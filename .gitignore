@@ -1,0 +1,13 @@
+# SwiftPM and Xcode build products
+.build/
+.swiftpm/
+DerivedData/
+*.xcuserstate
+
+# Locally generated app and release artifacts
+TokenHorizon.app/
+dist/
+website/
+
+# macOS metadata
+.DS_Store
