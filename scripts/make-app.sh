@@ -40,5 +40,9 @@ if pgrep -x TokenHorizon >/dev/null; then
     pkill -x TokenHorizon || true
     sleep 0.5
 fi
-open "$APP"
-echo "launched $APP"
+# Launch directly so TOKEN_HORIZON_* settings are inherited by the app. The
+# `open` command uses LaunchServices and does not reliably preserve shell env.
+LOG_DIR="$HOME/Library/Logs"
+mkdir -p "$LOG_DIR"
+nohup "$APP/Contents/MacOS/TokenHorizon" >"$LOG_DIR/TokenHorizon.log" 2>&1 </dev/null &
+echo "launched $APP (log: $LOG_DIR/TokenHorizon.log)"

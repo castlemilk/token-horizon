@@ -47,6 +47,11 @@ cd ~/projects/token-horizon
 ./scripts/make-app.sh          # swift build -c release + TokenHorizon.app bundle + relaunch
 ```
 
+`make-app.sh` launches the bundled executable directly so
+`TOKEN_HORIZON_OLLAMA_UPSTREAM` and `TOKEN_HORIZON_OLLAMA_PROXY_PORT` are
+inherited. The app writes its launch log to
+`~/Library/Logs/TokenHorizon.log`.
+
 The local script uses an ad-hoc signature for development. For a distributable full-feature build, use `scripts/package-notarized.sh` with a Developer ID Application certificate; see `docs/notarized-release.md`. This build intentionally is not App Sandbox-compatible because it reads local AI tool data and observes system processes.
 
 - Icon: `scripts/make-icon.swift` → `Resources/AppIcon.icns` (black hole, CoreGraphics)
