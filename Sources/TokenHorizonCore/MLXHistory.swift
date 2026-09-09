@@ -1,5 +1,6 @@
 import Foundation
 
+<<<<<<<< HEAD:Sources/TokenHorizon/LocalModels/MLXHistory.swift
 struct MLXHistoryPoint: Equatable {
     var timestamp: Date
     var cpuPercent: Double
@@ -8,14 +9,32 @@ struct MLXHistoryPoint: Equatable {
     var diskWriteMBps: Double
     var tokPerSec: Double?
     var prefillTokPerSec: Double?
+========
+public struct MLXHistoryPoint: Equatable {
+    public init(timestamp: Date, cpuPercent: Double, memoryMB: Double, diskReadMBps: Double, diskWriteMBps: Double, tokPerSec: Double? = nil) {
+        self.timestamp = timestamp
+        self.cpuPercent = cpuPercent
+        self.memoryMB = memoryMB
+        self.diskReadMBps = diskReadMBps
+        self.diskWriteMBps = diskWriteMBps
+        self.tokPerSec = tokPerSec
+    }
+
+    public var timestamp: Date
+    public var cpuPercent: Double
+    public var memoryMB: Double
+    public var diskReadMBps: Double
+    public var diskWriteMBps: Double
+    public var tokPerSec: Double?
+>>>>>>>> c0b8275 (Split portable server side into TokenHorizonCore + OS seam interfaces):Sources/TokenHorizonCore/MLXHistory.swift
 }
 
-struct MLXHistory: Equatable {
-    static let fineLimit = 1_800
-    static let coarseLimit = 2_880
-    static let rollupSeconds: TimeInterval = 30
+public struct MLXHistory: Equatable {
+    public static let fineLimit = 1_800
+    public static let coarseLimit = 2_880
+    public static let rollupSeconds: TimeInterval = 30
 
-    private(set) var fine: [MLXHistoryPoint] = []
+    public private(set) var fine: [MLXHistoryPoint] = []
     private(set) var coarse: [MLXHistoryPoint] = []
 
     private var activeBucket: Date?
@@ -28,6 +47,8 @@ struct MLXHistory: Equatable {
     private var tokCount = 0
     private var prefillSum = 0.0
     private var prefillCount = 0
+
+    public init() {}
 
     mutating func append(_ snapshot: MLXSnapshot) {
         let point = MLXHistoryPoint(
@@ -72,18 +93,19 @@ struct MLXHistory: Equatable {
         }
     }
 
-    func cpuSeries(coarse: Bool = false) -> [Double] {
+    public func cpuSeries(coarse: Bool = false) -> [Double] {
         (coarse ? self.coarse : fine).map(\ .cpuPercent)
     }
 
-    func memorySeries(coarse: Bool = false) -> [Double] {
+    public func memorySeries(coarse: Bool = false) -> [Double] {
         (coarse ? self.coarse : fine).map(\ .memoryMB)
     }
 
-    func diskSeries(coarse: Bool = false) -> [Double] {
+    public func diskSeries(coarse: Bool = false) -> [Double] {
         (coarse ? self.coarse : fine).map { $0.diskReadMBps + $0.diskWriteMBps }
     }
 
+<<<<<<<< HEAD:Sources/TokenHorizon/LocalModels/MLXHistory.swift
     func tokSeries(coarse: Bool = false) -> [Double] {
         (coarse ? self.coarse : fine).map { $0.tokPerSec ?? 0.0 }
     }
@@ -130,6 +152,10 @@ struct MLXHistory: Equatable {
         let measured = (coarse ? self.coarse : fine).compactMap(\.prefillTokPerSec).filter { $0 > 0 }
         guard !measured.isEmpty else { return 0.0 }
         return measured.reduce(0, +) / Double(measured.count)
+========
+    public func tokSeries(coarse: Bool = false) -> [Double] {
+        (coarse ? self.coarse : fine).compactMap(\ .tokPerSec)
+>>>>>>>> c0b8275 (Split portable server side into TokenHorizonCore + OS seam interfaces):Sources/TokenHorizonCore/MLXHistory.swift
     }
 
     private mutating func flushRollup() {

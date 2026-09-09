@@ -26,6 +26,42 @@ Tests/TokenHorizonPerfTests/       # one testTarget, split by kind
   Integration/        OllamaProxyIntegrationTests (loopback relay round-trips)
   Fixtures/           catalog-7300.json + golden/testdata files (see Package.swift resources)
 ```
+
+Sources/TokenHorizonCore/   portable server-side module (macOS + Linux; Windows TBD)
+  Models.swift            UsageSnapshot, ToolUsage, ModelUsage, ProviderLimit, HistoryPoint, TrendWindow, ShellEvent
+  UsageEngine.swift       all token/cost collection (opencode sqlite, claude/codex/kimi/generic JSONL), hourly buckets, history/trends
+  PlanLimitsEngine.swift  glm/minimax/opencode-go/alibaba/gemini/claude limit fetchers
+  KimiLimitsEngine.swift  Kimi OAuth refresh + usage API
+  SettingsStore.swift     config dir settings.json (alibaba cookie) — path via Platform.paths
+  ModelCatalog.swift      model catalog + canonical identity
+  ModelsPipeline.swift    catalog merge + filter + sort + scope counts (off-main pipeline)
+  ModelRow.swift          ModelRow/ModelTableColumn/ModelFilterScope (pure data, no SwiftUI)
+  TelemetryTypes.swift    OllamaTelemetrySample + bounded store
+  MLXTypes.swift          MLXProcess/MLXSnapshot DTOs
+  MLXHistory.swift        bounded fine samples + 30s rollups
+  OllamaClient.swift      Ollama REST client (proxy URL via baseURLProvider seam)
+  TelemetryMetrics.swift  OTel meter on macOS; no-op stub where SDK unavailable
+  EventStore.swift        bounded shell-event ring buffer
+  Notifications.swift     shared Notification.Name constants
+  SystemStatsTypes.swift  ProcSample/ProcDetail/SystemSnapshot/SystemIORates + SystemStatsProviding protocol
+  Platform/
+    PlatformPaths.swift     config/cache/home dirs (XDG on Linux, APPDATA on Windows, ~/.config on macOS)
+    CredentialStore.swift   CredentialStore protocol + Platform registry (paths/credentials/systemStats)
+    LocalHTTPServing.swift  LocalHTTPServing protocol + POSIXLoopbackHTTPServer (BSD sockets, macOS+Linux)
+    LinuxSystemStats.swift  ProcFSSystemStats: /proc/stat, meminfo, diskstats, net/dev + ps
+Sources/token-horizon-headless/  cross-platform daemon: same loopback API as the macOS app, no UI
+Sources/CSQLite/                 system sqlite3 module-map shim (non-macOS only)
+Sources/TokenHorizon/
+  main.swift            AppKit entry, .accessory activation policy
+  AppDelegate.swift     surfaces (notch vs tray), refresh loops, HTTP wiring, dashboard window, Platform seam wiring
+  SystemStats.swift     macOS SystemStatsProviding impl: mach CPU ticks, vm64 RAM, load avg, system I/O, ps, MLX sampling
+  MLXObserver.swift     MLX/Ollama runner detection + measured tok/s association
+  OllamaTelemetryProxy.swift  in-process localhost Ollama relay (Network.framework)
+  LocalServer.swift     NWListener HTTP on 127.0.0.1:8765 (macOS app server)
+  LimitNotifier.swift   UNUserNotification limit alerts
+  Panels.swift          NotchPanel (hover driver + hysteresis), ring gauges live in Views
+  Views.swift           UIModel, DashboardTabs (shared by notch/popover/window), all tab views
+
 mcp/token-horizon-mcp.mjs   zero-dep stdio MCP server (talks to :8765, sqlite fallback for usage/sessions)
 shell/token-horizon.zsh     zsh preexec/precmd hooks + `th` CLI (stats, limits, history, cache, reset-cache)
   docs/blog/                  static blog (index + posts) sharing the landing chrome/styles.css
@@ -43,6 +79,8 @@ scripts/fetch-brand-logos.py  official white provider marks → docs/assets/bran
 scripts/onboard-domain.sh   Cloudflare zone creation + registrar NS steps for a custom domain
 LEADERBOARD.md              objective-vs-current screen alignment + full leaderboard data flow
 ```
+
+See docs/cross-platform.md for the Linux/Windows port status and the Platform seam contract.
 
 ## Invariants — do not break
 

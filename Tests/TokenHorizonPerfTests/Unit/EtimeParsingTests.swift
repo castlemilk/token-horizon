@@ -1,4 +1,5 @@
 import XCTest
+import TokenHorizonCore
 @testable import TokenHorizon
 
 /// Tests for ps etime parsing used by processSamples and processDetail.

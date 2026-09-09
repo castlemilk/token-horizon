@@ -1,51 +1,5 @@
 import Foundation
-
-struct MLXProcess: Equatable, Identifiable {
-    var pid: Int32
-    var ppid: Int32
-    var name: String
-    var command: String
-    var model: String?
-    var cpu: Double
-    var memoryMB: Double
-    var diskReadMBps: Double
-    var diskWriteMBps: Double
-    var startTime: Date
-    var tokPerSec: Double?
-    var prefillTokPerSec: Double? = nil
-    var ttftSeconds: Double? = nil
-
-    var id: Int32 { pid }
-}
-
-struct MLXSnapshot: Equatable {
-    var sampledAt: Date = .distantPast
-    var processes: [MLXProcess] = []
-
-    var cpuPercent: Double { processes.reduce(0) { $0 + $1.cpu } }
-    var memoryMB: Double { processes.reduce(0) { $0 + $1.memoryMB } }
-    var diskReadMBps: Double { processes.reduce(0) { $0 + $1.diskReadMBps } }
-    var diskWriteMBps: Double { processes.reduce(0) { $0 + $1.diskWriteMBps } }
-    var measuredTokPerSec: Double? {
-        let rates = Dictionary(grouping: processes.compactMap { process -> (String, Double)? in
-            guard let model = process.model, let rate = process.tokPerSec else { return nil }
-            return (model, rate)
-        }, by: { $0.0 }).values.compactMap { $0.first?.1 }
-        guard !rates.isEmpty else { return nil }
-        return rates.reduce(0, +)
-    }
-
-    /// One prefill rate per active model, measured by the runner itself
-    /// (Ollama benchmark or `/metrics`), summed across models.
-    var measuredPrefillTokPerSec: Double? {
-        let rates = Dictionary(grouping: processes.compactMap { process -> (String, Double)? in
-            guard let model = process.model, let rate = process.prefillTokPerSec else { return nil }
-            return (model, rate)
-        }, by: { $0.0 }).values.compactMap { $0.first?.1 }
-        guard !rates.isEmpty else { return nil }
-        return rates.reduce(0, +)
-    }
-}
+import TokenHorizonCore
 
 enum MLXObserver {
     /// Identify the command forms used by mlx-lm, mlx-vlm, and Ollama's MLX runner.

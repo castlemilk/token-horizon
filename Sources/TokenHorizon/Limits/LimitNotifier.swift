@@ -1,4 +1,5 @@
 import Foundation
+import TokenHorizonCore
 #if canImport(UserNotifications)
 import UserNotifications
 #endif

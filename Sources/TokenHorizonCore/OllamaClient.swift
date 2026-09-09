@@ -1,5 +1,9 @@
 import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 
+<<<<<<<< HEAD:Sources/TokenHorizon/LocalModels/OllamaClient.swift
 struct OllamaModel: Codable {
     var name: String
     var size: UInt64
@@ -12,24 +16,38 @@ struct OllamaModel: Codable {
     var digest: String? = nil
     var sizeVRAM: UInt64? = nil
     var rawMetadata: LocalMetadataValue? = nil
+========
+public struct OllamaModel: Codable {
+    public var name: String
+    public var size: UInt64
+    public var modifiedAt: String
+    public var capabilities: [String]
+    public var details: [String: String]
+    public var tokPerSec: Double?
+    public var promptTokPerSec: Double?
+>>>>>>>> c0b8275 (Split portable server side into TokenHorizonCore + OS seam interfaces):Sources/TokenHorizonCore/OllamaClient.swift
 }
 
-struct OllamaSpeedBenchmark: Codable {
-    var tokPerSec: Double
-    var promptTokPerSec: Double?
-    var evalCount: Int
-    var evalDurationNs: UInt64
-    var timestamp: Date
+public struct OllamaSpeedBenchmark: Codable {
+    public var tokPerSec: Double
+    public var promptTokPerSec: Double?
+    public var evalCount: Int
+    public var evalDurationNs: UInt64
+    public var timestamp: Date
 }
 
-final class OllamaClient {
+public final class OllamaClient {
+    /// Platform seam: the app assigns this to route through the telemetry proxy
+    /// (e.g. `{ OllamaTelemetryProxy.shared.proxyURL }`). Default talks to Ollama directly.
+    public static var baseURLProvider: () -> URL? = { nil }
+
     private static let lock = NSLock()
     private static var benchmarkCache: [String: OllamaSpeedBenchmark] = [:]
     private static var inProgressBenchmarks: Set<String> = []
     private static var cacheLoaded = false
 
     private static func endpoint(_ path: String) -> URL? {
-        let base = OllamaTelemetryProxy.shared.proxyURL ?? URL(string: "http://127.0.0.1:11434")
+        let base = baseURLProvider() ?? URL(string: "http://127.0.0.1:11434")
         return base?.appendingPathComponent(path.hasPrefix("/") ? String(path.dropFirst()) : path)
     }
 
@@ -60,20 +78,20 @@ final class OllamaClient {
         }
     }
 
-    static func cachedBenchmark(for model: String) -> OllamaSpeedBenchmark? {
+    public static func cachedBenchmark(for model: String) -> OllamaSpeedBenchmark? {
         ensureCacheLoaded()
         lock.lock()
         defer { lock.unlock() }
         return benchmarkCache[model] ?? benchmarkCache[model.lowercased()]
     }
 
-    static func isBenchmarking(model: String) -> Bool {
+    public static func isBenchmarking(model: String) -> Bool {
         lock.lock()
         defer { lock.unlock() }
         return inProgressBenchmarks.contains(model) || inProgressBenchmarks.contains(model.lowercased())
     }
 
-    static func fetchInstalled() -> [OllamaModel] {
+    public static func fetchInstalled() -> [OllamaModel] {
         ensureCacheLoaded()
         guard let data = requestData(path: "/api/tags"),
               let json = try? JSONSerialization.jsonObject(with: data),
@@ -101,7 +119,7 @@ final class OllamaClient {
         }
     }
 
-    static func benchmark(model: String, completion: ((OllamaSpeedBenchmark?) -> Void)? = nil) {
+    public static func benchmark(model: String, completion: ((OllamaSpeedBenchmark?) -> Void)? = nil) {
         lock.lock()
         if inProgressBenchmarks.contains(model) {
             lock.unlock()
@@ -184,6 +202,7 @@ final class OllamaClient {
         }
     }
 
+<<<<<<<< HEAD:Sources/TokenHorizon/LocalModels/OllamaClient.swift
     static func modelCard(for name: String) -> [String: Any]? {
         guard case .object(let values) = requestJSON(path: "/api/show", method: "POST", body: ["name": name]) else {
             return nil
@@ -260,6 +279,14 @@ final class OllamaClient {
             request.httpBody = try? JSONSerialization.data(withJSONObject: body)
         }
 
+========
+    public static func modelCard(for name: String) -> [String: Any]? {
+        guard let url = endpoint("/api/show") else { return nil }
+        var req = URLRequest(url: url, timeoutInterval: 4)
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try? JSONSerialization.data(withJSONObject: ["name": name])
+>>>>>>>> c0b8275 (Split portable server side into TokenHorizonCore + OS seam interfaces):Sources/TokenHorizonCore/OllamaClient.swift
         var data: Data?
         let semaphore = DispatchSemaphore(value: 0)
         URLSession.shared.dataTask(with: request) { responseData, response, _ in

@@ -1,226 +1,11 @@
 import Foundation
 import Network
 import os
+import TokenHorizonCore
 
 private let proxyLog = Logger(subsystem: "com.tokenhorizon.app", category: "ollama-proxy")
 
-struct OllamaTelemetrySample: Equatable {
-    var model: String
-    var completedAt: Date
-    var evalCount: Int
-    var evalDurationNs: UInt64
-    var promptEvalCount: Int?
-    var promptEvalDurationNs: UInt64?
-
-    var tokPerSec: Double? {
-        guard evalCount > 0, evalDurationNs > 0 else { return nil }
-        return Double(evalCount) / (Double(evalDurationNs) / 1_000_000_000)
-    }
-
-    var promptTokPerSec: Double? {
-        guard let count = promptEvalCount,
-              let duration = promptEvalDurationNs,
-              count > 0, duration > 0 else { return nil }
-        return Double(count) / (Double(duration) / 1_000_000_000)
-    }
-}
-
-struct LocalModelUsageRecord: Codable {
-    var model: String
-    var promptTokens: Int = 0
-    var evalTokens: Int = 0
-    var totalTokens: Int = 0
-    var messages: Int = 0
-    var lastUsed: Date = Date()
-    var hourlyBuckets: [Int: Int] = [:]
-}
-
-struct LocalLLMTelemetryState: Codable {
-    var version: Int = 1
-    var models: [String: LocalModelUsageRecord] = [:]
-}
-
-struct LocalLLMSummary {
-    var todayTokens: Int
-    var allTokens: Int
-    var messagesToday: Int
-    var messagesAll: Int
-    var models: [String: (today: Int, all: Int, prompt: Int, eval: Int, messages: Int)]
-    var hourlyBuckets: [Int: Int]
-}
-
-final class OllamaTelemetryStore {
-    static let shared = OllamaTelemetryStore()
-
-    private static let maxModels = 256
-    private static let recentSampleLimit = 8
-    private static let minimumRateTokens = 8
-    private let lock = NSLock()
-    private var latestSamples: [String: OllamaTelemetrySample] = [:]
-    private var recentSamples: [String: [OllamaTelemetrySample]] = [:]
-    private var isLoaded = false
-    private var isSavePending = false
-    private var usageRecords: [String: LocalModelUsageRecord] = [:]
-
-    private static var storageURL: URL {
-        let dir = NSString(string: "~/.config/token-horizon").expandingTildeInPath
-        return URL(fileURLWithPath: dir).appendingPathComponent("localllm-usage.json")
-    }
-
-    private func ensureLoadedLocked() {
-        if isLoaded { return }
-        isLoaded = true
-        guard let data = try? Data(contentsOf: Self.storageURL),
-              let state = try? JSONDecoder().decode(LocalLLMTelemetryState.self, from: data) else {
-            return
-        }
-        usageRecords = state.models
-    }
-
-    private func scheduleSaveLocked() {
-        if isSavePending { return }
-        isSavePending = true
-        let snapshot = LocalLLMTelemetryState(version: 1, models: usageRecords)
-        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 1.0) { [weak self] in
-            guard let self else { return }
-            self.lock.lock()
-            self.isSavePending = false
-            self.lock.unlock()
-            guard let encoded = try? JSONEncoder().encode(snapshot) else { return }
-            let url = Self.storageURL
-            try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-            try? encoded.write(to: url, options: .atomic)
-        }
-    }
-
-    func record(_ sample: OllamaTelemetrySample) {
-        let key = sample.model.lowercased()
-        let promptTokens = sample.promptEvalCount ?? 0
-        let evalTokens = sample.evalCount
-        let totalTokens = promptTokens + evalTokens
-        let hourBucket = Int(sample.completedAt.timeIntervalSince1970 / 3600) * 3600
-
-        lock.lock()
-        ensureLoadedLocked()
-        latestSamples[key] = sample
-        var recent = recentSamples[key, default: []]
-        recent.append(sample)
-        if recent.count > Self.recentSampleLimit {
-            recent.removeFirst(recent.count - Self.recentSampleLimit)
-        }
-        recentSamples[key] = recent
-        if latestSamples.count > Self.maxModels {
-            let oldestKeys = latestSamples
-                .sorted { $0.value.completedAt < $1.value.completedAt }
-                .prefix(latestSamples.count - Self.maxModels)
-                .map(\.key)
-            for k in oldestKeys {
-                latestSamples.removeValue(forKey: k)
-                recentSamples.removeValue(forKey: k)
-            }
-        }
-
-        if totalTokens > 0 {
-            var rec = usageRecords[key] ?? LocalModelUsageRecord(model: sample.model)
-            rec.promptTokens += promptTokens
-            rec.evalTokens += evalTokens
-            rec.totalTokens += totalTokens
-            rec.messages += 1
-            rec.lastUsed = sample.completedAt
-            rec.hourlyBuckets[hourBucket, default: 0] += totalTokens
-            let cutoff = hourBucket - (90 * 86_400)
-            rec.hourlyBuckets = rec.hourlyBuckets.filter { $0.key >= cutoff }
-            usageRecords[key] = rec
-            scheduleSaveLocked()
-        }
-        lock.unlock()
-    }
-
-    func latest(for model: String) -> OllamaTelemetrySample? {
-        lock.lock()
-        defer { lock.unlock() }
-        return latestSamples[model.lowercased()]
-    }
-
-    /// A weighted recent rate avoids letting a one-token completion replace a useful throughput reading.
-    func recentTokPerSec(for model: String) -> Double? {
-        lock.lock()
-        defer { lock.unlock() }
-        let samples = recentSamples[model.lowercased()] ?? []
-        let measured = samples.filter { $0.evalCount > 0 && $0.evalDurationNs > 0 }
-        let tokenCount = measured.reduce(0) { $0 + $1.evalCount }
-        let durationNs = measured.reduce(0.0) { $0 + Double($1.evalDurationNs) }
-        guard tokenCount >= Self.minimumRateTokens, durationNs > 0 else { return nil }
-        return Double(tokenCount) * 1_000_000_000 / durationNs
-    }
-
-    func usage(for model: String) -> (tokensToday: Int, tokensAll: Int, messages: Int) {
-        let key = model.lowercased()
-        lock.lock()
-        ensureLoadedLocked()
-        let rec = usageRecords[key]
-        lock.unlock()
-
-        guard let rec else { return (0, 0, 0) }
-        let todayStart = Int(Calendar.current.startOfDay(for: Date()).timeIntervalSince1970)
-        var todayTokens = 0
-        for (h, count) in rec.hourlyBuckets where h >= todayStart {
-            todayTokens += count
-        }
-        return (todayTokens, rec.totalTokens, rec.messages)
-    }
-
-    func summary() -> LocalLLMSummary {
-        lock.lock()
-        ensureLoadedLocked()
-        let records = usageRecords
-        lock.unlock()
-
-        let todayStart = Int(Calendar.current.startOfDay(for: Date()).timeIntervalSince1970)
-        var totalToday = 0
-        var totalAll = 0
-        var msgToday = 0
-        var msgAll = 0
-        var modelMap: [String: (today: Int, all: Int, prompt: Int, eval: Int, messages: Int)] = [:]
-        var hourlyMerged: [Int: Int] = [:]
-
-        for (key, rec) in records {
-            var modelToday = 0
-            for (h, count) in rec.hourlyBuckets {
-                hourlyMerged[h, default: 0] += count
-                if h >= todayStart {
-                    modelToday += count
-                }
-            }
-            if modelToday > 0 {
-                msgToday += rec.messages
-            }
-            totalToday += modelToday
-            totalAll += rec.totalTokens
-            msgAll += rec.messages
-            let name = rec.model.isEmpty ? key : rec.model
-            modelMap[name] = (today: modelToday, all: rec.totalTokens, prompt: rec.promptTokens, eval: rec.evalTokens, messages: rec.messages)
-        }
-
-        return LocalLLMSummary(
-            todayTokens: totalToday,
-            allTokens: totalAll,
-            messagesToday: msgToday,
-            messagesAll: msgAll,
-            models: modelMap,
-            hourlyBuckets: hourlyMerged
-        )
-    }
-
-    func resetForTesting() {
-        lock.lock()
-        latestSamples.removeAll()
-        recentSamples.removeAll()
-        usageRecords.removeAll()
-        isLoaded = true
-        lock.unlock()
-    }
-}
+// OllamaTelemetrySample and OllamaTelemetryStore live in TokenHorizonCore.
 
 final class OllamaTelemetryProxy {
     static let shared = OllamaTelemetryProxy()
@@ -287,12 +72,12 @@ final class OllamaTelemetryProxy {
         }
         newListener.stateUpdateHandler = { [weak self] state in
             if case .ready = state {
-                proxyLog.info("Ollama telemetry proxy listening on 127.0.0.1:\(requested)")
+                NSLog("Ollama telemetry proxy listening on 127.0.0.1:\(requested)")
                 self?.stateLock.lock()
                 self?.activePort = requested
                 self?.stateLock.unlock()
             } else if case .failed = state {
-                proxyLog.error("Ollama telemetry proxy could not bind port \(requested)")
+                NSLog("Ollama telemetry proxy could not bind port \(requested)")
                 self?.stateLock.lock()
                 self?.listener = nil
                 self?.activePort = nil
@@ -316,80 +101,45 @@ final class OllamaTelemetryProxy {
         current?.cancel()
     }
 
-    static func parseTelemetry(model: String? = nil, responseBody: Data, completedAt: Date = Date(), elapsedDurationNs: UInt64? = nil) -> OllamaTelemetrySample? {
-        let objects = JSONObjects(in: responseBody)
-        for object in objects.reversed() {
-            let resolvedModel = model ?? (object["model"] as? String)
-            guard let activeModel = resolvedModel, !activeModel.isEmpty else { continue }
-
-            // 1. Ollama native format: done == true, eval_count, eval_duration
-            if let done = object["done"] as? Bool, done,
-               let evalCount = number(object["eval_count"])?.intValue,
-               let evalDuration = number(object["eval_duration"])?.uint64Value,
-               evalCount >= 0, evalDuration > 0 {
-                return OllamaTelemetrySample(
-                    model: activeModel,
-                    completedAt: completedAt,
-                    evalCount: evalCount,
-                    evalDurationNs: evalDuration,
-                    promptEvalCount: number(object["prompt_eval_count"])?.intValue,
-                    promptEvalDurationNs: number(object["prompt_eval_duration"])?.uint64Value
-                )
-            }
-
-            // 2. OpenAI-compatible format: usage: { completion_tokens, prompt_tokens, total_tokens }
-            if let usage = object["usage"] as? [String: Any],
-               let completionTokens = number(usage["completion_tokens"])?.intValue,
-               completionTokens >= 0 {
-                let promptTokens = number(usage["prompt_tokens"])?.intValue
-                let durationNs = elapsedDurationNs ?? 1_000_000_000
-                return OllamaTelemetrySample(
-                    model: activeModel,
-                    completedAt: completedAt,
-                    evalCount: completionTokens,
-                    evalDurationNs: max(durationNs, 1),
-                    promptEvalCount: promptTokens,
-                    promptEvalDurationNs: nil
-                )
-            }
+    static func parseTelemetry(model: String, responseBody: Data, completedAt: Date = Date()) -> OllamaTelemetrySample? {
+        for object in JSONObjects(in: responseBody) {
+            guard let done = object["done"] as? Bool, done,
+                  let evalCount = number(object["eval_count"])?.intValue,
+                  let evalDuration = number(object["eval_duration"])?.uint64Value,
+                  evalCount >= 0, evalDuration > 0 else { continue }
+            return OllamaTelemetrySample(
+                model: model,
+                completedAt: completedAt,
+                evalCount: evalCount,
+                evalDurationNs: evalDuration,
+                promptEvalCount: number(object["prompt_eval_count"])?.intValue,
+                promptEvalDurationNs: number(object["prompt_eval_duration"])?.uint64Value
+            )
         }
         return nil
     }
 
-    /// Pure JSON-number coercion. Internal for hermetic unit tests.
-    static func number(_ value: Any?) -> NSNumber? {
+    private static func number(_ value: Any?) -> NSNumber? {
         if let number = value as? NSNumber { return number }
         if let string = value as? String { return NSNumber(value: Double(string) ?? 0) }
         return nil
     }
 
-    static func JSONObjects(in data: Data) -> [[String: Any]] {
-        let payload = decodeChunkedBody(data)
+    private static func JSONObjects(in data: Data) -> [[String: Any]] {
+        let text = String(decoding: decodeChunkedBody(data), as: UTF8.self)
         var objects: [[String: Any]] = []
-
-        if let root = try? JSONSerialization.jsonObject(with: payload) as? [String: Any] {
-            objects.append(root)
-            return objects
-        }
-
-        let text = String(decoding: payload, as: UTF8.self)
         for line in text.split(whereSeparator: { $0 == "\n" || $0 == "\r" }) {
-            var trimmed = line.trimmingCharacters(in: .whitespaces)
-            if trimmed.hasPrefix("data:") {
-                trimmed = trimmed.dropFirst(5).trimmingCharacters(in: .whitespaces)
-            }
-            guard !trimmed.isEmpty, trimmed != "[DONE]",
-                  let lineData = trimmed.data(using: .utf8),
-                  let object = try? JSONSerialization.jsonObject(with: lineData) as? [String: Any] else {
-                continue
-            }
+            guard let lineData = String(line).data(using: .utf8),
+                  let object = try? JSONSerialization.jsonObject(with: lineData) as? [String: Any] else { continue }
+            objects.append(object)
+        }
+        if let object = try? JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any] {
             objects.append(object)
         }
         return objects
     }
 
-    /// Strips HTTP headers / chunked framing. Internal for hermetic tests.
-    static func decodeChunkedBody(_ data: Data) -> Data {
+    private static func decodeChunkedBody(_ data: Data) -> Data {
         guard let headerEnd = data.range(of: Data("\r\n\r\n".utf8)) else { return data }
         let header = String(decoding: data[..<headerEnd.lowerBound], as: UTF8.self).lowercased()
         guard header.contains("transfer-encoding: chunked") else { return data[headerEnd.upperBound...] }
@@ -397,9 +147,8 @@ final class OllamaTelemetryProxy {
         return decodeChunkedPayload(Data(data[headerEnd.upperBound...]))
     }
 
-    static func decodeChunkedPayload(_ data: Data) -> Data {
+    private static func decodeChunkedPayload(_ data: Data) -> Data {
         var output = Data()
-        output.reserveCapacity(data.count)
         var index = 0
         while index < data.count {
             guard let lineEnd = data[index...].range(of: Data("\r\n".utf8)) else { break }
@@ -574,7 +323,6 @@ final class OllamaTelemetryProxy {
         let model: String?
         private var data = Data()
         private var notified = false
-        private let startTime = DispatchTime.now()
 
         init(model: String?) { self.model = model }
 
@@ -586,8 +334,8 @@ final class OllamaTelemetryProxy {
         func finish() {
             guard !notified else { return }
             notified = true
-            let elapsedNs = DispatchTime.now().uptimeNanoseconds - startTime.uptimeNanoseconds
-            guard let sample = OllamaTelemetryProxy.parseTelemetry(model: model, responseBody: data, completedAt: Date(), elapsedDurationNs: elapsedNs) else { return }
+            guard let model,
+                  let sample = OllamaTelemetryProxy.parseTelemetry(model: model, responseBody: data) else { return }
             OllamaTelemetryStore.shared.record(sample)
             TokenHorizonTelemetry.shared.recordOllama(sample)
             NotificationCenter.default.post(name: .ollamaTelemetryUpdated, object: sample)
