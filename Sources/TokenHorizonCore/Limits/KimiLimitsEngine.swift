@@ -3,35 +3,16 @@ import Foundation
 import FoundationNetworking
 #endif
 
-public final class KimiLimitsEngine {
+public final class KimiLimitsEngine: LimitsEngine {
     public static let shared = KimiLimitsEngine()
-    private let lock = NSLock()
-    private var cache: [ProviderLimit] = []
-    private var lastFetch = Date.distantPast
     private static let clientID = "17e5f671-d194-4dfb-9706-5516cb48c098"
 
-    public func cachedLimits() -> [ProviderLimit] {
-        lock.lock(); defer { lock.unlock() }
-        return cache
+    public init() {
+        super.init(updatedNotification: .kimiLimitsUpdated)
     }
 
-    public func refreshIfDue(maxAge: TimeInterval = 60) {
-        lock.lock()
-        if Date().timeIntervalSince(lastFetch) < maxAge {
-            lock.unlock()
-            return
-        }
-        lastFetch = Date()
-        lock.unlock()
-        DispatchQueue.global(qos: .utility).async { [weak self] in
-            let limits = Self.fetch()
-            self?.lock.lock()
-            self?.cache = limits
-            self?.lock.unlock()
-            DispatchQueue.main.async {
-                NotificationCenter.default.post(name: Notification.Name("kimiLimitsUpdated"), object: limits)
-            }
-        }
+    public override func fetchLimits() -> [ProviderLimit] {
+        Self.fetch()
     }
 
     public struct Credentials {

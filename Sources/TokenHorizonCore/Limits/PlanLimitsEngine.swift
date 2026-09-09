@@ -3,41 +3,15 @@ import Foundation
 import FoundationNetworking
 #endif
 
-public final class PlanLimitsEngine {
+public final class PlanLimitsEngine: LimitsEngine {
     public static let shared = PlanLimitsEngine()
-    private let lock = NSLock()
-    private var cache: [ProviderLimit] = []
-    private var lastFetch = Date.distantPast
 
-    public func cachedLimits() -> [ProviderLimit] {
-        lock.lock(); defer { lock.unlock() }
-        return cache
+    public init() {
+        super.init(updatedNotification: .planLimitsUpdated)
     }
 
-    public func refreshNow() {
-        lock.lock()
-        lastFetch = .distantPast
-        lock.unlock()
-        refreshIfDue(maxAge: .infinity)
-    }
-
-    public func refreshIfDue(maxAge: TimeInterval = 60) {
-        lock.lock()
-        if Date().timeIntervalSince(lastFetch) < maxAge {
-            lock.unlock()
-            return
-        }
-        lastFetch = Date()
-        lock.unlock()
-        DispatchQueue.global(qos: .utility).async { [weak self] in
-            let limits = Self.fetchAll()
-            self?.lock.lock()
-            self?.cache = limits
-            self?.lock.unlock()
-            DispatchQueue.main.async {
-                NotificationCenter.default.post(name: Notification.Name("planLimitsUpdated"), object: limits)
-            }
-        }
+    public override func fetchLimits() -> [ProviderLimit] {
+        Self.fetchAll()
     }
 
     public static func authKeys() -> [String: String] {
