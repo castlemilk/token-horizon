@@ -1,11 +1,11 @@
+#if os(macOS)
 import Foundation
 import Network
-import TokenHorizonCore
 
 // OllamaTelemetrySample and OllamaTelemetryStore live in TokenHorizonCore.
 
-final class OllamaTelemetryProxy {
-    static let shared = OllamaTelemetryProxy()
+public final class OllamaTelemetryProxy {
+    public static let shared = OllamaTelemetryProxy()
 
     private let queue = DispatchQueue(label: "tokenhorizon.ollama-proxy", qos: .utility)
     private let stateLock = NSLock()
@@ -15,13 +15,13 @@ final class OllamaTelemetryProxy {
     private var activePort: UInt16?
     private var shouldRun = false
 
-    var port: UInt16? {
+    public var port: UInt16? {
         stateLock.lock()
         defer { stateLock.unlock() }
         return activePort
     }
 
-    var proxyURL: URL? {
+    public var proxyURL: URL? {
         guard let port else { return nil }
         return URL(string: "http://127.0.0.1:\(port)")
     }
@@ -33,7 +33,7 @@ final class OllamaTelemetryProxy {
         upstreamPort = NWEndpoint.Port(rawValue: UInt16(pieces.count > 1 ? pieces[1] : "11434") ?? 11434) ?? 11434
     }
 
-    func start() {
+    public func start() {
         stateLock.lock()
         let alreadyStarted = shouldRun
         shouldRun = true
@@ -88,7 +88,7 @@ final class OllamaTelemetryProxy {
         newListener.start(queue: queue)
     }
 
-    func stop() {
+    public func stop() {
         stateLock.lock()
         let current = listener
         listener = nil
@@ -98,7 +98,7 @@ final class OllamaTelemetryProxy {
         current?.cancel()
     }
 
-    static func parseTelemetry(model: String, responseBody: Data, completedAt: Date = Date()) -> OllamaTelemetrySample? {
+    public static func parseTelemetry(model: String, responseBody: Data, completedAt: Date = Date()) -> OllamaTelemetrySample? {
         for object in JSONObjects(in: responseBody) {
             guard let done = object["done"] as? Bool, done,
                   let evalCount = number(object["eval_count"])?.intValue,
@@ -339,3 +339,5 @@ final class OllamaTelemetryProxy {
         }
     }
 }
+
+#endif // os(macOS)

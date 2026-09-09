@@ -1,5 +1,5 @@
 import XCTest
-import TokenHorizonCore
+@testable import TokenHorizonCore
 @testable import TokenHorizon
 import OpenTelemetryApi
 import OpenTelemetrySdk

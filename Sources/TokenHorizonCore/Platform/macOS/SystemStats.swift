@@ -1,14 +1,14 @@
+#if os(macOS)
 import Foundation
 import Darwin
-import TokenHorizonCore
 
 // ProcSample, ProcDetail, SystemSnapshot, SystemIORates and the
 // SystemStatsProviding protocol live in TokenHorizonCore (cross-platform).
 // This enum is the macOS implementation of that protocol (mach, vm64, iostat, ps).
 
-enum SystemStats {
-    typealias Snapshot = SystemSnapshot
-    typealias IORates = SystemIORates
+public enum SystemStats {
+    public typealias Snapshot = SystemSnapshot
+    public typealias IORates = SystemIORates
 
     private static var prevDisk: [Int32: (read: UInt64, write: UInt64, time: Date)] = [:]
     private static var prevMLXDisk: [Int32: (read: UInt64, write: UInt64, time: Date)] = [:]
@@ -20,7 +20,7 @@ enum SystemStats {
     private static var ioCacheTime: Date?
     private static var previousIO: (diskMB: Double, netB: UInt64, time: Date)?
 
-    static func processSamples() -> (all: [ProcSample], byCPU: [ProcSample], byMem: [ProcSample], byDisk: [ProcSample], byNet: [ProcSample]) {
+    public static func processSamples() -> (all: [ProcSample], byCPU: [ProcSample], byMem: [ProcSample], byDisk: [ProcSample], byNet: [ProcSample]) {
         NSLog("processSamples start")
         // Extended ps: pid, ppid, %cpu, rss, etime, user, comm
         // (macOS ps doesn't have nthreads/nlwp in standard column mode; we get threads
@@ -111,7 +111,7 @@ enum SystemStats {
 
     /// Build a tree representation of processes (children grouped under parents).
     /// Returns a flat ordered list with depth info suitable for indented tree display.
-    static func buildProcessTree(_ procs: [ProcSample]) -> [(proc: ProcSample, depth: Int, hasChildren: Bool)] {
+    public static func buildProcessTree(_ procs: [ProcSample]) -> [(proc: ProcSample, depth: Int, hasChildren: Bool)] {
         // Index children by ppid
         var byParent: [Int32: [ProcSample]] = [:]
         for p in procs { byParent[p.ppid, default: []].append(p) }
@@ -140,7 +140,7 @@ enum SystemStats {
     }
 
     /// Lookup detailed info for a single PID (used by drill-down).
-    static func processDetail(pid: Int32) -> ProcDetail? {
+    public static func processDetail(pid: Int32) -> ProcDetail? {
         // Use ps with extra fields (no nthreads — macOS doesn't support it in ps column mode)
         let pipe = Pipe()
         let task = Process()
@@ -209,32 +209,32 @@ enum SystemStats {
 
     /// Send SIGTERM to a PID (used by drill-down kill button).
     @discardableResult
-    static func killProcess(pid: Int32, signal: Int32 = SIGTERM) -> Bool {
+    public static func killProcess(pid: Int32, signal: Int32 = SIGTERM) -> Bool {
         return kill(pid, signal) == 0
     }
 
     // Legacy wrapper for existing call sites
-    static func processSamplesLegacy() -> (byCPU: [ProcSample], byMem: [ProcSample]) {
+    public static func processSamplesLegacy() -> (byCPU: [ProcSample], byMem: [ProcSample]) {
         let r = processSamples()
         return (r.byCPU, r.byMem)
     }
 
     /// Narrow process sampling for MLX observability. This intentionally does
     /// not run nettop or populate the general process table.
-    static func mlxProcessSamples() -> [ProcSample] {
+    public static func mlxProcessSamples() -> [ProcSample] {
         let task = Process()
         task.executableURL = URL(fileURLWithPath: "/bin/ps")
         task.arguments = ["-axo", "pid=,ppid=,%cpu=,rss=,etime=,user=,args="]
         guard let data = runCapture(task) else { return [] }
 
         struct Raw {
-            var pid: Int32
-            var ppid: Int32
-            var cpu: Double
-            var rssKB: Double
-            var etime: String
-            var user: String
-            var command: String
+            public var pid: Int32
+            public var ppid: Int32
+            public var cpu: Double
+            public var rssKB: Double
+            public var etime: String
+            public var user: String
+            public var command: String
         }
 
         let now = Date()
@@ -326,7 +326,7 @@ enum SystemStats {
         return result
     }
 
-    static func parseNetSnapshot(_ data: Data) -> [Int32: (inB: UInt64, outB: UInt64)] {
+    public static func parseNetSnapshot(_ data: Data) -> [Int32: (inB: UInt64, outB: UInt64)] {
         let lines = String(decoding: data, as: UTF8.self).split(separator: "\n")
         guard let headerIndex = lines.firstIndex(where: { $0.contains("bytes_in") }) else { return [:] }
         let header = lines[headerIndex].split(separator: ",", omittingEmptySubsequences: false).map(String.init)
@@ -382,7 +382,7 @@ enum SystemStats {
 
     /// Read system-wide I/O counters on a short cache interval. This is much
     /// cheaper than retaining or rescanning per-process samples for history.
-    static func ioRates(now: Date = Date()) -> IORates {
+    public static func ioRates(now: Date = Date()) -> IORates {
         ioLock.lock()
         defer { ioLock.unlock() }
         if let cachedAt = ioCacheTime, now.timeIntervalSince(cachedAt) < 4 {
@@ -418,7 +418,7 @@ enum SystemStats {
         return parseDiskTotalMB(data)
     }
 
-    static func parseDiskTotalMB(_ data: Data) -> Double {
+    public static func parseDiskTotalMB(_ data: Data) -> Double {
         let lines = String(decoding: data, as: UTF8.self).split(separator: "\n")
         for line in lines {
             let values = line.split(whereSeparator: { $0 == " " || $0 == "\t" }).compactMap { Double($0) }
@@ -448,7 +448,7 @@ enum SystemStats {
 
     private static var prevTicks: [Int64]?
 
-    static func snapshot() -> Snapshot {
+    public static func snapshot() -> Snapshot {
         var s = Snapshot()
         s.cpuPercent = cpuUsage()
         s.loadAvg1 = loadAverage()
@@ -528,3 +528,5 @@ enum SystemStats {
 
 // MARK: - Cross-platform protocol conformance (interface defined in TokenHorizonCore)
 extension SystemStats: SystemStatsProviding {}
+
+#endif // os(macOS)

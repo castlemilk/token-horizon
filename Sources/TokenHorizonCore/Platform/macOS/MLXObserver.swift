@@ -1,9 +1,9 @@
+#if os(macOS)
 import Foundation
-import TokenHorizonCore
 
-enum MLXObserver {
+public enum MLXObserver {
     /// Identify the command forms used by mlx-lm and Ollama's MLX runner.
-    static func isMLXCommand(_ command: String) -> Bool {
+    public static func isMLXCommand(_ command: String) -> Bool {
         let value = command.lowercased()
         return value.contains("--mlx-engine")
             || value.contains("mlx_lm")
@@ -11,7 +11,7 @@ enum MLXObserver {
             || value.contains("/mlx")
     }
 
-    static func modelName(in command: String) -> String? {
+    public static func modelName(in command: String) -> String? {
         let parts = command.split(whereSeparator: { $0 == " " || $0 == "\t" }).map(String.init)
         for index in parts.indices {
             if parts[index] == "--model" || parts[index] == "-m", parts.indices.contains(index + 1) {
@@ -25,7 +25,7 @@ enum MLXObserver {
         return nil
     }
 
-    static func snapshot(from samples: [ProcSample], now: Date = Date()) -> MLXSnapshot {
+    public static func snapshot(from samples: [ProcSample], now: Date = Date()) -> MLXSnapshot {
         let marked = samples.filter { isMLXCommand($0.command) || isMLXCommand($0.name) }
         guard !marked.isEmpty else { return MLXSnapshot(sampledAt: now) }
 
@@ -78,3 +78,5 @@ enum MLXObserver {
         return MLXSnapshot(sampledAt: now, processes: processes)
     }
 }
+
+#endif // os(macOS)

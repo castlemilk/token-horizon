@@ -1,5 +1,5 @@
 import XCTest
-import TokenHorizonCore
+@testable import TokenHorizonCore
 @testable import TokenHorizon
 
 /// Regression guard for the "countForScope × 6 per view update" bug.
