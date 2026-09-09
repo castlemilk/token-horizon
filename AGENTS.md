@@ -28,36 +28,32 @@ Tests/TokenHorizonPerfTests/       # one testTarget, split by kind
 ```
 
 Sources/TokenHorizonCore/   portable server-side module (macOS + Linux; Windows TBD)
-  Models.swift            UsageSnapshot, ToolUsage, ModelUsage, ProviderLimit, HistoryPoint, TrendWindow, ShellEvent
-  UsageEngine.swift       all token/cost collection (opencode sqlite, claude/codex/kimi/generic JSONL), hourly buckets, history/trends
-  PlanLimitsEngine.swift  glm/minimax/opencode-go/alibaba/gemini/claude limit fetchers
-  KimiLimitsEngine.swift  Kimi OAuth refresh + usage API
-  SettingsStore.swift     config dir settings.json (alibaba cookie) — path via Platform.paths
-  ModelCatalog.swift      model catalog + canonical identity
-  ModelsPipeline.swift    catalog merge + filter + sort + scope counts (off-main pipeline)
-  ModelRow.swift          ModelRow/ModelTableColumn/ModelFilterScope (pure data, no SwiftUI)
-  TelemetryTypes.swift    OllamaTelemetrySample + bounded store
-  MLXTypes.swift          MLXProcess/MLXSnapshot DTOs
-  MLXHistory.swift        bounded fine samples + 30s rollups
-  OllamaClient.swift      Ollama REST client (proxy URL via baseURLProvider seam)
-  TelemetryMetrics.swift  OTel meter on macOS; no-op stub where SDK unavailable
-  EventStore.swift        bounded shell-event ring buffer
+  Usage/                  UsageEngine (opencode sqlite, claude/codex/kimi/generic JSONL, hourly
+                          buckets, history/trends) + shared DTOs (UsageSnapshot, ProviderLimit, ...)
+  Limits/                 LimitsEngine base class (cache/refresh/notify), PlanLimitsEngine registry,
+                          KimiLimitsEngine (OAuth), Vendors/ one VendorLimitsAdapter subclass per
+                          provider (Zhipu, MiniMax, OpenCodeGo, Alibaba, Gemini, Claude, DeepSeek)
+  Catalog/                ModelCatalog (identity/pricing/benchmarks), ModelsPipeline (off-main
+                          merge/filter/sort), ModelRow/ModelTableColumn/ModelFilterScope
+  Telemetry/              OllamaClient (proxy via baseURLProvider seam), TelemetryMetrics (OTel on
+                          macOS, no-op stub elsewhere), MLXTypes, MLXHistory, OllamaTelemetryStore
+  Events/                 EventStore (bounded shell-event ring buffer)
+  Settings/               SettingsStore (config dir settings.json, path via Platform.paths)
   Notifications.swift     shared Notification.Name constants
-  SystemStatsTypes.swift  ProcSample/ProcDetail/SystemSnapshot/SystemIORates + SystemStatsProviding protocol
   Platform/
-    PlatformPaths.swift     config/cache/home dirs (XDG on Linux, APPDATA on Windows, ~/.config on macOS)
-    CredentialStore.swift   CredentialStore protocol + Platform registry (paths/credentials/systemStats)
-    LocalHTTPServing.swift  LocalHTTPServing protocol + POSIXLoopbackHTTPServer (BSD sockets, macOS+Linux)
-    LinuxSystemStats.swift  ProcFSSystemStats: /proc/stat, meminfo, diskstats, net/dev + ps
+    SystemStatsProviding.swift  ProcSample/ProcDetail/SystemSnapshot DTOs + protocol
+    PlatformPaths.swift         paths protocol + per-OS typealias
+    CredentialStore.swift       credential protocol + Platform registry (paths/credentials/systemStats)
+    LocalHTTPServing.swift      HTTP protocol + POSIXLoopbackHTTPServer (BSD sockets, macOS+Linux)
+    macOS/    SystemStats (mach/vm64/iostat/ps), LocalServer (NWListener :8765),
+              OllamaTelemetryProxy, MLXObserver, MacOSKeychainStore, MacOSPaths
+    Linux/    ProcFSSystemStats (/proc+ps), LinuxPaths (XDG), credential stub
+    Windows/  WindowsPaths (APPDATA), credential stub
 Sources/token-horizon-headless/  cross-platform daemon: same loopback API as the macOS app, no UI
 Sources/CSQLite/                 system sqlite3 module-map shim (non-macOS only)
-Sources/TokenHorizon/
+Sources/TokenHorizon/            macOS app — UI + lifecycle only
   main.swift            AppKit entry, .accessory activation policy
-  AppDelegate.swift     surfaces (notch vs tray), refresh loops, HTTP wiring, dashboard window, Platform seam wiring
-  SystemStats.swift     macOS SystemStatsProviding impl: mach CPU ticks, vm64 RAM, load avg, system I/O, ps, MLX sampling
-  MLXObserver.swift     MLX/Ollama runner detection + measured tok/s association
-  OllamaTelemetryProxy.swift  in-process localhost Ollama relay (Network.framework)
-  LocalServer.swift     NWListener HTTP on 127.0.0.1:8765 (macOS app server)
+  AppDelegate.swift     surfaces (notch vs tray), refresh loops, Platform seam wiring
   LimitNotifier.swift   UNUserNotification limit alerts
   Panels.swift          NotchPanel (hover driver + hysteresis), ring gauges live in Views
   Views.swift           UIModel, DashboardTabs (shared by notch/popover/window), all tab views
@@ -133,7 +129,13 @@ See docs/cross-platform.md for the Linux/Windows port status and the Platform se
 
 ## Provider adapter contract
 
-`ProviderLimit { provider, label, usedPercent 0-100, resetsAt Date?, detail }` — add new providers by returning rows from `PlanLimitsEngine.fetchAll()` (or KimiLimitsEngine for OAuth-style). UI/MCP/`/limits` pick them up automatically. Group-by-provider rendering handles N windows per row.
+`ProviderLimit { provider, label, usedPercent 0-100, resetsAt Date?, detail }` — one class per
+vendor in `Sources/TokenHorizonCore/Limits/Vendors/`, subclassing `VendorLimitsAdapter`
+(shared bearer HTTP helpers, JSON digging, date/number coercion, opencode auth.json reader).
+Register by appending to `PlanLimitsEngine.vendors`; the `LimitsEngine` base class supplies
+caching, throttled refresh, and `.planLimitsUpdated` notifications. OAuth-style vendors
+(Kimi) subclass `LimitsEngine` directly. UI/MCP/`/limits` pick new vendors up automatically.
+Group-by-provider rendering handles N windows per row.
 
 Auth sources (checked in order). A new `~/.<provider>-N` profile dir is picked
 up automatically — all home discovery goes through `HomeDiscovery.variantDirs`
