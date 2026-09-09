@@ -1,5 +1,5 @@
 import XCTest
-import TokenHorizonCore
+@testable import TokenHorizonCore
 @testable import TokenHorizon
 
 final class ProcessMetricsTests: XCTestCase {

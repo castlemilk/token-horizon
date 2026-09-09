@@ -1,19 +1,19 @@
+#if os(macOS)
 import Foundation
 import Network
-import TokenHorizonCore
 
-final class LocalServer {
+public final class LocalServer {
     private var listener: NWListener?
-    let onEvent: (ShellEvent) -> Void
-    let statsProvider: () -> UsageSnapshot
-    let sysProvider: () -> SystemStats.Snapshot
-    let historyProvider: (Int) -> (points: [HistoryPoint], streak: Int)
-    let trendsProvider: (TrendWindow) -> [HistoryPoint]
-    let limitsProvider: () -> [ProviderLimit]
-    let processesProvider: () -> (all: [ProcSample], byCPU: [ProcSample], byMem: [ProcSample], byDisk: [ProcSample], byNet: [ProcSample])
+    public let onEvent: (ShellEvent) -> Void
+    public let statsProvider: () -> UsageSnapshot
+    public let sysProvider: () -> SystemStats.Snapshot
+    public let historyProvider: (Int) -> (points: [HistoryPoint], streak: Int)
+    public let trendsProvider: (TrendWindow) -> [HistoryPoint]
+    public let limitsProvider: () -> [ProviderLimit]
+    public let processesProvider: () -> (all: [ProcSample], byCPU: [ProcSample], byMem: [ProcSample], byDisk: [ProcSample], byNet: [ProcSample])
     private(set) var port: UInt16 = 8765
 
-    init(statsProvider: @escaping () -> UsageSnapshot,
+    public init(statsProvider: @escaping () -> UsageSnapshot,
          sysProvider: @escaping () -> SystemStats.Snapshot,
          historyProvider: @escaping (Int) -> (points: [HistoryPoint], streak: Int),
          trendsProvider: @escaping (TrendWindow) -> [HistoryPoint],
@@ -29,7 +29,7 @@ final class LocalServer {
         self.onEvent = onEvent
     }
 
-    func start() {
+    public func start() {
         for attempt in 0..<20 {
             let candidate = UInt16(8765 + attempt)
             let params = NWParameters.tcp
@@ -91,11 +91,11 @@ final class LocalServer {
         }
     }
 
-    static func percentDecode(_ s: String) -> String {
+    public static func percentDecode(_ s: String) -> String {
         s.replacingOccurrences(of: "+", with: " ").removingPercentEncoding ?? s
     }
 
-    static func parseForm(_ body: Data) -> [String: String] {
+    public static func parseForm(_ body: Data) -> [String: String] {
         var out: [String: String] = [:]
         for pair in String(decoding: body, as: UTF8.self).components(separatedBy: "&") {
             let kv = pair.split(separator: "=", maxSplits: 1).map(String.init)
@@ -104,7 +104,7 @@ final class LocalServer {
         return out
     }
 
-    static func handle(method: String, path: String, body: Data, server: LocalServer) -> Data {
+    public static func handle(method: String, path: String, body: Data, server: LocalServer) -> Data {
         let route = path.split(separator: "?").first.map(String.init) ?? path
         let components = URLComponents(string: "http://localhost\(path.hasPrefix("/") ? path : "/" + path)")
         let queryItems = components?.queryItems ?? []
@@ -272,3 +272,5 @@ final class LocalServer {
 }
 
 // EventStore moved to TokenHorizonCore (EventStore.swift).
+
+#endif // os(macOS)
