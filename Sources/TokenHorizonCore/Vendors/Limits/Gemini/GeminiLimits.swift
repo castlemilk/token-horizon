@@ -13,24 +13,28 @@ import FoundationNetworking
 public final class GeminiLimits: VendorLimitsAdapter {
     public init() { super.init(provider: "google") }
 
+    /// ~/.gemini/oauth_creds.json → Keychain "gemini"/"antigravity"
+    /// (go-keyring-base64 wrapped JSON).
+    public override var auth: VendorAuth {
+        VendorAuth(sources: [
+            .fileJSON("~/.gemini/oauth_creds.json", keyPaths: ["access_token"]),
+            .custom { [self] in keychainToken() },
+        ])
+    }
+
     public override func fetch() -> [ProviderLimit] {
         let agyLimits = fetchAgyLanguageServerLimits()
         if !agyLimits.isEmpty {
             return agyLimits
         }
 
-        var accessToken: String?
+        let accessToken = auth.resolve()
         var projectId = ""
 
         let credsPath = NSString(string: "~/.gemini/oauth_creds.json").expandingTildeInPath
         if let data = FileManager.default.contents(atPath: credsPath),
            let creds = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-            accessToken = creds["access_token"] as? String
             projectId = creds["project_id"] as? String ?? ""
-        }
-
-        if accessToken == nil {
-            accessToken = keychainToken()
         }
 
         if let access = accessToken {
@@ -42,22 +46,15 @@ public final class GeminiLimits: VendorLimitsAdapter {
                     guard let remaining = (bucket["remainingFraction"] as? NSNumber)?.doubleValue else { return nil }
                     let used = (1 - remaining) * 100
                     let model = bucket["modelId"] as? String ?? bucket["tokenType"] as? String ?? "gemini"
-                    return ProviderLimit(provider: "google",
-                                         label: model,
-                                         usedPercent: min(max(used, 0), 100),
-                                         resetsAt: parseISO(bucket["resetTime"] as? String),
-                                         detail: "")
+                    return limit(label: model, usedPercent: used,
+                                 resetsAt: parseISO(bucket["resetTime"] as? String))
                 }
             }
         }
 
         if accessToken != nil {
             return [
-                ProviderLimit(provider: "agy",
-                              label: "tier",
-                              usedPercent: 0,
-                              resetsAt: nil,
-                              detail: "Active · Pro")
+                limit(label: "tier", usedPercent: 0, detail: "Active · Pro", provider: "agy")
             ]
         }
         return []
@@ -136,11 +133,8 @@ public final class GeminiLimits: VendorLimitsAdapter {
                         let lbl = "\(prefix) \(w)"
                         let detail = "\(Int(round(rem * 100.0)))% left"
                         let reset = parseISO(b["resetTime"] as? String)
-                        out.append(ProviderLimit(provider: "agy",
-                                                 label: lbl,
-                                                 usedPercent: (used * 10).rounded() / 10,
-                                                 resetsAt: reset,
-                                                 detail: detail))
+                        out.append(limit(label: lbl, usedPercent: (used * 10).rounded() / 10,
+                                         resetsAt: reset, detail: detail, provider: "agy"))
                     }
                 }
             }

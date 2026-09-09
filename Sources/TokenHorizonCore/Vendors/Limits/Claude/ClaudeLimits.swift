@@ -11,8 +11,20 @@ import FoundationNetworking
 public final class ClaudeLimits: VendorLimitsAdapter {
     public init() { super.init(provider: "claude") }
 
+    /// CLAUDE_CONFIG_DIR/.credentials.json (dot-path walked) → macOS Keychain
+    /// "Claude Code-credentials" (secret is itself JSON, same key paths).
+    public override var auth: VendorAuth {
+        let env = ProcessInfo.processInfo.environment
+        let configDir = env["CLAUDE_CONFIG_DIR"] ?? "~/.claude"
+        let keyPaths = ["claudeAiOauth.accessToken", "oauth.accessToken", "accessToken"]
+        return VendorAuth(sources: [
+            .fileJSON("\(configDir)/.credentials.json", keyPaths: keyPaths),
+            .keychain(service: "Claude Code-credentials", jsonKeyPaths: keyPaths),
+        ])
+    }
+
     public override func fetch() -> [ProviderLimit] {
-        guard let token = accessToken() else { return [] }
+        guard let token = auth.resolve() else { return [] }
         guard let u = URL(string: "https://api.anthropic.com/api/oauth/usage") else { return [] }
         var req = URLRequest(url: u, timeoutInterval: 8)
         req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
@@ -32,38 +44,17 @@ public final class ClaudeLimits: VendorLimitsAdapter {
             var reset: Date?
             if let ts = window["resets_at"] as? String { reset = parseISO(ts) }
             else if let ts = window["resets_at"] as? NSNumber { reset = epoch(ts) }
-            out.append(ProviderLimit(provider: "claude", label: label,
-                                     usedPercent: min(max(pct, 0), 100),
-                                     resetsAt: reset, detail: ""))
+            out.append(limit(label: label, usedPercent: pct, resetsAt: reset))
         }
         if let limits = obj["limits"] as? [[String: Any]] {
             for entry in limits where (entry["kind"] as? String) == "weekly_scoped" {
                 let model = ((entry["scope"] as? [String: Any])?["model"] as? [String: Any])?["display_name"] as? String ?? "scoped"
                 if let pct = (entry["utilization"] as? NSNumber)?.doubleValue {
-                    out.append(ProviderLimit(provider: "claude", label: "weekly · \(model)",
-                                             usedPercent: min(max(pct, 0), 100),
-                                             resetsAt: parseISO(entry["resets_at"] as? String), detail: ""))
+                    out.append(limit(label: "weekly · \(model)", usedPercent: pct,
+                                     resetsAt: parseISO(entry["resets_at"] as? String)))
                 }
             }
         }
         return out
-    }
-
-    private func accessToken() -> String? {
-        let env = ProcessInfo.processInfo.environment
-        let configDir = env["CLAUDE_CONFIG_DIR"] ?? "~/.claude"
-        let file = NSString(string: "\(configDir)/.credentials.json").expandingTildeInPath
-        var root: [String: Any]?
-        if let data = FileManager.default.contents(atPath: file),
-           let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-            root = obj
-        } else if let secret = Platform.credentials.genericPassword(service: "Claude Code-credentials", account: nil),
-                  let secretData = secret.data(using: .utf8),
-                  let obj = try? JSONSerialization.jsonObject(with: secretData) as? [String: Any] {
-            root = obj
-        }
-        guard let root else { return nil }
-        let oauth = (root["claudeAiOauth"] as? [String: Any]) ?? (root["oauth"] as? [String: Any]) ?? root
-        return oauth["accessToken"] as? String
     }
 }

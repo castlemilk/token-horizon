@@ -5,46 +5,62 @@ import FoundationNetworking
 
 /// Base class for per-vendor plan/quota adapters.
 ///
-/// One subclass per vendor (ZhipuLimits, AlibabaLimits, ClaudeLimits, ...).
-/// The base class provides the shared plumbing: bearer-auth JSON GET/POST,
-/// JSON tree digging, and date/number coercion. Subclasses override `fetch()`
-/// and return unified `ProviderLimit` rows; returning [] means "vendor not
+/// One subclass per vendor (Vendors/Limits/<Vendor>/). The base class provides
+/// the shared plumbing: bearer-auth JSON GET/POST, JSON tree digging, date/number
+/// coercion, and the `VendorAuth` credential chain. Subclasses must override
+/// `fetch()` and typically `auth`; returning [] from fetch means "vendor not
 /// configured/unreachable" and is silent by design.
-public class VendorLimitsAdapter {
+open class VendorLimitsAdapter {
     public let provider: String
 
     public init(provider: String) {
         self.provider = provider
     }
 
-    /// Override point. May block (called off-main via LimitsEngine.refreshIfDue).
-    public func fetch() -> [ProviderLimit] { [] }
+    /// Credential chain for this vendor. Empty by default (vendor needs no auth).
+    open var auth: VendorAuth { VendorAuth() }
+
+    /// Override point — required. May block (called off-main via
+    /// LimitsEngine.refreshIfDue). Use `limit(...)` to build rows.
+    open func fetch() -> [ProviderLimit] {
+        fatalError("\(type(of: self)) must override fetch()")
+    }
+
+    /// Build a limit row: clamps to 0-100; `provider` defaults to this adapter's
+    /// vendor but can be overridden (e.g. GeminiLimits also emits "agy" rows).
+    public func limit(label: String, usedPercent: Double, resetsAt: Date? = nil,
+                      detail: String = "", provider: String? = nil) -> ProviderLimit {
+        ProviderLimit(provider: provider ?? self.provider, label: label,
+                      usedPercent: min(max(usedPercent, 0), 100),
+                      resetsAt: resetsAt, detail: detail)
+    }
 
     // MARK: - Auth sources
 
-    /// API keys stored by opencode (`~/.local/share/opencode/auth.json`).
+    /// Back-compat shim — see `CredentialSource.opencodeKey`.
     public static func opencodeAuthKeys() -> [String: String] {
-        let path = ProcessInfo.processInfo.environment["OPENCODE_AUTH"]
-            ?? NSString(string: "~/.local/share/opencode/auth.json").expandingTildeInPath
-        guard let data = FileManager.default.contents(atPath: path),
-              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: [String: Any]] else { return [:] }
-        var out: [String: String] = [:]
-        for (provider, entry) in obj {
-            if let key = entry["key"] as? String, !key.isEmpty {
-                out[provider] = key
-            }
-        }
-        return out
+        CredentialSource.opencodeAuthFileKeys()
     }
 
     // MARK: - HTTP helpers (blocking, JSON object in/out)
+
+    static var userAgent: String {
+        // Keep the opencode UA string — some vendor gateways key off it.
+        #if os(macOS)
+        return "opencode/1.0.0 (darwin; arm64)"
+        #elseif os(Linux)
+        return "opencode/1.0.0 (linux; x86_64)"
+        #else
+        return "opencode/1.0.0 (windows; x86_64)"
+        #endif
+    }
 
     func getJSON(url: String, key: String, timeout: TimeInterval = 8) -> [String: Any]? {
         guard let u = URL(string: url) else { return nil }
         var req = URLRequest(url: u, timeoutInterval: timeout)
         req.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
         req.setValue("application/json", forHTTPHeaderField: "Accept")
-        req.setValue("opencode/1.0.0 (darwin; arm64)", forHTTPHeaderField: "User-Agent")
+        req.setValue(Self.userAgent, forHTTPHeaderField: "User-Agent")
         return performJSON(req, timeout: timeout)
     }
 
@@ -54,7 +70,7 @@ public class VendorLimitsAdapter {
         req.httpMethod = "POST"
         req.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        req.setValue("opencode/1.0.0 (darwin; arm64)", forHTTPHeaderField: "User-Agent")
+        req.setValue(Self.userAgent, forHTTPHeaderField: "User-Agent")
         req.httpBody = try? JSONSerialization.data(withJSONObject: body)
         return performJSON(req, timeout: timeout)
     }
@@ -129,8 +145,6 @@ public class VendorLimitsAdapter {
         let t = n.doubleValue
         return Date(timeIntervalSince1970: t > 1e12 ? t / 1000 : t)
     }
-
-    func epochMS(_ v: Any?) -> Date? { epoch(v) }
 
     func parseISO(_ s: String?) -> Date? {
         guard let s else { return nil }

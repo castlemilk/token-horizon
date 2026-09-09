@@ -7,9 +7,12 @@ import Foundation
 public final class ZhipuLimits: VendorLimitsAdapter {
     public init() { super.init(provider: "glm") }
 
+    public override var auth: VendorAuth {
+        VendorAuth(sources: [.opencodeKey("zai-coding-plan"), .opencodeKey("zai")])
+    }
+
     public override func fetch() -> [ProviderLimit] {
-        let keys = Self.opencodeAuthKeys()
-        guard let key = keys["zai-coding-plan"] ?? keys["zai"] else { return [] }
+        guard let key = auth.resolve() else { return [] }
         guard let obj = getJSON(url: "https://api.z.ai/api/monitor/usage/quota/limit", key: key),
               let data = obj["data"] as? [String: Any],
               let limits = data["limits"] as? [[String: Any]] else { return [] }
@@ -40,12 +43,8 @@ public final class ZhipuLimits: VendorLimitsAdapter {
                 detail = String(format: "%.0f left", remaining)
             }
 
-            let resetsAt = epochMS(limit["nextResetTime"])
-            return ProviderLimit(provider: "glm",
-                                 label: label,
-                                 usedPercent: min(max(pct, 0), 100),
-                                 resetsAt: resetsAt,
-                                 detail: detail)
+            let resetsAt = epoch(limit["nextResetTime"])
+            return self.limit(label: label, usedPercent: pct, resetsAt: resetsAt, detail: detail)
         }
     }
 }

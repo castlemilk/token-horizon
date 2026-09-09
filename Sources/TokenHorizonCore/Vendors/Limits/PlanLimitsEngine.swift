@@ -36,6 +36,6 @@ public final class PlanLimitsEngine: LimitsEngine {
 
     /// Back-compat shim — implementation moved to the adapter base class.
     public static func authKeys() -> [String: String] {
-        VendorLimitsAdapter.opencodeAuthKeys()
+        CredentialSource.opencodeAuthFileKeys()
     }
 }
