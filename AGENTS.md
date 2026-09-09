@@ -30,9 +30,14 @@ Tests/TokenHorizonPerfTests/       # one testTarget, split by kind
 Sources/TokenHorizonCore/   portable server-side module (macOS + Linux; Windows TBD)
   Usage/                  UsageEngine (opencode sqlite, claude/codex/kimi/generic JSONL, hourly
                           buckets, history/trends) + shared DTOs (UsageSnapshot, ProviderLimit, ...)
-  Limits/                 LimitsEngine base class (cache/refresh/notify), PlanLimitsEngine registry,
-                          KimiLimitsEngine (OAuth), Vendors/ one VendorLimitsAdapter subclass per
-                          provider (Zhipu, MiniMax, OpenCodeGo, Alibaba, Gemini, Claude, DeepSeek)
+  Vendors/                per-vendor integrations, grouped by LLM function then vendor
+    Limits/                 quota function: LimitsEngine base (cache/refresh/notify),
+                            VendorLimitsAdapter (shared HTTP/JSON/auth plumbing),
+                            PlanLimitsEngine registry; one subfolder per vendor:
+                            Zhipu/ MiniMax/ OpenCodeGo/ Alibaba/ Gemini/ Claude/ DeepSeek/
+                            Kimi/ (OAuth-style engine subclassing LimitsEngine directly)
+    Usage/                  (future: per-vendor collectors extracted from UsageEngine)
+    Catalog/                (future: per-vendor identity/pricing extracted from ModelCatalog)
   Catalog/                ModelCatalog (identity/pricing/benchmarks), ModelsPipeline (off-main
                           merge/filter/sort), ModelRow/ModelTableColumn/ModelFilterScope
   Telemetry/              OllamaClient (proxy via baseURLProvider seam), TelemetryMetrics (OTel on
@@ -130,12 +135,12 @@ See docs/cross-platform.md for the Linux/Windows port status and the Platform se
 ## Provider adapter contract
 
 `ProviderLimit { provider, label, usedPercent 0-100, resetsAt Date?, detail }` — one class per
-vendor in `Sources/TokenHorizonCore/Limits/Vendors/`, subclassing `VendorLimitsAdapter`
+vendor in `Sources/TokenHorizonCore/Vendors/Limits/<Vendor>/`, subclassing `VendorLimitsAdapter`
 (shared bearer HTTP helpers, JSON digging, date/number coercion, opencode auth.json reader).
 Register by appending to `PlanLimitsEngine.vendors`; the `LimitsEngine` base class supplies
 caching, throttled refresh, and `.planLimitsUpdated` notifications. OAuth-style vendors
-(Kimi) subclass `LimitsEngine` directly. UI/MCP/`/limits` pick new vendors up automatically.
-Group-by-provider rendering handles N windows per row.
+(e.g. `Vendors/Limits/Kimi/`) subclass `LimitsEngine` directly. UI/MCP/`/limits` pick new
+vendors up automatically. Group-by-provider rendering handles N windows per row.
 
 Auth sources (checked in order). A new `~/.<provider>-N` profile dir is picked
 up automatically — all home discovery goes through `HomeDiscovery.variantDirs`
