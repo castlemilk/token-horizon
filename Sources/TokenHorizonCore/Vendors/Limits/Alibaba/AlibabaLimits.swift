@@ -12,21 +12,22 @@ import FoundationNetworking
 public final class AlibabaLimits: VendorLimitsAdapter {
     public init() { super.init(provider: "alibaba") }
 
+    /// Cookie chain: ALIBABA_COOKIE_FILE → env → config file → SettingsStore.
+    public override var auth: VendorAuth {
+        VendorAuth(sources: [
+            .custom {
+                guard let path = ProcessInfo.processInfo.environment["ALIBABA_COOKIE_FILE"] else { return nil }
+                return (try? String(contentsOfFile: path, encoding: .utf8))?.trimmingCharacters(in: .whitespacesAndNewlines)
+            },
+            .env("ALIBABA_TOKEN_PLAN_COOKIE"),
+            .fileText(Platform.paths.configDirectory.appendingPathComponent("alibaba-cookie.txt").path),
+            .custom { SettingsStore.shared.alibabaCookie },
+        ])
+    }
+
     public override func fetch() -> [ProviderLimit] {
         let env = ProcessInfo.processInfo.environment
-        var cookie = ""
-        if let path = ProcessInfo.processInfo.environment["ALIBABA_COOKIE_FILE"] {
-            cookie = (try? String(contentsOfFile: path, encoding: .utf8)) ?? ""
-        }
-        if cookie.isEmpty, let env = ProcessInfo.processInfo.environment["ALIBABA_TOKEN_PLAN_COOKIE"] {
-            cookie = env
-        }
-        if cookie.isEmpty {
-            let path = Platform.paths.configDirectory.appendingPathComponent("alibaba-cookie.txt").path
-            cookie = (try? String(contentsOfFile: path, encoding: .utf8)) ?? ""
-        }
-        if cookie.isEmpty { cookie = SettingsStore.shared.alibabaCookie }
-        if cookie.isEmpty { cookie = env["ALIBABA_TOKEN_PLAN_COOKIE"] ?? "" }
+        var cookie = auth.resolve() ?? ""
         guard !cookie.isEmpty, cookie.contains("=") else { return [] }
         if cookie.lowercased().hasPrefix("cookie:") {
             cookie = String(cookie.dropFirst(7)).trimmingCharacters(in: .whitespaces)
@@ -116,16 +117,14 @@ public final class AlibabaLimits: VendorLimitsAdapter {
                 return out
             }
             if let ratio = number(windows["per5HourPercentage"]) {
-                out.append(ProviderLimit(provider: "alibaba", label: "5h",
-                                         usedPercent: min(max(ratio <= 1 ? ratio * 100 : ratio, 0), 100),
-                                         resetsAt: epochMS(windows["per5HourResetTime"]),
-                                         detail: ""))
+                out.append(limit(label: "5h",
+                                 usedPercent: ratio <= 1 ? ratio * 100 : ratio,
+                                 resetsAt: epoch(windows["per5HourResetTime"])))
             }
             if let ratio = number(windows["per1WeekPercentage"]) {
-                out.append(ProviderLimit(provider: "alibaba", label: "weekly",
-                                         usedPercent: min(max(ratio <= 1 ? ratio * 100 : ratio, 0), 100),
-                                         resetsAt: epochMS(windows["per1WeekResetTime"]),
-                                         detail: ""))
+                out.append(limit(label: "weekly",
+                                 usedPercent: ratio <= 1 ? ratio * 100 : ratio,
+                                 resetsAt: epoch(windows["per1WeekResetTime"])))
             }
             if !out.isEmpty { break }
         }

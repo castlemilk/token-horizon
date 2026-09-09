@@ -31,9 +31,11 @@ Sources/TokenHorizonCore/   portable server-side module (macOS + Linux; Windows 
   Usage/                  UsageEngine (opencode sqlite, claude/codex/kimi/generic JSONL, hourly
                           buckets, history/trends) + shared DTOs (UsageSnapshot, ProviderLimit, ...)
   Vendors/                per-vendor integrations, grouped by LLM function then vendor
+    Auth/                   VendorAuth credential chains: composable CredentialSource
+                            (.env/.opencodeKey/.fileText/.fileJSON/.keychain/.custom)
     Limits/                 quota function: LimitsEngine base (cache/refresh/notify),
-                            VendorLimitsAdapter (shared HTTP/JSON/auth plumbing),
-                            PlanLimitsEngine registry; one subfolder per vendor:
+                            VendorLimitsAdapter (shared HTTP/JSON helpers + auth chain + clamped
+                            limit() builder), PlanLimitsEngine registry; one subfolder per vendor:
                             Zhipu/ MiniMax/ OpenCodeGo/ Alibaba/ Gemini/ Claude/ DeepSeek/
                             Kimi/ (OAuth-style engine subclassing LimitsEngine directly)
     Usage/                  (future: per-vendor collectors extracted from UsageEngine)
@@ -135,12 +137,14 @@ See docs/cross-platform.md for the Linux/Windows port status and the Platform se
 ## Provider adapter contract
 
 `ProviderLimit { provider, label, usedPercent 0-100, resetsAt Date?, detail }` — one class per
-vendor in `Sources/TokenHorizonCore/Vendors/Limits/<Vendor>/`, subclassing `VendorLimitsAdapter`
-(shared bearer HTTP helpers, JSON digging, date/number coercion, opencode auth.json reader).
-Register by appending to `PlanLimitsEngine.vendors`; the `LimitsEngine` base class supplies
-caching, throttled refresh, and `.planLimitsUpdated` notifications. OAuth-style vendors
-(e.g. `Vendors/Limits/Kimi/`) subclass `LimitsEngine` directly. UI/MCP/`/limits` pick new
-vendors up automatically. Group-by-provider rendering handles N windows per row.
+vendor in `Sources/TokenHorizonCore/Vendors/Limits/<Vendor>/`, subclassing `VendorLimitsAdapter`.
+Required overrides: `fetch()` (fatalError if forgotten) and usually `auth` (a `VendorAuth`
+credential chain from `Vendors/Auth/`). Build rows via `limit(label:usedPercent:resetsAt:detail:)`
+— it stamps the provider and clamps 0-100 automatically. Register by appending to
+`PlanLimitsEngine.vendors`; the `LimitsEngine` base class supplies caching, throttled refresh,
+and `.planLimitsUpdated` notifications. OAuth-style vendors (e.g. `Vendors/Limits/Kimi/`)
+subclass `LimitsEngine` directly. UI/MCP/`/limits` pick new vendors up automatically.
+Group-by-provider rendering handles N windows per row.
 
 Auth sources (checked in order). A new `~/.<provider>-N` profile dir is picked
 up automatically — all home discovery goes through `HomeDiscovery.variantDirs`
