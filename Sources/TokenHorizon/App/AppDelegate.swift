@@ -183,7 +183,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         NotificationCenter.default.addObserver(forName: .openDashboard, object: nil, queue: .main) { [weak self] _ in
             self?.openDashboard()
         }
-        NotificationCenter.default.addObserver(forName: NSNotification.Name("planLimitsUpdated"), object: nil, queue: .main) { [weak self] note in
+        NotificationCenter.default.addObserver(forName: .planLimitsUpdated, object: nil, queue: .main) { [weak self] note in
             let limits = (note.object as? [ProviderLimit]) ?? PlanLimitsEngine.shared.cachedLimits()
             self?.model.planLimits = limits
             LimitNotifier.shared.checkLimits(limits)
@@ -191,7 +191,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                 DurableStore.shared.saveLimits(plan: limits, kimi: self.model.kimiLimits)
             }
         }
-        NotificationCenter.default.addObserver(forName: NSNotification.Name("kimiLimitsUpdated"), object: nil, queue: .main) { [weak self] note in
+        NotificationCenter.default.addObserver(forName: .kimiLimitsUpdated, object: nil, queue: .main) { [weak self] note in
             let limits = (note.object as? [ProviderLimit]) ?? KimiLimitsEngine.shared.cachedLimits()
             self?.model.kimiLimits = limits
             LimitNotifier.shared.checkLimits(limits)
