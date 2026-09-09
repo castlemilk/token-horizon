@@ -1,9 +1,9 @@
 import Foundation
 
-/// Fan-out engine over the per-vendor adapters in `Limits/Vendors/`.
+/// Fan-out engine over the per-vendor adapters in `Vendors/Limits/<Vendor>/`.
 ///
 /// Adding a vendor:
-///   1. Subclass `VendorLimitsAdapter` in `Limits/Vendors/` (override `fetch()`).
+///   1. Subclass `VendorLimitsAdapter` in `Vendors/Limits/<Vendor>/` (override `fetch()`).
 ///   2. Append an instance to `PlanLimitsEngine.vendors`.
 /// UI, MCP, /limits, caching, refresh throttling and notifications all pick
 /// it up automatically via the `LimitsEngine` base class.
