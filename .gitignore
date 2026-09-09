@@ -11,3 +11,7 @@ website/
 
 # macOS metadata
 .DS_Store
+
+# JS tooling (Remotion product film)
+video/node_modules/
+video/dist/

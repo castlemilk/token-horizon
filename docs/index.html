@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Token Horizon — Your AI usage. On the horizon.</title>
+<meta name="description" content="Native macOS notch dashboard tracking AI token usage, costs, plan limits, and Mac performance. Private by design." />
+<link rel="icon" href="./assets/favicon.svg" type="image/svg+xml" />
+<meta property="og:title" content="Token Horizon" />
+<meta property="og:description" content="Tokens, costs, plan limits, local models, and Mac performance — glanceable from the notch." />
+<meta property="og:image" content="./assets/og.png" />
+<link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+<nav class="nav">
+  <a class="brand" href="./"><img src="./assets/icon.png" alt="" /><span>Token Horizon</span></a>
+  <div class="nav-links">
+    <a href="./leaderboard.html">Leaderboard</a>
+    <a href="#features">Features</a>
+    <a href="#film">Film</a>
+    <a href="#privacy">Privacy</a>
+    <a href="#install">Install</a>
+    <a class="nav-cta" href="https://github.com/castlemilk/token-horizon">GitHub</a>
+  </div>
+</nav>
+
+<header class="hero" id="top">
+  <div class="hero-copy">
+    <span class="pill"><i></i>Native macOS intelligence</span>
+    <h1>Your AI usage.<br /><em>On the horizon.</em></h1>
+    <p>Tokens, costs, plan limits, local models, and Mac performance — glanceable from the notch, without breaking your flow.</p>
+    <div class="install-line">
+      <code id="install-cmd">curl -fsSL https://raw.githubusercontent.com/castlemilk/token-horizon/main/install.sh | bash</code>
+      <button id="copy-btn" type="button" aria-label="Copy install command">⧉</button>
+    </div>
+    <div class="hero-actions">
+      <a class="primary" href="#install">Install in seconds ↓</a>
+      <a class="secondary" href="./leaderboard.html">Live Leaderboard 🏆</a>
+      <a class="secondary" href="#film">Watch film ↘</a>
+    </div>
+    <div class="meta"><span> Apple silicon</span><span>•</span><span>Native Swift</span><span>•</span><span>Private by design</span></div>
+  </div>
+  <div class="hero-demo" aria-label="Animated preview of Token Horizon expanding from the MacBook notch">
+    <div class="mac-screen">
+      <div class="notch-shell">
+        <div class="notch-collapsed"><div class="mini-ring cyan"><span>34</span></div><span class="camera"></span><div class="mini-ring violet"><span>61</span></div></div>
+        <div class="notch-panel">
+          <div class="panel-head"><div><span class="eyebrow">TOKENS TODAY</span><strong>1.84M</strong></div><span class="live-dot">LIVE</span></div>
+          <div class="chart" aria-hidden="true"><i style="height:34%"></i><i style="height:48%"></i><i style="height:28%"></i><i style="height:58%"></i><i style="height:74%"></i><i style="height:61%"></i><i style="height:88%"></i><i style="height:69%"></i><i style="height:93%"></i><i style="height:76%"></i><i style="height:96%"></i><i style="height:83%"></i></div>
+          <div class="panel-foot"><span>Codex <b>47%</b></span><span>Claude <b>31%</b></span><span>Kimi <b>22%</b></span></div>
+        </div>
+      </div>
+    </div>
+    <div class="mac-base"></div>
+    <p class="desktop-label"><span class="status-pulse"></span>Watching every token, quietly.</p>
+  </div>
+</header>
+
+<div class="provider-strip"><div class="provider-inner"><span>ONE VIEW FOR</span><b>Codex</b><b>Claude</b><b>Kimi</b><b>Gemini</b><b>GLM</b><b>MiniMax</b><b>OpenCode</b><b>DeepSeek</b></div></div>
+
+<section class="section" id="features">
+  <div class="section-heading"><span class="kicker">THE WHOLE PICTURE</span><h2>One quiet utility.<br />Nothing gets past it.</h2></div>
+  <div class="feature-grid">
+    <article class="feature-card"><span class="num">01</span><h3>Token intelligence</h3><p>Today and all-time usage, cost, per-model provider share, streaks, and a full-year heatmap.</p></article>
+    <article class="feature-card"><span class="num">02</span><h3>Plan limits</h3><p>Exactly how much room is left in every rolling provider window — and when each one resets. Per-model quotas like Fable included.</p></article>
+    <article class="feature-card"><span class="num">03</span><h3>Mac performance</h3><p>Live CPU, memory, disk, network, and top-process telemetry without opening Activity Monitor.</p></article>
+    <article class="feature-card"><span class="num">04</span><h3>Local AI telemetry</h3><p>MLX and Ollama runners with measured tokens-per-second, resource load, and bounded history.</p></article>
+  </div>
+</section>
+
+<section class="section film" id="film">
+  <div class="section-heading"><span class="kicker">THE FILM</span><h2>Sixty seconds,<br />every token.</h2><p>A code-rendered tour of the dashboard — no screen recordings were harmed.</p></div>
+  <video controls preload="metadata" poster="./assets/og.png" src="https://github.com/castlemilk/token-horizon/releases/latest/download/TokenHorizon-film.mp4">
+    Sorry — your browser can't play embedded video.
+    <a href="https://github.com/castlemilk/token-horizon/releases/latest/download/TokenHorizon-film.mp4">Download the film</a>.
+  </video>
+</section>
+
+<section class="section privacy" id="privacy">
+  <div class="section-heading"><span class="kicker">LOCAL BY DEFAULT</span><h2>Your usage data<br />stays yours.</h2></div>
+  <p class="lede">The app reads local session files and provider quota endpoints directly from your Mac. No Token Horizon account, no analytics service, no cloud database.</p>
+  <div class="privacy-points"><span><b>127.0.0.1</b>Loopback APIs only</span><span><b>24H</b>Bounded system history</span><span><b>0</b>Cloud database</span></div>
+</section>
+
+<section class="section install" id="install">
+  <div class="section-heading"><span class="kicker">GET FLYING</span><h2>Three ways in.</h2></div>
+  <div class="install-grid">
+    <article class="install-card">
+      <h3>① One-liner <em>recommended</em></h3>
+      <pre><code>curl -fsSL https://raw.githubusercontent.com/castlemilk/token-horizon/main/install.sh | bash</code></pre>
+      <p>Downloads the latest release, installs to <code>/Applications</code>, enables crash auto-recovery, wires up the <code>th</code> shell command. No sudo, no prompts.</p>
+    </article>
+    <article class="install-card">
+      <h3>② Homebrew</h3>
+      <pre><code>brew tap castlemilk/tap
+brew install --cask token-horizon</code></pre>
+      <p>Tracks releases through a versioned Cask. See <a href="https://github.com/castlemilk/token-horizon/blob/main/packaging/homebrew/token-horizon.rb">packaging/homebrew</a> for the formula.</p>
+    </article>
+    <article class="install-card">
+      <h3>③ Manual / from source</h3>
+      <p>Grab the <a href="https://github.com/castlemilk/token-horizon/releases/latest">DMG from GitHub Releases</a>, drag to Applications — or build it yourself:</p>
+      <pre><code>git clone https://github.com/castlemilk/token-horizon
+cd token-horizon &amp;&amp; ./scripts/make-app.sh</code></pre>
+      <p class="fine">Preview builds carry an ad-hoc signature — on first launch, approve in Privacy &amp; Security if asked.</p>
+    </article>
+  </div>
+</section>
+
+<footer class="footer">
+  <a class="brand" href="./"><img src="./assets/icon.png" alt="" /><span>Token Horizon</span></a>
+  <p>Native observability for the AI-powered Mac.</p>
+  <div class="footer-links"><a href="https://github.com/castlemilk/token-horizon">GitHub</a><a href="https://github.com/castlemilk/token-horizon/releases">Releases</a><a href="https://github.com/castlemilk/token-horizon/issues">Issues</a></div>
+</footer>
+<script src="./app.js"></script>
+</body>
+</html>

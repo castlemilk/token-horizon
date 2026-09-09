@@ -1,0 +1,55 @@
+name: release
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode_16.2.app/Contents/Developer || true
+
+      - name: Build release app
+        env:
+          SKIP_LAUNCH: "1"
+        run: ./scripts/make-app.sh
+
+      - name: Package artifacts
+        run: |
+          VER="${GITHUB_REF_NAME#v}"
+          OUT="dist"
+          mkdir -p "$OUT"
+          ditto -c -k --keepParent TokenHorizon.app "$OUT/TokenHorizon-${VER}.zip"
+          STAGE="$(mktemp -d)"
+          cp -R TokenHorizon.app "$STAGE/"
+          ln -s /Applications "$STAGE/Applications"
+          hdiutil create -volname "Token Horizon ${VER}" -srcfolder "$STAGE" -ov -format UDZO "$OUT/TokenHorizon-${VER}.dmg" >/dev/null
+          rm -rf "$STAGE"
+          (cd "$OUT" && shasum -a 256 "TokenHorizon-${VER}.zip" "TokenHorizon-${VER}.dmg" > "TokenHorizon-${VER}.sha256")
+          ls -la "$OUT"
+
+      - name: Render product film (best effort)
+        run: |
+          if [ -d video ]; then
+            cd video && npm ci --no-audit --no-fund || exit 0
+            npx --no-install remotion render TokenHorizonFilm --output "../dist/TokenHorizon-film.mp4" || echo "film render skipped (non-fatal)"
+          fi
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/TokenHorizon-*.zip
+            dist/TokenHorizon-*.dmg
+            dist/TokenHorizon-*.sha256
+            dist/TokenHorizon-film.mp4
+          fail_on_unmatched_files: false
+          generate_release_notes: true
+          prerelease: true

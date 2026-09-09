@@ -1,0 +1,25 @@
+{
+  "name": "token-horizon-film",
+  "version": "0.2.0",
+  "private": true,
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "render": "remotion render TokenHorizonFilm --output=../dist/TokenHorizon-film.mp4",
+    "render:preview": "remotion render TokenHorizonFilm --output=../dist/TokenHorizon-film-preview.mp4 --scale=0.5 -- --crf=30",
+    "still": "remotion still TokenHorizonFilm",
+    "studio": "remotion studio"
+  },
+  "dependencies": {
+    "react": "19.1.1",
+    "react-dom": "19.1.1",
+    "remotion": "4.0.410"
+  },
+  "devDependencies": {
+    "@remotion/cli": "4.0.410",
+    "@types/node": "22.19.19",
+    "@types/react": "19.1.8",
+    "typescript": "5.9.3"
+  }
+}
