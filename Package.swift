@@ -21,13 +21,16 @@ targets.append(.systemLibrary(name: "CSQLite", path: "Sources/CSQLite"))
 coreDeps.append("CSQLite")
 #endif
 
-#if os(macOS)
-// OpenTelemetry SDK is currently validated on macOS only; TokenHorizonCore
-// compiles a no-op TokenHorizonTelemetry elsewhere (see TelemetryMetrics.swift).
+// OpenTelemetry SDK builds on macOS and is linked there; the package pins are
+// declared unconditionally so Package.resolved stays identical across platforms
+// (Linux builds resolve but never compile these — TelemetryMetrics.swift compiles
+// a no-op TokenHorizonTelemetry when the SDK is unavailable).
 packageDeps += [
     .package(url: "https://github.com/open-telemetry/opentelemetry-swift-core.git", exact: "2.3.0"),
     .package(url: "https://github.com/open-telemetry/opentelemetry-swift.git", exact: "2.3.0"),
 ]
+
+#if os(macOS)
 coreDeps += [
     .product(name: "OpenTelemetryApi", package: "opentelemetry-swift-core"),
     .product(name: "OpenTelemetrySdk", package: "opentelemetry-swift-core"),
