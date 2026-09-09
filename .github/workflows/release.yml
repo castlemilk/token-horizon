@@ -52,4 +52,7 @@ jobs:
             dist/TokenHorizon-film.mp4
           fail_on_unmatched_files: false
           generate_release_notes: true
-          prerelease: true
+          # Full release (not prerelease): install.sh, the landing page, and
+          # README film embeds all resolve through /releases/latest, which
+          # skips prereleases. Preview status lives in the notes instead.
+          prerelease: false
