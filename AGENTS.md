@@ -5,28 +5,48 @@ Guide for coding agents working in this repo. Read alongside README.md (user set
 ## Layout
 
 ```
+Sources/TokenHorizonCore/   portable server-side module (macOS + Linux; Windows TBD)
+  Models.swift            UsageSnapshot, ToolUsage, ModelUsage, ProviderLimit, HistoryPoint, TrendWindow, ShellEvent
+  UsageEngine.swift       all token/cost collection (opencode sqlite, claude/codex/kimi/generic JSONL), hourly buckets, history/trends
+  PlanLimitsEngine.swift  glm/minimax/opencode-go/alibaba/gemini/claude limit fetchers
+  KimiLimitsEngine.swift  Kimi OAuth refresh + usage API
+  SettingsStore.swift     config dir settings.json (alibaba cookie) — path via Platform.paths
+  ModelCatalog.swift      model catalog + canonical identity
+  ModelsPipeline.swift    catalog merge + filter + sort + scope counts (off-main pipeline)
+  ModelRow.swift          ModelRow/ModelTableColumn/ModelFilterScope (pure data, no SwiftUI)
+  TelemetryTypes.swift    OllamaTelemetrySample + bounded store
+  MLXTypes.swift          MLXProcess/MLXSnapshot DTOs
+  MLXHistory.swift        bounded fine samples + 30s rollups
+  OllamaClient.swift      Ollama REST client (proxy URL via baseURLProvider seam)
+  TelemetryMetrics.swift  OTel meter on macOS; no-op stub where SDK unavailable
+  EventStore.swift        bounded shell-event ring buffer
+  Notifications.swift     shared Notification.Name constants
+  SystemStatsTypes.swift  ProcSample/ProcDetail/SystemSnapshot/SystemIORates + SystemStatsProviding protocol
+  Platform/
+    PlatformPaths.swift     config/cache/home dirs (XDG on Linux, APPDATA on Windows, ~/.config on macOS)
+    CredentialStore.swift   CredentialStore protocol + Platform registry (paths/credentials/systemStats)
+    LocalHTTPServing.swift  LocalHTTPServing protocol + POSIXLoopbackHTTPServer (BSD sockets, macOS+Linux)
+    LinuxSystemStats.swift  ProcFSSystemStats: /proc/stat, meminfo, diskstats, net/dev + ps
+Sources/token-horizon-headless/  cross-platform daemon: same loopback API as the macOS app, no UI
+Sources/CSQLite/                 system sqlite3 module-map shim (non-macOS only)
 Sources/TokenHorizon/
   main.swift            AppKit entry, .accessory activation policy
-  AppDelegate.swift     surfaces (notch vs tray), refresh loops, HTTP wiring, dashboard window
-  Models.swift          UsageSnapshot, ToolUsage, ModelUsage, ProviderLimit, HistoryPoint, TrendWindow, ShellEvent
-  UsageEngine.swift     all token/cost collection (opencode sqlite, claude/codex/kimi/generic JSONL), hourly buckets, history/trends aggregation
-  SystemStats.swift     mach CPU ticks, vm64 RAM, load avg, system I/O, top processes (ps %cpu+rss), narrow MLX process sampling
-  MLXObserver.swift     independent MLX/Ollama runner detection, process-tree telemetry, measured tok/s association
-  MLXHistory.swift      bounded fine samples and online 30-second MLX rollups
-  OllamaTelemetryProxy.swift  in-process localhost Ollama relay, streaming response metrics, bounded telemetry store
-  TelemetryMetrics.swift OpenTelemetry meter with Prometheus text and optional OTLP/HTTP export
-  LocalServer.swift     NWListener HTTP on 127.0.0.1:8765 (stats/history/trends/limits/events/health/metrics)
-  KimiLimitsEngine.swift  Kimi OAuth refresh + usage API
-  PlanLimitsEngine.swift  glm/minimax/opencode-go/alibaba/gemini/claude limit fetchers
-  SettingsStore.swift   ~/.config/token-horizon/settings.json (alibaba cookie)
+  AppDelegate.swift     surfaces (notch vs tray), refresh loops, HTTP wiring, dashboard window, Platform seam wiring
+  SystemStats.swift     macOS SystemStatsProviding impl: mach CPU ticks, vm64 RAM, load avg, system I/O, ps, MLX sampling
+  MLXObserver.swift     MLX/Ollama runner detection + measured tok/s association
+  OllamaTelemetryProxy.swift  in-process localhost Ollama relay (Network.framework)
+  LocalServer.swift     NWListener HTTP on 127.0.0.1:8765 (macOS app server)
+  LimitNotifier.swift   UNUserNotification limit alerts
   Panels.swift          NotchPanel (hover driver + hysteresis), ring gauges live in Views
-  Views.swift           UIModel, DashboardTabs (shared by notch/popover/window), all tab views, Sparkline/HeatmapGrid/StackedTrends/WingRingGauge
+  Views.swift           UIModel, DashboardTabs (shared by notch/popover/window), all tab views
 mcp/token-horizon-mcp.mjs   zero-dep stdio MCP server (talks to :8765, sqlite fallback for usage/sessions)
 shell/token-horizon.zsh     zsh preexec/precmd hooks + `th` CLI
   scripts/make-app.sh         release build + .app bundle (LSUIElement) + ad-hoc codesign + relaunch
   scripts/package-notarized.sh Developer ID hardened-runtime app + DMG/ZIP + optional notarytool submission
 scripts/make-icon.swift     renders the black-hole AppIcon.icns
 ```
+
+See docs/cross-platform.md for the Linux/Windows port status and the Platform seam contract.
 
 ## Invariants — do not break
 

@@ -1,4 +1,5 @@
 import XCTest
+import TokenHorizonCore
 @testable import TokenHorizon
 
 final class CanonicalIdentityTests: XCTestCase {

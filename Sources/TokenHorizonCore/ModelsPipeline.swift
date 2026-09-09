@@ -1,15 +1,15 @@
 import Foundation
 
-enum ModelsPipeline {
-    struct Result {
-        let base: [ModelRow]
-        let filtered: [ModelRow]
-        let scopeCounts: [ModelFilterScope: Int]
-        let localCount: Int
-        var baseKey: String
+public enum ModelsPipeline {
+    public struct Result {
+        public let base: [ModelRow]
+        public let filtered: [ModelRow]
+        public let scopeCounts: [ModelFilterScope: Int]
+        public let localCount: Int
+        public var baseKey: String
     }
 
-    static func compute(
+    public static func compute(
         search: String,
         scope: ModelFilterScope,
         sortColumn: ModelTableColumn,

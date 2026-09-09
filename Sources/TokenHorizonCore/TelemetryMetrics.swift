@@ -1,11 +1,16 @@
 import Foundation
+
+// OpenTelemetry is wired only on platforms where the SDK is available
+// (currently macOS). Elsewhere TokenHorizonTelemetry is a no-op stub with
+// the same API surface so callers compile unchanged.
+#if canImport(OpenTelemetryApi)
 import OpenTelemetryApi
 import OpenTelemetryProtocolExporterHttp
 import OpenTelemetrySdk
 import PrometheusExporter
 
-final class TokenHorizonTelemetry {
-    static let shared = TokenHorizonTelemetry()
+public final class TokenHorizonTelemetry {
+    public static let shared = TokenHorizonTelemetry()
 
     private let meterProvider: MeterProviderSdk
     private let prometheusExporter: PrometheusExporter
@@ -66,7 +71,7 @@ final class TokenHorizonTelemetry {
         recordMLX(MLXSnapshot())
     }
 
-    func recordOllama(_ sample: OllamaTelemetrySample) {
+    public func recordOllama(_ sample: OllamaTelemetrySample) {
         let attributes = attributes(model: sample.model)
         metricLock.lock()
         completedRequests.add(value: 1, attributes: attributes)
@@ -85,14 +90,14 @@ final class TokenHorizonTelemetry {
         metricLock.unlock()
     }
 
-    func recordOllamaRequest(model: String?) {
+    public func recordOllamaRequest(model: String?) {
         let attributes = attributes(model: model ?? "unknown")
         metricLock.lock()
         requests.add(value: 1, attributes: attributes)
         metricLock.unlock()
     }
 
-    func recordMLX(_ snapshot: MLXSnapshot) {
+    public func recordMLX(_ snapshot: MLXSnapshot) {
         let attributes = ["backend": AttributeValue.string("mlx")]
         metricLock.lock()
         mlxActive.record(value: Double(snapshot.processes.isEmpty ? 0 : 1), attributes: attributes)
@@ -103,12 +108,12 @@ final class TokenHorizonTelemetry {
         metricLock.unlock()
     }
 
-    func prometheusText() -> String {
+    public func prometheusText() -> String {
         _ = meterProvider.forceFlush()
         return PrometheusExporterExtensions.writeMetricsCollection(exporter: prometheusExporter)
     }
 
-    func shutdown() {
+    public func shutdown() {
         _ = meterProvider.shutdown()
     }
 
@@ -147,3 +152,21 @@ final class TokenHorizonTelemetry {
         return nil
     }
 }
+
+#else
+
+/// No-op fallback used when the OpenTelemetry SDK is not available
+/// (Linux/Windows until the OTel wiring is validated there).
+public final class TokenHorizonTelemetry {
+    public static let shared = TokenHorizonTelemetry()
+
+    public init() {}
+
+    public func recordOllama(_ sample: OllamaTelemetrySample) {}
+    public func recordOllamaRequest(model: String?) {}
+    public func recordMLX(_ snapshot: MLXSnapshot) {}
+    public func prometheusText() -> String { "" }
+    public func shutdown() {}
+}
+
+#endif

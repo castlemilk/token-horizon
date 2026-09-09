@@ -1,18 +1,21 @@
 import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 
-final class KimiLimitsEngine {
-    static let shared = KimiLimitsEngine()
+public final class KimiLimitsEngine {
+    public static let shared = KimiLimitsEngine()
     private let lock = NSLock()
     private var cache: [ProviderLimit] = []
     private var lastFetch = Date.distantPast
     private static let clientID = "17e5f671-d194-4dfb-9706-5516cb48c098"
 
-    func cachedLimits() -> [ProviderLimit] {
+    public func cachedLimits() -> [ProviderLimit] {
         lock.lock(); defer { lock.unlock() }
         return cache
     }
 
-    func refreshIfDue(maxAge: TimeInterval = 60) {
+    public func refreshIfDue(maxAge: TimeInterval = 60) {
         lock.lock()
         if Date().timeIntervalSince(lastFetch) < maxAge {
             lock.unlock()
@@ -31,14 +34,14 @@ final class KimiLimitsEngine {
         }
     }
 
-    struct Credentials {
-        var accessToken: String
-        var refreshToken: String
-        var expiresAt: Double
-        var path: String
+    public struct Credentials {
+        public var accessToken: String
+        public var refreshToken: String
+        public var expiresAt: Double
+        public var path: String
     }
 
-    static func credentialPaths() -> [String] {
+    public static func credentialPaths() -> [String] {
         var paths: [String] = []
         if let codeHome = ProcessInfo.processInfo.environment["KIMI_CODE_HOME"], !codeHome.trimmingCharacters(in: .whitespaces).isEmpty {
             paths.append("\(codeHome)/credentials/kimi-code.json")
@@ -49,7 +52,7 @@ final class KimiLimitsEngine {
         return paths
     }
 
-    static func readCredentials() -> Credentials? {
+    public static func readCredentials() -> Credentials? {
         for path in credentialPaths() {
             guard let data = FileManager.default.contents(atPath: path),
                   let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -61,7 +64,7 @@ final class KimiLimitsEngine {
         return nil
     }
 
-    static func saveCredentials(_ creds: Credentials) {
+    public static func saveCredentials(_ creds: Credentials) {
         let obj: [String: Any] = [
             "access_token": creds.accessToken,
             "refresh_token": creds.refreshToken,
@@ -73,7 +76,7 @@ final class KimiLimitsEngine {
         try? data.write(to: URL(fileURLWithPath: creds.path))
     }
 
-    static func fetch() -> [ProviderLimit] {
+    public static func fetch() -> [ProviderLimit] {
         guard var creds = readCredentials() else { return [] }
 
         if creds.expiresAt > 0 && Date().timeIntervalSince1970 + 300 > creds.expiresAt {
@@ -141,7 +144,7 @@ final class KimiLimitsEngine {
         return limits
     }
 
-    static func refresh(_ creds: Credentials) -> Credentials? {
+    public static func refresh(_ creds: Credentials) -> Credentials? {
         guard !creds.refreshToken.isEmpty,
               let url = URL(string: "https://auth.kimi.com/api/oauth/token") else { return nil }
         var req = URLRequest(url: url, timeoutInterval: 8)
@@ -165,13 +168,13 @@ final class KimiLimitsEngine {
                            expiresAt: Date().timeIntervalSince1970 + expiresIn, path: creds.path)
     }
 
-    static func parseQuota(_ dict: [String: Any], _ key: String) -> Double? {
+    public static func parseQuota(_ dict: [String: Any], _ key: String) -> Double? {
         if let s = dict[key] as? String { return flexibleNumber(s) }
         if let n = dict[key] as? NSNumber { return n.doubleValue }
         return nil
     }
 
-    static func flexibleNumber(_ s: String) -> Double? {
+    public static func flexibleNumber(_ s: String) -> Double? {
         let trimmed = s.trimmingCharacters(in: .whitespaces).uppercased()
         var numPart = ""
         var multiplier = 1.0
@@ -186,13 +189,13 @@ final class KimiLimitsEngine {
         return v * multiplier
     }
 
-    static func membership(_ obj: [String: Any]) -> String? {
+    public static func membership(_ obj: [String: Any]) -> String? {
         guard let user = obj["user"] as? [String: Any],
               let mem = user["membership"] as? [String: Any] else { return nil }
         return mem["level"] as? String
     }
 
-    static func parseDate(_ s: String?) -> Date? {
+    public static func parseDate(_ s: String?) -> Date? {
         guard let s else { return nil }
         let f = ISO8601DateFormatter()
         f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
@@ -201,7 +204,7 @@ final class KimiLimitsEngine {
         return f.date(from: s)
     }
 
-    static func fmt(_ v: Double) -> String {
+    public static func fmt(_ v: Double) -> String {
         switch v {
         case 1_000_000_000...: return String(format: "%.1fB", v / 1_000_000_000)
         case 1_000_000...: return String(format: "%.1fM", v / 1_000_000)

@@ -1,24 +1,27 @@
 import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 
-final class PlanLimitsEngine {
-    static let shared = PlanLimitsEngine()
+public final class PlanLimitsEngine {
+    public static let shared = PlanLimitsEngine()
     private let lock = NSLock()
     private var cache: [ProviderLimit] = []
     private var lastFetch = Date.distantPast
 
-    func cachedLimits() -> [ProviderLimit] {
+    public func cachedLimits() -> [ProviderLimit] {
         lock.lock(); defer { lock.unlock() }
         return cache
     }
 
-    func refreshNow() {
+    public func refreshNow() {
         lock.lock()
         lastFetch = .distantPast
         lock.unlock()
         refreshIfDue(maxAge: .infinity)
     }
 
-    func refreshIfDue(maxAge: TimeInterval = 60) {
+    public func refreshIfDue(maxAge: TimeInterval = 60) {
         lock.lock()
         if Date().timeIntervalSince(lastFetch) < maxAge {
             lock.unlock()
@@ -37,7 +40,7 @@ final class PlanLimitsEngine {
         }
     }
 
-    static func authKeys() -> [String: String] {
+    public static func authKeys() -> [String: String] {
         let path = ProcessInfo.processInfo.environment["OPENCODE_AUTH"]
             ?? NSString(string: "~/.local/share/opencode/auth.json").expandingTildeInPath
         guard let data = FileManager.default.contents(atPath: path),
@@ -51,7 +54,7 @@ final class PlanLimitsEngine {
         return out
     }
 
-    static func fetchAll() -> [ProviderLimit] {
+    public static func fetchAll() -> [ProviderLimit] {
         let keys = authKeys()
         var out: [ProviderLimit] = []
         if let key = keys["zai-coding-plan"] ?? keys["zai"] { out += zai(key) }
@@ -307,17 +310,10 @@ final class PlanLimitsEngine {
         if let data = FileManager.default.contents(atPath: file),
            let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
             root = obj
-        } else {
-            let security = Process()
-            security.executableURL = URL(fileURLWithPath: "/usr/bin/security")
-            security.arguments = ["find-generic-password", "-s", "Claude Code-credentials", "-w"]
-            let pipe = Pipe()
-            security.standardOutput = pipe
-            security.standardError = FileHandle.nullDevice
-            do { try security.run() } catch { return nil }
-            let out = pipe.fileHandleForReading.readDataToEndOfFile()
-            security.waitUntilExit()
-            if let obj = try? JSONSerialization.jsonObject(with: out) as? [String: Any] { root = obj }
+        } else if let secret = Platform.credentials.genericPassword(service: "Claude Code-credentials", account: nil),
+                  let secretData = secret.data(using: .utf8),
+                  let obj = try? JSONSerialization.jsonObject(with: secretData) as? [String: Any] {
+            root = obj
         }
         guard let root else { return nil }
         let oauth = (root["claudeAiOauth"] as? [String: Any]) ?? (root["oauth"] as? [String: Any]) ?? root
@@ -500,7 +496,11 @@ final class PlanLimitsEngine {
         FileManager.default.createFile(atPath: tmp.path, contents: nil)
         guard let fh = FileHandle(forWritingAtPath: tmp.path) else { return [] }
         let proc = Process()
+        #if os(macOS)
         proc.executableURL = URL(fileURLWithPath: "/usr/sbin/lsof")
+        #else
+        proc.executableURL = URL(fileURLWithPath: "/usr/bin/lsof")
+        #endif
         proc.arguments = ["-nP", "-iTCP", "-sTCP:LISTEN", "-c", "agy", "-a", "-i4"]
         proc.standardOutput = fh
         proc.standardError = FileHandle.nullDevice
@@ -585,16 +585,7 @@ final class PlanLimitsEngine {
     }
 
     private static func geminiKeychainToken() -> String? {
-        let security = Process()
-        security.executableURL = URL(fileURLWithPath: "/usr/bin/security")
-        security.arguments = ["find-generic-password", "-s", "gemini", "-a", "antigravity", "-w"]
-        let pipe = Pipe()
-        security.standardOutput = pipe
-        security.standardError = FileHandle.nullDevice
-        do { try security.run() } catch { return nil }
-        let out = pipe.fileHandleForReading.readDataToEndOfFile()
-        security.waitUntilExit()
-        guard let str = String(data: out, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines), !str.isEmpty else { return nil }
+        guard let str = Platform.credentials.genericPassword(service: "gemini", account: "antigravity") else { return nil }
         var rawB64 = str
         if rawB64.hasPrefix("go-keyring-base64:") {
             rawB64 = String(rawB64.dropFirst("go-keyring-base64:".count))

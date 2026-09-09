@@ -1,4 +1,5 @@
 import Foundation
+import TokenHorizonCore
 import UserNotifications
 
 final class LimitNotifier: NSObject, UNUserNotificationCenterDelegate {

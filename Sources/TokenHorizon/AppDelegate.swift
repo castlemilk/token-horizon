@@ -1,4 +1,5 @@
 import AppKit
+import TokenHorizonCore
 import SwiftUI
 
 final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
@@ -13,6 +14,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private var surfacesBuilt = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Wire the TokenHorizonCore platform seams to the macOS backends.
+        Platform.systemStats = SystemStats.self
+        OllamaClient.baseURLProvider = { OllamaTelemetryProxy.shared.proxyURL }
+
         try? "launch at \(Date())\n".write(to: URL(fileURLWithPath: "/tmp/token-horizon-launch.log"), atomically: true, encoding: .utf8)
         server = LocalServer(statsProvider: { [engine] in engine.snapshot() },
                              sysProvider: { SystemStats.snapshot() },

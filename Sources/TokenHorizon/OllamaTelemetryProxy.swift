@@ -1,51 +1,8 @@
 import Foundation
 import Network
+import TokenHorizonCore
 
-struct OllamaTelemetrySample: Equatable {
-    var model: String
-    var completedAt: Date
-    var evalCount: Int
-    var evalDurationNs: UInt64
-    var promptEvalCount: Int?
-    var promptEvalDurationNs: UInt64?
-
-    var tokPerSec: Double? {
-        guard evalCount > 0, evalDurationNs > 0 else { return nil }
-        return Double(evalCount) / (Double(evalDurationNs) / 1_000_000_000)
-    }
-
-    var promptTokPerSec: Double? {
-        guard let count = promptEvalCount,
-              let duration = promptEvalDurationNs,
-              count > 0, duration > 0 else { return nil }
-        return Double(count) / (Double(duration) / 1_000_000_000)
-    }
-}
-
-final class OllamaTelemetryStore {
-    static let shared = OllamaTelemetryStore()
-
-    private let lock = NSLock()
-    private var latestSamples: [String: OllamaTelemetrySample] = [:]
-
-    func record(_ sample: OllamaTelemetrySample) {
-        lock.lock()
-        latestSamples[sample.model.lowercased()] = sample
-        if latestSamples.count > 256 {
-            let oldest = latestSamples.values
-                .sorted { $0.completedAt < $1.completedAt }
-                .prefix(latestSamples.count - 256)
-            for sample in oldest { latestSamples.removeValue(forKey: sample.model.lowercased()) }
-        }
-        lock.unlock()
-    }
-
-    func latest(for model: String) -> OllamaTelemetrySample? {
-        lock.lock()
-        defer { lock.unlock() }
-        return latestSamples[model.lowercased()]
-    }
-}
+// OllamaTelemetrySample and OllamaTelemetryStore live in TokenHorizonCore.
 
 final class OllamaTelemetryProxy {
     static let shared = OllamaTelemetryProxy()

@@ -1,13 +1,18 @@
 import Foundation
+#if canImport(Darwin)
+import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#endif
 
-final class SettingsStore {
-    static let shared = SettingsStore()
+public final class SettingsStore {
+    public static let shared = SettingsStore()
     private let lock = NSLock()
     private let path: String
     private var _alibabaCookie: String
     private var _notifyOnLimitRefresh: Bool = true
 
-    var alibabaCookie: String {
+    public var alibabaCookie: String {
         get { lock.lock(); defer { lock.unlock() }; return _alibabaCookie }
         set {
             lock.lock()
@@ -17,7 +22,7 @@ final class SettingsStore {
         }
     }
 
-    var notifyOnLimitRefresh: Bool {
+    public var notifyOnLimitRefresh: Bool {
         get { lock.lock(); defer { lock.unlock() }; return _notifyOnLimitRefresh }
         set {
             lock.lock()
@@ -39,7 +44,7 @@ final class SettingsStore {
     }
 
     private init() {
-        let dir = NSString(string: "~/.config/token-horizon").expandingTildeInPath
+        let dir = Platform.paths.configDirectory.path
         try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
         path = dir + "/settings.json"
         var c = ""
@@ -52,14 +57,14 @@ final class SettingsStore {
             }
         }
         if c.isEmpty {
-            let fb = NSString(string: "~/.config/token-horizon/alibaba-cookie.txt").expandingTildeInPath
+            let fb = Platform.paths.configDirectory.appendingPathComponent("alibaba-cookie.txt").path
             c = (try? String(contentsOfFile: fb, encoding: .utf8)) ?? ""
         }
         _alibabaCookie = c.trimmingCharacters(in: .whitespacesAndNewlines)
         _notifyOnLimitRefresh = notify
     }
 
-    func getCookie() -> String { alibabaCookie }
+    public func getCookie() -> String { alibabaCookie }
 
-    func setCookie(_ s: String) { alibabaCookie = s }
+    public func setCookie(_ s: String) { alibabaCookie = s }
 }

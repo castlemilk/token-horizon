@@ -1,4 +1,5 @@
 import AppKit
+import TokenHorizonCore
 import SwiftUI
 
 final class NotchPanel: NSPanel {

@@ -1,41 +1,80 @@
 import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 
-final class ModelCatalog {
-    static let shared = ModelCatalog()
+public final class ModelCatalog {
+    public static let shared = ModelCatalog()
     private let lock = NSLock()
     private var byId: [String: Entry] = [:]
     private var lastFetch: Date = .distantPast
 
-    struct Entry: Codable {
-        var id: String
-        var name: String
-        var provider: String
-        var providerName: String
-        var inputPerM: Double
-        var outputPerM: Double
-        var cacheReadPerM: Double?
-        var contextK: Int
-        var benchmarks: Benchmarks?
-        var docUrl: String?
-        var description: String?
-        var reasoning: Bool?
-        var toolCall: Bool?
-        var vision: Bool?
-        var openWeights: Bool?
-        var discountPercent: Int?
-        var discountLabel: String?
-        var discountDetail: String?
-        var originalInputPerM: Double?
-        var originalOutputPerM: Double?
+    public struct Entry: Codable {
+        public init(id: String, name: String, provider: String, providerName: String,
+                    inputPerM: Double, outputPerM: Double, cacheReadPerM: Double? = nil,
+                    contextK: Int, benchmarks: Benchmarks? = nil, docUrl: String? = nil,
+                    description: String? = nil, reasoning: Bool? = nil, toolCall: Bool? = nil,
+                    vision: Bool? = nil, openWeights: Bool? = nil,
+                    discountPercent: Int? = nil, discountLabel: String? = nil,
+                    discountDetail: String? = nil, originalInputPerM: Double? = nil,
+                    originalOutputPerM: Double? = nil) {
+            self.id = id
+            self.name = name
+            self.provider = provider
+            self.providerName = providerName
+            self.inputPerM = inputPerM
+            self.outputPerM = outputPerM
+            self.cacheReadPerM = cacheReadPerM
+            self.contextK = contextK
+            self.benchmarks = benchmarks
+            self.docUrl = docUrl
+            self.description = description
+            self.reasoning = reasoning
+            self.toolCall = toolCall
+            self.vision = vision
+            self.openWeights = openWeights
+            self.discountPercent = discountPercent
+            self.discountLabel = discountLabel
+            self.discountDetail = discountDetail
+            self.originalInputPerM = originalInputPerM
+            self.originalOutputPerM = originalOutputPerM
+        }
+
+        public var id: String
+        public var name: String
+        public var provider: String
+        public var providerName: String
+        public var inputPerM: Double
+        public var outputPerM: Double
+        public var cacheReadPerM: Double?
+        public var contextK: Int
+        public var benchmarks: Benchmarks?
+        public var docUrl: String?
+        public var description: String?
+        public var reasoning: Bool?
+        public var toolCall: Bool?
+        public var vision: Bool?
+        public var openWeights: Bool?
+        public var discountPercent: Int?
+        public var discountLabel: String?
+        public var discountDetail: String?
+        public var originalInputPerM: Double?
+        public var originalOutputPerM: Double?
     }
 
-    struct Benchmarks: Codable {
-        var swe: Double?
-        var lcb: Double?
-        var source: String
+    public struct Benchmarks: Codable {
+        public init(swe: Double? = nil, lcb: Double? = nil, source: String) {
+            self.swe = swe
+            self.lcb = lcb
+            self.source = source
+        }
+
+        public var swe: Double?
+        public var lcb: Double?
+        public var source: String
     }
 
-    func lookup(id: String) -> Entry? {
+    public func lookup(id: String) -> Entry? {
         lock.lock(); defer { lock.unlock() }
         let clean = id.lowercased().trimmingCharacters(in: .whitespaces)
         if let exact = byId[clean] { return exact }
@@ -232,31 +271,31 @@ final class ModelCatalog {
         return nil
     }
 
-    func allEntries() -> [Entry] {
+    public func allEntries() -> [Entry] {
         lock.lock(); defer { lock.unlock() }
         return Array(byId.values)
     }
 
-    func getLastFetchTime() -> Date {
+    public func getLastFetchTime() -> Date {
         lock.lock(); defer { lock.unlock() }
         return lastFetch
     }
 
-    func refreshRemote() {
+    public func refreshRemote() {
         lock.lock()
         lastFetch = .distantPast
         lock.unlock()
         DispatchQueue.global(qos: .utility).async { Self.fetchAndMerge() }
     }
 
-    func ensureLoaded() {
+    public func ensureLoaded() {
         lock.lock()
         let stale = lastFetch == .distantPast
         lock.unlock()
         if stale { DispatchQueue.global(qos: .utility).async { Self.fetchAndMerge() } }
     }
 
-    static func formatModelDisplayName(_ modelId: String) -> String {
+    public static func formatModelDisplayName(_ modelId: String) -> String {
         var clean = modelId
             .replacingOccurrences(of: ":latest", with: "")
             .replacingOccurrences(of: "-latest", with: "")
@@ -318,7 +357,7 @@ final class ModelCatalog {
         return words.joined(separator: " ")
     }
 
-    static func canonicalIdentity(provider: String, model: String) -> (family: String, displayName: String, providerId: String, providerName: String) {
+    public static func canonicalIdentity(provider: String, model: String) -> (family: String, displayName: String, providerId: String, providerName: String) {
         let p = provider.lowercased()
         let m = model.lowercased()
             .replacingOccurrences(of: "_", with: "-")
@@ -504,7 +543,7 @@ final class ModelCatalog {
         return ("\(p)-\(clean.lowercased())", lastPart, p, provider)
     }
 
-    static func docUrl(for provider: String, model: String, catalogEntry: Entry? = nil) -> URL? {
+    public static func docUrl(for provider: String, model: String, catalogEntry: Entry? = nil) -> URL? {
         if let direct = catalogEntry?.docUrl, let u = URL(string: direct), !direct.isEmpty {
             return u
         }

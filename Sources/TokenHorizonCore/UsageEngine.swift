@@ -1,7 +1,12 @@
 import Foundation
+#if canImport(SQLite3)
 import SQLite3
+#elseif canImport(CSQLite)
+import CSQLite
+#endif
 
-final class UsageEngine {
+public final class UsageEngine {
+    public init() {}
     private var db: OpaquePointer?
     private let lock = NSLock()
 
@@ -11,51 +16,51 @@ final class UsageEngine {
     private var kimiFiles: [String: AdditiveFileState] = [:]
     private var dirCache: [String: (mtime: Date, files: [String])] = [:]
 
-    struct AdditiveFileState {
-        var offset: UInt64 = 0
-        var allTokens: Int = 0
-        var allCost: Double = 0
-        var cacheRead: Int = 0
-        var buckets: [Int: (tokens: Int, cost: Double)] = [:]
-        var models: [String: (all: Int, today: Int, cost: Double)] = [:]
+    public struct AdditiveFileState {
+        public var offset: UInt64 = 0
+        public var allTokens: Int = 0
+        public var allCost: Double = 0
+        public var cacheRead: Int = 0
+        public var buckets: [Int: (tokens: Int, cost: Double)] = [:]
+        public var models: [String: (all: Int, today: Int, cost: Double)] = [:]
     }
 
-    struct CodexWatermark {
-        var input = 0
-        var output = 0
-        var cached = 0
-        var reasoning = 0
+    public struct CodexWatermark {
+        public var input = 0
+        public var output = 0
+        public var cached = 0
+        public var reasoning = 0
 
-        var total: Int { input + output + cached + reasoning }
-        var displayTokens: Int { input + output }
+        public var total: Int { input + output + cached + reasoning }
+        public var displayTokens: Int { input + output }
 
-        static func >= (l: CodexWatermark, r: CodexWatermark) -> Bool {
+        public static func >= (l: CodexWatermark, r: CodexWatermark) -> Bool {
             l.input >= r.input && l.output >= r.output && l.cached >= r.cached && l.reasoning >= r.reasoning
         }
 
-        func delta(from prev: CodexWatermark) -> CodexWatermark {
+        public func delta(from prev: CodexWatermark) -> CodexWatermark {
             CodexWatermark(input: input - prev.input, output: output - prev.output,
                            cached: cached - prev.cached, reasoning: reasoning - prev.reasoning)
         }
     }
 
-    struct CodexRate {
-        var usedPercent: Double
-        var windowMinutes: Int
-        var resetsAt: Int
+    public struct CodexRate {
+        public var usedPercent: Double
+        public var windowMinutes: Int
+        public var resetsAt: Int
     }
 
-    struct CodexFileState {
-        var offset: UInt64 = 0
-        var watermark = CodexWatermark()
-        var last = CodexWatermark()
-        var allTokens: Int = 0
-        var buckets: [Int: Int] = [:]
-        var rate: CodexRate?
-        var modelTokens: Int = 0
+    public struct CodexFileState {
+        public var offset: UInt64 = 0
+        public var watermark = CodexWatermark()
+        public var last = CodexWatermark()
+        public var allTokens: Int = 0
+        public var buckets: [Int: Int] = [:]
+        public var rate: CodexRate?
+        public var modelTokens: Int = 0
     }
 
-    static let genericSources: [(tool: String, dirs: [String])] = [
+    public static let genericSources: [(tool: String, dirs: [String])] = [
         ("glm", ["~/.zcode/projects"]),
         ("qwen", ["~/.qwen/projects"]),
         ("grok", ["~/.grok/sessions"]),
@@ -63,7 +68,7 @@ final class UsageEngine {
         ("gemini", ["~/.gemini/transcripts", "~/.gemini/sessions", "~/.gemini/projects"]),
         ("agy", ["~/.gemini/antigravity-cli/brain", "~/.gemini/antigravity-cli/conversations"]),
     ]
-    static var kimiDirs: [String] {
+    public static var kimiDirs: [String] {
         let env = ProcessInfo.processInfo.environment
         var dirs: [String] = []
         if let home = env["KIMI_HOME"] { dirs.append("\(home)/sessions") }
@@ -80,13 +85,13 @@ final class UsageEngine {
     }()
     private let isoFallback = ISO8601DateFormatter()
 
-    func snapshot() -> UsageSnapshot {
+    public func snapshot() -> UsageSnapshot {
         lock.lock()
         defer { lock.unlock() }
         return collectLocked()
     }
 
-    func history(days: Int) -> (points: [HistoryPoint], streak: Int) {
+    public func history(days: Int) -> (points: [HistoryPoint], streak: Int) {
         lock.lock()
         defer { lock.unlock() }
         _ = collectLocked()
@@ -110,7 +115,7 @@ final class UsageEngine {
         return (points, streak)
     }
 
-    func trendHistory(window: TrendWindow) -> [HistoryPoint] {
+    public func trendHistory(window: TrendWindow) -> [HistoryPoint] {
         lock.lock()
         defer { lock.unlock() }
         _ = collectLocked()
@@ -181,7 +186,7 @@ final class UsageEngine {
         return merged
     }
 
-    static func windowLabel(minutes: Int) -> String {
+    public static func windowLabel(minutes: Int) -> String {
         if minutes <= 0 { return "session" }
         if minutes < 60 { return "\(minutes)m" }
         if minutes < 1440 { return "\(minutes / 60)h" }
@@ -530,11 +535,11 @@ final class UsageEngine {
         return parsed.last.displayTokens
     }
 
-    struct CodexParsed {
-        var totals: CodexWatermark
-        var last: CodexWatermark
-        var hour: Int
-        var rate: CodexRate?
+    public struct CodexParsed {
+        public var totals: CodexWatermark
+        public var last: CodexWatermark
+        public var hour: Int
+        public var rate: CodexRate?
     }
 
     private func parseCodexLine(_ line: Data) -> CodexParsed? {
@@ -832,9 +837,9 @@ final class UsageEngine {
         )
     }
 
-    struct Cell {
-        var int: Int?
-        var double: Double?
+    public struct Cell {
+        public var int: Int?
+        public var double: Double?
     }
 
     private func text(_ stmt: OpaquePointer, _ i: Int32) -> String {

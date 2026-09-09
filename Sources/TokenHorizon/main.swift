@@ -1,4 +1,5 @@
 import AppKit
+import TokenHorizonCore
 
 let app = NSApplication.shared
 let delegate = AppDelegate()

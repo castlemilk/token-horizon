@@ -1,54 +1,14 @@
 import Foundation
 import Darwin
+import TokenHorizonCore
 
-struct ProcSample: Equatable {
-    var pid: Int32
-    var ppid: Int32          // parent PID (for tree view)
-    var name: String
-    var command: String      // full command path (comm field from ps)
-    var user: String         // effective user
-    var threads: Int         // thread count
-    var cpu: Double
-    var memMB: Double
-    var diskReadMBps: Double
-    var diskWriteMBps: Double
-    var netInKBps: Double
-    var netOutKBps: Double
-    var startTime: Date      // process start (for uptime)
-}
-
-/// Detailed info for a single PID (used by drill-down).
-struct ProcDetail: Equatable, Identifiable {
-    var pid: Int32
-    var ppid: Int32
-    var cpu: Double
-    var memPercent: Double
-    var memMB: Double
-    var virtMB: Double
-    var etime: String        // raw ps etime format
-    var user: String
-    var threads: Int
-    var state: String        // R, S, D, Z, etc.
-    var nice: Int
-    var command: String
-    var openFiles: Int?      // lsof count
-    var id: Int32 { pid }
-}
+// ProcSample, ProcDetail, SystemSnapshot, SystemIORates and the
+// SystemStatsProviding protocol live in TokenHorizonCore (cross-platform).
+// This enum is the macOS implementation of that protocol (mach, vm64, iostat, ps).
 
 enum SystemStats {
-    struct Snapshot {
-        var cpuPercent: Double = 0
-        var ramUsedGB: Double = 0
-        var ramTotalGB: Double = 0
-        var loadAvg1: Double = 0
-        var diskMBps: Double = 0
-        var netMBps: Double = 0
-    }
-
-    struct IORates {
-        var diskMBps: Double = 0
-        var netMBps: Double = 0
-    }
+    typealias Snapshot = SystemSnapshot
+    typealias IORates = SystemIORates
 
     private static var prevDisk: [Int32: (read: UInt64, write: UInt64, time: Date)] = [:]
     private static var prevMLXDisk: [Int32: (read: UInt64, write: UInt64, time: Date)] = [:]
@@ -565,3 +525,6 @@ enum SystemStats {
         return (usedBytes / 1_073_741_824, total / 1_073_741_824)
     }
 }
+
+// MARK: - Cross-platform protocol conformance (interface defined in TokenHorizonCore)
+extension SystemStats: SystemStatsProviding {}
