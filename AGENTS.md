@@ -6,8 +6,9 @@ Guide for coding agents working in this repo. Read alongside README.md (user set
 
 ```
 Sources/TokenHorizonCore/   portable server-side module (macOS + Linux; Windows TBD)
-  Usage/                  UsageEngine (opencode sqlite, claude/codex/kimi/generic JSONL, hourly
-                          buckets, history/trends) + shared DTOs (UsageSnapshot, ProviderLimit, ...)
+  Usage/                  UsageEngine (opencode sqlite, claude/codex/kimi/generic JSONL, 15-min
+                          buckets, TokenBreakdown input/output/reasoning/cacheRead/cacheWrite,
+                          history/trends) + shared DTOs (UsageSnapshot, ProviderLimit, ...)
   Vendors/                per-vendor integrations, split by who runs the infra
     Auth/                   VendorAuth credential chains: composable CredentialSource
                             (.env/.opencodeKey/.fileText/.fileJSON/.keychain/.custom)
@@ -61,7 +62,7 @@ See docs/cross-platform.md for the Linux/Windows port status and the Platform se
 ## Invariants — do not break
 
 1. **UsageEngine.snapshot()/history()/trendHistory() take `lock`**; sqlite opened `READONLY | FULLMUTEX`. All engine calls run off-main via `DispatchQueue.global`. Concurrent unlocked sqlite use = SIGSEGV (happened before).
-2. **Buckets are hourly epoch keys** everywhere (`per*HourPercentage`-style day math derives from them). "Today" = `bucket >= todayBucket()` (local midnight). Do not reintroduce day-keyed buckets.
+2. **Buckets are 15-minute epoch keys** everywhere (`UsageEngine.bucketSeconds = 900`; day math derives from them). "Today" = `bucket >= todayBucket()` (local midnight). Do not reintroduce day- or hour-keyed buckets. Each bucket carries a compat `tokens`/`cost` aggregate plus a granular `TokenBreakdown` (input/output/reasoning/cacheRead/cacheWrite) — compat totals must stay byte-exact vs provider ground truth; breakdown detail (e.g. codex cached/reasoning beyond displayTokens) lives only in `breakdown`.
 3. **Codex parsing is stateful per file** (offset + watermarks + last). Never reset state on truncation without clearing buckets. Multi-dir scans share `codexFiles`; filter preserved state by path prefix.
 4. **Incremental JSONL readers** only consume up to the last `\n` and advance the stored offset by exactly the consumed byte count (partial tail lines must survive to the next poll).
 5. **The engine is the single source of truth.** MCP shim and any UI read from the HTTP API (fallback: direct sqlite read-only for usage/sessions). Never parse provider files from the MCP shim.
