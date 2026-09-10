@@ -96,6 +96,31 @@ open class OpenAICompatibleMeter: RequestMeter {
         return b
     }
 
+    /// OpenAI: `reasoning_effort: "low|medium|high"` (chat) or
+    /// `reasoning: {effort: ...}` (Responses API). Absent = model default.
+    public override func thinkingLevel(for exchange: MeteredExchange) -> (level: String, raw: String)? {
+        guard let obj = try? JSONSerialization.jsonObject(with: exchange.requestBody) as? [String: Any] else { return nil }
+        if let effort = obj["reasoning_effort"] as? String {
+            return (normalizeEffort(effort), "reasoning_effort:\(effort)")
+        }
+        if let reasoning = obj["reasoning"] as? [String: Any],
+           let effort = reasoning["effort"] as? String {
+            return (normalizeEffort(effort), "reasoning.effort:\(effort)")
+        }
+        return nil
+    }
+
+    func normalizeEffort(_ effort: String) -> String {
+        switch effort.lowercased() {
+        case "none", "minimal", "off": return "off"
+        case "low": return "low"
+        case "medium": return "medium"
+        case "high", "max": return "high"
+        case "auto": return "adaptive"
+        default: return effort.lowercased()
+        }
+    }
+
     /// Cost from the built-in catalog pricing when the model is known.
     public override func cost(for exchange: MeteredExchange, tokens: TokenBreakdown) -> Double {
         let model = model(for: exchange)

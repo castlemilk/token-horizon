@@ -8,6 +8,8 @@ public struct MeteredExchange {
     public var method = ""
     public var path = ""
     public var requestBody = Data()
+    /// Client headers, lowercase names (User-Agent etc. for product sniffing).
+    public var requestHeaders: [String: String] = [:]
     public var status = 0
     public var responseBody = Data()
     public var startedAt = Date()
@@ -89,6 +91,35 @@ open class RequestMeter: NSObject, URLSessionDataDelegate {
     /// Client session correlation, when the wire format carries it.
     open func sessionID(for exchange: MeteredExchange) -> String? { nil }
 
+    /// Configured thinking/reasoning effort from the REQUEST. Every vendor
+    /// encodes this differently — subclasses parse the native form and
+    /// normalize to "off"/"low"/"medium"/"high"/"adaptive".
+    open func thinkingLevel(for exchange: MeteredExchange) -> (level: String, raw: String)? { nil }
+
+    /// Explicit product label (set per meter via TH_METERS `vendor:port@product`).
+    public var productLabel: String?
+
+    /// Product-level attribution: which client TOOL made this request
+    /// (claude-code, codex, pi, opencode...). Default: explicit label, else
+    /// User-Agent sniffing. Product is orthogonal to vendor — codex CLI can
+    /// hit OpenAI or a local runtime.
+    open func product(for exchange: MeteredExchange) -> String? {
+        if let productLabel { return productLabel }
+        guard let ua = exchange.requestHeaders["user-agent"]?.lowercased() else { return nil }
+        let table: [(String, String)] = [
+            ("claude-cli", "claude-code"), ("claude_code", "claude-code"),
+            ("codex_cli_rs", "codex"), ("codex", "codex"),
+            ("opencode", "opencode"),
+            ("kimi", "kimi-cli"),
+            ("gemini-cli", "gemini-cli"), ("gemini_cli", "gemini-cli"),
+            ("aider", "aider"), ("cursor", "cursor"), ("continue", "continue"),
+            ("python-", "python-sdk"), ("node", "node-sdk"),
+            ("curl", "curl"),
+        ]
+        for (needle, product) in table where ua.contains(needle) { return product }
+        return nil
+    }
+
     /// Context occupancy semantics differ per wire format (OpenAI's
     /// prompt_tokens INCLUDE cached tokens; Anthropic's input_tokens exclude
     /// cache read/write). Override accordingly. Default: input + cacheWrite.
@@ -124,6 +155,7 @@ open class RequestMeter: NSObject, URLSessionDataDelegate {
               let tokens = usage(from: exchange), tokens.total > 0 else { return nil }
         let model = model(for: exchange)
         let rates = rates(from: exchange, tokens: tokens)
+        let thinking = thinkingLevel(for: exchange)
         return UsageEvent(
             timestamp: exchange.completedAt,
             machineID: machineID,
@@ -138,6 +170,9 @@ open class RequestMeter: NSObject, URLSessionDataDelegate {
             generationTokPerSec: rates.generation,
             latencyMs: exchange.durationMs,
             sessionID: sessionID(for: exchange),
+            thinkingLevel: thinking?.level,
+            thinkingRaw: thinking?.raw,
+            product: product(for: exchange),
             attestation: attestation)
     }
 
@@ -208,6 +243,9 @@ open class RequestMeter: NSObject, URLSessionDataDelegate {
         }
         conn.exchange.method = request.method
         conn.exchange.path = request.path
+        for (name, value) in request.headers {
+            conn.exchange.requestHeaders[name.lowercased()] = value
+        }
 
         // Read the full request body (Content-Length or chunked).
         var body = rest

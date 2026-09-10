@@ -80,6 +80,24 @@ open class AnthropicMeter: RequestMeter {
         return out
     }
 
+    /// Anthropic: `thinking: {"type": "enabled", "budget_tokens": N}` — the
+    /// level is a token BUDGET, so we band it (off/low/medium/high).
+    public override func thinkingLevel(for exchange: MeteredExchange) -> (level: String, raw: String)? {
+        guard let obj = try? JSONSerialization.jsonObject(with: exchange.requestBody) as? [String: Any],
+              let thinking = obj["thinking"] as? [String: Any],
+              let type = thinking["type"] as? String else { return nil }
+        guard type == "enabled" else { return ("off", "type:\(type)") }
+        let budget = (thinking["budget_tokens"] as? NSNumber)?.intValue ?? 0
+        let level: String
+        switch budget {
+        case ..<1: level = "adaptive"
+        case ..<4_000: level = "low"
+        case ..<16_000: level = "medium"
+        default: level = "high"
+        }
+        return (level, "budget_tokens:\(budget)")
+    }
+
     /// Cost from the built-in catalog pricing (incl. cache-read rate).
     public override func cost(for exchange: MeteredExchange, tokens: TokenBreakdown) -> Double {
         let model = model(for: exchange)

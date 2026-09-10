@@ -58,6 +58,24 @@ open class GeminiMeter: RequestMeter {
             cacheRead: int("cachedContentTokenCount"))
     }
 
+    /// Gemini: `generationConfig.thinkingConfig.thinkingBudget` — 0 = off,
+    /// -1 = dynamic (adaptive), positive = token budget (banded).
+    public override func thinkingLevel(for exchange: MeteredExchange) -> (level: String, raw: String)? {
+        guard let obj = try? JSONSerialization.jsonObject(with: exchange.requestBody) as? [String: Any],
+              let config = obj["generationConfig"] as? [String: Any],
+              let thinking = config["thinkingConfig"] as? [String: Any] else { return nil }
+        guard let budget = (thinking["thinkingBudget"] as? NSNumber)?.intValue else { return nil }
+        let level: String
+        switch budget {
+        case 0: level = "off"
+        case -1: level = "adaptive"
+        case ..<4_000: level = "low"
+        case ..<16_000: level = "medium"
+        default: level = "high"
+        }
+        return (level, "thinkingBudget:\(budget)")
+    }
+
     public override func cost(for exchange: MeteredExchange, tokens: TokenBreakdown) -> Double {
         let model = model(for: exchange)
         guard let entry = ModelCatalog.shared.lookup(id: model) else { return 0 }
