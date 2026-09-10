@@ -22,10 +22,27 @@ let usageStore: UsageStoring? = {
 }()
 
 // Request meters (the listeners). TH_METERS="vendor:port->target,..." e.g.
-//   TH_METERS="vllm:9100->http://127.0.0.1:8000,openai:9101->https://api.openai.com"
-// Clients point their base URL at 127.0.0.1:<port>; every completed exchange
-// becomes a UsageEvent in the store. All meters are OpenAI-wire-compatible
-// for now; other formats add subclasses.
+//   TH_METERS="vllm:9100->http://127.0.0.1:8000,claude:9102->https://api.anthropic.com"
+// The vendor name selects the wire-format meter; unknown vendors get the
+// OpenAI-compatible meter (covers vllm/sglang/llamacpp/deepseek/zhipu/...).
+func makeMeter(vendor: String, port: UInt16, target: URL) -> RequestMeter {
+    let selfManaged = ["vllm", "sglang", "llamacpp", "ollama", "mlx"].contains(vendor)
+    let kind: SourceKind = selfManaged ? .selfManaged : .external
+    switch vendor {
+    case "claude", "anthropic", "kimi":
+        return AnthropicMeter(vendor: vendor, listenPort: port, targetBase: target,
+                              store: usageStore, sourceKind: kind)
+    case "gemini", "google":
+        return GeminiMeter(vendor: vendor, listenPort: port, targetBase: target,
+                           store: usageStore, sourceKind: kind)
+    case "ollama":
+        return OllamaMeter(vendor: vendor, listenPort: port, targetBase: target,
+                           store: usageStore, sourceKind: kind)
+    default:
+        return OpenAICompatibleMeter(vendor: vendor, listenPort: port, targetBase: target,
+                                     store: usageStore, sourceKind: kind)
+    }
+}
 var meters: [RequestMeter] = []
 if let spec = ProcessInfo.processInfo.environment["TH_METERS"] {
     for entry in spec.split(separator: ",") {
@@ -36,9 +53,7 @@ if let spec = ProcessInfo.processInfo.environment["TH_METERS"] {
               let port = UInt16(text[text.index(after: colon)..<arrow.lowerBound]),
               let target = URL(string: String(text[arrow.upperBound...])) else { continue }
         let vendor = String(text[..<colon])
-        let kind: SourceKind = ["vllm", "sglang", "llamacpp", "ollama"].contains(vendor) ? .selfManaged : .external
-        let meter = OpenAICompatibleMeter(vendor: vendor, listenPort: port, targetBase: target,
-                                          store: usageStore, sourceKind: kind)
+        let meter = makeMeter(vendor: vendor, port: port, target: target)
         meter.start()
         meters.append(meter)
     }
