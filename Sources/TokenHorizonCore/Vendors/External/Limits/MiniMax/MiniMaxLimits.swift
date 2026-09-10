@@ -8,6 +8,8 @@ import Foundation
 public final class MiniMaxLimits: VendorLimitsAdapter {
     public init() { super.init(provider: "minimax") }
 
+    public override var meterTarget: URL? { URL(string: "https://api.minimax.io") }
+
     public override var auth: VendorAuth {
         VendorAuth(sources: [.opencodeKey("minimax-coding-plan")])
     }

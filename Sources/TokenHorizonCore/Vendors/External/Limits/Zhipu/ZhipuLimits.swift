@@ -7,6 +7,8 @@ import Foundation
 public final class ZhipuLimits: VendorLimitsAdapter {
     public init() { super.init(provider: "glm") }
 
+    public override var meterTarget: URL? { URL(string: "https://open.bigmodel.cn") }
+
     public override var auth: VendorAuth {
         VendorAuth(sources: [.opencodeKey("zai-coding-plan"), .opencodeKey("zai")])
     }

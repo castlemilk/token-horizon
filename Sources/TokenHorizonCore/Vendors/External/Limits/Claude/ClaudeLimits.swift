@@ -11,6 +11,14 @@ import FoundationNetworking
 public final class ClaudeLimits: VendorLimitsAdapter {
     public init() { super.init(provider: "claude") }
 
+    public override var meterTarget: URL? { URL(string: "https://api.anthropic.com") }
+
+    public override func makeMeter(listenPort: UInt16, target: URL?, store: UsageStoring?) -> RequestMeter? {
+        AnthropicMeter(vendor: provider, listenPort: listenPort,
+                       targetBase: target ?? URL(string: "https://api.anthropic.com")!,
+                       store: store, sourceKind: .external)
+    }
+
     /// CLAUDE_CONFIG_DIR/.credentials.json (dot-path walked) → macOS Keychain
     /// "Claude Code-credentials" (secret is itself JSON, same key paths).
     public override var auth: VendorAuth {

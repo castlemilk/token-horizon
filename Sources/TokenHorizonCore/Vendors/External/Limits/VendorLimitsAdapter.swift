@@ -26,6 +26,19 @@ open class VendorLimitsAdapter {
         fatalError("\(type(of: self)) must override fetch()")
     }
 
+    // MARK: - Meterable (dual tracking: limits/files + request metering)
+
+    /// Vendor's meterable API base. Nil = vendor exposes no meterable API.
+    open var meterTarget: URL? { nil }
+
+    /// Default: OpenAI-compatible wire format (most vendors). Override for
+    /// Anthropic/Gemini-shaped APIs.
+    open func makeMeter(listenPort: UInt16, target: URL?, store: UsageStoring?) -> RequestMeter? {
+        guard let base = target ?? meterTarget else { return nil }
+        return OpenAICompatibleMeter(vendor: provider, listenPort: listenPort, targetBase: base,
+                                     store: store, sourceKind: .external)
+    }
+
     /// Build a limit row: clamps to 0-100; `provider` defaults to this adapter's
     /// vendor but can be overridden (e.g. GeminiLimits also emits "agy" rows).
     public func limit(label: String, usedPercent: Double, resetsAt: Date? = nil,

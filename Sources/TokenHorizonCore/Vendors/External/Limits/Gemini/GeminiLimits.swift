@@ -13,6 +13,14 @@ import FoundationNetworking
 public final class GeminiLimits: VendorLimitsAdapter {
     public init() { super.init(provider: "google") }
 
+    public override var meterTarget: URL? { URL(string: "https://generativelanguage.googleapis.com") }
+
+    public override func makeMeter(listenPort: UInt16, target: URL?, store: UsageStoring?) -> RequestMeter? {
+        GeminiMeter(vendor: provider, listenPort: listenPort,
+                    targetBase: target ?? URL(string: "https://generativelanguage.googleapis.com")!,
+                    store: store, sourceKind: .external)
+    }
+
     /// ~/.gemini/oauth_creds.json → Keychain "gemini"/"antigravity"
     /// (go-keyring-base64 wrapped JSON).
     public override var auth: VendorAuth {

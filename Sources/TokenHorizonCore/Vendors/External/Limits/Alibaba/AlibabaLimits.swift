@@ -12,6 +12,8 @@ import FoundationNetworking
 public final class AlibabaLimits: VendorLimitsAdapter {
     public init() { super.init(provider: "alibaba") }
 
+    public override var meterTarget: URL? { URL(string: "https://dashscope.aliyuncs.com") }
+
     /// Cookie chain: ALIBABA_COOKIE_FILE → env → config file → SettingsStore.
     public override var auth: VendorAuth {
         VendorAuth(sources: [
