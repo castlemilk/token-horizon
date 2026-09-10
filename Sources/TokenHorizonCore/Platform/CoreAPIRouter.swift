@@ -98,9 +98,6 @@ public final class CoreAPIRouter {
                 "platform": Platform.name,
                 "usage_store": usageStore != nil,
             ]
-            #if os(macOS)
-            payload["ollama_proxy_port"] = OllamaTelemetryProxy.shared.port.map { Int($0) } ?? NSNull()
-            #endif
             return Self.json(payload)
 
         case ("POST", "/analytics/events"):

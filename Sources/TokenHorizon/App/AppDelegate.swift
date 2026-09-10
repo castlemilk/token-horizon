@@ -16,7 +16,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Wire the TokenHorizonCore platform seams to the macOS backends.
         Platform.systemStats = SystemStats.self
-        OllamaClient.baseURLProvider = { OllamaTelemetryProxy.shared.proxyURL }
 
         try? "launch at \(Date())\n".write(to: URL(fileURLWithPath: "/tmp/token-horizon-launch.log"), atomically: true, encoding: .utf8)
         // One router for every host (core): app and headless serve identical APIs.
@@ -39,10 +38,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         InferenceMonitor.shared.startPolling()
         router.startMetersFromEnv()
         router.startMetersFromSettings()
+        // Ollama metering (replaces the old telemetry proxy): with consent,
+        // listen on 11435 and route our own Ollama client through it so the
+        // app's queries are measured too. Asks once, remembers the answer.
+        if ConsentManager.shared.ensure(.metering,
+                reason: "A loopback listener measures token usage and exact tok/s per Ollama API request. Traffic is forwarded unchanged to your local Ollama server."),
+           router.addMeter(vendor: "ollama", port: 11435, target: nil) {
+            OllamaClient.baseURLProvider = { URL(string: "http://127.0.0.1:11435") }
+            model.ollamaMeterPort = 11435
+        }
         server = LocalServer(router: router)
         server.start()
         _ = TokenHorizonTelemetry.shared
-        OllamaTelemetryProxy.shared.start()
 
         model.latestEvent = EventStore.shared.latest()
         model.shellEvents = EventStore.shared.recent(limit: 9)
@@ -357,7 +364,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
-        OllamaTelemetryProxy.shared.stop()
         TokenHorizonTelemetry.shared.shutdown()
     }
 }

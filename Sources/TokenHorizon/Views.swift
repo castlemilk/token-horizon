@@ -15,6 +15,8 @@ final class UIModel: ObservableObject {
     @Published var diskCoarse: [Double] = []
     @Published var netCoarse: [Double] = []
     @Published var mlx = MLXSnapshot()
+    /// Loopback port of the Ollama request meter (nil = metering off/declined).
+    var ollamaMeterPort: Int? = nil
     @Published private(set) var mlxHistory = MLXHistory()
     @Published var sysWindow: SysWindow = .m3
     @Published var processes: [ProcSample] = []
@@ -276,8 +278,8 @@ struct DashboardTabs: View {
                     size: 8
                 )
             }
-            if let proxyPort = OllamaTelemetryProxy.shared.port {
-                MonospacedText(text: "telemetry proxy 127.0.0.1:\(proxyPort) · point Ollama-compatible clients here for exact tok/s", color: .white.opacity(0.35), size: 7.5)
+            if let meterPort = model.ollamaMeterPort {
+                MonospacedText(text: "request meter 127.0.0.1:\(meterPort) · point Ollama-compatible clients here for exact tok/s", color: .white.opacity(0.35), size: 7.5)
                     .fixedSize(horizontal: false, vertical: true)
             }
             HStack(spacing: 4) {

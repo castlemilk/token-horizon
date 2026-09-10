@@ -9,7 +9,7 @@ description: Maintain Token Horizon's bundled Ollama/MLX telemetry, OpenTelemetr
 
 Use this skill when changing:
 
-- `OllamaTelemetryProxy.swift`
+- `Metering/OllamaMeter.swift` (consented loopback meter; supersedes the removed OllamaTelemetryProxy)
 - `TelemetryMetrics.swift`
 - `MLXHistory.swift` or the MLX tab in `Views.swift`
 - `LocalServer.swift` `/metrics`
