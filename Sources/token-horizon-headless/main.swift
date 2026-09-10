@@ -145,7 +145,7 @@ func router(_ request: HTTPRequest) -> HTTPResponse {
         ])
 
     // Unified usage store: ingest endpoint (same shape a cloud API will take).
-    case ("POST", "/events"):
+    case ("POST", "/analytics/events"):
         guard let store = usageStore else {
             return json(["error": "usage store unavailable"], status: 503)
         }
@@ -204,12 +204,12 @@ func router(_ request: HTTPRequest) -> HTTPResponse {
             "source": $0.sourceKind.rawValue,
         ] })
 
-    case ("GET", "/events/count"):
+    case ("GET", "/analytics/count"):
         guard let store = usageStore else { return json(["error": "usage store unavailable"], status: 503) }
         return json(["count": (try? store.count()) ?? -1])
 
     // Tabular request view: newest-first, filtered, rowid-paginated.
-    case ("GET", "/events"):
+    case ("GET", "/analytics/events"):
         guard let store = usageStore else { return json(["error": "usage store unavailable"], status: 503) }
         let params = queryParams(query)
         let (from, to) = timeRange(params)
@@ -223,7 +223,7 @@ func router(_ request: HTTPRequest) -> HTTPResponse {
                      "next_cursor": page.nextCursor ?? NSNull()])
 
     // Chart series at arbitrary resolution: ?resolution=900|3600|86400&vendor=...
-    case ("GET", "/events/buckets"):
+    case ("GET", "/analytics/buckets"):
         guard let store = usageStore else { return json(["error": "usage store unavailable"], status: 503) }
         let params = queryParams(query)
         let (from, to) = timeRange(params)
@@ -233,14 +233,14 @@ func router(_ request: HTTPRequest) -> HTTPResponse {
         return json(["resolution": resolution, "buckets": encodeToJSONObject(rows, datesAsEpoch: false)])
 
     // Provider → model rollup.
-    case ("GET", "/events/summary"):
+    case ("GET", "/analytics/summary"):
         guard let store = usageStore else { return json(["error": "usage store unavailable"], status: 503) }
         let params = queryParams(query)
         let (from, to) = timeRange(params)
         let rows = (try? store.summarize(from: from, to: to, filter: usageFilter(params))) ?? []
         return json(["providers": encodeToJSONObject(rows, datesAsEpoch: true)])
 
-    case ("GET", "/events/aggregate"):
+    case ("GET", "/analytics/aggregate"):
         guard let store = usageStore else { return json(["error": "usage store unavailable"], status: 503) }
         let params = queryParams(query)
         let (from, to) = timeRange(params)
@@ -249,7 +249,7 @@ func router(_ request: HTTPRequest) -> HTTPResponse {
                                          filter: usageFilter(params))) ?? []
         return json(["group": groupBy.rawValue, "rows": encodeToJSONObject(rows, datesAsEpoch: true)])
 
-    case ("GET", "/events/sync"):
+    case ("GET", "/analytics/sync"):
         guard let store = usageStore else { return json(["error": "usage store unavailable"], status: 503) }
         let params = queryParams(query)
         let cursor = Int64(params["cursor"] ?? "0") ?? 0
