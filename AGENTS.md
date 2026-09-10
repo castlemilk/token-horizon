@@ -70,6 +70,8 @@ Sources/TokenHorizonCore/   portable server-side module (macOS + Linux; Windows 
     PlatformPaths.swift         paths protocol + per-OS typealias
     CredentialStore.swift       credential protocol + Platform registry (paths/credentials/systemStats)
     LocalHTTPServing.swift      HTTP protocol + POSIXLoopbackHTTPServer (BSD sockets, macOS+Linux)
+    CoreAPIRouter.swift         THE loopback API router — single implementation used by every host
+                                (macOS LocalServer + headless daemon); hosts inject closures only
     macOS/    SystemStats (mach/vm64/iostat/ps), LocalServer (NWListener :8765),
               OllamaTelemetryProxy, MLXObserver, MacOSKeychainStore, MacOSPaths
     Linux/    ProcFSSystemStats (/proc+ps), LinuxPaths (XDG), credential stub
@@ -100,7 +102,7 @@ See docs/cross-platform.md for the Linux/Windows port status and the Platform se
 5. **The engine is the single source of truth.** MCP shim and any UI read from the HTTP API (fallback: direct sqlite read-only for usage/sessions). Never parse provider files from the MCP shim.
 6. **Swift concurrency**: language mode 5, no Sendable gymnastics — keep it that way unless you enjoy type-checker timeouts.
 7. **Dependencies stay deliberate.** System SQLite3, Network, AppKit/SwiftUI, and the pinned OpenTelemetry Swift SDK are allowed; do not add another dependency without review.
-8. **Process list must always be populated.** `SystemStats.processSamples()` returns top 8 sorted by CPU and by MEM with *no* threshold filter — filtering `cpu >=0.5` at idle produced empty lists. It must use the temp-file pattern (`FileHandle(forWritingAtPath:)` → `Data(contentsOf:)`) not `Pipe` + `waitUntilExit` + `readDataToEndOfFile` (pipe deadlock on utility queue). It is exposed as `GET /processes` (`LocalServer.swift:143`) and `token_horizon_processes` MCP tool (`mcp/token-horizon-mcp.mjs:131`) — both must stay in sync with `AppDelegate.swift:182` `model.processes`/`processesMem`.
+8. **Process list must always be populated.** `SystemStats.processSamples()` returns top 8 sorted by CPU and by MEM with *no* threshold filter — filtering `cpu >=0.5` at idle produced empty lists. It must use the temp-file pattern (`FileHandle(forWritingAtPath:)` → `Data(contentsOf:)`) not `Pipe` + `waitUntilExit` + `readDataToEndOfFile` (pipe deadlock on utility queue). It is exposed as `GET /processes` (`Platform/CoreAPIRouter.swift`) and `token_horizon_processes` MCP tool (`mcp/token-horizon-mcp.mjs:131`) — both must stay in sync with `AppDelegate.swift:182` `model.processes`/`processesMem`.
 
 9. **System performance history is bounded.** `SystemStats.snapshot()` exposes CPU, memory, disk MB/s, and network MB/s. `UIModel` records fine samples every 2 seconds, caps each fine series at 1,800 points, and emits one 30-second average after every 15 samples. Each coarse series is capped at 2,880 points (24 hours); old points are discarded, not persisted. I/O sampling runs off-main, uses a 4-second cache, disk `iostat` totals, and non-loopback `getifaddrs` counters. Keep this path free of per-process history or unbounded allocations.
 
@@ -110,7 +112,7 @@ See docs/cross-platform.md for the Linux/Windows port status and the Platform se
 
 12. **Runtime usage parity is measured-only.** Self-managed runtimes feed `UsageEngine` (stats/trends/history, same 15-min `BucketEntry`s as providers) exclusively through `RuntimeUsageLedger`: persisted deltas of cumulative Prometheus counters, keyed by scope (`vendor`, `vendor|model`). First sighting of a counter establishes a baseline — never backfill unmeasured tokens; a counter decrease means server restart (delta = current reading). tok/s rates stay in `InferenceMonitor` snapshots; estimation from resource usage remains forbidden.
 
-13. **Telemetry metrics are bounded and opt-in.** Prometheus text is served by the existing loopback `LocalServer` at `/metrics`; do not start a second listener. OTLP/HTTP is enabled only by `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` or `OTEL_EXPORTER_OTLP_ENDPOINT`. Keep metric attributes low-cardinality, with model labels capped and overflow grouped as `other`. MLX rollups are in-memory only: fine samples are capped at 1,800 points and 30-second averages at 2,880 points.
+13. **Telemetry metrics are bounded and opt-in.** Prometheus text is served by the loopback API at `/metrics` (CoreAPIRouter); do not start a second listener. OTLP/HTTP is enabled only by `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` or `OTEL_EXPORTER_OTLP_ENDPOINT`. Keep metric attributes low-cardinality, with model labels capped and overflow grouped as `other`. MLX rollups are in-memory only: fine samples are capped at 1,800 points and 30-second averages at 2,880 points.
 
 ## UI invariants
 

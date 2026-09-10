@@ -19,31 +19,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         OllamaClient.baseURLProvider = { OllamaTelemetryProxy.shared.proxyURL }
 
         try? "launch at \(Date())\n".write(to: URL(fileURLWithPath: "/tmp/token-horizon-launch.log"), atomically: true, encoding: .utf8)
-        server = LocalServer(statsProvider: { [engine] in engine.snapshot() },
-                             sysProvider: { SystemStats.snapshot() },
-                             historyProvider: { [engine] days in engine.history(days: days) },
-                             trendsProvider: { [engine] window in engine.trendHistory(window: window) },
-                              limitsProvider: { [engine] in
-                                  var all = engine.snapshot().limits
-                                  all.append(contentsOf: KimiLimitsEngine.shared.cachedLimits())
-                                  all.append(contentsOf: PlanLimitsEngine.shared.cachedLimits())
-                                  return all
-                              },
-                              processesProvider: { [weak self] in
-                                  if let self = self, !self.model.allProcesses.isEmpty {
-                                      return (self.model.allProcesses, self.model.processes, self.model.processesMem, self.model.processesDisk, self.model.processesNet)
-                                  }
-                                  let live = SystemStats.processSamples()
-                                  return (live.all, live.byCPU, live.byMem, live.byDisk, live.byNet)
-                              },
-                             onEvent: { [weak self] ev in
-                                 EventStore.shared.add(ev)
-                                 DispatchQueue.main.async {
-                                     self?.model.latestEvent = EventStore.shared.latest()
-                                     self?.model.shellEvents = EventStore.shared.recent(limit: 9)
-                                 }
-                                 self?.refreshHeavy()
-                             })
+        // One router for every host (core): app and headless serve identical APIs.
+        let router = CoreAPIRouter(engine: engine, usageStore: try? SQLiteUsageStore())
+        router.serverName = "token-horizon"
+        router.metricsText = { TokenHorizonTelemetry.shared.prometheusText() }
+        router.healthExtras = {
+            if let port = OllamaTelemetryProxy.shared.port { return ["ollama_proxy_port": Int(port)] }
+            return [:]
+        }
+        router.processesOverride = { [weak self] in
+            if let self = self, !self.model.allProcesses.isEmpty {
+                return (self.model.allProcesses, self.model.processes, self.model.processesMem, self.model.processesDisk, self.model.processesNet)
+            }
+            return SystemStats.processSamples()
+        }
+        router.onShellEvent = { [weak self] _ in
+            DispatchQueue.main.async {
+                self?.model.latestEvent = EventStore.shared.latest()
+                self?.model.shellEvents = EventStore.shared.recent(limit: 9)
+            }
+            self?.refreshHeavy()
+        }
+        engine.localRuntimeUsage = { RuntimeUsageLedger.shared.contributions() }
+        InferenceMonitor.shared.startPolling()
+        router.startMetersFromEnv()
+        router.startMetersFromSettings()
+        server = LocalServer(router: router)
         server.start()
         _ = TokenHorizonTelemetry.shared
         OllamaTelemetryProxy.shared.start()

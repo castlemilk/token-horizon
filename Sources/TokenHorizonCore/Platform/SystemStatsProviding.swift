@@ -102,9 +102,36 @@ public protocol SystemStatsProviding {
     static func snapshot() -> SystemSnapshot
     static func ioRates(now: Date) -> SystemIORates
     static func processSamples() -> (all: [ProcSample], byCPU: [ProcSample], byMem: [ProcSample], byDisk: [ProcSample], byNet: [ProcSample])
+    /// Drill-down detail for one PID (default: unsupported).
+    static func processDetail(pid: Int32) -> ProcDetail?
+    /// Send a signal to a process (default: unsupported).
+    static func killProcess(pid: Int32, signal: Int32) -> Bool
+    /// Parent/child ordering for tree views (default: generic DFS builder).
+    static func buildProcessTree(_ procs: [ProcSample]) -> [(proc: ProcSample, depth: Int, hasChildren: Bool)]
 }
 
 /// Convenience for protocol conformers.
 extension SystemStatsProviding {
     public static func ioRates() -> SystemIORates { ioRates(now: Date()) }
+
+    /// Drill-down detail for one PID (macOS: task_threads+lsof; Linux: /proc).
+    public static func processDetail(pid: Int32) -> ProcDetail? { nil }
+    /// Send a signal to a process (default: unsupported).
+    public static func killProcess(pid: Int32, signal: Int32) -> Bool { false }
+
+    /// Parent/child ordering for tree views: roots first, DFS by parentage.
+    public static func buildProcessTree(_ procs: [ProcSample]) -> [(proc: ProcSample, depth: Int, hasChildren: Bool)] {
+        var children: [Int32: [ProcSample]] = [:]
+        let pids = Set(procs.map { $0.pid })
+        for p in procs { children[p.ppid, default: []].append(p) }
+        for key in children.keys { children[key]?.sort { $0.cpu > $1.cpu } }
+        var out: [(proc: ProcSample, depth: Int, hasChildren: Bool)] = []
+        func visit(_ p: ProcSample, _ depth: Int) {
+            let kids = children[p.pid] ?? []
+            out.append((proc: p, depth: depth, hasChildren: !kids.isEmpty))
+            for k in kids { visit(k, depth + 1) }
+        }
+        for p in procs where p.ppid <= 1 || !pids.contains(p.ppid) { visit(p, 0) }
+        return out
+    }
 }
