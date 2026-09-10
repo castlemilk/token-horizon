@@ -71,9 +71,8 @@ Sources/TokenHorizonCore/   portable server-side module (macOS + Linux; Windows 
     CredentialStore.swift       credential protocol + Platform registry (paths/credentials/systemStats)
     LocalHTTPServing.swift      HTTP protocol + POSIXLoopbackHTTPServer (BSD sockets, macOS+Linux)
     CoreAPIRouter.swift         THE loopback API router — single implementation used by every host
-                                (macOS LocalServer + headless daemon); hosts inject closures only
-    macOS/    SystemStats (mach/vm64/iostat/ps), LocalServer (NWListener :8765),
-              MLXObserver, MacOSKeychainStore, MacOSPaths
+                                (macOS app Server/LocalServer + headless daemon); hosts inject closures only
+    macOS/    SystemStats (mach/vm64/iostat/ps), MacOSKeychainStore, MacOSPaths
     Linux/    ProcFSSystemStats (/proc+ps), LinuxPaths (XDG), credential stub
     Windows/  WindowsPaths (APPDATA), credential stub
 Sources/token-horizon-headless/  cross-platform daemon: same loopback API as the macOS app, no UI
@@ -82,8 +81,10 @@ Sources/TokenHorizon/            macOS app — UI + lifecycle only
   main.swift            AppKit entry, .accessory activation policy
   AppDelegate.swift     surfaces (notch vs tray), refresh loops, Platform seam wiring
   LimitNotifier.swift   UNUserNotification limit alerts
-  Panels.swift          NotchPanel (hover driver + hysteresis), ring gauges live in Views
-  Views.swift           UIModel, DashboardTabs (shared by notch/popover/window), all tab views
+  Server/LocalServer.swift  NWListener loopback transport (:8765) — framing only;
+                            all routes live in core CoreAPIRouter
+  UI/Panels.swift       NotchPanel (hover driver + hysteresis), ring gauges live in Views
+  UI/Views.swift        UIModel, DashboardTabs (shared by notch/popover/window), all tab views
 mcp/token-horizon-mcp.mjs   zero-dep stdio MCP server (talks to :8765, sqlite fallback for usage/sessions)
 shell/token-horizon.zsh     zsh preexec/precmd hooks + `th` CLI
   scripts/make-app.sh         release build + .app bundle (LSUIElement) + ad-hoc codesign + relaunch

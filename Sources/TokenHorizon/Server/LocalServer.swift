@@ -1,20 +1,20 @@
-#if os(macOS)
 import Foundation
 import Network
+import TokenHorizonCore
 
-/// macOS loopback transport (NWListener). ALL route logic lives in core's
-/// `CoreAPIRouter` — this type only frames bytes and delegates, so the app
-/// and the headless daemon serve byte-identical APIs.
-public final class LocalServer {
+/// macOS loopback transport (NWListener), app-target only. ALL route logic
+/// lives in core's `CoreAPIRouter` — this type only frames bytes and
+/// delegates, so the app and the headless daemon serve byte-identical APIs.
+final class LocalServer {
     private var listener: NWListener?
-    public let router: CoreAPIRouter
+    let router: CoreAPIRouter
     private(set) var port: UInt16 = 8765
 
-    public init(router: CoreAPIRouter) {
+    init(router: CoreAPIRouter) {
         self.router = router
     }
 
-    public func start() {
+    func start() {
         for attempt in 0..<20 {
             let candidate = UInt16(8765 + attempt)
             let params = NWParameters.tcp
@@ -77,4 +77,3 @@ public final class LocalServer {
     }
 }
 
-#endif // os(macOS)

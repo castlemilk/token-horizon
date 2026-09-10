@@ -42,12 +42,8 @@ open class AnthropicMeter: RequestMeter {
     private func usageFromSSE(_ text: String) -> TokenBreakdown? {
         var breakdown = TokenBreakdown()
         var sawUsage = false
-        for line in text.components(separatedBy: "\n") {
-            guard line.hasPrefix("data:") else { continue }
-            let payload = line.dropFirst(5).trimmingCharacters(in: .whitespaces)
-            guard let data = payload.data(using: .utf8),
-                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  let type = obj["type"] as? String else { continue }
+        for obj in sseObjects(text) {
+            guard let type = obj["type"] as? String else { continue }
             switch type {
             case "message_start":
                 if let message = obj["message"] as? [String: Any],
