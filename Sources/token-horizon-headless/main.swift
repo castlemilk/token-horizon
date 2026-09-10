@@ -10,6 +10,9 @@ import FoundationNetworking
 // so the MCP shim, shell hook, and any future UI work unchanged.
 
 let engine = UsageEngine()
+// Self-managed runtimes accrue usage into the durable ledger; the engine
+// merges it like any provider source (stats/trends/history parity).
+engine.localRuntimeUsage = { RuntimeUsageLedger.shared.contributions() }
 
 #if os(Linux)
 Platform.systemStats = ProcFSSystemStats.self
@@ -116,6 +119,14 @@ func router(_ request: HTTPRequest) -> HTTPResponse {
             if let gen = snap.generationTokensTotal { dict["generation_tokens_total"] = gen }
             if let prompt = snap.promptTokensTotal { dict["prompt_tokens_total"] = prompt }
             if !snap.extra.isEmpty { dict["extra"] = snap.extra }
+            // Provider-parity usage totals from the durable ledger.
+            let usage = RuntimeUsageLedger.shared.totals(vendor: snap.vendor)
+            dict["usage"] = [
+                "tokens_all": usage.all,
+                "tokens_today": usage.today,
+                "breakdown_all": encodeToJSONObject(usage.breakdownAll),
+                "breakdown_today": encodeToJSONObject(usage.breakdownToday),
+            ]
             return dict
         })
 

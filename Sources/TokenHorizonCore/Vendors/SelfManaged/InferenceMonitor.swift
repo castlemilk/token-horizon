@@ -16,7 +16,11 @@ public final class InferenceMonitor {
     private let lock = NSLock()
     private var snapshots: [String: RuntimeSnapshot] = [:]
     private var lastCounters: [String: (generation: Double, prompt: Double, time: Date)] = [:]
+    private var lastModelCounters: [String: (prompt: Double, generation: Double)] = [:]
     private var timer: DispatchSourceTimer?
+
+    /// Durable usage ledger receiving measured counter deltas. Replaceable in tests.
+    public var ledger: RuntimeUsageLedger = .shared
 
     public init() {}
 
@@ -58,7 +62,12 @@ public final class InferenceMonitor {
     private func pollOne(_ runtime: LocalInferenceRuntime, now: Date) -> RuntimeSnapshot {
         let processes = runtime.detectProcesses()
         guard !processes.isEmpty else {
-            lock.lock(); lastCounters[runtime.vendor] = nil; lock.unlock()
+            lock.lock()
+            lastCounters[runtime.vendor] = nil
+            for key in lastModelCounters.keys where key.hasPrefix("\(runtime.vendor)|") {
+                lastModelCounters[key] = nil
+            }
+            lock.unlock()
             return RuntimeSnapshot(vendor: runtime.vendor, displayName: runtime.displayName,
                                    running: false, sampledAt: now)
         }
@@ -69,14 +78,25 @@ public final class InferenceMonitor {
               let text = runtime.fetchMetricsText(port: port) else {
             return snap // running but not scraping (yet)
         }
-        let metrics = runtime.metrics(from: runtime.parsePrometheus(text))
+        var metrics = runtime.metrics(from: runtime.parsePrometheus(text))
+        metrics.perModel = runtime.parsePrometheusPerModel(text)
         snap.port = port
         snap.generationTokensTotal = metrics.generationTokensTotal
         snap.promptTokensTotal = metrics.promptTokensTotal
         snap.extra = metrics.extra
 
+        // Measured deltas only: first sighting establishes a baseline (no
+        // backfill); a counter decrease means the server restarted, so the
+        // current reading is the delta since restart.
+        func measuredDelta(_ cur: Double, _ prev: Double?) -> Int {
+            guard let prev else { return 0 }
+            let d = cur - prev
+            return d >= 0 ? Int(d.rounded()) : Int(cur.rounded())
+        }
+
         lock.lock()
-        if let prev = lastCounters[runtime.vendor] {
+        let prev = lastCounters[runtime.vendor]
+        if let prev {
             let dt = now.timeIntervalSince(prev.time)
             if dt > 0 {
                 let genDelta = metrics.generationTokensTotal - prev.generation
@@ -86,6 +106,29 @@ public final class InferenceMonitor {
             }
         }
         lastCounters[runtime.vendor] = (metrics.generationTokensTotal, metrics.promptTokensTotal, now)
+
+        // Feed the durable usage ledger (provider-parity usage data).
+        let inputDelta = measuredDelta(metrics.promptTokensTotal, prev?.prompt)
+        let outputDelta = measuredDelta(metrics.generationTokensTotal, prev?.generation)
+        if inputDelta > 0 || outputDelta > 0 {
+            ledger.record(vendor: runtime.vendor, input: inputDelta, output: outputDelta, at: now)
+        }
+        for (model, counts) in metrics.perModel {
+            let key = "\(runtime.vendor)|\(model)"
+            let prevModel = lastModelCounters[key]
+            let mIn = measuredDelta(counts.prompt, prevModel?.prompt)
+            let mOut = measuredDelta(counts.generation, prevModel?.generation)
+            if mIn > 0 || mOut > 0 {
+                ledger.record(vendor: runtime.vendor, model: model, input: mIn, output: mOut, at: now)
+            }
+            lastModelCounters[key] = counts
+        }
+        // Drop per-model baselines for models that disappeared (server restart
+        // with a different model) so a returning model is treated as reset.
+        for key in lastModelCounters.keys where key.hasPrefix("\(runtime.vendor)|") {
+            let model = String(key.dropFirst(runtime.vendor.count + 1))
+            if metrics.perModel[model] == nil { lastModelCounters[key] = nil }
+        }
         lock.unlock()
         return snap
     }

@@ -37,6 +37,19 @@ public final class UsageEngine {
         public init() {}
     }
 
+    /// Self-managed runtime usage parity seam. Wired by the host (app/daemon)
+    /// to `RuntimeUsageLedger.shared.contributions()`; the engine treats each
+    /// contribution exactly like a file-tailed provider source.
+    public struct RuntimeUsageContribution {
+        public var tool: String
+        public var buckets: [Int: BucketEntry] = [:]
+        public var models: [String: ModelAccum] = [:]
+
+        public init(tool: String) { self.tool = tool }
+    }
+
+    public var localRuntimeUsage: (() -> [RuntimeUsageContribution])?
+
     public struct AdditiveFileState {
         public var offset: UInt64 = 0
         public var allTokens: Int = 0
@@ -211,6 +224,11 @@ public final class UsageEngine {
         }
         for (_, st) in codexFiles { for (h, b) in st.buckets { add(h, "codex", b) } }
         opencodePerBucket { bucket, entry in add(bucket, "opencode", entry) }
+        if let contributions = localRuntimeUsage?() {
+            for c in contributions {
+                for (h, b) in c.buckets { add(h, c.tool, b) }
+            }
+        }
         return merged
     }
 
@@ -386,6 +404,39 @@ public final class UsageEngine {
                                                   tokensAll: v.all, tokensToday: v.today, cost: v.cost,
                                                   messages: 0, free: v.cost < 0.0001,
                                                   breakdown: v.breakdown))
+                }
+            }
+        }
+
+        if let contributions = localRuntimeUsage?() {
+            let todayStart = todayBucket()
+            for c in contributions {
+                var all = 0, todayT = 0
+                var bAll = TokenBreakdown(), bToday = TokenBreakdown()
+                for (h, e) in c.buckets {
+                    all += e.tokens
+                    bAll.add(e.breakdown)
+                    if h >= todayStart {
+                        todayT += e.tokens
+                        bToday.add(e.breakdown)
+                    }
+                }
+                guard all > 0 else { continue }
+                tools.append(ToolUsage(tool: c.tool,
+                                       tokensToday: todayT, tokensAllTime: all,
+                                       costToday: 0, costAllTime: 0,
+                                       cacheReadAll: bAll.cacheRead,
+                                       breakdownToday: bToday, breakdownAll: bAll))
+                snap.tokensToday += todayT
+                snap.tokensAllTime += all
+                snap.breakdownToday.add(bToday)
+                snap.breakdownAll.add(bAll)
+                for (model, v) in c.models {
+                    snap.models.append(ModelUsage(provider: c.tool, model: model,
+                                                  tokensAll: v.all, tokensToday: v.today, cost: 0,
+                                                  messages: 0, free: true,
+                                                  cacheReadAll: v.breakdown.cacheRead,
+                                                  isLocal: true, breakdown: v.breakdown))
                 }
             }
         }
