@@ -39,6 +39,17 @@ public struct UsageEvent: Codable, Identifiable {
     public var latencyMs: Int?
     /// Client session correlation (claude/codex/opencode session id).
     public var sessionID: String?
+    /// Configured thinking/reasoning effort, normalized across vendors:
+    /// "off" | "low" | "medium" | "high" | "adaptive" (vendor decides dynamically).
+    /// Vendors represent this wildly differently (OpenAI reasoning_effort,
+    /// Anthropic thinking.budget_tokens, Gemini thinkingBudget, Ollama think) —
+    /// meters normalize here and keep the native form in thinkingRaw.
+    public var thinkingLevel: String?
+    /// Vendor-native thinking representation (e.g. "budget_tokens:16000").
+    public var thinkingRaw: String?
+    /// Client product the request came from ("claude-code", "codex", "pi",
+    /// "opencode", ...) — sniffed from headers or set per meter port.
+    public var product: String?
     public var attestation: Attestation
 
     public init(id: UUID = UUID(), timestamp: Date = Date(), machineID: String,
@@ -47,6 +58,8 @@ public struct UsageEvent: Codable, Identifiable {
                 contextLimit: Int? = nil, cost: Double = 0,
                 promptTokPerSec: Double? = nil, generationTokPerSec: Double? = nil,
                 latencyMs: Int? = nil, sessionID: String? = nil,
+                thinkingLevel: String? = nil, thinkingRaw: String? = nil,
+                product: String? = nil,
                 attestation: Attestation = .selfReported) {
         self.id = id
         self.timestamp = timestamp
@@ -62,6 +75,9 @@ public struct UsageEvent: Codable, Identifiable {
         self.generationTokPerSec = generationTokPerSec
         self.latencyMs = latencyMs
         self.sessionID = sessionID
+        self.thinkingLevel = thinkingLevel
+        self.thinkingRaw = thinkingRaw
+        self.product = product
         self.attestation = attestation
     }
 }

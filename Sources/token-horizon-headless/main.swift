@@ -21,33 +21,46 @@ let usageStore: UsageStoring? = {
     catch { FileHandle.standardError.write("usage store unavailable: \(error)\n".data(using: .utf8)!); return nil }
 }()
 
-// Request meters (the listeners). Every vendor/runtime class is Meterable —
-// it carries both its native channel (limits API / logs / Prometheus) and a
-// request listener. TH_METERS="vendor:port[->target],..." e.g.
-//   TH_METERS="vllm:9100,claude:9102->https://api.anthropic.com"
-// Target optional: the vendor/runtime class supplies its default API base.
+// Request meters (the listeners). Every provider class is Meterable — it
+// carries both its native channel (limits API / logs / Prometheus) and a
+// request listener. TH_METERS="vendor:port[@product][->target],..." e.g.
+//   TH_METERS="vllm:9100,claude:9201@claude-code,codex:9202->https://api.openai.com"
+// Target optional (the provider class supplies its default API base); the
+// @product label pins client attribution when User-Agent sniffing isn't enough.
+// CONSENT: meters only start with consent — TH_CONSENT=metering (or 'all'),
+// a stored grant in consents.json, or TH_ASK_CONSENT=1 to prompt natively.
 var meters: [RequestMeter] = []
+if ProcessInfo.processInfo.environment["TH_ASK_CONSENT"] != nil {
+    _ = ConsentManager.shared.ensure(.metering,
+        reason: "Loopback request listeners measure token usage, model, thinking level, and rates per API request. Traffic is forwarded unchanged to the real API.")
+}
+let meteringConsented = ConsentManager.shared.isGranted(.metering)
 if let spec = ProcessInfo.processInfo.environment["TH_METERS"] {
-    for entry in spec.split(separator: ",") {
+    if !meteringConsented {
+        FileHandle.standardError.write("token-horizon: TH_METERS set but metering consent not granted; listeners disabled (TH_CONSENT=metering to grant)\n".data(using: .utf8)!)
+    }
+    for entry in spec.split(separator: ",") where meteringConsented {
         let text = String(entry)
         guard let colon = text.firstIndex(of: ":") else { continue }
         let vendor = String(text[..<colon])
-        let rest = String(text[text.index(after: colon)...])
-        let portText: String
-        let target: URL?
+        var rest = String(text[text.index(after: colon)...])
+        var target: URL?
         if let arrow = rest.range(of: "->") {
-            portText = String(rest[..<arrow.lowerBound])
             target = URL(string: String(rest[arrow.upperBound...]))
-        } else {
-            portText = rest
-            target = nil
+            rest = String(rest[..<arrow.lowerBound])
         }
-        guard let port = UInt16(portText) else { continue }
+        var productLabel: String?
+        if let at = rest.range(of: "@", options: .backwards) {
+            productLabel = String(rest[at.upperBound...])
+            rest = String(rest[..<at.lowerBound])
+        }
+        guard let port = UInt16(rest) else { continue }
         guard let meter = MeterRegistry.make(vendor: vendor, port: port,
                                              target: target, store: usageStore) else {
             FileHandle.standardError.write("no meterable vendor/runtime '\(vendor)'\n".data(using: .utf8)!)
             continue
         }
+        meter.productLabel = productLabel
         meter.start()
         meters.append(meter)
     }

@@ -10,10 +10,16 @@ Sources/TokenHorizonCore/   portable server-side module (macOS + Linux; Windows 
                           buckets, TokenBreakdown input/output/reasoning/cacheRead/cacheWrite,
                           history/trends) + shared DTOs (UsageSnapshot, ProviderLimit, ...)
     Events/               unified measurement contract: UsageEvent (per-request, UUID-keyed,
-                          machineID, attestation tier), ContextState (live context occupancy),
-                          UsageStoring protocol (insert/aggregate/buckets/sync-cursor) +
-                          SQLiteUsageStore local backend (~/.config/token-horizon/usage.db, WAL).
+                          machineID, attestation tier, thinkingLevel/thinkingRaw normalized
+                          across vendors, product attribution), ContextState (live context
+                          occupancy), UsageStoring protocol (insert/aggregate/buckets/
+                          sync-cursor) + SQLiteUsageStore local backend (usage.db, WAL).
                           Cloud backends (Postgres/HTTP) slot in behind UsageStoring later.
+    Consolidation/        INACTIVE backfill logic: FileConsolidator base + per-provider
+                          consolidators (Claude/Codex/Kimi/OpenCode) emitting deterministic-ID
+                          events from local files. Nothing calls ConsolidationRunner;
+                          requires explicit TH_CONSOLIDATE=1. Do NOT wire into daemon/app
+                          without review — it is the meter↔files reconciliation source.
   Providers/              per-vendor integrations — ONE folder per provider, everything
                           about that provider inside (quota adapter, meter target/wire
                           format, auth config). Cloud vs self-managed is a property of the
@@ -48,6 +54,11 @@ Sources/TokenHorizonCore/   portable server-side module (macOS + Linux; Windows 
   Settings/               SettingsStore (config dir settings.json, path via Platform.paths)
   Notifications.swift     shared Notification.Name constants
   Platform/
+    Consent/                ConsentManager: per-scope grants (metering/fileReading/telemetry)
+                            persisted in consents.json; OS-native prompts (macOS osascript,
+                            Linux zenity/kdialog, Windows PowerShell MessageBox); headless
+                            NEVER auto-grants — TH_CONSENT=scope|'all' env, or TH_ASK_CONSENT=1
+                            to prompt. Meters do not start without .metering consent.
     SystemStatsProviding.swift  ProcSample/ProcDetail/SystemSnapshot DTOs + protocol
     PlatformPaths.swift         paths protocol + per-OS typealias
     CredentialStore.swift       credential protocol + Platform registry (paths/credentials/systemStats)

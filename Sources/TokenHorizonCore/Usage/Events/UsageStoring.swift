@@ -5,6 +5,7 @@ public enum UsageGroupBy: String, Codable {
     case vendor
     case model
     case machine
+    case product
     case session
     case day
 }

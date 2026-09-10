@@ -55,6 +55,20 @@ open class OllamaMeter: RequestMeter {
         return (prompt, generation)
     }
 
+    /// Ollama: `think` is bool OR a level string ("low"/"medium"/"high"),
+    /// depending on model support.
+    public override func thinkingLevel(for exchange: MeteredExchange) -> (level: String, raw: String)? {
+        guard let obj = try? JSONSerialization.jsonObject(with: exchange.requestBody) as? [String: Any],
+              let think = obj["think"] else { return nil }
+        if let flag = think as? Bool {
+            return (flag ? "adaptive" : "off", "think:\(flag)")
+        }
+        if let level = think as? String {
+            return (level.lowercased(), "think:\(level)")
+        }
+        return nil
+    }
+
     /// Last non-empty NDJSON line as an object.
     private func finalObject(_ body: Data) -> [String: Any]? {
         guard let text = String(data: body, encoding: .utf8) else { return nil }

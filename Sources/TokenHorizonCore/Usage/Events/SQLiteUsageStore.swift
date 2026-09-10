@@ -57,6 +57,9 @@ public final class SQLiteUsageStore: UsageStoring {
             gen_tps REAL,
             latency_ms INTEGER,
             session_id TEXT,
+            thinking_level TEXT,
+            thinking_raw TEXT,
+            product TEXT,
             attestation TEXT NOT NULL DEFAULT 'selfReported'
         );
         CREATE INDEX IF NOT EXISTS idx_usage_ts ON usage_event(ts);
@@ -74,6 +77,17 @@ public final class SQLiteUsageStore: UsageStoring {
         guard sqlite3_exec(db, ddl, nil, nil, nil) == SQLITE_OK else {
             throw UsageStoreError.stepFailed("migrate: \(lastError())")
         }
+        // Forward-compatible column adds (existing DBs): errors are ignored —
+        // SQLITE "duplicate column name" simply means the column exists.
+        for alter in [
+            "ALTER TABLE usage_event ADD COLUMN thinking_level TEXT",
+            "ALTER TABLE usage_event ADD COLUMN thinking_raw TEXT",
+            "ALTER TABLE usage_event ADD COLUMN product TEXT",
+        ] {
+            sqlite3_exec(db, alter, nil, nil, nil)
+        }
+        // Index on the added column runs AFTER the ALTERs (existing DBs).
+        sqlite3_exec(db, "CREATE INDEX IF NOT EXISTS idx_usage_product_ts ON usage_event(product, ts)", nil, nil, nil)
     }
 
     // MARK: - UsageStoring
@@ -84,8 +98,9 @@ public final class SQLiteUsageStore: UsageStoring {
         INSERT OR IGNORE INTO usage_event
         (id, ts, machine_id, source, vendor, model, input, output, reasoning,
          cache_read, cache_write, context_occupancy, context_limit, cost,
-         prompt_tps, gen_tps, latency_ms, session_id, attestation)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+         prompt_tps, gen_tps, latency_ms, session_id, attestation,
+         thinking_level, thinking_raw, product)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         """
         var stmt: OpaquePointer?
         guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
@@ -115,6 +130,9 @@ public final class SQLiteUsageStore: UsageStoring {
             bindOptInt(stmt, 17, e.latencyMs)
             if let s = e.sessionID { bindText(stmt, 18, s) } else { sqlite3_bind_null(stmt, 18) }
             bindText(stmt, 19, e.attestation.rawValue)
+            if let v = e.thinkingLevel { bindText(stmt, 20, v) } else { sqlite3_bind_null(stmt, 20) }
+            if let v = e.thinkingRaw { bindText(stmt, 21, v) } else { sqlite3_bind_null(stmt, 21) }
+            if let v = e.product { bindText(stmt, 22, v) } else { sqlite3_bind_null(stmt, 22) }
             guard sqlite3_step(stmt) == SQLITE_DONE else {
                 sqlite3_exec(db, "ROLLBACK", nil, nil, nil)
                 throw UsageStoreError.stepFailed("insert: \(lastError())")
@@ -129,6 +147,7 @@ public final class SQLiteUsageStore: UsageStoring {
         case .vendor: keyExpr = "vendor"
         case .model: keyExpr = "vendor || '/' || model"
         case .machine: keyExpr = "machine_id"
+        case .product: keyExpr = "COALESCE(product, '?')"
         case .session: keyExpr = "COALESCE(session_id, '')"
         case .day: keyExpr = "strftime('%Y-%m-%d', ts, 'unixepoch', 'localtime')"
         }
@@ -251,7 +270,8 @@ public final class SQLiteUsageStore: UsageStoring {
         let sql = """
         SELECT rowid, id, ts, machine_id, source, vendor, model, input, output,
                reasoning, cache_read, cache_write, context_occupancy, context_limit,
-               cost, prompt_tps, gen_tps, latency_ms, session_id, attestation
+               cost, prompt_tps, gen_tps, latency_ms, session_id, attestation,
+               thinking_level, thinking_raw, product
         FROM usage_event WHERE rowid > ? ORDER BY rowid LIMIT ?
         """
         lock.lock(); defer { lock.unlock() }
@@ -278,6 +298,9 @@ public final class SQLiteUsageStore: UsageStoring {
             let genTps = sqlite3_column_type(stmt, 16) == SQLITE_NULL ? nil : sqlite3_column_double(stmt, 16)
             let latency = sqlite3_column_type(stmt, 17) == SQLITE_NULL ? nil : Int(sqlite3_column_int64(stmt, 17))
             let session = sqlite3_column_type(stmt, 18) == SQLITE_NULL ? nil : columnText(stmt, 18)
+            let thinkingLevel = sqlite3_column_type(stmt, 20) == SQLITE_NULL ? nil : columnText(stmt, 20)
+            let thinkingRaw = sqlite3_column_type(stmt, 21) == SQLITE_NULL ? nil : columnText(stmt, 21)
+            let product = sqlite3_column_type(stmt, 22) == SQLITE_NULL ? nil : columnText(stmt, 22)
             out.append(UsageEvent(
                 id: UUID(uuidString: columnText(stmt, 1)) ?? UUID(),
                 timestamp: Date(timeIntervalSince1970: sqlite3_column_double(stmt, 2)),
@@ -288,6 +311,8 @@ public final class SQLiteUsageStore: UsageStoring {
                 cost: sqlite3_column_double(stmt, 14),
                 promptTokPerSec: promptTps, generationTokPerSec: genTps,
                 latencyMs: latency, sessionID: session,
+                thinkingLevel: thinkingLevel, thinkingRaw: thinkingRaw,
+                product: product,
                 attestation: Attestation(rawValue: columnText(stmt, 19)) ?? .selfReported))
         }
         return (out, last)
