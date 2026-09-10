@@ -15,3 +15,7 @@ website/
 # JS tooling (Remotion product film)
 video/node_modules/
 video/dist/
+
+# JS subprojects (deps via npm ci, build output regenerated — never commit)
+node_modules/
+ui/out/

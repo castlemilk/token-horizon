@@ -1,0 +1,92 @@
+id: cloudguardian-assessment
+name: CloudGuardian Infrastructure & Cost Assessment
+version: "1.0.0"
+description: Automatically audits cloud infrastructure connectors, reviews historical quality & security scans, detects risk anomalies, and generates an executive remediation artifact.
+
+inputs:
+  org:
+    type: string
+    default: "mI9dMP4nwuP5cjF5Ap6a"
+    description: CloudGuardian organization ID (Gamma Systems)
+  model_provider:
+    type: string
+    default: "agy"
+    description: AI provider to use for synthesis (agy, claude, local, glm, kimi)
+  dry_run:
+    type: boolean
+    default: true
+    description: When true, recommendations are drafted without applying changes
+
+stages:
+  - id: collect_telemetry
+    name: "1. Collect Cloud & Code Telemetry"
+    steps:
+      - id: cluster_status
+        name: "Audit Cloud Connectors & Infrastructure"
+        provider: cli
+        command: "go -C /Users/benebsworth/projects/cloud-guardian/services run ./cmd/cli connector list 2>&1"
+        outputs:
+          connectors: stdout
+
+      - id: cg_quality
+        name: "Gather Historical Quality & Security Reports"
+        provider: cli
+        command: "go -C /Users/benebsworth/projects/cloud-guardian/services run ./cmd/cli quality report list --org {{inputs.org}} 2>&1"
+        outputs:
+          raw_quality: stdout
+          status: exit_code
+
+  - id: analyze_posture
+    name: "2. AI Infrastructure & Cost Analysis"
+    steps:
+      - id: executive_analysis
+        name: "Synthesize Findings & Leaks"
+        provider: "{{inputs.model_provider}}"
+        prompt: |
+          You are the lead Cloud Infrastructure and FinOps Architect for CloudGuardian.
+          Analyze the following live cloud connectors and repository quality audit reports:
+
+          Active Cloud Infrastructure Connectors:
+          {{stages.collect_telemetry.steps.cluster_status.outputs.connectors}}
+
+          Recent Repository Quality, Security, and Coverage Reports:
+          {{stages.collect_telemetry.steps.cg_quality.outputs.raw_quality}}
+
+          Formulate an executive assessment report containing:
+          1. **Executive Summary**: Overall infrastructure health, active cloud providers (GCP, AWS, Vultr VKE), and security posture.
+          2. **Critical Quality & Vulnerability Hotspots**: Repositories requiring immediate remediation (e.g., flaggr with 282 violations, psymatch with 42 violations).
+          3. **Infrastructure & Cost Opportunities**: Multi-cloud connector distribution, idle capacity, and consolidation recommendations.
+          4. **Prioritized Action Plan**: Ordered checklist of immediate remediation actions.
+        outputs:
+          analysis_markdown: stdout
+
+  - id: generate_artifact
+    name: "3. Publish Remediation Plan Artifact"
+    steps:
+      - id: write_report
+        name: "Save Assessment Report to Disk"
+        provider: cli
+        command: |
+          mkdir -p reports
+          cat << 'REPORT_EOF' > reports/cloudguardian-latest.md
+          # CloudGuardian Infrastructure & Cost Assessment
+          **Generated**: $(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          **Target Org**: {{inputs.org}} (Gamma Systems)
+          **Execution Mode**: Dry-Run ({{inputs.dry_run}})
+
+          {{stages.analyze_posture.steps.executive_analysis.outputs.analysis_markdown}}
+          REPORT_EOF
+          echo "Assessment saved to reports/cloudguardian-latest.md"
+        outputs:
+          report_path: "reports/cloudguardian-latest.md"
+
+  - id: execute_remediation
+    name: "4. Apply Automated Remediations"
+    condition: "{{inputs.dry_run}} == false"
+    steps:
+      - id: apply_fixes
+        name: "Apply Verified Fixes via CloudGuardian CLI"
+        provider: cli
+        command: "go -C /Users/benebsworth/projects/cloud-guardian/services run ./cmd/cli remediation apply --org {{inputs.org}}"
+        outputs:
+          apply_log: stdout
