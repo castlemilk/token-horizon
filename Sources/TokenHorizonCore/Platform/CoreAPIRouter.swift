@@ -13,10 +13,6 @@ public final class CoreAPIRouter {
 
     /// Host wiring hooks:
     public var serverName = "token-horizon"
-    /// Prometheus text for /metrics (macOS wires TokenHorizonTelemetry).
-    public var metricsText: () -> String = { "" }
-    /// Extra keys merged into /health (e.g. ollama proxy port on macOS).
-    public var healthExtras: () -> [String: Any] = { [:] }
     /// macOS UI serves cached process lists; nil = live sampling.
     public var processesOverride: (() -> (all: [ProcSample], byCPU: [ProcSample], byMem: [ProcSample],
                                           byDisk: [ProcSample], byNet: [ProcSample]))?
@@ -102,7 +98,9 @@ public final class CoreAPIRouter {
                 "platform": Platform.name,
                 "usage_store": usageStore != nil,
             ]
-            for (k, v) in healthExtras() { payload[k] = v }
+            #if os(macOS)
+            payload["ollama_proxy_port"] = OllamaTelemetryProxy.shared.port.map { Int($0) } ?? NSNull()
+            #endif
             return Self.json(payload)
 
         case ("POST", "/analytics/events"):
@@ -334,7 +332,7 @@ public final class CoreAPIRouter {
 
         case ("GET", "/metrics"):
             return HTTPResponse(contentType: "text/plain; version=0.0.4",
-                                body: Data(metricsText().utf8))
+                                body: Data(TokenHorizonTelemetry.shared.prometheusText().utf8))
 
         default:
             return Self.json(["error": "not found"], status: 404)

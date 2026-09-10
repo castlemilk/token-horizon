@@ -22,11 +22,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         // One router for every host (core): app and headless serve identical APIs.
         let router = CoreAPIRouter(engine: engine, usageStore: try? SQLiteUsageStore())
         router.serverName = "token-horizon"
-        router.metricsText = { TokenHorizonTelemetry.shared.prometheusText() }
-        router.healthExtras = {
-            if let port = OllamaTelemetryProxy.shared.port { return ["ollama_proxy_port": Int(port)] }
-            return [:]
-        }
         router.processesOverride = { [weak self] in
             if let self = self, !self.model.allProcesses.isEmpty {
                 return (self.model.allProcesses, self.model.processes, self.model.processesMem, self.model.processesDisk, self.model.processesNet)
