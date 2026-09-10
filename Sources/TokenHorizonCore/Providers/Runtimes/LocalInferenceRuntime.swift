@@ -51,7 +51,7 @@ public struct RuntimeSnapshot {
     }
 }
 
-/// Base class for self-managed inference runtimes (Vendors/SelfManaged/<Vendor>/).
+/// Base class for self-managed inference runtimes (Providers/<Vendor>/).
 ///
 /// Detection is process-based via `Platform.systemStats` (cross-platform);
 /// telemetry comes from each runtime's Prometheus /metrics endpoint — no

@@ -5,7 +5,7 @@ import FoundationNetworking
 
 /// Base class for per-vendor plan/quota adapters.
 ///
-/// One subclass per vendor (Vendors/Limits/<Vendor>/). The base class provides
+/// One subclass per vendor (Providers/<Vendor>/). The base class provides
 /// the shared plumbing: bearer-auth JSON GET/POST, JSON tree digging, date/number
 /// coercion, and the `VendorAuth` credential chain. Subclasses must override
 /// `fetch()` and typically `auth`; returning [] from fetch means "vendor not
