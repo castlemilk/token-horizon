@@ -35,7 +35,7 @@ OS-specific behavior goes through `Platform` (in `Platform/CredentialStore.swift
 | `Platform.paths` | `PlatformPathsProviding` | `~/.config/token-horizon` | `$XDG_CONFIG_HOME` | `%APPDATA%` (TBD) |
 | `Platform.credentials` | `CredentialStore` | Keychain via `/usr/bin/security` | nil (libsecret TBD) | nil (wincred TBD) |
 | `Platform.systemStats` | `SystemStatsProviding` | `SystemStats` (mach/vm64/iostat/ps) | `ProcFSSystemStats` (/proc + ps) | TBD (PDH/Toolhelp) |
-| HTTP transport | `LocalHTTPServing` | `LocalServer` (NWListener, app only) | `POSIXLoopbackHTTPServer` | TBD |
+| HTTP transport | `LocalHTTPServing` | `POSIXLoopbackHTTPServer` (BSD sockets, all platforms) | same | same |
 | Ollama meter routing | `OllamaClient.baseURLProvider` | wired to consented OllamaMeter :11435 | direct :11434 (opt-in meter) | — |
 
 The app assigns backends at launch (`AppDelegate.applicationDidFinishLaunching`);
@@ -45,7 +45,7 @@ the headless daemon assigns them in `main.swift`.
 
 - All AGENTS.md invariants (hourly buckets, locking, incremental JSONL offsets,
   codex statefulness, engine-as-source-of-truth) — untouched.
-- macOS UI (`Sources/TokenHorizon/UI/`) and the NWListener transport (`Sources/TokenHorizon/Server/LocalServer.swift`, framing only — routes live in core's CoreAPIRouter) live in the app target.
+- Only macOS UI (`Sources/TokenHorizon/UI/`) and lifecycle live in the app target; the server transport + router are shared core code on every platform.
 - The MCP shim still only talks to the loopback API — no changes needed.
 
 ## Next steps

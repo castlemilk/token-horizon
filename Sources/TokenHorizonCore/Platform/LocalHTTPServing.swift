@@ -51,8 +51,8 @@ public struct HTTPResponse {
 
 public typealias HTTPHandler = (HTTPRequest) -> HTTPResponse
 
-/// Loopback HTTP server abstraction. The macOS app uses its NWListener-based
-/// `LocalServer`; headless/cross-platform builds use `POSIXLoopbackHTTPServer`.
+/// Loopback HTTP server abstraction. Every host (macOS app and headless
+/// daemon alike) uses `POSIXLoopbackHTTPServer` — one transport, one router.
 public protocol LocalHTTPServing: AnyObject {
     /// Actual bound port (0 until started).
     var port: UInt16 { get }
@@ -68,7 +68,7 @@ extension LocalHTTPServing {
 
 /// Minimal dependency-free HTTP/1.1 loopback server built on BSD sockets.
 /// Compiles on macOS (Darwin) and Linux (Glibc); used where Network.framework
-/// is unavailable. Behavior mirrors LocalServer: bind 127.0.0.1, scan upward
+/// is unavailable. Binds 127.0.0.1, scans upward
 /// from the preferred port, one request per connection, Connection: close.
 public final class POSIXLoopbackHTTPServer: LocalHTTPServing {
     public private(set) var port: UInt16 = 0
