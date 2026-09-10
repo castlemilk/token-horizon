@@ -21,6 +21,29 @@ let usageStore: UsageStoring? = {
     catch { FileHandle.standardError.write("usage store unavailable: \(error)\n".data(using: .utf8)!); return nil }
 }()
 
+// Request meters (the listeners). TH_METERS="vendor:port->target,..." e.g.
+//   TH_METERS="vllm:9100->http://127.0.0.1:8000,openai:9101->https://api.openai.com"
+// Clients point their base URL at 127.0.0.1:<port>; every completed exchange
+// becomes a UsageEvent in the store. All meters are OpenAI-wire-compatible
+// for now; other formats add subclasses.
+var meters: [RequestMeter] = []
+if let spec = ProcessInfo.processInfo.environment["TH_METERS"] {
+    for entry in spec.split(separator: ",") {
+        let text = String(entry)
+        guard let colon = text.firstIndex(of: ":"),
+              let arrow = text.range(of: "->"),
+              colon < arrow.lowerBound,
+              let port = UInt16(text[text.index(after: colon)..<arrow.lowerBound]),
+              let target = URL(string: String(text[arrow.upperBound...])) else { continue }
+        let vendor = String(text[..<colon])
+        let kind: SourceKind = ["vllm", "sglang", "llamacpp", "ollama"].contains(vendor) ? .selfManaged : .external
+        let meter = OpenAICompatibleMeter(vendor: vendor, listenPort: port, targetBase: target,
+                                          store: usageStore, sourceKind: kind)
+        meter.start()
+        meters.append(meter)
+    }
+}
+
 #if os(Linux)
 Platform.systemStats = ProcFSSystemStats.self
 #endif
@@ -87,6 +110,14 @@ func router(_ request: HTTPRequest) -> HTTPResponse {
         } catch {
             return json(["error": "insert failed: \(error)"], status: 500)
         }
+
+    case ("GET", "/meters"):
+        return json(meters.map { [
+            "vendor": $0.vendor,
+            "listen_port": Int($0.listenPort),
+            "target": $0.targetBase.absoluteString,
+            "source": $0.sourceKind.rawValue,
+        ] })
 
     case ("GET", "/events/count"):
         guard let store = usageStore else { return json(["error": "usage store unavailable"], status: 503) }
