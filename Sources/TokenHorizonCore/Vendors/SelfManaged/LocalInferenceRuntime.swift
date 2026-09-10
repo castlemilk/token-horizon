@@ -71,6 +71,16 @@ open class LocalInferenceRuntime {
     /// Additional gauge/counter names surfaced as `extra`.
     open var extraMetricNames: [String] { [] }
 
+    // MARK: - Meterable (dual tracking: Prometheus counters + request metering)
+
+    /// The runtime's own server is the meter's upstream. All supported
+    /// runtimes speak the OpenAI wire format; override for others.
+    open func makeMeter(listenPort: UInt16, target: URL?, store: UsageStoring?) -> RequestMeter? {
+        let upstream = target ?? URL(string: "http://127.0.0.1:\(activePort() ?? defaultPorts[0])")!
+        return OpenAICompatibleMeter(vendor: vendor, listenPort: listenPort, targetBase: upstream,
+                                     store: store, sourceKind: .selfManaged)
+    }
+
     /// Label keys carrying the served model name (vLLM uses `model_name`,
     /// SGLang `model`). Empty for runtimes without per-model series.
     open var modelLabelKeys: [String] { ["model_name", "model"] }

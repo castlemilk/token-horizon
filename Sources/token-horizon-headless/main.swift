@@ -21,39 +21,33 @@ let usageStore: UsageStoring? = {
     catch { FileHandle.standardError.write("usage store unavailable: \(error)\n".data(using: .utf8)!); return nil }
 }()
 
-// Request meters (the listeners). TH_METERS="vendor:port->target,..." e.g.
-//   TH_METERS="vllm:9100->http://127.0.0.1:8000,claude:9102->https://api.anthropic.com"
-// The vendor name selects the wire-format meter; unknown vendors get the
-// OpenAI-compatible meter (covers vllm/sglang/llamacpp/deepseek/zhipu/...).
-func makeMeter(vendor: String, port: UInt16, target: URL) -> RequestMeter {
-    let selfManaged = ["vllm", "sglang", "llamacpp", "ollama", "mlx"].contains(vendor)
-    let kind: SourceKind = selfManaged ? .selfManaged : .external
-    switch vendor {
-    case "claude", "anthropic", "kimi":
-        return AnthropicMeter(vendor: vendor, listenPort: port, targetBase: target,
-                              store: usageStore, sourceKind: kind)
-    case "gemini", "google":
-        return GeminiMeter(vendor: vendor, listenPort: port, targetBase: target,
-                           store: usageStore, sourceKind: kind)
-    case "ollama":
-        return OllamaMeter(vendor: vendor, listenPort: port, targetBase: target,
-                           store: usageStore, sourceKind: kind)
-    default:
-        return OpenAICompatibleMeter(vendor: vendor, listenPort: port, targetBase: target,
-                                     store: usageStore, sourceKind: kind)
-    }
-}
+// Request meters (the listeners). Every vendor/runtime class is Meterable —
+// it carries both its native channel (limits API / logs / Prometheus) and a
+// request listener. TH_METERS="vendor:port[->target],..." e.g.
+//   TH_METERS="vllm:9100,claude:9102->https://api.anthropic.com"
+// Target optional: the vendor/runtime class supplies its default API base.
 var meters: [RequestMeter] = []
 if let spec = ProcessInfo.processInfo.environment["TH_METERS"] {
     for entry in spec.split(separator: ",") {
         let text = String(entry)
-        guard let colon = text.firstIndex(of: ":"),
-              let arrow = text.range(of: "->"),
-              colon < arrow.lowerBound,
-              let port = UInt16(text[text.index(after: colon)..<arrow.lowerBound]),
-              let target = URL(string: String(text[arrow.upperBound...])) else { continue }
+        guard let colon = text.firstIndex(of: ":") else { continue }
         let vendor = String(text[..<colon])
-        let meter = makeMeter(vendor: vendor, port: port, target: target)
+        let rest = String(text[text.index(after: colon)...])
+        let portText: String
+        let target: URL?
+        if let arrow = rest.range(of: "->") {
+            portText = String(rest[..<arrow.lowerBound])
+            target = URL(string: String(rest[arrow.upperBound...]))
+        } else {
+            portText = rest
+            target = nil
+        }
+        guard let port = UInt16(portText) else { continue }
+        guard let meter = MeterRegistry.make(vendor: vendor, port: port,
+                                             target: target, store: usageStore) else {
+            FileHandle.standardError.write("no meterable vendor/runtime '\(vendor)'\n".data(using: .utf8)!)
+            continue
+        }
         meter.start()
         meters.append(meter)
     }

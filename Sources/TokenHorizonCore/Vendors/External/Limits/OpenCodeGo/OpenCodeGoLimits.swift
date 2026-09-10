@@ -7,6 +7,8 @@ import Foundation
 public final class OpenCodeGoLimits: VendorLimitsAdapter {
     public init() { super.init(provider: "opencode-go") }
 
+    public override var meterTarget: URL? { URL(string: "https://opencode.ai") }
+
     public override var auth: VendorAuth {
         VendorAuth(sources: [.opencodeKey("opencode-go")])
     }

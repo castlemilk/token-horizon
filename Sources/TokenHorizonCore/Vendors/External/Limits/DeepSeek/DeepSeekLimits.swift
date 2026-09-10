@@ -6,6 +6,8 @@ import Foundation
 public final class DeepSeekLimits: VendorLimitsAdapter {
     public init() { super.init(provider: "deepseek") }
 
+    public override var meterTarget: URL? { URL(string: "https://api.deepseek.com") }
+
     public override var auth: VendorAuth {
         VendorAuth(sources: [.opencodeKey("deepseek"), .env("DEEPSEEK_API_KEY")])
     }
