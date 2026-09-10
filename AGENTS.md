@@ -8,16 +8,23 @@ Guide for coding agents working in this repo. Read alongside README.md (user set
 Sources/TokenHorizonCore/   portable server-side module (macOS + Linux; Windows TBD)
   Usage/                  UsageEngine (opencode sqlite, claude/codex/kimi/generic JSONL, hourly
                           buckets, history/trends) + shared DTOs (UsageSnapshot, ProviderLimit, ...)
-  Vendors/                per-vendor integrations, grouped by LLM function then vendor
+  Vendors/                per-vendor integrations, split by who runs the infra
     Auth/                   VendorAuth credential chains: composable CredentialSource
                             (.env/.opencodeKey/.fileText/.fileJSON/.keychain/.custom)
-    Limits/                 quota function: LimitsEngine base (cache/refresh/notify),
-                            VendorLimitsAdapter (shared HTTP/JSON helpers + auth chain + clamped
-                            limit() builder), PlanLimitsEngine registry; one subfolder per vendor:
-                            Zhipu/ MiniMax/ OpenCodeGo/ Alibaba/ Gemini/ Claude/ DeepSeek/
-                            Kimi/ (OAuth-style engine subclassing LimitsEngine directly)
-    Usage/                  (future: per-vendor collectors extracted from UsageEngine)
-    Catalog/                (future: per-vendor identity/pricing extracted from ModelCatalog)
+    External/               hosted SaaS vendors (quota/rate-limit tracking)
+      Limits/                 LimitsEngine base (cache/refresh/notify), VendorLimitsAdapter
+                              (shared HTTP/JSON helpers + auth chain + clamped limit() builder),
+                              PlanLimitsEngine registry; one subfolder per vendor:
+                              Zhipu/ MiniMax/ OpenCodeGo/ Alibaba/ Gemini/ Claude/ DeepSeek/
+                              Kimi/ (OAuth-style engine subclassing LimitsEngine directly)
+    SelfManaged/            local inference runtimes the user runs
+      LocalInferenceRuntime.swift  base: process detection via Platform.systemStats,
+                              Prometheus /metrics scraping, counter-delta tok/s
+      InferenceMonitor.swift    poll loop + bounded snapshots (measured tok/s)
+      RuntimeTelemetry.swift    InferenceTelemetrySample/Store (+ Ollama* back-compat aliases)
+      Ollama/   OllamaClient (REST + benchmarks), OllamaTelemetryProxy (macOS relay)
+      MLX/      MLXTypes, MLXHistory, MLXObserver (macOS)
+      VLLM/ SGLang/ LlamaCpp/   runtime adapters (ports, process signatures, counter names)
   Catalog/                ModelCatalog (identity/pricing/benchmarks), ModelsPipeline (off-main
                           merge/filter/sort), ModelRow/ModelTableColumn/ModelFilterScope
   Telemetry/              OllamaClient (proxy via baseURLProvider seam), TelemetryMetrics (OTel on
@@ -81,7 +88,8 @@ See docs/cross-platform.md for the Linux/Windows port status and the Platform se
 ## Provider adapter contract
 
 `ProviderLimit { provider, label, usedPercent 0-100, resetsAt Date?, detail }` — one class per
-vendor in `Sources/TokenHorizonCore/Vendors/Limits/<Vendor>/`, subclassing `VendorLimitsAdapter`.
+vendor in `Sources/TokenHorizonCore/Vendors/External/Limits/<Vendor>/`, subclassing
+`VendorLimitsAdapter`.
 Required overrides: `fetch()` (fatalError if forgotten) and usually `auth` (a `VendorAuth`
 credential chain from `Vendors/Auth/`). Build rows via `limit(label:usedPercent:resetsAt:detail:)`
 — it stamps the provider and clamps 0-100 automatically. Register by appending to

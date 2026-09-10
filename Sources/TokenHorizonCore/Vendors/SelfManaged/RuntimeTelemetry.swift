@@ -1,7 +1,7 @@
 import Foundation
 
-/// One completed Ollama generation, parsed from streaming response metadata.
-public struct OllamaTelemetrySample: Equatable {
+/// One completed generation from a self-managed runtime (parsed from response metadata).
+public struct InferenceTelemetrySample: Equatable {
     public var model: String
     public var completedAt: Date
     public var evalCount: Int
@@ -33,15 +33,15 @@ public struct OllamaTelemetrySample: Equatable {
 }
 
 /// Bounded in-memory store of the most recent sample per model.
-public final class OllamaTelemetryStore {
-    public static let shared = OllamaTelemetryStore()
+public final class InferenceTelemetryStore {
+    public static let shared = InferenceTelemetryStore()
 
     private let lock = NSLock()
-    private var latestSamples: [String: OllamaTelemetrySample] = [:]
+    private var latestSamples: [String: InferenceTelemetrySample] = [:]
 
     public init() {}
 
-    public func record(_ sample: OllamaTelemetrySample) {
+    public func record(_ sample: InferenceTelemetrySample) {
         lock.lock()
         latestSamples[sample.model.lowercased()] = sample
         if latestSamples.count > 256 {
@@ -53,9 +53,13 @@ public final class OllamaTelemetryStore {
         lock.unlock()
     }
 
-    public func latest(for model: String) -> OllamaTelemetrySample? {
+    public func latest(for model: String) -> InferenceTelemetrySample? {
         lock.lock()
         defer { lock.unlock() }
         return latestSamples[model.lowercased()]
     }
 }
+
+// Back-compat aliases (pre-rename names used by the app target and metrics).
+public typealias OllamaTelemetrySample = InferenceTelemetrySample
+public typealias OllamaTelemetryStore = InferenceTelemetryStore
