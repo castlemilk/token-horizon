@@ -19,8 +19,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
         try? "launch at \(Date())\n".write(to: URL(fileURLWithPath: "/tmp/token-horizon-launch.log"), atomically: true, encoding: .utf8)
         // One router for every host (core): app and headless serve identical APIs.
-        let router = CoreAPIRouter(engine: engine, usageStore: try? SQLiteUsageStore())
+        let usageStore = try? SQLiteUsageStore()
+        let router = CoreAPIRouter(engine: engine, usageStore: usageStore)
         router.serverName = "token-horizon"
+        model.usageStore = usageStore
         router.processesOverride = { [weak self] in
             if let self = self, !self.model.allProcesses.isEmpty {
                 return (self.model.allProcesses, self.model.processes, self.model.processesMem, self.model.processesDisk, self.model.processesNet)
@@ -268,9 +270,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         DispatchQueue.global(qos: .utility).async { [weak self] in
             guard let self else { return }
             let usage = engine.snapshot()
+            let runtimes = InferenceMonitor.shared.current()
+            let summary = self.model.usageStore.flatMap {
+                try? $0.summarize(from: Date().addingTimeInterval(-30 * 86400),
+                                  to: Date(), filter: UsageFilter())
+            }
             let procs = sampleProcesses ? SystemStats.processSamples() : nil
             DispatchQueue.main.async {
                 self.model.usage = usage
+                self.model.runtimes = runtimes
+                if let summary { self.model.providerSummary = summary }
                 if let procs {
                     guard self.processMonitoringActive else { return }
                     self.model.allProcesses = procs.all

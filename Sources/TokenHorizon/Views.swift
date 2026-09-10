@@ -17,6 +17,10 @@ final class UIModel: ObservableObject {
     @Published var mlx = MLXSnapshot()
     /// Loopback port of the Ollama request meter (nil = metering off/declined).
     var ollamaMeterPort: Int? = nil
+    /// Unified runtime/provider surfaces (fed by InferenceMonitor + UsageStoring).
+    @Published var runtimes: [RuntimeSnapshot] = []
+    @Published var providerSummary: [ProviderSummary] = []
+    var usageStore: UsageStoring?
     @Published private(set) var mlxHistory = MLXHistory()
     @Published var sysWindow: SysWindow = .m3
     @Published var processes: [ProcSample] = []
@@ -159,7 +163,7 @@ struct NotchContentView: View {
 }
 
 enum DashboardTab: String, CaseIterable, Identifiable {
-    case activity = "ACTIVITY", mlx = "MLX", tokens = "TOKENS", models = "MODELS", shells = "SHELLS", settings = "⚙ SETTINGS"
+    case activity = "ACTIVITY", mlx = "MLX", tokens = "TOKENS", providers = "PROVIDERS", models = "MODELS", shells = "SHELLS", settings = "⚙ SETTINGS"
     var id: String { rawValue }
 }
 
@@ -190,6 +194,7 @@ struct DashboardTabs: View {
                 case .activity: activityTab
                 case .mlx: mlxTab
                 case .tokens: tokensTab
+                case .providers: providersTab
                 case .models: modelsTab
                 case .shells: shellsTab
                 case .settings: settingsTab
@@ -265,6 +270,86 @@ struct DashboardTabs: View {
             Divider().overlay(Color.white.opacity(0.12))
             processesSection
         }
+    }
+
+    // Unified provider/runtime surface: live measured throughput for every
+    // runtime (InferenceMonitor) + metered provider→model rollups (UsageStoring).
+    private var providersTab: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                sectionLabel("PROVIDERS & RUNTIMES")
+                Spacer()
+                let active = model.runtimes.filter { $0.running }.count
+                MonospacedText(text: active == 0 ? "IDLE" : "\(active) ACTIVE",
+                               color: active == 0 ? .secondary : .green, size: 8)
+            }
+            if model.runtimes.isEmpty && model.providerSummary.isEmpty {
+                MonospacedText(text: "no runtime or metered activity yet", color: .secondary, size: 9)
+            }
+            if !model.runtimes.isEmpty {
+                sectionLabel("LIVE RUNTIMES · MEASURED")
+                ForEach(model.runtimes, id: \.vendor) { rt in
+                    VStack(alignment: .leading, spacing: 2) {
+                        HStack(spacing: 6) {
+                            Circle().fill(rt.running ? Color.green : Color.secondary.opacity(0.4))
+                                .frame(width: 5, height: 5)
+                            MonospacedText(text: rt.displayName, color: .white, size: 9)
+                            Spacer()
+                            if let tps = rt.tokPerSec {
+                                MonospacedText(text: String(format: "%.1f tok/s", tps), color: .green, size: 9)
+                            } else {
+                                MonospacedText(text: "—", color: .secondary, size: 9)
+                            }
+                        }
+                        HStack(spacing: 8) {
+                            if let p = rt.promptTokPerSec {
+                                MonospacedText(text: String(format: "prompt %.1f/s", p), color: .secondary, size: 8)
+                            }
+                            if let g = rt.generationTokensTotal {
+                                MonospacedText(text: "gen \(fmtTok(Int(g)))", color: .secondary, size: 8)
+                            }
+                            if let port = rt.port {
+                                MonospacedText(text: ":\(port)", color: .secondary, size: 8)
+                            }
+                        }.padding(.leading, 11)
+                    }
+                }
+            }
+            if !model.providerSummary.isEmpty {
+                sectionLabel("METERED USAGE · 30D")
+                ForEach(model.providerSummary, id: \.vendor) { prov in
+                    VStack(alignment: .leading, spacing: 2) {
+                        HStack(spacing: 6) {
+                            MonospacedText(text: prov.vendor.uppercased(), color: .white, size: 9)
+                            MonospacedText(text: prov.source, color: .secondary, size: 8)
+                            Spacer()
+                            MonospacedText(text: "\(fmtTok(prov.tokens.total)) tok · \(prov.requests) req",
+                                           color: .white.opacity(0.7), size: 8)
+                        }
+                        ForEach(prov.models, id: \.model) { m in
+                            HStack(spacing: 6) {
+                                Text(m.model)
+                                    .font(.system(size: 8, design: .monospaced))
+                                    .foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+                                Spacer()
+                                if let tps = m.avgGenerationTokPerSec {
+                                    MonospacedText(text: String(format: "%.1f t/s", tps), color: .green.opacity(0.8), size: 8)
+                                }
+                                MonospacedText(text: fmtTok(m.tokens.total), color: .secondary, size: 8)
+                            }.padding(.leading, 8)
+                        }
+                    }
+                }
+            }
+            Spacer(minLength: 0)
+        }
+    }
+
+    private func fmtTok(_ n: Int) -> String {
+        if n >= 1_000_000_000 { return String(format: "%.1fB", Double(n) / 1e9) }
+        if n >= 1_000_000 { return String(format: "%.1fM", Double(n) / 1e6) }
+        if n >= 1_000 { return String(format: "%.1fK", Double(n) / 1e3) }
+        return "\(n)"
     }
 
     private var mlxTab: some View {
