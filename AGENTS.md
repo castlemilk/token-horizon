@@ -42,8 +42,13 @@ Sources/TokenHorizonCore/   portable server-side module (macOS + Linux; Windows 
                               Kimi/ (OAuth-style engine subclassing LimitsEngine directly)
     SelfManaged/            local inference runtimes the user runs
       LocalInferenceRuntime.swift  base: process detection via Platform.systemStats,
-                              Prometheus /metrics scraping, counter-delta tok/s
-      InferenceMonitor.swift    poll loop + bounded snapshots (measured tok/s)
+                              Prometheus /metrics scraping, counter-delta tok/s,
+                              per-model labeled series parsing
+      InferenceMonitor.swift    poll loop + bounded snapshots (measured tok/s) +
+                              feeds measured counter deltas into RuntimeUsageLedger
+      RuntimeUsageLedger.swift  DURABLE 15-min usage buckets per vendor+model
+                              (~/.config/token-horizon/runtime-usage.json) — provider-parity
+                              history for runtimes whose counters live in server RAM
       RuntimeTelemetry.swift    InferenceTelemetrySample/Store (+ Ollama* back-compat aliases)
       Ollama/   OllamaClient (REST + benchmarks), OllamaTelemetryProxy (macOS relay)
       MLX/      MLXTypes, MLXHistory, MLXObserver (macOS)
@@ -110,7 +115,9 @@ See docs/cross-platform.md for the Linux/Windows port status and the Platform se
 
 11. **Ollama telemetry is out-of-band.** `OllamaTelemetryProxy` is a lightweight in-process TCP relay on loopback. It forwards request/response bytes unchanged, parses completed Ollama JSON metadata (`eval_count`, `prompt_eval_count`), bounds and persists history to `localllm-usage.json`, and feeds `UsageEngine` token counters under `tool: "ollama"`. It must never block the main queue.
 
-12. **Telemetry metrics are bounded and opt-in.** Prometheus text is served by the existing loopback `LocalServer` at `/metrics`; do not start a second listener. OTLP/HTTP is enabled only by `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` or `OTEL_EXPORTER_OTLP_ENDPOINT`. Keep metric attributes low-cardinality, with model labels capped and overflow grouped as `other`. MLX rollups are in-memory only: fine samples are capped at 1,800 points and 30-second averages at 2,880 points.
+12. **Runtime usage parity is measured-only.** Self-managed runtimes feed `UsageEngine` (stats/trends/history, same 15-min `BucketEntry`s as providers) exclusively through `RuntimeUsageLedger`: persisted deltas of cumulative Prometheus counters, keyed by scope (`vendor`, `vendor|model`). First sighting of a counter establishes a baseline — never backfill unmeasured tokens; a counter decrease means server restart (delta = current reading). tok/s rates stay in `InferenceMonitor` snapshots; estimation from resource usage remains forbidden.
+
+13. **Telemetry metrics are bounded and opt-in.** Prometheus text is served by the existing loopback `LocalServer` at `/metrics`; do not start a second listener. OTLP/HTTP is enabled only by `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` or `OTEL_EXPORTER_OTLP_ENDPOINT`. Keep metric attributes low-cardinality, with model labels capped and overflow grouped as `other`. MLX rollups are in-memory only: fine samples are capped at 1,800 points and 30-second averages at 2,880 points.
 
 13. **One instance, one build, always identifiable.** The API port is fixed at `:8765` — never reintroduce port-hopping (two instances serving divergent data caused real "missing data" scares). `InstanceGuard.claimPort()` runs at launch: same-build duplicates exit quietly, different builds are replaced (newest launch wins), and a listener that dies before first ready is fatal via `LocalServer.onBindFailure` (never a silent API-less run). `scripts/make-app.sh` is the ONLY supported launcher: it stamps `THGitSHA`/`THBuiltAt` into Info.plist, syncs the build to `/Applications/TokenHorizon.app`, restarts via the LaunchAgent when installed (else direct launch), and health-gates on the serving build reporting our stamp. Crash recovery is the app binary itself (`--install-launch-agent` / `--uninstall-launch-agent` / `--agent-status`): a portable LaunchAgent pointing at its own bundle with snapshotted `TOKEN_HORIZON_*`/auth env, KeepAlive with `SuccessfulExit=false` so clean duplicate-exits don't loop. `/health` always carries `build{version,commit,built_at}` and the Settings tab shows the same line — if it doesn't match `git rev-parse --short HEAD`, you're looking at a stale binary: rebuild, don't debug the data.
 

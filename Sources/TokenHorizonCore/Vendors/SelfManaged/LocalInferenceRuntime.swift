@@ -7,6 +7,9 @@ import FoundationNetworking
 public struct RuntimeMetrics {
     public var promptTokensTotal: Double = 0
     public var generationTokensTotal: Double = 0
+    /// Per-model cumulative counters (from metric labels; empty when the
+    /// runtime does not label series, e.g. single-model llama.cpp).
+    public var perModel: [String: (prompt: Double, generation: Double)] = [:]
     public var extra: [String: Double] = [:]
 
     public init() {}
@@ -68,6 +71,10 @@ open class LocalInferenceRuntime {
     /// Additional gauge/counter names surfaced as `extra`.
     open var extraMetricNames: [String] { [] }
 
+    /// Label keys carrying the served model name (vLLM uses `model_name`,
+    /// SGLang `model`). Empty for runtimes without per-model series.
+    open var modelLabelKeys: [String] { ["model_name", "model"] }
+
     public init(vendor: String, displayName: String, defaultPorts: [Int], processSignatures: [String]) {
         self.vendor = vendor
         self.displayName = displayName
@@ -128,6 +135,39 @@ open class LocalInferenceRuntime {
             sums[String(name), default: 0] += value
         }
         return sums
+    }
+
+    /// Label-aware variant: per-model sums for the token counters.
+    public func parsePrometheusPerModel(_ text: String) -> [String: (prompt: Double, generation: Double)] {
+        let counterNames = Set(promptCounterNames + generationCounterNames)
+        guard !counterNames.isEmpty, !modelLabelKeys.isEmpty else { return [:] }
+        var out: [String: (prompt: Double, generation: Double)] = [:]
+        for line in text.split(separator: "\n") {
+            guard let first = line.first, first != "#",
+                  let brace = line.firstIndex(of: "{"),
+                  let close = line.firstIndex(of: "}"),
+                  let space = line[close...].firstIndex(of: " ") else { continue }
+            let name = String(line[..<brace])
+            guard counterNames.contains(name),
+                  let value = Double(line[line.index(after: space)...].trimmingCharacters(in: .whitespaces)) else { continue }
+            let labels = String(line[line.index(after: brace)..<close])
+            var model: String?
+            for key in modelLabelKeys {
+                if let range = labels.range(of: "\(key)=\"") {
+                    let rest = labels[range.upperBound...]
+                    if let endQuote = rest.firstIndex(of: "\"") {
+                        model = String(rest[..<endQuote])
+                        break
+                    }
+                }
+            }
+            guard let model, !model.isEmpty else { continue }
+            var counts = out[model] ?? (0, 0)
+            if promptCounterNames.contains(name) { counts.prompt += value }
+            if generationCounterNames.contains(name) { counts.generation += value }
+            out[model] = counts
+        }
+        return out
     }
 
     /// Map parsed Prometheus series onto runtime counters.

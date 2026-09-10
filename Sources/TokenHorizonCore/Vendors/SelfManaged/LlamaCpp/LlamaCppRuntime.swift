@@ -12,6 +12,8 @@ public final class LlamaCppRuntime: LocalInferenceRuntime {
 
     public override var promptCounterNames: [String] { ["llamacpp:prompt_tokens_total"] }
     public override var generationCounterNames: [String] { ["llamacpp:tokens_predicted_total"] }
+    /// Single-model server; series carry no model label.
+    public override var modelLabelKeys: [String] { [] }
     public override var extraMetricNames: [String] {
         ["llamacpp:requests_processing", "llamacpp:requests_deferred", "llamacpp:n_tokens_max"]
     }
