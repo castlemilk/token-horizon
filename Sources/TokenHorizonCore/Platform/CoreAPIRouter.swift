@@ -1,7 +1,7 @@
 import Foundation
 
 /// THE loopback API router — one implementation, used by every host:
-/// the macOS app (NWListener transport in Platform/macOS/LocalServer) and the
+/// the macOS app (NWListener transport in Sources/TokenHorizon/Server) and the
 /// headless daemon (POSIX sockets in Platform/POSIXLoopbackHTTPServer).
 /// Host differences are injected as closures; no route logic lives in hosts.
 public final class CoreAPIRouter {
@@ -361,15 +361,7 @@ public final class CoreAPIRouter {
     }
 
     public static func parseForm(_ body: Data) -> [String: String] {
-        var out: [String: String] = [:]
-        for pair in String(decoding: body, as: UTF8.self).components(separatedBy: "&") {
-            let kv = pair.split(separator: "=", maxSplits: 1).map(String.init)
-            if kv.count == 2 {
-                out[kv[0]] = kv[1].replacingOccurrences(of: "+", with: " ")
-                    .removingPercentEncoding ?? kv[1]
-            }
-        }
-        return out
+        queryParams(String(decoding: body, as: UTF8.self).replacingOccurrences(of: "+", with: " "))
     }
 
     static func usageFilter(_ params: [String: String]) -> UsageFilter {

@@ -57,12 +57,7 @@ open class OpenAICompatibleMeter: RequestMeter {
     private func usageFromSSE(_ body: Data) -> TokenBreakdown? {
         guard let text = String(data: body, encoding: .utf8), text.hasPrefix("data:") else { return nil }
         var found: TokenBreakdown?
-        for line in text.components(separatedBy: "\n") {
-            guard line.hasPrefix("data:") else { continue }
-            let payload = line.dropFirst(5).trimmingCharacters(in: .whitespaces)
-            guard payload != "[DONE]",
-                  let data = payload.data(using: .utf8),
-                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { continue }
+        for obj in sseObjects(text) {
             if let usage = obj["usage"] as? [String: Any] {
                 found = parseUsageDict(usage)
             } else if let response = obj["response"] as? [String: Any],

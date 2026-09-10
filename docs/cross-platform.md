@@ -45,7 +45,7 @@ the headless daemon assigns them in `main.swift`.
 
 - All AGENTS.md invariants (hourly buckets, locking, incremental JSONL offsets,
   codex statefulness, engine-as-source-of-truth) — untouched.
-- macOS UI (`Views.swift`, `Panels.swift`) still lives in the app target.
+- macOS UI (`Sources/TokenHorizon/UI/`) and the NWListener transport (`Sources/TokenHorizon/Server/LocalServer.swift`, framing only — routes live in core's CoreAPIRouter) live in the app target.
 - The MCP shim still only talks to the loopback API — no changes needed.
 
 ## Next steps

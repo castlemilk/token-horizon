@@ -5,28 +5,6 @@ Guide for coding agents working in this repo. Read alongside README.md (user set
 ## Layout
 
 ```
-Sources/TokenHorizon/              # one executableTarget, grouped by feature/domain (not layer)
-  App/                main.swift (AppKit entry, .accessory policy), AppDelegate.swift (surfaces, refresh loops, HTTP wiring, dashboard window), BuildInfo.swift, LaunchAgentCtl.swift
-  Usage/              Models.swift (UsageSnapshot, ToolUsage, ModelUsage, ProviderLimit, HistoryPoint, TrendWindow, ShellEvent), UsageEngine.swift (all token/cost collection, hourly buckets, history/trends aggregation; opencode sqlite is stat-gated, dir listings are TTL-cached per `listingTTL`, agy media dirs pruned per `excludedDirNames`, scan tails version-memoized per `scanVersions`, engine-state saves dirty-gated + throttled per `engineSaveInterval`)
-  Limits/             PlanLimitsEngine.swift (glm/minimax/opencode-go/alibaba/gemini/claude/agy fetchers), KimiLimitsEngine.swift (OAuth refresh + usage API), ClaudeDiscovery.swift (multi-account profiles, keychain, usage API, disk cache staleness), LimitNotifier.swift
-  System/             SystemStats.swift (mach CPU, vm64 RAM, load avg, system I/O, top processes, narrow MLX sampling), DockerObserver.swift (container metrics, CPU%, RSS, VM host PID correlation)
-  LocalModels/        MLXObserver.swift (independent runner detection, process-tree telemetry, measured tok/s), MLXHistory.swift (bounded fine samples + 30s rollups), OllamaTelemetryProxy.swift (loopback relay, streaming metrics, bounded store), OllamaClient.swift, ModelDiscoveryEngine.swift, LocalModelMetadata.swift
-  Catalog/            ModelCatalog.swift, ModelsPipeline.swift (off-main merge + filter + sort + scope counts), ModelCatalogExport.swift (web catalog payload for `/models/catalog` + `--export-model-catalog`)
-  Leaderboard/        LeaderboardStore.swift (multi-period rankings, badges, share cards, durable store), LeaderboardAnalytics.swift (pure league/MMR/season/efficiency/achievements — mirrored by the worker)
-  Persistence/        DurableStore.swift (~/.config/token-horizon/cache persistence), SettingsStore.swift (settings.json)
-  Discovery/          HomeDiscovery.swift (shared `~/.*` provider-home auto-discovery with 30s-cached $HOME listing)
-  Telemetry/          TelemetryMetrics.swift (OTel meter, Prometheus text, optional OTLP/HTTP export; engine tick + files-tracked instruments)
-  Server/             LocalServer.swift (NWListener HTTP on 127.0.0.1:8765)
-  Widget/             WidgetSnapshot.swift (versioned app↔widget contract, v5: per-provider series for the 1H/1D/1W/1M/1Y ladder — hourly[24], days[30], weeks[17], months[12] — plus window-shaped heatmap + expiry-sorted limits; WidgetPreferences/WidgetWindow/WidgetPage), WidgetBridge.swift (engine→snapshot publish + WidgetCenter reload), WidgetCard.swift (shared widget/Settings-preview view: 3-page carousel × segmented 5-step time-window toggle, provider legend + stacked bars, GitHub-style heatmap, plans/expiry page). Carousel page + chart window are app-owned (`SettingsStore.widgetPreferences`); widget controls are `Link` deep links (`tokenhorizon://window?value=` / `tokenhorizon://page?value=next|prev|N`) — `Button(intent:)` App Intents are NOT delivered for this ad-hoc-signed extension (verified: no intent invocation at all), so keep interactions on deep links.
-  UI/                 UIModel.swift (UIModel history on BoundedSeries, SysWindow/MLXWindow), DashboardTabs.swift (DashboardTabs shell + routing + all tabs; per-tab extraction is the next split), Chrome.swift (notch chrome + tab enum), PlanLimitsViews.swift, Charts.swift (gauges, sparklines, heatmap, trends), ModelsViews.swift, LocalModelsViews.swift, ProviderLogos.swift, StatusIcon.swift (tray CPU/MEM rings), Panels.swift (NotchPanel hover driver + hysteresis)
-  Core/               CLEAN seams (additive, behavior-free): Protocols.swift (consumer-defined ports), AppDependencies.swift (composition root factory), Clock.swift (injectable time), FileSystem.swift (injectable file reads), BoundedSeries.swift (generic bounded history), THError.swift (context-chained errors)
-Tests/TokenHorizonPerfTests/       # one testTarget, split by kind
-  Unit/               pure-logic XCTest suites (watermarks, parsers, stores, engines) + Unit/Core/ (seam tests)
-  Perf/               budget-gated suites (ModelsPipeline, ScopeCounts, SystemHistory, ProcessMetrics)
-  Integration/        OllamaProxyIntegrationTests (loopback relay round-trips)
-  Fixtures/           catalog-7300.json + golden/testdata files (see Package.swift resources)
-```
-
 Sources/TokenHorizonCore/   portable server-side module (macOS + Linux; Windows TBD)
   Usage/                  UsageEngine (opencode sqlite, claude/codex/kimi/generic JSONL, 15-min
                           buckets, TokenBreakdown input/output/reasoning/cacheRead/cacheWrite,
@@ -93,9 +71,8 @@ Sources/TokenHorizonCore/   portable server-side module (macOS + Linux; Windows 
     CredentialStore.swift       credential protocol + Platform registry (paths/credentials/systemStats)
     LocalHTTPServing.swift      HTTP protocol + POSIXLoopbackHTTPServer (BSD sockets, macOS+Linux)
     CoreAPIRouter.swift         THE loopback API router — single implementation used by every host
-                                (macOS LocalServer + headless daemon); hosts inject closures only
-    macOS/    SystemStats (mach/vm64/iostat/ps), LocalServer (NWListener :8765),
-              MLXObserver, MacOSKeychainStore, MacOSPaths
+                                (macOS app Server/LocalServer + headless daemon); hosts inject closures only
+    macOS/    SystemStats (mach/vm64/iostat/ps), MacOSKeychainStore, MacOSPaths
     Linux/    ProcFSSystemStats (/proc+ps), LinuxPaths (XDG), credential stub
     Windows/  WindowsPaths (APPDATA), credential stub
 Sources/token-horizon-headless/  cross-platform daemon: same loopback API as the macOS app, no UI
@@ -104,25 +81,15 @@ Sources/TokenHorizon/            macOS app — UI + lifecycle only
   main.swift            AppKit entry, .accessory activation policy
   AppDelegate.swift     surfaces (notch vs tray), refresh loops, Platform seam wiring
   LimitNotifier.swift   UNUserNotification limit alerts
-  Panels.swift          NotchPanel (hover driver + hysteresis), ring gauges live in Views
-  Views.swift           UIModel, DashboardTabs (shared by notch/popover/window), all tab views
-
+  Server/LocalServer.swift  NWListener loopback transport (:8765) — framing only;
+                            all routes live in core CoreAPIRouter
+  UI/Panels.swift       NotchPanel (hover driver + hysteresis), ring gauges live in Views
+  UI/Views.swift        UIModel, DashboardTabs (shared by notch/popover/window), all tab views
 mcp/token-horizon-mcp.mjs   zero-dep stdio MCP server (talks to :8765, sqlite fallback for usage/sessions)
-shell/token-horizon.zsh     zsh preexec/precmd hooks + `th` CLI (stats, limits, history, cache, reset-cache)
-  docs/blog/                  static blog (index + posts) sharing the landing chrome/styles.css
-  docs/docs/                  single-page documentation + TOC (install, data rules, API, MCP, gateway)
+shell/token-horizon.zsh     zsh preexec/precmd hooks + `th` CLI
   scripts/make-app.sh         release build + .app bundle (LSUIElement) + ad-hoc codesign + relaunch
-  scripts/make-widget.sh      builds + embeds + signs Widget/TokenHorizonWidget.appex (SwiftPM has no .appex target; invoked by make-app.sh)
-Widget/                       standalone WidgetKit extension sources (timeline provider → GET 127.0.0.1:8765/widget + offline cache, Info.plist, Widget.entitlements)
-  scripts/refresh-models.sh   runs `TokenHorizon --export-model-catalog --refresh` → docs/data/models.json
-.github/workflows/models-refresh.yml  weekly catalog refresh + commit when changed
   scripts/package-notarized.sh Developer ID hardened-runtime app + DMG/ZIP + optional notarytool submission
 scripts/make-icon.swift     renders the black-hole AppIcon.icns
-scripts/build-vendor.mjs    bundles @tanstack/charts + DiceBear → docs/vendor/*.js (`npm run vendor`)
-scripts/process-league-badges.py  white-keyed/cropped league badge PNGs → docs/assets/leagues/
-scripts/fetch-brand-logos.py  official white provider marks → docs/assets/brands/ (Simple Icons + BrandBrain)
-scripts/onboard-domain.sh   Cloudflare zone creation + registrar NS steps for a custom domain
-LEADERBOARD.md              objective-vs-current screen alignment + full leaderboard data flow
 ```
 
 See docs/cross-platform.md for the Linux/Windows port status and the Platform seam contract.
@@ -148,34 +115,12 @@ See docs/cross-platform.md for the Linux/Windows port status and the Platform se
 
 13. **Telemetry metrics are bounded and opt-in.** Prometheus text is served by the loopback API at `/metrics` (CoreAPIRouter); do not start a second listener. OTLP/HTTP is enabled only by `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` or `OTEL_EXPORTER_OTLP_ENDPOINT`. Keep metric attributes low-cardinality, with model labels capped and overflow grouped as `other`. MLX rollups are in-memory only: fine samples are capped at 1,800 points and 30-second averages at 2,880 points.
 
-13. **One instance, one build, always identifiable.** The API port is fixed at `:8765` — never reintroduce port-hopping (two instances serving divergent data caused real "missing data" scares). `InstanceGuard.claimPort()` runs at launch: same-build duplicates exit quietly, different builds are replaced (newest launch wins), and a listener that dies before first ready is fatal via `LocalServer.onBindFailure` (never a silent API-less run). `scripts/make-app.sh` is the ONLY supported launcher: it stamps `THGitSHA`/`THBuiltAt` into Info.plist, syncs the build to `/Applications/TokenHorizon.app`, restarts via the LaunchAgent when installed (else direct launch), and health-gates on the serving build reporting our stamp. Crash recovery is the app binary itself (`--install-launch-agent` / `--uninstall-launch-agent` / `--agent-status`): a portable LaunchAgent pointing at its own bundle with snapshotted `TOKEN_HORIZON_*`/auth env, KeepAlive with `SuccessfulExit=false` so clean duplicate-exits don't loop. `/health` always carries `build{version,commit,built_at}` and the Settings tab shows the same line — if it doesn't match `git rev-parse --short HEAD`, you're looking at a stale binary: rebuild, don't debug the data.
-
-13. **Durable disk persistence & instant hydration**: `DurableStore` persists `UsageSnapshot`, `HistoryPoint` array + streak, `TrendWindow` points, `ProviderLimit` arrays, and incremental parser file state (`engine-state.json`) to `~/.config/token-horizon/cache/`. On app launch, `AppDelegate` hydrates `UIModel` immediately on frame 1 to guarantee zero cold-start blank state or perceived history loss. `UsageEngine.history(days:)` overlays durable past days when log files have been rotated or pruned. Disk persistence is configurable via `SettingsStore.historyPersistenceEnabled` and can be cleanly cleared/rebuilt via `DurableStore.resetAll()`, `POST /cache/reset`, `th reset-cache`, or the Settings tab UI.
-
-14. **Claude multi-account sequential querying & quota prioritization**: `ClaudeDiscovery.fetchAllLimits()` executes sequentially with a 100ms pause to eliminate Cloudflare HTTP 429 rate limiting. Disk cache files older than 2 hours (7200s) are ignored. Unified plan rendering explicitly prioritizes `label == "weekly"` for `cycleLimit`, routing model-scoped caps (`weekly · Fable`) to `extraLimit` / subtitle.
-
-15. **Antigravity (AGY) language server telemetry**: Port discovery parses `~/.gemini/antigravity-cli/cli.log` and active `agy` process sockets with cache fallback to avoid slow full-system `lsof` scans. Token accounting dynamically queries `~/.gemini/antigravity-cli/settings.json` for configured models (`gemini-3.8-flash`) rather than hardcoding.
-
-16. **Leaderboard & share card engine**: `LeaderboardStore` persists ranked entries across multi-accounts and peer nodes to `~/.config/token-horizon/leaderboard.json`, ranks across 4 periods (`today`, `week`/`7d`, `all`, `streak`), computes percentiles and badges (`🥇 1st`, `🥈 2nd`, `🥉 3rd`, `🔥 Streak`), and generates share cards in 4 formats (`text`, `markdown`, `json`, `svg`) with clipboard copy. The `/leaderboard` and `/leaderboard/share` endpoints serve API and shell clients (`th leaderboard`, `th share`). Privacy controls: `leaderboardShareCost`/`leaderboardShareHardware` (default on) and `leaderboardSharePrompts` (**default off** — when off, session rows still publish with empty titles so the Recent Activity timeline works, but titles/categories are stripped). Prompt history lives **only inside the individual profile**; the public Prompts view was removed, and the worker's `/api/prompts` + `topPrompts` are off unless the deployment opts in with the `PROMPTS_PUBLIC=1` var. Published entries also carry league/MMR/division/efficiency, input/output/request splits, season tokens, achievements, per-project rollups, a 7×24 heatmap, a trailing 17-week daily calendar, and (opt-in) recent sessions — computed by `LeaderboardAnalytics` and mirrored in `cloudflare/src/index.js`; keep both copies in sync.
-
-17. **Token-class analytics & engine-state v4**: `UsageEngine` tracks input/output/cache-write/request splits per file, per model, and per hour (`ModelAccum`/`HourBucket`/`ProjectAccum`), plus per-model daily buckets (`modelDays`, trailing 17 weeks, per-file so truncation resets them) exposed as `UsageSnapshot.modelDaily`. `DurableStore.EngineStatePayload.version = 4`; `loadDurableEngineState` discards payloads older than v4 so the first scan rebuilds the full window (pre-v4 state only kept 8 days). `LeaderboardStore.syncLocal(..., heatmap:)` takes the engine's 4-week grid and preserves the last published grid when omitted; it derives `modelHistory` (top 8 models + Other) and `daily` (non-zero days, 17 weeks) from `snapshot.modelDaily`/`history` — the dashboard slices the last 7 days for the stacked chart and uses the rest for per-day heatmap drilldowns. Local endpoints: `/stats`, `/activity/heatmap?days=`, `/projects`, `/achievements`.
-
-18. **Dashboard charts/avatars/search are vendored**: `docs/vendor/tanstack-charts.js` (stacked `barY` usage charts + structured tooltip), `docs/vendor/dicebear.js` (deterministic generated avatars) and `docs/vendor/fuse.js` (model explorer search) are minified IIFE bundles built by `npm run vendor` (`scripts/{vendor,dicebear,fuse}-entry.js` → `scripts/build-vendor.mjs`; root devDependencies only). Charts are declared per render into `chartRegistry`, definitions memoized by content key (`chartDefs`), and mounted hosts pooled by content key (`chartPool`, LRU 14) — identical data adopts the live host, it is NOT destroyed/remounted; only changed data mounts. If a bundle is missing the dashboard falls back to SVG `stackedArea` / initials. Provider brand marks are ported from `ProviderLogos.swift` (`providerLogo`). Avatars: owner-set Google photo / upload (R2 `avatars/<handle>`, served by `/api/avatar/:handle`) or DiceBear-seeded generated styles (`avatarStyle` on the entry); `/api/profile/avatar` is owner-only. Do not import these libraries from a CDN at runtime. Dashboard GETs are cached in-memory (worker `max-age`, 30s default) with in-flight dedupe; `loadLeaderboard` fingerprints payloads (FNV-1a) and the 30s tick skips `render()` on no-change; search/sort refresh only `#lb-table-wrap`. `LEADERBOARD.md` documents the objective-vs-current screen alignment and the full data flow.
-
-19. **Dashboard identity & sign-in**: branding is "Token Horizon" everywhere (never TokenArena). The sign-in modal (`openSignInModal`, `requireSignIn` + `state.signInPending` resume, `?signin=1` deep link) pairs the GSI button with an animated ASCII black hole (`createBlackHole` light-map ray tracer; static under `prefers-reduced-motion`, RAF stops on close/detach). A second 22×9 instance is the sidebar brand mark (paused at rest, hover to animate, shield fallback <860px).
-
-20. **Drop-in LLM gateway (Go sidecar, not Swift)**: `gateway/` is a zero-dep Go module (`token-horizon-gateway` binary) — portable, decoupled, headless-capable. It owns capture, JSONL storage (`~/.config/token-horizon/traces/`, 256KB/side, 30 day-files, 256MB, oldest pruned), and its read API (`/traces`, `/traces/<id>`, `/proxy/stats`, `/proxy/config`, `POST /traces/clear`, own `/metrics`). Single-port routing per request (path → auth headers → body shape, `infer.go`; `/th-openai/` + `/th-anthropic/` force it); responses stream unchanged with an `x-token-horizon-trace-id` header; redirects never followed with client credentials. Swift keeps only `Gateway/GatewaySupervisor.swift` (attach-or-spawn, port discovery via `/__token_horizon`, `TOKEN_HORIZON_GATEWAY_BIN` override) plus `GatewayBridge` (`:8765` reverse-proxy for the gateway paths, 503 when down) and `POST /ingest/ollama` (best-effort local-totals continuity). Cloud traces must NOT feed `UsageEngine` totals (file parsers already count that traffic). Token counts are provider-reported or absent — never estimated; `estCostUSD` stays null (pricing lives with the catalog). `scripts/make-app.sh` builds the sidecar into app Resources and gates the build on `LC_UUID` (macOS dyld aborts quarantined Mach-O binaries without it — a release shipped a dead sidecar from an old Go internal linker, so `gateway/go.mod` pins a toolchain that emits it); pin wire formats in `gateway/*_test.go` (`gofmt -l . && go vet ./... && go test ./...`).
-
-21. **Web model catalog is an app export** (`docs/data/models.json` + `GET /models/catalog` + `/models`): the static artifact is produced ONLY by `scripts/refresh-models.sh` (`TokenHorizon --export-model-catalog [--refresh]`, same `ModelsPipeline` merge as the MODELS tab) and committed by the weekly `models-refresh.yml` job; never hand-edit it and never fetch provider APIs from the dashboard. The worker proxies the ASSETS file at `/api/models/catalog` with CORS + `s-maxage=3600` and aggregates adoption at `/api/models/usage` (read-side over R2, normalized providers, input/output splits); `/models` is the canonical flat catalog route (SPA asset + no dashboard chrome; the landing-page nav links `./models/` and the static mirror `docs/models/index.html` redirects to `?view=models&flat=1`; `/leaderboard?view=models` 302s to `/models` unless `tab=providers`). The explorer (`renderModels`/`mx*` in `docs/leaderboard.html`) is client-side: lazy Fuse index (vendored `docs/vendor/fuse.js`, rebuilt via `npm run vendor`), windowed list (`MX_ROW_H_*` must match `.mx-row` CSS height), primary-listings dedupe on by default, relevance order while searching, `?model=<id>` drawer deep link, `?provider=<key>` provider filter (provider rows in the Providers tab and per-model drawer link through it). The Models view tabs are Explorer | Cheapest | Providers | Plans: the Cheapest tab (`renderCheapestTab`) is a price leaderboard derived from the export's listing spread (`listings`/`priceFrom`/`priceFromProvider`) — best price per family, discount vs direct, and per-provider price leaders; it is NOT a separate scrape. Per-user model lists (profile Model Inventory, session/activity chips, day drilldown, Billing, shared reports, chart legends) link into the drawer via `[data-model-link]`/`modelLink()` + one delegated handler; the drawer is the per-model provider view (cross-user totals split by provider, listings comparison, top publishers). Subscription plans are a curated artifact (`Resources/plans.json`, hand-maintained from provider docs — never generated): the export links plan-covered rows via their source providers (`plan`/`plans` fields, matched through `sourceProvidersByFamily` because canonical merge drops the plan provider id) and ships a `plans` payload with per-plan model counts; the dashboard/`/models` Plans view renders tier cards (`renderPlansTab`, `?tab=plans`) and plan filters (`?plan=<id>`). Plan-covered models must never show a per-token price. Keep Fuse/search/dedupe/cross-links in the dashboard — do not move catalog filtering into the Swift server or the worker.
-
-22. **Desktop macOS widget & shared contract**: `Sources/TokenHorizon/Widget/` + `Widget/` ship a native WidgetKit extension (`TokenHorizonWidget.appex`, macOS 14+, small/medium/large). The extension is built and embedded by `scripts/make-widget.sh` (SwiftPM has no `.appex` target; `make-app.sh` invokes it) — it must link with `-Xlinker -e -Xlinker _NSExtensionMain` (raw `_main` entry silently fails chronod's gallery probe: pluginkit lists the appex but **Edit Widgets never shows it**) and needs no App Intents metadata because *all widget interaction is `Link` deep links*: `Button(intent:)` App Intent taps are **not delivered at all** for this ad-hoc-signed extension (verified with instrumented intents — zero invocations), so `tokenhorizon://window?value=hours|days|weeks|months|years` and `tokenhorizon://page?value=next|prev|N` are handled by `AppDelegate.application(_:open:)`, which updates `SettingsStore.widgetPreferences` (app owns carousel page + chart window) and force-republishes. `WidgetSnapshot` is the versioned app↔widget contract (currently **v5**): `hourly[24]`, `days[30]`, `weeks[17]`, `months[12]` per-provider stacks (top-5 + "other" via `cappedStacks`), a 119-cell daily heatmap, and expiry-sorted limits (`detail` included; sorts soonest-reset first, urgency <24h/<48h mirrors the notch). Chart window ≈ h(24 hourly bars) / d(7 daily) / w(17 weekly) / m(30 daily) / y(12 monthly); the heatmap follows the window with grid shapes 12×2 / 7×1 / N×7 / 15×2 / 6×2 (never a 1-cell strip or stretched mega-cells — aspect-fit squares). `WidgetBridge.publish` reloads timelines at most every 300s; the provider caches the last good snapshot to `~/Library/Caches/token-horizon-widget.json` and rejects stale schema versions. `ProviderLogos.swift` is compiled into the appex (dependency-free) so widget rows use the same brand marks as the notch; the suite compiles into the app too for the Settings preview, which drives the same `WidgetCard` through closures instead of links.
-
 ## UI invariants
 
 - NotchPanel anchors top-flush to the notch screen (`auxiliaryTopLeft/RightArea` for exact bounds); expansion grows DOWNWARD only; hover uses the 60ms polled driver with hysteresis (0.12s in / 0.4s out) — never re-add `.onHover`-driven expansion (oscillation).
 - `NSHostingView.sizingOptions = []` on panels; `canBecomeKey = true` (settings TextEditor needs Cmd+A); tooltips are custom hover bubbles (`.help()` never fires in non-activating panels).
 - Tab content is inside `ScrollView(.vertical)` — clipping is a bug.
-- No bottom statusline (user removed it). Surface precedence: `TOKEN_HORIZON_FORCE_TRAY=1` > Settings → Surface (`auto`/`notch`/`tray`) > auto-detect (notch screen present?). `showTrayIcon` keeps the menu-bar item alongside the notch panel (both at once). Forced notch on a notch-less display falls back to `NSScreen.main` top-center (NotchPanel already handles it); the tray item always shows CPU/MEM rings (`StatusIcon`, CoreGraphics — never a hosting view, so button clicks still toggle the popover).
+- No bottom statusline (user removed it). No menu bar item when a notch display exists.
 - `heatmapExpanded` toggles 24W↔52W; heatmap sits LEFT of the chart; KPI cards (Total/Peak/Active days) beside it.
 
 ## Provider contract
@@ -195,68 +140,29 @@ only when the wire format isn't OpenAI-compatible (claude→AnthropicMeter, goog
 Self-managed runtimes subclass `Providers/Runtimes/LocalInferenceRuntime` instead and get
 both channels (Prometheus ledger + request meter) from the base.
 
-Auth sources (checked in order). A new `~/.<provider>-N` profile dir is picked
-up automatically — all home discovery goes through `HomeDiscovery.variantDirs`
-(env override → defaults → `~/<prefix>*` glob → `~/.config/<name>`, default-first):
+Auth sources (checked in order):
 - alibaba cookie: `SettingsStore.alibabaCookie` → env `ALIBABA_TOKEN_PLAN_COOKIE` (see `.agents/skills/provider-quota-alibaba/SKILL.md`)
-- kimi: `KIMI_CODE_HOME`/`KIMI_HOME` + `~/.kimi-code/credentials/kimi-code.json` → `~/.kimi/credentials/…` → any `~/.kimi*/credentials/kimi-code.json` (see `.agents/skills/provider-quota-kimi/SKILL.md`)
-- glm/minimax/opencode-go: opencode `auth.json` keys (`zai-coding-plan`, `minimax-coding-plan`, `opencode-go`), `OPENCODE_AUTH` → `~/.local/share/opencode/auth.json` → `~/.config/opencode/auth.json` → `~/.opencode/auth.json` (see `.agents/skills/provider-quota-zhipu/SKILL.md`, `minimax`, `opencode`)
-- openai/codex: opencode `auth.json` key (`openai` OAuth access token + account ID) → live `https://chatgpt.com/backend-api/wham/usage` + `~/.codex*/sessions|archived_sessions/**/*.jsonl` recursive fallback (`$CODEX_HOME` first) (see `.agents/skills/provider-quota-openai/SKILL.md`)
-- claude: `~/.claude*` variants (`$CLAUDE_CONFIG_DIR` first) → `<dir>/.credentials.json` → Keychain `Claude Code-credentials[-hash]` (see `.agents/skills/provider-quota-anthropic/SKILL.md`)
-- gemini: `~/.gemini*/oauth_creds.json` (see `.agents/skills/provider-quota-google/SKILL.md`)
-- generic JSONL tools: `~/.zcode|~/.glm` (glm), `~/.qwen*` (qwen), `~/.grok*|~/.xai*` (grok), `~/.dsh*|~/.deepseek*` (deepseek), `~/.gemini*` (gemini/agy) — all variant-aware
-- deepseek: `DEEPSEEK_API_KEY` env → opencode `auth.json` (`deepseek`) (see `.agents/skills/provider-quota-deepseek/SKILL.md`)
+- kimi: `KIMI_CODE_HOME`/`KIMI_HOME` + `~/.kimi-code/credentials/kimi-code.json` → `~/.kimi/credentials/…` (see `.agents/skills/provider-quota-kimi/SKILL.md`)
+- glm/minimax/opencode-go: opencode `auth.json` keys (`zai-coding-plan`, `minimax-coding-plan`, `opencode-go`) (see `.agents/skills/provider-quota-zhipu/SKILL.md`, `minimax`, `opencode`)
+- claude: `CLAUDE_CONFIG_DIR/.credentials.json` → Keychain `Claude Code-credentials` (see `.agents/skills/provider-quota-anthropic/SKILL.md`)
+- gemini: `~/.gemini/oauth_creds.json` (see `.agents/skills/provider-quota-google/SKILL.md`)
 - Complete provider quota skills catalog: `.agents/skills/provider-quota-*/SKILL.md`
 
 ## Verification checklist (run after changes)
 
 ```bash
-./scripts/make-app.sh                     # build + install + relaunch (health-gated, exits 1 if :8765 isn't our stamp)
-curl -s localhost:8765/health             # must show build.commit == `git rev-parse --short HEAD` (else stale binary)
-curl -s localhost:8765/health | python3 -c "import json,sys; print(json.load(sys.stdin)['llm_gateway_port'])"
-                                          # must be non-null: the app always ships with its gateway proxy
+./scripts/make-app.sh                     # build + relaunch
+curl -s localhost:8765/health
 curl -s localhost:8765/stats | python3 -m json.tool | head -40
-curl -s localhost:8765/models/catalog | python3 -c "import json,sys; d=json.load(sys.stdin); print(d['count'], len(d['topPicks']), d['build']['commit'])"
-                                          # web catalog export (docs/data/models.json is regenerated by `task models-refresh`)
 curl -s "localhost:8765/trends?window=1D" | python3 -c "import json,sys; d=json.load(sys.stdin); print(len(d['points']), d['total'])"
 curl -s localhost:8765/limits | python3 -m json.tool
-curl -s "localhost:8765/activity/heatmap?days=7" | python3 -m json.tool | head
-curl -s localhost:8765/widget | python3 -c "import json,sys; d=json.load(sys.stdin); print(d['version'], len(d['hourly']), len(d['days']), len(d['weeks']), len(d['months']), len(d['heatmap']))"
-                                          # widget contract (v5: 24 30 17 12 119) — app-owned canvas
-open "tokenhorizon://window?value=weeks"  # widget window toggle path (deep link, not App Intents)
-curl -s localhost:8765/achievements | python3 -m json.tool | head
-curl -s localhost:8765/proxy/config | python3 -m json.tool | head -20
-(cd gateway && gofmt -l . && go vet ./... && go test ./...)
-                                          # sidecar gate (also `task gateway-test`, runs in CI)
 printf '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}\n' | node mcp/token-horizon-mcp.mjs
 ```
-
-The block above is also `task smoke` (task-native in `Taskfile.yml`, with PASS/FAIL
-per line). Local gates live in `Taskfile.yml` (`task validate` = lint + full
-suite, mirrors CI); see `TESTING.md` for the full stack (lint / unit /
-fixtures / integration / perf / smoke rules).
 
 Ground-truth checks when touching parsers:
 - codex: `grep '"total_token_usage"' <file> | tail -1` per session, sum `total_tokens` → must equal parser all-time (verified exact before)
 - opencode: session-table sums vs `message.data` per-model sums (json_extract)
 - stress: 60× parallel `/stats` + `/event` curls; process must stay alive
-
-## Leaderboard & MCP Server
-
-- **Edge Architecture (`cloudflare/` + `cloudflare/src/index.js`)**: Cloudflare Worker + R2 bucket (`token-horizon-leaderboard`). Canonical URL: `https://token-horizon.dev` (`www` 301s to apex). `cloudflare/wrangler.toml` also keeps the legacy `tokens.benebsworth.com` route until the nameserver cutover is verified; `scripts/onboard-domain.sh` creates the zone (needs a Zone:Edit API token) and prints the registrar NS steps. Deploy with `--config wrangler.toml` (`scripts/deploy-cloudflare.sh` does): newer wrangler versions can otherwise walk up to the root `package.json` and deploy a stray worker named `token-horizon-dashboard`. Read APIs: `/api/leaderboard?period=&team=&league=` (ranked rows + `kpis` with real 7d deltas + `movers`/`mostImproved` + `season` + `leagueLadder`), `/api/user/:handle` (standing/achievements/rankHistory/teamRank), `/api/providers?days=`, `/api/teams`, `/api/season`, `/api/models/catalog` (ASSETS proxy of `docs/data/models.json`, CORS + edge cache), `/api/models/usage` (per-model adoption rollup over R2), `/api/config` (public client config), `/api/health`. `/api/prompts` and the `/api/providers` `topPrompts` payload exist only when the deployment opts in with `PROMPTS_PUBLIC=1` (prompt history is individual-profile-only by default). Publishing: `POST /api/leaderboard` also derives league/MMR when absent and appends a bounded daily `snapshots[]` entry (rank + cumulative tokens + per-provider totals) — movers, rank deltas, league progression, and provider-over-time all read from these snapshots, so they stay empty until ≥2 days of publishes exist.
-- **Authentication & Claims**: Anonymous publish automatically mints a SHA-256 hashed `claimToken` preventing handle hijacking. Unclaimed profiles can be claimed and verified via Google OAuth (`POST /api/claim`). When `GOOGLE_CLIENT_ID` is set (worker `[vars]`), `parseGoogleAuth` only accepts RS256 ID tokens verified against Google's JWKS (`GOOGLE_JWKS` env overrides the fetch for hermetic tests) with `aud`/`iss`/`exp` checks; the unsigned `google:<email>` / `body.googleUser` fallbacks are legacy-only and disabled in production. Machine publishes (Mac app) use the `LEADERBOARD_SECRET` bearer instead. Never echo `ownerId`/`claimTokenHash` in responses (`sanitizeEntry`).
-- **Sharing & access control**: R2-backed share records (`POST /api/share/create`, `GET /api/share/list`, `POST /api/share/revoke`, public `GET /api/shared/:id` honoring anonymize/hide-cost/full-token options) plus per-owner groups (`GET/POST /api/groups`) and an activity log. Public links are served at `/s/<id>` and rendered by the dashboard.
-- **Frontend Dashboard (`docs/leaderboard.html`)**: Full Token Horizon SPA (inline CSS/JS + the vendored TanStack Charts bundle) with eight routed views — Dashboard deep-dive, Leaderboard, Player Profile, Teams, Models (catalog **Explorer** + provider-analytics **Providers** tab), Billing, Leagues & Season, and Settings (Sharing & Access Control) — plus the Share Usage Report modal and `?share=<id>` report pages. The explorer serves the static app-exported catalog (Fuse search + windowed list + detail drawer, see invariant 21) from `GET /api/models/catalog`; `/models` is the dedicated route (`?view=models`, `?model=<id>` opens the drawer). Deep links: `?view=`, `?user=<handle>` (opens Player Profile); breadcrumbs navigate. API base: same-origin on worker hosts (incl. localhost), canonical `https://token-horizon.dev` from static mirrors/`file://`. Usage-over-time charts stack by model (`usageHistory` from the leaderboard response; `breakdown.modelHistory` on profiles) with a structured tooltip + total; donuts/sparklines/heatmaps remain hand-rolled SVG. See `LEADERBOARD.md` for the screen-by-screen alignment.
-- **MCP Server (`mcp/`)**: `mcp/token-horizon-mcp.mjs` is the zero-dep stdio server installed by `install.sh` (`token_horizon_*` tools: usage, limits, claude accounts, trends, proxy guide, system, processes, sessions, history, events, models, **catalog**, **plans**, discovery, workflows, nodes). `mcp/src/index.js` is the SDK-based hosted-leaderboard server (`get_leaderboard`, `get_user_profile`, `get_daemon_metrics`, `publish_telemetry`, `claim_profile`, `compare_users`, **`search_models`**, **`get_plans`**). Catalog tools share `mcp/catalog.mjs` (pure filter/sort/plan helpers + local-first fetch with hosted fallback); hermetic tests in `mcp/test-catalog.mjs` and `mcp/test-server-errors.mjs` (known tools must never surface as "unknown tool" when a daemon call fails — a slow `/limits` refresh used to hit the catch-all). Run tests with `make mcp-test` or `npm test` inside `mcp/`.
-- **Testing**: `make leaderboard-test` runs the edge worker test suite (`cloudflare/worker.test.mjs`) + hermetic Playwright E2E browser tests (`scripts/test-leaderboard-ui.mjs`, all API calls fixture-intercepted). CI's `web` job runs worker + MCP contract tests + the UI suite + render budgets (`task web-test` locally); Playwright resolves from the repo devDependency (`scripts/playwright.mjs`) with a checkout fallback.
-
-## Release & distribution (keep these in sync)
-
-- Landing page: `docs/` (dependency-free static) → GitHub Pages via `.github/workflows/pages.yml` (Actions, watches `docs/**`), and the Cloudflare ASSETS binding at token-horizon.dev. `docs/docs/` (documentation) and `docs/blog/` (vision/accuracy posts) share `styles.css` + `app.js` with the landing page; Workers Assets serves `/docs` and `/blog` directory indexes. Project-page hosting: all internal links must stay relative (`./`), never root-absolute.
-- Installer: `install.sh` (`curl -fsSL .../main/install.sh | bash`) resolves `/releases/latest`, installs the ZIP to `/Applications`, fetches versioned shell/MCP helpers, health-verifies. Test safely with `INSTALL_DIR=$TMP/Apps TH_NO_LAUNCH=1 TH_NO_AGENT=1 TH_NO_SHELL=1`.
-- Releases: tag `v*` → `.github/workflows/release.yml` runs `scripts/package-notarized.sh` (Developer ID hardened-runtime signing + Apple notarization + stapling of app and DMG, Gatekeeper assessment) and publishes DMG/ZIP/sha256 + `video/` film. Without the Apple secrets (`APPLE_CERT_P12_BASE64`/`APPLE_CERT_PASSWORD`/`KEYCHAIN_PASSWORD` + notary auth: `APPLE_API_KEY_BASE64`/`APPLE_API_KEY_ID`/`APPLE_API_ISSUER_ID`, or `APPLE_ID`/`APPLE_TEAM_ID`/`APPLE_APP_PASSWORD`) it warns and ships an ad-hoc build — see `docs/notarized-release.md`. To validate locally: `DEVELOPER_ID_APPLICATION="Developer ID Application: …" NOTARYTOOL_PROFILE=token-horizon-notary MARKETING_VERSION=x.y.z ./scripts/package-notarized.sh`. Releases must stay FULL (not prerelease) — installer, landing film embed, and README video all resolve through `/releases/latest`, which skips prereleases.
-- Homebrew: `packaging/homebrew/token-horizon.rb` is the Cask source of truth; the published tap is `castlemilk/homebrew-tap` (tap `castlemilk/tap`). Per release: bump `version` + `sha256` (from the release's `.sha256` asset), then `task brew-sync` (`scripts/sync-homebrew-tap.sh`) to copy + push the cask. Validate with `brew audit --cask castlemilk/tap/token-horizon` and `brew fetch --cask castlemilk/tap/token-horizon` (checksum); do not `brew uninstall` a dev-installed app — the cask only removes the app artifact and LaunchAgent plist.
-- Product film: `video/` (Remotion, code-drawn, offline render). `npm run render` → `dist/TokenHorizon-film.mp4` is the release + landing-page asset. See `video/README.md` for scene/optimization notes.
 
 ## Performance budgets (Models tab)
 
@@ -284,32 +190,19 @@ swift test                                                              # comple
 ./scripts/bench-models.sh                                              # bench + summary
 ./scripts/test-models-perf.sh                                          # regression guard (fails on budget breach)
 ./scripts/make-app-with-tests.sh                                       # release build gated on perf tests
-task bench-leaderboard                                                 # dashboard charts/render/API-cache budgets (fails on breach)
-make profile                                                           # live tick timing table (opt-in harness, no asserts)
-make profile-sample                                                    # + 20s `sample` hotspot profile; TH_PERF_LOG=1 adds engine phase spans
-make coverage                                                          # llvm-cov table for Sources/ (report-only, see below)
 ```
 
 **Test layout:**
 ```
 Tests/TokenHorizonPerfTests/
-  Unit/               pure-logic suites (parsers, stores, engines, routes, view math) + Unit/Core/ (seam tests)
-  Perf/               budget-gated suites (ModelsPipeline, ScopeCounts, SystemHistory, ProcessMetrics) + TickPerfHarness (opt-in via TH_PROFILE)
-  Integration/        loopback relay + server-lifecycle round-trips
+  ModelsPipelinePerfTests.swift   perf budgets + dedup + search
+  ScopeCountsCachingTests.swift   cached lookup is O(1), not O(n)
+  CanonicalIdentityTests.swift    family-key dedup contract
+  ProcessMetricsTests.swift       live process sampling and metric ordering
+  ProcessTreeTests.swift          process hierarchy safety and ordering
+  SystemHistoryTests.swift        I/O rates, cache behavior, and 24-hour retention
   Fixtures/catalog-7300.json      synthetic 7,300-row catalog (committed)
 ```
-
-**Coverage policy (`make coverage`, CI `coverage` job — both report-only):**
-- This suite exercises live machine state (displays, keychain, running
-  tools, real $HOME), so absolute % differs per machine. A hard gate would
-  be a flake factory — perf budgets gate, not coverage numbers.
-- New pure logic (parsers, math, routing, formatting) must ship with
-  table-driven unit tests. Widen `private` → internal with a doc comment
-  when that is the only blocker (established precedent).
-- Intentionally uncovered, do not chase: network fetchers, Keychain,
-  SMAppService/launchd, destructive ops (kill, cache reset, sheet/cloud
-  publish), live process spawns, SwiftUI view bodies, `main.swift`, and
-  AppDelegate launch wiring.
 
 If a test fails with "REGRESSION", the pipeline is slower than the budget. Common causes:
 - New filter pass inside `modelsTab` view body
@@ -318,8 +211,6 @@ If a test fails with "REGRESSION", the pipeline is slower than the budget. Commo
 - New field added to `ModelRow` whose computed property is expensive (e.g. another `.lowerCased().contains(q)`)
 
 ## Known gaps
-
-- cheapinference.com is **robots-disallowed** (`User-agent: * → Disallow: /`) and bot-walled (browser check) with no public API/dataset (`api.`/`data.`/`docs.` subdomains are stubs) — do not scrape or bypass it. Cheap-inference comparison is derived from OpenRouter + models.dev gateway listings (the Cheapest tab / `priceFrom`). Integrate only if they publish a feed or grant permission.
 
 - alibaba 5h window intermittently absent (gateway omits it; retry ×3 handles most cases)
 - minimax/glm/opencode-go keys expire per opencode re-auth — limits silently drop rows when 401

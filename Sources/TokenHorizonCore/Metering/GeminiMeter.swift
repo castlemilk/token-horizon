@@ -37,13 +37,8 @@ open class GeminiMeter: RequestMeter {
 
     private func usageFromSSE(_ text: String) -> TokenBreakdown? {
         var found: TokenBreakdown?
-        for line in text.components(separatedBy: "\n") {
-            guard line.hasPrefix("data:") else { continue }
-            let payload = line.dropFirst(5).trimmingCharacters(in: .whitespaces)
-            guard let data = payload.data(using: .utf8),
-                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  let usage = usageFromObject(obj) else { continue }
-            found = usage
+        for obj in sseObjects(text) {
+            if let usage = usageFromObject(obj) { found = usage }
         }
         return found
     }

@@ -82,6 +82,20 @@ open class RequestMeter: NSObject, URLSessionDataDelegate {
     /// Which exchanges to measure. Default: POST requests.
     open func shouldMeter(method: String, path: String) -> Bool { method == "POST" }
 
+    /// All JSON objects carried by SSE `data:` lines (`[DONE]` skipped).
+    /// Shared by every SSE meter — subclass usage parsers iterate this.
+    public func sseObjects(_ text: String) -> [[String: Any]] {
+        var out: [[String: Any]] = []
+        for line in text.components(separatedBy: "\n") {
+            guard line.hasPrefix("data:") else { continue }
+            let payload = line.dropFirst(5).trimmingCharacters(in: .whitespaces)
+            guard payload != "[DONE]", let data = payload.data(using: .utf8),
+                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { continue }
+            out.append(obj)
+        }
+        return out
+    }
+
     /// Selected model for the exchange (request body, path, or response).
     open func model(for exchange: MeteredExchange) -> String { "" }
 
