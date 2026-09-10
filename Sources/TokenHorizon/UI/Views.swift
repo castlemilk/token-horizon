@@ -311,6 +311,15 @@ struct DashboardTabs: View {
                             if let port = rt.port {
                                 MonospacedText(text: ":\(port)", color: .secondary, size: 8)
                             }
+                            // Local process telemetry: rendered only when the
+                            // backend actually detected local processes (ps
+                            // decoration); remote/undetected runtimes show nothing.
+                            if let cpu = rt.extra["proc_cpu_percent"] {
+                                MonospacedText(text: String(format: "cpu %.0f%%", cpu), color: .secondary, size: 8)
+                            }
+                            if let mem = rt.extra["proc_mem_mb"] {
+                                MonospacedText(text: String(format: "mem %.0fM", mem), color: .secondary, size: 8)
+                            }
                         }.padding(.leading, 11)
                     }
                 }
