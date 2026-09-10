@@ -14,6 +14,7 @@ let engine = UsageEngine()
 #if os(Linux)
 Platform.systemStats = ProcFSSystemStats.self
 #endif
+InferenceMonitor.shared.startPolling()
 
 func json(_ obj: Any, status: Int = 200) -> HTTPResponse {
     let payload = (try? JSONSerialization.data(withJSONObject: obj)) ?? Data("{}".utf8)
@@ -97,6 +98,26 @@ func router(_ request: HTTPRequest) -> HTTPResponse {
 
     case ("GET", "/limits"):
         return json(["limits": encodeToJSONObject(PlanLimitsEngine.fetchAll() + KimiLimitsEngine.fetch())])
+
+    case ("GET", "/runtimes"):
+        // Self-managed inference runtimes (vLLM, SGLang, llama.cpp): detection + measured tok/s.
+        let snaps = InferenceMonitor.shared.current()
+        return json(snaps.map { snap -> [String: Any] in
+            var dict: [String: Any] = [
+                "vendor": snap.vendor,
+                "display_name": snap.displayName,
+                "running": snap.running,
+                "pids": snap.pids,
+                "sampled_at": snap.sampledAt.timeIntervalSince1970,
+            ]
+            if let port = snap.port { dict["port"] = port }
+            if let tps = snap.tokPerSec { dict["tok_per_sec"] = tps }
+            if let ptps = snap.promptTokPerSec { dict["prompt_tok_per_sec"] = ptps }
+            if let gen = snap.generationTokensTotal { dict["generation_tokens_total"] = gen }
+            if let prompt = snap.promptTokensTotal { dict["prompt_tokens_total"] = prompt }
+            if !snap.extra.isEmpty { dict["extra"] = snap.extra }
+            return dict
+        })
 
     case ("GET", "/processes"):
         guard let stats = Platform.systemStats else {
