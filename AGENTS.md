@@ -31,6 +31,11 @@ Sources/TokenHorizonCore/   portable server-side module (macOS + Linux; Windows 
   Usage/                  UsageEngine (opencode sqlite, claude/codex/kimi/generic JSONL, 15-min
                           buckets, TokenBreakdown input/output/reasoning/cacheRead/cacheWrite,
                           history/trends) + shared DTOs (UsageSnapshot, ProviderLimit, ...)
+    Events/               unified measurement contract: UsageEvent (per-request, UUID-keyed,
+                          machineID, attestation tier), ContextState (live context occupancy),
+                          UsageStoring protocol (insert/aggregate/buckets/sync-cursor) +
+                          SQLiteUsageStore local backend (~/.config/token-horizon/usage.db, WAL).
+                          Cloud backends (Postgres/HTTP) slot in behind UsageStoring later.
   Vendors/                per-vendor integrations, split by who runs the infra
     Auth/                   VendorAuth credential chains: composable CredentialSource
                             (.env/.opencodeKey/.fileText/.fileJSON/.keychain/.custom)

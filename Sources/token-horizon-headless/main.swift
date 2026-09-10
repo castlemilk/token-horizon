@@ -14,6 +14,13 @@ let engine = UsageEngine()
 // merges it like any provider source (stats/trends/history parity).
 engine.localRuntimeUsage = { RuntimeUsageLedger.shared.contributions() }
 
+// Unified usage store (UsageStoring) — local sqlite backend; cloud backends
+// (Postgres/HTTP) slot in behind the same protocol later.
+let usageStore: UsageStoring? = {
+    do { return try SQLiteUsageStore() }
+    catch { FileHandle.standardError.write("usage store unavailable: \(error)\n".data(using: .utf8)!); return nil }
+}()
+
 #if os(Linux)
 Platform.systemStats = ProcFSSystemStats.self
 #endif
@@ -32,6 +39,15 @@ func encodeToJSONObject<T: Encodable>(_ value: T, datesAsEpoch: Bool = true) -> 
     return obj
 }
 
+func queryParams(_ query: String) -> [String: String] {
+    var out: [String: String] = [:]
+    for pair in query.split(separator: "&") {
+        let kv = pair.split(separator: "=", maxSplits: 1).map(String.init)
+        if kv.count == 2 { out[kv[0]] = kv[1].removingPercentEncoding ?? kv[1] }
+    }
+    return out
+}
+
 func router(_ request: HTTPRequest) -> HTTPResponse {
     let route = request.path.split(separator: "?").first.map(String.init) ?? request.path
     let query = request.path.split(separator: "?", maxSplits: 1).last.map(String.init) ?? ""
@@ -43,7 +59,58 @@ func router(_ request: HTTPRequest) -> HTTPResponse {
             "version": "0.2.0",
             "name": "token-horizon-headless",
             "platform": Platform.name,
+            "usage_store": usageStore != nil,
         ])
+
+    // Unified usage store: ingest endpoint (same shape a cloud API will take).
+    case ("POST", "/events"):
+        guard let store = usageStore else {
+            return json(["error": "usage store unavailable"], status: 503)
+        }
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .secondsSince1970
+        let body = request.body
+        let events: [UsageEvent]?
+        if let array = try? decoder.decode([UsageEvent].self, from: body) {
+            events = array
+        } else if let single = try? decoder.decode(UsageEvent.self, from: body) {
+            events = [single]
+        } else {
+            events = nil
+        }
+        guard let events, !events.isEmpty else {
+            return json(["error": "body must be a UsageEvent or [UsageEvent] JSON"], status: 400)
+        }
+        do {
+            try store.insert(events)
+            return json(["inserted": events.count, "total": (try? store.count()) ?? -1])
+        } catch {
+            return json(["error": "insert failed: \(error)"], status: 500)
+        }
+
+    case ("GET", "/events/count"):
+        guard let store = usageStore else { return json(["error": "usage store unavailable"], status: 503) }
+        return json(["count": (try? store.count()) ?? -1])
+
+    case ("GET", "/events/aggregate"):
+        guard let store = usageStore else { return json(["error": "usage store unavailable"], status: 503) }
+        let params = queryParams(query)
+        let from = Date(timeIntervalSince1970: TimeInterval(Int(params["from"] ?? "0") ?? 0))
+        let to = Date(timeIntervalSince1970: TimeInterval(Int(params["to"] ?? "\(Int(Date().timeIntervalSince1970) + 60)") ?? 0))
+        let groupBy = UsageGroupBy(rawValue: params["group"] ?? "vendor") ?? .vendor
+        let rows = (try? store.aggregate(from: from, to: to, groupBy: groupBy)) ?? []
+        return json(["group": groupBy.rawValue, "rows": encodeToJSONObject(rows, datesAsEpoch: true)])
+
+    case ("GET", "/events/sync"):
+        guard let store = usageStore else { return json(["error": "usage store unavailable"], status: 503) }
+        let params = queryParams(query)
+        let cursor = Int64(params["cursor"] ?? "0") ?? 0
+        let limit = Int(params["limit"] ?? "500") ?? 500
+        guard let page = try? store.events(afterSequence: cursor, limit: limit) else {
+            return json(["error": "sync read failed"], status: 500)
+        }
+        return json(["events": encodeToJSONObject(page.events, datesAsEpoch: true),
+                     "cursor": page.lastSequence])
 
     case ("GET", "/stats"):
         let usage = engine.snapshot()
