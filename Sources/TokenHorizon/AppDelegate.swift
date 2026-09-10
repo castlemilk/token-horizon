@@ -5,7 +5,7 @@ import SwiftUI
 final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     let model = UIModel()
     let engine = UsageEngine()
-    var server: LocalServer!
+    var server: POSIXLoopbackHTTPServer!
     var notchPanel: NotchPanel?
     var statusItem: NSStatusItem?
     var popover: NSPopover?
@@ -49,7 +49,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             OllamaClient.baseURLProvider = { URL(string: "http://127.0.0.1:11435") }
             model.ollamaMeterPort = 11435
         }
-        server = LocalServer(router: router)
+        // One server on every machine: the POSIX loopback transport +
+        // core CoreAPIRouter (the old NWListener LocalServer is gone).
+        server = POSIXLoopbackHTTPServer { router.route($0) }
         server.start()
         _ = TokenHorizonTelemetry.shared
 

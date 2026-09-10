@@ -1,7 +1,7 @@
 import Foundation
 
 /// THE loopback API router — one implementation, used by every host:
-/// the macOS app (NWListener transport in Sources/TokenHorizon/Server) and the
+/// the macOS app and the headless daemon — both serve it over
 /// headless daemon (POSIX sockets in Platform/POSIXLoopbackHTTPServer).
 /// Host differences are injected as closures; no route logic lives in hosts.
 public final class CoreAPIRouter {
