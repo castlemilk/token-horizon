@@ -110,6 +110,26 @@ func queryParams(_ query: String) -> [String: String] {
     return out
 }
 
+func usageFilter(_ params: [String: String]) -> UsageFilter {
+    UsageFilter(
+        vendor: params["vendor"],
+        model: params["model"],
+        machineID: params["machine"],
+        product: params["product"],
+        source: params["source"].flatMap { SourceKind(rawValue: $0) },
+        attestation: params["attestation"].flatMap { Attestation(rawValue: $0) },
+        thinkingLevel: params["thinking"],
+        sessionID: params["session"])
+}
+
+func timeRange(_ params: [String: String]) -> (Date, Date) {
+    let from = Date(timeIntervalSince1970: TimeInterval(Int(params["from"] ?? "0") ?? 0))
+    // +60s slack: events stamped at exactly "now" are inside the range.
+    let to = Date(timeIntervalSince1970: TimeInterval(
+        Int(params["to"] ?? "\(Int(Date().timeIntervalSince1970) + 60)") ?? 0))
+    return (from, to)
+}
+
 func router(_ request: HTTPRequest) -> HTTPResponse {
     let route = request.path.split(separator: "?").first.map(String.init) ?? request.path
     let query = request.path.split(separator: "?", maxSplits: 1).last.map(String.init) ?? ""
@@ -188,13 +208,45 @@ func router(_ request: HTTPRequest) -> HTTPResponse {
         guard let store = usageStore else { return json(["error": "usage store unavailable"], status: 503) }
         return json(["count": (try? store.count()) ?? -1])
 
+    // Tabular request view: newest-first, filtered, rowid-paginated.
+    case ("GET", "/events"):
+        guard let store = usageStore else { return json(["error": "usage store unavailable"], status: 503) }
+        let params = queryParams(query)
+        let (from, to) = timeRange(params)
+        let cursor = params["cursor"].flatMap { Int64($0) }
+        let limit = min(Int(params["limit"] ?? "200") ?? 200, 1000)
+        guard let page = try? store.query(from: from, to: to, filter: usageFilter(params),
+                                          cursor: cursor, limit: limit) else {
+            return json(["error": "query failed"], status: 500)
+        }
+        return json(["events": encodeToJSONObject(page.events, datesAsEpoch: true),
+                     "next_cursor": page.nextCursor ?? NSNull()])
+
+    // Chart series at arbitrary resolution: ?resolution=900|3600|86400&vendor=...
+    case ("GET", "/events/buckets"):
+        guard let store = usageStore else { return json(["error": "usage store unavailable"], status: 503) }
+        let params = queryParams(query)
+        let (from, to) = timeRange(params)
+        let resolution = Int(params["resolution"] ?? "900") ?? 900
+        let rows = (try? store.buckets(from: from, to: to, bucketSeconds: resolution,
+                                       filter: usageFilter(params))) ?? []
+        return json(["resolution": resolution, "buckets": encodeToJSONObject(rows, datesAsEpoch: false)])
+
+    // Provider → model rollup.
+    case ("GET", "/events/summary"):
+        guard let store = usageStore else { return json(["error": "usage store unavailable"], status: 503) }
+        let params = queryParams(query)
+        let (from, to) = timeRange(params)
+        let rows = (try? store.summarize(from: from, to: to, filter: usageFilter(params))) ?? []
+        return json(["providers": encodeToJSONObject(rows, datesAsEpoch: true)])
+
     case ("GET", "/events/aggregate"):
         guard let store = usageStore else { return json(["error": "usage store unavailable"], status: 503) }
         let params = queryParams(query)
-        let from = Date(timeIntervalSince1970: TimeInterval(Int(params["from"] ?? "0") ?? 0))
-        let to = Date(timeIntervalSince1970: TimeInterval(Int(params["to"] ?? "\(Int(Date().timeIntervalSince1970) + 60)") ?? 0))
+        let (from, to) = timeRange(params)
         let groupBy = UsageGroupBy(rawValue: params["group"] ?? "vendor") ?? .vendor
-        let rows = (try? store.aggregate(from: from, to: to, groupBy: groupBy)) ?? []
+        let rows = (try? store.aggregate(from: from, to: to, groupBy: groupBy,
+                                         filter: usageFilter(params))) ?? []
         return json(["group": groupBy.rawValue, "rows": encodeToJSONObject(rows, datesAsEpoch: true)])
 
     case ("GET", "/events/sync"):

@@ -12,9 +12,12 @@ Sources/TokenHorizonCore/   portable server-side module (macOS + Linux; Windows 
     Events/               unified measurement contract: UsageEvent (per-request, UUID-keyed,
                           machineID, attestation tier, thinkingLevel/thinkingRaw normalized
                           across vendors, product attribution), ContextState (live context
-                          occupancy), UsageStoring protocol (insert/aggregate/buckets/
-                          sync-cursor) + SQLiteUsageStore local backend (usage.db, WAL).
-                          Cloud backends (Postgres/HTTP) slot in behind UsageStoring later.
+                          occupancy), UsageStoring protocol + SQLiteUsageStore (usage.db, WAL).
+                          Analytics primitives (all filterable via UsageFilter): query (tabular
+                          newest-first, rowid-paginated), aggregate (vendor/model/machine/
+                          product/session/day), buckets (arbitrary resolution: 900/3600/86400),
+                          summarize (provider→model rollup: tokens, cost, avg measured tok/s,
+                          avg context). Cloud backends slot in behind UsageStoring later.
     Consolidation/        INACTIVE backfill logic: FileConsolidator base + per-provider
                           consolidators (Claude/Codex/Kimi/OpenCode) emitting deterministic-ID
                           events from local files. Nothing calls ConsolidationRunner;

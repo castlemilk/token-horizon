@@ -141,7 +141,79 @@ public final class SQLiteUsageStore: UsageStoring {
         sqlite3_exec(db, "COMMIT", nil, nil, nil)
     }
 
-    public func aggregate(from: Date, to: Date, groupBy: UsageGroupBy) throws -> [UsageAggregate] {
+    // MARK: - Filtering
+
+    /// WHERE clause from time range + filter. Returns SQL (starting with
+    /// WHERE or empty) and the values to bind in order.
+    private func whereSQL(from: Date, to: Date, filter: UsageFilter,
+                          cursor: Int64? = nil, cursorBefore: Bool = true) -> (String, [String], [Int64]) {
+        var clauses = ["ts >= ?", "ts < ?"]
+        var ints: [Int64] = [Int64(from.timeIntervalSince1970), Int64(to.timeIntervalSince1970)]
+        var strings: [String] = []
+        if let cursor {
+            clauses.append(cursorBefore ? "rowid < ?" : "rowid > ?")
+            ints.append(cursor)
+        }
+        for clause in filter.sqlClauses {
+            clauses.append("\(clause.column) = ?")
+            strings.append(clause.value)
+        }
+        return ("WHERE " + clauses.joined(separator: " AND "), strings, ints)
+    }
+
+    private func bindWhere(_ stmt: OpaquePointer?, _ parts: (String, [String], [Int64])) {
+        var index: Int32 = 1
+        for v in parts.2 { sqlite3_bind_int64(stmt, index, v); index += 1 }
+        for v in parts.1 { bindText(stmt, index, v); index += 1 }
+    }
+
+    /// Bind order must match whereSQL clause order: ts ints, cursor int,
+    /// then filter strings. (Ints before strings because ts/cursor clauses
+    /// are prepended.)
+
+    // MARK: - Tabular query
+
+    public func query(from: Date, to: Date, filter: UsageFilter,
+                      cursor: Int64?, limit: Int) throws -> (events: [UsageEvent], nextCursor: Int64?) {
+        let parts = whereSQL(from: from, to: to, filter: filter, cursor: cursor)
+        let sql = """
+        SELECT rowid, id, ts, machine_id, source, vendor, model, input, output,
+               reasoning, cache_read, cache_write, context_occupancy, context_limit,
+               cost, prompt_tps, gen_tps, latency_ms, session_id, attestation,
+               thinking_level, thinking_raw, product
+        FROM usage_event \(parts.0)
+        ORDER BY rowid DESC LIMIT ?
+        """
+        lock.lock(); defer { lock.unlock() }
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
+            throw UsageStoreError.prepareFailed(lastError())
+        }
+        defer { sqlite3_finalize(stmt) }
+        bindWhere(stmt, parts)
+        sqlite3_bind_int64(stmt, Int32(parts.2.count + parts.1.count + 1), Int64(limit))
+        var out: [UsageEvent] = []
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            out.append(readEvent(stmt))
+        }
+        let nextCursor: Int64? = out.count == limit ? lastRowid(of: out) : nil
+        return (out, nextCursor)
+    }
+
+    private func lastRowid(of events: [UsageEvent]) -> Int64? {
+        // rowid of the last row read — recovered via a lookup on the event id.
+        guard let lastID = events.last?.id.uuidString else { return nil }
+        var lookup: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "SELECT rowid FROM usage_event WHERE id = ?", -1, &lookup, nil) == SQLITE_OK else { return nil }
+        defer { sqlite3_finalize(lookup) }
+        bindText(lookup, 1, lastID)
+        guard sqlite3_step(lookup) == SQLITE_ROW else { return nil }
+        return sqlite3_column_int64(lookup, 0)
+    }
+
+    // MARK: - Aggregates / buckets / summary
+
+    public func aggregate(from: Date, to: Date, groupBy: UsageGroupBy, filter: UsageFilter) throws -> [UsageAggregate] {
         let keyExpr: String
         switch groupBy {
         case .vendor: keyExpr = "vendor"
@@ -151,12 +223,13 @@ public final class SQLiteUsageStore: UsageStoring {
         case .session: keyExpr = "COALESCE(session_id, '')"
         case .day: keyExpr = "strftime('%Y-%m-%d', ts, 'unixepoch', 'localtime')"
         }
+        let parts = whereSQL(from: from, to: to, filter: filter)
         let sql = """
         SELECT \(keyExpr), SUM(input), SUM(output), SUM(reasoning),
                SUM(cache_read), SUM(cache_write), SUM(cost), COUNT(*),
                MIN(ts), MAX(ts)
         FROM usage_event
-        WHERE ts >= ? AND ts < ?
+        \(parts.0)
         GROUP BY 1 ORDER BY 2+3+4+5+6 DESC
         """
         lock.lock(); defer { lock.unlock() }
@@ -165,8 +238,7 @@ public final class SQLiteUsageStore: UsageStoring {
             throw UsageStoreError.prepareFailed(lastError())
         }
         defer { sqlite3_finalize(stmt) }
-        sqlite3_bind_int64(stmt, 1, Int64(from.timeIntervalSince1970))
-        sqlite3_bind_int64(stmt, 2, Int64(to.timeIntervalSince1970))
+        bindWhere(stmt, parts)
         var out: [UsageAggregate] = []
         while sqlite3_step(stmt) == SQLITE_ROW {
             var agg = UsageAggregate(key: columnText(stmt, 0))
@@ -185,14 +257,15 @@ public final class SQLiteUsageStore: UsageStoring {
         return out
     }
 
-    public func buckets(from: Date, to: Date, bucketSeconds: Int) throws -> [UsageBucket] {
+    public func buckets(from: Date, to: Date, bucketSeconds: Int, filter: UsageFilter) throws -> [UsageBucket] {
         let size = max(60, bucketSeconds)
+        let parts = whereSQL(from: from, to: to, filter: filter)
         let sql = """
         SELECT (ts / \(size)) * \(size), vendor,
                SUM(input), SUM(output), SUM(reasoning),
                SUM(cache_read), SUM(cache_write), SUM(cost)
         FROM usage_event
-        WHERE ts >= ? AND ts < ?
+        \(parts.0)
         GROUP BY 1, 2 ORDER BY 1
         """
         lock.lock(); defer { lock.unlock() }
@@ -201,8 +274,7 @@ public final class SQLiteUsageStore: UsageStoring {
             throw UsageStoreError.prepareFailed(lastError())
         }
         defer { sqlite3_finalize(stmt) }
-        sqlite3_bind_int64(stmt, 1, Int64(from.timeIntervalSince1970))
-        sqlite3_bind_int64(stmt, 2, Int64(to.timeIntervalSince1970))
+        bindWhere(stmt, parts)
         var out: [UsageBucket] = []
         while sqlite3_step(stmt) == SQLITE_ROW {
             var b = UsageBucket(start: Int(sqlite3_column_int64(stmt, 0)),
@@ -243,6 +315,56 @@ public final class SQLiteUsageStore: UsageStoring {
         guard sqlite3_step(stmt) == SQLITE_DONE else {
             throw UsageStoreError.stepFailed("upsertContextState: \(lastError())")
         }
+    }
+
+    public func summarize(from: Date, to: Date, filter: UsageFilter) throws -> [ProviderSummary] {
+        let parts = whereSQL(from: from, to: to, filter: filter)
+        let sql = """
+        SELECT vendor, source, model,
+               SUM(input), SUM(output), SUM(reasoning),
+               SUM(cache_read), SUM(cache_write), SUM(cost), COUNT(*),
+               AVG(gen_tps), AVG(prompt_tps), AVG(context_occupancy), MAX(ts)
+        FROM usage_event
+        \(parts.0)
+        GROUP BY vendor, model
+        ORDER BY 4+5+6+7+8 DESC
+        """
+        lock.lock(); defer { lock.unlock() }
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
+            throw UsageStoreError.prepareFailed(lastError())
+        }
+        defer { sqlite3_finalize(stmt) }
+        bindWhere(stmt, parts)
+        var providers: [String: ProviderSummary] = [:]
+        var order: [String] = []
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            let vendor = columnText(stmt, 0)
+            let source = columnText(stmt, 1)
+            let model = columnText(stmt, 2)
+            if providers[vendor] == nil {
+                providers[vendor] = ProviderSummary(vendor: vendor, source: source)
+                order.append(vendor)
+            }
+            var row = ModelSummary(model: model)
+            row.tokens = TokenBreakdown(
+                input: Int(sqlite3_column_int64(stmt, 3)),
+                output: Int(sqlite3_column_int64(stmt, 4)),
+                reasoning: Int(sqlite3_column_int64(stmt, 5)),
+                cacheRead: Int(sqlite3_column_int64(stmt, 6)),
+                cacheWrite: Int(sqlite3_column_int64(stmt, 7)))
+            row.cost = sqlite3_column_double(stmt, 8)
+            row.requests = Int(sqlite3_column_int64(stmt, 9))
+            if sqlite3_column_type(stmt, 10) != SQLITE_NULL { row.avgGenerationTokPerSec = sqlite3_column_double(stmt, 10) }
+            if sqlite3_column_type(stmt, 11) != SQLITE_NULL { row.avgPromptTokPerSec = sqlite3_column_double(stmt, 11) }
+            if sqlite3_column_type(stmt, 12) != SQLITE_NULL { row.avgContextOccupancy = sqlite3_column_double(stmt, 12) }
+            row.lastEvent = Date(timeIntervalSince1970: sqlite3_column_double(stmt, 13))
+            providers[vendor]?.tokens.add(row.tokens)
+            providers[vendor]?.cost += row.cost
+            providers[vendor]?.requests += row.requests
+            providers[vendor]?.models.append(row)
+        }
+        return order.compactMap { providers[$0] }
     }
 
     public func contextStates() throws -> [ContextState] {
@@ -286,34 +408,7 @@ public final class SQLiteUsageStore: UsageStoring {
         var last = cursor
         while sqlite3_step(stmt) == SQLITE_ROW {
             last = sqlite3_column_int64(stmt, 0)
-            var tokens = TokenBreakdown()
-            tokens.input = Int(sqlite3_column_int64(stmt, 7))
-            tokens.output = Int(sqlite3_column_int64(stmt, 8))
-            tokens.reasoning = Int(sqlite3_column_int64(stmt, 9))
-            tokens.cacheRead = Int(sqlite3_column_int64(stmt, 10))
-            tokens.cacheWrite = Int(sqlite3_column_int64(stmt, 11))
-            let occupancy = sqlite3_column_type(stmt, 12) == SQLITE_NULL ? nil : Int(sqlite3_column_int64(stmt, 12))
-            let ctxLimit = sqlite3_column_type(stmt, 13) == SQLITE_NULL ? nil : Int(sqlite3_column_int64(stmt, 13))
-            let promptTps = sqlite3_column_type(stmt, 15) == SQLITE_NULL ? nil : sqlite3_column_double(stmt, 15)
-            let genTps = sqlite3_column_type(stmt, 16) == SQLITE_NULL ? nil : sqlite3_column_double(stmt, 16)
-            let latency = sqlite3_column_type(stmt, 17) == SQLITE_NULL ? nil : Int(sqlite3_column_int64(stmt, 17))
-            let session = sqlite3_column_type(stmt, 18) == SQLITE_NULL ? nil : columnText(stmt, 18)
-            let thinkingLevel = sqlite3_column_type(stmt, 20) == SQLITE_NULL ? nil : columnText(stmt, 20)
-            let thinkingRaw = sqlite3_column_type(stmt, 21) == SQLITE_NULL ? nil : columnText(stmt, 21)
-            let product = sqlite3_column_type(stmt, 22) == SQLITE_NULL ? nil : columnText(stmt, 22)
-            out.append(UsageEvent(
-                id: UUID(uuidString: columnText(stmt, 1)) ?? UUID(),
-                timestamp: Date(timeIntervalSince1970: sqlite3_column_double(stmt, 2)),
-                machineID: columnText(stmt, 3),
-                source: SourceKind(rawValue: columnText(stmt, 4)) ?? .external,
-                vendor: columnText(stmt, 5), model: columnText(stmt, 6),
-                tokens: tokens, contextOccupancy: occupancy, contextLimit: ctxLimit,
-                cost: sqlite3_column_double(stmt, 14),
-                promptTokPerSec: promptTps, generationTokPerSec: genTps,
-                latencyMs: latency, sessionID: session,
-                thinkingLevel: thinkingLevel, thinkingRaw: thinkingRaw,
-                product: product,
-                attestation: Attestation(rawValue: columnText(stmt, 19)) ?? .selfReported))
+            out.append(readEvent(stmt))
         }
         return (out, last)
     }
@@ -327,6 +422,38 @@ public final class SQLiteUsageStore: UsageStoring {
         defer { sqlite3_finalize(stmt) }
         guard sqlite3_step(stmt) == SQLITE_ROW else { return 0 }
         return Int(sqlite3_column_int64(stmt, 0))
+    }
+
+    /// Row → UsageEvent. Column layout fixed by the SELECTs above.
+    private func readEvent(_ stmt: OpaquePointer?) -> UsageEvent {
+        let tokens = TokenBreakdown(
+            input: Int(sqlite3_column_int64(stmt, 7)),
+            output: Int(sqlite3_column_int64(stmt, 8)),
+            reasoning: Int(sqlite3_column_int64(stmt, 9)),
+            cacheRead: Int(sqlite3_column_int64(stmt, 10)),
+            cacheWrite: Int(sqlite3_column_int64(stmt, 11)))
+        let occupancy = sqlite3_column_type(stmt, 12) == SQLITE_NULL ? nil : Int(sqlite3_column_int64(stmt, 12))
+        let ctxLimit = sqlite3_column_type(stmt, 13) == SQLITE_NULL ? nil : Int(sqlite3_column_int64(stmt, 13))
+        let promptTps = sqlite3_column_type(stmt, 15) == SQLITE_NULL ? nil : sqlite3_column_double(stmt, 15)
+        let genTps = sqlite3_column_type(stmt, 16) == SQLITE_NULL ? nil : sqlite3_column_double(stmt, 16)
+        let latency = sqlite3_column_type(stmt, 17) == SQLITE_NULL ? nil : Int(sqlite3_column_int64(stmt, 17))
+        let session = sqlite3_column_type(stmt, 18) == SQLITE_NULL ? nil : columnText(stmt, 18)
+        let thinkingLevel = sqlite3_column_type(stmt, 20) == SQLITE_NULL ? nil : columnText(stmt, 20)
+        let thinkingRaw = sqlite3_column_type(stmt, 21) == SQLITE_NULL ? nil : columnText(stmt, 21)
+        let product = sqlite3_column_type(stmt, 22) == SQLITE_NULL ? nil : columnText(stmt, 22)
+        return UsageEvent(
+            id: UUID(uuidString: columnText(stmt, 1)) ?? UUID(),
+            timestamp: Date(timeIntervalSince1970: sqlite3_column_double(stmt, 2)),
+            machineID: columnText(stmt, 3),
+            source: SourceKind(rawValue: columnText(stmt, 4)) ?? .external,
+            vendor: columnText(stmt, 5), model: columnText(stmt, 6),
+            tokens: tokens, contextOccupancy: occupancy, contextLimit: ctxLimit,
+            cost: sqlite3_column_double(stmt, 14),
+            promptTokPerSec: promptTps, generationTokPerSec: genTps,
+            latencyMs: latency, sessionID: session,
+            thinkingLevel: thinkingLevel, thinkingRaw: thinkingRaw,
+            product: product,
+            attestation: Attestation(rawValue: columnText(stmt, 19)) ?? .selfReported)
     }
 
     // MARK: - Helpers
