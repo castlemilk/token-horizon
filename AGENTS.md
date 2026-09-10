@@ -39,7 +39,7 @@ Sources/TokenHorizonCore/   portable server-side module (macOS + Linux; Windows 
     Meterable.swift         dual-tracking contract: every provider vends a request meter
     Claude/ Gemini/ Zhipu/ MiniMax/ OpenCodeGo/ Alibaba/ DeepSeek/ Kimi/   cloud vendors
     VLLM/ SGLang/ LlamaCpp/   runtime adapters (ports, process signatures, counter names)
-    Ollama/                 OllamaClient (REST + benchmarks), OllamaTelemetryProxy (macOS relay)
+    Ollama/                 OllamaClient (REST + benchmarks; baseURLProvider seam for meter routing)
     MLX/                    MLXTypes, MLXHistory, MLXObserver (macOS)
   Metering/               RequestMeter base (loopback HTTP relay: forwards to real API,
                           streams response byte-identical, measures TTFT/stream duration,
@@ -73,7 +73,7 @@ Sources/TokenHorizonCore/   portable server-side module (macOS + Linux; Windows 
     CoreAPIRouter.swift         THE loopback API router — single implementation used by every host
                                 (macOS LocalServer + headless daemon); hosts inject closures only
     macOS/    SystemStats (mach/vm64/iostat/ps), LocalServer (NWListener :8765),
-              OllamaTelemetryProxy, MLXObserver, MacOSKeychainStore, MacOSPaths
+              MLXObserver, MacOSKeychainStore, MacOSPaths
     Linux/    ProcFSSystemStats (/proc+ps), LinuxPaths (XDG), credential stub
     Windows/  WindowsPaths (APPDATA), credential stub
 Sources/token-horizon-headless/  cross-platform daemon: same loopback API as the macOS app, no UI
@@ -108,7 +108,7 @@ See docs/cross-platform.md for the Linux/Windows port status and the Platform se
 
 10. **MLX observability is independent.** `SystemStats.mlxProcessSamples()` uses full `ps` arguments to detect `--mlx-engine`/`mlx-lm` roots and includes their descendants, but does not run `nettop` or populate the general process table. `MLXObserver` must not read or mutate `UsageEngine`; tok/s must come from a measured source or remain unavailable rather than being estimated from resource usage.
 
-11. **Ollama telemetry is out-of-band.** `OllamaTelemetryProxy` is a lightweight in-process TCP relay on loopback. It forwards request/response bytes unchanged, parses only completed Ollama JSON metadata, and bounds retained samples. It must never feed `UsageEngine` or block the main queue.
+11. **Inference telemetry comes from request meters.** The macOS `OllamaTelemetryProxy` was removed in favor of `OllamaMeter` (Metering/): a consented loopback listener that forwards bytes unchanged and parses only completed Ollama JSON metadata (exact ns-duration rates). Meters bridge measured samples into `InferenceTelemetryStore` + OTel metrics, and emit `UsageEvent`s into the store. They must never feed `UsageEngine` aggregates directly or block the main queue, and never listen without consent.
 
 12. **Runtime usage parity is measured-only.** Self-managed runtimes feed `UsageEngine` (stats/trends/history, same 15-min `BucketEntry`s as providers) exclusively through `RuntimeUsageLedger`: persisted deltas of cumulative Prometheus counters, keyed by scope (`vendor`, `vendor|model`). First sighting of a counter establishes a baseline — never backfill unmeasured tokens; a counter decrease means server restart (delta = current reading). tok/s rates stay in `InferenceMonitor` snapshots; estimation from resource usage remains forbidden.
 

@@ -40,6 +40,20 @@ open class OllamaMeter: RequestMeter {
     /// Exact provider-measured rates from nanosecond durations.
     public override func rates(from exchange: MeteredExchange, tokens: TokenBreakdown) -> (prompt: Double?, generation: Double?) {
         guard let final = finalObject(exchange.responseBody) else { return (nil, nil) }
+        let evalCount = (final["eval_count"] as? NSNumber)?.intValue ?? 0
+        let evalNs = (final["eval_duration"] as? NSNumber)?.uint64Value ?? 0
+        // Bridge into the shared runtime-telemetry store + OTel metrics so the
+        // same surfaces that the old macOS proxy fed (MLX/ollama card,
+        // /metrics) now run off metered data on every platform.
+        if evalCount > 0, evalNs > 0 {
+            let sample = InferenceTelemetrySample(
+                model: model(for: exchange), completedAt: exchange.completedAt,
+                evalCount: evalCount, evalDurationNs: evalNs,
+                promptEvalCount: (final["prompt_eval_count"] as? NSNumber)?.intValue,
+                promptEvalDurationNs: (final["prompt_eval_duration"] as? NSNumber)?.uint64Value)
+            InferenceTelemetryStore.shared.record(sample)
+            TokenHorizonTelemetry.shared.recordOllama(sample)
+        }
         var prompt: Double?
         var generation: Double?
         if let count = (final["prompt_eval_count"] as? NSNumber)?.intValue,

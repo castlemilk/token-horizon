@@ -22,8 +22,8 @@ public struct OllamaSpeedBenchmark: Codable {
 }
 
 public final class OllamaClient {
-    /// Platform seam: the app assigns this to route through the telemetry proxy
-    /// (e.g. `{ OllamaTelemetryProxy.shared.proxyURL }`). Default talks to Ollama directly.
+    /// Platform seam: route through a request meter to measure the client's own
+    /// traffic (e.g. point at an OllamaMeter listen port). Default talks to Ollama directly.
     public static var baseURLProvider: () -> URL? = { nil }
 
     private static let lock = NSLock()

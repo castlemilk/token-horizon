@@ -212,15 +212,18 @@ async function callTool(name, args) {
       }
       case "token_horizon_proxy_guide": {
         let health = null;
+        let meters = [];
         try {
           health = await api("/health");
+          meters = await api("/meters");
         } catch {
-          health = { ok: false, ollama_proxy_port: 11435 };
+          health = { ok: false };
         }
         const configuredUpstream = process.env.TOKEN_HORIZON_OLLAMA_UPSTREAM || "127.0.0.1:11434";
-        const port = health.ollama_proxy_port || Number(process.env.TOKEN_HORIZON_OLLAMA_PROXY_PORT || 11435);
+        const ollamaMeter = Array.isArray(meters) ? meters.find(m => m.vendor === "ollama") : null;
+        const port = (ollamaMeter && ollamaMeter.listen_port) || Number(process.env.TOKEN_HORIZON_OLLAMA_PROXY_PORT || 11435);
         const proxyURL = process.env.OLLAMA_PROXY_URL || `http://127.0.0.1:${port}`;
-        const tokenHorizonReachable = health.name === "token-horizon" && health.ok === true;
+        const tokenHorizonReachable = health.ok === true;
         let proxyReachable = false;
         let proxyError = null;
         try {
