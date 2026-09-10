@@ -204,8 +204,11 @@ open class LocalInferenceRuntime {
             sema.signal()
         }.resume()
         if sema.wait(timeout: .now() + 2) == .timedOut { return nil }
-        guard let data else { return nil }
-        return String(data: data, encoding: .utf8)
+        guard let data, let text = String(data: data, encoding: .utf8),
+              // Content check: any 2xx page on a default port (e.g. an MLX or
+              // Ollama server) must not read as a Prometheus runtime.
+              text.contains("# HELP") || text.contains("# TYPE") else { return nil }
+        return text
     }
 
     /// Minimal Prometheus text parser: sums samples by metric name

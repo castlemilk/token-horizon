@@ -12,10 +12,12 @@ public final class InferenceMonitor {
         SGLangRuntime(),
         LlamaCppRuntime(),
         OllamaRuntime(),
+        MLXRuntime(),
     ]
 
     private let lock = NSLock()
     private var snapshots: [String: RuntimeSnapshot] = [:]
+    private var histories: [String: RuntimeHistory] = [:]
     private var lastCounters: [String: (generation: Double, prompt: Double, time: Date)] = [:]
     private var lastModelCounters: [String: (prompt: Double, generation: Double)] = [:]
     private var timer: DispatchSourceTimer?
@@ -31,6 +33,12 @@ public final class InferenceMonitor {
         return snapshots.values.sorted { $0.vendor < $1.vendor }
     }
 
+    /// Bounded in-memory history per runtime (fine per-poll + 30s rollups).
+    public func history(vendor: String) -> RuntimeHistory? {
+        lock.lock(); defer { lock.unlock() }
+        return histories[vendor]
+    }
+
     /// One poll pass over all runtimes (blocks briefly on HTTP probes;
     /// call off-main).
     @discardableResult
@@ -40,7 +48,20 @@ public final class InferenceMonitor {
             results.append(pollOne(runtime, now: now))
         }
         lock.lock()
-        for snap in results { snapshots[snap.vendor] = snap }
+        for snap in results {
+            snapshots[snap.vendor] = snap
+            if snap.running {
+                var history = histories[snap.vendor] ?? RuntimeHistory()
+                history.append(RuntimeHistoryPoint(
+                    timestamp: snap.sampledAt,
+                    tokPerSec: snap.tokPerSec,
+                    promptTokPerSec: snap.promptTokPerSec,
+                    cpuPercent: snap.extra["proc_cpu_percent"],
+                    memMB: snap.extra["proc_mem_mb"],
+                    loadedModels: snap.extra["loaded_models"]))
+                histories[snap.vendor] = history
+            }
+        }
         lock.unlock()
         return results
     }
@@ -80,6 +101,12 @@ public final class InferenceMonitor {
                                    running: true, pids: processes.map(\.pid), sampledAt: now)
         snap.port = probe?.url.port
         snap.extra = probe?.extra ?? [:]
+        // Local decoration only: aggregate CPU/MEM of matched processes (ps).
+        // Remote runtimes simply lack these keys — no inspection is attempted.
+        if !processes.isEmpty {
+            snap.extra["proc_cpu_percent"] = processes.reduce(0.0) { $0 + $1.cpu }
+            snap.extra["proc_mem_mb"] = processes.reduce(0.0) { $0 + $1.memMB }
+        }
         // Token counters exist only for Prometheus runtimes (probe.text);
         // Ollama & co. get usage truth from their request meter instead.
         guard let text = probe?.text else { return snap }
