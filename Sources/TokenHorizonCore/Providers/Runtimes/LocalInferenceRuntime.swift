@@ -131,6 +131,31 @@ open class LocalInferenceRuntime {
         }
     }
 
+    /// Result of an HTTP liveness/workload probe against a runtime endpoint.
+    public struct RuntimeProbe {
+        public var url: URL
+        /// Raw metrics text when the probe target is Prometheus (nil for API probes).
+        public var text: String?
+        /// Workload gauges surfaced on the snapshot (loaded models, VRAM, ...).
+        public var extra: [String: Double]
+        public init(url: URL, text: String? = nil, extra: [String: Double] = [:]) {
+            self.url = url; self.text = text; self.extra = extra
+        }
+    }
+
+    /// HTTP probe — THE liveness signal. Works for local and remote endpoints
+    /// alike; process detection (ps) only decorates local snapshots with pids.
+    /// Default: first configured/detected /metrics URL answering 2xx.
+    /// Runtimes without Prometheus (Ollama) override with their native API.
+    open func probe() -> RuntimeProbe? {
+        for url in metricsURLs() {
+            if let text = fetchMetricsText(url: url) {
+                return RuntimeProbe(url: url, text: text)
+            }
+        }
+        return nil
+    }
+
     /// User-configured endpoints (Settings) — self-hosters may run this
     /// runtime on remote/other hosts. Cloud providers never get this; their
     /// API base is fixed on the provider class.

@@ -11,6 +11,7 @@ public final class InferenceMonitor {
         VLLMRuntime(),
         SGLangRuntime(),
         LlamaCppRuntime(),
+        OllamaRuntime(),
     ]
 
     private let lock = NSLock()
@@ -61,7 +62,10 @@ public final class InferenceMonitor {
 
     private func pollOne(_ runtime: LocalInferenceRuntime, now: Date) -> RuntimeSnapshot {
         let processes = runtime.detectProcesses()
-        guard !processes.isEmpty else {
+        // HTTP probe is the liveness signal — a runtime on another host is
+        // just as alive as a local one. ps only decorates with local pids.
+        let probe = runtime.probe()
+        guard probe != nil || !processes.isEmpty else {
             lock.lock()
             lastCounters[runtime.vendor] = nil
             for key in lastModelCounters.keys where key.hasPrefix("\(runtime.vendor)|") {
@@ -74,16 +78,16 @@ public final class InferenceMonitor {
 
         var snap = RuntimeSnapshot(vendor: runtime.vendor, displayName: runtime.displayName,
                                    running: true, pids: processes.map(\.pid), sampledAt: now)
-        guard let metricsURL = runtime.activeMetricsURL(),
-              let text = runtime.fetchMetricsText(url: metricsURL) else {
-            return snap // running but not scraping (yet)
-        }
+        snap.port = probe?.url.port
+        snap.extra = probe?.extra ?? [:]
+        // Token counters exist only for Prometheus runtimes (probe.text);
+        // Ollama & co. get usage truth from their request meter instead.
+        guard let text = probe?.text else { return snap }
         var metrics = runtime.metrics(from: runtime.parsePrometheus(text))
         metrics.perModel = runtime.parsePrometheusPerModel(text)
-        snap.port = metricsURL.port
         snap.generationTokensTotal = metrics.generationTokensTotal
         snap.promptTokensTotal = metrics.promptTokensTotal
-        snap.extra = metrics.extra
+        for (k, v) in metrics.extra { snap.extra[k] = v }
 
         // Measured deltas only: first sighting establishes a baseline (no
         // backfill); a counter decrease means the server restarted, so the
