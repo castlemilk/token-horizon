@@ -74,13 +74,13 @@ public final class InferenceMonitor {
 
         var snap = RuntimeSnapshot(vendor: runtime.vendor, displayName: runtime.displayName,
                                    running: true, pids: processes.map(\.pid), sampledAt: now)
-        guard let port = runtime.activePort(),
-              let text = runtime.fetchMetricsText(port: port) else {
+        guard let metricsURL = runtime.activeMetricsURL(),
+              let text = runtime.fetchMetricsText(url: metricsURL) else {
             return snap // running but not scraping (yet)
         }
         var metrics = runtime.metrics(from: runtime.parsePrometheus(text))
         metrics.perModel = runtime.parsePrometheusPerModel(text)
-        snap.port = port
+        snap.port = metricsURL.port
         snap.generationTokensTotal = metrics.generationTokensTotal
         snap.promptTokensTotal = metrics.promptTokensTotal
         snap.extra = metrics.extra

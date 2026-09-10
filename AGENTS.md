@@ -76,6 +76,10 @@ Sources/TokenHorizonCore/   portable server-side module (macOS + Linux; Windows 
   Settings/               SettingsStore (config dir settings.json, path via Platform.paths)
   Notifications.swift     shared Notification.Name constants
   Platform/
+    Permissions/            PermissionManager: OS capability probes (networkListen /
+                            networkOutbound / localStorage / processInspection) with
+                            per-platform remediation steps relayed via GET /permissions.
+                            Consent = "may we?" (ConsentManager); capabilities = "can we?".
     Consent/                ConsentManager: per-scope grants (metering/fileReading/telemetry)
                             persisted in consents.json; OS-native prompts (macOS osascript,
                             Linux zenity/kdialog, Windows PowerShell MessageBox); headless

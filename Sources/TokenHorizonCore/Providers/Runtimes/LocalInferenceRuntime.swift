@@ -15,6 +15,34 @@ public struct RuntimeMetrics {
     public init() {}
 }
 
+/// One user-managed self-hosted endpoint: where the runtime serves, and
+/// optionally which loopback port the request meter should listen on.
+public struct RuntimeEndpoint: Codable, Equatable {
+    public var url: String          // e.g. "http://gpu-box.local:8000"
+    public var meterPort: Int?      // if set, daemon relays/meters this endpoint
+    public var label: String?
+
+    public init(url: String, meterPort: Int? = nil, label: String? = nil) {
+        self.url = url
+        self.meterPort = meterPort
+        self.label = label
+    }
+
+    public var asDict: [String: Any] {
+        var d: [String: Any] = ["url": url]
+        if let meterPort { d["meterPort"] = meterPort }
+        if let label { d["label"] = label }
+        return d
+    }
+
+    public init?(dict: [String: Any]) {
+        guard let url = dict["url"] as? String else { return nil }
+        self.url = url
+        self.meterPort = dict["meterPort"] as? Int
+        self.label = dict["label"] as? String
+    }
+}
+
 /// External view of one self-managed runtime (vLLM, SGLang, llama.cpp, ...).
 public struct RuntimeSnapshot {
     public var vendor: String
@@ -73,10 +101,12 @@ open class LocalInferenceRuntime {
 
     // MARK: - Meterable (dual tracking: Prometheus counters + request metering)
 
-    /// The runtime's own server is the meter's upstream. All supported
-    /// runtimes speak the OpenAI wire format; override for others.
+    /// The runtime's server is the meter's upstream. Priority: explicit
+    /// target arg → first user-configured endpoint → detected loopback port.
     open func makeMeter(listenPort: UInt16, target: URL?, store: UsageStoring?) -> RequestMeter? {
-        let upstream = target ?? URL(string: "http://127.0.0.1:\(activePort() ?? defaultPorts[0])")!
+        let upstream = target
+            ?? configuredEndpoints.lazy.compactMap { URL(string: $0.url) }.first
+            ?? URL(string: "http://127.0.0.1:\(activePort() ?? defaultPorts[0])")!
         return OpenAICompatibleMeter(vendor: vendor, listenPort: listenPort, targetBase: upstream,
                                      store: store, sourceKind: .selfManaged)
     }
@@ -101,16 +131,46 @@ open class LocalInferenceRuntime {
         }
     }
 
+    /// User-configured endpoints (Settings) — self-hosters may run this
+    /// runtime on remote/other hosts. Cloud providers never get this; their
+    /// API base is fixed on the provider class.
+    public var configuredEndpoints: [RuntimeEndpoint] {
+        SettingsStore.shared.runtimeEndpoints[vendor] ?? []
+    }
+
+    /// Candidate /metrics URLs: configured endpoints first, then detected
+    /// loopback ports.
+    public func metricsURLs() -> [URL] {
+        var urls = configuredEndpoints.compactMap { URL(string: $0.url + "/metrics") }
+        for port in defaultPorts {
+            if let url = URL(string: "http://127.0.0.1:\(port)/metrics") { urls.append(url) }
+        }
+        return urls
+    }
+
+    /// First candidate /metrics URL answering with 2xx.
+    public func activeMetricsURL() -> URL? {
+        for url in metricsURLs() {
+            if fetchMetricsText(url: url) != nil { return url }
+        }
+        return nil
+    }
+
     /// First candidate port answering GET /metrics with 2xx.
     public func activePort() -> Int? {
         for port in defaultPorts {
-            if fetchMetricsText(port: port) != nil { return port }
+            if let url = URL(string: "http://127.0.0.1:\(port)/metrics"),
+               fetchMetricsText(url: url) != nil { return port }
         }
         return nil
     }
 
     public func fetchMetricsText(port: Int) -> String? {
         guard let url = URL(string: "http://127.0.0.1:\(port)/metrics") else { return nil }
+        return fetchMetricsText(url: url)
+    }
+
+    public func fetchMetricsText(url: URL) -> String? {
         let req = URLRequest(url: url, timeoutInterval: 1.5)
         var data: Data?
         let sema = DispatchSemaphore(value: 0)
