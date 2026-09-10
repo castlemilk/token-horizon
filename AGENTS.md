@@ -14,28 +14,24 @@ Sources/TokenHorizonCore/   portable server-side module (macOS + Linux; Windows 
                           UsageStoring protocol (insert/aggregate/buckets/sync-cursor) +
                           SQLiteUsageStore local backend (~/.config/token-horizon/usage.db, WAL).
                           Cloud backends (Postgres/HTTP) slot in behind UsageStoring later.
-  Vendors/                per-vendor integrations, split by who runs the infra
+  Providers/              per-vendor integrations — ONE folder per provider, everything
+                          about that provider inside (quota adapter, meter target/wire
+                          format, auth config). Cloud vs self-managed is a property of the
+                          class (SourceKind), not a folder split.
     Auth/                   VendorAuth credential chains: composable CredentialSource
                             (.env/.opencodeKey/.fileText/.fileJSON/.keychain/.custom)
-    External/               hosted SaaS vendors (quota/rate-limit tracking)
-      Limits/                 LimitsEngine base (cache/refresh/notify), VendorLimitsAdapter
-                              (shared HTTP/JSON helpers + auth chain + clamped limit() builder),
-                              PlanLimitsEngine registry; one subfolder per vendor:
-                              Zhipu/ MiniMax/ OpenCodeGo/ Alibaba/ Gemini/ Claude/ DeepSeek/
-                              Kimi/ (OAuth-style engine subclassing LimitsEngine directly)
-    SelfManaged/            local inference runtimes the user runs
-      LocalInferenceRuntime.swift  base: process detection via Platform.systemStats,
-                              Prometheus /metrics scraping, counter-delta tok/s,
-                              per-model labeled series parsing
-      InferenceMonitor.swift    poll loop + bounded snapshots (measured tok/s) +
-                              feeds measured counter deltas into RuntimeUsageLedger
-      RuntimeUsageLedger.swift  DURABLE 15-min usage buckets per vendor+model
-                              (~/.config/token-horizon/runtime-usage.json) — provider-parity
-                              history for runtimes whose counters live in server RAM
-      RuntimeTelemetry.swift    InferenceTelemetrySample/Store (+ Ollama* back-compat aliases)
-      Ollama/   OllamaClient (REST + benchmarks), OllamaTelemetryProxy (macOS relay)
-      MLX/      MLXTypes, MLXHistory, MLXObserver (macOS)
-      VLLM/ SGLang/ LlamaCpp/   runtime adapters (ports, process signatures, counter names)
+    Limits/                 generic quota infra: LimitsEngine base (cache/refresh/notify),
+                            VendorLimitsAdapter (shared HTTP/JSON + auth chain + clamped
+                            limit() builder + makeMeter), PlanLimitsEngine registry
+    Runtimes/               generic runtime infra: LocalInferenceRuntime (process detection
+                            via Platform.systemStats, Prometheus /metrics scraping, counter-delta
+                            tok/s, makeMeter), InferenceMonitor (poll loop), RuntimeUsageLedger
+                            (DURABLE 15-min buckets, runtime-usage.json), RuntimeTelemetry
+    Meterable.swift         dual-tracking contract: every provider vends a request meter
+    Claude/ Gemini/ Zhipu/ MiniMax/ OpenCodeGo/ Alibaba/ DeepSeek/ Kimi/   cloud vendors
+    VLLM/ SGLang/ LlamaCpp/   runtime adapters (ports, process signatures, counter names)
+    Ollama/                 OllamaClient (REST + benchmarks), OllamaTelemetryProxy (macOS relay)
+    MLX/                    MLXTypes, MLXHistory, MLXObserver (macOS)
   Metering/               RequestMeter base (loopback HTTP relay: forwards to real API,
                           streams response byte-identical, measures TTFT/stream duration,
                           emits UsageEvent per completed request) + per-wire-format meters:
@@ -106,18 +102,22 @@ See docs/cross-platform.md for the Linux/Windows port status and the Platform se
 - No bottom statusline (user removed it). No menu bar item when a notch display exists.
 - `heatmapExpanded` toggles 24W↔52W; heatmap sits LEFT of the chart; KPI cards (Total/Peak/Active days) beside it.
 
-## Provider adapter contract
+## Provider contract
 
-`ProviderLimit { provider, label, usedPercent 0-100, resetsAt Date?, detail }` — one class per
-vendor in `Sources/TokenHorizonCore/Vendors/External/Limits/<Vendor>/`, subclassing
+`ProviderLimit { provider, label, usedPercent 0-100, resetsAt Date?, detail }` — one folder per
+provider in `Sources/TokenHorizonCore/Providers/<Vendor>/`, quota adapter subclassing
 `VendorLimitsAdapter`.
 Required overrides: `fetch()` (fatalError if forgotten) and usually `auth` (a `VendorAuth`
-credential chain from `Vendors/Auth/`). Build rows via `limit(label:usedPercent:resetsAt:detail:)`
+credential chain from `Providers/Auth/`). Build rows via `limit(label:usedPercent:resetsAt:detail:)`
 — it stamps the provider and clamps 0-100 automatically. Register by appending to
 `PlanLimitsEngine.vendors`; the `LimitsEngine` base class supplies caching, throttled refresh,
-and `.planLimitsUpdated` notifications. OAuth-style vendors (e.g. `Vendors/Limits/Kimi/`)
-subclass `LimitsEngine` directly. UI/MCP/`/limits` pick new vendors up automatically.
+and `.planLimitsUpdated` notifications. OAuth-style providers (e.g. `Providers/Kimi/`)
+subclass `LimitsEngine` directly. UI/MCP/`/limits` pick new providers up automatically.
 Group-by-provider rendering handles N windows per row.
+Every provider is also `Meterable`: declare `meterTarget` (API base) and override `makeMeter`
+only when the wire format isn't OpenAI-compatible (claude→AnthropicMeter, google→GeminiMeter).
+Self-managed runtimes subclass `Providers/Runtimes/LocalInferenceRuntime` instead and get
+both channels (Prometheus ledger + request meter) from the base.
 
 Auth sources (checked in order):
 - alibaba cookie: `SettingsStore.alibabaCookie` → env `ALIBABA_TOKEN_PLAN_COOKIE` (see `.agents/skills/provider-quota-alibaba/SKILL.md`)
