@@ -58,6 +58,11 @@ Sources/TokenHorizonCore/   portable server-side module (macOS + Linux; Windows 
       Ollama/   OllamaClient (REST + benchmarks), OllamaTelemetryProxy (macOS relay)
       MLX/      MLXTypes, MLXHistory, MLXObserver (macOS)
       VLLM/ SGLang/ LlamaCpp/   runtime adapters (ports, process signatures, counter names)
+  Metering/               RequestMeter base (loopback HTTP relay: forwards to real API,
+                          streams response byte-identical, measures TTFT/stream duration,
+                          emits UsageEvent per completed request) + per-wire-format subclasses
+                          (OpenAICompatibleMeter covers OpenAI + vLLM/SGLang/llama.cpp).
+                          Daemon config: TH_METERS="vendor:port->target,..."; GET /meters.
   Catalog/                ModelCatalog (identity/pricing/benchmarks), ModelsPipeline (off-main
                           merge/filter/sort), ModelRow/ModelTableColumn/ModelFilterScope
   Telemetry/              OllamaClient (proxy via baseURLProvider seam), TelemetryMetrics (OTel on
