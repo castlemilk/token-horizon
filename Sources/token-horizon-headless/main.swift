@@ -66,6 +66,23 @@ if let spec = ProcessInfo.processInfo.environment["TH_METERS"] {
     }
 }
 
+// Settings-managed runtime endpoints with meterPort: auto-start meters for
+// self-hosted runtimes (remote hosts welcome). Cloud providers never appear
+// here — their targets are fixed on the provider class.
+if meteringConsented {
+    for (vendor, endpoints) in SettingsStore.shared.runtimeEndpoints {
+        for endpoint in endpoints {
+            guard let meterPort = endpoint.meterPort,
+                  let url = URL(string: endpoint.url),
+                  !meters.contains(where: { $0.listenPort == meterPort }),
+                  let meter = MeterRegistry.make(vendor: vendor, port: UInt16(meterPort),
+                                                 target: url, store: usageStore) else { continue }
+            meter.start()
+            meters.append(meter)
+        }
+    }
+}
+
 #if os(Linux)
 Platform.systemStats = ProcFSSystemStats.self
 #endif
@@ -132,6 +149,32 @@ func router(_ request: HTTPRequest) -> HTTPResponse {
         } catch {
             return json(["error": "insert failed: \(error)"], status: 500)
         }
+
+    case ("GET", "/permissions"):
+        // OS capability probe with per-platform remediation steps for the
+        // client to display (consent = may we; capabilities = can we).
+        return json(["permissions": encodeToJSONObject(PermissionManager.status())])
+
+    // User-managed self-hosted runtime endpoints (list of url+port objects).
+    case ("POST", "/runtimes/endpoints"):
+        guard let obj = try? JSONSerialization.jsonObject(with: request.body) as? [String: Any],
+              let vendor = obj["vendor"] as? String,
+              let url = obj["url"] as? String else {
+            return json(["error": "body must be {vendor, url, meterPort?, label?}"], status: 400)
+        }
+        let endpoint = RuntimeEndpoint(url: url, meterPort: obj["meterPort"] as? Int,
+                                       label: obj["label"] as? String)
+        SettingsStore.shared.addRuntimeEndpoint(vendor: vendor, endpoint)
+        // Start its meter immediately when requested and consented.
+        var meterStarted = false
+        if let meterPort = endpoint.meterPort, meteringConsented,
+           let meter = MeterRegistry.make(vendor: vendor, port: UInt16(meterPort),
+                                          target: URL(string: url), store: usageStore) {
+            meter.start()
+            meters.append(meter)
+            meterStarted = true
+        }
+        return json(["ok": true, "meter_started": meterStarted])
 
     case ("GET", "/meters"):
         return json(meters.map { [
