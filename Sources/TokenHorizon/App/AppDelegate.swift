@@ -4,9 +4,7 @@ import SwiftUI
 
 final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     let model = UIModel()
-    // Created via the composition root so tests can substitute fakes at the
-    // seam without touching this wiring. Same concrete type, no behavior change.
-    let engine = AppDependencies.makeUsageEngine()
+    let engine = UsageEngine()
     var server: LocalServer!
     var notchPanel: NotchPanel?
     var statusItem: NSStatusItem?
@@ -16,88 +14,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private var surfacesBuilt = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        NSLog("TokenHorizon starting (build %@)", BuildInfo.display)
-        // Single instance on :8765, newest launch wins. A duplicate of our
-        // own build exits quietly (login item + launcher double-fire);
-        // anything else is replaced so a stale binary can never shadow us.
-        switch InstanceGuard.claimPort() {
-        case .proceed:
-            break
-        case .duplicate:
-            NSLog("TokenHorizon: same build already serving :8765 — exiting quietly")
-            NSApp.terminate(nil)
-            return
-        case .conflict:
-            NSLog("TokenHorizon: :8765 held by another process that would not yield — exiting(1) for supervised relaunch")
-            exit(1)
-        }
-        // Zero-latency instant UI hydration from durable disk cache
-        if SettingsStore.shared.historyPersistenceEnabled {
-            if let snap = DurableStore.shared.loadSnapshot() {
-                model.usage = snap
-            }
-            if let hist = DurableStore.shared.loadHistory() {
-                model.historyPoints = hist.points
-                model.historyStreak = hist.streak
-            }
-            if let trends = DurableStore.shared.loadTrends(window: model.trendWindow) {
-                model.trendPoints = trends
-            }
-            if let lims = DurableStore.shared.loadLimits() {
-                model.planLimits = lims.plan
-                model.kimiLimits = lims.kimi
-            }
-        }
-
         // Wire the TokenHorizonCore platform seams to the macOS backends.
         Platform.systemStats = SystemStats.self
         OllamaClient.baseURLProvider = { OllamaTelemetryProxy.shared.proxyURL }
 
         try? "launch at \(Date())\n".write(to: URL(fileURLWithPath: "/tmp/token-horizon-launch.log"), atomically: true, encoding: .utf8)
-        server = LocalServer(statsProvider: { [engine] in engine.snapshot() },
-                             sysProvider: { SystemStats.snapshot() },
-                             historyProvider: { [engine] days in engine.history(days: days) },
-                             trendsProvider: { [engine] window in engine.trendHistory(window: window) },
-                              limitsProvider: { [engine] in
-                                  let plan = PlanLimitsEngine.shared.cachedLimits()
-                                  let kimi = KimiLimitsEngine.shared.cachedLimits()
-                                  // Cached (non-blocking): a cold-start scan
-                                  // must not stall /limits for minutes.
-                                  var all = engine.cachedSnapshot()?.limits ?? []
-                                  if plan.contains(where: { $0.provider == "codex" }) {
-                                      all.removeAll(where: { $0.provider == "codex" })
-                                  }
-                                  all.append(contentsOf: kimi)
-                                  all.append(contentsOf: plan)
-                                  return all
-                              },
-                              processesProvider: { [weak self] in
-                                  if let self {
-                                      let snap = self.model.processSnapshot()
-                                      if !snap.all.isEmpty { return snap }
-                                  }
-                                  let live = SystemStats.processSamples()
-                                  return (live.all, live.byCPU, live.byMem, live.byDisk, live.byNet)
-                              },
-                              heatmapProvider: { [engine] days in engine.activityHeatmap(days: days) },
-                             onEvent: { [weak self] ev in
-                                 EventStore.shared.add(ev)
-                                 DispatchQueue.main.async {
-                                     self?.model.latestEvent = EventStore.shared.latest()
-                                     self?.model.shellEvents = EventStore.shared.recent(limit: 9)
-                                 }
-                                 self?.refreshHeavy()
-                             },
-                             onCacheReset: { [weak self] in
-                                 self?.engine.resetState()
-                                 self?.refresh()
-                                 self?.refreshHistory()
-                                 self?.refreshTrends()
-                             })
+        // One router for every host (core): app and headless serve identical APIs.
+        let router = CoreAPIRouter(engine: engine, usageStore: try? SQLiteUsageStore())
+        router.serverName = "token-horizon"
+        router.metricsText = { TokenHorizonTelemetry.shared.prometheusText() }
+        router.healthExtras = {
+            if let port = OllamaTelemetryProxy.shared.port { return ["ollama_proxy_port": Int(port)] }
+            return [:]
+        }
+        router.processesOverride = { [weak self] in
+            if let self = self, !self.model.allProcesses.isEmpty {
+                return (self.model.allProcesses, self.model.processes, self.model.processesMem, self.model.processesDisk, self.model.processesNet)
+            }
+            return SystemStats.processSamples()
+        }
+        router.onShellEvent = { [weak self] _ in
+            DispatchQueue.main.async {
+                self?.model.latestEvent = EventStore.shared.latest()
+                self?.model.shellEvents = EventStore.shared.recent(limit: 9)
+            }
+            self?.refreshHeavy()
+        }
+        engine.localRuntimeUsage = { RuntimeUsageLedger.shared.contributions() }
+        InferenceMonitor.shared.startPolling()
+        router.startMetersFromEnv()
+        router.startMetersFromSettings()
+        server = LocalServer(router: router)
         server.start()
         _ = TokenHorizonTelemetry.shared
         OllamaTelemetryProxy.shared.start()
-        GatewaySupervisor.shared.start()
 
         model.latestEvent = EventStore.shared.latest()
         model.shellEvents = EventStore.shared.recent(limit: 9)
@@ -107,30 +57,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             let s = SystemStats.snapshot()
             DispatchQueue.main.async { self.model.sys = s }
         }
-        publishWidget()
-        NotificationCenter.default.addObserver(forName: .tokenHorizonWidgetDidChange, object: nil, queue: .main) { [weak self] _ in
-            self?.publishWidget(force: true)
-        }
         refresh()
         refreshHistory()
-        refreshTrends()
         refreshOllama()
         refreshMLX()
         KimiLimitsEngine.shared.refreshIfDue()
         PlanLimitsEngine.shared.refreshIfDue()
         ModelCatalog.shared.ensureLoaded()
-        ModelDiscoveryEngine.shared.start()
         rebuildSurfaces()
         NotificationCenter.default.addObserver(forName: .refreshTrends, object: nil, queue: .main) { [weak self] _ in
             self?.refreshTrends()
         }
         NotificationCenter.default.addObserver(forName: .refreshModelExtras, object: nil, queue: .main) { [weak self] _ in
             self?.refreshOllama()
-        }
-        NotificationCenter.default.addObserver(forName: .ollamaTelemetryUpdated, object: nil, queue: .main) { [weak self] _ in
-            self?.refresh()
-            self?.refreshOllama()
-            self?.refreshTrends()
         }
 
         // Light tick: sys + coarse every 2s
@@ -148,10 +87,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                                       net: sys.netMBps)
                     self.model.recordCoarse()
                     if self.usingTray {
-                        let memPct = sys.ramUsedGB / max(sys.ramTotalGB, 1) * 100
                         self.statusItem?.button?.title = String(format: "◉ %2.0f%% %2.0f%%",
-                                                                 sys.cpuPercent, memPct)
-                        self.statusItem?.button?.image = StatusIcon.image(cpuPercent: sys.cpuPercent, memPercent: memPct)
+                                                                 sys.cpuPercent,
+                                                                 sys.ramUsedGB / max(sys.ramTotalGB, 1) * 100)
                     }
                 }
             }
@@ -187,68 +125,46 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             let limits = (note.object as? [ProviderLimit]) ?? PlanLimitsEngine.shared.cachedLimits()
             self?.model.planLimits = limits
             LimitNotifier.shared.checkLimits(limits)
-            if let self {
-                DurableStore.shared.saveLimits(plan: limits, kimi: self.model.kimiLimits)
-            }
         }
         NotificationCenter.default.addObserver(forName: .kimiLimitsUpdated, object: nil, queue: .main) { [weak self] note in
             let limits = (note.object as? [ProviderLimit]) ?? KimiLimitsEngine.shared.cachedLimits()
             self?.model.kimiLimits = limits
             LimitNotifier.shared.checkLimits(limits)
-            if let self {
-                DurableStore.shared.saveLimits(plan: self.model.planLimits, kimi: limits)
-            }
         }
         NotificationCenter.default.addObserver(forName: NSNotification.Name("TokenHorizonProcessMonitoringDidChange"), object: nil, queue: .main) { [weak self] note in
             guard let self else { return }
-            if (note.object as? Bool) == true {
-                self.refreshHeavy()
+            if (note.object as? Bool) == false {
+                self.model.allProcesses = []
+                self.model.processes = []
+                self.model.processesMem = []
+                self.model.processesDisk = []
+                self.model.processesNet = []
             }
+            self.refreshHeavy()
         }
         NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { [weak self] _ in
             self?.rebuildSurfaces()
         }
-        NotificationCenter.default.addObserver(forName: .tokenHorizonSurfaceDidChange, object: nil, queue: .main) { [weak self] _ in
-            self?.rebuildSurfaces()
-        }
-    }
-
-    /// Surface precedence: TOKEN_HORIZON_FORCE_TRAY=1 (escape hatch) >
-    /// Settings surfaceMode > auto-detect (notch screen present?).
-    enum ActiveSurface { case notch, tray }
-
-    func resolveSurface() -> ActiveSurface {
-        if ProcessInfo.processInfo.environment["TOKEN_HORIZON_FORCE_TRAY"] == "1" { return .tray }
-        switch SettingsStore.shared.surfaceMode {
-        case .tray: return .tray
-        case .notch: return .notch
-        case .auto: return hasNotch ? .notch : .tray
-        }
     }
 
     private var hasNotch: Bool {
-        NSScreen.screens.contains { $0.safeAreaInsets.top > 0 }
+        if ProcessInfo.processInfo.environment["TOKEN_HORIZON_FORCE_TRAY"] == "1" { return false }
+        return NSScreen.screens.contains { $0.safeAreaInsets.top > 0 }
     }
 
     func rebuildSurfaces() {
-        let surface = resolveSurface()
-        let extraTray = SettingsStore.shared.showTrayIcon
-        let wantTray = (surface == .tray) || extraTray
-        let wantNotch = (surface == .notch)
-        if surfacesBuilt, wantTray == usingTray, wantNotch == (notchPanel != nil) { return }
+        let wantTray = !hasNotch
+        if surfacesBuilt, wantTray == usingTray { return }
         surfacesBuilt = true
         usingTray = wantTray
 
         if wantTray {
-            if statusItem == nil { setupStatusItem() }
+            notchPanel?.orderOut(nil)
+            notchPanel = nil
+            setupStatusItem()
         } else {
             removeStatusItem()
-        }
-
-        if wantNotch {
-            // Exclusive-notch closes the dashboard window (tray→notch
-            // transition); with both surfaces the window is independent.
-            if !extraTray { closeDashboard() }
+            closeDashboard()
             if notchPanel == nil {
                 let panel = NotchPanel(model: model)
                 panel.relayout(expanded: false)
@@ -258,9 +174,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                 notchPanel?.relayout(expanded: false)
                 notchPanel?.orderFrontRegardless()
             }
-        } else {
-            notchPanel?.orderOut(nil)
-            notchPanel = nil
         }
     }
 
@@ -269,13 +182,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         if let button = item.button {
             button.font = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .medium)
             button.title = "◉ …"
-            button.image = StatusIcon.image(cpuPercent: 0, memPercent: 0)
         }
         let pop = NSPopover()
         pop.contentSize = NSSize(width: 560, height: 680)
         pop.behavior = .transient
         pop.appearance = NSAppearance(named: .darkAqua)
-        let wrap = FirstMouseHostingController(rootView:
+        let wrap = NSHostingController(rootView:
             DashboardTabs(model: model, compact: false)
                 .padding(14)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -299,10 +211,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         guard let button = statusItem?.button, let pop = popover else { return }
         if pop.isShown {
             pop.close()
+            clearProcessSamples()
         } else {
             pop.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
-            NSApp.activate(ignoringOtherApps: true)
-            pop.contentViewController?.view.window?.makeKey()
             refreshHeavy()
         }
     }
@@ -322,12 +233,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             w.center()
             // NSHostingView set as contentView auto-fills the window; sizingOptions=[]
             // stops it from pushing the window size back from SwiftUI's ideal size.
-            let host = FirstMouseHostingView(rootView:
+            let host = NSHostingView(rootView:
                 DashboardTabs(model: model, compact: false)
                     .padding(16)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             )
-            host.sizingOptions = []
+            if #available(macOS 13.0, *) { host.sizingOptions = [] }
             w.contentView = host
             dashboardWindow = w
             window = w
@@ -340,47 +251,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private func closeDashboard() {
         dashboardWindow?.close()
         dashboardWindow = nil
-    }
-
-    private func publishWidget(force: Bool = false) {
-        let usage = model.usage
-        let history = model.historyPoints
-        let hourly = model.hourTrendPoints
-        var limits = usage.limits
-        if model.planLimits.contains(where: { $0.provider == "codex" }) {
-            limits.removeAll { $0.provider == "codex" }
-        }
-        limits += model.planLimits + model.kimiLimits
-        WidgetBridge.shared.publish(usage: usage, history: history, hourly: hourly,
-                                    limits: limits, force: force)
-    }
-
-    func application(_ application: NSApplication, open urls: [URL]) {
-        for url in urls where url.scheme == "tokenhorizon" {
-            switch url.host {
-            case "dashboard":
-                openDashboard()
-            case "window":
-                // tokenhorizon://window?value=hours|days|weeks — same effect as
-                // the widget picker's link.
-                guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
-                      let value = components.queryItems?.first(where: { $0.name == "value" })?.value,
-                      let window = WidgetSnapshot.windowValue(from: value) else { continue }
-                var prefs = SettingsStore.shared.widgetPreferences
-                prefs.window = window
-                SettingsStore.shared.widgetPreferences = prefs
-            case "page":
-                // tokenhorizon://page?value=next|prev|<index> — carousel nav.
-                guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
-                      let value = components.queryItems?.first(where: { $0.name == "value" })?.value else { continue }
-                var prefs = SettingsStore.shared.widgetPreferences
-                guard let target = WidgetSnapshot.pageValue(from: value, current: prefs.page) else { continue }
-                prefs.page = target
-                SettingsStore.shared.widgetPreferences = prefs
-            default:
-                continue
-            }
-        }
+        if !hasNotch { clearProcessSamples() }
     }
 
     func refresh() {
@@ -390,43 +261,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     func refreshHeavy() {
         KimiLimitsEngine.shared.refreshIfDue(maxAge: 30)
         PlanLimitsEngine.shared.refreshIfDue(maxAge: 30)
+        // Process enumeration runs only while the process table is visible.
+        let sampleProcesses = processMonitoringActive
         DispatchQueue.global(qos: .utility).async { [weak self] in
             guard let self else { return }
-            let usage = self.engine.snapshot()
-            let procs = SystemStats.processSamples()
-            let containers = DockerObserver.sampleContainers()
+            let usage = engine.snapshot()
+            let procs = sampleProcesses ? SystemStats.processSamples() : nil
             DispatchQueue.main.async {
                 self.model.usage = usage
-                self.publishWidget()
-                self.model.storeProcesses(all: procs.all, byCPU: procs.byCPU, byMem: procs.byMem,
-                                          byDisk: procs.byDisk, byNet: procs.byNet)
-                self.model.dockerContainers = containers
-                LeaderboardStore.shared.syncLocal(snapshot: usage, history: self.model.historyPoints, streak: self.model.historyStreak)
-                self.model.leaderboardRankings = LeaderboardStore.shared.rankings(for: .today)
-
-                if SettingsStore.shared.leaderboardAutoSync {
-                    // Cloud backend preferred: edge-cached reads + TTL/change-gated
-                    // writes. Sheets stays as the legacy fallback. Both paths are
-                    // policy-gated inside the store (no per-tick network hammer)
-                    // and rankings always serve instantly from memory.
-                    if SettingsStore.shared.leaderboardCloudConfigured {
-                        LeaderboardStore.shared.publishToCloud { _ in }
-                        LeaderboardStore.shared.pullFromCloud { _ in
-                            DispatchQueue.main.async {
-                                self.model.leaderboardRankings = LeaderboardStore.shared.rankings(for: .today)
-                            }
-                        }
-                    } else if !SettingsStore.shared.leaderboardSheetsURL.isEmpty {
-                        LeaderboardStore.shared.publishToGoogleSheet { _ in }
-                        LeaderboardStore.shared.pullFromGoogleSheet { _ in
-                            DispatchQueue.main.async {
-                                self.model.leaderboardRankings = LeaderboardStore.shared.rankings(for: .today)
-                            }
-                        }
-                    }
+                if let procs {
+                    guard self.processMonitoringActive else { return }
+                    self.model.allProcesses = procs.all
+                    self.model.processes = procs.byCPU
+                    self.model.processesMem = procs.byMem
+                    self.model.processesDisk = procs.byDisk
+                    self.model.processesNet = procs.byNet
                 }
             }
         }
+    }
+
+    private var processMonitoringActive: Bool {
+        if dashboardWindow?.isVisible == true { return true }
+        if hasNotch { return model.notchExpanded }
+        return popover?.isShown == true || dashboardWindow?.isVisible == true
+    }
+
+    private func clearProcessSamples() {
+        model.allProcesses = []
+        model.processes = []
+        model.processesMem = []
+        model.processesDisk = []
+        model.processesNet = []
     }
 
     func refreshTrends() {
@@ -434,16 +300,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         DispatchQueue.global(qos: .utility).async { [weak self] in
             guard let self else { return }
             let points = engine.trendHistory(window: window)
-            // Hourly series feeds the widget's 24H chart window; fetched on the
-            // 60s trends tick (trendHistory persists to disk — keep it off the
-            // 5s heavy tick).
-            let hourly = engine.trendHistory(window: .day)
             DispatchQueue.main.async {
                 self.model.trendPoints = points
-                self.model.hourTrendPoints = hourly
-                // Republish so the widget's 1H window reflects the fresh
-                // hourly series on the first trends tick after launch.
-                self.publishWidget()
             }
         }
     }
@@ -452,13 +310,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         DispatchQueue.global(qos: .utility).async { [weak self] in
             guard let self else { return }
             let result = engine.history(days: 370)
-            let heatmap = engine.activityHeatmap(days: 28)
             DispatchQueue.main.async {
                 self.model.historyPoints = result.points
                 self.model.historyStreak = result.streak
-                LeaderboardStore.shared.syncLocal(snapshot: self.model.usage, history: result.points,
-                                                  streak: result.streak, heatmap: heatmap)
-                self.model.leaderboardRankings = LeaderboardStore.shared.rankings(for: .today)
             }
         }
     }
@@ -486,8 +340,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                     paramSize: param.isEmpty ? nil : param,
                     quant: quant.isEmpty ? nil : quant,
                     isLocal: true,
-                    capabilities: m.capabilities,
-                    localModelName: m.name
+                    capabilities: m.capabilities
                 )
             }
             DispatchQueue.main.async {
@@ -509,12 +362,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
-        ModelDiscoveryEngine.shared.stop()
         OllamaTelemetryProxy.shared.stop()
-        GatewaySupervisor.shared.stop()
-        // Exact parser-state persistence for fast next boot (throttled to
-        // 60s during the run; a few hundred ms here is invisible on quit).
-        DurableStore.shared.flushEngineState()
         TokenHorizonTelemetry.shared.shutdown()
     }
 }

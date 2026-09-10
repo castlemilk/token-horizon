@@ -63,6 +63,23 @@ public enum ProcFSSystemStats: SystemStatsProviding {
         return (all, byCPU, byMem, [], [])
     }
 
+    public static func killProcess(pid: Int32, signal: Int32 = SIGTERM) -> Bool {
+        kill(pid, signal) == 0
+    }
+
+    public static func processDetail(pid: Int32) -> ProcDetail? {
+        guard let sample = psSamples().first(where: { $0.pid == pid }) else { return nil }
+        let stat = (try? String(contentsOfFile: "/proc/\(pid)/stat", encoding: .utf8)) ?? ""
+        let tail = stat.split(separator: ")").last.map(String.init) ?? ""
+        let fields = tail.split(separator: " ")
+        let state = fields.count > 0 ? String(fields[0]) : "?"
+        let nice = fields.count > 16 ? Int(fields[16]) ?? 0 : 0
+        return ProcDetail(pid: pid, ppid: sample.ppid, cpu: sample.cpu,
+                          memPercent: 0, memMB: sample.memMB, virtMB: 0,
+                          etime: "", user: sample.user, threads: sample.threads,
+                          state: state, nice: nice, command: sample.command)
+    }
+
     // MARK: - /proc readers
 
     private static func cpuPercent() -> Double {
