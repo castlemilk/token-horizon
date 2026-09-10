@@ -282,6 +282,28 @@ public final class CoreAPIRouter {
                 return dict
             })
 
+        case ("GET", "/runtimes/history"):
+            // Bounded per-runtime series (fine per-poll / coarse 30s rollups):
+            // ?vendor=mlx&coarse=0|1 — the MLXHistory feature, for every runtime.
+            let params = Self.queryParams(query)
+            guard let vendor = params["vendor"],
+                  let history = InferenceMonitor.shared.history(vendor: vendor) else {
+                return Self.json(["error": "unknown vendor or no history yet"], status: 404)
+            }
+            let points = params["coarse"] == "1" ? history.coarse : history.fine
+            return Self.json([
+                "vendor": vendor,
+                "points": points.map { p -> [String: Any] in
+                    var dict: [String: Any] = ["timestamp": p.timestamp.timeIntervalSince1970]
+                    if let v = p.tokPerSec { dict["tok_per_sec"] = v }
+                    if let v = p.promptTokPerSec { dict["prompt_tok_per_sec"] = v }
+                    if let v = p.cpuPercent { dict["cpu_percent"] = v }
+                    if let v = p.memMB { dict["mem_mb"] = v }
+                    if let v = p.loadedModels { dict["loaded_models"] = v }
+                    return dict
+                },
+            ])
+
         case ("GET", "/processes"):
             guard let stats = Platform.systemStats else {
                 return Self.json(["error": "no system stats provider on this platform"], status: 404)
