@@ -76,6 +76,8 @@ Sources/TokenHorizonCore/   portable server-side module (macOS + Linux; Windows 
     Linux/    ProcFSSystemStats (/proc+ps), LinuxPaths (XDG), credential stub
     Windows/  WindowsPaths (APPDATA), credential stub
 Sources/token-horizon-headless/  cross-platform daemon: same loopback API as the macOS app, no UI
+ui/                              cross-platform desktop UI: SvelteKit (TS, adapter-static SPA, no
+                                 Tailwind) + Tauri v2 shell; thin client of the loopback API
 Sources/CSQLite/                 system sqlite3 module-map shim (non-macOS only)
 Sources/TokenHorizon/            macOS app — UI + lifecycle only (server = core POSIX transport)
   main.swift            AppKit entry, .accessory activation policy
