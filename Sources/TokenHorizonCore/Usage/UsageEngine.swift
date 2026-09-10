@@ -16,13 +16,35 @@ public final class UsageEngine {
     private var kimiFiles: [String: AdditiveFileState] = [:]
     private var dirCache: [String: (mtime: Date, files: [String])] = [:]
 
+    /// One 15-minute bucket: compat aggregate (`tokens`, `cost`) + granular split.
+    /// `tokens` preserves each source's canonical total (e.g. codex display tokens
+    /// exclude cached/reasoning); `breakdown` carries the full type detail.
+    public struct BucketEntry {
+        public var tokens = 0
+        public var cost = 0.0
+        public var breakdown = TokenBreakdown()
+
+        public init() {}
+    }
+
+    /// Per-model accumulator for JSONL sources.
+    public struct ModelAccum {
+        public var all = 0
+        public var today = 0
+        public var cost = 0.0
+        public var breakdown = TokenBreakdown()
+
+        public init() {}
+    }
+
     public struct AdditiveFileState {
         public var offset: UInt64 = 0
         public var allTokens: Int = 0
         public var allCost: Double = 0
         public var cacheRead: Int = 0
-        public var buckets: [Int: (tokens: Int, cost: Double)] = [:]
-        public var models: [String: (all: Int, today: Int, cost: Double)] = [:]
+        public var breakdown = TokenBreakdown()
+        public var buckets: [Int: BucketEntry] = [:]
+        public var models: [String: ModelAccum] = [:]
     }
 
     public struct CodexWatermark {
@@ -55,7 +77,8 @@ public final class UsageEngine {
         public var watermark = CodexWatermark()
         public var last = CodexWatermark()
         public var allTokens: Int = 0
-        public var buckets: [Int: Int] = [:]
+        public var breakdown = TokenBreakdown()
+        public var buckets: [Int: BucketEntry] = [:]
         public var rate: CodexRate?
         public var modelTokens: Int = 0
     }
@@ -95,7 +118,7 @@ public final class UsageEngine {
         lock.lock()
         defer { lock.unlock() }
         _ = collectLocked()
-        let merged = mergedHourlyLocked()
+        let merged = mergedBucketsLocked()
 
         let cal = Calendar.current
         var points: [HistoryPoint] = []
@@ -119,20 +142,20 @@ public final class UsageEngine {
         lock.lock()
         defer { lock.unlock() }
         _ = collectLocked()
-        let merged = mergedHourlyLocked()
+        let merged = mergedBucketsLocked()
 
         let spec = window.spec
         var points: [HistoryPoint] = []
-        let nowHour = currentHour()
+        let nowBucket = currentBucket()
         let today = todayBucket()
 
         for i in (0..<spec.count).reversed() {
             let start: Int
             let end: Int
             if !spec.dailyAligned {
-                if spec.seconds == 3600 {
-                    start = nowHour - i * 3600
-                    end = start + 3600
+                if spec.seconds == Self.bucketSeconds {
+                    start = nowBucket - i * Self.bucketSeconds
+                    end = start + Self.bucketSeconds
                 } else {
                     start = today - i * spec.seconds
                     end = start + spec.seconds
@@ -141,48 +164,53 @@ public final class UsageEngine {
                 start = today - i * 86_400
                 end = start + 86_400
             }
-            points.append(aggregate(merged, from: start, to: min(end, currentHour() + 3600)))
+            points.append(aggregate(merged, from: start, to: min(end, currentBucket() + Self.bucketSeconds)))
         }
         return points
     }
 
-    private func aggregate(_ merged: [Int: [String: (t: Int, c: Double)]], from: Int, to: Int) -> HistoryPoint {
+    private func aggregate(_ merged: [Int: [String: BucketEntry]], from: Int, to: Int) -> HistoryPoint {
         var byTool: [String: Int] = [:]
         var tokens = 0
         var cost = 0.0
-        for (hour, tools) in merged where hour >= from && hour < to {
+        var breakdown = TokenBreakdown()
+        for (bucket, tools) in merged where bucket >= from && bucket < to {
             for (tool, v) in tools {
-                byTool[tool, default: 0] += v.t
-                tokens += v.t
-                cost += v.c
+                byTool[tool, default: 0] += v.tokens
+                tokens += v.tokens
+                cost += v.cost
+                breakdown.add(v.breakdown)
             }
         }
-        return HistoryPoint(day: from, tokens: tokens, cost: cost, byTool: byTool)
+        return HistoryPoint(day: from, tokens: tokens, cost: cost, byTool: byTool, breakdown: breakdown)
     }
 
-    private func dayTokens(_ merged: [Int: [String: (t: Int, c: Double)]], _ dayStart: Int) -> Int {
+    private func dayTokens(_ merged: [Int: [String: BucketEntry]], _ dayStart: Int) -> Int {
         var total = 0
-        for (hour, tools) in merged where hour >= dayStart && hour < dayStart + 86_400 {
-            total += tools.values.reduce(0) { $0 + $1.t }
+        for (bucket, tools) in merged where bucket >= dayStart && bucket < dayStart + 86_400 {
+            total += tools.values.reduce(0) { $0 + $1.tokens }
         }
         return total
     }
 
-    private func mergedHourlyLocked() -> [Int: [String: (t: Int, c: Double)]] {
-        var merged: [Int: [String: (t: Int, c: Double)]] = [:]
-        func add(_ hour: Int, _ tool: String, _ tokens: Int, _ cost: Double) {
-            guard tokens > 0 || cost > 0 else { return }
-            let prev = merged[hour]?[tool] ?? (0, 0.0)
-            merged[hour, default: [:]][tool] = (prev.t + tokens, prev.c + cost)
+    private func mergedBucketsLocked() -> [Int: [String: BucketEntry]] {
+        var merged: [Int: [String: BucketEntry]] = [:]
+        func add(_ bucket: Int, _ tool: String, _ entry: BucketEntry) {
+            guard entry.tokens > 0 || entry.cost > 0 else { return }
+            var prev = merged[bucket, default: [:]][tool] ?? BucketEntry()
+            prev.tokens += entry.tokens
+            prev.cost += entry.cost
+            prev.breakdown.add(entry.breakdown)
+            merged[bucket, default: [:]][tool] = prev
         }
-        for (_, st) in claudeFiles { for (h, b) in st.buckets { add(h, "claude", b.tokens, b.cost) } }
-        for (_, st) in kimiFiles { for (h, b) in st.buckets { add(h, "kimi", b.tokens, b.cost) } }
+        for (_, st) in claudeFiles { for (h, b) in st.buckets { add(h, "claude", b) } }
+        for (_, st) in kimiFiles { for (h, b) in st.buckets { add(h, "kimi", b) } }
         for (key, st) in genericFiles {
             let tool = key.split(separator: "::", maxSplits: 1).first.map(String.init) ?? "other"
-            for (h, b) in st.buckets { add(h, tool, b.tokens, b.cost) }
+            for (h, b) in st.buckets { add(h, tool, b) }
         }
-        for (_, st) in codexFiles { for (h, tokens) in st.buckets { add(h, "codex", tokens, 0) } }
-        opencodePerDay { day, tokens, cost in add(day, "opencode", tokens, cost) }
+        for (_, st) in codexFiles { for (h, b) in st.buckets { add(h, "codex", b) } }
+        opencodePerBucket { bucket, entry in add(bucket, "opencode", entry) }
         return merged
     }
 
@@ -199,21 +227,29 @@ public final class UsageEngine {
         }
     }
 
-    private func opencodePerDay(_ handler: (Int, Int, Double) -> Void) {
+    private func opencodePerBucket(_ handler: (Int, BucketEntry) -> Void) {
         guard let db = openDB() else { return }
         let sql = """
         SELECT time_created,
-               COALESCE(tokens_input+tokens_output+tokens_reasoning+tokens_cache_read+tokens_cache_write,0),
-               COALESCE(cost,0)
+               COALESCE(tokens_input,0), COALESCE(tokens_output,0),
+               COALESCE(tokens_reasoning,0), COALESCE(tokens_cache_read,0),
+               COALESCE(tokens_cache_write,0), COALESCE(cost,0)
         FROM session
         """
         guard let stmt = prepare(db, sql) else { return }
         while sqlite3_step(stmt) == SQLITE_ROW {
             let createdMs = sqlite3_column_double(stmt, 0)
-            let tokens = Int(sqlite3_column_int64(stmt, 1))
-            let cost = sqlite3_column_double(stmt, 2)
-            let hour = Int(createdMs / 1000 / 3600) * 3600
-            handler(hour, tokens, cost)
+            var entry = BucketEntry()
+            entry.breakdown = TokenBreakdown(
+                input: Int(sqlite3_column_int64(stmt, 1)),
+                output: Int(sqlite3_column_int64(stmt, 2)),
+                reasoning: Int(sqlite3_column_int64(stmt, 3)),
+                cacheRead: Int(sqlite3_column_int64(stmt, 4)),
+                cacheWrite: Int(sqlite3_column_int64(stmt, 5)))
+            entry.tokens = entry.breakdown.total
+            entry.cost = sqlite3_column_double(stmt, 6)
+            let bucket = bucketStart(Int(createdMs / 1000))
+            handler(bucket, entry)
         }
         sqlite3_finalize(stmt)
     }
@@ -227,11 +263,15 @@ public final class UsageEngine {
             tools.append(ToolUsage(tool: "opencode",
                                    tokensToday: oc.todayTokens, tokensAllTime: oc.allTokens,
                                    costToday: oc.todayCost, costAllTime: oc.allCost,
-                                   cacheReadAll: oc.cacheRead))
+                                   cacheReadAll: oc.cacheRead,
+                                   breakdownToday: oc.breakdownToday,
+                                   breakdownAll: oc.breakdownAll))
             snap.tokensToday += oc.todayTokens
             snap.costToday += oc.todayCost
             snap.tokensAllTime += oc.allTokens
             snap.costAllTime += oc.allCost
+            snap.breakdownToday.add(oc.breakdownToday)
+            snap.breakdownAll.add(oc.breakdownAll)
             snap.recentSessions = oc.sessions
             snap.models = modelUsage()
         }
@@ -242,15 +282,20 @@ public final class UsageEngine {
             tools.append(ToolUsage(tool: "claude",
                                    tokensToday: claude.todayTokens, tokensAllTime: claude.allTokens,
                                    costToday: claude.todayCost, costAllTime: claude.allCost,
-                                   cacheReadAll: claude.cacheRead))
+                                   cacheReadAll: claude.cacheRead,
+                                   breakdownToday: claude.breakdownToday,
+                                   breakdownAll: claude.breakdownAll))
             snap.tokensToday += claude.todayTokens
             snap.costToday += claude.todayCost
             snap.tokensAllTime += claude.allTokens
             snap.costAllTime += claude.allCost
+            snap.breakdownToday.add(claude.breakdownToday)
+            snap.breakdownAll.add(claude.breakdownAll)
             for (model, v) in claude.perModel {
                 snap.models.append(ModelUsage(provider: "claude", model: model,
                                               tokensAll: v.all, tokensToday: v.today, cost: v.cost,
-                                              messages: 0, free: v.cost < 0.0001, cacheReadAll: 0))
+                                              messages: 0, free: v.cost < 0.0001, cacheReadAll: 0,
+                                              breakdown: v.breakdown))
             }
         }
 
@@ -264,11 +309,24 @@ public final class UsageEngine {
                 detail: ""))
         }
         if codexToday.all > 0 {
+            var codexBreakdownAll = TokenBreakdown()
+            var codexBreakdownToday = TokenBreakdown()
+            let codexTodayStart = todayBucket()
+            for (_, st) in codexFiles {
+                codexBreakdownAll.add(st.breakdown)
+                for (h, b) in st.buckets where h >= codexTodayStart {
+                    codexBreakdownToday.add(b.breakdown)
+                }
+            }
             tools.append(ToolUsage(tool: "codex",
                                    tokensToday: codexToday.today, tokensAllTime: codexToday.all,
-                                   costToday: 0, costAllTime: 0))
+                                   costToday: 0, costAllTime: 0,
+                                   breakdownToday: codexBreakdownToday,
+                                   breakdownAll: codexBreakdownAll))
             snap.tokensToday += codexToday.today
             snap.tokensAllTime += codexToday.all
+            snap.breakdownToday.add(codexBreakdownToday)
+            snap.breakdownAll.add(codexBreakdownAll)
             let codexTokens = codexFiles.values.reduce(0) { $0 + $1.modelTokens }
             if codexTokens > 0 {
                 snap.models.append(ModelUsage(provider: "codex", model: "codex (model n/a)",
@@ -283,20 +341,26 @@ public final class UsageEngine {
         for (_, st) in kimiFiles {
             kimi.allTokens += st.allTokens
             kimi.allCost += st.allCost
+            kimi.breakdownAll.add(st.breakdown)
             for (h, b) in st.buckets where h >= kimiToday {
                 kimi.todayTokens += b.tokens
                 kimi.todayCost += b.cost
+                kimi.breakdownToday.add(b.breakdown)
             }
         }
         kimi.trackedAny = !kimiFiles.isEmpty
         if kimi.allTokens > 0 || kimi.trackedAny {
             tools.append(ToolUsage(tool: "kimi",
                                    tokensToday: kimi.todayTokens, tokensAllTime: kimi.allTokens,
-                                   costToday: kimi.todayCost, costAllTime: kimi.allCost))
+                                   costToday: kimi.todayCost, costAllTime: kimi.allCost,
+                                   breakdownToday: kimi.breakdownToday,
+                                   breakdownAll: kimi.breakdownAll))
             snap.tokensToday += kimi.todayTokens
             snap.costToday += kimi.todayCost
             snap.tokensAllTime += kimi.allTokens
             snap.costAllTime += kimi.allCost
+            snap.breakdownToday.add(kimi.breakdownToday)
+            snap.breakdownAll.add(kimi.breakdownAll)
             snap.models.append(ModelUsage(provider: "kimi", model: "kimi (model n/a)",
                                           tokensAll: kimi.allTokens, tokensToday: kimi.todayTokens,
                                           cost: kimi.allCost, messages: 0, free: kimi.allCost < 0.0001))
@@ -308,15 +372,20 @@ public final class UsageEngine {
                 tools.append(ToolUsage(tool: source.tool,
                                        tokensToday: r.todayTokens, tokensAllTime: r.allTokens,
                                        costToday: r.todayCost, costAllTime: r.allCost,
-                                       cacheReadAll: r.cacheRead))
+                                       cacheReadAll: r.cacheRead,
+                                       breakdownToday: r.breakdownToday,
+                                       breakdownAll: r.breakdownAll))
                 snap.tokensToday += r.todayTokens
                 snap.costToday += r.todayCost
                 snap.tokensAllTime += r.allTokens
                 snap.costAllTime += r.allCost
+                snap.breakdownToday.add(r.breakdownToday)
+                snap.breakdownAll.add(r.breakdownAll)
                 for (model, v) in r.perModel {
                     snap.models.append(ModelUsage(provider: source.tool, model: model,
                                                   tokensAll: v.all, tokensToday: v.today, cost: v.cost,
-                                                  messages: 0, free: v.cost < 0.0001))
+                                                  messages: 0, free: v.cost < 0.0001,
+                                                  breakdown: v.breakdown))
                 }
             }
         }
@@ -337,23 +406,33 @@ public final class UsageEngine {
         var allTokens = 0
         var allCost = 0.0
         var cacheRead = 0
-        var perModel: [String: (all: Int, today: Int, cost: Double)] = [:]
+        var breakdownAll = TokenBreakdown()
+        var breakdownToday = TokenBreakdown()
+        var perModel: [String: ModelAccum] = [:]
+    }
+
+    /// Bucket granularity: 15 minutes (epoch-aligned keys). "Today" compares
+    /// bucket keys against local-midnight epoch; history/trends re-aggregate.
+    public static let bucketSeconds = 900
+
+    private func bucketStart(_ epochSeconds: Int) -> Int {
+        epochSeconds / Self.bucketSeconds * Self.bucketSeconds
     }
 
     private func todayBucket() -> Int {
         Int(Calendar.current.startOfDay(for: Date()).timeIntervalSince1970)
     }
 
-    private func hourFromTimestamp(_ ts: String?) -> Int {
-        guard let ts else { return currentHour() }
+    private func bucketFromTimestamp(_ ts: String?) -> Int {
+        guard let ts else { return currentBucket() }
         var date = isoFormatter.date(from: ts)
         if date == nil { date = isoFallback.date(from: ts) }
-        if let d = date { return Int(d.timeIntervalSince1970 / 3600) * 3600 }
-        return currentHour()
+        if let d = date { return bucketStart(Int(d.timeIntervalSince1970)) }
+        return currentBucket()
     }
 
-    private func currentHour() -> Int {
-        Int(Date().timeIntervalSince1970 / 3600) * 3600
+    private func currentBucket() -> Int {
+        bucketStart(Int(Date().timeIntervalSince1970))
     }
 
     private func cachedFiles(in dir: String, suffix: String = ".jsonl") -> [String] {
@@ -376,7 +455,7 @@ public final class UsageEngine {
     private func scanAdditive(dirs: [String], state: inout [String: AdditiveFileState], prefix: String) -> SourceResult {
         var out = SourceResult()
         var cacheRead = 0
-        var perModel: [String: (all: Int, today: Int, cost: Double)] = [:]
+        var perModel: [String: ModelAccum] = [:]
         let fm = FileManager.default
         let today = todayBucket()
         var seen = Set<String>()
@@ -401,13 +480,21 @@ public final class UsageEngine {
                     if let p = parseAdditiveLine(Data(line)) {
                         st.allTokens += p.tokens
                         st.allCost += p.cost
-                        st.cacheRead += p.cacheRead
-                        st.buckets[p.hour, default: (0, 0)].tokens += p.tokens
-                        st.buckets[p.hour, default: (0, 0)].cost += p.cost
+                        st.cacheRead += p.breakdown.cacheRead
+                        st.breakdown.add(p.breakdown)
+                        var entry = st.buckets[p.hour] ?? BucketEntry()
+                        entry.tokens += p.tokens
+                        entry.cost += p.cost
+                        entry.breakdown.add(p.breakdown)
+                        st.buckets[p.hour] = entry
                         let modelName = p.model.isEmpty ? (prefix == "agy" ? "gemini-3.7-flash" : "\(prefix)-default") : p.model
                         let isToday = p.hour >= today
-                        let prev = st.models[modelName] ?? (0, 0, 0.0)
-                        st.models[modelName] = (prev.all + p.tokens, prev.today + (isToday ? p.tokens : 0), prev.cost + p.cost)
+                        var accum = st.models[modelName] ?? ModelAccum()
+                        accum.all += p.tokens
+                        accum.today += isToday ? p.tokens : 0
+                        accum.cost += p.cost
+                        accum.breakdown.add(p.breakdown)
+                        st.models[modelName] = accum
                     }
                 }
                 st.offset = st.offset + UInt64(consumable.count)
@@ -422,13 +509,19 @@ public final class UsageEngine {
             out.allTokens += st.allTokens
             out.allCost += st.allCost
             cacheRead += st.cacheRead
+            out.breakdownAll.add(st.breakdown)
             for (model, v) in st.models {
-                let prev = perModel[model] ?? (0, 0, 0.0)
-                perModel[model] = (prev.all + v.all, prev.today + v.today, prev.cost + v.cost)
+                var prev = perModel[model] ?? ModelAccum()
+                prev.all += v.all
+                prev.today += v.today
+                prev.cost += v.cost
+                prev.breakdown.add(v.breakdown)
+                perModel[model] = prev
             }
             for (h, b) in st.buckets where h >= today {
                 out.todayTokens += b.tokens
                 out.todayCost += b.cost
+                out.breakdownToday.add(b.breakdown)
             }
         }
         out.cacheRead = cacheRead
@@ -455,8 +548,13 @@ public final class UsageEngine {
                 let consumable = chunk[chunk.startIndex...lastNewline]
                 for line in consumable.split(separator: UInt8(ascii: "\n")) where !line.isEmpty {
                     if let p = parseKimiLine(Data(line)) {
-                        st.allTokens += p.tokens
-                        st.buckets[p.hour, default: (0, 0)].tokens += p.tokens
+                        st.allTokens += p.breakdown.total
+                        st.cacheRead += p.breakdown.cacheRead
+                        st.breakdown.add(p.breakdown)
+                        var entry = st.buckets[p.hour] ?? BucketEntry()
+                        entry.tokens += p.breakdown.total
+                        entry.breakdown.add(p.breakdown)
+                        st.buckets[p.hour] = entry
                     }
                 }
                 st.offset = st.offset + UInt64(consumable.count)
@@ -488,13 +586,23 @@ public final class UsageEngine {
                 let consumable = chunk[chunk.startIndex...lastNewline]
                 for line in consumable.split(separator: UInt8(ascii: "\n")) where !line.isEmpty {
                     if let parsed = parseCodexLine(Data(line)) {
-                        let deltaTokens = codexAccept(parsed, state: &st)
+                        let delta = codexAccept(parsed, state: &st)
                         if let rate = parsed.rate {
                             st.rate = rate
                         }
-                        if deltaTokens > 0 {
-                            st.allTokens += deltaTokens
-                            st.buckets[parsed.hour, default: 0] += deltaTokens
+                        if delta.displayTokens > 0 {
+                            st.allTokens += delta.displayTokens
+                            st.breakdown.input += delta.input
+                            st.breakdown.output += delta.output
+                            st.breakdown.reasoning += delta.reasoning
+                            st.breakdown.cacheRead += delta.cached
+                            var entry = st.buckets[parsed.hour] ?? BucketEntry()
+                            entry.tokens += delta.displayTokens
+                            entry.breakdown.input += delta.input
+                            entry.breakdown.output += delta.output
+                            entry.breakdown.reasoning += delta.reasoning
+                            entry.breakdown.cacheRead += delta.cached
+                            st.buckets[parsed.hour] = entry
                         }
                     }
                 }
@@ -507,12 +615,13 @@ public final class UsageEngine {
         var todayTokens = 0, allTokens = 0
         for (_, st) in codexFiles {
             allTokens += st.allTokens
-            for (h, v) in st.buckets where h >= today { todayTokens += v }
+            for (h, v) in st.buckets where h >= today { todayTokens += v.tokens }
         }
         return (todayTokens, allTokens)
     }
 
-    private func codexAccept(_ parsed: CodexParsed, state: inout CodexFileState) -> Int {
+    /// Returns the accepted watermark delta (zero watermark when nothing new).
+    private func codexAccept(_ parsed: CodexParsed, state: inout CodexFileState) -> CodexWatermark {
         let prev = state.watermark
         let cur = parsed.totals
 
@@ -520,7 +629,7 @@ public final class UsageEngine {
             let delta = cur.delta(from: prev)
             state.watermark = cur
             state.last = parsed.last
-            return delta.displayTokens
+            return delta
         }
 
         let prevTotal = prev.total
@@ -528,11 +637,11 @@ public final class UsageEngine {
         let lastTotal = state.last.total
         let stale = prevTotal > 0 && curTotal > 0 && lastTotal > 0 &&
             (curTotal * 100 >= prevTotal * 98 || curTotal + lastTotal * 2 >= prevTotal)
-        if stale { return 0 }
+        if stale { return CodexWatermark() }
 
         state.watermark = cur
         state.last = parsed.last
-        return parsed.last.displayTokens
+        return parsed.last
     }
 
     public struct CodexParsed {
@@ -561,7 +670,7 @@ public final class UsageEngine {
 
         guard let totals = watermark(info["total_token_usage"] as? [String: Any]) else { return nil }
         let last = watermark(info["last_token_usage"] as? [String: Any]) ?? totals
-        let hour = hourFromTimestamp(obj["timestamp"] as? String)
+        let hour = bucketFromTimestamp(obj["timestamp"] as? String)
 
         var rate: CodexRate?
         if let rl = payload["rate_limits"] as? [String: Any],
@@ -575,7 +684,7 @@ public final class UsageEngine {
         return CodexParsed(totals: totals, last: last, hour: hour, rate: rate)
     }
 
-    private func parseKimiLine(_ line: Data) -> (tokens: Int, hour: Int)? {
+    private func parseKimiLine(_ line: Data) -> (breakdown: TokenBreakdown, hour: Int)? {
         guard let obj = try? JSONSerialization.jsonObject(with: line) as? [String: Any],
               let message = obj["message"] as? [String: Any],
               let payload = message["payload"] as? [String: Any],
@@ -589,43 +698,42 @@ public final class UsageEngine {
             return 0
         }
 
-        let input = field(["input_other", "inputOther"])
-        let output = field(["output"])
-        let cacheRead = field(["input_cache_read", "inputCacheRead"])
-        let cacheWrite = field(["input_cache_creation", "inputCacheCreation"])
-        let tokens = input + output + cacheRead + cacheWrite
-        guard tokens > 0 else { return nil }
+        let breakdown = TokenBreakdown(
+            input: field(["input_other", "inputOther"]),
+            output: field(["output"]),
+            cacheRead: field(["input_cache_read", "inputCacheRead"]),
+            cacheWrite: field(["input_cache_creation", "inputCacheCreation"]))
+        guard breakdown.total > 0 else { return nil }
 
-        var hour = currentHour()
+        var hour = currentBucket()
         if let ts = obj["timestamp"] as? Double {
-            hour = Int(ts / 3600) * 3600
+            hour = bucketStart(Int(ts))
         } else if let ts = obj["timestamp"] as? String {
-            hour = hourFromTimestamp(ts)
+            hour = bucketFromTimestamp(ts)
         }
-        return (tokens, hour)
+        return (breakdown, hour)
     }
 
-    private func parseAdditiveLine(_ line: Data) -> (tokens: Int, cost: Double, hour: Int, model: String, cacheRead: Int)? {
+    private func parseAdditiveLine(_ line: Data) -> (tokens: Int, cost: Double, hour: Int, model: String, breakdown: TokenBreakdown)? {
         guard let obj = try? JSONSerialization.jsonObject(with: line) as? [String: Any] else { return nil }
         var tokens = 0
         var cost = 0.0
-        var cacheRead = 0
+        var breakdown = TokenBreakdown()
 
         if let usage = (obj["message"] as? [String: Any])?["usage"] as? [String: Any] {
-            tokens += anthropicTokens(usage)
-            cacheRead += (usage["cache_read_input_tokens"] as? Int) ?? 0
+            let b = anthropicBreakdown(usage)
+            tokens += b.total
+            breakdown.add(b)
         }
         for key in ["usage", "token_usage", "usageMetadata", "usage_metadata"] {
             if let usage = obj[key] as? [String: Any] {
-                tokens += anthropicTokens(usage)
-                tokens += openAITokens(usage)
-                tokens += geminiTokens(usage)
-                cacheRead += (usage["cache_read_input_tokens"] as? Int) ?? 0
-                cacheRead += (usage["cached_content_token_count"] as? Int) ?? 0
-                cacheRead += (usage["cachedContentTokenCount"] as? Int) ?? 0
-                if let details = usage["prompt_tokens_details"] as? [String: Any] {
-                    cacheRead += (details["cached_tokens"] as? Int) ?? 0
-                }
+                let a = anthropicBreakdown(usage)
+                let o = openAIBreakdown(usage)
+                let g = geminiBreakdown(usage)
+                tokens += a.total + o.total + g.total
+                breakdown.add(a)
+                breakdown.add(o)
+                breakdown.add(g)
             }
         }
         if let costBlock = obj["cost"] as? [String: Any], let total = costBlock["total"] as? Double {
@@ -644,16 +752,17 @@ public final class UsageEngine {
             }
             if charCount > 0 {
                 tokens = max(1, charCount / 4)
+                breakdown.output += tokens   // char-estimate: attribute as model output
             }
         }
 
-        var hour = currentHour()
+        var hour = currentBucket()
         if let ts = obj["timestamp"] as? String {
-            hour = hourFromTimestamp(ts)
+            hour = bucketFromTimestamp(ts)
         } else if let ts = obj["timestamp"] as? Double {
-            hour = Int(ts > 1e12 ? ts / 1000 / 3600 : ts / 3600) * 3600
+            hour = bucketStart(Int(ts > 1e12 ? ts / 1000 : ts))
         } else if let ts = obj["created_at"] as? String {
-            hour = hourFromTimestamp(ts)
+            hour = bucketFromTimestamp(ts)
         }
         var model = ""
         if let m = (obj["message"] as? [String: Any])?["model"] as? String { model = m }
@@ -666,36 +775,51 @@ public final class UsageEngine {
             }
         }
         guard tokens > 0 || cost > 0 else { return nil }
-        return (tokens, cost, hour, model, cacheRead)
+        return (tokens, cost, hour, model, breakdown)
     }
 
-    private func anthropicTokens(_ usage: [String: Any]) -> Int {
-        var t = 0
-        for key in ["input_tokens", "output_tokens", "cache_creation_input_tokens", "cache_read_input_tokens"] {
-            if let n = usage[key] as? Int, n > 0 { t += n }
-            else if let n = usage[key] as? NSNumber, n.intValue > 0 { t += n.intValue }
-        }
-        return t
+    private func intField(_ usage: [String: Any], _ key: String) -> Int {
+        if let n = usage[key] as? Int, n > 0 { return n }
+        if let n = usage[key] as? NSNumber, n.intValue > 0 { return n.intValue }
+        return 0
     }
 
-    private func openAITokens(_ usage: [String: Any]) -> Int {
-        var t = 0
-        for key in ["prompt_tokens", "completion_tokens"] {
-            if let n = usage[key] as? Int, n > 0 { t += n }
-            else if let n = usage[key] as? NSNumber, n.intValue > 0 { t += n.intValue }
-        }
-        return t
+    /// Anthropic convention: input/output/cache_read/cache_creation.
+    private func anthropicBreakdown(_ usage: [String: Any]) -> TokenBreakdown {
+        TokenBreakdown(
+            input: intField(usage, "input_tokens"),
+            output: intField(usage, "output_tokens"),
+            cacheRead: intField(usage, "cache_read_input_tokens"),
+            cacheWrite: intField(usage, "cache_creation_input_tokens"))
     }
 
-    private func geminiTokens(_ usage: [String: Any]) -> Int {
-        if let total = usage["total_token_count"] as? Int, total > 0 { return total }
-        if let total = usage["totalTokenCount"] as? Int, total > 0 { return total }
-        var t = 0
-        for key in ["prompt_token_count", "promptTokenCount", "candidates_token_count", "candidatesTokenCount"] {
-            if let n = usage[key] as? Int, n > 0 { t += n }
-            else if let n = usage[key] as? NSNumber, n.intValue > 0 { t += n.intValue }
+    /// OpenAI convention: prompt/completion + details.reasoning/cached.
+    private func openAIBreakdown(_ usage: [String: Any]) -> TokenBreakdown {
+        var b = TokenBreakdown(
+            input: intField(usage, "prompt_tokens"),
+            output: intField(usage, "completion_tokens"))
+        if let details = usage["completion_tokens_details"] as? [String: Any] {
+            b.reasoning += intField(details, "reasoning_tokens")
         }
-        return t
+        if let details = usage["prompt_tokens_details"] as? [String: Any] {
+            b.cacheRead += intField(details, "cached_tokens")
+        }
+        return b
+    }
+
+    /// Gemini convention: prompt/candidates/thoughts/cached counts; falls back
+    /// to the bare total (attributed as input) when components are absent.
+    private func geminiBreakdown(_ usage: [String: Any]) -> TokenBreakdown {
+        var b = TokenBreakdown(
+            input: intField(usage, "prompt_token_count") + intField(usage, "promptTokenCount"),
+            output: intField(usage, "candidates_token_count") + intField(usage, "candidatesTokenCount"),
+            reasoning: intField(usage, "thoughts_token_count") + intField(usage, "thoughtsTokenCount"),
+            cacheRead: intField(usage, "cached_content_token_count") + intField(usage, "cachedContentTokenCount"))
+        if b.total == 0 {
+            let total = intField(usage, "total_token_count") + intField(usage, "totalTokenCount")
+            if total > 0 { b.input += total }
+        }
+        return b
     }
 
     private struct OCSums {
@@ -704,6 +828,8 @@ public final class UsageEngine {
         var allTokens = 0
         var allCost = 0.0
         var cacheRead = 0
+        var breakdownAll = TokenBreakdown()
+        var breakdownToday = TokenBreakdown()
         var sessions: [SessionSummary] = []
     }
 
@@ -737,6 +863,14 @@ public final class UsageEngine {
             out.todayTokens = tok
             out.todayCost = cost
         }
+        // Granular type split, all-time and today.
+        let cols = "COALESCE(SUM(tokens_input),0), COALESCE(SUM(tokens_output),0), COALESCE(SUM(tokens_reasoning),0), COALESCE(SUM(tokens_cache_read),0), COALESCE(SUM(tokens_cache_write),0)"
+        if let b = queryBreakdown(db, "SELECT \(cols) FROM session") {
+            out.breakdownAll = b
+        }
+        if let b = queryBreakdown(db, "SELECT \(cols) FROM session WHERE time_created > \(midnightMs)") {
+            out.breakdownToday = b
+        }
         sql = """
         SELECT id, title, cost,
                COALESCE(tokens_input+tokens_output+tokens_reasoning+tokens_cache_read+tokens_cache_write,0),
@@ -758,6 +892,18 @@ public final class UsageEngine {
         return out
     }
 
+    private func queryBreakdown(_ db: OpaquePointer, _ sql: String) -> TokenBreakdown? {
+        guard let stmt = prepare(db, sql) else { return nil }
+        defer { sqlite3_finalize(stmt) }
+        guard sqlite3_step(stmt) == SQLITE_ROW else { return nil }
+        return TokenBreakdown(
+            input: Int(sqlite3_column_int64(stmt, 0)),
+            output: Int(sqlite3_column_int64(stmt, 1)),
+            reasoning: Int(sqlite3_column_int64(stmt, 2)),
+            cacheRead: Int(sqlite3_column_int64(stmt, 3)),
+            cacheWrite: Int(sqlite3_column_int64(stmt, 4)))
+    }
+
     private func modelUsage() -> [ModelUsage] {
         guard let db = openDB() else { return [] }
         let midnightMs = localMidnightUTC() * 1000
@@ -768,7 +914,12 @@ public final class UsageEngine {
                SUM(\(tokensExpr)),
                SUM(CASE WHEN time_created > \(midnightMs) THEN \(tokensExpr) ELSE 0 END),
                COALESCE(SUM(json_extract(data,'$.cost')),0),
-               COUNT(*)
+               COUNT(*),
+               COALESCE(SUM(json_extract(data,'$.tokens.input')),0),
+               COALESCE(SUM(json_extract(data,'$.tokens.output')),0),
+               COALESCE(SUM(json_extract(data,'$.tokens.reasoning')),0),
+               COALESCE(SUM(json_extract(data,'$.tokens.cache.read')),0),
+               COALESCE(SUM(json_extract(data,'$.tokens.cache.write')),0)
         FROM message
         WHERE json_extract(data,'$.role')='assistant'
         GROUP BY 1,2 ORDER BY 3 DESC
@@ -782,9 +933,16 @@ public final class UsageEngine {
                 let tokensToday = Int(sqlite3_column_int64(stmt, 3))
                 let cost = sqlite3_column_double(stmt, 4)
                 let messages = Int(sqlite3_column_int64(stmt, 5))
+                let breakdown = TokenBreakdown(
+                    input: Int(sqlite3_column_int64(stmt, 6)),
+                    output: Int(sqlite3_column_int64(stmt, 7)),
+                    reasoning: Int(sqlite3_column_int64(stmt, 8)),
+                    cacheRead: Int(sqlite3_column_int64(stmt, 9)),
+                    cacheWrite: Int(sqlite3_column_int64(stmt, 10)))
                 out.append(ModelUsage(provider: provider, model: model,
                                       tokensAll: tokensAll, tokensToday: tokensToday,
-                                      cost: cost, messages: messages, free: cost < 0.0001))
+                                      cost: cost, messages: messages, free: cost < 0.0001,
+                                      breakdown: breakdown))
             }
             sqlite3_finalize(stmt)
         }
