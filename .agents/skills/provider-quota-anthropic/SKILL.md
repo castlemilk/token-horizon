@@ -11,16 +11,29 @@ This skill explains how Token Horizon retrieves OAuth tokens and queries Claude 
 
 ---
 
-## 1. Credential Discovery
+## 1. Multi-Account & Credential Discovery
 
-Token Horizon checks two locations:
+Token Horizon automatically discovers all Claude profiles configured on the host:
+- Default directory: `~/.claude`
+- Profile directories matching `~/.claude*` (e.g. `~/.claude-1`, `~/.claude-2`, `~/.claude-work`)
+- Custom directory: `$CLAUDE_CONFIG_DIR`
+- Standard config directory: `~/.config/claude`
 
-1. **Config File**:
-   - Path: `$CLAUDE_CONFIG_DIR/.credentials.json` (defaults to `~/.claude/.credentials.json`).
-   - JSON path: `claudeAiOauth.accessToken` or `oauth.accessToken`.
-2. **macOS Keychain Fallback**:
-   - Command: `/usr/bin/security find-generic-password -s "Claude Code-credentials" -w`
-   - Decodes JSON payload to extract `accessToken`.
+For each discovered profile directory:
+1. **Metadata Discovery**:
+   - Reads `.claude.json` from `<dir>/.claude.json` (or `~/.claude.json` for `~/.claude`).
+   - Extracts `oauthAccount`: `emailAddress`, `displayName`, `organizationName`, `organizationType`, `organizationRateLimitTier`, `hasExtraUsageEnabled`.
+   - Reads `cachedUsageUtilization` as fallback when offline or unauthenticated.
+2. **Access Token Resolution**:
+   - Checks `<dir>/.credentials.json` on disk.
+   - Computes 8-character SHA-256 hash of the expanded path: `SHA256(expandedPath).prefix(8)`
+   - Queries macOS Keychain:
+     - For default `~/.claude`: service `"Claude Code-credentials"` (fallback: `"Claude Code-credentials-\(hash)"`)
+     - For other profiles: service `"Claude Code-credentials-\(hash)"` (fallback: `"Claude Code-credentials"`)
+   - Decodes JSON payload to extract `claudeAiOauth.accessToken` (or `oauth.accessToken`, `claudeOAuth.accessToken`).
+3. **Usage Tracking**:
+   - Automatically scans `projects/` and `transcripts/` across all discovered profile directories.
+   - Computes per-account token consumption and cost alongside overall combined totals.
 
 ---
 
@@ -31,8 +44,13 @@ Token Horizon checks two locations:
   ```http
   Authorization: Bearer <accessToken>
   anthropic-beta: oauth-2025-04-20
+  User-Agent: claude-code/0.2.29
   Accept: application/json
   ```
+* **Rate Limiting & Anti-429 Discipline**:
+  - `ClaudeDiscovery.fetchAllLimits()` queries all discovered accounts **sequentially** with a **100ms pause** between calls rather than concurrent fan-out, avoiding Cloudflare `HTTP 429 Too Many Requests`.
+  - In-memory `lastSuccessfulLiveLimits` caches the last valid live limits per account so transient Cloudflare blips never zero out or downgrade active quotas.
+  - Disk cache entries in `.claude.json` (`cachedUsageUtilization`) older than **2 hours (7,200 seconds)** are discarded as stale to prevent displaying expired days-old limits.
 
 ---
 
@@ -55,11 +73,13 @@ Token Horizon checks two locations:
   "limits": [
     {
       "kind": "weekly_scoped",
+      "group": "weekly",
+      "percent": 51.0,
+      "severity": "normal",
+      "resets_at": "2026-08-30T00:00:00Z",
       "scope": {
-        "model": { "display_name": "Claude 3.7 Sonnet" }
-      },
-      "utilization": 54.0,
-      "resets_at": "2026-08-30T00:00:00Z"
+        "model": { "id": null, "display_name": "Fable" }
+      }
     }
   ]
 }
@@ -67,4 +87,10 @@ Token Horizon checks two locations:
 
 * **5h Window**: Short-term prompt bursting protection.
 * **7d Weekly Window**: Standard subscription rolling quota.
-* **Weekly Model-Scoped**: High-demand models (Sonnet / Opus) with dedicated sub-quotas.
+* **Weekly Model-Scoped**: Per-model sub-quotas (Fable, Sonnet, Opus) under `limits[]`
+  with `kind: "weekly_scoped"`. Live entries carry **`percent`** (older payloads
+  used `utilization`) — the parser accepts both, plus a null `resets_at`.
+  Never treat a missing percent as 0; skip the row. In the Plan Limits table
+  scoped rows ride in the `extra` slot and subtitle (`Fable 51%`) — they must
+  never compete for the burst/cycle slots or their reset dates will hijack the
+  weekly headroom column.

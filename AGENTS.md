@@ -5,24 +5,28 @@ Guide for coding agents working in this repo. Read alongside README.md (user set
 ## Layout
 
 ```
-Sources/TokenHorizon/
-  main.swift            AppKit entry, .accessory activation policy
-  AppDelegate.swift     surfaces (notch vs tray), refresh loops, HTTP wiring, dashboard window
-  Models.swift          UsageSnapshot, ToolUsage, ModelUsage, ProviderLimit, HistoryPoint, TrendWindow, ShellEvent
-  UsageEngine.swift     all token/cost collection (opencode sqlite, claude/codex/kimi/generic JSONL), hourly buckets, history/trends aggregation
-  SystemStats.swift     mach CPU ticks, vm64 RAM, load avg, system I/O, top processes (ps %cpu+rss), narrow MLX process sampling
-  MLXObserver.swift     independent MLX/Ollama runner detection, process-tree telemetry, measured tok/s association
-  MLXHistory.swift      bounded fine samples and online 30-second MLX rollups
-  OllamaTelemetryProxy.swift  in-process localhost Ollama relay, streaming response metrics, bounded telemetry store
-  TelemetryMetrics.swift OpenTelemetry meter with Prometheus text and optional OTLP/HTTP export
-  LocalServer.swift     NWListener HTTP on 127.0.0.1:8765 (stats/history/trends/limits/events/health/metrics)
-  KimiLimitsEngine.swift  Kimi OAuth refresh + usage API
-  PlanLimitsEngine.swift  glm/minimax/opencode-go/alibaba/gemini/claude limit fetchers
-  SettingsStore.swift   ~/.config/token-horizon/settings.json (alibaba cookie)
-  Panels.swift          NotchPanel (hover driver + hysteresis), ring gauges live in Views
-  Views.swift           UIModel, DashboardTabs (shared by notch/popover/window), all tab views, Sparkline/HeatmapGrid/StackedTrends/WingRingGauge
+Sources/TokenHorizon/              # one executableTarget, grouped by feature/domain (not layer)
+  App/                main.swift (AppKit entry, .accessory policy), AppDelegate.swift (surfaces, refresh loops, HTTP wiring, dashboard window), BuildInfo.swift, LaunchAgentCtl.swift
+  Usage/              Models.swift (UsageSnapshot, ToolUsage, ModelUsage, ProviderLimit, HistoryPoint, TrendWindow, ShellEvent), UsageEngine.swift (all token/cost collection, hourly buckets, history/trends aggregation; opencode sqlite is stat-gated, dir listings are TTL-cached per `listingTTL`, agy media dirs pruned per `excludedDirNames`, scan tails version-memoized per `scanVersions`, engine-state saves dirty-gated + throttled per `engineSaveInterval`)
+  Limits/             PlanLimitsEngine.swift (glm/minimax/opencode-go/alibaba/gemini/claude/agy fetchers), KimiLimitsEngine.swift (OAuth refresh + usage API), ClaudeDiscovery.swift (multi-account profiles, keychain, usage API, disk cache staleness), LimitNotifier.swift
+  System/             SystemStats.swift (mach CPU, vm64 RAM, load avg, system I/O, top processes, narrow MLX sampling), DockerObserver.swift (container metrics, CPU%, RSS, VM host PID correlation)
+  LocalModels/        MLXObserver.swift (independent runner detection, process-tree telemetry, measured tok/s), MLXHistory.swift (bounded fine samples + 30s rollups), OllamaTelemetryProxy.swift (loopback relay, streaming metrics, bounded store), OllamaClient.swift, ModelDiscoveryEngine.swift, LocalModelMetadata.swift
+  Catalog/            ModelCatalog.swift, ModelsPipeline.swift (off-main merge + filter + sort + scope counts)
+  Leaderboard/        LeaderboardStore.swift (multi-period rankings, badges, share cards, durable store)
+  Persistence/        DurableStore.swift (~/.config/token-horizon/cache persistence), SettingsStore.swift (settings.json)
+  Discovery/          HomeDiscovery.swift (shared `~/.*` provider-home auto-discovery with 30s-cached $HOME listing)
+  Telemetry/          TelemetryMetrics.swift (OTel meter, Prometheus text, optional OTLP/HTTP export; engine tick + files-tracked instruments)
+  Server/             LocalServer.swift (NWListener HTTP on 127.0.0.1:8765)
+  UI/                 UIModel.swift (UIModel history on BoundedSeries, SysWindow/MLXWindow), DashboardTabs.swift (DashboardTabs shell + routing + all tabs; per-tab extraction is the next split), Chrome.swift (notch chrome + tab enum), PlanLimitsViews.swift, Charts.swift (gauges, sparklines, heatmap, trends), ModelsViews.swift, LocalModelsViews.swift, ProviderLogos.swift, StatusIcon.swift (tray CPU/MEM rings), Panels.swift (NotchPanel hover driver + hysteresis)
+  Core/               CLEAN seams (additive, behavior-free): Protocols.swift (consumer-defined ports), AppDependencies.swift (composition root factory), Clock.swift (injectable time), FileSystem.swift (injectable file reads), BoundedSeries.swift (generic bounded history), THError.swift (context-chained errors)
+Tests/TokenHorizonPerfTests/       # one testTarget, split by kind
+  Unit/               pure-logic XCTest suites (watermarks, parsers, stores, engines) + Unit/Core/ (seam tests)
+  Perf/               budget-gated suites (ModelsPipeline, ScopeCounts, SystemHistory, ProcessMetrics)
+  Integration/        OllamaProxyIntegrationTests (loopback relay round-trips)
+  Fixtures/           catalog-7300.json + golden/testdata files (see Package.swift resources)
+```
 mcp/token-horizon-mcp.mjs   zero-dep stdio MCP server (talks to :8765, sqlite fallback for usage/sessions)
-shell/token-horizon.zsh     zsh preexec/precmd hooks + `th` CLI
+shell/token-horizon.zsh     zsh preexec/precmd hooks + `th` CLI (stats, limits, history, cache, reset-cache)
   scripts/make-app.sh         release build + .app bundle (LSUIElement) + ad-hoc codesign + relaunch
   scripts/package-notarized.sh Developer ID hardened-runtime app + DMG/ZIP + optional notarytool submission
 scripts/make-icon.swift     renders the black-hole AppIcon.icns
@@ -43,35 +47,50 @@ scripts/make-icon.swift     renders the black-hole AppIcon.icns
 
 10. **MLX observability is independent.** `SystemStats.mlxProcessSamples()` uses full `ps` arguments to detect `--mlx-engine`/`mlx-lm` roots and includes their descendants, but does not run `nettop` or populate the general process table. `MLXObserver` must not read or mutate `UsageEngine`; tok/s must come from a measured source or remain unavailable rather than being estimated from resource usage.
 
-11. **Ollama telemetry is out-of-band.** `OllamaTelemetryProxy` is a lightweight in-process TCP relay on loopback. It forwards request/response bytes unchanged, parses only completed Ollama JSON metadata, and bounds retained samples. It must never feed `UsageEngine` or block the main queue.
+11. **Ollama telemetry is out-of-band.** `OllamaTelemetryProxy` is a lightweight in-process TCP relay on loopback. It forwards request/response bytes unchanged, parses completed Ollama JSON metadata (`eval_count`, `prompt_eval_count`), bounds and persists history to `localllm-usage.json`, and feeds `UsageEngine` token counters under `tool: "ollama"`. It must never block the main queue.
 
 12. **Telemetry metrics are bounded and opt-in.** Prometheus text is served by the existing loopback `LocalServer` at `/metrics`; do not start a second listener. OTLP/HTTP is enabled only by `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` or `OTEL_EXPORTER_OTLP_ENDPOINT`. Keep metric attributes low-cardinality, with model labels capped and overflow grouped as `other`. MLX rollups are in-memory only: fine samples are capped at 1,800 points and 30-second averages at 2,880 points.
+
+13. **One instance, one build, always identifiable.** The API port is fixed at `:8765` — never reintroduce port-hopping (two instances serving divergent data caused real "missing data" scares). `InstanceGuard.claimPort()` runs at launch: same-build duplicates exit quietly, different builds are replaced (newest launch wins), and a listener that dies before first ready is fatal via `LocalServer.onBindFailure` (never a silent API-less run). `scripts/make-app.sh` is the ONLY supported launcher: it stamps `THGitSHA`/`THBuiltAt` into Info.plist, syncs the build to `/Applications/TokenHorizon.app`, restarts via the LaunchAgent when installed (else direct launch), and health-gates on the serving build reporting our stamp. Crash recovery is the app binary itself (`--install-launch-agent` / `--uninstall-launch-agent` / `--agent-status`): a portable LaunchAgent pointing at its own bundle with snapshotted `TOKEN_HORIZON_*`/auth env, KeepAlive with `SuccessfulExit=false` so clean duplicate-exits don't loop. `/health` always carries `build{version,commit,built_at}` and the Settings tab shows the same line — if it doesn't match `git rev-parse --short HEAD`, you're looking at a stale binary: rebuild, don't debug the data.
+
+13. **Durable disk persistence & instant hydration**: `DurableStore` persists `UsageSnapshot`, `HistoryPoint` array + streak, `TrendWindow` points, `ProviderLimit` arrays, and incremental parser file state (`engine-state.json`) to `~/.config/token-horizon/cache/`. On app launch, `AppDelegate` hydrates `UIModel` immediately on frame 1 to guarantee zero cold-start blank state or perceived history loss. `UsageEngine.history(days:)` overlays durable past days when log files have been rotated or pruned. Disk persistence is configurable via `SettingsStore.historyPersistenceEnabled` and can be cleanly cleared/rebuilt via `DurableStore.resetAll()`, `POST /cache/reset`, `th reset-cache`, or the Settings tab UI.
+
+14. **Claude multi-account sequential querying & quota prioritization**: `ClaudeDiscovery.fetchAllLimits()` executes sequentially with a 100ms pause to eliminate Cloudflare HTTP 429 rate limiting. Disk cache files older than 2 hours (7200s) are ignored. Unified plan rendering explicitly prioritizes `label == "weekly"` for `cycleLimit`, routing model-scoped caps (`weekly · Fable`) to `extraLimit` / subtitle.
+
+15. **Antigravity (AGY) language server telemetry**: Port discovery parses `~/.gemini/antigravity-cli/cli.log` and active `agy` process sockets with cache fallback to avoid slow full-system `lsof` scans. Token accounting dynamically queries `~/.gemini/antigravity-cli/settings.json` for configured models (`gemini-3.8-flash`) rather than hardcoding.
+
+16. **Leaderboard & share card engine**: `LeaderboardStore` persists ranked entries across multi-accounts and peer nodes to `~/.config/token-horizon/leaderboard.json`, ranks across 4 periods (`today`, `week`/`7d`, `all`, `streak`), computes percentiles and badges (`🥇 1st`, `🥈 2nd`, `🥉 3rd`, `🔥 Streak`), and generates share cards in 4 formats (`text`, `markdown`, `json`, `svg`) with clipboard copy. The `/leaderboard` and `/leaderboard/share` endpoints serve API and shell clients (`th leaderboard`, `th share`). Privacy controls (`leaderboardShareCost`, `leaderboardShareHardware`) protect sensitive user billing data.
 
 ## UI invariants
 
 - NotchPanel anchors top-flush to the notch screen (`auxiliaryTopLeft/RightArea` for exact bounds); expansion grows DOWNWARD only; hover uses the 60ms polled driver with hysteresis (0.12s in / 0.4s out) — never re-add `.onHover`-driven expansion (oscillation).
 - `NSHostingView.sizingOptions = []` on panels; `canBecomeKey = true` (settings TextEditor needs Cmd+A); tooltips are custom hover bubbles (`.help()` never fires in non-activating panels).
 - Tab content is inside `ScrollView(.vertical)` — clipping is a bug.
-- No bottom statusline (user removed it). No menu bar item when a notch display exists.
+- No bottom statusline (user removed it). Surface precedence: `TOKEN_HORIZON_FORCE_TRAY=1` > Settings → Surface (`auto`/`notch`/`tray`) > auto-detect (notch screen present?). `showTrayIcon` keeps the menu-bar item alongside the notch panel (both at once). Forced notch on a notch-less display falls back to `NSScreen.main` top-center (NotchPanel already handles it); the tray item always shows CPU/MEM rings (`StatusIcon`, CoreGraphics — never a hosting view, so button clicks still toggle the popover).
 - `heatmapExpanded` toggles 24W↔52W; heatmap sits LEFT of the chart; KPI cards (Total/Peak/Active days) beside it.
 
 ## Provider adapter contract
 
 `ProviderLimit { provider, label, usedPercent 0-100, resetsAt Date?, detail }` — add new providers by returning rows from `PlanLimitsEngine.fetchAll()` (or KimiLimitsEngine for OAuth-style). UI/MCP/`/limits` pick them up automatically. Group-by-provider rendering handles N windows per row.
 
-Auth sources (checked in order):
+Auth sources (checked in order). A new `~/.<provider>-N` profile dir is picked
+up automatically — all home discovery goes through `HomeDiscovery.variantDirs`
+(env override → defaults → `~/<prefix>*` glob → `~/.config/<name>`, default-first):
 - alibaba cookie: `SettingsStore.alibabaCookie` → env `ALIBABA_TOKEN_PLAN_COOKIE` (see `.agents/skills/provider-quota-alibaba/SKILL.md`)
-- kimi: `KIMI_CODE_HOME`/`KIMI_HOME` + `~/.kimi-code/credentials/kimi-code.json` → `~/.kimi/credentials/…` (see `.agents/skills/provider-quota-kimi/SKILL.md`)
-- glm/minimax/opencode-go: opencode `auth.json` keys (`zai-coding-plan`, `minimax-coding-plan`, `opencode-go`) (see `.agents/skills/provider-quota-zhipu/SKILL.md`, `minimax`, `opencode`)
-- claude: `CLAUDE_CONFIG_DIR/.credentials.json` → Keychain `Claude Code-credentials` (see `.agents/skills/provider-quota-anthropic/SKILL.md`)
-- gemini: `~/.gemini/oauth_creds.json` (see `.agents/skills/provider-quota-google/SKILL.md`)
+- kimi: `KIMI_CODE_HOME`/`KIMI_HOME` + `~/.kimi-code/credentials/kimi-code.json` → `~/.kimi/credentials/…` → any `~/.kimi*/credentials/kimi-code.json` (see `.agents/skills/provider-quota-kimi/SKILL.md`)
+- glm/minimax/opencode-go: opencode `auth.json` keys (`zai-coding-plan`, `minimax-coding-plan`, `opencode-go`), `OPENCODE_AUTH` → `~/.local/share/opencode/auth.json` → `~/.config/opencode/auth.json` → `~/.opencode/auth.json` (see `.agents/skills/provider-quota-zhipu/SKILL.md`, `minimax`, `opencode`)
+- openai/codex: opencode `auth.json` key (`openai` OAuth access token + account ID) → live `https://chatgpt.com/backend-api/wham/usage` + `~/.codex*/sessions|archived_sessions/**/*.jsonl` recursive fallback (`$CODEX_HOME` first) (see `.agents/skills/provider-quota-openai/SKILL.md`)
+- claude: `~/.claude*` variants (`$CLAUDE_CONFIG_DIR` first) → `<dir>/.credentials.json` → Keychain `Claude Code-credentials[-hash]` (see `.agents/skills/provider-quota-anthropic/SKILL.md`)
+- gemini: `~/.gemini*/oauth_creds.json` (see `.agents/skills/provider-quota-google/SKILL.md`)
+- generic JSONL tools: `~/.zcode|~/.glm` (glm), `~/.qwen*` (qwen), `~/.grok*|~/.xai*` (grok), `~/.dsh*|~/.deepseek*` (deepseek), `~/.gemini*` (gemini/agy) — all variant-aware
+- deepseek: `DEEPSEEK_API_KEY` env → opencode `auth.json` (`deepseek`) (see `.agents/skills/provider-quota-deepseek/SKILL.md`)
 - Complete provider quota skills catalog: `.agents/skills/provider-quota-*/SKILL.md`
 
 ## Verification checklist (run after changes)
 
 ```bash
-./scripts/make-app.sh                     # build + relaunch
-curl -s localhost:8765/health
+./scripts/make-app.sh                     # build + install + relaunch (health-gated, exits 1 if :8765 isn't our stamp)
+curl -s localhost:8765/health             # must show build.commit == `git rev-parse --short HEAD` (else stale binary)
 curl -s localhost:8765/stats | python3 -m json.tool | head -40
 curl -s "localhost:8765/trends?window=1D" | python3 -c "import json,sys; d=json.load(sys.stdin); print(len(d['points']), d['total'])"
 curl -s localhost:8765/limits | python3 -m json.tool
@@ -82,6 +101,14 @@ Ground-truth checks when touching parsers:
 - codex: `grep '"total_token_usage"' <file> | tail -1` per session, sum `total_tokens` → must equal parser all-time (verified exact before)
 - opencode: session-table sums vs `message.data` per-model sums (json_extract)
 - stress: 60× parallel `/stats` + `/event` curls; process must stay alive
+
+## Release & distribution (keep these in sync)
+
+- Landing page: `docs/` (dependency-free static) → GitHub Pages via `.github/workflows/pages.yml` (Actions, watches `docs/**`). Project-page hosting: all internal links must stay relative (`./`), never root-absolute.
+- Installer: `install.sh` (`curl -fsSL .../main/install.sh | bash`) resolves `/releases/latest`, installs the ZIP to `/Applications`, fetches versioned shell/MCP helpers, health-verifies. Test safely with `INSTALL_DIR=$TMP/Apps TH_NO_LAUNCH=1 TH_NO_AGENT=1 TH_NO_SHELL=1`.
+- Releases: tag `v*` → `.github/workflows/release.yml` builds, packages DMG/ZIP/sha256, renders `video/` film, publishes. Releases must stay FULL (not prerelease) — installer, landing film embed, and README video all resolve through `/releases/latest`, which skips prereleases.
+- Homebrew: `packaging/homebrew/token-horizon.rb` is the Cask source of truth (bump version+sha256 per release; published tap is manual — see header).
+- Product film: `video/` (Remotion, code-drawn, offline render). `npm run render` → `dist/TokenHorizon-film.mp4` is the release + landing-page asset. See `video/README.md` for scene/optimization notes.
 
 ## Performance budgets (Models tab)
 
@@ -109,6 +136,8 @@ swift test                                                              # comple
 ./scripts/bench-models.sh                                              # bench + summary
 ./scripts/test-models-perf.sh                                          # regression guard (fails on budget breach)
 ./scripts/make-app-with-tests.sh                                       # release build gated on perf tests
+make profile                                                           # live tick timing table (opt-in harness, no asserts)
+make profile-sample                                                    # + 20s `sample` hotspot profile; TH_PERF_LOG=1 adds engine phase spans
 ```
 
 **Test layout:**

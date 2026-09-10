@@ -17,8 +17,9 @@ Use this skill when changing:
 
 ## Contracts
 
-- The proxy binds only to `127.0.0.1`, forwards request and response bytes unchanged, and parses only completed Ollama metadata.
-- Do not send telemetry into `UsageEngine`; usage accounting and observability remain separate.
+- The proxy binds only to `127.0.0.1`, forwards request and response bytes unchanged, and parses completed Ollama metadata (`eval_count`, `eval_duration`, `prompt_eval_count`, `prompt_eval_duration`).
+- `OllamaTelemetryStore` aggregates prompt & eval token counts and message totals with bounded 90-day hourly history persisted to `~/.config/token-horizon/localllm-usage.json`.
+- `UsageEngine` includes local LLM token usage under `tool: "ollama"`, contributing to total tokens today/all-time, trend charts, and MCP `token_horizon_usage`.
 - Exact tok/s comes from Ollama `eval_count` / `eval_duration` or another measured source. Never estimate it from CPU, memory, disk, or network activity.
 - Prometheus is served through the existing `LocalServer` on `127.0.0.1:8765/metrics`. Do not create another HTTP listener for the exporter.
 - OTLP/HTTP is disabled unless `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` or `OTEL_EXPORTER_OTLP_ENDPOINT` is set.

@@ -1,0 +1,18 @@
+# Token Horizon leaderboard cloud backend (Cloudflare Worker + R2).
+# Fill in `account_id`, then:  npx wrangler r2 bucket create token-horizon-leaderboard
+#                              npx wrangler secret put LEADERBOARD_TOKEN
+#                              npx wrangler deploy
+name = "token-horizon-leaderboard"
+main = "worker.js"
+compatibility_date = "2025-01-01"
+
+# 👇 `wrangler whoami` shows your account ID; paste it here (never commit a token).
+account_id = "REPLACE_WITH_CLOUDFLARE_ACCOUNT_ID"
+
+[[r2_buckets]]
+binding = "LEADERBOARD_BUCKET"
+bucket_name = "token-horizon-leaderboard"
+
+[vars]
+# Public base URL of this worker once deployed (used in docs only).
+# PUBLIC_BASE_URL = "https://token-horizon-leaderboard.<subdomain>.workers.dev"

@@ -1,0 +1,27 @@
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# CI is the fast feedback gate (lint errors + full XCTest suite).
+# Releases stay on tag-driven release.yml, which builds via
+# scripts/make-app.sh (the ONLY supported launcher path).
+jobs:
+  lint-and-test:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode_16.2.app/Contents/Developer || true
+
+      - name: Install SwiftLint
+        run: brew install swiftlint || brew upgrade swiftlint || true
+
+      - name: Lint (errors fail, warnings burn down)
+        run: swiftlint lint
+
+      - name: Test (unit + perf budgets + integration)
+        run: swift test

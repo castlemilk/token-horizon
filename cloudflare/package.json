@@ -1,0 +1,16 @@
+{
+  "name": "token-horizon-cloudflare-leaderboard",
+  "version": "0.1.0",
+  "description": "High-performance edge Leaderboard webhosting and R2 backend for Token Horizon",
+  "main": "src/index.js",
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "create-bucket": "wrangler r2 bucket create token-horizon-leaderboard"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20260515.1",
+    "wrangler": "^4.92.0"
+  }
+}

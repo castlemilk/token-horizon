@@ -1,0 +1,2187 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Token Horizon — AI Token Usage Leaderboard</title>
+<meta name="description" content="Live team and cross-agent AI token usage leaderboard powered by Google Sheets and Token Horizon." />
+<link rel="icon" href="./assets/favicon.svg" type="image/svg+xml" />
+<meta property="og:title" content="Token Horizon — Leaderboard" />
+<meta property="og:description" content="Track token usage, cost, streaks, and model telemetry across your team with Google Sheets." />
+<link rel="stylesheet" href="./styles.css" />
+<style>
+  :root {
+    --gold: #f59e0b;
+    --silver: #94a3b8;
+    --bronze: #d97706;
+    --card-bg: rgba(15, 23, 42, 0.65);
+    --border-subtle: rgba(255, 255, 255, 0.08);
+  }
+
+  .leaderboard-wrap {
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: 32px 24px 80px;
+  }
+
+  /* Top subnav & breadcrumb */
+  .top-meta-bar {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 16px;
+    margin-bottom: 24px;
+    padding-bottom: 16px;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .source-status {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--muted);
+    background: rgba(255, 255, 255, 0.03);
+    padding: 6px 14px;
+    border-radius: 999px;
+    border: 1px solid var(--border-subtle);
+  }
+
+  .status-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--green);
+    box-shadow: 0 0 8px var(--green);
+  }
+  .status-dot.demo {
+    background: var(--orange);
+    box-shadow: 0 0 8px var(--orange);
+  }
+  .status-dot.error {
+    background: #ef4444;
+    box-shadow: 0 0 8px #ef4444;
+  }
+
+  .latency-badge {
+    font-family: var(--mono);
+    font-size: 11px;
+    font-weight: 700;
+    color: #10b981;
+    background: rgba(16, 185, 129, 0.12);
+    border: 1px solid rgba(16, 185, 129, 0.25);
+    padding: 2px 8px;
+    border-radius: 999px;
+    margin-left: 4px;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+  }
+  .latency-badge.slow {
+    color: #f59e0b;
+    background: rgba(245, 158, 11, 0.12);
+    border-color: rgba(245, 158, 11, 0.25);
+  }
+
+  .meta-actions {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+  }
+
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-family: var(--sans);
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--text);
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 7px 14px;
+    cursor: pointer;
+    text-decoration: none;
+    transition: all 0.15s ease;
+  }
+  .btn:hover {
+    background: rgba(255, 255, 255, 0.1);
+    border-color: rgba(255, 255, 255, 0.2);
+  }
+  .btn.btn-primary {
+    background: linear-gradient(135deg, #6366f1, #8b5cf6);
+    border: none;
+    color: #fff;
+    font-weight: 600;
+  }
+  .btn.btn-primary:hover {
+    filter: brightness(1.1);
+    box-shadow: 0 0 16px rgba(124, 92, 255, 0.35);
+  }
+
+  /* Hero Headline */
+  .leaderboard-hero {
+    margin-bottom: 32px;
+  }
+  .leaderboard-hero h1 {
+    font-size: clamp(32px, 4vw, 48px);
+    margin: 8px 0 12px;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+  }
+  .leaderboard-hero p {
+    color: var(--muted);
+    font-size: 16px;
+    margin: 0;
+  }
+
+  /* Aggregate KPIs */
+  .kpi-row {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 16px;
+    margin-bottom: 32px;
+  }
+
+  .kpi-card {
+    background: var(--card-bg);
+    border: 1px solid var(--border-subtle);
+    border-radius: 12px;
+    padding: 18px 20px;
+    backdrop-filter: blur(8px);
+    position: relative;
+    overflow: hidden;
+  }
+  .kpi-card::before {
+    content: "";
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 2px;
+    background: linear-gradient(90deg, transparent, rgba(124, 92, 255, 0.4), transparent);
+  }
+  .kpi-label {
+    font-family: var(--mono);
+    font-size: 11px;
+    text-transform: uppercase;
+    color: var(--muted);
+    letter-spacing: 0.05em;
+    margin-bottom: 6px;
+  }
+  .kpi-val {
+    font-size: 28px;
+    font-weight: 700;
+    letter-spacing: -0.01em;
+    color: var(--text);
+  }
+  .kpi-sub {
+    font-size: 12px;
+    color: var(--faint);
+    margin-top: 4px;
+  }
+
+  /* Control Bar: Tabs & Search */
+  .control-bar {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 16px;
+    margin-bottom: 20px;
+    background: var(--panel);
+    padding: 12px 16px;
+    border-radius: 12px;
+    border: 1px solid var(--line);
+  }
+
+  .period-tabs {
+    display: flex;
+    background: rgba(0, 0, 0, 0.4);
+    padding: 3px;
+    border-radius: 8px;
+    border: 1px solid var(--line);
+  }
+
+  .period-btn {
+    background: transparent;
+    border: none;
+    color: var(--muted);
+    font-family: var(--sans);
+    font-size: 13px;
+    font-weight: 500;
+    padding: 6px 14px;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: all 0.15s ease;
+  }
+  .period-btn:hover {
+    color: var(--text);
+  }
+  .period-btn.active {
+    background: rgba(255, 255, 255, 0.12);
+    color: #fff;
+    font-weight: 600;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+  }
+
+  .filters-group {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    flex: 1;
+    max-width: 460px;
+    justify-content: flex-end;
+  }
+
+  .search-box {
+    position: relative;
+    flex: 1;
+  }
+  .search-box input {
+    width: 100%;
+    background: rgba(0, 0, 0, 0.4);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 7px 12px 7px 30px;
+    color: var(--text);
+    font-family: var(--sans);
+    font-size: 13px;
+    outline: none;
+  }
+  .search-box input:focus {
+    border-color: var(--accent);
+  }
+  .search-icon {
+    position: absolute;
+    left: 10px;
+    top: 50%;
+    transform: translateY(-50%);
+    color: var(--muted);
+    font-size: 12px;
+  }
+
+  .team-select {
+    background: rgba(0, 0, 0, 0.4);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 7px 12px;
+    color: var(--text);
+    font-family: var(--sans);
+    font-size: 13px;
+    outline: none;
+    cursor: pointer;
+  }
+
+  /* Leaderboard Table */
+  .table-container {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    overflow: hidden;
+    box-shadow: 0 8px 30px rgba(0, 0, 0, 0.4);
+  }
+
+  .leaderboard-table {
+    width: 100%;
+    border-collapse: collapse;
+    text-align: left;
+    font-size: 13.5px;
+  }
+
+  .leaderboard-table th {
+    background: rgba(255, 255, 255, 0.02);
+    color: var(--muted);
+    font-family: var(--mono);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    padding: 12px 18px;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .leaderboard-table td {
+    padding: 14px 18px;
+    border-bottom: 1px solid var(--border-subtle);
+    vertical-align: middle;
+  }
+  .leaderboard-table tr:last-child td {
+    border-bottom: none;
+  }
+  .leaderboard-table tr:hover td {
+    background: rgba(255, 255, 255, 0.025);
+  }
+
+  /* Rank Badges */
+  .rank-pill {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-family: var(--mono);
+    font-weight: 700;
+    font-size: 12px;
+    min-width: 32px;
+    height: 28px;
+    padding: 0 6px;
+    border-radius: 6px;
+  }
+  .rank-1 {
+    background: rgba(245, 158, 11, 0.15);
+    color: var(--gold);
+    border: 1px solid rgba(245, 158, 11, 0.35);
+  }
+  .rank-2 {
+    background: rgba(148, 163, 184, 0.15);
+    color: var(--silver);
+    border: 1px solid rgba(148, 163, 184, 0.35);
+  }
+  .rank-3 {
+    background: rgba(217, 119, 6, 0.15);
+    color: var(--bronze);
+    border: 1px solid rgba(217, 119, 6, 0.35);
+  }
+  .rank-default {
+    color: var(--muted);
+  }
+
+  /* User Info Column */
+  .participant-cell {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  .avatar {
+    width: 34px;
+    height: 34px;
+    border-radius: 50%;
+    background: linear-gradient(135deg, #1e293b, #334155);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 700;
+    font-size: 13px;
+    color: var(--cyan);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+  }
+  .avatar.top-1 {
+    background: linear-gradient(135deg, #78350f, #b45309);
+    color: #fef08a;
+    border-color: var(--gold);
+  }
+  .handle-meta {
+    display: flex;
+    flex-direction: column;
+  }
+  .handle-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .handle-text {
+    font-weight: 600;
+    color: var(--text);
+  }
+  .team-tag {
+    font-size: 11px;
+    color: var(--muted);
+  }
+
+  /* Model & Chip Badges */
+  .chip-tag {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-family: var(--mono);
+    font-size: 11.5px;
+    color: var(--muted);
+    background: rgba(255, 255, 255, 0.04);
+    padding: 3px 8px;
+    border-radius: 6px;
+    border: 1px solid var(--border-subtle);
+  }
+  .model-tag {
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--cyan);
+  }
+
+  /* Progress Bar */
+  .volume-wrap {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    min-width: 140px;
+  }
+  .volume-text {
+    font-family: var(--mono);
+    font-weight: 600;
+    font-size: 13px;
+  }
+  .volume-bar-track {
+    height: 4px;
+    background: rgba(255, 255, 255, 0.06);
+    border-radius: 999px;
+    overflow: hidden;
+  }
+  .volume-bar-fill {
+    height: 100%;
+    background: linear-gradient(90deg, #6366f1, #39d5c0);
+    border-radius: 999px;
+  }
+
+  /* Modals */
+  .modal-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.75);
+    backdrop-filter: blur(8px);
+    z-index: 100;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.2s ease;
+  }
+  .modal-overlay.active {
+    opacity: 1;
+    pointer-events: auto;
+  }
+  .modal-dialog {
+    background: #0f172a;
+    border: 1px solid var(--line);
+    border-radius: 16px;
+    max-width: 600px;
+    width: 100%;
+    box-shadow: 0 20px 40px rgba(0, 0, 0, 0.6);
+    overflow: hidden;
+    transform: scale(0.96);
+    transition: transform 0.2s ease;
+  }
+  .modal-overlay.active .modal-dialog {
+    transform: scale(1);
+  }
+  .modal-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 16px 20px;
+    border-bottom: 1px solid var(--line);
+  }
+  .modal-title {
+    font-weight: 600;
+    font-size: 16px;
+  }
+  .close-btn {
+    background: transparent;
+    border: none;
+    color: var(--muted);
+    font-size: 20px;
+    cursor: pointer;
+  }
+  .modal-body {
+    padding: 20px;
+  }
+  .form-group {
+    margin-bottom: 16px;
+  }
+  .form-label {
+    display: block;
+    font-family: var(--mono);
+    font-size: 11px;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin-bottom: 6px;
+  }
+  .form-input {
+    width: 100%;
+    background: rgba(0, 0, 0, 0.5);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 9px 12px;
+    color: var(--text);
+    font-family: var(--mono);
+    font-size: 13px;
+    outline: none;
+  }
+  .form-input:focus {
+    border-color: var(--accent);
+  }
+
+  /* Share Card Output Box */
+  .share-preview-box {
+    background: #090d16;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 16px;
+    overflow-x: auto;
+    max-height: 280px;
+    margin-bottom: 16px;
+  }
+  .share-preview-box pre {
+    margin: 0;
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--cyan);
+    white-space: pre-wrap;
+  }
+  .share-format-tabs {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 12px;
+  }
+  .share-tab-btn {
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid var(--border-subtle);
+    color: var(--muted);
+    font-size: 12px;
+    padding: 5px 12px;
+    border-radius: 6px;
+    cursor: pointer;
+  }
+  .share-tab-btn.active {
+    background: var(--accent);
+    color: #fff;
+    border-color: var(--accent);
+  }
+
+  /* Backend selection tabs */
+  .backend-tabs {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 16px;
+  }
+  .backend-tab-btn {
+    flex: 1;
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid var(--border-subtle);
+    color: var(--muted);
+    font-family: var(--sans);
+    font-size: 12px;
+    font-weight: 500;
+    padding: 8px 10px;
+    border-radius: 8px;
+    cursor: pointer;
+    text-align: center;
+    transition: all 0.15s ease;
+  }
+  .backend-tab-btn:hover {
+    color: var(--text);
+    background: rgba(255, 255, 255, 0.08);
+  }
+  .backend-tab-btn.active {
+    background: rgba(124, 92, 255, 0.15);
+    border-color: var(--accent);
+    color: #fff;
+    font-weight: 600;
+    box-shadow: 0 0 12px rgba(124, 92, 255, 0.2);
+  }
+
+  /* Toast notification */
+  .toast {
+    position: fixed;
+    bottom: 24px;
+    right: 24px;
+    background: #1e293b;
+    border: 1px solid var(--cyan);
+    color: #fff;
+    padding: 10px 18px;
+    border-radius: 8px;
+    font-size: 13px;
+    box-shadow: 0 8px 20px rgba(0, 0, 0, 0.5);
+    transform: translateY(100px);
+    opacity: 0;
+    transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+    z-index: 200;
+  }
+  .toast.show {
+    transform: translateY(0);
+    opacity: 1;
+  }
+
+  @media (max-width: 768px) {
+    .leaderboard-wrap { padding: 16px 12px 60px; }
+    .control-bar { flex-direction: column; align-items: stretch; }
+    .filters-group { max-width: none; }
+    .leaderboard-table th:nth-child(3),
+    .leaderboard-table td:nth-child(3) { display: none; }
+  }
+</style>
+</head>
+<body>
+
+<nav class="nav">
+  <a class="brand" href="./"><img src="./assets/icon.png" alt="Token Horizon" /><span>Token Horizon</span></a>
+  <div class="nav-links">
+    <a href="./#features">Features</a>
+    <a href="./leaderboard.html" style="color:var(--text); font-weight:600;">Leaderboard</a>
+    <a href="./#install">Install</a>
+    <a class="nav-cta" href="https://github.com/castlemilk/token-horizon">GitHub</a>
+  </div>
+</nav>
+
+<main class="leaderboard-wrap">
+  <!-- Top Meta Bar -->
+  <header class="top-meta-bar">
+    <div class="source-status" id="status-pill">
+      <span class="status-dot" id="status-dot"></span>
+      <span id="status-text">Connecting to edge backend…</span>
+      <span class="latency-badge" id="latency-badge" style="display: none;">⚡ --ms</span>
+    </div>
+
+    <div class="meta-actions">
+      <button class="btn btn-primary" id="publish-btn" type="button" style="background: linear-gradient(135deg, #06b6d4, #3b82f6); border: none; font-weight: 600;">
+        ⬆ Publish Stats
+      </button>
+      <button class="btn" id="refresh-btn" type="button" title="Refresh data now">
+        ↻ Refresh
+      </button>
+      <button class="btn" id="config-btn" type="button">
+        ⚙ Data Source
+      </button>
+      <a class="btn btn-primary" href="./#install">
+         Get Mac App
+      </a>
+    </div>
+  </header>
+
+  <!-- Hero Headline -->
+  <section class="leaderboard-hero">
+    <span class="pill"><i></i>Live Team Telemetry</span>
+    <h1>Token Horizon Leaderboard</h1>
+    <p>Real-time rankings across AI models, coding agents, streaks, and hardware nodes powered by Cloudflare Edge + R2 & Google Sheets.</p>
+  </section>
+
+  <!-- Hero KPI Row -->
+  <section class="kpi-row">
+    <article class="kpi-card">
+      <div class="kpi-label">Total Tokens Tracked</div>
+      <div class="kpi-val" id="kpi-total-tokens">—</div>
+      <div class="kpi-sub" id="kpi-total-tokens-sub">Across all participants</div>
+    </article>
+    <article class="kpi-card">
+      <div class="kpi-label">Estimated AI Spend</div>
+      <div class="kpi-val" id="kpi-total-cost">—</div>
+      <div class="kpi-sub" id="kpi-total-cost-sub">Blended prompt & cache rates</div>
+    </article>
+    <article class="kpi-card">
+      <div class="kpi-label">Active Agents & Devs</div>
+      <div class="kpi-val" id="kpi-active-devs">—</div>
+      <div class="kpi-sub" id="kpi-active-devs-sub">Reporting hardware nodes</div>
+    </article>
+    <article class="kpi-card">
+      <div class="kpi-label">Longest Streak</div>
+      <div class="kpi-val" id="kpi-max-streak">—</div>
+      <div class="kpi-sub" id="kpi-max-streak-sub">Consecutive active days</div>
+    </article>
+  </section>
+
+  <!-- Control & Filter Bar -->
+  <section class="control-bar">
+    <div class="period-tabs" role="tablist">
+      <button class="period-btn active" data-period="today">Today</button>
+      <button class="period-btn" data-period="week">7-Day Rolling</button>
+      <button class="period-btn" data-period="all">All-Time</button>
+      <button class="period-btn" data-period="streak">Streak</button>
+    </div>
+
+    <div class="filters-group">
+      <div class="search-box">
+        <span class="search-icon">🔍</span>
+        <input type="text" id="search-input" placeholder="Search participant, model, chip…" />
+      </div>
+      <select class="team-select" id="team-select">
+        <option value="">All Teams</option>
+      </select>
+    </div>
+  </section>
+
+  <!-- Leaderboard Table Container -->
+  <div class="table-container">
+    <table class="leaderboard-table">
+      <thead>
+        <tr>
+          <th style="width: 70px;">Rank</th>
+          <th>Participant & Team</th>
+          <th>Hardware</th>
+          <th>Top Model</th>
+          <th style="width: 220px;">Volume & Share</th>
+          <th>Est. Cost</th>
+          <th>Streak</th>
+          <th style="text-align: right; width: 100px;">Share</th>
+        </tr>
+      </thead>
+      <tbody id="leaderboard-tbody">
+        <!-- Injected dynamically by JavaScript -->
+      </tbody>
+    </table>
+  </div>
+</main>
+
+<!-- Share Card Modal -->
+<div class="modal-overlay" id="share-modal">
+  <div class="modal-dialog">
+    <div class="modal-head">
+      <div class="modal-title" id="share-modal-title">Share Token Usage</div>
+      <button class="close-btn" id="close-share-btn">&times;</button>
+    </div>
+    <div class="modal-body">
+      <div class="share-format-tabs">
+        <button class="share-tab-btn active" data-format="svg">SVG Badge</button>
+        <button class="share-tab-btn" data-format="markdown">Markdown</button>
+        <button class="share-tab-btn" data-format="text">Terminal ASCII</button>
+        <button class="share-tab-btn" data-format="json">JSON</button>
+      </div>
+
+      <div class="share-preview-box" id="share-preview-container">
+        <pre id="share-preview-text"></pre>
+      </div>
+
+      <div style="display: flex; justify-content: flex-end; gap: 10px;">
+        <button class="btn" id="download-svg-btn" style="display: none;">⬇ Download SVG</button>
+        <button class="btn btn-primary" id="copy-share-btn">⧉ Copy to Clipboard</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Backend Configuration Modal -->
+<div class="modal-overlay" id="config-modal">
+  <div class="modal-dialog">
+    <div class="modal-head">
+      <div class="modal-title">Leaderboard Backend Settings</div>
+      <button class="close-btn" id="close-config-btn">&times;</button>
+    </div>
+    <div class="modal-body">
+      <!-- Backend Tabs -->
+      <div class="backend-tabs">
+        <button class="backend-tab-btn active" id="tab-cf-btn" type="button">⚡ Cloudflare Edge + R2 (&lt;25ms)</button>
+        <button class="backend-tab-btn" id="tab-sheets-btn" type="button">📄 Google Sheets (No Infra)</button>
+      </div>
+
+      <!-- Cloudflare Edge Panel -->
+      <div id="panel-cf">
+        <p style="font-size: 13px; color: var(--muted); margin-top: 0; line-height: 1.5;">
+          Sub-20ms edge responses globally, direct Cloudflare R2 bucket persistence, dynamic SVG README badges, and edge caching.
+        </p>
+        <div class="form-group">
+          <label class="form-label">Cloudflare Worker URL / Domain</label>
+          <input class="form-input" id="cf-url-input" type="text" placeholder="https://token-horizon-leaderboard.your-subdomain.workers.dev (leave blank for same domain)" />
+        </div>
+        <div style="background: rgba(255, 255, 255, 0.03); border: 1px solid var(--border-subtle); border-radius: 8px; padding: 12px; margin-bottom: 20px; font-size: 12.5px; color: var(--muted);">
+          ⚡ <strong>Turnkey Deployment:</strong><br />
+          Run <code style="color:var(--cyan);">./scripts/deploy-cloudflare.sh</code> in the repo to create an R2 bucket and deploy the Worker &amp; web app in seconds.
+        </div>
+      </div>
+
+      <!-- Google Sheets Panel -->
+      <div id="panel-sheets" style="display: none;">
+        <p style="font-size: 13px; color: var(--muted); margin-top: 0; line-height: 1.5;">
+          Connect your team's Google Sheet or Google Apps Script Web App. Changes are saved locally in your browser.
+        </p>
+        <div class="form-group">
+          <label class="form-label">Google Sheet or Apps Script URL</label>
+          <input class="form-input" id="sheets-url-input" type="text" placeholder="https://script.google.com/macros/s/.../exec or Google Sheet URL" />
+        </div>
+        <div style="background: rgba(255, 255, 255, 0.03); border: 1px solid var(--border-subtle); border-radius: 8px; padding: 12px; margin-bottom: 20px; font-size: 12.5px; color: var(--muted);">
+          💡 <strong>Quick Setup:</strong><br />
+          1. In Google Sheets, paste <a href="https://github.com/castlemilk/token-horizon/blob/main/scripts/google-sheets-leaderboard.js" target="_blank" style="color:var(--cyan);"><code>scripts/google-sheets-leaderboard.js</code></a> in <em>Extensions &gt; Apps Script</em>.<br />
+          2. Deploy as <em>Web App</em> with access set to <em>Anyone</em>.<br />
+          3. Paste the URL here to enable automatic team sync!
+        </div>
+      </div>
+
+      <div style="display: flex; justify-content: space-between; align-items: center;">
+        <button class="btn" id="reset-demo-btn" type="button">Reset to Demo</button>
+        <div style="display: flex; gap: 10px;">
+          <button class="btn" id="cancel-config-btn" type="button">Cancel</button>
+          <button class="btn btn-primary" id="save-config-btn" type="button">Save &amp; Connect</button>
+        </div>
+      </div>
+    </div>
+  </div>
+<!-- Publish Stats Modal -->
+<div class="modal-overlay" id="publish-modal">
+  <div class="modal-dialog" style="max-width: 540px;">
+    <div class="modal-head">
+      <div class="modal-title">Publish Stats to Leaderboard</div>
+      <button class="close-btn" id="close-publish-btn">&times;</button>
+    </div>
+    <div class="modal-body">
+      <p style="font-size: 13px; color: var(--muted); margin-top: 0; line-height: 1.5;">
+        Push your local AI token usage metrics to the global edge leaderboard at <code style="color:var(--cyan);">tokens.benebsworth.com</code>.
+      </p>
+
+      <!-- Auto-fetch from local app card -->
+      <div style="background: rgba(6, 182, 212, 0.08); border: 1px solid rgba(6, 182, 212, 0.25); border-radius: 10px; padding: 14px; margin-bottom: 20px;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+          <div style="font-size: 13px; font-weight: 600; color: var(--cyan); display: flex; align-items: center; gap: 6px;">
+            <span> Token Horizon App</span>
+            <span id="daemon-badge" style="font-size: 10px; font-weight: 700; background: rgba(255,255,255,0.1); padding: 2px 6px; border-radius: 4px; color: var(--muted);">127.0.0.1:8765</span>
+          </div>
+          <button class="btn" id="daemon-sync-btn" type="button" style="background: var(--cyan); color: #000; font-weight: 700; font-size: 11px; padding: 4px 10px; border: none;">
+            One-Click Publish
+          </button>
+        </div>
+        <p style="font-size: 12px; color: var(--muted); margin: 0; line-height: 1.4;">
+          Reads live usage from your running Token Horizon daemon and publishes instantly to the edge.
+        </p>
+      </div>
+
+      <div style="position: relative; text-align: center; margin: 18px 0;">
+        <hr style="border: none; border-top: 1px solid var(--border-subtle); margin: 0;" />
+        <span style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); background: #0f172a; padding: 0 10px; font-size: 11px; color: var(--muted); font-family: var(--mono);">OR ENTER MANUALLY</span>
+      </div>
+
+      <!-- Manual Publish Form -->
+      <form id="publish-form" onsubmit="return false;">
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 12px;">
+          <div class="form-group" style="margin-bottom: 0;">
+            <label class="form-label">Handle / Name *</label>
+            <input class="form-input" id="pub-handle" type="text" placeholder="e.g. benebsworth" required />
+          </div>
+          <div class="form-group" style="margin-bottom: 0;">
+            <label class="form-label">Team / Organization</label>
+            <input class="form-input" id="pub-team" type="text" placeholder="e.g. Castlemilk" />
+          </div>
+        </div>
+
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 12px;">
+          <div class="form-group" style="margin-bottom: 0;">
+            <label class="form-label">Tokens Today</label>
+            <input class="form-input" id="pub-today" type="number" placeholder="e.g. 2469019625" />
+          </div>
+          <div class="form-group" style="margin-bottom: 0;">
+            <label class="form-label">Tokens All-Time</label>
+            <input class="form-input" id="pub-all" type="number" placeholder="e.g. 21162915444" />
+          </div>
+        </div>
+
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 16px;">
+          <div class="form-group" style="margin-bottom: 0;">
+            <label class="form-label">Top AI Model</label>
+            <input class="form-input" id="pub-model" type="text" placeholder="e.g. claude-opus-5" />
+          </div>
+          <div class="form-group" style="margin-bottom: 0;">
+            <label class="form-label">Hardware Device</label>
+            <input class="form-input" id="pub-hardware" type="text" placeholder="e.g. Apple M5 Max" />
+          </div>
+        </div>
+
+        <div style="display: flex; justify-content: space-between; align-items: center; padding-top: 8px; border-top: 1px solid var(--border-subtle);">
+          <div style="font-size: 11px; color: var(--muted); font-family: var(--mono);">
+            Target: <span id="pub-target-url" style="color:var(--cyan);">https://tokens.benebsworth.com</span>
+          </div>
+          <div style="display: flex; gap: 10px;">
+            <button class="btn" id="cancel-publish-btn" type="button">Cancel</button>
+            <button class="btn btn-primary" id="submit-publish-btn" type="button" style="background: linear-gradient(135deg, #06b6d4, #3b82f6); border: none;">
+              Publish to Board
+            </button>
+          </div>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+
+<!-- User Usage Breakdown Detail Modal -->
+<div class="modal-overlay" id="user-detail-modal">
+  <div class="modal-dialog" style="max-width: 720px;">
+    <div class="modal-head" style="align-items: flex-start;">
+      <div style="display: flex; gap: 14px; align-items: center;">
+        <div class="avatar" id="detail-avatar" style="width: 44px; height: 44px; font-size: 18px; font-weight: 700;">B</div>
+        <div>
+          <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+            <div class="modal-title" id="detail-handle" style="font-size: 18px; font-family: var(--mono);">@benebsworth</div>
+            <span class="rank-pill" id="detail-rank-pill" style="font-size: 11px; height: 22px; padding: 0 8px;">🥇 1st</span>
+          </div>
+          <div style="display: flex; gap: 8px; margin-top: 5px; flex-wrap: wrap; align-items: center;">
+            <span class="team-tag" id="detail-team">Castlemilk</span>
+            <span class="chip-tag" id="detail-hardware">Apple M5 Max</span>
+            <span style="font-family: var(--mono); font-size: 11px; color: #fb923c;" id="detail-streak">🔥 17d streak</span>
+          </div>
+        </div>
+      </div>
+      <button class="close-btn" id="close-detail-btn">&times;</button>
+    </div>
+    <div class="modal-body" style="padding-top: 16px;">
+      <!-- KPI Metric Cards Grid -->
+      <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; margin-bottom: 20px;">
+        <div style="background: rgba(255,255,255,0.03); border: 1px solid var(--border-subtle); border-radius: 10px; padding: 12px;">
+          <div style="font-size: 10px; font-family: var(--mono); color: var(--muted); text-transform: uppercase;">Today's Tokens</div>
+          <div id="detail-kpi-today" style="font-size: 18px; font-weight: 700; font-family: var(--mono); color: var(--cyan); margin-top: 4px;">--</div>
+          <div id="detail-kpi-cost-today" style="font-size: 11px; font-family: var(--mono); color: var(--muted); margin-top: 2px;">--</div>
+        </div>
+        <div style="background: rgba(255,255,255,0.03); border: 1px solid var(--border-subtle); border-radius: 10px; padding: 12px;">
+          <div style="font-size: 10px; font-family: var(--mono); color: var(--muted); text-transform: uppercase;">7-Day Rolling</div>
+          <div id="detail-kpi-7d" style="font-size: 18px; font-weight: 700; font-family: var(--mono); color: #a78bfa; margin-top: 4px;">--</div>
+          <div id="detail-kpi-cost-7d" style="font-size: 11px; font-family: var(--mono); color: var(--muted); margin-top: 2px;">--</div>
+        </div>
+        <div style="background: rgba(255,255,255,0.03); border: 1px solid var(--border-subtle); border-radius: 10px; padding: 12px;">
+          <div style="font-size: 10px; font-family: var(--mono); color: var(--muted); text-transform: uppercase;">All-Time Tokens</div>
+          <div id="detail-kpi-all" style="font-size: 18px; font-weight: 700; font-family: var(--mono); color: #38bdf8; margin-top: 4px;">--</div>
+          <div id="detail-kpi-cost-all" style="font-size: 11px; font-family: var(--mono); color: var(--muted); margin-top: 2px;">--</div>
+        </div>
+        <div style="background: rgba(255,255,255,0.03); border: 1px solid var(--border-subtle); border-radius: 10px; padding: 12px;">
+          <div style="font-size: 10px; font-family: var(--mono); color: var(--muted); text-transform: uppercase;">Top Model</div>
+          <div id="detail-kpi-model" style="font-size: 13px; font-weight: 700; font-family: var(--mono); color: var(--text); margin-top: 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">--</div>
+          <div style="font-size: 11px; font-family: var(--mono); color: var(--muted); margin-top: 2px;">Primary Architecture</div>
+        </div>
+      </div>
+
+      <!-- 7-Day Activity Chart -->
+      <div style="margin-bottom: 24px;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+          <div style="font-size: 11px; font-weight: 700; font-family: var(--mono); color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em;">7-Day Token Activity</div>
+          <div id="detail-activity-total" style="font-size: 11px; font-family: var(--mono); color: var(--cyan);"></div>
+        </div>
+        <div id="detail-chart-container" style="background: rgba(0,0,0,0.3); border: 1px solid var(--border-subtle); border-radius: 10px; padding: 16px 12px 10px; height: 110px; display: flex; align-items: flex-end; gap: 8px;">
+          <!-- Generated bars -->
+        </div>
+      </div>
+
+      <!-- Models Breakdown Table -->
+      <div style="margin-bottom: 24px;">
+        <div style="font-size: 11px; font-weight: 700; font-family: var(--mono); color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 10px;">Model Breakdown &amp; Quota Allocation</div>
+        <div style="border: 1px solid var(--border-subtle); border-radius: 10px; overflow: hidden; background: rgba(0,0,0,0.25);">
+          <table style="width: 100%; border-collapse: collapse; font-size: 12.5px;">
+            <thead>
+              <tr style="border-bottom: 1px solid var(--border-subtle); background: rgba(255,255,255,0.02);">
+                <th style="padding: 9px 14px; text-align: left; font-family: var(--mono); font-size: 10.5px; color: var(--muted);">MODEL</th>
+                <th style="padding: 9px 14px; text-align: left; font-family: var(--mono); font-size: 10.5px; color: var(--muted);">TODAY</th>
+                <th style="padding: 9px 14px; text-align: left; font-family: var(--mono); font-size: 10.5px; color: var(--muted);">ALL-TIME</th>
+                <th style="padding: 9px 14px; text-align: left; font-family: var(--mono); font-size: 10.5px; color: var(--muted);">EST. COST</th>
+                <th style="padding: 9px 14px; text-align: left; font-family: var(--mono); font-size: 10.5px; color: var(--muted); width: 140px;">SHARE</th>
+              </tr>
+            </thead>
+            <tbody id="detail-models-tbody">
+              <!-- Dynamically populated model rows -->
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Tools / Providers Section -->
+      <div style="margin-bottom: 24px;">
+        <div style="font-size: 11px; font-weight: 700; font-family: var(--mono); color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 10px;">Provider &amp; Tool Telemetry</div>
+        <div id="detail-tools-container" style="display: flex; gap: 10px; flex-wrap: wrap;">
+          <!-- Dynamically populated tool pills -->
+        </div>
+      </div>
+
+      <!-- Bottom Actions -->
+      <div style="display: flex; justify-content: space-between; align-items: center; padding-top: 14px; border-top: 1px solid var(--border-subtle);">
+        <div style="font-size: 11px; color: var(--muted); font-family: var(--mono);" id="detail-updated-at">Updated: --</div>
+        <div style="display: flex; gap: 10px;">
+          <button class="btn" id="detail-share-btn" type="button">
+            📋 Share Card
+          </button>
+          <button class="btn btn-primary" id="detail-close-btn" type="button">
+            Done
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Toast -->
+<div class="toast" id="toast">Copied to clipboard!</div>
+
+<script>
+// --- State & Constants ---
+const DEFAULT_DEMO_ENTRIES = [
+  {
+    id: "local:benebsworth",
+    handle: "benebsworth",
+    team: "Castlemilk",
+    tokensToday: 2469019625,
+    tokens7d: 12925918017,
+    tokensAll: 21162915444,
+    costToday: 822.40,
+    cost7d: 6795.30,
+    costAll: 8499.64,
+    streakDays: 16,
+    topModel: "claude-opus-5",
+    hardware: "Apple M5 Max",
+    isLocal: true,
+    updatedAt: Date.now() / 1000
+  },
+  {
+    id: "claude:claude",
+    handle: "ben.ebsworth (Claude)",
+    team: "Frontier AI",
+    tokensToday: 1002198684,
+    tokens7d: 7528838077,
+    tokensAll: 7528838077,
+    costToday: 701.35,
+    cost7d: 5252.09,
+    costAll: 5252.09,
+    streakDays: 16,
+    topModel: "claude-3-7-sonnet",
+    hardware: "Apple M5 Max",
+    isLocal: false,
+    updatedAt: Date.now() / 1000 - 120
+  },
+  {
+    id: "peer:alice",
+    handle: "alice",
+    team: "Core Team",
+    tokensToday: 450000000,
+    tokens7d: 3100000000,
+    tokensAll: 14200000000,
+    costToday: 120.00,
+    cost7d: 840.00,
+    costAll: 3800.00,
+    streakDays: 24,
+    topModel: "gpt-6-astra",
+    hardware: "Apple M4 Max",
+    isLocal: false,
+    updatedAt: Date.now() / 1000 - 300
+  },
+  {
+    id: "claude:claude-1",
+    handle: "shorted (Claude)",
+    team: "Shorted Org",
+    tokensToday: 130603807,
+    tokens7d: 980000000,
+    tokensAll: 3390445616,
+    costToday: 87.12,
+    cost7d: 640.00,
+    costAll: 2406.13,
+    streakDays: 16,
+    topModel: "claude-3-7-sonnet",
+    hardware: "Apple M5 Max",
+    isLocal: false,
+    updatedAt: Date.now() / 1000 - 600
+  },
+  {
+    id: "peer:charlie",
+    handle: "charlie",
+    team: "Research",
+    tokensToday: 85000000,
+    tokens7d: 1450000000,
+    tokensAll: 8900000000,
+    costToday: 34.50,
+    cost7d: 410.00,
+    costAll: 2150.00,
+    streakDays: 9,
+    topModel: "gemini-3.8-flash",
+    hardware: "Apple M4 Pro",
+    isLocal: false,
+    updatedAt: Date.now() / 1000 - 900
+  },
+  {
+    id: "claude:claude-2",
+    handle: "dorja (Claude)",
+    team: "Dorja Studio",
+    tokensToday: 23510757,
+    tokens7d: 210000000,
+    tokensAll: 1018331892,
+    costToday: 32.91,
+    cost7d: 210.00,
+    costAll: 825.31,
+    streakDays: 16,
+    topModel: "claude-3-7-sonnet",
+    hardware: "Apple M5 Max",
+    isLocal: false,
+    updatedAt: Date.now() / 1000 - 1200
+  }
+];
+
+let rawEntries = [];
+let currentPeriod = "today";
+let currentSearch = "";
+let currentTeam = "";
+let activeShareEntry = null;
+let activeShareFormat = "svg";
+
+// --- Number & Token Formatting Helpers ---
+function formatTokens(n) {
+  if (!n || n <= 0) return "0";
+  if (n >= 1_000_000_000_000) return (n / 1_000_000_000_000).toFixed(2) + "T";
+  if (n >= 1_000_000_000) return (n / 1_000_000_000).toFixed(2) + "B";
+  if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + "M";
+  if (n >= 1_000) return (n / 1_000).toFixed(1) + "k";
+  return n.toLocaleString();
+}
+
+function formatCurrency(n) {
+  if (!n || n <= 0) return "$0";
+  if (n >= 1000) return "$" + Math.round(n).toLocaleString();
+  return "$" + n.toFixed(2);
+}
+
+function getPeriodScore(entry, period) {
+  switch (period) {
+    case "today": return entry.tokensToday || 0;
+    case "week": return entry.tokens7d || 0;
+    case "all": return entry.tokensAll || 0;
+    case "streak": return entry.streakDays || 0;
+    default: return entry.tokensToday || 0;
+  }
+}
+
+function getPeriodCost(entry, period) {
+  switch (period) {
+    case "today": return entry.costToday || 0;
+    case "week": return entry.cost7d || 0;
+    case "all": return entry.costAll || 0;
+    case "streak": return entry.costToday || 0;
+    default: return entry.costToday || 0;
+  }
+}
+
+// --- CSV Parser ---
+function parseCSV(text) {
+  const rows = [];
+  let currentRow = [];
+  let currentField = "";
+  let inQuotes = false;
+
+  for (let i = 0; i < text.length; i++) {
+    const char = text[i];
+    if (char === '"') {
+      inQuotes = !inQuotes;
+    } else if (char === ',' && !inQuotes) {
+      currentRow.push(currentField.trim());
+      currentField = "";
+    } else if ((char === '\r' || char === '\n') && !inQuotes) {
+      currentRow.push(currentField.trim());
+      currentField = "";
+      if (currentRow.length > 0 && currentRow.some(c => c !== "")) {
+        rows.push(currentRow);
+      }
+      currentRow = [];
+      if (char === '\r' && text[i + 1] === '\n') i++;
+    } else {
+      currentField += char;
+    }
+  }
+  if (currentField !== "" || currentRow.length > 0) {
+    currentRow.push(currentField.trim());
+    if (currentRow.some(c => c !== "")) rows.push(currentRow);
+  }
+  return rows;
+}
+
+function parseEntriesFromCSV(rows) {
+  if (rows.length < 2) return [];
+  const cleanHeader = (s) => s.toLowerCase().replace(/[\s_\-]/g, "");
+  const headers = rows[0].map(cleanHeader);
+
+  const colIdx = (aliases) => {
+    for (const a of aliases) {
+      const idx = headers.indexOf(a);
+      if (idx !== -1) return idx;
+    }
+    return -1;
+  };
+
+  const handleIdx = colIdx(["handle", "participant", "user", "username", "name"]);
+  const teamIdx = colIdx(["team", "org", "organization"]);
+  const todayIdx = colIdx(["tokenstoday", "today", "todaytokens", "tokensday"]);
+  const weekIdx = colIdx(["tokens7d", "7d", "week", "tokensweek", "tokens7days", "weeklytokens"]);
+  const allIdx = colIdx(["tokensalltime", "tokensall", "alltime", "all", "total", "totaltokens", "lifetime"]);
+  const costTodayIdx = colIdx(["costtoday", "cost", "todaycost"]);
+  const cost7dIdx = colIdx(["cost7d", "costweek", "weekcost"]);
+  const costAllIdx = colIdx(["costalltime", "costall", "costtotal", "totalcost"]);
+  const streakIdx = colIdx(["streak", "streakdays", "activedays"]);
+  const modelIdx = colIdx(["topmodel", "model", "llm"]);
+  const hwIdx = colIdx(["hardware", "hw", "chip", "cpu", "device"]);
+
+  const entries = [];
+  for (let r = 1; r < rows.length; r++) {
+    const row = rows[r];
+    const rawHandle = handleIdx !== -1 && row[handleIdx] ? row[handleIdx] : row[0];
+    if (!rawHandle) continue;
+    const handle = String(rawHandle).replace(/^@/, "").trim();
+    if (!handle) continue;
+
+    const parseNum = (idx) => {
+      if (idx === -1 || !row[idx]) return 0;
+      const clean = String(row[idx]).replace(/[,$]/g, "");
+      return Number(clean) || 0;
+    };
+
+    entries.push({
+      id: "sheet:" + handle,
+      handle: handle,
+      team: teamIdx !== -1 && row[teamIdx] ? String(row[teamIdx]).trim() : "",
+      tokensToday: parseNum(todayIdx),
+      tokens7d: parseNum(weekIdx),
+      tokensAll: parseNum(allIdx),
+      costToday: parseNum(costTodayIdx),
+      cost7d: parseNum(cost7dIdx),
+      costAll: parseNum(costAllIdx),
+      streakDays: parseNum(streakIdx),
+      topModel: modelIdx !== -1 && row[modelIdx] ? String(row[modelIdx]).trim() : "claude-3-7-sonnet",
+      hardware: hwIdx !== -1 && row[hwIdx] ? String(row[hwIdx]).trim() : "Apple Silicon",
+      isLocal: false,
+      updatedAt: Date.now() / 1000
+    });
+  }
+  return entries;
+}
+
+// --- Backend URL Resolvers ---
+let activeBackendType = "demo";
+let activeCloudflareBase = "";
+
+function resolveCloudflareBase(raw) {
+  if (raw && raw.trim()) {
+    return raw.trim().replace(/\/+$/, "");
+  }
+  // Auto-detection: if hosted on custom domain, workers.dev, pages.dev, or local proxy
+  if (window.location.hostname === "tokens.benebsworth.com" ||
+      window.location.hostname.includes("workers.dev") ||
+      window.location.hostname.includes("pages.dev") ||
+      (window.location.port !== "8765" && !window.location.hostname.includes("github.io") && window.location.protocol.startsWith("http"))) {
+    return window.location.origin;
+  }
+  return "https://tokens.benebsworth.com";
+}
+
+function resolveSheetURL(raw) {
+  if (!raw) return null;
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+
+  // Google Apps Script Web App
+  if (trimmed.includes("script.google.com/macros/s/")) {
+    return { type: "apps_script", url: trimmed };
+  }
+
+  // Google Sheets Document URL
+  const docMatch = trimmed.match(/https:\/\/docs\.google\.com\/spreadsheets\/d\/([a-zA-Z0-9_-]+)/);
+  if (docMatch) {
+    const docId = docMatch[1];
+    return {
+      type: "csv_export",
+      url: `https://docs.google.com/spreadsheets/d/${docId}/gviz/tq?tqx=out:csv`
+    };
+  }
+
+  // Direct CSV URL
+  if (trimmed.endsWith(".csv") || trimmed.includes("out=csv") || trimmed.includes("out:csv")) {
+    return { type: "csv_direct", url: trimmed };
+  }
+
+  return { type: "unknown", url: trimmed };
+}
+
+// --- Fetch Data ---
+async function fetchLeaderboardData() {
+  const statusDot = document.getElementById("status-dot");
+  const statusText = document.getElementById("status-text");
+  const latencyBadge = document.getElementById("latency-badge");
+
+  // Priority: URL Param -> LocalStorage -> Auto-detection
+  const params = new URLSearchParams(window.location.search);
+  const paramCF = params.get("cf") || params.get("worker") || params.get("api");
+  const paramSheet = params.get("sheet") || params.get("src");
+  const savedType = localStorage.getItem("th_backend_type");
+  const savedCF = localStorage.getItem("th_cf_url");
+  const savedSheet = localStorage.getItem("th_sheets_url");
+
+  let targetType = "demo";
+  if (paramCF !== null) {
+    targetType = "cloudflare";
+  } else if (paramSheet !== null) {
+    targetType = "sheets";
+  } else if (savedType === "cloudflare") {
+    targetType = "cloudflare";
+  } else if (savedType === "sheets") {
+    targetType = "sheets";
+  } else if (savedCF) {
+    targetType = "cloudflare";
+  } else if (savedSheet) {
+    targetType = "sheets";
+  } else if (resolveCloudflareBase("")) {
+    targetType = "cloudflare";
+  }
+
+  // 1. Cloudflare Edge + R2
+  if (targetType === "cloudflare") {
+    const cfRaw = paramCF !== null ? paramCF : (savedCF || "");
+    const cfBase = resolveCloudflareBase(cfRaw);
+    activeCloudflareBase = cfBase;
+    activeBackendType = "cloudflare";
+
+    statusDot.className = "status-dot";
+    statusText.textContent = "Querying Cloudflare R2 Edge…";
+    if (latencyBadge) latencyBadge.style.display = "none";
+
+    const startTime = performance.now();
+    try {
+      const endpoint = `${cfBase}/api/leaderboard?period=${encodeURIComponent(currentPeriod)}${currentTeam ? `&team=${encodeURIComponent(currentTeam)}` : ""}`;
+      // NOTE: intentionally NOT `cache: "no-store"` — the Worker serves
+      // `Cache-Control: public, max-age=60, stale-while-revalidate=300`, and
+      // no-store would bypass the Cloudflare edge cache on every view.
+      const response = await fetch(endpoint);
+      if (!response.ok) throw new Error("HTTP " + response.status);
+      const data = await response.json();
+      const latency = Math.round(performance.now() - startTime);
+
+      if (data && Array.isArray(data.leaderboard)) {
+        rawEntries = data.leaderboard.map(item => item.entry || item);
+      } else {
+        throw new Error("Invalid Cloudflare response payload");
+      }
+
+      statusDot.className = "status-dot";
+      const total = data.total || rawEntries.length;
+      statusText.textContent = `Cloudflare R2 Edge · ${total} participant${total === 1 ? "" : "s"}`;
+      if (latencyBadge) {
+        latencyBadge.textContent = `⚡ ${latency}ms`;
+        latencyBadge.className = `latency-badge ${latency > 150 ? "slow" : ""}`;
+        latencyBadge.style.display = "inline-flex";
+      }
+      renderLeaderboard();
+      return;
+    } catch (err) {
+      console.error("Cloudflare Edge fetch error:", err);
+      statusDot.className = "status-dot error";
+      statusText.textContent = `Edge Error: ${err.message} (Using Demo Data)`;
+      if (latencyBadge) latencyBadge.style.display = "none";
+      if (rawEntries.length === 0) rawEntries = [...DEFAULT_DEMO_ENTRIES];
+      renderLeaderboard();
+      return;
+    }
+  }
+
+  // 2. Google Sheets
+  if (targetType === "sheets") {
+    const targetRaw = paramSheet !== null ? paramSheet : (savedSheet || "");
+    activeBackendType = "sheets";
+
+    if (!targetRaw) {
+      rawEntries = [...DEFAULT_DEMO_ENTRIES];
+      statusDot.className = "status-dot demo";
+      statusText.textContent = "Demo Mode (Configure Google Sheet or Cloudflare)";
+      if (latencyBadge) latencyBadge.style.display = "none";
+      renderLeaderboard();
+      return;
+    }
+
+    const resolved = resolveSheetURL(targetRaw);
+    if (!resolved) {
+      statusDot.className = "status-dot error";
+      statusText.textContent = "Invalid Sheet URL";
+      if (latencyBadge) latencyBadge.style.display = "none";
+      return;
+    }
+
+    statusDot.className = "status-dot";
+    statusText.textContent = "Syncing Google Sheet…";
+    if (latencyBadge) latencyBadge.style.display = "none";
+
+    const startTime = performance.now();
+    try {
+      const response = await fetch(resolved.url, { cache: "no-store" });
+      if (!response.ok) throw new Error("HTTP " + response.status);
+      const latency = Math.round(performance.now() - startTime);
+
+      if (resolved.type === "apps_script") {
+        const json = await response.json();
+        if (json && Array.isArray(json.leaderboard)) {
+          rawEntries = json.leaderboard;
+        } else {
+          throw new Error("Invalid Apps Script response");
+        }
+      } else {
+        const csvText = await response.text();
+        const rows = parseCSV(csvText);
+        const parsed = parseEntriesFromCSV(rows);
+        if (parsed.length > 0) {
+          rawEntries = parsed;
+        } else {
+          throw new Error("No rows parsed from CSV");
+        }
+      }
+
+      statusDot.className = "status-dot";
+      statusText.textContent = `Google Sheet · ${rawEntries.length} participant${rawEntries.length === 1 ? "" : "s"}`;
+      if (latencyBadge) {
+        latencyBadge.textContent = `🐢 ${latency}ms`;
+        latencyBadge.className = `latency-badge ${latency > 250 ? "slow" : ""}`;
+        latencyBadge.style.display = "inline-flex";
+      }
+      renderLeaderboard();
+      return;
+    } catch (err) {
+      console.error("Fetch failed:", err);
+      statusDot.className = "status-dot error";
+      statusText.textContent = `Sync Error: ${err.message} (Using Demo Data)`;
+      if (latencyBadge) latencyBadge.style.display = "none";
+      if (rawEntries.length === 0) rawEntries = [...DEFAULT_DEMO_ENTRIES];
+      renderLeaderboard();
+      return;
+    }
+  }
+
+  // 3. Demo Fallback
+  activeBackendType = "demo";
+  rawEntries = [...DEFAULT_DEMO_ENTRIES];
+  statusDot.className = "status-dot demo";
+  statusText.textContent = "Demo Mode (Configure Cloudflare or Google Sheet)";
+  if (latencyBadge) latencyBadge.style.display = "none";
+  renderLeaderboard();
+}
+
+// --- Render Table & KPIs ---
+function renderLeaderboard() {
+  // Update Team Dropdown
+  const teams = Array.from(new Set(rawEntries.map(e => e.team).filter(Boolean))).sort();
+  const teamSelect = document.getElementById("team-select");
+  const currentSelected = teamSelect.value;
+  teamSelect.innerHTML = '<option value="">All Teams</option>' +
+    teams.map(t => `<option value="${t}" ${t === currentSelected ? 'selected' : ''}>${t}</option>`).join('');
+
+  // Filter entries
+  let filtered = rawEntries.filter(entry => {
+    if (currentTeam && entry.team.toLowerCase() !== currentTeam.toLowerCase()) return false;
+    if (currentSearch) {
+      const q = currentSearch.toLowerCase();
+      const match = entry.handle.toLowerCase().includes(q) ||
+                    entry.team.toLowerCase().includes(q) ||
+                    entry.topModel.toLowerCase().includes(q) ||
+                    entry.hardware.toLowerCase().includes(q);
+      if (!match) return false;
+    }
+    return true;
+  });
+
+  // Sort entries
+  filtered.sort((a, b) => {
+    const scoreA = getPeriodScore(a, currentPeriod);
+    const scoreB = getPeriodScore(b, currentPeriod);
+    return scoreB - scoreA;
+  });
+
+  // Calculate Global KPIs
+  let totalTokens = 0;
+  let totalCost = 0;
+  let maxStreak = 0;
+  rawEntries.forEach(e => {
+    totalTokens += (e.tokensAll || 0);
+    totalCost += (e.costAll || 0);
+    if ((e.streakDays || 0) > maxStreak) maxStreak = e.streakDays;
+  });
+
+  document.getElementById("kpi-total-tokens").textContent = formatTokens(totalTokens);
+  document.getElementById("kpi-total-cost").textContent = formatCurrency(totalCost);
+  document.getElementById("kpi-active-devs").textContent = rawEntries.length.toString();
+  document.getElementById("kpi-max-streak").textContent = `${maxStreak} Days 🔥`;
+
+  // Render Table Rows
+  const tbody = document.getElementById("leaderboard-tbody");
+  tbody.innerHTML = "";
+
+  if (filtered.length === 0) {
+    tbody.innerHTML = `<tr><td colspan="8" style="text-align:center; padding: 40px; color: var(--muted);">No matching participants found.</td></tr>`;
+    return;
+  }
+
+  const topScore = getPeriodScore(filtered[0], currentPeriod) || 1;
+
+  filtered.forEach((entry, idx) => {
+    const rank = idx + 1;
+    const score = getPeriodScore(entry, currentPeriod);
+    const cost = getPeriodCost(entry, currentPeriod);
+    const relPercent = Math.min(100, Math.max(1, (score / topScore) * 100));
+
+    let rankBadgeClass = "rank-default";
+    let rankText = `#${rank}`;
+    let avatarClass = "avatar";
+    if (rank === 1) { rankBadgeClass = "rank-1"; rankText = "🥇 1st"; avatarClass += " top-1"; }
+    else if (rank === 2) { rankBadgeClass = "rank-2"; rankText = "🥈 2nd"; }
+    else if (rank === 3) { rankBadgeClass = "rank-3"; rankText = "🥉 3rd"; }
+
+    const initial = (entry.handle.replace(/^@/, "").charAt(0) || "U").toUpperCase();
+    const isStreakPeriod = currentPeriod === "streak";
+    const volumeDisplay = isStreakPeriod ? `${score} Days` : formatTokens(score);
+
+    const tr = document.createElement("tr");
+    tr.className = "clickable-row";
+    tr.title = "Click row to view full usage breakdown";
+    tr.innerHTML = `
+      <td>
+        <span class="rank-pill ${rankBadgeClass}">${rankText}</span>
+      </td>
+      <td>
+        <div class="participant-cell">
+          <div class="${avatarClass}">${initial}</div>
+          <div class="handle-meta">
+            <div class="handle-row">
+              <span class="handle-text">@${entry.handle}</span>
+              ${entry.isLocal ? '<span class="chip-tag" style="color:var(--cyan); border-color:var(--cyan);">YOU</span>' : ''}
+            </div>
+            <span class="team-tag">${entry.team || 'Personal'}</span>
+          </div>
+        </div>
+      </td>
+      <td>
+        <span class="chip-tag">${entry.hardware || 'Apple Silicon'}</span>
+      </td>
+      <td>
+        <span class="model-tag">${entry.topModel || 'claude-3-7-sonnet'}</span>
+      </td>
+      <td>
+        <div class="volume-wrap">
+          <div class="volume-text">${volumeDisplay}</div>
+          <div class="volume-bar-track">
+            <div class="volume-bar-fill" style="width: ${relPercent}%;"></div>
+          </div>
+        </div>
+      </td>
+      <td style="font-family: var(--mono); color: var(--text);">
+        ${formatCurrency(cost)}
+      </td>
+      <td style="font-family: var(--mono);">
+        <span style="color: #fb923c;">🔥 ${entry.streakDays || 0}d</span>
+      </td>
+      <td style="text-align: right; white-space: nowrap;">
+        <button class="btn view-details-btn" style="padding: 4px 8px; font-size: 11px; margin-right: 4px;" title="View usage breakdown">
+          📊 Details
+        </button>
+        <button class="btn share-entry-btn" data-id="${entry.id}">
+          Share
+        </button>
+      </td>
+    `;
+
+    tr.addEventListener("click", (e) => {
+      if (e.target.closest(".share-entry-btn")) return;
+      openUserDetailModal(entry, rank);
+    });
+
+    tr.querySelector(".share-entry-btn").addEventListener("click", (e) => {
+      e.stopPropagation();
+      openShareModal(entry, rank);
+    });
+
+    tr.querySelector(".view-details-btn").addEventListener("click", (e) => {
+      e.stopPropagation();
+      openUserDetailModal(entry, rank);
+    });
+
+    tbody.appendChild(tr);
+  });
+}
+
+function openUserDetailModal(entry, rank) {
+  const modal = document.getElementById("user-detail-modal");
+  if (!modal) return;
+
+  activeShareEntry = { entry, rank };
+
+  const initial = (entry.handle.replace(/^@/, "").charAt(0) || "U").toUpperCase();
+  let rankBadgeClass = "rank-default";
+  let rankText = `#${rank}`;
+  if (rank === 1) { rankBadgeClass = "rank-1"; rankText = "🥇 1st"; }
+  else if (rank === 2) { rankBadgeClass = "rank-2"; rankText = "🥈 2nd"; }
+  else if (rank === 3) { rankBadgeClass = "rank-3"; rankText = "🥉 3rd"; }
+
+  document.getElementById("detail-avatar").textContent = initial;
+  document.getElementById("detail-handle").textContent = `@${entry.handle}`;
+
+  const rankPill = document.getElementById("detail-rank-pill");
+  rankPill.className = `rank-pill ${rankBadgeClass}`;
+  rankPill.textContent = rankText;
+
+  document.getElementById("detail-team").textContent = entry.team || "Personal";
+  document.getElementById("detail-hardware").textContent = entry.hardware || "Apple Silicon";
+  document.getElementById("detail-streak").textContent = `🔥 ${entry.streakDays || 0}d streak`;
+
+  // KPIs
+  document.getElementById("detail-kpi-today").textContent = formatTokens(entry.tokensToday || 0);
+  document.getElementById("detail-kpi-cost-today").textContent = formatCurrency(entry.costToday || 0);
+
+  document.getElementById("detail-kpi-7d").textContent = formatTokens(entry.tokens7d || entry.tokensToday || 0);
+  document.getElementById("detail-kpi-cost-7d").textContent = formatCurrency(entry.cost7d || entry.costToday || 0);
+
+  document.getElementById("detail-kpi-all").textContent = formatTokens(entry.tokensAll || entry.tokensToday || 0);
+  document.getElementById("detail-kpi-cost-all").textContent = formatCurrency(entry.costAll || entry.costToday || 0);
+
+  document.getElementById("detail-kpi-model").textContent = entry.topModel || "claude-3-7-sonnet";
+
+  // Breakdown resolution
+  let bd = entry.breakdown;
+  if (!bd || !Array.isArray(bd.models) || bd.models.length === 0) {
+    const prov = (entry.topModel || "").toLowerCase().includes("claude") ? "claude" : ((entry.topModel || "").toLowerCase().includes("gpt") ? "openai" : "google");
+    bd = {
+      models: [
+        {
+          provider: prov,
+          model: entry.topModel || "claude-3-7-sonnet",
+          tokensToday: entry.tokensToday || 0,
+          tokensAll: entry.tokensAll || 0,
+          costToday: entry.costToday || 0,
+          costAll: entry.costAll || 0,
+          sharePercent: 100.0
+        }
+      ],
+      tools: [
+        { tool: prov, tokensToday: entry.tokensToday || 0, tokensAll: entry.tokensAll || 0, costToday: entry.costToday || 0, costAll: entry.costAll || 0 }
+      ],
+      history: [],
+      activeDays: entry.streakDays || 1,
+      totalSessions: 1
+    };
+  }
+
+  // 7-Day Activity Chart
+  const chartContainer = document.getElementById("detail-chart-container");
+  chartContainer.innerHTML = "";
+  const history = bd.history || [];
+  let maxHistoryTokens = 1;
+  history.forEach(h => { if (h.tokens > maxHistoryTokens) maxHistoryTokens = h.tokens; });
+  let historySum = 0;
+
+  if (history.length === 0) {
+    chartContainer.innerHTML = `<div style="width:100%; text-align:center; color:var(--muted); font-size:12px; align-self:center; font-family:var(--mono);">Continuous hourly tracking active on node</div>`;
+  } else {
+    history.forEach(h => {
+      historySum += h.tokens;
+      const heightPct = Math.max(10, Math.min(100, Math.round((h.tokens / maxHistoryTokens) * 100)));
+      const barCol = document.createElement("div");
+      barCol.style.flex = "1";
+      barCol.style.display = "flex";
+      barCol.style.flexDirection = "column";
+      barCol.style.alignItems = "center";
+      barCol.style.height = "100%";
+      barCol.style.justifyContent = "flex-end";
+      barCol.title = `${h.dayLabel || 'Day'}: ${formatTokens(h.tokens)} (${formatCurrency(h.cost || 0)})`;
+
+      barCol.innerHTML = `
+        <div style="font-size: 9px; font-family: var(--mono); color: var(--muted); margin-bottom: 4px;">${formatTokens(h.tokens)}</div>
+        <div style="width: 100%; max-width: 32px; height: ${heightPct}%; background: linear-gradient(180deg, var(--cyan), #3b82f6); border-radius: 4px 4px 0 0; min-height: 4px; transition: height 0.3s ease;"></div>
+        <div style="font-size: 9.5px; font-family: var(--mono); color: var(--muted); margin-top: 6px;">${h.dayLabel || ''}</div>
+      `;
+      chartContainer.appendChild(barCol);
+    });
+  }
+  document.getElementById("detail-activity-total").textContent = historySum > 0 ? `Total: ${formatTokens(historySum)}` : "";
+
+  // Models Table
+  const modelsTbody = document.getElementById("detail-models-tbody");
+  modelsTbody.innerHTML = "";
+  const models = bd.models || [];
+  models.forEach(m => {
+    const tr = document.createElement("tr");
+    tr.style.borderBottom = "1px solid var(--border-subtle)";
+    const share = Number(m.sharePercent || 0).toFixed(1);
+    const provBadge = (m.provider || "ai").toUpperCase();
+    tr.innerHTML = `
+      <td style="padding: 10px 14px; font-weight: 600; font-family: var(--mono); color: var(--text);">
+        <span style="display:inline-block; font-size: 9px; background: rgba(255,255,255,0.08); padding: 1px 5px; border-radius: 4px; margin-right: 6px; color: var(--cyan);">${provBadge}</span>
+        ${m.model}
+      </td>
+      <td style="padding: 10px 14px; font-family: var(--mono); color: var(--cyan);">${formatTokens(m.tokensToday || 0)}</td>
+      <td style="padding: 10px 14px; font-family: var(--mono);">${formatTokens(m.tokensAll || 0)}</td>
+      <td style="padding: 10px 14px; font-family: var(--mono); color: var(--muted);">${formatCurrency(m.costAll || m.costToday || 0)}</td>
+      <td style="padding: 10px 14px; font-family: var(--mono);">
+        <div style="display:flex; align-items:center; gap:8px;">
+          <div style="flex:1; height: 6px; background: rgba(255,255,255,0.08); border-radius: 3px; overflow:hidden;">
+            <div style="width: ${Math.min(100, Math.max(2, share))}%; height: 100%; background: var(--cyan); border-radius: 3px;"></div>
+          </div>
+          <span style="font-size: 11px; min-width: 38px; text-align:right;">${share}%</span>
+        </div>
+      </td>
+    `;
+    modelsTbody.appendChild(tr);
+  });
+
+  // Tools Container
+  const toolsContainer = document.getElementById("detail-tools-container");
+  toolsContainer.innerHTML = "";
+  const tools = bd.tools || [];
+  if (tools.length === 0) {
+    toolsContainer.innerHTML = `<span style="color:var(--muted); font-size:12px; font-family:var(--mono);">Integrated with Token Horizon agent engine</span>`;
+  } else {
+    tools.forEach(t => {
+      const pill = document.createElement("div");
+      pill.style.background = "rgba(255,255,255,0.03)";
+      pill.style.border = "1px solid var(--border-subtle)";
+      pill.style.borderRadius = "8px";
+      pill.style.padding = "8px 14px";
+      pill.style.display = "flex";
+      pill.style.flexDirection = "column";
+      pill.style.gap = "2px";
+      pill.innerHTML = `
+        <div style="font-size: 10.5px; font-weight: 700; font-family: var(--mono); color: var(--cyan); text-transform: uppercase;">${t.tool}</div>
+        <div style="font-size: 13px; font-weight: 600; font-family: var(--mono);">${formatTokens(t.tokensAll || t.tokensToday || 0)}</div>
+        <div style="font-size: 10px; font-family: var(--mono); color: var(--muted);">${formatCurrency(t.costAll || t.costToday || 0)}</div>
+      `;
+      toolsContainer.appendChild(pill);
+    });
+  }
+
+  const updatedAt = entry.updatedAt ? new Date(entry.updatedAt * 1000).toLocaleString() : "Live Edge";
+  document.getElementById("detail-updated-at").textContent = `Telemetry Updated: ${updatedAt}`;
+
+  modal.classList.add("active");
+}
+
+// --- Share Card Generator ---
+function generateShareText(entry, rank) {
+  const handle = entry.handle;
+  const hw = entry.hardware || "Apple Silicon";
+  const score = getPeriodScore(entry, currentPeriod);
+  const cost = getPeriodCost(entry, currentPeriod);
+  const periodLabel = currentPeriod.toUpperCase();
+
+  return `╭─────────────────────────────────────────────────────────────╮
+│ 🌌 TOKEN HORIZON LEADERBOARD                                │
+│ Participant: @${handle.padEnd(46)} │
+│ Hardware: ${hw.padEnd(49)} │
+├─────────────────────────────────────────────────────────────┤
+│ Period: ${periodLabel.padEnd(14)} Rank: #${rank}
+│ Tokens: ${formatTokens(score).padEnd(16)} Cost: ${formatCurrency(cost).padEnd(20)} │
+│ Active Streak: ${entry.streakDays || 0} Days 🔥 Top Model: ${entry.topModel}
+╰─────────────────────────────────────────────────────────────╯`;
+}
+
+function generateShareMarkdown(entry, rank) {
+  const handle = entry.handle;
+  const hw = entry.hardware || "Apple Silicon";
+
+  return `### 🌌 Token Horizon Usage Card
+
+**@${handle}**
+*Hardware:* ${hw}
+
+| Metric | Value | Rank & Status |
+| :--- | :--- | :--- |
+| **Leaderboard Rank** | **#${rank}** | Period: ${currentPeriod.toUpperCase()} |
+| **Tokens Today** | \`${formatTokens(entry.tokensToday)}\` | ${formatCurrency(entry.costToday)} |
+| **7-Day Rolling** | \`${formatTokens(entry.tokens7d)}\` | ${formatCurrency(entry.cost7d)} |
+| **All-Time Tokens** | \`${formatTokens(entry.tokensAll)}\` | ${formatCurrency(entry.costAll)} |
+| **Active Streak** | 🔥 ${entry.streakDays || 0} Days | Consecutive Active Days |
+| **Top AI Model** | \`${entry.topModel}\` | Most utilized architecture |
+
+*Generated by [Token Horizon](https://github.com/castlemilk/token-horizon)*`;
+}
+
+function generateShareSVG(entry, rank) {
+  const handle = entry.handle;
+  const hw = entry.hardware || "Apple Silicon";
+  const score = formatTokens(getPeriodScore(entry, currentPeriod));
+  const allTokens = formatTokens(entry.tokensAll);
+  const model = entry.topModel;
+  const streak = `${entry.streakDays || 0}d`;
+  const team = (entry.team || "Personal").toUpperCase();
+
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 540 260" width="540" height="260" style="font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Segoe UI', Roboto, sans-serif;">
+  <defs>
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#090D16" />
+      <stop offset="50%" stop-color="#111827" />
+      <stop offset="100%" stop-color="#1A2035" />
+    </linearGradient>
+    <linearGradient id="accentGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#6366F1" />
+      <stop offset="50%" stop-color="#8B5CF6" />
+      <stop offset="100%" stop-color="#EC4899" />
+    </linearGradient>
+    <filter id="shadow" x="-5%" y="-5%" width="110%" height="110%">
+      <feDropShadow dx="0" dy="8" stdDeviation="12" flood-color="#000000" flood-opacity="0.6" />
+    </filter>
+  </defs>
+
+  <rect x="10" y="10" width="520" height="240" rx="16" fill="url(#bgGrad)" stroke="#2E3856" stroke-width="1.2" filter="url(#shadow)" />
+  <rect x="10" y="10" width="520" height="4" rx="2" fill="url(#accentGrad)" />
+
+  <text x="32" y="44" fill="#38BDF8" font-size="11" font-weight="700" letter-spacing="1.5">TOKEN HORIZON</text>
+  <text x="145" y="44" fill="#4B5563" font-size="11">|</text>
+  <text x="156" y="44" fill="#9CA3AF" font-size="11" letter-spacing="0.5">${team}</text>
+
+  <rect x="420" y="28" width="88" height="24" rx="12" fill="#1E293B" stroke="#334155" stroke-width="0.8" />
+  <text x="464" y="44" fill="#F8FAFC" font-size="11" font-weight="700" text-anchor="middle">RANK #${rank}</text>
+
+  <circle cx="50" cy="90" r="18" fill="#1E293B" stroke="#6366F1" stroke-width="1.5" />
+  <text x="50" y="96" fill="#F8FAFC" font-size="14" font-weight="700" text-anchor="middle">@</text>
+
+  <text x="80" y="88" fill="#FFFFFF" font-size="18" font-weight="700">${handle}</text>
+  <text x="80" y="106" fill="#9CA3AF" font-size="11">${hw}</text>
+
+  <line x1="32" y1="126" x2="508" y2="126" stroke="#1F2937" stroke-width="1" />
+
+  <text x="32" y="152" fill="#6B7280" font-size="10" font-weight="700" letter-spacing="0.8">${currentPeriod.toUpperCase()} TOKENS</text>
+  <text x="32" y="180" fill="#F8FAFC" font-size="24" font-weight="800">${score}</text>
+
+  <text x="160" y="152" fill="#6B7280" font-size="10" font-weight="700" letter-spacing="0.8">ALL-TIME</text>
+  <text x="160" y="180" fill="#38BDF8" font-size="24" font-weight="800">${allTokens}</text>
+
+  <text x="280" y="152" fill="#6B7280" font-size="10" font-weight="700" letter-spacing="0.8">ACTIVE STREAK</text>
+  <text x="280" y="180" fill="#FB923C" font-size="24" font-weight="800">${streak} 🔥</text>
+
+  <text x="400" y="152" fill="#6B7280" font-size="10" font-weight="700" letter-spacing="0.8">TOP MODEL</text>
+  <text x="400" y="180" fill="#C084FC" font-size="14" font-weight="700">${model}</text>
+
+  <line x1="32" y1="214" x2="508" y2="214" stroke="#1F2937" stroke-width="1" />
+  <text x="32" y="234" fill="#4B5563" font-size="10">castlemilk/token-horizon · native macos agent intelligence</text>
+</svg>`;
+}
+
+function openShareModal(entry, rank) {
+  activeShareEntry = { entry, rank };
+  document.getElementById("share-modal-title").textContent = `Share Card — @${entry.handle}`;
+  updateSharePreview();
+  document.getElementById("share-modal").classList.add("active");
+}
+
+function updateSharePreview() {
+  if (!activeShareEntry) return;
+  const { entry, rank } = activeShareEntry;
+  const pre = document.getElementById("share-preview-text");
+  const downloadBtn = document.getElementById("download-svg-btn");
+
+  if (activeShareFormat === "svg") {
+    downloadBtn.style.display = "inline-flex";
+    const svgCode = generateShareSVG(entry, rank);
+    pre.textContent = svgCode;
+  } else if (activeShareFormat === "markdown") {
+    downloadBtn.style.display = "none";
+    pre.textContent = generateShareMarkdown(entry, rank);
+  } else if (activeShareFormat === "text") {
+    downloadBtn.style.display = "none";
+    pre.textContent = generateShareText(entry, rank);
+  } else if (activeShareFormat === "json") {
+    downloadBtn.style.display = "none";
+    pre.textContent = JSON.stringify({
+      handle: entry.handle,
+      team: entry.team,
+      rank: rank,
+      period: currentPeriod,
+      tokensToday: entry.tokensToday,
+      tokens7d: entry.tokens7d,
+      tokensAll: entry.tokensAll,
+      costToday: entry.costToday,
+      streakDays: entry.streakDays,
+      topModel: entry.topModel,
+      hardware: entry.hardware
+    }, null, 2);
+  }
+}
+
+function showToast(msg) {
+  const toast = document.getElementById("toast");
+  toast.textContent = msg;
+  toast.classList.add("show");
+  setTimeout(() => toast.classList.remove("show"), 2500);
+}
+
+// --- Wire Event Listeners ---
+document.addEventListener("DOMContentLoaded", () => {
+  // Period Tabs
+  document.querySelectorAll(".period-btn").forEach(btn => {
+    btn.addEventListener("click", () => {
+      document.querySelectorAll(".period-btn").forEach(b => b.classList.remove("active"));
+      btn.classList.add("active");
+      currentPeriod = btn.dataset.period;
+      renderLeaderboard();
+    });
+  });
+
+  // Search & Filter
+  document.getElementById("search-input").addEventListener("input", (e) => {
+    currentSearch = e.target.value.trim();
+    renderLeaderboard();
+  });
+
+  document.getElementById("team-select").addEventListener("change", (e) => {
+    currentTeam = e.target.value;
+    renderLeaderboard();
+  });
+
+  // Refresh Button
+  document.getElementById("refresh-btn").addEventListener("click", () => {
+    fetchLeaderboardData();
+    showToast("Refreshing leaderboard data…");
+  });
+
+  // Config Modal
+  const configModal = document.getElementById("config-modal");
+  const tabCfBtn = document.getElementById("tab-cf-btn");
+  const tabSheetsBtn = document.getElementById("tab-sheets-btn");
+  const panelCf = document.getElementById("panel-cf");
+  const panelSheets = document.getElementById("panel-sheets");
+  const cfInput = document.getElementById("cf-url-input");
+  const sheetsInput = document.getElementById("sheets-url-input");
+
+  let selectedConfigBackend = "cloudflare";
+
+  function setConfigBackendTab(type) {
+    selectedConfigBackend = type;
+    if (type === "cloudflare") {
+      tabCfBtn.classList.add("active");
+      tabSheetsBtn.classList.remove("active");
+      panelCf.style.display = "block";
+      panelSheets.style.display = "none";
+    } else {
+      tabSheetsBtn.classList.add("active");
+      tabCfBtn.classList.remove("active");
+      panelSheets.style.display = "block";
+      panelCf.style.display = "none";
+    }
+  }
+
+  if (tabCfBtn && tabSheetsBtn) {
+    tabCfBtn.addEventListener("click", () => setConfigBackendTab("cloudflare"));
+    tabSheetsBtn.addEventListener("click", () => setConfigBackendTab("sheets"));
+  }
+
+  document.getElementById("config-btn").addEventListener("click", () => {
+    cfInput.value = localStorage.getItem("th_cf_url") || "";
+    sheetsInput.value = localStorage.getItem("th_sheets_url") || "";
+    const currentSavedType = localStorage.getItem("th_backend_type") || (localStorage.getItem("th_sheets_url") ? "sheets" : "cloudflare");
+    setConfigBackendTab(currentSavedType);
+    configModal.classList.add("active");
+  });
+
+  document.getElementById("close-config-btn").addEventListener("click", () => {
+    configModal.classList.remove("active");
+  });
+
+  document.getElementById("cancel-config-btn").addEventListener("click", () => {
+    configModal.classList.remove("active");
+  });
+
+  document.getElementById("save-config-btn").addEventListener("click", () => {
+    localStorage.setItem("th_backend_type", selectedConfigBackend);
+    const cfVal = cfInput.value.trim();
+    if (cfVal) {
+      localStorage.setItem("th_cf_url", cfVal);
+    } else {
+      localStorage.removeItem("th_cf_url");
+    }
+
+    const sheetsVal = sheetsInput.value.trim();
+    if (sheetsVal) {
+      localStorage.setItem("th_sheets_url", sheetsVal);
+    } else {
+      localStorage.removeItem("th_sheets_url");
+    }
+
+    configModal.classList.remove("active");
+    fetchLeaderboardData();
+    showToast(selectedConfigBackend === "cloudflare" ? "Connected to Cloudflare Edge!" : "Connected to Google Sheet!");
+  });
+
+  document.getElementById("reset-demo-btn").addEventListener("click", () => {
+    localStorage.removeItem("th_backend_type");
+    localStorage.removeItem("th_cf_url");
+    localStorage.removeItem("th_sheets_url");
+    cfInput.value = "";
+    sheetsInput.value = "";
+    configModal.classList.remove("active");
+    fetchLeaderboardData();
+    showToast("Reset to sample demo data.");
+  });
+
+  // Share Modal
+  const shareModal = document.getElementById("share-modal");
+  document.getElementById("close-share-btn").addEventListener("click", () => {
+    shareModal.classList.remove("active");
+  });
+
+  document.querySelectorAll(".share-tab-btn").forEach(btn => {
+    btn.addEventListener("click", () => {
+      document.querySelectorAll(".share-tab-btn").forEach(b => b.classList.remove("active"));
+      btn.classList.add("active");
+      activeShareFormat = btn.dataset.format;
+      updateSharePreview();
+    });
+  });
+
+  document.getElementById("copy-share-btn").addEventListener("click", () => {
+    const text = document.getElementById("share-preview-text").textContent;
+    navigator.clipboard.writeText(text).then(() => {
+      showToast("Copied share card to clipboard!");
+    });
+  });
+
+  document.getElementById("download-svg-btn").addEventListener("click", () => {
+    if (!activeShareEntry) return;
+    const svgContent = generateShareSVG(activeShareEntry.entry, activeShareEntry.rank);
+    const blob = new Blob([svgContent], { type: "image/svg+xml;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `token-horizon-${activeShareEntry.entry.handle}-card.svg`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    showToast("Downloaded SVG card!");
+  });
+
+  // Publish Modal
+  const publishModal = document.getElementById("publish-modal");
+  const pubHandle = document.getElementById("pub-handle");
+  const pubTeam = document.getElementById("pub-team");
+  const pubToday = document.getElementById("pub-today");
+  const pubAll = document.getElementById("pub-all");
+  const pubModel = document.getElementById("pub-model");
+  const pubHardware = document.getElementById("pub-hardware");
+  const pubTargetUrl = document.getElementById("pub-target-url");
+
+  function getActivePublishEndpoint() {
+    const cf = activeCloudflareBase || resolveCloudflareBase(localStorage.getItem("th_cf_url"));
+    return cf ? `${cf}/api/leaderboard` : "/api/leaderboard";
+  }
+
+  document.getElementById("publish-btn").addEventListener("click", () => {
+    pubHandle.value = localStorage.getItem("th_pub_handle") || "";
+    pubTeam.value = localStorage.getItem("th_pub_team") || "";
+    const ep = getActivePublishEndpoint();
+    if (pubTargetUrl) pubTargetUrl.textContent = ep;
+    publishModal.classList.add("active");
+  });
+
+  document.getElementById("close-publish-btn").addEventListener("click", () => {
+    publishModal.classList.remove("active");
+  });
+
+  document.getElementById("cancel-publish-btn").addEventListener("click", () => {
+    publishModal.classList.remove("active");
+  });
+
+  // One-click daemon sync from Token Horizon app (127.0.0.1:8765)
+  document.getElementById("daemon-sync-btn").addEventListener("click", async () => {
+    const daemonBtn = document.getElementById("daemon-sync-btn");
+    const origText = daemonBtn.textContent;
+    daemonBtn.textContent = "Connecting…";
+    daemonBtn.disabled = true;
+
+    try {
+      const statsRes = await fetch("http://127.0.0.1:8765/stats", { signal: AbortSignal.timeout(3000) });
+      if (!statsRes.ok) throw new Error("Daemon returned HTTP " + statsRes.status);
+      const stats = await statsRes.json();
+
+      let handle = localStorage.getItem("th_pub_handle") || "";
+      if (!handle) {
+        handle = prompt("Enter your handle to publish under:", "benebsworth");
+        if (!handle) {
+          daemonBtn.textContent = origText;
+          daemonBtn.disabled = false;
+          return;
+        }
+      }
+      localStorage.setItem("th_pub_handle", handle);
+
+      const tokensToday = stats.tokens?.today || stats.tokens_today || stats.today || 0;
+      const tokensAll = stats.tokens?.total || stats.tokens_total || stats.all || tokensToday;
+      const topModel = stats.top_model || (stats.models && Object.keys(stats.models)[0]) || "claude-3-7-sonnet";
+      const hardware = stats.hardware || "Apple Silicon";
+
+      daemonBtn.textContent = "Publishing…";
+      const targetEndpoint = getActivePublishEndpoint();
+
+      const pushRes = await fetch(targetEndpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          handle,
+          tokensToday,
+          tokensAll,
+          topModel,
+          hardware
+        })
+      });
+
+      if (!pushRes.ok) throw new Error("Cloud push failed: HTTP " + pushRes.status);
+      publishModal.classList.remove("active");
+      showToast(`Published @${handle} to edge leaderboard! ⚡`);
+      setTimeout(fetchLeaderboardData, 300);
+    } catch (err) {
+      alert("Could not reach Token Horizon app at 127.0.0.1:8765 (" + err.message + "). Make sure Token Horizon is running, or use manual entry below.");
+    } finally {
+      daemonBtn.textContent = origText;
+      daemonBtn.disabled = false;
+    }
+  });
+
+  // Manual submit to /api/leaderboard
+  document.getElementById("submit-publish-btn").addEventListener("click", async () => {
+    const handle = pubHandle.value.trim();
+    if (!handle) {
+      pubHandle.focus();
+      showToast("Handle is required to publish.");
+      return;
+    }
+
+    const team = pubTeam.value.trim();
+    const tokensToday = Number(pubToday.value) || 0;
+    const tokensAll = Number(pubAll.value) || tokensToday;
+    const topModel = pubModel.value.trim() || "claude-3-7-sonnet";
+    const hardware = pubHardware.value.trim() || "Apple Silicon";
+
+    localStorage.setItem("th_pub_handle", handle);
+    if (team) localStorage.setItem("th_pub_team", team);
+
+    const submitBtn = document.getElementById("submit-publish-btn");
+    submitBtn.textContent = "Publishing…";
+    submitBtn.disabled = true;
+
+    try {
+      const targetEndpoint = getActivePublishEndpoint();
+      const res = await fetch(targetEndpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          handle,
+          team,
+          tokensToday,
+          tokensAll,
+          topModel,
+          hardware
+        })
+      });
+
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || ("HTTP " + res.status));
+      }
+
+      publishModal.classList.remove("active");
+      showToast(`Published @${handle} successfully! 🎉`);
+      setTimeout(fetchLeaderboardData, 300);
+    } catch (err) {
+      alert("Failed to publish stats: " + err.message);
+    } finally {
+      submitBtn.textContent = "Publish to Board";
+      submitBtn.disabled = false;
+    }
+  });
+
+  // User Detail Modal Listeners
+  const userDetailModal = document.getElementById("user-detail-modal");
+  document.getElementById("close-detail-btn").addEventListener("click", () => {
+    userDetailModal.classList.remove("active");
+  });
+  document.getElementById("detail-close-btn").addEventListener("click", () => {
+    userDetailModal.classList.remove("active");
+  });
+  document.getElementById("detail-share-btn").addEventListener("click", () => {
+    if (activeShareEntry) {
+      userDetailModal.classList.remove("active");
+      openShareModal(activeShareEntry.entry, activeShareEntry.rank);
+    }
+  });
+
+  // Auto-refresh every 60 seconds
+  setInterval(fetchLeaderboardData, 60000);
+
+  // Initial Load
+  fetchLeaderboardData();
+});
+</script>
+</body>
+</html>
