@@ -35,6 +35,9 @@ final class UIModel: ObservableObject {
     var netCoarse: [Double] { _netCoarse.values }
     @Published var mlx = MLXSnapshot()
     @Published private(set) var mlxHistory = MLXHistory()
+    /// Loopback Ollama meter port when the app relays its own Ollama traffic
+    /// for exact tok/s (nil = direct to Ollama, unmetered).
+    @Published var ollamaMeterPort: Int? = nil
     @Published var sysWindow: SysWindow = .m3
     @Published var processes: [ProcSample] = []
     @Published var processesMem: [ProcSample] = []

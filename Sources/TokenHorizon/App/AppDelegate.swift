@@ -34,8 +34,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
         try? "launch at \(Date())\n".write(to: URL(fileURLWithPath: "/tmp/token-horizon-launch.log"), atomically: true, encoding: .utf8)
         // One router for every host (core): app and headless serve identical APIs.
+        // The router runs on its own Core engine (Core types); the UI keeps
+        // the app engine (app view-model types). Both scan the same files.
         let usageStore = try? SQLiteUsageStore()
-        let router = CoreAPIRouter(engine: engine, usageStore: usageStore)
+        let coreEngine = TokenHorizonCore.UsageEngine()
+        coreEngine.localRuntimeUsage = { RuntimeUsageLedger.shared.contributions() }
+        coreEngine.usageStore = usageStore
+        let router = CoreAPIRouter(engine: coreEngine, usageStore: usageStore)
         router.serverName = "token-horizon"
         router.processesOverride = { [weak self] in
             if let self = self, !self.model.allProcesses.isEmpty {
@@ -50,8 +55,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             }
             self?.refreshHeavy()
         }
-        engine.localRuntimeUsage = { RuntimeUsageLedger.shared.contributions() }
-        engine.usageStore = usageStore
         InferenceMonitor.shared.startPolling()
         if ConsentManager.shared.isGranted(.fileReading) {
             FilePoller.shared.startPolling()
@@ -65,6 +68,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                 reason: "A loopback listener measures token usage and exact tok/s per Ollama API request. Traffic is forwarded unchanged to your local Ollama server."),
            router.addMeter(vendor: "ollama", port: 11435, target: nil) {
             OllamaClient.baseURLProvider = { URL(string: "http://127.0.0.1:11435") }
+            model.ollamaMeterPort = 11435
         }
         // One server on every machine: the POSIX loopback transport +
         // core CoreAPIRouter (the old NWListener LocalServer is gone).
@@ -156,8 +160,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             if heavyTick % 6 == 0 {
                 KimiLimitsEngine.shared.refreshIfDue()
                 PlanLimitsEngine.shared.refreshIfDue()
-                self?.model.kimiLimits = KimiLimitsEngine.shared.cachedLimits().map(ProviderLimit.init)
-                self?.model.planLimits = PlanLimitsEngine.shared.cachedLimits().map(ProviderLimit.init)
+                self?.model.kimiLimits = KimiLimitsEngine.shared.cachedLimits()
+                self?.model.planLimits = PlanLimitsEngine.shared.cachedLimits()
             }
             if heavyTick % 12 == 0 {
                 self?.refreshOllama()
@@ -170,8 +174,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             self?.openDashboard()
         }
         NotificationCenter.default.addObserver(forName: .planLimitsUpdated, object: nil, queue: .main) { [weak self] note in
-            let core = (note.object as? [TokenHorizonCore.ProviderLimit]) ?? PlanLimitsEngine.shared.cachedLimits()
-            let limits = core.map(ProviderLimit.init)
+            let limits = (note.object as? [ProviderLimit]) ?? PlanLimitsEngine.shared.cachedLimits()
             self?.model.planLimits = limits
             LimitNotifier.shared.checkLimits(limits)
             if let self {
@@ -179,8 +182,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             }
         }
         NotificationCenter.default.addObserver(forName: .kimiLimitsUpdated, object: nil, queue: .main) { [weak self] note in
-            let core = (note.object as? [TokenHorizonCore.ProviderLimit]) ?? KimiLimitsEngine.shared.cachedLimits()
-            let limits = core.map(ProviderLimit.init)
+            let limits = (note.object as? [ProviderLimit]) ?? KimiLimitsEngine.shared.cachedLimits()
             self?.model.kimiLimits = limits
             LimitNotifier.shared.checkLimits(limits)
             if let self {
@@ -343,7 +345,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             let procs = SystemStats.processSamples()
             let containers = DockerObserver.sampleContainers()
             DispatchQueue.main.async {
-                self.model.usage = UsageSnapshot(usage)
+                self.model.usage = usage
                 self.model.storeProcesses(all: procs.all, byCPU: procs.byCPU, byMem: procs.byMem,
                                           byDisk: procs.byDisk, byNet: procs.byNet)
                 self.model.dockerContainers = containers
@@ -379,7 +381,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         let window = model.trendWindow
         DispatchQueue.global(qos: .utility).async { [weak self] in
             guard let self else { return }
-            let points = engine.trendHistory(window: window.core).map(HistoryPoint.init)
+            let points = engine.trendHistory(window: window)
             DispatchQueue.main.async {
                 self.model.trendPoints = points
             }
@@ -391,11 +393,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             guard let self else { return }
             let result = engine.history(days: 370)
             let heatmap = engine.activityHeatmap(days: 28)
-            let points = result.points.map(HistoryPoint.init)
             DispatchQueue.main.async {
-                self.model.historyPoints = points
+                self.model.historyPoints = result.points
                 self.model.historyStreak = result.streak
-                LeaderboardStore.shared.syncLocal(snapshot: self.model.usage, history: points,
+                LeaderboardStore.shared.syncLocal(snapshot: self.model.usage, history: result.points,
                                                   streak: result.streak, heatmap: heatmap)
                 self.model.leaderboardRankings = LeaderboardStore.shared.rankings(for: .today)
             }
