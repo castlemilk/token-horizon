@@ -36,6 +36,16 @@ final class ModelsMiscTests: XCTestCase {
         XCTAssertEqual(shared.map { $0.sharePercent }.reduce(0, +), 100, accuracy: 1e-9)
     }
 
+    func testTrendWindowIds() {
+        XCTAssertEqual(TrendWindow.day.id, "1D")
+        XCTAssertEqual(TrendWindow.year.id, "1Y")
+        XCTAssertEqual(TrendWindow.allCases.count, 5)
+    }
+
+    func testWithProviderShares_emptyStaysEmpty() {
+        XCTAssertTrue(ModelUsage.withProviderShares([]).isEmpty)
+    }
+
     func testClaudeAccountTexts() {
         var acct = ClaudeAccount(id: "a", label: "l", configDir: "/tmp")
         acct.tokensToday = 2500

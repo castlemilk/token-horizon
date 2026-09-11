@@ -47,3 +47,11 @@ profile:
 # Timing table + 20s `sample` hotspot profile (/tmp/th-tick-profile.txt).
 profile-sample:
 	./scripts/profile-tick.sh --sample
+
+# Coverage report for Sources/ (report-only: the suite exercises live
+# machine state, so absolute % differs per machine — budgets gate, not this).
+coverage:
+	swift test --enable-code-coverage
+	BIN=".build/arm64-apple-macosx/debug/token-horizonPackageTests.xctest/Contents/MacOS/token-horizonPackageTests"; \
+	PROF=$$(find .build -name default.profdata | head -1); \
+	xcrun llvm-cov report "$$BIN" -instr-profile "$$PROF" | grep -E "Filename|Sources/TokenHorizon"

@@ -23,7 +23,8 @@ struct ProviderLogoView: View {
         .shadow(color: Color.black.opacity(0.2), radius: 1, y: 0.5)
     }
 
-    private func brandBackground(p: String, m: String) -> Color {
+    /// Brand background color. Internal for hermetic unit tests.
+    func brandBackground(p: String, m: String) -> Color {
         if p.contains("anthropic") || p.contains("claude") || m.contains("claude") {
             return Color(red: 0.85, green: 0.47, blue: 0.34)
         }

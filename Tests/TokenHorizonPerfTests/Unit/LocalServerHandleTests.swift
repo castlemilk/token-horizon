@@ -201,6 +201,20 @@ final class LocalServerHandleTests: XCTestCase {
         XCTAssertTrue(r.contentType.lowercased().contains("text/plain"))
     }
 
+    func testDiscoveryStatus_shape() {
+        // Read-only: status() inspects locks/timestamps, never scans or
+        // touches the network. (POST /discovery/scan is deliberately
+        // untested here — it performs live provider fetches.)
+        for path in ["/discovery/status", "/models/discovery"] {
+            let r = call(stubServer(events: Events()), "GET", path)
+            XCTAssertEqual(r.code, 200, path)
+            let obj = r.json as? [String: Any]
+            XCTAssertNotNil(obj?["catalogCount"], path)
+            XCTAssertNotNil(obj?["catalogRevision"], path)
+            XCTAssertNotNil(obj?["monitoredFiles"], path)
+        }
+    }
+
     func testUnknownRoute_404() {
         let r = call(stubServer(events: Events()), "GET", "/nope")
         XCTAssertEqual(r.code, 404)

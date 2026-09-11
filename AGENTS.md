@@ -97,6 +97,11 @@ curl -s localhost:8765/limits | python3 -m json.tool
 printf '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}\n' | node mcp/token-horizon-mcp.mjs
 ```
 
+The block above is also `task smoke` (`scripts/smoke-api.sh`, with PASS/FAIL
+per line). Local gates live in `Taskfile.yml` (`task validate` = lint + full
+suite, mirrors CI); see `TESTING.md` for the full stack (lint / unit /
+fixtures / integration / perf / smoke rules).
+
 Ground-truth checks when touching parsers:
 - codex: `grep '"total_token_usage"' <file> | tail -1` per session, sum `total_tokens` → must equal parser all-time (verified exact before)
 - opencode: session-table sums vs `message.data` per-model sums (json_extract)
@@ -138,19 +143,29 @@ swift test                                                              # comple
 ./scripts/make-app-with-tests.sh                                       # release build gated on perf tests
 make profile                                                           # live tick timing table (opt-in harness, no asserts)
 make profile-sample                                                    # + 20s `sample` hotspot profile; TH_PERF_LOG=1 adds engine phase spans
+make coverage                                                          # llvm-cov table for Sources/ (report-only, see below)
 ```
 
 **Test layout:**
 ```
 Tests/TokenHorizonPerfTests/
-  ModelsPipelinePerfTests.swift   perf budgets + dedup + search
-  ScopeCountsCachingTests.swift   cached lookup is O(1), not O(n)
-  CanonicalIdentityTests.swift    family-key dedup contract
-  ProcessMetricsTests.swift       live process sampling and metric ordering
-  ProcessTreeTests.swift          process hierarchy safety and ordering
-  SystemHistoryTests.swift        I/O rates, cache behavior, and 24-hour retention
+  Unit/               pure-logic suites (parsers, stores, engines, routes, view math) + Unit/Core/ (seam tests)
+  Perf/               budget-gated suites (ModelsPipeline, ScopeCounts, SystemHistory, ProcessMetrics) + TickPerfHarness (opt-in via TH_PROFILE)
+  Integration/        loopback relay + server-lifecycle round-trips
   Fixtures/catalog-7300.json      synthetic 7,300-row catalog (committed)
 ```
+
+**Coverage policy (`make coverage`, CI `coverage` job — both report-only):**
+- This suite exercises live machine state (displays, keychain, running
+  tools, real $HOME), so absolute % differs per machine. A hard gate would
+  be a flake factory — perf budgets gate, not coverage numbers.
+- New pure logic (parsers, math, routing, formatting) must ship with
+  table-driven unit tests. Widen `private` → internal with a doc comment
+  when that is the only blocker (established precedent).
+- Intentionally uncovered, do not chase: network fetchers, Keychain,
+  SMAppService/launchd, destructive ops (kill, cache reset, sheet/cloud
+  publish), live process spawns, SwiftUI view bodies, `main.swift`, and
+  AppDelegate launch wiring.
 
 If a test fails with "REGRESSION", the pipeline is slower than the budget. Common causes:
 - New filter pass inside `modelsTab` view body

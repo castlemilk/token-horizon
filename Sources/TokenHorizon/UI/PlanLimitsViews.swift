@@ -49,7 +49,8 @@ struct PlanLimitCard: View {
         return spaceBelow >= need || spaceBelow >= rowTop
     }
 
-    private var isUrgent: Bool {
+    /// Urgent when the cycle window resets within 24h. Internal for tests.
+    var isUrgent: Bool {
         (row.cycleLimit?.resetsAt?.timeIntervalSinceNow ?? .infinity) < 86_400
     }
 

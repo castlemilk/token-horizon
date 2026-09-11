@@ -142,20 +142,24 @@ struct HeatmapGrid: View {
         }
     }
 
-    private func heatColor(level: Double) -> Color {
+    /// Heat color scale. Internal for hermetic unit tests.
+    func heatColor(level: Double) -> Color {
         Color.green.opacity(0.22 + 0.78 * level)
     }
-    private func cellColor(_ tokens: Int) -> Color {
+    /// Log-scaled cell color. Internal for hermetic unit tests.
+    func cellColor(_ tokens: Int) -> Color {
         guard tokens > 0 else { return Color.white.opacity(0.06) }
         let ratio = log(Double(tokens) + 1) / log(Double(maxTokens) + 1)
         return heatColor(level: Swift.min(ratio * 1.4, 1))
     }
-    private func tooltipX(col: Int, totalCols: Int) -> CGFloat {
+    /// Clamped tooltip anchor. Internal for hermetic unit tests.
+    func tooltipX(col: Int, totalCols: Int) -> CGFloat {
         let raw = CGFloat(col) * (cellSize + gap) - tooltipWidth / 2 + cellSize / 2
         let maxX = CGFloat(totalCols) * (cellSize + gap) - tooltipWidth
         return Swift.min(Swift.max(raw, 0), Swift.max(maxX, 0))
     }
-    private func tooltipHeight(_ p: HistoryPoint) -> CGFloat { p.tokens > 0 ? 58 : 40 }
+    /// Tooltip height by content. Internal for hermetic unit tests.
+    func tooltipHeight(_ p: HistoryPoint) -> CGFloat { p.tokens > 0 ? 58 : 40 }
     private func tooltipCard(_ p: HistoryPoint) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(dayString(p.day))
@@ -249,11 +253,13 @@ struct StackedTrends: View {
             }
         }
     }
-    private func barHeight(_ tokens: Int, _ maxTotal: Int, container: CGFloat) -> CGFloat {
+    /// Sqrt-scaled bar height. Internal for hermetic unit tests.
+    func barHeight(_ tokens: Int, _ maxTotal: Int, container: CGFloat) -> CGFloat {
         let ratio = sqrt(Double(tokens) / Double(maxTotal))
         return max(1.5, CGFloat(ratio * Double(container - 4)))
     }
-    private func sortedTools(_ point: HistoryPoint) -> [(String, Int)] {
+    /// Tools sorted by tokens desc. Internal for hermetic unit tests.
+    func sortedTools(_ point: HistoryPoint) -> [(String, Int)] {
         point.byTool.filter { $0.value > 0 }.sorted { $0.value > $1.value }
     }
     private func trendTooltip(_ p: HistoryPoint) -> some View {

@@ -170,6 +170,16 @@ final class ModelRowTests: XCTestCase {
                        "https://ollama.com/library/qwen3")
     }
 
+    func testMiscIdsAndDetails() {
+        XCTAssertEqual(ModelTableColumn.allCases.count, 9)
+        XCTAssertEqual(ModelFilterScope.allCases.count, 6)
+        XCTAssertEqual(ModelTableColumn.model.id, "MODEL")
+        XCTAssertEqual(ModelFilterScope.freeOpen.id, "FREE / OPEN")
+        XCTAssertEqual(ModelFilterScope.active.id, "USED")
+        let row = ModelRow(usage: usage(), catalog: entry(discountLabel: nil))
+        XCTAssertNil(row.discountDetail)
+    }
+
     func testShareTextThresholds() {
         var u = usage()
         u.sharePercent = 66.66

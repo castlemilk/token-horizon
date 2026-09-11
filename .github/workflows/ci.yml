@@ -25,3 +25,25 @@ jobs:
 
       - name: Test (unit + perf budgets + integration)
         run: swift test
+
+  coverage:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode_16.2.app/Contents/Developer || true
+
+      # Coverage is REPORT-ONLY by design: this suite exercises live
+      # machine state (displays, keychain, running tools), so absolute
+      # percentages differ between CI and dev machines. A hard gate would
+      # just be a flake factory. Budgets (not coverage %) are the gate.
+      - name: Test with coverage
+        run: swift test --enable-code-coverage
+
+      - name: Coverage summary (Sources/ only)
+        run: |
+          BIN=".build/arm64-apple-macosx/debug/token-horizonPackageTests.xctest/Contents/MacOS/token-horizonPackageTests"
+          PROF=$(find .build -name default.profdata | head -1)
+          xcrun llvm-cov report "$BIN" -instr-profile "$PROF" 2>/dev/null \
+            | grep -E "Filename|Sources/TokenHorizon|TOTAL" || true
