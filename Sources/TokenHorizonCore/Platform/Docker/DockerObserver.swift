@@ -3,6 +3,8 @@ import Foundation
 import Darwin
 #elseif canImport(Glibc)
 import Glibc
+#elseif os(Windows)
+import WinSDK
 #endif
 
 /// One Docker container's resource footprint.
@@ -52,6 +54,7 @@ public protocol DockerTransport {
     func get(path: String) -> Data?
 }
 
+#if !os(Windows)
 /// Docker Engine API over a Unix socket: `GET <path> HTTP/1.0` with a short
 /// timeout and a bounded response cap. No dependencies beyond POSIX sockets.
 public struct SocketDockerTransport: DockerTransport {
@@ -110,12 +113,77 @@ public struct SocketDockerTransport: DockerTransport {
         return out[headEnd.upperBound...].isEmpty ? nil : Data(out[headEnd.upperBound...])
     }
 }
+#endif // !os(Windows)
+
+#if os(Windows)
+/// Docker Engine API over the Windows named pipe
+/// (`\\.\pipe\docker_engine`, Docker Desktop default). Same HTTP framing as
+/// the socket transport; fails fast when Docker is absent. No dependencies
+/// beyond WinSDK.
+public struct NamedPipeDockerTransport: DockerTransport {
+    public var pipePath: String
+    public var timeoutMs: DWORD
+    public var maxBytes: Int
+
+    public init(pipePath: String = #"\\.\pipe\docker_engine"#,
+                timeoutMs: DWORD = 2000, maxBytes: Int = 8_388_608) {
+        self.pipePath = pipePath
+        self.timeoutMs = timeoutMs
+        self.maxBytes = maxBytes
+    }
+
+    public func get(path: String) -> Data? {
+        guard let handle = openHandle() else { return nil }
+        defer { CloseHandle(handle) }
+        let request = "GET \(path) HTTP/1.0\r\nHost: localhost\r\nConnection: close\r\n\r\n"
+        let reqBytes = Array(request.utf8)
+        var written: DWORD = 0
+        let wrote: Bool = reqBytes.withUnsafeBytes {
+            WriteFile(handle, $0.baseAddress, DWORD($0.count), &written, nil)
+        }
+        guard wrote, written == DWORD(reqBytes.count) else { return nil }
+        var out = Data()
+        var chunk = [UInt8](repeating: 0, count: 65536)
+        while out.count < maxBytes {
+            var read: DWORD = 0
+            let ok: Bool = chunk.withUnsafeMutableBytes {
+                ReadFile(handle, $0.baseAddress, DWORD($0.count), &read, nil)
+            }
+            guard ok, read > 0 else { break }
+            out.append(contentsOf: chunk[0..<Int(read)])
+        }
+        guard let headEnd = out.range(of: Data("\r\n\r\n".utf8)) else { return nil }
+        return out[headEnd.upperBound...].isEmpty ? nil : Data(out[headEnd.upperBound...])
+    }
+
+    private func openHandle() -> HANDLE? {
+        let access: DWORD = GENERIC_READ | GENERIC_WRITE
+        func open() -> HANDLE? {
+            pipePath.withCString(encodedAs: UTF16.self) {
+                CreateFileW($0, access, 0, nil, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nil)
+            }
+        }
+        var handle = open()
+        if handle == nil || handle == INVALID_HANDLE_VALUE {
+            guard GetLastError() == ERROR_PIPE_BUSY else { return nil }
+            let waited: Bool = pipePath.withCString(encodedAs: UTF16.self) {
+                WaitNamedPipeW($0, timeoutMs)
+            }
+            guard waited else { return nil }
+            handle = open()
+        }
+        guard let handle, handle != INVALID_HANDLE_VALUE else { return nil }
+        return handle
+    }
+}
+#endif // os(Windows)
 
 /// Container telemetry via the local Docker Engine API.
 ///
-/// Our way: socket API (not CLI scraping), bounded (capped container count,
-/// short timeouts, 2.5s result cache), injectable transport, platform-neutral
-/// socket search. Call off-main; returns [] when Docker is absent.
+/// Our way: Engine API over a local endpoint (Unix socket, Windows named
+/// pipe — not CLI scraping), bounded (capped container count, short timeouts,
+/// 2.5s result cache), injectable transport, platform-neutral endpoint
+/// search. Call off-main; returns [] when Docker is absent.
 public enum DockerObserver {
     private static let lock = NSLock()
     private static var cached: [DockerContainerSample] = []
@@ -152,10 +220,14 @@ public enum DockerObserver {
 
     private static func transport() -> DockerTransport? {
         if let t = transportOverride { return t }
+        #if os(Windows)
+        return NamedPipeDockerTransport()
+        #else
         for path in socketPaths() where FileManager.default.fileExists(atPath: path) {
             return SocketDockerTransport(socketPath: path)
         }
         return nil
+        #endif
     }
 
     private static func fetch() -> [DockerContainerSample] {
