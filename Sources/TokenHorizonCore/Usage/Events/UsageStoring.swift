@@ -141,6 +141,36 @@ public enum UsageStoreError: Error {
     case stepFailed(String)
 }
 
+/// Minimal leaderboard row for cloud sync. The cloud schema is deliberately
+/// different from local tables: it is read-optimized for cross-user rankings
+/// (handle/team/period) while local tables stay write-optimized per-machine.
+/// Hosts map their richer entry types onto this before recording.
+public struct SyncLeaderboardEntry: Codable {
+    public var machineID: String
+    public var handle: String
+    public var team: String
+    public var period: String
+    public var tokens: Int
+    public var cost: Double
+    public var topModel: String
+    public var breakdownJSON: String
+    public var updatedAt: Date
+
+    public init(machineID: String, handle: String, team: String = "", period: String = "today",
+                tokens: Int, cost: Double, topModel: String = "",
+                breakdownJSON: String = "{}", updatedAt: Date = Date()) {
+        self.machineID = machineID
+        self.handle = handle
+        self.team = team
+        self.period = period
+        self.tokens = tokens
+        self.cost = cost
+        self.topModel = topModel
+        self.breakdownJSON = breakdownJSON
+        self.updatedAt = updatedAt
+    }
+}
+
 /// The storage contract every usage backend implements — local sqlite today,
 /// Postgres/HTTP API tomorrow. Collectors write events through it; engines,
 /// dashboards, sync and leaderboards read through it. Implementations must be
@@ -183,6 +213,18 @@ public protocol UsageStoring {
 
     /// Quota history over [from, to), optionally filtered by provider.
     func limitHistory(from: Date, to: Date, provider: String?) throws -> [LimitSnapshot]
+
+    /// Leaderboard outbox: upsert per (machine, handle, period) for cloud sync.
+    func recordLeaderboard(_ entries: [SyncLeaderboardEntry]) throws
+
+    /// Leaderboard rows updated since the given date (for delta pushes).
+    func leaderboardSnapshots(since: Date) throws -> [SyncLeaderboardEntry]
+
+    /// Sync cursors: opaque per-dataset progress markers for delta pushes
+    /// (usage rowid, limits timestamp, …). Backends persist them; the sync
+    /// engine advances them only on acknowledged pushes.
+    func syncCursor(dataset: String) throws -> String?
+    func setSyncCursor(dataset: String, cursor: String) throws
 }
 
 /// Default no-op quota history for backends that haven't opted in
@@ -190,4 +232,8 @@ public protocol UsageStoring {
 public extension UsageStoring {
     func recordLimits(_ snapshots: [LimitSnapshot]) throws {}
     func limitHistory(from: Date, to: Date, provider: String?) throws -> [LimitSnapshot] { [] }
+    func recordLeaderboard(_ entries: [SyncLeaderboardEntry]) throws {}
+    func leaderboardSnapshots(since: Date) throws -> [SyncLeaderboardEntry] { [] }
+    func syncCursor(dataset: String) throws -> String? { nil }
+    func setSyncCursor(dataset: String, cursor: String) throws {}
 }

@@ -285,6 +285,25 @@ public final class CoreAPIRouter {
             let snaps = (try? store.limitHistory(from: from, to: to, provider: params["provider"])) ?? []
             return Self.json(["snapshots": Self.encode(snaps)])
 
+        case ("GET", "/sync/status"):
+            guard let store = usageStore else { return Self.json(["error": "usage store unavailable"], status: 503) }
+            var cursors: [String: String] = [:]
+            for dataset in CloudSyncDataset.allCases {
+                cursors[dataset.rawValue] = (try? store.syncCursor(dataset: dataset.rawValue)) ?? ""
+            }
+            let report = CloudSync.shared.lastReport
+            return Self.json([
+                "enabled": CloudSync.shared.baseURL != nil,
+                "cursors": cursors,
+                "last_sync": CloudSync.shared.lastSync?.timeIntervalSince1970 ?? NSNull(),
+                "last_report": Self.encode(report),
+            ])
+
+        case ("POST", "/sync/now"):
+            guard let store = usageStore else { return Self.json(["error": "usage store unavailable"], status: 503) }
+            let report = CloudSync.shared.sync(store: store)
+            return Self.json(["report": Self.encode(report)])
+
         case ("GET", "/timeline"):
             guard let store = usageStore else { return Self.json(["error": "usage store unavailable"], status: 503) }
             let params = Self.queryParams(query)

@@ -100,3 +100,14 @@ extension ShellEvent {
         self.exit = core.exit
     }
 }
+
+extension TokenHorizonCore.SyncLeaderboardEntry {
+    /// App entry → Core outbox row (cloud sync reads Core rows only).
+    init(app entry: LeaderboardEntry, machineID: String = TokenHorizonCore.MachineIdentity.current) {
+        let breakdown = (try? JSONEncoder().encode(entry.breakdown)).flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
+        self.init(machineID: machineID, handle: entry.handle, team: entry.team,
+                  period: "today", tokens: entry.tokensAll, cost: entry.costAll,
+                  topModel: entry.topModel, breakdownJSON: breakdown,
+                  updatedAt: entry.updatedAt)
+    }
+}

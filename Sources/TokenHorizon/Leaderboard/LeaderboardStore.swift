@@ -1,4 +1,5 @@
 import Foundation
+import TokenHorizonCore
 #if canImport(AppKit)
 import AppKit
 #endif
@@ -564,6 +565,8 @@ final class LeaderboardStore {
     private let lock = NSLock()
     private let path: String
     private var entries: [LeaderboardEntry] = []
+    /// Core store for the cloud-sync outbox (set by the host; nil = local only).
+    var coreStore: TokenHorizonCore.UsageStoring?
 
     init(customPath: String? = nil) {
         if let customPath {
@@ -902,6 +905,11 @@ final class LeaderboardStore {
             } else {
                 entries.append(acctEntry)
             }
+        }
+
+        // Cloud-sync outbox (Core store; pushed on reconnect when offline).
+        if let coreStore {
+            try? coreStore.recordLeaderboard([TokenHorizonCore.SyncLeaderboardEntry(app: local)])
         }
 
         saveLocked()

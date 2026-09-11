@@ -28,6 +28,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         let router = CoreAPIRouter(engine: coreEngine, usageStore: usageStore)
         router.serverName = "token-horizon"
         model.usageStore = usageStore
+        LeaderboardStore.shared.coreStore = usageStore
         router.processesOverride = { [weak self] in
             if let self = self, !self.model.allProcesses.isEmpty {
                 return (self.model.allProcesses, self.model.processes, self.model.processesMem, self.model.processesDisk, self.model.processesNet)
