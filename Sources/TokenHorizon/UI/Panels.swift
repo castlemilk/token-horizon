@@ -58,7 +58,7 @@ final class NotchPanel: NSPanel {
         hasShadow = false
         isMovable = false
 
-        let host = NSHostingView(rootView: NotchContentView(model: model, geometry: geo))
+        let host = FirstMouseHostingView(rootView: NotchContentView(model: model, geometry: geo))
         host.sizingOptions = []
         let wrap = PanelContentView(frame: NSRect(origin: .zero, size: geo.collapsed))
         wrap.addSubview(host)
@@ -138,9 +138,35 @@ final class NotchPanel: NSPanel {
     }
 
     override var canBecomeKey: Bool { true }
+    override var canBecomeMain: Bool { true }
+
+    override func sendEvent(_ event: NSEvent) {
+        if event.type == .leftMouseDown && !isKeyWindow {
+            makeKey()
+        }
+        super.sendEvent(event)
+    }
+}
+
+final class FirstMouseHostingView<Content: View>: NSHostingView<Content> {
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
+        true
+    }
+}
+
+final class FirstMouseHostingController<Content: View>: NSHostingController<Content> {
+    override func loadView() {
+        let host = FirstMouseHostingView(rootView: rootView)
+        host.sizingOptions = []
+        self.view = host
+    }
 }
 
 final class PanelContentView: NSView {
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
+        true
+    }
+
     override init(frame: NSRect) {
         super.init(frame: frame)
         wantsLayer = true

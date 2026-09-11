@@ -88,4 +88,25 @@ final class PlanLimitsParseTests: XCTestCase {
     func testParseClaudePayload_empty() {
         XCTAssertTrue(PlanLimitsEngine.parseClaudePayload([:]).isEmpty)
     }
+
+    func testEpochHelpers() {        // NSNumber seconds and millis, ISO strings, and garbage.
+        let d = Date(timeIntervalSince1970: 1_700_000_000)
+        XCTAssertEqual(PlanLimitsEngine.epoch(NSNumber(value: 1_700_000_000))?.timeIntervalSince1970 ?? -1,
+                       d.timeIntervalSince1970, accuracy: 0.001)
+        XCTAssertEqual(PlanLimitsEngine.epochMS(NSNumber(value: 1_700_000_000_000))?.timeIntervalSince1970 ?? -1,
+                       d.timeIntervalSince1970, accuracy: 0.001)
+        XCTAssertNotNil(PlanLimitsEngine.parseISO("2026-09-10T12:00:00Z"))
+        XCTAssertNil(PlanLimitsEngine.parseISO(nil))
+        XCTAssertNil(PlanLimitsEngine.parseISO("garbage"))
+        XCTAssertNil(PlanLimitsEngine.epoch(nil))
+        XCTAssertNil(PlanLimitsEngine.epoch("garbage"))
+    }
+
+    func testCookieValue() {
+        let cookie = "a=1; sec_token=abc%20123; c=3"
+        XCTAssertEqual(PlanLimitsEngine.cookieValue(name: "sec_token", from: cookie), "abc 123")
+        XCTAssertEqual(PlanLimitsEngine.cookieValue(name: "a", from: cookie), "1")
+        XCTAssertNil(PlanLimitsEngine.cookieValue(name: "missing", from: cookie))
+        XCTAssertNil(PlanLimitsEngine.cookieValue(name: "a", from: ""))
+    }
 }

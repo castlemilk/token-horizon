@@ -54,12 +54,29 @@ final class DurableStore {
     struct StoredBucket: Codable {
         var tokens: Int
         var cost: Double
+        var input: Int = 0
+        var output: Int = 0
+        var requests: Int = 0
     }
 
     struct StoredModelAccum: Codable {
         var all: Int
         var today: Int
         var cost: Double
+        var inputAll: Int = 0
+        var outputAll: Int = 0
+        var inputToday: Int = 0
+        var outputToday: Int = 0
+        var requestsAll: Int = 0
+        var requestsToday: Int = 0
+    }
+
+    struct StoredProjectAccum: Codable {
+        var tokens: Int = 0
+        var cost: Double = 0
+        var input: Int = 0
+        var output: Int = 0
+        var sessions: Int = 0
     }
 
     struct StoredAdditiveFile: Codable {
@@ -70,6 +87,11 @@ final class DurableStore {
         var buckets: [String: StoredBucket]
         var models: [String: StoredModelAccum]
         var watermarks: [String: StoredWatermark]
+        var cacheWrite: Int = 0
+        var inputAll: Int = 0
+        var outputAll: Int = 0
+        var requestsAll: Int = 0
+        var projects: [String: StoredProjectAccum] = [:]
     }
 
     struct StoredCodexRate: Codable {
@@ -90,14 +112,24 @@ final class DurableStore {
         var watermark: StoredCodexWatermark
         var last: StoredCodexWatermark
         var allTokens: Int
-        var buckets: [String: Int]
+        var buckets: [String: StoredBucket]
         var rate: StoredCodexRate?
         var model: String
         var modelTokens: Int
+        var inputAll: Int = 0
+        var outputAll: Int = 0
+        var cachedAll: Int = 0
+        var reasoningAll: Int = 0
+        var requestsAll: Int = 0
+        var models: [String: StoredModelAccum] = [:]
     }
 
     struct EngineStatePayload: Codable {
-        var version: Int = 1
+        /// v2 added per-bucket token-class splits, per-model input/output/
+        /// request accumulators, and per-project rollups. v1 payloads fail
+        /// decoding (missing keys) and trigger a one-time full reparse, which
+        /// is the only way to recover complete historical splits.
+        var version: Int = 2
         var claudeFiles: [String: StoredAdditiveFile]
         var kimiFiles: [String: StoredAdditiveFile]
         var genericFiles: [String: StoredAdditiveFile]

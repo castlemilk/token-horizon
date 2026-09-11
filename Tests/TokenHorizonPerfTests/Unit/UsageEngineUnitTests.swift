@@ -76,8 +76,8 @@ final class UsageEngineUnitTests: XCTestCase {
         state.allTokens = 1000
         state.allCost = 0.05
         state.cacheRead = 200
-        state.buckets[1725184800] = (tokens: 500, cost: 0.025)
-        state.models["claude-3-5-sonnet"] = (all: 1000, today: 500, cost: 0.05)
+        state.buckets[1725184800] = UsageEngine.HourBucket(tokens: 500, cost: 0.025)
+        state.models["claude-3-5-sonnet"] = UsageEngine.ModelAccum(all: 1000, today: 500, cost: 0.05)
 
         XCTAssertEqual(state.allTokens, 1000)
         XCTAssertEqual(state.allCost, 0.05)

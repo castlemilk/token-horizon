@@ -48,13 +48,53 @@ final class UsageEngine {
         var cacheRead: Int = 0
     }
 
+    /// Per-model accumulation. `all`/`today`/`cost` are the original fields;
+    /// the input/output/request splits feed the leaderboard analytics.
+    struct ModelAccum {
+        var all = 0
+        var today = 0
+        var cost = 0.0
+        var inputAll = 0
+        var outputAll = 0
+        var inputToday = 0
+        var outputToday = 0
+        var requestsAll = 0
+        var requestsToday = 0
+    }
+
+    /// Hourly bucket with token-class split. `tokens` stays the total
+    /// (input + output + cache read + cache write) so every existing consumer
+    /// keeps working.
+    struct HourBucket {
+        var tokens = 0
+        var cost = 0.0
+        var input = 0
+        var output = 0
+        var requests = 0
+    }
+
+    /// Working-directory rollup. Claude/generic JSONL `cwd` + opencode
+    /// session `directory`.
+    struct ProjectAccum {
+        var tokens = 0
+        var cost = 0.0
+        var input = 0
+        var output = 0
+        var sessions = 0
+    }
+
     struct AdditiveFileState {
         var offset: UInt64 = 0
         var allTokens: Int = 0
         var allCost: Double = 0
         var cacheRead: Int = 0
-        var buckets: [Int: (tokens: Int, cost: Double)] = [:]
-        var models: [String: (all: Int, today: Int, cost: Double)] = [:]
+        var cacheWrite: Int = 0
+        var inputAll: Int = 0
+        var outputAll: Int = 0
+        var requestsAll: Int = 0
+        var buckets: [Int: HourBucket] = [:]
+        var models: [String: ModelAccum] = [:]
+        var projects: [String: ProjectAccum] = [:]
         var watermarks: [String: AdditiveWatermark] = [:]
     }
 
@@ -88,10 +128,16 @@ final class UsageEngine {
         var watermark = CodexWatermark()
         var last = CodexWatermark()
         var allTokens: Int = 0
-        var buckets: [Int: Int] = [:]
+        var buckets: [Int: HourBucket] = [:]
         var rate: CodexRate?
         var model: String = "codex"
         var modelTokens: Int = 0
+        var inputAll: Int = 0
+        var outputAll: Int = 0
+        var cachedAll: Int = 0
+        var reasoningAll: Int = 0
+        var requestsAll: Int = 0
+        var models: [String: ModelAccum] = [:]
     }
 
     /// Session dirs for the fixed single-home generic tools, expanded to
@@ -257,16 +303,23 @@ final class UsageEngine {
         var points: [HistoryPoint] = []
         for offset in (0..<days).reversed() {
             guard let date = cal.date(byAdding: .day, value: -offset, to: Date()) else { continue }
-            let start = Int(cal.startOfDay(for: date).timeIntervalSince1970)
-            points.append(aggregate(merged, from: start, to: start + 86_400))
+            let startDay = cal.startOfDay(for: date)
+            let start = Int(startDay.timeIntervalSince1970)
+            // Calendar-day end (DST-safe): a fixed +86400 would drop or
+            // borrow an hour on 23/25-hour days.
+            let endDay = cal.date(byAdding: .day, value: 1, to: startDay) ?? startDay.addingTimeInterval(86_400)
+            points.append(aggregate(merged, from: start, to: Int(endDay.timeIntervalSince1970)))
         }
 
+        let today = todayBucket()
+        // Durable overlay, shared by the points fill above and the streak
+        // walk below: pruned-file days count in both, so the heatmap and
+        // the streak can never disagree about the past.
+        var storedByDay: [Int: HistoryPoint] = [:]
         // Overlay durable history for prior days where log files were pruned/deleted
         if SettingsStore.shared.historyPersistenceEnabled,
            let stored = DurableStore.shared.loadHistory() {
-            var storedByDay: [Int: HistoryPoint] = [:]
             for p in stored.points { storedByDay[p.day] = p }
-            let today = todayBucket()
             for i in 0..<points.count {
                 let day = points[i].day
                 if day < today && points[i].tokens == 0, let cached = storedByDay[day], cached.tokens > 0 {
@@ -275,12 +328,12 @@ final class UsageEngine {
             }
         }
 
-        var streak = 0
-        var cursor = todayBucket()
-        if dayTokens(merged, cursor) == 0 { cursor -= 86_400 }
-        while dayTokens(merged, cursor) > 0 {
-            streak += 1
-            cursor -= 86_400
+        let streak = Self.streakDays(today: today) { day in
+            let live = dayTokens(merged, day)
+            if day < today, live == 0, let cached = storedByDay[day], cached.tokens > 0 {
+                return cached.tokens
+            }
+            return live
         }
 
         let t1 = Self.perfNow()
@@ -305,8 +358,10 @@ final class UsageEngine {
         var points: [HistoryPoint] = []
         let nowHour = currentHour()
         let today = todayBucket()
+        // Calendar-day bounds for daily-aligned windows (DST-safe).
+        let dayBounds = spec.dailyAligned ? Self.dailyAlignedBounds(count: spec.count, today: today) : []
 
-        for i in (0..<spec.count).reversed() {
+        for (position, i) in (0..<spec.count).reversed().enumerated() {
             let start: Int
             let end: Int
             if !spec.dailyAligned {
@@ -318,8 +373,8 @@ final class UsageEngine {
                     end = start + spec.seconds
                 }
             } else {
-                start = today - i * 86_400
-                end = start + 86_400
+                start = dayBounds[position].start
+                end = dayBounds[position].end
             }
             points.append(aggregate(merged, from: start, to: min(end, currentHour() + 3600)))
         }
@@ -335,32 +390,88 @@ final class UsageEngine {
         return points
     }
 
-    private func aggregate(_ merged: [Int: [String: (t: Int, c: Double)]], from: Int, to: Int) -> HistoryPoint {
+    /// Sums hourly buckets in [from, to). Buckets are UTC-hour aligned while
+    /// windows start at LOCAL midnight, so this matches by RANGE, never by
+    /// striding exact keys — striding silently drops every bucket in
+    /// non-whole-hour zones and on DST transition days. Internal for tests.
+    func aggregate(_ merged: [Int: [String: (t: Int, c: Double)]], from: Int, to: Int) -> HistoryPoint {
         var byTool: [String: Int] = [:]
         var tokens = 0
         var cost = 0.0
-        for hour in stride(from: from, to: to, by: 3600) {
-            if let tools = merged[hour] {
-                for (tool, v) in tools {
-                    byTool[tool, default: 0] += v.t
-                    tokens += v.t
-                    cost += v.c
-                }
+        for (hour, tools) in merged where hour >= from && hour < to {
+            for (tool, v) in tools {
+                byTool[tool, default: 0] += v.t
+                tokens += v.t
+                cost += v.c
             }
         }
         return HistoryPoint(day: from, tokens: tokens, cost: cost, byTool: byTool)
     }
 
-    private func dayTokens(_ merged: [Int: [String: (t: Int, c: Double)]], _ dayStart: Int) -> Int {
-        var total = 0
-        for hour in stride(from: dayStart, to: dayStart + 86_400, by: 3600) {
-            if let tools = merged[hour] {
-                for (_, v) in tools {
-                    total += v.t
-                }
+    /// Day total via aggregate (single implementation of the range rule).
+    /// Internal for hermetic unit tests.
+    func dayTokens(_ merged: [Int: [String: (t: Int, c: Double)]], _ dayStart: Int) -> Int {
+        aggregate(merged, from: dayStart, to: dayStart + 86_400).tokens
+    }
+
+    /// Consecutive active days ending today (or yesterday when today is
+    /// still empty — the grace rule). Pure for testability: `tokensOn` maps
+    /// a day-start bucket to that day's tokens.
+    static func streakDays(today: Int, tokensOn: (Int) -> Int) -> Int {
+        var streak = 0
+        var cursor = today
+        if tokensOn(cursor) == 0 { cursor -= 86_400 }
+        while tokensOn(cursor) > 0 {
+            streak += 1
+            cursor -= 86_400
+        }
+        return streak
+    }
+
+    /// Merge per-directory accumulators into the snapshot project list.
+    private func mergeProjects(into list: inout [ProjectUsage], from accums: [String: ProjectAccum]) {
+        guard !accums.isEmpty else { return }
+        var index: [String: Int] = [:]
+        for (i, p) in list.enumerated() { index[p.directory] = i }
+        for (dir, a) in accums {
+            if let i = index[dir] {
+                list[i].tokens += a.tokens
+                list[i].cost += a.cost
+                list[i].sessions += a.sessions
+                list[i].inputTokens += a.input
+                list[i].outputTokens += a.output
+            } else {
+                index[dir] = list.count
+                list.append(ProjectUsage(directory: dir, tokens: a.tokens, cost: a.cost,
+                                         sessions: a.sessions, inputTokens: a.input,
+                                         outputTokens: a.output))
             }
         }
-        return total
+    }
+
+    /// 7 (Mon-first) x 24 local-hour token grid over the trailing `days`.
+    /// Buckets are UTC-hour aligned; Calendar converts each to local time.
+    func activityHeatmap(days: Int = 28) -> [[Int]] {
+        lock.lock()
+        defer { lock.unlock() }
+        _ = collectLocked()
+        let merged = mergedHourlyLocked()
+        let cal = Calendar.current
+        let start = cal.startOfDay(for: cal.date(byAdding: .day, value: -(max(1, days) - 1), to: Date()) ?? Date())
+        let startTs = Int(start.timeIntervalSince1970)
+        var grid = Array(repeating: Array(repeating: 0, count: 24), count: 7)
+        for (hour, tools) in merged where hour >= startTs {
+            var tokens = 0
+            for (_, v) in tools { tokens += v.t }
+            guard tokens > 0 else { continue }
+            let date = Date(timeIntervalSince1970: TimeInterval(hour))
+            let weekday = cal.component(.weekday, from: date)
+            let hourOfDay = cal.component(.hour, from: date)
+            let row = (weekday + 5) % 7
+            guard (0..<7).contains(row), (0..<24).contains(hourOfDay) else { continue }
+            grid[row][hourOfDay] += tokens
+        }
+        return grid
     }
 
     private func mergedHourlyLocked() -> [Int: [String: (t: Int, c: Double)]] {
@@ -376,7 +487,7 @@ final class UsageEngine {
             let tool = key.split(separator: "::", maxSplits: 1).first.map(String.init) ?? "other"
             for (h, b) in st.buckets { add(h, tool, b.tokens, b.cost) }
         }
-        for (_, st) in codexFiles { for (h, tokens) in st.buckets { add(h, "codex", tokens, 0) } }
+        for (_, st) in codexFiles { for (h, b) in st.buckets { add(h, "codex", b.tokens, 0) } }
         let localllm = OllamaTelemetryStore.shared.summary()
         for (h, tokens) in localllm.hourlyBuckets { add(h, "ollama", tokens, 0) }
         for (day, tokens, cost) in cachedOpencodeLocked().hourly { add(day, "opencode", tokens, cost) }
@@ -426,13 +537,20 @@ final class UsageEngine {
             tools.append(ToolUsage(tool: "opencode",
                                    tokensToday: oc.todayTokens, tokensAllTime: oc.allTokens,
                                    costToday: oc.todayCost, costAllTime: oc.allCost,
-                                   cacheReadAll: oc.cacheRead))
+                                   cacheReadAll: oc.cacheRead, cacheWriteAll: oc.cacheWrite,
+                                   inputTokensToday: oc.inputTokensToday,
+                                   outputTokensToday: oc.outputTokensToday,
+                                   inputTokensAllTime: oc.inputTokensAll,
+                                   outputTokensAllTime: oc.outputTokensAll,
+                                   requestsToday: oc.requestsToday,
+                                   requestsAllTime: oc.requestsAll))
             snap.tokensToday += oc.todayTokens
             snap.costToday += oc.todayCost
             snap.tokensAllTime += oc.allTokens
             snap.costAllTime += oc.allCost
             snap.recentSessions = oc.sessions
             snap.models = opencode.models
+            for p in opencode.projects { snap.projects.append(p) }
         }
         ph.mark("opencode")
 
@@ -448,7 +566,13 @@ final class UsageEngine {
             tools.append(ToolUsage(tool: "claude",
                                    tokensToday: claude.todayTokens, tokensAllTime: claude.allTokens,
                                    costToday: claude.todayCost, costAllTime: claude.allCost,
-                                   cacheReadAll: claude.cacheRead))
+                                   cacheReadAll: claude.cacheRead, cacheWriteAll: claude.cacheWrite,
+                                   inputTokensToday: claude.inputToday,
+                                   outputTokensToday: claude.outputToday,
+                                   inputTokensAllTime: claude.inputAll,
+                                   outputTokensAllTime: claude.outputAll,
+                                   requestsToday: claude.requestsToday,
+                                   requestsAllTime: claude.requestsAll))
             snap.tokensToday += claude.todayTokens
             snap.costToday += claude.todayCost
             snap.tokensAllTime += claude.allTokens
@@ -456,8 +580,12 @@ final class UsageEngine {
             for (model, v) in claude.perModel {
                 snap.models.append(ModelUsage(provider: "claude", model: model,
                                               tokensAll: v.all, tokensToday: v.today, cost: v.cost,
-                                              messages: 0, free: v.cost < 0.0001, cacheReadAll: 0))
+                                              messages: v.requestsAll, free: v.cost < 0.0001,
+                                              inputTokensAll: v.inputAll, outputTokensAll: v.outputAll,
+                                              inputTokensToday: v.inputToday, outputTokensToday: v.outputToday,
+                                              requestsAll: v.requestsAll, requestsToday: v.requestsToday))
             }
+            mergeProjects(into: &snap.projects, from: claude.projects)
         }
         ph.mark("claude")
 
@@ -500,24 +628,47 @@ final class UsageEngine {
                 detail: "\(left)% left"))
         }
         if codexToday.all > 0 {
+            let codexTodayBucket = todayBucket()
+            var cInputAll = 0, cOutputAll = 0, cRequestsAll = 0
+            var cInputToday = 0, cOutputToday = 0, cRequestsToday = 0
+            var modelMap: [String: ModelAccum] = [:]
+            for (_, st) in codexFiles {
+                cInputAll += st.inputAll
+                cOutputAll += st.outputAll
+                cRequestsAll += st.requestsAll
+                for (model, v) in st.models {
+                    var acc = modelMap[model] ?? ModelAccum()
+                    acc.all += v.all
+                    acc.today += v.today
+                    acc.inputAll += v.inputAll
+                    acc.outputAll += v.outputAll
+                    acc.inputToday += v.inputToday
+                    acc.outputToday += v.outputToday
+                    acc.requestsAll += v.requestsAll
+                    acc.requestsToday += v.requestsToday
+                    modelMap[model] = acc
+                }
+                for (h, b) in st.buckets where h >= codexTodayBucket {
+                    cInputToday += b.input
+                    cOutputToday += b.output
+                    cRequestsToday += b.requests
+                }
+            }
             tools.append(ToolUsage(tool: "codex",
                                    tokensToday: codexToday.today, tokensAllTime: codexToday.all,
-                                   costToday: 0, costAllTime: 0))
+                                   costToday: 0, costAllTime: 0,
+                                   inputTokensToday: cInputToday, outputTokensToday: cOutputToday,
+                                   inputTokensAllTime: cInputAll, outputTokensAllTime: cOutputAll,
+                                   requestsToday: cRequestsToday, requestsAllTime: cRequestsAll))
             snap.tokensToday += codexToday.today
             snap.tokensAllTime += codexToday.all
-            let codexTodayBucket = todayBucket()
-            var modelMap: [String: (all: Int, today: Int)] = [:]
-            for (_, st) in codexFiles {
-                let model = st.model.isEmpty ? "codex" : st.model
-                var today = 0
-                for (h, v) in st.buckets where h >= codexTodayBucket { today += v }
-                let cur = modelMap[model, default: (all: 0, today: 0)]
-                modelMap[model] = (all: cur.all + st.allTokens, today: cur.today + today)
-            }
             for (model, v) in modelMap.sorted(by: { $0.value.all > $1.value.all }) {
                 snap.models.append(ModelUsage(provider: "codex", model: model,
                                               tokensAll: v.all, tokensToday: v.today, cost: 0,
-                                              messages: 0, free: true))
+                                              messages: v.requestsAll, free: true,
+                                              inputTokensAll: v.inputAll, outputTokensAll: v.outputAll,
+                                              inputTokensToday: v.inputToday, outputTokensToday: v.outputToday,
+                                              requestsAll: v.requestsAll, requestsToday: v.requestsToday))
             }
         }
         ph.mark("codex")
@@ -528,23 +679,55 @@ final class UsageEngine {
         for (_, st) in kimiFiles {
             kimi.allTokens += st.allTokens
             kimi.allCost += st.allCost
+            kimi.inputAll += st.inputAll
+            kimi.outputAll += st.outputAll
+            kimi.requestsAll += st.requestsAll
+            for (model, v) in st.models {
+                var acc = kimi.perModel[model] ?? ModelAccum()
+                acc.all += v.all
+                acc.today += v.today
+                acc.cost += v.cost
+                acc.inputAll += v.inputAll
+                acc.outputAll += v.outputAll
+                acc.inputToday += v.inputToday
+                acc.outputToday += v.outputToday
+                acc.requestsAll += v.requestsAll
+                acc.requestsToday += v.requestsToday
+                kimi.perModel[model] = acc
+            }
             for (h, b) in st.buckets where h >= kimiToday {
                 kimi.todayTokens += b.tokens
                 kimi.todayCost += b.cost
+                kimi.inputToday += b.input
+                kimi.outputToday += b.output
+                kimi.requestsToday += b.requests
             }
         }
         kimi.trackedAny = !kimiFiles.isEmpty
         if kimi.allTokens > 0 || kimi.trackedAny {
             tools.append(ToolUsage(tool: "kimi",
                                    tokensToday: kimi.todayTokens, tokensAllTime: kimi.allTokens,
-                                   costToday: kimi.todayCost, costAllTime: kimi.allCost))
+                                   costToday: kimi.todayCost, costAllTime: kimi.allCost,
+                                   cacheReadAll: kimi.cacheRead, cacheWriteAll: kimi.cacheWrite,
+                                   inputTokensToday: kimi.inputToday,
+                                   outputTokensToday: kimi.outputToday,
+                                   inputTokensAllTime: kimi.inputAll,
+                                   outputTokensAllTime: kimi.outputAll,
+                                   requestsToday: kimi.requestsToday,
+                                   requestsAllTime: kimi.requestsAll))
             snap.tokensToday += kimi.todayTokens
             snap.costToday += kimi.todayCost
             snap.tokensAllTime += kimi.allTokens
             snap.costAllTime += kimi.allCost
-            snap.models.append(ModelUsage(provider: "kimi", model: "kimi (model n/a)",
-                                          tokensAll: kimi.allTokens, tokensToday: kimi.todayTokens,
-                                          cost: kimi.allCost, messages: 0, free: kimi.allCost < 0.0001))
+            for (model, v) in kimi.perModel {
+                snap.models.append(ModelUsage(provider: "kimi", model: model,
+                                              tokensAll: v.all, tokensToday: v.today,
+                                              cost: v.cost, messages: v.requestsAll,
+                                              free: v.cost < 0.0001,
+                                              inputTokensAll: v.inputAll, outputTokensAll: v.outputAll,
+                                              inputTokensToday: v.inputToday, outputTokensToday: v.outputToday,
+                                              requestsAll: v.requestsAll, requestsToday: v.requestsToday))
+            }
         }
         ph.mark("kimi")
 
@@ -554,7 +737,13 @@ final class UsageEngine {
                 tools.append(ToolUsage(tool: source.tool,
                                        tokensToday: r.todayTokens, tokensAllTime: r.allTokens,
                                        costToday: r.todayCost, costAllTime: r.allCost,
-                                       cacheReadAll: r.cacheRead))
+                                       cacheReadAll: r.cacheRead, cacheWriteAll: r.cacheWrite,
+                                       inputTokensToday: r.inputToday,
+                                       outputTokensToday: r.outputToday,
+                                       inputTokensAllTime: r.inputAll,
+                                       outputTokensAllTime: r.outputAll,
+                                       requestsToday: r.requestsToday,
+                                       requestsAllTime: r.requestsAll))
                 snap.tokensToday += r.todayTokens
                 snap.costToday += r.todayCost
                 snap.tokensAllTime += r.allTokens
@@ -562,24 +751,33 @@ final class UsageEngine {
                 for (model, v) in r.perModel {
                     snap.models.append(ModelUsage(provider: source.tool, model: model,
                                                   tokensAll: v.all, tokensToday: v.today, cost: v.cost,
-                                                  messages: 0, free: v.cost < 0.0001))
+                                                  messages: v.requestsAll, free: v.cost < 0.0001,
+                                                  inputTokensAll: v.inputAll, outputTokensAll: v.outputAll,
+                                                  inputTokensToday: v.inputToday, outputTokensToday: v.outputToday,
+                                                  requestsAll: v.requestsAll, requestsToday: v.requestsToday))
                 }
+                mergeProjects(into: &snap.projects, from: r.projects)
             }
         }
         ph.mark("generic")
 
         let localllm = OllamaTelemetryStore.shared.summary()
         if localllm.allTokens > 0 {
+            var ollamaRequestsAll = 0
+            for (_, v) in localllm.models { ollamaRequestsAll += v.messages }
             tools.append(ToolUsage(tool: "ollama",
                                    tokensToday: localllm.todayTokens, tokensAllTime: localllm.allTokens,
-                                   costToday: 0, costAllTime: 0))
+                                   costToday: 0, costAllTime: 0,
+                                   requestsAllTime: ollamaRequestsAll))
             snap.tokensToday += localllm.todayTokens
             snap.tokensAllTime += localllm.allTokens
             for (model, v) in localllm.models.sorted(by: { $0.value.all > $1.value.all }) {
                 snap.models.append(ModelUsage(provider: "ollama", model: model,
                                               tokensAll: v.all, tokensToday: v.today, cost: 0,
                                               messages: v.messages, free: true, isLocal: true,
-                                              localModelName: model))
+                                              localModelName: model,
+                                              inputTokensAll: v.prompt, outputTokensAll: v.eval,
+                                              requestsAll: v.messages))
             }
         }
         ph.mark("ollama")
@@ -593,6 +791,13 @@ final class UsageEngine {
         snap.models = ModelUsage.withProviderShares(snap.models)
         snap.perTool = tools.filter { $0.tokensAllTime > 0 || $0.tokensToday > 0 }
         snap.sources = snap.perTool.map { $0.tool }
+        snap.inputTokensAllTime = snap.perTool.reduce(0) { $0 + $1.inputTokensAllTime }
+        snap.outputTokensAllTime = snap.perTool.reduce(0) { $0 + $1.outputTokensAllTime }
+        snap.inputTokensToday = snap.perTool.reduce(0) { $0 + $1.inputTokensToday }
+        snap.outputTokensToday = snap.perTool.reduce(0) { $0 + $1.outputTokensToday }
+        snap.requestsAllTime = snap.perTool.reduce(0) { $0 + $1.requestsAllTime }
+        snap.requestsToday = snap.perTool.reduce(0) { $0 + $1.requestsToday }
+        snap.projects.sort { $0.tokens > $1.tokens }
         persistEngineStateLocked()
         ph.mark("tail")
         ph.log()
@@ -612,11 +817,23 @@ final class UsageEngine {
             for (path, st) in dict {
                 var buckets: [String: DurableStore.StoredBucket] = [:]
                 for (h, b) in st.buckets {
-                    buckets[String(h)] = DurableStore.StoredBucket(tokens: b.tokens, cost: b.cost)
+                    buckets[String(h)] = DurableStore.StoredBucket(
+                        tokens: b.tokens, cost: b.cost, input: b.input,
+                        output: b.output, requests: b.requests)
                 }
                 var models: [String: DurableStore.StoredModelAccum] = [:]
                 for (m, accum) in st.models {
-                    models[m] = DurableStore.StoredModelAccum(all: accum.all, today: accum.today, cost: accum.cost)
+                    models[m] = DurableStore.StoredModelAccum(
+                        all: accum.all, today: accum.today, cost: accum.cost,
+                        inputAll: accum.inputAll, outputAll: accum.outputAll,
+                        inputToday: accum.inputToday, outputToday: accum.outputToday,
+                        requestsAll: accum.requestsAll, requestsToday: accum.requestsToday)
+                }
+                var projects: [String: DurableStore.StoredProjectAccum] = [:]
+                for (dir, p) in st.projects {
+                    projects[dir] = DurableStore.StoredProjectAccum(
+                        tokens: p.tokens, cost: p.cost, input: p.input,
+                        output: p.output, sessions: p.sessions)
                 }
                 var watermarks: [String: DurableStore.StoredWatermark] = [:]
                 for (mid, wm) in st.watermarks {
@@ -629,7 +846,12 @@ final class UsageEngine {
                     cacheRead: st.cacheRead,
                     buckets: buckets,
                     models: models,
-                    watermarks: watermarks
+                    watermarks: watermarks,
+                    cacheWrite: st.cacheWrite,
+                    inputAll: st.inputAll,
+                    outputAll: st.outputAll,
+                    requestsAll: st.requestsAll,
+                    projects: projects
                 )
             }
             return out
@@ -638,8 +860,20 @@ final class UsageEngine {
         var storedCodex: [String: DurableStore.StoredCodexFile] = [:]
         storedCodex.reserveCapacity(codexFiles.count)
         for (path, st) in codexFiles {
-            var buckets: [String: Int] = [:]
-            for (h, v) in st.buckets { buckets[String(h)] = v }
+            var buckets: [String: DurableStore.StoredBucket] = [:]
+            for (h, b) in st.buckets {
+                buckets[String(h)] = DurableStore.StoredBucket(
+                    tokens: b.tokens, cost: b.cost, input: b.input,
+                    output: b.output, requests: b.requests)
+            }
+            var models: [String: DurableStore.StoredModelAccum] = [:]
+            for (m, accum) in st.models {
+                models[m] = DurableStore.StoredModelAccum(
+                    all: accum.all, today: accum.today, cost: accum.cost,
+                    inputAll: accum.inputAll, outputAll: accum.outputAll,
+                    inputToday: accum.inputToday, outputToday: accum.outputToday,
+                    requestsAll: accum.requestsAll, requestsToday: accum.requestsToday)
+            }
             let wm = DurableStore.StoredCodexWatermark(
                 input: st.watermark.input,
                 output: st.watermark.output,
@@ -663,7 +897,13 @@ final class UsageEngine {
                 buckets: buckets,
                 rate: rate,
                 model: st.model,
-                modelTokens: st.modelTokens
+                modelTokens: st.modelTokens,
+                inputAll: st.inputAll,
+                outputAll: st.outputAll,
+                cachedAll: st.cachedAll,
+                reasoningAll: st.reasoningAll,
+                requestsAll: st.requestsAll,
+                models: models
             )
         }
 
@@ -685,13 +925,27 @@ final class UsageEngine {
             var out: [String: AdditiveFileState] = [:]
             out.reserveCapacity(dict.count)
             for (path, stored) in dict {
-                var buckets: [Int: (tokens: Int, cost: Double)] = [:]
+                var buckets: [Int: HourBucket] = [:]
                 for (hStr, b) in stored.buckets {
-                    if let h = Int(hStr) { buckets[h] = (tokens: b.tokens, cost: b.cost) }
+                    if let h = Int(hStr) {
+                        buckets[h] = HourBucket(tokens: b.tokens, cost: b.cost,
+                                                input: b.input, output: b.output,
+                                                requests: b.requests)
+                    }
                 }
-                var models: [String: (all: Int, today: Int, cost: Double)] = [:]
+                var models: [String: ModelAccum] = [:]
                 for (m, accum) in stored.models {
-                    models[m] = (all: accum.all, today: accum.today, cost: accum.cost)
+                    models[m] = ModelAccum(
+                        all: accum.all, today: accum.today, cost: accum.cost,
+                        inputAll: accum.inputAll, outputAll: accum.outputAll,
+                        inputToday: accum.inputToday, outputToday: accum.outputToday,
+                        requestsAll: accum.requestsAll, requestsToday: accum.requestsToday)
+                }
+                var projects: [String: ProjectAccum] = [:]
+                for (dir, p) in stored.projects {
+                    projects[dir] = ProjectAccum(
+                        tokens: p.tokens, cost: p.cost, input: p.input,
+                        output: p.output, sessions: p.sessions)
                 }
                 var watermarks: [String: AdditiveWatermark] = [:]
                 for (mid, wm) in stored.watermarks {
@@ -702,8 +956,13 @@ final class UsageEngine {
                     allTokens: stored.allTokens,
                     allCost: stored.allCost,
                     cacheRead: stored.cacheRead,
+                    cacheWrite: stored.cacheWrite,
+                    inputAll: stored.inputAll,
+                    outputAll: stored.outputAll,
+                    requestsAll: stored.requestsAll,
                     buckets: buckets,
                     models: models,
+                    projects: projects,
                     watermarks: watermarks
                 )
             }
@@ -713,9 +972,21 @@ final class UsageEngine {
         var loadedCodex: [String: CodexFileState] = [:]
         loadedCodex.reserveCapacity(payload.codexFiles.count)
         for (path, stored) in payload.codexFiles {
-            var buckets: [Int: Int] = [:]
-            for (hStr, v) in stored.buckets {
-                if let h = Int(hStr) { buckets[h] = v }
+            var buckets: [Int: HourBucket] = [:]
+            for (hStr, b) in stored.buckets {
+                if let h = Int(hStr) {
+                    buckets[h] = HourBucket(tokens: b.tokens, cost: b.cost,
+                                            input: b.input, output: b.output,
+                                            requests: b.requests)
+                }
+            }
+            var models: [String: ModelAccum] = [:]
+            for (m, accum) in stored.models {
+                models[m] = ModelAccum(
+                    all: accum.all, today: accum.today, cost: accum.cost,
+                    inputAll: accum.inputAll, outputAll: accum.outputAll,
+                    inputToday: accum.inputToday, outputToday: accum.outputToday,
+                    requestsAll: accum.requestsAll, requestsToday: accum.requestsToday)
             }
             let wm = CodexWatermark(
                 input: stored.watermark.input,
@@ -740,7 +1011,13 @@ final class UsageEngine {
                 buckets: buckets,
                 rate: rate,
                 model: stored.model,
-                modelTokens: stored.modelTokens
+                modelTokens: stored.modelTokens,
+                inputAll: stored.inputAll,
+                outputAll: stored.outputAll,
+                cachedAll: stored.cachedAll,
+                reasoningAll: stored.reasoningAll,
+                requestsAll: stored.requestsAll,
+                models: models
             )
         }
 
@@ -758,11 +1035,38 @@ final class UsageEngine {
         var allTokens = 0
         var allCost = 0.0
         var cacheRead = 0
-        var perModel: [String: (all: Int, today: Int, cost: Double)] = [:]
+        var cacheWrite = 0
+        var inputAll = 0
+        var outputAll = 0
+        var inputToday = 0
+        var outputToday = 0
+        var requestsAll = 0
+        var requestsToday = 0
+        var perModel: [String: ModelAccum] = [:]
+        var projects: [String: ProjectAccum] = [:]
     }
 
     private func todayBucket() -> Int {
         Int(Calendar.current.startOfDay(for: Date()).timeIntervalSince1970)
+    }
+
+    /// Calendar-day window bounds, newest last. Uses real calendar days
+    /// (not today-i*86400) so DST transition days come out as 23/25h days
+    /// instead of misattributing an hour. Pure for testability.
+    static func dailyAlignedBounds(count: Int, today: Int, calendar: Calendar = .current) -> [(start: Int, end: Int)] {
+        let anchor = Date(timeIntervalSince1970: TimeInterval(today))
+        var out: [(start: Int, end: Int)] = []
+        out.reserveCapacity(count)
+        for i in (0..<count).reversed() {
+            if let ds = calendar.date(byAdding: .day, value: -i, to: anchor),
+               let de = calendar.date(byAdding: .day, value: 1, to: ds) {
+                out.append((Int(ds.timeIntervalSince1970), Int(de.timeIntervalSince1970)))
+            } else {
+                let s = today - i * 86_400
+                out.append((s, s + 86_400))
+            }
+        }
+        return out
     }
 
     private func hourFromTimestamp(_ ts: String?) -> Int {
@@ -865,7 +1169,14 @@ final class UsageEngine {
     func scanAdditive(dirs: [String], state: inout [String: AdditiveFileState], prefix: String) -> SourceResult {
         var out = SourceResult()
         var cacheRead = 0
-        var perModel: [String: (all: Int, today: Int, cost: Double)] = [:]
+        var cacheWrite = 0
+        var inputAll = 0
+        var outputAll = 0
+        var inputToday = 0
+        var outputToday = 0
+        var requestsAll = 0
+        var requestsToday = 0
+        var perModel: [String: ModelAccum] = [:]
         let today = todayBucket()
         var seen = Set<String>()
         let keyPrefix = prefix + "::"
@@ -936,12 +1247,41 @@ final class UsageEngine {
                         st.allTokens += deltaTokens
                         st.allCost += cost
                         st.cacheRead += deltaCr
-                        st.buckets[p.hour, default: (0, 0)].tokens += deltaTokens
-                        st.buckets[p.hour, default: (0, 0)].cost += cost
+                        st.cacheWrite += deltaCw
+                        st.inputAll += deltaIn
+                        st.outputAll += deltaOut
+                        if deltaTokens > 0 { st.requestsAll += 1 }
+                        var bucket = st.buckets[p.hour] ?? HourBucket()
+                        bucket.tokens += deltaTokens
+                        bucket.cost += cost
+                        bucket.input += deltaIn
+                        bucket.output += deltaOut
+                        if deltaTokens > 0 { bucket.requests += 1 }
+                        st.buckets[p.hour] = bucket
                         let modelName = p.model.isEmpty ? (prefix == "agy" ? Self.configuredAgyModel() : "\(prefix)-default") : p.model
                         let isToday = p.hour >= today
-                        let prev = st.models[modelName] ?? (0, 0, 0.0)
-                        st.models[modelName] = (prev.all + deltaTokens, prev.today + (isToday ? deltaTokens : 0), prev.cost + cost)
+                        var acc = st.models[modelName] ?? ModelAccum()
+                        acc.all += deltaTokens
+                        acc.today += isToday ? deltaTokens : 0
+                        acc.cost += cost
+                        acc.inputAll += deltaIn
+                        acc.outputAll += deltaOut
+                        if deltaTokens > 0 { acc.requestsAll += 1 }
+                        if isToday {
+                            acc.inputToday += deltaIn
+                            acc.outputToday += deltaOut
+                            if deltaTokens > 0 { acc.requestsToday += 1 }
+                        }
+                        st.models[modelName] = acc
+                        if let cwd = p.cwd, !cwd.isEmpty {
+                            var pa = st.projects[cwd] ?? ProjectAccum()
+                            pa.tokens += deltaTokens
+                            pa.cost += cost
+                            pa.input += deltaIn
+                            pa.output += deltaOut
+                            if deltaTokens > 0 { pa.sessions += 1 }
+                            st.projects[cwd] = pa
+                        }
                     }
                 }
                 st.offset += UInt64(consumable.count)
@@ -967,16 +1307,48 @@ final class UsageEngine {
             out.allTokens += st.allTokens
             out.allCost += st.allCost
             cacheRead += st.cacheRead
+            cacheWrite += st.cacheWrite
+            inputAll += st.inputAll
+            outputAll += st.outputAll
+            requestsAll += st.requestsAll
             for (model, v) in st.models {
-                let prev = perModel[model] ?? (0, 0, 0.0)
-                perModel[model] = (prev.all + v.all, prev.today + v.today, prev.cost + v.cost)
+                var acc = perModel[model] ?? ModelAccum()
+                acc.all += v.all
+                acc.today += v.today
+                acc.cost += v.cost
+                acc.inputAll += v.inputAll
+                acc.outputAll += v.outputAll
+                acc.inputToday += v.inputToday
+                acc.outputToday += v.outputToday
+                acc.requestsAll += v.requestsAll
+                acc.requestsToday += v.requestsToday
+                perModel[model] = acc
             }
             for (h, b) in st.buckets where h >= today {
                 out.todayTokens += b.tokens
                 out.todayCost += b.cost
+                inputToday += b.input
+                outputToday += b.output
+                requestsToday += b.requests
+            }
+            for (dir, p) in st.projects {
+                var acc = out.projects[dir] ?? ProjectAccum()
+                acc.tokens += p.tokens
+                acc.cost += p.cost
+                acc.input += p.input
+                acc.output += p.output
+                acc.sessions += p.sessions
+                out.projects[dir] = acc
             }
         }
         out.cacheRead = cacheRead
+        out.cacheWrite = cacheWrite
+        out.inputAll = inputAll
+        out.outputAll = outputAll
+        out.inputToday = inputToday
+        out.outputToday = outputToday
+        out.requestsAll = requestsAll
+        out.requestsToday = requestsToday
         out.perModel = perModel
         out.trackedAny = !seen.isEmpty
         scanMemos[prefix] = ScanMemo(version: scanVersions[prefix] ?? 0, today: today, result: out)
@@ -999,10 +1371,33 @@ final class UsageEngine {
                 try? fh.close()
                 guard let lastNewline = chunk.lastIndex(of: UInt8(ascii: "\n")) else { continue }
                 let consumable = chunk[chunk.startIndex...lastNewline]
+                let kimiToday = todayBucket()
                 for line in consumable.split(separator: UInt8(ascii: "\n")) where !line.isEmpty {
                     if let p = parseKimiLine(Data(line)) {
                         st.allTokens += p.tokens
-                        st.buckets[p.hour, default: (0, 0)].tokens += p.tokens
+                        st.cacheRead += p.cacheReadTokens
+                        st.cacheWrite += p.cacheWriteTokens
+                        st.inputAll += p.inputTokens
+                        st.outputAll += p.outputTokens
+                        st.requestsAll += 1
+                        var bucket = st.buckets[p.hour] ?? HourBucket()
+                        bucket.tokens += p.tokens
+                        bucket.input += p.inputTokens
+                        bucket.output += p.outputTokens
+                        bucket.requests += 1
+                        st.buckets[p.hour] = bucket
+                        var acc = st.models["kimi (model n/a)"] ?? ModelAccum()
+                        acc.all += p.tokens
+                        acc.inputAll += p.inputTokens
+                        acc.outputAll += p.outputTokens
+                        acc.requestsAll += 1
+                        if p.hour >= kimiToday {
+                            acc.today += p.tokens
+                            acc.inputToday += p.inputTokens
+                            acc.outputToday += p.outputTokens
+                            acc.requestsToday += 1
+                        }
+                        st.models["kimi (model n/a)"] = acc
                     }
                 }
                 st.offset += UInt64(consumable.count)
@@ -1046,11 +1441,35 @@ final class UsageEngine {
                             st.rate = rate
                         }
                         if let totals = parsed.totals {
-                            let deltaTokens = codexAccept(totals, last: parsed.last ?? totals, state: &st)
+                            let delta = codexAcceptDetailed(totals, last: parsed.last ?? totals, state: &st)
+                            let deltaTokens = delta.displayTokens
                             if deltaTokens > 0 {
                                 st.allTokens += deltaTokens
                                 st.modelTokens += deltaTokens
-                                st.buckets[parsed.hour, default: 0] += deltaTokens
+                                st.inputAll += delta.input
+                                st.outputAll += delta.output
+                                st.cachedAll += delta.cached
+                                st.reasoningAll += delta.reasoning
+                                st.requestsAll += 1
+                                var bucket = st.buckets[parsed.hour] ?? HourBucket()
+                                bucket.tokens += deltaTokens
+                                bucket.input += delta.input
+                                bucket.output += delta.output
+                                bucket.requests += 1
+                                st.buckets[parsed.hour] = bucket
+                                let model = st.model.isEmpty ? "codex" : st.model
+                                var acc = st.models[model] ?? ModelAccum()
+                                acc.all += deltaTokens
+                                acc.inputAll += delta.input
+                                acc.outputAll += delta.output
+                                acc.requestsAll += 1
+                                if parsed.hour >= today {
+                                    acc.today += deltaTokens
+                                    acc.inputToday += delta.input
+                                    acc.outputToday += delta.output
+                                    acc.requestsToday += 1
+                                }
+                                st.models[model] = acc
                             }
                         }
                     }
@@ -1067,20 +1486,26 @@ final class UsageEngine {
         var todayTokens = 0, allTokens = 0
         for (_, st) in codexFiles {
             allTokens += st.allTokens
-            for (h, v) in st.buckets where h >= today { todayTokens += v }
+            for (h, b) in st.buckets where h >= today { todayTokens += b.tokens }
         }
         return (todayTokens, allTokens)
     }
 
     /// Stateful codex watermark accept. Internal for hermetic unit tests.
     func codexAccept(_ cur: CodexWatermark, last: CodexWatermark, state: inout CodexFileState) -> Int {
+        codexAcceptDetailed(cur, last: last, state: &state).displayTokens
+    }
+
+    /// Component-preserving variant of `codexAccept`: returns the accepted
+    /// delta with input/output/cached/reasoning split for analytics.
+    func codexAcceptDetailed(_ cur: CodexWatermark, last: CodexWatermark, state: inout CodexFileState) -> CodexWatermark {
         let prev = state.watermark
 
         if cur >= prev {
             let delta = cur.delta(from: prev)
             state.watermark = cur
             state.last = last
-            return delta.displayTokens
+            return delta
         }
 
         let prevTotal = prev.total
@@ -1088,11 +1513,11 @@ final class UsageEngine {
         let lastTotal = state.last.total
         let stale = prevTotal > 0 && curTotal > 0 && lastTotal > 0 &&
             (curTotal * 100 >= prevTotal * 98 || curTotal + lastTotal * 2 >= prevTotal)
-        if stale { return 0 }
+        if stale { return CodexWatermark() }
 
         state.watermark = cur
         state.last = last
-        return last.displayTokens
+        return last
     }
 
     struct CodexParsed {
@@ -1153,8 +1578,17 @@ final class UsageEngine {
         return CodexParsed(totals: totals, last: last, hour: hour, rate: rate, model: model)
     }
 
+    struct KimiParsedLine {
+        var tokens: Int
+        var inputTokens: Int
+        var outputTokens: Int
+        var cacheReadTokens: Int
+        var cacheWriteTokens: Int
+        var hour: Int
+    }
+
     /// Parses one kimi wire.jsonl line. Internal for hermetic unit tests.
-    func parseKimiLine(_ line: Data) -> (tokens: Int, hour: Int)? {
+    func parseKimiLine(_ line: Data) -> KimiParsedLine? {
         guard let obj = try? JSONSerialization.jsonObject(with: line) as? [String: Any],
               let message = obj["message"] as? [String: Any],
               let payload = message["payload"] as? [String: Any],
@@ -1181,7 +1615,8 @@ final class UsageEngine {
         } else if let ts = obj["timestamp"] as? String {
             hour = hourFromTimestamp(ts)
         }
-        return (tokens, hour)
+        return KimiParsedLine(tokens: tokens, inputTokens: input, outputTokens: output,
+                              cacheReadTokens: cacheRead, cacheWriteTokens: cacheWrite, hour: hour)
     }
 
     struct AdditiveParsedLine {
@@ -1193,6 +1628,7 @@ final class UsageEngine {
         var explicitCost: Double?
         var hour: Int
         var model: String
+        var cwd: String?
     }
 
     /// Parses one generic/claude JSONL line (anthropic/openai/gemini usage
@@ -1291,7 +1727,8 @@ final class UsageEngine {
             cacheReadTokens: cacheRead,
             explicitCost: explicitCost,
             hour: hour,
-            model: model
+            model: model,
+            cwd: obj["cwd"] as? String
         )
     }
 
@@ -1434,6 +1871,13 @@ final class UsageEngine {
         var allTokens = 0
         var allCost = 0.0
         var cacheRead = 0
+        var cacheWrite = 0
+        var inputTokensAll = 0
+        var outputTokensAll = 0
+        var inputTokensToday = 0
+        var outputTokensToday = 0
+        var requestsAll = 0
+        var requestsToday = 0
         var sessions: [SessionSummary] = []
     }
 
@@ -1451,6 +1895,7 @@ final class UsageEngine {
         var sums: OCSums?
         var models: [ModelUsage]
         var hourly: [(Int, Int, Double)]
+        var projects: [ProjectUsage]
     }
     private var opencodeCache: OpencodeSnapshot?
 
@@ -1476,11 +1921,16 @@ final class UsageEngine {
     private func cachedOpencodeLocked() -> OpencodeSnapshot {
         let fp = opencodeFingerprint()
         if let c = opencodeCache, c.fingerprint == fp { return c }
-        var snap = OpencodeSnapshot(fingerprint: fp, sums: nil, models: [], hourly: [])
-        snap.sums = opencodeUsageQuery()
+        var snap = OpencodeSnapshot(fingerprint: fp, sums: nil, models: [], hourly: [], projects: [])
         snap.models = modelUsageQuery()
+        if var sums = opencodeUsageQuery() {
+            sums.requestsAll = snap.models.reduce(0) { $0 + $1.requestsAll }
+            sums.requestsToday = snap.models.reduce(0) { $0 + $1.requestsToday }
+            snap.sums = sums
+        }
         if let db = openDB() {
             opencodePerDayQuery(db) { h, t, c in snap.hourly.append((h, t, c)) }
+            snap.projects = opencodeProjectsQuery(db)
         }
         opencodeCache = snap
         return snap
@@ -1493,22 +1943,39 @@ final class UsageEngine {
         let tokenExpr = "COALESCE(SUM(tokens_input+tokens_output+tokens_reasoning+tokens_cache_read+tokens_cache_write),0)"
         let midnightMs = localMidnightUTC() * 1000
 
-        var sql = "SELECT \(tokenExpr), COALESCE(SUM(cost),0), COALESCE(SUM(tokens_cache_read),0) FROM session"
-        if let sums = query3(db, sql) {
-            out.allTokens = sums.0
-            out.allCost = sums.1
-            out.cacheRead = sums.2
-        }
-        sql = "SELECT \(tokenExpr), COALESCE(SUM(cost),0) FROM session WHERE time_created > \(midnightMs)"
-        if let sums = query2(db, sql), let tok = sums.0.int, let cost = sums.1.double {
-            out.todayTokens = tok
-            out.todayCost = cost
+        var sql = """
+        SELECT \(tokenExpr), COALESCE(SUM(cost),0),
+               COALESCE(SUM(tokens_cache_read),0), COALESCE(SUM(tokens_cache_write),0),
+               COALESCE(SUM(tokens_input),0), COALESCE(SUM(tokens_output),0)
+        FROM session
+        """
+        if let stmt = prepare(db, sql), sqlite3_step(stmt) == SQLITE_ROW {
+            out.allTokens = Int(sqlite3_column_int64(stmt, 0))
+            out.allCost = sqlite3_column_double(stmt, 1)
+            out.cacheRead = Int(sqlite3_column_int64(stmt, 2))
+            out.cacheWrite = Int(sqlite3_column_int64(stmt, 3))
+            out.inputTokensAll = Int(sqlite3_column_int64(stmt, 4))
+            out.outputTokensAll = Int(sqlite3_column_int64(stmt, 5))
+            sqlite3_finalize(stmt)
         }
         sql = """
-        SELECT id, title, cost,
-               COALESCE(tokens_input+tokens_output+tokens_reasoning+tokens_cache_read+tokens_cache_write,0),
-               directory, time_created
-        FROM session ORDER BY time_updated DESC LIMIT 12
+        SELECT \(tokenExpr), COALESCE(SUM(cost),0),
+               COALESCE(SUM(tokens_input),0), COALESCE(SUM(tokens_output),0)
+        FROM session WHERE time_created > \(midnightMs)
+        """
+        if let stmt = prepare(db, sql), sqlite3_step(stmt) == SQLITE_ROW {
+            out.todayTokens = Int(sqlite3_column_int64(stmt, 0))
+            out.todayCost = sqlite3_column_double(stmt, 1)
+            out.inputTokensToday = Int(sqlite3_column_int64(stmt, 2))
+            out.outputTokensToday = Int(sqlite3_column_int64(stmt, 3))
+            sqlite3_finalize(stmt)
+        }
+        sql = """
+        SELECT s.id, s.title, s.cost,
+               COALESCE(s.tokens_input+s.tokens_output+s.tokens_reasoning+s.tokens_cache_read+s.tokens_cache_write,0),
+               s.directory, s.time_created, s.tokens_input, s.tokens_output, s.model,
+               (SELECT COUNT(*) FROM message m WHERE m.session_id = s.id AND json_extract(m.data,'$.role')='assistant')
+        FROM session s ORDER BY s.time_updated DESC LIMIT 12
         """
         if let stmt = prepare(db, sql) {
             while sqlite3_step(stmt) == SQLITE_ROW {
@@ -1518,10 +1985,47 @@ final class UsageEngine {
                 let tokens = Int(sqlite3_column_int64(stmt, 3))
                 let dir = text(stmt, 4)
                 let created = Date(timeIntervalSince1970: sqlite3_column_double(stmt, 5) / 1000)
-                out.sessions.append(SessionSummary(id: id, title: title, cost: cost, tokens: tokens, directory: dir, created: created))
+                let inputTokens = Int(sqlite3_column_int64(stmt, 6))
+                let outputTokens = Int(sqlite3_column_int64(stmt, 7))
+                let requests = Int(sqlite3_column_int64(stmt, 9))
+                var provider = ""
+                var modelName = ""
+                if let data = text(stmt, 8).data(using: .utf8),
+                   let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                    provider = obj["providerID"] as? String ?? ""
+                    modelName = obj["id"] as? String ?? ""
+                }
+                out.sessions.append(SessionSummary(id: id, title: title, cost: cost, tokens: tokens,
+                                                   directory: dir, created: created,
+                                                   provider: provider, model: modelName,
+                                                   inputTokens: inputTokens, outputTokens: outputTokens,
+                                                   requests: requests))
             }
             sqlite3_finalize(stmt)
         }
+        return out
+    }
+
+    private func opencodeProjectsQuery(_ db: OpaquePointer) -> [ProjectUsage] {
+        let sql = """
+        SELECT directory,
+               COALESCE(SUM(tokens_input+tokens_output+tokens_reasoning+tokens_cache_read+tokens_cache_write),0),
+               COALESCE(SUM(cost),0), COUNT(*),
+               COALESCE(SUM(tokens_input),0), COALESCE(SUM(tokens_output),0)
+        FROM session WHERE directory != ''
+        GROUP BY directory ORDER BY 2 DESC LIMIT 12
+        """
+        var out: [ProjectUsage] = []
+        guard let stmt = prepare(db, sql) else { return out }
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            out.append(ProjectUsage(directory: text(stmt, 0),
+                                    tokens: Int(sqlite3_column_int64(stmt, 1)),
+                                    cost: sqlite3_column_double(stmt, 2),
+                                    sessions: Int(sqlite3_column_int64(stmt, 3)),
+                                    inputTokens: Int(sqlite3_column_int64(stmt, 4)),
+                                    outputTokens: Int(sqlite3_column_int64(stmt, 5))))
+        }
+        sqlite3_finalize(stmt)
         return out
     }
 
@@ -1538,11 +2042,19 @@ final class UsageEngine {
                    COALESCE(json_extract(data,'$.modelID'),'?') AS mo,
                    \(tokensExpr) AS t,
                    time_created AS tc,
-                   COALESCE(json_extract(data,'$.cost'),0) AS c
+                   COALESCE(json_extract(data,'$.cost'),0) AS c,
+                   COALESCE(json_extract(data,'$.tokens.input'),0) AS i,
+                   COALESCE(json_extract(data,'$.tokens.output'),0) AS o,
+                   COALESCE(json_extract(data,'$.tokens.cache.read'),0) AS cr,
+                   COALESCE(json_extract(data,'$.tokens.cache.write'),0) AS cw
             FROM message WHERE json_extract(data,'$.role')='assistant')
         SELECT p, mo, SUM(t),
                SUM(CASE WHEN tc > \(midnightMs) THEN t ELSE 0 END),
-               SUM(c), COUNT(*)
+               SUM(c), COUNT(*),
+               SUM(i), SUM(o), SUM(cr), SUM(cw),
+               SUM(CASE WHEN tc > \(midnightMs) THEN i ELSE 0 END),
+               SUM(CASE WHEN tc > \(midnightMs) THEN o ELSE 0 END),
+               SUM(CASE WHEN tc > \(midnightMs) THEN 1 ELSE 0 END)
         FROM m GROUP BY 1,2 ORDER BY 3 DESC
         """
         var out: [ModelUsage] = []
@@ -1557,7 +2069,15 @@ final class UsageEngine {
                 let isFree = cost < 0.0001 || provider.lowercased().contains("free") || model.lowercased().contains("free") || model.lowercased().contains("pickle")
                 out.append(ModelUsage(provider: provider, model: model,
                                       tokensAll: tokensAll, tokensToday: tokensToday,
-                                      cost: cost, messages: messages, free: isFree))
+                                      cost: cost, messages: messages, free: isFree,
+                                      cacheReadAll: Int(sqlite3_column_int64(stmt, 8)),
+                                      inputTokensAll: Int(sqlite3_column_int64(stmt, 6)),
+                                      outputTokensAll: Int(sqlite3_column_int64(stmt, 7)),
+                                      inputTokensToday: Int(sqlite3_column_int64(stmt, 10)),
+                                      outputTokensToday: Int(sqlite3_column_int64(stmt, 11)),
+                                      cacheWriteAll: Int(sqlite3_column_int64(stmt, 9)),
+                                      requestsAll: messages,
+                                      requestsToday: Int(sqlite3_column_int64(stmt, 12))))
             }
             sqlite3_finalize(stmt)
         }

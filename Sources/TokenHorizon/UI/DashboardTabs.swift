@@ -83,6 +83,7 @@ struct DashboardTabs: View {
                         .foregroundStyle(tab == t ? Color.black : Color.white.opacity(0.5))
                         .padding(.horizontal, 12).padding(.vertical, 4)
                         .background(Capsule().fill(tab == t ? Color.white : Color.white.opacity(0.14)))
+                        .contentShape(Capsule())
                 }
                 .buttonStyle(.plain)
             }
@@ -90,12 +91,16 @@ struct DashboardTabs: View {
             Button { NotificationCenter.default.post(name: NSNotification.Name("openDashboard"), object: nil) } label: {
                 Image(systemName: "arrow.up.left.and.arrow.down.right")
                     .font(.system(size: 9)).foregroundStyle(.white.opacity(0.5))
+                    .padding(4)
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .help("Open dashboard window")
             if compact {
                 Button { NSApp.terminate(nil) } label: {
                     Image(systemName: "power").font(.system(size: 10)).foregroundStyle(.white.opacity(0.5))
+                        .padding(4)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .help("Quit")
@@ -1431,6 +1436,7 @@ struct DashboardTabs: View {
                             .foregroundStyle(leaderboardPeriod == p ? Color.black : Color.white.opacity(0.55))
                             .padding(.horizontal, 8).padding(.vertical, 3)
                             .background(Capsule().fill(leaderboardPeriod == p ? Color.white : Color.white.opacity(0.1)))
+                            .contentShape(Capsule())
                     }
                     .buttonStyle(.plain)
                 }
@@ -1448,6 +1454,7 @@ struct DashboardTabs: View {
                                 .foregroundStyle(leaderboardShareFormat == fmt ? Color.cyan : Color.white.opacity(0.4))
                                 .padding(.horizontal, 4).padding(.vertical, 2)
                                 .background(RoundedRectangle(cornerRadius: 3).fill(leaderboardShareFormat == fmt ? Color.cyan.opacity(0.15) : Color.clear))
+                                .contentShape(RoundedRectangle(cornerRadius: 3))
                         }
                         .buttonStyle(.plain)
                     }
@@ -1474,6 +1481,7 @@ struct DashboardTabs: View {
                     .foregroundStyle(leaderboardCopiedNotice ? Color.green : Color.white.opacity(0.9))
                     .padding(.horizontal, 7).padding(.vertical, 3.5)
                     .background(RoundedRectangle(cornerRadius: 4).fill(Color.white.opacity(0.12)))
+                    .contentShape(RoundedRectangle(cornerRadius: 4))
                 }
                 .buttonStyle(.plain)
 
@@ -1530,6 +1538,7 @@ struct DashboardTabs: View {
                     .foregroundStyle(leaderboardPublishNotice == "Published!" ? Color.black : (leaderboardPublishNotice == "Failed" ? Color.white : Color.black))
                     .padding(.horizontal, 7).padding(.vertical, 3.5)
                     .background(RoundedRectangle(cornerRadius: 4).fill(leaderboardPublishNotice == "Published!" ? Color.green : (leaderboardPublishNotice == "Failed" ? Color.red.opacity(0.8) : Color.cyan)))
+                    .contentShape(RoundedRectangle(cornerRadius: 4))
                 }
                 .buttonStyle(.plain)
                 .disabled(leaderboardPublishing)

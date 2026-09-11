@@ -1,5 +1,13 @@
 import Foundation
 
+/// Decode helper: falls back to a default when a key is absent, so adding
+/// fields to persisted Codable payloads never invalidates old caches.
+extension KeyedDecodingContainer {
+    func thDecode<T: Decodable>(_ key: Key, or fallback: T) -> T {
+        (try? decodeIfPresent(T.self, forKey: key)) ?? fallback
+    }
+}
+
 struct UsageSnapshot: Codable {
     var tokensToday: Int = 0
     var tokensAllTime: Int = 0
@@ -12,8 +20,46 @@ struct UsageSnapshot: Codable {
     var recentSessions: [SessionSummary] = []
     var sources: [String] = []
     var updatedAt: Date = .distantPast
+    var inputTokensToday: Int = 0
+    var outputTokensToday: Int = 0
+    var inputTokensAllTime: Int = 0
+    var outputTokensAllTime: Int = 0
+    var requestsToday: Int = 0
+    var requestsAllTime: Int = 0
+    var projects: [ProjectUsage] = []
 
     static let empty = UsageSnapshot()
+
+    init() {}
+
+    enum CodingKeys: String, CodingKey {
+        case tokensToday, tokensAllTime, costToday, costAllTime, perTool, models
+        case limits, claudeAccounts, recentSessions, sources, updatedAt, projects
+        case inputTokensToday, outputTokensToday, inputTokensAllTime, outputTokensAllTime
+        case requestsToday, requestsAllTime
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        tokensToday = c.thDecode(.tokensToday, or: 0)
+        tokensAllTime = c.thDecode(.tokensAllTime, or: 0)
+        costToday = c.thDecode(.costToday, or: 0)
+        costAllTime = c.thDecode(.costAllTime, or: 0)
+        perTool = c.thDecode(.perTool, or: [])
+        models = c.thDecode(.models, or: [])
+        limits = c.thDecode(.limits, or: [])
+        claudeAccounts = c.thDecode(.claudeAccounts, or: [])
+        recentSessions = c.thDecode(.recentSessions, or: [])
+        sources = c.thDecode(.sources, or: [])
+        updatedAt = c.thDecode(.updatedAt, or: .distantPast)
+        inputTokensToday = c.thDecode(.inputTokensToday, or: 0)
+        outputTokensToday = c.thDecode(.outputTokensToday, or: 0)
+        inputTokensAllTime = c.thDecode(.inputTokensAllTime, or: 0)
+        outputTokensAllTime = c.thDecode(.outputTokensAllTime, or: 0)
+        requestsToday = c.thDecode(.requestsToday, or: 0)
+        requestsAllTime = c.thDecode(.requestsAllTime, or: 0)
+        projects = c.thDecode(.projects, or: [])
+    }
 
     var tokensTodayText: String { Self.tokens(tokensToday) }
     var tokensAllTimeText: String { Self.tokens(tokensAllTime) }
@@ -40,6 +86,56 @@ struct ToolUsage: Codable {
     var costAllTime: Double
     var cacheReadAll: Int = 0
     var cacheWriteAll: Int = 0
+    var inputTokensToday: Int = 0
+    var outputTokensToday: Int = 0
+    var inputTokensAllTime: Int = 0
+    var outputTokensAllTime: Int = 0
+    var requestsToday: Int = 0
+    var requestsAllTime: Int = 0
+
+    init(tool: String, tokensToday: Int, tokensAllTime: Int, costToday: Double,
+         costAllTime: Double, cacheReadAll: Int = 0, cacheWriteAll: Int = 0,
+         inputTokensToday: Int = 0, outputTokensToday: Int = 0,
+         inputTokensAllTime: Int = 0, outputTokensAllTime: Int = 0,
+         requestsToday: Int = 0, requestsAllTime: Int = 0) {
+        self.tool = tool
+        self.tokensToday = tokensToday
+        self.tokensAllTime = tokensAllTime
+        self.costToday = costToday
+        self.costAllTime = costAllTime
+        self.cacheReadAll = cacheReadAll
+        self.cacheWriteAll = cacheWriteAll
+        self.inputTokensToday = inputTokensToday
+        self.outputTokensToday = outputTokensToday
+        self.inputTokensAllTime = inputTokensAllTime
+        self.outputTokensAllTime = outputTokensAllTime
+        self.requestsToday = requestsToday
+        self.requestsAllTime = requestsAllTime
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case tool, tokensToday, tokensAllTime, costToday, costAllTime
+        case cacheReadAll, cacheWriteAll
+        case inputTokensToday, outputTokensToday, inputTokensAllTime, outputTokensAllTime
+        case requestsToday, requestsAllTime
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        tool = c.thDecode(.tool, or: "other")
+        tokensToday = c.thDecode(.tokensToday, or: 0)
+        tokensAllTime = c.thDecode(.tokensAllTime, or: 0)
+        costToday = c.thDecode(.costToday, or: 0)
+        costAllTime = c.thDecode(.costAllTime, or: 0)
+        cacheReadAll = c.thDecode(.cacheReadAll, or: 0)
+        cacheWriteAll = c.thDecode(.cacheWriteAll, or: 0)
+        inputTokensToday = c.thDecode(.inputTokensToday, or: 0)
+        outputTokensToday = c.thDecode(.outputTokensToday, or: 0)
+        inputTokensAllTime = c.thDecode(.inputTokensAllTime, or: 0)
+        outputTokensAllTime = c.thDecode(.outputTokensAllTime, or: 0)
+        requestsToday = c.thDecode(.requestsToday, or: 0)
+        requestsAllTime = c.thDecode(.requestsAllTime, or: 0)
+    }
 }
 
 struct ProviderLimit: Codable, Identifiable {
@@ -131,6 +227,13 @@ struct ModelUsage: Codable, Identifiable {
     /// claude). Populated by `withProviderShares` after per-provider totals
     /// are known; 0 when unknown.
     var sharePercent: Double = 0
+    var inputTokensAll: Int = 0
+    var outputTokensAll: Int = 0
+    var inputTokensToday: Int = 0
+    var outputTokensToday: Int = 0
+    var cacheWriteAll: Int = 0
+    var requestsAll: Int = 0
+    var requestsToday: Int = 0
 
     var id: String { "\(provider)/\(model)" }
 
@@ -155,6 +258,45 @@ struct ModelUsage: Codable, Identifiable {
     }
 }
 
+extension ModelUsage {
+    enum CodingKeys: String, CodingKey {
+        case provider, model, tokensAll, tokensToday, cost, messages, free
+        case cacheReadAll, estCost, contextK, tokPerSec, promptTokPerSec
+        case paramSize, quant, isLocal, capabilities, localModelName, sharePercent
+        case inputTokensAll, outputTokensAll, inputTokensToday, outputTokensToday
+        case cacheWriteAll, requestsAll, requestsToday
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        provider = c.thDecode(.provider, or: "?")
+        model = c.thDecode(.model, or: "?")
+        tokensAll = c.thDecode(.tokensAll, or: 0)
+        tokensToday = c.thDecode(.tokensToday, or: 0)
+        cost = c.thDecode(.cost, or: 0)
+        messages = c.thDecode(.messages, or: 0)
+        free = c.thDecode(.free, or: false)
+        cacheReadAll = c.thDecode(.cacheReadAll, or: 0)
+        estCost = c.thDecode(.estCost, or: 0)
+        contextK = c.thDecode(.contextK, or: 0)
+        tokPerSec = c.thDecode(.tokPerSec, or: nil as Double?)
+        promptTokPerSec = c.thDecode(.promptTokPerSec, or: nil as Double?)
+        paramSize = c.thDecode(.paramSize, or: nil as String?)
+        quant = c.thDecode(.quant, or: nil as String?)
+        isLocal = c.thDecode(.isLocal, or: false)
+        capabilities = c.thDecode(.capabilities, or: [])
+        localModelName = c.thDecode(.localModelName, or: nil as String?)
+        sharePercent = c.thDecode(.sharePercent, or: 0)
+        inputTokensAll = c.thDecode(.inputTokensAll, or: 0)
+        outputTokensAll = c.thDecode(.outputTokensAll, or: 0)
+        inputTokensToday = c.thDecode(.inputTokensToday, or: 0)
+        outputTokensToday = c.thDecode(.outputTokensToday, or: 0)
+        cacheWriteAll = c.thDecode(.cacheWriteAll, or: 0)
+        requestsAll = c.thDecode(.requestsAll, or: 0)
+        requestsToday = c.thDecode(.requestsToday, or: 0)
+    }
+}
+
 struct SessionSummary: Codable, Identifiable {
     var id: String
     var title: String
@@ -162,6 +304,88 @@ struct SessionSummary: Codable, Identifiable {
     var tokens: Int
     var directory: String
     var created: Date
+    var provider: String = ""
+    var model: String = ""
+    var inputTokens: Int = 0
+    var outputTokens: Int = 0
+    var requests: Int = 0
+
+    init(id: String, title: String, cost: Double, tokens: Int, directory: String,
+         created: Date, provider: String = "", model: String = "",
+         inputTokens: Int = 0, outputTokens: Int = 0, requests: Int = 0) {
+        self.id = id
+        self.title = title
+        self.cost = cost
+        self.tokens = tokens
+        self.directory = directory
+        self.created = created
+        self.provider = provider
+        self.model = model
+        self.inputTokens = inputTokens
+        self.outputTokens = outputTokens
+        self.requests = requests
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id, title, cost, tokens, directory, created
+        case provider, model, inputTokens, outputTokens, requests
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = c.thDecode(.id, or: UUID().uuidString)
+        title = c.thDecode(.title, or: "")
+        cost = c.thDecode(.cost, or: 0)
+        tokens = c.thDecode(.tokens, or: 0)
+        directory = c.thDecode(.directory, or: "")
+        created = c.thDecode(.created, or: Date())
+        provider = c.thDecode(.provider, or: "")
+        model = c.thDecode(.model, or: "")
+        inputTokens = c.thDecode(.inputTokens, or: 0)
+        outputTokens = c.thDecode(.outputTokens, or: 0)
+        requests = c.thDecode(.requests, or: 0)
+    }
+}
+
+/// Real per-project (working directory) aggregation. Fed by the opencode
+/// session table plus claude/generic JSONL `cwd` fields.
+struct ProjectUsage: Codable, Identifiable {
+    var directory: String
+    var tokens: Int = 0
+    var cost: Double = 0
+    var sessions: Int = 0
+    var inputTokens: Int = 0
+    var outputTokens: Int = 0
+
+    var id: String { directory }
+    var name: String {
+        let last = (directory as NSString).lastPathComponent
+        return last.isEmpty ? directory : last
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case directory, tokens, cost, sessions, inputTokens, outputTokens
+    }
+
+    init(directory: String, tokens: Int, cost: Double, sessions: Int,
+         inputTokens: Int = 0, outputTokens: Int = 0) {
+        self.directory = directory
+        self.tokens = tokens
+        self.cost = cost
+        self.sessions = sessions
+        self.inputTokens = inputTokens
+        self.outputTokens = outputTokens
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        directory = c.thDecode(.directory, or: "")
+        tokens = c.thDecode(.tokens, or: 0)
+        cost = c.thDecode(.cost, or: 0)
+        sessions = c.thDecode(.sessions, or: 0)
+        inputTokens = c.thDecode(.inputTokens, or: 0)
+        outputTokens = c.thDecode(.outputTokens, or: 0)
+    }
 }
 
 struct ShellEvent: Codable, Identifiable {

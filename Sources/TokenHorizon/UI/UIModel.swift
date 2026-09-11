@@ -40,6 +40,25 @@ final class UIModel: ObservableObject {
     @Published var processesDisk: [ProcSample] = []
     @Published var processesNet: [ProcSample] = []
     @Published var allProcesses: [ProcSample] = []  // htop-style: all ~500 procs, sorted/filtered in view
+    private let processesLock = NSLock()
+
+    /// Locked snapshot of the process lists for off-main readers
+    /// (LocalServer /processes serves from a connection queue while the main
+    /// thread replaces these arrays — direct reads raced). Views keep reading
+    /// the @Published vars on main. Call storeProcesses on main.
+    func processSnapshot() -> (all: [ProcSample], byCPU: [ProcSample], byMem: [ProcSample], byDisk: [ProcSample], byNet: [ProcSample]) {
+        processesLock.lock(); defer { processesLock.unlock() }
+        return (allProcesses, processes, processesMem, processesDisk, processesNet)
+    }
+
+    func storeProcesses(all: [ProcSample], byCPU: [ProcSample], byMem: [ProcSample], byDisk: [ProcSample], byNet: [ProcSample]) {
+        processesLock.lock(); defer { processesLock.unlock() }
+        allProcesses = all
+        processes = byCPU
+        processesMem = byMem
+        processesDisk = byDisk
+        processesNet = byNet
+    }
     @Published var dockerContainers: [DockerContainerSample] = []
     @Published var shellEvents: [ShellEvent] = []
     @Published var historyPoints: [HistoryPoint] = []

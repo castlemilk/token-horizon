@@ -13,6 +13,7 @@ routes = [
 [assets]
 directory = "../docs"
 binding = "ASSETS"
+run_worker_first = true
 
 # Cloudflare R2 Object Storage Backend
 [[r2_buckets]]

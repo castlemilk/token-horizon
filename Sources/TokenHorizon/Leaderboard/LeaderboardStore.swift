@@ -73,6 +73,45 @@ struct LeaderboardModelBreakdown: Codable, Identifiable, Equatable {
     var costToday: Double
     var costAll: Double
     var sharePercent: Double
+    var inputTokens: Int = 0
+    var outputTokens: Int = 0
+    var requests: Int = 0
+
+    init(provider: String, model: String, tokensToday: Int, tokensAll: Int,
+         costToday: Double, costAll: Double, sharePercent: Double,
+         inputTokens: Int = 0, outputTokens: Int = 0, requests: Int = 0) {
+        self.provider = provider
+        self.model = model
+        self.tokensToday = tokensToday
+        self.tokensAll = tokensAll
+        self.costToday = costToday
+        self.costAll = costAll
+        self.sharePercent = sharePercent
+        self.inputTokens = inputTokens
+        self.outputTokens = outputTokens
+        self.requests = requests
+    }
+}
+
+extension LeaderboardModelBreakdown {
+    enum CodingKeys: String, CodingKey {
+        case provider, model, tokensToday, tokensAll, costToday, costAll, sharePercent
+        case inputTokens, outputTokens, requests
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        provider = c.thDecode(.provider, or: "?")
+        model = c.thDecode(.model, or: "?")
+        tokensToday = c.thDecode(.tokensToday, or: 0)
+        tokensAll = c.thDecode(.tokensAll, or: 0)
+        costToday = c.thDecode(.costToday, or: 0)
+        costAll = c.thDecode(.costAll, or: 0)
+        sharePercent = c.thDecode(.sharePercent, or: 0)
+        inputTokens = c.thDecode(.inputTokens, or: 0)
+        outputTokens = c.thDecode(.outputTokens, or: 0)
+        requests = c.thDecode(.requests, or: 0)
+    }
 }
 
 struct LeaderboardToolBreakdown: Codable, Identifiable, Equatable {
@@ -82,6 +121,40 @@ struct LeaderboardToolBreakdown: Codable, Identifiable, Equatable {
     var tokensAll: Int
     var costToday: Double
     var costAll: Double
+    var inputTokens: Int = 0
+    var outputTokens: Int = 0
+    var requests: Int = 0
+
+    init(tool: String, tokensToday: Int, tokensAll: Int, costToday: Double,
+         costAll: Double, inputTokens: Int = 0, outputTokens: Int = 0, requests: Int = 0) {
+        self.tool = tool
+        self.tokensToday = tokensToday
+        self.tokensAll = tokensAll
+        self.costToday = costToday
+        self.costAll = costAll
+        self.inputTokens = inputTokens
+        self.outputTokens = outputTokens
+        self.requests = requests
+    }
+}
+
+extension LeaderboardToolBreakdown {
+    enum CodingKeys: String, CodingKey {
+        case tool, tokensToday, tokensAll, costToday, costAll
+        case inputTokens, outputTokens, requests
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        tool = c.thDecode(.tool, or: "?")
+        tokensToday = c.thDecode(.tokensToday, or: 0)
+        tokensAll = c.thDecode(.tokensAll, or: 0)
+        costToday = c.thDecode(.costToday, or: 0)
+        costAll = c.thDecode(.costAll, or: 0)
+        inputTokens = c.thDecode(.inputTokens, or: 0)
+        outputTokens = c.thDecode(.outputTokens, or: 0)
+        requests = c.thDecode(.requests, or: 0)
+    }
 }
 
 struct LeaderboardDailyPoint: Codable, Identifiable, Equatable {
@@ -92,12 +165,151 @@ struct LeaderboardDailyPoint: Codable, Identifiable, Equatable {
     var cost: Double
 }
 
+struct LeaderboardProjectBreakdown: Codable, Identifiable, Equatable {
+    var id: String { project }
+    var project: String
+    var tokens: Int
+    var cost: Double
+    var sessions: Int
+    var inputTokens: Int = 0
+    var outputTokens: Int = 0
+
+    init(project: String, tokens: Int, cost: Double, sessions: Int,
+         inputTokens: Int = 0, outputTokens: Int = 0) {
+        self.project = project
+        self.tokens = tokens
+        self.cost = cost
+        self.sessions = sessions
+        self.inputTokens = inputTokens
+        self.outputTokens = outputTokens
+    }
+}
+
+extension LeaderboardProjectBreakdown {
+    enum CodingKeys: String, CodingKey {
+        case project, tokens, cost, sessions, inputTokens, outputTokens
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        project = c.thDecode(.project, or: "")
+        tokens = c.thDecode(.tokens, or: 0)
+        cost = c.thDecode(.cost, or: 0)
+        sessions = c.thDecode(.sessions, or: 0)
+        inputTokens = c.thDecode(.inputTokens, or: 0)
+        outputTokens = c.thDecode(.outputTokens, or: 0)
+    }
+}
+
+/// Durable per-entry rank/usage snapshots, appended by the worker. Used for
+/// Top Movers, Most Improved, league progression, and rank deltas.
+struct LeaderboardSnapshot: Codable, Equatable {
+    var day: Int
+    var tokensAll: Int
+    var tokens7d: Int = 0
+    var costAll: Double = 0
+    var mmr: Int = 0
+    var league: String = ""
+    var rank: Int = 0
+
+    init(day: Int, tokensAll: Int, tokens7d: Int = 0, costAll: Double = 0,
+         mmr: Int = 0, league: String = "", rank: Int = 0) {
+        self.day = day
+        self.tokensAll = tokensAll
+        self.tokens7d = tokens7d
+        self.costAll = costAll
+        self.mmr = mmr
+        self.league = league
+        self.rank = rank
+    }
+}
+
+extension LeaderboardSnapshot {
+    enum CodingKeys: String, CodingKey {
+        case day, tokensAll, tokens7d, costAll, mmr, league, rank
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        day = c.thDecode(.day, or: 0)
+        tokensAll = c.thDecode(.tokensAll, or: 0)
+        tokens7d = c.thDecode(.tokens7d, or: 0)
+        costAll = c.thDecode(.costAll, or: 0)
+        mmr = c.thDecode(.mmr, or: 0)
+        league = c.thDecode(.league, or: "")
+        rank = c.thDecode(.rank, or: 0)
+    }
+}
+
+struct LeaderboardSessionEntry: Codable, Identifiable, Equatable {
+    var id: String { "\(at)-\(title)" }
+    var title: String
+    var provider: String
+    var model: String
+    var tokens: Int
+    var cost: Double
+    var requests: Int = 0
+    /// Epoch seconds of the session's creation.
+    var at: Int = 0
+
+    init(title: String, provider: String, model: String, tokens: Int,
+         cost: Double, requests: Int = 0, at: Int = 0) {
+        self.title = title
+        self.provider = provider
+        self.model = model
+        self.tokens = tokens
+        self.cost = cost
+        self.requests = requests
+        self.at = at
+    }
+}
+
+extension LeaderboardSessionEntry {
+    enum CodingKeys: String, CodingKey {
+        case title, provider, model, tokens, cost, requests, at
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        title = c.thDecode(.title, or: "")
+        provider = c.thDecode(.provider, or: "")
+        model = c.thDecode(.model, or: "")
+        tokens = c.thDecode(.tokens, or: 0)
+        cost = c.thDecode(.cost, or: 0)
+        requests = c.thDecode(.requests, or: 0)
+        at = c.thDecode(.at, or: 0)
+    }
+}
+
 struct LeaderboardUsageBreakdown: Codable, Equatable {
     var models: [LeaderboardModelBreakdown] = []
     var tools: [LeaderboardToolBreakdown] = []
     var history: [LeaderboardDailyPoint] = []
     var activeDays: Int = 0
     var totalSessions: Int = 0
+    var projects: [LeaderboardProjectBreakdown] = []
+    /// 7 (Mon-first) x 24 local-hour token grid over the trailing 4 weeks.
+    var hourly: [[Int]] = []
+    /// Most recent sessions/workloads (title + model + tokens), bounded.
+    var sessions: [LeaderboardSessionEntry] = []
+}
+
+extension LeaderboardUsageBreakdown {
+    enum CodingKeys: String, CodingKey {
+        case models, tools, history, activeDays, totalSessions, projects, hourly, sessions
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        models = c.thDecode(.models, or: [])
+        tools = c.thDecode(.tools, or: [])
+        history = c.thDecode(.history, or: [])
+        activeDays = c.thDecode(.activeDays, or: 0)
+        totalSessions = c.thDecode(.totalSessions, or: 0)
+        projects = c.thDecode(.projects, or: [])
+        hourly = c.thDecode(.hourly, or: [])
+        sessions = c.thDecode(.sessions, or: [])
+    }
 }
 
 struct LeaderboardEntry: Codable, Identifiable, Equatable {
@@ -116,9 +328,47 @@ struct LeaderboardEntry: Codable, Identifiable, Equatable {
     var isLocal: Bool
     var updatedAt: Date
     var breakdown: LeaderboardUsageBreakdown? = nil
+    var mmr: Int = 0
+    var league: String = ""
+    var division: Int = 0
+    var efficiency: Double = 0
+    var inputTokensToday: Int = 0
+    var outputTokensToday: Int = 0
+    var inputTokensAll: Int = 0
+    var outputTokensAll: Int = 0
+    var requestsToday: Int = 0
+    var requestsAll: Int = 0
+    var seasonId: String = ""
+    var seasonTokens: Int = 0
+    var achievements: [LeaderboardAchievement] = []
+    var snapshots: [LeaderboardSnapshot] = []
 
     var displayHandle: String {
         handle.hasPrefix("@") ? handle : "@\(handle)"
+    }
+
+    var standing: LeagueStanding {
+        if let tier = LeagueTier.from(league), division > 0 {
+            let range = tier.mmrRange
+            let mmrValue = mmr > 0 ? mmr : range.lowerBound
+            let next = tier.next
+            return LeagueStanding(league: tier, division: min(3, max(1, division)),
+                                  mmr: mmrValue,
+                                  mmrToNext: next.map { $0.mmrRange.lowerBound - mmrValue })
+        }
+        let computedMMR = mmr > 0 ? mmr : LeaderboardAnalytics.mmr(
+            tokensAll: tokensAll, streakDays: streakDays, activeDays: 0, modelCount: 0)
+        return LeaderboardAnalytics.standing(mmr: computedMMR)
+    }
+
+    /// Rank recorded in the snapshot closest to `daysAgo` (nil when the
+    /// history is missing or too sparse to be meaningful).
+    func historicalRank(daysAgo: Int) -> Int? {
+        guard !snapshots.isEmpty else { return nil }
+        let target = Int(Date().timeIntervalSince1970) / 86_400 - daysAgo
+        let best = snapshots.min { abs($0.day - target) < abs($1.day - target) }
+        guard let best, best.rank > 0, abs(best.day - target) <= 3 else { return nil }
+        return best.rank
     }
 
     init(
@@ -136,7 +386,21 @@ struct LeaderboardEntry: Codable, Identifiable, Equatable {
         hardware: String,
         isLocal: Bool,
         updatedAt: Date,
-        breakdown: LeaderboardUsageBreakdown? = nil
+        breakdown: LeaderboardUsageBreakdown? = nil,
+        mmr: Int = 0,
+        league: String = "",
+        division: Int = 0,
+        efficiency: Double = 0,
+        inputTokensToday: Int = 0,
+        outputTokensToday: Int = 0,
+        inputTokensAll: Int = 0,
+        outputTokensAll: Int = 0,
+        requestsToday: Int = 0,
+        requestsAll: Int = 0,
+        seasonId: String = "",
+        seasonTokens: Int = 0,
+        achievements: [LeaderboardAchievement] = [],
+        snapshots: [LeaderboardSnapshot] = []
     ) {
         self.id = id
         self.handle = handle
@@ -153,6 +417,20 @@ struct LeaderboardEntry: Codable, Identifiable, Equatable {
         self.isLocal = isLocal
         self.updatedAt = updatedAt
         self.breakdown = breakdown
+        self.mmr = mmr
+        self.league = league
+        self.division = division
+        self.efficiency = efficiency
+        self.inputTokensToday = inputTokensToday
+        self.outputTokensToday = outputTokensToday
+        self.inputTokensAll = inputTokensAll
+        self.outputTokensAll = outputTokensAll
+        self.requestsToday = requestsToday
+        self.requestsAll = requestsAll
+        self.seasonId = seasonId
+        self.seasonTokens = seasonTokens
+        self.achievements = achievements
+        self.snapshots = snapshots
     }
 
     func resolvedBreakdown() -> LeaderboardUsageBreakdown {
@@ -165,16 +443,66 @@ struct LeaderboardEntry: Codable, Identifiable, Equatable {
             tokensAll: tokensAll,
             costToday: costToday,
             costAll: costAll,
-            sharePercent: 100.0
+            sharePercent: 100.0,
+            inputTokens: inputTokensAll,
+            outputTokens: outputTokensAll,
+            requests: requestsAll
         )
         let t = LeaderboardToolBreakdown(
             tool: prov,
             tokensToday: tokensToday,
             tokensAll: tokensAll,
             costToday: costToday,
-            costAll: costAll
+            costAll: costAll,
+            inputTokens: inputTokensAll,
+            outputTokens: outputTokensAll,
+            requests: requestsAll
         )
         return LeaderboardUsageBreakdown(models: [m], tools: [t], history: [], activeDays: streakDays, totalSessions: 1)
+    }
+}
+
+extension LeaderboardEntry {
+    enum CodingKeys: String, CodingKey {
+        case id, handle, team, tokensToday, tokens7d, tokensAll
+        case costToday, cost7d, costAll, streakDays, topModel, hardware
+        case isLocal, updatedAt, breakdown
+        case mmr, league, division, efficiency
+        case inputTokensToday, outputTokensToday, inputTokensAll, outputTokensAll
+        case requestsToday, requestsAll, seasonId, seasonTokens, achievements, snapshots
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = c.thDecode(.id, or: UUID().uuidString)
+        handle = c.thDecode(.handle, or: "unknown")
+        team = c.thDecode(.team, or: "")
+        tokensToday = c.thDecode(.tokensToday, or: 0)
+        tokens7d = c.thDecode(.tokens7d, or: 0)
+        tokensAll = c.thDecode(.tokensAll, or: 0)
+        costToday = c.thDecode(.costToday, or: 0)
+        cost7d = c.thDecode(.cost7d, or: 0)
+        costAll = c.thDecode(.costAll, or: 0)
+        streakDays = c.thDecode(.streakDays, or: 0)
+        topModel = c.thDecode(.topModel, or: "")
+        hardware = c.thDecode(.hardware, or: "")
+        isLocal = c.thDecode(.isLocal, or: false)
+        updatedAt = c.thDecode(.updatedAt, or: Date())
+        breakdown = c.thDecode(.breakdown, or: nil as LeaderboardUsageBreakdown?)
+        mmr = c.thDecode(.mmr, or: 0)
+        league = c.thDecode(.league, or: "")
+        division = c.thDecode(.division, or: 0)
+        efficiency = c.thDecode(.efficiency, or: 0)
+        inputTokensToday = c.thDecode(.inputTokensToday, or: 0)
+        outputTokensToday = c.thDecode(.outputTokensToday, or: 0)
+        inputTokensAll = c.thDecode(.inputTokensAll, or: 0)
+        outputTokensAll = c.thDecode(.outputTokensAll, or: 0)
+        requestsToday = c.thDecode(.requestsToday, or: 0)
+        requestsAll = c.thDecode(.requestsAll, or: 0)
+        seasonId = c.thDecode(.seasonId, or: "")
+        seasonTokens = c.thDecode(.seasonTokens, or: 0)
+        achievements = c.thDecode(.achievements, or: [])
+        snapshots = c.thDecode(.snapshots, or: [])
     }
 }
 
@@ -188,6 +516,16 @@ struct LeaderboardRankedEntry: Codable, Identifiable {
     var scoreFormatted: String
     var costFormatted: String
     var relativePercent: Double
+    var league: String = ""
+    var division: Int = 0
+    var mmr: Int = 0
+    var efficiency: Double = 0
+    var rankDelta7d: Int? = nil
+    var avgPerRequest: Int = 0
+    var inputFormatted: String = ""
+    var outputFormatted: String = ""
+    var requestsFormatted: String = ""
+    var trend: [Int] = []
 }
 
 final class LeaderboardStore {
@@ -266,7 +604,8 @@ final class LeaderboardStore {
         saveLocked()
     }
 
-    func syncLocal(snapshot: UsageSnapshot, history: [HistoryPoint], streak: Int) {
+    func syncLocal(snapshot: UsageSnapshot, history: [HistoryPoint], streak: Int,
+                   heatmap: [[Int]]? = nil) {
         lock.lock()
         defer { lock.unlock() }
 
@@ -303,7 +642,10 @@ final class LeaderboardStore {
                 tokensAll: m.tokensAll,
                 costToday: shareCost ? m.cost : 0.0,
                 costAll: shareCost ? (m.estCost > 0 ? m.estCost : m.cost) : 0.0,
-                sharePercent: share
+                sharePercent: share,
+                inputTokens: m.inputTokensAll,
+                outputTokens: m.outputTokensAll,
+                requests: m.requestsAll
             ))
         }
 
@@ -315,16 +657,19 @@ final class LeaderboardStore {
                 tokensToday: t.tokensToday,
                 tokensAll: t.tokensAllTime,
                 costToday: shareCost ? t.costToday : 0.0,
-                costAll: shareCost ? t.costAllTime : 0.0
+                costAll: shareCost ? t.costAllTime : 0.0,
+                inputTokens: t.inputTokensAllTime,
+                outputTokens: t.outputTokensAllTime,
+                requests: t.requestsAllTime
             ))
         }
 
-        // Build 7-day history points
+        // Build 7-day history points (day is already epoch seconds)
         let df = DateFormatter()
         df.dateFormat = "EEE d"
         var historyPoints: [LeaderboardDailyPoint] = []
         for p in recent7 {
-            let date = Date(timeIntervalSince1970: TimeInterval(p.day * 86400))
+            let date = Date(timeIntervalSince1970: TimeInterval(p.day))
             historyPoints.append(LeaderboardDailyPoint(
                 day: p.day,
                 dayLabel: df.string(from: date),
@@ -333,12 +678,76 @@ final class LeaderboardStore {
             ))
         }
 
+        // Real per-project rollup (top 8) from the engine's working-directory
+        // aggregation (opencode session dirs + JSONL cwd).
+        let projectBreakdowns: [LeaderboardProjectBreakdown] = snapshot.projects.prefix(8).map {
+            LeaderboardProjectBreakdown(
+                project: $0.name,
+                tokens: $0.tokens,
+                cost: shareCost ? $0.cost : 0.0,
+                sessions: $0.sessions,
+                inputTokens: $0.inputTokens,
+                outputTokens: $0.outputTokens
+            )
+        }
+
+        // Season + MMR + efficiency + achievements (all pure/real signals).
+        let season = LeaderboardAnalytics.season()
+        let seasonStart = Int(Calendar.current.startOfDay(for: season.start).timeIntervalSince1970)
+        let seasonTokens = history.filter { $0.day >= seasonStart }.reduce(0) { $0 + $1.tokens }
+        let activeDays = history.suffix(30).filter { $0.tokens > 0 }.count
+        let modelCount = snapshot.models.count
+        let cacheRead = snapshot.models.reduce(0) { $0 + $1.cacheReadAll }
+        let freeTokens = snapshot.models.filter { $0.free }.reduce(0) { $0 + $1.tokensAll }
+        let cacheHitRate = Double(cacheRead) / Double(max(1, cacheRead + snapshot.inputTokensAllTime)) * 100
+        let efficiency = LeaderboardAnalytics.efficiency(
+            input: snapshot.inputTokensAllTime,
+            output: snapshot.outputTokensAllTime,
+            cacheRead: cacheRead,
+            totalTokens: snapshot.tokensAllTime,
+            freeTokens: freeTokens)
+        let mmr = LeaderboardAnalytics.mmr(
+            tokensAll: snapshot.tokensAllTime,
+            streakDays: streak,
+            activeDays: activeDays,
+            modelCount: modelCount)
+        let standing = LeaderboardAnalytics.standing(mmr: mmr)
+        let achievements = LeaderboardAnalytics.achievements(
+            tokensAll: snapshot.tokensAllTime,
+            requestsAll: snapshot.requestsAllTime,
+            modelCount: modelCount,
+            streakDays: streak,
+            efficiency: efficiency,
+            percentile: 0,
+            seasonTokens: seasonTokens,
+            cacheHitRate: cacheHitRate)
+
+        // Recent sessions/workloads (bounded, titles truncated) power the
+        // profile "Recent Activity" and "Top Prompts / Workloads" panels.
+        let sessionEntries: [LeaderboardSessionEntry] = snapshot.recentSessions.prefix(6).map {
+            LeaderboardSessionEntry(
+                title: String($0.title.prefix(80)),
+                provider: $0.provider,
+                model: $0.model,
+                tokens: $0.tokens,
+                cost: shareCost ? $0.cost : 0.0,
+                requests: $0.requests,
+                at: Int($0.created.timeIntervalSince1970))
+        }
+
+        // Preserve the last published heatmap when this sync has no fresh
+        // engine grid (e.g. LocalServer-triggered syncs); AppDelegate passes
+        // a fresh 4-week grid on every heavy tick.
+        let previousHourly = entries.first(where: { $0.isLocal })?.breakdown?.hourly ?? []
         let localBreakdown = LeaderboardUsageBreakdown(
             models: modelBreakdowns,
             tools: toolBreakdowns,
             history: historyPoints,
-            activeDays: streak,
-            totalSessions: snapshot.recentSessions.count
+            activeDays: activeDays,
+            totalSessions: snapshot.recentSessions.count,
+            projects: projectBreakdowns,
+            hourly: heatmap ?? previousHourly,
+            sessions: sessionEntries
         )
 
         let local = LeaderboardEntry(
@@ -356,7 +765,20 @@ final class LeaderboardStore {
             hardware: hardware,
             isLocal: true,
             updatedAt: Date(),
-            breakdown: localBreakdown
+            breakdown: localBreakdown,
+            mmr: standing.mmr,
+            league: standing.league.rawValue,
+            division: standing.division,
+            efficiency: efficiency,
+            inputTokensToday: snapshot.inputTokensToday,
+            outputTokensToday: snapshot.outputTokensToday,
+            inputTokensAll: snapshot.inputTokensAllTime,
+            outputTokensAll: snapshot.outputTokensAllTime,
+            requestsToday: snapshot.requestsToday,
+            requestsAll: snapshot.requestsAllTime,
+            seasonId: season.id,
+            seasonTokens: seasonTokens,
+            achievements: achievements
         )
 
         // Clear prior local entries to keep exactly one primary local
@@ -367,6 +789,8 @@ final class LeaderboardStore {
         for acct in snapshot.claudeAccounts where !acct.email.isEmpty {
             let acctHandle = acct.label.isEmpty ? acct.email : acct.label
             let acctId = "claude:\(acct.id)"
+            let acctStanding = LeaderboardAnalytics.standing(mmr: LeaderboardAnalytics.mmr(
+                tokensAll: acct.tokensAllTime, streakDays: streak, activeDays: activeDays, modelCount: 1))
             let acctEntry = LeaderboardEntry(
                 id: acctId,
                 handle: "\(acctHandle) (Claude)",
@@ -381,7 +805,12 @@ final class LeaderboardStore {
                 topModel: "claude-3-7-sonnet",
                 hardware: hardware,
                 isLocal: false,
-                updatedAt: acct.updatedAt
+                updatedAt: acct.updatedAt,
+                mmr: acctStanding.mmr,
+                league: acctStanding.league.rawValue,
+                division: acctStanding.division,
+                seasonId: season.id,
+                seasonTokens: 0
             )
             if let idx = entries.firstIndex(where: { $0.id == acctId }) {
                 entries[idx] = acctEntry
@@ -472,6 +901,23 @@ final class LeaderboardStore {
             let relativePercent = min(100.0, max(1.0, (Double(score) / maxScore) * 100.0))
             let percentile = max(1.0, (Double(total - rank + 1) / Double(total)) * 100.0)
 
+            let standing = item.standing
+            let periodInput: Int
+            let periodOutput: Int
+            let periodRequests: Int
+            switch period {
+            case .today:
+                periodInput = item.inputTokensToday
+                periodOutput = item.outputTokensToday
+                periodRequests = item.requestsToday
+            default:
+                periodInput = item.inputTokensAll
+                periodOutput = item.outputTokensAll
+                periodRequests = item.requestsAll
+            }
+            let avgPerRequest = periodRequests > 0 ? score / max(1, periodRequests) : 0
+            let trend = item.resolvedBreakdown().history.map { $0.tokens }
+
             return LeaderboardRankedEntry(
                 rank: rank,
                 badge: badge,
@@ -480,7 +926,20 @@ final class LeaderboardStore {
                 score: score,
                 scoreFormatted: scoreFormatted,
                 costFormatted: costFormatted,
-                relativePercent: (relativePercent * 10).rounded() / 10
+                relativePercent: (relativePercent * 10).rounded() / 10,
+                league: standing.league.rawValue,
+                division: standing.division,
+                mmr: standing.mmr,
+                efficiency: item.efficiency,
+                rankDelta7d: {
+                    guard let old = item.historicalRank(daysAgo: 7) else { return nil }
+                    return old - rank
+                }(),
+                avgPerRequest: avgPerRequest,
+                inputFormatted: UsageSnapshot.tokens(periodInput),
+                outputFormatted: UsageSnapshot.tokens(periodOutput),
+                requestsFormatted: "\(periodRequests)",
+                trend: trend
             )
         }
     }
@@ -935,7 +1394,12 @@ final class LeaderboardStore {
                     let cToday = m["costToday"] as? Double ?? (m["cost"] as? Double ?? 0.0)
                     let cAll = m["costAll"] as? Double ?? 0.0
                     let share = m["sharePercent"] as? Double ?? 0.0
-                    models.append(LeaderboardModelBreakdown(provider: prov, model: model, tokensToday: tokToday, tokensAll: tokAll, costToday: cToday, costAll: cAll, sharePercent: share))
+                    models.append(LeaderboardModelBreakdown(
+                        provider: prov, model: model, tokensToday: tokToday, tokensAll: tokAll,
+                        costToday: cToday, costAll: cAll, sharePercent: share,
+                        inputTokens: m["inputTokens"] as? Int ?? 0,
+                        outputTokens: m["outputTokens"] as? Int ?? 0,
+                        requests: m["requests"] as? Int ?? 0))
                 }
             }
             var tools: [LeaderboardToolBreakdown] = []
@@ -946,7 +1410,12 @@ final class LeaderboardStore {
                     let tokAll = t["tokensAll"] as? Int ?? 0
                     let cToday = t["costToday"] as? Double ?? 0.0
                     let cAll = t["costAll"] as? Double ?? 0.0
-                    tools.append(LeaderboardToolBreakdown(tool: tool, tokensToday: tokToday, tokensAll: tokAll, costToday: cToday, costAll: cAll))
+                    tools.append(LeaderboardToolBreakdown(
+                        tool: tool, tokensToday: tokToday, tokensAll: tokAll,
+                        costToday: cToday, costAll: cAll,
+                        inputTokens: t["inputTokens"] as? Int ?? 0,
+                        outputTokens: t["outputTokens"] as? Int ?? 0,
+                        requests: t["requests"] as? Int ?? 0))
                 }
             }
             var historyPts: [LeaderboardDailyPoint] = []
@@ -959,13 +1428,71 @@ final class LeaderboardStore {
                     historyPts.append(LeaderboardDailyPoint(day: day, dayLabel: label, tokens: tok, cost: cost))
                 }
             }
+            var projects: [LeaderboardProjectBreakdown] = []
+            if let pl = bd["projects"] as? [[String: Any]] {
+                for p in pl {
+                    guard let project = p["project"] as? String else { continue }
+                    projects.append(LeaderboardProjectBreakdown(
+                        project: project,
+                        tokens: p["tokens"] as? Int ?? 0,
+                        cost: p["cost"] as? Double ?? 0.0,
+                        sessions: p["sessions"] as? Int ?? 0,
+                        inputTokens: p["inputTokens"] as? Int ?? 0,
+                        outputTokens: p["outputTokens"] as? Int ?? 0))
+                }
+            }
+            var hourly: [[Int]] = []
+            if let grid = bd["hourly"] as? [[Int]] { hourly = grid }
+            var sessions: [LeaderboardSessionEntry] = []
+            if let sl = bd["sessions"] as? [[String: Any]] {
+                for s in sl {
+                    guard let title = s["title"] as? String else { continue }
+                    sessions.append(LeaderboardSessionEntry(
+                        title: title,
+                        provider: s["provider"] as? String ?? "",
+                        model: s["model"] as? String ?? "",
+                        tokens: s["tokens"] as? Int ?? 0,
+                        cost: s["cost"] as? Double ?? 0.0,
+                        requests: s["requests"] as? Int ?? 0,
+                        at: s["at"] as? Int ?? 0))
+                }
+            }
             breakdown = LeaderboardUsageBreakdown(
                 models: models,
                 tools: tools,
                 history: historyPts,
                 activeDays: bd["activeDays"] as? Int ?? streakDays,
-                totalSessions: bd["totalSessions"] as? Int ?? 0
+                totalSessions: bd["totalSessions"] as? Int ?? 0,
+                projects: projects,
+                hourly: hourly,
+                sessions: sessions
             )
+        }
+
+        var achievements: [LeaderboardAchievement] = []
+        if let al = d["achievements"] as? [[String: Any]] {
+            for a in al {
+                guard let id = a["id"] as? String else { continue }
+                achievements.append(LeaderboardAchievement(
+                    id: id,
+                    title: a["title"] as? String ?? id,
+                    detail: a["detail"] as? String ?? "",
+                    icon: a["icon"] as? String ?? "🏅",
+                    unlockedAt: (a["unlockedAt"] as? Double).map { Date(timeIntervalSince1970: $0) }))
+            }
+        }
+        var snapshots: [LeaderboardSnapshot] = []
+        if let sl = d["snapshots"] as? [[String: Any]] {
+            for s in sl {
+                snapshots.append(LeaderboardSnapshot(
+                    day: s["day"] as? Int ?? 0,
+                    tokensAll: s["tokensAll"] as? Int ?? 0,
+                    tokens7d: s["tokens7d"] as? Int ?? 0,
+                    costAll: s["costAll"] as? Double ?? 0.0,
+                    mmr: s["mmr"] as? Int ?? 0,
+                    league: s["league"] as? String ?? "",
+                    rank: s["rank"] as? Int ?? 0))
+            }
         }
 
         return LeaderboardEntry(
@@ -983,7 +1510,21 @@ final class LeaderboardStore {
             hardware: hardware,
             isLocal: false,
             updatedAt: updatedAt,
-            breakdown: breakdown
+            breakdown: breakdown,
+            mmr: d["mmr"] as? Int ?? 0,
+            league: d["league"] as? String ?? "",
+            division: d["division"] as? Int ?? 0,
+            efficiency: d["efficiency"] as? Double ?? 0.0,
+            inputTokensToday: d["inputTokensToday"] as? Int ?? 0,
+            outputTokensToday: d["outputTokensToday"] as? Int ?? 0,
+            inputTokensAll: d["inputTokensAll"] as? Int ?? 0,
+            outputTokensAll: d["outputTokensAll"] as? Int ?? 0,
+            requestsToday: d["requestsToday"] as? Int ?? 0,
+            requestsAll: d["requestsAll"] as? Int ?? 0,
+            seasonId: d["seasonId"] as? String ?? "",
+            seasonTokens: d["seasonTokens"] as? Int ?? 0,
+            achievements: achievements,
+            snapshots: snapshots
         )
     }
 

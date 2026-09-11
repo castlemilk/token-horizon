@@ -9,6 +9,20 @@ final class ClaudeDiscovery {
     private var lastSuccessfulLiveLimits: [String: [ProviderLimit]] = [:]
     private var lastFetch = Date.distantPast
 
+    /// Per-account throttle state: configDir → earliest next live attempt.
+    /// A 429 backs one account off without pausing the others, and stops the
+    /// refresh loop from renewing a server backoff faster than it can decay.
+    private var backoffUntil: [String: Date] = [:]
+    static let defaultThrottleBackoff: TimeInterval = 300 // 5 min
+
+    /// Outcome of one live usage-API call: payload on 2xx, plus the raw
+    /// status and any Retry-After so callers can back off per account.
+    struct LiveUsageResult {
+        var payload: [String: Any]?
+        var statusCode: Int
+        var retryAfter: TimeInterval?
+    }
+
     private init() {}
 
     static func sha256Prefix8(_ str: String) -> String {
@@ -130,27 +144,54 @@ final class ClaudeDiscovery {
         return String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    func fetchUsageAPI(token: String, timeout: TimeInterval = 8) -> [String: Any]? {
-        guard let url = URL(string: "https://api.anthropic.com/api/oauth/usage") else { return nil }
+    func fetchUsageAPI(token: String, timeout: TimeInterval = 8) -> LiveUsageResult {
+        guard let url = URL(string: "https://api.anthropic.com/api/oauth/usage") else {
+            return LiveUsageResult(payload: nil, statusCode: -1, retryAfter: nil)
+        }
         var req = URLRequest(url: url, timeoutInterval: timeout)
         req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         req.setValue("oauth-2025-04-20", forHTTPHeaderField: "anthropic-beta")
         req.setValue("application/json", forHTTPHeaderField: "Accept")
         req.setValue("claude-code/0.2.29", forHTTPHeaderField: "User-Agent")
         var resultData: Data?
+        var statusCode = -1
+        var retryAfter: TimeInterval?
         let sema = DispatchSemaphore(value: 0)
         URLSession.shared.dataTask(with: req) { d, resp, _ in
-            if let http = resp as? HTTPURLResponse, (200..<300).contains(http.statusCode) {
-                resultData = d
+            if let http = resp as? HTTPURLResponse {
+                statusCode = http.statusCode
+                if (200..<300).contains(http.statusCode) { resultData = d }
+                retryAfter = Self.parseRetryAfter(http)
             }
             sema.signal()
         }.resume()
         _ = sema.wait(timeout: .now() + timeout)
         guard let resultData,
               let obj = try? JSONSerialization.jsonObject(with: resultData) as? [String: Any] else {
-            return nil
+            return LiveUsageResult(payload: nil, statusCode: statusCode, retryAfter: retryAfter)
         }
-        return obj
+        return LiveUsageResult(payload: obj, statusCode: statusCode, retryAfter: retryAfter)
+    }
+
+    /// Parses `Retry-After` (seconds) case-insensitively. Anthropic/Cloudflare
+    /// send integer seconds on 429; anything else yields nil (caller defaults).
+    static func parseRetryAfter(_ http: HTTPURLResponse) -> TimeInterval? {
+        for (key, value) in http.allHeaderFields {
+            guard let name = key as? String, name.lowercased() == "retry-after",
+                  let raw = value as? String,
+                  let secs = Double(raw.trimmingCharacters(in: .whitespacesAndNewlines)),
+                  secs >= 0 else { continue }
+            return secs
+        }
+        return nil
+    }
+
+    /// Clamp for throttle backoffs: honor the server's ask, floored at 60s
+    /// (sub-minute asks just re-trigger the throttle) and capped at 24h.
+    /// Missing/invalid asks default to `defaultThrottleBackoff`.
+    static func throttleBackoffDelay(retryAfter: TimeInterval?) -> TimeInterval {
+        guard let r = retryAfter, r > 0 else { return defaultThrottleBackoff }
+        return min(max(r, 60), 86_400)
     }
 
     func accountMetadata(for dir: String) -> ClaudeAccount {
@@ -173,6 +214,39 @@ final class ClaudeDiscovery {
             rateLimitTier: oauth?["organizationRateLimitTier"] as? String ?? "",
             hasExtraUsageEnabled: oauth?["hasExtraUsageEnabled"] as? Bool ?? false
         )
+    }
+
+    /// Disk fallback for `cachedUsageUtilization`. Returns parsed rows plus
+    /// whether they are stale (older than `maxFreshAge`). Fresh rows are
+    /// always safe; stale rows are only better than hiding the account when
+    /// live is throttled or erroring — never invent rows from a missing blob.
+    static func diskFallbackLimits(
+        cachedUsage: [String: Any]?,
+        provider: String,
+        detail: String,
+        maxFreshAge: TimeInterval = 7200
+    ) -> (limits: [ProviderLimit], isStale: Bool) {
+        guard let util = cachedUsage?["utilization"] as? [String: Any] else { return ([], false) }
+        let rows = PlanLimitsEngine.parseClaudePayload(util, provider: provider, detail: detail)
+        guard !rows.isEmpty else { return ([], false) }
+        let fetchedAtMs = cachedUsage?["fetchedAtMs"] as? Double ?? 0
+        let age = Date().timeIntervalSince1970 - (fetchedAtMs / 1000.0)
+        return (rows, !(age > 0 && age < maxFreshAge))
+    }
+
+    /// Tags stale fallback rows in `detail`. Throttled rows carry the
+    /// established "rate-limited" marker (drives the red RATE LIMITED badge
+    /// in PlanLimitsViews and the cleared-refresh notification); other stale
+    /// rows carry "stale". Fresh rows pass through untouched. Idempotent.
+    static func markStale(_ rows: [ProviderLimit], throttled: Bool) -> [ProviderLimit] {
+        rows.map { row in
+            var marked = row
+            let tag = throttled ? "rate-limited" : "stale"
+            if !marked.detail.localizedCaseInsensitiveContains(tag) {
+                marked.detail = marked.detail.isEmpty ? tag : "\(marked.detail) · \(tag)"
+            }
+            return marked
+        }
     }
 
     func fetchAllLimits() -> [ProviderLimit] {
@@ -206,13 +280,34 @@ final class ClaudeDiscovery {
             let detail = "\(acct.email.isEmpty ? acct.id : acct.email)\(acct.organizationType.isEmpty ? "" : " · \(acct.organizationType)")"
 
             var limits: [ProviderLimit] = []
-            if let token = self.findAccessToken(for: acct.configDir),
-               let liveObj = self.fetchUsageAPI(token: token) {
-                limits = PlanLimitsEngine.parseClaudePayload(liveObj, provider: providerName, detail: detail)
-                if !limits.isEmpty {
+            var liveThrottled = false
+            var liveAttempted = false
+            self.lock.lock()
+            let backedOff = (self.backoffUntil[acct.configDir] ?? .distantPast) > Date()
+            self.lock.unlock()
+            if backedOff {
+                // Still inside a server backoff window: don't spend a request
+                // that would only renew the throttle. Fall through to memory
+                // + disk below so the account stays visible.
+                liveThrottled = true
+            } else if let token = self.findAccessToken(for: acct.configDir) {
+                liveAttempted = true
+                let res = self.fetchUsageAPI(token: token)
+                if let obj = res.payload {
+                    limits = PlanLimitsEngine.parseClaudePayload(obj, provider: providerName, detail: detail)
+                    if !limits.isEmpty {
+                        self.lock.lock()
+                        self.lastSuccessfulLiveLimits[acct.configDir] = limits
+                        self.backoffUntil.removeValue(forKey: acct.configDir)
+                        self.lock.unlock()
+                    }
+                } else if res.statusCode == 429 {
+                    liveThrottled = true
+                    let wait = Self.throttleBackoffDelay(retryAfter: res.retryAfter)
                     self.lock.lock()
-                    self.lastSuccessfulLiveLimits[acct.configDir] = limits
+                    self.backoffUntil[acct.configDir] = Date().addingTimeInterval(wait)
                     self.lock.unlock()
+                    NSLog("[ClaudeDiscovery] %@: usage API throttled (429), backing off %.0fs", acct.id, wait)
                 }
             }
 
@@ -228,14 +323,17 @@ final class ClaudeDiscovery {
                 } else if !prevMem.isEmpty {
                     limits = prevMem
                 } else {
-                    // 2. Only fall back to .claude.json if disk cache is fresh (< 2 hours old)
+                    // 2. Fresh disk cache (< 2h) as before; plus a stale tier:
+                    // when live was attempted but refused (429/backoff) or
+                    // errored, an old row marked stale beats a vanished
+                    // account. Token-missing (logged out) keeps fresh-only.
                     let (_, cachedUsage) = self.readClaudeJson(for: acct.configDir)
-                    let fetchedAtMs = cachedUsage?["fetchedAtMs"] as? Double ?? 0
-                    let ageSeconds = Date().timeIntervalSince1970 - (fetchedAtMs / 1000.0)
-                    if ageSeconds > 0 && ageSeconds < 7200 {
-                        if let util = cachedUsage?["utilization"] as? [String: Any] {
-                            limits = PlanLimitsEngine.parseClaudePayload(util, provider: providerName, detail: detail)
-                        }
+                    let fb = Self.diskFallbackLimits(
+                        cachedUsage: cachedUsage, provider: providerName, detail: detail)
+                    if !fb.limits.isEmpty && (!fb.isStale || liveThrottled || liveAttempted) {
+                        limits = fb.isStale
+                            ? Self.markStale(fb.limits, throttled: liveThrottled)
+                            : fb.limits
                     }
                 }
             }

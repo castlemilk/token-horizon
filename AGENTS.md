@@ -107,6 +107,14 @@ Ground-truth checks when touching parsers:
 - opencode: session-table sums vs `message.data` per-model sums (json_extract)
 - stress: 60× parallel `/stats` + `/event` curls; process must stay alive
 
+## Leaderboard & MCP Server
+
+- **Edge Architecture (`cloudflare/` + `cloudflare/src/index.js`)**: Cloudflare Worker + R2 bucket (`token-horizon-leaderboard`). Production URL: `https://tokens.benebsworth.com` (`/api/leaderboard`, `/api/user/:handle`, `/api/claim`, `/api/health`).
+- **Authentication & Claims**: Anonymous publish automatically mints a SHA-256 hashed `claimToken` preventing handle hijacking. Unclaimed profiles can be claimed and verified via Google OAuth (`POST /api/claim`).
+- **Frontend Dashboard (`docs/leaderboard.html`)**: Mirrors the macOS app's Participant Detail modal (`DashboardTabs.swift:2052-2260`), featuring KPI cards (TODAY, 7 DAYS, ALL-TIME, TOP MODEL), 7-day gradient histograms, and full model allocation inventories. Supports deep linking (`?user=<handle>`) and Google Identity Services.
+- **MCP Server (`mcp/`)**: Model Context Protocol stdio server exposing 6 tools: `get_leaderboard`, `get_user_profile`, `get_daemon_metrics`, `publish_telemetry`, `claim_profile`, and `compare_users`. Run tests with `make mcp-test` or `npm test` inside `mcp/`.
+- **Testing**: `make leaderboard-test` runs the edge worker test suite + Playwright E2E browser tests.
+
 ## Release & distribution (keep these in sync)
 
 - Landing page: `docs/` (dependency-free static) → GitHub Pages via `.github/workflows/pages.yml` (Actions, watches `docs/**`). Project-page hosting: all internal links must stay relative (`./`), never root-absolute.

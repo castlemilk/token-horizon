@@ -20,6 +20,50 @@ final class PlanLimitsRenderingTests: XCTestCase {
         DashboardTabs(model: UIModel(), compact: true)
     }
 
+    func testBuildRows_emptyLimits_noRows() {
+        XCTAssertTrue(makeHost().buildUnifiedPlanRows(from: []).isEmpty)
+    }
+
+    func testBuildRows_scopedOnlyProvider_routesToExtra() {
+        let limits = [ProviderLimit(provider: "anthropic", label: "weekly · Fable",
+                                    usedPercent: 33, resetsAt: nil, detail: "")]
+        let rows = makeHost().buildUnifiedPlanRows(from: limits)
+        XCTAssertEqual(rows.count, 1)
+        // Scoped rows must never occupy burst/cycle slots.
+        XCTAssertNil(rows[0].burstLimit)
+        XCTAssertNil(rows[0].cycleLimit)
+        XCTAssertEqual(rows[0].extraLimit?.label, "weekly · Fable")
+    }
+
+    func testBuildRows_unknownProviderFallsBackToDetail() {
+        let limits = [ProviderLimit(provider: "mystery", label: "5h", usedPercent: 9,
+                                    resetsAt: nil, detail: "custom detail")]
+        let rows = makeHost().buildUnifiedPlanRows(from: limits)
+        XCTAssertEqual(rows.count, 1)
+        XCTAssertEqual(rows[0].subtitle, "custom detail")
+        XCTAssertEqual(rows[0].burstLimit?.usedPercent, 9)
+    }
+
+    func testBuildRows_sortsBySoonestCycleReset() {
+        let soon = ProviderLimit(provider: "aaa", label: "weekly", usedPercent: 1,
+                                 resetsAt: Date().addingTimeInterval(3600), detail: "")
+        let later = ProviderLimit(provider: "zzz", label: "weekly", usedPercent: 1,
+                                  resetsAt: Date().addingTimeInterval(7200), detail: "")
+        let rows = makeHost().buildUnifiedPlanRows(from: [later, soon])
+        XCTAssertEqual(rows.map { $0.provider }, ["aaa", "zzz"])
+    }
+
+    func testBuildRows_opencodeGoExtraSubtitle() {
+        let withExtra = [ProviderLimit(provider: "opencode-go", label: "search", usedPercent: 1,
+                                       resetsAt: nil, detail: "")]
+        XCTAssertEqual(makeHost().buildUnifiedPlanRows(from: withExtra).first?.subtitle,
+                       "extra: search")
+        let plain = [ProviderLimit(provider: "opencode-go", label: "5h", usedPercent: 1,
+                                   resetsAt: nil, detail: "")]
+        XCTAssertEqual(makeHost().buildUnifiedPlanRows(from: plain).first?.subtitle,
+                       "opencode-go zen")
+    }
+
     func testMultiAccountClaude_eachGetsARow() {
         let limits = claudeLimits(tag: "alpha", fiveH: 28, weekly: 51)
             + claudeLimits(tag: "beta", fiveH: 17, weekly: 4)

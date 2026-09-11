@@ -55,3 +55,15 @@ coverage:
 	BIN=".build/arm64-apple-macosx/debug/token-horizonPackageTests.xctest/Contents/MacOS/token-horizonPackageTests"; \
 	PROF=$$(find .build -name default.profdata | head -1); \
 	xcrun llvm-cov report "$$BIN" -instr-profile "$$PROF" | grep -E "Filename|Sources/TokenHorizon"
+
+leaderboard-test:
+	node --test cloudflare/worker.test.mjs
+	node scripts/test-leaderboard-ui.mjs
+
+mcp-test:
+	cd mcp && npm test
+
+mcp-session:
+	cd mcp && npm run session
+
+

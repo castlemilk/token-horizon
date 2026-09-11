@@ -143,7 +143,9 @@ enum HomeDiscovery {
 
     /// Gemini OAuth credential files across `~/.gemini*` variants, default first.
     static func geminiCredentialPaths(home: String? = nil) -> [String] {
-        var paths = [expand("~/.gemini/oauth_creds.json")]
+        // An explicit home roots the default entry too — otherwise the
+        // parameter is a lie and callers always hit the real ~/.gemini first.
+        var paths = ["\(home ?? NSHomeDirectory())/.gemini/oauth_creds.json"]
         for variant in variantDirs(prefixes: [".gemini"], home: home) {
             let p = "\(variant)/oauth_creds.json"
             if !paths.contains(p) { paths.append(p) }
@@ -154,9 +156,10 @@ enum HomeDiscovery {
     /// Kimi credential files across `~/.kimi*` variants (covers `.kimi`,
     /// `.kimi-code`, and any suffixed profile dir), default first.
     static func kimiCredentialPaths(home: String? = nil) -> [String] {
+        let root = home ?? NSHomeDirectory()
         var paths = [
-            expand("~/.kimi-code/credentials/kimi-code.json"),
-            expand("~/.kimi/credentials/kimi-code.json"),
+            "\(root)/.kimi-code/credentials/kimi-code.json",
+            "\(root)/.kimi/credentials/kimi-code.json",
         ]
         for variant in variantDirs(prefixes: [".kimi"], home: home) {
             let p = "\(variant)/credentials/kimi-code.json"

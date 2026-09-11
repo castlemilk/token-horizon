@@ -64,12 +64,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                                   return all
                               },
                               processesProvider: { [weak self] in
-                                  if let self, !self.model.allProcesses.isEmpty {
-                                      return (self.model.allProcesses, self.model.processes, self.model.processesMem, self.model.processesDisk, self.model.processesNet)
+                                  if let self {
+                                      let snap = self.model.processSnapshot()
+                                      if !snap.all.isEmpty { return snap }
                                   }
                                   let live = SystemStats.processSamples()
                                   return (live.all, live.byCPU, live.byMem, live.byDisk, live.byNet)
                               },
+                              heatmapProvider: { [engine] days in engine.activityHeatmap(days: days) },
                              onEvent: { [weak self] ev in
                                  EventStore.shared.add(ev)
                                  DispatchQueue.main.async {
@@ -259,7 +261,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         pop.contentSize = NSSize(width: 560, height: 680)
         pop.behavior = .transient
         pop.appearance = NSAppearance(named: .darkAqua)
-        let wrap = NSHostingController(rootView:
+        let wrap = FirstMouseHostingController(rootView:
             DashboardTabs(model: model, compact: false)
                 .padding(14)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -285,6 +287,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             pop.close()
         } else {
             pop.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+            NSApp.activate(ignoringOtherApps: true)
+            pop.contentViewController?.view.window?.makeKey()
             refreshHeavy()
         }
     }
@@ -304,7 +308,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             w.center()
             // NSHostingView set as contentView auto-fills the window; sizingOptions=[]
             // stops it from pushing the window size back from SwiftUI's ideal size.
-            let host = NSHostingView(rootView:
+            let host = FirstMouseHostingView(rootView:
                 DashboardTabs(model: model, compact: false)
                     .padding(16)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -338,11 +342,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             let containers = DockerObserver.sampleContainers()
             DispatchQueue.main.async {
                 self.model.usage = usage
-                self.model.allProcesses = procs.all
-                self.model.processes = procs.byCPU
-                self.model.processesMem = procs.byMem
-                self.model.processesDisk = procs.byDisk
-                self.model.processesNet = procs.byNet
+                self.model.storeProcesses(all: procs.all, byCPU: procs.byCPU, byMem: procs.byMem,
+                                          byDisk: procs.byDisk, byNet: procs.byNet)
                 self.model.dockerContainers = containers
                 LeaderboardStore.shared.syncLocal(snapshot: usage, history: self.model.historyPoints, streak: self.model.historyStreak)
                 self.model.leaderboardRankings = LeaderboardStore.shared.rankings(for: .today)
@@ -387,10 +388,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         DispatchQueue.global(qos: .utility).async { [weak self] in
             guard let self else { return }
             let result = engine.history(days: 370)
+            let heatmap = engine.activityHeatmap(days: 28)
             DispatchQueue.main.async {
                 self.model.historyPoints = result.points
                 self.model.historyStreak = result.streak
-                LeaderboardStore.shared.syncLocal(snapshot: self.model.usage, history: result.points, streak: result.streak)
+                LeaderboardStore.shared.syncLocal(snapshot: self.model.usage, history: result.points,
+                                                  streak: result.streak, heatmap: heatmap)
                 self.model.leaderboardRankings = LeaderboardStore.shared.rankings(for: .today)
             }
         }

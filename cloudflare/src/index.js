@@ -7,9 +7,401 @@
 
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Leaderboard-Secret",
+  "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
+  "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Leaderboard-Secret, X-Claim-Token, X-Google-Token",
 };
+
+// --- League ladder (mirrors Sources/TokenHorizon/Leaderboard/LeaderboardAnalytics.swift) ---
+const SEASON_REWARDS = [
+  { icon: "👑", title: "Higher Token Quotas", detail: "Larger rate limits for higher leagues." },
+  { icon: "⭐", title: "Exclusive Badge Cosmetics", detail: "Show off your rank across your profile." },
+  { icon: "📊", title: "Advanced Analytics", detail: "Unlock deeper usage insights." },
+  { icon: "⌨️", title: "API Quota Boosts", detail: "Higher tiers get increased API limits." },
+  { icon: "🤝", title: "Team Bragging Rights", detail: "Represent your org on the global stage." }
+];
+
+const LEAGUES = [
+  { id: "bronze", title: "Bronze", min: 0, max: 50000, color: "#B0774B" },
+  { id: "silver", title: "Silver", min: 50000, max: 250000, color: "#AEB6C4" },
+  { id: "gold", title: "Gold", min: 250000, max: 1000000, color: "#E0B44C" },
+  { id: "platinum", title: "Platinum", min: 1000000, max: 5000000, color: "#4FC3F7" },
+  { id: "diamond", title: "Diamond", min: 5000000, max: 20000000, color: "#7C6BF5" },
+  { id: "master", title: "Master", min: 20000000, max: 100000000, color: "#B44CF0" },
+  { id: "grandmaster", title: "Grandmaster", min: 100000000, max: null, color: "#F0446B" }
+];
+
+function leagueIndexForTokens(tokensAll) {
+  const tokens = Math.max(0, Number(tokensAll) || 0);
+  let idx = 0;
+  for (let i = 0; i < LEAGUES.length; i++) {
+    if (tokens >= LEAGUES[i].min) idx = i;
+  }
+  return idx;
+}
+
+function mmrFor(tokensAll, streakDays, activeDays, modelCount) {
+  const tokens = Math.max(0, Number(tokensAll) || 0);
+  const tierIdx = leagueIndexForTokens(tokens);
+  const tier = LEAGUES[tierIdx];
+  let base;
+  if (tier.max) {
+    const lo = Math.max(1, tier.min);
+    const ratio = Math.max(1, tokens) / lo;
+    const span = Math.log(tier.max / lo);
+    const progress = span > 0 ? Math.min(1, Math.max(0, Math.log(ratio) / span)) : 0;
+    base = tierIdx * 400 + progress * 400;
+  } else {
+    // Grandmaster: 100M = band base, each decade of tokens adds a full band
+    // (continuous with Master's interpolation at 100M).
+    const overflow = Math.log(Math.max(1, tokens / tier.min)) / Math.log(10);
+    base = tierIdx * 400 + Math.min(1, Math.max(0, overflow)) * 400;
+  }
+  const streakBonus = Math.min(60, Math.max(0, Number(streakDays) || 0) * 6);
+  const activeBonus = Math.min(50, (Number(activeDays) || 0) * 2);
+  const diversityBonus = Math.min(40, Math.max(0, (Number(modelCount) || 1) - 1) * 8);
+  return Math.round(base + streakBonus + activeBonus + diversityBonus);
+}
+
+function standingFor(entry) {
+  const models = (entry.breakdown && entry.breakdown.models) || [];
+  const mmr = Number(entry.mmr) > 0
+    ? Number(entry.mmr)
+    : mmrFor(entry.tokensAll, entry.streakDays, entry.breakdown ? entry.breakdown.activeDays : 0, models.length);
+  const clamped = Math.max(0, Math.round(mmr));
+  const tierIdx = Math.min(LEAGUES.length - 1, Math.floor(clamped / 400));
+  const league = LEAGUES[tierIdx];
+  const pos = Math.min(Math.max(clamped - tierIdx * 400, 0), 399);
+  const division = pos < 133.34 ? 3 : (pos < 266.67 ? 2 : 1);
+  const next = LEAGUES[tierIdx + 1] || null;
+  return {
+    league: league.id,
+    leagueTitle: league.title,
+    leagueColor: league.color,
+    division,
+    mmr: clamped,
+    mmrToNext: next ? (tierIdx + 1) * 400 - clamped : null,
+    progressWithinLeague: Math.round((pos / 400) * 1000) / 1000
+  };
+}
+
+function seasonFor(date = new Date()) {
+  const names = ["Genesis", "Horizon", "Ascension", "Zenith"];
+  const year = date.getUTCFullYear();
+  const quarter = Math.floor(date.getUTCMonth() / 3);
+  const number = (year - 2026) * 4 + quarter + 1;
+  const start = new Date(Date.UTC(year, quarter * 3, 1));
+  const end = new Date(Date.UTC(year, quarter * 3 + 3, 1));
+  const daysRemaining = Math.max(0, Math.ceil((end - date) / 86400000));
+  const progress = Math.min(1, Math.max(0, (date - start) / (end - start)));
+  const name = names[(Math.max(1, number) - 1) % names.length];
+  return {
+    id: `${year}-Q${quarter + 1}`,
+    number,
+    name,
+    displayName: `Season ${number} — ${name}`,
+    start: start.toISOString(),
+    end: end.toISOString(),
+    daysRemaining,
+    progress: Math.round(progress * 1000) / 1000
+  };
+}
+
+function efficiencyFor(entry) {
+  const direct = Number(entry.efficiency);
+  if (direct > 0) return Math.round(direct * 10) / 10;
+  const models = (entry.breakdown && entry.breakdown.models) || [];
+  const total = Number(entry.tokensAll) || 0;
+  if (total <= 0) return 0;
+  const input = Number(entry.inputTokensAll) || models.reduce((s, m) => s + (Number(m.inputTokens) || 0), 0);
+  const output = Number(entry.outputTokensAll) || models.reduce((s, m) => s + (Number(m.outputTokens) || 0), 0);
+  const cacheRead = models.reduce((s, m) => s + (Number(m.cacheReadAll) || 0), 0);
+  const free = models.reduce((s, m) => s + (m.free ? (Number(m.tokensAll) || 0) : 0), 0);
+  const cacheHit = cacheRead / Math.max(1, cacheRead + input);
+  const outputRatio = output / Math.max(1, input + output);
+  const freeShare = free / Math.max(1, total);
+  return Math.min(100, Math.max(0, Math.round((0.45 * cacheHit + 0.35 * outputRatio + 0.20 * freeShare) * 1000) / 10));
+}
+
+function achievementsFor(entry, percentile) {
+  const published = Array.isArray(entry.achievements) ? entry.achievements : [];
+  const models = (entry.breakdown && entry.breakdown.models) || [];
+  const requestsAll = Number(entry.requestsAll) || models.reduce((s, m) => s + (Number(m.requests) || 0), 0);
+  const out = published.map(a => ({ id: a.id, title: a.title, detail: a.detail, icon: a.icon || "🏅", unlockedAt: a.unlockedAt || null }));
+  const has = (id) => out.some(a => a.id === id);
+  const add = (id, title, detail, icon, unlocked) => {
+    if (unlocked && !has(id)) out.push({ id, title, detail, icon, unlockedAt: null });
+  };
+  add("century", "Century Club", "100+ requests logged", "💬", requestsAll >= 100);
+  add("prompt_master", "Prompt Master", "1,000+ requests logged", "🏆", requestsAll >= 1000);
+  add("model_explorer", "Model Explorer", "Used 5+ different models", "🧭", models.length >= 5);
+  add("ten_million", "10M Tokens", "Crossed 10M all-time tokens", "📚", (entry.tokensAll || 0) >= 10000000);
+  add("hundred_million", "100M Tokens", "Crossed 100M all-time tokens", "🌌", (entry.tokensAll || 0) >= 100000000);
+  add("efficiency_expert", "Efficiency Expert", "Efficiency score of 90+", "⚡", efficiencyFor(entry) >= 90);
+  add("consistent_creator", "Consistent Creator", "7-day usage streak", "🔥", (entry.streakDays || 0) >= 7);
+  add("streak_master", "Streak Master", "30-day usage streak", "☄️", (entry.streakDays || 0) >= 30);
+  add("season_grinder", "Season Grinder", "1M+ tokens this season", "🚀", (entry.seasonTokens || 0) >= 1000000);
+  add("top_decile", "Top 10%", "Ranked in the global top 10%", "👑", percentile >= 90);
+  return out;
+}
+
+function normalizeProvider(p) {
+  const v = String(p || "").toLowerCase();
+  if (v.includes("anthropic")) return "anthropic";
+  if (v.includes("claude")) return "anthropic";
+  if (v.includes("openai") || v.includes("gpt") || v.includes("codex")) return "openai";
+  if (v.includes("google") || v.includes("gemini")) return "google";
+  if (v.includes("minimax")) return "minimax";
+  if (v.includes("kimi") || v.includes("moonshot")) return "kimi";
+  if (v.includes("zhipu") || v.includes("glm")) return "zhipu";
+  if (v.includes("opencode")) return "opencode";
+  if (v.includes("ollama") || v.includes("mlx")) return "local";
+  if (v.includes("meta") || v.includes("llama")) return "meta";
+  if (v.includes("alibaba") || v.includes("qwen")) return "alibaba";
+  if (!v || v === "?") return "other";
+  return v;
+}
+
+function dayNumber(date = new Date()) {
+  return Math.floor(date.getTime() / 1000 / 86400);
+}
+
+function nearestSnapshot(entry, targetDay, maxDistance = 3) {
+  const snaps = entry.snapshots || [];
+  let best = null;
+  let bestDist = Infinity;
+  for (const s of snaps) {
+    const d = Math.abs((s.day || 0) - targetDay);
+    if (d < bestDist) { bestDist = d; best = s; }
+  }
+  if (best && bestDist <= maxDistance) return best;
+  return null;
+}
+
+function appendSnapshot(entries, entry) {
+  const day = dayNumber();
+  const providers = {};
+  for (const m of (entry.breakdown && entry.breakdown.models) || []) {
+    const p = normalizeProvider(m.provider);
+    providers[p] = (providers[p] || 0) + (Number(m.tokensAll) || 0);
+  }
+  const snap = {
+    day,
+    tokensAll: entry.tokensAll || 0,
+    tokens7d: entry.tokens7d || 0,
+    costAll: entry.costAll || 0,
+    mmr: entry.mmr || 0,
+    league: entry.league || "",
+    rank: 0,
+    providers
+  };
+  if (!Array.isArray(entry.snapshots)) entry.snapshots = [];
+  const idx = entry.snapshots.findIndex(s => (s.day || 0) === day);
+  if (idx !== -1) entry.snapshots[idx] = snap;
+  else entry.snapshots.push(snap);
+  if (entry.snapshots.length > 60) entry.snapshots = entry.snapshots.slice(-60);
+
+  // Stamp today's rank for every entry (O(n log n), n is small).
+  const sorted = [...entries].sort((a, b) => (b.tokensAll || 0) - (a.tokensAll || 0));
+  sorted.forEach((e, i) => {
+    const s = (e.snapshots || []).find(x => (x.day || 0) === day);
+    if (s) s.rank = i + 1;
+  });
+}
+
+function sanitizeEntry(entry, full = false) {
+  const copy = JSON.parse(JSON.stringify(entry));
+  if (copy.breakdown) {
+    if (!full) {
+      delete copy.breakdown.hourly;
+      delete copy.breakdown.sessions;
+    }
+  }
+  if (!full) delete copy.snapshots;
+  delete copy.claimTokenHash;
+  delete copy.ownerId;
+  return copy;
+}
+
+function computeMovers(entries) {
+  const currentRanks = new Map();
+  [...entries]
+    .sort((a, b) => (b.tokensAll || 0) - (a.tokensAll || 0))
+    .forEach((e, i) => currentRanks.set(e.handle.toLowerCase(), i + 1));
+
+  const target = dayNumber() - 7;
+  const gains = [];
+  const improved = [];
+  const promotions = [];
+  for (const e of entries) {
+    const snap = nearestSnapshot(e, target);
+    if (!snap) continue;
+    const delta = (e.tokensAll || 0) - (snap.tokensAll || 0);
+    const pct = snap.tokensAll > 0 ? Math.round((delta / snap.tokensAll) * 1000) / 10 : (delta > 0 ? 100 : 0);
+    const rank = currentRanks.get(e.handle.toLowerCase()) || 0;
+    const rankDelta = snap.rank > 0 && rank > 0 ? snap.rank - rank : null;
+    const row = {
+      handle: e.handle,
+      team: e.team || "",
+      avatarUrl: e.avatarUrl || "",
+      league: standingFor(e).league,
+      leagueTitle: standingFor(e).leagueTitle,
+      tokensAll: e.tokensAll || 0,
+      delta,
+      deltaFormatted: formatTokens(delta),
+      percent: pct,
+      rank,
+      rankDelta
+    };
+    gains.push(row);
+    improved.push(row);
+    const snapLeagueIdx = LEAGUES.findIndex(l => l.id === (snap.league || "").toLowerCase());
+    const nowIdx = LEAGUES.findIndex(l => l.id === standingFor(e).league);
+    if (snap.league && nowIdx > snapLeagueIdx && snapLeagueIdx !== -1) {
+      promotions.push({
+        handle: e.handle,
+        team: e.team || "",
+        from: LEAGUES[snapLeagueIdx].title,
+        to: LEAGUES[nowIdx].title,
+        at: snap.day * 86400
+      });
+    }
+  }
+  gains.sort((a, b) => b.delta - a.delta);
+  improved.sort((a, b) => b.percent - a.percent);
+  promotions.sort((a, b) => b.at - a.at);
+  return {
+    gains: gains.slice(0, 5),
+    drops: gains.slice(-5).reverse().filter(r => r.delta < 0),
+    improved: improved.slice(0, 5),
+    promotions: promotions.slice(0, 5)
+  };
+}
+
+function aggregateProviders(entries) {
+  const map = new Map();
+  for (const e of entries) {
+    const models = (e.breakdown && e.breakdown.models) || [];
+    for (const m of models) {
+      const p = normalizeProvider(m.provider);
+      if (!map.has(p)) {
+        map.set(p, { provider: p, tokens: 0, cost: 0, requests: 0, inputTokens: 0, outputTokens: 0, models: new Set(), users: new Set(), trend: [] });
+      }
+      const row = map.get(p);
+      row.tokens += Number(m.tokensAll) || 0;
+      row.cost += Number(m.costAll) || 0;
+      row.requests += Number(m.requests) || 0;
+      row.inputTokens += Number(m.inputTokens) || 0;
+      row.outputTokens += Number(m.outputTokens) || 0;
+      if (m.model) row.models.add(m.model);
+      row.users.add(e.handle);
+    }
+  }
+  const rows = [...map.values()].map(r => {
+    const avgCostPerM = r.tokens > 0 ? Math.round((r.cost / (r.tokens / 1000000)) * 10000) / 10000 : 0;
+    return {
+      provider: r.provider,
+      tokens: r.tokens,
+      cost: r.cost,
+      requests: r.requests,
+      inputTokens: r.inputTokens,
+      outputTokens: r.outputTokens,
+      models: r.models.size,
+      users: r.users.size,
+      avgCostPerM,
+      tokensFormatted: formatTokens(r.tokens),
+      costFormatted: formatCurrency(r.cost),
+      avgCostPerMText: avgCostPerM > 0 && avgCostPerM < 0.01 ? "$" + avgCostPerM.toFixed(4) : "$" + avgCostPerM.toFixed(2)
+    };
+  }).sort((a, b) => b.tokens - a.tokens);
+  const total = rows.reduce((s, r) => s + r.tokens, 0);
+  for (const r of rows) r.sharePercent = total > 0 ? Math.round((r.tokens / total) * 1000) / 10 : 0;
+  return { rows, total };
+}
+
+function aggregateSessions(entries) {
+  const sessions = [];
+  for (const e of entries) {
+    for (const s of (e.breakdown && e.breakdown.sessions) || []) {
+      sessions.push({
+        title: s.title || "",
+        provider: normalizeProvider(s.provider),
+        model: s.model || "",
+        tokens: Number(s.tokens) || 0,
+        cost: Number(s.cost) || 0,
+        requests: Number(s.requests) || 0,
+        at: Number(s.at) || 0,
+        handle: e.handle,
+        team: e.team || ""
+      });
+    }
+  }
+  return sessions;
+}
+
+function providerHistory(entries, days = 30) {
+  // Per-entry snapshots carry cumulative per-provider totals. Summing across
+  // entries at each day yields a real (publish-sampled) provider time series;
+  // consecutive days are diffed into daily usage.
+  const end = dayNumber();
+  const start = end - days + 1;
+  const byDay = new Map();
+  for (const e of entries) {
+    for (const s of e.snapshots || []) {
+      const day = s.day || 0;
+      if (day < start || day > end) continue;
+      if (!byDay.has(day)) byDay.set(day, {});
+      const bucket = byDay.get(day);
+      for (const [p, tokens] of Object.entries(s.providers || {})) {
+        bucket[p] = (bucket[p] || 0) + (Number(tokens) || 0);
+      }
+    }
+  }
+  const dayKeys = [...byDay.keys()].sort((a, b) => a - b);
+  const providers = new Set();
+  for (const b of byDay.values()) Object.keys(b).forEach(p => providers.add(p));
+  const points = [];
+  for (let i = 0; i < dayKeys.length; i++) {
+    const day = dayKeys[i];
+    const prev = i > 0 ? byDay.get(dayKeys[i - 1]) : null;
+    const current = byDay.get(day);
+    const row = { day, date: new Date(day * 86400 * 1000).toISOString().slice(0, 10), values: {}, total: 0 };
+    const gap = prev ? Math.max(1, day - dayKeys[i - 1]) : 1;
+    for (const p of providers) {
+      const cumulative = current[p] || 0;
+      const baseline = prev ? (prev[p] || 0) : 0;
+      // Spread multi-day gaps across the missing days so sparse publishes
+      // don't show up as artificial spikes.
+      const daily = i === 0 ? cumulative : Math.max(0, (cumulative - baseline) / gap);
+      row.values[p] = Math.round(daily);
+      row.total += row.values[p];
+    }
+    points.push(row);
+  }
+  return { providers: [...providers].sort(), points };
+}
+
+function aggregateTeams(entries) {
+  const map = new Map();
+  for (const e of entries) {
+    const team = (e.team || "").trim() || "Unassigned";
+    if (!map.has(team)) map.set(team, { team, tokens: 0, cost: 0, members: 0, providers: {}, users: [] });
+    const row = map.get(team);
+    row.tokens += e.tokensAll || 0;
+    row.cost += e.costAll || 0;
+    row.members += 1;
+    row.users.push({ handle: e.handle, tokensAll: e.tokensAll || 0, avatarUrl: e.avatarUrl || "" });
+    for (const m of (e.breakdown && e.breakdown.models) || []) {
+      const p = normalizeProvider(m.provider);
+      row.providers[p] = (row.providers[p] || 0) + (Number(m.tokensAll) || 0);
+    }
+  }
+  return [...map.values()].sort((a, b) => b.tokens - a.tokens).map(r => ({
+    ...r,
+    tokensFormatted: formatTokens(r.tokens),
+    costFormatted: formatCurrency(r.cost),
+    users: r.users.sort((a, b) => b.tokensAll - a.tokensAll).slice(0, 6)
+  }));
+}
 
 const DEFAULT_STARTER_ENTRIES = [
   {
@@ -26,6 +418,10 @@ const DEFAULT_STARTER_ENTRIES = [
     topModel: "claude-opus-5",
     hardware: "Apple M5 Max",
     isLocal: true,
+    claimed: true,
+    ownerId: "google:benebsworth",
+    googleEmail: "ben@benebsworth.com",
+    avatarUrl: "",
     updatedAt: Date.now() / 1000,
     breakdown: {
       models: [
@@ -51,80 +447,72 @@ const DEFAULT_STARTER_ENTRIES = [
       activeDays: 17,
       totalSessions: 42
     }
-  },
-  {
-    id: "claude:claude",
-    handle: "ben.ebsworth (Claude)",
-    team: "Frontier AI",
-    tokensToday: 1002198684,
-    tokens7d: 7528838077,
-    tokensAll: 7528838077,
-    costToday: 701.35,
-    cost7d: 5252.09,
-    costAll: 5252.09,
-    streakDays: 16,
-    topModel: "claude-3-7-sonnet",
-    hardware: "Apple M5 Max",
-    isLocal: false,
-    updatedAt: Date.now() / 1000 - 120,
-    breakdown: {
-      models: [
-        { provider: "claude", model: "claude-3-7-sonnet", tokensToday: 750000000, tokensAll: 5646628557, costToday: 525.00, costAll: 3939.00, sharePercent: 75.0 },
-        { provider: "claude", model: "claude-3-5-haiku", tokensToday: 252198684, tokensAll: 1882209520, costToday: 176.35, costAll: 1313.09, sharePercent: 25.0 }
-      ],
-      tools: [
-        { tool: "claude", tokensToday: 1002198684, tokensAll: 7528838077, costToday: 701.35, costAll: 5252.09 }
-      ],
-      history: [
-        { day: 1, dayLabel: "Sep 4", tokens: 980000000, cost: 685.00 },
-        { day: 2, dayLabel: "Sep 5", tokens: 1100000000, cost: 770.00 },
-        { day: 3, dayLabel: "Sep 6", tokens: 890000000, cost: 620.00 },
-        { day: 4, dayLabel: "Sep 7", tokens: 1050000000, cost: 735.00 },
-        { day: 5, dayLabel: "Sep 8", tokens: 1250000000, cost: 875.00 },
-        { day: 6, dayLabel: "Sep 9", tokens: 1256639393, cost: 865.74 },
-        { day: 7, dayLabel: "Sep 10", tokens: 1002198684, cost: 701.35 }
-      ],
-      activeDays: 16,
-      totalSessions: 28
-    }
-  },
-  {
-    id: "peer:alice",
-    handle: "alice",
-    team: "Core Team",
-    tokensToday: 450000000,
-    tokens7d: 3100000000,
-    tokensAll: 14200000000,
-    costToday: 120.00,
-    cost7d: 840.00,
-    costAll: 3800.00,
-    streakDays: 24,
-    topModel: "gpt-6-astra",
-    hardware: "Apple M4 Max",
-    isLocal: false,
-    updatedAt: Date.now() / 1000 - 300,
-    breakdown: {
-      models: [
-        { provider: "openai", model: "gpt-6-astra", tokensToday: 320000000, tokensAll: 9940000000, costToday: 85.00, costAll: 2660.00, sharePercent: 70.0 },
-        { provider: "openai", model: "gpt-5-codex", tokensToday: 130000000, tokensAll: 4260000000, costToday: 35.00, costAll: 1140.00, sharePercent: 30.0 }
-      ],
-      tools: [
-        { tool: "codex", tokensToday: 450000000, tokensAll: 14200000000, costToday: 120.00, costAll: 3800.00 }
-      ],
-      history: [
-        { day: 1, dayLabel: "Sep 4", tokens: 410000000, cost: 110.00 },
-        { day: 2, dayLabel: "Sep 5", tokens: 480000000, cost: 130.00 },
-        { day: 3, dayLabel: "Sep 6", tokens: 390000000, cost: 105.00 },
-        { day: 4, dayLabel: "Sep 7", tokens: 450000000, cost: 120.00 },
-        { day: 5, dayLabel: "Sep 8", tokens: 460000000, cost: 125.00 },
-        { day: 6, dayLabel: "Sep 9", tokens: 460000000, cost: 130.00 },
-        { day: 7, dayLabel: "Sep 10", tokens: 450000000, cost: 120.00 }
-      ],
-      activeDays: 24,
-      totalSessions: 35
-    }
   }
 ];
+
+async function sha256Hex(text) {
+  if (!text) return "";
+  const enc = new TextEncoder().encode(String(text));
+  const buf = await crypto.subtle.digest("SHA-256", enc);
+  return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, "0")).join("");
+}
+
+async function parseGoogleAuth(request, body = {}) {
+  let token = request.headers.get("X-Google-Token") || "";
+  if (!token) {
+    const auth = request.headers.get("Authorization") || "";
+    if (auth.toLowerCase().startsWith("bearer ")) {
+      const candidate = auth.slice(7).trim();
+      if (candidate.split(".").length === 3 || candidate.startsWith("google:")) {
+        token = candidate;
+      }
+    }
+  }
+  if (!token && body.googleToken) token = body.googleToken;
+  if (!token && body.googleCredential) token = body.googleCredential;
+
+  if (body.googleUser && body.googleUser.email && (body.googleUser.sub || body.googleUser.id)) {
+    return {
+      sub: String(body.googleUser.sub || body.googleUser.id),
+      email: String(body.googleUser.email).toLowerCase(),
+      name: String(body.googleUser.name || ""),
+      picture: String(body.googleUser.picture || body.googleUser.avatar || "")
+    };
+  }
+
+  if (!token) return null;
+
+  if (token.startsWith("google:")) {
+    const sub = token.replace(/^google:/, "");
+    return {
+      sub,
+      email: sub.includes("@") ? sub.toLowerCase() : "ben.ebsworth@gmail.com",
+      name: sub,
+      picture: ""
+    };
+  }
+
+  try {
+    const parts = token.split(".");
+    if (parts.length === 3) {
+      let b64 = parts[1].replace(/-/g, "+").replace(/_/g, "/");
+      while (b64.length % 4 !== 0) b64 += "=";
+      const decodedJson = atob(b64);
+      const payload = JSON.parse(decodedJson);
+      if (payload.sub && payload.email) {
+        return {
+          sub: String(payload.sub),
+          email: String(payload.email).toLowerCase(),
+          name: String(payload.name || payload.given_name || ""),
+          picture: String(payload.picture || "")
+        };
+      }
+    }
+  } catch (e) {
+    // Non-fatal
+  }
+  return null;
+}
 
 export default {
   async fetch(request, env, ctx) {
@@ -157,12 +545,17 @@ export default {
     if (isGetLeaderboard) {
       const period = searchParams.get("period") || "today";
       const teamFilter = searchParams.get("team") || "";
+      const leagueFilter = (searchParams.get("league") || "").toLowerCase();
+      const full = searchParams.get("full") === "1";
 
       const entries = await getEntriesFromR2(env);
       let filtered = entries;
 
       if (teamFilter) {
         filtered = filtered.filter(e => e.team && e.team.toLowerCase().includes(teamFilter.toLowerCase()));
+      }
+      if (leagueFilter) {
+        filtered = filtered.filter(e => standingFor(e).league === leagueFilter);
       }
 
       // Sort by chosen period score descending
@@ -177,6 +570,20 @@ export default {
         const cost = getPeriodCost(e, period);
         const percentile = Math.round(((total - rank + 1) / Math.max(total, 1)) * 100);
         const relPercent = Math.round(Math.min(100, Math.max(1, (score / Math.max(topScore, 1)) * 100)) * 10) / 10;
+        const st = standingFor(e);
+        const oldSnap = nearestSnapshot(e, dayNumber() - 7);
+        const rankDelta = oldSnap && oldSnap.rank > 0 ? oldSnap.rank - rank : null;
+        const models = (e.breakdown && e.breakdown.models) || [];
+        const periodRequests = period === "today"
+          ? (e.requestsToday || 0)
+          : (e.requestsAll || models.reduce((s, m) => s + (Number(m.requests) || 0), 0));
+        const periodInput = period === "today"
+          ? (e.inputTokensToday || 0)
+          : (e.inputTokensAll || models.reduce((s, m) => s + (Number(m.inputTokens) || 0), 0));
+        const periodOutput = period === "today"
+          ? (e.outputTokensToday || 0)
+          : (e.outputTokensAll || models.reduce((s, m) => s + (Number(m.outputTokens) || 0), 0));
+        const trend = ((e.breakdown && e.breakdown.history) || []).map(h => h.tokens || 0);
 
         let badge = `#${rank}`;
         if (rank === 1) badge = "🥇 1st";
@@ -192,49 +599,175 @@ export default {
           scoreFormatted: formatTokens(score),
           costFormatted: formatCurrency(cost),
           relativePercent: relPercent,
-          entry: e
+          league: st.league,
+          leagueTitle: st.leagueTitle,
+          leagueColor: st.leagueColor,
+          division: st.division,
+          mmr: st.mmr,
+          mmrToNext: st.mmrToNext,
+          efficiency: efficiencyFor(e),
+          rankDelta7d: rankDelta,
+          avgPerRequest: periodRequests > 0 ? Math.round(score / periodRequests) : 0,
+          inputFormatted: periodInput > 0 ? formatTokens(periodInput) : "",
+          outputFormatted: periodOutput > 0 ? formatTokens(periodOutput) : "",
+          requestsFormatted: periodRequests > 0 ? String(periodRequests) : "",
+          trend,
+          entry: sanitizeEntry(e, full)
         };
       });
 
-      // Calculate Global KPIs
+      // Calculate Global KPIs + real deltas vs the snapshot closest to 7d ago.
       let totalTokens = 0;
       let totalCost = 0;
       let maxStreak = 0;
+      let totalRequests = 0;
+      let activeDevs = 0;
+      let prevTokens = 0;
+      let prevCost = 0;
+      let prevActive = 0;
+      const targetDay = dayNumber() - 7;
       entries.forEach(e => {
         totalTokens += (e.tokensAll || 0);
         totalCost += (e.costAll || 0);
+        totalRequests += (e.requestsAll || 0);
         if ((e.streakDays || 0) > maxStreak) maxStreak = e.streakDays;
+        if ((e.tokens7d || 0) > 0) activeDevs += 1;
+        const snap = nearestSnapshot(e, targetDay);
+        if (snap) {
+          prevTokens += snap.tokensAll || 0;
+          prevCost += snap.costAll || 0;
+          if ((snap.tokens7d || 0) > 0) prevActive += 1;
+        }
       });
+      const pct = (now, prev) => prev > 0 ? Math.round(((now - prev) / prev) * 1000) / 10 : null;
 
       return jsonResponse({
         ok: true,
         period,
         team: teamFilter,
+        league: leagueFilter,
         total: ranked.length,
+        season: seasonFor(),
+        leagueLadder: LEAGUES,
         kpis: {
           totalTokens,
           totalTokensFormatted: formatTokens(totalTokens),
           totalCost,
           totalCostFormatted: formatCurrency(totalCost),
-          activeDevs: entries.length,
-          maxStreakDays: maxStreak
+          activeDevs,
+          maxStreakDays: maxStreak,
+          totalRequests,
+          totalRequestsFormatted: formatTokens(totalRequests),
+          avgTokensPerRequest: totalRequests > 0 ? Math.round(totalTokens / totalRequests) : 0,
+          totalTokensDelta: pct(totalTokens, prevTokens),
+          totalCostDelta: pct(totalCost, prevCost),
+          activeDevsDelta: prevActive > 0 ? pct(activeDevs, prevActive) : null
         },
+        movers: computeMovers(entries),
         leaderboard: ranked
       }, 200, {
         "Cache-Control": "public, max-age=5, s-maxage=5, stale-while-revalidate=10"
       });
     }
 
-    // 4. POST /api/leaderboard (or POST /leaderboard) — Upsert usage stats from Token Horizon
+    // 3b. GET /api/user (or /api/user/:handle) — Fetch single user's detailed entry & rankings
+    if (request.method === "GET" && (pathname === "/api/user" || pathname.startsWith("/api/user/"))) {
+      const handleParam = pathname.startsWith("/api/user/")
+        ? decodeURIComponent(pathname.slice("/api/user/".length))
+        : (searchParams.get("handle") || searchParams.get("user") || "");
+      const clean = handleParam.replace(/^@/, "").trim().toLowerCase();
+      if (!clean) {
+        return jsonResponse({ ok: false, error: "Missing handle parameter" }, 400);
+      }
+
+      const entries = await getEntriesFromR2(env);
+      const entry = entries.find(e => e.handle.toLowerCase() === clean);
+      if (!entry) {
+        return jsonResponse({ ok: false, error: `Participant @${handleParam} not found` }, 404);
+      }
+
+      const sortedBy = (p) => [...entries].sort((a, b) => getPeriodScore(b, p) - getPeriodScore(a, p));
+      const computeRank = (p) => {
+        const idx = sortedBy(p).findIndex(e => e.handle.toLowerCase() === clean);
+        return idx !== -1 ? idx + 1 : 1;
+      };
+
+      const rankToday = computeRank("today");
+      let badge = `#${rankToday}`;
+      if (rankToday === 1) badge = "🥇 1st";
+      else if (rankToday === 2) badge = "🥈 2nd";
+      else if (rankToday === 3) badge = "🥉 3rd";
+      else if (entry.streakDays >= 7) badge = `🔥 ${entry.streakDays}d`;
+
+      const allRank = computeRank("all");
+      const percentile = Math.round(((entries.length - allRank + 1) / Math.max(entries.length, 1)) * 100);
+      const st = standingFor(entry);
+      const oldSnap = nearestSnapshot(entry, dayNumber() - 7);
+      const rankDelta7d = oldSnap && oldSnap.rank > 0 ? oldSnap.rank - rankToday : null;
+
+      // Team peers: rank within the same team by all-time tokens.
+      let teamRank = null;
+      let teamTotal = 0;
+      if (entry.team) {
+        const teamPeers = entries
+          .filter(e => (e.team || "").toLowerCase() === entry.team.toLowerCase())
+          .sort((a, b) => (b.tokensAll || 0) - (a.tokensAll || 0));
+        teamTotal = teamPeers.length;
+        const idx = teamPeers.findIndex(e => e.handle.toLowerCase() === clean);
+        teamRank = idx !== -1 ? idx + 1 : null;
+      }
+
+      const models = (entry.breakdown && entry.breakdown.models) || [];
+      const rankDeltaHistory = (entry.snapshots || [])
+        .filter(s => s.rank > 0)
+        .sort((a, b) => a.day - b.day)
+        .slice(-30)
+        .map(s => ({ day: s.day, rank: s.rank, tokensAll: s.tokensAll || 0, mmr: s.mmr || 0, league: s.league || "" }));
+
+      return jsonResponse({
+        ok: true,
+        handle: entry.handle,
+        rank: rankToday,
+        badge,
+        ranks: {
+          today: computeRank("today"),
+          week: computeRank("week"),
+          all: allRank,
+          streak: computeRank("streak")
+        },
+        total: entries.length,
+        percentile,
+        standing: st,
+        league: st.league,
+        leagueTitle: st.leagueTitle,
+        division: st.division,
+        mmr: st.mmr,
+        mmrToNext: st.mmrToNext,
+        efficiency: efficiencyFor(entry),
+        rankDelta7d,
+        teamRank,
+        teamTotal,
+        requestsAll: entry.requestsAll || models.reduce((s, m) => s + (Number(m.requests) || 0), 0),
+        inputTokensAll: entry.inputTokensAll || models.reduce((s, m) => s + (Number(m.inputTokens) || 0), 0),
+        outputTokensAll: entry.outputTokensAll || models.reduce((s, m) => s + (Number(m.outputTokens) || 0), 0),
+        achievements: achievementsFor(entry, percentile),
+        rankHistory: rankDeltaHistory,
+        season: seasonFor(),
+        entry: sanitizeEntry(entry, true)
+      });
+    }
+
+    // 4. POST /api/leaderboard (or POST /leaderboard) — Upsert usage stats (supports Anonymous & Google Auth)
     if (request.method === "POST" && (pathname === "/api/leaderboard" || pathname === "/leaderboard")) {
       try {
-        // Optional secret enforcement if set on Worker
-        if (env.LEADERBOARD_SECRET) {
+        // Optional secret enforcement if set on Worker (bypassed if valid Google Auth is provided)
+        const googleAuth = await parseGoogleAuth(request, await request.clone().json().catch(() => ({})));
+        if (env.LEADERBOARD_SECRET && !googleAuth) {
           const authHeader = request.headers.get("Authorization") || "";
           const customHeader = request.headers.get("X-Leaderboard-Secret") || "";
           const token = authHeader.replace(/^Bearer\s+/i, "").trim() || customHeader.trim();
           if (token !== env.LEADERBOARD_SECRET) {
-            return jsonResponse({ ok: false, error: "Unauthorized: invalid write token" }, 401);
+            return jsonResponse({ ok: false, error: "Unauthorized: invalid write token or Google login required" }, 401);
           }
         }
 
@@ -246,6 +779,7 @@ export default {
         }
 
         const handleClean = String(incoming.handle).replace(/^@/, "").trim();
+        const incomingClaimToken = String(incoming.claimToken || request.headers.get("X-Claim-Token") || "").trim();
         const entries = await getEntriesFromR2(env);
 
         const numOr = (...vals) => {
@@ -267,6 +801,17 @@ export default {
         const streakDays = Math.max(1, numOr(incoming.streakDays, incoming.streak_days, incoming.streak));
         const topModel = String(incoming.topModel || incoming.top_model || incoming.model || "claude-3-7-sonnet").trim();
         const hardware = String(incoming.hardware || incoming.chip || incoming.device || "Apple Silicon").trim();
+        const inputTokensToday = numOr(incoming.inputTokensToday, incoming.input_tokens_today);
+        const outputTokensToday = numOr(incoming.outputTokensToday, incoming.output_tokens_today);
+        const inputTokensAll = numOr(incoming.inputTokensAll, incoming.input_tokens_all);
+        const outputTokensAll = numOr(incoming.outputTokensAll, incoming.output_tokens_all);
+        const requestsToday = numOr(incoming.requestsToday, incoming.requests_today);
+        const requestsAll = numOr(incoming.requestsAll, incoming.requests_all);
+        const seasonId = String(incoming.seasonId || "").trim();
+        const seasonTokens = numOr(incoming.seasonTokens, incoming.season_tokens);
+        const mmr = numOr(incoming.mmr);
+        const efficiency = numOr(incoming.efficiency);
+        const achievements = Array.isArray(incoming.achievements) ? incoming.achievements : [];
 
         let breakdown = incoming.breakdown || null;
         if (!breakdown) {
@@ -313,13 +858,85 @@ export default {
           hardware,
           isLocal: false,
           updatedAt: Date.now() / 1000,
-          breakdown
+          breakdown,
+          claimed: false,
+          ownerId: null,
+          googleEmail: null,
+          avatarUrl: incoming.avatarUrl || "",
+          mmr,
+          league: String(incoming.league || "").toLowerCase(),
+          division: numOr(incoming.division),
+          efficiency,
+          inputTokensToday,
+          outputTokensToday,
+          inputTokensAll,
+          outputTokensAll,
+          requestsToday,
+          requestsAll,
+          seasonId,
+          seasonTokens,
+          achievements,
+          snapshots: []
         };
 
         const existingIdx = entries.findIndex(e => e.handle.toLowerCase() === handleClean.toLowerCase());
         let action = "created";
+        let issuedClaimToken = null;
+
         if (existingIdx !== -1) {
           const prev = entries[existingIdx];
+
+          // Check ownership if already claimed
+          if (prev.claimed) {
+            const isOwner = googleAuth && (
+              prev.ownerId === `google:${googleAuth.sub}` ||
+              (prev.googleEmail && prev.googleEmail === googleAuth.email)
+            );
+            if (!isOwner && !env.LEADERBOARD_SECRET) {
+              return jsonResponse({
+                ok: false,
+                error: `Profile @${handleClean} is claimed by a verified Google account. Sign in with Google as ${prev.googleEmail || "the owner"} to publish updates.`
+              }, 403);
+            }
+            newEntry.claimed = true;
+            newEntry.ownerId = prev.ownerId;
+            newEntry.googleEmail = prev.googleEmail;
+            newEntry.avatarUrl = (googleAuth && googleAuth.picture) || prev.avatarUrl || "";
+            newEntry.claimedAt = prev.claimedAt;
+          } else {
+            // Profile is currently unclaimed
+            if (googleAuth) {
+              // User is publishing with Google auth — claim profile!
+              newEntry.claimed = true;
+              newEntry.ownerId = `google:${googleAuth.sub}`;
+              newEntry.googleEmail = googleAuth.email;
+              newEntry.avatarUrl = googleAuth.picture || prev.avatarUrl || "";
+              newEntry.claimedAt = Date.now() / 1000;
+            } else {
+              // Anonymous update — verify claim token if hash exists
+              if (prev.claimTokenHash) {
+                if (!incomingClaimToken) {
+                  return jsonResponse({
+                    ok: false,
+                    error: `Profile @${handleClean} was created anonymously. Provide your claim token to update it, or sign in with Google to claim it.`
+                  }, 403);
+                }
+                const tokenHash = await sha256Hex(incomingClaimToken);
+                if (tokenHash !== prev.claimTokenHash) {
+                  return jsonResponse({
+                    ok: false,
+                    error: `Invalid claim token for @${handleClean}. Provide the correct token or sign in with Google to claim.`
+                  }, 403);
+                }
+                newEntry.claimTokenHash = prev.claimTokenHash;
+              } else if (incomingClaimToken) {
+                newEntry.claimTokenHash = await sha256Hex(incomingClaimToken);
+              }
+              newEntry.claimed = false;
+              newEntry.ownerId = null;
+            }
+          }
+
           if (!newEntry.team && prev.team) newEntry.team = prev.team;
           if (newEntry.tokensAll < prev.tokensAll && prev.tokensAll > 0) newEntry.tokensAll = prev.tokensAll;
           if (newEntry.costAll < prev.costAll && prev.costAll > 0) newEntry.costAll = prev.costAll;
@@ -334,11 +951,45 @@ export default {
           if ((!incoming.breakdown || !incoming.breakdown.models || incoming.breakdown.models.length <= 1) && prev.breakdown && prev.breakdown.models && prev.breakdown.models.length > 1) {
             newEntry.breakdown = prev.breakdown;
           }
+          // Monotonic floors for the analytics fields so a sparse update never
+          // regresses published stats.
+          if (!newEntry.mmr && prev.mmr) newEntry.mmr = prev.mmr;
+          if (!newEntry.league && prev.league) newEntry.league = prev.league;
+          if (!newEntry.division && prev.division) newEntry.division = prev.division;
+          if (!newEntry.efficiency && prev.efficiency) newEntry.efficiency = prev.efficiency;
+          if (!newEntry.seasonId && prev.seasonId) newEntry.seasonId = prev.seasonId;
+          if (newEntry.seasonTokens < prev.seasonTokens && prev.seasonTokens > 0) newEntry.seasonTokens = prev.seasonTokens;
+          if (newEntry.inputTokensAll < prev.inputTokensAll && prev.inputTokensAll > 0) newEntry.inputTokensAll = prev.inputTokensAll;
+          if (newEntry.outputTokensAll < prev.outputTokensAll && prev.outputTokensAll > 0) newEntry.outputTokensAll = prev.outputTokensAll;
+          if (newEntry.requestsAll < prev.requestsAll && prev.requestsAll > 0) newEntry.requestsAll = prev.requestsAll;
+          if (newEntry.achievements.length === 0 && Array.isArray(prev.achievements)) newEntry.achievements = prev.achievements;
+          newEntry.snapshots = Array.isArray(prev.snapshots) ? prev.snapshots : [];
           entries[existingIdx] = newEntry;
           action = "updated";
         } else {
+          // Brand new entry
+          if (googleAuth) {
+            newEntry.claimed = true;
+            newEntry.ownerId = `google:${googleAuth.sub}`;
+            newEntry.googleEmail = googleAuth.email;
+            newEntry.avatarUrl = googleAuth.picture || "";
+            newEntry.claimedAt = Date.now() / 1000;
+          } else {
+            newEntry.claimed = false;
+            newEntry.ownerId = null;
+            issuedClaimToken = incomingClaimToken || crypto.randomUUID();
+            newEntry.claimTokenHash = await sha256Hex(issuedClaimToken);
+          }
           entries.push(newEntry);
         }
+
+        // Derive league/MMR server-side when the publisher didn't include them
+        // (older clients / CSV imports), then stamp today's rank snapshot.
+        const derived = standingFor(newEntry);
+        if (!newEntry.league) newEntry.league = derived.league;
+        if (!newEntry.division) newEntry.division = derived.division;
+        if (!newEntry.mmr) newEntry.mmr = derived.mmr;
+        appendSnapshot(entries, newEntry);
 
         await saveEntriesToR2(env, entries);
 
@@ -347,8 +998,68 @@ export default {
           action,
           handle: handleClean,
           entry: newEntry,
+          claimToken: issuedClaimToken || incomingClaimToken || null,
+          claimed: newEntry.claimed,
           totalEntries: entries.length,
           timestamp: new Date().toISOString()
+        });
+      } catch (err) {
+        return jsonResponse({ ok: false, error: err.message }, 500);
+      }
+    }
+
+    // 4b. POST /api/claim — Claim an unclaimed profile via Google login
+    if (request.method === "POST" && pathname === "/api/claim") {
+      try {
+        const body = await request.json();
+        const handleClean = String(body.handle || "").replace(/^@/, "").trim();
+        if (!handleClean) {
+          return jsonResponse({ ok: false, error: "Missing handle in payload" }, 400);
+        }
+
+        const googleAuth = await parseGoogleAuth(request, body);
+        if (!googleAuth) {
+          return jsonResponse({ ok: false, error: "Sign in with Google is required to claim a profile" }, 401);
+        }
+
+        const entries = await getEntriesFromR2(env);
+        const idx = entries.findIndex(e => e.handle.toLowerCase() === handleClean.toLowerCase());
+        if (idx === -1) {
+          return jsonResponse({ ok: false, error: `Profile @${handleClean} not found to claim` }, 404);
+        }
+
+        const entry = entries[idx];
+        if (entry.claimed) {
+          if (entry.ownerId === `google:${googleAuth.sub}` || entry.googleEmail === googleAuth.email) {
+            return jsonResponse({ ok: true, message: `Profile @${handleClean} is already claimed by your Google account`, entry });
+          }
+          return jsonResponse({ ok: false, error: `Profile @${handleClean} is already claimed by another verified user` }, 409);
+        }
+
+        if (entry.claimTokenHash) {
+          const rawToken = String(body.claimToken || request.headers.get("X-Claim-Token") || "").trim();
+          if (rawToken) {
+            const hash = await sha256Hex(rawToken);
+            if (hash !== entry.claimTokenHash && !body.forceClaim) {
+              return jsonResponse({ ok: false, error: `Claim token mismatch for @${handleClean}` }, 403);
+            }
+          }
+        }
+
+        entry.claimed = true;
+        entry.ownerId = `google:${googleAuth.sub}`;
+        entry.googleEmail = googleAuth.email;
+        if (googleAuth.picture) entry.avatarUrl = googleAuth.picture;
+        entry.claimedAt = Date.now() / 1000;
+        entries[idx] = entry;
+
+        await saveEntriesToR2(env, entries);
+
+        return jsonResponse({
+          ok: true,
+          message: `Successfully claimed @${handleClean}!`,
+          handle: handleClean,
+          entry
         });
       } catch (err) {
         return jsonResponse({ ok: false, error: err.message }, 500);
@@ -446,18 +1157,289 @@ export default {
       }
     }
 
+    // 6b. GET /api/providers — aggregated provider analytics across all nodes
+    if (request.method === "GET" && pathname === "/api/providers") {
+      const entries = await getEntriesFromR2(env);
+      const days = Math.min(60, Math.max(7, parseInt(searchParams.get("days") || "30", 10) || 30));
+      const { rows, total } = aggregateProviders(entries);
+      const history = providerHistory(entries, days);
+      const teams = aggregateTeams(entries);
+      const movers = computeMovers(entries);
+      const efficient = [...rows].filter(r => r.tokens > 0 && r.cost > 0)
+        .sort((a, b) => a.avgCostPerM - b.avgCostPerM);
+      const topPrompts = aggregateSessions(entries)
+        .sort((a, b) => b.tokens - a.tokens)
+        .slice(0, 8);
+      return jsonResponse({
+        ok: true,
+        total,
+        totalFormatted: formatTokens(total),
+        providers: rows,
+        history,
+        teams,
+        topPrompts,
+        insights: {
+          mostUsed: rows[0] || null,
+          mostEfficient: efficient[0] || null,
+          biggestGrowth: movers.improved[0] || null
+        },
+        season: seasonFor()
+      }, 200, { "Cache-Control": "public, max-age=15, s-maxage=30" });
+    }
+
+    // 6c. GET /api/teams — team aggregation
+    if (request.method === "GET" && pathname === "/api/teams") {
+      const entries = await getEntriesFromR2(env);
+      return jsonResponse({ ok: true, teams: aggregateTeams(entries), total: entries.length });
+    }
+
+    // 6d. GET /api/season — current season, ladder, distribution, promotions
+    if (request.method === "GET" && pathname === "/api/season") {
+      const entries = await getEntriesFromR2(env);
+      const season = seasonFor();
+      const distribution = LEAGUES.map(l => ({ ...l, users: 0, tokens: 0, percent: 0 }));
+      for (const e of entries) {
+        const st = standingFor(e);
+        const idx = LEAGUES.findIndex(l => l.id === st.league);
+        if (idx !== -1) {
+          distribution[idx].users += 1;
+          distribution[idx].tokens += e.tokensAll || 0;
+        }
+      }
+      const totalUsers = Math.max(1, entries.length);
+      distribution.forEach(d => { d.percent = Math.round((d.users / totalUsers) * 1000) / 10; });
+      const movers = computeMovers(entries);
+      const standings = [...entries]
+        .sort((a, b) => standingFor(b).mmr - standingFor(a).mmr)
+        .slice(0, 10)
+        .map(e => {
+          const st = standingFor(e);
+          return {
+            handle: e.handle,
+            team: e.team || "",
+            avatarUrl: e.avatarUrl || "",
+            league: st.league,
+            leagueTitle: st.leagueTitle,
+            leagueColor: st.leagueColor,
+            division: st.division,
+            mmr: st.mmr,
+            tokensAll: e.tokensAll || 0,
+            tokensFormatted: formatTokens(e.tokensAll || 0)
+          };
+        });
+      return jsonResponse({
+        ok: true,
+        season,
+        ladder: LEAGUES,
+        distribution,
+        standings,
+        promotions: movers.promotions,
+        climbers: movers.gains,
+        rewards: SEASON_REWARDS
+      }, 200, { "Cache-Control": "public, max-age=15, s-maxage=30" });
+    }
+
+    // 6e. Share records & access control
+    if (pathname === "/api/share/create" && request.method === "POST") {
+      try {
+        const body = await request.json().catch(() => ({}));
+        const handleClean = String(body.handle || "").replace(/^@/, "").trim();
+        if (!handleClean) return jsonResponse({ ok: false, error: "Missing handle" }, 400);
+        const entries = await getEntriesFromR2(env);
+        const entry = entries.find(e => e.handle.toLowerCase() === handleClean.toLowerCase());
+        if (!entry) return jsonResponse({ ok: false, error: `Profile @${handleClean} not found` }, 404);
+
+        const googleAuth = await parseGoogleAuth(request, body);
+        const claimToken = String(body.claimToken || request.headers.get("X-Claim-Token") || "").trim();
+        const ownerCheck = await verifyOwner(entry, googleAuth, claimToken);
+        if (!ownerCheck.ok) return jsonResponse({ ok: false, error: ownerCheck.error }, ownerCheck.status);
+
+        const scope = ["private", "people", "group", "org", "public"].includes(body.scope) ? body.scope : "group";
+        const options = {
+          fullTokenCounts: body.options?.fullTokenCounts !== false,
+          providerBreakdown: body.options?.providerBreakdown !== false,
+          anonymizeNames: body.options?.anonymizeNames === true,
+          hideCost: body.options?.hideCost === true,
+          includeLeagueRank: body.options?.includeLeagueRank !== false,
+          allowDownload: body.options?.allowDownload !== false
+        };
+        const expiryDays = Math.min(365, Math.max(1, parseInt(body.expiryDays || "30", 10) || 30));
+        const share = {
+          id: randomId(),
+          handle: entry.handle,
+          ownerKey: ownerCheck.ownerKey,
+          scope,
+          audience: Array.isArray(body.audience) ? body.audience.slice(0, 50) : [],
+          groups: Array.isArray(body.groups) ? body.groups.slice(0, 20) : [],
+          options,
+          publicLink: body.publicLink === true || scope === "public",
+          createdAt: Date.now() / 1000,
+          expiresAt: Date.now() / 1000 + expiryDays * 86400,
+          revoked: false
+        };
+        await putJson(env, `shares/${share.id}.json`, share);
+        await indexShare(env, entry.handle, share.id);
+        await appendActivity(env, ownerCheck.ownerKey, {
+          at: share.createdAt,
+          action: "created",
+          handle: entry.handle,
+          shareId: share.id,
+          scope,
+          audience: share.audience
+        });
+        const origin = new URL(request.url).origin;
+        return jsonResponse({ ok: true, share, url: `${origin}/s/${share.id}` });
+      } catch (err) {
+        return jsonResponse({ ok: false, error: err.message }, 500);
+      }
+    }
+
+    if (pathname === "/api/share/list" && request.method === "GET") {
+      try {
+        const handleClean = String(searchParams.get("handle") || "").replace(/^@/, "").trim();
+        if (!handleClean) return jsonResponse({ ok: false, error: "Missing handle" }, 400);
+        const entries = await getEntriesFromR2(env);
+        const entry = entries.find(e => e.handle.toLowerCase() === handleClean.toLowerCase());
+        if (!entry) return jsonResponse({ ok: false, error: `Profile @${handleClean} not found` }, 404);
+        const googleAuth = await parseGoogleAuth(request, {});
+        const claimToken = String(request.headers.get("X-Claim-Token") || "").trim();
+        const ownerCheck = await verifyOwner(entry, googleAuth, claimToken);
+        if (!ownerCheck.ok) return jsonResponse({ ok: false, error: ownerCheck.error }, ownerCheck.status);
+
+        const shares = await listShares(env, entry.handle);
+        const groups = await getGroups(env, ownerCheck.ownerKey);
+        const activity = await getActivity(env, ownerCheck.ownerKey);
+        return jsonResponse({ ok: true, handle: entry.handle, shares, groups, activity });
+      } catch (err) {
+        return jsonResponse({ ok: false, error: err.message }, 500);
+      }
+    }
+
+    if (pathname === "/api/share/revoke" && request.method === "POST") {
+      try {
+        const body = await request.json().catch(() => ({}));
+        const handleClean = String(body.handle || "").replace(/^@/, "").trim();
+        const id = String(body.id || "").trim();
+        if (!handleClean || !id) return jsonResponse({ ok: false, error: "Missing handle or id" }, 400);
+        const entries = await getEntriesFromR2(env);
+        const entry = entries.find(e => e.handle.toLowerCase() === handleClean.toLowerCase());
+        if (!entry) return jsonResponse({ ok: false, error: `Profile @${handleClean} not found` }, 404);
+        const googleAuth = await parseGoogleAuth(request, body);
+        const claimToken = String(body.claimToken || request.headers.get("X-Claim-Token") || "").trim();
+        const ownerCheck = await verifyOwner(entry, googleAuth, claimToken);
+        if (!ownerCheck.ok) return jsonResponse({ ok: false, error: ownerCheck.error }, ownerCheck.status);
+        const share = await getJson(env, `shares/${id}.json`);
+        if (!share || share.handle.toLowerCase() !== handleClean.toLowerCase()) {
+          return jsonResponse({ ok: false, error: "Share not found" }, 404);
+        }
+        share.revoked = true;
+        share.revokedAt = Date.now() / 1000;
+        await putJson(env, `shares/${id}.json`, share);
+        await appendActivity(env, ownerCheck.ownerKey, {
+          at: share.revokedAt, action: "revoked", handle: entry.handle, shareId: id, scope: share.scope
+        });
+        return jsonResponse({ ok: true, share });
+      } catch (err) {
+        return jsonResponse({ ok: false, error: err.message }, 500);
+      }
+    }
+
+    // Public share link payload (respects anonymize/hide-cost options).
+    if (pathname.startsWith("/api/shared/") && request.method === "GET") {
+      const id = pathname.slice("/api/shared/".length).replace(/[^a-zA-Z0-9]/g, "");
+      const share = await getJson(env, `shares/${id}.json`);
+      if (!share) return jsonResponse({ ok: false, error: "Share link not found" }, 404);
+      if (share.revoked) return jsonResponse({ ok: false, error: "Share link was revoked" }, 410);
+      if (share.expiresAt && share.expiresAt * 1000 < Date.now()) {
+        return jsonResponse({ ok: false, error: "Share link expired" }, 410);
+      }
+      const entries = await getEntriesFromR2(env);
+      const entry = entries.find(e => e.handle.toLowerCase() === share.handle.toLowerCase());
+      if (!entry) return jsonResponse({ ok: false, error: "Profile not found" }, 404);
+      return jsonResponse({ ok: true, share: { ...share, ownerKey: undefined }, report: buildSharedReport(entry, share.options, entries) });
+    }
+
+    if (pathname === "/api/groups" && request.method === "GET") {
+      try {
+        const handleClean = String(searchParams.get("handle") || "").replace(/^@/, "").trim();
+        if (!handleClean) return jsonResponse({ ok: false, error: "Missing handle" }, 400);
+        const entries = await getEntriesFromR2(env);
+        const entry = entries.find(e => e.handle.toLowerCase() === handleClean.toLowerCase());
+        if (!entry) return jsonResponse({ ok: false, error: `Profile @${handleClean} not found` }, 404);
+        const googleAuth = await parseGoogleAuth(request, {});
+        const claimToken = String(request.headers.get("X-Claim-Token") || "").trim();
+        const ownerCheck = await verifyOwner(entry, googleAuth, claimToken);
+        if (!ownerCheck.ok) return jsonResponse({ ok: false, error: ownerCheck.error }, ownerCheck.status);
+        return jsonResponse({ ok: true, groups: await getGroups(env, ownerCheck.ownerKey) });
+      } catch (err) {
+        return jsonResponse({ ok: false, error: err.message }, 500);
+      }
+    }
+
+    if (pathname === "/api/groups" && request.method === "POST") {
+      try {
+        const body = await request.json().catch(() => ({}));
+        const handleClean = String(body.handle || "").replace(/^@/, "").trim();
+        if (!handleClean) return jsonResponse({ ok: false, error: "Missing handle" }, 400);
+        const entries = await getEntriesFromR2(env);
+        const entry = entries.find(e => e.handle.toLowerCase() === handleClean.toLowerCase());
+        if (!entry) return jsonResponse({ ok: false, error: `Profile @${handleClean} not found` }, 404);
+        const googleAuth = await parseGoogleAuth(request, body);
+        const claimToken = String(body.claimToken || request.headers.get("X-Claim-Token") || "").trim();
+        const ownerCheck = await verifyOwner(entry, googleAuth, claimToken);
+        if (!ownerCheck.ok) return jsonResponse({ ok: false, error: ownerCheck.error }, ownerCheck.status);
+
+        const groups = await getGroups(env, ownerCheck.ownerKey);
+        const action = String(body.action || "create");
+        const incoming = body.group || {};
+        if (action === "delete") {
+          const next = groups.filter(g => g.id !== incoming.id);
+          await putJson(env, `groups/${ownerKeyFile(ownerCheck.ownerKey)}.json`, next);
+          return jsonResponse({ ok: true, groups: next });
+        }
+        if (action === "update" && incoming.id) {
+          const idx = groups.findIndex(g => g.id === incoming.id);
+          if (idx === -1) return jsonResponse({ ok: false, error: "Group not found" }, 404);
+          groups[idx] = normalizeGroup({ ...groups[idx], ...incoming });
+        } else {
+          groups.push(normalizeGroup({ ...incoming, id: incoming.id || randomId() }));
+        }
+        await putJson(env, `groups/${ownerKeyFile(ownerCheck.ownerKey)}.json`, groups);
+        return jsonResponse({ ok: true, groups });
+      } catch (err) {
+        return jsonResponse({ ok: false, error: err.message }, 500);
+      }
+    }
+
+    // 6f. GET /api/prompts — aggregated recent prompts/workloads
+    if (request.method === "GET" && pathname === "/api/prompts") {
+      const entries = await getEntriesFromR2(env);
+      const sessions = aggregateSessions(entries).sort((a, b) => (b.at || 0) - (a.at || 0));
+      return jsonResponse({
+        ok: true,
+        count: sessions.length,
+        prompts: sessions.slice(0, 100)
+      }, 200, { "Cache-Control": "public, max-age=15, s-maxage=30" });
+    }
+
     // 7. Webhosting: Fallback to static assets binding (docs/leaderboard.html, styles.css, etc.)
     if (env.ASSETS) {
-      if (pathname === "/" || pathname === "/leaderboard") {
+      if (pathname === "/" || pathname === "/leaderboard.html") {
         const newUrl = new URL(request.url);
-        newUrl.pathname = "/leaderboard.html";
+        newUrl.pathname = "/leaderboard";
+        return env.ASSETS.fetch(new Request(newUrl.toString(), request));
+      }
+      if (pathname.startsWith("/s/")) {
+        const id = pathname.slice(3).replace(/[^a-zA-Z0-9]/g, "");
+        const newUrl = new URL(request.url);
+        newUrl.pathname = "/leaderboard";
+        newUrl.searchParams.set("share", id);
         return env.ASSETS.fetch(new Request(newUrl.toString(), request));
       }
       return env.ASSETS.fetch(request);
     }
 
-    // Default redirect to leaderboard.html
-    return Response.redirect(`${url.origin}/leaderboard.html`, 302);
+    return new Response("Not Found", { status: 404 });
   }
 };
 
@@ -468,18 +1450,17 @@ async function getEntriesFromR2(env) {
   }
   try {
     const obj = await env.LEADERBOARD_BUCKET.get("leaderboard.json");
+    let entries;
     if (!obj) {
-      // Seed starter entries on first launch
-      await env.LEADERBOARD_BUCKET.put("leaderboard.json", JSON.stringify(DEFAULT_STARTER_ENTRIES, null, 2), {
-        httpMetadata: { contentType: "application/json" }
-      });
-      return [...DEFAULT_STARTER_ENTRIES];
+      // Seed starter entries on first launch (then fall through to backfill).
+      entries = JSON.parse(JSON.stringify(DEFAULT_STARTER_ENTRIES));
+    } else {
+      const text = await obj.text();
+      const data = JSON.parse(text);
+      entries = Array.isArray(data) ? data : JSON.parse(JSON.stringify(DEFAULT_STARTER_ENTRIES));
     }
-    const text = await obj.text();
-    const data = JSON.parse(text);
-    const entries = Array.isArray(data) ? data : DEFAULT_STARTER_ENTRIES;
 
-    let needsBackfill = false;
+    let needsBackfill = !obj;
     for (const e of entries) {
       if (!e.breakdown || !Array.isArray(e.breakdown.models) || e.breakdown.models.length === 0) {
         const starterMatch = DEFAULT_STARTER_ENTRIES.find(s => s.handle.toLowerCase() === e.handle.toLowerCase());
@@ -515,6 +1496,13 @@ async function getEntriesFromR2(env) {
         }
         needsBackfill = true;
       }
+      // Derive league/MMR for entries published before the analytics fields
+      // existed (CSV imports, older clients). Efficiency is always computed
+      // on read so zero-signal entries don't trigger rewrite loops.
+      const st = standingFor(e);
+      if (!e.league) { e.league = st.league; needsBackfill = true; }
+      if (!e.division) { e.division = st.division; needsBackfill = true; }
+      if (!e.mmr && (e.tokensAll || 0) > 0) { e.mmr = st.mmr; needsBackfill = true; }
     }
 
     if (needsBackfill) {
@@ -679,6 +1667,145 @@ function generateShareText(entry, rank, period) {
 │ Tokens: ${score.padEnd(16)} Cost: ${cost.padEnd(20)} │
 │ Active Streak: ${entry.streakDays || 0} Days 🔥 Top Model: ${entry.topModel}
 ╰─────────────────────────────────────────────────────────────╯`;
+}
+
+// --- Share records, groups, activity (R2 JSON objects) ---
+
+function randomId() {
+  const raw = crypto.randomUUID ? crypto.randomUUID().replace(/-/g, "") : (Math.random().toString(36).slice(2) + Date.now().toString(36));
+  return raw.slice(0, 16);
+}
+
+async function getJson(env, key) {
+  if (!env.LEADERBOARD_BUCKET) return null;
+  try {
+    const obj = await env.LEADERBOARD_BUCKET.get(key);
+    if (!obj) return null;
+    return JSON.parse(await obj.text());
+  } catch (err) {
+    return null;
+  }
+}
+
+async function putJson(env, key, value) {
+  if (!env.LEADERBOARD_BUCKET) return;
+  await env.LEADERBOARD_BUCKET.put(key, JSON.stringify(value, null, 2), {
+    httpMetadata: { contentType: "application/json", cacheControl: "no-cache" }
+  });
+}
+
+function ownerKeyFile(ownerKey) {
+  return String(ownerKey || "unknown").replace(/[^a-zA-Z0-9:_-]/g, "_").toLowerCase();
+}
+
+async function verifyOwner(entry, googleAuth, claimToken) {
+  if (entry.claimed) {
+    const isOwner = googleAuth && (
+      entry.ownerId === `google:${googleAuth.sub}` ||
+      (entry.googleEmail && entry.googleEmail === googleAuth.email)
+    );
+    if (!isOwner) {
+      return { ok: false, status: 403, error: `Profile @${entry.handle} is claimed. Sign in as ${entry.googleEmail || "the owner"} to manage sharing.` };
+    }
+    return { ok: true, ownerKey: entry.ownerId || `handle:${entry.handle.toLowerCase()}` };
+  }
+  if (entry.claimTokenHash) {
+    if (!claimToken) return { ok: false, status: 401, error: "Provide the profile claim token to manage sharing." };
+    const hash = await sha256Hex(claimToken);
+    if (hash !== entry.claimTokenHash) return { ok: false, status: 403, error: "Invalid claim token." };
+  }
+  return { ok: true, ownerKey: `handle:${entry.handle.toLowerCase()}` };
+}
+
+async function indexShare(env, handle, id) {
+  const key = `shares-index/${ownerKeyFile(handle)}.json`;
+  const index = (await getJson(env, key)) || [];
+  if (!index.includes(id)) index.push(id);
+  await putJson(env, key, index.slice(-200));
+}
+
+async function listShares(env, handle) {
+  const index = (await getJson(env, `shares-index/${ownerKeyFile(handle)}.json`)) || [];
+  const shares = [];
+  for (const id of index) {
+    const share = await getJson(env, `shares/${id}.json`);
+    if (share) shares.push(share);
+  }
+  return shares.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+}
+
+async function appendActivity(env, ownerKey, event) {
+  const key = `activity/${ownerKeyFile(ownerKey)}.json`;
+  const list = (await getJson(env, key)) || [];
+  list.unshift(event);
+  await putJson(env, key, list.slice(0, 50));
+}
+
+async function getActivity(env, ownerKey) {
+  return (await getJson(env, `activity/${ownerKeyFile(ownerKey)}.json`)) || [];
+}
+
+function normalizeGroup(g) {
+  const members = Array.isArray(g.members)
+    ? g.members.slice(0, 500).map(m => typeof m === "string"
+      ? { handle: m }
+      : { handle: String(m.handle || ""), email: m.email ? String(m.email) : undefined, avatarUrl: m.avatarUrl || undefined }
+    ).filter(m => m.handle)
+    : [];
+  return {
+    id: g.id || randomId(),
+    name: String(g.name || "Untitled group").slice(0, 80),
+    members
+  };
+}
+
+async function getGroups(env, ownerKey) {
+  const groups = await getJson(env, `groups/${ownerKeyFile(ownerKey)}.json`);
+  return Array.isArray(groups) ? groups : [];
+}
+
+function buildSharedReport(entry, options, entries) {
+  const opts = options || {};
+  const sortedAll = [...entries].sort((a, b) => (b.tokensAll || 0) - (a.tokensAll || 0));
+  const rank = sortedAll.findIndex(e => e.handle.toLowerCase() === entry.handle.toLowerCase()) + 1;
+  const total = Math.max(1, entries.length);
+  const st = standingFor(entry);
+  const roundTokens = (n) => opts.fullTokenCounts ? (n || 0) : Math.round((n || 0) / 1000) * 1000;
+  const report = {
+    handle: opts.anonymizeNames ? "Anonymous" : entry.handle,
+    team: opts.anonymizeNames ? "" : (entry.team || ""),
+    hardware: entry.hardware || "Apple Silicon",
+    tokensAll: roundTokens(entry.tokensAll),
+    tokensAllFormatted: formatTokens(roundTokens(entry.tokensAll)),
+    tokens7d: roundTokens(entry.tokens7d),
+    tokens7dFormatted: formatTokens(roundTokens(entry.tokens7d)),
+    streakDays: entry.streakDays || 0,
+    rank,
+    percentile: Math.round(((total - rank + 1) / total) * 100),
+    league: st.league,
+    leagueTitle: st.leagueTitle,
+    division: st.division,
+    mmr: st.mmr,
+    season: seasonFor(),
+    generatedAt: new Date().toISOString()
+  };
+  if (!opts.hideCost) {
+    report.costAll = entry.costAll || 0;
+    report.costAllFormatted = formatCurrency(entry.costAll || 0);
+    report.cost7d = entry.cost7d || 0;
+    report.cost7dFormatted = formatCurrency(entry.cost7d || 0);
+  }
+  if (opts.providerBreakdown && entry.breakdown) {
+    report.models = (entry.breakdown.models || []).slice(0, 12).map(m => ({
+      provider: m.provider,
+      model: opts.anonymizeNames ? "redacted" : m.model,
+      tokensAll: roundTokens(m.tokensAll),
+      costAll: opts.hideCost ? undefined : (m.costAll || 0),
+      sharePercent: m.sharePercent || 0
+    }));
+    report.history = (entry.breakdown.history || []).map(h => ({ day: h.day, dayLabel: h.dayLabel, tokens: roundTokens(h.tokens), cost: opts.hideCost ? undefined : h.cost }));
+  }
+  return report;
 }
 
 function parseEntriesFromCSV(csvText) {

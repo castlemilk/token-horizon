@@ -137,6 +137,36 @@ final class TokenCountingAccuracyTests: XCTestCase {
         XCTAssertEqual(e.scanAdditive(dirs: [root], state: &state, prefix: "test").allTokens, 15)
     }
 
+    /// Input/output/cache/request splits and per-project (cwd) rollups are
+    /// exact — these feed the leaderboard's Input/Output/Requests columns.
+    func testAdditive_tokenClassSplitsAndProjects() {
+        let nowTs = Double(nowHour)
+        write("s1.jsonl", """
+        {"cwd":"/Users/dev/alpha","message":{"id":"m1","model":"claude-sonnet","usage":{"input_tokens":100,"output_tokens":50,"cache_creation_input_tokens":10,"cache_read_input_tokens":200}},"timestamp":\(nowTs)}
+        {"cwd":"/Users/dev/beta","message":{"id":"m2","model":"claude-sonnet","usage":{"input_tokens":5,"output_tokens":5}},"timestamp":\(nowTs)}
+
+        """)
+        let e = engine()
+        var state: [String: UsageEngine.AdditiveFileState] = [:]
+        let r = e.scanAdditive(dirs: [root], state: &state, prefix: "test")
+        XCTAssertEqual(r.allTokens, 370)
+        XCTAssertEqual(r.inputAll, 105)
+        XCTAssertEqual(r.outputAll, 55)
+        XCTAssertEqual(r.cacheWrite, 10)
+        XCTAssertEqual(r.cacheRead, 200)
+        XCTAssertEqual(r.requestsAll, 2)
+        XCTAssertEqual(r.inputToday, 105)
+        XCTAssertEqual(r.outputToday, 55)
+        XCTAssertEqual(r.requestsToday, 2)
+        XCTAssertEqual(r.projects["/Users/dev/alpha"]?.tokens, 360)
+        XCTAssertEqual(r.projects["/Users/dev/alpha"]?.input, 100)
+        XCTAssertEqual(r.projects["/Users/dev/beta"]?.tokens, 10)
+        let model = r.perModel["claude-sonnet"]
+        XCTAssertEqual(model?.inputAll, 105)
+        XCTAssertEqual(model?.outputAll, 55)
+        XCTAssertEqual(model?.requestsAll, 2)
+    }
+
     // MARK: - Codex sessions
 
     /// Per-session ALL must equal the last total (not the sum of lines);
