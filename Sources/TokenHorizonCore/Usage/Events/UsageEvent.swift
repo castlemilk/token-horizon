@@ -111,8 +111,10 @@ public struct ContextState: Codable {
 /// UUID in the config dir on first use; user-resettable by deleting the file.
 public enum MachineIdentity {
     private static var cached: String?
+    private static let lock = NSLock()
 
     public static var current: String {
+        lock.lock(); defer { lock.unlock() }
         if let cached { return cached }
         let url = Platform.paths.configDirectory.appendingPathComponent("machine-id")
         if let data = try? Data(contentsOf: url),
@@ -125,6 +127,7 @@ public enum MachineIdentity {
         try? FileManager.default.createDirectory(
             at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         try? id.data(using: .utf8)?.write(to: url, options: .atomic)
+        chmod(url.path, 0o600)
         cached = id
         return id
     }

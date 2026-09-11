@@ -3,12 +3,21 @@ import Foundation
 import FoundationNetworking
 #endif
 
-public final class KimiLimitsEngine: LimitsEngine {
+public final class KimiLimitsEngine: LimitsEngine, Meterable {
     public static let shared = KimiLimitsEngine()
     private static let clientID = "17e5f671-d194-4dfb-9706-5516cb48c098"
 
     public init() {
         super.init(updatedNotification: .kimiLimitsUpdated)
+    }
+
+    public var meterVendorKey: String { "kimi" }
+    public var defaultMeterTarget: URL? { URL(string: "https://api.kimi.com") }
+    public func makeMeter(listenPort: UInt16, target: URL?, store: UsageStoring?) -> RequestMeter? {
+        guard ConsentManager.shared.isGranted(.metering) else { return nil }
+        return AnthropicMeter(vendor: meterVendorKey, listenPort: listenPort,
+                              targetBase: target ?? defaultMeterTarget!,
+                              store: store, sourceKind: .external)
     }
 
     public override func fetchLimits() -> [ProviderLimit] {
@@ -23,13 +32,18 @@ public final class KimiLimitsEngine: LimitsEngine {
     }
 
     public static func credentialPaths() -> [String] {
+        let home = Platform.paths.homeDirectory.path
         var paths: [String] = []
-        if let codeHome = ProcessInfo.processInfo.environment["KIMI_CODE_HOME"], !codeHome.trimmingCharacters(in: .whitespaces).isEmpty {
-            paths.append("\(codeHome)/credentials/kimi-code.json")
-        } else {
-            paths.append(NSString(string: "~/.kimi-code/credentials/kimi-code.json").expandingTildeInPath)
+        for envKey in ["KIMI_CODE_HOME", "KIMI_HOME"] {
+            if let codeHome = ProcessInfo.processInfo.environment[envKey],
+               !codeHome.trimmingCharacters(in: .whitespaces).isEmpty {
+                paths.append("\(codeHome)/credentials/kimi-code.json")
+            }
         }
-        paths.append(NSString(string: "~/.kimi/credentials/kimi-code.json").expandingTildeInPath)
+        if paths.isEmpty {
+            paths.append("\(home)/.kimi-code/credentials/kimi-code.json")
+        }
+        paths.append("\(home)/.kimi/credentials/kimi-code.json")
         return paths
     }
 
@@ -55,6 +69,12 @@ public final class KimiLimitsEngine: LimitsEngine {
         ]
         guard let data = try? JSONSerialization.data(withJSONObject: obj, options: .prettyPrinted) else { return }
         try? data.write(to: URL(fileURLWithPath: creds.path))
+    }
+
+    private static func makeLimit(label: String, usedPercent: Double, resetsAt: Date? = nil, detail: String = "") -> ProviderLimit {
+        ProviderLimit(provider: "kimi", label: label,
+                      usedPercent: min(max(usedPercent, 0), 100),
+                      resetsAt: resetsAt, detail: detail)
     }
 
     public static func fetch() -> [ProviderLimit] {
@@ -89,10 +109,9 @@ public final class KimiLimitsEngine: LimitsEngine {
            let used = parseQuota(usage, "used") {
             let pct = limit > 0 ? used / limit * 100 : 0
             let plan = (membership(obj) ?? "plan").replacingOccurrences(of: "LEVEL_", with: "").lowercased()
-            limits.append(ProviderLimit(
-                provider: "kimi",
+            limits.append(makeLimit(
                 label: plan.lowercased(),
-                usedPercent: min(max(pct, 0), 100),
+                usedPercent: pct,
                 resetsAt: parseDate(usage["resetTime"] as? String),
                 detail: "\(fmt(used)) / \(fmt(limit))"))
         }
@@ -114,10 +133,9 @@ public final class KimiLimitsEngine: LimitsEngine {
                         label = "\(duration)d"
                     }
                 }
-                limits.append(ProviderLimit(
-                    provider: "kimi",
+                limits.append(makeLimit(
                     label: label,
-                    usedPercent: min(max(pct, 0), 100),
+                    usedPercent: pct,
                     resetsAt: parseDate(detail["resetTime"] as? String),
                     detail: "\(fmt(remaining)) / \(fmt(limit)) left"))
             }
@@ -150,24 +168,11 @@ public final class KimiLimitsEngine: LimitsEngine {
     }
 
     public static func parseQuota(_ dict: [String: Any], _ key: String) -> Double? {
-        if let s = dict[key] as? String { return flexibleNumber(s) }
-        if let n = dict[key] as? NSNumber { return n.doubleValue }
-        return nil
+        QuotaParsers.quota(dict, key)
     }
 
     public static func flexibleNumber(_ s: String) -> Double? {
-        let trimmed = s.trimmingCharacters(in: .whitespaces).uppercased()
-        var numPart = ""
-        var multiplier = 1.0
-        for ch in trimmed {
-            if ch.isNumber || ch == "." { numPart.append(ch) }
-            else if ch == "K" { multiplier = 1_000 }
-            else if ch == "M" { multiplier = 1_000_000 }
-            else if ch == "B" { multiplier = 1_000_000_000 }
-            else if !numPart.isEmpty { break }
-        }
-        guard let v = Double(numPart) else { return nil }
-        return v * multiplier
+        QuotaParsers.flexibleNumber(s)
     }
 
     public static func membership(_ obj: [String: Any]) -> String? {
@@ -177,20 +182,10 @@ public final class KimiLimitsEngine: LimitsEngine {
     }
 
     public static func parseDate(_ s: String?) -> Date? {
-        guard let s else { return nil }
-        let f = ISO8601DateFormatter()
-        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        if let d = f.date(from: s) { return d }
-        f.formatOptions = [.withInternetDateTime]
-        return f.date(from: s)
+        QuotaParsers.parseISO(s)
     }
 
     public static func fmt(_ v: Double) -> String {
-        switch v {
-        case 1_000_000_000...: return String(format: "%.1fB", v / 1_000_000_000)
-        case 1_000_000...: return String(format: "%.1fM", v / 1_000_000)
-        case 1_000...: return String(format: "%.1fk", v / 1_000)
-        default: return String(format: "%.0f", v)
-        }
+        QuotaParsers.compact(v)
     }
 }

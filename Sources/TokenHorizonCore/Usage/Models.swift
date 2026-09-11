@@ -151,7 +151,7 @@ public enum TrendWindow: String, CaseIterable, Identifiable {
 
     public var spec: (count: Int, seconds: Int, dailyAligned: Bool) {
         switch self {
-        case .day: return (96, 900, false)   // 15-minute granularity
+        case .day: return (288, 300, false)   // 5-minute granularity
         case .week: return (7, 86_400, true)
         case .month: return (30, 86_400, true)
         case .quarter: return (90, 86_400, true)
@@ -167,6 +167,30 @@ public enum TrendWindow: String, CaseIterable, Identifiable {
         case .quarter: return "3m"
         case .year: return "1y"
         }
+    }
+}
+
+/// Tick resolution for analytics buckets. Canonical finest tick is 5 minutes;
+/// larger horizons aggregate up (15m → 1h → 1d) to bound point counts.
+/// Supported ticks: 300 (5m), 900 (15m), 3600 (1h), 86400 (1d).
+public enum BucketResolution {
+    public static let ticks = [300, 900, 3600, 86_400]
+    public static let finest = 300
+
+    /// Snap an arbitrary requested resolution to the nearest supported tick.
+    public static func snap(_ requested: Int) -> Int {
+        if requested <= 450 { return 300 }
+        if requested <= 1_800 { return 900 }
+        if requested <= 12_600 { return 3_600 }
+        return 86_400
+    }
+
+    /// Pick a tick for a horizon span: 5m ≤1D, 15m ≤7D, 1h ≤31D, else 1d.
+    public static func forHorizon(spanSeconds: Int) -> Int {
+        if spanSeconds <= 86_400 { return 300 }
+        if spanSeconds <= 7 * 86_400 { return 900 }
+        if spanSeconds <= 31 * 86_400 { return 3_600 }
+        return 86_400
     }
 }
 

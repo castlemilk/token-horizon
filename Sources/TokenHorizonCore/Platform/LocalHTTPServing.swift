@@ -37,12 +37,13 @@ public struct HTTPResponse {
         case 200: reason = "OK"
         case 400: reason = "Bad Request"
         case 404: reason = "Not Found"
+        case 413: reason = "Content Too Large"
         case 500: reason = "Internal Server Error"
+        case 503: reason = "Service Unavailable"
         default: reason = "OK"
         }
         let header = "HTTP/1.1 \(status) \(reason)\r\n"
             + "Content-Type: \(contentType)\r\n"
-            + "Access-Control-Allow-Origin: *\r\n"
             + "Content-Length: \(body.count)\r\n"
             + "Connection: close\r\n\r\n"
         return Data(header.utf8) + body
@@ -175,6 +176,20 @@ public final class POSIXLoopbackHTTPServer: LocalHTTPServing {
         let rawPath = parts.count > 1 ? String(parts[1]) : "/"
         let contentLength = lines.first(where: { $0.lowercased().hasPrefix("content-length:") })
             .flatMap { Int($0.drop(while: { $0 != ":" }).dropFirst().trimmingCharacters(in: .whitespaces)) } ?? 0
+        guard contentLength <= 4_194_304 else {
+            let resp = HTTPResponse(status: 413, body: Data("{\"error\":\"body too large\"}".utf8))
+            var out413 = resp.serialized()
+            out413.withUnsafeBytes { ptr in
+                var sent = 0
+                while sent < out413.count {
+                    guard let base = ptr.baseAddress else { return }
+                    let n = write(fd, base.advanced(by: sent), out413.count - sent)
+                    if n <= 0 { return }
+                    sent += n
+                }
+            }
+            return
+        }
         while body.count < contentLength {
             let n = chunk.withUnsafeMutableBytes { ptr -> Int in
                 read(fd, ptr.baseAddress, min(ptr.count, contentLength - body.count))
@@ -195,6 +210,15 @@ public final class POSIXLoopbackHTTPServer: LocalHTTPServing {
             }
         }
     }
+}
+
+#else
+
+public final class POSIXLoopbackHTTPServer: LocalHTTPServing {
+    public private(set) var port: UInt16 = 0
+    public init(handler: @escaping HTTPHandler) {}
+    public func start(preferredPort: UInt16) {}
+    public func stop() {}
 }
 
 #endif // !os(Windows)

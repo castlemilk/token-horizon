@@ -61,11 +61,12 @@ public final class ConsentManager {
     }
 
     /// Non-interactive grant via environment (CI, containers, systemd units):
-    /// TH_CONSENT="metering,fileReading" or "all".
+    /// TH_CONSENT="metering,fileReading" — explicit scopes only, no "all" wildcard
+    /// (prevents future scopes from auto-granting).
     private func envGranted(_ scope: ConsentScope) -> Bool {
         guard let value = ProcessInfo.processInfo.environment["TH_CONSENT"]?.lowercased() else { return false }
         let granted = value.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
-        return granted.contains("all") || granted.contains(scope.rawValue.lowercased())
+        return granted.contains(scope.rawValue.lowercased())
     }
 
     // MARK: - Grant / revoke
@@ -120,10 +121,11 @@ public final class ConsentManager {
 
     /// OS-native yes/no dialog. Nil = no display available (headless).
     private func prompt(scope: ConsentScope, reason: String) -> Bool? {
-        let text = "Token Horizon requests permission: \(scope.rawValue)\n\n\(reason)"
+        let safeReason = reason.replacingOccurrences(of: "\"", with: "'").replacingOccurrences(of: "\\", with: "")
+        let text = "Token Horizon requests permission: \(scope.rawValue)\n\n\(safeReason)"
         #if os(macOS)
         return runPrompt("/usr/bin/osascript", [
-            "-e", "display dialog \"\(text)\" buttons {\"Deny\", \"Allow\"} default button \"Deny\" with title \"Token Horizon\""],
+            "-e", "display dialog \"\(text.replacingOccurrences(of: "\"", with: "'"))\" buttons {\"Deny\", \"Allow\"} default button \"Deny\" with title \"Token Horizon\""],
             stdoutMarker: "Allow")
         #elseif os(Linux)
         guard ProcessInfo.processInfo.environment["DISPLAY"] != nil
@@ -139,13 +141,14 @@ public final class ConsentManager {
         }
         return nil
         #elseif os(Windows)
+        guard ProcessInfo.processInfo.environment["SESSIONNAME"] != nil else { return nil }
         let script = """
         Add-Type -AssemblyName System.Windows.Forms; \
         $r = [System.Windows.Forms.MessageBox]::Show('\(text.replacingOccurrences(of: "'", with: "''"))', \
         'Token Horizon', 'YesNo', 'Question'); if ($r -eq 'Yes') { exit 0 } else { exit 1 }
         """
         return runPrompt("powershell.exe", ["-NoProfile", "-Command", script],
-                         exitZeroMeansGrant: true)
+                         exitZeroMeansGrant: true, timeout: 60)
         #endif
     }
 
@@ -155,13 +158,20 @@ public final class ConsentManager {
     }
 
     /// Prompt runner: exit-code semantics (zenity/kdialog/powershell).
-    private func runPrompt(_ launch: String, _ args: [String], exitZeroMeansGrant: Bool) -> Bool? {
+    private func runPrompt(_ launch: String, _ args: [String], exitZeroMeansGrant: Bool, timeout: TimeInterval = 65) -> Bool? {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: launch)
         process.arguments = args
         do {
             try process.run()
-            process.waitUntilExit()
+            let deadline = Date().addingTimeInterval(timeout)
+            while process.isRunning && Date() < deadline {
+                Thread.sleep(forTimeInterval: 0.1)
+            }
+            if process.isRunning {
+                process.terminate()
+                return nil
+            }
             return process.terminationStatus == 0
         } catch { return nil }
     }
@@ -173,17 +183,25 @@ public final class ConsentManager {
     }
 
     private func runCapture(_ launch: String, _ args: [String]) -> String {
+        let tmp = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("th-consent-\(UUID().uuidString).txt")
+        FileManager.default.createFile(atPath: tmp.path, contents: nil)
+        guard let fh = FileHandle(forWritingAtPath: tmp.path) else { return "" }
         let process = Process()
         process.executableURL = URL(fileURLWithPath: launch)
         process.arguments = args
-        let pipe = Pipe()
-        process.standardOutput = pipe
+        process.standardOutput = fh
         process.standardError = FileHandle.nullDevice
         do {
             try process.run()
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
             process.waitUntilExit()
+            try? fh.close()
+            let data = (try? Data(contentsOf: tmp)) ?? Data()
+            try? FileManager.default.removeItem(at: tmp)
             return String(data: data, encoding: .utf8) ?? ""
-        } catch { return "" }
+        } catch {
+            try? fh.close()
+            try? FileManager.default.removeItem(at: tmp)
+            return ""
+        }
     }
 }

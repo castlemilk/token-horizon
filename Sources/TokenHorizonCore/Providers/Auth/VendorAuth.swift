@@ -14,12 +14,16 @@ public enum CredentialSource {
     case opencodeKey(String)
     /// Plain-text file (trimmed), e.g. a cookie dump.
     case fileText(String)
+    /// Plain-text file whose path comes from an env var, else fallback path.
+    case fileTextEnv(envVar: String, fallback: String)
     /// JSON file with dot-separated key paths, first hit wins,
     /// e.g. `.fileJSON("~/.gemini/oauth_creds.json", keyPaths: ["access_token"])`.
     case fileJSON(String, keyPaths: [String])
     /// OS secret store (macOS Keychain; stubs elsewhere). If `jsonKeyPaths` is
     /// given, the secret itself is parsed as JSON and walked.
     case keychain(service: String, account: String? = nil, jsonKeyPaths: [String]? = nil)
+    /// Keychain secret wrapped as `go-keyring-base64:<b64(JSON)>` (antigravity).
+    case keychainBase64JSON(service: String, account: String? = nil, jsonKeyPaths: [String])
     /// Escape hatch for bespoke flows (base64 wrappers, multi-step handshakes).
     case custom(() -> String?)
 
@@ -32,13 +36,26 @@ public enum CredentialSource {
             return Self.opencodeAuthFileKeys()[key]
 
         case .fileText(let path):
-            let expanded = NSString(string: path).expandingTildeInPath
+            let expanded = Self.expand(path)
+            let value = (try? String(contentsOfFile: expanded, encoding: .utf8))?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            return (value?.isEmpty == false) ? value : nil
+
+        case .fileTextEnv(let envVar, let fallback):
+            let path: String
+            if let envPath = ProcessInfo.processInfo.environment[envVar],
+               !envPath.trimmingCharacters(in: .whitespaces).isEmpty {
+                path = envPath
+            } else {
+                path = fallback
+            }
+            let expanded = Self.expand(path)
             let value = (try? String(contentsOfFile: expanded, encoding: .utf8))?
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             return (value?.isEmpty == false) ? value : nil
 
         case .fileJSON(let path, let keyPaths):
-            let expanded = NSString(string: path).expandingTildeInPath
+            let expanded = Self.expand(path)
             guard let data = FileManager.default.contents(atPath: expanded),
                   let obj = try? JSONSerialization.jsonObject(with: data) else { return nil }
             for keyPath in keyPaths {
@@ -57,6 +74,20 @@ public enum CredentialSource {
             }
             return nil
 
+        case .keychainBase64JSON(let service, let account, let jsonKeyPaths):
+            guard var raw = Platform.credentials.genericPassword(service: service, account: account),
+                  !raw.isEmpty else { return nil }
+            if raw.hasPrefix("go-keyring-base64:") {
+                raw = String(raw.dropFirst("go-keyring-base64:".count))
+            }
+            guard let decoded = Data(base64Encoded: raw),
+                  let obj = try? JSONSerialization.jsonObject(with: decoded) as? [String: Any] else { return nil }
+            let tokenObj = (obj["token"] as? [String: Any]) ?? obj
+            for keyPath in jsonKeyPaths {
+                if let value = Self.walk(tokenObj, keyPath: keyPath), !value.isEmpty { return value }
+            }
+            return nil
+
         case .custom(let read):
             return read()
         }
@@ -65,7 +96,7 @@ public enum CredentialSource {
     /// opencode's auth.json (`OPENCODE_AUTH` env override honored).
     public static func opencodeAuthFileKeys() -> [String: String] {
         let path = ProcessInfo.processInfo.environment["OPENCODE_AUTH"]
-            ?? NSString(string: "~/.local/share/opencode/auth.json").expandingTildeInPath
+            ?? Platform.paths.homeDirectory.appendingPathComponent(".local/share/opencode/auth.json").path
         guard let data = FileManager.default.contents(atPath: path),
               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: [String: Any]] else { return [:] }
         var out: [String: String] = [:]
@@ -84,6 +115,14 @@ public enum CredentialSource {
             if current == nil { return nil }
         }
         return current as? String
+    }
+
+    public static func expand(_ path: String) -> String {
+        if path.hasPrefix("~/") {
+            return Platform.paths.homeDirectory.appendingPathComponent(String(path.dropFirst(2))).path
+        }
+        if path == "~" { return Platform.paths.homeDirectory.path }
+        return path
     }
 }
 

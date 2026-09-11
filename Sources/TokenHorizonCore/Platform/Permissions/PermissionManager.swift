@@ -77,17 +77,27 @@ public enum PermissionManager {
     }
 
     private static func probeOutbound() -> CapabilityStatus {
+        if ProcessInfo.processInfo.environment["TH_OFFLINE"] == "1" {
+            return CapabilityStatus(capability: .networkOutbound, state: "unknown",
+                                    detail: "skipped (TH_OFFLINE=1)")
+        }
+        let hostStr = ProcessInfo.processInfo.environment["TH_PROBE_HOST"] ?? "1.1.1.1"
+        let timeoutMs = Int(ProcessInfo.processInfo.environment["TH_PROBE_TIMEOUT_MS"] ?? "") ?? 800
         let fd = socket(AF_INET, Int32(SOCK_STREAM.rawValue), 0)
         guard fd >= 0 else {
             return CapabilityStatus(capability: .networkOutbound, state: "unknown",
                                     detail: "socket() failed: errno \(errno)")
         }
         defer { close(fd) }
-        // Non-blocking connect to a well-known host:443, 800ms window.
         var addr = sockaddr_in()
         addr.sin_family = sa_family_t(AF_INET)
         addr.sin_port = UInt16(443).bigEndian
-        addr.sin_addr = in_addr(s_addr: 0x01010101)  // 1.1.1.1
+        var ip = in_addr()
+        guard inet_pton(AF_INET, hostStr, &ip) == 1 else {
+            return CapabilityStatus(capability: .networkOutbound, state: "unknown",
+                                    detail: "bad TH_PROBE_HOST")
+        }
+        addr.sin_addr = ip
         var flags = fcntl(fd, F_GETFL)
         _ = fcntl(fd, F_SETFL, flags | O_NONBLOCK)
         let result = withUnsafePointer(to: &addr) { ptr in
@@ -97,13 +107,13 @@ public enum PermissionManager {
         }
         if result == 0 || errno == EINPROGRESS {
             var pfd = pollfd(fd: fd, events: Int16(POLLOUT), revents: 0)
-            if poll(&pfd, 1, 800) > 0, pfd.revents & Int16(POLLOUT) != 0 {
+            if poll(&pfd, 1, Int32(timeoutMs)) > 0, pfd.revents & Int16(POLLOUT) != 0 {
                 var err: Int32 = 0
                 var len = socklen_t(MemoryLayout<Int32>.size)
                 getsockopt(fd, SOL_SOCKET, SO_ERROR, &err, &len)
                 if err == 0 {
                     return CapabilityStatus(capability: .networkOutbound, state: "granted",
-                                            detail: "TCP connect to 1.1.1.1:443 succeeded")
+                                            detail: "TCP connect to \(hostStr):443 succeeded")
                 }
             }
         }
@@ -113,9 +123,9 @@ public enum PermissionManager {
     }
 
     private static func probeStorage() -> CapabilityStatus {
-        let candidates = ["~/.claude", "~/.codex", "~/.kimi",
-                          "~/.local/share/opencode", "~/.gemini"]
-            .map(NSString.init(string:)).map(\.expandingTildeInPath)
+        let home = Platform.paths.homeDirectory.path
+        let candidates = ["\(home)/.claude", "\(home)/.codex", "\(home)/.kimi",
+                          "\(home)/.local/share/opencode", "\(home)/.gemini"]
         var unreadable: [String] = []
         var found = 0
         let fm = FileManager.default

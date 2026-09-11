@@ -16,42 +16,44 @@ public protocol Meterable {
 
 /// Builds meters for any registered vendor/runtime key.
 public enum MeterRegistry {
-    /// All meterable keys (runtimes + external vendors).
+    /// Canonical alias map (google ↔ gemini).
+    public static let aliases: [String: String] = ["google": "gemini", "gemini": "google"]
+
+    /// Every Meterable in the process (runtimes + quota adapters + Kimi).
+    public static var meterables: [Meterable] {
+        var out: [Meterable] = []
+        out += InferenceMonitor.shared.runtimes.map { $0 as Meterable }
+        out += PlanLimitsEngine.vendors.map { $0 as Meterable }
+        out.append(KimiLimitsEngine.shared as Meterable)
+        return out
+    }
+
+    /// All meterable keys (runtimes + external vendors + aliases).
     public static var availableVendors: [String] {
-        InferenceMonitor.shared.runtimes.map(\.vendor)
-            + PlanLimitsEngine.vendors.map(\.provider)
-            + ["kimi"]
+        var keys = meterables.map(\.meterVendorKey)
+        for (from, to) in aliases where keys.contains(from) && !keys.contains(to) {
+            keys.append(to)
+        }
+        return keys
     }
 
     public static func make(vendor: String, port: UInt16, target: URL?,
                             store: UsageStoring?) -> RequestMeter? {
-        // Named aliases with class-supplied defaults.
-        switch vendor {
-        case "kimi":
-            return AnthropicMeter(vendor: vendor, listenPort: port,
-                                  targetBase: target ?? URL(string: "https://api.kimi.com")!,
-                                  store: store, sourceKind: .external)
-        case "gemini":
-            return GeminiMeter(vendor: vendor, listenPort: port,
-                               targetBase: target ?? URL(string: "https://generativelanguage.googleapis.com")!,
-                               store: store, sourceKind: .external)
-        case "ollama":
-            return OllamaMeter(vendor: vendor, listenPort: port,
-                               targetBase: target ?? URL(string: "http://127.0.0.1:11434")!,
-                               store: store, sourceKind: .selfManaged)
-        case "codex", "openai":
-            return OpenAICompatibleMeter(vendor: vendor, listenPort: port,
+        let key = vendor.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        // Protocol-driven lookup first (adapters/runtimes own their wire format).
+        if let m = meterables.first(where: { $0.meterVendorKey.lowercased() == key }) {
+            return m.makeMeter(listenPort: port, target: target, store: store)
+        }
+        // Alias fallback (google ↔ gemini share GeminiMeter via adapter).
+        if let alias = aliases[key],
+           let m = meterables.first(where: { $0.meterVendorKey.lowercased() == alias }) {
+            return m.makeMeter(listenPort: port, target: target, store: store)
+        }
+        // Codex/OpenAI have no quota adapter — OpenAI-compatible meter.
+        if key == "codex" || key == "openai" {
+            return OpenAICompatibleMeter(vendor: key, listenPort: port,
                                          targetBase: target ?? URL(string: "https://api.openai.com")!,
                                          store: store, sourceKind: .external)
-        default:
-            break
-        }
-        // Registered runtime or limits adapter.
-        if let runtime = InferenceMonitor.shared.runtimes.first(where: { $0.vendor == vendor }) {
-            return runtime.makeMeter(listenPort: port, target: target, store: store)
-        }
-        if let adapter = PlanLimitsEngine.vendors.first(where: { $0.provider == vendor }) {
-            return adapter.makeMeter(listenPort: port, target: target, store: store)
         }
         // Unknown vendor with an explicit target: OpenAI-compatible default.
         if let target {

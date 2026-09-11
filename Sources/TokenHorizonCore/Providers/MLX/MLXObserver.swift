@@ -3,26 +3,13 @@ import Foundation
 
 public enum MLXObserver {
     /// Identify the command forms used by mlx-lm and Ollama's MLX runner.
+    /// Delegates to MLXRuntime (single source of truth, cross-platform).
     public static func isMLXCommand(_ command: String) -> Bool {
-        let value = command.lowercased()
-        return value.contains("--mlx-engine")
-            || value.contains("mlx_lm")
-            || value.contains("mlx-lm")
-            || value.contains("/mlx")
+        MLXRuntime.isMLXCommand(command)
     }
 
     public static func modelName(in command: String) -> String? {
-        let parts = command.split(whereSeparator: { $0 == " " || $0 == "\t" }).map(String.init)
-        for index in parts.indices {
-            if parts[index] == "--model" || parts[index] == "-m", parts.indices.contains(index + 1) {
-                return parts[index + 1]
-            }
-            if parts[index].hasPrefix("--model=") {
-                let value = String(parts[index].dropFirst("--model=".count))
-                return value.isEmpty ? nil : value
-            }
-        }
-        return nil
+        MLXRuntime.modelName(in: command)
     }
 
     public static func snapshot(from samples: [ProcSample], now: Date = Date()) -> MLXSnapshot {

@@ -17,10 +17,8 @@ public final class AlibabaLimits: VendorLimitsAdapter {
     /// Cookie chain: ALIBABA_COOKIE_FILE → env → config file → SettingsStore.
     public override var auth: VendorAuth {
         VendorAuth(sources: [
-            .custom {
-                guard let path = ProcessInfo.processInfo.environment["ALIBABA_COOKIE_FILE"] else { return nil }
-                return (try? String(contentsOfFile: path, encoding: .utf8))?.trimmingCharacters(in: .whitespacesAndNewlines)
-            },
+            .fileTextEnv(envVar: "ALIBABA_COOKIE_FILE",
+                         fallback: Platform.paths.configDirectory.appendingPathComponent("alibaba-cookie.txt").path),
             .env("ALIBABA_TOKEN_PLAN_COOKIE"),
             .fileText(Platform.paths.configDirectory.appendingPathComponent("alibaba-cookie.txt").path),
             .custom { SettingsStore.shared.alibabaCookie },
@@ -110,7 +108,11 @@ public final class AlibabaLimits: VendorLimitsAdapter {
         let data = performRaw(req, timeout: 8)
         var out: [ProviderLimit] = []
         for attempt in 0..<3 {
-            guard let data, let raw = try? JSONSerialization.jsonObject(with: data) else { return [] }
+            let attemptData: Data? = attempt == 0 ? data : performRaw(req, timeout: 8)
+            guard let attemptData, let raw = try? JSONSerialization.jsonObject(with: attemptData) else {
+                if attempt < 2 { Thread.sleep(forTimeInterval: 0.4); continue }
+                return []
+            }
             guard let windows = findDict(containingAny: ["per5HourPercentage", "per1WeekPercentage"], in: raw) else {
                 if attempt < 2 {
                     Thread.sleep(forTimeInterval: 0.4)

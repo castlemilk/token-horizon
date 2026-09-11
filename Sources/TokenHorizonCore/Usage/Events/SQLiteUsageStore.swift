@@ -28,7 +28,7 @@ public final class SQLiteUsageStore: UsageStoring {
             sqlite3_close(handle)
             throw UsageStoreError.openFailed(resolved)
         }
-        sqlite3_busy_timeout(handle, 150)
+        sqlite3_busy_timeout(handle, 5000)
         db = handle
         try migrate()
     }
@@ -73,6 +73,17 @@ public final class SQLiteUsageStore: UsageStoring {
             context_limit INTEGER NOT NULL,
             updated_at INTEGER NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS limit_snapshot (
+            recorded_at INTEGER NOT NULL,
+            machine_id TEXT NOT NULL,
+            provider TEXT NOT NULL,
+            label TEXT NOT NULL,
+            used_percent REAL NOT NULL,
+            resets_at INTEGER,
+            detail TEXT NOT NULL DEFAULT '',
+            PRIMARY KEY (recorded_at, machine_id, provider, label)
+        );
+        CREATE INDEX IF NOT EXISTS idx_limit_provider_ts ON limit_snapshot(provider, recorded_at);
         """
         guard sqlite3_exec(db, ddl, nil, nil, nil) == SQLITE_OK else {
             throw UsageStoreError.stepFailed("migrate: \(lastError())")
@@ -107,7 +118,13 @@ public final class SQLiteUsageStore: UsageStoring {
             throw UsageStoreError.prepareFailed(lastError())
         }
         defer { sqlite3_finalize(stmt) }
-        sqlite3_exec(db, "BEGIN IMMEDIATE", nil, nil, nil)
+        // Retry BEGIN IMMEDIATE under parallel load (60× /stats+/event stress).
+        var began = false
+        for _ in 0..<5 {
+            if sqlite3_exec(db, "BEGIN IMMEDIATE", nil, nil, nil) == SQLITE_OK { began = true; break }
+            Thread.sleep(forTimeInterval: 0.005)
+        }
+        guard began else { throw UsageStoreError.stepFailed("insert: busy") }
         for e in events {
             sqlite3_reset(stmt)
             sqlite3_clear_bindings(stmt)
@@ -258,7 +275,7 @@ public final class SQLiteUsageStore: UsageStoring {
     }
 
     public func buckets(from: Date, to: Date, bucketSeconds: Int, filter: UsageFilter) throws -> [UsageBucket] {
-        let size = max(60, bucketSeconds)
+        let size = BucketResolution.snap(bucketSeconds)
         let parts = whereSQL(from: from, to: to, filter: filter)
         let sql = """
         SELECT (ts / \(size)) * \(size), vendor,
@@ -323,7 +340,9 @@ public final class SQLiteUsageStore: UsageStoring {
         SELECT vendor, source, model,
                SUM(input), SUM(output), SUM(reasoning),
                SUM(cache_read), SUM(cache_write), SUM(cost), COUNT(*),
-               AVG(gen_tps), AVG(prompt_tps), AVG(context_occupancy), MAX(ts)
+               SUM(gen_tps * (output+input)) / NULLIF(SUM(output+input),0),
+               SUM(prompt_tps * (output+input)) / NULLIF(SUM(output+input),0),
+               SUM(context_occupancy * (output+input)) / NULLIF(SUM(output+input),0), MAX(ts)
         FROM usage_event
         \(parts.0)
         GROUP BY vendor, model
@@ -422,6 +441,71 @@ public final class SQLiteUsageStore: UsageStoring {
         defer { sqlite3_finalize(stmt) }
         guard sqlite3_step(stmt) == SQLITE_ROW else { return 0 }
         return Int(sqlite3_column_int64(stmt, 0))
+    }
+
+    public func recordLimits(_ snapshots: [LimitSnapshot]) throws {
+        guard !snapshots.isEmpty else { return }
+        lock.lock(); defer { lock.unlock() }
+        let sql = """
+        INSERT OR IGNORE INTO limit_snapshot
+        (recorded_at, machine_id, provider, label, used_percent, resets_at, detail)
+        VALUES (?,?,?,?,?,?,?)
+        """
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
+            throw UsageStoreError.prepareFailed(lastError())
+        }
+        defer { sqlite3_finalize(stmt) }
+        for s in snapshots {
+            // Minute-granularity dedup: refreshes within the same minute collapse.
+            let minute = Int64(s.recordedAt.timeIntervalSince1970) / 60 * 60
+            sqlite3_bind_int64(stmt, 1, minute)
+            bindText(stmt, 2, s.machineID)
+            bindText(stmt, 3, s.provider)
+            bindText(stmt, 4, s.label)
+            sqlite3_bind_double(stmt, 5, s.usedPercent)
+            if let r = s.resetsAt { sqlite3_bind_int64(stmt, 6, Int64(r.timeIntervalSince1970)) }
+            else { sqlite3_bind_null(stmt, 6) }
+            bindText(stmt, 7, s.detail)
+            sqlite3_step(stmt)
+            sqlite3_reset(stmt)
+            sqlite3_clear_bindings(stmt)
+        }
+        // Bound table growth: keep 370 days.
+        let cutoff = Int64(Date().timeIntervalSince1970) - 370 * 86_400
+        sqlite3_exec(db, "DELETE FROM limit_snapshot WHERE recorded_at < \(cutoff)", nil, nil, nil)
+    }
+
+    public func limitHistory(from: Date, to: Date, provider: String?) throws -> [LimitSnapshot] {
+        lock.lock(); defer { lock.unlock() }
+        let sql: String
+        if provider != nil {
+            sql = "SELECT recorded_at, machine_id, provider, label, used_percent, resets_at, detail FROM limit_snapshot WHERE recorded_at >= ? AND recorded_at < ? AND provider = ? ORDER BY recorded_at"
+        } else {
+            sql = "SELECT recorded_at, machine_id, provider, label, used_percent, resets_at, detail FROM limit_snapshot WHERE recorded_at >= ? AND recorded_at < ? ORDER BY recorded_at"
+        }
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
+            throw UsageStoreError.prepareFailed(lastError())
+        }
+        defer { sqlite3_finalize(stmt) }
+        sqlite3_bind_int64(stmt, 1, Int64(from.timeIntervalSince1970))
+        sqlite3_bind_int64(stmt, 2, Int64(to.timeIntervalSince1970))
+        if let provider { bindText(stmt, 3, provider) }
+        var out: [LimitSnapshot] = []
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            let resets: Date? = sqlite3_column_type(stmt, 5) == SQLITE_NULL
+                ? nil : Date(timeIntervalSince1970: sqlite3_column_double(stmt, 5))
+            out.append(LimitSnapshot(
+                recordedAt: Date(timeIntervalSince1970: sqlite3_column_double(stmt, 0)),
+                machineID: columnText(stmt, 1),
+                provider: columnText(stmt, 2),
+                label: columnText(stmt, 3),
+                usedPercent: sqlite3_column_double(stmt, 4),
+                resetsAt: resets,
+                detail: columnText(stmt, 6)))
+        }
+        return out
     }
 
     /// Row → UsageEvent. Column layout fixed by the SELECTs above.

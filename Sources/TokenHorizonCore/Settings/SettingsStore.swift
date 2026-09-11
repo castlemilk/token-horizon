@@ -77,7 +77,7 @@ public final class SettingsStore {
             },
         ]
         if let data = try? JSONSerialization.data(withJSONObject: payload) {
-            try? data.write(to: URL(fileURLWithPath: path))
+            try? data.write(to: URL(fileURLWithPath: path), options: .atomic)
             chmod(path, 0o600)
         }
     }

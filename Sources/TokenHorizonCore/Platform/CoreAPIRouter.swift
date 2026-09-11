@@ -22,6 +22,14 @@ public final class CoreAPIRouter {
     public init(engine: UsageEngine, usageStore: UsageStoring? = nil) {
         self.engine = engine
         self.usageStore = usageStore
+        // DB-first wiring: file poller + quota snapshots write through the
+        // same store every analytics read goes through (multi-machine sync
+        // via machine_id + /analytics/sync).
+        if let store = usageStore {
+            FilePoller.shared.store = store
+            PlanLimitsEngine.shared.snapshotStore = store
+            KimiLimitsEngine.shared.snapshotStore = store
+        }
     }
 
     private var meteringConsented: Bool {
@@ -50,14 +58,20 @@ public final class CoreAPIRouter {
             return
         }
         for entry in spec.split(separator: ",") {
-            let text = String(entry)
+            let text = String(entry).trimmingCharacters(in: .whitespacesAndNewlines)
             guard let colon = text.firstIndex(of: ":") else { continue }
-            let vendor = String(text[..<colon])
-            var rest = String(text[text.index(after: colon)...])
+            let vendor = String(text[..<colon]).trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            guard !vendor.isEmpty else { continue }
+            var rest = String(text[text.index(after: colon)...]).trimmingCharacters(in: .whitespacesAndNewlines)
             var target: URL?
             if let arrow = rest.range(of: "->") {
-                target = URL(string: String(rest[arrow.upperBound...]))
-                rest = String(rest[..<arrow.lowerBound])
+                let targetStr = String(rest[arrow.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines)
+                guard let url = URL(string: targetStr),
+                      let scheme = url.scheme?.lowercased(),
+                      ["http", "https"].contains(scheme),
+                      url.host != nil else { continue }
+                target = url
+                rest = String(rest[..<arrow.lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines)
             }
             var product: String?
             if let at = rest.range(of: "@", options: .backwards) {
@@ -114,8 +128,8 @@ public final class CoreAPIRouter {
             } else {
                 events = nil
             }
-            guard let events, !events.isEmpty else {
-                return Self.json(["error": "body must be a UsageEvent or [UsageEvent] JSON"], status: 400)
+            guard let events, !events.isEmpty, events.count <= 1000 else {
+                return Self.json(["error": "body must be a UsageEvent or [UsageEvent] JSON (max 1000)"], status: 400)
             }
             do {
                 try store.insert(events)
@@ -172,7 +186,13 @@ public final class CoreAPIRouter {
             guard let store = usageStore else { return Self.json(["error": "usage store unavailable"], status: 503) }
             let params = Self.queryParams(query)
             let (from, to) = Self.timeRange(params)
-            let resolution = Int(params["resolution"] ?? "900") ?? 900
+            let requested = Int(params["resolution"] ?? "300") ?? 300
+            let resolution: Int
+            if params["resolution"] == nil {
+                resolution = BucketResolution.forHorizon(spanSeconds: Int(to.timeIntervalSince(from)))
+            } else {
+                resolution = BucketResolution.snap(requested)
+            }
             let rows = (try? store.buckets(from: from, to: to, bucketSeconds: resolution,
                                            filter: Self.usageFilter(params))) ?? []
             return Self.json(["resolution": resolution, "buckets": Self.encode(rows)])
@@ -197,7 +217,7 @@ public final class CoreAPIRouter {
             guard let store = usageStore else { return Self.json(["error": "usage store unavailable"], status: 503) }
             let params = Self.queryParams(query)
             let cursor = Int64(params["cursor"] ?? "0") ?? 0
-            let limit = Int(params["limit"] ?? "500") ?? 500
+            let limit = min(max(Int(params["limit"] ?? "500") ?? 500, 1), 1000)
             guard let page = try? store.events(afterSequence: cursor, limit: limit) else {
                 return Self.json(["error": "sync read failed"], status: 500)
             }
@@ -254,7 +274,37 @@ public final class CoreAPIRouter {
                               "points": Self.encode(points)])
 
         case ("GET", "/limits"):
-            return Self.json(["limits": Self.encode(PlanLimitsEngine.fetchAll() + KimiLimitsEngine.fetch())])
+            PlanLimitsEngine.shared.refreshIfDue()
+            KimiLimitsEngine.shared.refreshIfDue()
+            return Self.json(["limits": Self.encode(PlanLimitsEngine.shared.cachedLimits() + KimiLimitsEngine.shared.cachedLimits())])
+
+        case ("GET", "/limits/history"):
+            guard let store = usageStore else { return Self.json(["error": "usage store unavailable"], status: 503) }
+            let params = Self.queryParams(query)
+            let (from, to) = Self.timeRange(params)
+            let snaps = (try? store.limitHistory(from: from, to: to, provider: params["provider"])) ?? []
+            return Self.json(["snapshots": Self.encode(snaps)])
+
+        case ("GET", "/timeline"):
+            guard let store = usageStore else { return Self.json(["error": "usage store unavailable"], status: 503) }
+            let params = Self.queryParams(query)
+            let (from, to) = Self.timeRange(params)
+            let resolution: Int
+            if let req = params["resolution"].flatMap({ Int($0) }) {
+                resolution = BucketResolution.snap(req)
+            } else {
+                resolution = BucketResolution.forHorizon(spanSeconds: Int(to.timeIntervalSince(from)))
+            }
+            let buckets = (try? store.buckets(from: from, to: to, bucketSeconds: resolution,
+                                              filter: Self.usageFilter(params))) ?? []
+            let limits = (try? store.limitHistory(from: from, to: to, provider: params["provider"])) ?? []
+            let files = FilePoller.shared.lastReport
+            return Self.json(["resolution": resolution,
+                              "buckets": Self.encode(buckets),
+                              "limits": Self.encode(limits),
+                              "file_poller": ["last_poll": FilePoller.shared.lastPoll?.timeIntervalSince1970 ?? NSNull(),
+                                              "locations": FilePoller.shared.locations,
+                                              "last_report": files]])
 
         case ("GET", "/runtimes"):
             let snaps = InferenceMonitor.shared.current()
@@ -343,10 +393,14 @@ public final class CoreAPIRouter {
         case ("POST", "/kill"):
             let params = Self.queryParams(query)
             guard let pid = params["pid"].flatMap({ Int32($0) }),
+                  pid > 1,
                   let stats = Platform.systemStats else {
-                return Self.json(["error": "missing pid"], status: 400)
+                return Self.json(["error": "missing or invalid pid"], status: 400)
             }
             let signal = params["signal"].flatMap { Int32($0) } ?? 15
+            guard [1, 2, 9, 15].contains(signal) else {
+                return Self.json(["error": "signal must be one of 1,2,9,15"], status: 400)
+            }
             return Self.json(["ok": stats.killProcess(pid: pid, signal: signal)])
 
         case ("GET", "/metrics"):

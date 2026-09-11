@@ -14,6 +14,7 @@ public final class GeminiLimits: VendorLimitsAdapter {
     public init() { super.init(provider: "google") }
 
     public override var meterTarget: URL? { URL(string: "https://generativelanguage.googleapis.com") }
+    public override var meterVendorKey: String { "gemini" }
 
     public override func makeMeter(listenPort: UInt16, target: URL?, store: UsageStoring?) -> RequestMeter? {
         GeminiMeter(vendor: provider, listenPort: listenPort,
@@ -24,9 +25,10 @@ public final class GeminiLimits: VendorLimitsAdapter {
     /// ~/.gemini/oauth_creds.json → Keychain "gemini"/"antigravity"
     /// (go-keyring-base64 wrapped JSON).
     public override var auth: VendorAuth {
-        VendorAuth(sources: [
-            .fileJSON("~/.gemini/oauth_creds.json", keyPaths: ["access_token"]),
-            .custom { [self] in keychainToken() },
+        let credsPath = Platform.paths.homeDirectory.appendingPathComponent(".gemini/oauth_creds.json").path
+        return VendorAuth(sources: [
+            .fileJSON(credsPath, keyPaths: ["access_token"]),
+            .keychainBase64JSON(service: "gemini", account: "antigravity", jsonKeyPaths: ["access_token"]),
         ])
     }
 
@@ -39,7 +41,7 @@ public final class GeminiLimits: VendorLimitsAdapter {
         let accessToken = auth.resolve()
         var projectId = ""
 
-        let credsPath = NSString(string: "~/.gemini/oauth_creds.json").expandingTildeInPath
+        let credsPath = Platform.paths.homeDirectory.appendingPathComponent(".gemini/oauth_creds.json").path
         if let data = FileManager.default.contents(atPath: credsPath),
            let creds = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
             projectId = creds["project_id"] as? String ?? ""
@@ -61,9 +63,7 @@ public final class GeminiLimits: VendorLimitsAdapter {
         }
 
         if accessToken != nil {
-            return [
-                limit(label: "tier", usedPercent: 0, detail: "Active · Pro", provider: "agy")
-            ]
+            return []
         }
         return []
     }
@@ -149,17 +149,5 @@ public final class GeminiLimits: VendorLimitsAdapter {
             if !out.isEmpty { return out }
         }
         return []
-    }
-
-    private func keychainToken() -> String? {
-        guard let str = Platform.credentials.genericPassword(service: "gemini", account: "antigravity") else { return nil }
-        var rawB64 = str
-        if rawB64.hasPrefix("go-keyring-base64:") {
-            rawB64 = String(rawB64.dropFirst("go-keyring-base64:".count))
-        }
-        guard let decodedData = Data(base64Encoded: rawB64),
-              let obj = try? JSONSerialization.jsonObject(with: decodedData) as? [String: Any] else { return nil }
-        let tokenObj = (obj["token"] as? [String: Any]) ?? obj
-        return tokenObj["access_token"] as? String
     }
 }

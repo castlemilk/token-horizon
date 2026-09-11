@@ -10,12 +10,15 @@ import FoundationNetworking
 /// coercion, and the `VendorAuth` credential chain. Subclasses must override
 /// `fetch()` and typically `auth`; returning [] from fetch means "vendor not
 /// configured/unreachable" and is silent by design.
-open class VendorLimitsAdapter {
+open class VendorLimitsAdapter: Meterable {
     public let provider: String
 
     public init(provider: String) {
         self.provider = provider
     }
+
+    open var meterVendorKey: String { provider }
+    open var defaultMeterTarget: URL? { meterTarget }
 
     /// Credential chain for this vendor. Empty by default (vendor needs no auth).
     open var auth: VendorAuth { VendorAuth() }
@@ -89,14 +92,21 @@ open class VendorLimitsAdapter {
     }
 
     /// Blocking JSON request; nil on transport error, non-2xx, or non-dict JSON.
+    /// 401/403 are logged to stderr so expired keys don't silently drop rows.
     func performJSON(_ req: URLRequest, timeout: TimeInterval) -> [String: Any]? {
         var data: Data?
+        var status = 0
         let sema = DispatchSemaphore(value: 0)
         URLSession.shared.dataTask(with: req) { d, resp, _ in
-            if let http = resp as? HTTPURLResponse, (200..<300).contains(http.statusCode) { data = d }
+            status = (resp as? HTTPURLResponse)?.statusCode ?? 0
+            if (200..<300).contains(status) { data = d }
             sema.signal()
         }.resume()
         if sema.wait(timeout: .now() + timeout) == .timedOut { return nil }
+        if status == 401 || status == 403 {
+            FileHandle.standardError.write("token-horizon: \(provider) quota 401/403 — credential expired, re-auth required\n".data(using: .utf8)!)
+            return nil
+        }
         guard let data, let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
         return obj
     }
@@ -104,12 +114,17 @@ open class VendorLimitsAdapter {
     /// Blocking raw request (for adapters that parse non-JSON or need the body).
     func performRaw(_ req: URLRequest, timeout: TimeInterval) -> Data? {
         var data: Data?
+        var status = 0
         let sema = DispatchSemaphore(value: 0)
         URLSession.shared.dataTask(with: req) { d, resp, _ in
-            if let http = resp as? HTTPURLResponse, (200..<300).contains(http.statusCode) { data = d }
+            status = (resp as? HTTPURLResponse)?.statusCode ?? 0
+            if (200..<300).contains(status) { data = d }
             sema.signal()
         }.resume()
         if sema.wait(timeout: .now() + timeout) == .timedOut { return nil }
+        if status == 401 || status == 403 {
+            FileHandle.standardError.write("token-horizon: \(provider) quota 401/403 — credential expired, re-auth required\n".data(using: .utf8)!)
+        }
         return data
     }
 
@@ -145,28 +160,13 @@ open class VendorLimitsAdapter {
         return nil
     }
 
-    // MARK: - Coercion
+    // MARK: - Coercion (delegate to shared QuotaParsers)
 
-    func number(_ v: Any?) -> Double? {
-        if let n = v as? NSNumber { return n.doubleValue }
-        if let s = v as? String { return Double(s) }
-        return nil
-    }
+    func number(_ v: Any?) -> Double? { QuotaParsers.number(v) }
 
-    func epoch(_ v: Any?) -> Date? {
-        guard let n = v as? NSNumber else { return nil }
-        let t = n.doubleValue
-        return Date(timeIntervalSince1970: t > 1e12 ? t / 1000 : t)
-    }
+    func epoch(_ v: Any?) -> Date? { QuotaParsers.epoch(v) }
 
-    func parseISO(_ s: String?) -> Date? {
-        guard let s else { return nil }
-        let f = ISO8601DateFormatter()
-        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        if let d = f.date(from: s) { return d }
-        f.formatOptions = [.withInternetDateTime]
-        return f.date(from: s)
-    }
+    func parseISO(_ s: String?) -> Date? { QuotaParsers.parseISO(s) }
 
     func cookieValue(name: String, from cookie: String) -> String? {
         for pair in cookie.split(separator: ";") {

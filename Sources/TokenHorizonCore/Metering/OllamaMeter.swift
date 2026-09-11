@@ -37,23 +37,9 @@ open class OllamaMeter: RequestMeter {
         return TokenBreakdown(input: input, output: output)
     }
 
-    /// Exact provider-measured rates from nanosecond durations.
+    /// Exact provider-measured rates from nanosecond durations (pure — no I/O).
     public override func rates(from exchange: MeteredExchange, tokens: TokenBreakdown) -> (prompt: Double?, generation: Double?) {
         guard let final = finalObject(exchange.responseBody) else { return (nil, nil) }
-        let evalCount = (final["eval_count"] as? NSNumber)?.intValue ?? 0
-        let evalNs = (final["eval_duration"] as? NSNumber)?.uint64Value ?? 0
-        // Bridge into the shared runtime-telemetry store + OTel metrics so the
-        // same surfaces that the old macOS proxy fed (MLX/ollama card,
-        // /metrics) now run off metered data on every platform.
-        if evalCount > 0, evalNs > 0 {
-            let sample = InferenceTelemetrySample(
-                model: model(for: exchange), completedAt: exchange.completedAt,
-                evalCount: evalCount, evalDurationNs: evalNs,
-                promptEvalCount: (final["prompt_eval_count"] as? NSNumber)?.intValue,
-                promptEvalDurationNs: (final["prompt_eval_duration"] as? NSNumber)?.uint64Value)
-            InferenceTelemetryStore.shared.record(sample)
-            TokenHorizonTelemetry.shared.recordOllama(sample)
-        }
         var prompt: Double?
         var generation: Double?
         if let count = (final["prompt_eval_count"] as? NSNumber)?.intValue,
@@ -67,6 +53,25 @@ open class OllamaMeter: RequestMeter {
             generation = Double(count) / (Double(ns) / 1_000_000_000)
         }
         return (prompt, generation)
+    }
+
+    /// Bridge measured sample into telemetry store + OTel exactly once per
+    /// completed request (called once from the connection teardown path).
+    public override func event(from exchange: MeteredExchange) -> UsageEvent? {
+        guard let event = super.event(from: exchange) else { return nil }
+        if let final = finalObject(exchange.responseBody),
+           let evalCount = (final["eval_count"] as? NSNumber)?.intValue,
+           let evalNs = (final["eval_duration"] as? NSNumber)?.uint64Value,
+           evalCount > 0, evalNs > 0 {
+            let sample = InferenceTelemetrySample(
+                model: event.model, completedAt: exchange.completedAt,
+                evalCount: evalCount, evalDurationNs: evalNs,
+                promptEvalCount: (final["prompt_eval_count"] as? NSNumber)?.intValue,
+                promptEvalDurationNs: (final["prompt_eval_duration"] as? NSNumber)?.uint64Value)
+            InferenceTelemetryStore.shared.record(sample)
+            TokenHorizonTelemetry.shared.recordOllama(sample)
+        }
+        return event
     }
 
     /// Ollama: `think` is bool OR a level string ("low"/"medium"/"high"),

@@ -48,7 +48,9 @@ public final class RuntimeUsageLedger {
     /// Buckets older than this are pruned on flush (bounds disk growth).
     public var retentionSeconds = 366 * 86_400
 
-    public static let bucketSeconds = 900
+    /// Finest tick: 5 minutes (matches UsageEngine; old 15-min keys remain
+    /// valid — 900s boundaries align with every third 5-min boundary).
+    public static let bucketSeconds = 300
 
     public let storeURL: URL
 
@@ -69,24 +71,31 @@ public final class RuntimeUsageLedger {
     /// `model == nil` writes the vendor aggregate scope; a non-nil model writes
     /// ONLY the `vendor|model` scope (callers record the aggregate separately).
     public func record(vendor: String, model: String? = nil,
-                       input: Int, output: Int, at date: Date = Date()) {
-        guard input > 0 || output > 0 else { return }
+                       input: Int, output: Int, reasoning: Int = 0,
+                       cacheRead: Int = 0, cacheWrite: Int = 0, at date: Date = Date()) {
+        guard input > 0 || output > 0 || reasoning > 0 || cacheRead > 0 || cacheWrite > 0 else { return }
         let bucket = Self.bucketStart(Int(date.timeIntervalSince1970))
         lock.lock()
         if let model, !model.isEmpty {
-            addLocked(scope: "\(vendor)|\(model)", bucket: bucket, input: input, output: output)
+            addLocked(scope: "\(vendor)|\(model)", bucket: bucket, input: input, output: output,
+                      reasoning: reasoning, cacheRead: cacheRead, cacheWrite: cacheWrite)
         } else {
-            addLocked(scope: vendor, bucket: bucket, input: input, output: output)
+            addLocked(scope: vendor, bucket: bucket, input: input, output: output,
+                      reasoning: reasoning, cacheRead: cacheRead, cacheWrite: cacheWrite)
         }
         dirty = true
         lock.unlock()
         flushIfDue()
     }
 
-    private func addLocked(scope: String, bucket: Int, input: Int, output: Int) {
+    private func addLocked(scope: String, bucket: Int, input: Int, output: Int,
+                           reasoning: Int = 0, cacheRead: Int = 0, cacheWrite: Int = 0) {
         var entry = scopes[scope, default: [:]][bucket] ?? Entry()
         entry.input += input
         entry.output += output
+        entry.reasoning += reasoning
+        entry.cacheRead += cacheRead
+        entry.cacheWrite += cacheWrite
         scopes[scope, default: [:]][bucket] = entry
     }
 
