@@ -1,0 +1,132 @@
+# Token Horizon — task runner (go-task, https://taskfile.dev).
+#
+# `task --list` shows every entry point with its description.
+# Convention: new commands live HERE, not in scripts/. scripts/ is reserved
+# for launcher/installer/packaging paths (make-app.sh, package-notarized.sh,
+# install.sh) that must stay standalone. Thin `make <target>` delegation is
+# kept where a Makefile target already exists, so there is exactly one
+# implementation per command (no drift).
+#
+# Rule of thumb: `task validate` before every PR; `task smoke` after
+# `./scripts/make-app.sh` relaunches the app; never overlap two swift
+# builds/tests at once (shared .build dir corrupts results).
+
+version: "3"
+
+vars:
+  PORT: 8765
+
+tasks:
+  default:
+    desc: List all tasks
+    cmds:
+      - task --list
+
+  # Full local gate: lint errors + entire XCTest suite. Mirrors CI.
+  validate:
+    desc: Full gate — lint (errors fail) + full test suite (mirrors CI)
+    deps: [lint, test]
+
+  lint:
+    desc: SwiftLint — errors fail the build, warnings are burn-down (see .swiftlint.yml)
+    cmds:
+      - make lint
+
+  test:
+    desc: Full XCTest suite — unit + budget-gated perf + integration (~2 min, run serially)
+    cmds:
+      - make test
+
+  test-catalog:
+    desc: Fast catalog/discovery slice — lookup, synthesis, ingestion, canonical identity
+    cmds:
+      - swift test --filter "Catalog|CanonicalIdentity|ModelDiscovery"
+
+  test-perf:
+    desc: Budget-gated perf regression guard (Models tab pipeline + scope counts)
+    cmds:
+      - ./scripts/test-models-perf.sh
+
+  test-integration:
+    desc: Loopback integration tests (Ollama proxy relay round-trips, no creds needed)
+    cmds:
+      - swift test --filter "OllamaProxyIntegrationTests"
+
+  test-race:
+    desc: Thread-sanitized suite — run before merging concurrency-adjacent changes
+    cmds:
+      - make test-race
+
+  build:
+    desc: Plain debug build (no install, no launch)
+    cmds:
+      - make build
+
+  app:
+    desc: Canonical release build + install + relaunch, health-gated (ONLY supported launcher)
+    cmds:
+      - ./scripts/make-app.sh
+
+  bench:
+    desc: Models-pipeline bench + summary (machine-dependent, no asserts)
+    cmds:
+      - make bench
+
+  smoke:
+    desc: Live validation vs the running app — stamp identity, endpoints, MCP (needs :8765 up)
+    cmds:
+      - |
+        PORT="{{.PORT}}"; fail=0
+        say() { if [ "$1" = ok ]; then echo "  [ok]   $2"; else echo "  [FAIL] $2"; fail=1; fi; }
+        echo "=== smoke (:$PORT) ==="
+        health=$(curl -s --max-time 5 "localhost:$PORT/health" || true)
+        if [ -z "$health" ]; then
+          say FAIL "/health unreachable — is the app running? (./scripts/make-app.sh)"; exit 1
+        fi
+        serving=$(printf '%s' "$health" | python3 -c "import json,sys; print(json.load(sys.stdin).get('build',{}).get('commit',''))" 2>/dev/null || true)
+        repo=$(git rev-parse --short HEAD 2>/dev/null || true)
+        # make-app.sh appends "-dirty" on uncommitted trees; strip it (a fresh
+        # build of a dirty tree is current — only a clean-tree build reproduces).
+        if [ -n "$serving" ] && [ "${serving%-dirty}" = "$repo" ]; then
+          if [ "$serving" = "$repo" ]; then say ok "/health build.commit == $repo (clean tree)";
+          else say ok "/health build $repo + uncommitted changes (fresh build of dirty tree)"; fi
+        else
+          say FAIL "/health commit '$serving' != repo '$repo' (stale binary: rebuild, don't debug data)"
+        fi
+        probe() { # $1 = path, $2 = python predicate over d, $3 = label
+          body=$(curl -s --max-time 10 "localhost:$PORT$1" || true)
+          if printf '%s' "$body" | python3 -c "import json,sys; d=json.load(sys.stdin); sys.exit(0 if ($2) else 1)" 2>/dev/null; then say ok "$3";
+          else say FAIL "$3"; fi
+        }
+        probe "/stats" "'usage' in d and 'system' in d" "/stats serves usage+system"
+        probe "/trends?window=1D" "'points' in d and 'total' in d" "/trends serves points+total"
+        probe "/limits" "'limits' in d" "/limits serves limits"
+        probe "/models?search=&scope=ALL" "d.get('count',0) > 0" "/models serves non-empty catalog"
+        probe "/discovery/status" "'catalogCount' in d" "/discovery/status serves catalog stats"
+        if command -v node >/dev/null 2>&1; then
+          mcp=$(printf '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}\n' | node mcp/token-horizon-mcp.mjs 2>/dev/null | head -c 4000 || true)
+          case "$mcp" in *token_horizon*|*tools*) say ok "MCP tools/list answers";; *) say FAIL "MCP tools/list (unexpected output)";; esac
+        else
+          say FAIL "MCP tools/list (node not installed)"
+        fi
+        if [ "$fail" = 0 ]; then echo "=== smoke: PASS ==="; else echo "=== smoke: FAIL ==="; fi
+        exit "$fail"
+
+  doctor:
+    desc: Check toolchain + environment (swift, swiftlint, node, xcode, app port)
+    cmds:
+      - |
+        fail=0
+        for tool in swift swiftlint node task; do
+          if command -v "$tool" >/dev/null 2>&1; then echo "  [ok]   $tool: $(command -v "$tool")";
+          else echo "  [FAIL] $tool missing"; fail=1; fi
+        done
+        if xcode-select -p >/dev/null 2>&1; then echo "  [ok]   xcode: $(xcode-select -p)"; else echo "  [FAIL] xcode-select path"; fail=1; fi
+        if curl -s --max-time 3 "localhost:{{.PORT}}/health" >/dev/null 2>&1; then echo "  [ok]   app :{{.PORT}} reachable";
+        else echo "  [info] app :{{.PORT}} not reachable (launch with ./scripts/make-app.sh)"; fi
+        exit "$fail"
+
+  clean:
+    desc: Wipe SwiftPM build artifacts (use after toolchain switches or weird failures)
+    cmds:
+      - swift package clean

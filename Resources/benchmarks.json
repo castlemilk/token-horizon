@@ -62,6 +62,26 @@
       "source": "Anthropic"
     },
     {
+      "match": "gpt-6-astra",
+      "name": "GPT-6 Astra",
+      "swe": 85.2,
+      "lcb": 81.0,
+      "aime": 92.5,
+      "gpqa": 88.0,
+      "approx": false,
+      "source": "OpenAI"
+    },
+    {
+      "match": "astra",
+      "name": "GPT-6 Astra",
+      "swe": 85.2,
+      "lcb": 81.0,
+      "aime": 92.5,
+      "gpqa": 88.0,
+      "approx": false,
+      "source": "OpenAI"
+    },
+    {
       "match": "gpt-5-sol",
       "name": "GPT-5 Sol",
       "swe": 81.5,
@@ -118,6 +138,106 @@
       "lcb": 50.0,
       "aime": 65.0,
       "gpqa": 60.0,
+      "approx": true,
+      "source": "OpenAI"
+    },
+    {
+      "match": "gpt-daybreak",
+      "name": "GPT Daybreak Blue",
+      "swe": 85.2,
+      "lcb": 81.0,
+      "aime": 92.5,
+      "gpqa": 88.0,
+      "approx": false,
+      "source": "OpenAI"
+    },
+    {
+      "match": "gpt-daybreak-blue-latest",
+      "name": "GPT Daybreak Blue",
+      "swe": 85.2,
+      "lcb": 81.0,
+      "aime": 92.5,
+      "gpqa": 88.0,
+      "approx": false,
+      "source": "OpenAI"
+    },
+    {
+      "match": "gpt-reserve",
+      "name": "GPT Reserve",
+      "swe": 81.5,
+      "lcb": 78.0,
+      "aime": 89.0,
+      "gpqa": 83.0,
+      "approx": true,
+      "source": "OpenAI"
+    },
+    {
+      "match": "gpt-5.6-sol",
+      "name": "GPT-5.6 Sol",
+      "swe": 81.5,
+      "lcb": 78.0,
+      "aime": 89.0,
+      "gpqa": 83.0,
+      "approx": true,
+      "source": "OpenAI"
+    },
+    {
+      "match": "gpt-5.6-terra",
+      "name": "GPT-5.6 Terra",
+      "swe": 72.0,
+      "lcb": 68.5,
+      "aime": 80.0,
+      "gpqa": 74.0,
+      "approx": true,
+      "source": "OpenAI"
+    },
+    {
+      "match": "gpt-5.6-luna",
+      "name": "GPT-5.6 Luna",
+      "swe": 52.0,
+      "lcb": 50.0,
+      "aime": 65.0,
+      "gpqa": 60.0,
+      "approx": true,
+      "source": "OpenAI"
+    },
+    {
+      "match": "gpt-5.5",
+      "name": "GPT-5.5",
+      "swe": 78.0,
+      "lcb": 75.0,
+      "aime": 84.0,
+      "gpqa": 78.0,
+      "approx": true,
+      "source": "OpenAI"
+    },
+    {
+      "match": "gpt-5.4-mini",
+      "name": "GPT-5.4 Mini",
+      "swe": 58.0,
+      "lcb": 55.0,
+      "aime": 68.0,
+      "gpqa": 62.0,
+      "approx": true,
+      "source": "OpenAI"
+    },
+    {
+      "match": "gpt-5.3-codex-spark",
+      "name": "GPT-5.3 Codex Spark",
+      "swe": 54.0,
+      "lcb": 50.0,
+      "aime": 62.0,
+      "gpqa": 58.0,
+      "approx": true,
+      "source": "OpenAI"
+    },
+    {
+      "match": "codex-auto-review",
+      "name": "Codex Auto Review",
+      "swe": 78.0,
+      "lcb": 75.0,
+      "aime": 84.0,
+      "gpqa": 78.0,
       "approx": true,
       "source": "OpenAI"
     },
@@ -552,32 +672,32 @@
       "source": "xAI"
     },
     {
-      "match": "muse-spark-1.2",
-      "name": "Muse Spark 1.2",
-      "swe": 61.5,
-      "lcb": 57.0,
-      "aime": 65.0,
-      "gpqa": 62.0,
+      "match": "muse-spark-1.3",
+      "name": "Muse Spark 1.3",
+      "swe": 64.2,
+      "lcb": 60.5,
+      "aime": 68.0,
+      "gpqa": 65.0,
       "approx": true,
       "source": "OpenCode"
     },
     {
-      "match": "x-preview-f-free",
-      "name": "x-Preview-f Free",
-      "swe": 59.0,
-      "lcb": 55.0,
-      "aime": 63.0,
-      "gpqa": 60.0,
+      "match": "nemotron-3.5-lightning-free",
+      "name": "Nemotron 3.5 Lightning Free",
+      "swe": 62.0,
+      "lcb": 58.5,
+      "aime": 64.0,
+      "gpqa": 61.0,
       "approx": true,
       "source": "OpenCode"
     },
     {
-      "match": "ox-alpha-free",
-      "name": "ox-Alpha Free",
-      "swe": 52.0,
-      "lcb": 48.0,
-      "aime": 55.0,
-      "gpqa": 52.0,
+      "match": "mimo-v2.5-free",
+      "name": "MiMo 2.5 Free",
+      "swe": 56.5,
+      "lcb": 52.0,
+      "aime": 58.0,
+      "gpqa": 54.0,
       "approx": true,
       "source": "OpenCode"
     },

@@ -1,0 +1,22 @@
+name = "token-horizon-leaderboard"
+main = "src/index.js"
+compatibility_date = "2026-09-01"
+compatibility_flags = ["nodejs_compat"]
+workers_dev = true
+
+# Custom Domain (automatic DNS + SSL certificate provisioning)
+routes = [
+  { pattern = "tokens.benebsworth.com", custom_domain = true }
+]
+
+# Webhosting: Serve static dashboard assets from ../docs
+[assets]
+directory = "../docs"
+binding = "ASSETS"
+run_worker_first = true
+
+# Cloudflare R2 Object Storage Backend
+[[r2_buckets]]
+binding = "LEADERBOARD_BUCKET"
+bucket_name = "token-horizon-leaderboard"
+preview_bucket_name = "token-horizon-leaderboard-dev"

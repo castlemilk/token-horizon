@@ -17,6 +17,7 @@
   <div class="nav-links">
     <a href="./leaderboard.html">Leaderboard</a>
     <a href="#features">Features</a>
+    <a href="#start">Start</a>
     <a href="#film">Film</a>
     <a href="#privacy">Privacy</a>
     <a href="#install">Install</a>
@@ -65,6 +66,29 @@
     <article class="feature-card"><span class="num">02</span><h3>Plan limits</h3><p>Exactly how much room is left in every rolling provider window — and when each one resets. Per-model quotas like Fable included.</p></article>
     <article class="feature-card"><span class="num">03</span><h3>Mac performance</h3><p>Live CPU, memory, disk, network, and top-process telemetry without opening Activity Monitor.</p></article>
     <article class="feature-card"><span class="num">04</span><h3>Local AI telemetry</h3><p>MLX and Ollama runners with measured tokens-per-second, resource load, and bounded history.</p></article>
+  </div>
+</section>
+
+<section class="section start" id="start">
+  <div class="section-heading"><span class="kicker">GET GOING</span><h2>Up and running<br />in 90 seconds.</h2><p>macOS on Apple silicon. No account, no setup wizard — install, glance, verify.</p></div>
+  <div class="install-grid">
+    <article class="install-card">
+      <h3>① Install</h3>
+      <pre><code>curl -fsSL https://raw.githubusercontent.com/castlemilk/token-horizon/main/install.sh | bash</code></pre>
+      <p>One line, no prompts, no sudo. Latest release lands in <code>/Applications</code>, crash auto-recovery switches on, and the <code>th</code> shell command is wired up.</p>
+    </article>
+    <article class="install-card">
+      <h3>② Glance</h3>
+      <p>Your notch (or menu bar) now wears live CPU/MEM rings. <b>Hover</b> to open the panel: <b>TOKENS</b> for usage, costs and plan limits · <b>ACTIVITY</b> for Mac performance · <b>MLX</b> for local models · plus Leaderboard, Shells and Settings. The ⤢ button pops it all out into a full dashboard window.</p>
+      <p class="fine">The model catalogue refreshes itself — new releases and live pricing appear on their own.</p>
+    </article>
+    <article class="install-card">
+      <h3>③ Verify</h3>
+      <pre><code>curl -s localhost:8765/health
+th /stats
+th /limits</code></pre>
+      <p>Health reports the running build; <code>th</code> brings usage and remaining quota to your terminal. Then connect your coding agent — see <a href="https://github.com/castlemilk/token-horizon#mcp-server">MCP server</a>.</p>
+    </article>
   </div>
 </section>
 

@@ -18,11 +18,12 @@ Sources/TokenHorizonCore/   portable server-side module (macOS + Linux; Windows 
                           product/session/day), buckets (arbitrary resolution: 900/3600/86400),
                           summarize (provider→model rollup: tokens, cost, avg measured tok/s,
                           avg context). Cloud backends slot in behind UsageStoring later.
-    Consolidation/        INACTIVE backfill logic: FileConsolidator base + per-provider
+    Consolidation/        routine + backfill file ingestion: FileConsolidator base + per-provider
                           consolidators (Claude/Codex/Kimi/OpenCode) emitting deterministic-ID
-                          events from local files. Nothing calls ConsolidationRunner;
-                          requires explicit TH_CONSOLIDATE=1. Do NOT wire into daemon/app
-                          without review — it is the meter↔files reconciliation source.
+                          events from local files. FilePoller runs them every 60s
+                          (`.fileReading` consent) into the usage store — the DB-backed
+                          timeline. ConsolidationRunner.run remains a deliberate
+                          one-off (TH_CONSOLIDATE=1).
   Providers/              per-vendor integrations — ONE folder per provider, everything
                           about that provider inside (quota adapter, meter target/wire
                           format, auth config). Cloud vs self-managed is a property of the
@@ -64,7 +65,7 @@ Sources/TokenHorizonCore/   portable server-side module (macOS + Linux; Windows 
     Consent/                ConsentManager: per-scope grants (metering/fileReading/telemetry)
                             persisted in consents.json; OS-native prompts (macOS osascript,
                             Linux zenity/kdialog, Windows PowerShell MessageBox); headless
-                            NEVER auto-grants — TH_CONSENT=scope|'all' env, or TH_ASK_CONSENT=1
+                            NEVER auto-grants — TH_CONSENT=scope env, or TH_ASK_CONSENT=1
                             to prompt. Meters do not start without .metering consent.
     SystemStatsProviding.swift  ProcSample/ProcDetail/SystemSnapshot DTOs + protocol
     PlatformPaths.swift         paths protocol + per-OS typealias
@@ -97,7 +98,9 @@ See docs/cross-platform.md for the Linux/Windows port status and the Platform se
 ## Invariants — do not break
 
 1. **UsageEngine.snapshot()/history()/trendHistory() take `lock`**; sqlite opened `READONLY | FULLMUTEX`. All engine calls run off-main via `DispatchQueue.global`. Concurrent unlocked sqlite use = SIGSEGV (happened before).
-2. **Buckets are 15-minute epoch keys** everywhere (`UsageEngine.bucketSeconds = 900`; day math derives from them). "Today" = `bucket >= todayBucket()` (local midnight). Do not reintroduce day- or hour-keyed buckets. Each bucket carries a compat `tokens`/`cost` aggregate plus a granular `TokenBreakdown` (input/output/reasoning/cacheRead/cacheWrite) — compat totals must stay byte-exact vs provider ground truth; breakdown detail (e.g. codex cached/reasoning beyond displayTokens) lives only in `breakdown`.
+2. **Buckets are 5-minute epoch keys at finest** (`UsageEngine.bucketSeconds = 300`;
+  `BucketResolution` snaps to 300/900/3600/86400 by horizon: 5m ≤1D, 15m ≤7D,
+  1h ≤31D, else 1d). "Today" = `bucket >= todayBucket()` (local midnight). Each bucket carries a compat `tokens`/`cost` aggregate plus a granular `TokenBreakdown` (input/output/reasoning/cacheRead/cacheWrite) — compat totals must stay byte-exact vs provider ground truth; breakdown detail (e.g. codex cached/reasoning beyond displayTokens) lives only in `breakdown`. Pre-change 900s keys remain valid (900 is a multiple of 300, epoch-aligned).
 3. **Codex parsing is stateful per file** (offset + watermarks + last). Never reset state on truncation without clearing buckets. Multi-dir scans share `codexFiles`; filter preserved state by path prefix.
 4. **Incremental JSONL readers** only consume up to the last `\n` and advance the stored offset by exactly the consumed byte count (partial tail lines must survive to the next poll).
 5. **The engine is the single source of truth.** MCP shim and any UI read from the HTTP API (fallback: direct sqlite read-only for usage/sessions). Never parse provider files from the MCP shim.

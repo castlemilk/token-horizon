@@ -1,0 +1,147 @@
+@import 'tailwindcss';
+@import 'tw-animate-css';
+@import '@fontsource-variable/geist';
+@import '@fontsource-variable/jetbrains-mono';
+@source '@/app';
+@source '@/lib';
+
+/* Dark mode driven by a `.dark` class on <html> (toggled by the theme store), not media query. */
+@custom-variant dark (&:is(.dark *));
+
+@theme {
+  --font-sans: 'Geist Variable', ui-sans-serif, system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono Variable', ui-monospace, 'SFMono-Regular', monospace;
+
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-border-bright: var(--border-bright);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  /* Brand coral accent — the one new color; everything else maps onto the neutrals above. */
+  --color-brand: var(--brand);
+  --color-brand-soft: var(--brand-soft);
+  --color-brand-hover: var(--brand-hover);
+  --color-success: var(--success);
+  --radius-lg: var(--radius);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-sm: calc(var(--radius) - 4px);
+}
+
+@layer base {
+  :root {
+    color-scheme: light;
+    --background: #f4f2ef;
+    --foreground: #14100e;
+    --card: #fffefc;
+    --card-foreground: #14100e;
+    --popover: #fffefc;
+    --popover-foreground: #14100e;
+    --primary: #14100e;
+    --primary-foreground: #fffefc;
+    --secondary: #f9f7f4;
+    --secondary-foreground: #14100e;
+    --muted: #f9f7f4;
+    --muted-foreground: #5f5952;
+    --accent: #f9f7f4;
+    --accent-foreground: #14100e;
+    --destructive: #e81123;
+    --destructive-foreground: #fffefc;
+    --border: #e2ded8;
+    --border-bright: #d3cec6;
+    --input: #e2ded8;
+    --ring: #d3cec6;
+    --brand: #ff5c3a;
+    --brand-soft: rgba(255, 92, 58, 0.13);
+    --brand-hover: #f04724;
+    --success: #16a34a;
+    --radius: 0.5rem;
+  }
+
+  .dark {
+    color-scheme: dark;
+    --background: #08090a;
+    --foreground: #f2f3f3;
+    --card: #0e1011;
+    --card-foreground: #f2f3f3;
+    --popover: #0e1011;
+    --popover-foreground: #f2f3f3;
+    --primary: #f2f3f3;
+    --primary-foreground: #14100e;
+    --secondary: #131617;
+    --secondary-foreground: #f2f3f3;
+    --muted: #131617;
+    --muted-foreground: #a3aaad;
+    --accent: #131617;
+    --accent-foreground: #f2f3f3;
+    --destructive: #e81123;
+    --destructive-foreground: #f2f3f3;
+    --border: #212527;
+    --border-bright: #2e3335;
+    --input: #212527;
+    --ring: #2e3335;
+    --brand: #ff5c3a;
+    --brand-soft: rgba(255, 92, 58, 0.13);
+    --brand-hover: #ff7053;
+    --success: #4ade80;
+    --radius: 0.5rem;
+  }
+
+  * {
+    border-color: var(--border);
+  }
+
+  /* Thin, themed scrollbars (Chromium/Electron) — no ScrollArea wrappers needed. */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--border-bright) transparent;
+  }
+  ::-webkit-scrollbar {
+    width: 11px;
+    height: 11px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: var(--border-bright);
+    border-radius: 999px;
+    border: 3px solid transparent;
+    background-clip: padding-box;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: var(--muted-foreground);
+    background-clip: padding-box;
+  }
+  ::-webkit-scrollbar-corner {
+    background: transparent;
+  }
+
+  /* Theme flips cross-fade rather than snap — see `withTransition` in shell/theme-store. */
+  ::view-transition-old(root),
+  ::view-transition-new(root) {
+    animation-duration: 220ms;
+    animation-timing-function: ease;
+  }
+
+  /* Held only across a theme flip: per-element colour transitions would lag the snapshot. */
+  .theme-switching *,
+  .theme-switching *::before,
+  .theme-switching *::after {
+    transition: none !important;
+  }
+}

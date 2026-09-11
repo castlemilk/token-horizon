@@ -1,25 +1,64 @@
 # Token Horizon
 
+[![GitHub release](https://img.shields.io/github/v/release/castlemilk/token-horizon?include_prereleases)](https://github.com/castlemilk/token-horizon/releases/latest)
+[![Landing page](https://img.shields.io/badge/site-castlemilk.github.io%2Ftoken--horizon-7c5cff)](https://castlemilk.github.io/token-horizon/)
+
 Native macOS statusline + notch dashboard tracking AI token usage, costs, system stats, and provider plan limits. Built with Swift + AppKit/SwiftUI, system SQLite, and the OpenTelemetry Swift SDK for optional metrics export.
+
+🌐 **Landing page:** https://castlemilk.github.io/token-horizon/ · 🎬 **Film below** · 📦 [Releases](https://github.com/castlemilk/token-horizon/releases/latest)
+
+## Product film
+
+<video src="https://github.com/castlemilk/token-horizon/releases/download/v0.2.0/TokenHorizon-film.mp4" poster="https://raw.githubusercontent.com/castlemilk/token-horizon/main/docs/assets/og.png" controls width="100%"></video>
+
+*Forty seconds, rendered entirely in code ([`video/`](video/) — Remotion, zero stock footage). Also embedded on the [landing page](https://castlemilk.github.io/token-horizon/#film).*
+
+## Getting started
+
+Requires macOS on Apple silicon. Three steps, under two minutes:
+
+**1. Install** — one line, no prompts, no sudo:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/castlemilk/token-horizon/main/install.sh | bash
+```
+
+This installs the latest release to `/Applications`, enables crash auto-recovery, and wires up the `th` shell helper. Alternatives: `brew tap castlemilk/tap && brew install --cask token-horizon` · [DMG from GitHub Releases](https://github.com/castlemilk/token-horizon/releases/latest) · build from source with `./scripts/make-app.sh`.
+
+**2. Glance at your notch** (menu bar if you have no notch): the CPU/MEM rings are live. Hover to open the panel and flip through the tabs — **TOKENS** (usage, costs, plan limits), **ACTIVITY** (Mac performance), **MLX** (local models), **LEADERBOARD**, **SHELLS**, **⚙ SETTINGS**. The ⤢ button pops everything out into a resizable dashboard window.
+
+**3. Confirm it's tracking you:**
+
+```bash
+curl -s localhost:8765/health | python3 -m json.tool   # must report this checkout's commit
+th /stats     # usage + system snapshot in your terminal
+th /limits    # remaining quota on every provider plan
+```
+
+If `/health` reports a different commit than `git rev-parse --short HEAD`, the running binary is stale — rebuild with `./scripts/make-app.sh`, don't debug the data.
+
+**Next steps:** connect your coding agent via the [MCP server](#mcp-server) · compare usage with your team ([Leaderboard](#leaderboard--backend-options)) · track a model catalogue that updates itself with live pricing · hack on it: [`TESTING.md`](TESTING.md) + `task validate`.
 
 ## Surfaces
 
 | Surface | When | Contents |
 |---|---|---|
 | **Notch panel** | notch display present | Collapsed: CPU/MEM activity rings flanking the camera. Hover: tabbed popout |
-| **Menu bar + popover** | no notch (closed lid / external display) | `◉ cpu% mem%` item, popover with the same tabs. Force with `TOKEN_HORIZON_FORCE_TRAY=1` |
+| **Menu bar + popover** | no notch (closed lid / external display), forced, or pinned alongside the notch | CPU/MEM rings + `◉ cpu% mem%` item, popover with the same tabs. ⚙ SETTINGS → Surface: auto / notch / menu bar (+ “also show menu bar” toggle). `TOKEN_HORIZON_FORCE_TRAY=1` always forces menu bar |
 | **Bottom statusline** | removed | — |
 | **Dashboard window** | ⤢ button in any popout | Resizable window, all tabs |
 
-Tabs: **ACTIVITY** (CPU, memory, disk I/O, and network sparklines; top processes by CPU/RSS/disk/network) · **MLX** (independent MLX/Ollama runner observability: CPU, memory, disk rates, 5M/1H/6H/24H bounded rollups, and measured tok/s when available) · **TOKENS** (today/all-time, window pills 1D–1Y + stacked provider chart, 365-day heatmap with KPI cards, BY TOOL, MODELS incl. free vs pay-go, PLAN LIMITS, recent sessions) · **SHELLS** (recent zsh commands) · **⚙ SETTINGS** (Alibaba cookie editor + provider notes).
+Tabs: **ACTIVITY** (CPU, memory, disk I/O, and network sparklines; top processes by CPU/RSS/disk/network) · **MLX** (independent MLX/Ollama runner observability: CPU, memory, disk rates, 5M/1H/6H/24H bounded rollups, and measured tok/s when available) · **TOKENS** (today/all-time, window pills 1D–1Y + stacked provider chart, 365-day heatmap with KPI cards, BY TOOL, MODELS incl. free vs pay-go, PLAN LIMITS, recent sessions) · **LEADERBOARD** (team & multi-account rankings across Today/7D/All-Time/Streak periods, edge-cached Cloudflare Worker+R2 backend with TTL/change-gated sync — Google Sheets stays as legacy fallback — and live SVG/Markdown share card previews) · **SHELLS** (recent zsh commands) · **⚙ SETTINGS** (Alibaba cookie editor + Google Sheets leaderboard config + provider notes).
 
 ## Performance Stats
 
 The ACTIVITY tab samples system performance every 2 seconds on a utility queue. CPU and memory use native Mach/VM counters. Disk throughput uses cumulative `iostat` counters, and network throughput sums non-loopback interface byte counters from `getifaddrs`. I/O collection is cached for 4 seconds so the external disk query does not run on every UI tick.
 
-The MLX tab is an independent observer for `ollama runner --mlx-engine` and `mlx-lm` process trees. It samples only matching processes and their children, so it does not enable the heavier general process table. MLX histories are bounded to the same fine-sample ceiling as system history. tok/s is captured from Ollama's completed response metadata (`eval_count` / `eval_duration`) or the benchmark cache; it is never inferred from CPU, memory, or network traffic.
+The MLX tab is an independent observer for `ollama runner --mlx-engine` and `mlx-lm` process trees. It samples only matching processes and their children, so it does not enable the heavier general process table. MLX histories are bounded to the same fine-sample ceiling as system history. tok/s comes from Ollama's completed response metadata (`eval_count` / `eval_duration`) or the benchmark cache; the displayed rate uses a small token-weighted recent window so short completions do not create misleading spikes. It is never inferred from CPU, memory, or network traffic.
 
-Token Horizon also starts a lightweight local Ollama telemetry proxy at `http://127.0.0.1:11435` when that port is available. If it is occupied, the app tries the next 19 loopback ports and shows the selected port in the MLX tab. Point an Ollama-compatible client at that endpoint to capture exact completion metrics without changing Ollama or the MLX runner. The proxy forwards streaming responses unchanged and keeps only the latest 256 model samples. Set `TOKEN_HORIZON_OLLAMA_PROXY_PORT` to change the starting port and `TOKEN_HORIZON_OLLAMA_UPSTREAM` when Ollama is not on `127.0.0.1:11434`.
+Click an Ollama model row in MODELS or an MLX runner row in the MLX tab to inspect its local configuration. Ollama details combine the complete `/api/tags` and `/api/show` payloads, including size, digest, format, family, parameter count, context, quantization, capabilities, templates, and model info. Direct MLX model paths are inspected for their model files and JSON configuration, with total size, format, and inferred quantization shown when available.
+
+Token Horizon also starts a lightweight local Ollama telemetry proxy at `http://127.0.0.1:11435` when that port is available. If it is occupied, the app tries the next 19 loopback ports and shows the selected port in the MLX tab. Point an Ollama-compatible client at that endpoint to capture exact completion metrics without changing Ollama or the MLX runner. The proxy forwards streaming responses unchanged and keeps a bounded recent window for up to 256 model names. Set `TOKEN_HORIZON_OLLAMA_PROXY_PORT` to change the starting port and `TOKEN_HORIZON_OLLAMA_UPSTREAM` when Ollama is not on `127.0.0.1:11434`.
 
 The proxy cannot observe traffic sent directly to `11434`; the calling client must use `http://127.0.0.1:11435` as its Ollama-compatible base URL. Token Horizon's own Ollama model discovery and benchmark requests are routed through it automatically. The listener is loopback-only and does not expose the Ollama API to other machines.
 
@@ -66,13 +105,99 @@ The local script uses an ad-hoc signature for development. For a distributable f
 | `GET /history?days=N` | N daily points (7–370) with per-tool breakdown + streak |
 | `GET /trends?window=1D\|1W\|1M\|3M\|1Y` | hourly (1D) or daily/weekly bars, per-provider |
 | `GET /limits` | merged plan limits (all providers) |
+| `GET /leaderboard?period=today\|week\|all\|streak&team=...` | ranked multi-period token leaderboard with badges & percentiles |
+| `GET /leaderboard/share?period=...&format=text\|markdown\|json\|svg&copy=1` | formatted share card (terminal box, markdown table, json, or standalone SVG) |
+| `GET /leaderboard/web` | 302 redirect to the GitHub Pages web leaderboard with sheet parameter |
+| `POST /leaderboard/sheets/publish` | push local token stats to configured Google Sheet |
+| `GET\|POST /leaderboard/sheets/pull` | pull team rankings from Google Sheet |
+| `POST /leaderboard/sheets/config` | configure leaderboard handle, team, Google Sheet URL, and auto-sync |
 | `GET /events` | recent shell events |
 | `GET /health` | liveness + version |
 | `GET /metrics` | Prometheus/OpenTelemetry metrics text |
 
 ## MCP server
 
-`mcp/token-horizon-mcp.mjs` (zero-dep Node, stdio JSON-RPC). Registered in `~/.config/opencode/opencode.jsonc`. Tools: `token_horizon_usage` (incl. per-model), `token_horizon_system`, `token_horizon_sessions`, `token_horizon_history`, `token_horizon_limits`, and `token_horizon_proxy_guide`. Call `token_horizon_proxy_guide` with `client="startup"` for the safe Ollama-upstream plus Token Horizon-proxy startup sequence, live proxy status, verification commands, and warnings against binding `ollama serve` to the proxy port. Falls back to direct sqlite for usage/sessions if the app isn't running.
+`mcp/token-horizon-mcp.mjs` (zero-dep Node, stdio JSON-RPC). Registered in `~/.config/opencode/opencode.jsonc`. Tools: `token_horizon_usage` (incl. per-model), `token_horizon_system`, `token_horizon_sessions`, `token_horizon_history`, `token_horizon_limits`, `token_horizon_proxy_guide`, `token_horizon_leaderboard` (get rankings, publish/pull Google Sheet, or get GitHub Pages web URL), and `token_horizon_share` (generate text/markdown/json/svg share cards). Call `token_horizon_proxy_guide` with `client="startup"` for the safe Ollama-upstream plus Token Horizon-proxy startup sequence, live proxy status, verification commands, and warnings against binding `ollama serve` to the proxy port. Falls back to direct sqlite for usage/sessions if the app isn't running.
+
+## Leaderboard & Backend Options
+
+Token Horizon includes a built-in team and cross-account leaderboard system with two collaborative backend options: **Cloudflare Edge + R2** (ultra-fast, <25ms) and **Google Spreadsheets** (zero-infrastructure, ~1-3s).
+
+### Backend Comparison
+
+| Feature | Cloudflare Edge + R2 (Recommended) | Google Sheets (No Infra) |
+|---|---|---|
+| **Global Latency** | **<25ms** (Edge-cached across 330+ cities) | 1,500ms – 3,000ms (Apps Script cold-start) |
+| **Object Storage** | Cloudflare R2 (`leaderboard.json`) | Google Drive Sheet |
+| **Web Hosting** | Edge-hosted via Worker `[assets]` (`../docs`) | GitHub Pages (`castlemilk.github.io`) |
+| **Dynamic README Badges** | `GET /api/share?handle=...&format=svg` (live SVG badge) | Offline generated SVG |
+| **Setup Effort** | 1 command (`./scripts/deploy-cloudflare.sh`) | Paste Apps Script into Sheet Extensions |
+
+---
+
+### Cloudflare Edge Webhosting & R2 Backend (Ultra-Fast)
+
+Deploy a private or team leaderboard edge API and web dashboard in seconds:
+
+1. **Deploy with 1 Command**:
+   ```bash
+   ./scripts/deploy-cloudflare.sh
+   ```
+   This creates the Cloudflare R2 bucket `token-horizon-leaderboard`, bundles the static web dashboard from `docs/`, and deploys the Worker to Cloudflare's global edge network.
+
+2. **Connect Token Horizon Desktop App**:
+   ```bash
+   th leaderboard config cf "https://token-horizon-leaderboard.<your-subdomain>.workers.dev"
+   ```
+   Or paste the URL in the **⚙ SETTINGS** tab or the **LEADERBOARD** drawer in Token Horizon.
+
+3. **Publish & Pull Usage**:
+   ```bash
+   th leaderboard publish --cf   # push your current usage to Cloudflare R2
+   th leaderboard pull --cf      # pull team rankings from edge
+   th leaderboard web            # open edge leaderboard in browser
+   ```
+
+4. **Dynamic SVG Badges for GitHub READMEs**:
+   Embed live auto-updating token usage cards in your GitHub profile or repository README:
+   ```markdown
+   [![AI Token Usage](https://token-horizon-leaderboard.<your-subdomain>.workers.dev/api/share?handle=yourname&format=svg)](https://token-horizon-leaderboard.<your-subdomain>.workers.dev/leaderboard.html)
+   ```
+
+---
+
+### Google Spreadsheet Backend (Zero-Infra Alternative)
+You can alternatively use a Google Sheet as a shared backend across your team or personal machines:
+
+1. **Option A: Google Apps Script Web App (Read + Write)**:
+   - Create a Google Sheet.
+   - Open **Extensions > Apps Script** and paste the code from [`scripts/google-sheets-leaderboard.js`](file:///Users/benebsworth/projects/token-horizon/scripts/google-sheets-leaderboard.js).
+   - Click **Deploy > New deployment**, select **Web app**, set *Execute as* to **Me**, and *Who has access* to **Anyone**.
+   - Copy the Web App URL (`https://script.google.com/macros/s/<ID>/exec`).
+   - Configure in Token Horizon:
+     ```bash
+     th leaderboard config sheets "https://script.google.com/macros/s/<ID>/exec"
+     ```
+2. **Option B: Public Google Sheet CSV (Read-Only Feed)**:
+   - In your Google Sheet, choose **File > Share > Publish to web**, select **Entire Document** as **CSV**, and click Publish.
+   - Or paste the normal sheet URL (`https://docs.google.com/spreadsheets/d/<ID>/edit`); Token Horizon automatically resolves it to the CSV export endpoint.
+
+### Shell CLI Commands
+```bash
+th leaderboard                # view today's leaderboard rankings
+th leaderboard week           # view 7-day rolling rankings
+th leaderboard all            # view all-time rankings
+th leaderboard streak         # view active streak rankings
+th leaderboard web            # open leaderboard web dashboard in browser
+th leaderboard publish --cf   # push stats to Cloudflare Edge + R2
+th leaderboard pull --cf      # pull rankings from Cloudflare Edge
+th leaderboard publish --sheets # push stats to Google Sheet
+th leaderboard config cf <url> # configure Cloudflare Worker URL
+th leaderboard config sheets <url> # configure Google Sheet URL
+th share                      # generate and copy share card to clipboard
+th share markdown --copy      # generate GitHub Markdown share card and copy
+th share svg > usage-card.svg # export SVG share card
+```
 
 ## Provider requirements
 

@@ -1,6 +1,9 @@
 import AppKit
 import CoreGraphics
 import Foundation
+// swiftlint:disable force_try
+// Render script: a failed allocation here SHOULD crash loudly (there is no
+// recovery path), so try! is intentional. App target code keeps enforcement.
 
 let size = 1024
 let cs = CGColorSpace(name: CGColorSpace.sRGB)!

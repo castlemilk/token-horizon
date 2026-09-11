@@ -1,0 +1,81 @@
+# SwiftLint baseline for Token Horizon.
+#
+# Philosophy (matches the Go best-practices analogue adopted here):
+# lint gates ERRORS in CI (`swiftlint lint` exits non-zero on errors only),
+# warnings are burn-down, not build-breakers. Legacy god files (Views.swift
+# ~4.9k lines, UsageEngine/ModelCatalog ~1.4k) are deliberately capped at
+# *warning* level until they are split — an error threshold here would just
+# force a mass-suppression commit that hides real issues.
+#
+# Run:  make lint   (or: swiftlint lint)
+
+excluded:
+  - .build
+  - .swiftpm
+  - TokenHorizon.app
+  - dist
+
+# Long lines / bodies are warnings: existing parser and view code exceeds
+# default budgets. Tighten these as files are split (see Core/ seams).
+# Error thresholds sit just above today's legacy maxima (grandfathered, not
+# blessed): they forbid NEW growth while the burn-down proceeds.
+line_length:
+  warning: 180
+  error: 400
+  ignores_comments: true
+  ignores_urls: true
+
+file_length:
+  warning: 1000
+  error: 6000
+  ignore_comment_only_lines: true
+
+type_body_length:
+  warning: 800
+  error: 6000
+
+function_body_length:
+  warning: 150
+  error: 600
+
+function_parameter_count:
+  warning: 6
+  error: 9
+
+cyclomatic_complexity:
+  warning: 20
+  error: 95 # today: LocalServer route fn 90, ModelsPipeline.compute 66 — splits lower this
+
+# Labeled tuples are this codebase's lightweight-struct idiom (provider
+# tuples, 5-way process splits, bucket accumulators). A max-2 rule fights the
+# codebase and would churn load-bearing call sites, so it stays off by
+# documented decision — same as a scoped `//nolint` with a reason.
+disabled_rules:
+  - large_tuple
+
+# Test doubles and throwaway scripts use file-level `// swiftlint:disable`
+# comments with a reason (see ModelShareTests.swift). This mirrors the Go
+# skill's rule excluding test files from errcheck/staticcheck, but stays
+# version-proof: per-rule `excluded:` paths are not honored by all SwiftLint
+# versions. Production code keeps the default (error-level) enforcement.
+
+type_name:
+  min_length:
+    warning: 2
+    error: 1
+  max_length:
+    warning: 50
+    error: 60
+
+identifier_name:
+  min_length:
+    warning: 2
+    error: 1
+
+nesting:
+  type_level:
+    warning: 3
+    error: 4
+
+# Keep the default rule set otherwise (trailing whitespace, force casts,
+# force unwrapping, TODOs as warnings, etc.).

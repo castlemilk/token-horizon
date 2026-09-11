@@ -5,13 +5,14 @@ import { existsSync } from "node:fs";
 import readline from "node:readline";
 
 const BASE = process.env.NOTCHMON_URL || "http://127.0.0.1:8765";
+const ENGINE_BASE = process.env.TOKEN_HORIZON_ENGINE_URL || "http://127.0.0.1:8766";
 const DB = `${homedir()}/.local/share/opencode/opencode.db`;
 
 const TOOLS = [
   {
     name: "token_horizon_usage",
     description:
-      "AI token usage, cost, cache rates, and model/tool breakdown tracked by Token Horizon across local AI coding tools (opencode, claude-code, codex, agy). Pass period=today or period=all.",
+      "AI token usage, cost, cache rates, and model/tool breakdown tracked by Token Horizon across local AI coding tools (opencode, claude-code, codex, agy). Each model includes share_percent (0-100 share of its provider's tokens, e.g. fable vs opus within claude). Pass period=today or period=all.",
     inputSchema: {
       type: "object",
       properties: {
@@ -31,6 +32,15 @@ const TOOLS = [
           description: "Optional filter by provider name (e.g. 'agy', 'opencode-go', 'kimi', 'glm', 'minimax', 'codex', 'claude', 'alibaba')",
         },
       },
+    },
+  },
+  {
+    name: "token_horizon_claude_accounts",
+    description:
+      "Discovered Claude accounts, organization details, token usage, and live quota limits across all configured Claude Code profiles (e.g. ~/.claude, ~/.claude-1, ~/.claude-2).",
+    inputSchema: {
+      type: "object",
+      properties: {},
     },
   },
   {
@@ -105,6 +115,144 @@ const TOOLS = [
       properties: { limit: { type: "number", default: 20 } },
     },
   },
+  {
+    name: "token_horizon_models",
+    description:
+      "Search and query AI models catalog with net blended pricing (prompt caching discounts), context windows, and SWE-bench / LiveCodeBench rankings. Optionally view Top Picks.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        search: { type: "string", description: "Filter by model name, provider, or capability" },
+        scope: { type: "string", enum: ["ALL", "CODING", "LOCAL", "FREE", "REASONING", "FLAGSHIP"], default: "ALL" },
+        top_picks: { type: "boolean", default: false, description: "If true, return top 10 ranked models by benchmark performance and net blended cost" },
+      },
+    },
+  },
+  {
+    name: "token_horizon_discovery",
+    description:
+      "Monitor or trigger live AI model discovery across local runtime caches (Codex, OpenCode, Ollama) and remote provider APIs. Returns monitored file states and discovered models count.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        action: { type: "string", enum: ["status", "scan"], default: "status" },
+        include_remote: { type: "boolean", default: true, description: "Whether to include remote provider APIs in scan" },
+      },
+    },
+  },
+  {
+    name: "token_horizon_workflows",
+    description:
+      "Inspect, trigger, and track agentic automation workflows in Token Horizon (e.g. CloudGuardian cloud infrastructure & cost assessment, code quality remediation). Actions: 'list' (all workflows), 'run' (trigger a workflow DAG), 'runs' (execution history), 'get_run' (single execution state), 'logs' (run step output logs).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        action: {
+          type: "string",
+          enum: ["list", "run", "runs", "get_run", "logs"],
+          default: "list",
+          description: "Action to perform",
+        },
+        workflow_id: {
+          type: "string",
+          description: "ID of workflow to run (e.g. 'cloudguardian-assessment', 'code-quality-remediation')",
+        },
+        run_id: {
+          type: "string",
+          description: "ID of workflow run to inspect or get logs for",
+        },
+        inputs: {
+          type: "object",
+          description: "Key-value input parameters for the workflow (e.g. { org: '...', model_provider: 'agy', dry_run: true })",
+        },
+      },
+    },
+  },
+  {
+    name: "token_horizon_nodes",
+    description:
+      "Cross-platform cluster telemetry across macOS (Apple Silicon unified memory), Linux (NVIDIA CUDA / ROCm), and Windows nodes. Reports CPU %, RAM, GPU VRAM, active model processes, and heartbeats.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        node_id: {
+          type: "string",
+          description: "Optional node ID to filter by",
+        },
+      },
+    },
+  },
+  {
+    name: "token_horizon_leaderboard",
+    description:
+      "Fetch, publish, or sync AI token usage rankings across local profiles, teams, peer nodes, cloud (Cloudflare Worker+R2, fast) or Google Spreadsheet backend, and GitHub Pages web app. Actions: 'get' (default, fetch rankings), 'publish' (push your token stats), 'pull' (pull team rows), 'config' (set backend URLs), 'web' (get GitHub Pages web leaderboard URL). The 'backend' param selects 'auto' (cloud when configured, else sheets), 'cloud', or 'sheets'.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        action: {
+          type: "string",
+          enum: ["get", "publish", "pull", "config", "web"],
+          default: "get",
+          description: "Action to perform ('get', 'publish', 'pull', 'config', 'web')",
+        },
+        backend: {
+          type: "string",
+          enum: ["auto", "cloud", "sheets"],
+          default: "auto",
+          description: "Sync backend for publish/pull/config ('auto' uses cloud when configured, else sheets)",
+        },
+        period: {
+          type: "string",
+          enum: ["today", "week", "all", "streak"],
+          default: "today",
+          description: "Leaderboard ranking period (today, week/7d, all, streak)",
+        },
+        team: {
+          type: "string",
+          description: "Optional team or organization filter",
+        },
+        sheets_url: {
+          type: "string",
+          description: "Optional Google Apps Script Web App URL or Published Google Sheet CSV URL when action is 'config'",
+        },
+        cloud_url: {
+          type: "string",
+          description: "Optional Cloudflare Worker base URL (e.g. https://…workers.dev) when action is 'config'",
+        },
+        cloud_token: {
+          type: "string",
+          description: "Optional cloud write token when action is 'config' (never logged)",
+        },
+      },
+    },
+  },
+  {
+    name: "token_horizon_share",
+    description:
+      "Generate a formatted AI token usage share card for social sharing, GitHub READMEs, team reporting, or clipboard copy. Available formats: text, markdown, json, svg.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        period: {
+          type: "string",
+          enum: ["today", "week", "all", "streak"],
+          default: "today",
+          description: "Time period for the share card",
+        },
+        format: {
+          type: "string",
+          enum: ["text", "markdown", "json", "svg"],
+          default: "text",
+          description: "Output format of the share card (text, markdown, json, svg)",
+        },
+        copy: {
+          type: "boolean",
+          default: false,
+          description: "If true, also copy the share card to macOS clipboard",
+        },
+      },
+    },
+  },
 ];
 
 function sh(cmd, args) {
@@ -118,8 +266,21 @@ function sh(cmd, args) {
 }
 
 async function api(path) {
-  const res = await fetch(`${BASE}${path}`, { signal: AbortSignal.timeout(2000) });
+  const res = await fetch(`${BASE}${path}`, { signal: AbortSignal.timeout(6000) });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+
+async function engineApi(path, options = {}) {
+  const res = await fetch(`${ENGINE_BASE}${path}`, {
+    signal: AbortSignal.timeout(15000),
+    ...options,
+  });
+  if (!res.ok) {
+    let errBody = "";
+    try { errBody = await res.text(); } catch {}
+    throw new Error(`Engine HTTP ${res.status}: ${errBody || res.statusText}`);
+  }
   return res.json();
 }
 
@@ -176,6 +337,7 @@ async function callTool(name, args) {
           tokens_all: m.tokensAll,
           cost: m.cost,
           free: m.free,
+          share_percent: Math.round((m.sharePercent || 0) * 10) / 10,
         }));
         const byTool = (u.perTool || []).map((t) => {
           const total = t.tokensAllTime || 0;
@@ -208,7 +370,19 @@ async function callTool(name, args) {
           },
           by_tool: byTool,
           models,
+          claude_accounts: u.claudeAccounts || [],
         };
+      }
+      case "token_horizon_claude_accounts": {
+        try {
+          const res = await api("/claude/accounts");
+          if (res?.accounts) return res;
+        } catch {}
+        try {
+          const stats = await api("/stats");
+          if (stats?.claudeAccounts) return { accounts: stats.claudeAccounts };
+        } catch {}
+        return { accounts: [] };
       }
       case "token_horizon_proxy_guide": {
         let health = null;
@@ -393,6 +567,9 @@ async function callTool(name, args) {
         return {
           count: limits.length,
           limits,
+          weekly_resets: d.weeklyResets || [],
+          next_weekly_reset: d.nextWeeklyReset || null,
+          maximizer_recommendation: d.maximizerRecommendation || null,
         };
       }
       case "token_horizon_trends": {
@@ -438,10 +615,142 @@ async function callTool(name, args) {
         const d = await api("/events");
         return Array.isArray(d) ? d.slice(0, limit) : [];
       }
+      case "token_horizon_models": {
+        if (args?.top_picks) {
+          const d = await api("/top-picks");
+          return d.topPicks;
+        }
+        const search = encodeURIComponent(args?.search || "");
+        const scope = encodeURIComponent(args?.scope || "ALL");
+        const d = await api(`/models?search=${search}&scope=${scope}`);
+        return d;
+      }
+      case "token_horizon_discovery": {
+        const action = args?.action || "status";
+        if (action === "scan") {
+          const remote = args?.include_remote !== false ? "1" : "0";
+          const res = await fetch(`${BASE}/discovery/scan?remote=${remote}`, { method: "POST", signal: AbortSignal.timeout(10000) });
+          return res.json();
+        }
+        const d = await api("/discovery/status");
+        return d;
+      }
+      case "token_horizon_workflows": {
+        const action = args?.action || "list";
+        if (action === "list") {
+          return await engineApi("/api/workflows");
+        }
+        if (action === "run") {
+          const wfId = args?.workflow_id;
+          if (!wfId) throw new Error("workflow_id is required for action 'run'");
+          return await engineApi(`/api/workflows/${encodeURIComponent(wfId)}/run`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ inputs: args?.inputs || {} }),
+          });
+        }
+        if (action === "runs") {
+          return await engineApi("/api/runs");
+        }
+        if (action === "get_run") {
+          const runId = args?.run_id;
+          if (!runId) throw new Error("run_id is required for action 'get_run'");
+          return await engineApi(`/api/runs/${encodeURIComponent(runId)}`);
+        }
+        if (action === "logs") {
+          const runId = args?.run_id;
+          if (!runId) throw new Error("run_id is required for action 'logs'");
+          return await engineApi(`/api/runs/${encodeURIComponent(runId)}/logs`);
+        }
+        throw new Error(`unknown workflows action ${action}`);
+      }
+      case "token_horizon_nodes": {
+        const nodes = await engineApi("/api/nodes");
+        if (args?.node_id) {
+          const filtered = nodes.filter((n) => n.id === args.node_id || n.hostname.toLowerCase().includes(args.node_id.toLowerCase()));
+          return filtered.length === 1 ? filtered[0] : filtered;
+        }
+        return nodes;
+      }
+      case "token_horizon_leaderboard": {
+        const action = args?.action || "get";
+        // Resolve backend once: explicit choice wins, otherwise cloud when the
+        // app reports one configured, else legacy sheets.
+        const resolveBackend = async (want) => {
+          if (want === "cloud" || want === "sheets") return want;
+          try {
+            const cfg = await api("/leaderboard/sheets/config");
+            if (cfg.cloudConfigured) return "cloud";
+          } catch { /* fall through to sheets */ }
+          return "sheets";
+        };
+        if (action === "publish") {
+          const backend = await resolveBackend(args?.backend);
+          const res = await fetch(`${BASE}/leaderboard/${backend}/publish`, { method: "POST", signal: AbortSignal.timeout(12000) });
+          if (!res.ok) throw new Error(`publish error: HTTP ${res.status}`);
+          return await res.json();
+        }
+        if (action === "pull") {
+          const backend = await resolveBackend(args?.backend);
+          const res = await fetch(`${BASE}/leaderboard/${backend}/pull`, { method: "POST", signal: AbortSignal.timeout(12000) });
+          if (!res.ok) throw new Error(`pull error: HTTP ${res.status}`);
+          return await res.json();
+        }
+        if (action === "config") {
+          if (args?.sheets_url || args?.cloud_url || args?.cloud_token) {
+            const body = JSON.stringify({
+              ...(args?.sheets_url ? {sheetsURL: args.sheets_url} : {}),
+              ...(args?.cloud_url ? {cloudURL: args.cloud_url} : {}),
+              ...(args?.cloud_token ? {cloudToken: args.cloud_token} : {}),
+            });
+            const res = await fetch(`${BASE}/leaderboard/sheets/config`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body,
+              signal: AbortSignal.timeout(6000),
+            });
+            return await res.json();
+          }
+          return await api("/leaderboard/sheets/config");
+        }
+        if (action === "web" || action === "pages") {
+          const cfg = await api("/leaderboard/sheets/config").catch(() => ({ sheetsURL: "", cloudURL: "", cloudConfigured: false }));
+          let webUrl = "";
+          if (cfg.cloudConfigured && cfg.cloudURL) {
+            webUrl = cfg.cloudURL.endsWith("/leaderboard.html") ? cfg.cloudURL : `${cfg.cloudURL}/leaderboard.html`;
+          } else {
+            const sheetParam = cfg.sheetsURL ? `?sheet=${encodeURIComponent(cfg.sheetsURL)}` : "";
+            webUrl = `https://castlemilk.github.io/token-horizon/leaderboard.html${sheetParam}`;
+          }
+          return {
+            web_url: webUrl,
+            cloud_url: cfg.cloudURL || null,
+            sheets_url: cfg.sheetsURL || null,
+            message: cfg.cloudConfigured ? "Open in browser to view live team leaderboard hosted on Cloudflare Edge + R2" : "Open in browser to view live team leaderboard hosted on GitHub Pages",
+          };
+        }
+        const period = args?.period || "today";
+        const team = args?.team ? `&team=${encodeURIComponent(args.team)}` : "";
+        return await api(`/leaderboard?period=${period}${team}`);
+      }
+      case "token_horizon_share": {
+        const period = args?.period || "today";
+        const format = args?.format || "text";
+        const copy = args?.copy ? "&copy=1" : "";
+        const res = await fetch(`${BASE}/leaderboard/share?period=${period}&format=${format}${copy}`, {
+          signal: AbortSignal.timeout(6000),
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const card = await res.text();
+        return { period, format, card };
+      }
       default:
         throw new Error(`unknown tool ${name}`);
     }
-  } catch {
+  } catch (err) {
+    if (name === "token_horizon_workflows" || name === "token_horizon_nodes") {
+      throw new Error(`Token Horizon Engine daemon not reachable at ${ENGINE_BASE} (${err.message}). Ensure the engine is running ('npm start' in engine/).`);
+    }
     if (!existsSync(DB)) throw new Error("Token Horizon app not reachable and no local data found");
     if (name === "token_horizon_usage") return usageFallback();
     if (name === "token_horizon_system") throw new Error("system stats require the Token Horizon app running (http://127.0.0.1:8765)");
