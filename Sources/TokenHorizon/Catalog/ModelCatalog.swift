@@ -1262,44 +1262,7 @@ final class ModelCatalog {
         // queue and delay pricing updates indefinitely).
         if let url = URL(string: "https://models.dev/api.json"),
            let obj = Self.fetchJSON(url: url, timeout: 15) as? [String: Any] {
-            var map: [String: Entry] = [:]
-            for (providerId, provAny) in obj {
-                guard let prov = provAny as? [String: Any] else { continue }
-                let providerName = prov["name"] as? String ?? providerId
-                let provDoc = prov["doc"] as? String
-                let models = prov["models"] as? [String: Any] ?? [:]
-                for (modelId, mAny) in models {
-                    guard let m = mAny as? [String: Any] else { continue }
-                    let cost = m["cost"] as? [String: Any] ?? [:]
-                    let limit = m["limit"] as? [String: Any] ?? [:]
-                    let key = "\(providerId)/\(modelId)".lowercased()
-                    let norm = modelId.lowercased().replacingOccurrences(of: "_", with: "-")
-                    let bench = bm[norm] ?? bm[key] ?? bm[modelId.lowercased()]
-                    let doc = (m["doc"] as? String) ?? provDoc
-                    let cacheRead = (cost["cache_read"] as? NSNumber)?.doubleValue
-                    let reasoning = m["reasoning"] as? Bool
-                    let toolCall = m["tool_call"] as? Bool
-                    let desc = m["description"] as? String
-                    let openWeights = m["open_weights"] as? Bool
-                    let modalities = (m["modalities"] as? [String: Any])?["input"] as? [String] ?? []
-                    let vision = modalities.contains("image") || modalities.contains("vision")
-                    map[key] = Entry(id: modelId,
-                                     name: bench?.name ?? (m["name"] as? String) ?? modelId,
-                                     provider: providerId,
-                                     providerName: providerName,
-                                     inputPerM: (cost["input"] as? NSNumber)?.doubleValue ?? 0,
-                                     outputPerM: (cost["output"] as? NSNumber)?.doubleValue ?? 0,
-                                     cacheReadPerM: cacheRead,
-                                     contextK: ((limit["context"] as? NSNumber)?.intValue ?? 0) / 1000,
-                                     benchmarks: bench.map { Benchmarks(swe: $0.swe, lcb: $0.lcb, source: $0.source) },
-                                     docUrl: doc,
-                                     description: desc,
-                                     reasoning: reasoning,
-                                     toolCall: toolCall,
-                                     vision: vision,
-                                     openWeights: openWeights)
-                }
-            }
+            var map = Self.parseModelsDev(api: obj, benchmarks: bm)
             injectDirectFlagships(into: &map, benchmarks: bm)
             fetchCodexCachedModels(into: &map, benchmarks: bm)
             fetchLiveZaiModels(into: &map, benchmarks: bm)
@@ -1356,6 +1319,51 @@ final class ModelCatalog {
         DispatchQueue.main.async {
             NotificationCenter.default.post(name: .refreshModelExtras, object: nil)
         }
+    }
+
+    /// Pure parse of a models.dev api.json document → catalog entries keyed by
+    /// "provider/model". Factored out of fetchAndMerge so ingestion is
+    /// hermetically testable with fixtures (no network). Separated for testing.
+    static func parseModelsDev(api obj: [String: Any], benchmarks bm: [String: (name: String, swe: Double?, lcb: Double?, source: String)]) -> [String: Entry] {
+        var map: [String: Entry] = [:]
+        for (providerId, provAny) in obj {
+            guard let prov = provAny as? [String: Any] else { continue }
+            let providerName = prov["name"] as? String ?? providerId
+            let provDoc = prov["doc"] as? String
+            let models = prov["models"] as? [String: Any] ?? [:]
+            for (modelId, mAny) in models {
+                guard let m = mAny as? [String: Any] else { continue }
+                let cost = m["cost"] as? [String: Any] ?? [:]
+                let limit = m["limit"] as? [String: Any] ?? [:]
+                let key = "\(providerId)/\(modelId)".lowercased()
+                let norm = modelId.lowercased().replacingOccurrences(of: "_", with: "-")
+                let bench = bm[norm] ?? bm[key] ?? bm[modelId.lowercased()]
+                let doc = (m["doc"] as? String) ?? provDoc
+                let cacheRead = (cost["cache_read"] as? NSNumber)?.doubleValue
+                let reasoning = m["reasoning"] as? Bool
+                let toolCall = m["tool_call"] as? Bool
+                let desc = m["description"] as? String
+                let openWeights = m["open_weights"] as? Bool
+                let modalities = (m["modalities"] as? [String: Any])?["input"] as? [String] ?? []
+                let vision = modalities.contains("image") || modalities.contains("vision")
+                map[key] = Entry(id: modelId,
+                                 name: bench?.name ?? (m["name"] as? String) ?? modelId,
+                                 provider: providerId,
+                                 providerName: providerName,
+                                 inputPerM: (cost["input"] as? NSNumber)?.doubleValue ?? 0,
+                                 outputPerM: (cost["output"] as? NSNumber)?.doubleValue ?? 0,
+                                 cacheReadPerM: cacheRead,
+                                 contextK: ((limit["context"] as? NSNumber)?.intValue ?? 0) / 1000,
+                                 benchmarks: bench.map { Benchmarks(swe: $0.swe, lcb: $0.lcb, source: $0.source) },
+                                 docUrl: doc,
+                                 description: desc,
+                                 reasoning: reasoning,
+                                 toolCall: toolCall,
+                                 vision: vision,
+                                 openWeights: openWeights)
+            }
+        }
+        return map
     }
 
     /// Bounded synchronous JSON GET for background catalog refresh. Returns the
@@ -1873,8 +1881,7 @@ final class ModelCatalog {
     /// shape changes so we keep last-known-good hardcoded pricing.
     static func scrapeDeepSeekPricing(html: String? = nil) -> DeepSeekScrapedPricing? {
         let page: String
-        if let html { page = html }
-        else {
+        if let html { page = html } else {
             guard let u = URL(string: "https://api-docs.deepseek.com/quick_start/pricing"),
                   let text = fetchText(url: u, timeout: 8) else { return nil }
             page = text

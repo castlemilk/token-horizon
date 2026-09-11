@@ -13,13 +13,31 @@ Native macOS statusline + notch dashboard tracking AI token usage, costs, system
 
 *Forty seconds, rendered entirely in code ([`video/`](video/) — Remotion, zero stock footage). Also embedded on the [landing page](https://castlemilk.github.io/token-horizon/#film).*
 
-## Install
+## Getting started
+
+Requires macOS on Apple silicon. Three steps, under two minutes:
+
+**1. Install** — one line, no prompts, no sudo:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/castlemilk/token-horizon/main/install.sh | bash
 ```
 
-One line, no prompts, no sudo: latest release → `/Applications`, crash auto-recovery on, `th` shell helper wired up. Alternatives: `brew tap castlemilk/tap && brew install --cask token-horizon` · [DMG from GitHub Releases](https://github.com/castlemilk/token-horizon/releases/latest) · build from source with `./scripts/make-app.sh`. Landing page: https://castlemilk.github.io/token-horizon/
+This installs the latest release to `/Applications`, enables crash auto-recovery, and wires up the `th` shell helper. Alternatives: `brew tap castlemilk/tap && brew install --cask token-horizon` · [DMG from GitHub Releases](https://github.com/castlemilk/token-horizon/releases/latest) · build from source with `./scripts/make-app.sh`.
+
+**2. Glance at your notch** (menu bar if you have no notch): the CPU/MEM rings are live. Hover to open the panel and flip through the tabs — **TOKENS** (usage, costs, plan limits), **ACTIVITY** (Mac performance), **MLX** (local models), **LEADERBOARD**, **SHELLS**, **⚙ SETTINGS**. The ⤢ button pops everything out into a resizable dashboard window.
+
+**3. Confirm it's tracking you:**
+
+```bash
+curl -s localhost:8765/health | python3 -m json.tool   # must report this checkout's commit
+th /stats     # usage + system snapshot in your terminal
+th /limits    # remaining quota on every provider plan
+```
+
+If `/health` reports a different commit than `git rev-parse --short HEAD`, the running binary is stale — rebuild with `./scripts/make-app.sh`, don't debug the data.
+
+**Next steps:** connect your coding agent via the [MCP server](#mcp-server) · compare usage with your team ([Leaderboard](#leaderboard--backend-options)) · track a model catalogue that updates itself with live pricing · hack on it: [`TESTING.md`](TESTING.md) + `task validate`.
 
 ## Surfaces
 

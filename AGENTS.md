@@ -97,7 +97,7 @@ curl -s localhost:8765/limits | python3 -m json.tool
 printf '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}\n' | node mcp/token-horizon-mcp.mjs
 ```
 
-The block above is also `task smoke` (`scripts/smoke-api.sh`, with PASS/FAIL
+The block above is also `task smoke` (task-native in `Taskfile.yml`, with PASS/FAIL
 per line). Local gates live in `Taskfile.yml` (`task validate` = lint + full
 suite, mirrors CI); see `TESTING.md` for the full stack (lint / unit /
 fixtures / integration / perf / smoke rules).

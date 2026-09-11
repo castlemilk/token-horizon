@@ -91,14 +91,14 @@ final class ModelCatalogLookupTests: XCTestCase {
         <tr><td>output peak</td><td>$1.2</td><td>$3.96</td></tr>
         <tr><td>Concurrency Limit</td></tr></table>
         """
-        let p = ModelCatalog.scrapeDeepSeekPricing(html: html)
-        XCTAssertNotNil(p)
-        XCTAssertEqual(p?.flashInput, 0.15)
-        XCTAssertEqual(p?.flashOutput, 0.6)
-        XCTAssertEqual(p?.flashCache, 0.003)
-        XCTAssertEqual(p?.proInput, 0.66)
-        XCTAssertEqual(p?.proOutput, 1.98)
-        XCTAssertEqual(p?.proCache, 0.022)
+        let pricing = ModelCatalog.scrapeDeepSeekPricing(html: html)
+        XCTAssertNotNil(pricing)
+        XCTAssertEqual(pricing?.flashInput, 0.15)
+        XCTAssertEqual(pricing?.flashOutput, 0.6)
+        XCTAssertEqual(pricing?.flashCache, 0.003)
+        XCTAssertEqual(pricing?.proInput, 0.66)
+        XCTAssertEqual(pricing?.proOutput, 1.98)
+        XCTAssertEqual(pricing?.proCache, 0.022)
     }
 
     func testScrapeDeepSeekPricing_rejectsChangedShape() {
@@ -112,7 +112,7 @@ final class ModelCatalogLookupTests: XCTestCase {
             "deepseek/deepseek-v4-pro": ModelCatalog.Entry(
                 id: "deepseek-v4-pro", name: "DeepSeek V4 Pro",
                 provider: "deepseek", providerName: "DeepSeek",
-                inputPerM: 0.435, outputPerM: 0.87, cacheReadPerM: 0.003625, contextK: 1000),
+                inputPerM: 0.435, outputPerM: 0.87, cacheReadPerM: 0.003625, contextK: 1000)
         ]
         ModelCatalog.applyDeepSeekAuthoritativeOverlay(into: &map, benchmarks: [:])
         XCTAssertEqual(map["deepseek/deepseek-v4-pro"]?.inputPerM, 0.66)
@@ -161,18 +161,18 @@ final class ModelCatalogLookupTests: XCTestCase {
             ("nova-99", "amazon"),
             ("solar-pro-99", "upstage"),
             ("big-pickle-99", "opencode"),
-            ("ornith-99:35b", "ollama"),
+            ("ornith-99:35b", "ollama")
         ]
-        for c in cases {
-            let e = catalog.lookup(id: c.id)
-            XCTAssertNotNil(e, "synthesis missing for \(c.id)")
-            XCTAssertEqual(e?.provider, c.provider, "wrong provider for \(c.id)")
+        for probe in cases {
+            let entry = catalog.lookup(id: probe.id)
+            XCTAssertNotNil(entry, "synthesis missing for \(probe.id)")
+            XCTAssertEqual(entry?.provider, probe.provider, "wrong provider for \(probe.id)")
         }
         // Paid families always get positive estimates (never $0).
         for id in ["qwen4-99-coder", "grok-99", "llama-99-70b", "kimi-k99"] {
-            let e = catalog.lookup(id: id)
-            XCTAssertGreaterThan(e?.inputPerM ?? 0, 0, "zero pricing for \(id)")
-            XCTAssertGreaterThan(e?.outputPerM ?? 0, 0, "zero pricing for \(id)")
+            let entry = catalog.lookup(id: id)
+            XCTAssertGreaterThan(entry?.inputPerM ?? 0, 0, "zero pricing for \(id)")
+            XCTAssertGreaterThan(entry?.outputPerM ?? 0, 0, "zero pricing for \(id)")
         }
     }
 
@@ -193,12 +193,12 @@ final class ModelCatalogLookupTests: XCTestCase {
              "context_length": 1048576,
              "architecture": ["input_modalities": ["text", "image"]],
              "supported_parameters": ["tools", "reasoning"],
-             "pricing": ["prompt": "0.00000015", "completion": "0.0000006", "input_cache_read": "0.000000003"]],
+              "pricing": ["prompt": "0.00000015", "completion": "0.0000006", "input_cache_read": "0.000000003"]],
             ["id": "nex-agi/nex-n2.5-mini:free", "name": "Nex AGI: Nex-N2.5-Mini (free)",
              "context_length": 262144,
              "architecture": ["input_modalities": ["text"]],
              "supported_parameters": ["tools"],
-             "pricing": ["prompt": "0", "completion": "0"]],
+             "pricing": ["prompt": "0", "completion": "0"]]
         ]
         let parsed = ModelCatalog.parseOpenRouterModels(list: list, benchmarks: [:])
         let flash = parsed["deepseek/deepseek-v4.1-flash"]
@@ -225,7 +225,7 @@ final class ModelCatalogLookupTests: XCTestCase {
             "google/gem-new": ModelCatalog.Entry(
                 id: "gem-new", name: "Gem New",
                 provider: "google", providerName: "Google",
-                inputPerM: 0, outputPerM: 0, contextK: 0),
+                inputPerM: 0, outputPerM: 0, contextK: 0)
         ]
         let parsed: [String: ModelCatalog.Entry] = [
             "anthropic/claude-x": ModelCatalog.Entry(
@@ -237,7 +237,7 @@ final class ModelCatalogLookupTests: XCTestCase {
                 provider: "google", providerName: "Google",
                 inputPerM: 0.15, outputPerM: 0.60, cacheReadPerM: 0.038, contextK: 1000,
                 docUrl: "https://openrouter.ai/models?q=google/gem-new",
-                description: "Live pricing via OpenRouter (google/gem-new)"),
+                description: "Live pricing via OpenRouter (google/gem-new)")
         ]
         ModelCatalog.applyOpenRouterEntries(into: &map, parsed: parsed)
         // Positive pricing untouched.
