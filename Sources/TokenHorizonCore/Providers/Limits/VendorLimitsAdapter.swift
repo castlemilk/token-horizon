@@ -23,6 +23,31 @@ open class VendorLimitsAdapter: Meterable {
     /// Credential chain for this vendor. Empty by default (vendor needs no auth).
     open var auth: VendorAuth { VendorAuth() }
 
+    /// Labeled credentials for quota fetching (multi-account). Default: the
+    /// whole auth chain flattened (profile dirs vend one entry per file).
+    /// Override for directory-per-account layouts (e.g. `~/.claude*`).
+    open func credentials() -> [(label: String, credential: String)] {
+        auth.resolveAll()
+    }
+
+    private let backoffLock = NSLock()
+    private var backoffUntil: [String: Date] = [:]
+
+    /// Per-host 429 backoff: skip requests while inside the window so one
+    /// throttled account doesn't burn the quota of the others.
+    public func isBackedOff(host: String) -> Bool {
+        backoffLock.lock(); defer { backoffLock.unlock() }
+        return (backoffUntil[host] ?? .distantPast) > Date()
+    }
+
+    public func noteStatus(host: String, status: Int, retryAfter: TimeInterval? = nil) {
+        guard status == 429 else { return }
+        backoffLock.lock()
+        backoffUntil[host] = Date().addingTimeInterval(retryAfter ?? 60)
+        backoffLock.unlock()
+        FileHandle.standardError.write("token-horizon: \(provider) 429 on \(host) — backing off\n".data(using: .utf8)!)
+    }
+
     /// Override point — required. May block (called off-main via
     /// LimitsEngine.refreshIfDue). Use `limit(...)` to build rows.
     open func fetch() -> [ProviderLimit] {
@@ -93,7 +118,9 @@ open class VendorLimitsAdapter: Meterable {
 
     /// Blocking JSON request; nil on transport error, non-2xx, or non-dict JSON.
     /// 401/403 are logged to stderr so expired keys don't silently drop rows.
+    /// 429 responses arm a per-host backoff window (see `isBackedOff`).
     func performJSON(_ req: URLRequest, timeout: TimeInterval) -> [String: Any]? {
+        if let host = req.url?.host, isBackedOff(host: host) { return nil }
         var data: Data?
         var status = 0
         let sema = DispatchSemaphore(value: 0)
@@ -103,6 +130,7 @@ open class VendorLimitsAdapter: Meterable {
             sema.signal()
         }.resume()
         if sema.wait(timeout: .now() + timeout) == .timedOut { return nil }
+        if let host = req.url?.host { noteStatus(host: host, status: status) }
         if status == 401 || status == 403 {
             FileHandle.standardError.write("token-horizon: \(provider) quota 401/403 — credential expired, re-auth required\n".data(using: .utf8)!)
             return nil
@@ -113,6 +141,7 @@ open class VendorLimitsAdapter: Meterable {
 
     /// Blocking raw request (for adapters that parse non-JSON or need the body).
     func performRaw(_ req: URLRequest, timeout: TimeInterval) -> Data? {
+        if let host = req.url?.host, isBackedOff(host: host) { return nil }
         var data: Data?
         var status = 0
         let sema = DispatchSemaphore(value: 0)
@@ -122,6 +151,7 @@ open class VendorLimitsAdapter: Meterable {
             sema.signal()
         }.resume()
         if sema.wait(timeout: .now() + timeout) == .timedOut { return nil }
+        if let host = req.url?.host { noteStatus(host: host, status: status) }
         if status == 401 || status == 403 {
             FileHandle.standardError.write("token-horizon: \(provider) quota 401/403 — credential expired, re-auth required\n".data(using: .utf8)!)
         }

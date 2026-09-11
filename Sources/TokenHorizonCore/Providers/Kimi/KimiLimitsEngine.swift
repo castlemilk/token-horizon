@@ -71,26 +71,50 @@ public final class KimiLimitsEngine: LimitsEngine, Meterable {
         try? data.write(to: URL(fileURLWithPath: creds.path))
     }
 
-    private static func makeLimit(label: String, usedPercent: Double, resetsAt: Date? = nil, detail: String = "") -> ProviderLimit {
-        ProviderLimit(provider: "kimi", label: label,
+    private static func makeLimit(provider: String = "kimi", label: String, usedPercent: Double, resetsAt: Date? = nil, detail: String = "") -> ProviderLimit {
+        ProviderLimit(provider: provider, label: label,
                       usedPercent: min(max(usedPercent, 0), 100),
                       resetsAt: resetsAt, detail: detail)
     }
 
     public static func fetch() -> [ProviderLimit] {
-        guard var creds = readCredentials() else { return [] }
-
-        if creds.expiresAt > 0 && Date().timeIntervalSince1970 + 300 > creds.expiresAt {
-            guard let refreshed = refresh(creds) else { return [] }
-            creds.accessToken = refreshed.accessToken
-            creds.refreshToken = refreshed.refreshToken
-            creds.expiresAt = refreshed.expiresAt
-            saveCredentials(creds)
+        let profiles = readAllCredentials()
+        guard !profiles.isEmpty else { return [] }
+        let multi = profiles.count > 1
+        var out: [ProviderLimit] = []
+        for (index, var creds) in profiles.enumerated() {
+            if index > 0 { Thread.sleep(forTimeInterval: 0.1) }
+            if creds.expiresAt > 0 && Date().timeIntervalSince1970 + 300 > creds.expiresAt {
+                guard let refreshed = refresh(creds) else { continue }
+                creds.accessToken = refreshed.accessToken
+                creds.refreshToken = refreshed.refreshToken
+                creds.expiresAt = refreshed.expiresAt
+                saveCredentials(creds)
+            }
+            out += fetchUsages(token: creds.accessToken,
+                               profile: multi ? AccountDiscovery.deriveLabel(dir: creds.path) : "")
         }
+        return out
+    }
 
+    /// Every credential file holding a token is one profile (multi-account).
+    public static func readAllCredentials() -> [Credentials] {
+        var out: [Credentials] = []
+        for path in credentialPaths() {
+            guard let data = FileManager.default.contents(atPath: path),
+                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let token = obj["access_token"] as? String, !token.isEmpty else { continue }
+            let refresh = obj["refresh_token"] as? String ?? ""
+            let expires = (obj["expires_at"] as? NSNumber)?.doubleValue ?? 0
+            out.append(Credentials(accessToken: token, refreshToken: refresh, expiresAt: expires, path: path))
+        }
+        return out
+    }
+
+    private static func fetchUsages(token: String, profile: String) -> [ProviderLimit] {
         guard let url = URL(string: "https://api.kimi.com/coding/v1/usages") else { return [] }
         var req = URLRequest(url: url, timeoutInterval: 8)
-        req.setValue("Bearer \(creds.accessToken)", forHTTPHeaderField: "Authorization")
+        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         req.setValue("application/json", forHTTPHeaderField: "Accept")
         req.setValue("OpenUsage", forHTTPHeaderField: "User-Agent")
 
@@ -104,12 +128,14 @@ public final class KimiLimitsEngine: LimitsEngine, Meterable {
         guard let data, let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return [] }
 
         var limits: [ProviderLimit] = []
+        let providerName = profile.isEmpty ? "kimi" : "kimi (\(profile))"
         if let usage = obj["usage"] as? [String: Any],
            let limit = parseQuota(usage, "limit"),
            let used = parseQuota(usage, "used") {
             let pct = limit > 0 ? used / limit * 100 : 0
             let plan = (membership(obj) ?? "plan").replacingOccurrences(of: "LEVEL_", with: "").lowercased()
             limits.append(makeLimit(
+                provider: providerName,
                 label: plan.lowercased(),
                 usedPercent: pct,
                 resetsAt: parseDate(usage["resetTime"] as? String),
@@ -134,6 +160,7 @@ public final class KimiLimitsEngine: LimitsEngine, Meterable {
                     }
                 }
                 limits.append(makeLimit(
+                    provider: providerName,
                     label: label,
                     usedPercent: pct,
                     resetsAt: parseDate(detail["resetTime"] as? String),

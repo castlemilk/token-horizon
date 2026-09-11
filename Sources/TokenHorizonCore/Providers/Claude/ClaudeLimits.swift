@@ -39,8 +39,51 @@ public final class ClaudeLimits: VendorLimitsAdapter {
         ])
     }
 
+    /// Multi-account: every `~/.claude*` variant dir (or CLAUDE_CONFIG_DIR)
+    /// holding `.credentials.json` is one profile; Keychain is the fallback
+    /// single profile. Labels stay empty for the single-profile case.
+    public override func credentials() -> [(label: String, credential: String)] {
+        let keyPaths = ["claudeAiOauth.accessToken", "oauth.accessToken", "accessToken"]
+        var dirs = AccountDiscovery.variantDirs(prefixes: [".claude"], envVars: ["CLAUDE_CONFIG_DIR"])
+        if dirs.isEmpty {
+            dirs = [Platform.paths.homeDirectory.appendingPathComponent(".claude").path]
+        }
+        var out: [(String, String)] = []
+        for dir in dirs {
+            let path = dir + "/.credentials.json"
+            guard let data = FileManager.default.contents(atPath: path),
+                  let obj = try? JSONSerialization.jsonObject(with: data) else { continue }
+            for keyPath in keyPaths {
+                var current: Any? = obj
+                for part in keyPath.split(separator: ".") {
+                    current = (current as? [String: Any])?[String(part)]
+                }
+                if let token = current as? String, !token.isEmpty {
+                    let label = dirs.count > 1 ? AccountDiscovery.deriveLabel(dir: dir) : ""
+                    out.append((label, token))
+                    break
+                }
+            }
+        }
+        if out.isEmpty, let fallback = auth.resolve() {
+            out.append(("", fallback))
+        }
+        return out
+    }
+
     public override func fetch() -> [ProviderLimit] {
-        guard let token = auth.resolve() else { return [] }
+        let creds = credentials()
+        guard !creds.isEmpty else { return [] }
+        let multi = creds.count > 1
+        var out: [ProviderLimit] = []
+        for (index, (profile, token)) in creds.enumerated() {
+            if index > 0 { Thread.sleep(forTimeInterval: 0.1) }
+            out += fetchWindows(token: token, providerName: multi && !profile.isEmpty ? "claude (\(profile))" : "claude")
+        }
+        return out
+    }
+
+    private func fetchWindows(token: String, providerName: String) -> [ProviderLimit] {
         guard let u = URL(string: "https://api.anthropic.com/api/oauth/usage") else { return [] }
         var req = URLRequest(url: u, timeoutInterval: 8)
         req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
@@ -60,14 +103,14 @@ public final class ClaudeLimits: VendorLimitsAdapter {
             var reset: Date?
             if let ts = window["resets_at"] as? String { reset = parseISO(ts) }
             else if let ts = window["resets_at"] as? NSNumber { reset = epoch(ts) }
-            out.append(limit(label: label, usedPercent: pct, resetsAt: reset))
+            out.append(limit(label: label, usedPercent: pct, resetsAt: reset, provider: providerName))
         }
         if let limits = obj["limits"] as? [[String: Any]] {
             for entry in limits where (entry["kind"] as? String) == "weekly_scoped" {
                 let model = ((entry["scope"] as? [String: Any])?["model"] as? [String: Any])?["display_name"] as? String ?? "scoped"
                 if let pct = (entry["utilization"] as? NSNumber)?.doubleValue {
                     out.append(limit(label: "weekly · \(model)", usedPercent: pct,
-                                     resetsAt: parseISO(entry["resets_at"] as? String)))
+                                     resetsAt: parseISO(entry["resets_at"] as? String), provider: providerName))
                 }
             }
         }
