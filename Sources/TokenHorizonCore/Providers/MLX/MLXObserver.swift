@@ -1,52 +1,16 @@
 #if os(macOS)
 import Foundation
 
-<<<<<<<< HEAD:Sources/TokenHorizon/LocalModels/MLXObserver.swift
-enum MLXObserver {
-    /// Identify the command forms used by mlx-lm, mlx-vlm, and Ollama's MLX runner.
-    static func isMLXCommand(_ command: String) -> Bool {
-========
 public enum MLXObserver {
     /// Identify the command forms used by mlx-lm and Ollama's MLX runner.
+    /// Delegates to MLXRuntime (single source of truth, cross-platform).
     public static func isMLXCommand(_ command: String) -> Bool {
->>>>>>>> e0e1d59 (Organize TokenHorizonCore by concern; per-OS Platform folders):Sources/TokenHorizonCore/Platform/macOS/MLXObserver.swift
-        let value = command.lowercased()
-        return value.contains("--mlx-engine")
-            || value.contains("mlx_lm")
-            || value.contains("mlx-lm")
-            || value.contains("mlx_vlm")
-            || value.contains("mlx-vlm")
-            || value.contains("/mlx")
+        MLXRuntime.isMLXCommand(command)
     }
 
-<<<<<<<< HEAD:Sources/TokenHorizon/LocalModels/MLXObserver.swift
-    static func modelName(in command: String) -> String? {
-        let parts = commandArguments(command)
-        // Explicit --model wins: bare -m collides with `python -m <module>`
-        // (e.g. `python -m mlx_vlm server --model X` resolved to "mlx_vlm",
-        // orphaning per-model telemetry/benchmark lookups).
-========
     public static func modelName(in command: String) -> String? {
-        let parts = command.split(whereSeparator: { $0 == " " || $0 == "\t" }).map(String.init)
->>>>>>>> e0e1d59 (Organize TokenHorizonCore by concern; per-OS Platform folders):Sources/TokenHorizonCore/Platform/macOS/MLXObserver.swift
-        for index in parts.indices {
-            if parts[index] == "--model", parts.indices.contains(index + 1) {
-                return parts[index + 1]
-            }
-            if parts[index].hasPrefix("--model=") {
-                let value = String(parts[index].dropFirst("--model=".count))
-                return value.isEmpty ? nil : value
-            }
-        }
-        for index in parts.indices {
-            if parts[index] == "-m", parts.indices.contains(index + 1) {
-                return parts[index + 1]
-            }
-        }
-        return nil
+        MLXRuntime.modelName(in: command)
     }
-
-<<<<<<<< HEAD:Sources/TokenHorizon/LocalModels/MLXObserver.swift
     /// Splits a ps command line into argv. Internal for hermetic unit tests.
     static func commandArguments(_ command: String) -> [String] {
         var arguments: [String] = []
@@ -82,10 +46,7 @@ public enum MLXObserver {
         return arguments
     }
 
-    static func snapshot(from samples: [ProcSample], now: Date = Date()) -> MLXSnapshot {
-========
     public static func snapshot(from samples: [ProcSample], now: Date = Date()) -> MLXSnapshot {
->>>>>>>> e0e1d59 (Organize TokenHorizonCore by concern; per-OS Platform folders):Sources/TokenHorizonCore/Platform/macOS/MLXObserver.swift
         let marked = samples.filter { isMLXCommand($0.command) || isMLXCommand($0.name) }
         guard !marked.isEmpty else { return MLXSnapshot(sampledAt: now) }
 

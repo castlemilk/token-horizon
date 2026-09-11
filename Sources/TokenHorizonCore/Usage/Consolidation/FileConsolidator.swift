@@ -8,9 +8,9 @@ import CSQLite
 /// Consolidation: backfill local provider files into UsageEvents so the
 /// unified store has complete history (pre-meter era + reconciliation source).
 ///
-/// INACTIVE BY DESIGN: nothing in the daemon or app calls ConsolidationRunner.
-/// Consolidators exist as the reference logic for the meter↔files cross-check
-/// and for one-off backfills. To run one deliberately:
+/// GATED BY DESIGN: only the headless daemon calls ConsolidationRunner, and
+/// only when TH_CONSOLIDATE=1 is set (one-off backfills). Never wire into the
+/// app launch path without review — it is the meter↔files reconciliation source.
 ///   let store = try SQLiteUsageStore()
 ///   try ClaudeConsolidator().consolidate(into: store)
 ///
@@ -110,8 +110,12 @@ open class FileConsolidator {
     public func jsonlFiles(under dirs: [String], suffix: String = ".jsonl") -> [String] {
         var out: [String] = []
         let fm = FileManager.default
+        let home = Platform.paths.homeDirectory.path
         for dir in dirs {
-            let root = NSString(string: dir).expandingTildeInPath
+            let root: String
+            if dir.hasPrefix("~/") { root = home + "/" + String(dir.dropFirst(2)) }
+            else if dir == "~" { root = home }
+            else { root = dir }
             guard let en = fm.enumerator(atPath: root) else { continue }
             while let item = en.nextObject() as? String {
                 if item.hasSuffix(suffix), !item.contains("/chunks/") {
@@ -249,9 +253,10 @@ public final class OpenCodeConsolidator: FileConsolidator {
     public override var vendor: String { "opencode" }
 
     public override func consolidate(into store: UsageStoring) throws -> Int {
+        let home = Platform.paths.homeDirectory.path
         let candidates = [
-            NSString("~/.local/share/opencode/opencode.db").expandingTildeInPath,
-            NSString("~/Library/Application Support/opencode/opencode.db").expandingTildeInPath,
+            home + "/.local/share/opencode/opencode.db",
+            home + "/Library/Application Support/opencode/opencode.db",
         ]
         guard let path = candidates.first(where: { FileManager.default.fileExists(atPath: $0) }) else { return 0 }
         var handle: OpaquePointer?

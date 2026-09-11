@@ -590,7 +590,7 @@ public final class ModelCatalog {
     }
 
     private static func fetchAndMerge() {
-        let cachePath = NSString(string: "~/.config/token-horizon/models-cache.json").expandingTildeInPath
+        let cachePath = Platform.paths.configDirectory.appendingPathComponent("models-cache.json").path
         let bm = loadBenchmarks()
         let catalog = ModelCatalog.shared
         // Try remote, fallback to cache
@@ -805,7 +805,7 @@ public final class ModelCatalog {
 
     private static func loadBenchmarks() -> [String: (name: String, swe: Double?, lcb: Double?, source: String)] {
         let bundled = Bundle.main.path(forResource: "benchmarks", ofType: "json")
-        let fallback = NSString(string: "~/.config/token-horizon/benchmarks.json").expandingTildeInPath
+        let fallback = Platform.paths.configDirectory.appendingPathComponent("benchmarks.json").path
         let projectFallback = "Resources/benchmarks.json"
         let path = bundled ?? (FileManager.default.fileExists(atPath: fallback) ? fallback : projectFallback)
         guard let data = FileManager.default.contents(atPath: path),

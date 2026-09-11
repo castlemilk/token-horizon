@@ -85,12 +85,18 @@ public struct RuntimeSnapshot {
 /// telemetry comes from each runtime's Prometheus /metrics endpoint — no
 /// traffic proxying required. Subclasses declare ports, process signatures,
 /// and counter names; the base class does the rest.
-open class LocalInferenceRuntime {
+open class LocalInferenceRuntime: Meterable {
     public let vendor: String
     public let displayName: String
     public let defaultPorts: [Int]
     /// Lowercase substrings matched against process command names.
     public let processSignatures: [String]
+
+    open var meterVendorKey: String { vendor }
+    open var defaultMeterTarget: URL? {
+        configuredEndpoints.lazy.compactMap { URL(string: $0.url) }.first
+            ?? defaultPorts.first.map { URL(string: "http://127.0.0.1:\($0)")! }
+    }
 
     /// Prometheus counter names summed for prompt tokens.
     open var promptCounterNames: [String] { [] }
@@ -104,9 +110,11 @@ open class LocalInferenceRuntime {
     /// The runtime's server is the meter's upstream. Priority: explicit
     /// target arg → first user-configured endpoint → detected loopback port.
     open func makeMeter(listenPort: UInt16, target: URL?, store: UsageStoring?) -> RequestMeter? {
+        guard ConsentManager.shared.isGranted(.metering) else { return nil }
+        let fallbackPort = defaultPorts.first ?? 8080
         let upstream = target
             ?? configuredEndpoints.lazy.compactMap { URL(string: $0.url) }.first
-            ?? URL(string: "http://127.0.0.1:\(activePort() ?? defaultPorts[0])")!
+            ?? URL(string: "http://127.0.0.1:\(activePort() ?? fallbackPort)")!
         return OpenAICompatibleMeter(vendor: vendor, listenPort: listenPort, targetBase: upstream,
                                      store: store, sourceKind: .selfManaged)
     }

@@ -126,12 +126,17 @@ extension SystemStatsProviding {
         for p in procs { children[p.ppid, default: []].append(p) }
         for key in children.keys { children[key]?.sort { $0.cpu > $1.cpu } }
         var out: [(proc: ProcSample, depth: Int, hasChildren: Bool)] = []
+        var visited = Set<Int32>()
         func visit(_ p: ProcSample, _ depth: Int) {
+            guard !visited.contains(p.pid), depth < 64 else { return }
+            visited.insert(p.pid)
             let kids = children[p.pid] ?? []
             out.append((proc: p, depth: depth, hasChildren: !kids.isEmpty))
             for k in kids { visit(k, depth + 1) }
         }
         for p in procs where p.ppid <= 1 || !pids.contains(p.ppid) { visit(p, 0) }
+        // Orphan cycles not reachable from roots (ppid loop): emit once each.
+        for p in procs where !visited.contains(p.pid) { visit(p, 0) }
         return out
     }
 }

@@ -52,7 +52,7 @@ public final class OllamaClient {
     }
 
     private static var cacheFilePath: String {
-        NSString(string: "~/.config/token-horizon/ollama-benchmarks.json").expandingTildeInPath
+        Platform.paths.configDirectory.appendingPathComponent("ollama-benchmarks.json").path
     }
 
     private static func ensureCacheLoaded() {
@@ -136,7 +136,7 @@ public final class OllamaClient {
                 lock.unlock()
             }
             guard let url = endpoint("/api/generate") else {
-                DispatchQueue.main.async { completion?(nil) }
+                completion?(nil)
                 return
             }
             var req = URLRequest(url: url, timeoutInterval: 25)
@@ -164,7 +164,7 @@ public final class OllamaClient {
             }.resume()
 
             if sema.wait(timeout: .now() + 25) == .timedOut {
-                DispatchQueue.main.async { completion?(nil) }
+                completion?(nil)
                 return
             }
 
@@ -173,7 +173,7 @@ public final class OllamaClient {
                   let evalCount = (obj["eval_count"] as? NSNumber)?.intValue,
                   let evalDuration = (obj["eval_duration"] as? NSNumber)?.uint64Value,
                   evalDuration > 0 else {
-                DispatchQueue.main.async { completion?(nil) }
+                completion?(nil)
                 return
             }
 
@@ -194,11 +194,8 @@ public final class OllamaClient {
             benchmarkCache[model] = result
             lock.unlock()
             saveCache()
-
-            DispatchQueue.main.async {
-                NotificationCenter.default.post(name: .refreshModelExtras, object: nil)
-                completion?(result)
-            }
+            NotificationCenter.default.post(name: .refreshModelExtras, object: nil)
+            completion?(result)
         }
     }
 

@@ -45,8 +45,11 @@ public final class TokenHorizonTelemetry {
     private let meter: MeterSdk
 
     private init() {
+        // In-memory Prometheus exporter only — the text is served via the
+        // existing CoreAPIRouter GET /metrics. Never bind a second listener
+        // on :8765 (invariant #13); port 0 guarantees no collision.
         let prometheus = PrometheusExporter(
-            options: PrometheusExporterOptions(url: "http://127.0.0.1:8765/metrics")
+            options: PrometheusExporterOptions(url: "http://127.0.0.1:0/metrics")
         )
         var builder = MeterProviderSdk.builder()
             .registerView(selector: InstrumentSelectorBuilder().build(), view: View.builder().build())

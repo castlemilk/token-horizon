@@ -173,14 +173,11 @@ public enum SystemStats {
     /// Lookup detailed info for a single PID (used by drill-down).
     public static func processDetail(pid: Int32) -> ProcDetail? {
         // Use ps with extra fields (no nthreads — macOS doesn't support it in ps column mode)
-        let pipe = Pipe()
+        // Temp-file capture (not Pipe) to avoid deadlock on utility queue.
         let task = Process()
         task.executableURL = URL(fileURLWithPath: "/bin/ps")
         task.arguments = ["-p", String(pid), "-o", "pid=,ppid=,%cpu=,%mem=,rss=,vsz=,etime=,user=,state=,nice=,command="]
-        task.standardOutput = pipe
-        do { try task.run() } catch { return nil }
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        task.waitUntilExit()
+        guard let data = runCapture(task) else { return nil }
         guard let line = String(decoding: data, as: UTF8.self).split(separator: "\n").first.map(String.init) else { return nil }
         let parts = line.split(separator: " ", omittingEmptySubsequences: true).map(String.init)
         // Format: pid ppid cpu mem% rss vsz etime user state nice command...

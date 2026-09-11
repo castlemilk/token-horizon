@@ -41,6 +41,11 @@ if ProcessInfo.processInfo.environment["TH_ASK_CONSENT"] != nil {
 // Provider-parity usage for self-managed runtimes via the durable ledger.
 engine.localRuntimeUsage = { RuntimeUsageLedger.shared.contributions() }
 InferenceMonitor.shared.startPolling()
+// Routine file polling → DB timeline (requires .fileReading consent;
+// TH_CONSENT=fileReading to opt in headless).
+if ConsentManager.shared.isGranted(.fileReading) {
+    FilePoller.shared.startPolling()
+}
 
 // Meters: env (TH_METERS) + settings-managed runtime endpoints.
 router.startMetersFromEnv()

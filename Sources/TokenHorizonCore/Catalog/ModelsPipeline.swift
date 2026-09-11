@@ -175,7 +175,6 @@ public enum ModelsPipeline {
                     || $0.usage.model.lowercased().contains(q)
                     || $0.usage.provider.lowercased().contains(q)
                     || $0.providerDisplay.lowercased().contains(q)
-                    || ($0.catalog?.description?.lowercased().contains(q) ?? false)
                     || ($0.usage.paramSize?.lowercased().contains(q) ?? false)
                     || ($0.usage.quant?.lowercased().contains(q) ?? false)
             }
@@ -215,17 +214,17 @@ public enum ModelsPipeline {
             return asc ? (a.id < b.id) : (a.id > b.id)
         }
 
-        var counts: [ModelFilterScope: Int] = [:]
-        counts[.all] = base.count
-        counts[.cloud] = base.filter { !$0.isLocal }.count
-        counts[.local] = base.filter { $0.isLocal }.count
-        counts[.freeOpen] = base.filter { $0.isFree || $0.isLocal }.count
-        counts[.benchmarked] = base.filter { $0.sweScore != nil || $0.lcbScore != nil }.count
-        counts[.active] = base.filter { $0.usage.tokensAll > 0 || $0.usage.cost > 0 }.count
+        var counts: [ModelFilterScope: Int] = [.all: base.count, .cloud: 0, .local: 0, .freeOpen: 0, .benchmarked: 0, .active: 0]
+        for row in base {
+            if row.isLocal { counts[.local, default: 0] += 1 } else { counts[.cloud, default: 0] += 1 }
+            if row.isFree || row.isLocal { counts[.freeOpen, default: 0] += 1 }
+            if row.sweScore != nil || row.lcbScore != nil { counts[.benchmarked, default: 0] += 1 }
+            if row.usage.tokensAll > 0 || row.usage.cost > 0 { counts[.active, default: 0] += 1 }
+        }
         let localCount = counts[.local] ?? 0
 
         let elapsed = Date().timeIntervalSince(t0) * 1000
-        let baseKey = "\(catalog.count)-\(usageModels.count)-\(syntheticModels.count)-\(search)-\(scope.rawValue)-\(sortColumn.rawValue)-\(sortAscending)"
+        let baseKey = "\(catalog.count)-\(usageModels.count)-\(syntheticModels.count)-\(search)-\(scope.rawValue)-\(sortColumn.rawValue)-\(sortAscending)-\(base.count)"
 
         NSLog("[ModelsPipeline] compute: \(String(format: "%.1f", elapsed))ms, base=\(base.count), filtered=\(list.count), input=\(catalog.count)")
 

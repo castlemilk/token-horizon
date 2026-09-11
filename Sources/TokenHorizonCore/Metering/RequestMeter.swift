@@ -193,6 +193,7 @@ open class RequestMeter: NSObject, URLSessionDataDelegate {
     // MARK: - Relay lifecycle
 
     public func start() {
+        guard ConsentManager.shared.isGranted(.metering) else { return }
         guard listenFD < 0 else { return }
         var addr = sockaddr_in()
         addr.sin_family = sa_family_t(AF_INET)
@@ -270,8 +271,10 @@ open class RequestMeter: NSObject, URLSessionDataDelegate {
         }
         conn.exchange.requestBody = body
 
-        // Forward upstream.
-        guard let url = URL(string: targetBase.absoluteString + request.path) else {
+        // Forward upstream (robust base+path join: avoid // and missing /).
+        let base = targetBase.absoluteString.hasSuffix("/") ? String(targetBase.absoluteString.dropLast()) : targetBase.absoluteString
+        let path = request.path.hasPrefix("/") ? request.path : "/\(request.path)"
+        guard let url = URL(string: base + path) else {
             close(fd)
             return
         }

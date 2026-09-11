@@ -14,7 +14,15 @@ public final class UsageEngine {
     private var codexFiles: [String: CodexFileState] = [:]
     private var genericFiles: [String: AdditiveFileState] = [:]
     private var kimiFiles: [String: AdditiveFileState] = [:]
-    private var dirCache: [String: (mtime: Date, files: [String])] = [:]
+    private var dirCache: [String: (mtime: Date, files: [String], cachedAt: Date)] = [:]
+
+    private func resolvePath(_ path: String) -> String {
+        if path.hasPrefix("~/") {
+            return Platform.paths.homeDirectory.appendingPathComponent(String(path.dropFirst(2))).path
+        }
+        if path == "~" { return Platform.paths.homeDirectory.path }
+        return path
+    }
 
     /// One 15-minute bucket: compat aggregate (`tokens`, `cost`) + granular split.
     /// `tokens` preserves each source's canonical total (e.g. codex display tokens
@@ -462,9 +470,13 @@ public final class UsageEngine {
         var perModel: [String: ModelAccum] = [:]
     }
 
-    /// Bucket granularity: 15 minutes (epoch-aligned keys). "Today" compares
-    /// bucket keys against local-midnight epoch; history/trends re-aggregate.
-    public static let bucketSeconds = 900
+    /// Bucket granularity: 5 minutes (epoch-aligned keys, the finest tick).
+    /// Larger horizons aggregate up (15m/1h/1d via BucketResolution). "Today"
+    /// compares bucket keys against local-midnight epoch; history/trends
+    /// re-aggregate. Note: pre-change 15-min buckets (900s) stay valid —
+    /// 900 is a multiple of 300 and epoch-aligned, so old keys land exactly
+    /// on every third 5-min boundary.
+    public static let bucketSeconds = 300
 
     private func bucketStart(_ epochSeconds: Int) -> Int {
         epochSeconds / Self.bucketSeconds * Self.bucketSeconds
@@ -488,9 +500,11 @@ public final class UsageEngine {
 
     private func cachedFiles(in dir: String, suffix: String = ".jsonl") -> [String] {
         let fm = FileManager.default
-        let mtime = (try? fm.attributesOfItem(atPath: dir)[.modificationDate] as? Date) ?? .distantPast
-        if let cached = dirCache[dir], cached.mtime == mtime { return cached.files }
-        guard let en = fm.enumerator(atPath: dir) else { return [] }
+        let resolved = resolvePath(dir)
+        let mtime = (try? fm.attributesOfItem(atPath: resolved)[.modificationDate] as? Date) ?? .distantPast
+        if let cached = dirCache[resolved], cached.mtime == mtime,
+           Date().timeIntervalSince(cached.cachedAt) < 2 { return cached.files }
+        guard let en = fm.enumerator(atPath: resolved) else { return [] }
         var files: [String] = []
         while let item = en.nextObject() as? String {
             if item.hasSuffix(suffix) {
@@ -499,7 +513,7 @@ public final class UsageEngine {
                 files.append(item)
             }
         }
-        dirCache[dir] = (mtime, files)
+        dirCache[resolved] = (mtime, files, Date())
         return files
     }
 
@@ -512,7 +526,7 @@ public final class UsageEngine {
         var seen = Set<String>()
 
         for dir in dirs {
-            let root = NSString(string: dir).expandingTildeInPath
+            let root = resolvePath(dir)
             for item in cachedFiles(in: root) {
                 let full = "\(root)/\(item)"
                 let key = "\(prefix)::\(full)"
@@ -584,7 +598,7 @@ public final class UsageEngine {
     private func scanKimi(dirs: [String]) {
         let fm = FileManager.default
         for dir in dirs {
-            let root = NSString(string: dir).expandingTildeInPath
+            let root = resolvePath(dir)
             for item in cachedFiles(in: root, suffix: "wire.jsonl") {
                 let full = "\(root)/\(item)"
                 guard let attrs = try? fm.attributesOfItem(atPath: full),
@@ -621,7 +635,7 @@ public final class UsageEngine {
         var seen = Set<String>()
 
         for dir in dirs {
-            let root = NSString(string: dir).expandingTildeInPath
+            let root = resolvePath(dir)
             for item in cachedFiles(in: root) {
                 let full = "\(root)/\(item)"
                 seen.insert(full)
@@ -630,9 +644,9 @@ public final class UsageEngine {
                 var st = state[full] ?? CodexFileState()
                 if size < st.offset { st = CodexFileState() }
                 guard size > st.offset, let fh = FileHandle(forReadingAtPath: full) else { continue }
-                defer { try? fh.close() }
                 fh.seek(toFileOffset: st.offset)
                 let chunk = fh.readDataToEndOfFile()
+                try? fh.close()
                 guard let lastNewline = chunk.lastIndex(of: UInt8(ascii: "\n")) else { continue }
                 let consumable = chunk[chunk.startIndex...lastNewline]
                 for line in consumable.split(separator: UInt8(ascii: "\n")) where !line.isEmpty {
@@ -791,21 +805,6 @@ public final class UsageEngine {
             cost += total
         }
         if let c = obj["costUSD"] as? NSNumber { cost += c.doubleValue }
-
-        if tokens == 0 {
-            var charCount = 0
-            if let c = obj["content"] as? String { charCount += c.count }
-            if let th = obj["thinking"] as? String { charCount += th.count }
-            if let tc = obj["tool_calls"] as? [Any] {
-                if let tcData = try? JSONSerialization.data(withJSONObject: tc) {
-                    charCount += tcData.count
-                }
-            }
-            if charCount > 0 {
-                tokens = max(1, charCount / 4)
-                breakdown.output += tokens   // char-estimate: attribute as model output
-            }
-        }
 
         var hour = currentBucket()
         if let ts = obj["timestamp"] as? String {
@@ -1002,9 +1001,10 @@ public final class UsageEngine {
 
     private func openDB() -> OpaquePointer? {
         if let db { return db }
+        let home = Platform.paths.homeDirectory.path
         let candidates = [
-            NSString("~/.local/share/opencode/opencode.db").expandingTildeInPath,
-            NSString("~/Library/Application Support/opencode/opencode.db").expandingTildeInPath,
+            home + "/.local/share/opencode/opencode.db",
+            home + "/Library/Application Support/opencode/opencode.db",
         ]
         for c in candidates {
             guard FileManager.default.fileExists(atPath: c) else { continue }

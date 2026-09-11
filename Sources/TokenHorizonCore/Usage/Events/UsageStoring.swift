@@ -105,6 +105,36 @@ public struct ProviderSummary: Codable {
     }
 }
 
+/// One quota/limit observation at a point in time. Recorded on every
+/// LimitsEngine refresh so quota, limit and reset history survives restarts
+/// and syncs multi-machine via the same store as usage events.
+public struct LimitSnapshot: Codable {
+    public var recordedAt: Date
+    public var machineID: String
+    public var provider: String
+    public var label: String
+    public var usedPercent: Double
+    public var resetsAt: Date?
+    public var detail: String
+
+    public init(recordedAt: Date = Date(), machineID: String, provider: String,
+                label: String, usedPercent: Double, resetsAt: Date? = nil, detail: String = "") {
+        self.recordedAt = recordedAt
+        self.machineID = machineID
+        self.provider = provider
+        self.label = label
+        self.usedPercent = usedPercent
+        self.resetsAt = resetsAt
+        self.detail = detail
+    }
+
+    public init(from limit: ProviderLimit, recordedAt: Date = Date(), machineID: String) {
+        self.init(recordedAt: recordedAt, machineID: machineID, provider: limit.provider,
+                  label: limit.label, usedPercent: limit.usedPercent,
+                  resetsAt: limit.resetsAt, detail: limit.detail)
+    }
+}
+
 public enum UsageStoreError: Error {
     case openFailed(String)
     case prepareFailed(String)
@@ -146,4 +176,18 @@ public protocol UsageStoring {
 
     /// Total stored events (health/debug).
     func count() throws -> Int
+
+    /// Quota timeline: append limit observations (deduplicated per provider/
+    /// label/minute so refreshes don't flood the table).
+    func recordLimits(_ snapshots: [LimitSnapshot]) throws
+
+    /// Quota history over [from, to), optionally filtered by provider.
+    func limitHistory(from: Date, to: Date, provider: String?) throws -> [LimitSnapshot]
+}
+
+/// Default no-op quota history for backends that haven't opted in
+/// (cloud stubs, test doubles) — SQLiteUsageStore overrides with real storage.
+public extension UsageStoring {
+    func recordLimits(_ snapshots: [LimitSnapshot]) throws {}
+    func limitHistory(from: Date, to: Date, provider: String?) throws -> [LimitSnapshot] { [] }
 }

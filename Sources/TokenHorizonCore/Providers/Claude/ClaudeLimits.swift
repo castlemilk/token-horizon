@@ -23,7 +23,15 @@ public final class ClaudeLimits: VendorLimitsAdapter {
     /// "Claude Code-credentials" (secret is itself JSON, same key paths).
     public override var auth: VendorAuth {
         let env = ProcessInfo.processInfo.environment
-        let configDir = env["CLAUDE_CONFIG_DIR"] ?? "~/.claude"
+        let rawDir = env["CLAUDE_CONFIG_DIR"] ?? "~/.claude"
+        let configDir: String
+        if rawDir.hasPrefix("~/") {
+            configDir = Platform.paths.homeDirectory.appendingPathComponent(String(rawDir.dropFirst(2))).path
+        } else if rawDir == "~" {
+            configDir = Platform.paths.homeDirectory.path
+        } else {
+            configDir = rawDir
+        }
         let keyPaths = ["claudeAiOauth.accessToken", "oauth.accessToken", "accessToken"]
         return VendorAuth(sources: [
             .fileJSON("\(configDir)/.credentials.json", keyPaths: keyPaths),
