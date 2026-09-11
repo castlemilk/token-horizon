@@ -84,6 +84,23 @@ public final class SQLiteUsageStore: UsageStoring {
             PRIMARY KEY (recorded_at, machine_id, provider, label)
         );
         CREATE INDEX IF NOT EXISTS idx_limit_provider_ts ON limit_snapshot(provider, recorded_at);
+        CREATE TABLE IF NOT EXISTS leaderboard_snapshot (
+            machine_id TEXT NOT NULL,
+            handle TEXT NOT NULL,
+            team TEXT NOT NULL DEFAULT '',
+            period TEXT NOT NULL DEFAULT 'today',
+            tokens INTEGER NOT NULL DEFAULT 0,
+            cost REAL NOT NULL DEFAULT 0,
+            top_model TEXT NOT NULL DEFAULT '',
+            breakdown_json TEXT NOT NULL DEFAULT '{}',
+            updated_at INTEGER NOT NULL,
+            PRIMARY KEY (machine_id, handle, period)
+        );
+        CREATE TABLE IF NOT EXISTS sync_state (
+            dataset TEXT PRIMARY KEY,
+            cursor TEXT NOT NULL DEFAULT '',
+            updated_at INTEGER NOT NULL
+        );
         """
         guard sqlite3_exec(db, ddl, nil, nil, nil) == SQLITE_OK else {
             throw UsageStoreError.stepFailed("migrate: \(lastError())")
@@ -506,6 +523,102 @@ public final class SQLiteUsageStore: UsageStoring {
                 detail: columnText(stmt, 6)))
         }
         return out
+    }
+
+    public func recordLeaderboard(_ entries: [SyncLeaderboardEntry]) throws {
+        guard !entries.isEmpty else { return }
+        lock.lock(); defer { lock.unlock() }
+        let sql = """
+        INSERT INTO leaderboard_snapshot
+        (machine_id, handle, team, period, tokens, cost, top_model, breakdown_json, updated_at)
+        VALUES (?,?,?,?,?,?,?,?,?)
+        ON CONFLICT(machine_id, handle, period) DO UPDATE SET
+          team=excluded.team, tokens=excluded.tokens, cost=excluded.cost,
+          top_model=excluded.top_model, breakdown_json=excluded.breakdown_json,
+          updated_at=excluded.updated_at
+        """
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
+            throw UsageStoreError.prepareFailed(lastError())
+        }
+        defer { sqlite3_finalize(stmt) }
+        for e in entries {
+            bindText(stmt, 1, e.machineID)
+            bindText(stmt, 2, e.handle)
+            bindText(stmt, 3, e.team)
+            bindText(stmt, 4, e.period)
+            sqlite3_bind_int64(stmt, 5, Int64(e.tokens))
+            sqlite3_bind_double(stmt, 6, e.cost)
+            bindText(stmt, 7, e.topModel)
+            bindText(stmt, 8, e.breakdownJSON)
+            sqlite3_bind_int64(stmt, 9, Int64(e.updatedAt.timeIntervalSince1970))
+            guard sqlite3_step(stmt) == SQLITE_DONE else {
+                throw UsageStoreError.stepFailed("recordLeaderboard: \(lastError())")
+            }
+            sqlite3_reset(stmt)
+            sqlite3_clear_bindings(stmt)
+        }
+    }
+
+    public func leaderboardSnapshots(since: Date) throws -> [SyncLeaderboardEntry] {
+        lock.lock(); defer { lock.unlock() }
+        let sql = """
+        SELECT machine_id, handle, team, period, tokens, cost, top_model,
+               breakdown_json, updated_at
+        FROM leaderboard_snapshot WHERE updated_at >= ? ORDER BY updated_at
+        """
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
+            throw UsageStoreError.prepareFailed(lastError())
+        }
+        defer { sqlite3_finalize(stmt) }
+        sqlite3_bind_int64(stmt, 1, Int64(since.timeIntervalSince1970))
+        var out: [SyncLeaderboardEntry] = []
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            out.append(SyncLeaderboardEntry(
+                machineID: columnText(stmt, 0),
+                handle: columnText(stmt, 1),
+                team: columnText(stmt, 2),
+                period: columnText(stmt, 3),
+                tokens: Int(sqlite3_column_int64(stmt, 4)),
+                cost: sqlite3_column_double(stmt, 5),
+                topModel: columnText(stmt, 6),
+                breakdownJSON: columnText(stmt, 7),
+                updatedAt: Date(timeIntervalSince1970: sqlite3_column_double(stmt, 8))))
+        }
+        return out
+    }
+
+    public func syncCursor(dataset: String) throws -> String? {
+        lock.lock(); defer { lock.unlock() }
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "SELECT cursor FROM sync_state WHERE dataset = ?",
+                                 -1, &stmt, nil) == SQLITE_OK else {
+            throw UsageStoreError.prepareFailed(lastError())
+        }
+        defer { sqlite3_finalize(stmt) }
+        bindText(stmt, 1, dataset)
+        guard sqlite3_step(stmt) == SQLITE_ROW else { return nil }
+        return columnText(stmt, 0)
+    }
+
+    public func setSyncCursor(dataset: String, cursor: String) throws {
+        lock.lock(); defer { lock.unlock() }
+        let sql = """
+        INSERT INTO sync_state (dataset, cursor, updated_at) VALUES (?,?,?)
+        ON CONFLICT(dataset) DO UPDATE SET cursor=excluded.cursor, updated_at=excluded.updated_at
+        """
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
+            throw UsageStoreError.prepareFailed(lastError())
+        }
+        defer { sqlite3_finalize(stmt) }
+        bindText(stmt, 1, dataset)
+        bindText(stmt, 2, cursor)
+        sqlite3_bind_int64(stmt, 3, Int64(Date().timeIntervalSince1970))
+        guard sqlite3_step(stmt) == SQLITE_DONE else {
+            throw UsageStoreError.stepFailed("setSyncCursor: \(lastError())")
+        }
     }
 
     /// Row → UsageEvent. Column layout fixed by the SELECTs above.

@@ -51,6 +51,17 @@ if ConsentManager.shared.isGranted(.fileReading) {
 router.startMetersFromEnv()
 router.startMetersFromSettings()
 
+// Cloud sync outbox (TH_SYNC_URL): retry pending deltas every 5 min so
+// offline stretches (flights) upload on reconnect. Manual: POST /sync/now.
+var cloudSyncTimer: DispatchSourceTimer?
+if CloudSync.shared.baseURL != nil, let store = usageStore {
+    let timer = DispatchSource.makeTimerSource(queue: DispatchQueue(label: "tokenhorizon.cloudsync", qos: .utility))
+    timer.schedule(deadline: .now() + 30, repeating: 300)
+    timer.setEventHandler { _ = CloudSync.shared.sync(store: store) }
+    timer.resume()
+    cloudSyncTimer = timer
+}
+
 // Explicit opt-in only: reconcile logs into the event store.
 if ProcessInfo.processInfo.environment["TH_CONSOLIDATE"] == "1", let store = usageStore {
     _ = try? ConsolidationRunner.run(into: store)
