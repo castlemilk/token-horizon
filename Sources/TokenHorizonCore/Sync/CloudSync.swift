@@ -23,7 +23,7 @@ import FoundationNetworking
 public enum CloudSyncDataset: String, CaseIterable {
     case usageEvents = "usage_events"   // cursor: rowid
     case limits = "limits"               // cursor: epoch seconds
-    case leaderboard = "leaderboard"     // cursor: epoch seconds
+    case leaderboard = "leaderboard"     // outbox: rows deleted on ack, no cursor
 }
 
 /// Transport seam for the cloud endpoint. URLSession in production, fakes in
@@ -213,13 +213,14 @@ public final class CloudSync {
     }
 
     private func pushLeaderboard(store: UsageStoring, transport: CloudTransport, now: Date) throws -> Int {
-        let sinceEpoch = Int(try store.syncCursor(dataset: CloudSyncDataset.leaderboard.rawValue) ?? "0") ?? 0
-        let entries = try store.leaderboardSnapshots(since: Date(timeIntervalSince1970: TimeInterval(sinceEpoch))).prefix(batchSize)
+        // Outbox semantics: the table holds only unacknowledged uploads
+        // (rankings themselves live cloud-side). Push everything pending,
+        // delete on ack. No cursor — the table IS the queue.
+        let entries = try store.leaderboardSnapshots(since: .distantPast).prefix(batchSize)
         guard !entries.isEmpty else { return 0 }
+        let pushStart = now
         try transport.post(path: "/ingest/leaderboard", payload: CloudSchema.encode(CloudSchema.leaderboard(Array(entries))))
-        if let last = entries.map(\.updatedAt).max() {
-            try store.setSyncCursor(dataset: CloudSyncDataset.leaderboard.rawValue, cursor: String(Int(last.timeIntervalSince1970)))
-        }
+        try store.clearSyncedLeaderboard(before: pushStart)
         return entries.count
     }
 }

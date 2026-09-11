@@ -215,10 +215,15 @@ public protocol UsageStoring {
     func limitHistory(from: Date, to: Date, provider: String?) throws -> [LimitSnapshot]
 
     /// Leaderboard outbox: upsert per (machine, handle, period) for cloud sync.
+    /// Pending uploads only — rankings themselves live cloud-side (global
+    /// construct); rows are deleted on acknowledged push.
     func recordLeaderboard(_ entries: [SyncLeaderboardEntry]) throws
 
     /// Leaderboard rows updated since the given date (for delta pushes).
     func leaderboardSnapshots(since: Date) throws -> [SyncLeaderboardEntry]
+
+    /// Drop outbox rows updated at or before the given date (after ack).
+    func clearSyncedLeaderboard(before: Date) throws
 
     /// Sync cursors: opaque per-dataset progress markers for delta pushes
     /// (usage rowid, limits timestamp, …). Backends persist them; the sync
@@ -234,6 +239,7 @@ public extension UsageStoring {
     func limitHistory(from: Date, to: Date, provider: String?) throws -> [LimitSnapshot] { [] }
     func recordLeaderboard(_ entries: [SyncLeaderboardEntry]) throws {}
     func leaderboardSnapshots(since: Date) throws -> [SyncLeaderboardEntry] { [] }
+    func clearSyncedLeaderboard(before: Date) throws {}
     func syncCursor(dataset: String) throws -> String? { nil }
     func setSyncCursor(dataset: String, cursor: String) throws {}
 }

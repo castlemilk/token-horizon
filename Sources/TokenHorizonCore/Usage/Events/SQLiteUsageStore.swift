@@ -589,6 +589,20 @@ public final class SQLiteUsageStore: UsageStoring {
         return out
     }
 
+    public func clearSyncedLeaderboard(before: Date) throws {
+        lock.lock(); defer { lock.unlock() }
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "DELETE FROM leaderboard_snapshot WHERE updated_at <= ?",
+                                 -1, &stmt, nil) == SQLITE_OK else {
+            throw UsageStoreError.prepareFailed(lastError())
+        }
+        defer { sqlite3_finalize(stmt) }
+        sqlite3_bind_int64(stmt, 1, Int64(before.timeIntervalSince1970))
+        guard sqlite3_step(stmt) == SQLITE_DONE else {
+            throw UsageStoreError.stepFailed("clearSyncedLeaderboard: \(lastError())")
+        }
+    }
+
     public func syncCursor(dataset: String) throws -> String? {
         lock.lock(); defer { lock.unlock() }
         var stmt: OpaquePointer?
