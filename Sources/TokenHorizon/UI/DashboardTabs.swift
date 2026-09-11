@@ -171,8 +171,8 @@ struct DashboardTabs: View {
                     size: 8
                 )
             }
-            if let proxyPort = OllamaTelemetryProxy.shared.port {
-                MonospacedText(text: "telemetry proxy 127.0.0.1:\(proxyPort) · point Ollama-compatible clients here for exact tok/s", color: .white.opacity(0.35), size: 7.5)
+            if let meterPort = model.ollamaMeterPort {
+                MonospacedText(text: "request meter 127.0.0.1:\(meterPort) · Ollama-compatible clients here for exact tok/s", color: .white.opacity(0.35), size: 7.5)
                     .fixedSize(horizontal: false, vertical: true)
             }
             if let gatewayPort = GatewaySupervisor.shared.port {

@@ -38,6 +38,9 @@ public final class InferenceTelemetryStore {
 
     private let lock = NSLock()
     private var latestSamples: [String: InferenceTelemetrySample] = [:]
+    private var dayTokens: [Int: Int] = [:]
+    private var totalTokens = 0
+    private var totalMessages = 0
 
     public init() {}
 
@@ -50,6 +53,12 @@ public final class InferenceTelemetryStore {
                 .prefix(latestSamples.count - 256)
             for sample in oldest { latestSamples.removeValue(forKey: sample.model.lowercased()) }
         }
+        let day = Int(Calendar.current.startOfDay(for: sample.completedAt).timeIntervalSince1970)
+        dayTokens[day, default: 0] += sample.evalCount
+        totalTokens += sample.evalCount
+        totalMessages += 1
+        let cutoff = Int(Date().timeIntervalSince1970) - 370 * 86_400
+        for key in dayTokens.keys where key < cutoff { dayTokens[key] = nil }
         lock.unlock()
     }
 
@@ -57,6 +66,33 @@ public final class InferenceTelemetryStore {
         lock.lock()
         defer { lock.unlock() }
         return latestSamples[model.lowercased()]
+    }
+
+    /// Rollup for the local-models card: today's + all-time measured tokens,
+    /// request count, and models with a recent sample.
+    public func summary(now: Date = Date()) -> TelemetrySummary {
+        lock.lock(); defer { lock.unlock() }
+        let today = Int(Calendar.current.startOfDay(for: now).timeIntervalSince1970)
+        return TelemetrySummary(
+            todayTokens: dayTokens[today] ?? 0,
+            allTokens: totalTokens,
+            messagesAll: totalMessages,
+            models: latestSamples.keys.sorted())
+    }
+}
+
+/// Card rollup over the bounded telemetry store.
+public struct TelemetrySummary: Codable, Equatable {
+    public var todayTokens: Int
+    public var allTokens: Int
+    public var messagesAll: Int
+    public var models: [String]
+
+    public init(todayTokens: Int = 0, allTokens: Int = 0, messagesAll: Int = 0, models: [String] = []) {
+        self.todayTokens = todayTokens
+        self.allTokens = allTokens
+        self.messagesAll = messagesAll
+        self.models = models
     }
 }
 
