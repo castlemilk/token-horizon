@@ -58,6 +58,10 @@ public final class UsageEngine {
 
     public var localRuntimeUsage: (() -> [RuntimeUsageContribution])?
 
+    /// Store backing DB-first analytics (heatmap/timeline). Wired by the host
+    /// alongside `localRuntimeUsage`; nil = in-memory file buckets only.
+    public var usageStore: UsageStoring?
+
     public struct AdditiveFileState {
         public var offset: UInt64 = 0
         public var allTokens: Int = 0
@@ -135,8 +139,7 @@ public final class UsageEngine {
         return collectLocked()
     }
 
-    public func history(days: Int) -> (points: [HistoryPoint], streak: Int) {
-        lock.lock()
+    public func history(days: Int) -> (points: [HistoryPoint], streak: Int) {        lock.lock()
         defer { lock.unlock() }
         _ = collectLocked()
         let merged = mergedBucketsLocked()
@@ -188,6 +191,30 @@ public final class UsageEngine {
             points.append(aggregate(merged, from: start, to: min(end, currentBucket() + Self.bucketSeconds)))
         }
         return points
+    }
+
+    /// 7 (Mon-first) x 24 local-hour token grid over the trailing `days`.
+    /// DB-first: reads hourly buckets from the store when wired (metered +
+    /// consolidated timeline); otherwise folds the in-memory file buckets.
+    public func activityHeatmap(days: Int = 28) -> [[Int]] {
+        lock.lock()
+        let store = usageStore
+        lock.unlock()
+        if let store,
+           let grid = try? ActivityHeatmap.grid(days: days, store: store) {
+            return grid
+        }
+        lock.lock()
+        defer { lock.unlock() }
+        _ = collectLocked()
+        let merged = mergedBucketsLocked()
+        var points: [(epoch: Int, tokens: Int)] = []
+        for (bucket, tools) in merged {
+            var tokens = 0
+            for (_, entry) in tools { tokens += entry.tokens }
+            points.append((bucket, tokens))
+        }
+        return ActivityHeatmap.fold(points)
     }
 
     private func aggregate(_ merged: [Int: [String: BucketEntry]], from: Int, to: Int) -> HistoryPoint {

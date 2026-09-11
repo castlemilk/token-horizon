@@ -130,18 +130,3 @@ public final class MLXRuntime: LocalInferenceRuntime {
         return nil
     }
 }
-                sema.signal()
-            }.resume()
-            _ = sema.wait(timeout: .now() + 2.5)
-            guard ok else { continue }
-            var extra: [String: Double] = [:]
-            if let result,
-               let obj = try? JSONSerialization.jsonObject(with: result) as? [String: Any],
-               let models = obj["data"] as? [[String: Any]] {
-                extra["loaded_models"] = Double(models.count)
-            }
-            return RuntimeProbe(url: base, extra: extra)
-        }
-        return nil
-    }
-}

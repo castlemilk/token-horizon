@@ -45,12 +45,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         }
         router.onShellEvent = { [weak self] _ in
             DispatchQueue.main.async {
-                self?.model.latestEvent = EventStore.shared.latest()
-                self?.model.shellEvents = EventStore.shared.recent(limit: 9)
+                self?.model.latestEvent = EventStore.shared.latest().map(ShellEvent.init)
+                self?.model.shellEvents = EventStore.shared.recent(limit: 9).map(ShellEvent.init)
             }
             self?.refreshHeavy()
         }
         engine.localRuntimeUsage = { RuntimeUsageLedger.shared.contributions() }
+        engine.usageStore = usageStore
         InferenceMonitor.shared.startPolling()
         if ConsentManager.shared.isGranted(.fileReading) {
             FilePoller.shared.startPolling()
@@ -89,8 +90,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         server.start()
         _ = TokenHorizonTelemetry.shared
 
-        model.latestEvent = EventStore.shared.latest()
-        model.shellEvents = EventStore.shared.recent(limit: 9)
+        model.latestEvent = EventStore.shared.latest().map(ShellEvent.init)
+        model.shellEvents = EventStore.shared.recent(limit: 9).map(ShellEvent.init)
         _ = SystemStats.snapshot()
         DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 0.5) { [weak self] in
             guard let self else { return }
@@ -155,8 +156,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             if heavyTick % 6 == 0 {
                 KimiLimitsEngine.shared.refreshIfDue()
                 PlanLimitsEngine.shared.refreshIfDue()
-                self?.model.kimiLimits = KimiLimitsEngine.shared.cachedLimits()
-                self?.model.planLimits = PlanLimitsEngine.shared.cachedLimits()
+                self?.model.kimiLimits = KimiLimitsEngine.shared.cachedLimits().map(ProviderLimit.init)
+                self?.model.planLimits = PlanLimitsEngine.shared.cachedLimits().map(ProviderLimit.init)
             }
             if heavyTick % 12 == 0 {
                 self?.refreshOllama()
@@ -169,7 +170,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             self?.openDashboard()
         }
         NotificationCenter.default.addObserver(forName: .planLimitsUpdated, object: nil, queue: .main) { [weak self] note in
-            let limits = (note.object as? [ProviderLimit]) ?? PlanLimitsEngine.shared.cachedLimits()
+            let core = (note.object as? [TokenHorizonCore.ProviderLimit]) ?? PlanLimitsEngine.shared.cachedLimits()
+            let limits = core.map(ProviderLimit.init)
             self?.model.planLimits = limits
             LimitNotifier.shared.checkLimits(limits)
             if let self {
@@ -177,7 +179,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             }
         }
         NotificationCenter.default.addObserver(forName: .kimiLimitsUpdated, object: nil, queue: .main) { [weak self] note in
-            let limits = (note.object as? [ProviderLimit]) ?? KimiLimitsEngine.shared.cachedLimits()
+            let core = (note.object as? [TokenHorizonCore.ProviderLimit]) ?? KimiLimitsEngine.shared.cachedLimits()
+            let limits = core.map(ProviderLimit.init)
             self?.model.kimiLimits = limits
             LimitNotifier.shared.checkLimits(limits)
             if let self {
@@ -340,7 +343,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             let procs = SystemStats.processSamples()
             let containers = DockerObserver.sampleContainers()
             DispatchQueue.main.async {
-                self.model.usage = usage
+                self.model.usage = UsageSnapshot(usage)
                 self.model.storeProcesses(all: procs.all, byCPU: procs.byCPU, byMem: procs.byMem,
                                           byDisk: procs.byDisk, byNet: procs.byNet)
                 self.model.dockerContainers = containers
@@ -376,7 +379,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         let window = model.trendWindow
         DispatchQueue.global(qos: .utility).async { [weak self] in
             guard let self else { return }
-            let points = engine.trendHistory(window: window)
+            let points = engine.trendHistory(window: window.core).map(HistoryPoint.init)
             DispatchQueue.main.async {
                 self.model.trendPoints = points
             }
@@ -388,10 +391,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             guard let self else { return }
             let result = engine.history(days: 370)
             let heatmap = engine.activityHeatmap(days: 28)
+            let points = result.points.map(HistoryPoint.init)
             DispatchQueue.main.async {
-                self.model.historyPoints = result.points
+                self.model.historyPoints = points
                 self.model.historyStreak = result.streak
-                LeaderboardStore.shared.syncLocal(snapshot: self.model.usage, history: result.points,
+                LeaderboardStore.shared.syncLocal(snapshot: self.model.usage, history: points,
                                                   streak: result.streak, heatmap: heatmap)
                 self.model.leaderboardRankings = LeaderboardStore.shared.rankings(for: .today)
             }

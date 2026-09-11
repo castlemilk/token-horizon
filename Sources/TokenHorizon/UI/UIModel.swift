@@ -1,4 +1,5 @@
 import SwiftUI
+import TokenHorizonCore
 
 extension Notification.Name {
     static let refreshTrends = Notification.Name("refreshTrends")

@@ -32,38 +32,66 @@ public final class GeminiLimits: VendorLimitsAdapter {
         ])
     }
 
+    /// Multi-account: every `~/.gemini*` variant dir holding
+    /// `oauth_creds.json` is one profile; Keychain is the fallback single
+    /// profile. The agy language-server path stays machine-level.
+    public override func credentials() -> [(label: String, credential: String)] {
+        var dirs = AccountDiscovery.variantDirs(prefixes: [".gemini"])
+        if dirs.isEmpty {
+            dirs = [Platform.paths.homeDirectory.appendingPathComponent(".gemini").path]
+        }
+        var out: [(String, String)] = []
+        for dir in dirs {
+            let path = dir + "/oauth_creds.json"
+            guard let data = FileManager.default.contents(atPath: path),
+                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let token = obj["access_token"] as? String, !token.isEmpty else { continue }
+            let label = dirs.count > 1 ? AccountDiscovery.deriveLabel(dir: dir) : ""
+            out.append((label, token))
+        }
+        if out.isEmpty, let fallback = auth.resolve() {
+            out.append(("", fallback))
+        }
+        return out
+    }
+
     public override func fetch() -> [ProviderLimit] {
         let agyLimits = fetchAgyLanguageServerLimits()
         if !agyLimits.isEmpty {
             return agyLimits
         }
 
-        let accessToken = auth.resolve()
-        var projectId = ""
+        let creds = credentials()
+        guard !creds.isEmpty else { return [] }
+        var out: [ProviderLimit] = []
+        for (index, (_, token)) in creds.enumerated() {
+            if index > 0 { Thread.sleep(forTimeInterval: 0.1) }
+            out += fetchCloudCode(token: token)
+        }
+        return out
+    }
 
+    private func projectId() -> String {
         let credsPath = Platform.paths.homeDirectory.appendingPathComponent(".gemini/oauth_creds.json").path
         if let data = FileManager.default.contents(atPath: credsPath),
            let creds = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-            projectId = creds["project_id"] as? String ?? ""
+            return creds["project_id"] as? String ?? ""
         }
+        return ""
+    }
 
-        if let access = accessToken {
-            if let obj = postJSON(url: "https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota",
-                                  key: access,
-                                  body: ["project": projectId]),
-               let buckets = obj["buckets"] as? [[String: Any]], !buckets.isEmpty {
-                return buckets.compactMap { bucket in
-                    guard let remaining = (bucket["remainingFraction"] as? NSNumber)?.doubleValue else { return nil }
-                    let used = (1 - remaining) * 100
-                    let model = bucket["modelId"] as? String ?? bucket["tokenType"] as? String ?? "gemini"
-                    return limit(label: model, usedPercent: used,
-                                 resetsAt: parseISO(bucket["resetTime"] as? String))
-                }
+    private func fetchCloudCode(token: String) -> [ProviderLimit] {
+        if let obj = postJSON(url: "https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota",
+                              key: token,
+                              body: ["project": projectId()]),
+           let buckets = obj["buckets"] as? [[String: Any]], !buckets.isEmpty {
+            return buckets.compactMap { bucket in
+                guard let remaining = (bucket["remainingFraction"] as? NSNumber)?.doubleValue else { return nil }
+                let used = (1 - remaining) * 100
+                let model = bucket["modelId"] as? String ?? bucket["tokenType"] as? String ?? "gemini"
+                return limit(label: model, usedPercent: used,
+                             resetsAt: parseISO(bucket["resetTime"] as? String))
             }
-        }
-
-        if accessToken != nil {
-            return []
         }
         return []
     }

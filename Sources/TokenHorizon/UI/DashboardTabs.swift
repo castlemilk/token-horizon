@@ -1,4 +1,5 @@
 import SwiftUI
+import TokenHorizonCore
 
 struct DashboardTabs: View {
     @ObservedObject var model: UIModel

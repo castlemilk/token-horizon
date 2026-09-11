@@ -24,6 +24,9 @@ public enum CredentialSource {
     case keychain(service: String, account: String? = nil, jsonKeyPaths: [String]? = nil)
     /// Keychain secret wrapped as `go-keyring-base64:<b64(JSON)>` (antigravity).
     case keychainBase64JSON(service: String, account: String? = nil, jsonKeyPaths: [String])
+    /// Every credentials file matching a pattern inside a directory
+    /// (multi-account profiles): label = file name without extension.
+    case profileFiles(directory: String, pattern: String, keyPaths: [String])
     /// Escape hatch for bespoke flows (base64 wrappers, multi-step handshakes).
     case custom(() -> String?)
 
@@ -93,6 +96,43 @@ public enum CredentialSource {
         }
     }
 
+    /// Labeled credentials across all sources (multi-account). Single-profile
+    /// sources vend one entry with an empty label; profile dirs vend one per
+    /// matching file. First source winning per label; order preserved.
+    public func resolveLabeled() -> [(label: String, credential: String)] {
+        var out: [(String, String)] = []
+        var seen = Set<String>()
+        switch self {
+        case .profileFiles(let directory, let pattern, let keyPaths):
+            let dir = Self.expand(directory)
+            guard let entries = try? FileManager.default.contentsOfDirectory(atPath: dir) else { return [] }
+            for entry in entries.sorted() where Self.match(pattern: pattern, name: entry) {
+                let full = dir + "/" + entry
+                guard let data = FileManager.default.contents(atPath: full),
+                      let obj = try? JSONSerialization.jsonObject(with: data) else { continue }
+                for keyPath in keyPaths {
+                    if let value = Self.walk(obj, keyPath: keyPath), !value.isEmpty {
+                        let label = (entry as NSString).deletingPathExtension
+                        if seen.insert(label).inserted { out.append((label, value)) }
+                        break
+                    }
+                }
+            }
+            return out
+        default:
+            if let value = resolve(), !value.isEmpty { return [("", value)] }
+            return []
+        }
+    }
+
+    private static func match(pattern: String, name: String) -> Bool {
+        if pattern == "*" { return true }
+        if pattern.hasPrefix("*.") {
+            return name.hasSuffix(String(pattern.dropFirst()))
+        }
+        return name == pattern
+    }
+
     /// opencode's auth.json (`OPENCODE_AUTH` env override honored).
     public static func opencodeAuthFileKeys() -> [String: String] {
         let path = ProcessInfo.processInfo.environment["OPENCODE_AUTH"]
@@ -139,5 +179,18 @@ public struct VendorAuth {
             if let value = source.resolve(), !value.isEmpty { return value }
         }
         return nil
+    }
+
+    /// Labeled credentials across the whole chain (multi-account profiles).
+    /// Labels are unique; single-profile vendors return one empty-labeled entry.
+    public func resolveAll() -> [(label: String, credential: String)] {
+        var out: [(String, String)] = []
+        var seen = Set<String>()
+        for source in sources {
+            for (label, cred) in source.resolveLabeled() where !cred.isEmpty {
+                if seen.insert(label).inserted { out.append((label, cred)) }
+            }
+        }
+        return out
     }
 }
