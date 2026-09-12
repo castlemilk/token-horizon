@@ -1,14 +1,13 @@
-// UI-level preferences, persisted to localStorage. These gate what the app
-// DISPLAYS (and are the contract a future daemon-side settings endpoint will
-// enforce at collection time). Handle is the local identity used by the
-// profile page and, later, leaderboard publishing.
+// UI-level preferences, persisted to localStorage. Handle is the local
+// identity used by the profile page and, later, leaderboard publishing.
+// (Collection control lives daemon-side: Request routing switches on the
+// Machine tab — display-time vendor filters were removed as redundant.)
 
 const KEY = 'token-horizon.settings';
 
 interface Persisted {
 	handle?: string;
-	disabledProviders?: string[];
-	disabledRuntimes?: string[];
+	showImports?: boolean;
 }
 
 function load(): Persisted {
@@ -22,38 +21,16 @@ function load(): Persisted {
 
 class UiSettings {
 	handle = $state(load().handle ?? 'me');
-	disabledProviders = $state<string[]>(load().disabledProviders ?? []);
-	disabledRuntimes = $state<string[]>(load().disabledRuntimes ?? []);
+	/** Include file-imported (selfReported, non-metered) rows in dashboards —
+	 *  debugging view; off by default for prod. */
+	showImports = $state(load().showImports ?? false);
 
 	save() {
 		if (typeof localStorage === 'undefined') return;
 		localStorage.setItem(
 			KEY,
-			JSON.stringify({
-				handle: this.handle,
-				disabledProviders: this.disabledProviders,
-				disabledRuntimes: this.disabledRuntimes
-			} satisfies Persisted)
+			JSON.stringify({ handle: this.handle, showImports: this.showImports } satisfies Persisted)
 		);
-	}
-
-	providerEnabled(vendor: string): boolean {
-		return !this.disabledProviders.includes(vendor);
-	}
-	runtimeEnabled(vendor: string): boolean {
-		return !this.disabledRuntimes.includes(vendor);
-	}
-	toggleProvider(vendor: string) {
-		this.disabledProviders = this.disabledProviders.includes(vendor)
-			? this.disabledProviders.filter((v) => v !== vendor)
-			: [...this.disabledProviders, vendor];
-		this.save();
-	}
-	toggleRuntime(vendor: string) {
-		this.disabledRuntimes = this.disabledRuntimes.includes(vendor)
-			? this.disabledRuntimes.filter((v) => v !== vendor)
-			: [...this.disabledRuntimes, vendor];
-		this.save();
 	}
 }
 

@@ -5,8 +5,17 @@
 	let { days, weeks = 53 }: { days: { day: string; ts: number; tokens: number }[]; weeks?: number } =
 		$props();
 
-	const CELL = 10;
-	const GAP = 2;
+	const CELL = 11;
+	const GAP = 3;
+	/* Apple system green (light/dark) — activity-rings accent. */
+	const HEAT = 'light-dark(#34c759, #30d158)';
+
+	/* Fit the container: show as many of the most recent weeks as the width
+	   allows — no scrolling, no clipping, always the freshest data. */
+	let avail = $state(0);
+	const fitWeeks = $derived(
+		avail > 0 ? Math.max(4, Math.min(weeks, Math.floor((avail + GAP) / (CELL + GAP)))) : weeks
+	);
 
 	const max = $derived(Math.max(1, ...days.map((d) => d.tokens)));
 
@@ -51,7 +60,7 @@
 				)
 			});
 		}
-		return cols.slice(-weeks);
+		return cols.slice(-fitWeeks);
 	});
 
 	const fmtDay = (day: string) =>
@@ -63,22 +72,24 @@
 		});
 </script>
 
-<div class="heatmap" style:--cell="{CELL}px" style:--gap="{GAP}px">
-	{#each columns as week}
-		<div class="week">
-			<span class="month">{week.month}</span>
-			{#each week.cells as cell}
-				{#if cell}
-					<span
-						class="cell lvl-{cell.lvl}"
-						title="{fmtDay(cell.day)} — {cell.tokens > 0 ? fmtTok(cell.tokens) + ' tokens' : 'no activity'}"
-					></span>
-				{:else}
-					<span class="cell pad"></span>
-				{/if}
-			{/each}
-		</div>
-	{/each}
+<div class="heatmap" bind:clientWidth={avail} style:--cell="{CELL}px" style:--gap="{GAP}px" style:--heat={HEAT}>
+	<div class="grid-row">
+		{#each columns as week}
+			<div class="week">
+				<span class="month">{week.month}</span>
+				{#each week.cells as cell}
+					{#if cell}
+						<span
+							class="cell lvl-{cell.lvl}"
+							title="{fmtDay(cell.day)} — {cell.tokens > 0 ? fmtTok(cell.tokens) + ' tokens' : 'no activity'}"
+						></span>
+					{:else}
+						<span class="cell pad"></span>
+					{/if}
+				{/each}
+			</div>
+		{/each}
+	</div>
 	<div class="legend">
 		<span>Less</span>
 		<span class="cell lvl-0"></span><span class="cell lvl-1"></span><span class="cell lvl-2"></span><span class="cell lvl-3"></span><span class="cell lvl-4"></span>
@@ -87,12 +98,18 @@
 </div>
 
 <style>
+	/* Apple-style: no frame — dots float on the page background, centered. */
 	.heatmap {
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+	}
+	.grid-row {
 		display: flex;
 		gap: var(--gap);
 		position: relative;
 		padding-top: 14px; /* month labels */
-		overflow-x: auto;
+		max-width: 100%;
 	}
 	.week {
 		display: flex;
@@ -112,29 +129,30 @@
 	.cell {
 		width: var(--cell);
 		height: var(--cell);
-		border-radius: 2.5px;
+		border-radius: 50%;
 		background: var(--track);
 		flex: none;
 	}
 	.cell.pad {
 		background: transparent;
 	}
-	.lvl-1 { background: color-mix(in srgb, var(--accent) 30%, var(--track)); }
-	.lvl-2 { background: color-mix(in srgb, var(--accent) 52%, var(--track)); }
-	.lvl-3 { background: color-mix(in srgb, var(--accent) 74%, var(--track)); }
-	.lvl-4 { background: var(--accent); }
+	/* Apple-activity green intensity ramp */
+	.lvl-1 { background: color-mix(in srgb, var(--heat) 35%, var(--track)); }
+	.lvl-2 { background: color-mix(in srgb, var(--heat) 60%, var(--track)); }
+	.lvl-3 { background: color-mix(in srgb, var(--heat) 82%, var(--track)); }
+	.lvl-4 { background: var(--heat); }
 	.legend {
-		position: absolute;
-		right: 0;
-		top: -2px;
 		display: flex;
 		align-items: center;
-		gap: 3px;
+		justify-content: center;
+		gap: 4px;
 		font-size: 10px;
 		color: var(--text-3);
+		margin-top: 14px;
 	}
 	.legend .cell {
 		width: 9px;
 		height: 9px;
+		border-radius: 50%;
 	}
 </style>

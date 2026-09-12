@@ -71,6 +71,22 @@ open class RequestMeter: NSObject, URLSessionDataDelegate {
     private var inflight: [Int: Connection] = [:]
     private lazy var session = URLSession(configuration: .default, delegate: self, delegateQueue: nil)
 
+    // MARK: - Diagnostics (is anything flowing through?)
+
+    /// Lifetime 2xx relayed exchanges vs exchanges that yielded a stored
+    /// event. `seen - measured > 0` means traffic arrives but isn't parsed
+    /// (path allowlist or wire-format miss) — surfaced via GET /meters.
+    private let counterLock = NSLock()
+    private var _seen = 0
+    private var _measured = 0
+    private var loggedUnmeasuredPaths = Set<String>()
+    public var seenExchanges: Int {
+        counterLock.lock(); defer { counterLock.unlock() }; return _seen
+    }
+    public var measuredExchanges: Int {
+        counterLock.lock(); defer { counterLock.unlock() }; return _measured
+    }
+
     public init(vendor: String, listenPort: UInt16, targetBase: URL,
                 store: UsageStoring? = nil, sourceKind: SourceKind = .external) {
         self.vendor = vendor
@@ -139,7 +155,7 @@ open class RequestMeter: NSObject, URLSessionDataDelegate {
             ("opencode", "opencode"),
             ("kimi", "kimi-cli"),
             ("gemini-cli", "gemini-cli"), ("gemini_cli", "gemini-cli"),
-            ("pi-ai", "pi"), ("pi/", "pi"),
+            ("pi-ai", "pi"), ("pi/", "pi"), ("pi-coding-agent", "pi"), ("pi_coding", "pi"),
             ("aider", "aider"), ("cursor", "cursor"), ("continue", "continue"),
             ("python-", "python-sdk"), ("node", "node-sdk"),
             ("curl", "curl"),
@@ -455,8 +471,26 @@ open class RequestMeter: NSObject, URLSessionDataDelegate {
             let exchange = conn.exchange
             DispatchQueue.global(qos: .utility).async { [weak self] in
                 guard let self else { return }
+                self.counterLock.lock()
+                self._seen += 1
+                self.counterLock.unlock()
                 if let event = self.event(from: exchange) {
                     try? self.store?.insertMetered([event])
+                    self.counterLock.lock()
+                    self._measured += 1
+                    self.counterLock.unlock()
+                } else if exchange.method == "POST" {
+                    // Traffic arrived but yielded nothing — path allowlist or
+                    // wire-format miss. Log once per path so new client
+                    // versions / prefixed bases (cf. /zen/v1) surface loudly
+                    // instead of silently dropping measurements.
+                    self.counterLock.lock()
+                    let first = self.loggedUnmeasuredPaths.insert(exchange.path).inserted
+                    self.counterLock.unlock()
+                    if first {
+                        FileHandle.standardError.write(
+                            "token-horizon: \(self.vendor) meter relayed POST \(exchange.path) but measured nothing (path or wire-format miss)\n".data(using: .utf8)!)
+                    }
                 }
                 // Wire rate limits ride every response — capture them into the
                 // limits timeline regardless of whether the exchange metered.

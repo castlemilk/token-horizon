@@ -73,6 +73,36 @@ open class FileConsolidator {
         }
     }
 
+    // MARK: - Incremental polling (FilePoller path)
+
+    /// Per-file byte offsets so the 60s poll reads only NEW bytes. Without
+    /// this every poll re-parsed every transcript (240MB of ~/.claude JSON
+    /// per minute — sustained 100%+ CPU and multi-second store-lock holds).
+    private var offsets: [String: UInt64] = [:]
+
+    /// Incremental variant of forEachLine: consumes only bytes past the
+    /// stored offset, stopping at the last newline so partial tail lines
+    /// survive to the next pass (invariant #4). Truncation resets the file.
+    public func forEachNewLine(_ path: String, _ body: ([String: Any], String) -> Void) {
+        let fm = FileManager.default
+        guard let attrs = try? fm.attributesOfItem(atPath: path),
+              let size = (attrs[.size] as? NSNumber)?.uint64Value else { return }
+        var off = offsets[path] ?? 0
+        if size < off { off = 0 }
+        guard size > off, let fh = FileHandle(forReadingAtPath: path) else { return }
+        fh.seek(toFileOffset: off)
+        let chunk = fh.readDataToEndOfFile()
+        try? fh.close()
+        guard let lastNL = chunk.lastIndex(of: UInt8(ascii: "\n")), lastNL >= chunk.startIndex else { return }
+        let consumable = chunk[chunk.startIndex...lastNL]
+        offsets[path] = off + UInt64(consumable.count)
+        for line in consumable.split(separator: UInt8(ascii: "\n")) where !line.isEmpty {
+            if let obj = try? JSONSerialization.jsonObject(with: Data(line)) as? [String: Any] {
+                body(obj, String(decoding: line, as: UTF8.self))
+            }
+        }
+    }
+
     public func jsonlFiles(under dirs: [String], suffix: String = ".jsonl") -> [String] {
         var out: [String] = []
         let fm = FileManager.default
@@ -105,7 +135,7 @@ public final class ClaudeConsolidator: FileConsolidator {
     public override func consolidate(into store: UsageStoring) throws -> Int {
         var annotations: [FileAnnotation] = []
         for file in jsonlFiles(under: dirs) {
-            forEachLine(file) { obj, _ in
+            forEachNewLine(file) { obj, _ in
                 guard let message = obj["message"] as? [String: Any],
                       let usage = message["usage"] as? [String: Any],
                       ((usage["input_tokens"] as? NSNumber)?.intValue ?? 0) > 0
@@ -137,7 +167,7 @@ public final class CodexConsolidator: FileConsolidator {
     public override func consolidate(into store: UsageStoring) throws -> Int {
         var snapshots: [LimitSnapshot] = []
         for file in jsonlFiles(under: dirs) {
-            forEachLine(file) { obj, _ in
+            forEachNewLine(file) { obj, _ in
                 guard let payload = obj["payload"] as? [String: Any],
                       payload["type"] as? String == "token_count",
                       let rateLimits = payload["rate_limits"] as? [String: Any] else { return }
@@ -181,25 +211,44 @@ public final class CodexConsolidator: FileConsolidator {
 /// anthropic-compatible format).
 public final class KimiConsolidator: FileConsolidator {
     public override var vendor: String { "kimi" }
-    public override var dirs: [String] { ["~/.kimi/sessions"] }
+    public override var dirs: [String] { ["~/.kimi/sessions", "~/.kimi-code/sessions"] }
 
     public override func consolidate(into store: UsageStoring) throws -> Int {
         var annotations: [FileAnnotation] = []
         for file in jsonlFiles(under: dirs, suffix: "wire.jsonl") {
-            forEachLine(file) { obj, _ in
-                guard let message = obj["message"] as? [String: Any],
-                      let payload = message["payload"] as? [String: Any],
-                      payload["token_usage"] != nil else { return }
-                let rid = (payload["request_id"] as? String)
-                    ?? (payload["requestId"] as? String)
-                    ?? (message["requestId"] as? String)
-                    ?? (obj["request_id"] as? String) ?? ""
-                guard !rid.isEmpty else { return }
-                annotations.append(FileAnnotation(
-                    vendor: vendor, requestID: rid,
-                    product: "kimi-cli",
-                    timestamp: parseTimestamp(obj["timestamp"]) ?? Date(),
-                    sourceFile: file))
+            forEachNewLine(file) { obj, _ in
+                // Old CLI (~/.kimi): message.payload.token_usage + message_id.
+                // New CLI (~/.kimi-code): context.append_loop_event → step.end
+                // with usage + messageId. The id is chatcmpl-… (OpenAI mode)
+                // or msg_… (Anthropic mode) — the meter captures the same
+                // body id, which is the join key.
+                if let message = obj["message"] as? [String: Any],
+                   let payload = message["payload"] as? [String: Any],
+                   payload["token_usage"] != nil {
+                    let rid = (payload["request_id"] as? String)
+                        ?? (payload["requestId"] as? String)
+                        ?? (payload["message_id"] as? String)
+                        ?? (message["requestId"] as? String)
+                        ?? (obj["request_id"] as? String) ?? ""
+                    guard !rid.isEmpty else { return }
+                    annotations.append(FileAnnotation(
+                        vendor: vendor, requestID: rid,
+                        product: "kimi-cli",
+                        timestamp: parseTimestamp(obj["timestamp"]) ?? Date(),
+                        sourceFile: file))
+                    return
+                }
+                if obj["type"] as? String == "context.append_loop_event",
+                   let event = obj["event"] as? [String: Any],
+                   event["type"] as? String == "step.end",
+                   event["usage"] != nil,
+                   let rid = event["messageId"] as? String, !rid.isEmpty {
+                    annotations.append(FileAnnotation(
+                        vendor: vendor, requestID: rid,
+                        product: "kimi-code",
+                        timestamp: parseTimestamp(obj["timestamp"]) ?? Date(),
+                        sourceFile: file))
+                }
             }
         }
         try store.annotate(annotations)
@@ -226,7 +275,7 @@ public final class PiConsolidator: FileConsolidator {
     public override func consolidate(into store: UsageStoring) throws -> Int {
         var annotations: [FileAnnotation] = []
         for file in jsonlFiles(under: dirs) {
-            forEachLine(file) { obj, _ in
+            forEachNewLine(file) { obj, _ in
                 guard obj["type"] as? String == "message",
                       let message = obj["message"] as? [String: Any],
                       message["role"] as? String == "assistant",

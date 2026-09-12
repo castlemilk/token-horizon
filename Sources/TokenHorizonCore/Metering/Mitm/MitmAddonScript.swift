@@ -40,6 +40,7 @@ VENDOR_HOSTS = {
     "generativelanguage.googleapis.com": "gemini",
     "dashscope.aliyuncs.com": "alibaba",
     "api.deepseek.com": "deepseek",
+    "opencode.ai": "opencode-go",
 }
 
 METERED_MARKERS = (
@@ -53,7 +54,7 @@ UA_TABLE = [
     ("claude-cli", "claude-code"), ("claude_code", "claude-code"),
     ("codex_cli_rs", "codex"), ("codex", "codex"),
     ("opencode", "opencode"), ("kimi", "kimi-cli"),
-    ("gemini-cli", "gemini-cli"), ("pi-ai", "pi"),
+    ("gemini-cli", "gemini-cli"), ("pi-ai", "pi"), ("pi-coding-agent", "pi"),
     ("aider", "aider"), ("cursor", "cursor"),
 ]
 
@@ -201,7 +202,8 @@ def parse_openai(body):
     saw = False
     body_id = None
     stripped = body.lstrip()
-    if stripped.startswith(b"data:"):
+    # Streams may start with `event:` (Zen emits event:/data: pairs) or `data:`.
+    if stripped.startswith(b"data:") or stripped.startswith(b"event:"):
         for obj in sse_objects(body.decode("utf-8", "replace")):
             if obj.get("id"):
                 body_id = body_id or obj.get("id")

@@ -1,168 +1,650 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { api, type Stats, type Trends, type ProviderSummary } from '$lib/api';
-	import { fmtTok, totalTok, poll } from '$lib/format';
-	import { fetchDailyActivity, activityStats, type DayActivity } from '$lib/activity';
+	import { api, type ProviderSummary, type UsageEvent } from '$lib/api';
+	import { fmtTok, fmtModel, billableTok, poll } from '$lib/format';
+	import { fetchDailyActivity, type DayActivity } from '$lib/activity';
 	import { providerAccent } from '$lib/colors';
 	import { settings } from '$lib/settings.svelte';
+	import { scope } from '$lib/scope.svelte';
 	import Heatmap from '$lib/components/Heatmap.svelte';
 	import VBars from '$lib/components/VBars.svelte';
-	import HBars, { type HBarRow } from '$lib/components/HBars.svelte';
+	import ProviderIcon from '$lib/components/ProviderIcon.svelte';
+	import CountUp from '$lib/components/CountUp.svelte';
+	import { fly } from 'svelte/transition';
+	import { flip } from 'svelte/animate';
+	import * as Accordion from '$lib/components/ui/accordion/index.js';
 
-	let stats = $state<Stats | null>(null);
+	const reduceMotion = typeof matchMedia !== 'undefined' && matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+	/** Visible-row caps: lists fade out past the cap with a "show all" toggle. */
+	const MODEL_LIMIT = 5;
+	const RECENT_LIMIT = 6;
+	let showAllModels = $state<Record<string, boolean>>({});
+	let showAllRecent = $state(false);
+
 	let days = $state<DayActivity[]>([]);
-	let summary = $state<ProviderSummary[]>([]);
-	let trends = $state<Trends | null>(null);
-	let window_ = $state('1M');
+	let summaryAll = $state<ProviderSummary[]>([]); // KPIs: window-independent
+	let summary = $state<ProviderSummary[]>([]);    // ranking: windowed
+	let recent = $state<UsageEvent[]>([]);
+	let chartPoints = $state<{ ts: number; value: number }[]>([]);
+	let chartFrom = $state(0);
+	let chartTo = $state(0);
+	let window_ = $state('1D');
+	let booted = $state(false);
+	/** Share-bar selection filters the chart. */
+	let selected = $state<{ vendor: string; model?: string } | null>(null);
 
 	const windows = ['1D', '1W', '1M', '3M', '1Y'];
+	/** window → [bucket resolution seconds, span seconds] */
+	const windowSpec: Record<string, [number, number]> = {
+		'1D': [300, 86400],
+		'1W': [900, 7 * 86400],
+		'1M': [3600, 31 * 86400],
+		'3M': [86400, 93 * 86400],
+		'1Y': [86400, 365 * 86400]
+	};
 
-	const loadTrends = async () => {
+
+	function fmtAgo(ts?: number): string {
+		if (!ts) return '—';
+		const s = Math.max(0, Date.now() / 1000 - ts);
+		if (s < 90) return 'just now';
+		if (s < 3600) return `${Math.round(s / 60)}m ago`;
+		if (s < 86400) return `${Math.round(s / 3600)}h ago`;
+		if (s < 86400 * 30) return `${Math.round(s / 86400)}d ago`;
+		return new Date(ts * 1000).toLocaleDateString(undefined, { month: 'short', year: 'numeric' });
+	}
+
+	const loadChart = async () => {
+		const [resolution, span] = windowSpec[window_] ?? windowSpec['1M'];
+		const from = Math.floor(Date.now() / 1000) - span;
+		chartFrom = from;
+		chartTo = Math.floor(Date.now() / 1000);
+		let extra = '';
+		if (selected) {
+			extra += `&vendor=${encodeURIComponent(selected.vendor)}`;
+			if (selected.model) extra += `&model=${encodeURIComponent(selected.model)}`;
+		}
 		try {
-			trends = await api.trends(window_);
+			const r = await api.buckets(resolution, from, !settings.showImports, extra);
+			// Fold per-vendor rows into one point per bucket; billable only.
+			const byStart = new Map<number, number>();
+			for (const b of r.buckets) {
+				byStart.set(b.start, (byStart.get(b.start) ?? 0) + billableTok(b.tokens));
+			}
+			chartPoints = [...byStart.entries()]
+				.sort((a, b) => a[0] - b[0])
+				.map(([start, value]) => ({ ts: start, value }));
 		} catch {
 			/* daemon down */
 		}
 	};
 
-	onMount(() => {
-		const stop = poll(async () => {
-			try {
-				[stats, summary] = await Promise.all([
-					api.stats(),
-					api.summary().then((r) => r.providers)
-				]);
-			} catch {
-				/* layout shows daemon-down state */
-			}
-		}, 5000);
-		void loadTrends();
-		fetchDailyActivity(365)
+	function select(vendor: string, model?: string) {
+		if (selected?.vendor === vendor && selected?.model === model) selected = null;
+		else selected = { vendor, model };
+		void loadChart();
+	}
+
+	const loadAll = async () => {
+		const span = (windowSpec[window_] ?? windowSpec['1M'])[1];
+		const from = Math.floor(Date.now() / 1000) - span;
+		chartFrom = from;
+		chartTo = Math.floor(Date.now() / 1000);
+		try {
+			[summaryAll, summary, recent] = await Promise.all([
+				api.summary(!settings.showImports).then((r) => r.providers),
+				api.summary(!settings.showImports, from).then((r) => r.providers),
+				api.events(`?limit=12${settings.showImports ? '' : '&metered=1'}`).then((r) => r.events)
+			]);
+		} catch {
+			/* layout shows daemon-down state */
+		}
+		void loadChart();
+		fetchDailyActivity(365, !settings.showImports)
 			.then((d) => (days = d))
 			.catch(() => {});
+	};
+
+	onMount(() => {
+		void loadAll().finally(() => (booted = true));
+		const stop = poll(loadAll, 5000);
 		return stop;
 	});
 
-	const act = $derived(activityStats(days));
 
-	// ---- vertical chart points, with per-window label formatting ----
-	function fmtLabel(ts: number): string {
-		const d = new Date(ts * 1000);
-		switch (window_) {
-			case '1D':
-				return d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
-			case '1W':
-				return d.toLocaleDateString(undefined, { weekday: 'short' });
-			case '1M':
-			case '3M':
-				return d.toLocaleDateString(undefined, { month: 'numeric', day: 'numeric' });
-			default:
-				return d.toLocaleDateString(undefined, { month: 'short' });
-		}
+	// ---- headline: billable work only, all time (cache reads excluded) ----
+	const billableAll = $derived(summaryAll.reduce((s, p) => s + billableTok(p.tokens), 0));
+	const requestsAll = $derived(summaryAll.reduce((s, p) => s + p.requests, 0));
+	const costAll = $derived(summaryAll.reduce((s, p) => s + p.cost, 0));
+
+	// ---- provider comparison ranking ----
+	interface RankRow {
+		key: string;
+		vendor: string;
+		model?: string;
+		label: string;
+		tokens: number;
+		input: number;
+		output: number;
+		thinking: number;
+		cost: number;
+		share: number;
+		lastEvent?: number;
 	}
-	const points = $derived(
-		(trends?.points ?? []).map((p) => ({ label: fmtLabel(p.day), value: p.tokens }))
-	);
-	const labelEvery = $derived(Math.max(1, Math.ceil(points.length / 8)));
 
-	// ---- provider / model horizontal bars (settings-filtered) ----
-	const provRows = $derived(
-		summary
-			.filter((p) => settings.providerEnabled(p.vendor))
-			.sort((a, b) => totalTok(b.tokens) - totalTok(a.tokens))
-			.flatMap((p) => {
-				const accent = providerAccent(p.vendor);
-				const rows: HBarRow[] = [
-					{
-						label: p.vendor,
-						value: totalTok(p.tokens),
-						color: accent,
-						sub: `${p.requests} req`
-					}
-				];
-				const models = [...p.models]
-					.sort((a, b) => totalTok(b.tokens) - totalTok(a.tokens));
-				const top = models.slice(0, 4);
-				const rest = models.slice(4);
-				for (const m of top) {
-					rows.push({
-						label: m.model,
-						value: totalTok(m.tokens),
-						color: accent,
-						sub: `${m.requests} req`,
-						indent: true
-					});
-				}
-				if (rest.length > 0) {
-					rows.push({
-						label: `${rest.length} other models`,
-						value: rest.reduce((s, m) => s + totalTok(m.tokens), 0),
-						color: accent,
-						indent: true
-					});
-				}
-				return rows;
-			})
+	const rankRows = $derived.by((): RankRow[] => {
+		return summary.map((p) => ({
+			key: p.vendor,
+			vendor: p.vendor,
+			label: p.vendor,
+			tokens: billableTok(p.tokens),
+			input: p.tokens.input,
+			output: p.tokens.output,
+			thinking: p.tokens.reasoning,
+			cost: p.cost,
+			share: 0,
+			lastEvent: Math.max(0, ...p.models.map((m) => m.lastEvent ?? 0)) || undefined
+		}));
+	});
+
+	const rankTotal = $derived(rankRows.reduce((s, r) => s + r.tokens, 0));
+
+	const ranked = $derived(
+		[...rankRows]
+			.sort((a, b) => b.tokens - a.tokens)
+			.map((r) => ({ ...r, share: rankTotal > 0 ? (r.tokens / rankTotal) * 100 : 0 }))
 	);
+	const visibleRecent = $derived(showAllRecent ? recent : recent.slice(0, RECENT_LIMIT));
+	const recentTruncated = $derived(recent.length > RECENT_LIMIT);
+
+	/** Newest request id — flashes once when a new request lands. */
+	let freshId = $state<string | null>(null);
+	$effect(() => {
+		const top = recent[0]?.id;
+		if (top && top !== freshId) freshId = top;
+	});
+
+	const multiMachine = $derived(scope.machines.length > 1);
+
+	function fmtTime(ts: number): string {
+		return new Date(ts * 1000).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+	}
+	function fmtCost(c: number): string {
+		return c > 0.0001 ? `$${c.toFixed(2)}` : '—';
+	}
 </script>
 
-<div class="grid cols-4">
-	<div class="card kpi">
-		<div class="value">{fmtTok(stats?.usage.tokensToday ?? 0)}</div>
-		<div class="label">Tokens today</div>
+<section class="hero">
+	{#if !booted}
+		<div class="hero-stats">
+			<div class="hero-stat"><div class="skel skel-hero"></div><div class="skel skel-label"></div></div>
+			<div class="hero-stat"><div class="skel skel-hero"></div><div class="skel skel-label"></div></div>
+		</div>
+	{:else}
+	<div class="hero-stats">
+		<div class="hero-stat">
+			<div class="hero-value"><CountUp value={billableAll} /></div>
+			<div class="hero-label">tokens · all time</div>
+		</div>
+		<div class="hero-stat">
+			<div class="hero-value"><CountUp value={requestsAll} format={(n) => Math.round(n).toLocaleString()} /></div>
+			<div class="hero-label">requests</div>
+		</div>
 	</div>
-	<div class="card kpi">
-		<div class="value">{fmtTok(stats?.usage.tokensAllTime ?? 0)}</div>
-		<div class="label">All time</div>
-	</div>
-	<div class="card kpi">
-		<div class="value">{act.streak}<span class="unit">d</span></div>
-		<div class="label">Current streak</div>
-	</div>
-	<div class="card kpi">
-		<div class="value">{act.activeDays}</div>
-		<div class="label">Active days · 365d</div>
-	</div>
-</div>
+	{/if}
+	{#if booted && costAll > 0.0001}
+		<div class="hero-sub faint">${costAll.toFixed(2)} all time</div>
+	{/if}
+</section>
 
-<div class="section-label">Activity · Last 12 months</div>
-<div class="card">
+<section>
 	{#if days.length > 0}
 		<Heatmap {days} />
 	{:else}
-		<div class="empty">Loading activity…</div>
+		<div class="empty">…</div>
 	{/if}
-</div>
+</section>
 
-<div class="section-label">Usage over time</div>
-<div class="row" style="margin-bottom: 10px">
-	<div class="seg" role="group" aria-label="Window">
-		{#each windows as w}
-			<button class:active={window_ === w} onclick={() => { window_ = w; void loadTrends(); }}>{w}</button>
-		{/each}
+<section>
+	<div class="picker-row">
+		<div class="seg" role="group" aria-label="Window">
+			{#each windows as w}
+				<button class:active={window_ === w} onclick={() => { window_ = w; void loadAll(); }}>{w}</button>
+			{/each}
+		</div>
+		{#if selected}
+			<button class="chip-clear" onclick={() => select(selected!.vendor, selected!.model)}
+				>✕ {selected.model ?? selected.vendor}</button>
+		{/if}
 	</div>
-	<span class="dim num-sm" style="margin-left: auto">
-		{#if trends}{fmtTok(trends.total)} total · {trends.points.length} buckets{/if}
-	</span>
-</div>
-<div class="card">
-	<VBars {points} {labelEvery} />
-</div>
-
-<div class="section-label">By provider and model</div>
-<div class="card">
-	{#if provRows.length > 0}
-		<HBars rows={provRows} />
+	{#if !booted}
+		<div class="skel skel-chart"></div>
 	{:else}
-		<div class="empty">No metered usage yet — providers appear here as traffic is measured</div>
+	<VBars points={chartPoints} from={chartFrom} to={chartTo} />
+	<div class="picker-sub faint"><CountUp value={chartPoints.reduce((s, p) => s + p.value, 0)} /> · {window_.toLowerCase()}{selected ? ` · ${selected.model ?? selected.vendor}` : ''}</div>
 	{/if}
-</div>
+
+	{#if !booted}
+		<div class="rankskel" aria-hidden="true">
+			{#each Array(5) as _}
+				<div class="rankskel-row"><span class="skel"></span><span class="skel"></span><span class="skel"></span></div>
+			{/each}
+		</div>
+	{:else if ranked.length === 0}
+		<div class="empty-card">
+			<div class="empty-card-title">No usage measured yet</div>
+			<div class="dim empty-card-body">Point a tool at a loopback meter and its requests will land here, per provider and model.</div>
+			<a class="btn" href="/machine">Set up metering</a>
+		</div>
+	{:else}
+		<div class="sharebar" role="img" aria-label="Provider share of token usage" style="margin-top: 38px">
+			{#each ranked as r}
+				<button
+					class="seg-segment"
+					class:dimmed={selected && selected.vendor !== r.vendor}
+					style="width: {Math.max(r.share, 1.5)}%; background: {providerAccent(r.vendor)}"
+					title="{r.label} · {r.share.toFixed(1)}% — filter chart"
+					aria-label="{r.label} {r.share.toFixed(1)} percent"
+					onclick={() => select(r.vendor)}
+				></button>
+			{/each}
+		</div>
+
+		<div class="rankgrid faint" style="margin-top: 20px; font-size: 11px">
+			<span></span><span>Provider</span><span class="right">Share</span>
+			<span class="right">Tokens</span><span class="right m-md">Input</span><span class="right m-md">Output</span>
+			<span class="right m-md">Thinking</span><span class="right m-sm">Cost</span><span class="right m-sm">Last activity</span>
+		</div>
+
+		<Accordion.Root type="multiple" class="ranklist">
+			{#each ranked as r, i (r.key)}
+				{@const models = summary.find((p) => p.vendor === r.vendor)?.models ?? []}
+				<div animate:flip={{ duration: reduceMotion ? 0 : 320 }}>
+				<Accordion.Item value={r.key} class="border-b-0">
+					<Accordion.Trigger class="w-full hover:no-underline" level={3}>
+						<span class="faint">{i + 1}</span>
+						<span style="display: flex; align-items: center; gap: 7px">
+							<ProviderIcon vendor={r.vendor} size={26} />
+							{r.label}
+						</span>
+						<span class="right num sharecell" style="justify-content: flex-end">
+							<span class="sharemini"><span style="width: {r.share}%; background: {providerAccent(r.vendor)}"></span></span>
+							{r.share.toFixed(1)}%
+						</span>
+					<span class="right num"><strong><CountUp value={r.tokens} /></strong></span>
+					<span class="right num dim m-md"><CountUp value={r.input} /></span>
+					<span class="right num dim m-md"><CountUp value={r.output} /></span>
+						<span class="right num dim m-md">{r.thinking > 0 ? fmtTok(r.thinking) : '—'}</span>
+						<span class="right num dim m-sm">{fmtCost(r.cost)}</span>
+						<span class="right dim m-sm">{fmtAgo(r.lastEvent)}</span>
+					</Accordion.Trigger>
+					<Accordion.Content>
+						{#if models.length === 0}
+							<div class="faint" style="padding: 4px 0 10px 24px; font-size: 12px">no per-model rows in this window</div>
+						{:else}
+							{@const sorted = [...models].sort((a, b) => billableTok(b.tokens) - billableTok(a.tokens))}
+							{@const mvisible = showAllModels[r.key] ? sorted : sorted.slice(0, MODEL_LIMIT)}
+							{#each mvisible as m (m.model)}
+								{@const mtoks = billableTok(m.tokens)}
+								<button class="rankgrid modelrow" onclick={() => select(r.vendor, m.model)}>
+									<span></span>
+									<span class="mono dim" style="padding-left: 22px; display: flex; align-items: center; gap: 7px" title={m.model}><ProviderIcon vendor={r.vendor} model={m.model} size={24} />{fmtModel(m.model)}</span>
+									<span class="right num dim">{rankTotal > 0 ? ((mtoks / rankTotal) * 100).toFixed(1) : '0.0'}%</span>
+								<span class="right num"><CountUp value={mtoks} /></span>
+								<span class="right num dim m-md"><CountUp value={m.tokens.input} /></span>
+								<span class="right num dim m-md"><CountUp value={m.tokens.output} /></span>
+									<span class="right num dim m-md">{m.tokens.reasoning > 0 ? fmtTok(m.tokens.reasoning) : '—'}</span>
+									<span class="right num dim m-sm">{fmtCost(m.cost)}</span>
+									<span class="right dim m-sm">{fmtAgo(m.lastEvent)}</span>
+								</button>
+							{/each}
+							{#if sorted.length > MODEL_LIMIT}
+								<button
+									class="showall"
+									onclick={() => (showAllModels[r.key] = !showAllModels[r.key])}
+								>
+									{showAllModels[r.key] ? 'Show fewer models' : `Show all ${sorted.length} models`}
+								</button>
+							{/if}
+						{/if}
+					</Accordion.Content>
+				</Accordion.Item>
+				</div>
+			{/each}
+		</Accordion.Root>
+	{/if}
+</section>
+
+<section>
+	<div class="faint" style="font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 12px">Recent</div>
+	{#if !booted}
+		<div class="rankskel" aria-hidden="true">
+			{#each Array(4) as _}
+				<div class="rankskel-row wide"><span class="skel"></span><span class="skel"></span></div>
+			{/each}
+		</div>
+	{:else if recent.length === 0}
+		<div class="empty-card">
+			<div class="empty-card-title">No requests yet</div>
+			<div class="dim empty-card-body">Each metered request shows up here the moment it completes.</div>
+			<a class="btn" href="/machine">Set up metering</a>
+		</div>
+	{:else}
+		<div class="recentfade" class:faded={!showAllRecent && recentTruncated}>
+		<table>
+			<thead>
+				<tr>
+					<th>Time</th>
+					<th class="t-md">Tool</th>
+					<th>Provider</th>
+					<th>Model</th>
+					{#if multiMachine}<th class="t-sm">Machine</th>{/if}
+					<th class="right">Tokens</th>
+					<th class="right t-md">tok/s</th>
+					<th class="right t-sm">Cost</th>
+				</tr>
+			</thead>
+			<tbody>
+				{#each visibleRecent as e (e.id)}
+					<tr
+						class:flash={e.id === freshId}
+						in:fly={{ y: reduceMotion ? 0 : -8, duration: reduceMotion ? 0 : 280 }}
+						animate:flip={{ duration: reduceMotion ? 0 : 300 }}
+					>
+						<td class="mono dim">{fmtTime(e.timestamp)}</td>
+						<td class="dim t-md">{e.product ?? '—'}</td>
+						<td>
+							<span style="display: flex; align-items: center; gap: 6px">
+								<ProviderIcon vendor={e.vendor} size={20} />
+								<span class="dim">{e.vendor}</span>
+							</span>
+						</td>
+						<td class="mono">
+							<span style="display: flex; align-items: center; gap: 6px">
+								<ProviderIcon vendor={e.vendor} model={e.model} size={20} />
+								{e.model}
+							</span>
+						</td>
+						{#if multiMachine}<td class="dim t-sm">{e.machineAlias ?? '—'}</td>{/if}
+						<td class="right num" style="white-space: nowrap">
+							{e.tokens.input > 0 ? `${fmtTok(e.tokens.input)} in` : ''}
+							{e.tokens.input > 0 && (e.tokens.output > 0 || e.tokens.reasoning > 0) ? ' · ' : ''}
+							{e.tokens.output > 0 ? `${fmtTok(e.tokens.output)} out` : ''}
+							{#if e.tokens.reasoning > 0}<span class="dim"> · {fmtTok(e.tokens.reasoning)} think</span>{/if}
+							{#if e.tokens.cacheRead > 0}<span class="faint t-sm"> · +{fmtTok(e.tokens.cacheRead)} cached</span>{/if}
+						</td>
+						<td class="right num dim t-md">
+							{#if e.generationTokPerSec != null}
+								{e.generationTokPerSec.toFixed(0)}
+							{:else if e.latencyMs != null && e.latencyMs > 0 && e.tokens.output > 0}
+								<span class="faint" title="Inferred: output tokens ÷ total request duration — includes prompt processing, so it's a lower bound. Prompt-processing speed can't be inferred from duration."
+									>≈{(e.tokens.output / (e.latencyMs / 1000)).toFixed(0)}</span>
+							{:else}
+								—
+							{/if}
+						</td>
+						<td class="right num dim t-sm">{e.cost > 0.0001 ? `$${e.cost.toFixed(4)}` : '—'}</td>
+					</tr>
+				{/each}
+			</tbody>
+		</table>
+		</div>
+		{#if recentTruncated}
+			<button class="showall" onclick={() => (showAllRecent = !showAllRecent)}>
+				{showAllRecent ? 'Show fewer requests' : `Show all ${recent.length} requests`}
+			</button>
+		{/if}
+	{/if}
+</section>
 
 <style>
-	.unit {
-		font-size: 13px;
-		font-weight: 500;
+	section {
+		margin: 52px 0;
+	}
+	.hero {
+		text-align: center;
+		margin-top: 28px;
+		margin-bottom: 56px;
+	}
+	.hero-stats {
+		display: flex;
+		justify-content: center;
+		gap: 56px;
+	}
+	.hero-stat {
+		min-width: 0;
+	}
+	.hero-value {
+		font-size: clamp(34px, 6vw, 46px);
+		font-weight: 680;
+		letter-spacing: -0.03em;
+		font-variant-numeric: tabular-nums;
+		line-height: 1.05;
+	}
+	.hero-label {
+		font-size: 12px;
 		color: var(--text-2);
-		margin-left: 2px;
+		margin-top: 7px;
+	}
+	.hero-sub {
+		font-size: 12px;
+		margin-top: 10px;
+		font-variant-numeric: tabular-nums;
+	}
+	.picker-row {
+		display: flex;
+		justify-content: center;
+		align-items: center;
+		gap: 10px;
+		margin-bottom: 18px;
+	}
+	.picker-sub {
+		text-align: center;
+		font-size: 11px;
+		margin-top: 8px;
+	}
+	.rankgrid {
+		display: grid;
+		grid-template-columns: 1.6rem minmax(9rem, 1.2fr) 5.5rem 5rem 5rem 5rem 5rem 4.5rem 5.5rem 1.2rem;
+		/* <900px: drop input/output/thinking · <640px: also drop cost/last */
+		gap: 8px;
+		align-items: center;
+		width: 100%;
+		text-align: left;
+		padding: 0 4px;
+	}
+	.modelrow {
+		background: none;
+		border: none;
+		border-top: 1px solid var(--line);
+		font: inherit;
+		color: var(--text);
+		font-size: 12px;
+		padding: 9px 4px;
+		cursor: pointer;
+	}
+	.modelrow:first-of-type {
+		border-top: none;
+	}
+	/* capped recent list fades out at the bottom edge */
+	.recentfade.faded {
+		-webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 84px), transparent 100%);
+		mask-image: linear-gradient(to bottom, #000 calc(100% - 84px), transparent 100%);
+	}
+	.showall {
+		appearance: none;
+		border: 0;
+		background: transparent;
+		color: var(--text-3);
+		font: inherit;
+		font-size: 12px;
+		padding: 10px 4px 2px;
+		cursor: pointer;
+	}
+	.showall:hover {
+		color: var(--text);
+	}
+	/* newest request flashes once on arrival */
+	@keyframes rowfresh {
+		0% { background: var(--accent-soft); }
+		100% { background: transparent; }
+	}
+	tbody tr.flash td {
+		animation: rowfresh 1.8s ease-out;
+	}
+	section :global(button[data-slot="accordion-trigger"][data-state="open"] > svg[data-slot="accordion-trigger-icon"]) {
+		transform: rotate(180deg);
+	}
+	.modelrow:hover { background: rgba(128, 128, 128, 0.06); }
+	/* accordion triggers are <button>s inside a child component — scoped CSS
+	   can't reach them, so the whole row layout lives in this global rule.
+	   Padding here matches .rankgrid rows so columns line up. */
+	section :global(button[data-slot="accordion-trigger"]) {
+		appearance: none;
+		border: 0;
+		background: transparent;
+		width: 100%;
+		color: var(--text);
+		font-family: inherit;
+		font-size: 13px;
+		text-align: left;
+		cursor: pointer;
+		display: grid;
+		grid-template-columns: 1.6rem minmax(9rem, 1.2fr) 5.5rem 5rem 5rem 5rem 5rem 4.5rem 5.5rem 1.2rem;
+		gap: 8px;
+		align-items: center;
+		padding: 16px 4px;
+	}
+	.sharebar {
+		display: flex;
+		height: 14px;
+		border-radius: 4px;
+		overflow: hidden;
+		gap: 1px;
+	}
+	.seg-segment {
+		border: none;
+		padding: 0;
+		cursor: pointer;
+		opacity: 0.85;
+		transition: opacity 0.12s;
+	}
+	.seg-segment:hover { opacity: 1; }
+	.seg-segment.dimmed { opacity: 0.25; }
+	.chip-clear {
+		border: 1px solid var(--line);
+		background: transparent;
+		color: var(--text-2);
+		border-radius: 999px;
+		font-size: 11px;
+		padding: 1px 8px;
+		cursor: pointer;
+	}
+	.sharecell { display: inline-flex; align-items: center; gap: 6px; }	.sharemini {
+		display: inline-block;
+		width: 42px;
+		height: 4px;
+		border-radius: 2px;
+		background: var(--track, rgba(128, 128, 128, 0.15));
+		overflow: hidden;
+	}
+	.sharemini span { display: block; height: 100%; }
+
+	/* ---- loading skeletons + designed empty states ---- */
+	@keyframes skelsweep {
+		0% { background-position: 200% 0; }
+		100% { background-position: -200% 0; }
+	}
+	.skel {
+		display: block;
+		border-radius: 6px;
+		background: linear-gradient(
+			100deg,
+			var(--track) 40%,
+			light-dark(rgb(0 0 0 / 0.1), rgb(255 255 255 / 0.14)) 50%,
+			var(--track) 60%
+		);
+		background-size: 200% 100%;
+		animation: skelsweep 1.4s linear infinite;
+	}
+	@media (prefers-reduced-motion: reduce) {
+		.skel { animation: none; }
+	}
+	.skel-hero {
+		width: min(220px, 40vw);
+		height: 46px;
+		margin: 0 auto;
+		border-radius: 10px;
+	}
+	.skel-label {
+		width: 110px;
+		height: 11px;
+		margin: 9px auto 0;
+	}
+	.skel-chart {
+		height: 230px;
+		border-radius: 12px;
+		margin-top: 8px;
+	}
+	.rankskel {
+		display: grid;
+		gap: 10px;
+		margin-top: 20px;
+	}
+	.rankskel-row {
+		display: grid;
+		grid-template-columns: 1fr 2fr 1fr;
+		gap: 10px;
+	}
+	.rankskel-row.wide {
+		grid-template-columns: 1fr 3fr;
+	}
+	.rankskel-row .skel {
+		height: 22px;
+	}
+	.empty-card {
+		background: color-mix(in srgb, var(--bg-raised) 72%, transparent);
+		border-radius: 18px;
+		box-shadow: 0 1px 4px rgb(0 0 0 / 0.04);
+		padding: 34px 24px;
+		text-align: center;
+		margin-top: 20px;
+		display: grid;
+		gap: 8px;
+		justify-items: center;
+	}
+	.empty-card-title {
+		font-size: 14px;
+		font-weight: 650;
+	}
+	.empty-card-body {
+		font-size: 12.5px;
+		max-width: 380px;
+	}
+	.empty-card .btn {
+		margin-top: 8px;
+	}
+
+	/* ---- responsive: md ≤900px, sm ≤640px ---- */
+	@media (max-width: 900px) {
+		.rankgrid,
+		section :global(button[data-slot="accordion-trigger"]) {
+			grid-template-columns: 1.6rem minmax(7rem, 1.4fr) 5rem 4.5rem 4.5rem 5.5rem 1.2rem;
+		}
+		.m-md { display: none; }
+		.t-md { display: none; }
+	}
+	@media (max-width: 640px) {
+		section { margin: 38px 0; }
+		.hero { margin-bottom: 40px; }
+		.rankgrid,
+		section :global(button[data-slot="accordion-trigger"]) {
+			grid-template-columns: 1.2rem minmax(6rem, 1.6fr) 4.5rem 4rem 1.2rem;
+			gap: 6px;
+		}
+		.m-sm { display: none; }
+		.t-sm { display: none; }
+		.modelrow { font-size: 11.5px; }
 	}
 </style>

@@ -56,7 +56,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             self?.refreshHeavy()
         }
         InferenceMonitor.shared.startPolling()
-        if ConsentManager.shared.isGranted(.fileReading) {
+        if ConsentManager.shared.isGranted(.fileReading), SettingsStore.shared.filePolling {
             FilePoller.shared.startPolling()
         }
         // Capture mode + meters. Point mode: env/settings meters PLUS

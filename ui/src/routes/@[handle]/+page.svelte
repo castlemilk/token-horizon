@@ -2,11 +2,12 @@
 	import { onMount } from 'svelte';
 	import { page } from '$app/stores';
 	import { api, type Stats, type ProviderSummary } from '$lib/api';
-	import { fmtTok, totalTok, poll } from '$lib/format';
+	import { totalTok, poll } from '$lib/format';
 	import { fetchDailyActivity, activityStats, type DayActivity } from '$lib/activity';
 	import { providerAccent } from '$lib/colors';
 	import Heatmap from '$lib/components/Heatmap.svelte';
 	import HBars, { type HBarRow } from '$lib/components/HBars.svelte';
+	import CountUp from '$lib/components/CountUp.svelte';
 
 	// Route: /@<handle> — profile summarizes this machine's activity attributed
 	// to the handle (the local identity configured in Settings).
@@ -63,15 +64,15 @@
 	</div>
 	<div class="totals">
 		<div class="t">
-			<div class="tv">{fmtTok(stats?.usage.tokensAllTime ?? 0)}</div>
+			<div class="tv"><CountUp value={stats?.usage.tokensAllTime ?? 0} /></div>
 			<div class="tl">All time</div>
 		</div>
 		<div class="t">
-			<div class="tv">{fmtTok(stats?.usage.tokensToday ?? 0)}</div>
+			<div class="tv"><CountUp value={stats?.usage.tokensToday ?? 0} /></div>
 			<div class="tl">Today</div>
 		</div>
 		<div class="t">
-			<div class="tv">{fmtTok(act.peak)}</div>
+			<div class="tv"><CountUp value={act.peak} /></div>
 			<div class="tl">Peak day</div>
 		</div>
 	</div>

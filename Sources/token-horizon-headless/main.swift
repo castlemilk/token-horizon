@@ -18,6 +18,41 @@ import ucrt
 Platform.systemStats = ProcFSSystemStats.self
 #endif
 
+// Service management — runs WITHOUT starting the daemon (installers, the UI
+// settings toggle, and operators use these):
+//   token-horizon-headless --service-status | --install-service | --uninstall-service
+// All print the resulting AutoStartStatus JSON; exit non-zero on failure.
+if CommandLine.arguments.count > 1 {
+    func printStatus(_ s: AutoStartStatus) {
+        let enc = JSONEncoder()
+        enc.outputFormatting = [.prettyPrinted, .sortedKeys]
+        if let data = try? enc.encode(s), let str = String(data: data, encoding: .utf8) {
+            print(str)
+        }
+    }
+    switch CommandLine.arguments[1] {
+    case "--service-status":
+        printStatus(DaemonAutoStart.status())
+        exit(0)
+    case "--install-service":
+        do { printStatus(try DaemonAutoStart.install()); exit(0) }
+        catch {
+            FileHandle.standardError.write("install-service failed: \(error)\n".data(using: .utf8)!)
+            printStatus(DaemonAutoStart.status())
+            exit(1)
+        }
+    case "--uninstall-service":
+        do { printStatus(try DaemonAutoStart.uninstall()); exit(0) }
+        catch {
+            FileHandle.standardError.write("uninstall-service failed: \(error)\n".data(using: .utf8)!)
+            printStatus(DaemonAutoStart.status())
+            exit(1)
+        }
+    default:
+        break
+    }
+}
+
 let engine = UsageEngine()
 
 let usageStore: UsageStoring? = {
@@ -49,7 +84,11 @@ InferenceMonitor.shared.startPolling()
 // Routine file polling → tool attribution + limit observations on the DB
 // timeline (requires .fileReading consent; TH_CONSENT=fileReading to opt in
 // headless). Files never create usage rows — usage is metered-only.
-if ConsentManager.shared.isGranted(.fileReading) {
+// timeline (requires .fileReading consent; TH_CONSENT=fileReading to opt in
+// headless). Files never create usage rows — usage is metered-only.
+// Consolidation is MANUAL by default (POST /consolidate); continuous polling
+// is opt-in via Settings.filePolling / TH_FILE_POLL=1.
+if ConsentManager.shared.isGranted(.fileReading), SettingsStore.shared.filePolling {
     FilePoller.shared.startPolling()
 }
 

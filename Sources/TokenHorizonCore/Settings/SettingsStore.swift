@@ -13,6 +13,24 @@ public final class SettingsStore {
     private var _notifyOnLimitRefresh: Bool = true
     private var _runtimeEndpoints: [String: [RuntimeEndpoint]] = [:]
     private var _meterCaptureMode: String = MeterCaptureMode.point.rawValue
+    private var _filePolling: Bool = false
+    /// Per-vendor meter desired state: true = always on, false = off (also
+    /// suppresses runtime auto-metering), absent = default (runtimes auto,
+    /// cloud vendors off). Persisted; the daemon reconciles live meters to
+    /// this map (POST /meters/toggle) and applies it at startup.
+    private var _meterToggles: [String: Bool] = [:]
+
+    public var meterToggles: [String: Bool] {
+        lock.lock(); defer { lock.unlock() }
+        return _meterToggles
+    }
+
+    public func setMeterEnabled(_ vendor: String, _ enabled: Bool) {
+        lock.lock()
+        _meterToggles[vendor.lowercased()] = enabled
+        saveLocked()
+        lock.unlock()
+    }
 
     /// How usage is measured: "point" (tools configured at loopback meters —
     /// the default, and the only mode corporate machines should use) or
@@ -29,6 +47,24 @@ public final class SettingsStore {
         set {
             lock.lock()
             _meterCaptureMode = newValue.rawValue
+            saveLocked()
+            lock.unlock()
+        }
+    }
+
+    /// Automatic periodic file consolidation (annotations + limit snapshots).
+    /// DEFAULT OFF: consolidation is a deliberate, manual action (POST
+    /// /consolidate) — files are not the usage source, so there is no reason
+    /// to read them continuously. Env TH_FILE_POLL=1 forces polling on.
+    public var filePolling: Bool {
+        get {
+            if ProcessInfo.processInfo.environment["TH_FILE_POLL"] == "1" { return true }
+            lock.lock(); defer { lock.unlock() }
+            return _filePolling
+        }
+        set {
+            lock.lock()
+            _filePolling = newValue
             saveLocked()
             lock.unlock()
         }
@@ -94,6 +130,8 @@ public final class SettingsStore {
             "alibabaCookie": _alibabaCookie,
             "notifyOnLimitRefresh": _notifyOnLimitRefresh,
             "meterCaptureMode": _meterCaptureMode,
+            "filePolling": _filePolling,
+            "meterToggles": _meterToggles,
             "runtimeEndpoints": _runtimeEndpoints.mapValues { list in
                 list.map { $0.asDict }
             },
@@ -119,6 +157,12 @@ public final class SettingsStore {
             }
             if let m = obj["meterCaptureMode"] as? String {
                 _meterCaptureMode = m
+            }
+            if let fp = obj["filePolling"] as? Bool {
+                _filePolling = fp
+            }
+            if let t = obj["meterToggles"] as? [String: Bool] {
+                _meterToggles = t
             }
             if let dict = obj["runtimeEndpoints"] as? [String: [[String: Any]]] {
                 for (vendor, list) in dict {

@@ -37,6 +37,26 @@ public enum MeterRegistry {
         return keys
     }
 
+    /// Deterministic default listen port per vendor — stable across
+    /// restarts so UI toggles, docs, and muscle memory all agree. Runtimes
+    /// declare their own (LocalInferenceRuntime.defaultMeterListenPort);
+    /// cloud vendors use the table; unknown vendors hash into 9260-9299.
+    public static func defaultListenPort(for vendor: String) -> UInt16 {
+        let key = vendor.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if let rt = InferenceMonitor.shared.runtimes.first(where: {
+            $0.meterVendorKey.lowercased() == key
+        }), let p = rt.defaultMeterListenPort { return p }
+        let table: [String: UInt16] = [
+            "claude": 9241, "openai": 9242, "codex": 9243, "glm": 9244,
+            "opencode-go": 9245, "kimi": 9246, "minimax": 9247,
+            "alibaba": 9248, "deepseek": 9249, "gemini": 9250, "google": 9250,
+        ]
+        if let p = table[key] { return p }
+        var h: UInt32 = 5381
+        for u in key.utf8 { h = h &* 33 &+ UInt32(u) }
+        return UInt16(9260 + Int(h % 40))
+    }
+
     /// Live meters, installed by the owning host (CoreAPIRouter). Lets any
     /// core component route its runtime calls through the measuring path
     /// without knowing who owns the meters.

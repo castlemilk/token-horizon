@@ -1,3 +1,32 @@
+/* Tailwind v4 for shadcn-svelte components — theme + utilities ONLY.
+ * Preflight is deliberately NOT imported: the hairline design system below
+ * owns the base styles. */
+@import 'tailwindcss/theme.css' layer(theme);
+@import 'tailwindcss/utilities.css' layer(utilities);
+@import 'tw-animate-css';
+
+/* shadcn theme bridge → hairline tokens (both themes via light-dark()) */
+:root {
+	--background: var(--bg);
+	--foreground: var(--text);
+	--muted-foreground: var(--text-3);
+	--border: var(--line);
+	--ring: var(--accent);
+	--accent-foreground: light-dark(#fafafb, #17171b);
+}
+@theme inline {
+	--color-background: var(--background);
+	--color-foreground: var(--foreground);
+	--color-muted-foreground: var(--muted-foreground);
+	--color-border: var(--border);
+	--color-ring: var(--ring);
+	--color-accent: var(--accent);
+	--color-accent-foreground: var(--accent-foreground);
+	--radius-lg: 6px;
+	--animate-accordion-down: accordion-down 0.15s ease-out;
+	--animate-accordion-up: accordion-up 0.15s ease-out;
+}
+
 /*
  * Token Horizon design language — "hairline".
  * One shared look across macOS / Windows / Linux: system UI type, 1px lines,
@@ -28,7 +57,7 @@
 
 	--accent: light-dark(#26262c, #dcdce2);
 	--accent-soft: light-dark(rgb(0 0 0 / 0.07), rgb(255 255 255 / 0.11));
-	--ok: light-dark(#1a7f37, #4ac26b);
+	--ok: light-dark(#34c759, #4ac26b);
 	--warn: light-dark(#9a6700, #d4a72c);
 	--bad: light-dark(#cf222e, #f47067);
 	--track: light-dark(rgb(0 0 0 / 0.07), rgb(255 255 255 / 0.08));
@@ -87,75 +116,208 @@ a {
 .shell {
 	max-width: 1040px;
 	margin: 0 auto;
-	padding: 0 20px 48px;
+	padding: 0 32px 72px;
+	overflow-x: clip; /* no child may ever cause page-level horizontal scroll */
+}
+.island-shell {
+	padding-top: 78px;
+}
+@media (max-width: 640px) {
+	.shell {
+		padding: 0 18px 64px;
+		overflow-x: clip;
+	}
+	.island-shell {
+		padding-top: 60px;
+	}
+	.dock-wrap {
+		padding: 0;
+	}
+	.dockbar {
+		padding: 9px 18px calc(9px + env(safe-area-inset-bottom));
+	}
+	.status.dock-sub .dock-text {
+		max-width: 120px;
+		overflow: hidden;
+		text-overflow: ellipsis;
+	}
+}
+@media (max-width: 460px) {
+	.dockbar .status .dock-text {
+		max-width: 110px;
+		overflow: hidden;
+		text-overflow: ellipsis;
+	}
 }
 
-.topbar {
+/* ---- Dynamic Island tab bar: floating frosted pill, centered on top ---- */
+
+.island-wrap {
+	position: fixed;
+	top: calc(10px + env(safe-area-inset-top));
+	left: 50%;
+	transform: translateX(-50%);
+	z-index: 50;
+	display: flex;
+	justify-content: center;
+	pointer-events: none;
+}
+
+.island {
+	pointer-events: auto;
+	display: flex;
+	align-items: center;
+	gap: 2px;
+	padding: 7px 9px;
+	border-radius: 999px;
+	border: 0;
+	background: color-mix(in srgb, var(--bg-raised) 62%, transparent);
+	backdrop-filter: blur(24px) saturate(1.8);
+	-webkit-backdrop-filter: blur(24px) saturate(1.8);
+	box-shadow:
+		inset 0 0 0 1px var(--line-strong),
+		inset 0 1px 0 rgb(255 255 255 / 0.12),
+		0 8px 28px rgb(0 0 0 / 0.14),
+		0 1px 5px rgb(0 0 0 / 0.1);
+}
+
+.island a {
+	position: relative;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	min-width: 48px;
+	height: 36px;
+	padding: 0 12px;
+	color: var(--text-2);
+	border-radius: 999px;
+	transition: background 0.18s, color 0.18s, transform 0.18s;
+}
+
+.island a:hover {
+	color: var(--text);
+	background: var(--accent-soft);
+}
+
+.island a:active {
+	transform: scale(0.94);
+}
+
+.island a.active {
+	background: light-dark(rgba(255, 255, 255, 0.95), rgba(72, 72, 78, 0.9));
+	color: var(--text);
+	font-weight: 600;
+	box-shadow:
+		0 1px 2px rgba(0, 0, 0, 0.16),
+		0 0 0 1px rgba(0, 0, 0, 0.05);
+}
+
+.island-sep {
+	width: 1px;
+	height: 16px;
+	margin: 0 4px;
+	background: var(--line-strong);
+	flex: none;
+}
+
+.island-profile {
+	min-width: 48px;
+	height: 36px;
+	padding: 0 12px !important;
+}
+
+/* selected profile reads exactly like a selected icon tab */
+.island-profile.active {
+	background: light-dark(rgba(255, 255, 255, 0.95), rgba(72, 72, 78, 0.9));
+	font-weight: 600;
+	box-shadow:
+		0 1px 2px rgba(0, 0, 0, 0.16),
+		0 0 0 1px rgba(0, 0, 0, 0.05);
+}
+
+.island-avatar {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	width: 30px;
+	height: 30px;
+	border-radius: 50%;
+	background: light-dark(#26262c, #e8e8ec);
+	color: light-dark(#fafafb, #17171b);
+	font-size: 12.5px;
+	font-weight: 700;
+	letter-spacing: 0.01em;
+	flex: none;
+}
+
+/* ---- Bottom status bar: flush bottom edge, top hairline only ---- */
+
+.dock-wrap {
+	position: fixed;
+	bottom: 0;
+	left: 0;
+	right: 0;
+	z-index: 50;
+	display: flex;
+	justify-content: center;
+	pointer-events: none;
+	padding: 0;
+}
+
+.dockbar {
+	pointer-events: auto;
 	display: flex;
 	align-items: center;
 	gap: 18px;
-	min-height: 46px;
-	border-bottom: 1px solid var(--line);
-	margin-bottom: 20px;
+	flex: 1;
+	width: 100%;
+	padding: 9px 32px calc(9px + env(safe-area-inset-bottom));
+	border-radius: 0;
+	border: 0;
+	border-top: 1px solid var(--line);
+	background: color-mix(in srgb, var(--bg-raised) 62%, transparent);
+	backdrop-filter: blur(24px) saturate(1.8);
+	-webkit-backdrop-filter: blur(24px) saturate(1.8);
+	box-shadow: none;
 }
 
-.brand {
+.dockbar .status {
+	font-size: 12px;
+}
+
+.dock-text {
+	white-space: nowrap;
+}
+
+.dock-gear {
 	display: flex;
 	align-items: center;
-	gap: 8px;
-	font-size: 13px;
-	font-weight: 650;
-	letter-spacing: 0.01em;
-}
-
-.brand::before {
-	content: '';
-	width: 9px;
-	height: 9px;
-	border-radius: 3px;
-	background: var(--accent);
-}
-
-/* Text tabs separated by hairlines; active tab takes the accent. */
-.tabs {
-	display: flex;
-	align-items: center;
-}
-
-.tabs a {
-	position: relative;
-	padding: 5px 11px;
-	font-size: 12.5px;
-	font-weight: 500;
+	justify-content: center;
+	width: 28px;
+	height: 28px;
+	border-radius: 8px;
 	color: var(--text-2);
-	border-radius: 5px;
-}
-
-.tabs a:hover {
-	color: var(--text);
-}
-
-.tabs a.active {
-	color: var(--accent);
-	font-weight: 600;
-}
-
-.tabs a + a::before {
-	content: '';
-	position: absolute;
-	left: -0.5px;
-	top: 50%;
-	translate: 0 -50%;
-	width: 1px;
-	height: 12px;
-	background: var(--line);
-}
-
-.topbar-right {
-	display: flex;
-	align-items: center;
-	gap: 14px;
+	border: 1px solid transparent;
+	transition: background 0.18s, color 0.18s, transform 0.18s;
+	flex: none;
 	margin-left: auto;
+}
+
+.dock-gear:hover {
+	color: var(--text);
+	background: var(--accent-soft);
+}
+
+.dock-gear:active {
+	transform: scale(0.92);
+}
+
+.dock-gear.active {
+	color: var(--text);
+	background: light-dark(rgba(255, 255, 255, 0.95), rgba(72, 72, 78, 0.9));
+	box-shadow:
+		0 1px 2px rgba(0, 0, 0, 0.16),
+		0 0 0 1px rgba(0, 0, 0, 0.05);
 }
 
 .status {
@@ -225,13 +387,15 @@ a {
 	margin: 24px 0 8px;
 }
 
-/* ---- Cards & KPIs ---- */
+/* ---- Cards ----
+ * Apple widget tile: soft raised fill, no hard border (matches /limits). */
 
 .card {
-	background: var(--bg-raised);
-	border: 1px solid var(--line);
-	border-radius: var(--radius);
-	padding: 14px 16px;
+	background: color-mix(in srgb, var(--bg-raised) 72%, transparent);
+	border: 0;
+	border-radius: 18px;
+	padding: 20px 18px;
+	box-shadow: 0 1px 4px rgb(0 0 0 / 0.04);
 }
 
 .grid {
@@ -277,53 +441,84 @@ th {
 	font-size: 11.5px;
 	font-weight: 600;
 	color: var(--text-3);
-	padding: 5px 10px;
+	padding: 8px 12px;
 	border-bottom: 1px solid var(--line);
 }
 td {
-	padding: 7px 10px;
+	padding: 10px 12px;
 	border-bottom: 1px solid var(--line);
 }
 tr:last-child td {
 	border-bottom: none;
 }
 
+/* Large screens: extra breathing room so rows don't read congested. */
+@media (min-width: 1100px) {
+	th {
+		padding: 9px 14px;
+	}
+	td {
+		padding: 12px 14px;
+	}
+	.grid {
+		gap: 12px;
+	}
+	.stack {
+		gap: 12px;
+	}
+	.card {
+		padding: 16px 18px;
+	}
+	.section-label {
+		margin: 28px 0 10px;
+	}
+}
+
 /* ---- Segmented control & buttons ----
  * Joined cells with hairline dividers — the primary picker pattern. */
 
+/* Period picker — Apple material: translucent frosted track, the active
+   segment floats as a raised opaque pill. Used for chart windows, theme. */
 .seg {
 	display: inline-flex;
-	align-items: stretch;
-	border: 1px solid var(--line);
-	border-radius: var(--radius);
-	background: var(--bg-raised);
-	overflow: hidden;
+	align-items: center;
+	gap: 2px;
+	border: 0;
+	border-radius: 999px;
+	background: color-mix(in srgb, var(--bg-raised) 55%, transparent);
+	backdrop-filter: blur(20px) saturate(1.8);
+	-webkit-backdrop-filter: blur(20px) saturate(1.8);
+	box-shadow:
+		inset 0 0 0 1px var(--line-strong),
+		0 1px 6px rgba(0, 0, 0, 0.08);
+	padding: 3px;
 }
 
 .seg button {
 	appearance: none;
 	border: 0;
-	border-left: 1px solid var(--line);
 	background: transparent;
 	color: var(--text-2);
 	font-family: inherit;
 	font-size: 12px;
 	font-weight: 500;
-	padding: 4px 11px;
+	padding: 5px 16px;
 	cursor: pointer;
 	white-space: nowrap;
+	border-radius: 999px;
+	transition: background 0.15s, color 0.15s, box-shadow 0.15s;
 }
 
-.seg button:first-child {
-	border-left: 0;
-}
 .seg button:hover {
 	color: var(--text);
 }
 .seg button.active {
-	background: var(--accent-soft);
-	color: var(--accent);
+	background: light-dark(rgba(255, 255, 255, 0.92), rgba(64, 64, 68, 0.85));
+	color: var(--text);
 	font-weight: 600;
+	box-shadow:
+		0 1px 2px rgba(0, 0, 0, 0.14),
+		0 0 0 1px rgba(0, 0, 0, 0.04);
 }
 
 .btn {
@@ -331,11 +526,11 @@ tr:last-child td {
 	border: 1px solid var(--line);
 	background: var(--bg-raised);
 	color: var(--text);
-	border-radius: var(--radius);
+	border-radius: 999px;
 	font-family: inherit;
 	font-size: 12px;
 	font-weight: 500;
-	padding: 5px 13px;
+	padding: 6px 14px;
 	cursor: pointer;
 }
 .btn:hover {
@@ -416,5 +611,48 @@ tr:last-child td {
 
 .stack {
 	display: grid;
-	gap: 8px;
+	gap: 10px;
+}
+/* grid items default to min-width:auto, which lets long unbroken lines
+   (commands, URLs) blow cards out of the column — always clamp. */
+.stack > * {
+	min-width: 0;
+}
+
+/* Hairline toggle switch */
+.switch {
+	margin-left: auto;
+	appearance: none;
+	width: 32px;
+	height: 18px;
+	border-radius: 999px;
+	border: 1px solid var(--line-strong);
+	background: var(--track);
+	position: relative;
+	cursor: pointer;
+	transition: background 0.15s, border-color 0.15s;
+	flex: none;
+}
+.switch::after {
+	content: '';
+	position: absolute;
+	top: 2px;
+	left: 2px;
+	width: 12px;
+	height: 12px;
+	border-radius: 50%;
+	background: var(--text-3);
+	transition: transform 0.15s, background 0.15s;
+}
+.switch.on {
+	background: var(--accent);
+	border-color: var(--accent);
+}
+.switch.on::after {
+	transform: translateX(14px);
+	background: #fff;
+}
+.switch:disabled {
+	opacity: 0.45;
+	cursor: default;
 }

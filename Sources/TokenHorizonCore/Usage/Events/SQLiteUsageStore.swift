@@ -170,6 +170,10 @@ public final class SQLiteUsageStore: UsageStoring {
             source_file TEXT NOT NULL DEFAULT '',
             PRIMARY KEY (vendor, request_id)
         );
+        -- The annotation read-join correlates on request_id alone (OR against
+        -- request_id_alt), so it cannot use the (vendor, request_id) PK —
+        -- without this index every usage row full-scans file_annotation.
+        CREATE INDEX IF NOT EXISTS idx_annotation_rid ON file_annotation(request_id);
         -- Read-side canonicalization cache: raw spelling → canonical form.
         -- Pure derivative state (rebuilt lazily by the read path); stored
         -- usage/limit rows are NEVER rewritten. Model folds join this table
@@ -442,6 +446,9 @@ public final class SQLiteUsageStore: UsageStoring {
         for clause in filter.sqlClauses where clause.column != "vendor" && clause.column != "model" && clause.column != "machine_id" {
             clauses.append("usage_event.\(clause.column) = ?")
             strings.append(clause.value)
+        }
+        if filter.meteredOnly {
+            clauses.append("usage_event.attestation != 'selfReported'")
         }
         return ("WHERE " + clauses.joined(separator: " AND "), strings, ints)
     }
