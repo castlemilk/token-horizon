@@ -54,11 +54,16 @@ public final class ConsentManager {
     // MARK: - Query
 
     /// True only with a stored, current-version grant (or env override).
-    public func isGranted(_ scope: ConsentScope) -> Bool {
-        if envGranted(scope) { return true }
+    public func isGranted(_ scope: ConsentScope) -> Bool {        if envGranted(scope) { return true }
         lock.lock(); defer { lock.unlock() }
         guard let record = records[scope.rawValue] else { return false }
         return record.granted && record.version == Self.consentVersion
+    }
+
+    /// Effective grant state per scope (env overrides count as granted) —
+    /// backs GET /consents so loopback clients can render permission screens.
+    public func states() -> [(scope: String, granted: Bool)] {
+        ConsentScope.allCases.map { ($0.rawValue, isGranted($0)) }
     }
 
     /// Non-interactive grant via environment (CI, containers, systemd units):

@@ -26,9 +26,11 @@ Sources/TokenHorizonCore/   portable server-side module (macOS + Linux; Windows 
     Consolidation/        file ANNOTATION + LIMITS ingestion (files never create or modify
                           usage rows): FileConsolidator base + per-provider consolidators
                           (Claude/Kimi/pi/OpenCode → FileAnnotations by provider request id;
-                          Codex → rate-limit LimitSnapshots). FilePoller runs them every 60s
-                          (`.fileReading` consent); annotations are read-joined, so poll
-                          timing cannot matter and re-polls are natural-key no-ops.
+                          Codex → rate-limit LimitSnapshots). FilePoller runs them ONLY on demand
+                          (POST /consolidate; continuous 60s polling is opt-in via
+                          Settings.filePolling / TH_FILE_POLL=1); annotations are
+                          read-joined, so poll timing cannot matter and re-polls are
+                          natural-key no-ops.
                           ConsolidationRunner.run remains a deliberate one-off (TH_CONSOLIDATE=1).
     AccountKey.swift      (Usage/) pseudonymous per-account ids (vendor + truncated SHA-256 of
                           the credential) — multi-account vendors consolidate usage/limits per
@@ -106,6 +108,13 @@ Sources/TokenHorizonCore/   portable server-side module (macOS + Linux; Windows 
     macOS/    SystemStats (mach/vm64/iostat/ps), MacOSKeychainStore, MacOSPaths
     Linux/    ProcFSSystemStats (/proc+ps), LinuxPaths (XDG), credential stub
     Windows/  WindowsPaths (APPDATA), credential stub
+    DaemonAutoStart.swift   user-scoped boot/login registration for the headless daemon:
+                            systemd --user + linger (Linux; XDG autostart fallback),
+                            LaunchAgent (macOS), unsupported on Windows. Pure generators
+                            unit-tested; CLI: --install-service/--uninstall-service/
+                            --service-status; API: GET /service, POST /service/install,
+                            POST /service/uninstall. Never root/system-level — the
+                            daemon needs the user's credentials and config dirs.
 Sources/token-horizon-headless/  cross-platform daemon: same loopback API as the macOS app, no UI
 ui/                              cross-platform desktop UI: SvelteKit (TS, adapter-static SPA, no
                                  Tailwind) + Tauri v2 shell; thin client of the loopback API
@@ -121,9 +130,13 @@ shell/token-horizon.zsh     zsh preexec/precmd hooks + `th` CLI
   scripts/make-app.sh         release build + .app bundle (LSUIElement) + ad-hoc codesign + relaunch
   scripts/package-notarized.sh Developer ID hardened-runtime app + DMG/ZIP + optional notarytool submission
 scripts/make-icon.swift     renders the black-hole AppIcon.icns
+scripts/run-dev.sh          cross-platform dev stack (daemon on Linux, app on macOS, Tauri/vite UI);
+                            kills stale backends/dev servers before starting (TH_REUSE=1 to reuse)
+build_scripts/tauri/        per-platform Tauri release bundle scripts (linux/macos/windows)
 ```
 
-See docs/cross-platform.md for the Linux/Windows port status and the Platform seam contract.
+See docs/cross-platform.md for the Linux/Windows port status and the Platform seam contract;
+docs/dev-environment-linux.md for the Linux dev-box toolchain/snap pitfalls run-dev.sh works around.
 
 ## Invariants — do not break
 
@@ -148,7 +161,7 @@ See docs/cross-platform.md for the Linux/Windows port status and the Platform se
 
 13. **Telemetry metrics are bounded and opt-in.** Prometheus text is served by the loopback API at `/metrics` (CoreAPIRouter); do not start a second listener. OTLP/HTTP is enabled only by `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` or `OTEL_EXPORTER_OTLP_ENDPOINT`. Keep metric attributes low-cardinality, with model labels capped and overflow grouped as `other`. Runtime rollups (InferenceMonitor RuntimeHistory, and MLXHistory on macOS) are in-memory only: fine samples are capped at 1,800 points and 30-second averages at 2,880 points. Runtime liveness is HTTP probes only — ps merely decorates local snapshots with pids/cpu/mem; remote runtimes must work with zero process inspection.
 
-14. **Usage is metered-only; files annotate at full resolution; stored spellings are raw.** Every counted row in `usage_event` originates from a request meter (`insertMetered`, attestation ≥ measured) — the ONLY writer. Provider/tool session files contribute ONLY: (a) `FileAnnotation`s — the file's own claim of tool label + tool-reported cost, stored in `file_annotation` keyed by provider request id and LEFT JOINed onto metered rows at READ time; (b) `LimitSnapshot`s (e.g. codex `rate_limits` windows). Files never create AND never modify usage rows — no write-time merging: the meter's product/cost and the file's product/cost coexist, and the rank (explicit label > file > header sniff; reported cost > computed) is resolved at query time (`effectiveProduct`/`effectiveCost`). Arrival order (file before/after the response) therefore cannot matter. Vendor/model/provider spellings are stored RAW as received — canonicalization happens exclusively in the read path and entirely in SQL (vendor CASE expression; model folds via the read-side `spelling` cache table joined in aggregation/filter queries); never rewrite stored rows to canonical form, and never merge observations early. Every row carries `machine_id` (persisted UUID); the alias lives ONCE per machine in the `machine` table (upserted on write, JOINed at read — never stored per row) and is inferred: TH_MACHINE_ALIAS > machine-alias file > sanitized hostname — alias is display-only, id is identity. The schema is v1 (`PRAGMA user_version = 1`) with NO migrations: pre-v1 databases are archived aside as `usage.legacy-<ts>.db` on open, never migrated. Limits and usage consolidate per vendor ACCOUNT (`AccountKey` = vendor + truncated SHA-256 of the credential; raw credentials are never stored); quota windows for different accounts of the same vendor are separate rows and must never merge.
+14. **Usage is metered-only; files annotate at full resolution; stored spellings are raw.** Every counted row in `usage_event` originates from a request meter (`insertMetered`, attestation ≥ measured) — the ONLY writer. Provider/tool session files contribute ONLY: (a) `FileAnnotation`s — the file's own claim of tool label + tool-reported cost, stored in `file_annotation` keyed by provider request id and LEFT JOINed onto metered rows at READ time; (b) `LimitSnapshot`s (e.g. codex `rate_limits` windows). Files never create AND never modify usage rows — no write-time merging: the meter's product/cost and the file's product/cost coexist, and the rank (explicit label > file > header sniff; reported cost > computed) is resolved at query time (`effectiveProduct`/`effectiveCost`). ONE documented exception: `POST /analytics/backfill` — a deliberate, operator-triggered bootstrap import of file-derived bucket history (`UsageEngine.backfillEvents()`), attestation `.selfReported` (runtime-ledger deltas `.measured`), model `(file import)`, deterministic id from `backfill|<tool>|<bucket>` so re-runs are INSERT OR IGNORE no-ops. Never automatic. Arrival order (file before/after the response) therefore cannot matter. Vendor/model/provider spellings are stored RAW as received — canonicalization happens exclusively in the read path and entirely in SQL (vendor CASE expression; model folds via the read-side `spelling` cache table joined in aggregation/filter queries); never rewrite stored rows to canonical form, and never merge observations early. Every row carries `machine_id` (persisted UUID); the alias lives ONCE per machine in the `machine` table (upserted on write, JOINed at read — never stored per row) and is inferred: TH_MACHINE_ALIAS > machine-alias file > sanitized hostname — alias is display-only, id is identity. The schema is v1 (`PRAGMA user_version = 1`) with NO migrations: pre-v1 databases are archived aside as `usage.legacy-<ts>.db` on open, never migrated. Limits and usage consolidate per vendor ACCOUNT (`AccountKey` = vendor + truncated SHA-256 of the credential; raw credentials are never stored); quota windows for different accounts of the same vendor are separate rows and must never merge.
 
 15. **Capture modes are swappable and consent-scoped.** `SettingsStore.meterCaptureMode` (env `TH_CAPTURE_MODE`) selects point (default; corporate-safe: every measured byte was deliberately routed) or mitm. MITM mode: requires the dedicated `.mitm` consent (never auto-granted, headless only via TH_CONSENT=mitm), intercepts ONLY allowlisted AI vendor API hosts (all other TLS passes through undecrypted), delegates the TLS core to mitmproxy (never hand-rolled in core), and presents privileged setup (CA trust, proxy config) as user-run remediation steps — never silent sudo. Both modes emit identical UsageEvents into the same store; analytics/sync/UI stay mode-agnostic.
 
@@ -253,3 +266,12 @@ If a test fails with "REGRESSION", the pipeline is slower than the budget. Commo
 - minimax/glm/opencode-go keys expire per opencode re-auth — limits silently drop rows when 401
 - claude token refresh not implemented (reads stored access token only; re-login fixes 401s)
 - alibaba cookie is manual paste; browser auto-import not implemented
+- pi ignores `models.json` provider `baseUrl`: model-level entries from
+  `models-store.json` (refreshed from pi's remote catalog at startup) replace
+  local entries wholesale (`mergeModels` matches on id), so meter routing must
+  be patched into `models-store.json` (all `baseUrl`s → the loopback meter),
+  not just `models.json`. Verified `pi update --models` does not revert it,
+  but a catalog-side URL change would. Upstream issue: earendil-works/pi —
+  user endpoint overrides should survive the catalog merge. Agent runbook:
+  `docs/agent-guides/pi-meter-routing.md` (+ upstream draft in
+  `docs/agent-guides/upstream-issues/`).

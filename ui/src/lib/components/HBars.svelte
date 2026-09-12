@@ -4,6 +4,8 @@
 		label: string;
 		value: number;
 		color: string;
+		/** Vendor key — renders the brand chip before the label. */
+		vendor?: string;
 		/** Secondary line under the label (e.g. request counts). */
 		sub?: string;
 		/** Indent under a parent provider row. */
@@ -13,6 +15,7 @@
 
 <script lang="ts">
 	import { fmtTok } from '$lib/format';
+	import ProviderIcon from './ProviderIcon.svelte';
 
 	let { rows, thin = false }: { rows: HBarRow[]; thin?: boolean } = $props();
 
@@ -23,8 +26,11 @@
 	{#each rows as r}
 		<div class="hrow" class:indent={r.indent} title="{r.label} — {fmtTok(r.value)} tokens">
 			<div class="meta">
-				<span class="name">{r.label}</span>
-				{#if r.sub}<span class="sub">{r.sub}</span>{/if}
+				<span class="name">
+					{#if r.vendor}<ProviderIcon vendor={r.vendor} size={14} />{/if}
+					{r.label}
+				</span>
+				{#if r.sub}<span class="hsub">{r.sub}</span>{/if}
 				<span class="val">{fmtTok(r.value)}</span>
 			</div>
 			<div class="track">
@@ -61,6 +67,9 @@
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
+		display: flex;
+		align-items: center;
+		gap: 6px;
 	}
 	.indent .name {
 		font-weight: 400;
@@ -68,7 +77,7 @@
 		font-family: var(--font-mono);
 		font-size: 11.5px;
 	}
-	.sub {
+	.hsub {
 		font-size: 11px;
 		color: var(--text-3);
 		font-variant-numeric: tabular-nums;

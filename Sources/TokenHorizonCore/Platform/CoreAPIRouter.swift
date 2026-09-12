@@ -53,6 +53,48 @@ public final class CoreAPIRouter {
         return true
     }
 
+    /// Remove + stop a running meter by vendor key.
+    @discardableResult
+    public func removeMeter(vendor: String) -> Bool {
+        guard let index = meters.firstIndex(where: {
+            $0.vendor.lowercased() == vendor.lowercased()
+        }) else { return false }
+        meters[index].stop()
+        meters.remove(at: index)
+        return true
+    }
+
+    /// UI/API toggle: reconcile live meters with the desired state and
+    /// persist it (survives restarts; applied by startCaptureMode).
+    @discardableResult
+    public func toggleMeter(vendor: String, enabled: Bool) -> Bool {
+        let key = vendor.lowercased()
+        if enabled {
+            guard meteringConsented else { return false }
+            if meters.contains(where: { $0.vendor.lowercased() == key }) {
+                SettingsStore.shared.setMeterEnabled(key, true)
+                return true
+            }
+            let port = MeterRegistry.defaultListenPort(for: key)
+            guard addMeter(vendor: key, port: port, target: nil) else { return false }
+            SettingsStore.shared.setMeterEnabled(key, true)
+            return true
+        }
+        SettingsStore.shared.setMeterEnabled(key, false)
+        return removeMeter(vendor: key)
+    }
+
+    /// Startup: start every meter the user toggled on (persisted desired
+    /// state). Env + settings-endpoint + auto-meters layer on top.
+    public func startMetersFromToggles() {
+        guard meteringConsented else { return }
+        for (vendor, enabled) in SettingsStore.shared.meterToggles where enabled {
+            _ = addMeter(vendor: vendor,
+                         port: MeterRegistry.defaultListenPort(for: vendor),
+                         target: nil)
+        }
+    }
+
     /// TH_METERS="vendor:port[@product][->target],..."
     public func startMetersFromEnv() {
         guard let spec = ProcessInfo.processInfo.environment["TH_METERS"] else { return }
@@ -116,6 +158,8 @@ public final class CoreAPIRouter {
         InferenceMonitor.shared.onRuntimeSighting = { [weak self] runtime in
             guard let self, self.meteringConsented,
                   let port = runtime.defaultMeterListenPort,
+                  // explicit user toggle-off suppresses auto-metering
+                  SettingsStore.shared.meterToggles[runtime.meterVendorKey] != false,
                   !self.meters.contains(where: { $0.vendor == runtime.meterVendorKey })
             else { return }
             if self.addMeter(vendor: runtime.meterVendorKey, port: port, target: nil) {
@@ -146,6 +190,7 @@ public final class CoreAPIRouter {
         case .point:
             startMetersFromEnv()
             startMetersFromSettings()
+            startMetersFromToggles()
             startAutoMetering()
         }
     }
@@ -193,8 +238,80 @@ public final class CoreAPIRouter {
                 return Self.json(["error": "insert failed: \(error)"], status: 500)
             }
 
+        case ("POST", "/analytics/backfill"):
+            // Deliberate one-time import of file-derived history into the
+            // event store (attestation-marked; deterministic ids make re-runs
+            // no-ops). Files stay annotation-only on the live path — this is
+            // the documented bootstrap exception, never automatic.
+            guard let store = usageStore else {
+                return Self.json(["error": "usage store unavailable"], status: 503)
+            }
+            let events = engine.backfillEvents()
+            do {
+                try store.insert(events)
+                return Self.json(["candidates": events.count, "total": (try? store.count()) ?? -1])
+            } catch {
+                return Self.json(["error": "backfill failed: \(error)"], status: 500)
+            }
+
+        case ("POST", "/consolidate"):
+            // Deliberate one-pass file consolidation (tool annotations +
+            // limit snapshots). Files never create usage rows; automatic
+            // polling is opt-in (Settings.filePolling / TH_FILE_POLL=1).
+            guard usageStore != nil else {
+                return Self.json(["error": "usage store unavailable"], status: 503)
+            }
+            guard ConsentManager.shared.isGranted(.fileReading) else {
+                return Self.json(["error": "fileReading consent not granted"], status: 403)
+            }
+            let report = FilePoller.shared.poll()
+            return Self.json(["ok": true, "observations": report])
+
         case ("GET", "/permissions"):
             return Self.json(["permissions": Self.encode(PermissionManager.status())])
+
+        case ("GET", "/consents"):
+            let scopes = ConsentManager.shared.states().map { ["scope": $0.scope, "granted": $0.granted] }
+            return Self.json(["scopes": scopes])
+
+        case ("POST", "/consents"):
+            // Loopback permission request: the user clicking Allow/Deny in
+            // the desktop UI grants exactly like the OS prompt would (same
+            // trust domain as /meters/toggle). Granting .metering also
+            // starts persisted meters immediately — no restart needed.
+            guard let obj = try? JSONSerialization.jsonObject(with: request.body) as? [String: Any],
+                  let scopeName = obj["scope"] as? String,
+                  let scope = ConsentScope(rawValue: scopeName),
+                  let granted = obj["granted"] as? Bool else {
+                return Self.json(["error": "body must be {scope, granted}"], status: 400)
+            }
+            if granted {
+                ConsentManager.shared.grant(scope)
+                if scope == .metering { startMetersFromToggles() }
+            } else {
+                ConsentManager.shared.revoke(scope)
+            }
+            return Self.json(["ok": true, "scope": scope.rawValue,
+                              "granted": ConsentManager.shared.isGranted(scope)])
+
+        case ("GET", "/service"):
+            return Self.json(Self.encode(DaemonAutoStart.status()))
+
+        case ("POST", "/service/install"):
+            do {
+                return Self.json(Self.encode(try DaemonAutoStart.install()))
+            } catch {
+                return Self.json(["error": "install failed: \(error)",
+                                  "status": Self.encode(DaemonAutoStart.status())], status: 500)
+            }
+
+        case ("POST", "/service/uninstall"):
+            do {
+                return Self.json(Self.encode(try DaemonAutoStart.uninstall()))
+            } catch {
+                return Self.json(["error": "uninstall failed: \(error)",
+                                  "status": Self.encode(DaemonAutoStart.status())], status: 500)
+            }
 
         case ("POST", "/runtimes/endpoints"):
             guard let obj = try? JSONSerialization.jsonObject(with: request.body) as? [String: Any],
@@ -213,6 +330,7 @@ public final class CoreAPIRouter {
             return Self.json(["ok": true, "meter_started": meterStarted])
 
         case ("GET", "/meters"):
+            let toggles = SettingsStore.shared.meterToggles
             var payload: [String: Any] = [
                 "mode": SettingsStore.shared.meterCaptureMode.rawValue,
                 "point": meters.map { [
@@ -220,12 +338,43 @@ public final class CoreAPIRouter {
                     "listen_port": Int($0.listenPort),
                     "target": $0.targetBase.absoluteString,
                     "source": $0.sourceKind.rawValue,
+                    "seen": $0.seenExchanges,
+                    "measured": $0.measuredExchanges,
                 ] },
+                // Every meterable vendor and its state — the UI renders
+                // toggles from this; no hardcoded vendor list client-side.
+                "catalog": MeterRegistry.availableVendors.sorted().map { v -> [String: Any] in
+                    let running = meters.first(where: { $0.vendor.lowercased() == v.lowercased() })
+                    return [
+                        "vendor": v,
+                        "running": running != nil,
+                        "enabled": running != nil || toggles[v.lowercased()] == true,
+                        "listen_port": running.map { Int($0.listenPort) } ?? Int(MeterRegistry.defaultListenPort(for: v)),
+                        "target": running?.targetBase.absoluteString ?? NSNull(),
+                    ]
+                },
             ]
             if let mitm = mitmCapture {
                 payload["mitm"] = mitm.status
             }
             return Self.json(payload)
+
+        case ("POST", "/meters/toggle"):
+            guard let obj = try? JSONSerialization.jsonObject(with: request.body) as? [String: Any],
+                  let vendor = obj["vendor"] as? String,
+                  let enabled = obj["enabled"] as? Bool else {
+                return Self.json(["error": "body must be {vendor, enabled}"], status: 400)
+            }
+            guard meteringConsented else {
+                return Self.json(["error": "metering consent not granted"], status: 403)
+            }
+            let ok = toggleMeter(vendor: vendor, enabled: enabled)
+            let running = meters.first(where: { $0.vendor.lowercased() == vendor.lowercased() })
+            return Self.json([
+                "ok": ok,
+                "running": running != nil,
+                "listen_port": running.map { Int($0.listenPort) } ?? NSNull(),
+            ], status: ok ? 200 : 502)
 
         case ("GET", "/analytics/count"):
             guard let store = usageStore else { return Self.json(["error": "usage store unavailable"], status: 503) }
@@ -284,6 +433,48 @@ public final class CoreAPIRouter {
                 return Self.json(["error": "sync read failed"], status: 500)
             }
             return Self.json(["events": Self.encode(page.events), "cursor": page.lastSequence])
+
+        case ("GET", "/summary"):
+            // Per-vendor rollups for the Tokens dashboard — same file-engine
+            // world as /stats and /trends (metered per-request data lives
+            // under /analytics). Vendor spellings canonicalized at query time.
+            let snapshot = engine.snapshot()
+            let providers: [[String: Any]] = snapshot.perTool
+                .filter { $0.tokensAllTime > 0 || $0.tokensToday > 0 }
+                .sorted { $0.tokensAllTime > $1.tokensAllTime }
+                .map { t in
+                    let b = t.breakdownAll
+                    let vendor = Canonical.vendor(t.tool)
+                    let models: [[String: Any]] = snapshot.models
+                        .filter { Canonical.vendor($0.provider) == vendor }
+                        .sorted { $0.tokensAll > $1.tokensAll }
+                        .map { m in
+                            [
+                                "model": m.model,
+                                "vendor": vendor,
+                                "tokens": [
+                                    "input": m.breakdown.input, "output": m.breakdown.output,
+                                    "reasoning": m.breakdown.reasoning,
+                                    "cacheRead": m.breakdown.cacheRead, "cacheWrite": m.breakdown.cacheWrite,
+                                    "total": m.tokensAll,
+                                ],
+                                "requests": m.messages,
+                                "cost": max(m.cost, 0),
+                            ]
+                        }
+                    return [
+                        "vendor": vendor,
+                        "tokens": [
+                            "input": b.input, "output": b.output, "reasoning": b.reasoning,
+                            "cacheRead": b.cacheRead, "cacheWrite": b.cacheWrite,
+                            "total": t.tokensAllTime,
+                        ],
+                        "requests": 0,
+                        "cost": max(t.costAllTime, 0),
+                        "models": models,
+                    ]
+                }
+            return Self.json(["providers": providers])
 
         case ("GET", "/stats"):
             let snapshot = engine.snapshot()
@@ -567,7 +758,8 @@ public final class CoreAPIRouter {
             source: params["source"].flatMap { SourceKind(rawValue: $0) },
             attestation: params["attestation"].flatMap { Attestation(rawValue: $0) },
             thinkingLevel: params["thinking"],
-            sessionID: params["session"])
+            sessionID: params["session"],
+            meteredOnly: params["metered"] == "1")
     }
 
     /// Store-backed /trends: one fine-grained bucket scan binned into the

@@ -46,11 +46,14 @@ public struct UsageFilter: Codable {
     public var attestation: Attestation?
     public var thinkingLevel: String?
     public var sessionID: String?
+    /// Exclude self-reported (file-claimed / backfilled) rows — the UI
+    /// default, so only measured-or-better attestation flows to dashboards.
+    public var meteredOnly: Bool = false
 
     public init(vendor: String? = nil, model: String? = nil, machineID: String? = nil,
                 product: String? = nil, source: SourceKind? = nil,
                 attestation: Attestation? = nil, thinkingLevel: String? = nil,
-                sessionID: String? = nil) {
+                sessionID: String? = nil, meteredOnly: Bool = false) {
         self.vendor = vendor
         self.model = model
         self.machineID = machineID
@@ -59,6 +62,7 @@ public struct UsageFilter: Codable {
         self.attestation = attestation
         self.thinkingLevel = thinkingLevel
         self.sessionID = sessionID
+        self.meteredOnly = meteredOnly
     }
 
     /// SQL WHERE fragments + bound values (column = ? equality only).

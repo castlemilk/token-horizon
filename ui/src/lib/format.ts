@@ -23,9 +23,43 @@ export function fmtDateTime(epochSeconds: number): string {
 	return new Date(epochSeconds * 1000).toLocaleString();
 }
 
+/** Reset countdown: "in 4h 12m" soon, "Tue 14:30" this week, "Mar 12" beyond. */
+export function fmtReset(epochSeconds: number): string {
+	const d = new Date(epochSeconds * 1000);
+	const s = Math.round(d.getTime() / 1000 - Date.now() / 1000);
+	if (s <= 0) return 'soon';
+	const m = Math.floor(s / 60);
+	if (m < 1) return `in ${s}s`;
+	if (m < 60) return `in ${m}m`;
+	const h = Math.floor(m / 60);
+	if (h < 48) return `in ${h}h ${String(m % 60).padStart(2, '0')}m`;
+	const days = Math.floor(h / 24);
+	if (days < 6) {
+		return d.toLocaleDateString(undefined, { weekday: 'short' }) +
+			' ' + d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', hour12: false });
+	}
+	return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+}
+
 /** Total across a token breakdown. */
 export function totalTok(b: { input: number; output: number; reasoning: number; cacheRead: number; cacheWrite: number }): number {
 	return b.input + b.output + b.reasoning + b.cacheRead + b.cacheWrite;
+}
+
+/**
+ * Tokens that represent real model work — everything except cache READS,
+ * which are near-free re-reads of already-processed context and otherwise
+ * dominate headline numbers (97% of long-session traffic). Cache WRITES
+ * count: they are billed, first-time work.
+ */
+export function billableTok(b: { input: number; output: number; reasoning: number; cacheRead?: number; cacheWrite: number }): number {
+	return b.input + b.output + b.reasoning + b.cacheWrite;
+}
+
+/** Display-trim a raw model id: `/models/Qwen3.8-27B-Q8_0.gguf` → `Qwen3.8-27B-Q8_0`. */
+export function fmtModel(m: string): string {
+	const base = m.split('/').pop() ?? m;
+	return base.replace(/\.(gguf|bin|safetensors)$/i, '');
 }
 
 /** Poll `fn` every `ms` while mounted; returns cleanup for onMount. */

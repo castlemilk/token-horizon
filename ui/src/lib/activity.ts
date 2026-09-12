@@ -26,10 +26,10 @@ function dayKey(ts: number): string {
 }
 
 /** Full local calendar for the last `days` days; zero-filled. */
-export async function fetchDailyActivity(days = 365): Promise<DayActivity[]> {
+export async function fetchDailyActivity(days = 365, metered = true): Promise<DayActivity[]> {
 	const now = Math.floor(Date.now() / 1000);
 	const from = now - days * 86400;
-	const res = await api.buckets(86400, from);
+	const res = await api.buckets(86400, from, metered);
 	const byDay = new Map<string, number>();
 	for (const b of res.buckets) {
 		const k = dayKey(b.start);

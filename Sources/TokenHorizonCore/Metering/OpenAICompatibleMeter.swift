@@ -13,15 +13,20 @@ import Foundation
 ///   → SSE `response.completed` event (data.response.usage) or final JSON
 ///     { "usage": { input_tokens, output_tokens, *_details } }.
 open class OpenAICompatibleMeter: RequestMeter {
-    /// Extra path prefixes to meter (defaults cover chat + legacy completions
-    /// + the Responses API).
+    /// Path suffixes to meter (defaults cover chat + legacy completions
+    /// + the Responses API). Suffixes, not prefixes: bases carry prefixes
+    /// (/zen/v1/... for opencode, /coding/v1/... for kimi-style gateways),
+    /// and meters are per-vendor loopback relays — only that vendor's
+    /// clients ever arrive here, so suffixes can't over-match.
     open var meteredPathPrefixes: [String] {
         ["/v1/chat/completions", "/v1/completions", "/chat/completions", "/completions",
          "/v1/responses", "/responses", "/backend-api/codex/responses"]
     }
 
     public override func shouldMeter(method: String, path: String) -> Bool {
-        method == "POST" && meteredPathPrefixes.contains { path.hasPrefix($0) }
+        guard method == "POST" else { return false }
+        let p = path.split(separator: "?", maxSplits: 1).first.map(String.init) ?? path
+        return meteredPathPrefixes.contains { p.hasSuffix($0) }
     }
 
     public override func model(for exchange: MeteredExchange) -> String {
@@ -47,11 +52,12 @@ open class OpenAICompatibleMeter: RequestMeter {
     public override func requestID(for exchange: MeteredExchange) -> String? {
         // Non-streaming: top-level body id (chatcmpl-/resp-…). SSE: every
         // chunk repeats the same response id — first wins ("response" wrapper
-        // for the Responses API).
+        // for the Responses API). SSE bodies may start with `event:` (Zen)
+        // or `data:` (OpenAI).
         if let obj = try? JSONSerialization.jsonObject(with: exchange.responseBody) as? [String: Any],
            let id = obj["id"] as? String { return id }
         guard let text = String(data: exchange.responseBody, encoding: .utf8),
-              text.hasPrefix("data:") else { return nil }
+              text.hasPrefix("data:") || text.hasPrefix("event:") else { return nil }
         for obj in sseObjects(text) {
             if let id = obj["id"] as? String { return id }
             if let resp = obj["response"] as? [String: Any], let id = resp["id"] as? String { return id }
@@ -68,9 +74,11 @@ open class OpenAICompatibleMeter: RequestMeter {
 
     /// SSE stream: usage rides a `response.completed` event (Responses API)
     /// or the final `data:` chunk (chat completions with include_usage;
-    /// vLLM/SGLang always send it).
+    /// vLLM/SGLang always send it). Streams may start with `event:` (Zen
+    /// emits `event:`/`data:` pairs plus `ping` events) or `data:`.
     private func usageFromSSE(_ body: Data) -> TokenBreakdown? {
-        guard let text = String(data: body, encoding: .utf8), text.hasPrefix("data:") else { return nil }
+        guard let text = String(data: body, encoding: .utf8),
+              text.hasPrefix("data:") || text.hasPrefix("event:") else { return nil }
         var found: TokenBreakdown?
         for obj in sseObjects(text) {
             if let usage = obj["usage"] as? [String: Any] {

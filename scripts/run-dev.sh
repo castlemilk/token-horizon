@@ -17,8 +17,11 @@
 #                                  deps are missing or tauri dies at boot)
 #   TH_API=http://127.0.0.1:8765   API the UI talks to (localStorage override)
 #
-# Reuse: if the API is already healthy on :8765 the backend is NOT started
-# and NOT killed on exit — we only shut down what we launched.
+# Restart: if the API is already healthy on :8765 the existing backend is
+# stopped first, then a fresh tracked backend is started; likewise any stale
+# vite dev server (:5173) or Tauri shell from a previous run is killed before
+# the frontend starts. Ctrl-C still only shuts down what this script
+# launched. Set TH_REUSE=1 to keep a running backend instead.
 
 set -euo pipefail
 
@@ -84,9 +87,52 @@ trap shutdown INT TERM
 
 api_up() { curl -sf --max-time 2 "$API/health" >/dev/null 2>&1; }
 
+# Port the API listens on, derived from $API (default 8765).
+api_port() { local p="${API##*:}"; echo "${p%%/*}"; }
+
+# PIDs listening on TCP port $1 (lsof on macOS/Linux, fuser on Linux without
+# lsof). Empty output when nothing listens or neither tool exists.
+port_pids() {
+  if command -v lsof >/dev/null 2>&1; then
+    lsof -tiTCP:"$1" -sTCP:LISTEN 2>/dev/null || true
+  elif command -v fuser >/dev/null 2>&1; then
+    fuser "$1"/tcp 2>/dev/null | tr -s ' ' '\n' || true
+  fi
+}
+
+# Stop whatever listens on TCP port $1 so we can start fresh. Returns
+# non-zero when the port is still occupied afterwards.
+stop_port() {
+  local port="$1" pids i
+  pids="$(port_pids "$port")"
+  [ -n "$pids" ] || return 0
+  log "stopping existing listener(s) on :$port (pid(s): $(echo $pids | tr '\n' ' '))"
+  kill $pids 2>/dev/null || true
+  for i in $(seq 1 10); do
+    [ -z "$(port_pids "$port")" ] && return 0
+    sleep 0.5
+  done
+  kill -9 $pids 2>/dev/null || true
+  for i in $(seq 1 10); do
+    [ -z "$(port_pids "$port")" ] && return 0
+    sleep 0.5
+  done
+  return 1
+}
+
+# Stop whatever is serving the API so we can start a fresh tracked backend.
+# Returns non-zero when the API is still up afterwards (nothing found, or the
+# process refused to die) — the caller then reuses the running backend.
+stop_api() {
+  api_up || return 0
+  stop_port "$(api_port)" && ! api_up
+}
+
 ensure_swift() {
-  if ! command -v swift >/dev/null 2>&1 && [ -f "$HOME/toolchains/env.sh" ]; then
-    # Rootless toolchain installed by setup (Ubuntu boxes without sudo).
+  # Check `swift build`, not just `swift` — a swiftly-managed toolchain can
+  # answer --version while swift-build fails to load (e.g. missing libxml2
+  # on newer Ubuntu). Fall back to the rootless toolchain from setup.
+  if ! swift build --version >/dev/null 2>&1 && [ -f "$HOME/toolchains/env.sh" ]; then
     # shellcheck disable=SC1091
     . "$HOME/toolchains/env.sh"
   fi
@@ -159,6 +205,13 @@ start_frontend() {
   [ "$mode" = none ] && return 0
   [ -d "$UI_DIR" ] || die "ui/ directory missing"
 
+  # Kill the leftovers of previous dev runs BEFORE starting: a stale vite
+  # holds :5173 (strictPort) and breaks both tauri's beforeDevCommand and the
+  # vite fallback; a stale Tauri shell holds the sidecar daemon and the
+  # cargo target lock.
+  stop_port 5173 || warn "could not free :5173 — a stale dev server is still listening"
+  pkill -f "$UI_DIR/src-tauri/target/debug/app" 2>/dev/null || true
+
   cd "$UI_DIR"
   if [ ! -d node_modules/@sveltejs ]; then
     log "installing UI dependencies…"
@@ -176,6 +229,13 @@ start_frontend() {
           warn "sidecar staging failed — the app will rely on an already-running daemon"
       fi
       log "starting Tauri shell (vite dev + cargo build on first run)…"
+      # Snap-packaged editors (VS Code snap) leak GTK/GDK module and schema
+      # paths pointing into the snap runtime; the app then loads the snap's
+      # core20 libpthread and dies with a GLIBC_PRIVATE symbol lookup error.
+      # Strip them so the child links against the system GTK stack.
+      unset GTK_EXE_PREFIX GTK_PATH GTK_IM_MODULE_FILE \
+            GDK_PIXBUF_MODULE_FILE GDK_PIXBUF_MODULEDIR \
+            GSETTINGS_SCHEMA_DIR GIO_MODULE_DIR LOCPATH 2>/dev/null || true
       npm run tauri dev &
       CHILDREN+=($!)
       # Tauri dies at boot when system webkit deps are missing (common on
@@ -185,6 +245,11 @@ start_frontend() {
       if ! kill -0 "$pid" 2>/dev/null; then
         if [ "$FRONTEND" = auto ]; then
           warn "tauri dev exited immediately — falling back to vite + browser"
+          # Drop the dead tauri pid from CHILDREN — the watch loop below
+          # tears the whole stack down for any tracked pid that exits.
+          local rest=() c
+          for c in "${CHILDREN[@]}"; do [ "$c" = "$pid" ] || rest+=("$c"); done
+          CHILDREN=("${rest[@]}")
           start_frontend vite
           return
         fi
@@ -210,8 +275,15 @@ MODE_FRONTEND="$(resolve_frontend)"
 log "platform=$PLATFORM backend=$MODE_BACKEND frontend=$MODE_FRONTEND"
 
 if api_up; then
-  log "API already healthy on $API — reusing (will NOT be shut down on exit)"
-else
+  if [ "${TH_REUSE:-0}" = 1 ]; then
+    log "API already healthy on $API — reusing (will NOT be shut down on exit)"
+  elif stop_api; then
+    log "existing backend stopped"
+  else
+    warn "could not stop the existing backend on $API — reusing it (will NOT be shut down on exit)"
+  fi
+fi
+if ! api_up; then
   start_backend "$MODE_BACKEND"
 fi
 

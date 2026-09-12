@@ -16,8 +16,40 @@ export function setApiBase(url: string | null) {
 	else localStorage.removeItem('token-horizon.api');
 }
 
+/**
+ * Find the daemon: probe the loopback port range (8765-8784, the same range
+ * the daemon scans and the MITM addon probes). An explicit localStorage
+ * override always wins — that's the undocumented escape hatch for SSH
+ * tunnels, no UI needed for it.
+ */
+export async function discoverApiBase(): Promise<string | null> {
+	if (typeof localStorage !== 'undefined' && localStorage.getItem('token-horizon.api')) {
+		return apiBase();
+	}
+	for (let port = 8765; port <= 8784; port++) {
+		const base = `http://127.0.0.1:${port}`;
+		try {
+			const res = await fetch(`${base}/health`, { signal: AbortSignal.timeout(800) });
+			if (res.ok) return base;
+		} catch {
+			/* nothing on this port */
+		}
+	}
+	return null;
+}
+
 async function get<T>(path: string): Promise<T> {
 	const res = await fetch(`${apiBase()}${path}`);
+	if (!res.ok) throw new Error(`${path}: HTTP ${res.status}`);
+	return (await res.json()) as T;
+}
+
+async function post<T>(path: string, body: unknown): Promise<T> {
+	const res = await fetch(`${apiBase()}${path}`, {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify(body)
+	});
 	if (!res.ok) throw new Error(`${path}: HTTP ${res.status}`);
 	return (await res.json()) as T;
 }
@@ -180,12 +212,62 @@ export interface ProcSample {
 	startTime: number;
 }
 
+/** One live request meter (GET /meters): loopback listen → upstream target. */
+export interface MeterInfo {
+	vendor: string;
+	listen_port: number;
+	target: string;
+	source: string;
+	seen?: number;
+	measured?: number;
+}
+
+/** One meterable vendor and its desired+actual state (GET /meters catalog). */
+export interface MeterCatalogEntry {
+	vendor: string;
+	running: boolean;
+	enabled: boolean;
+	listen_port: number;
+	target: string | null;
+}
+
+export interface Meters {
+	mode: 'point' | 'mitm';
+	point: MeterInfo[];
+	catalog: MeterCatalogEntry[];
+	mitm?: Record<string, unknown>;
+}
+
+/** OS capability probe (GET /permissions): can-we vs may-we. */
+export interface CapabilityStatus {
+	capability: string;
+	state: 'granted' | 'denied' | 'unknown' | string;
+	detail: string;
+	remediation: string[];
+}
+
+/** Consent grant state (GET /consents). */
+export interface ConsentState {
+	scope: string;
+	granted: boolean;
+}
+
 /** Cloud sync state (GET /sync/status). */
 export interface SyncStatus {
 	enabled: boolean;
 	cursors: Record<string, string>;
 	last_sync: number | null;
 	last_report?: { pushed: Record<string, number>; skipped: string[]; error?: string | null };
+}
+
+/** Daemon boot/login auto-start registration (GET /service). */
+export interface ServiceStatus {
+	supported: boolean;
+	mechanism: 'systemd-user' | 'autostart-desktop' | 'launchagent' | 'unsupported';
+	installed: boolean;
+	enabled: boolean;
+	running: boolean;
+	detail: string;
 }
 
 /** One machine's usage rollup (GET /analytics/aggregate?group=machine).
@@ -211,14 +293,31 @@ export const api = {
 		),
 	events: (params = '', cursor?: number) =>
 		get<EventsPage>(`/analytics/events${params}${cursor ? `${params ? '&' : '?'}cursor=${cursor}` : ''}`),
-	summary: () => get<{ providers: ProviderSummary[] }>('/analytics/summary'),
+	summary: (metered = true, fromEpoch = 0) =>
+		get<{ providers: ProviderSummary[] }>(
+			`/analytics/summary?from=${Math.floor(fromEpoch)}${metered ? '&metered=1' : ''}`
+		),
 	trends: (window: string) => get<Trends>(`/trends?window=${window}`),
 	limits: () => get<{ limits: ProviderLimit[] }>('/limits'),
-	buckets: (resolution: number, fromEpoch: number) =>
+	buckets: (resolution: number, fromEpoch: number, metered = true, extra = '') =>
 		get<{ resolution: number; buckets: BucketRow[] }>(
-			`/analytics/buckets?resolution=${resolution}&from=${Math.floor(fromEpoch)}`
+			`/analytics/buckets?resolution=${resolution}&from=${Math.floor(fromEpoch)}${metered ? '&metered=1' : ''}${extra}`
 		),
 	processes: () => get<Record<string, ProcSample[]>>('/processes'),
 	syncStatus: () => get<SyncStatus>('/sync/status'),
-	machines: () => get<{ group: string; rows: MachineRow[] }>('/analytics/aggregate?group=machine')
+	machines: () => get<{ group: string; rows: MachineRow[] }>('/analytics/aggregate?group=machine'),
+	meters: () => get<Meters>('/meters'),
+	toggleMeter: (vendor: string, enabled: boolean) =>
+		post<{ ok: boolean; running: boolean; listen_port: number | null }>('/meters/toggle', {
+			vendor,
+			enabled
+		}),
+	consolidate: () => post<{ ok: boolean; observations: Record<string, number> }>('/consolidate', {}),
+	permissions: () => get<{ permissions: CapabilityStatus[] }>('/permissions'),
+	consents: () => get<{ scopes: ConsentState[] }>('/consents'),
+	setConsent: (scope: string, granted: boolean) =>
+		post<{ ok: boolean; scope: string; granted: boolean }>('/consents', { scope, granted }),
+	serviceStatus: () => get<ServiceStatus>('/service'),
+	installService: () => post<ServiceStatus>('/service/install', {}),
+	uninstallService: () => post<ServiceStatus>('/service/uninstall', {})
 };

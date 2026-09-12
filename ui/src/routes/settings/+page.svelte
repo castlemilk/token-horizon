@@ -1,10 +1,10 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { api, apiBase, setApiBase, type ProviderSummary, type RuntimeInfo, type ProviderLimit } from '$lib/api';
+	import { api, type ServiceStatus, type ConsentState } from '$lib/api';
 	import { getTheme, setTheme, type Theme } from '$lib/theme';
 	import { settings } from '$lib/settings.svelte';
-	import { providerAccent } from '$lib/colors';
-	import { poll } from '$lib/format';
+	import { Sun, Moon, Monitor } from 'lucide-svelte';
+	import { Switch } from '$lib/components/ui/switch/index.js';
 
 	// Autostart is a Tauri plugin — only callable inside the desktop shell.
 	const inTauri = typeof window !== 'undefined' && '__TAURI__' in window;
@@ -33,33 +33,104 @@
 	}
 
 	let theme = $state<Theme>('system');
-	let base = $state('');
-	let summary = $state<ProviderSummary[]>([]);
-	let runtimes = $state<RuntimeInfo[]>([]);
-	let limits = $state<ProviderLimit[]>([]);
 	let saved = $state(false);
+	let consolidating = $state(false);
+	let consolidateResult = $state<string | null>(null);
+	let consents = $state<ConsentState[]>([]);
+
+	const CONSENT_COPY: Record<string, { title: string; body: string }> = {
+		metering: {
+			title: 'Measure requests',
+			body: 'Loopback relays observe per-request token usage.'
+		},
+		fileReading: {
+			title: 'Read tool session files',
+			body: 'Joins tool labels and reported costs onto metered requests.'
+		},
+		telemetry: {
+			title: 'Watch local runtimes',
+			body: 'Detects local models and scrapes speed counters.'
+		}
+	};
+
+	async function loadConsents() {
+		try {
+			consents = (await api.consents())?.scopes ?? [];
+		} catch {
+			/* daemon down — toggles stay hidden */
+		}
+	}
+
+	async function flipConsent(scope: string, granted: boolean) {
+		try {
+			await api.setConsent(scope, granted);
+			await loadConsents();
+		} catch {
+			/* daemon down */
+		}
+	}
+
+	function replayOnboarding() {
+		try {
+			localStorage.removeItem('token-horizon.onboarded');
+		} catch {
+			/* private mode */
+		}
+		location.reload();
+	}
+
+	// Daemon boot registration — served by the daemon itself, so this works
+	// in the browser too (unlike the Tauri-plugin app autostart above).
+	let service = $state<ServiceStatus | null>(null);
+	let serviceBusy = $state(false);
+	let serviceError = $state<string | null>(null);
+
+	async function loadService() {
+		try {
+			service = await api.serviceStatus();
+		} catch {
+			service = null;
+		}
+	}
+
+	async function toggleService() {
+		if (!service || serviceBusy) return;
+		serviceBusy = true;
+		serviceError = null;
+		try {
+			service = service.enabled ? await api.uninstallService() : await api.installService();
+		} catch (e) {
+			serviceError = e instanceof Error ? e.message : 'service operation failed';
+			await loadService();
+		} finally {
+			serviceBusy = false;
+		}
+	}
+
+	async function consolidateNow() {
+		consolidating = true;
+		consolidateResult = null;
+		try {
+			const r = await api.consolidate();
+			const parts = Object.entries(r.observations)
+				.filter(([, n]) => n > 0)
+				.map(([v, n]) => `${v}: ${n}`);
+			consolidateResult = parts.length > 0 ? `Joined ${parts.join(' · ')}` : 'No new file observations';
+		} catch (e) {
+			consolidateResult = e instanceof Error && e.message.includes('403')
+				? 'File-reading consent not granted on the daemon'
+				: 'Consolidation failed — daemon unreachable';
+		} finally {
+			consolidating = false;
+		}
+	}
 
 	onMount(() => {
 		theme = getTheme();
-		base = apiBase();
 		void loadAutostart();
-		return poll(async () => {
-			try {
-				[summary, runtimes, limits] = await Promise.all([
-					api.summary().then((r) => r.providers),
-					api.runtimes(),
-					api.limits().then((r) => r.limits)
-				]);
-			} catch {
-				/* daemon down */
-			}
-		}, 15000);
+		void loadService();
+		void loadConsents();
 	});
-
-	// Providers the machine has discovered: metered traffic ∪ quota adapters.
-	const discoveredProviders = $derived(
-		[...new Set([...summary.map((p) => p.vendor), ...limits.map((l) => l.provider)])].sort()
-	);
 
 	function pickTheme(t: Theme) {
 		theme = t;
@@ -73,11 +144,6 @@
 		setTimeout(() => (saved = false), 1500);
 	}
 
-	function applyBase() {
-		const v = base.trim();
-		setApiBase(v && v !== 'http://127.0.0.1:8765' ? v : null);
-		location.reload();
-	}
 </script>
 
 <div class="section-label">Account</div>
@@ -97,8 +163,19 @@
 <div class="section-label">Appearance</div>
 <div class="card">
 	<div class="seg" role="group" aria-label="Theme">
-		{#each [['system', 'Auto'], ['light', 'Light'], ['dark', 'Dark']] as [id, label]}
-			<button class:active={theme === id} onclick={() => pickTheme(id as Theme)}>{label}</button>
+		{#each [
+			{ id: 'system', label: 'Auto · follows the OS', icon: Monitor },
+			{ id: 'light', label: 'Light', icon: Sun },
+			{ id: 'dark', label: 'Dark', icon: Moon }
+		] as t}
+			<button
+				class:active={theme === t.id}
+				title={t.label}
+				aria-label={t.label}
+				onclick={() => pickTheme(t.id as Theme)}
+			>
+				<t.icon size={15} strokeWidth={1.8} />
+			</button>
 		{/each}
 	</div>
 	<div class="hint" style="margin-top: 8px">Auto follows the OS. Accent follows the OS accent color where supported.</div>
@@ -121,69 +198,82 @@
 			onclick={() => void toggleAutostart()}
 		></button>
 	</div>
+	<div class="toggle-row">
+		<span class="tname">Daemon starts with the machine</span>
+		<span class="hint" style="margin: 0">
+			{service?.supported
+				? (service.detail || 'Registers the daemon with the OS service manager')
+				: 'Not supported on this platform'}
+		</span>
+		<button
+			class="switch"
+			class:on={service?.enabled === true}
+			role="switch"
+			aria-checked={service?.enabled === true}
+			aria-label="Daemon starts with the machine"
+			disabled={!service?.supported || serviceBusy}
+			onclick={() => void toggleService()}
+		></button>
+	</div>
+	{#if serviceError}
+		<div class="hint" style="margin-top: 6px; color: var(--red, #e5534b)">{serviceError}</div>
+	{/if}
 	<div class="hint" style="margin-top: 6px">
-		Closing the window hides Token Horizon to the system tray — request logging and sync keep running.
+		Closing the window hides the app to the system tray — request logging and sync keep running.
 		Quit from the tray menu to stop everything.
 	</div>
 </div>
 
-<div class="section-label">Connection</div>
+<div class="section-label">Permissions</div>
 <div class="card">
-	<div class="field">
-		<label for="api">Loopback API</label>
-		<div class="row">
-			<input id="api" class="input mono" bind:value={base} spellcheck="false" />
-			<button class="btn" onclick={applyBase}>Apply</button>
-		</div>
-		<div class="hint">Default http://127.0.0.1:8765. Point at a remote daemon to watch another machine.</div>
+	{#if consents.length === 0}
+		<div class="empty">Daemon unreachable — permissions load when the listener is up</div>
+	{:else}
+		{#each Object.keys(CONSENT_COPY) as scope}
+			{@const rec = consents.find((c) => c.scope === scope)}
+			<div class="toggle-row">
+				<span class="tname">{CONSENT_COPY[scope].title}</span>
+				<span class="hint" style="margin: 0">{CONSENT_COPY[scope].body}</span>
+				{#if rec}
+					<Switch
+						checked={rec.granted}
+						onCheckedChange={(v) => void flipConsent(scope, v)}
+						aria-label={CONSENT_COPY[scope].title}
+					/>
+				{/if}
+			</div>
+		{/each}
+	{/if}
+	<div class="toggle-row">
+		<span class="tname">Replay onboarding</span>
+		<span class="hint" style="margin: 0">Walk through setup, permissions, and client routing again</span>
+		<button class="btn" onclick={replayOnboarding}>Replay</button>
 	</div>
 </div>
 
-<div class="section-label">Logging · Providers ({discoveredProviders.filter((p) => settings.providerEnabled(p)).length}/{discoveredProviders.length})</div>
+<div class="section-label">Data</div>
 <div class="card">
-	{#if discoveredProviders.length === 0}
-		<div class="empty">No providers discovered yet — they appear as the machine detects traffic and quota adapters</div>
-	{:else}
-		{#each discoveredProviders as v}
-			<div class="toggle-row">
-				<span class="swatch" style:background={providerAccent(v)}></span>
-				<span class="tname">{v}</span>
-				<button
-					class="switch"
-					class:on={settings.providerEnabled(v)}
-					role="switch"
-					aria-checked={settings.providerEnabled(v)}
-					aria-label="Log {v}"
-					onclick={() => settings.toggleProvider(v)}
-				></button>
-			</div>
-		{/each}
-	{/if}
-</div>
-
-<div class="section-label">Logging · Runtimes ({runtimes.filter((r) => settings.runtimeEnabled(r.vendor)).length}/{runtimes.length})</div>
-<div class="card">
-	{#if runtimes.length === 0}
-		<div class="empty">No runtimes discovered yet</div>
-	{:else}
-		{#each runtimes as rt}
-			<div class="toggle-row">
-				<span class="swatch" style:background={providerAccent(rt.vendor)}></span>
-				<span class="tname">{rt.display_name}</span>
-				<span class="hint" style="margin: 0">{rt.running ? 'running' : 'not running'}</span>
-				<button
-					class="switch"
-					class:on={settings.runtimeEnabled(rt.vendor)}
-					role="switch"
-					aria-checked={settings.runtimeEnabled(rt.vendor)}
-					aria-label="Log {rt.display_name}"
-					onclick={() => settings.toggleRuntime(rt.vendor)}
-				></button>
-			</div>
-		{/each}
-	{/if}
-	<div class="hint" style="margin-top: 10px">
-		Toggles currently filter what this app displays. Daemon-side collection control is wired to these preferences in a future release.
+	<div class="toggle-row">
+		<span class="tname">File imports in dashboards</span>
+		<span class="hint" style="margin: 0">
+			Show file-imported (self-reported, non-metered) history — debugging view, off for prod
+		</span>
+		<button
+			class="switch"
+			class:on={settings.showImports}
+			role="switch"
+			aria-checked={settings.showImports}
+			aria-label="File imports in dashboards"
+			onclick={() => { settings.showImports = !settings.showImports; settings.save(); }}
+		></button>
+	</div>
+	<div class="toggle-row">
+		<span class="tname">Consolidate files</span>
+		<span class="hint" style="margin: 0">
+			{consolidateResult ?? 'One pass over tool session files — joins tool labels and file-claimed costs onto metered requests'}
+		</span>
+		<button class="btn" disabled={consolidating} onclick={() => void consolidateNow()}
+			>{consolidating ? 'Scanning…' : 'Run'}</button>
 	</div>
 </div>
 
@@ -201,7 +291,7 @@
 		border: 1px solid var(--line);
 		background: var(--bg);
 		color: var(--text);
-		border-radius: var(--radius);
+		border-radius: 10px;
 		font-family: inherit;
 		font-size: 13px;
 		padding: 5px 10px;
@@ -224,8 +314,13 @@
 		display: flex;
 		align-items: center;
 		gap: 10px;
-		padding: 7px 0;
+		padding: 10px 0;
 		border-bottom: 1px solid var(--line);
+	}
+	@media (min-width: 1100px) {
+		.toggle-row {
+			padding: 12px 0;
+		}
 	}
 	.toggle-row:last-of-type {
 		border-bottom: none;
@@ -233,48 +328,5 @@
 	.tname {
 		font-size: 13px;
 		font-weight: 500;
-	}
-	.swatch {
-		width: 8px;
-		height: 8px;
-		border-radius: 2.5px;
-		flex: none;
-	}
-	/* Hairline switch */
-	.switch {
-		margin-left: auto;
-		appearance: none;
-		width: 32px;
-		height: 18px;
-		border-radius: 999px;
-		border: 1px solid var(--line-strong);
-		background: var(--track);
-		position: relative;
-		cursor: pointer;
-		transition: background 0.15s, border-color 0.15s;
-		flex: none;
-	}
-	.switch::after {
-		content: '';
-		position: absolute;
-		top: 2px;
-		left: 2px;
-		width: 12px;
-		height: 12px;
-		border-radius: 50%;
-		background: var(--text-3);
-		transition: transform 0.15s, background 0.15s;
-	}
-	.switch.on {
-		background: var(--accent);
-		border-color: var(--accent);
-	}
-	.switch.on::after {
-		transform: translateX(14px);
-		background: #fff;
-	}
-	.switch:disabled {
-		opacity: 0.45;
-		cursor: default;
 	}
 </style>

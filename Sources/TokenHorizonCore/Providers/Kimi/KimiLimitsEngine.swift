@@ -15,9 +15,9 @@ public final class KimiLimitsEngine: LimitsEngine, Meterable {
     public var defaultMeterTarget: URL? { URL(string: "https://api.kimi.com") }
     public func makeMeter(listenPort: UInt16, target: URL?, store: UsageStoring?) -> RequestMeter? {
         guard ConsentManager.shared.isGranted(.metering) else { return nil }
-        return AnthropicMeter(vendor: meterVendorKey, listenPort: listenPort,
-                              targetBase: target ?? defaultMeterTarget!,
-                              store: store, sourceKind: .external)
+        return KimiMeter(vendor: meterVendorKey, listenPort: listenPort,
+                         targetBase: target ?? defaultMeterTarget!,
+                         store: store, sourceKind: .external)
     }
 
     public override func fetchLimits() -> [ProviderLimit] {
@@ -92,9 +92,18 @@ public final class KimiLimitsEngine: LimitsEngine, Meterable {
                 saveCredentials(creds)
             }
             out += fetchUsages(token: creds.accessToken,
-                               profile: multi ? AccountDiscovery.deriveLabel(dir: creds.path) : "")
+                               profile: multi ? profileLabel(for: creds.path) : "")
         }
         return out
+    }
+
+    /// Label for a credential profile: the kimi home two levels up from
+    /// `…/.kimi-code/credentials/kimi-code.json` → "kimi-code". (deriveLabel
+    /// is dir-oriented; fed the FILE path it returned the extension — "json".)
+    private static func profileLabel(for path: String) -> String {
+        let home = ((path as NSString).deletingLastPathComponent as NSString).deletingLastPathComponent
+        let base = (home as NSString).lastPathComponent
+        return base.hasPrefix(".") ? String(base.dropFirst()) : base
     }
 
     /// Every credential file holding a token is one profile (multi-account).
@@ -133,13 +142,12 @@ public final class KimiLimitsEngine: LimitsEngine, Meterable {
            let limit = parseQuota(usage, "limit"),
            let used = parseQuota(usage, "used") {
             let pct = limit > 0 ? used / limit * 100 : 0
-            let plan = (membership(obj) ?? "plan").replacingOccurrences(of: "LEVEL_", with: "").lowercased()
             limits.append(makeLimit(
                 provider: providerName,
-                label: plan.lowercased(),
+                label: "week",   // top-level `usage` is the weekly budget (resetTime ~7d out)
                 usedPercent: pct,
                 resetsAt: parseDate(usage["resetTime"] as? String),
-                detail: "\(fmt(used)) / \(fmt(limit))"))
+                detail: ""))
         }
         if let entries = obj["limits"] as? [[String: Any]] {
             for entry in entries.prefix(2) {
@@ -164,7 +172,7 @@ public final class KimiLimitsEngine: LimitsEngine, Meterable {
                     label: label,
                     usedPercent: pct,
                     resetsAt: parseDate(detail["resetTime"] as? String),
-                    detail: "\(fmt(remaining)) / \(fmt(limit)) left"))
+                    detail: ""))   // ring carries the number; no redundant quota text
             }
         }
         return limits
@@ -210,9 +218,5 @@ public final class KimiLimitsEngine: LimitsEngine, Meterable {
 
     public static func parseDate(_ s: String?) -> Date? {
         QuotaParsers.parseISO(s)
-    }
-
-    public static func fmt(_ v: Double) -> String {
-        QuotaParsers.compact(v)
     }
 }

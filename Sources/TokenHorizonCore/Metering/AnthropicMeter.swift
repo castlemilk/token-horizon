@@ -10,7 +10,10 @@ import Foundation
 /// Non-streaming: plain JSON response with the same usage object.
 open class AnthropicMeter: RequestMeter {
     public override func shouldMeter(method: String, path: String) -> Bool {
-        method == "POST" && (path.hasPrefix("/v1/messages") || path.hasPrefix("/messages"))
+        // Anthropic-compatible bases carry prefixes: kimi is /coding/v1/messages,
+        // zhipu is /api/anthropic/v1/messages — match the SUFFIX, not a prefix.
+        let p = path.split(separator: "?", maxSplits: 1).first.map(String.init) ?? path
+        return method == "POST" && (p.hasSuffix("/v1/messages") || p.hasPrefix("/messages"))
     }
 
     /// Anthropic's `request-id` response header == the `requestId` field

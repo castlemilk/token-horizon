@@ -274,6 +274,65 @@ public final class UsageEngine {
         return "\(minutes / 1440)d"
     }
 
+    // MARK: - One-time file-history backfill
+
+    /// Deliberate, operator-triggered import of file-derived history into the
+    /// event store. THE documented exception to "files never create usage
+    /// rows": every event is attestation=.selfReported (runtime-ledger deltas:
+    /// .measured — they are server counters), model "(file import)", and a
+    /// DETERMINISTIC id hashed from "backfill|<tool>|<bucket>" so re-runs are
+    /// INSERT OR IGNORE no-ops. Live file polling stays annotation-only.
+    public func backfillEvents() -> [UsageEvent] {
+        lock.lock()
+        defer { lock.unlock() }
+        _ = collectLocked()
+        let merged = mergedBucketsLocked()
+        var events: [UsageEvent] = []
+        for (bucket, tools) in merged {
+            for (tool, entry) in tools {
+                let vendor = Canonical.vendor(tool)
+                let isRuntime = CostEngine.localComputeVendors.contains(vendor)
+                let costSource: CostSource = entry.cost > 0.0001
+                    ? .reported
+                    : (CostEngine.planVendors.contains(vendor) || isRuntime ? .planFree : .unknown)
+                events.append(UsageEvent(
+                    id: Self.backfillUUID(tool: tool, bucket: bucket),
+                    timestamp: Date(timeIntervalSince1970: TimeInterval(bucket + Self.bucketSeconds / 2)),
+                    machineID: MachineIdentity.current,
+                    source: isRuntime ? .selfManaged : .external,
+                    vendor: vendor,
+                    model: isRuntime ? "(ledger import)" : "(file import)",
+                    tokens: entry.breakdown,
+                    cost: entry.cost,
+                    product: tool,
+                    productSource: .fileJoined,
+                    costSource: costSource,
+                    attestation: isRuntime ? .measured : .selfReported))
+            }
+        }
+        return events
+    }
+
+    /// Deterministic UUID from the backfill natural key (dual FNV-1a mix) —
+    /// stable across runs, so re-imports collide on the PRIMARY KEY and skip.
+    private static func backfillUUID(tool: String, bucket: Int) -> UUID {
+        var h1: UInt64 = 0xcbf29ce484222325
+        var h2: UInt64 = 0x84222325cbf29ce4
+        for b in "backfill|\(tool)|\(bucket)".utf8 {
+            h1 = (h1 ^ UInt64(b)) &* 0x100000001b3
+            h2 = (h2 &+ UInt64(b)) &* 0x9e3779b97f4a7c15
+        }
+        return UUID(uuid: (
+            UInt8(truncatingIfNeeded: h1 >> 56), UInt8(truncatingIfNeeded: h1 >> 48),
+            UInt8(truncatingIfNeeded: h1 >> 40), UInt8(truncatingIfNeeded: h1 >> 32),
+            UInt8(truncatingIfNeeded: h1 >> 24), UInt8(truncatingIfNeeded: h1 >> 16),
+            UInt8(truncatingIfNeeded: h1 >> 8), UInt8(truncatingIfNeeded: h1),
+            UInt8(truncatingIfNeeded: h2 >> 56), UInt8(truncatingIfNeeded: h2 >> 48),
+            UInt8(truncatingIfNeeded: h2 >> 40), UInt8(truncatingIfNeeded: h2 >> 32),
+            UInt8(truncatingIfNeeded: h2 >> 24), UInt8(truncatingIfNeeded: h2 >> 16),
+            UInt8(truncatingIfNeeded: h2 >> 8), UInt8(truncatingIfNeeded: h2)))
+    }
+
     private func latestCodexRate() -> CodexRate? {
         codexFiles.values.compactMap { $0.rate }.max { a, b in
             a.resetsAt != b.resetsAt ? a.resetsAt < b.resetsAt : a.usedPercent < b.usedPercent
@@ -384,7 +443,8 @@ public final class UsageEngine {
             if codexTokens > 0 {
                 snap.models.append(ModelUsage(provider: "codex", model: "codex (model n/a)",
                                               tokensAll: codexTokens, tokensToday: 0, cost: 0,
-                                              messages: 0, free: true))
+                                              messages: 0, free: true,
+                                              breakdown: codexBreakdownAll))
             }
         }
 
@@ -416,7 +476,8 @@ public final class UsageEngine {
             snap.breakdownAll.add(kimi.breakdownAll)
             snap.models.append(ModelUsage(provider: "kimi", model: "kimi (model n/a)",
                                           tokensAll: kimi.allTokens, tokensToday: kimi.todayTokens,
-                                          cost: kimi.allCost, messages: 0, free: kimi.allCost < 0.0001))
+                                          cost: kimi.allCost, messages: 0, free: kimi.allCost < 0.0001,
+                                          breakdown: kimi.breakdownAll))
         }
 
         for source in Self.genericSources {
