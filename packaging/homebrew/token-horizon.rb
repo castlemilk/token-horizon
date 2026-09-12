@@ -19,7 +19,7 @@ cask "token-horizon" do
   url "https://github.com/castlemilk/token-horizon/releases/download/v#{version}/TokenHorizon-#{version}.zip"
   name "Token Horizon"
   desc "Native macOS notch dashboard for AI token usage, costs, and plan limits"
-  homepage "https://castlemilk.github.io/token-horizon/"
+  homepage "https://token-horizon.dev/"
 
   auto_updates false
   depends_on macos: ">= :sonoma"

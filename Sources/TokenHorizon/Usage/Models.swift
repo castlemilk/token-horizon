@@ -27,6 +27,7 @@ struct UsageSnapshot: Codable {
     var requestsToday: Int = 0
     var requestsAllTime: Int = 0
     var projects: [ProjectUsage] = []
+    var modelDaily: [ModelDailyUsage] = []
 
     static let empty = UsageSnapshot()
 
@@ -36,7 +37,7 @@ struct UsageSnapshot: Codable {
         case tokensToday, tokensAllTime, costToday, costAllTime, perTool, models
         case limits, claudeAccounts, recentSessions, sources, updatedAt, projects
         case inputTokensToday, outputTokensToday, inputTokensAllTime, outputTokensAllTime
-        case requestsToday, requestsAllTime
+        case requestsToday, requestsAllTime, modelDaily
     }
 
     init(from decoder: Decoder) throws {
@@ -59,6 +60,7 @@ struct UsageSnapshot: Codable {
         requestsToday = c.thDecode(.requestsToday, or: 0)
         requestsAllTime = c.thDecode(.requestsAllTime, or: 0)
         projects = c.thDecode(.projects, or: [])
+        modelDaily = c.thDecode(.modelDaily, or: [])
     }
 
     var tokensTodayText: String { Self.tokens(tokensToday) }
@@ -344,6 +346,35 @@ struct SessionSummary: Codable, Identifiable {
         inputTokens = c.thDecode(.inputTokens, or: 0)
         outputTokens = c.thDecode(.outputTokens, or: 0)
         requests = c.thDecode(.requests, or: 0)
+    }
+}
+
+/// One (model, local-day) token total for the trailing model-history window.
+/// Published in the leaderboard breakdown so the dashboard can stack usage
+/// by model over time with real data.
+struct ModelDailyUsage: Codable, Identifiable, Equatable {
+    var model: String
+    var provider: String
+    var day: Int
+    var tokens: Int
+
+    var id: String { "\(model)@\(day)" }
+
+    init(model: String, provider: String, day: Int, tokens: Int) {
+        self.model = model
+        self.provider = provider
+        self.day = day
+        self.tokens = tokens
+    }
+
+    enum CodingKeys: String, CodingKey { case model, provider, day, tokens }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        model = c.thDecode(.model, or: "unknown")
+        provider = c.thDecode(.provider, or: "other")
+        day = c.thDecode(.day, or: 0)
+        tokens = c.thDecode(.tokens, or: 0)
     }
 }
 

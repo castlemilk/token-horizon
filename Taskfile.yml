@@ -72,6 +72,11 @@ tasks:
     cmds:
       - make bench
 
+  bench-leaderboard:
+    desc: Dashboard bench — chart reuse, view switches, search, idle ticks (budget-gated)
+    cmds:
+      - node scripts/bench-leaderboard.mjs
+
   smoke:
     desc: Live validation vs the running app — stamp identity, endpoints, MCP (needs :8765 up)
     cmds:
@@ -103,6 +108,9 @@ tasks:
         probe "/limits" "'limits' in d" "/limits serves limits"
         probe "/models?search=&scope=ALL" "d.get('count',0) > 0" "/models serves non-empty catalog"
         probe "/discovery/status" "'catalogCount' in d" "/discovery/status serves catalog stats"
+        probe "/activity/heatmap?days=7" "'grid' in d and len(d['grid']) == 7" "/activity/heatmap serves 7x24 grid"
+        probe "/projects" "'projects' in d" "/projects serves project rollups"
+        probe "/achievements" "'achievements' in d and 'season' in d" "/achievements serves season+achievements"
         if command -v node >/dev/null 2>&1; then
           mcp=$(printf '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}\n' | node mcp/token-horizon-mcp.mjs 2>/dev/null | head -c 4000 || true)
           case "$mcp" in *token_horizon*|*tools*) say ok "MCP tools/list answers";; *) say FAIL "MCP tools/list (unexpected output)";; esac

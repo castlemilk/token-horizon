@@ -4,10 +4,19 @@ compatibility_date = "2026-09-01"
 compatibility_flags = ["nodejs_compat"]
 workers_dev = true
 
-# Custom Domain (automatic DNS + SSL certificate provisioning)
+# Custom Domains (automatic DNS + SSL certificate provisioning).
+# token-horizon.dev is canonical; the legacy host stays routed until the
+# nameserver cutover is verified, then the second entry can be removed.
 routes = [
+  { pattern = "token-horizon.dev", custom_domain = true },
+  { pattern = "www.token-horizon.dev", custom_domain = true },
   { pattern = "tokens.benebsworth.com", custom_domain = true }
 ]
+
+# Google Identity Services: Web OAuth client ID (public value, not a secret).
+# Authorized JavaScript origins must include https://token-horizon.dev.
+[vars]
+GOOGLE_CLIENT_ID = "658875965368-eosj3vhjdg6e6l8jaa27jarvatpa53eb.apps.googleusercontent.com"
 
 # Webhosting: Serve static dashboard assets from ../docs
 [assets]

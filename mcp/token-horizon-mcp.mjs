@@ -717,7 +717,7 @@ async function callTool(name, args) {
             webUrl = cfg.cloudURL.endsWith("/leaderboard.html") ? cfg.cloudURL : `${cfg.cloudURL}/leaderboard.html`;
           } else {
             const sheetParam = cfg.sheetsURL ? `?sheet=${encodeURIComponent(cfg.sheetsURL)}` : "";
-            webUrl = `https://castlemilk.github.io/token-horizon/leaderboard.html${sheetParam}`;
+            webUrl = `https://token-horizon.dev/leaderboard${sheetParam}`;
           }
           return {
             web_url: webUrl,

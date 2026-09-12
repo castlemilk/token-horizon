@@ -36,6 +36,7 @@ struct DashboardTabs: View {
     @State private var leaderboardTeamDraft: String = SettingsStore.shared.leaderboardTeam
     @State private var leaderboardShareCostDraft: Bool = SettingsStore.shared.leaderboardShareCost
     @State private var leaderboardShareHwDraft: Bool = SettingsStore.shared.leaderboardShareHardware
+    @State private var leaderboardSharePromptsDraft: Bool = SettingsStore.shared.leaderboardSharePrompts
     @State private var leaderboardSheetsDraft: String = SettingsStore.shared.leaderboardSheetsURL
     @State private var leaderboardCloudDraft: String = SettingsStore.shared.leaderboardCloudURL
     @State private var leaderboardCloudTokenDraft: String = SettingsStore.shared.leaderboardCloudToken
@@ -1492,7 +1493,7 @@ struct DashboardTabs: View {
                     leaderboardPublishNotice = nil
                     // First ensure local usage is fresh
                     LeaderboardStore.shared.syncLocal(snapshot: model.usage, history: model.historyPoints, streak: model.historyStreak)
-                    // Push to Cloud (defaulting to https://tokens.benebsworth.com)
+                    // Push to Cloud (defaulting to https://token-horizon.dev)
                     LeaderboardStore.shared.publishToCloud(forced: true) { res in
                         DispatchQueue.main.async {
                             leaderboardPublishing = false
@@ -1542,7 +1543,7 @@ struct DashboardTabs: View {
                 }
                 .buttonStyle(.plain)
                 .disabled(leaderboardPublishing)
-                .help("Publish your token usage to the global leaderboard at tokens.benebsworth.com")
+                .help("Publish your token usage to the global leaderboard at token-horizon.dev")
 
                 // Sync button
                 Button {
@@ -1632,6 +1633,18 @@ struct DashboardTabs: View {
                         .toggleStyle(.checkbox)
                         .font(.system(size: 8, design: .monospaced))
                     }
+
+                    Toggle("Share Prompt History (session titles)", isOn: Binding(
+                        get: { leaderboardSharePromptsDraft },
+                        set: {
+                            leaderboardSharePromptsDraft = $0
+                            SettingsStore.shared.leaderboardSharePrompts = $0
+                            LeaderboardStore.shared.syncLocal(snapshot: model.usage, history: model.historyPoints, streak: model.historyStreak)
+                        }
+                    ))
+                    .toggleStyle(.checkbox)
+                    .font(.system(size: 8, design: .monospaced))
+                    .help("Off by default: session titles can reveal project or client names. Enables Recent Activity and Top Prompts panels.")
 
                     Divider().overlay(Color.white.opacity(0.1))
 
@@ -1789,7 +1802,7 @@ struct DashboardTabs: View {
                         HStack(spacing: 8) {
                             Button {
                                 let sheetUrl = SettingsStore.shared.leaderboardSheetsURL
-                                var target = "https://castlemilk.github.io/token-horizon/leaderboard.html"
+                                var target = "https://token-horizon.dev/leaderboard"
                                 if !sheetUrl.isEmpty, let encoded = sheetUrl.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) {
                                     target += "?sheet=\(encoded)"
                                 }
@@ -2587,6 +2600,17 @@ struct DashboardTabs: View {
                 Text("Share hardware chip name (\(SystemStats.cpuBrandString()))").font(.system(size: 9, design: .monospaced))
             }.toggleStyle(.switch).tint(.green)
 
+            Toggle(isOn: Binding(
+                get: { leaderboardSharePromptsDraft },
+                set: {
+                    leaderboardSharePromptsDraft = $0
+                    SettingsStore.shared.leaderboardSharePrompts = $0
+                    LeaderboardStore.shared.syncLocal(snapshot: model.usage, history: model.historyPoints, streak: model.historyStreak)
+                }
+            )) {
+                Text("Share prompt history / session titles (off by default)").font(.system(size: 9, design: .monospaced))
+            }.toggleStyle(.switch).tint(.green)
+
             VStack(alignment: .leading, spacing: 2) {
                 HStack {
                     Text("Cloudflare Edge Leaderboard URL").font(.system(size: 8, design: .monospaced)).foregroundStyle(.orange)
@@ -2596,7 +2620,7 @@ struct DashboardTabs: View {
                     }
                 }
                 HStack(spacing: 6) {
-                    TextField("https://tokens.benebsworth.com", text: $leaderboardCloudDraft)
+                    TextField("https://token-horizon.dev", text: $leaderboardCloudDraft)
                         .textFieldStyle(.roundedBorder)
                         .font(.system(size: 8.5, design: .monospaced))
                         .onChange(of: leaderboardCloudDraft) { val in
@@ -2623,7 +2647,7 @@ struct DashboardTabs: View {
                         .background(Capsule().fill(Color.cyan))
                     }
                     .buttonStyle(.plain)
-                    .help("Publish your stats directly to tokens.benebsworth.com")
+                    .help("Publish your stats directly to token-horizon.dev")
                 }
             }
 
@@ -2661,6 +2685,7 @@ struct DashboardTabs: View {
             leaderboardTeamDraft = SettingsStore.shared.leaderboardTeam
             leaderboardShareCostDraft = SettingsStore.shared.leaderboardShareCost
             leaderboardShareHwDraft = SettingsStore.shared.leaderboardShareHardware
+            leaderboardSharePromptsDraft = SettingsStore.shared.leaderboardSharePrompts
             leaderboardCloudDraft = SettingsStore.shared.leaderboardCloudURL
             leaderboardSheetsDraft = SettingsStore.shared.leaderboardSheetsURL
             leaderboardAutoSyncDraft = SettingsStore.shared.leaderboardAutoSync

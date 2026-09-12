@@ -1,17 +1,17 @@
 # Token Horizon
 
 [![GitHub release](https://img.shields.io/github/v/release/castlemilk/token-horizon?include_prereleases)](https://github.com/castlemilk/token-horizon/releases/latest)
-[![Landing page](https://img.shields.io/badge/site-castlemilk.github.io%2Ftoken--horizon-7c5cff)](https://castlemilk.github.io/token-horizon/)
+[![Landing page](https://img.shields.io/badge/site-token--horizon.dev-7c5cff)](https://token-horizon.dev/)
 
 Native macOS statusline + notch dashboard tracking AI token usage, costs, system stats, and provider plan limits. Built with Swift + AppKit/SwiftUI, system SQLite, and the OpenTelemetry Swift SDK for optional metrics export.
 
-🌐 **Landing page:** https://castlemilk.github.io/token-horizon/ · 🎬 **Film below** · 📦 [Releases](https://github.com/castlemilk/token-horizon/releases/latest)
+🌐 **Landing page:** https://token-horizon.dev/ · 🎬 **Film below** · 📦 [Releases](https://github.com/castlemilk/token-horizon/releases/latest)
 
 ## Product film
 
 <video src="https://github.com/castlemilk/token-horizon/releases/download/v0.2.0/TokenHorizon-film.mp4" poster="https://raw.githubusercontent.com/castlemilk/token-horizon/main/docs/assets/og.png" controls width="100%"></video>
 
-*Forty seconds, rendered entirely in code ([`video/`](video/) — Remotion, zero stock footage). Also embedded on the [landing page](https://castlemilk.github.io/token-horizon/#film).*
+*Forty seconds, rendered entirely in code ([`video/`](video/) — Remotion, zero stock footage). Also embedded on the [landing page](https://token-horizon.dev/#film).*
 
 ## Getting started
 
@@ -123,6 +123,8 @@ The local script uses an ad-hoc signature for development. For a distributable f
 
 Token Horizon includes a built-in team and cross-account leaderboard system with two collaborative backend options: **Cloudflare Edge + R2** (ultra-fast, <25ms) and **Google Spreadsheets** (zero-infrastructure, ~1-3s).
 
+The edge-hosted **TokenArena** dashboard (`docs/leaderboard.html`) ships nine real-data views — Dashboard deep-dive, Leaderboard (league ladder + MMR + Top Movers/Most Improved), Player Profile (usage/costs, prompts, projects, comparisons, achievements), Teams, Prompts, Models (provider breakdown), Billing, Leagues & Season Progression, and Sharing & Access Control — plus the Share Usage Report modal and public `/s/<id>` report links. Usage-over-time charts are stacked bars by model with a structured tooltip (vendored [TanStack Charts](https://tanstack.com/charts), rebuilt via `npm run vendor`); provider brand marks match the app's model list, and every player gets an avatar — Google photo, uploaded image, or a deterministic generated style (vendored [DiceBear](https://dicebear.com)). League/MMR/season/efficiency/achievement math lives in `Sources/TokenHorizon/Leaderboard/LeaderboardAnalytics.swift` and is mirrored by the worker; rank history comes from bounded daily snapshots appended on each publish (movers and league progression stay empty until ≥2 days of publishes exist). Screen-by-screen objective-vs-current alignment and the full data flow live in [`LEADERBOARD.md`](LEADERBOARD.md).
+
 ### Backend Comparison
 
 | Feature | Cloudflare Edge + R2 (Recommended) | Google Sheets (No Infra) |
@@ -161,8 +163,31 @@ Deploy a private or team leaderboard edge API and web dashboard in seconds:
 4. **Dynamic SVG Badges for GitHub READMEs**:
    Embed live auto-updating token usage cards in your GitHub profile or repository README:
    ```markdown
-   [![AI Token Usage](https://token-horizon-leaderboard.<your-subdomain>.workers.dev/api/share?handle=yourname&format=svg)](https://token-horizon-leaderboard.<your-subdomain>.workers.dev/leaderboard.html)
+   [![AI Token Usage](https://token-horizon.dev/api/share?handle=yourname&format=svg)](https://token-horizon.dev/leaderboard)
    ```
+
+5. **Google sign-in (optional, recommended for public deployments)**:
+   Users sign in with Google to claim profiles, manage sharing, and publish to a claimed handle. The worker verifies the GSI ID token (RS256 against Google's JWKS) — unsigned tokens are rejected once a client ID is configured.
+   1. Google Cloud Console → **APIs & Services → Credentials → Create credentials → OAuth client ID → Web application**.
+   2. **Authorized JavaScript origins**: `https://token-horizon.dev` (add `http://localhost:8765` for local testing).
+   3. Put the client ID (a public value) in `cloudflare/wrangler.toml`:
+      ```toml
+      [vars]
+      GOOGLE_CLIENT_ID = "1234567890-abc.apps.googleusercontent.com"
+      ```
+   4. `./scripts/deploy-cloudflare.sh` — the dashboard fetches `/api/config` and renders the official Google button.
+   For daemon publishes from the Mac app, set a shared machine secret instead:
+   `npx wrangler secret put LEADERBOARD_SECRET` and paste the same value into the app's leaderboard cloud token field.
+
+### Custom domain (token-horizon.dev)
+
+`token-horizon.dev` is the canonical host (Worker custom domain + `www` → apex redirect). To onboard a new domain to Cloudflare:
+```bash
+./scripts/onboard-domain.sh          # dashboard steps, or run with CLOUDFLARE_API_TOKEN to create the zone
+# set the printed nameservers at the registrar (Vercel → Domains → Nameservers)
+./scripts/onboard-domain.sh --check  # poll until the zone is Active
+./scripts/deploy-cloudflare.sh       # deploy routes + assets
+```
 
 ---
 

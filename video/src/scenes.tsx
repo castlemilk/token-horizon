@@ -233,7 +233,7 @@ export const CTA: React.FC = () => {
         $ {CMD.slice(0, chars)}
         <span style={{opacity: frame % 30 < 15 ? 1 : 0}}>▊</span>
       </div>
-      <div style={{fontFamily: MONO, fontSize: 24, color: C.faint}}>Apple silicon · free preview · castlemilk.github.io/token-horizon</div>
+      <div style={{fontFamily: MONO, fontSize: 24, color: C.faint}}>Apple silicon · free preview · token-horizon.dev</div>
     </div>
   );
 };

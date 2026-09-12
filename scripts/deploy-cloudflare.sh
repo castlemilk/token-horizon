@@ -43,10 +43,12 @@ if ! $WRANGLER_BIN r2 bucket create "${BUCKET_NAME}" 2>/dev/null; then
 fi
 
 # 4. Deploy Cloudflare Worker + Assets
+# Pass the config explicitly: newer wrangler versions can otherwise walk up to
+# the root package.json and deploy a stray worker named after it.
 echo "Deploying Cloudflare Worker + Static Web Assets from docs/..."
 (
     cd "${CF_DIR}"
-    $WRANGLER_BIN deploy
+    $WRANGLER_BIN deploy --config wrangler.toml
 )
 
 echo
@@ -55,13 +57,16 @@ echo "🎉 Cloudflare Deployment Complete!"
 echo "=============================================================="
 echo "Your Token Horizon Leaderboard is live on Cloudflare's global edge network."
 echo
-echo "Endpoints:"
-echo "  • Web Dashboard:  https://token-horizon-leaderboard.<subdomain>.workers.dev/leaderboard.html"
-echo "  • REST API:       https://token-horizon-leaderboard.<subdomain>.workers.dev/api/leaderboard"
-echo "  • Dynamic SVG:    https://token-horizon-leaderboard.<subdomain>.workers.dev/api/share?format=svg"
+echo "Endpoints (canonical: https://token-horizon.dev):"
+echo "  • Web Dashboard:  https://token-horizon.dev/leaderboard"
+echo "  • REST API:       https://token-horizon.dev/api/leaderboard"
+echo "  • Dynamic SVG:    https://token-horizon.dev/api/share?format=svg"
+echo
+echo "Custom-domain routes require the zone to be onboarded first. If the"
+echo "deploy fails on a custom domain, run: ./scripts/onboard-domain.sh"
 echo
 echo "To connect your local Token Horizon Mac app:"
-echo "  th leaderboard config cf https://token-horizon-leaderboard.<subdomain>.workers.dev"
+echo "  th leaderboard config cf https://token-horizon.dev"
 echo
 echo "To publish your latest usage to the edge:"
 echo "  th leaderboard publish --cf"

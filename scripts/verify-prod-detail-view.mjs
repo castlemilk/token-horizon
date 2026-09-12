@@ -1,7 +1,7 @@
 import { chromium } from '/Users/benebsworth/projects/tautau/web/node_modules/playwright/index.mjs';
 
 async function verifyProdView() {
-  console.log("=== Testing Production Leaderboard UI (tokens.benebsworth.com) ===\n");
+  console.log("=== Testing Production Leaderboard UI (token-horizon.dev) ===\n");
 
   const browser = await chromium.launch({ channel: 'chrome', headless: true });
   const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
@@ -11,7 +11,7 @@ async function verifyProdView() {
     if (msg.type() === 'error') console.log(`[BROWSER ERROR]:`, msg.text());
   });
 
-  const url = "https://tokens.benebsworth.com/leaderboard";
+  const url = "https://token-horizon.dev/leaderboard";
   console.log(`1. Navigating to ${url}...`);
   await page.goto(url, { waitUntil: 'networkidle' });
 

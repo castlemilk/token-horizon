@@ -33,6 +33,13 @@ final class UsageEngine {
     }
     private struct ListingCache { var files: [String]; var validatedAt: Date }
     private var listingCache: [String: ListingCache] = [:]
+    /// hour-bucket → local day-start memo (Calendar calls are costly on the
+    /// per-line scan path; the working set is ~24h × a few weeks).
+    private var hourDayCache: [Int: Int] = [:]
+    /// Trailing window kept for per-model daily history. The dashboard shows a
+    /// 7-day stacked chart but needs the full 17-week window for per-day
+    /// heatmap drilldowns.
+    static let modelHistoryDays = 120
     /// Listing refresh bound. Directory trees hold thousands of media dirs
     /// (agy `brain/` ≈ 4k dirs); re-walking them every 5s tick cost ~200ms.
     /// New/deleted files are discovered at most this late — growth of KNOWN
@@ -96,6 +103,9 @@ final class UsageEngine {
         var models: [String: ModelAccum] = [:]
         var projects: [String: ProjectAccum] = [:]
         var watermarks: [String: AdditiveWatermark] = [:]
+        /// model → local day-start → tokens, pruned to the trailing window.
+        /// Per-file so truncation/rotation resets it with the rest of state.
+        var modelDays: [String: [Int: Int]] = [:]
     }
 
     struct CodexWatermark {
@@ -138,6 +148,7 @@ final class UsageEngine {
         var reasoningAll: Int = 0
         var requestsAll: Int = 0
         var models: [String: ModelAccum] = [:]
+        var modelDays: [String: [Int: Int]] = [:]
     }
 
     /// Session dirs for the fixed single-home generic tools, expanded to
@@ -228,6 +239,7 @@ final class UsageEngine {
         genericFiles.removeAll()
         codexFiles.removeAll()
         listingCache.removeAll()
+        hourDayCache.removeAll()
         opencodeCache = nil
         scanVersions.removeAll()
         scanMemos.removeAll()
@@ -449,6 +461,16 @@ final class UsageEngine {
         }
     }
 
+    /// Merge per-model daily maps across files/sources.
+    private func mergeModelDays(into list: inout [String: [Int: Int]], from accums: [String: [Int: Int]]) {
+        guard !accums.isEmpty else { return }
+        for (model, days) in accums {
+            var acc = list[model] ?? [:]
+            for (day, tokens) in days { acc[day, default: 0] += tokens }
+            list[model] = acc
+        }
+    }
+
     /// 7 (Mon-first) x 24 local-hour token grid over the trailing `days`.
     /// Buckets are UTC-hour aligned; Calendar converts each to local time.
     func activityHeatmap(days: Int = 28) -> [[Int]] {
@@ -529,6 +551,7 @@ final class UsageEngine {
         var snap = UsageSnapshot()
         snap.updatedAt = Date()
         var tools: [ToolUsage] = []
+        var mergedModelDays: [String: [Int: Int]] = [:]
         var ph = PhaseTimer()
         ph.mark("start")
 
@@ -586,6 +609,7 @@ final class UsageEngine {
                                               requestsAll: v.requestsAll, requestsToday: v.requestsToday))
             }
             mergeProjects(into: &snap.projects, from: claude.projects)
+            mergeModelDays(into: &mergedModelDays, from: claude.modelDays)
         }
         ph.mark("claude")
 
@@ -648,6 +672,7 @@ final class UsageEngine {
                     acc.requestsToday += v.requestsToday
                     modelMap[model] = acc
                 }
+                mergeModelDays(into: &mergedModelDays, from: st.modelDays)
                 for (h, b) in st.buckets where h >= codexTodayBucket {
                     cInputToday += b.input
                     cOutputToday += b.output
@@ -695,6 +720,7 @@ final class UsageEngine {
                 acc.requestsToday += v.requestsToday
                 kimi.perModel[model] = acc
             }
+            mergeModelDays(into: &kimi.modelDays, from: st.modelDays)
             for (h, b) in st.buckets where h >= kimiToday {
                 kimi.todayTokens += b.tokens
                 kimi.todayCost += b.cost
@@ -729,6 +755,7 @@ final class UsageEngine {
                                               requestsAll: v.requestsAll, requestsToday: v.requestsToday))
             }
         }
+        mergeModelDays(into: &mergedModelDays, from: kimi.modelDays)
         ph.mark("kimi")
 
         for source in Self.genericSources {
@@ -757,6 +784,7 @@ final class UsageEngine {
                                                   requestsAll: v.requestsAll, requestsToday: v.requestsToday))
                 }
                 mergeProjects(into: &snap.projects, from: r.projects)
+                mergeModelDays(into: &mergedModelDays, from: r.modelDays)
             }
         }
         ph.mark("generic")
@@ -789,6 +817,14 @@ final class UsageEngine {
         // Per-model share of its provider (fable % of claude, etc.). Single
         // O(n) pass; feeds the dashboard MODELS list, /stats, and MCP.
         snap.models = ModelUsage.withProviderShares(snap.models)
+        // Per-model daily history (trailing window), provider-resolved.
+        var providerByModel: [String: String] = [:]
+        for m in snap.models { providerByModel[m.model] = m.provider }
+        snap.modelDaily = mergedModelDays.flatMap { model, days in
+            days.map { ModelDailyUsage(model: model,
+                                       provider: providerByModel[model] ?? "other",
+                                       day: $0.key, tokens: $0.value) }
+        }.filter { $0.tokens > 0 }
         snap.perTool = tools.filter { $0.tokensAllTime > 0 || $0.tokensToday > 0 }
         snap.sources = snap.perTool.map { $0.tool }
         snap.inputTokensAllTime = snap.perTool.reduce(0) { $0 + $1.inputTokensAllTime }
@@ -835,6 +871,12 @@ final class UsageEngine {
                         tokens: p.tokens, cost: p.cost, input: p.input,
                         output: p.output, sessions: p.sessions)
                 }
+                var modelDays: [String: [String: Int]] = [:]
+                for (model, days) in st.modelDays {
+                    var d: [String: Int] = [:]
+                    for (day, tokens) in days { d[String(day)] = tokens }
+                    modelDays[model] = d
+                }
                 var watermarks: [String: DurableStore.StoredWatermark] = [:]
                 for (mid, wm) in st.watermarks {
                     watermarks[mid] = DurableStore.StoredWatermark(input: wm.input, output: wm.output, cacheWrite: wm.cacheWrite, cacheRead: wm.cacheRead)
@@ -851,7 +893,8 @@ final class UsageEngine {
                     inputAll: st.inputAll,
                     outputAll: st.outputAll,
                     requestsAll: st.requestsAll,
-                    projects: projects
+                    projects: projects,
+                    modelDays: modelDays
                 )
             }
             return out
@@ -886,6 +929,12 @@ final class UsageEngine {
                 cached: st.last.cached,
                 reasoning: st.last.reasoning
             )
+            var modelDays: [String: [String: Int]] = [:]
+            for (model, days) in st.modelDays {
+                var d: [String: Int] = [:]
+                for (day, tokens) in days { d[String(day)] = tokens }
+                modelDays[model] = d
+            }
             let rate = st.rate.map {
                 DurableStore.StoredCodexRate(usedPercent: $0.usedPercent, windowMinutes: $0.windowMinutes, resetsAt: $0.resetsAt)
             }
@@ -903,7 +952,8 @@ final class UsageEngine {
                 cachedAll: st.cachedAll,
                 reasoningAll: st.reasoningAll,
                 requestsAll: st.requestsAll,
-                models: models
+                models: models,
+                modelDays: modelDays
             )
         }
 
@@ -918,6 +968,9 @@ final class UsageEngine {
     private func loadDurableEngineState() {
         guard SettingsStore.shared.historyPersistenceEnabled,
               let payload = DurableStore.shared.loadEngineState() else { return }
+        // Pre-v4 payloads kept only an 8-day per-model window; discard them so
+        // the first scan rebuilds the full 17-week history for drilldowns.
+        guard payload.version >= 4 else { return }
         lock.lock()
         defer { lock.unlock() }
 
@@ -947,6 +1000,12 @@ final class UsageEngine {
                         tokens: p.tokens, cost: p.cost, input: p.input,
                         output: p.output, sessions: p.sessions)
                 }
+                var modelDays: [String: [Int: Int]] = [:]
+                for (model, days) in stored.modelDays {
+                    var d: [Int: Int] = [:]
+                    for (dayStr, tokens) in days { if let day = Int(dayStr) { d[day] = tokens } }
+                    modelDays[model] = d
+                }
                 var watermarks: [String: AdditiveWatermark] = [:]
                 for (mid, wm) in stored.watermarks {
                     watermarks[mid] = AdditiveWatermark(input: wm.input, output: wm.output, cacheWrite: wm.cacheWrite, cacheRead: wm.cacheRead)
@@ -963,7 +1022,8 @@ final class UsageEngine {
                     buckets: buckets,
                     models: models,
                     projects: projects,
-                    watermarks: watermarks
+                    watermarks: watermarks,
+                    modelDays: modelDays
                 )
             }
             return out
@@ -1000,6 +1060,12 @@ final class UsageEngine {
                 cached: stored.last.cached,
                 reasoning: stored.last.reasoning
             )
+            var modelDays: [String: [Int: Int]] = [:]
+            for (model, days) in stored.modelDays {
+                var d: [Int: Int] = [:]
+                for (dayStr, tokens) in days { if let day = Int(dayStr) { d[day] = tokens } }
+                modelDays[model] = d
+            }
             let rate = stored.rate.map {
                 CodexRate(usedPercent: $0.usedPercent, windowMinutes: $0.windowMinutes, resetsAt: $0.resetsAt)
             }
@@ -1017,7 +1083,8 @@ final class UsageEngine {
                 cachedAll: stored.cachedAll,
                 reasoningAll: stored.reasoningAll,
                 requestsAll: stored.requestsAll,
-                models: models
+                models: models,
+                modelDays: modelDays
             )
         }
 
@@ -1044,10 +1111,29 @@ final class UsageEngine {
         var requestsToday = 0
         var perModel: [String: ModelAccum] = [:]
         var projects: [String: ProjectAccum] = [:]
+        var modelDays: [String: [Int: Int]] = [:]
     }
 
     private func todayBucket() -> Int {
         Int(Calendar.current.startOfDay(for: Date()).timeIntervalSince1970)
+    }
+
+    /// Local day-start for an epoch-hour bucket, memoized. Buckets are
+    /// UTC-hour aligned; the Calendar conversion gives the local day.
+    private func dayStartLocked(forHour hour: Int) -> Int {
+        if let cached = hourDayCache[hour] { return cached }
+        let day = Int(Calendar.current.startOfDay(
+            for: Date(timeIntervalSince1970: TimeInterval(hour))).timeIntervalSince1970)
+        if hourDayCache.count > 4096 { hourDayCache.removeAll(keepingCapacity: true) }
+        hourDayCache[hour] = day
+        return day
+    }
+
+    /// Drop per-model days outside the trailing window (bounds state + payload).
+    private func pruneModelDays(_ days: inout [Int: Int], cutoff: Int) {
+        if days.count > Self.modelHistoryDays * 2 {
+            days = days.filter { $0.key >= cutoff }
+        }
     }
 
     /// Calendar-day window bounds, newest last. Uses real calendar days
@@ -1178,6 +1264,7 @@ final class UsageEngine {
         var requestsToday = 0
         var perModel: [String: ModelAccum] = [:]
         let today = todayBucket()
+        let modelDayCutoff = today - Self.modelHistoryDays * 86_400
         var seen = Set<String>()
         let keyPrefix = prefix + "::"
 
@@ -1273,6 +1360,13 @@ final class UsageEngine {
                             if deltaTokens > 0 { acc.requestsToday += 1 }
                         }
                         st.models[modelName] = acc
+                        if deltaTokens > 0 {
+                            let dayStart = dayStartLocked(forHour: p.hour)
+                            var days = st.modelDays[modelName] ?? [:]
+                            days[dayStart, default: 0] += deltaTokens
+                            pruneModelDays(&days, cutoff: modelDayCutoff)
+                            st.modelDays[modelName] = days
+                        }
                         if let cwd = p.cwd, !cwd.isEmpty {
                             var pa = st.projects[cwd] ?? ProjectAccum()
                             pa.tokens += deltaTokens
@@ -1340,6 +1434,13 @@ final class UsageEngine {
                 acc.sessions += p.sessions
                 out.projects[dir] = acc
             }
+            for (model, days) in st.modelDays {
+                var acc = out.modelDays[model] ?? [:]
+                for (day, tokens) in days where day >= modelDayCutoff {
+                    acc[day, default: 0] += tokens
+                }
+                out.modelDays[model] = acc
+            }
         }
         out.cacheRead = cacheRead
         out.cacheWrite = cacheWrite
@@ -1398,6 +1499,10 @@ final class UsageEngine {
                             acc.requestsToday += 1
                         }
                         st.models["kimi (model n/a)"] = acc
+                        var days = st.modelDays["kimi (model n/a)"] ?? [:]
+                        days[dayStartLocked(forHour: p.hour), default: 0] += p.tokens
+                        pruneModelDays(&days, cutoff: kimiToday - Self.modelHistoryDays * 86_400)
+                        st.modelDays["kimi (model n/a)"] = days
                     }
                 }
                 st.offset += UInt64(consumable.count)
@@ -1470,6 +1575,10 @@ final class UsageEngine {
                                     acc.requestsToday += 1
                                 }
                                 st.models[model] = acc
+                                var days = st.modelDays[model] ?? [:]
+                                days[dayStartLocked(forHour: parsed.hour), default: 0] += deltaTokens
+                                pruneModelDays(&days, cutoff: today - Self.modelHistoryDays * 86_400)
+                                st.modelDays[model] = days
                             }
                         }
                     }

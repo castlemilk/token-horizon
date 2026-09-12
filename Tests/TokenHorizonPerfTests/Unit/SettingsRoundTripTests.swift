@@ -38,26 +38,32 @@ final class SettingsRoundTripTests: XCTestCase {
         let origSync = store.leaderboardAutoSync
         let origCost = store.leaderboardShareCost
         let origHw = store.leaderboardShareHardware
+        let origPrompts = store.leaderboardSharePrompts
         let origHist = store.historyPersistenceEnabled
         let origNotify = store.notifyOnLimitRefresh
         defer {
             store.leaderboardAutoSync = origSync
             store.leaderboardShareCost = origCost
             store.leaderboardShareHardware = origHw
+            store.leaderboardSharePrompts = origPrompts
             store.historyPersistenceEnabled = origHist
             store.notifyOnLimitRefresh = origNotify
         }
         store.leaderboardAutoSync = !origSync
         store.leaderboardShareCost = !origCost
         store.leaderboardShareHardware = !origHw
+        store.leaderboardSharePrompts = !origPrompts
         store.historyPersistenceEnabled = !origHist
         store.notifyOnLimitRefresh = !origNotify
         XCTAssertEqual(store.leaderboardAutoSync, !origSync)
         XCTAssertEqual(store.leaderboardShareCost, !origCost)
         XCTAssertEqual(store.leaderboardShareHardware, !origHw)
+        XCTAssertEqual(store.leaderboardSharePrompts, !origPrompts)
         XCTAssertEqual(store.historyPersistenceEnabled, !origHist)
         XCTAssertEqual(store.notifyOnLimitRefresh, !origNotify)
     }
+
+
 
     func testLaunchAtLogin_getterIsReadOnlyBool() {
         // Setter registers with launchd — never call it here. The getter

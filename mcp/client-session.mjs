@@ -19,7 +19,7 @@ async function runSession() {
     args: [serverPath],
     env: {
       ...process.env,
-      TOKEN_HORIZON_API_BASE: "https://tokens.benebsworth.com",
+      TOKEN_HORIZON_API_BASE: "https://token-horizon.dev",
       TOKEN_HORIZON_DAEMON_BASE: "http://127.0.0.1:8765"
     }
   });

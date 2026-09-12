@@ -45,6 +45,9 @@ final class SettingsStore {
     private var _leaderboardAutoSync: Bool = false
     private var _leaderboardShareCost: Bool = true
     private var _leaderboardShareHardware: Bool = true
+    /// Prompt/session history is private by default: publishing titles can
+    /// leak project or client names to the public leaderboard.
+    private var _leaderboardSharePrompts: Bool = false
     private var _surfaceMode: String = SurfaceMode.auto.rawValue
     private var _showTrayIcon: Bool = false
 
@@ -91,12 +94,12 @@ final class SettingsStore {
         }
     }
 
-    /// Cloudflare Worker + R2 backend base URL (e.g. https://tokens.benebsworth.com).
-    /// Defaults to https://tokens.benebsworth.com so any user pushes and pulls automatically.
+    /// Cloudflare Worker + R2 backend base URL (e.g. https://token-horizon.dev).
+    /// Defaults to https://token-horizon.dev so any user pushes and pulls automatically.
     var leaderboardCloudURL: String {
         get {
             lock.lock(); defer { lock.unlock() }
-            return _leaderboardCloudURL.isEmpty ? "https://tokens.benebsworth.com" : _leaderboardCloudURL
+            return _leaderboardCloudURL.isEmpty ? "https://token-horizon.dev" : _leaderboardCloudURL
         }
         set {
             lock.lock()
@@ -191,6 +194,16 @@ final class SettingsStore {
         }
     }
 
+    var leaderboardSharePrompts: Bool {
+        get { lock.lock(); defer { lock.unlock() }; return _leaderboardSharePrompts }
+        set {
+            lock.lock()
+            _leaderboardSharePrompts = newValue
+            saveLocked()
+            lock.unlock()
+        }
+    }
+
     var historyPersistenceEnabled: Bool {
         get { lock.lock(); defer { lock.unlock() }; return _historyPersistenceEnabled }
         set {
@@ -271,6 +284,7 @@ final class SettingsStore {
             "leaderboardAutoSync": _leaderboardAutoSync,
             "leaderboardShareCost": _leaderboardShareCost,
             "leaderboardShareHardware": _leaderboardShareHardware,
+            "leaderboardSharePrompts": _leaderboardSharePrompts,
             "surfaceMode": _surfaceMode,
             "showTrayIcon": _showTrayIcon
         ]
@@ -297,6 +311,7 @@ final class SettingsStore {
         var autoSync = false
         var shareCost = true
         var shareHardware = true
+        var sharePrompts = false
         var surfaceMode = SurfaceMode.auto.rawValue
         var showTrayIcon = false
 
@@ -340,6 +355,9 @@ final class SettingsStore {
             if let lsh = obj["leaderboardShareHardware"] as? Bool {
                 shareHardware = lsh
             }
+            if let lsp = obj["leaderboardSharePrompts"] as? Bool {
+                sharePrompts = lsp
+            }
             if let sm = obj["surfaceMode"] as? String,
                SurfaceMode(rawValue: sm.trimmingCharacters(in: .whitespacesAndNewlines)) != nil {
                 surfaceMode = sm.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -360,14 +378,21 @@ final class SettingsStore {
         _leaderboardTeam = team
         _leaderboardRemoteURL = remoteURL
         _leaderboardSheetsURL = sheetsURL.isEmpty ? remoteURL : sheetsURL
+        // Domain migration: the leaderboard edge moved to token-horizon.dev.
+        // Rewrite the legacy host so existing installs cut over automatically.
+        if cloudURL.hasPrefix("https://tokens.benebsworth.com") {
+            cloudURL = cloudURL.replacingOccurrences(
+                of: "https://tokens.benebsworth.com", with: "https://token-horizon.dev")
+        }
         if cloudURL.isEmpty {
-            cloudURL = "https://tokens.benebsworth.com"
+            cloudURL = "https://token-horizon.dev"
         }
         _leaderboardCloudURL = cloudURL
         _leaderboardCloudToken = cloudToken
         _leaderboardAutoSync = autoSync
         _leaderboardShareCost = shareCost
         _leaderboardShareHardware = shareHardware
+        _leaderboardSharePrompts = sharePrompts
         _surfaceMode = surfaceMode
         _showTrayIcon = showTrayIcon
 

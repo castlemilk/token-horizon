@@ -3,7 +3,7 @@
  * Connects MCP clients to Token Horizon's edge leaderboard and local macOS daemon.
  */
 
-export const DEFAULT_API_BASE = "https://tokens.benebsworth.com";
+export const DEFAULT_API_BASE = "https://token-horizon.dev";
 export const DEFAULT_DAEMON_BASE = "http://127.0.0.1:8765";
 
 function getApiBase() {

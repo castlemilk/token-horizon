@@ -50,7 +50,7 @@ th() {
             local target
             target=$(curl -s -m 2 -I "${TOKEN_HORIZON_URL%/}/leaderboard/web" 2>/dev/null | grep -i "^Location:" | awk '{print $2}' | tr -d '\r\n')
             if [[ -z "$target" ]]; then
-                target="https://castlemilk.github.io/token-horizon/leaderboard.html"
+                target="https://token-horizon.dev/leaderboard"
             fi
             echo "Opening Leaderboard: $target"
             open "$target" 2>/dev/null || xdg-open "$target" 2>/dev/null || echo "$target"

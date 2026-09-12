@@ -7,7 +7,7 @@ Model Context Protocol (MCP) server for **Token Horizon** — seamlessly inspect
 - **🏆 Real-Time Leaderboard**: Query platform metrics, KPIs, and rankings by period (`today`, `week`, `all`, `streak`) or team.
 - **👤 Deep Participant Profiles**: Access 7-day activity sparklines/histograms, model allocation inventories (up to 36 models), tool spend, hardware info, and verification badges.
 - **⚡ Local Daemon Integration**: Query the running macOS Token Horizon daemon (`127.0.0.1:8765`) live for local dev metrics without leaving your AI assistant.
-- **🚀 Telemetry Sync & Publishing**: One-click publish from the local daemon or custom payloads to the public edge leaderboard (`tokens.benebsworth.com`), protected by cryptographic claim tokens or Google Auth.
+- **🚀 Telemetry Sync & Publishing**: One-click publish from the local daemon or custom payloads to the public edge leaderboard (`token-horizon.dev`), protected by cryptographic claim tokens or Google Auth.
 - **⭐ Ownership & Verification**: Claim profiles with Google login to lock handles and activate the verified badge.
 - **⚔️ Dev Comparison**: Head-to-head comparison between participants (token volume, effective $/M tokens, model preference, streaks).
 
@@ -43,7 +43,7 @@ Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
         "/Users/benebsworth/projects/token-horizon/mcp/src/index.js"
       ],
       "env": {
-        "TOKEN_HORIZON_API_BASE": "https://tokens.benebsworth.com",
+        "TOKEN_HORIZON_API_BASE": "https://token-horizon.dev",
         "TOKEN_HORIZON_DAEMON_BASE": "http://127.0.0.1:8765"
       }
     }

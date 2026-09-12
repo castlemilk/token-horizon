@@ -92,6 +92,8 @@ final class DurableStore {
         var outputAll: Int = 0
         var requestsAll: Int = 0
         var projects: [String: StoredProjectAccum] = [:]
+        /// model → day-start string → tokens (trailing model-history window).
+        var modelDays: [String: [String: Int]] = [:]
     }
 
     struct StoredCodexRate: Codable {
@@ -122,14 +124,16 @@ final class DurableStore {
         var reasoningAll: Int = 0
         var requestsAll: Int = 0
         var models: [String: StoredModelAccum] = [:]
+        var modelDays: [String: [String: Int]] = [:]
     }
 
     struct EngineStatePayload: Codable {
         /// v2 added per-bucket token-class splits, per-model input/output/
-        /// request accumulators, and per-project rollups. v1 payloads fail
-        /// decoding (missing keys) and trigger a one-time full reparse, which
-        /// is the only way to recover complete historical splits.
-        var version: Int = 2
+        /// request accumulators, and per-project rollups. v3 added per-model
+        /// daily buckets. v4 widened that window to 17 weeks for heatmap
+        /// drilldowns. Older payloads fail decoding (missing keys) and trigger
+        /// a one-time full reparse — the only way to recover complete history.
+        var version: Int = 4
         var claudeFiles: [String: StoredAdditiveFile]
         var kimiFiles: [String: StoredAdditiveFile]
         var genericFiles: [String: StoredAdditiveFile]

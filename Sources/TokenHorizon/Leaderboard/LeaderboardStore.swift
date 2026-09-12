@@ -281,6 +281,29 @@ extension LeaderboardSessionEntry {
     }
 }
 
+/// One model's daily token series, for stacked usage-by-model charts.
+struct LeaderboardModelHistory: Codable, Identifiable, Equatable {
+    var id: String { model }
+    var model: String
+    var provider: String
+    var points: [LeaderboardDailyPoint]
+
+    init(model: String, provider: String, points: [LeaderboardDailyPoint]) {
+        self.model = model
+        self.provider = provider
+        self.points = points
+    }
+
+    enum CodingKeys: String, CodingKey { case model, provider, points }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        model = c.thDecode(.model, or: "unknown")
+        provider = c.thDecode(.provider, or: "other")
+        points = c.thDecode(.points, or: [])
+    }
+}
+
 struct LeaderboardUsageBreakdown: Codable, Equatable {
     var models: [LeaderboardModelBreakdown] = []
     var tools: [LeaderboardToolBreakdown] = []
@@ -292,11 +315,16 @@ struct LeaderboardUsageBreakdown: Codable, Equatable {
     var hourly: [[Int]] = []
     /// Most recent sessions/workloads (title + model + tokens), bounded.
     var sessions: [LeaderboardSessionEntry] = []
+    /// Per-model daily tokens (trailing 7 days) for stacked charts.
+    var modelHistory: [LeaderboardModelHistory] = []
+    /// Non-zero days over the trailing ~17 weeks for the GitHub-style calendar.
+    var daily: [LeaderboardDailyPoint] = []
 }
 
 extension LeaderboardUsageBreakdown {
     enum CodingKeys: String, CodingKey {
         case models, tools, history, activeDays, totalSessions, projects, hourly, sessions
+        case modelHistory, daily
     }
 
     init(from decoder: Decoder) throws {
@@ -309,6 +337,8 @@ extension LeaderboardUsageBreakdown {
         projects = c.thDecode(.projects, or: [])
         hourly = c.thDecode(.hourly, or: [])
         sessions = c.thDecode(.sessions, or: [])
+        modelHistory = c.thDecode(.modelHistory, or: [])
+        daily = c.thDecode(.daily, or: [])
     }
 }
 
@@ -678,6 +708,20 @@ final class LeaderboardStore {
             ))
         }
 
+        // GitHub-style calendar: non-zero days over the trailing 17 weeks.
+        let calendarCutoff = Int(Calendar.current.startOfDay(
+            for: Calendar.current.date(byAdding: .day, value: -118, to: Date()) ?? Date()
+        ).timeIntervalSince1970)
+        let calendarDaily: [LeaderboardDailyPoint] = history
+            .filter { $0.day >= calendarCutoff && $0.tokens > 0 }
+            .map { p in
+                LeaderboardDailyPoint(
+                    day: p.day,
+                    dayLabel: df.string(from: Date(timeIntervalSince1970: TimeInterval(p.day))),
+                    tokens: p.tokens,
+                    cost: shareCost ? p.cost : 0.0)
+            }
+
         // Real per-project rollup (top 8) from the engine's working-directory
         // aggregation (opencode session dirs + JSONL cwd).
         let projectBreakdowns: [LeaderboardProjectBreakdown] = snapshot.projects.prefix(8).map {
@@ -690,6 +734,43 @@ final class LeaderboardStore {
                 outputTokens: $0.outputTokens
             )
         }
+
+        // Per-model daily history over the full calendar window: top 8 models
+        // + Other. The dashboard slices the last 7 days for its stacked chart
+        // and uses the rest for per-day heatmap drilldowns.
+        let windowDays = Set(snapshot.modelDaily.filter { $0.day >= calendarCutoff }.map(\.day)).sorted()
+        var modelDayTotals: [String: [Int: Int]] = [:]
+        var modelProviders: [String: String] = [:]
+        var modelTotals: [String: Int] = [:]
+        for p in snapshot.modelDaily {
+            modelProviders[p.model] = p.provider
+            modelTotals[p.model, default: 0] += p.tokens
+            if p.day >= calendarCutoff {
+                modelDayTotals[p.model, default: [:]][p.day, default: 0] += p.tokens
+            }
+        }
+        let topModels = Set(modelTotals.sorted { $0.value > $1.value }.prefix(8).map(\.key))
+        func dayPoints(_ days: [Int: Int]) -> [LeaderboardDailyPoint] {
+            windowDays.map { day in
+                LeaderboardDailyPoint(day: day,
+                                      dayLabel: df.string(from: Date(timeIntervalSince1970: TimeInterval(day))),
+                                      tokens: days[day] ?? 0, cost: 0)
+            }
+        }
+        var modelHistory: [LeaderboardModelHistory] = []
+        var otherDays: [Int: Int] = [:]
+        for (model, days) in modelDayTotals {
+            if topModels.contains(model) {
+                modelHistory.append(LeaderboardModelHistory(
+                    model: model, provider: modelProviders[model] ?? "other", points: dayPoints(days)))
+            } else {
+                for (day, tokens) in days { otherDays[day, default: 0] += tokens }
+            }
+        }
+        if otherDays.values.contains(where: { $0 > 0 }) {
+            modelHistory.append(LeaderboardModelHistory(model: "Other", provider: "other", points: dayPoints(otherDays)))
+        }
+        modelHistory.sort { $0.points.reduce(0) { $0 + $1.tokens } > $1.points.reduce(0) { $0 + $1.tokens } }
 
         // Season + MMR + efficiency + achievements (all pure/real signals).
         let season = LeaderboardAnalytics.season()
@@ -722,11 +803,13 @@ final class LeaderboardStore {
             seasonTokens: seasonTokens,
             cacheHitRate: cacheHitRate)
 
-        // Recent sessions/workloads (bounded, titles truncated) power the
-        // profile "Recent Activity" and "Top Prompts / Workloads" panels.
+        // Recent sessions power the "Recent Activity" timeline and (when
+        // enabled) the "Top Prompts / Workloads" panels. Titles are private by
+        // default — without them the rows keep timing/model/tokens/cost but
+        // carry no prompt text.
         let sessionEntries: [LeaderboardSessionEntry] = snapshot.recentSessions.prefix(6).map {
             LeaderboardSessionEntry(
-                title: String($0.title.prefix(80)),
+                title: settings.leaderboardSharePrompts ? String($0.title.prefix(80)) : "",
                 provider: $0.provider,
                 model: $0.model,
                 tokens: $0.tokens,
@@ -747,7 +830,9 @@ final class LeaderboardStore {
             totalSessions: snapshot.recentSessions.count,
             projects: projectBreakdowns,
             hourly: heatmap ?? previousHourly,
-            sessions: sessionEntries
+            sessions: sessionEntries,
+            modelHistory: modelHistory,
+            daily: calendarDaily
         )
 
         let local = LeaderboardEntry(
@@ -1457,6 +1542,34 @@ final class LeaderboardStore {
                         at: s["at"] as? Int ?? 0))
                 }
             }
+            var modelHistory: [LeaderboardModelHistory] = []
+            if let mh = bd["modelHistory"] as? [[String: Any]] {
+                for m in mh {
+                    guard let model = m["model"] as? String else { continue }
+                    var pts: [LeaderboardDailyPoint] = []
+                    if let pl = m["points"] as? [[String: Any]] {
+                        for p in pl {
+                            pts.append(LeaderboardDailyPoint(
+                                day: p["day"] as? Int ?? 0,
+                                dayLabel: p["dayLabel"] as? String ?? "",
+                                tokens: p["tokens"] as? Int ?? 0,
+                                cost: p["cost"] as? Double ?? 0))
+                        }
+                    }
+                    modelHistory.append(LeaderboardModelHistory(
+                        model: model, provider: m["provider"] as? String ?? "other", points: pts))
+                }
+            }
+            var daily: [LeaderboardDailyPoint] = []
+            if let dl = bd["daily"] as? [[String: Any]] {
+                for d in dl {
+                    daily.append(LeaderboardDailyPoint(
+                        day: d["day"] as? Int ?? 0,
+                        dayLabel: d["dayLabel"] as? String ?? "",
+                        tokens: d["tokens"] as? Int ?? 0,
+                        cost: d["cost"] as? Double ?? 0))
+                }
+            }
             breakdown = LeaderboardUsageBreakdown(
                 models: models,
                 tools: tools,
@@ -1465,7 +1578,9 @@ final class LeaderboardStore {
                 totalSessions: bd["totalSessions"] as? Int ?? 0,
                 projects: projects,
                 hourly: hourly,
-                sessions: sessions
+                sessions: sessions,
+                modelHistory: modelHistory,
+                daily: daily
             )
         }
 

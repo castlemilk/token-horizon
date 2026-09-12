@@ -12,7 +12,7 @@ Sources/TokenHorizon/              # one executableTarget, grouped by feature/do
   System/             SystemStats.swift (mach CPU, vm64 RAM, load avg, system I/O, top processes, narrow MLX sampling), DockerObserver.swift (container metrics, CPU%, RSS, VM host PID correlation)
   LocalModels/        MLXObserver.swift (independent runner detection, process-tree telemetry, measured tok/s), MLXHistory.swift (bounded fine samples + 30s rollups), OllamaTelemetryProxy.swift (loopback relay, streaming metrics, bounded store), OllamaClient.swift, ModelDiscoveryEngine.swift, LocalModelMetadata.swift
   Catalog/            ModelCatalog.swift, ModelsPipeline.swift (off-main merge + filter + sort + scope counts)
-  Leaderboard/        LeaderboardStore.swift (multi-period rankings, badges, share cards, durable store)
+  Leaderboard/        LeaderboardStore.swift (multi-period rankings, badges, share cards, durable store), LeaderboardAnalytics.swift (pure league/MMR/season/efficiency/achievements — mirrored by the worker)
   Persistence/        DurableStore.swift (~/.config/token-horizon/cache persistence), SettingsStore.swift (settings.json)
   Discovery/          HomeDiscovery.swift (shared `~/.*` provider-home auto-discovery with 30s-cached $HOME listing)
   Telemetry/          TelemetryMetrics.swift (OTel meter, Prometheus text, optional OTLP/HTTP export; engine tick + files-tracked instruments)
@@ -30,6 +30,11 @@ shell/token-horizon.zsh     zsh preexec/precmd hooks + `th` CLI (stats, limits, 
   scripts/make-app.sh         release build + .app bundle (LSUIElement) + ad-hoc codesign + relaunch
   scripts/package-notarized.sh Developer ID hardened-runtime app + DMG/ZIP + optional notarytool submission
 scripts/make-icon.swift     renders the black-hole AppIcon.icns
+scripts/build-vendor.mjs    bundles @tanstack/charts + DiceBear → docs/vendor/*.js (`npm run vendor`)
+scripts/process-league-badges.py  white-keyed/cropped league badge PNGs → docs/assets/leagues/
+scripts/fetch-brand-logos.py  official white provider marks → docs/assets/brands/ (Simple Icons + BrandBrain)
+scripts/onboard-domain.sh   Cloudflare zone creation + registrar NS steps for a custom domain
+LEADERBOARD.md              objective-vs-current screen alignment + full leaderboard data flow
 ```
 
 ## Invariants — do not break
@@ -59,7 +64,11 @@ scripts/make-icon.swift     renders the black-hole AppIcon.icns
 
 15. **Antigravity (AGY) language server telemetry**: Port discovery parses `~/.gemini/antigravity-cli/cli.log` and active `agy` process sockets with cache fallback to avoid slow full-system `lsof` scans. Token accounting dynamically queries `~/.gemini/antigravity-cli/settings.json` for configured models (`gemini-3.8-flash`) rather than hardcoding.
 
-16. **Leaderboard & share card engine**: `LeaderboardStore` persists ranked entries across multi-accounts and peer nodes to `~/.config/token-horizon/leaderboard.json`, ranks across 4 periods (`today`, `week`/`7d`, `all`, `streak`), computes percentiles and badges (`🥇 1st`, `🥈 2nd`, `🥉 3rd`, `🔥 Streak`), and generates share cards in 4 formats (`text`, `markdown`, `json`, `svg`) with clipboard copy. The `/leaderboard` and `/leaderboard/share` endpoints serve API and shell clients (`th leaderboard`, `th share`). Privacy controls (`leaderboardShareCost`, `leaderboardShareHardware`) protect sensitive user billing data.
+16. **Leaderboard & share card engine**: `LeaderboardStore` persists ranked entries across multi-accounts and peer nodes to `~/.config/token-horizon/leaderboard.json`, ranks across 4 periods (`today`, `week`/`7d`, `all`, `streak`), computes percentiles and badges (`🥇 1st`, `🥈 2nd`, `🥉 3rd`, `🔥 Streak`), and generates share cards in 4 formats (`text`, `markdown`, `json`, `svg`) with clipboard copy. The `/leaderboard` and `/leaderboard/share` endpoints serve API and shell clients (`th leaderboard`, `th share`). Privacy controls: `leaderboardShareCost`/`leaderboardShareHardware` (default on) and `leaderboardSharePrompts` (**default off** — when off, session rows still publish with empty titles so the Recent Activity timeline works, but titles/categories are stripped and the worker's `/api/prompts` skips them). Published entries also carry league/MMR/division/efficiency, input/output/request splits, season tokens, achievements, per-project rollups, a 7×24 heatmap, a trailing 17-week daily calendar, and (opt-in) recent sessions — computed by `LeaderboardAnalytics` and mirrored in `cloudflare/src/index.js`; keep both copies in sync.
+
+17. **Token-class analytics & engine-state v4**: `UsageEngine` tracks input/output/cache-write/request splits per file, per model, and per hour (`ModelAccum`/`HourBucket`/`ProjectAccum`), plus per-model daily buckets (`modelDays`, trailing 17 weeks, per-file so truncation resets them) exposed as `UsageSnapshot.modelDaily`. `DurableStore.EngineStatePayload.version = 4`; `loadDurableEngineState` discards payloads older than v4 so the first scan rebuilds the full window (pre-v4 state only kept 8 days). `LeaderboardStore.syncLocal(..., heatmap:)` takes the engine's 4-week grid and preserves the last published grid when omitted; it derives `modelHistory` (top 8 models + Other) and `daily` (non-zero days, 17 weeks) from `snapshot.modelDaily`/`history` — the dashboard slices the last 7 days for the stacked chart and uses the rest for per-day heatmap drilldowns. Local endpoints: `/stats`, `/activity/heatmap?days=`, `/projects`, `/achievements`.
+
+18. **Dashboard charts/avatars are vendored**: `docs/vendor/tanstack-charts.js` (stacked `barY` usage charts + structured tooltip) and `docs/vendor/dicebear.js` (deterministic generated avatars) are minified IIFE bundles built by `npm run vendor` (`scripts/{vendor,dicebear}-entry.js` → `scripts/build-vendor.mjs`; root devDependencies only). Charts are declared per render, mounted after `#view` updates, and destroyed on the next; if a bundle is missing the dashboard falls back to SVG `stackedArea` / initials. Provider brand marks are ported from `ProviderLogos.swift` (`providerLogo`). Avatars: owner-set Google photo / upload (R2 `avatars/<handle>`, served by `/api/avatar/:handle`) or DiceBear-seeded generated styles (`avatarStyle` on the entry); `/api/profile/avatar` is owner-only. Do not import these libraries from a CDN at runtime. `LEADERBOARD.md` documents the objective-vs-current screen alignment and the full data flow.
 
 ## UI invariants
 
@@ -94,6 +103,8 @@ curl -s localhost:8765/health             # must show build.commit == `git rev-p
 curl -s localhost:8765/stats | python3 -m json.tool | head -40
 curl -s "localhost:8765/trends?window=1D" | python3 -c "import json,sys; d=json.load(sys.stdin); print(len(d['points']), d['total'])"
 curl -s localhost:8765/limits | python3 -m json.tool
+curl -s "localhost:8765/activity/heatmap?days=7" | python3 -m json.tool | head
+curl -s localhost:8765/achievements | python3 -m json.tool | head
 printf '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}\n' | node mcp/token-horizon-mcp.mjs
 ```
 
@@ -109,11 +120,12 @@ Ground-truth checks when touching parsers:
 
 ## Leaderboard & MCP Server
 
-- **Edge Architecture (`cloudflare/` + `cloudflare/src/index.js`)**: Cloudflare Worker + R2 bucket (`token-horizon-leaderboard`). Production URL: `https://tokens.benebsworth.com` (`/api/leaderboard`, `/api/user/:handle`, `/api/claim`, `/api/health`).
-- **Authentication & Claims**: Anonymous publish automatically mints a SHA-256 hashed `claimToken` preventing handle hijacking. Unclaimed profiles can be claimed and verified via Google OAuth (`POST /api/claim`).
-- **Frontend Dashboard (`docs/leaderboard.html`)**: Mirrors the macOS app's Participant Detail modal (`DashboardTabs.swift:2052-2260`), featuring KPI cards (TODAY, 7 DAYS, ALL-TIME, TOP MODEL), 7-day gradient histograms, and full model allocation inventories. Supports deep linking (`?user=<handle>`) and Google Identity Services.
+- **Edge Architecture (`cloudflare/` + `cloudflare/src/index.js`)**: Cloudflare Worker + R2 bucket (`token-horizon-leaderboard`). Canonical URL: `https://token-horizon.dev` (`www` 301s to apex). `cloudflare/wrangler.toml` also keeps the legacy `tokens.benebsworth.com` route until the nameserver cutover is verified; `scripts/onboard-domain.sh` creates the zone (needs a Zone:Edit API token) and prints the registrar NS steps. Deploy with `--config wrangler.toml` (`scripts/deploy-cloudflare.sh` does): newer wrangler versions can otherwise walk up to the root `package.json` and deploy a stray worker named `token-horizon-dashboard`. Read APIs: `/api/leaderboard?period=&team=&league=` (ranked rows + `kpis` with real 7d deltas + `movers`/`mostImproved` + `season` + `leagueLadder`), `/api/user/:handle` (standing/achievements/rankHistory/teamRank), `/api/providers?days=`, `/api/teams`, `/api/season`, `/api/prompts`, `/api/config` (public client config), `/api/health`. Publishing: `POST /api/leaderboard` also derives league/MMR when absent and appends a bounded daily `snapshots[]` entry (rank + cumulative tokens + per-provider totals) — movers, rank deltas, league progression, and provider-over-time all read from these snapshots, so they stay empty until ≥2 days of publishes exist.
+- **Authentication & Claims**: Anonymous publish automatically mints a SHA-256 hashed `claimToken` preventing handle hijacking. Unclaimed profiles can be claimed and verified via Google OAuth (`POST /api/claim`). When `GOOGLE_CLIENT_ID` is set (worker `[vars]`), `parseGoogleAuth` only accepts RS256 ID tokens verified against Google's JWKS (`GOOGLE_JWKS` env overrides the fetch for hermetic tests) with `aud`/`iss`/`exp` checks; the unsigned `google:<email>` / `body.googleUser` fallbacks are legacy-only and disabled in production. Machine publishes (Mac app) use the `LEADERBOARD_SECRET` bearer instead. Never echo `ownerId`/`claimTokenHash` in responses (`sanitizeEntry`).
+- **Sharing & access control**: R2-backed share records (`POST /api/share/create`, `GET /api/share/list`, `POST /api/share/revoke`, public `GET /api/shared/:id` honoring anonymize/hide-cost/full-token options) plus per-owner groups (`GET/POST /api/groups`) and an activity log. Public links are served at `/s/<id>` and rendered by the dashboard.
+- **Frontend Dashboard (`docs/leaderboard.html`)**: Full TokenArena SPA (inline CSS/JS + the vendored TanStack Charts bundle) with nine routed views — Dashboard deep-dive, Leaderboard, Player Profile, Teams, Prompts, Models (provider breakdown), Billing, Leagues & Season, and Settings (Sharing & Access Control) — plus the Share Usage Report modal and `?share=<id>` report pages. Deep links: `?view=`, `?user=<handle>` (opens Player Profile); breadcrumbs navigate. API base: same-origin on worker hosts (incl. localhost), canonical `https://token-horizon.dev` from static mirrors/`file://`. Usage-over-time charts stack by model (`usageHistory` from the leaderboard response; `breakdown.modelHistory` on profiles) with a structured tooltip + total; donuts/sparklines/heatmaps remain hand-rolled SVG. See `LEADERBOARD.md` for the screen-by-screen alignment.
 - **MCP Server (`mcp/`)**: Model Context Protocol stdio server exposing 6 tools: `get_leaderboard`, `get_user_profile`, `get_daemon_metrics`, `publish_telemetry`, `claim_profile`, and `compare_users`. Run tests with `make mcp-test` or `npm test` inside `mcp/`.
-- **Testing**: `make leaderboard-test` runs the edge worker test suite + Playwright E2E browser tests.
+- **Testing**: `make leaderboard-test` runs the edge worker test suite (`cloudflare/worker.test.mjs`) + hermetic Playwright E2E browser tests (`scripts/test-leaderboard-ui.mjs`, all API calls fixture-intercepted).
 
 ## Release & distribution (keep these in sync)
 
@@ -149,6 +161,7 @@ swift test                                                              # comple
 ./scripts/bench-models.sh                                              # bench + summary
 ./scripts/test-models-perf.sh                                          # regression guard (fails on budget breach)
 ./scripts/make-app-with-tests.sh                                       # release build gated on perf tests
+task bench-leaderboard                                                 # dashboard charts/render/API-cache budgets (fails on breach)
 make profile                                                           # live tick timing table (opt-in harness, no asserts)
 make profile-sample                                                    # + 20s `sample` hotspot profile; TH_PERF_LOG=1 adds engine phase spans
 make coverage                                                          # llvm-cov table for Sources/ (report-only, see below)

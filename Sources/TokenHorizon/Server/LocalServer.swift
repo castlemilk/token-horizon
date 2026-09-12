@@ -135,6 +135,64 @@ final class LocalServer {
         return out
     }
 
+    /// Analytics routes (heatmap/projects/achievements), extracted from the
+    /// main router to keep its cyclomatic/body-length budgets intact.
+    static func analyticsResponse(method: String, route: String, path: String,
+                                  server: LocalServer, json: (Any, Int) -> Data) -> Data? {
+        switch (method, route) {
+        case ("GET", "/activity/heatmap"):
+            var days = 28
+            if let q = path.split(separator: "?", maxSplits: 1).last {
+                for pair in q.split(separator: "&") where pair.hasPrefix("days=") {
+                    if let n = Int(pair.dropFirst(5)) { days = min(max(n, 7), 90) }
+                }
+            }
+            let grid = server.heatmapProvider?(days) ?? []
+            let flat = grid.flatMap { $0 }
+            return json(["days": days, "max": flat.max() ?? 0, "total": flat.reduce(0, +), "grid": grid], 200)
+
+        case ("GET", "/projects"):
+            let snap = server.statsProvider()
+            let enc = JSONEncoder()
+            let data = (try? enc.encode(snap.projects)) ?? Data("[]".utf8)
+            let arr = (try? JSONSerialization.jsonObject(with: data)) as? [Any] ?? []
+            return json(["projects": arr, "count": snap.projects.count], 200)
+
+        case ("GET", "/achievements"):
+            let snap = server.statsProvider()
+            let local = LeaderboardStore.shared.localEntry()
+            let season = LeaderboardAnalytics.season()
+            let seasonStart = Int(Calendar.current.startOfDay(for: season.start).timeIntervalSince1970)
+            let history = server.historyProvider(370).points
+            let seasonTokens = history.filter { $0.day >= seasonStart }.reduce(0) { $0 + $1.tokens }
+            let cacheRead = snap.models.reduce(0) { $0 + $1.cacheReadAll }
+            let freeTokens = snap.models.filter { $0.free }.reduce(0) { $0 + $1.tokensAll }
+            let cacheHitRate = Double(cacheRead) / Double(max(1, cacheRead + snap.inputTokensAllTime)) * 100
+            let efficiency = LeaderboardAnalytics.efficiency(
+                input: snap.inputTokensAllTime, output: snap.outputTokensAllTime,
+                cacheRead: cacheRead, totalTokens: snap.tokensAllTime, freeTokens: freeTokens)
+            let achievements = LeaderboardAnalytics.achievements(
+                tokensAll: snap.tokensAllTime, requestsAll: snap.requestsAllTime,
+                modelCount: snap.models.count, streakDays: local?.streakDays ?? 0,
+                efficiency: efficiency, percentile: 0, seasonTokens: seasonTokens,
+                cacheHitRate: cacheHitRate)
+            let enc = JSONEncoder()
+            let data = (try? enc.encode(achievements)) ?? Data("[]".utf8)
+            let arr = (try? JSONSerialization.jsonObject(with: data)) as? [Any] ?? []
+            return json([
+                "season": ["id": season.id, "number": season.number, "name": season.name,
+                           "displayName": season.displayName, "daysRemaining": season.daysRemaining,
+                           "start": season.start.timeIntervalSince1970, "end": season.end.timeIntervalSince1970,
+                           "progress": season.progress],
+                "seasonTokens": seasonTokens,
+                "achievements": arr
+            ], 200)
+
+        default:
+            return nil
+        }
+    }
+
     static func handle(method: String, path: String, body: Data, server: LocalServer) -> Data {
         let route = path.split(separator: "?").first.map(String.init) ?? path
         let components = URLComponents(string: "http://localhost\(path.hasPrefix("/") ? path : "/" + path)")
@@ -154,6 +212,11 @@ final class LocalServer {
 
         func pid32(_ s: String) -> Int32? {
             return Int32(s.trimmingCharacters(in: .whitespaces))
+        }
+
+        if let analytics = analyticsResponse(method: method, route: route, path: path,
+                                             server: server, json: json) {
+            return analytics
         }
 
         switch (method, route) {
@@ -300,58 +363,6 @@ final class LocalServer {
             let pointsData = (try? enc.encode(result.points)) ?? Data("[]".utf8)
             let points = (try? JSONSerialization.jsonObject(with: pointsData)) as? [Any] ?? []
             return json(["days": days, "streak": result.streak, "points": points])
-
-        case ("GET", "/activity/heatmap"):
-            var days = 28
-            if let q = path.split(separator: "?", maxSplits: 1).last {
-                for pair in q.split(separator: "&") {
-                    if pair.hasPrefix("days="), let n = Int(pair.dropFirst(5)) {
-                        days = min(max(n, 7), 90)
-                    }
-                }
-            }
-            let grid = server.heatmapProvider?(days) ?? []
-            let maxValue = grid.flatMap { $0 }.max() ?? 0
-            let total = grid.flatMap { $0 }.reduce(0, +)
-            return json(["days": days, "max": maxValue, "total": total, "grid": grid])
-
-        case ("GET", "/projects"):
-            let snap = server.statsProvider()
-            let enc = JSONEncoder()
-            let data = (try? enc.encode(snap.projects)) ?? Data("[]".utf8)
-            let arr = (try? JSONSerialization.jsonObject(with: data)) as? [Any] ?? []
-            return json(["projects": arr, "count": snap.projects.count])
-
-        case ("GET", "/achievements"):
-            let snap = server.statsProvider()
-            let local = LeaderboardStore.shared.localEntry()
-            let season = LeaderboardAnalytics.season()
-            let seasonStart = Int(Calendar.current.startOfDay(for: season.start).timeIntervalSince1970)
-            let history = server.historyProvider(370).points
-            let seasonTokens = history.filter { $0.day >= seasonStart }.reduce(0) { $0 + $1.tokens }
-            let activeDays = history.suffix(30).filter { $0.tokens > 0 }.count
-            let cacheRead = snap.models.reduce(0) { $0 + $1.cacheReadAll }
-            let freeTokens = snap.models.filter { $0.free }.reduce(0) { $0 + $1.tokensAll }
-            let cacheHitRate = Double(cacheRead) / Double(max(1, cacheRead + snap.inputTokensAllTime)) * 100
-            let efficiency = LeaderboardAnalytics.efficiency(
-                input: snap.inputTokensAllTime, output: snap.outputTokensAllTime,
-                cacheRead: cacheRead, totalTokens: snap.tokensAllTime, freeTokens: freeTokens)
-            let achievements = LeaderboardAnalytics.achievements(
-                tokensAll: snap.tokensAllTime, requestsAll: snap.requestsAllTime,
-                modelCount: snap.models.count, streakDays: local?.streakDays ?? 0,
-                efficiency: efficiency, percentile: 0, seasonTokens: seasonTokens,
-                cacheHitRate: cacheHitRate)
-            let enc = JSONEncoder()
-            let data = (try? enc.encode(achievements)) ?? Data("[]".utf8)
-            let arr = (try? JSONSerialization.jsonObject(with: data)) as? [Any] ?? []
-            return json([
-                "season": ["id": season.id, "number": season.number, "name": season.name,
-                           "displayName": season.displayName, "daysRemaining": season.daysRemaining,
-                           "start": season.start.timeIntervalSince1970, "end": season.end.timeIntervalSince1970,
-                           "progress": season.progress],
-                "seasonTokens": seasonTokens,
-                "achievements": arr
-            ])
 
         case ("GET", "/cache"):
             let stats = DurableStore.shared.cacheStats()
@@ -673,7 +684,7 @@ final class LocalServer {
         case ("GET", "/leaderboard/web"), ("HEAD", "/leaderboard/web"), ("GET", "/leaderboard/pages"), ("HEAD", "/leaderboard/pages"):
             let cloudUrl = SettingsStore.shared.leaderboardCloudURL
             let sheetUrl = SettingsStore.shared.leaderboardSheetsURL
-            var target = "https://castlemilk.github.io/token-horizon/leaderboard.html"
+            var target = "https://token-horizon.dev/leaderboard"
             if !cloudUrl.isEmpty {
                 target = cloudUrl.hasSuffix("/leaderboard.html") ? cloudUrl : "\(cloudUrl)/leaderboard.html"
             } else if !sheetUrl.isEmpty, let encoded = sheetUrl.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) {

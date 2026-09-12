@@ -152,11 +152,17 @@ function normalizeProvider(p) {
   if (v.includes("google") || v.includes("gemini")) return "google";
   if (v.includes("minimax")) return "minimax";
   if (v.includes("kimi") || v.includes("moonshot")) return "kimi";
-  if (v.includes("zhipu") || v.includes("glm")) return "zhipu";
+  if (v.includes("zhipu") || v.includes("glm") || v.includes("zai")) return "zhipu";
   if (v.includes("opencode")) return "opencode";
+  if (v.includes("openrouter")) return "openrouter";
   if (v.includes("ollama") || v.includes("mlx")) return "local";
   if (v.includes("meta") || v.includes("llama")) return "meta";
   if (v.includes("alibaba") || v.includes("qwen")) return "alibaba";
+  if (v.includes("mistral")) return "mistral";
+  if (v.includes("xai") || v.includes("grok")) return "xai";
+  if (v.includes("deepseek")) return "deepseek";
+  if (v.includes("agy") || v.includes("antigravity")) return "agy";
+  if (v.includes("upstage") || v.includes("solar")) return "upstage";
   if (!v || v === "?") return "other";
   return v;
 }
@@ -214,12 +220,58 @@ function sanitizeEntry(entry, full = false) {
     if (!full) {
       delete copy.breakdown.hourly;
       delete copy.breakdown.sessions;
+      delete copy.breakdown.modelHistory;
+      delete copy.breakdown.daily;
     }
   }
   if (!full) delete copy.snapshots;
   delete copy.claimTokenHash;
   delete copy.ownerId;
   return copy;
+}
+
+/// Monotonic time-series merge for publishes: a fresh (or reset) client with a
+/// short local window must never truncate days already published by the same
+/// handle. Incoming days win; remote-only days are preserved. Other breakdown
+/// fields (models, sessions, projects, hourly) stay as published — privacy
+/// gating is applied while building the payload locally.
+function mergeBreakdownHistory(incoming, previous, maxDays = 130) {
+  // Local history points carry epoch-second `day` values.
+  const cutoff = (dayNumber() - maxDays) * 86400;
+  const dayOf = (p) => Number(p && p.day) || 0;
+  const trim = (points) => {
+    const byDay = new Map();
+    for (const p of points || []) { const d = dayOf(p); if (p && d >= cutoff) byDay.set(d, p); }
+    return [...byDay.values()].sort((a, b) => dayOf(a) - dayOf(b));
+  };
+  const out = { ...incoming };
+
+  const models = new Map();
+  for (const m of incoming.modelHistory || []) {
+    if (m && m.model) models.set(m.model, { model: m.model, provider: m.provider, points: trim(m.points) });
+  }
+  for (const m of previous.modelHistory || []) {
+    if (!m || !m.model) continue;
+    const cur = models.get(m.model);
+    const prevPoints = trim(m.points);
+    if (!cur) { models.set(m.model, { model: m.model, provider: m.provider, points: prevPoints }); continue; }
+    const seen = new Set(cur.points.map(dayOf));
+    for (const p of prevPoints) if (!seen.has(dayOf(p))) cur.points.push(p);
+    cur.points.sort((a, b) => dayOf(a) - dayOf(b));
+    if ((!cur.provider || cur.provider === "other") && m.provider) cur.provider = m.provider;
+  }
+  out.modelHistory = [...models.values()];
+
+  const daily = new Map();
+  for (const p of previous.daily || []) { const d = dayOf(p); if (p && d >= cutoff) daily.set(d, p); }
+  for (const p of incoming.daily || []) { const d = dayOf(p); if (p && d >= cutoff) daily.set(d, p); }
+  out.daily = [...daily.values()].sort((a, b) => dayOf(a) - dayOf(b));
+
+  const history = new Map();
+  for (const p of previous.history || []) history.set(dayOf(p), p);
+  for (const p of incoming.history || []) history.set(dayOf(p), p);
+  out.history = [...history.values()].sort((a, b) => dayOf(a) - dayOf(b)).slice(-10);
+  return out;
 }
 
 function computeMovers(entries) {
@@ -243,6 +295,7 @@ function computeMovers(entries) {
       handle: e.handle,
       team: e.team || "",
       avatarUrl: e.avatarUrl || "",
+      avatarStyle: e.avatarStyle || "",
       league: standingFor(e).league,
       leagueTitle: standingFor(e).leagueTitle,
       tokensAll: e.tokensAll || 0,
@@ -275,6 +328,51 @@ function computeMovers(entries) {
     improved: improved.slice(0, 5),
     promotions: promotions.slice(0, 5)
   };
+}
+
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+/// Stacked usage-by-model series aggregated across published entries.
+/// `days` is the trailing window (dashboard passes its range pill value).
+function aggregateUsageHistory(entries, days = 30) {
+  const byModel = new Map();
+  const allDays = new Set();
+  for (const e of entries) {
+    for (const mh of (e.breakdown && e.breakdown.modelHistory) || []) {
+      const model = mh.model || "unknown";
+      if (!byModel.has(model)) {
+        byModel.set(model, { model, provider: normalizeProvider(mh.provider), days: new Map() });
+      }
+      const row = byModel.get(model);
+      for (const p of mh.points || []) {
+        const day = Number(p.day) || 0;
+        row.days.set(day, (row.days.get(day) || 0) + (Number(p.tokens) || 0));
+        allDays.add(day);
+      }
+    }
+  }
+  const dayKeys = [...allDays].sort((a, b) => a - b).slice(-days);
+  const models = [...byModel.values()].map(m => ({
+    model: m.model,
+    provider: m.provider,
+    total: dayKeys.reduce((s, d) => s + (m.days.get(d) || 0), 0),
+    values: dayKeys.map(d => m.days.get(d) || 0)
+  })).filter(m => m.total > 0).sort((a, b) => b.total - a.total);
+  const series = models.slice(0, 8);
+  const rest = models.slice(8);
+  if (rest.length) {
+    series.push({
+      model: "Other",
+      provider: "other",
+      total: rest.reduce((s, m) => s + m.total, 0),
+      values: dayKeys.map((_, i) => rest.reduce((s, m) => s + m.values[i], 0))
+    });
+  }
+  const labels = dayKeys.map(d => {
+    const date = new Date(d * 1000);
+    return `${MONTHS[date.getUTCMonth()]} ${date.getUTCDate()}`;
+  });
+  return { days: dayKeys, labels, series, total: series.reduce((s, m) => s + m.total, 0) };
 }
 
 function aggregateProviders(entries) {
@@ -322,6 +420,9 @@ function aggregateSessions(entries) {
   const sessions = [];
   for (const e of entries) {
     for (const s of (e.breakdown && e.breakdown.sessions) || []) {
+      // Titles are private unless the owner opted in; redacted activity rows
+      // (no title) never surface in prompt analytics.
+      if (!s.title) continue;
       sessions.push({
         title: s.title || "",
         provider: normalizeProvider(s.provider),
@@ -338,45 +439,87 @@ function aggregateSessions(entries) {
   return sessions;
 }
 
+/// Per-provider daily token series.
+/// Modern publishes carry exact per-model daily history (`breakdown.modelHistory`),
+/// so those entries are aggregated directly. Snapshots remain the fallback for
+/// legacy entries (or days before a client started publishing modelHistory);
+/// their cumulative provider totals are diffed and spread across publish gaps.
 function providerHistory(entries, days = 30) {
-  // Per-entry snapshots carry cumulative per-provider totals. Summing across
-  // entries at each day yields a real (publish-sampled) provider time series;
-  // consecutive days are diffed into daily usage.
   const end = dayNumber();
   const start = end - days + 1;
-  const byDay = new Map();
+  // Local publishes store modelHistory days as epoch seconds; snapshots use
+  // day numbers. Normalize both to the UTC day index used by `dayNumber()`.
+  const dayIndexOf = (value) => Math.floor((Number(value) || 0) / 86400);
+
+  // Exact daily totals from published modelHistory.
+  const exact = new Map();
+  const legacyEntries = [];
   for (const e of entries) {
+    const modelHistory = (e.breakdown && e.breakdown.modelHistory) || [];
+    const hasExact = modelHistory.some(m => (m.points || []).some(p => {
+      const day = dayIndexOf(p.day);
+      return day >= start && day <= end;
+    }));
+    if (!hasExact) { legacyEntries.push(e); continue; }
+    for (const m of modelHistory) {
+      const p = normalizeProvider(m.provider);
+      for (const pt of m.points || []) {
+        const day = dayIndexOf(pt.day);
+        if (day < start || day > end) continue;
+        if (!exact.has(day)) exact.set(day, {});
+        const bucket = exact.get(day);
+        bucket[p] = (bucket[p] || 0) + (Number(pt.tokens) || 0);
+      }
+    }
+  }
+
+  // Legacy snapshot diffing (cumulative per-provider totals → daily usage).
+  const byDay = new Map();
+  for (const e of legacyEntries) {
     for (const s of e.snapshots || []) {
       const day = s.day || 0;
       if (day < start || day > end) continue;
       if (!byDay.has(day)) byDay.set(day, {});
       const bucket = byDay.get(day);
       for (const [p, tokens] of Object.entries(s.providers || {})) {
-        bucket[p] = (bucket[p] || 0) + (Number(tokens) || 0);
+        // Snapshots written before provider normalization carry raw ids
+        // (e.g. zai-coding-plan); fold them into the canonical key on read.
+        const key = normalizeProvider(p);
+        bucket[key] = (bucket[key] || 0) + (Number(tokens) || 0);
       }
     }
   }
-  const dayKeys = [...byDay.keys()].sort((a, b) => a - b);
-  const providers = new Set();
-  for (const b of byDay.values()) Object.keys(b).forEach(p => providers.add(p));
-  const points = [];
-  for (let i = 0; i < dayKeys.length; i++) {
-    const day = dayKeys[i];
-    const prev = i > 0 ? byDay.get(dayKeys[i - 1]) : null;
+  const legacyDaily = new Map();
+  const legacyDays = [...byDay.keys()].sort((a, b) => a - b);
+  for (let i = 0; i < legacyDays.length; i++) {
+    const day = legacyDays[i];
+    const prev = i > 0 ? byDay.get(legacyDays[i - 1]) : null;
     const current = byDay.get(day);
-    const row = { day, date: new Date(day * 86400 * 1000).toISOString().slice(0, 10), values: {}, total: 0 };
-    const gap = prev ? Math.max(1, day - dayKeys[i - 1]) : 1;
-    for (const p of providers) {
+    const gap = prev ? Math.max(1, day - legacyDays[i - 1]) : 1;
+    const row = {};
+    for (const p of Object.keys(current)) {
       const cumulative = current[p] || 0;
       const baseline = prev ? (prev[p] || 0) : 0;
       // Spread multi-day gaps across the missing days so sparse publishes
       // don't show up as artificial spikes.
-      const daily = i === 0 ? cumulative : Math.max(0, (cumulative - baseline) / gap);
-      row.values[p] = Math.round(daily);
-      row.total += row.values[p];
+      row[p] = Math.round(i === 0 ? cumulative : Math.max(0, (cumulative - baseline) / gap));
     }
-    points.push(row);
+    legacyDaily.set(day, row);
   }
+
+  const dayKeys = [...new Set([...exact.keys(), ...legacyDaily.keys()])].sort((a, b) => a - b);
+  const providers = new Set();
+  for (const b of exact.values()) Object.keys(b).forEach(p => providers.add(p));
+  for (const b of legacyDaily.values()) Object.keys(b).forEach(p => providers.add(p));
+  const points = dayKeys.map(day => {
+    const row = { day, date: new Date(day * 86400 * 1000).toISOString().slice(0, 10), values: {}, total: 0 };
+    for (const p of providers) {
+      const v = ((exact.get(day) || {})[p] || 0) + ((legacyDaily.get(day) || {})[p] || 0);
+      row.values[p] = v;
+      row.total += v;
+    }
+    return row;
+  });
   return { providers: [...providers].sort(), points };
 }
 
@@ -389,7 +532,7 @@ function aggregateTeams(entries) {
     row.tokens += e.tokensAll || 0;
     row.cost += e.costAll || 0;
     row.members += 1;
-    row.users.push({ handle: e.handle, tokensAll: e.tokensAll || 0, avatarUrl: e.avatarUrl || "" });
+    row.users.push({ handle: e.handle, tokensAll: e.tokensAll || 0, avatarUrl: e.avatarUrl || "", avatarStyle: e.avatarStyle || "" });
     for (const m of (e.breakdown && e.breakdown.models) || []) {
       const p = normalizeProvider(m.provider);
       row.providers[p] = (row.providers[p] || 0) + (Number(m.tokensAll) || 0);
@@ -423,12 +566,33 @@ const DEFAULT_STARTER_ENTRIES = [
     googleEmail: "ben@benebsworth.com",
     avatarUrl: "",
     updatedAt: Date.now() / 1000,
+    mmr: 2860,
+    league: "grandmaster",
+    division: 1,
+    efficiency: 84,
+    inputTokensToday: 1450000000,
+    outputTokensToday: 320000000,
+    inputTokensAll: 14100000000,
+    outputTokensAll: 3400000000,
+    requestsToday: 312,
+    requestsAll: 4120,
+    seasonId: "2026-Q3",
+    seasonTokens: 4200000000,
+    achievements: [
+      { id: "century", title: "Century Club", detail: "100+ requests logged", icon: "💬" },
+      { id: "prompt_master", title: "Prompt Master", detail: "1,000+ requests logged", icon: "🏆" },
+      { id: "model_explorer", title: "Model Explorer", detail: "Used 5+ different models", icon: "🧭" },
+      { id: "ten_million", title: "10M Tokens", detail: "Crossed 10M all-time tokens", icon: "📚" },
+      { id: "hundred_million", title: "100M Tokens", detail: "Crossed 100M all-time tokens", icon: "🌌" },
+      { id: "consistent_creator", title: "Consistent Creator", detail: "7-day usage streak", icon: "🔥" },
+      { id: "top_decile", title: "Top 10%", detail: "Ranked in the global top 10%", icon: "👑" }
+    ],
     breakdown: {
       models: [
-        { provider: "claude", model: "claude-opus-5", tokensToday: 1580000000, tokensAll: 14800000000, costToday: 550.00, costAll: 6100.00, sharePercent: 62.1 },
-        { provider: "claude", model: "claude-3-7-sonnet", tokensToday: 620000000, tokensAll: 5800000000, costToday: 210.00, costAll: 2100.00, sharePercent: 24.3 },
-        { provider: "google", model: "gemini-3.8-flash", tokensToday: 180000000, tokensAll: 1900000000, costToday: 34.00, costAll: 120.00, sharePercent: 8.0 },
-        { provider: "openai", model: "gpt-5-codex", tokensToday: 89019625, tokensAll: 1344909130, costToday: 28.40, costAll: 303.40, sharePercent: 5.6 }
+        { provider: "claude", model: "claude-opus-5", tokensToday: 1580000000, tokensAll: 14800000000, costToday: 550.00, costAll: 6100.00, sharePercent: 62.1, inputTokens: 9000000000, outputTokens: 2200000000, requests: 2100 },
+        { provider: "claude", model: "claude-3-7-sonnet", tokensToday: 620000000, tokensAll: 5800000000, costToday: 210.00, costAll: 2100.00, sharePercent: 24.3, inputTokens: 3600000000, outputTokens: 800000000, requests: 900 },
+        { provider: "google", model: "gemini-3.8-flash", tokensToday: 180000000, tokensAll: 1900000000, costToday: 34.00, costAll: 120.00, sharePercent: 8.0, inputTokens: 1100000000, outputTokens: 250000000, requests: 620 },
+        { provider: "openai", model: "gpt-5-codex", tokensToday: 89019625, tokensAll: 1344909130, costToday: 28.40, costAll: 303.40, sharePercent: 5.6, inputTokens: 400000000, outputTokens: 150000000, requests: 500 }
       ],
       tools: [
         { tool: "claude", tokensToday: 2200000000, tokensAll: 20600000000, costToday: 760.00, costAll: 8200.00 },
@@ -457,7 +621,112 @@ async function sha256Hex(text) {
   return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, "0")).join("");
 }
 
-async function parseGoogleAuth(request, body = {}) {
+// --- Google Identity Services ID-token verification ---
+// The web dashboard signs users in with GSI and sends the resulting ID token
+// (RS256 JWT). We verify it against Google's JWKS instead of trusting an
+// unsigned payload. When GOOGLE_CLIENT_ID is unset the worker runs in legacy
+// mode (unsigned `google:<email>` / body.googleUser accepted) so local dev and
+// existing installs keep working; production sets the client ID.
+
+const GOOGLE_JWKS_URL = "https://www.googleapis.com/oauth2/v3/certs";
+let googleJwksCache = { fetchedAt: 0, keys: [] };
+
+function b64urlToBytes(input) {
+  let b64 = String(input).replace(/-/g, "+").replace(/_/g, "/");
+  while (b64.length % 4 !== 0) b64 += "=";
+  const bin = atob(b64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return bytes;
+}
+
+function b64urlDecodeJson(input) {
+  return JSON.parse(new TextDecoder().decode(b64urlToBytes(input)));
+}
+
+async function getGoogleJwks(env) {
+  if (env.GOOGLE_JWKS) {
+    // Hermetic test / offline override: inline JWKS JSON.
+    try { return JSON.parse(env.GOOGLE_JWKS).keys || []; } catch (_) { return []; }
+  }
+  const now = Date.now();
+  if (googleJwksCache.keys.length && now - googleJwksCache.fetchedAt < 3600_000) {
+    return googleJwksCache.keys;
+  }
+  const res = await fetch(GOOGLE_JWKS_URL, { cf: { cacheTtl: 3600, cacheEverything: true } });
+  if (!res.ok) throw new Error("Google JWKS fetch failed: HTTP " + res.status);
+  const data = await res.json();
+  googleJwksCache = { fetchedAt: now, keys: data.keys || [] };
+  return googleJwksCache.keys;
+}
+
+async function verifyGoogleIdToken(token, env) {
+  const parts = String(token || "").split(".");
+  if (parts.length !== 3) return null;
+  let header, payload;
+  try {
+    header = b64urlDecodeJson(parts[0]);
+    payload = b64urlDecodeJson(parts[1]);
+  } catch (_) {
+    return null;
+  }
+  if (header.alg !== "RS256") return null;
+
+  let keys;
+  try {
+    keys = await getGoogleJwks(env);
+  } catch (_) {
+    return null;
+  }
+  let jwk = keys.find(k => k.kid === header.kid);
+  if (!jwk && !env.GOOGLE_JWKS) {
+    // Unknown kid: refresh once (Google rotates signing keys).
+    googleJwksCache.fetchedAt = 0;
+    try { keys = await getGoogleJwks(env); } catch (_) { return null; }
+    jwk = keys.find(k => k.kid === header.kid);
+  }
+  if (!jwk) return null;
+
+  let valid = false;
+  try {
+    const key = await crypto.subtle.importKey(
+      "jwk",
+      { kty: jwk.kty, n: jwk.n, e: jwk.e, alg: "RS256", ext: true },
+      { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" },
+      false,
+      ["verify"]
+    );
+    valid = await crypto.subtle.verify(
+      "RSASSA-PKCS1-v1_5",
+      key,
+      b64urlToBytes(parts[2]),
+      new TextEncoder().encode(parts[0] + "." + parts[1])
+    );
+  } catch (_) {
+    return null;
+  }
+  if (!valid) return null;
+
+  const now = Math.floor(Date.now() / 1000);
+  if (!payload.exp || payload.exp < now) return null;
+  if (payload.iat && payload.iat > now + 300) return null;
+  if (payload.nbf && payload.nbf > now + 300) return null;
+  const iss = String(payload.iss || "");
+  if (iss !== "accounts.google.com" && iss !== "https://accounts.google.com") return null;
+  if (env.GOOGLE_CLIENT_ID && payload.aud !== env.GOOGLE_CLIENT_ID) return null;
+  if (!payload.sub || !payload.email) return null;
+  if (payload.email_verified === false) return null;
+
+  return {
+    sub: String(payload.sub),
+    email: String(payload.email).toLowerCase(),
+    name: String(payload.name || payload.given_name || ""),
+    picture: String(payload.picture || ""),
+    verified: true
+  };
+}
+
+async function parseGoogleAuth(request, body = {}, env = {}) {
   let token = request.headers.get("X-Google-Token") || "";
   if (!token) {
     const auth = request.headers.get("Authorization") || "";
@@ -471,6 +740,15 @@ async function parseGoogleAuth(request, body = {}) {
   if (!token && body.googleToken) token = body.googleToken;
   if (!token && body.googleCredential) token = body.googleCredential;
 
+  if (env.GOOGLE_CLIENT_ID) {
+    // Production: only cryptographically verified ID tokens are accepted.
+    if (token && token.split(".").length === 3) {
+      return await verifyGoogleIdToken(token, env);
+    }
+    return null;
+  }
+
+  // Legacy/dev mode (no GOOGLE_CLIENT_ID configured): unsigned fallbacks.
   if (body.googleUser && body.googleUser.email && (body.googleUser.sub || body.googleUser.id)) {
     return {
       sub: String(body.googleUser.sub || body.googleUser.id),
@@ -493,20 +771,14 @@ async function parseGoogleAuth(request, body = {}) {
   }
 
   try {
-    const parts = token.split(".");
-    if (parts.length === 3) {
-      let b64 = parts[1].replace(/-/g, "+").replace(/_/g, "/");
-      while (b64.length % 4 !== 0) b64 += "=";
-      const decodedJson = atob(b64);
-      const payload = JSON.parse(decodedJson);
-      if (payload.sub && payload.email) {
-        return {
-          sub: String(payload.sub),
-          email: String(payload.email).toLowerCase(),
-          name: String(payload.name || payload.given_name || ""),
-          picture: String(payload.picture || "")
-        };
-      }
+    const payload = b64urlDecodeJson(token.split(".")[1]);
+    if (payload.sub && payload.email) {
+      return {
+        sub: String(payload.sub),
+        email: String(payload.email).toLowerCase(),
+        name: String(payload.name || payload.given_name || ""),
+        picture: String(payload.picture || "")
+      };
     }
   } catch (e) {
     // Non-fatal
@@ -518,6 +790,20 @@ export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
     const { pathname, searchParams } = url;
+
+    // 0. Canonicalize hosts → token-horizon.dev (permanent).
+    //    The legacy host keeps serving /api/* so existing app installs can
+    //    publish/pull until they upgrade; browser traffic 301s.
+    if (url.hostname.startsWith("www.")) {
+      const canonical = new URL(request.url);
+      canonical.hostname = url.hostname.slice(4);
+      return Response.redirect(canonical.toString(), 301);
+    }
+    if (url.hostname === "tokens.benebsworth.com" && !pathname.startsWith("/api/")) {
+      const canonical = new URL(request.url);
+      canonical.hostname = "token-horizon.dev";
+      return Response.redirect(canonical.toString(), 301);
+    }
 
     // 1. Handle CORS Preflight
     if (request.method === "OPTIONS") {
@@ -533,8 +819,20 @@ export default {
         storage: hasBucket ? "Cloudflare R2" : "Memory Fallback",
         edge_colo: request.cf?.colo || "local",
         edge_country: request.cf?.country || "unknown",
+        google_client_id: env.GOOGLE_CLIENT_ID || "",
         timestamp: new Date().toISOString()
       });
+    }
+
+    // 2b. Client config (public values only — safe to embed)
+    if (pathname === "/api/config") {
+      return jsonResponse({
+        ok: true,
+        googleClientId: env.GOOGLE_CLIENT_ID || "",
+        googleAuth: Boolean(env.GOOGLE_CLIENT_ID),
+        canonicalUrl: `https://${url.hostname}`,
+        season: seasonFor()
+      }, 200, { "Cache-Control": "public, max-age=300, s-maxage=600" });
     }
 
     // 3. GET /api/leaderboard (or /leaderboard with JSON accept / query)
@@ -664,6 +962,7 @@ export default {
           activeDevsDelta: prevActive > 0 ? pct(activeDevs, prevActive) : null
         },
         movers: computeMovers(entries),
+        usageHistory: aggregateUsageHistory(entries, Math.min(120, Math.max(7, parseInt(searchParams.get("historyDays") || "30", 10) || 30))),
         leaderboard: ranked
       }, 200, {
         "Cache-Control": "public, max-age=5, s-maxage=5, stale-while-revalidate=10"
@@ -761,7 +1060,7 @@ export default {
     if (request.method === "POST" && (pathname === "/api/leaderboard" || pathname === "/leaderboard")) {
       try {
         // Optional secret enforcement if set on Worker (bypassed if valid Google Auth is provided)
-        const googleAuth = await parseGoogleAuth(request, await request.clone().json().catch(() => ({})));
+        const googleAuth = await parseGoogleAuth(request, await request.clone().json().catch(() => ({})), env);
         if (env.LEADERBOARD_SECRET && !googleAuth) {
           const authHeader = request.headers.get("Authorization") || "";
           const customHeader = request.headers.get("X-Leaderboard-Secret") || "";
@@ -938,6 +1237,7 @@ export default {
           }
 
           if (!newEntry.team && prev.team) newEntry.team = prev.team;
+          if (!newEntry.avatarUrl && prev.avatarUrl) newEntry.avatarUrl = prev.avatarUrl;
           if (newEntry.tokensAll < prev.tokensAll && prev.tokensAll > 0) newEntry.tokensAll = prev.tokensAll;
           if (newEntry.costAll < prev.costAll && prev.costAll > 0) newEntry.costAll = prev.costAll;
           if (newEntry.tokens7d < prev.tokens7d && prev.tokens7d > 0) newEntry.tokens7d = prev.tokens7d;
@@ -950,6 +1250,11 @@ export default {
           }
           if ((!incoming.breakdown || !incoming.breakdown.models || incoming.breakdown.models.length <= 1) && prev.breakdown && prev.breakdown.models && prev.breakdown.models.length > 1) {
             newEntry.breakdown = prev.breakdown;
+          }
+          // Monotonic history merge: never let a fresh/short local window
+          // truncate remote days already published for this handle.
+          if (newEntry.breakdown && prev.breakdown && newEntry.breakdown !== prev.breakdown) {
+            newEntry.breakdown = mergeBreakdownHistory(newEntry.breakdown, prev.breakdown);
           }
           // Monotonic floors for the analytics fields so a sparse update never
           // regresses published stats.
@@ -997,7 +1302,8 @@ export default {
           ok: true,
           action,
           handle: handleClean,
-          entry: newEntry,
+          // Never echo ownership/claim hashes back over the wire.
+          entry: sanitizeEntry(newEntry, true),
           claimToken: issuedClaimToken || incomingClaimToken || null,
           claimed: newEntry.claimed,
           totalEntries: entries.length,
@@ -1017,7 +1323,7 @@ export default {
           return jsonResponse({ ok: false, error: "Missing handle in payload" }, 400);
         }
 
-        const googleAuth = await parseGoogleAuth(request, body);
+        const googleAuth = await parseGoogleAuth(request, body, env);
         if (!googleAuth) {
           return jsonResponse({ ok: false, error: "Sign in with Google is required to claim a profile" }, 401);
         }
@@ -1059,7 +1365,7 @@ export default {
           ok: true,
           message: `Successfully claimed @${handleClean}!`,
           handle: handleClean,
-          entry
+          entry: sanitizeEntry(entry, true)
         });
       } catch (err) {
         return jsonResponse({ ok: false, error: err.message }, 500);
@@ -1218,6 +1524,7 @@ export default {
             handle: e.handle,
             team: e.team || "",
             avatarUrl: e.avatarUrl || "",
+            avatarStyle: e.avatarStyle || "",
             league: st.league,
             leagueTitle: st.leagueTitle,
             leagueColor: st.leagueColor,
@@ -1249,10 +1556,10 @@ export default {
         const entry = entries.find(e => e.handle.toLowerCase() === handleClean.toLowerCase());
         if (!entry) return jsonResponse({ ok: false, error: `Profile @${handleClean} not found` }, 404);
 
-        const googleAuth = await parseGoogleAuth(request, body);
+        const googleAuth = await parseGoogleAuth(request, body, env);
         const claimToken = String(body.claimToken || request.headers.get("X-Claim-Token") || "").trim();
-        const ownerCheck = await verifyOwner(entry, googleAuth, claimToken);
-        if (!ownerCheck.ok) return jsonResponse({ ok: false, error: ownerCheck.error }, ownerCheck.status);
+        const ownerCheck = await verifyOwner(entry, googleAuth, claimToken, { hadToken: hasGoogleToken(request, body) });
+        if (!ownerCheck.ok) return jsonResponse({ ok: false, code: ownerCheck.code || "", error: ownerCheck.error }, ownerCheck.status);
 
         const scope = ["private", "people", "group", "org", "public"].includes(body.scope) ? body.scope : "group";
         const options = {
@@ -1301,15 +1608,16 @@ export default {
         const entries = await getEntriesFromR2(env);
         const entry = entries.find(e => e.handle.toLowerCase() === handleClean.toLowerCase());
         if (!entry) return jsonResponse({ ok: false, error: `Profile @${handleClean} not found` }, 404);
-        const googleAuth = await parseGoogleAuth(request, {});
+        const googleAuth = await parseGoogleAuth(request, {}, env);
         const claimToken = String(request.headers.get("X-Claim-Token") || "").trim();
-        const ownerCheck = await verifyOwner(entry, googleAuth, claimToken);
-        if (!ownerCheck.ok) return jsonResponse({ ok: false, error: ownerCheck.error }, ownerCheck.status);
+        const ownerCheck = await verifyOwner(entry, googleAuth, claimToken, { hadToken: hasGoogleToken(request, {}) });
+        if (!ownerCheck.ok) return jsonResponse({ ok: false, code: ownerCheck.code || "", error: ownerCheck.error }, ownerCheck.status);
 
         const shares = await listShares(env, entry.handle);
         const groups = await getGroups(env, ownerCheck.ownerKey);
         const activity = await getActivity(env, ownerCheck.ownerKey);
-        return jsonResponse({ ok: true, handle: entry.handle, shares, groups, activity });
+        const publicShares = shares.map(s => ({ ...s, ownerKey: undefined }));
+        return jsonResponse({ ok: true, handle: entry.handle, shares: publicShares, groups, activity });
       } catch (err) {
         return jsonResponse({ ok: false, error: err.message }, 500);
       }
@@ -1324,10 +1632,10 @@ export default {
         const entries = await getEntriesFromR2(env);
         const entry = entries.find(e => e.handle.toLowerCase() === handleClean.toLowerCase());
         if (!entry) return jsonResponse({ ok: false, error: `Profile @${handleClean} not found` }, 404);
-        const googleAuth = await parseGoogleAuth(request, body);
+        const googleAuth = await parseGoogleAuth(request, body, env);
         const claimToken = String(body.claimToken || request.headers.get("X-Claim-Token") || "").trim();
-        const ownerCheck = await verifyOwner(entry, googleAuth, claimToken);
-        if (!ownerCheck.ok) return jsonResponse({ ok: false, error: ownerCheck.error }, ownerCheck.status);
+        const ownerCheck = await verifyOwner(entry, googleAuth, claimToken, { hadToken: hasGoogleToken(request, body) });
+        if (!ownerCheck.ok) return jsonResponse({ ok: false, code: ownerCheck.code || "", error: ownerCheck.error }, ownerCheck.status);
         const share = await getJson(env, `shares/${id}.json`);
         if (!share || share.handle.toLowerCase() !== handleClean.toLowerCase()) {
           return jsonResponse({ ok: false, error: "Share not found" }, 404);
@@ -1366,10 +1674,10 @@ export default {
         const entries = await getEntriesFromR2(env);
         const entry = entries.find(e => e.handle.toLowerCase() === handleClean.toLowerCase());
         if (!entry) return jsonResponse({ ok: false, error: `Profile @${handleClean} not found` }, 404);
-        const googleAuth = await parseGoogleAuth(request, {});
+        const googleAuth = await parseGoogleAuth(request, {}, env);
         const claimToken = String(request.headers.get("X-Claim-Token") || "").trim();
-        const ownerCheck = await verifyOwner(entry, googleAuth, claimToken);
-        if (!ownerCheck.ok) return jsonResponse({ ok: false, error: ownerCheck.error }, ownerCheck.status);
+        const ownerCheck = await verifyOwner(entry, googleAuth, claimToken, { hadToken: hasGoogleToken(request, {}) });
+        if (!ownerCheck.ok) return jsonResponse({ ok: false, code: ownerCheck.code || "", error: ownerCheck.error }, ownerCheck.status);
         return jsonResponse({ ok: true, groups: await getGroups(env, ownerCheck.ownerKey) });
       } catch (err) {
         return jsonResponse({ ok: false, error: err.message }, 500);
@@ -1384,10 +1692,10 @@ export default {
         const entries = await getEntriesFromR2(env);
         const entry = entries.find(e => e.handle.toLowerCase() === handleClean.toLowerCase());
         if (!entry) return jsonResponse({ ok: false, error: `Profile @${handleClean} not found` }, 404);
-        const googleAuth = await parseGoogleAuth(request, body);
+        const googleAuth = await parseGoogleAuth(request, body, env);
         const claimToken = String(body.claimToken || request.headers.get("X-Claim-Token") || "").trim();
-        const ownerCheck = await verifyOwner(entry, googleAuth, claimToken);
-        if (!ownerCheck.ok) return jsonResponse({ ok: false, error: ownerCheck.error }, ownerCheck.status);
+        const ownerCheck = await verifyOwner(entry, googleAuth, claimToken, { hadToken: hasGoogleToken(request, body) });
+        if (!ownerCheck.ok) return jsonResponse({ ok: false, code: ownerCheck.code || "", error: ownerCheck.error }, ownerCheck.status);
 
         const groups = await getGroups(env, ownerCheck.ownerKey);
         const action = String(body.action || "create");
@@ -1409,6 +1717,72 @@ export default {
       } catch (err) {
         return jsonResponse({ ok: false, error: err.message }, 500);
       }
+    }
+
+    // 6g. Profile avatars — Google photo, uploaded image, or cleared (generated)
+    if (pathname === "/api/profile/avatar" && request.method === "POST") {
+      try {
+        const body = await request.json().catch(() => ({}));
+        const handleClean = String(body.handle || "").replace(/^@/, "").trim();
+        if (!handleClean) return jsonResponse({ ok: false, error: "Missing handle" }, 400);
+        const entries = await getEntriesFromR2(env);
+        const entry = entries.find(e => e.handle.toLowerCase() === handleClean.toLowerCase());
+        if (!entry) return jsonResponse({ ok: false, error: `Profile @${handleClean} not found` }, 404);
+
+        const googleAuth = await parseGoogleAuth(request, body, env);
+        const claimToken = String(body.claimToken || request.headers.get("X-Claim-Token") || "").trim();
+        const secret = (request.headers.get("Authorization") || "").replace(/^Bearer\s+/i, "").trim() ||
+          (request.headers.get("X-Leaderboard-Secret") || "").trim();
+        const secretOk = Boolean(env.LEADERBOARD_SECRET) && secret === env.LEADERBOARD_SECRET;
+        if (!secretOk) {
+          const ownerCheck = await verifyOwner(entry, googleAuth, claimToken, { hadToken: hasGoogleToken(request, body) });
+          if (!ownerCheck.ok) return jsonResponse({ ok: false, code: ownerCheck.code || "", error: ownerCheck.error }, ownerCheck.status);
+        }
+
+        let avatarUrl = "";
+        if (body.avatarStyle) {
+          entry.avatarStyle = String(body.avatarStyle).toLowerCase().replace(/[^a-z0-9]/g, "").slice(0, 24);
+        }
+        if (body.imageDataUrl) {
+          const match = /^data:(image\/(?:png|jpeg|jpg|webp|gif));base64,([A-Za-z0-9+/=\s]+)$/.exec(String(body.imageDataUrl));
+          if (!match) return jsonResponse({ ok: false, error: "Unsupported image data (png/jpeg/webp/gif only)" }, 400);
+          const bytes = Uint8Array.from(atob(match[2].replace(/\s+/g, "")), ch => ch.charCodeAt(0));
+          if (bytes.length > 400_000) return jsonResponse({ ok: false, error: "Image too large (max 400KB)" }, 400);
+          if (env.LEADERBOARD_BUCKET) {
+            await env.LEADERBOARD_BUCKET.put(`avatars/${entry.handle.toLowerCase()}`, bytes, {
+              httpMetadata: { contentType: match[1], cacheControl: "public, max-age=86400" }
+            });
+          }
+          avatarUrl = `/api/avatar/${encodeURIComponent(entry.handle)}?v=${Date.now()}`;
+        } else if (body.useGooglePhoto && googleAuth && googleAuth.picture) {
+          avatarUrl = googleAuth.picture;
+        } else if (body.avatarUrl) {
+          const candidate = String(body.avatarUrl).slice(0, 500);
+          if (!/^https?:\/\//.test(candidate)) return jsonResponse({ ok: false, error: "avatarUrl must be http(s)" }, 400);
+          avatarUrl = candidate;
+        }
+
+        entry.avatarUrl = avatarUrl;
+        if (avatarUrl) delete entry.avatarStyle;
+        entry.updatedAt = Date.now() / 1000;
+        await saveEntriesToR2(env, entries);
+        return jsonResponse({ ok: true, handle: entry.handle, avatarUrl: entry.avatarUrl, avatarStyle: entry.avatarStyle || "" });
+      } catch (err) {
+        return jsonResponse({ ok: false, error: err.message }, 500);
+      }
+    }
+
+    if (pathname.startsWith("/api/avatar/") && request.method === "GET") {
+      const handleClean = decodeURIComponent(pathname.slice("/api/avatar/".length)).toLowerCase();
+      if (!env.LEADERBOARD_BUCKET) return new Response("Not Found", { status: 404, headers: CORS_HEADERS });
+      const obj = await env.LEADERBOARD_BUCKET.get(`avatars/${handleClean}`);
+      if (!obj) return new Response("Not Found", { status: 404, headers: CORS_HEADERS });
+      const bytes = await obj.arrayBuffer();
+      const type = (obj.httpMetadata && obj.httpMetadata.contentType) || "image/png";
+      return new Response(bytes, {
+        status: 200,
+        headers: { ...CORS_HEADERS, "Content-Type": type, "Cache-Control": "public, max-age=86400" }
+      });
     }
 
     // 6f. GET /api/prompts — aggregated recent prompts/workloads
@@ -1698,23 +2072,46 @@ function ownerKeyFile(ownerKey) {
   return String(ownerKey || "unknown").replace(/[^a-zA-Z0-9:_-]/g, "_").toLowerCase();
 }
 
-async function verifyOwner(entry, googleAuth, claimToken) {
+async function verifyOwner(entry, googleAuth, claimToken, opts = {}) {
   if (entry.claimed) {
-    const isOwner = googleAuth && (
-      entry.ownerId === `google:${googleAuth.sub}` ||
-      (entry.googleEmail && entry.googleEmail === googleAuth.email)
-    );
+    if (!googleAuth) {
+      // Distinguish "never signed in" from "signed in but the credential was
+      // rejected/expired" so the client can re-auth instead of guessing.
+      const error = opts.hadToken
+        ? `Your Google session expired or was rejected — sign in again to manage @${entry.handle}.`
+        : `Sign in with Google as ${entry.googleEmail || "the owner"} to manage @${entry.handle}.`;
+      return { ok: false, status: 401, code: "auth_required", error };
+    }
+    const isOwner = entry.ownerId === `google:${googleAuth.sub}` ||
+      (entry.googleEmail && entry.googleEmail === googleAuth.email);
     if (!isOwner) {
-      return { ok: false, status: 403, error: `Profile @${entry.handle} is claimed. Sign in as ${entry.googleEmail || "the owner"} to manage sharing.` };
+      return {
+        ok: false, status: 403, code: "not_owner",
+        error: `Signed in as ${googleAuth.email}, but @${entry.handle} is owned by ${entry.googleEmail || "another account"}.`
+      };
     }
     return { ok: true, ownerKey: entry.ownerId || `handle:${entry.handle.toLowerCase()}` };
   }
   if (entry.claimTokenHash) {
-    if (!claimToken) return { ok: false, status: 401, error: "Provide the profile claim token to manage sharing." };
+    if (!claimToken) {
+      return { ok: false, status: 401, code: "auth_required", error: "Provide the profile claim token to manage sharing." };
+    }
     const hash = await sha256Hex(claimToken);
-    if (hash !== entry.claimTokenHash) return { ok: false, status: 403, error: "Invalid claim token." };
+    if (hash !== entry.claimTokenHash) {
+      return { ok: false, status: 403, code: "bad_claim_token", error: "Invalid claim token." };
+    }
   }
   return { ok: true, ownerKey: `handle:${entry.handle.toLowerCase()}` };
+}
+
+/// True when the request carried any Google credential (even one the worker
+/// may reject), used to tailor auth error messages.
+function hasGoogleToken(request, body = {}) {
+  return Boolean(
+    request.headers.get("X-Google-Token") ||
+    (request.headers.get("Authorization") || "").toLowerCase().startsWith("bearer ") ||
+    body.googleToken || body.googleCredential || body.googleUser
+  );
 }
 
 async function indexShare(env, handle, id) {

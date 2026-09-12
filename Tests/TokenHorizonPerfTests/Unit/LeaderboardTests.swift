@@ -125,6 +125,54 @@ final class LeaderboardTests: XCTestCase {
         XCTAssertEqual(streakRankings.first?.score, 16)
     }
 
+    func testSyncLocal_promptHistoryIsPrivateUntilEnabled() {
+        let settings = SettingsStore.shared
+        let origPrompts = settings.leaderboardSharePrompts
+        defer { settings.leaderboardSharePrompts = origPrompts }
+
+        let tempPath = NSTemporaryDirectory() + "test-prompts-\(UUID().uuidString).json"
+        defer { try? FileManager.default.removeItem(atPath: tempPath) }
+        let board = LeaderboardStore(customPath: tempPath)
+
+        var snap = UsageSnapshot()
+        snap.tokensToday = 1_000_000
+        snap.tokensAllTime = 5_000_000
+        snap.recentSessions = [
+            SessionSummary(id: "s1", title: "Secret project kickoff", cost: 1.0,
+                           tokens: 1_000, directory: "/tmp/p", created: Date())
+        ]
+
+        settings.leaderboardSharePrompts = false
+        board.syncLocal(snapshot: snap, history: [], streak: 3)
+        let redacted = board.localEntry()?.breakdown?.sessions ?? []
+        XCTAssertEqual(redacted.count, 1, "activity rows still publish without titles")
+        XCTAssertEqual(redacted.first?.title, "", "prompt titles must stay private while the setting is off")
+        XCTAssertEqual(redacted.first?.tokens, 1_000)
+
+        settings.leaderboardSharePrompts = true
+        board.syncLocal(snapshot: snap, history: [], streak: 3)
+        XCTAssertEqual(board.localEntry()?.breakdown?.sessions.count, 1)
+        XCTAssertEqual(board.localEntry()?.breakdown?.sessions.first?.title, "Secret project kickoff")
+    }
+
+    func testSyncLocal_calendarDailyExcludesZeroDays() {
+        let tempPath = NSTemporaryDirectory() + "test-calendar-\(UUID().uuidString).json"
+        defer { try? FileManager.default.removeItem(atPath: tempPath) }
+        let board = LeaderboardStore(customPath: tempPath)
+
+        var snap = UsageSnapshot()
+        snap.tokensToday = 1_000_000
+        snap.tokensAllTime = 5_000_000
+        let today = Int(Calendar.current.startOfDay(for: Date()).timeIntervalSince1970)
+        let history = (0..<10).map { i in
+            HistoryPoint(day: today - i * 86_400, tokens: i % 2 == 0 ? 0 : 1_000, cost: 0, byTool: [:])
+        }
+        board.syncLocal(snapshot: snap, history: history, streak: 1)
+        let daily = board.localEntry()?.breakdown?.daily ?? []
+        XCTAssertEqual(daily.count, 5)
+        XCTAssertTrue(daily.allSatisfy { $0.tokens > 0 })
+    }
+
     func testLeaderboardStore_shareCardFormats() {
         let tempPath = NSTemporaryDirectory() + "test-sharecard-\(UUID().uuidString).json"
         defer { try? FileManager.default.removeItem(atPath: tempPath) }

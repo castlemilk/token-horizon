@@ -6,6 +6,9 @@
 <title>TokenArena — Token Horizon Leaderboard & AI Analytics</title>
 <meta name="description" content="Competitive AI token usage leaderboard, league ladders, provider breakdowns, and developer analytics powered by Token Horizon." />
 <link rel="icon" href="./assets/favicon.svg" type="image/svg+xml" />
+<script src="https://accounts.google.com/gsi/client" async defer></script>
+<script src="./vendor/tanstack-charts.js" defer></script>
+<script src="./vendor/dicebear.js" defer></script>
 <style>
 :root{
   --bg:#080B12; --panel:#0F141E; --panel2:#141B28; --panel3:#1A2233;
@@ -63,6 +66,8 @@ button{font-family:inherit}
 .content{padding:22px 24px 60px;max-width:1500px;width:100%;margin:0 auto}
 .breadcrumb{font-size:11.5px;color:var(--faint);margin-bottom:10px}
 .breadcrumb b{color:var(--muted);font-weight:500}
+.breadcrumb .crumb-link{color:var(--faint);cursor:pointer;transition:color .12s}
+.breadcrumb .crumb-link:hover{color:#9CC0FF;text-decoration:underline}
 .page-head{display:flex;justify-content:space-between;align-items:flex-start;gap:24px;margin-bottom:20px}
 .page-head h1{margin:0;font-size:30px;letter-spacing:-.4px;font-weight:800}
 .page-head p{margin:6px 0 0;color:var(--muted);font-size:13.5px;max-width:640px}
@@ -87,7 +92,12 @@ button{font-family:inherit}
 
 .avatar{display:inline-grid;place-items:center;border-radius:50%;background:linear-gradient(135deg,#2B3A5C,#1A2336);color:#DCE8FF;font-weight:700;width:32px;height:32px;font-size:12px;flex:none;border:1px solid var(--line2);overflow:hidden}
 .avatar img{width:100%;height:100%;object-fit:cover}
-.chip{display:inline-flex;align-items:center;gap:5px;background:var(--panel2);border:1px solid var(--line);border-radius:999px;padding:3px 9px;font-size:11px;color:var(--muted);white-space:nowrap}
+.league-icon{position:relative;display:inline-grid;place-items:center;flex:none;vertical-align:middle}
+.league-icon img{width:100%;height:100%;object-fit:contain}
+.league-icon .league-fallback{display:none}
+.league-icon.fallback .league-fallback{display:grid}
+.chip{display:inline-flex;align-items:center;gap:6px;background:var(--panel2);border:1px solid var(--line);border-radius:999px;padding:4px 10px;font-size:11.5px;color:var(--muted);white-space:nowrap;line-height:1.1}
+.chip.logo-chip{padding:5px 12px 5px 7px;gap:8px;font-size:12px;margin:2px 2px 2px 0;background:linear-gradient(180deg,#161E2D,#121826);box-shadow:inset 0 1px 0 rgba(255,255,255,.05)}
 .chip.you{background:rgba(79,140,255,.15);border-color:rgba(79,140,255,.4);color:#9CC0FF}
 .chip.league{font-weight:600}
 .chip.green{color:#7FE0A8;border-color:rgba(34,197,94,.3);background:rgba(34,197,94,.08)}
@@ -107,14 +117,14 @@ tbody tr.selected{background:rgba(79,140,255,.08)}
 .num{font-variant-numeric:tabular-nums;font-family:var(--mono);font-size:12px}
 .muted{color:var(--muted)} .faint{color:var(--faint)}
 .right{text-align:right}
-.bar{height:5px;border-radius:3px;background:var(--panel3);overflow:hidden;min-width:52px}
+.bar{display:block;height:5px;border-radius:3px;background:var(--panel3);overflow:hidden;min-width:52px}
 .bar i{display:block;height:100%;border-radius:3px;background:linear-gradient(90deg,var(--cyan),var(--blue))}
 .rank-badge{display:inline-grid;place-items:center;min-width:26px;height:22px;padding:0 6px;border-radius:7px;background:var(--panel3);font-size:11px;font-weight:700}
 .rank-badge.gold{background:rgba(224,180,76,.18);color:#F1D48A}
 .rank-badge.silver{background:rgba(174,182,196,.18);color:#D5DCE6}
 .rank-badge.bronze{background:rgba(176,119,75,.2);color:#E0B08A}
 
-.ladder{display:grid;grid-template-columns:repeat(7,1fr);gap:10px}
+.ladder{display:grid;grid-template-columns:repeat(auto-fit,minmax(118px,1fr));gap:10px}
 .tier{position:relative;text-align:center;padding:14px 8px;border-radius:12px;border:1px solid var(--line);background:var(--panel);cursor:pointer;transition:.15s}
 .tier:hover{transform:translateY(-2px);border-color:var(--line2)}
 .tier.active{border-color:rgba(79,140,255,.6);box-shadow:0 0 0 1px rgba(79,140,255,.3) inset}
@@ -124,7 +134,7 @@ tbody tr.selected{background:rgba(79,140,255,.08)}
 .tier.faded{opacity:.45}
 
 .donut-wrap{display:flex;gap:18px;align-items:center}
-.legend{flex:1;display:flex;flex-direction:column;gap:9px;min-width:0}
+.legend{flex:1;display:flex;flex-direction:column;gap:11px;min-width:0}
 .legend-row{display:flex;align-items:center;gap:9px;font-size:12px}
 .legend-dot{width:9px;height:9px;border-radius:3px;flex:none}
 .legend-row .val{margin-left:auto;font-family:var(--mono);font-size:11.5px;color:var(--muted)}
@@ -135,6 +145,16 @@ tbody tr.selected{background:rgba(79,140,255,.08)}
 .heatmap .day{font-size:10px;color:var(--faint)}
 .heat-cell{aspect-ratio:1/1;border-radius:3px;background:#131A27;min-width:8px}
 .hover-tip{position:fixed;pointer-events:none;background:#0A0F18;border:1px solid var(--line2);border-radius:8px;padding:7px 10px;font-size:11px;color:var(--text);box-shadow:0 8px 24px rgba(0,0,0,.5);z-index:200;opacity:0;transition:opacity .1s}
+.cal-wrap{display:flex;flex-direction:column;gap:6px}
+.cal-months{display:grid;grid-auto-flow:column;grid-auto-columns:1fr;gap:3px;margin-left:24px;font-size:9px;color:var(--faint)}
+.cal-body{display:flex;gap:6px}
+.cal-days{display:grid;grid-template-rows:repeat(7,1fr);gap:3px;font-size:8px;color:var(--faint);width:18px;flex:none}
+.cal-days span{display:flex;align-items:center;justify-content:flex-end}
+.cal-grid{display:grid;grid-auto-flow:column;grid-auto-columns:1fr;grid-template-rows:repeat(7,auto);gap:3px;flex:1;min-width:0}
+.cal-cell{aspect-ratio:1/1;border-radius:3px;background:rgba(255,255,255,.06);min-width:0}
+.cal-cell:hover{outline:1px solid rgba(255,255,255,.35)}
+.cal-legend{display:flex;align-items:center;gap:4px;justify-content:flex-end;font-size:9px;color:var(--faint)}
+.cal-legend i{width:10px;height:10px;border-radius:2px;display:inline-block}
 
 .mover{display:flex;align-items:center;gap:10px;padding:8px 4px;border-bottom:1px solid rgba(30,38,53,.5)}
 .mover:last-child{border-bottom:none}
@@ -164,6 +184,29 @@ tbody tr.selected{background:rgba(79,140,255,.08)}
 .stack-area{position:relative}
 .tooltip-card{position:absolute;background:#0A0F18;border:1px solid var(--line2);border-radius:9px;padding:9px 11px;font-size:11px;box-shadow:0 10px 30px rgba(0,0,0,.55);pointer-events:none;display:none;z-index:20;min-width:160px}
 .tooltip-card b{font-size:12px}
+.ts-chart{width:100%}
+.ts-chart svg{overflow:visible}
+.prov-logo{position:relative;display:inline-grid;place-items:center;border-radius:30%;border:1px solid rgba(255,255,255,.16);box-shadow:inset 0 0 0 1px rgba(0,0,0,.35),inset 0 1px 0 rgba(255,255,255,.2),0 1px 3px rgba(0,0,0,.4);flex:none;vertical-align:middle;overflow:hidden}
+.prov-logo::before{content:"";position:absolute;inset:0;border-radius:inherit;background:radial-gradient(circle at 50% 42%,rgba(0,0,0,.34),rgba(0,0,0,0) 68%);pointer-events:none}
+.prov-logo img{position:relative;width:72%;height:72%;object-fit:contain;display:block;filter:drop-shadow(0 1px 1px rgba(0,0,0,.5))}
+.prov-logo .prov-glyph{display:none;width:100%;height:100%;place-items:center}
+.prov-logo.fallback .prov-glyph{display:grid}
+.prov-logo.fallback img{display:none}
+.prov-logo svg{display:block}
+.prov-logo .glyph-text{color:#fff;font-weight:800;line-height:1;font-family:var(--mono);position:relative}
+.chart-legend{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:5px 20px;margin-top:12px}
+.legend-item{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--muted);min-width:0}
+.legend-swatch{width:10px;height:10px;border-radius:3px;flex:none;box-shadow:inset 0 0 0 1px rgba(255,255,255,.22),0 1px 2px rgba(0,0,0,.4)}
+.legend-text{display:flex;flex-direction:column;min-width:0;flex:1;line-height:1.25}
+.legend-item .legend-name{color:var(--text);font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.legend-item .legend-desc{color:var(--faint);font-size:10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.legend-item .legend-value{font-family:var(--mono);font-size:11px;color:var(--muted);text-align:right;flex:none;font-variant-numeric:tabular-nums}
+.ts-chart-tooltip{background:#0A0F18 !important;border:1px solid var(--line2) !important;border-radius:10px !important;padding:10px 12px !important;box-shadow:0 12px 34px rgba(0,0,0,.6) !important;color:var(--text) !important;font-size:11.5px !important;min-width:190px;z-index:60}
+.ts-chart-tooltip__title{color:#DCE8FF !important;font-size:12px !important}
+.ts-chart-tooltip__row{margin:3px 0}
+.ts-chart-tooltip__row[data-active="true"]{border-top:1px solid var(--line);margin-top:6px;padding-top:6px;font-weight:700}
+.ts-chart-tooltip__row > span:last-child{font-family:var(--mono);color:var(--muted)}
+.ts-chart-tooltip__row[data-active="true"] > span:last-child{color:var(--text)}
 
 .modal-backdrop{position:fixed;inset:0;background:rgba(3,5,9,.72);backdrop-filter:blur(4px);z-index:100;display:none;align-items:flex-start;justify-content:center;padding:40px 16px;overflow-y:auto}
 .modal-backdrop.open{display:flex}
@@ -192,6 +235,24 @@ tbody tr.selected{background:rgba(79,140,255,.08)}
 .tag-pill{display:inline-flex;align-items:center;gap:6px;background:var(--panel3);border:1px solid var(--line2);border-radius:999px;padding:5px 10px;font-size:12px;margin:0 6px 6px 0}
 .tag-pill button{background:none;border:none;color:var(--faint);cursor:pointer;font-size:13px;padding:0 2px}
 
+/* Sign-in modal + animated ASCII black hole (Gargantua-style lensed disk) */
+.signin-modal{max-width:940px;overflow:hidden}
+.signin-grid{display:grid;grid-template-columns:1.18fr 1fr;min-height:452px}
+.signin-art{position:relative;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;padding:16px 8px;background:radial-gradient(ellipse at 50% 45%,#0B1424 0%,#04060B 74%);border-right:1px solid var(--line);overflow:hidden}
+.signin-art::after{content:"";position:absolute;inset:0;background:radial-gradient(ellipse at 50% 45%,rgba(79,140,255,.07),transparent 60%);pointer-events:none}
+.bh-art{margin:0;font-family:var(--mono);font-size:10.5px;line-height:1.02;letter-spacing:0;color:#A9C6F2;text-shadow:0 0 9px rgba(84,145,255,.38);user-select:none;white-space:pre}
+.bh-art .bh-tok{color:#FFD185;text-shadow:0 0 10px rgba(255,190,90,.85)}
+.signin-art-cap{position:relative;font-size:8.5px;letter-spacing:2.4px;text-transform:uppercase;color:#4E5E7A}
+.signin-pane{display:flex;flex-direction:column;min-width:0}
+.signin-benefits{display:flex;flex-direction:column;gap:10px;margin:14px 0 18px}
+.signin-benefit{display:flex;gap:11px;align-items:flex-start}
+.signin-benefit .ico{width:32px;height:32px;border-radius:9px;background:var(--panel3);display:grid;place-items:center;flex:none}
+.signin-benefit .t{font-weight:600;font-size:12.5px}
+.signin-benefit .d{font-size:11px;color:var(--faint)}
+.signin-gsi{display:flex;flex-direction:column;gap:10px;align-items:flex-start}
+.signin-cta{display:flex;gap:14px;align-items:center;justify-content:space-between;flex-wrap:wrap;background:linear-gradient(120deg,rgba(79,140,255,.12),rgba(139,92,246,.06));border:1px solid rgba(79,140,255,.28);border-radius:var(--radius);padding:14px 16px}
+@media(max-width:760px){.signin-grid{grid-template-columns:1fr}.signin-art{display:none}}
+
 .spinner{width:16px;height:16px;border:2px solid rgba(255,255,255,.2);border-top-color:#fff;border-radius:50%;animation:spin .7s linear infinite;display:inline-block}
 @keyframes spin{to{transform:rotate(360deg)}}
 .notice{font-size:12px;color:var(--muted);background:rgba(79,140,255,.08);border:1px solid rgba(79,140,255,.25);border-radius:10px;padding:9px 12px;margin-top:10px}
@@ -201,6 +262,7 @@ tbody tr.selected{background:rgba(79,140,255,.08)}
 @keyframes sk{0%{background-position:200% 0}100%{background-position:-200% 0}}
 .empty{padding:28px;text-align:center;color:var(--faint);font-size:13px}
 .two-col{display:grid;grid-template-columns:1fr 340px;gap:16px}
+.grid.top,.split.top,.two-col.top{align-items:start}
 .three-col{display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px}
 .split{display:grid;grid-template-columns:1.6fr 1fr;gap:16px}
 .chart-label{font-size:10.5px;color:var(--faint)}
@@ -278,11 +340,18 @@ tbody tr.selected{background:rgba(79,140,255,.08)}
      /api/teams        /api/season        /api/share/*
    ============================================================ */
 
+const CANONICAL_API = "https://token-horizon.dev";
 const API_BASE = (() => {
   const override = new URLSearchParams(location.search).get("api");
   if (override) return override.replace(/\/$/, "");
-  if (location.protocol.startsWith("http")) return location.origin;
-  return "https://tokens.benebsworth.com";
+  // Worker-hosted (custom domain or workers.dev): same-origin API. Static
+  // mirrors (GitHub Pages, Vercel previews) and file:// fall back to canonical.
+  const host = location.hostname;
+  const isLocal = host === "localhost" || host === "127.0.0.1" || host === "::1";
+  const isWorkerHost = isLocal || host === "token-horizon.dev" || host.endsWith(".token-horizon.dev") ||
+    host === "tokens.benebsworth.com" || host.endsWith(".workers.dev");
+  if (location.protocol.startsWith("http") && isWorkerHost) return location.origin;
+  return CANONICAL_API;
 })();
 
 const LEAGUES = [
@@ -343,7 +412,13 @@ const state = {
   shareExpiryDays: 30,
   sharePublicLink: true,
   currentHandle: null,
+  signInPending: null,
+  groupDraft: { name: "", members: [] },
   googleSession: getGoogleSession(),
+  googleClientId: "",
+  googleReady: false,
+  googleUnavailable: false,
+  chartHosts: [],
   defaultRules: loadDefaultRules()
 };
 
@@ -370,6 +445,7 @@ function fmtCost(n) {
 }
 function fmtNum(n) { return (Number(n) || 0).toLocaleString(); }
 function fmtPct(n, digits = 0) { return (Number(n) || 0).toFixed(digits) + "%"; }
+function topPercent(percentile) { return Math.max(1, Math.round(100 - (Number(percentile) || 0))); }
 function fmtDate(ts) {
   if (!ts) return "—";
   const d = new Date(ts * 1000);
@@ -385,30 +461,240 @@ function initials(handle) {
   if (parts.length >= 2) return (parts[0][0] + parts[1][0]).toUpperCase();
   return String(handle || "?").slice(0, 2).toUpperCase();
 }
-function avatar(handle, url, size = 32) {
-  if (url) return `<span class="avatar" style="width:${size}px;height:${size}px"><img src="${esc(url)}" alt="" loading="lazy" onerror="this.parentNode.textContent='${esc(initials(handle))}'"/></span>`;
+function avatarStyleFor(handle, preferred) {
+  const styles = (window.DiceBear && window.DiceBear.styles) || ["identicon"];
+  if (preferred && styles.includes(String(preferred).toLowerCase())) return String(preferred).toLowerCase();
+  return styles[Math.abs(hashCode(String(handle))) % styles.length];
+}
+function generatedAvatar(handle, size, preferred) {
+  if (!window.DiceBear) return "";
+  try {
+    return window.DiceBear.avatarSvg(avatarStyleFor(handle, preferred), handle, { size: Math.max(32, Math.round(size * 2)) });
+  } catch (_) {
+    return "";
+  }
+}
+function avatar(handle, url, size = 32, preferredStyle) {
+  if (url) {
+    const src = String(url).startsWith("/api/") ? API_BASE + url : url;
+    return `<span class="avatar" style="width:${size}px;height:${size}px"><img src="${esc(src)}" alt="" loading="lazy" onerror="this.parentNode.innerHTML='${esc(initials(handle))}'"/></span>`;
+  }
+  const generated = generatedAvatar(handle, size, preferredStyle);
+  if (generated) return `<span class="avatar" style="width:${size}px;height:${size}px">${generated}</span>`;
   return `<span class="avatar" style="width:${size}px;height:${size}px;font-size:${Math.round(size * 0.36)}px">${esc(initials(handle))}</span>`;
+}
+function entryAvatar(entry, size = 32) {
+  return avatar(entry.handle, entry.avatarUrl, size, entry.avatarStyle);
+}
+function canEditAvatar(entry) {
+  const s = state.googleSession;
+  if (!s) return false;
+  if (entry.googleEmail && s.email && entry.googleEmail.toLowerCase() === s.email.toLowerCase()) return true;
+  if (!entry.claimed) return true;
+  return false;
 }
 function leagueMeta(id) {
   const key = String(id || "").toLowerCase();
   return LEAGUES.find(l => l.id === key) || LEAGUES[0];
 }
 function leagueColor(id) { return leagueMeta(id).color; }
-function leagueIcon(id, size = 26) {
+function leagueSvg(id, size = 26) {
   const c = leagueColor(id);
   return `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none"><path d="M12 2l8 3v6c0 5-3.5 8.5-8 11-4.5-2.5-8-6-8-11V5l8-3z" fill="${c}22" stroke="${c}" stroke-width="1.4"/><path d="M12 6.5l2.6 2.6-2.6 2.6-2.6-2.6 2.6-2.6z" fill="${c}"/></svg>`;
+}
+/// Generated tier badge (docs/assets/leagues/<id>.png) with a league-colored
+/// glow and an inline-SVG fallback if the asset is missing.
+function leagueIcon(id, size = 26) {
+  const key = LEAGUES.some(l => l.id === id) ? id : "bronze";
+  const glow = Math.max(4, Math.round(size * 0.22));
+  return `<span class="league-icon" style="width:${size}px;height:${size}px;filter:drop-shadow(0 2px ${glow}px ${leagueColor(key)}55)">
+    <img src="./assets/leagues/${key}.png" alt="" loading="lazy" onerror="this.style.display='none';this.parentNode.classList.add('fallback')"/>
+    <span class="league-fallback">${leagueSvg(key, size)}</span>
+  </span>`;
 }
 function roman(n) { return n === 1 ? "I" : n === 2 ? "II" : "III"; }
 function providerColor(p) { return PROVIDER_COLORS[String(p || "").toLowerCase()] || PALETTE[Math.abs(hashCode(String(p))) % PALETTE.length]; }
 function hashCode(s) { let x = 0; for (let i = 0; i < s.length; i++) { x = (x * 31 + s.charCodeAt(i)) | 0; } return x; }
+
+/* ---------- Series color assignment (legend + bars stay in sync) ---------- */
+function hexToRgb(hex) {
+  const h = String(hex || "").replace("#", "");
+  const full = h.length === 3 ? h.split("").map(c => c + c).join("") : h.padEnd(6, "0");
+  return { r: parseInt(full.slice(0, 2), 16), g: parseInt(full.slice(2, 4), 16), b: parseInt(full.slice(4, 6), 16) };
+}
+function rgbToHex(r, g, b) {
+  return "#" + [r, g, b].map(v => Math.max(0, Math.min(255, Math.round(v))).toString(16).padStart(2, "0")).join("");
+}
+/// amount > 0 lightens toward white, < 0 darkens toward black.
+function shadeHex(hex, amount) {
+  const { r, g, b } = hexToRgb(hex);
+  const t = amount < 0 ? 0 : 255;
+  const p = Math.abs(amount);
+  return rgbToHex((t - r) * p + r, (t - g) * p + g, (t - b) * p + b);
+}
+function luminance(hex) {
+  const { r, g, b } = hexToRgb(hex);
+  return (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
+}
+/// Provider brand base color (tile color), lifted when too dark for a bar.
+function seriesBaseColor(provider) {
+  const key = String(provider || "").toLowerCase();
+  const brand = PROVIDER_BRANDS[key] || PROVIDER_BRANDS[providerKey(key)] || PROVIDER_BRANDS.other;
+  return luminance(brand.bg) < 0.2 ? shadeHex(brand.bg, 0.45) : brand.bg;
+}
+/// Assigns each series a color derived from its provider's brand, varying
+/// lightness when one provider contributes multiple models. Mutates `series`.
+function assignSeriesColors(series) {
+  const byProvider = new Map();
+  for (const s of series) {
+    const p = String(s.provider || providerKey(s.name)).toLowerCase();
+    if (!byProvider.has(p)) byProvider.set(p, []);
+    byProvider.get(p).push(s);
+  }
+  const steps = [0, 0.3, -0.24, 0.48, -0.38, 0.16];
+  for (const [provider, list] of byProvider) {
+    const base = provider === "other" ? "#6B7280" : seriesBaseColor(provider);
+    list.forEach((s, i) => { s.color = i === 0 ? base : shadeHex(base, steps[i % steps.length]); });
+  }
+  return series;
+}
+
+/* ---------- Provider brand marks (ported from ProviderLogos.swift) ---------- */
+const PROVIDER_BRANDS = {
+  anthropic: { bg: "#D97757", glyph: "asterisk" },
+  openai: { bg: "#0FA37F", glyph: "swirl" },
+  google: { bg: "#2666F0", glyph: "sparkle" },
+  deepseek: { bg: "#1585EB", glyph: "fin" },
+  kimi: { bg: "#7A47E0", glyph: "text", text: "K" },
+  zhipu: { bg: "#1F70F2", glyph: "prism" },
+  minimax: { bg: "#F24D40", glyph: "text", text: "M" },
+  qwen: { bg: "#6950EF", glyph: "orbit" },
+  openrouter: { bg: "#6467F2", glyph: "text", text: "OR" },
+  alibaba: { bg: "#FF6B00", glyph: "orbit" },
+  xai: { bg: "#3B3B44", glyph: "text", text: "𝕏" },
+  local: { bg: "#2E2E38", glyph: "llama" },
+  mistral: { bg: "#F2660D", glyph: "steps" },
+  meta: { bg: "#0082FA", glyph: "text", text: "∞" },
+  agy: { bg: "#612EEF", glyph: "delta" },
+  upstage: { bg: "#6B52F2", glyph: "sun" },
+  opencode: { bg: "#10A66B", glyph: "text", text: ">_" },
+  other: { bg: "#6B7280", glyph: "monogram" }
+};
+function providerKey(provider, model = "") {
+  const p = String(provider || "").toLowerCase();
+  const m = String(model || "").toLowerCase();
+  if (p.includes("anthropic") || p.includes("claude") || m.includes("claude")) return "anthropic";
+  if (p.includes("openai") || p.includes("codex") || p.includes("gpt") || m.includes("gpt") || m.startsWith("o1") || m.startsWith("o3")) return "openai";
+  if (p.includes("google") || p.includes("gemini") || m.includes("gemini") || m.includes("gemma")) return "google";
+  if (p.includes("deepseek") || m.includes("deepseek")) return "deepseek";
+  if (p.includes("kimi") || p.includes("moonshot") || m.includes("kimi")) return "kimi";
+  if (p.includes("glm") || p.includes("zai") || p.includes("zhipu") || m.includes("glm")) return "zhipu";
+  if (p.includes("openrouter")) return "openrouter";
+  if (p.includes("minimax") || m.includes("minimax")) return "minimax";
+  if (p.includes("alibaba") || p.includes("qwen") || p.includes("bailian") || m.includes("qwen")) return "qwen";
+  if (p.includes("xai") || p.includes("grok") || m.includes("grok")) return "xai";
+  if (p.includes("ollama") || p.includes("mlx") || p.includes("local")) return "local";
+  if (p.includes("mistral") || m.includes("mistral") || m.includes("codestral")) return "mistral";
+  if (p.includes("meta") || m.includes("llama")) return "meta";
+  if (p.includes("agy") || p.includes("antigravity")) return "agy";
+  if (p.includes("upstage") || m.includes("solar")) return "upstage";
+  if (p.includes("opencode") || p.includes("muse") || m.includes("muse") || m.includes("x-preview") || m.includes("pickle")) return "opencode";
+  return "other";
+}
+function brandGlyphSvg(brand, size) {
+  const s = size, c = s / 2, white = "#fff";
+  const wrap = (inner) => `<svg width="${s}" height="${s}" viewBox="0 0 ${s} ${s}" aria-hidden="true">${inner}</svg>`;
+  const n = (v) => v.toFixed(2);
+  switch (brand.glyph) {
+    case "asterisk": {
+      let d = "";
+      for (let i = 0; i < 8; i++) {
+        const a = i * Math.PI / 4;
+        d += `M${n(c)},${n(c)} L${n(c + Math.cos(a) * s * 0.4)},${n(c + Math.sin(a) * s * 0.4)} `;
+      }
+      return wrap(`<path d="${d}" stroke="${white}" stroke-width="${n(s * 0.15)}" stroke-linecap="round"/>`);
+    }
+    case "swirl": {
+      const r = s * 0.42;
+      let d = "";
+      for (let i = 0; i < 6; i++) {
+        const a = i * Math.PI / 3;
+        const p1 = [c + Math.cos(a) * r * 0.4, c + Math.sin(a) * r * 0.4];
+        const p2 = [c + Math.cos(a + 0.8) * r, c + Math.sin(a + 0.8) * r];
+        const ctl = [c + Math.cos(a + 0.4) * r * 1.15, c + Math.sin(a + 0.4) * r * 1.15];
+        d += `M${n(p1[0])},${n(p1[1])} Q${n(ctl[0])},${n(ctl[1])} ${n(p2[0])},${n(p2[1])} `;
+      }
+      return wrap(`<path d="${d}" stroke="${white}" stroke-width="${n(s * 0.14)}" fill="none" stroke-linecap="round"/>`);
+    }
+    case "sparkle": {
+      const w = s * 0.46, h = s * 0.46, pinch = 0.22;
+      const d = `M${n(c)},${n(c - h)} Q${n(c + w * pinch)},${n(c - h * pinch)} ${n(c + w)},${n(c)} Q${n(c + w * pinch)},${n(c + h * pinch)} ${n(c)},${n(c + h)} Q${n(c - w * pinch)},${n(c + h * pinch)} ${n(c - w)},${n(c)} Q${n(c - w * pinch)},${n(c - h * pinch)} ${n(c)},${n(c - h)} Z`;
+      return wrap(`<path d="${d}" fill="${white}"/>`);
+    }
+    case "fin": {
+      const d = `M${n(s * 0.15)},${n(s * 0.85)} C${n(s * 0.3)},${n(s * 0.2)} ${n(s * 0.6)},${n(s * 0.3)} ${n(s * 0.85)},${n(s * 0.25)} Q${n(s * 0.8)},${n(s * 0.7)} ${n(s * 0.55)},${n(s * 0.85)} Z`;
+      return wrap(`<path d="${d}" fill="${white}"/>`);
+    }
+    case "prism": {
+      const d = `M${n(c)},${n(s * 0.16)} L${n(s * 0.84)},${n(c)} L${n(c)},${n(s * 0.84)} L${n(s * 0.16)},${n(c)} Z`;
+      return wrap(`<path d="${d}" fill="${white}"/>`);
+    }
+    case "orbit":
+      return wrap(`<circle cx="${n(c)}" cy="${n(c)}" r="${n(s * 0.3)}" fill="none" stroke="${white}" stroke-width="${n(s * 0.12)}"/><path d="M${n(s * 0.58)},${n(s * 0.58)} L${n(s * 0.84)},${n(s * 0.84)}" stroke="${white}" stroke-width="${n(s * 0.12)}" stroke-linecap="round"/>`);
+    case "llama": {
+      const d = `M${n(s * 0.25)},${n(s * 0.85)} L${n(s * 0.25)},${n(s * 0.35)} L${n(s * 0.38)},${n(s * 0.1)} L${n(s * 0.48)},${n(s * 0.35)} L${n(s * 0.6)},${n(s * 0.1)} L${n(s * 0.7)},${n(s * 0.35)} L${n(s * 0.85)},${n(s * 0.55)} L${n(s * 0.85)},${n(s * 0.75)} L${n(s * 0.65)},${n(s * 0.85)} L${n(s * 0.65)},${n(s * 0.85)} Z`;
+      return wrap(`<path d="${d}" fill="#40E6B3"/>`);
+    }
+    case "steps": {
+      const heights = [0.35, 0.65, 0.95, 0.5];
+      const bars = heights.map((h, i) => `<rect x="${n(s * (0.08 + i * 0.24))}" y="${n(s - s * 0.16 - s * 0.72 * h)}" width="${n(s * 0.16)}" height="${n(s * 0.72 * h)}" rx="1" fill="${white}"/>`).join("");
+      return wrap(bars);
+    }
+    case "delta":
+      return wrap(`<path d="M${n(c)},${n(s * 0.12)} L${n(s * 0.88)},${n(s * 0.85)} L${n(s * 0.12)},${n(s * 0.85)} Z" fill="${white}"/>`);
+    case "sun": {
+      const rays = Array.from({ length: 8 }, (_, i) => {
+        const a = i * Math.PI / 4;
+        return `<path d="M${n(c + Math.cos(a) * s * 0.34)},${n(c + Math.sin(a) * s * 0.34)} L${n(c + Math.cos(a) * s * 0.46)},${n(c + Math.sin(a) * s * 0.46)}" stroke="${white}" stroke-width="${n(s * 0.1)}" stroke-linecap="round"/>`;
+      }).join("");
+      return wrap(`<circle cx="${n(c)}" cy="${n(c)}" r="${n(s * 0.2)}" fill="${white}"/>${rays}`);
+    }
+    case "monogram":
+      return `<span class="glyph-text" style="font-size:${Math.round(s * 0.42)}px">${esc(String(brand.text || "?").slice(0, 2).toUpperCase())}</span>`;
+    case "text":
+    default:
+      return `<span class="glyph-text" style="font-size:${Math.round(s * (String(brand.text || "").length > 1 ? 0.5 : 0.64))}px">${esc(brand.text || "?")}</span>`;
+  }
+}
+/// Official white marks fetched by scripts/fetch-brand-logos.py. Brands without
+/// an asset (zhipu, local, other) fall back to the inline glyph.
+const BRAND_ASSETS = {
+  anthropic: "svg", openai: "svg", google: "svg", meta: "svg", deepseek: "svg",
+  mistral: "svg", xai: "svg", minimax: "svg", opencode: "svg", qwen: "svg",
+  ollama: "svg", kimi: "png"
+};
+function providerLogo(provider, size = 18, model = "") {
+  const key = providerKey(provider, model);
+  const brand = PROVIDER_BRANDS[key] || PROVIDER_BRANDS.other;
+  const asset = BRAND_ASSETS[key];
+  const glyph = brandGlyphSvg(brand, size);
+  const img = asset
+    ? `<img src="./assets/brands/${key}.${asset}" alt="" loading="lazy" onerror="this.style.display='none';this.parentNode.classList.add('fallback')"/>`
+    : "";
+  return `<span class="prov-logo${asset ? "" : " fallback"}" style="width:${size}px;height:${size}px;background:${brand.bg}" title="${esc(providerLabel(provider))}">${img}<span class="prov-glyph">${glyph}</span></span>`;
+}
 function deltaHtml(delta, suffix = "%") {
   if (delta === null || delta === undefined) return `<span class="faint">— vs previous period</span>`;
   const up = delta >= 0;
   return `<span class="${up ? "up" : "down"}">${up ? "▲" : "▼"} ${Math.abs(delta).toFixed(1)}${suffix}</span> <span class="faint">vs previous period</span>`;
 }
 function providerLabel(p) {
-  const map = { anthropic: "Anthropic", openai: "OpenAI", google: "Google", meta: "Meta", opencode: "OpenCode", minimax: "MiniMax", kimi: "Kimi", zhipu: "Zhipu", deepseek: "DeepSeek", alibaba: "Alibaba", local: "Local", other: "Other", ai: "AI" };
+  const map = { anthropic: "Anthropic", openai: "OpenAI", google: "Google", meta: "Meta", opencode: "OpenCode", minimax: "MiniMax", kimi: "Kimi", zhipu: "Zhipu (GLM)", deepseek: "DeepSeek", alibaba: "Alibaba", qwen: "Qwen", openrouter: "OpenRouter", agy: "Antigravity", mistral: "Mistral", xai: "xAI", local: "Local", other: "Other", ai: "AI" };
   return map[String(p || "").toLowerCase()] || String(p || "Other");
+}
+/// Display label for a raw tool/provider id (claude → Anthropic, opencode-go → OpenCode).
+function providerDisplay(provider, model = "") {
+  return providerLabel(providerKey(provider, model));
 }
 
 /* ---------- SVG chart builders ---------- */
@@ -476,7 +762,7 @@ function barList(rows, opts = {}) {
   const max = Math.max(...rows.map(r => r.value), 1);
   return rows.map(r => `<div style="display:flex;align-items:center;gap:10px;margin-bottom:9px">
     <span style="width:${opts.labelWidth || 96}px;font-size:12px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(r.label)}">${esc(r.label)}</span>
-    <span style="flex:1"><span class="bar"><i style="width:${Math.max(2, (r.value / max) * 100)}%;${r.color ? `background:${r.color}` : ""}"></i></span></span>
+    <span style="flex:1"><span class="bar"><i style="width:${r.value > 0 ? Math.max(2, (r.value / max) * 100) : 0}%;${r.color ? `background:${r.color}` : ""}"></i></span></span>
     <span class="num" style="width:64px;text-align:right">${esc(r.valueText || fmtTokens(r.value))}</span>
     ${r.percent != null ? `<span class="num faint" style="width:38px;text-align:right">${fmtPct(r.percent)}</span>` : ""}
   </div>`).join("");
@@ -499,15 +785,365 @@ function heatmap(grid) {
   return html + `</div>`;
 }
 
-/* ---------- API ---------- */
-async function api(path, opts) {
-  const res = await fetch(API_BASE + path, opts);
-  if (!res.ok) {
-    let msg = "HTTP " + res.status;
-    try { const j = await res.json(); if (j && j.error) msg = j.error; } catch (_) {}
-    throw new Error(msg);
+/// GitHub-style contribution calendar from daily points (non-zero days).
+/// Used when more than a week of history is available; falls back to the
+/// weekday × hour grid otherwise.
+function calendarHeatmap(daily, opts = {}) {
+  const list = (daily || []).filter(d => d && Number(d.day) > 0);
+  if (list.length <= 7) return "";
+  const byDay = new Map(list.map(d => [Number(d.day), Number(d.tokens) || 0]));
+  const today = new Date();
+  const todayStart = Math.floor(new Date(today.getFullYear(), today.getMonth(), today.getDate()).getTime() / 1000);
+  const todayRow = (today.getDay() + 6) % 7; // Mon = 0
+  const weeks = opts.weeks || 17;
+  const lastMonday = todayStart - todayRow * 86400;
+  const firstMonday = lastMonday - (weeks - 1) * 7 * 86400;
+  const maxTokens = Math.max(1, ...list.map(d => Number(d.tokens) || 0));
+  const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  const fmtDayLabel = (ts) => new Date(ts * 1000).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+  const color = (tokens) => {
+    if (tokens <= 0) return "rgba(255,255,255,.06)";
+    const level = Math.min(1, Math.log10(tokens + 1) / Math.log10(maxTokens + 1) * 1.4);
+    return `rgba(34,197,94,${(0.22 + 0.78 * level).toFixed(2)})`;
+  };
+  const monthCells = [];
+  let lastMonth = -1;
+  const cells = [];
+  for (let col = 0; col < weeks; col++) {
+    const monday = firstMonday + col * 7 * 86400;
+    const month = new Date(monday * 1000).getMonth();
+    monthCells.push(month !== lastMonth ? `<span>${months[month]}</span>` : "<span></span>");
+    lastMonth = month;
+    for (let row = 0; row < 7; row++) {
+      const day = monday + row * 86400;
+      if (day > todayStart) { cells.push('<span class="cal-cell cal-empty"></span>'); continue; }
+      const tokens = byDay.get(day) || 0;
+      cells.push(`<span class="cal-cell" style="background:${color(tokens)}" data-tip="${esc(fmtDayLabel(day))} — ${tokens > 0 ? fmtTokens(tokens) + " tokens · click for breakdown" : "no usage"}" data-cal-day="${day}"></span>`);
+    }
   }
-  return res.json();
+  const dayLabels = ["Mon", "", "Wed", "", "Fri", "", ""];
+  return `<div class="cal-wrap">
+    <div class="cal-months">${monthCells.join("")}</div>
+    <div class="cal-body">
+      <div class="cal-days">${dayLabels.map(d => `<span>${d}</span>`).join("")}</div>
+      <div class="cal-grid">${cells.join("")}</div>
+    </div>
+    <div class="cal-legend"><span>Less</span>${[0, 1, 2, 3, 4, 5].map(l => `<i style="background:${color(l === 0 ? 0 : Math.pow(10, (Math.log10(maxTokens + 1) * (l / 5) / 1.4)) - 1)}"></i>`).join("")}<span>More</span></div>
+  </div>`;
+}
+
+/* ---------- TanStack Charts host ----------
+   docs/vendor/tanstack-charts.js exposes window.TanStackCharts (see
+   scripts/vendor-entry.js). Charts are declared here, mounted after each
+   render, and fall back to the hand-rolled SVG when the vendor bundle is
+   unavailable (offline / blocked). */
+const CHARTS_READY = (() => {
+  if (typeof window !== "undefined" && window.TanStackCharts) return Promise.resolve(true);
+  return new Promise(resolve => {
+    let tries = 0;
+    const timer = setInterval(() => {
+      if (window.TanStackCharts) { clearInterval(timer); resolve(true); }
+      else if (++tries > 50) { clearInterval(timer); resolve(false); }
+    }, 100);
+  });
+})();
+
+const DICEBEAR_READY = (() => {
+  if (typeof window !== "undefined" && window.DiceBear) return Promise.resolve(true);
+  return new Promise(resolve => {
+    let tries = 0;
+    const timer = setInterval(() => {
+      if (window.DiceBear) { clearInterval(timer); resolve(true); }
+      else if (++tries > 50) { clearInterval(timer); resolve(false); }
+    }, 100);
+  });
+})();
+
+const chartRegistry = new Map();
+const chartPool = new Map();                 // contentKey → { el, host, height }
+const chartDefs = new Map();                 // contentKey → definition + rows
+const CHART_POOL_MAX = 14;
+const CHART_DEF_MAX = 24;
+let chartSeq = 0;
+
+/// Lightweight counters, also consumed by scripts/bench-leaderboard.mjs.
+const perf = window.__thPerf = {
+  renders: 0, renderMs: 0, renderMsTotal: 0,
+  chartMounts: 0, chartReuses: 0, chartEvictions: 0, chartMountMs: 0,
+  apiRequests: 0, apiCacheHits: 0, apiInflightHits: 0,
+  dataRefreshes: 0, dataChanges: 0, skippedRenders: 0,
+  tableRefreshes: 0
+};
+
+function registerChart(definition, options) {
+  const id = "tsc-" + (++chartSeq);
+  chartRegistry.set(id, { definition, options, key: options.cacheKey || id });
+  return `<div class="ts-chart" data-chart-id="${id}"></div>`;
+}
+function destroyCharts() {
+  for (const item of chartPool.values()) {
+    try { item.host.destroy(); } catch (_) {}
+  }
+  chartPool.clear();
+  state.chartHosts = [];
+}
+function mountOptions(entry) {
+  return {
+    definition: entry.definition,
+    height: entry.options.height || 220,
+    initialWidth: entry.options.initialWidth || 640,
+    ariaLabel: entry.options.ariaLabel || "Token usage chart",
+    onFocusGroupChange: entry.options.onFocusGroupChange
+  };
+}
+/// Reconciles TanStack hosts against the freshly rendered placeholders.
+/// Data-identical charts (same content key) adopt their live host element —
+/// view switches and re-renders reuse the existing scene instead of rebuilding.
+/// Charts not in the current view stay pooled (LRU, capped) for the next visit.
+function mountCharts() {
+  if (!window.TanStackCharts) return;
+  const extra = [];
+  $$(".ts-chart[data-chart-id]").forEach(placeholder => {
+    const entry = chartRegistry.get(placeholder.dataset.chartId);
+    if (!entry) return;
+    const key = entry.key;
+    const cached = chartPool.get(key);
+    const wantHeight = entry.options.height || 220;
+    if (cached) {
+      if (cached.height !== wantHeight) {
+        try { cached.host.update(mountOptions(entry)); } catch (_) {}
+        cached.height = wantHeight;
+      }
+      placeholder.replaceWith(cached.el);
+      // Touch for LRU order.
+      chartPool.delete(key);
+      chartPool.set(key, cached);
+      perf.chartReuses++;
+      return;
+    }
+    const t0 = performance.now();
+    try {
+      const host = window.TanStackCharts.mountChart(placeholder, mountOptions(entry));
+      perf.chartMounts++;
+      perf.chartMountMs += performance.now() - t0;
+      if (chartPool.has(key)) { extra.push(host); return; }   // duplicate key this frame
+      chartPool.set(key, { el: placeholder, host, height: wantHeight });
+    } catch (err) {
+      placeholder.innerHTML = `<div class="empty">Chart unavailable: ${esc(err.message)}</div>`;
+    }
+  });
+  while (chartPool.size > CHART_POOL_MAX) {
+    const key = chartPool.keys().next().value;
+    const item = chartPool.get(key);
+    try { item.host.destroy(); } catch (_) {}
+    item.el.remove();
+    chartPool.delete(key);
+    perf.chartEvictions++;
+  }
+  while (chartDefs.size > CHART_DEF_MAX) chartDefs.delete(chartDefs.keys().next().value);
+  state.chartHosts = [...chartPool.values()].map(item => item.host).concat(extra);
+}
+
+/// Generic stacked chart over {labels, series:[{name, color, values}]}.
+/// Uses TanStack Charts when available, else the SVG stackedArea fallback.
+function stackedUsageChart(data, opts = {}) {
+  const labels = data.labels || [];
+  const series = (data.series || []).filter(s => (s.values || []).some(v => v > 0));
+  if (!labels.length || !series.length) return `<div class="empty">Collecting model history…</div>`;
+  // Brand-aligned colors so every legend item matches its stacked bar.
+  assignSeriesColors(series);
+  if (!window.TanStackCharts) {
+    return stackedArea(series.map(s => ({ name: s.name, color: s.color, values: s.values })), labels, { height: opts.height || 230 });
+  }
+  const TS = window.TanStackCharts;
+  // Content key: identical data reuses both the definition and the mounted
+  // host, so re-renders and view switches never rebuild an unchanged scene.
+  const cacheKey = opts.cacheKey || ("usage|" + (opts.height || 230) + "|" + (opts.ariaLabel || "") + "|" +
+    labels.join("\u0001") + "|" + series.map(s => s.name + ":" + (s.values || []).join(",")).join(";"));
+  let definition = chartDefs.get(cacheKey);
+  if (!definition) {
+    const rows = [];
+    labels.forEach((label, i) => {
+      series.forEach(s => rows.push({ x: label, model: s.name, value: s.values[i] || 0 }));
+    });
+    const domain = series.map(s => s.name);
+    const range = series.map(s => s.color);
+    definition = TS.defineChart({
+      marks: [
+        TS.barY(rows, {
+          x: "x",
+          y: "value",
+          z: "model",
+          color: "model",
+          layout: TS.stack({ order: domain }),
+          fillOpacity: 0.95,
+          // Columns touch: no per-bar inset, minimal band padding (notch-UI density).
+          inset: 0
+        })
+      ],
+      scales: {
+        x: { scale: () => TS.scaleBand().padding(0.03), axis: { label: opts.xLabel || "" } },
+        y: {
+          scale: TS.scaleLinear,
+          nice: true,
+          grid: true,
+          axis: {
+            label: opts.yLabel || "Tokens",
+            // Compact units (1B/1M/12k) keep the axis inside the card.
+            ticks: { count: 5, format: (value) => fmtTokens(value) }
+          }
+        }
+      },
+      color: { domain, range }
+      // No explicit margin: TanStack measures axis labels/titles and reserves
+      // the left gutter itself (a fixed margin clipped the y tick labels).
+    }, {
+      focus: "group-x",
+      // Area marks only emit boundary points; make the whole column focusable
+      // so the tooltip works anywhere in the plot.
+      maxFocusDistance: 100000,
+      tooltip: {
+        use: TS.tooltip,
+        className: "ts-chart-tooltip",
+        motion: false,
+        sort: "color-domain",
+        content: (points) => {
+          const total = points.reduce((s, p) => s + Number(p.yValue || 0), 0);
+          return {
+            title: String(points[0]?.xValue ?? ""),
+            rows: [
+              ...points.slice().sort((a, b) => Number(b.yValue) - Number(a.yValue)).map(p => ({
+                label: String(p.group ?? p.markId),
+                value: fmtTokens(Number(p.yValue || 0)),
+                color: p.color
+              })),
+              { label: "Total", value: fmtTokens(total), active: true }
+            ]
+          };
+        }
+      }
+    });
+    chartDefs.set(cacheKey, definition);
+  }
+  const chart = registerChart(definition, {
+    height: opts.height || 230,
+    initialWidth: opts.initialWidth || 640,
+    ariaLabel: opts.ariaLabel || "Stacked token usage",
+    cacheKey
+  });
+  const grandTotal = series.reduce((sum, s) => sum + (s.values || []).reduce((a, b) => a + b, 0), 0) || 1;
+  // Legend: provider logo + bar color swatch + model name + description
+  // (provider + share of the window) + total tokens.
+  const legend = series.map(s => {
+    const total = (s.values || []).reduce((a, b) => a + b, 0);
+    const desc = s.description || `${providerDisplay(s.provider || providerKey(s.name), s.name)} · ${fmtPct(total / grandTotal * 100, 1)}`;
+    return `<div class="legend-item" title="${esc(s.name)} · ${esc(desc)}"><i class="legend-swatch" style="background:${s.color}"></i>${providerLogo(s.provider || s.name, 16, s.name)}<span class="legend-text"><span class="legend-name">${esc(s.name)}</span><span class="legend-desc">${esc(desc)}</span></span><span class="legend-value">${fmtTokens(total)}</span></div>`;
+  }).join("");
+  return chart + `<div class="chart-legend">${legend}</div>`;
+}
+
+/// Adapter: leaderboard entry breakdown modelHistory → chart data.
+function modelHistoryChartData(modelHistory, opts = {}) {
+  const list = (modelHistory || []).filter(s => (s.points || []).length);
+  if (!list.length) return null;
+  const daySet = new Set();
+  for (const s of list) for (const p of s.points) daySet.add(p.day);
+  const days = [...daySet].sort((a, b) => a - b).slice(-(opts.days || 7));
+  const labelFor = (day) => {
+    for (const s of list) {
+      const p = s.points.find(x => x.day === day);
+      if (p && p.dayLabel) return p.dayLabel;
+    }
+    return fmtDay(day);
+  };
+  const labels = days.map(labelFor);
+  const series = list.map((s, i) => ({
+    name: s.model === "Other" ? "Other" : s.model,
+    provider: s.provider || providerKey(s.model),
+    color: s.model === "Other" ? "#6B7280" : PALETTE[i % PALETTE.length],
+    values: days.map(day => (s.points.find(x => x.day === day) || {}).tokens || 0)
+  }));
+  return { labels, series };
+}
+
+/// Adapter: worker aggregate usageHistory {labels, series:[{model,values}]}.
+function aggregateUsageChartData(usageHistory) {
+  if (!usageHistory || !usageHistory.labels || !usageHistory.series) return null;
+  return {
+    labels: usageHistory.labels,
+    series: usageHistory.series.map((s, i) => ({
+      name: s.model,
+      provider: s.provider || providerKey(s.model),
+      color: s.model === "Other" ? "#6B7280" : PALETTE[i % PALETTE.length],
+      values: s.values || []
+    }))
+  };
+}
+
+/* ---------- API (GET cache + in-flight dedupe) ---------- */
+const apiCache = new Map();      // "GET path" → { at, ttl, text }
+const apiInflight = new Map();   // "GET path" → Promise<text>
+const API_DEFAULT_TTL = 30000;
+
+function parseMaxAge(header) {
+  if (!header) return null;
+  const m = /(?:^|,)\s*max-age=(\d+)/i.exec(header);
+  return m ? Number(m[1]) * 1000 : null;
+}
+function fnv1a(str) {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < str.length; i++) { h ^= str.charCodeAt(i); h = Math.imul(h, 0x01000193); }
+  return (h >>> 0).toString(16);
+}
+function clearApiCache() { apiCache.clear(); }
+
+async function api(path, opts = {}) {
+  const method = (opts.method || "GET").toUpperCase();
+  const isGet = method === "GET";
+  const key = method + " " + path;
+  const bypass = opts.cache === "reload" || opts.cache === "no-store";
+  if (isGet && !bypass) {
+    const hit = apiCache.get(key);
+    if (hit && Date.now() - hit.at < hit.ttl) { perf.apiCacheHits++; return JSON.parse(hit.text); }
+    const flight = apiInflight.get(key);
+    if (flight) { perf.apiInflightHits++; return JSON.parse(await flight); }
+  }
+  perf.apiRequests++;
+  const request = (async () => {
+    const res = await fetch(API_BASE + path, opts);
+    if (!res.ok) {
+      let msg = "HTTP " + res.status;
+      let code = "";
+      try {
+        const j = await res.json();
+        if (j && j.error) msg = j.error;
+        if (j && j.code) code = j.code;
+      } catch (_) {}
+      // A rejected/expired Google credential must not keep masquerading as a
+      // signed-in session — drop it and surface the sign-in button again.
+      if (res.status === 401 && state.googleSession &&
+          (code === "auth_required" || (state.googleClientId && !isGoogleSessionValid()))) {
+        setGoogleSession(null);
+        msg = "Google session expired — sign in again.";
+      }
+      const err = new Error(msg);
+      err.code = code;
+      err.status = res.status;
+      throw err;
+    }
+    const text = await res.text();
+    if (isGet) {
+      const ttl = parseMaxAge(res.headers.get("cache-control")) ?? API_DEFAULT_TTL;
+      apiCache.set(key, { at: Date.now(), ttl, text });
+    }
+    return text;
+  })();
+  if (isGet) {
+    const cleanup = () => apiInflight.delete(key);
+    request.then(cleanup, cleanup);   // handled rejection, no unhandled warning
+    apiInflight.set(key, request);
+  }
+  return JSON.parse(await request);
 }
 
 function getGoogleSession() {
@@ -521,26 +1157,130 @@ function setGoogleSession(s) {
 }
 function googleHeaders(extra = {}) {
   const headers = { "Content-Type": "application/json", ...extra };
-  if (state.googleSession && state.googleSession.email) {
-    headers["X-Google-Token"] = "google:" + state.googleSession.email;
-  }
+  const s = state.googleSession;
+  if (s && s.credential) headers["X-Google-Token"] = s.credential;
+  else if (s && s.email && !state.googleClientId) headers["X-Google-Token"] = "google:" + s.email;
   return headers;
 }
+/// GSI ID tokens expire (~1h); a credential-less session is a stale dev-mode
+/// artifact. Treat both as signed out so we never claim a session the worker
+/// will reject.
+function isGoogleSessionValid() {
+  const s = state.googleSession;
+  if (!s) return false;
+  if (state.googleClientId) {
+    if (!s.credential) return false;
+    const p = decodeJwtPayload(s.credential);
+    if (!p || !p.exp) return false;
+    return p.exp * 1000 > Date.now() + 30_000;
+  }
+  return true;
+}
+function decodeJwtPayload(jwt) {
+  try {
+    const b64 = String(jwt).split(".")[1].replace(/-/g, "+").replace(/_/g, "/");
+    const bin = atob(b64);
+    const json = decodeURIComponent([...bin].map(c => "%" + c.charCodeAt(0).toString(16).padStart(2, "0")).join(""));
+    return JSON.parse(json);
+  } catch (_) {
+    return null;
+  }
+}
+function handleGoogleCredential(response) {
+  const p = decodeJwtPayload(response && response.credential);
+  if (!p || !p.email) { toast("Google sign-in failed", true); return; }
+  setGoogleSession({
+    email: String(p.email).toLowerCase(),
+    name: p.name || p.email,
+    sub: p.sub || "",
+    picture: p.picture || "",
+    credential: response.credential
+  });
+  toast("Signed in as " + p.email);
+  completeSignIn();
+}
+function initGoogleSignIn() {
+  if (!state.googleClientId) return;
+  let attempts = 0;
+  const tryInit = () => {
+    if (window.google && window.google.accounts && window.google.accounts.id) {
+      try {
+        google.accounts.id.initialize({
+          client_id: state.googleClientId,
+          callback: handleGoogleCredential,
+          auto_select: false,
+          cancel_on_tap_outside: true
+        });
+        state.googleReady = true;
+      } catch (_) {
+        state.googleReady = false;
+      }
+      renderAuthSlot();
+      mountSignInOptions();
+      return;
+    }
+    if (++attempts < 40) { setTimeout(tryInit, 250); return; }
+    // GSI script unavailable (offline/blocked): fall back to a clear label
+    // instead of an eternal spinner.
+    state.googleUnavailable = true;
+    renderAuthSlot();
+    mountSignInOptions();
+  };
+  tryInit();
+}
+function renderGoogleButton(container, opts = {}) {
+  if (!state.googleReady || !window.google?.accounts?.id || !container) return false;
+  try {
+    google.accounts.id.renderButton(container, {
+      theme: "outline", size: "large", shape: "pill",
+      text: "signin_with", logo_alignment: "left", width: opts.width || 200
+    });
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
 function promptGoogleLogin() {
-  const email = prompt("Sign in with Google (email):", state.googleSession?.email || "");
+  // Legacy dev fallback (no GOOGLE_CLIENT_ID configured on the worker).
+  const email = prompt("Sign in with Google (dev mode — no OAuth client configured):", state.googleSession?.email || "");
   if (!email || !email.includes("@")) return;
   const name = email.split("@")[0].replace(/[._-]+/g, " ").replace(/\b\w/g, c => c.toUpperCase());
   setGoogleSession({ email: email.toLowerCase(), name, sub: "google_" + email.toLowerCase(), picture: "" });
+  completeSignIn();
 }
+
+const GOOGLE_G = '<svg width="15" height="15" viewBox="0 0 48 48"><path fill="#EA4335" d="M24 9.5c3.5 0 6.6 1.2 9.1 3.6l6.8-6.8C35.6 2.4 30.1 0 24 0 14.6 0 6.5 5.4 2.6 13.2l7.9 6.2C12.4 13.3 17.7 9.5 24 9.5z"/><path fill="#4285F4" d="M46.5 24.5c0-1.6-.1-3.1-.4-4.5H24v9h12.7c-.6 3-2.3 5.5-4.8 7.2l7.6 5.9c4.4-4.1 7-10.2 7-17.6z"/><path fill="#FBBC05" d="M10.5 28.6c-.5-1.5-.8-3-.8-4.6s.3-3.1.8-4.6l-7.9-6.2C1 16.3 0 20 0 24s1 7.7 2.6 10.8l7.9-6.2z"/><path fill="#34A853" d="M24 48c6.1 0 11.3-2 15-5.5l-7.6-5.9c-2.1 1.4-4.6 2.2-7.4 2.2-6.3 0-11.6-3.8-13.5-9.1l-7.9 6.2C6.5 42.6 14.6 48 24 48z"/></svg>';
 
 function renderAuthSlot() {
   const slot = $("#auth-slot");
+  if (state.googleSession && state.googleClientId && !isGoogleSessionValid()) {
+    // Drop expired/credential-less sessions so the sign-in button returns.
+    const hadEmail = state.googleSession.email;
+    localStorage.removeItem("th_google_session");
+    state.googleSession = null;
+    if (hadEmail) toast("Google session expired — sign in again");
+  }
   const s = state.googleSession;
-  slot.innerHTML = s
-    ? `<div class="user-chip" id="user-chip">${avatar(s.name || s.email, s.picture, 28)}<div><div style="font-size:12.5px;font-weight:600">${esc(s.name || s.email)}</div><small>Google · sign out</small></div></div>`
-    : `<div class="pill" id="signin-btn">Sign in with Google</div>`;
-  if (s) $("#user-chip").onclick = () => { if (confirm("Sign out of TokenArena?")) setGoogleSession(null); };
-  else $("#signin-btn").onclick = promptGoogleLogin;
+  if (s) {
+    slot.innerHTML = `<div class="user-chip" id="user-chip">${avatar(s.name || s.email, s.picture, 28)}<div><div style="font-size:12.5px;font-weight:600">${esc(s.name || s.email)}</div><small>Google · sign out</small></div></div>`;
+    $("#user-chip").onclick = () => {
+      if (!confirm("Sign out of TokenArena?")) return;
+      if (state.googleReady && window.google?.accounts?.id) {
+        try { google.accounts.id.disableAutoSelect(); } catch (_) {}
+      }
+      setGoogleSession(null);
+    };
+    return;
+  }
+  // One clear entry point into the animated sign-in modal.
+  const dev = !state.googleClientId;
+  const title = dev
+    ? "Google login isn't configured on this deployment (set GOOGLE_CLIENT_ID on the worker)."
+    : state.googleUnavailable
+      ? "Google sign-in failed to load (script blocked or offline) — click to retry."
+      : "Sign in with Google";
+  slot.innerHTML = `<button class="pill ${dev || state.googleUnavailable ? "ghost" : "primary"}" id="signin-btn" title="${esc(title)}">${GOOGLE_G} Sign in</button>`;
+  $("#signin-btn").onclick = () => openSignInModal();
 }
 
 /* ---------- navigation ---------- */
@@ -582,18 +1322,38 @@ window.addEventListener("popstate", () => {
 });
 
 /* ---------- data loading ---------- */
-async function loadLeaderboard() {
+function demoPayload() {
+  return { ok: true, period: state.period, total: DEFAULT_DEMO.length, leaderboard: DEFAULT_DEMO.map((e, i) => ({ rank: i + 1, badge: "#1", percentile: 100, score: e.tokensToday, scoreFormatted: fmtTokens(e.tokensToday), costFormatted: fmtCost(e.costToday), relativePercent: 100, league: e.league, division: e.division, mmr: e.mmr, efficiency: e.efficiency, rankDelta7d: null, avgPerRequest: 0, inputFormatted: "", outputFormatted: "", requestsFormatted: "0", trend: [], entry: e })), kpis: { totalTokens: e0total(DEFAULT_DEMO), totalCost: DEFAULT_DEMO[0].costAll, activeDevs: 1, maxStreakDays: 17 }, movers: { gains: [], improved: [], promotions: [] }, season: null, leagueLadder: LEAGUES };
+}
+/// Refreshes the leaderboard payload. Returns true when the fingerprint
+/// changed (caller should re-render); false when the data is identical, so
+/// idle 30s ticks never rebuild the DOM or remount charts.
+async function loadLeaderboard(opts = {}) {
   const q = new URLSearchParams({ period: state.period });
   if (state.teamFilter !== "all") q.set("team", state.teamFilter);
   if (state.leagueFilter !== "all") q.set("league", state.leagueFilter);
+  if (state.range) q.set("historyDays", state.range);
+  perf.dataRefreshes++;
   try {
-    state.data = await api("/api/leaderboard?" + q.toString());
+    const payload = await api("/api/leaderboard?" + q.toString(), opts.force ? { cache: "reload" } : {});
+    const sig = fnv1a(JSON.stringify(payload));
+    if (state.dataSig === sig && state.data) return false;
+    state.data = payload;
+    state.dataSig = sig;
+    state.demo = false;
+    perf.dataChanges++;
+    return true;
   } catch (err) {
-    state.data = { ok: true, period: state.period, total: DEFAULT_DEMO.length, leaderboard: DEFAULT_DEMO.map((e, i) => ({ rank: i + 1, badge: "#1", percentile: 100, score: e.tokensToday, scoreFormatted: fmtTokens(e.tokensToday), costFormatted: fmtCost(e.costToday), relativePercent: 100, league: e.league, division: e.division, mmr: e.mmr, efficiency: e.efficiency, rankDelta7d: null, avgPerRequest: 0, inputFormatted: "", outputFormatted: "", requestsFormatted: "0", trend: [], entry: e })), kpis: { totalTokens: e0total(DEFAULT_DEMO), totalCost: DEFAULT_DEMO[0].costAll, activeDevs: 1, maxStreakDays: 17 }, movers: { gains: [], improved: [], promotions: [] }, season: null, leagueLadder: LEAGUES };
+    if (state.data) return false;              // keep the last good payload
+    state.data = demoPayload();
+    state.dataSig = "";
     state.demo = true;
+    return true;
   }
 }
 function e0total(list) { return list.reduce((s, e) => s + (e.tokensAll || 0), 0); }
+/// Manual refresh hook for the bench harness (and future UI refresh button).
+window.__thRefresh = async () => (await loadLeaderboard({ force: true })) ? render() : false;
 
 async function loadUser(handle) {
   if (!handle) { state.user = null; return; }
@@ -630,7 +1390,12 @@ function renderFilters() {
   $("#filters-label").textContent = active ? `Filters (${active})` : "Filters";
 }
 function wireChrome() {
-  $("#global-search").addEventListener("input", (e) => { state.search = e.target.value.toLowerCase(); render(); });
+  $("#global-search").addEventListener("input", (e) => {
+    state.search = e.target.value.toLowerCase();
+    // Typing only ever filters table rows client-side; never remount charts.
+    if (state.view === "leaderboard" && $("#lb-table-wrap")) scheduleLeaderboardTable();
+    else render();
+  });
   $("#filters-btn").onclick = () => { const r = $("#filters-row"); r.style.display = r.style.display === "none" ? "flex" : "none"; };
   $("#league-filter").onchange = (e) => { state.leagueFilter = e.target.value; render(); };
   $("#team-filter").onchange = (e) => { state.teamFilter = e.target.value; render(); };
@@ -640,6 +1405,8 @@ function wireChrome() {
     state.range = opts[(opts.indexOf(state.range) + 1) % opts.length];
     $("#range-label").textContent = `Last ${state.range} days`;
     state.providers = null;
+    state.data = null;                        // historyDays is part of the query
+    state.dataSig = "";
     render();
   };
   const tip = $("#hover-tip");
@@ -655,8 +1422,21 @@ function wireChrome() {
 }
 
 /* ---------- shared bits ---------- */
+const CRUMB_VIEWS = {
+  dashboard: "dashboard", leaderboard: "leaderboard", players: "players",
+  users: "dashboard", analytics: "models", teams: "teams", prompts: "prompts",
+  models: "models", billing: "billing", settings: "settings", leagues: "leagues"
+};
 function pageHead(crumb, title, sub, quote) {
-  return `<div class="breadcrumb">Dashboard / ${crumb.map((c, i) => i === crumb.length - 1 ? `<b>${esc(c)}</b>` : `<span>${esc(c)}</span>`).join(" / ")}</div>
+  const parts = ["Dashboard", ...crumb];
+  const trail = parts.map((c, i) => {
+    if (i === parts.length - 1) return `<b>${esc(c)}</b>`;
+    const view = CRUMB_VIEWS[String(c).toLowerCase()];
+    return view
+      ? `<a class="crumb-link" href="#" data-crumb="${view}">${esc(c)}</a>`
+      : `<span>${esc(c)}</span>`;
+  }).join(" / ");
+  return `<div class="breadcrumb">${trail}</div>
   <div class="page-head">
     <div><h1>${esc(title)}</h1><p>${esc(sub)}</p></div>
     ${quote ? `<div class="quote">“${esc(quote)}”<br/><span class="u"></span></div>` : ""}
@@ -684,13 +1464,24 @@ const ICONS = {
 /* ============================================================
    VIEW: LEADERBOARD
    ============================================================ */
+/// The leaderboard table pane, isolated so search/sort can refresh it
+/// without rebuilding the rest of the view (and its charts).
+function leaderboardTableHtml(d, local) {
+  const sorted = sortRows(filterRows(d.leaderboard || []));
+  return `<div class="card" style="padding:0;overflow:hidden">
+    <div class="card-head" style="padding:16px 16px 10px"><h3>Leaderboard <span class="sub">${d.total || 0} players</span></h3>
+      <span class="sub">Click a row for the full profile</span></div>
+    <div style="overflow-x:auto"><table id="lb-table"><thead><tr>
+      ${th("rank", "#")}${th("user", "User")}${th("league", "League")}${th("tokens", "Tokens")}${th("input", "Input")}${th("output", "Output")}${th("cost", "Cost")}${th("requests", "Requests")}${th("avg", "Avg / Req")}${th("trend", "Trend")}${th("efficiency", "Efficiency")}${th("streak", "Streak")}
+    </tr></thead><tbody>
+    ${sorted.length === 0 ? `<tr><td colspan="12"><div class="empty">No players match your filters.</div></td></tr>` : sorted.map(r => rowHtml(r, local)).join("")}
+    </tbody></table></div></div>`;
+}
 function viewLeaderboard() {
   const d = state.data;
   if (!d) return `<div class="card"><div class="skeleton" style="height:340px"></div></div>`;
   const k = d.kpis || {};
   const local = (d.leaderboard || []).find(r => r.entry.isLocal) || (d.leaderboard || [])[0];
-  const rows = filterRows(d.leaderboard || []);
-  const sorted = sortRows(rows);
   const season = d.season;
 
   const kpis = `<div class="grid kpis" style="margin-bottom:16px">
@@ -707,40 +1498,37 @@ function viewLeaderboard() {
       const count = (d.leaderboard || []).filter(r => r.league === l.id).length;
       const isYou = local && local.league === l.id;
       return `<div class="tier ${state.leagueFilter === l.id ? "active" : ""} ${isYou ? "" : ""}" data-league="${l.id}">
-        ${leagueIcon(l.id, 30)}<div class="name" style="color:${l.color}">${l.title.toUpperCase()}</div>
+        ${leagueIcon(l.id, 44)}<div class="name" style="color:${l.color}">${l.title.toUpperCase()}</div>
         <div class="range">${fmtTokens(l.min)}${l.max ? " – " + fmtTokens(l.max) : "+"}</div>
         ${isYou ? `<div class="you">You are here</div>` : `<div class="range">${count} player${count === 1 ? "" : "s"}</div>`}
       </div>`;
-    }).join("")}</div></div>`;
+    }).join("")}<div class="tier" style="cursor:default;background:linear-gradient(180deg,#141C2B,#0E1420)">
+        <span style="font-size:26px">👑</span><div class="name" style="color:#C7D2E5">HIGHER LEAGUES</div>
+        <div class="range">Unlock greater possibilities</div></div></div></div>`;
 
-  const table = `<div class="card" style="padding:0;overflow:hidden">
-    <div class="card-head" style="padding:16px 16px 10px"><h3>Leaderboard <span class="sub">${d.total || 0} players</span></h3>
-      <span class="sub">Click a row for the full profile</span></div>
-    <div style="overflow-x:auto"><table id="lb-table"><thead><tr>
-      ${th("rank", "#")}${th("user", "User")}${th("league", "League")}${th("tokens", "Tokens")}${th("input", "Input")}${th("output", "Output")}${th("cost", "Cost")}${th("requests", "Requests")}${th("avg", "Avg / Req")}${th("trend", "Trend")}${th("efficiency", "Efficiency")}${th("streak", "Streak")}
-    </tr></thead><tbody>
-    ${sorted.length === 0 ? `<tr><td colspan="12"><div class="empty">No players match your filters.</div></td></tr>` : sorted.map(r => rowHtml(r, local)).join("")}
-    </tbody></table></div></div>`;
+  const table = `<div id="lb-table-wrap">${leaderboardTableHtml(d, local)}</div>`;
 
   const movers = d.movers || {};
   const moversCard = `<div class="card"><div class="card-head"><h3>Top Movers</h3><span class="sub">Last 7 days</span></div>
     ${(movers.gains || []).length === 0 ? `<div class="empty" style="padding:12px">Rank history builds from daily snapshots.</div>` :
-      (movers.gains || []).slice(0, 5).map((m, i) => `<div class="mover"><span class="rank">${i + 1}</span>${avatar(m.handle, m.avatarUrl, 26)}<div><div class="name">${esc(m.handle)}</div><div class="faint" style="font-size:10.5px">${esc(m.leagueTitle || "")}</div></div><div class="val"><div class="up">+${esc(m.deltaFormatted)}</div><div class="faint">${m.rankDelta != null ? (m.rankDelta >= 0 ? "▲ " + m.rankDelta : "▼ " + Math.abs(m.rankDelta)) + " ranks" : "tokens"}</div></div></div>`).join("")}
+      (movers.gains || []).slice(0, 5).map((m, i) => `<div class="mover"><span class="rank">${i + 1}</span>${avatar(m.handle, m.avatarUrl, 26, m.avatarStyle)}<div><div class="name">${esc(m.handle)}</div><div class="faint" style="font-size:10.5px">${esc(m.leagueTitle || "")}</div></div><div class="val"><div class="up">+${esc(m.deltaFormatted)}</div><div class="faint">${m.rankDelta != null ? (m.rankDelta >= 0 ? "▲ " + m.rankDelta : "▼ " + Math.abs(m.rankDelta)) + " ranks" : "tokens"}</div></div></div>`).join("")}
   </div>`;
 
   const improvedCard = `<div class="card"><div class="card-head"><h3>Most Improved</h3><span class="sub">vs last period</span></div>
     ${(movers.improved || []).length === 0 ? `<div class="empty" style="padding:12px">Growth history builds from daily snapshots.</div>` :
-      (movers.improved || []).slice(0, 5).map((m, i) => `<div class="mover"><span class="rank">${i + 1}</span>${avatar(m.handle, m.avatarUrl, 26)}<div><div class="name">${esc(m.handle)}</div><div class="faint" style="font-size:10.5px">${esc(m.team || m.leagueTitle || "")}</div></div><div class="val"><div class="up">+${m.percent.toFixed(0)}%</div><div class="faint">${esc(m.deltaFormatted)}</div></div></div>`).join("")}
+      (movers.improved || []).slice(0, 5).map((m, i) => `<div class="mover"><span class="rank">${i + 1}</span>${avatar(m.handle, m.avatarUrl, 26, m.avatarStyle)}<div><div class="name">${esc(m.handle)}</div><div class="faint" style="font-size:10.5px">${esc(m.team || m.leagueTitle || "")}</div></div><div class="val"><div class="up">+${m.percent.toFixed(0)}%</div><div class="faint">${esc(m.deltaFormatted)}</div></div></div>`).join("")}
   </div>`;
 
-  const history = aggregateHistory(d.leaderboard || []);
-  const overTime = `<div class="card"><div class="card-head"><h3>Token Usage Over Time</h3><span class="chip">Total Tokens</span></div>
-    ${areaChart(history, { color: "#4F8CFF", height: 210 })}</div>`;
+  const modelChartData = aggregateUsageChartData(d.usageHistory);
+  const overTime = `<div class="card"><div class="card-head"><h3>Token Usage Over Time</h3><span class="chip">By Model</span></div>
+    ${modelChartData
+      ? stackedUsageChart(modelChartData, { height: 220, ariaLabel: "Token usage by model over time" })
+      : areaChart(aggregateHistory(d.leaderboard || []), { color: "#4F8CFF", height: 210 })}</div>`;
 
   const modelSegments = aggregateModels(d.leaderboard || []);
   const mix = `<div class="card"><div class="card-head"><h3>Usage by Model / Provider</h3><span class="chip">By Provider</span></div>
     <div class="donut-wrap">${donut(modelSegments.slice(0, 5), 168, fmtTokens(k.totalTokens), "tokens")}
-    <div class="legend">${modelSegments.slice(0, 6).map((s, i) => `<div class="legend-row"><span class="legend-dot" style="background:${s.color}"></span>${esc(s.label)}<span class="val">${fmtTokens(s.value)}</span><span class="pct">${fmtPct(s.value / Math.max(1, modelSegments.reduce((a, b) => a + b.value, 0)) * 100, 0)}</span></div>`).join("")}</div></div></div>`;
+    <div class="legend">${modelSegments.slice(0, 6).map((s, i) => `<div class="legend-row">${providerLogo(s.provider || s.label, 15)}${esc(s.label)}<span class="val">${fmtTokens(s.value)}</span><span class="pct">${fmtPct(s.value / Math.max(1, modelSegments.reduce((a, b) => a + b.value, 0)) * 100, 0)}</span></div>`).join("")}</div></div></div>`;
 
   const leagueCta = local ? `<div class="card">
     <div style="display:flex;gap:12px;align-items:center"><span style="font-size:26px">🏆</span>
@@ -809,8 +1597,8 @@ function rowHtml(r, local) {
   const medal = r.rank <= 3 ? ["🥇", "🥈", "🥉"][r.rank - 1] : "";
   return `<tr class="clickable ${isYou ? "selected" : ""}" data-handle="${esc(e.handle)}">
     <td><span class="rank-badge ${rankClass}">${medal || r.rank}</span></td>
-    <td><div class="user-cell">${avatar(e.handle, e.avatarUrl, 30)}<div><div class="name">${esc(e.handle)} ${isYou ? '<span class="chip you">YOU</span>' : ""}</div><div class="sub">${esc(e.team || e.hardware || "")}</div></div></div></td>
-    <td><span class="chip league" style="color:${leagueColor(r.league)};border-color:${leagueColor(r.league)}55;background:${leagueColor(r.league)}14">${leagueIcon(r.league, 14)}${esc(leagueMeta(r.league).title)} ${roman(r.division || 3)}</span></td>
+    <td><div class="user-cell">${entryAvatar(e, 30)}<div><div class="name">${esc(e.handle)} ${isYou ? '<span class="chip you">YOU</span>' : ""}</div><div class="sub">${esc(e.team || e.hardware || "")}</div></div></div></td>
+    <td><span class="chip league" style="color:${leagueColor(r.league)};border-color:${leagueColor(r.league)}55;background:${leagueColor(r.league)}14">${leagueIcon(r.league, 17)}${esc(leagueMeta(r.league).title)} ${roman(r.division || 3)}</span></td>
     <td><div class="num">${esc(r.scoreFormatted)}</div><div class="bar" style="margin-top:4px"><i style="width:${r.relativePercent}%"></i></div></td>
     <td class="num">${esc(r.inputFormatted || "—")}</td>
     <td class="num">${esc(r.outputFormatted || "—")}</td>
@@ -843,7 +1631,7 @@ function aggregateModels(rows) {
       map.set(p, (map.get(p) || 0) + (m.tokensAll || 0));
     }
   }
-  return [...map.entries()].map(([label, value]) => ({ label: providerLabel(label), value, color: providerColor(label) }))
+  return [...map.entries()].map(([key, value]) => ({ label: providerLabel(key), provider: key, value, color: providerColor(key) }))
     .sort((a, b) => b.value - a.value);
 }
 
@@ -851,9 +1639,12 @@ function aggregateModels(rows) {
    MAIN RENDER
    ============================================================ */
 async function render() {
+  const t0 = performance.now();
+  perf.renders++;
   const view = $("#view");
   try {
     await ensureData();
+    chartRegistry.clear();
     renderSeasonSelect();
     renderFilters();
     switch (state.view) {
@@ -871,18 +1662,41 @@ async function render() {
     view.innerHTML = `<div class="card"><div class="notice err">Failed to load dashboard data: ${esc(err.message)}</div></div>`;
   }
   wireCharts();
+  mountCharts();
   $$("[data-view-leagues]").forEach(b => b.onclick = () => navigate("leagues"));
+  perf.renderMs = performance.now() - t0;
+  perf.renderMsTotal += perf.renderMs;
 }
 async function ensureData() {
   if (!state.data) await loadLeaderboard();
 }
-function wireLeaderboard() {
+function wireLeaderboardTable() {
   $$("#lb-table thead th[data-sort]").forEach(thEl => thEl.onclick = () => {
     const key = thEl.dataset.sort;
     if (state.sortKey === key) state.sortDir *= -1; else { state.sortKey = key; state.sortDir = 1; }
-    render();
+    refreshLeaderboardTable();
   });
   $$("#lb-table tbody tr[data-handle]").forEach(tr => tr.onclick = () => navigate("players", { handle: tr.dataset.handle }));
+}
+let tableRefreshTimer = 0;
+/// Debounced search/sort refresh: swaps only the table card, so the KPI,
+/// ladder, and TanStack charts keep their DOM and hosts.
+function scheduleLeaderboardTable() {
+  clearTimeout(tableRefreshTimer);
+  tableRefreshTimer = setTimeout(refreshLeaderboardTable, 120);
+}
+function refreshLeaderboardTable() {
+  clearTimeout(tableRefreshTimer);
+  tableRefreshTimer = 0;
+  const wrap = $("#lb-table-wrap");
+  if (!wrap || !state.data) return;
+  const local = (state.data.leaderboard || []).find(r => r.entry.isLocal) || (state.data.leaderboard || [])[0];
+  wrap.innerHTML = leaderboardTableHtml(state.data, local);
+  perf.tableRefreshes++;
+  wireLeaderboardTable();
+}
+function wireLeaderboard() {
+  wireLeaderboardTable();
   $$(".tier[data-league]").forEach(t => t.onclick = () => { state.leagueFilter = state.leagueFilter === t.dataset.league ? "all" : t.dataset.league; render(); });
 }
 function wireCharts() {
@@ -906,7 +1720,15 @@ function wireCharts() {
   });
   $$("[data-tab]").forEach(t => t.onclick = () => { state.profileTab = t.dataset.tab; render(); });
   $$("[data-handle-link]").forEach(el => el.onclick = () => navigate("players", { handle: el.dataset.handleLink }));
-  $$("[data-share-user]").forEach(el => el.onclick = (ev) => { ev.stopPropagation(); openShareModal(el.dataset.shareUser); });
+  $$("[data-share-user]").forEach(el => el.onclick = (ev) => {
+    ev.stopPropagation();
+    const target = el.dataset.shareUser;
+    if (!requireSignIn({ action: `Sharing @${target}'s report`, onSuccess: () => openShareModal(target) })) return;
+    openShareModal(target);
+  });
+  $$("[data-crumb]").forEach(el => el.onclick = (ev) => { ev.preventDefault(); navigate(el.dataset.crumb); });
+  $$("[data-edit-avatar]").forEach(el => el.onclick = () => openAvatarModal(el.dataset.editAvatar));
+  $$("[data-cal-day]").forEach(el => el.onclick = () => openDayDrilldown(parseInt(el.dataset.calDay, 10)));
 }
 
 /* ============================================================
@@ -973,19 +1795,20 @@ function profileHero(p) {
   return `<div class="card" style="margin-bottom:16px">
     <div style="display:flex;gap:22px;align-items:center;flex-wrap:wrap">
       <div style="display:flex;gap:16px;align-items:center;min-width:280px">
-        ${avatar(e.handle, e.avatarUrl, 74)}
+        ${entryAvatar(e, 74)}
         <div><div style="font-size:24px;font-weight:800">${esc(e.handle)}</div>
           <div class="sub" style="margin-top:3px">${esc(e.team || "Personal")} · ${esc(e.hardware || "Apple Silicon")}</div>
           <div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap">
             ${e.isLocal ? '<span class="chip you">YOU</span>' : ""}
             <span class="chip">Rank #${p.rank} of ${p.total}</span>
             <span class="chip orange">🔥 ${e.streakDays || 0}d streak</span>
+            ${canEditAvatar(e) ? `<span class="chip" data-edit-avatar="${esc(e.handle)}" style="cursor:pointer">✎ Edit avatar</span>` : ""}
           </div></div>
       </div>
       <div style="display:flex;gap:16px;align-items:center;min-width:240px">
-        ${leagueIcon(league.id, 52)}
+        ${leagueIcon(league.id, 76)}
         <div><div style="font-weight:800;font-size:17px;color:${league.color}">${esc(league.title.toUpperCase())} ${roman(st.division || 3)}</div>
-          <div class="sub" style="margin-top:3px">${fmtNum(st.mmr)} MMR · Top ${100 - (p.percentile || 0)}% globally</div>
+          <div class="sub" style="margin-top:3px">${fmtNum(st.mmr)} MMR · Top ${topPercent(p.percentile)}% globally</div>
           <div class="progress" style="margin-top:8px;width:180px"><i style="width:${st.mmrToNext != null ? Math.max(5, 100 - Math.min(100, (st.mmrToNext / 400) * 100)) : 100}%"></i></div>
           <div class="mini" style="margin-top:4px">${st.mmrToNext != null ? fmtNum(st.mmrToNext) + " MMR to " + leagueMeta(nextLeague(st.league)).title : "Top league reached"}</div>
         </div>
@@ -998,7 +1821,7 @@ function profileHero(p) {
     </div>
   </div>`;
 }
-function profileKpis(p) {
+function profileKpis(p, opts = {}) {
   const e = p.entry;
   const models = e.breakdown?.models || [];
   const input = p.inputTokensAll || e.inputTokensAll || models.reduce((s, m) => s + (m.inputTokens || 0), 0);
@@ -1006,10 +1829,10 @@ function profileKpis(p) {
   const requests = p.requestsAll || e.requestsAll || models.reduce((s, m) => s + (m.requests || 0), 0);
   const avg = requests > 0 ? Math.round((e.tokensAll || 0) / requests) : 0;
   return `<div class="stat-grid" style="margin-bottom:16px">
-    ${stat("Total Tokens", fmtTokens(e.tokensAll), ICONS.tokens)}
+    ${opts.skipTotals ? "" : stat("Total Tokens", fmtTokens(e.tokensAll), ICONS.tokens)}
     ${stat("Input Tokens", fmtTokens(input), ICONS.activity)}
     ${stat("Output Tokens", fmtTokens(output), ICONS.bolt)}
-    ${stat("Total Cost", fmtCost(e.costAll), ICONS.cost)}
+    ${opts.skipTotals ? "" : stat("Total Cost", fmtCost(e.costAll), ICONS.cost)}
     ${stat("Requests", fmtNum(requests), ICONS.users)}
     ${stat("Avg / Request", fmtTokens(avg), ICONS.clock)}
     ${stat("Efficiency", Math.round(p.efficiency || e.efficiency || 0) + " / 100", ICONS.shield)}
@@ -1027,28 +1850,31 @@ function profileContent(p) {
     const hist = (bd.history || []).map(h => ({ label: h.dayLabel || fmtDay(h.day), value: h.tokens || 0, cost: h.cost || 0 }));
     const models = (bd.models || []).slice(0, 8).map(m => ({ label: m.model || m.provider, value: m.tokensAll || 0, color: providerColor(m.provider) }));
     const providers = aggregateModels([{ entry: e }]);
+    const modelData = modelHistoryChartData(bd.modelHistory);
     return `<div class="split" style="margin-bottom:16px">
-      <div class="card"><div class="card-head"><h3>Token Usage Over Time</h3><span class="chip">Total Tokens</span></div>${areaChart(hist, { color: "#4F8CFF", height: 220 })}</div>
+      <div class="card"><div class="card-head"><h3>Token Usage Over Time</h3><span class="chip">By Model</span></div>${modelData
+        ? stackedUsageChart(modelData, { height: 220, ariaLabel: "Token usage by model over time" })
+        : areaChart(hist, { color: "#4F8CFF", height: 220 })}</div>
       <div class="card"><div class="card-head"><h3>Usage by Model / Provider</h3></div>
         <div class="donut-wrap">${donut(providers.slice(0, 5), 150, fmtTokens(e.tokensAll), "tokens")}
-        <div class="legend">${providers.slice(0, 6).map(s => `<div class="legend-row"><span class="legend-dot" style="background:${s.color}"></span>${esc(s.label)}<span class="val">${fmtTokens(s.value)}</span></div>`).join("")}</div></div></div>
+        <div class="legend">${providers.slice(0, 6).map(s => `<div class="legend-row">${providerLogo(s.provider || s.label, 15)}${esc(s.label)}<span class="val">${fmtTokens(s.value)}</span></div>`).join("")}</div></div></div>
     </div>
-    <div class="two-col">
+    <div class="two-col top">
       <div class="card"><div class="card-head"><h3>Model Inventory</h3><span class="sub">${models.length} models</span></div>
         <table><thead><tr><th>Model</th><th>Provider</th><th class="right">Tokens</th><th class="right">Requests</th><th class="right">Cost</th><th class="right">Share</th></tr></thead><tbody>
-        ${(bd.models || []).slice(0, 10).map(m => `<tr><td>${esc(m.model)}</td><td><span class="chip">${esc(providerLabel(m.provider))}</span></td><td class="num right">${fmtTokens(m.tokensAll)}</td><td class="num right">${fmtNum(m.requests)}</td><td class="num right">${fmtCost(m.costAll)}</td><td style="width:110px"><div class="bar"><i style="width:${m.sharePercent || 0}%"></i></div><div class="mini right">${fmtPct(m.sharePercent || 0, 1)}</div></td></tr>`).join("") || '<tr><td colspan="6"><div class="empty">No model data published yet.</div></td></tr>'}
+        ${(bd.models || []).slice(0, 10).map(m => `<tr><td>${esc(m.model)}</td><td><span class="chip logo-chip">${providerLogo(m.provider, 15, m.model)}${esc(providerDisplay(m.provider, m.model))}</span></td><td class="num right">${fmtTokens(m.tokensAll)}</td><td class="num right">${fmtNum(m.requests)}</td><td class="num right">${fmtCost(m.costAll)}</td><td style="width:110px"><div class="bar"><i style="width:${m.sharePercent || 0}%"></i></div><div class="mini right">${fmtPct(m.sharePercent || 0, 1)}</div></td></tr>`).join("") || '<tr><td colspan="6"><div class="empty">No model data published yet.</div></td></tr>'}
         </tbody></table></div>
-      <div class="card"><div class="card-head"><h3>Usage Heatmap</h3><span class="sub">last 4 weeks</span></div>${heatmap(bd.hourly)}</div>
+      <div class="card"><div class="card-head"><h3>Usage Heatmap</h3><span class="sub">${calendarHeatmap(bd.daily) ? "last 17 weeks" : "weekday × hour"}</span></div>${calendarHeatmap(bd.daily) || heatmap(bd.hourly)}</div>
     </div>`;
   }
   if (tab === "prompts") {
-    const sessions = sessionRows(e, 12);
+    const sessions = sessionRows(e, 12).filter(s => s.title);
     const cats = new Map();
     for (const s of sessions) cats.set(categorize(s.title), (cats.get(categorize(s.title)) || 0) + (s.tokens || 0));
     const catRows = [...cats.entries()].map(([label, value]) => ({ label, value })).sort((a, b) => b.value - a.value);
     return `<div class="two-col"><div class="card"><div class="card-head"><h3>Top Prompts / Workloads</h3><span class="sub">recent sessions</span></div>
       <table><thead><tr><th>#</th><th>Prompt / Workflow</th><th>Model</th><th class="right">Tokens</th><th class="right">Cost</th><th class="right">Requests</th></tr></thead><tbody>
-      ${sessions.map((s, i) => `<tr><td class="faint">${i + 1}</td><td>${esc(s.title || "(untitled)")}</td><td><span class="chip">${esc(providerLabel(s.provider))}${s.model ? " · " + esc(s.model) : ""}</span></td><td class="num right">${fmtTokens(s.tokens)}</td><td class="num right">${fmtCost(s.cost)}</td><td class="num right">${fmtNum(s.requests)}</td></tr>`).join("") || '<tr><td colspan="6"><div class="empty">No sessions published.</div></td></tr>'}
+      ${sessions.map((s, i) => `<tr><td class="faint">${i + 1}</td><td>${esc(s.title || "(untitled)")}</td><td><span class="chip logo-chip">${providerLogo(s.provider, 14, s.model)}${esc(providerDisplay(s.provider, s.model))}${s.model ? " · " + esc(s.model) : ""}</span></td><td class="num right">${fmtTokens(s.tokens)}</td><td class="num right">${fmtCost(s.cost)}</td><td class="num right">${fmtNum(s.requests)}</td></tr>`).join("") || '<tr><td colspan="6"><div class="empty">Prompt history isn&#39;t published for this profile — owners can enable it in Token Horizon settings.</div></td></tr>'}
       </tbody></table></div>
       <div class="card"><div class="card-head"><h3>Prompt Categories</h3><span class="sub">keyword-classified</span></div>${barList(catRows, { labelWidth: 130 }) || '<div class="empty">No sessions.</div>'}</div>
     </div>`;
@@ -1065,14 +1891,14 @@ function profileContent(p) {
     const peers = (state.data?.leaderboard || []).filter(r => r.entry.handle !== e.handle).slice(0, 4);
     return `<div class="card" style="margin-bottom:16px"><div class="card-head"><h3>Peer Comparison</h3></div>
       <div class="stat-grid">
-        ${stat("Global Percentile", "Top " + (100 - (p.percentile || 0)) + "%", ICONS.rank)}
+        ${stat("Global Percentile", "Top " + topPercent(p.percentile) + "%", ICONS.rank)}
         ${stat("Team Rank", p.teamRank ? "#" + p.teamRank : "—", ICONS.users)}
         ${stat("All-Time Rank", "#" + (p.ranks?.all || p.rank), ICONS.shield)}
         ${stat("Streak Rank", "#" + (p.ranks?.streak || p.rank), ICONS.fire)}
       </div></div>
       <div class="card"><div class="card-head"><h3>Nearby Players</h3><span class="sub">by all-time tokens</span></div>
       <table><thead><tr><th>#</th><th>User</th><th>League</th><th class="right">Tokens</th><th class="right">Efficiency</th><th class="right">Streak</th></tr></thead><tbody>
-      ${peers.map(r => `<tr class="clickable" data-handle-link="${esc(r.entry.handle)}"><td class="faint">${r.rank}</td><td><div class="user-cell">${avatar(r.entry.handle, r.entry.avatarUrl, 26)}<span>${esc(r.entry.handle)}</span></div></td><td><span class="chip" style="color:${leagueColor(r.league)}">${esc(leagueMeta(r.league).title)} ${roman(r.division || 3)}</span></td><td class="num right">${esc(r.scoreFormatted)}</td><td class="num right">${Math.round(r.efficiency || 0)}</td><td class="num right">🔥 ${r.entry.streakDays || 0}</td></tr>`).join("")}
+      ${peers.map(r => `<tr class="clickable" data-handle-link="${esc(r.entry.handle)}"><td class="faint">${r.rank}</td><td><div class="user-cell">${entryAvatar(r.entry, 26)}<span>${esc(r.entry.handle)}</span></div></td><td><span class="chip" style="color:${leagueColor(r.league)}">${esc(leagueMeta(r.league).title)} ${roman(r.division || 3)}</span></td><td class="num right">${esc(r.scoreFormatted)}</td><td class="num right">${Math.round(r.efficiency || 0)}</td><td class="num right">🔥 ${r.entry.streakDays || 0}</td></tr>`).join("")}
       </tbody></table></div>`;
   }
   if (tab === "achievements") {
@@ -1096,32 +1922,32 @@ async function renderDashboard() {
   const sessions = sessionRows(e, 8);
   const anomalies = anomalyRows(e);
   const cats = new Map();
-  for (const s of sessionRows(e, 30)) cats.set(categorize(s.title), (cats.get(categorize(s.title)) || 0) + (s.tokens || 0));
+  for (const s of sessionRows(e, 30).filter(s => s.title)) cats.set(categorize(s.title), (cats.get(categorize(s.title)) || 0) + (s.tokens || 0));
   const catRows = [...cats.entries()].map(([label, value]) => ({ label, value })).sort((a, b) => b.value - a.value);
   const st = p.standing || {};
   const league = leagueMeta(st.league);
 
   $("#view").innerHTML = pageHead(["Users", e.handle], "User Activity Deep Dive", "Explore detailed activity, costs, and patterns for this user.", "Details turn usage into opportunity.")
     + `<div class="card" style="margin-bottom:16px;display:flex;gap:20px;align-items:center;flex-wrap:wrap">
-        ${avatar(e.handle, e.avatarUrl, 62)}
+        ${entryAvatar(e, 62)}
         <div><div style="font-size:21px;font-weight:800">${esc(e.handle)}</div><div class="sub">${esc(e.team || "Personal")} · ${esc(e.hardware || "Apple Silicon")}</div></div>
-        <div style="display:flex;gap:12px;align-items:center">${leagueIcon(league.id, 40)}<div><div style="font-weight:700;color:${league.color}">${esc(league.title.toUpperCase())}</div><div class="mini">${fmtTokens(league.min)} – ${league.max ? fmtTokens(league.max) : "∞"} tokens</div></div></div>
+        <div style="display:flex;gap:12px;align-items:center">${leagueIcon(league.id, 54)}<div><div style="font-weight:700;color:${league.color}">${esc(league.title.toUpperCase())}</div><div class="mini">${fmtTokens(league.min)} – ${league.max ? fmtTokens(league.max) : "∞"} tokens</div></div></div>
         <div style="margin-left:auto;display:flex;gap:30px;text-align:right">
-          <div><div class="kpi-label">Total Tokens</div><div style="font-size:20px;font-weight:800">${fmtTokens(e.tokensAll)}</div><div class="mini up">${p.rankDelta7d != null && p.rankDelta7d > 0 ? "▲ " + p.rankDelta7d + " ranks" : "top " + (100 - (p.percentile || 0)) + "%"}</div></div>
+          <div><div class="kpi-label">Total Tokens</div><div style="font-size:20px;font-weight:800">${fmtTokens(e.tokensAll)}</div><div class="mini up">${p.rankDelta7d != null && p.rankDelta7d > 0 ? "▲ " + p.rankDelta7d + " ranks" : "top " + topPercent(p.percentile) + "%"}</div></div>
           <div><div class="kpi-label">Total Cost</div><div style="font-size:20px;font-weight:800">${fmtCost(e.costAll)}</div><div class="mini">all-time</div></div>
         </div>
       </div>`
-    + profileKpis(p)
-    + `<div class="two-col" style="margin-bottom:16px">
+    + profileKpis(p, { skipTotals: true })
+    + `<div class="two-col top" style="margin-bottom:16px">
         <div class="card" style="padding:0;overflow:hidden">
           <div class="card-head" style="padding:16px 16px 8px"><h3>Recent Activity</h3><span class="sub">detailed request history for this user</span></div>
           <div style="overflow-x:auto"><table><thead><tr><th>Time</th><th>Prompt / App</th><th>Model</th><th class="right">Tokens</th><th class="right">Cost</th><th class="right">Requests</th></tr></thead><tbody>
-          ${sessions.map(s => `<tr><td class="faint" style="white-space:nowrap">${fmtDate(s.at)}</td><td>${esc(s.title || "(untitled)")}</td><td><span class="chip">${esc(providerLabel(s.provider))}${s.model ? " · " + esc(s.model) : ""}</span></td><td class="num right">${fmtTokens(s.tokens)}</td><td class="num right">${fmtCost(s.cost)}</td><td class="num right">${fmtNum(s.requests)}</td></tr>`).join("") || '<tr><td colspan="6"><div class="empty">No recent sessions published.</div></td></tr>'}
+          ${sessions.map(s => `<tr><td class="faint" style="white-space:nowrap">${fmtDate(s.at)}</td><td>${s.title ? esc(s.title) : '<span class="faint">title private</span>'}${s.title ? "" : ' <span class="chip" style="font-size:9.5px;padding:2px 7px">🔒</span>'}</td><td><span class="chip logo-chip">${providerLogo(s.provider, 14, s.model)}${esc(providerDisplay(s.provider, s.model))}${s.model ? " · " + esc(s.model) : ""}</span></td><td class="num right">${fmtTokens(s.tokens)}</td><td class="num right">${fmtCost(s.cost)}</td><td class="num right">${fmtNum(s.requests)}</td></tr>`).join("") || '<tr><td colspan="6"><div class="empty">Prompt history isn&#39;t published for this profile — owners can enable it in Token Horizon settings.</div></td></tr>'}
           </tbody></table></div>
         </div>
         <div class="grid" style="align-content:start">
           <div class="card"><div class="card-head"><h3>League Activity</h3><button class="pill ghost" style="font-size:11px" data-view-leagues>View League →</button></div>
-            <div style="display:flex;gap:14px;align-items:center">${leagueIcon(league.id, 44)}<div><div style="font-weight:700;color:${league.color}">${esc(league.title.toUpperCase())} ${roman(st.division || 3)}</div><div class="mini">${fmtTokens(league.min)} – ${league.max ? fmtTokens(league.max) : "∞"} tokens</div></div></div>
+            <div style="display:flex;gap:14px;align-items:center">${leagueIcon(league.id, 58)}<div><div style="font-weight:700;color:${league.color}">${esc(league.title.toUpperCase())} ${roman(st.division || 3)}</div><div class="mini">${fmtTokens(league.min)} – ${league.max ? fmtTokens(league.max) : "∞"} tokens</div></div></div>
             <div class="progress" style="margin-top:12px"><i style="width:${st.mmrToNext != null ? Math.max(5, 100 - Math.min(100, (st.mmrToNext / 400) * 100)) : 100}%"></i></div>
             <div class="mini" style="margin-top:6px">${st.mmrToNext != null ? fmtNum(st.mmrToNext) + " MMR to " + leagueMeta(nextLeague(st.league)).title : "Top league reached"}</div>
             <div style="display:flex;gap:10px;margin-top:14px">
@@ -1137,13 +1963,18 @@ async function renderDashboard() {
         </div>
       </div>`
     + `<div class="split" style="margin-bottom:16px">
-        <div class="card"><div class="card-head"><h3>Usage Over Time</h3><span class="chip">Total Tokens</span></div>${areaChart((e.breakdown?.history || []).map(x => ({ label: x.dayLabel || fmtDay(x.day), value: x.tokens || 0, cost: x.cost || 0 })), { color: "#38BDF8", height: 200 })}</div>
-        <div class="card"><div class="card-head"><h3>Usage Heatmap</h3><span class="sub">when this user is most active</span></div>${heatmap(e.breakdown?.hourly)}</div>
+        <div class="card"><div class="card-head"><h3>Usage Over Time</h3><span class="chip">By Model</span></div>${(() => {
+          const modelData = modelHistoryChartData(e.breakdown?.modelHistory);
+          return modelData
+            ? stackedUsageChart(modelData, { height: 200, ariaLabel: "Token usage by model over time" })
+            : areaChart((e.breakdown?.history || []).map(x => ({ label: x.dayLabel || fmtDay(x.day), value: x.tokens || 0, cost: x.cost || 0 })), { color: "#38BDF8", height: 200 });
+        })()}</div>
+        <div class="card"><div class="card-head"><h3>Usage Heatmap</h3><span class="sub">${calendarHeatmap(e.breakdown?.daily) ? "last 17 weeks" : "when this user is most active"}</span></div>${calendarHeatmap(e.breakdown?.daily) || heatmap(e.breakdown?.hourly)}</div>
       </div>`
     + `<div class="three-col">
-        <div class="card"><div class="card-head"><h3>Usage by Model</h3></div><div class="donut-wrap">${donut(aggregateModels([{ entry: e }]).slice(0, 5), 140, fmtTokens(e.tokensAll), "tokens")}<div class="legend">${aggregateModels([{ entry: e }]).slice(0, 5).map(s => `<div class="legend-row"><span class="legend-dot" style="background:${s.color}"></span>${esc(s.label)}<span class="val">${fmtTokens(s.value)}</span></div>`).join("")}</div></div></div>
+        <div class="card"><div class="card-head"><h3>Usage by Model</h3></div><div class="donut-wrap">${donut(aggregateModels([{ entry: e }]).slice(0, 5), 140, fmtTokens(e.tokensAll), "tokens")}<div class="legend">${aggregateModels([{ entry: e }]).slice(0, 5).map(s => `<div class="legend-row">${providerLogo(s.provider || s.label, 15)}${esc(s.label)}<span class="val">${fmtTokens(s.value)}</span></div>`).join("")}</div></div></div>
         <div class="card"><div class="card-head"><h3>Cost by Project</h3></div>${barList((e.breakdown?.projects || []).slice(0, 6).map(pr => ({ label: pr.project, value: pr.cost, valueText: fmtCost(pr.cost) })), { labelWidth: 110 })}</div>
-        <div class="card"><div class="card-head"><h3>Prompt Categories</h3></div>${barList(catRows, { labelWidth: 120 })}</div>
+        <div class="card"><div class="card-head"><h3>Prompt Categories</h3></div>${catRows.length ? barList(catRows, { labelWidth: 120 }) : '<div class="empty" style="padding:10px">Prompt titles are private — enable prompt history in Token Horizon settings.</div>'}</div>
       </div>`;
   wireProfile();
 }
@@ -1160,18 +1991,18 @@ async function renderPlayers() {
   const p = currentProfile();
   if (!p) { $("#view").innerHTML = `<div class="empty">No players yet.</div>`; return; }
   const progression = (p.rankHistory || []).slice(-12);
-  const progressionHtml = progression.length >= 2
+  const progressionHtml = progression.length >= 3
     ? areaChart(progression.map(x => ({ label: fmtDay(x.day * 86400), value: x.mmr || 0, extra: "Rank #" + x.rank })), { color: "#8B5CF6", height: 150 })
     : `<div class="empty" style="padding:14px">League progression builds from daily snapshots.</div>`;
   $("#view").innerHTML = pageHead(["Players", p.entry.handle], "Player Profile", "Detailed performance, usage patterns, and competitive stats.", "Better prompts. Brighter tomorrows.")
     + profileHero(p)
     + `<div class="tabs">${profileTabs().map(([id, label]) => `<div class="tab ${state.profileTab === id ? "active" : ""}" data-tab="${id}">${label}</div>`).join("")}</div>`
-    + profileKpis(p)
-    + `<div class="two-col" style="margin-bottom:16px">
+    + profileKpis(p, { skipTotals: true })
+    + `<div class="two-col top" style="margin-bottom:16px">
         <div class="card"><div class="card-head"><h3>League Progression</h3><span class="sub">MMR over time</span></div>${progressionHtml}</div>
         <div class="card"><div class="card-head"><h3>Peer Comparison</h3></div>
           <div class="stat-grid" style="grid-template-columns:1fr 1fr">
-            ${stat("Global", "Top " + (100 - (p.percentile || 0)) + "%", ICONS.rank)}
+            ${stat("Global", "Top " + topPercent(p.percentile) + "%", ICONS.rank)}
             ${stat("Team", p.teamRank ? "#" + p.teamRank + " of " + p.teamTotal : "—", ICONS.users)}
             ${stat("Rank Δ 7d", p.rankDelta7d == null ? "—" : (p.rankDelta7d >= 0 ? "+" + p.rankDelta7d : p.rankDelta7d), ICONS.activity)}
             ${stat("Streak", (p.entry.streakDays || 0) + " days", ICONS.fire)}
@@ -1241,14 +2072,14 @@ async function renderLeagues() {
     + `<div class="card" style="margin-bottom:16px">
       <div class="card-head"><h3>League Tier Ladder</h3><span class="sub">Climb the ranks based on your token usage, consistency, and impact. Click a tier to filter standings.</span></div>
       <div class="ladder">${LEAGUES.map(l => `<div class="tier ${state.leagueFilter === l.id ? "active" : ""}" data-league="${l.id}">
-        ${leagueIcon(l.id, 34)}<div class="name" style="color:${l.color}">${l.title.toUpperCase()}</div>
+        ${leagueIcon(l.id, 48)}<div class="name" style="color:${l.color}">${l.title.toUpperCase()}</div>
         <div class="range">${fmtTokens(l.min)}${l.max ? " – " + fmtTokens(l.max) : "+"}</div>
         <div class="range">${l.max ? "tokens / season" : "tokens / season"}</div>
       </div>`).join("")}</div>
       <div style="display:flex;gap:16px;margin-top:16px;flex-wrap:wrap">
         <div class="card" style="flex:1;min-width:260px;background:var(--panel2)">
           <div class="kpi-label">Your Current League</div>
-          ${local ? `<div style="display:flex;gap:12px;align-items:center;margin-top:8px">${leagueIcon(local.league, 44)}<div><div style="font-weight:800;font-size:16px;color:${leagueColor(local.league)}">${esc(leagueMeta(local.league).title.toUpperCase())} ${roman(local.division || 3)}</div><div class="mini">Rank #${local.rank} overall · ${fmtNum(local.mmr)} MMR</div></div></div>
+          ${local ? `<div style="display:flex;gap:12px;align-items:center;margin-top:8px">${leagueIcon(local.league, 58)}<div><div style="font-weight:800;font-size:16px;color:${leagueColor(local.league)}">${esc(leagueMeta(local.league).title.toUpperCase())} ${roman(local.division || 3)}</div><div class="mini">Rank #${local.rank} overall · ${fmtNum(local.mmr)} MMR</div></div></div>
           <div class="progress" style="margin-top:12px"><i style="width:${local.mmrToNext != null ? Math.max(5, 100 - Math.min(100, (local.mmrToNext / 400) * 100)) : 100}%"></i></div>
           <div class="mini" style="margin-top:6px">${local.mmrToNext != null ? fmtNum(local.mmrToNext) + " MMR to " + leagueMeta(nextLeague(local.league)).title : "Top league reached"}</div>` : '<div class="empty">No local entry.</div>'}
         </div>
@@ -1267,14 +2098,14 @@ async function renderLeagues() {
           <div class="mini" style="margin-top:5px">${season.daysRemaining} days remaining</div></div>` : '<div class="empty">No active season.</div>'}
       </div>
     </div>`
-    + `<div class="split" style="margin-bottom:16px">
+    + `<div class="split top" style="margin-bottom:16px">
       <div class="card" style="padding:0;overflow:hidden"><div class="card-head" style="padding:16px 16px 8px"><h3>Current Standings</h3></div>
         <div style="overflow-x:auto"><table><thead><tr><th>#</th><th>Player</th><th>League</th><th>Division</th><th class="right">MMR</th><th class="right">Tokens</th></tr></thead><tbody>
-        ${(s.standings || []).map((r, i) => `<tr class="clickable" data-handle-link="${esc(r.handle)}"><td class="faint">${i + 1}</td><td><div class="user-cell">${avatar(r.handle, r.avatarUrl, 26)}<span>${esc(r.handle)}</span></div></td><td><span class="chip" style="color:${r.leagueColor}">${esc(r.leagueTitle)}</span></td><td class="num">${roman(r.division)}</td><td class="num right">${fmtNum(r.mmr)}</td><td class="num right">${esc(r.tokensFormatted)}</td></tr>`).join("") || '<tr><td colspan="6"><div class="empty">No standings.</div></td></tr>'}
+        ${(s.standings || []).map((r, i) => `<tr class="clickable" data-handle-link="${esc(r.handle)}"><td class="faint">${i + 1}</td><td><div class="user-cell">${avatar(r.handle, r.avatarUrl, 26, r.avatarStyle)}<span>${esc(r.handle)}</span></div></td><td><span class="chip logo-chip" style="color:${r.leagueColor}">${leagueIcon(r.league, 16)}${esc(r.leagueTitle)}</span></td><td class="num">${roman(r.division)}</td><td class="num right">${fmtNum(r.mmr)}</td><td class="num right">${esc(r.tokensFormatted)}</td></tr>`).join("") || '<tr><td colspan="6"><div class="empty">No standings.</div></td></tr>'}
         </tbody></table></div></div>
       <div class="grid" style="align-content:start">
         <div class="card"><div class="card-head"><h3>Top Climbers</h3><span class="sub">Last 7 days</span></div>
-          ${(s.climbers || []).slice(0, 5).map((m, i) => `<div class="mover"><span class="rank">${i + 1}</span>${avatar(m.handle, m.avatarUrl, 26)}<div><div class="name">${esc(m.handle)}</div><div class="faint" style="font-size:10.5px">${esc(m.team || "")}</div></div><div class="val"><div class="up">+${esc(m.deltaFormatted)}</div><div class="faint">${m.rankDelta != null ? "▲ " + m.rankDelta + " ranks" : ""}</div></div></div>`).join("") || '<div class="empty" style="padding:10px">Climb history builds from snapshots.</div>'}
+          ${(s.climbers || []).slice(0, 5).map((m, i) => `<div class="mover"><span class="rank">${i + 1}</span>${avatar(m.handle, m.avatarUrl, 26, m.avatarStyle)}<div><div class="name">${esc(m.handle)}</div><div class="faint" style="font-size:10.5px">${esc(m.team || "")}</div></div><div class="val"><div class="up">+${esc(m.deltaFormatted)}</div><div class="faint">${m.rankDelta != null ? "▲ " + m.rankDelta + " ranks" : ""}</div></div></div>`).join("") || '<div class="empty" style="padding:10px">Climb history builds from snapshots.</div>'}
         </div>
         <div class="card"><div class="card-head"><h3>Recent Promotions</h3></div>
           ${(s.promotions || []).map(p => `<div class="mover"><div><div class="name">${esc(p.handle)}</div><div class="faint" style="font-size:10.5px">${esc(p.from)} → ${esc(p.to)}</div></div><div class="val faint">${fmtDay(p.at)}</div></div>`).join("") || '<div class="empty" style="padding:10px">No promotions recorded yet.</div>'}
@@ -1299,10 +2130,11 @@ async function renderProviders() {
   const labels = history.points.map(pt => fmtDay(new Date(pt.date + "T00:00:00Z").getTime() / 1000));
   const series = (history.providers || []).map((name, i) => ({
     name: providerLabel(name),
+    provider: name,
     color: providerColor(name),
     values: history.points.map(pt => pt.values[name] || 0)
   })).filter(s => s.values.some(v => v > 0));
-  const mix = rows.map(r => ({ label: providerLabel(r.provider), value: r.tokens, color: providerColor(r.provider) }));
+  const mix = rows.map(r => ({ label: providerLabel(r.provider), provider: r.provider, value: r.tokens, color: providerColor(r.provider) }));
   const topPrompts = (p.topPrompts || []).slice();
   const insights = p.insights || {};
   const avgCostPer1k = totalTokens > 0 ? (totalCost / totalTokens) * 1000 : 0;
@@ -1315,35 +2147,36 @@ async function renderProviders() {
       ${kpiCard("Avg Cost / 1k Tokens", "$" + avgCostPer1k.toFixed(4), "", ICONS.bolt)}
     </div>`
     + `<div class="split" style="margin-bottom:16px">
-      <div class="card"><div class="card-head"><h3>Token Usage by Provider Over Time</h3><span class="chip">Stacked</span></div>${stackedArea(series, labels, { height: 250 })}
-        <div style="display:flex;gap:14px;flex-wrap:wrap;margin-top:10px">${series.map(s => `<span class="chip"><span class="legend-dot" style="background:${s.color};display:inline-block;width:8px;height:8px;border-radius:2px"></span>${esc(s.name)}</span>`).join("")}</div></div>
+      <div class="card"><div class="card-head"><h3>Token Usage by Provider Over Time</h3><span class="chip">Stacked</span></div>${stackedUsageChart({ labels, series: series.map(s => ({ name: s.name, color: s.color, values: s.values })) }, { height: 250, ariaLabel: "Token usage by provider over time" })}
+        </div>
       <div class="card"><div class="card-head"><h3>Provider Mix</h3><span class="sub">share across providers</span></div>
         <div class="donut-wrap">${donut(mix.slice(0, 5), 156, fmtTokens(totalTokens), "tokens")}
-        <div class="legend">${mix.slice(0, 6).map(s => `<div class="legend-row"><span class="legend-dot" style="background:${s.color}"></span>${esc(s.label)}<span class="val">${fmtTokens(s.value)}</span><span class="pct">${fmtPct(s.value / Math.max(1, totalTokens) * 100, 0)}</span></div>`).join("")}</div></div></div>
+        <div class="legend">${mix.slice(0, 6).map(s => `<div class="legend-row">${providerLogo(s.provider || s.label, 15)}${esc(s.label)}<span class="val">${fmtTokens(s.value)}</span><span class="pct">${fmtPct(s.value / Math.max(1, totalTokens) * 100, 0)}</span></div>`).join("")}</div></div></div>
     </div>`
     + `<div class="split" style="margin-bottom:16px">
       <div class="card" style="padding:0;overflow:hidden"><div class="card-head" style="padding:16px 16px 8px"><h3>Provider Comparison</h3></div>
         <div style="overflow-x:auto"><table><thead><tr><th>#</th><th>Provider</th><th class="right">Tokens</th><th class="right">Input</th><th class="right">Output</th><th class="right">Cost</th><th class="right">Requests</th><th class="right">$/M</th><th class="right">Users</th><th class="right">Share</th></tr></thead><tbody>
-        ${rows.map((r, i) => `<tr><td class="faint">${i + 1}</td><td><span class="chip"><span class="legend-dot" style="background:${providerColor(r.provider)};display:inline-block;width:8px;height:8px;border-radius:2px"></span>${esc(providerLabel(r.provider))}</span></td><td class="num right">${esc(r.tokensFormatted)}</td><td class="num right">${r.inputTokens ? fmtTokens(r.inputTokens) : "—"}</td><td class="num right">${r.outputTokens ? fmtTokens(r.outputTokens) : "—"}</td><td class="num right">${esc(r.costFormatted)}</td><td class="num right">${fmtNum(r.requests)}</td><td class="num right">${esc(r.avgCostPerMText || ("$" + r.avgCostPerM.toFixed(2)))}</td><td class="num right">${fmtNum(r.users)}</td><td style="width:110px"><div class="bar"><i style="width:${r.sharePercent}%;background:${providerColor(r.provider)}"></i></div><div class="mini right">${fmtPct(r.sharePercent, 1)}</div></td></tr>`).join("") || '<tr><td colspan="10"><div class="empty">No provider data published yet.</div></td></tr>'}
+        ${rows.map((r, i) => `<tr><td class="faint">${i + 1}</td><td><span class="chip logo-chip">${providerLogo(r.provider, 15)}${esc(providerLabel(r.provider))}</span></td><td class="num right">${esc(r.tokensFormatted)}</td><td class="num right">${r.inputTokens ? fmtTokens(r.inputTokens) : "—"}</td><td class="num right">${r.outputTokens ? fmtTokens(r.outputTokens) : "—"}</td><td class="num right">${esc(r.costFormatted)}</td><td class="num right">${fmtNum(r.requests)}</td><td class="num right">${esc(r.avgCostPerMText || ("$" + r.avgCostPerM.toFixed(2)))}</td><td class="num right">${fmtNum(r.users)}</td><td style="width:110px"><div class="bar"><i style="width:${r.sharePercent}%;background:${providerColor(r.provider)}"></i></div><div class="mini right">${fmtPct(r.sharePercent, 1)}</div></td></tr>`).join("") || '<tr><td colspan="10"><div class="empty">No provider data published yet.</div></td></tr>'}
         </tbody></table></div></div>
       <div class="grid" style="align-content:start">
         <div class="card"><div class="card-head"><h3>Usage by Team</h3></div>
           ${(p.teams || []).slice(0, 5).map(t => `<div style="margin-bottom:12px"><div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:5px"><span>${esc(t.team)}</span><span class="num muted">${esc(t.tokensFormatted)}</span></div>${Object.entries(t.providers || {}).length ? `<div style="display:flex;height:7px;border-radius:4px;overflow:hidden">${Object.entries(t.providers).sort((a, b) => b[1] - a[1]).map(([prov, val]) => `<span style="width:${(val / Math.max(1, t.tokens)) * 100}%;background:${providerColor(prov)}" title="${providerLabel(prov)}"></span>`).join("")}</div>` : ""}</div>`).join("") || '<div class="empty" style="padding:10px">No teams yet.</div>'}
         </div>
         <div class="card"><div class="card-head"><h3>Top Prompts by Provider</h3></div>
-          ${topPrompts.slice(0, 5).map((s, i) => `<div class="mover"><span class="rank">${i + 1}</span><div style="min-width:0"><div class="name" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:200px">${esc(s.title || "(untitled)")}</div><div class="faint" style="font-size:10.5px">${esc(providerLabel(s.provider))}${s.model ? " · " + esc(s.model) : ""}</div></div><div class="val">${fmtTokens(s.tokens)}</div></div>`).join("") || '<div class="empty" style="padding:10px">No session data published.</div>'}
+          ${topPrompts.slice(0, 5).map((s, i) => `<div class="mover"><span class="rank">${i + 1}</span><div style="min-width:0"><div class="name" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:200px">${esc(s.title || "(untitled)")}</div><div class="faint" style="font-size:10.5px;display:flex;align-items:center;gap:5px">${providerLogo(s.provider, 13, s.model)}${esc(providerDisplay(s.provider, s.model))}${s.model ? " · " + esc(s.model) : ""}</div></div><div class="val">${fmtTokens(s.tokens)}</div></div>`).join("") || '<div class="empty" style="padding:10px">Prompt history is private for this deployment.</div>'}
         </div>
       </div>
     </div>`
     + `<div class="grid kpis">
-      ${insightCard("Most Used Provider", insights.mostUsed ? providerLabel(insights.mostUsed.provider) : "—", insights.mostUsed ? fmtPct(insights.mostUsed.sharePercent, 1) + " of total tokens" : "", "🏆")}
-      ${insightCard("Most Cost Efficient", insights.mostEfficient ? providerLabel(insights.mostEfficient.provider) : "—", insights.mostEfficient ? "$" + insights.mostEfficient.avgCostPerM.toFixed(2) + " per 1M tokens" : "", "💰")}
+      ${insightCard("Most Used Provider", insights.mostUsed ? providerLabel(insights.mostUsed.provider) : "—", insights.mostUsed ? fmtPct(insights.mostUsed.sharePercent, 1) + " of total tokens" : "", "🏆", insights.mostUsed?.provider)}
+      ${insightCard("Most Cost Efficient", insights.mostEfficient ? providerLabel(insights.mostEfficient.provider) : "—", insights.mostEfficient ? (insights.mostEfficient.avgCostPerMText || ("$" + insights.mostEfficient.avgCostPerM.toFixed(2))) + " per 1M tokens" : "", "💰", insights.mostEfficient?.provider)}
       ${insightCard("Biggest Growth", insights.biggestGrowth ? insights.biggestGrowth.handle : "—", insights.biggestGrowth ? "+" + insights.biggestGrowth.percent.toFixed(0) + "% vs last period" : "", "📈")}
       ${insightCard("Tracked Requests", fmtTokens(p.providers?.reduce((s, r) => s + r.requests, 0) || 0), "across all providers", "⚡")}
     </div>`;
 }
-function insightCard(label, value, detail, icon) {
-  return `<div class="card insight"><div class="ico" style="font-size:18px">${icon}</div><div><div class="t">${esc(label)}</div><div class="v">${esc(value)}</div><div class="d faint">${esc(detail)}</div></div></div>`;
+function insightCard(label, value, detail, icon, provider) {
+  const ico = provider ? providerLogo(provider, 34) : `<span style="font-size:18px">${icon}</span>`;
+  return `<div class="card insight"><div class="ico" style="background:transparent;border:none">${ico}</div><div><div class="t">${esc(label)}</div><div class="v">${esc(value)}</div><div class="d faint">${esc(detail)}</div></div></div>`;
 }
 
 /* ============================================================
@@ -1369,7 +2202,8 @@ async function renderTeams() {
           <div><div class="kpi-label">Cost</div><div style="font-weight:800;font-size:17px">${esc(t.costFormatted)}</div></div>
         </div>
         <div style="display:flex;height:8px;border-radius:4px;overflow:hidden;margin-bottom:12px">${Object.entries(t.providers || {}).sort((a, b) => b[1] - a[1]).map(([prov, val]) => `<span style="width:${(val / Math.max(1, t.tokens)) * 100}%;background:${providerColor(prov)}" title="${providerLabel(prov)}"></span>`).join("")}</div>
-        <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">${(t.users || []).map(u => `<span class="chip" data-handle-link="${esc(u.handle)}" style="cursor:pointer">${avatar(u.handle, u.avatarUrl, 18)} ${esc(u.handle)}</span>`).join("")}</div>
+        <div class="chart-legend" style="margin:0 0 12px">${Object.keys(t.providers || {}).map(prov => `<span class="chip logo-chip">${providerLogo(prov, 13)}${providerLabel(prov)}</span>`).join("")}</div>
+        <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">${(t.users || []).map(u => `<span class="chip" data-handle-link="${esc(u.handle)}" style="cursor:pointer">${avatar(u.handle, u.avatarUrl, 18, u.avatarStyle)} ${esc(u.handle)}</span>`).join("")}</div>
       </div>`).join("") || '<div class="empty">No teams yet.</div>'}
     </div>`;
   wireProfile();
@@ -1398,7 +2232,7 @@ async function renderPrompts() {
     <div class="split" style="margin-bottom:16px">
       <div class="card" style="padding:0;overflow:hidden"><div class="card-head" style="padding:16px 16px 8px"><h3>Recent Prompts / Workloads</h3></div>
         <div style="overflow-x:auto"><table><thead><tr><th>#</th><th>Prompt / Workflow</th><th>User</th><th>Provider</th><th class="right">Tokens</th><th class="right">Cost</th></tr></thead><tbody>
-        ${sessions.slice(0, 25).map((s, i) => `<tr><td class="faint">${i + 1}</td><td>${esc(s.title || "(untitled)")}</td><td><span class="chip" data-handle-link="${esc(s.handle)}" style="cursor:pointer">${esc(s.handle)}</span></td><td><span class="chip">${esc(providerLabel(s.provider))}${s.model ? " · " + esc(s.model) : ""}</span></td><td class="num right">${fmtTokens(s.tokens)}</td><td class="num right">${fmtCost(s.cost)}</td></tr>`).join("") || '<tr><td colspan="6"><div class="empty">No prompts published yet.</div></td></tr>'}
+        ${sessions.slice(0, 25).map((s, i) => `<tr><td class="faint">${i + 1}</td><td>${esc(s.title || "(untitled)")}</td><td><span class="chip" data-handle-link="${esc(s.handle)}" style="cursor:pointer">${esc(s.handle)}</span></td><td><span class="chip logo-chip">${providerLogo(s.provider, 14, s.model)}${esc(providerDisplay(s.provider, s.model))}${s.model ? " · " + esc(s.model) : ""}</span></td><td class="num right">${fmtTokens(s.tokens)}</td><td class="num right">${fmtCost(s.cost)}</td></tr>`).join("") || '<tr><td colspan="6"><div class="empty">Prompt history is private by default — owners can enable it in Token Horizon settings.</div></td></tr>'}
         </tbody></table></div></div>
       <div class="grid" style="align-content:start">
         <div class="card"><div class="card-head"><h3>Prompt Categories</h3></div>${barList([...cats.entries()].map(([label, value]) => ({ label, value })).sort((a, b) => b.value - a.value), { labelWidth: 130 })}</div>
@@ -1440,11 +2274,11 @@ async function renderBilling() {
     <div class="split" style="margin-bottom:16px">
       <div class="card"><div class="card-head"><h3>Cost by Provider</h3></div>${barList(rows.map(r => ({ label: providerLabel(r.provider), value: r.cost, valueText: fmtCost(r.cost), color: providerColor(r.provider) })), { labelWidth: 110 })}</div>
       <div class="card"><div class="card-head"><h3>Cost Share</h3></div><div class="donut-wrap">${donut(rows.map(r => ({ label: providerLabel(r.provider), value: r.cost, color: providerColor(r.provider) })).slice(0, 5), 156, fmtCost(totalCost), "total cost")}
-        <div class="legend">${rows.slice(0, 6).map(r => `<div class="legend-row"><span class="legend-dot" style="background:${providerColor(r.provider)}"></span>${esc(providerLabel(r.provider))}<span class="val">${esc(r.costFormatted)}</span></div>`).join("")}</div></div></div>
+        <div class="legend">${rows.slice(0, 6).map(r => `<div class="legend-row">${providerLogo(r.provider, 15)}${esc(providerLabel(r.provider))}<span class="val">${esc(r.costFormatted)}</span></div>`).join("")}</div></div></div>
     </div>
     <div class="card" style="padding:0;overflow:hidden"><div class="card-head" style="padding:16px 16px 8px"><h3>Cost by Model</h3></div>
       <div style="overflow-x:auto"><table><thead><tr><th>#</th><th>Model</th><th>Provider</th><th class="right">Tokens</th><th class="right">Requests</th><th class="right">Cost</th><th class="right">$/1M</th></tr></thead><tbody>
-      ${modelRows.map((m, i) => `<tr><td class="faint">${i + 1}</td><td>${esc(m.model)}</td><td><span class="chip">${esc(providerLabel(m.provider))}</span></td><td class="num right">${fmtTokens(m.tokens)}</td><td class="num right">${fmtNum(m.requests)}</td><td class="num right">${fmtCost(m.cost)}</td><td class="num right">$${m.tokens > 0 ? (m.cost / m.tokens * 1e6).toFixed(2) : "0.00"}</td></tr>`).join("") || '<tr><td colspan="7"><div class="empty">No model cost data.</div></td></tr>'}
+      ${modelRows.map((m, i) => `<tr><td class="faint">${i + 1}</td><td>${esc(m.model)}</td><td><span class="chip logo-chip">${providerLogo(m.provider, 15, m.model)}${esc(providerDisplay(m.provider, m.model))}</span></td><td class="num right">${fmtTokens(m.tokens)}</td><td class="num right">${fmtNum(m.requests)}</td><td class="num right">${fmtCost(m.cost)}</td><td class="num right">$${m.tokens > 0 ? (m.cost / m.tokens * 1e6).toFixed(2) : "0.00"}</td></tr>`).join("") || '<tr><td colspan="7"><div class="empty">No model cost data.</div></td></tr>'}
       </tbody></table></div></div>`;
 }
 
@@ -1471,14 +2305,20 @@ async function renderSettings() {
       const res = await api(`/api/share/list?handle=${encodeURIComponent(handle)}`, { headers: googleHeaders() });
       shares = res.shares || []; activity = res.activity || []; groups = res.groups || [];
     } catch (e) { err = e.message; }
-  } else {
-    err = "Sign in with Google (top right) to manage sharing for your profile.";
   }
   state.shares = shares; state.groups = groups; state.activity = activity;
   const active = shares.filter(s => !s.revoked && (s.expiresAt || 0) * 1000 > Date.now());
   const internal = active.filter(s => ["people", "group", "org"].includes(s.scope));
   const publicShares = active.filter(s => s.scope === "public" || s.publicLink);
   const rules = state.defaultRules;
+  const signInBanner = session ? "" : `<div class="signin-cta" style="margin:16px 0">
+    <div style="display:flex;gap:13px;align-items:center;min-width:0">
+      ${ICONS.shield}
+      <div><div style="font-weight:700;font-size:13.5px">Sign in to unlock sharing</div>
+      <div class="mini">Create groups &amp; teams, share reports with access controls, and track every event.</div></div>
+    </div>
+    <button class="pill primary" id="settings-signin">${GOOGLE_G} Sign in with Google</button>
+  </div>`;
 
   const rowsHtml = shares.map(s => {
     const expired = s.expiresAt && s.expiresAt * 1000 < Date.now();
@@ -1499,7 +2339,8 @@ async function renderSettings() {
   }).join("");
 
   $("#view").innerHTML = pageHead(["Settings", "Sharing"], "Sharing & Access Control", "Manage visibility and permissions for reports, profiles, leaderboards, and dashboards.", "Control access. Unlock opportunity.")
-    + (err ? `<div class="notice ${session ? "err" : ""}">${esc(err)}</div>` : "")
+    + signInBanner
+    + (err ? `<div class="notice err">${esc(err)}</div>` : "")
     + `<div class="grid kpis" style="margin:16px 0">
       ${kpiCard("Active Shared Items", String(active.length), "", ICONS.shield)}
       ${kpiCard("Internal Shares", String(internal.length), "", ICONS.users)}
@@ -1530,7 +2371,12 @@ async function renderSettings() {
       <table><thead><tr><th>Permission</th><th class="right">View</th><th class="right">Comment</th><th class="right">Edit</th><th class="right">Share</th></tr></thead><tbody>
         ${[["View the item", 1, 1, 1, 1], ["Add comments and feedback", 0, 1, 1, 1], ["Edit content, settings, or configuration", 0, 0, 1, 1], ["Share with others", 0, 0, 0, 1]].map(([label, v, c, e, s]) => `<tr><td>${esc(label)}</td>${[v, c, e, s].map(x => `<td class="right">${x ? "✓" : "—"}</td>`).join("")}</tr>`).join("")}
       </tbody></table></div>`;
-  $("#settings-share-new").onclick = () => openShareModal(handle);
+  $("#settings-share-new").onclick = () => {
+    if (!requireSignIn({ action: "Sharing usage reports", onSuccess: () => openShareModal(handle) })) return;
+    openShareModal(handle);
+  };
+  const settingsSignIn = $("#settings-signin");
+  if (settingsSignIn) settingsSignIn.onclick = () => openSignInModal();
   $$("[data-revoke]").forEach(b => b.onclick = async () => {
     try {
       await api("/api/share/revoke", { method: "POST", headers: googleHeaders(), body: JSON.stringify({ handle, id: b.dataset.revoke }) });
@@ -1541,16 +2387,9 @@ async function renderSettings() {
     state.defaultRules[el.dataset.rule] = !state.defaultRules[el.dataset.rule];
     saveDefaultRules(); render();
   });
-  $("#new-group-btn").onclick = async () => {
-    if (!session) { alert("Sign in with Google to create groups."); return; }
-    const name = prompt("Group name:");
-    if (!name) return;
-    const handles = prompt("Member handles (comma-separated):", "") || "";
-    const members = handles.split(",").map(x => x.trim()).filter(Boolean);
-    try {
-      await api("/api/groups", { method: "POST", headers: googleHeaders(), body: JSON.stringify({ handle, action: "create", group: { name, members } }) });
-      render();
-    } catch (e) { alert("Could not create group: " + e.message); }
+  $("#new-group-btn").onclick = () => {
+    if (!requireSignIn({ action: "Creating groups & teams", onSuccess: () => openGroupModal(handle) })) return;
+    openGroupModal(handle);
   };
 }
 function ruleRow(key, title, detail) {
@@ -1642,7 +2481,7 @@ function openShareModal(handle) {
   });
   $("#share-expiry").onchange = (e) => { state.shareExpiryDays = parseInt(e.target.value, 10); };
   const copy = async () => {
-    const link = state.shareLink || "https://tokens.benebsworth.com/leaderboard";
+    const link = state.shareLink || "https://token-horizon.dev/leaderboard";
     try { await navigator.clipboard.writeText(link); } catch (_) {}
     toast("Link copied");
   };
@@ -1672,11 +2511,330 @@ function openShareModal(handle) {
     }
   };
 }
-function closeModal() { $("#modal-backdrop").classList.remove("open"); $("#modal-backdrop").innerHTML = ""; }
+function closeModal() {
+  state.signInPending = null;
+  BLACKHOLE.stop();
+  $("#modal-backdrop").classList.remove("open");
+  $("#modal-backdrop").innerHTML = "";
+}
 function toast(msg, isErr = false) {
   const el = h(`<div style="position:fixed;bottom:22px;left:50%;transform:translateX(-50%);z-index:300;background:${isErr ? "#3A1518" : "#0F1B2E"};border:1px solid ${isErr ? "rgba(239,68,68,.4)" : "rgba(79,140,255,.4)"};color:${isErr ? "#F9A0A0" : "#DCE8FF"};padding:10px 16px;border-radius:10px;font-size:12.5px;box-shadow:0 10px 30px rgba(0,0,0,.5)">${esc(msg)}</div>`);
   document.body.appendChild(el);
   setTimeout(() => el.remove(), 2600);
+}
+
+/* ============================================================
+   ANIMATED ASCII BLACK HOLE (sign-in art)
+   Classic Gargantua view: an edge-on accretion disk lensed by a
+   Schwarzschild black hole, with token streams spiralling into
+   the event horizon. Null geodesics are integrated once per
+   character cell (a light map of disk crossings); each animation
+   frame only re-evaluates the disk + token field, so it is cheap.
+   ============================================================ */
+const BLACKHOLE = (() => {
+  const W = 72, H = 32;
+  const TAU = Math.PI * 2;
+  const RS = 1;                          // event horizon radius
+  const CAM_Y = 1.05, CAM_Z = 13;        // camera: slightly above the disk plane
+  const WORLD_HALF = 7.6;                // horizontal half-extent in world units
+  const DX = (WORLD_HALF * 2) / W;
+  const DY = DX * 1.66;                  // monospace cell aspect (~0.6 w/h)
+  const MAXSTEP = 200;
+  const RAMP = " .:-=+*#%@";
+
+  const light = new Array(W * H);
+  let built = false, el = null, raf = 0, pending = 0, last = 0, t0 = 0, running = false;
+
+  const fract = v => v - Math.floor(v);
+  const smoothstep = (a, b, x) => {
+    const t = Math.max(0, Math.min(1, (x - a) / (b - a)));
+    return t * t * (3 - 2 * t);
+  };
+  const reduceMotion = () => {
+    try { return window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches; }
+    catch (_) { return false; }
+  };
+
+  /// Trace every screen cell once. Stores, per cell, the disk-plane
+  /// crossings (radius + angle of each lensed image) and a background star.
+  function buildLightMap() {
+    const started = performance.now();
+    const dl = Math.hypot(CAM_Y, CAM_Z);
+    const vy0 = -CAM_Y / dl, vz0 = -CAM_Z / dl;
+    for (let j = 0; j < H; j++) {
+      for (let i = 0; i < W; i++) {
+        let px = (i + 0.5 - W / 2) * DX;
+        let py = (H / 2 - 0.5 - j) * DY + CAM_Y;
+        let pz = CAM_Z;
+        let vx = 0, vy = vy0, vz = vz0;
+        let cx = py * vz - pz * vy, cy = -px * vz, cz = px * vy;
+        const h2 = cx * cx + cy * cy + cz * cz;
+        const crossings = [];
+        let bg = 0;
+        for (let s = 0; s < MAXSTEP; s++) {
+          const r2 = px * px + py * py + pz * pz;
+          const r = Math.sqrt(r2);
+          if (r < RS) break;                                // swallowed
+          if (s > 0 && r > 16 && (px * vx + py * vy + pz * vz) > 0) {
+            const sn = fract(Math.sin(Math.round(vx * 57) * 12.9898 + Math.round(vy * 57) * 78.233) * 43758.5453);
+            if (sn > 0.986) bg = 0.22 + (sn - 0.986) * 16;
+            break;
+          }
+          const dt = Math.min(0.5, Math.max(0.07, r * 0.09));
+          const ir5 = 1 / (r2 * r2 * r);
+          const ax = -1.5 * h2 * px * ir5, ay = -1.5 * h2 * py * ir5, az = -1.5 * h2 * pz * ir5;
+          const nx = px + vx * dt + 0.5 * ax * dt * dt;
+          const ny = py + vy * dt + 0.5 * ay * dt * dt;
+          const nz = pz + vz * dt + 0.5 * az * dt * dt;
+          const nr2 = nx * nx + ny * ny + nz * nz;
+          const nir5 = 1 / (nr2 * nr2 * Math.sqrt(nr2));
+          vx += 0.5 * (ax - 1.5 * h2 * nx * nir5) * dt;
+          vy += 0.5 * (ay - 1.5 * h2 * ny * nir5) * dt;
+          vz += 0.5 * (az - 1.5 * h2 * nz * nir5) * dt;
+          const vl = Math.sqrt(vx * vx + vy * vy + vz * vz) || 1;
+          vx /= vl; vy /= vl; vz /= vl;
+          if (py * ny < 0) {                                // crossed the disk plane
+            const f = py / (py - ny);
+            const qx = px + (nx - px) * f, qz = pz + (nz - pz) * f;
+            const rc = Math.sqrt(qx * qx + qz * qz);
+            if (rc > 1.55 && rc < 6.2) crossings.push(rc, Math.atan2(qz, qx));
+          }
+          px = nx; py = ny; pz = nz;
+        }
+        light[j * W + i] = { c: crossings, bg };
+      }
+    }
+    built = true;
+    window.__bhBuildMs = Math.round(performance.now() - started);
+  }
+
+  /// Accretion-disk emission at a lensed crossing: radial profile,
+  /// turbulence, doppler beaming, plus the inbound token streams.
+  function disk(rc, ang, t) {
+    const u = ang / TAU + 0.5;
+    let d = smoothstep(2.0, 2.6, rc) * (1 - smoothstep(4.55, 5.5, rc));
+    if (d <= 0) return [0, 0];
+    d *= 0.55 + 1.3 * Math.exp(-((rc - 2.35) * (rc - 2.35)) / 2.6);
+    d *= 0.86 + 0.18 * Math.sin(u * TAU * 6 + rc * 1.9 - t * 1.4);
+    d *= 0.72 + 0.42 * Math.cos(ang - 0.7);
+    const p = fract(u * 8 + rc * 1.05 - t * 0.6);
+    const tok = 1.55 * Math.exp(-((p - 0.5) * (p - 0.5)) / 0.018);
+    return [d + tok, tok];
+  }
+
+  function draw(time) {
+    if (!el) return;
+    let out = "";
+    for (let j = 0; j < H; j++) {
+      for (let i = 0; i < W; i++) {
+        const cell = light[j * W + i];
+        let b = cell.bg, tok = false;
+        for (let k = 0; k < cell.c.length; k += 2) {
+          const [d, tk] = disk(cell.c[k], cell.c[k + 1], time);
+          if (d > b) { b = d; tok = tk > 0.5; }
+        }
+        const idx = Math.max(0, Math.min(RAMP.length - 1, Math.round(b * (RAMP.length - 1))));
+        const ch = RAMP[idx];
+        out += tok && ch !== " " ? `<span class="bh-tok">${ch}</span>` : ch;
+      }
+      out += "\n";
+    }
+    el.innerHTML = out;
+  }
+
+  function frame(now) {
+    if (!running) return;
+    if (!el || !el.isConnected) { running = false; el = null; return; }
+    raf = requestAnimationFrame(frame);
+    if (now - last < 33) return;                            // ~30fps cap
+    last = now;
+    draw((now - t0) / 1000);
+  }
+
+  function run() {
+    if (!el) return;
+    draw(4.2);
+    if (reduceMotion()) return;
+    running = true;
+    t0 = performance.now();
+    last = 0;
+    raf = requestAnimationFrame(frame);
+  }
+
+  return {
+    start(target) {
+      this.stop();
+      el = target;
+      if (built) return run();
+      pending = setTimeout(() => {                          // paint the modal first
+        pending = 0;
+        if (!el) return;
+        buildLightMap();
+        run();
+      }, 24);
+    },
+    stop() {
+      running = false;
+      if (raf) cancelAnimationFrame(raf);
+      raf = 0;
+      if (pending) { clearTimeout(pending); pending = 0; }
+      el = null;
+    },
+    get ready() { return built; }
+  };
+})();
+
+/* ============================================================
+   SIGN-IN FLOW
+   ============================================================ */
+/// Gate an action behind a verified Google session. When signed out,
+/// opens the animated sign-in modal and resumes the action afterwards.
+function requireSignIn(opts = {}) {
+  if (isGoogleSessionValid()) return true;
+  openSignInModal(opts);
+  return false;
+}
+function completeSignIn() {
+  const pendingAction = state.signInPending;
+  state.signInPending = null;
+  closeModal();
+  renderAuthSlot();
+  if (state.view === "settings") render();
+  if (pendingAction && pendingAction.onSuccess) setTimeout(() => pendingAction.onSuccess(), 60);
+}
+function openSignInModal(opts = {}) {
+  const action = opts.action || "";
+  if (typeof opts.onSuccess === "function") state.signInPending = { action, onSuccess: opts.onSuccess };
+  const benefits = [
+    ["👥", "Create groups & teams", "Bundle teammates into audiences you can share with in one click."],
+    ["🛡️", "Claim your profile", "Own your handle, stats, avatar, and rank history."],
+    ["🔗", "Share usage reports", "Invite-only links with expiry and access controls."],
+    ["📊", "Publish telemetry", "Push this machine's usage to the global leaderboard."]
+  ];
+  const backdrop = $("#modal-backdrop");
+  backdrop.innerHTML = `<div class="modal signin-modal">
+    <div class="signin-grid">
+      <div class="signin-art">
+        <pre class="bh-art" id="bh-art" aria-hidden="true"></pre>
+        <div class="signin-art-cap">Token Horizon · Singularity Engine</div>
+      </div>
+      <div class="signin-pane">
+        <div class="modal-head"><div>
+          <h2>${action ? "Sign in to continue" : "Welcome to TokenArena"}</h2>
+          <p>${action ? esc(action) + " requires a verified Google account." : "Sign in to compete, collaborate, and claim your stats."}</p>
+        </div><button class="x" data-close>×</button></div>
+        <div class="modal-body" style="flex:1">
+          <div class="signin-benefits">${benefits.map(([ico, t, d]) => `<div class="signin-benefit"><div class="ico">${ico}</div><div><div class="t">${t}</div><div class="d">${d}</div></div></div>`).join("")}</div>
+          <div class="signin-gsi" id="signin-gsi"></div>
+          <div id="signin-status" class="mini" style="margin-top:10px"></div>
+          <div class="notice" style="margin-top:14px">Google OAuth · TokenArena only stores your email, name, and avatar choice.</div>
+        </div>
+        <div class="modal-foot" style="justify-content:space-between;align-items:center">
+          <span class="mini">Protected by Google</span>
+          <button class="pill ghost" data-close>Not now</button>
+        </div>
+      </div>
+    </div>
+  </div>`;
+  backdrop.classList.add("open");
+  $$("[data-close]", backdrop).forEach(b => b.onclick = closeModal);
+  backdrop.onclick = (e) => { if (e.target === backdrop) closeModal(); };
+  BLACKHOLE.start($("#bh-art"));
+  mountSignInOptions();
+}
+/// (Re)render the right-hand sign-in options from the current GSI state.
+function mountSignInOptions() {
+  const host = $("#signin-gsi");
+  if (!host) return;
+  const status = $("#signin-status");
+  if (state.googleReady) {
+    status.textContent = "";
+    host.innerHTML = `<div id="signin-gsi-btn"></div>`;
+    if (renderGoogleButton($("#signin-gsi-btn"), { width: 250 })) return;
+    host.innerHTML = `<button class="pill primary" id="signin-retry">Retry Google sign-in</button>`;
+    $("#signin-retry").onclick = () => { state.googleReady = false; state.googleUnavailable = false; initGoogleSignIn(); status.textContent = "Retrying…"; };
+    return;
+  }
+  if (state.googleClientId) {
+    host.innerHTML = `<div class="pill" style="opacity:.75"><span class="spinner"></span> ${state.googleUnavailable ? "Google sign-in unavailable" : "Loading Google sign-in…"}</div>`;
+    if (state.googleUnavailable) {
+      host.innerHTML += `<div class="notice err">The Google sign-in script could not load (offline or blocked).</div>
+        <button class="pill" id="signin-retry">Retry</button>`;
+      $("#signin-retry").onclick = () => { state.googleUnavailable = false; initGoogleSignIn(); mountSignInOptions(); };
+    }
+    return;
+  }
+  host.innerHTML = `<button class="pill primary" id="signin-dev">Continue (dev mode)</button>`;
+  status.textContent = "GOOGLE_CLIENT_ID isn't configured on this deployment — dev sign-in uses an email only.";
+  $("#signin-dev").onclick = promptGoogleLogin;
+}
+
+/* ============================================================
+   GROUPS
+   ============================================================ */
+function openGroupModal(handle) {
+  const owner = handle || state.currentHandle || (state.data?.leaderboard || [])[0]?.entry.handle || "";
+  const suggestions = [...new Set((state.data?.leaderboard || []).map(r => r.entry.handle))].filter(x => x && x !== owner);
+  const draft = state.groupDraft || { name: "", members: [] };
+  const backdrop = $("#modal-backdrop");
+  backdrop.innerHTML = `<div class="modal" style="max-width:560px">
+    <div class="modal-head"><div><h2>New Group</h2><p>Bundle teammates into an audience you can share with in one click.</p></div><button class="x" data-close>×</button></div>
+    <div class="modal-body">
+      <div class="kpi-label">Group name</div>
+      <input id="group-name" placeholder="e.g. Platform Team" value="${esc(draft.name)}" style="width:100%;margin:6px 0 16px;background:var(--panel);border:1px solid var(--line);border-radius:9px;padding:10px 12px;color:var(--text)"/>
+      <div class="kpi-label">Members</div>
+      <div id="group-member-pills" style="margin:8px 0"></div>
+      <div style="display:flex;gap:8px">
+        <input id="group-member-input" list="group-handles" placeholder="Add by handle, then press Enter" style="flex:1;background:var(--panel);border:1px solid var(--line);border-radius:9px;padding:10px 12px;color:var(--text)"/>
+        <button class="pill" id="group-member-add">Add</button>
+      </div>
+      <datalist id="group-handles">${suggestions.map(s => `<option value="${esc(s)}"></option>`).join("")}</datalist>
+      ${suggestions.length ? `<div class="mini" style="margin-top:8px">From the leaderboard: ${suggestions.slice(0, 6).map(s => `<a href="#" data-group-suggest="${esc(s)}" style="color:#9CC0FF">@${esc(s)}</a>`).join(" ")}</div>` : ""}
+      <div id="group-status" class="mini" style="margin-top:10px"></div>
+    </div>
+    <div class="modal-foot"><button class="pill ghost" data-close>Cancel</button><button class="pill primary" id="group-create">Create Group</button></div>
+  </div>`;
+  backdrop.classList.add("open");
+  $$("[data-close]", backdrop).forEach(b => b.onclick = closeModal);
+  backdrop.onclick = (e) => { if (e.target === backdrop) closeModal(); };
+  function renderMembers() {
+    state.groupDraft.members = [...new Set(state.groupDraft.members)];
+    $("#group-member-pills").innerHTML = state.groupDraft.members.map(m => `<span class="tag-pill">@${esc(m)}<button data-remove-member="${esc(m)}">×</button></span>`).join("") || '<span class="faint" style="font-size:12px">No members yet — you can add them later.</span>';
+    $$("[data-remove-member]").forEach(b => b.onclick = () => {
+      state.groupDraft.members = state.groupDraft.members.filter(x => x !== b.dataset.removeMember);
+      renderMembers();
+    });
+  }
+  function addMember(value) {
+    const v = String(value || "").trim().replace(/^@/, "");
+    if (v && !state.groupDraft.members.includes(v)) state.groupDraft.members.push(v);
+    $("#group-member-input").value = "";
+    renderMembers();
+  }
+  $("#group-name").oninput = (e) => { state.groupDraft.name = e.target.value; };
+  $("#group-member-add").onclick = () => addMember($("#group-member-input").value);
+  $("#group-member-input").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { e.preventDefault(); addMember(e.target.value); }
+  });
+  $$("[data-group-suggest]").forEach(a => a.onclick = (e) => { e.preventDefault(); addMember(a.dataset.groupSuggest); });
+  renderMembers();
+  $("#group-create").onclick = async () => {
+    const name = $("#group-name").value.trim();
+    if (!name) { toast("Group name is required", true); return; }
+    if (!isGoogleSessionValid()) { openSignInModal({ action: "Creating groups & teams", onSuccess: () => openGroupModal(owner) }); return; }
+    const btn = $("#group-create");
+    btn.innerHTML = '<span class="spinner"></span>';
+    try {
+      await api("/api/groups", { method: "POST", headers: googleHeaders(), body: JSON.stringify({ handle: owner, action: "create", group: { name, members: state.groupDraft.members } }) });
+      toast("Group created");
+      state.groupDraft = { name: "", members: [] };
+      closeModal();
+      if (state.view === "settings") render();
+    } catch (e) {
+      toast("Could not create group: " + e.message, true);
+      btn.textContent = "Create Group";
+    }
+  };
 }
 
 /* ============================================================
@@ -1693,20 +2851,152 @@ async function renderSharedReport(id) {
       + `<div class="grid kpis" style="margin-bottom:16px">
         ${kpiCard("Tokens", r.tokensAllFormatted, "", ICONS.tokens)}
         ${r.costAllFormatted ? kpiCard("Cost", r.costAllFormatted, "", ICONS.cost) : kpiCard("League", r.leagueTitle + " " + roman(r.division || 3), "", ICONS.shield)}
-        ${kpiCard("Rank", "#" + r.rank, `<span class="faint">Top ${100 - (r.percentile || 0)}%</span>`, ICONS.rank)}
+        ${kpiCard("Rank", "#" + r.rank, `<span class="faint">Top ${topPercent(r.percentile)}%</span>`, ICONS.rank)}
         ${kpiCard("Streak", (r.streakDays || 0) + " days", "", ICONS.fire)}
       </div>
       <div class="split">
         <div class="card"><div class="card-head"><h3>Usage Over Time</h3></div>${areaChart((r.history || []).map(x => ({ label: x.dayLabel || fmtDay(x.day), value: x.tokens || 0, cost: x.cost || 0 })), { color: "#4F8CFF", height: 200 })}</div>
         <div class="card"><div class="card-head"><h3>Model Allocation</h3></div>
           <table><thead><tr><th>Model</th><th>Provider</th><th class="right">Tokens</th><th class="right">Share</th></tr></thead><tbody>
-          ${(r.models || []).map(m => `<tr><td>${esc(m.model)}</td><td>${esc(providerLabel(m.provider))}</td><td class="num right">${fmtTokens(m.tokensAll)}</td><td class="num right">${fmtPct(m.sharePercent || 0, 1)}</td></tr>`).join("") || '<tr><td colspan="4"><div class="empty">Not shared</div></td></tr>'}
+          ${(r.models || []).map(m => `<tr><td>${esc(m.model)}</td><td>${esc(providerDisplay(m.provider, m.model))}</td><td class="num right">${fmtTokens(m.tokensAll)}</td><td class="num right">${fmtPct(m.sharePercent || 0, 1)}</td></tr>`).join("") || '<tr><td colspan="4"><div class="empty">Not shared</div></td></tr>'}
           </tbody></table></div>
       </div>`;
   } catch (e) {
     view.innerHTML = pageHead(["Shared", "Report"], "Share link unavailable", "This share link may have expired or been revoked.", "")
       + `<div class="card"><div class="notice err">${esc(e.message)}</div><div style="margin-top:14px"><button class="pill" onclick="location.href=location.pathname">Back to leaderboard</button></div></div>`;
   }
+}
+
+/* ============================================================
+   HEATMAP DAY DRILLDOWN
+   ============================================================ */
+function localDayStart(ts) {
+  const d = new Date(ts * 1000);
+  return Math.floor(new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime() / 1000);
+}
+function openDayDrilldown(day) {
+  const p = currentProfile();
+  if (!p) return;
+  const e = p.entry;
+  const bd = e.breakdown || {};
+  const daily = (bd.daily || []).find(d => d.day === day);
+  const total = daily ? daily.tokens : 0;
+  const cost = daily ? daily.cost : 0;
+  const models = (bd.modelHistory || []).map(s => {
+    const pt = (s.points || []).find(x => x.day === day);
+    return pt && pt.tokens > 0 ? { model: s.model, provider: s.provider, tokens: pt.tokens } : null;
+  }).filter(Boolean).sort((a, b) => b.tokens - a.tokens);
+  const sessions = (bd.sessions || []).filter(s => s.at && localDayStart(s.at) === day);
+  const label = new Date(day * 1000).toLocaleDateString(undefined, {
+    weekday: "long", month: "long", day: "numeric", year: "numeric"
+  });
+  const backdrop = $("#modal-backdrop");
+  backdrop.innerHTML = `<div class="modal" style="max-width:580px">
+    <div class="modal-head"><div><h2>${esc(label)}</h2>
+      <p>${fmtTokens(total)} tokens${cost ? " · " + fmtCost(cost) : ""}${models.length ? " · " + models.length + " model" + (models.length === 1 ? "" : "s") : ""}</p></div>
+      <button class="x" data-close>×</button></div>
+    <div class="modal-body">
+      ${models.length
+        ? `<div class="card" style="background:var(--panel2)"><div class="card-head"><h3>Usage by model</h3><span class="sub">share of day</span></div>
+            ${models.map(m => `<div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">
+              ${providerLogo(m.provider, 18, m.model)}
+              <span style="width:150px;font-size:12.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(m.model)}">${esc(m.model)}</span>
+              <span style="flex:1"><span class="bar"><i style="width:${(m.tokens / Math.max(1, total) * 100).toFixed(1)}%"></i></span></span>
+              <span class="num" style="width:64px;text-align:right">${fmtTokens(m.tokens)}</span>
+              <span class="num faint" style="width:44px;text-align:right">${(m.tokens / Math.max(1, total) * 100).toFixed(1)}%</span>
+            </div>`).join("")}</div>`
+        : `<div class="notice">No per-model rows published for this day.</div>`}
+      ${sessions.length
+        ? `<div class="card" style="background:var(--panel2);margin-top:12px"><div class="card-head"><h3>Activity</h3><span class="sub">${sessions.length} session${sessions.length === 1 ? "" : "s"}</span></div>
+            ${sessions.map(s => `<div class="mover"><div style="min-width:0"><div class="name" style="font-size:12px">${s.title ? esc(s.title) : '<span class="faint">title private</span>'}</div>
+              <div class="faint" style="font-size:10.5px;display:flex;align-items:center;gap:5px">${fmtDate(s.at)} · ${providerLogo(s.provider, 13, s.model)}${esc(providerDisplay(s.provider, s.model))}${s.model ? " · " + esc(s.model) : ""}</div></div>
+              <div class="val">${fmtTokens(s.tokens)}<div class="faint">${fmtCost(s.cost)}</div></div></div>`).join("")}</div>`
+        : ""}
+    </div>
+    <div class="modal-foot"><button class="pill ghost" data-close>Close</button></div>
+  </div>`;
+  backdrop.classList.add("open");
+  $$("[data-close]", backdrop).forEach(b => b.onclick = closeModal);
+  backdrop.onclick = (ev) => { if (ev.target === backdrop) closeModal(); };
+}
+
+/* ============================================================
+   AVATAR PICKER
+   ============================================================ */
+async function saveAvatar(handle, payload) {
+  const body = { handle, ...payload };
+  const tokenEl = $("#avatar-claim-token");
+  if (tokenEl && tokenEl.value.trim()) body.claimToken = tokenEl.value.trim();
+  if (state.googleSession && !state.googleClientId) {
+    body.googleUser = {
+      email: state.googleSession.email, sub: state.googleSession.sub,
+      name: state.googleSession.name, picture: state.googleSession.picture
+    };
+  }
+  await api("/api/profile/avatar", { method: "POST", headers: googleHeaders(), body: JSON.stringify(body) });
+  toast("Avatar updated");
+  state.user = null;
+  state.data = null;
+  closeModal();
+  render();
+}
+function openAvatarModal(handle) {
+  const entry = (state.user && state.user.entry) ||
+    ((state.data?.leaderboard || []).find(r => r.entry.handle.toLowerCase() === String(handle).toLowerCase()) || {}).entry;
+  if (!entry) return;
+  const styles = (window.DiceBear && window.DiceBear.styles) || ["identicon"];
+  const isOwner = Boolean(state.googleSession && entry.googleEmail &&
+    state.googleSession.email && entry.googleEmail.toLowerCase() === state.googleSession.email.toLowerCase());
+  const backdrop = $("#modal-backdrop");
+  backdrop.innerHTML = `<div class="modal" style="max-width:660px">
+    <div class="modal-head"><div><h2>Display photo</h2><p>Use your Google photo, upload one, or pick a generated avatar.</p></div><button class="x" data-close>×</button></div>
+    <div class="modal-body">
+      <div style="display:flex;gap:16px;align-items:center;margin-bottom:16px">
+        ${entryAvatar(entry, 64)}
+        <div><div style="font-weight:700">@${esc(entry.handle)}</div><div class="mini">${entry.avatarUrl ? "Custom photo" : "Generated avatar" + (entry.avatarStyle ? " · " + esc(entry.avatarStyle) : "")}</div></div>
+      </div>
+      ${state.googleSession?.picture ? `<div class="card" style="background:var(--panel2);margin-bottom:12px"><div class="card-head"><h3>Google photo</h3></div>
+        <div style="display:flex;gap:12px;align-items:center">${avatar(entry.handle, state.googleSession.picture, 44)}<button class="pill" id="avatar-google">Use my Google photo</button></div></div>` : ""}
+      <div class="card" style="background:var(--panel2);margin-bottom:12px"><div class="card-head"><h3>Generated avatars</h3><span class="sub">click a style to use it for @${esc(entry.handle)}</span></div>
+        <div style="display:flex;gap:10px;flex-wrap:wrap">${styles.map(st => `<span class="avatar" data-avatar-style="${st}" title="${esc(st)}" style="width:46px;height:46px;cursor:pointer;border:2px solid ${entry.avatarStyle === st ? "#4F8CFF" : "var(--line2)"}">${window.DiceBear ? window.DiceBear.avatarSvg(st, entry.handle, { size: 92 }) : ""}</span>`).join("")}</div>
+      </div>
+      <div class="card" style="background:var(--panel2);margin-bottom:12px"><div class="card-head"><h3>Upload a photo</h3><span class="sub">PNG/JPEG/WebP/GIF · max 400KB</span></div>
+        <input type="file" id="avatar-file" accept="image/png,image/jpeg,image/webp,image/gif" style="font-size:12px;color:var(--muted)"/>
+        <div id="avatar-file-status" class="mini" style="margin-top:6px"></div>
+      </div>
+      <div class="card" style="background:var(--panel2)"><div class="card-head"><h3>Image URL</h3></div>
+        <div style="display:flex;gap:8px"><input id="avatar-url" placeholder="https://…" style="flex:1;background:var(--panel);border:1px solid var(--line);border-radius:9px;padding:9px 11px;color:var(--text);font-size:12.5px"/><button class="pill" id="avatar-url-save">Use URL</button></div>
+      </div>
+      ${entry.claimed && !isOwner ? `<div class="notice err" style="margin-top:12px">This profile is claimed by another account — sign in as its owner to change the photo.</div>` : ""}
+      ${!entry.claimed ? `<div style="margin-top:12px"><input id="avatar-claim-token" placeholder="Claim token (required for anonymous profiles)" style="width:100%;background:var(--panel);border:1px solid var(--line);border-radius:9px;padding:9px 11px;color:var(--text);font-size:12.5px"/></div>` : ""}
+    </div>
+    <div class="modal-foot"><button class="pill ghost" data-close>Close</button></div>
+  </div>`;
+  backdrop.classList.add("open");
+  $$("[data-close]", backdrop).forEach(b => b.onclick = closeModal);
+  backdrop.onclick = (e) => { if (e.target === backdrop) closeModal(); };
+  const googleBtn = $("#avatar-google");
+  if (googleBtn) googleBtn.onclick = () => saveAvatar(entry.handle, { useGooglePhoto: true }).catch(e => toast(e.message, true));
+  $$("[data-avatar-style]", backdrop).forEach(el => el.onclick = () => {
+    saveAvatar(entry.handle, { avatarStyle: el.dataset.avatarStyle, avatarUrl: "" }).catch(e => toast(e.message, true));
+  });
+  $("#avatar-url-save").onclick = () => {
+    const url = $("#avatar-url").value.trim();
+    if (!/^https?:\/\//.test(url)) { toast("Enter an http(s) image URL", true); return; }
+    saveAvatar(entry.handle, { avatarUrl: url }).catch(e => toast(e.message, true));
+  };
+  $("#avatar-file").onchange = (ev) => {
+    const file = ev.target.files && ev.target.files[0];
+    if (!file) return;
+    const status = $("#avatar-file-status");
+    if (file.size > 400_000) { status.innerHTML = '<span class="down">Image too large (max 400KB)</span>'; return; }
+    const reader = new FileReader();
+    reader.onload = () => {
+      status.textContent = "Uploading…";
+      saveAvatar(entry.handle, { imageDataUrl: reader.result }).catch(e => { status.innerHTML = `<span class="down">${esc(e.message)}</span>`; });
+    };
+    reader.readAsDataURL(file);
+  };
 }
 
 /* ============================================================
@@ -1717,24 +3007,35 @@ function openClaimModal(handle) {
   backdrop.innerHTML = `<div class="modal" style="max-width:480px">
     <div class="modal-head"><div><h2>Claim @${esc(handle)}</h2><p>Verify your Google account to own this profile.</p></div><button class="x" data-close>×</button></div>
     <div class="modal-body">
-      <div class="notice">Sign in with Google, then enter the claim token issued when the profile first published (or publish from the app to auto-claim).</div>
-      <div style="display:flex;flex-direction:column;gap:10px;margin-top:14px">
-        <input id="claim-token" placeholder="Claim token (optional)" style="background:var(--panel);border:1px solid var(--line);border-radius:9px;padding:10px 12px;color:var(--text)"/>
-        <input id="claim-email" placeholder="Google email" value="${esc(state.googleSession?.email || "")}" style="background:var(--panel);border:1px solid var(--line);border-radius:9px;padding:10px 12px;color:var(--text)"/>
+      <div class="notice">${state.googleReady ? "Sign in with Google, then claim this profile." : "Google sign-in isn't configured — enter your email and the claim token issued when the profile first published."}</div>
+      <div style="display:flex;flex-direction:column;gap:10px;margin-top:14px;align-items:flex-start">
+        <input id="claim-token" placeholder="Claim token (optional)" style="width:100%;background:var(--panel);border:1px solid var(--line);border-radius:9px;padding:10px 12px;color:var(--text)"/>
+        ${state.googleReady
+          ? `<div id="claim-gsi"></div>`
+          : `<input id="claim-email" placeholder="Google email" value="${esc(state.googleSession?.email || "")}" style="width:100%;background:var(--panel);border:1px solid var(--line);border-radius:9px;padding:10px 12px;color:var(--text)"/>`}
       </div>
+      ${state.googleSession ? `<div class="notice ok" style="margin-top:10px">Signed in as ${esc(state.googleSession.email)}</div>` : ""}
     </div>
     <div class="modal-foot"><button class="pill ghost" data-close>Cancel</button><button class="pill primary" id="claim-submit">Claim Profile</button></div>
   </div>`;
   backdrop.classList.add("open");
   $$("[data-close]", backdrop).forEach(b => b.onclick = closeModal);
+  if (state.googleReady) renderGoogleButton($("#claim-gsi"), { width: 240 });
   $("#claim-submit").onclick = async () => {
-    const email = $("#claim-email").value.trim();
+    const emailInput = $("#claim-email");
+    const email = emailInput ? emailInput.value.trim() : (state.googleSession?.email || "");
+    if (state.googleReady && !state.googleSession) {
+      openSignInModal({ action: `Claiming @${handle}`, onSuccess: () => openClaimModal(handle) });
+      return;
+    }
     if (!email.includes("@")) { toast("Enter a valid email", true); return; }
+    const body = { handle, claimToken: $("#claim-token").value.trim() || undefined };
+    if (!state.googleClientId) body.googleUser = { email, sub: "google_" + email };
     try {
       await api("/api/claim", {
         method: "POST",
         headers: googleHeaders(),
-        body: JSON.stringify({ handle, claimToken: $("#claim-token").value.trim() || undefined, googleUser: { email, sub: "google_" + email } })
+        body: JSON.stringify(body)
       });
       toast("Profile claimed");
       closeModal();
@@ -1768,7 +3069,9 @@ function openPublishModal() {
       if (!entry) throw new Error("No local entry found — is the app running?");
       const handle = $("#publish-handle").value.trim() || entry.handle;
       const payload = { ...entry, handle, claimToken: $("#publish-token").value.trim() || undefined };
-      if (state.googleSession) payload.googleUser = { email: state.googleSession.email, sub: state.googleSession.sub, name: state.googleSession.name };
+      if (state.googleSession && !state.googleClientId) {
+        payload.googleUser = { email: state.googleSession.email, sub: state.googleSession.sub, name: state.googleSession.name };
+      }
       status.textContent = "Publishing…";
       const res = await api("/api/leaderboard", { method: "POST", headers: googleHeaders(), body: JSON.stringify(payload) });
       status.innerHTML = `<span class="up">Published as @${esc(res.handle)} (${res.action})</span>`;
@@ -1782,20 +3085,37 @@ function openPublishModal() {
 /* ============================================================
    INIT
    ============================================================ */
-function init() {
+async function init() {
   wireChrome();
+  renderAuthSlot();
+  // Public client config (Google OAuth client ID + season) from the worker.
+  try {
+    const cfg = await api("/api/config");
+    state.googleClientId = cfg.googleClientId || "";
+  } catch (_) {
+    state.googleClientId = "";
+  }
+  await Promise.all([CHARTS_READY, DICEBEAR_READY]);
+  initGoogleSignIn();
   renderAuthSlot();
   $("#global-search").addEventListener("focus", () => {
     if (state.view !== "leaderboard") navigate("leaderboard");
   });
   const params = new URLSearchParams(location.search);
-  state.view = params.get("view") || "leaderboard";
   if (params.get("user")) state.currentHandle = params.get("user");
+  state.view = params.get("view") || (params.get("user") ? "players" : "leaderboard");
   renderNav();
   if (params.get("share")) { renderSharedReport(params.get("share")); return; }
   render();
-  setInterval(() => {
-    if (state.view === "leaderboard" && !document.hidden) { state.data = null; render(); }
+  if (params.get("signin")) openSignInModal();
+  setInterval(async () => {
+    // Idle tick: refresh in the background and only rebuild the view when the
+    // payload fingerprint actually changed (no chart remounts on no-op ticks).
+    if (state.view !== "leaderboard" || document.hidden) return;
+    try {
+      if (await loadLeaderboard({ force: true })) render();
+      else perf.skippedRenders++;
+    } catch (_) {}
   }, 30000);
 }
 document.addEventListener("keydown", (e) => {
