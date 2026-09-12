@@ -19,3 +19,13 @@ video/dist/
 # JS subprojects (deps via npm ci, build output regenerated — never commit)
 node_modules/
 ui/out/
+
+# SvelteKit/Tauri build output
+ui/.svelte-kit/
+ui/build/
+ui/src-tauri/binaries/
+ui/src-tauri/target/
+
+# Local toolchain downloads
+swiftly
+swiftly-*.tar.gz

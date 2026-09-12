@@ -30,6 +30,8 @@ export interface Health {
 	platform: string;
 	version: string;
 	usage_store: boolean;
+	machine_id?: string;
+	machine_alias?: string;
 }
 
 export interface TokenBreakdown {
@@ -94,6 +96,9 @@ export interface UsageEvent {
 	model: string;
 	source: string;
 	product?: string;
+	machineID?: string;
+	machineAlias?: string;
+	accountID?: string;
 	tokens: TokenBreakdown;
 	cost: number;
 	latencyMs?: number;
@@ -129,10 +134,12 @@ export interface ProviderSummary {
 }
 
 export interface TrendPoint {
-	day: string;
+	/** Bucket start, epoch seconds. */
+	day: number;
 	tokens: number;
 	cost: number;
 	breakdown?: TokenBreakdown;
+	byTool?: Record<string, number>;
 }
 
 export interface Trends {
@@ -149,6 +156,49 @@ export interface ProviderLimit {
 	detail?: string;
 }
 
+export interface BucketRow {
+	/** Bucket start, epoch seconds. */
+	start: number;
+	vendor: string;
+	tokens: TokenBreakdown;
+	cost: number;
+}
+
+export interface ProcSample {
+	pid: number;
+	ppid: number;
+	name: string;
+	command: string;
+	user: string;
+	threads: number;
+	cpu: number;
+	memMB: number;
+	diskReadMBps: number;
+	diskWriteMBps: number;
+	netInKBps: number;
+	netOutKBps: number;
+	startTime: number;
+}
+
+/** Cloud sync state (GET /sync/status). */
+export interface SyncStatus {
+	enabled: boolean;
+	cursors: Record<string, string>;
+	last_sync: number | null;
+	last_report?: { pushed: Record<string, number>; skipped: string[]; error?: string | null };
+}
+
+/** One machine's usage rollup (GET /analytics/aggregate?group=machine).
+ * `key` is the machine alias when known, else the raw machine id. */
+export interface MachineRow {
+	key: string;
+	tokens: TokenBreakdown;
+	cost: number;
+	requests: number;
+	firstEvent?: number;
+	lastEvent?: number;
+}
+
 // ---- Endpoints ----
 
 export const api = {
@@ -163,5 +213,12 @@ export const api = {
 		get<EventsPage>(`/analytics/events${params}${cursor ? `${params ? '&' : '?'}cursor=${cursor}` : ''}`),
 	summary: () => get<{ providers: ProviderSummary[] }>('/analytics/summary'),
 	trends: (window: string) => get<Trends>(`/trends?window=${window}`),
-	limits: () => get<{ limits: ProviderLimit[] }>('/limits')
+	limits: () => get<{ limits: ProviderLimit[] }>('/limits'),
+	buckets: (resolution: number, fromEpoch: number) =>
+		get<{ resolution: number; buckets: BucketRow[] }>(
+			`/analytics/buckets?resolution=${resolution}&from=${Math.floor(fromEpoch)}`
+		),
+	processes: () => get<Record<string, ProcSample[]>>('/processes'),
+	syncStatus: () => get<SyncStatus>('/sync/status'),
+	machines: () => get<{ group: string; rows: MachineRow[] }>('/analytics/aggregate?group=machine')
 };

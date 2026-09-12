@@ -37,6 +37,34 @@ public enum MeterRegistry {
         return keys
     }
 
+    /// Live meters, installed by the owning host (CoreAPIRouter). Lets any
+    /// core component route its runtime calls through the measuring path
+    /// without knowing who owns the meters.
+    public static var meterProvider: (() -> [RequestMeter])?
+
+    /// Loopback URL of the meter forwarding to `endpoint`, if one is live.
+    /// THE routing rule for internal clients: consult this before calling
+    /// any runtime/vendor endpoint so all measured traffic uses one path
+    /// (OllamaClient, future benchmarks, ...). Nil = call the endpoint
+    /// directly (no meter, or metering not consented).
+    public static func routedURL(for endpoint: URL) -> URL? {
+        guard let meters = meterProvider?() else { return nil }
+        for meter in meters where sameEndpoint(meter.targetBase, endpoint) {
+            return URL(string: "http://127.0.0.1:\(Int(meter.listenPort))")
+        }
+        return nil
+    }
+
+    /// Endpoint identity for routing: scheme + host + effective port.
+    public static func sameEndpoint(_ a: URL, _ b: URL) -> Bool {
+        func effectivePort(_ u: URL) -> Int {
+            u.port ?? (u.scheme?.lowercased() == "https" ? 443 : 80)
+        }
+        return a.scheme?.lowercased() == b.scheme?.lowercased()
+            && a.host?.lowercased() == b.host?.lowercased()
+            && effectivePort(a) == effectivePort(b)
+    }
+
     public static func make(vendor: String, port: UInt16, target: URL?,
                             store: UsageStoring?) -> RequestMeter? {
         let key = vendor.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()

@@ -10,6 +10,7 @@ public final class LlamaCppRuntime: LocalInferenceRuntime {
                    processSignatures: ["llama-server", "llamacpp", "llama.cpp"])
     }
 
+    public override var defaultMeterListenPort: UInt16? { 9313 }
     public override var promptCounterNames: [String] { ["llamacpp:prompt_tokens_total"] }
     public override var generationCounterNames: [String] { ["llamacpp:tokens_predicted_total"] }
     /// Single-model server; series carry no model label.

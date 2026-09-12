@@ -11,11 +11,14 @@ public struct HTTPRequest {
     /// Raw path including the query string.
     public let path: String
     public let body: Data
+    /// Header values keyed by lowercased header name.
+    public let headers: [String: String]
 
-    public init(method: String, path: String, body: Data) {
+    public init(method: String, path: String, body: Data, headers: [String: String] = [:]) {
         self.method = method
         self.path = path
         self.body = body
+        self.headers = headers
     }
 }
 
@@ -31,7 +34,7 @@ public struct HTTPResponse {
         self.body = body
     }
 
-    public func serialized() -> Data {
+    public func serialized(corsOrigin: String? = nil) -> Data {
         let reason: String
         switch status {
         case 200: reason = "OK"
@@ -42,9 +45,15 @@ public struct HTTPResponse {
         case 503: reason = "Service Unavailable"
         default: reason = "OK"
         }
-        let header = "HTTP/1.1 \(status) \(reason)\r\n"
+        var header = "HTTP/1.1 \(status) \(reason)\r\n"
             + "Content-Type: \(contentType)\r\n"
-            + "Content-Length: \(body.count)\r\n"
+        // Reflect only trusted local webview origins (see transport); never "*",
+        // which would let any website read local usage data cross-origin.
+        if let corsOrigin {
+            header += "Access-Control-Allow-Origin: \(corsOrigin)\r\n"
+                + "Vary: Origin\r\n"
+        }
+        header += "Content-Length: \(body.count)\r\n"
             + "Connection: close\r\n\r\n"
         return Data(header.utf8) + body
     }
@@ -150,6 +159,34 @@ public final class POSIXLoopbackHTTPServer: LocalHTTPServing {
         }
     }
 
+    /// Origins trusted to read the loopback API from a webview: the Tauri
+    /// shell (`tauri://localhost` on macOS/Linux, `http://tauri.localhost` on
+    /// Windows) and local dev servers on any port. Anything else gets no CORS
+    /// header, so arbitrary websites can't read local usage data cross-origin.
+    private static func corsOrigin(for request: HTTPRequest) -> String? {
+        guard let origin = request.headers["origin"],
+              let host = URL(string: origin)?.host?.lowercased()
+        else { return nil }
+        switch host {
+        case "tauri.localhost", "localhost", "127.0.0.1", "::1", "[::1]":
+            return origin
+        default:
+            return nil
+        }
+    }
+
+    private static func writeAll(_ fd: Int32, _ data: Data) {
+        data.withUnsafeBytes { ptr in
+            var sent = 0
+            while sent < data.count {
+                guard let base = ptr.baseAddress else { return }
+                let n = write(fd, base.advanced(by: sent), data.count - sent)
+                if n <= 0 { return }
+                sent += n
+            }
+        }
+    }
+
     private func handleConnection(_ fd: Int32) {
         defer { close(fd) }
         var buffer = Data()
@@ -174,20 +211,17 @@ public final class POSIXLoopbackHTTPServer: LocalHTTPServing {
         let parts = lines.first.map { $0.split(separator: " ") } ?? []
         let method = parts.count > 0 ? String(parts[0]) : ""
         let rawPath = parts.count > 1 ? String(parts[1]) : "/"
-        let contentLength = lines.first(where: { $0.lowercased().hasPrefix("content-length:") })
-            .flatMap { Int($0.drop(while: { $0 != ":" }).dropFirst().trimmingCharacters(in: .whitespaces)) } ?? 0
+        var headers: [String: String] = [:]
+        for line in lines.dropFirst() {
+            guard let colon = line.firstIndex(of: ":") else { continue }
+            let name = line[..<colon].trimmingCharacters(in: .whitespaces).lowercased()
+            let value = line[line.index(after: colon)...].trimmingCharacters(in: .whitespaces)
+            if !name.isEmpty { headers[name] = value }
+        }
+        let contentLength = headers["content-length"].flatMap { Int($0) } ?? 0
         guard contentLength <= 4_194_304 else {
             let resp = HTTPResponse(status: 413, body: Data("{\"error\":\"body too large\"}".utf8))
-            var out413 = resp.serialized()
-            out413.withUnsafeBytes { ptr in
-                var sent = 0
-                while sent < out413.count {
-                    guard let base = ptr.baseAddress else { return }
-                    let n = write(fd, base.advanced(by: sent), out413.count - sent)
-                    if n <= 0 { return }
-                    sent += n
-                }
-            }
+            Self.writeAll(fd, resp.serialized())
             return
         }
         while body.count < contentLength {
@@ -198,17 +232,26 @@ public final class POSIXLoopbackHTTPServer: LocalHTTPServing {
             body.append(contentsOf: chunk[0..<n])
         }
 
-        let response = handler(HTTPRequest(method: method, path: rawPath, body: body))
-        var out = response.serialized()
-        out.withUnsafeBytes { ptr in
-            var sent = 0
-            while sent < out.count {
-                guard let base = ptr.baseAddress else { return }
-                let n = write(fd, base.advanced(by: sent), out.count - sent)
-                if n <= 0 { return }
-                sent += n
+        let request = HTTPRequest(method: method, path: rawPath, body: body, headers: headers)
+        let cors = Self.corsOrigin(for: request)
+
+        // CORS preflight: answered by the transport, never routed.
+        if method == "OPTIONS", request.headers["access-control-request-method"] != nil {
+            var head = "HTTP/1.1 200 OK\r\n"
+            if let cors {
+                head += "Access-Control-Allow-Origin: \(cors)\r\n"
+                    + "Vary: Origin\r\n"
+                    + "Access-Control-Allow-Methods: GET, POST, DELETE, OPTIONS\r\n"
+                    + "Access-Control-Allow-Headers: Content-Type, Authorization\r\n"
+                    + "Access-Control-Max-Age: 600\r\n"
             }
+            head += "Content-Length: 0\r\nConnection: close\r\n\r\n"
+            Self.writeAll(fd, Data(head.utf8))
+            return
         }
+
+        let response = handler(request)
+        Self.writeAll(fd, response.serialized(corsOrigin: cors))
     }
 }
 

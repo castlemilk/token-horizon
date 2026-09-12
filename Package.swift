@@ -45,6 +45,14 @@ targets.append(.target(
     path: "Sources/TokenHorizonCore"
 ))
 
+// Pure-core unit tests — cross-platform (macOS + Linux). App-target tests
+// stay in Tests/TokenHorizonPerfTests (macOS only).
+targets.append(.testTarget(
+    name: "TokenHorizonCoreTests",
+    dependencies: ["TokenHorizonCore"],
+    path: "Tests/TokenHorizonCoreTests"
+))
+
 #if !os(Windows)
 // Headless daemon: same loopback API as the macOS app, no UI.
 products.append(.executable(name: "token-horizon-headless", targets: ["token-horizon-headless"]))

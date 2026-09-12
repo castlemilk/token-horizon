@@ -394,7 +394,9 @@ async function callTool(name, args) {
           health = { ok: false };
         }
         const configuredUpstream = process.env.TOKEN_HORIZON_OLLAMA_UPSTREAM || "127.0.0.1:11434";
-        const ollamaMeter = Array.isArray(meters) ? meters.find(m => m.vendor === "ollama") : null;
+        // /meters: {mode, point: [...], mitm?} (legacy: bare array)
+        const meterList = Array.isArray(meters) ? meters : (meters?.point ?? []);
+        const ollamaMeter = meterList.find(m => m.vendor === "ollama") || null;
         const port = (ollamaMeter && ollamaMeter.listen_port) || Number(process.env.TOKEN_HORIZON_OLLAMA_PROXY_PORT || 11435);
         const proxyURL = process.env.OLLAMA_PROXY_URL || `http://127.0.0.1:${port}`;
         const tokenHorizonReachable = health.ok === true;

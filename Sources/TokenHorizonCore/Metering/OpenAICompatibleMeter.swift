@@ -44,6 +44,21 @@ open class OpenAICompatibleMeter: RequestMeter {
         return nil
     }
 
+    public override func requestID(for exchange: MeteredExchange) -> String? {
+        // Non-streaming: top-level body id (chatcmpl-/resp-…). SSE: every
+        // chunk repeats the same response id — first wins ("response" wrapper
+        // for the Responses API).
+        if let obj = try? JSONSerialization.jsonObject(with: exchange.responseBody) as? [String: Any],
+           let id = obj["id"] as? String { return id }
+        guard let text = String(data: exchange.responseBody, encoding: .utf8),
+              text.hasPrefix("data:") else { return nil }
+        for obj in sseObjects(text) {
+            if let id = obj["id"] as? String { return id }
+            if let resp = obj["response"] as? [String: Any], let id = resp["id"] as? String { return id }
+        }
+        return nil
+    }
+
     /// Whole-body JSON response (non-streaming).
     private func usageFromJSON(_ body: Data) -> TokenBreakdown? {
         guard let obj = try? JSONSerialization.jsonObject(with: body) as? [String: Any],
@@ -114,16 +129,5 @@ open class OpenAICompatibleMeter: RequestMeter {
         case "auto": return "adaptive"
         default: return effort.lowercased()
         }
-    }
-
-    /// Cost from the built-in catalog pricing when the model is known.
-    public override func cost(for exchange: MeteredExchange, tokens: TokenBreakdown) -> Double {
-        let model = model(for: exchange)
-        guard let entry = ModelCatalog.shared.lookup(id: model) else { return 0 }
-        var usd = (Double(tokens.input) * entry.inputPerM + Double(tokens.output) * entry.outputPerM) / 1_000_000
-        if let cacheRate = entry.cacheReadPerM {
-            usd += Double(tokens.cacheRead) * cacheRate / 1_000_000
-        }
-        return usd
     }
 }

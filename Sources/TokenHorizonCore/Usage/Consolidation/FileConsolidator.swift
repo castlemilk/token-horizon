@@ -5,17 +5,29 @@ import SQLite3
 import CSQLite
 #endif
 
-/// Consolidation: backfill local provider files into UsageEvents so the
-/// unified store has complete history (pre-meter era + reconciliation source).
+/// Consolidation: recover TOOL ATTRIBUTION and LIMITS from provider files.
 ///
-/// GATED BY DESIGN: only the headless daemon calls ConsolidationRunner, and
-/// only when TH_CONSOLIDATE=1 is set (one-off backfills). Never wire into the
-/// app launch path without review — it is the meter↔files reconciliation source.
-///   let store = try SQLiteUsageStore()
-///   try ClaudeConsolidator().consolidate(into: store)
+/// Files NEVER create usage rows, and they never MODIFY usage rows either.
+/// Usage is measured exclusively by request meters. What files contribute is
+/// stored at full resolution ALONGSIDE the meter's observations:
+///   1. FileAnnotations — the file's own claim of tool identity and
+///      tool/provider-reported cost, keyed by the PROVIDER REQUEST ID. The
+///      store keeps them in `file_annotation` and LEFT JOINs them at READ
+///      time, so arrival order (file before/after the response) cannot
+///      matter and no observation is ever overwritten — the ranking
+///      (explicit label > file record > header sniff; reported cost >
+///      computed) is a query-time decision.
+///   2. LimitSnapshots — rate-limit state captured in file records (codex
+///      `token_count` payloads carry the account's window utilization),
+///      consolidated against the same vendor ACCOUNT as meter/API sources.
 ///
-/// Events carry DETERMINISTIC ids (hash of vendor+source-record key), so
-/// re-running a consolidator is idempotent (INSERT OR IGNORE dedups).
+/// A file record with no provider request id yields nothing — the tool
+/// simply never gets the label for that request (meter header-sniffing may
+/// still attribute it).
+///
+/// GATED BY DESIGN: routine passes run via FilePoller (60s, .fileReading
+/// consent). ConsolidationRunner.run remains a deliberate one-off
+/// (TH_CONSOLIDATE=1) for backfills.
 open class FileConsolidator {
     open var vendor: String { fatalError("FileConsolidator subclass must set vendor") }
     open var sourceKind: SourceKind { .external }
@@ -23,60 +35,14 @@ open class FileConsolidator {
 
     public init() {}
 
+    /// One pass over the files. Returns the number of observations emitted
+    /// (annotations + limit snapshots). Idempotent by store natural keys.
     open func consolidate(into store: UsageStoring) throws -> Int { 0 }
-
-    // MARK: - Deterministic event ids
-
-    /// FNV-1a over the record key, twice with different seeds → 16 bytes → UUID.
-    /// Stable across runs: re-consolidating the same record yields the same id.
-    public func deterministicID(_ key: String) -> UUID {
-        var h1: UInt64 = 0xcbf2_9ce4_8422_2325
-        var h2: UInt64 = 0x8422_2325_cbf2_9ce4
-        for byte in key.utf8 {
-            h1 = (h1 ^ UInt64(byte)) &* 0x0000_0100_0000_01b3
-            h2 = (h2 ^ UInt64(byte) &+ 1) &* 0x0000_0100_0000_01b3
-        }
-        var bytes = [UInt8]()
-        for v in [h1, h2] {
-            for shift in stride(from: 56, through: 0, by: -8) {
-                bytes.append(UInt8((v >> UInt64(shift)) & 0xff))
-            }
-        }
-        return UUID(uuid: (bytes[0], bytes[1], bytes[2], bytes[3],
-                           bytes[4], bytes[5], bytes[6], bytes[7],
-                           bytes[8], bytes[9], bytes[10], bytes[11],
-                           bytes[12], bytes[13], bytes[14], bytes[15]))
-    }
 
     // MARK: - Shared parse helpers (same conventions as UsageEngine/meters)
 
     public func intField(_ dict: [String: Any], _ key: String) -> Int {
         (dict[key] as? NSNumber)?.intValue ?? 0
-    }
-
-    public func anthropicBreakdown(_ usage: [String: Any]) -> TokenBreakdown {
-        TokenBreakdown(
-            input: intField(usage, "input_tokens"),
-            output: intField(usage, "output_tokens"),
-            cacheRead: intField(usage, "cache_read_input_tokens"),
-            cacheWrite: intField(usage, "cache_creation_input_tokens"))
-    }
-
-    public func openAIBreakdown(_ usage: [String: Any]) -> TokenBreakdown {
-        var b = TokenBreakdown(
-            input: intField(usage, "prompt_tokens") + intField(usage, "input_tokens"),
-            output: intField(usage, "completion_tokens") + intField(usage, "output_tokens"))
-        for detailsKey in ["completion_tokens_details", "output_tokens_details"] {
-            if let d = usage[detailsKey] as? [String: Any] {
-                b.reasoning += intField(d, "reasoning_tokens")
-            }
-        }
-        for detailsKey in ["prompt_tokens_details", "input_tokens_details"] {
-            if let d = usage[detailsKey] as? [String: Any] {
-                b.cacheRead += intField(d, "cached_tokens")
-            }
-        }
-        return b
     }
 
     public func parseTimestamp(_ any: Any?) -> Date? {
@@ -129,126 +95,166 @@ open class FileConsolidator {
 
 // MARK: - Claude Code
 
-/// One event per assistant message with usage. Session id from the filename.
+/// Transcript `requestId` == the `request-id` response header the
+/// AnthropicMeter captures — the exact join key. One annotation per
+/// assistant message carrying usage.
 public final class ClaudeConsolidator: FileConsolidator {
     public override var vendor: String { "claude" }
     public override var dirs: [String] { ["~/.claude/projects", "~/.claude/transcripts"] }
 
     public override func consolidate(into store: UsageStoring) throws -> Int {
-        var events: [UsageEvent] = []
+        var annotations: [FileAnnotation] = []
         for file in jsonlFiles(under: dirs) {
-            let session = URL(fileURLWithPath: file).deletingPathExtension().lastPathComponent
-            var lineNo = 0
             forEachLine(file) { obj, _ in
-                lineNo += 1
                 guard let message = obj["message"] as? [String: Any],
-                      let usage = message["usage"] as? [String: Any] else { return }
-                let tokens = anthropicBreakdown(usage)
-                guard tokens.total > 0 else { return }
-                events.append(UsageEvent(
-                    id: deterministicID("\(vendor):\(file):\(lineNo)"),
-                    timestamp: parseTimestamp(obj["timestamp"]) ?? Date(),
-                    machineID: MachineIdentity.current,
-                    source: sourceKind, vendor: vendor,
-                    model: message["model"] as? String ?? "",
-                    tokens: tokens,
-                    contextOccupancy: tokens.input + tokens.cacheRead + tokens.cacheWrite,
-                    sessionID: session,
+                      let usage = message["usage"] as? [String: Any],
+                      ((usage["input_tokens"] as? NSNumber)?.intValue ?? 0) > 0
+                        || ((usage["output_tokens"] as? NSNumber)?.intValue ?? 0) > 0,
+                      let rid = obj["requestId"] as? String, !rid.isEmpty else { return }
+                annotations.append(FileAnnotation(
+                    vendor: vendor, requestID: rid,
                     product: "claude-code",
-                    attestation: .selfReported))
+                    timestamp: parseTimestamp(obj["timestamp"]) ?? Date(),
+                    sourceFile: file))
             }
         }
-        try store.insert(events)
-        return events.count
+        try store.annotate(annotations)
+        return annotations.count
     }
 }
 
 // MARK: - Codex
 
-/// `token_count` payloads carry per-request usage in `last_token_usage` —
-/// that IS request-level data (input/output/cached/reasoning).
+/// `token_count` payloads carry no provider request id — codex sessions can
+/// never be tool-annotated (the meter's User-Agent sniff covers codex).
+/// What they DO carry is the account's rate-limit state
+/// (`payload.rate_limits.primary/secondary`), captured here as limit
+/// snapshots. Account is unknown from files ("" = single/unknown account).
 public final class CodexConsolidator: FileConsolidator {
     public override var vendor: String { "codex" }
     public override var dirs: [String] { ["~/.codex/sessions", "~/.codex/archived_sessions"] }
 
     public override func consolidate(into store: UsageStoring) throws -> Int {
-        var events: [UsageEvent] = []
+        var snapshots: [LimitSnapshot] = []
         for file in jsonlFiles(under: dirs) {
-            let session = URL(fileURLWithPath: file).deletingPathExtension().lastPathComponent
-            var lineNo = 0
             forEachLine(file) { obj, _ in
-                lineNo += 1
                 guard let payload = obj["payload"] as? [String: Any],
                       payload["type"] as? String == "token_count",
-                      let info = payload["info"] as? [String: Any],
-                      let last = info["last_token_usage"] as? [String: Any] else { return }
-                var tokens = TokenBreakdown(
-                    input: intField(last, "input_tokens"),
-                    output: intField(last, "output_tokens"),
-                    reasoning: intField(last, "reasoning_output_tokens"))
-                tokens.cacheRead = max(intField(last, "cached_input_tokens"),
-                                       intField(last, "cache_read_input_tokens"))
-                guard tokens.total > 0 else { return }
-                events.append(UsageEvent(
-                    id: deterministicID("\(vendor):\(file):\(lineNo)"),
-                    timestamp: parseTimestamp(obj["timestamp"]) ?? Date(),
-                    machineID: MachineIdentity.current,
-                    source: sourceKind, vendor: vendor,
-                    model: "",
-                    tokens: tokens,
-                    contextOccupancy: tokens.input,
-                    sessionID: session,
-                    product: "codex",
-                    attestation: .selfReported))
+                      let rateLimits = payload["rate_limits"] as? [String: Any] else { return }
+                let ts = parseTimestamp(obj["timestamp"]) ?? Date()
+                for window in ["primary", "secondary"] {
+                    guard let w = rateLimits[window] as? [String: Any],
+                          let used = (w["used_percent"] as? NSNumber)?.doubleValue else { continue }
+                    let minutes = (w["window_minutes"] as? NSNumber)?.intValue ?? 0
+                    let resets = (w["resets_at"] as? NSNumber)?.doubleValue
+                    snapshots.append(LimitSnapshot(
+                        recordedAt: ts,
+                        machineID: MachineIdentity.current,
+                        provider: vendor,
+                        accountID: "",
+                        label: Self.windowLabel(minutes: minutes),
+                        usedPercent: used,
+                        resetsAt: resets.map { Date(timeIntervalSince1970: $0) },
+                        detail: "codex \(window) window (file)"))
+                }
             }
         }
-        try store.insert(events)
-        return events.count
+        try store.recordLimits(snapshots)
+        return snapshots.count
+    }
+
+    static func windowLabel(minutes: Int) -> String {
+        switch minutes {
+        case 0: return "window (file)"
+        case 10_080: return "weekly (file)"
+        case 1_440: return "daily (file)"
+        case let m where m % 60 == 0: return "\(m / 60)h (file)"
+        default: return "\(minutes)m (file)"
+        }
     }
 }
 
 // MARK: - Kimi
 
-/// wire.jsonl token_usage payloads (input_other/output/cache read+creation).
+/// wire.jsonl records usually carry no provider request id; when one is
+/// present it joins the AnthropicMeter's wire id (kimi speaks the
+/// anthropic-compatible format).
 public final class KimiConsolidator: FileConsolidator {
     public override var vendor: String { "kimi" }
     public override var dirs: [String] { ["~/.kimi/sessions"] }
 
     public override func consolidate(into store: UsageStoring) throws -> Int {
-        var events: [UsageEvent] = []
+        var annotations: [FileAnnotation] = []
         for file in jsonlFiles(under: dirs, suffix: "wire.jsonl") {
-            var lineNo = 0
             forEachLine(file) { obj, _ in
-                lineNo += 1
                 guard let message = obj["message"] as? [String: Any],
                       let payload = message["payload"] as? [String: Any],
-                      let usage = payload["token_usage"] as? [String: Any] else { return }
-                let tokens = TokenBreakdown(
-                    input: intField(usage, "input_other"),
-                    output: intField(usage, "output"),
-                    cacheRead: intField(usage, "input_cache_read"),
-                    cacheWrite: intField(usage, "input_cache_creation"))
-                guard tokens.total > 0 else { return }
-                events.append(UsageEvent(
-                    id: deterministicID("\(vendor):\(file):\(lineNo)"),
-                    timestamp: parseTimestamp(obj["timestamp"]) ?? Date(),
-                    machineID: MachineIdentity.current,
-                    source: sourceKind, vendor: vendor, model: "",
-                    tokens: tokens,
-                    contextOccupancy: tokens.input + tokens.cacheRead + tokens.cacheWrite,
-                    sessionID: URL(fileURLWithPath: file).deletingLastPathComponent().lastPathComponent,
+                      payload["token_usage"] != nil else { return }
+                let rid = (payload["request_id"] as? String)
+                    ?? (payload["requestId"] as? String)
+                    ?? (message["requestId"] as? String)
+                    ?? (obj["request_id"] as? String) ?? ""
+                guard !rid.isEmpty else { return }
+                annotations.append(FileAnnotation(
+                    vendor: vendor, requestID: rid,
                     product: "kimi-cli",
-                    attestation: .selfReported))
+                    timestamp: parseTimestamp(obj["timestamp"]) ?? Date(),
+                    sourceFile: file))
             }
         }
-        try store.insert(events)
-        return events.count
+        try store.annotate(annotations)
+        return annotations.count
+    }
+}
+
+// MARK: - pi (coding agent harness)
+
+/// ~/.pi/agent/sessions/<project>/<ts>_<uuid>.jsonl — assistant messages carry
+/// `usage { ..., cost.total }` and `responseId` == the provider body id
+/// (chatcmpl-/resp- for OpenAI-style APIs, msg_... for Anthropic — the
+/// meter captures both via requestID/requestIDAlt).
+///
+/// Vendor attribution: pi is the HARNESS, `message.provider` is the upstream
+/// vendor — annotations carry vendor = provider (raw spelling; folds to
+/// canonical at query time) and product = "pi". Pi also reports the actual
+/// billed cost, which outranks the meter's computed/plan cost at query time
+/// (both are stored; nothing is merged).
+public final class PiConsolidator: FileConsolidator {
+    public override var vendor: String { "pi" }
+    public override var dirs: [String] { ["~/.pi/agent/sessions"] }
+
+    public override func consolidate(into store: UsageStoring) throws -> Int {
+        var annotations: [FileAnnotation] = []
+        for file in jsonlFiles(under: dirs) {
+            forEachLine(file) { obj, _ in
+                guard obj["type"] as? String == "message",
+                      let message = obj["message"] as? [String: Any],
+                      message["role"] as? String == "assistant",
+                      message["usage"] != nil,
+                      let rid = message["responseId"] as? String, !rid.isEmpty else { return }
+                let provider = (message["provider"] as? String ?? "pi")
+                    .lowercased().replacingOccurrences(of: " ", with: "-")
+                let cost = ((message["usage"] as? [String: Any])?["cost"] as? [String: Any])?["total"]
+                    as? NSNumber
+                annotations.append(FileAnnotation(
+                    vendor: provider, requestID: rid,
+                    product: "pi",
+                    cost: cost?.doubleValue,
+                    timestamp: parseTimestamp(obj["timestamp"]) ?? Date(),
+                    sourceFile: file))
+            }
+        }
+        try store.annotate(annotations)
+        return annotations.count
     }
 }
 
 // MARK: - opencode (sqlite)
 
-/// One event per assistant message row: tokens + cost + model + session.
+/// One annotation per assistant message row that exposes an upstream
+/// response id. opencode's own message ids are internal and never join —
+/// only a provider-issued response id does. Rows carry the zen-reported
+/// cost, which becomes the authoritative cost on the joined metered row.
 public final class OpenCodeConsolidator: FileConsolidator {
     public override var vendor: String { "opencode" }
 
@@ -266,53 +272,37 @@ public final class OpenCodeConsolidator: FileConsolidator {
         }
         defer { sqlite3_close(handle) }
         let sql = """
-        SELECT id, session_id, time_created,
-               COALESCE(json_extract(data,'$.modelID'),''),
-               COALESCE(json_extract(data,'$.tokens.input'),0),
-               COALESCE(json_extract(data,'$.tokens.output'),0),
-               COALESCE(json_extract(data,'$.tokens.reasoning'),0),
-               COALESCE(json_extract(data,'$.tokens.cache.read'),0),
-               COALESCE(json_extract(data,'$.tokens.cache.write'),0),
+        SELECT COALESCE(json_extract(data,'$.responseID'),
+                        json_extract(data,'$.responseId'),
+                        json_extract(data,'$.provider.responseId'), ''),
+               time_created,
                COALESCE(json_extract(data,'$.cost'),0)
         FROM message WHERE json_extract(data,'$.role')='assistant'
         """
         var stmt: OpaquePointer?
         guard sqlite3_prepare_v2(handle, sql, -1, &stmt, nil) == SQLITE_OK else { return 0 }
         defer { sqlite3_finalize(stmt) }
-        var events: [UsageEvent] = []
+        var annotations: [FileAnnotation] = []
         while sqlite3_step(stmt) == SQLITE_ROW {
-            func text(_ i: Int32) -> String {
-                sqlite3_column_text(stmt, i).map { String(cString: $0) } ?? ""
-            }
-            let tokens = TokenBreakdown(
-                input: Int(sqlite3_column_int64(stmt, 4)),
-                output: Int(sqlite3_column_int64(stmt, 5)),
-                reasoning: Int(sqlite3_column_int64(stmt, 6)),
-                cacheRead: Int(sqlite3_column_int64(stmt, 7)),
-                cacheWrite: Int(sqlite3_column_int64(stmt, 8)))
-            guard tokens.total > 0 else { continue }
-            events.append(UsageEvent(
-                id: deterministicID("opencode:\(text(0))"),
-                timestamp: Date(timeIntervalSince1970: sqlite3_column_double(stmt, 2) / 1000),
-                machineID: MachineIdentity.current,
-                source: sourceKind, vendor: vendor, model: text(3),
-                tokens: tokens,
-                contextOccupancy: tokens.input,
-                cost: sqlite3_column_double(stmt, 9),
-                sessionID: text(1),
+            let rid = sqlite3_column_text(stmt, 0).map { String(cString: $0) } ?? ""
+            guard !rid.isEmpty else { continue }
+            annotations.append(FileAnnotation(
+                vendor: vendor, requestID: rid,
                 product: "opencode",
-                attestation: .selfReported))
+                cost: sqlite3_column_double(stmt, 2),
+                timestamp: Date(timeIntervalSince1970: sqlite3_column_double(stmt, 1) / 1000),
+                sourceFile: path))
         }
-        try store.insert(events)
-        return events.count
+        try store.annotate(annotations)
+        return annotations.count
     }
 }
 
 // MARK: - Runner (INACTIVE by default)
 
-/// Deliberate, explicit backfill entry point. NOT called by the daemon or app.
-/// `enabled` must be set true by the caller; TH_CONSOLIDATE=1 in the
-/// environment is the documented opt-in for manual runs.
+/// Deliberate, explicit backfill entry point. NOT called by the daemon or app
+/// except with TH_CONSOLIDATE=1. Re-runs are idempotent: annotations key on
+/// (vendor, request_id); limit snapshots dedup per minute.
 public enum ConsolidationRunner {
     public static var enabled: Bool {
         ProcessInfo.processInfo.environment["TH_CONSOLIDATE"] == "1"
@@ -322,10 +312,11 @@ public enum ConsolidationRunner {
         ClaudeConsolidator(),
         CodexConsolidator(),
         KimiConsolidator(),
+        PiConsolidator(),
         OpenCodeConsolidator(),
     ]
 
-    /// Returns event counts per vendor. Throws when not enabled.
+    /// Returns observation counts per vendor. Throws when not enabled.
     @discardableResult
     public static func run(into store: UsageStoring) throws -> [String: Int] {
         guard enabled else {

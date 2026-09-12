@@ -29,6 +29,7 @@ let usageStore: UsageStoring? = {
 }()
 
 let router = CoreAPIRouter(engine: engine, usageStore: usageStore)
+engine.usageStore = usageStore   // store-backed reads (heatmap grid, etc.)
 router.serverName = "token-horizon-headless"
 
 // Consent: nothing listens without it. Interactive hosts ask via OS dialog;
@@ -36,20 +37,25 @@ router.serverName = "token-horizon-headless"
 if ProcessInfo.processInfo.environment["TH_ASK_CONSENT"] != nil {
     _ = ConsentManager.shared.ensure(.metering,
         reason: "Loopback request listeners measure token usage, model, thinking level, and rates per API request. Traffic is forwarded unchanged to the real API.")
+    if SettingsStore.shared.meterCaptureMode == .mitm {
+        _ = ConsentManager.shared.ensure(.mitm,
+            reason: "A local proxy intercepts TLS for AI vendor API hosts ONLY (all other traffic passes through untouched, undecrypted) to measure token usage without per-tool configuration. Requires installing a local CA certificate. Corporate machines: use point mode instead.")
+    }
 }
 
 // Provider-parity usage for self-managed runtimes via the durable ledger.
 engine.localRuntimeUsage = { RuntimeUsageLedger.shared.contributions() }
 InferenceMonitor.shared.startPolling()
-// Routine file polling → DB timeline (requires .fileReading consent;
-// TH_CONSENT=fileReading to opt in headless).
+// Routine file polling → tool attribution + limit observations on the DB
+// timeline (requires .fileReading consent; TH_CONSENT=fileReading to opt in
+// headless). Files never create usage rows — usage is metered-only.
 if ConsentManager.shared.isGranted(.fileReading) {
     FilePoller.shared.startPolling()
 }
 
-// Meters: env (TH_METERS) + settings-managed runtime endpoints.
-router.startMetersFromEnv()
-router.startMetersFromSettings()
+// Capture mode (point meters ↔ scoped mitm, per settings/TH_CAPTURE_MODE).
+// Consent is enforced per mode inside startCaptureMode.
+router.startCaptureMode()
 
 // Cloud sync outbox (TH_SYNC_URL): retry pending deltas every 5 min so
 // offline stretches (flights) upload on reconnect. Manual: POST /sync/now.
@@ -62,7 +68,7 @@ if CloudSync.shared.baseURL != nil, let store = usageStore {
     cloudSyncTimer = timer
 }
 
-// Explicit opt-in only: reconcile logs into the event store.
+// Explicit opt-in only: annotation/limits backfill from logs into the store.
 if ProcessInfo.processInfo.environment["TH_CONSOLIDATE"] == "1", let store = usageStore {
     _ = try? ConsolidationRunner.run(into: store)
 }

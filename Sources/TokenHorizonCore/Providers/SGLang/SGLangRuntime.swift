@@ -10,6 +10,7 @@ public final class SGLangRuntime: LocalInferenceRuntime {
                    processSignatures: ["sglang"])
     }
 
+    public override var defaultMeterListenPort: UInt16? { 9312 }
     public override var promptCounterNames: [String] { ["sglang:prompt_tokens_total"] }
     public override var generationCounterNames: [String] { ["sglang:generation_tokens_total"] }
     public override var extraMetricNames: [String] {

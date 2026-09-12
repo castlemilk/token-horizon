@@ -15,6 +15,8 @@ public final class OllamaRuntime: LocalInferenceRuntime {
                    defaultPorts: [11434], processSignatures: ["ollama serve", "ollama runner", "ollama "])
     }
 
+    public override var defaultMeterListenPort: UInt16? { 11435 }
+
     public override func makeMeter(listenPort: UInt16, target: URL?, store: UsageStoring?) -> RequestMeter? {
         guard ConsentManager.shared.isGranted(.metering) else { return nil }
         return OllamaMeter(vendor: vendor, listenPort: listenPort,

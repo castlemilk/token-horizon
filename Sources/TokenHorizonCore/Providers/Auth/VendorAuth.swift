@@ -91,6 +91,10 @@ public enum CredentialSource {
             }
             return nil
 
+        case .profileFiles:
+            // Single-value resolve: first labeled profile wins.
+            return resolveLabeled().first?.credential
+
         case .custom(let read):
             return read()
         }

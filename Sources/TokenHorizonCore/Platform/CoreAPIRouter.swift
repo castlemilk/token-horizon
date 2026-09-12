@@ -30,6 +30,9 @@ public final class CoreAPIRouter {
             PlanLimitsEngine.shared.snapshotStore = store
             KimiLimitsEngine.shared.snapshotStore = store
         }
+        // Routing seam: any core component can route runtime calls through
+        // live meters via MeterRegistry.routedURL (one measuring path).
+        MeterRegistry.meterProvider = { [weak self] in self?.meters ?? [] }
     }
 
     private var meteringConsented: Bool {
@@ -97,6 +100,56 @@ public final class CoreAPIRouter {
         }
     }
 
+    // MARK: - Capture mode (swappable: point ↔ mitm)
+
+    /// MITM capture manager, alive only while mitm mode is active.
+    public private(set) var mitmCapture: MitmCaptureManager?
+
+    /// Point-mode auto-metering: the first time InferenceMonitor observes a
+    /// runtime alive, pre-wire its request meter on the runtime's
+    /// deterministic loopback port (LocalInferenceRuntime.defaultMeterListenPort).
+    /// GENERIC — every detected runtime (Ollama, vLLM, SGLang, llama.cpp,
+    /// MLX) gets the same treatment, no per-vendor special cases. The meter
+    /// measures whoever points at it; users find the ports via GET /meters,
+    /// and internal clients route automatically via MeterRegistry.routedURL.
+    public func startAutoMetering() {
+        InferenceMonitor.shared.onRuntimeSighting = { [weak self] runtime in
+            guard let self, self.meteringConsented,
+                  let port = runtime.defaultMeterListenPort,
+                  !self.meters.contains(where: { $0.vendor == runtime.meterVendorKey })
+            else { return }
+            if self.addMeter(vendor: runtime.meterVendorKey, port: port, target: nil) {
+                FileHandle.standardError.write(
+                    "token-horizon: auto-meter for \(runtime.vendor) on 127.0.0.1:\(port) — point clients there for exact per-request measurement\n".data(using: .utf8)!)
+            }
+        }
+    }
+
+    /// Start the configured capture mode. This is THE swappable seam:
+    /// - point (default; the corporate-safe mode): loopback request meters
+    ///   from env + settings + auto-meters for detected local runtimes;
+    /// - mitm (personal machines, explicit .mitm consent): scoped TLS
+    ///   interception of AI vendor hosts via MitmCaptureManager; point
+    ///   meters are NOT started alongside it.
+    /// Both modes emit the same UsageEvents into the same store.
+    public func startCaptureMode() {
+        switch SettingsStore.shared.meterCaptureMode {
+        case .mitm:
+            let manager = MitmCaptureManager.shared
+            mitmCapture = manager
+            if ConsentManager.shared.isGranted(.mitm) {
+                manager.start()
+            } else {
+                FileHandle.standardError.write(
+                    "token-horizon: capture mode is mitm but .mitm consent not granted — nothing intercepted (TH_CONSENT=mitm or approve the prompt)\n".data(using: .utf8)!)
+            }
+        case .point:
+            startMetersFromEnv()
+            startMetersFromSettings()
+            startAutoMetering()
+        }
+    }
+
     // MARK: - Routing
 
     public func route(_ request: HTTPRequest) -> HTTPResponse {
@@ -111,6 +164,8 @@ public final class CoreAPIRouter {
                 "name": serverName,
                 "platform": Platform.name,
                 "usage_store": usageStore != nil,
+                "machine_id": MachineIdentity.current,
+                "machine_alias": MachineIdentity.alias,
             ]
             return Self.json(payload)
 
@@ -158,12 +213,19 @@ public final class CoreAPIRouter {
             return Self.json(["ok": true, "meter_started": meterStarted])
 
         case ("GET", "/meters"):
-            return Self.json(meters.map { [
-                "vendor": $0.vendor,
-                "listen_port": Int($0.listenPort),
-                "target": $0.targetBase.absoluteString,
-                "source": $0.sourceKind.rawValue,
-            ] })
+            var payload: [String: Any] = [
+                "mode": SettingsStore.shared.meterCaptureMode.rawValue,
+                "point": meters.map { [
+                    "vendor": $0.vendor,
+                    "listen_port": Int($0.listenPort),
+                    "target": $0.targetBase.absoluteString,
+                    "source": $0.sourceKind.rawValue,
+                ] },
+            ]
+            if let mitm = mitmCapture {
+                payload["mitm"] = mitm.status
+            }
+            return Self.json(payload)
 
         case ("GET", "/analytics/count"):
             guard let store = usageStore else { return Self.json(["error": "usage store unavailable"], status: 503) }
@@ -224,7 +286,34 @@ public final class CoreAPIRouter {
             return Self.json(["events": Self.encode(page.events), "cursor": page.lastSequence])
 
         case ("GET", "/stats"):
-            let usage = engine.snapshot()
+            let snapshot = engine.snapshot()
+            var usage = Self.encode(snapshot) as? [String: Any] ?? [:]
+            if let store = usageStore {
+                // Reconcile "today": the event store includes metered +
+                // consolidated sources the file engine doesn't parse (pi,
+                // meters, runtime ledger); the engine covers unconsented file
+                // history. Report the larger of the two — never less data.
+                let todayStart = Calendar.current.startOfDay(for: Date())
+                let rows = (try? store.buckets(from: todayStart, to: Date(),
+                                               bucketSeconds: UsageEngine.bucketSeconds,
+                                               filter: UsageFilter())) ?? []
+                var tokens = 0
+                var cost = 0.0
+                var bd = TokenBreakdown()
+                for r in rows {
+                    let t = r.tokens
+                    tokens += t.input + t.output + t.reasoning + t.cacheRead + t.cacheWrite
+                    cost += r.cost
+                    bd.input += t.input; bd.output += t.output
+                    bd.reasoning += t.reasoning
+                    bd.cacheRead += t.cacheRead; bd.cacheWrite += t.cacheWrite
+                }
+                if tokens > snapshot.tokensToday {
+                    usage["tokensToday"] = tokens
+                    usage["costToday"] = cost
+                    usage["breakdownToday"] = Self.encode(bd)
+                }
+            }
             var system: [String: Any] = [:]
             if let stats = Platform.systemStats {
                 let sys = stats.snapshot()
@@ -235,7 +324,7 @@ public final class CoreAPIRouter {
                     "load_1m": sys.loadAvg1,
                 ]
             }
-            return Self.json(["usage": Self.encode(usage), "system": system])
+            return Self.json(["usage": usage, "system": system])
 
         case ("POST", "/event"):
             let form = Self.parseForm(request.body)
@@ -267,6 +356,15 @@ public final class CoreAPIRouter {
             }
             guard let window = TrendWindow(rawValue: key.uppercased()) else {
                 return Self.json(["error": "unknown window, use 1D/1W/1M/3M/1Y"], status: 400)
+            }
+            // DB-first: the event store holds meters + consolidators + the
+            // runtime ledger (complete, incl. today). The file-engine path is
+            // the fallback for hosts without a wired store.
+            if let store = usageStore {
+                let points = Self.storeTrends(window: window, store: store)
+                let total = points.reduce(0) { $0 + $1.tokens }
+                return Self.json(["window": window.rawValue, "total": total,
+                                  "points": Self.encode(points)])
             }
             let points = engine.trendHistory(window: window)
             let total = points.reduce(0) { $0 + $1.tokens }
@@ -318,10 +416,11 @@ public final class CoreAPIRouter {
                                               filter: Self.usageFilter(params))) ?? []
             let limits = (try? store.limitHistory(from: from, to: to, provider: params["provider"])) ?? []
             let files = FilePoller.shared.lastReport
+            let lastPoll: Any = FilePoller.shared.lastPoll.map { $0.timeIntervalSince1970 } ?? NSNull()
             return Self.json(["resolution": resolution,
                               "buckets": Self.encode(buckets),
                               "limits": Self.encode(limits),
-                              "file_poller": ["last_poll": FilePoller.shared.lastPoll?.timeIntervalSince1970 ?? NSNull(),
+                              "file_poller": ["last_poll": lastPoll,
                                               "locations": FilePoller.shared.locations,
                                               "last_report": files]])
 
@@ -469,6 +568,46 @@ public final class CoreAPIRouter {
             attestation: params["attestation"].flatMap { Attestation(rawValue: $0) },
             thinkingLevel: params["thinking"],
             sessionID: params["session"])
+    }
+
+    /// Store-backed /trends: one fine-grained bucket scan binned into the
+    /// window's point ranges. Range math mirrors UsageEngine.trendHistory so
+    /// both paths agree on bucket boundaries (local-midnight day alignment).
+    static func storeTrends(window: TrendWindow, store: UsageStoring, now: Date = Date()) -> [HistoryPoint] {
+        let spec = window.spec
+        let fine = UsageEngine.bucketSeconds
+        let cal = Calendar.current
+        let todayStart = Int(cal.startOfDay(for: now).timeIntervalSince1970)
+        let nowBucket = Int(now.timeIntervalSince1970) / fine * fine
+
+        var ranges: [(start: Int, end: Int)] = []
+        for i in (0..<spec.count).reversed() {
+            let start: Int
+            if !spec.dailyAligned {
+                start = spec.seconds == fine ? nowBucket - i * fine : todayStart - i * spec.seconds
+            } else {
+                start = todayStart - i * spec.seconds
+            }
+            ranges.append((start, min(start + spec.seconds, nowBucket + fine)))
+        }
+        guard let earliest = ranges.first?.start else { return [] }
+        let rows = (try? store.buckets(from: Date(timeIntervalSince1970: TimeInterval(earliest)),
+                                       to: now, bucketSeconds: fine, filter: UsageFilter())) ?? []
+        var points = ranges.map { HistoryPoint(day: $0.start, tokens: 0, cost: 0, byTool: [:]) }
+        for row in rows {
+            guard let idx = ranges.firstIndex(where: { row.start >= $0.start && row.start < $0.end }) else { continue }
+            let t = row.tokens
+            let total = t.input + t.output + t.reasoning + t.cacheRead + t.cacheWrite
+            points[idx].tokens += total
+            points[idx].cost += row.cost
+            points[idx].byTool[row.vendor, default: 0] += total
+            points[idx].breakdown.input += t.input
+            points[idx].breakdown.output += t.output
+            points[idx].breakdown.reasoning += t.reasoning
+            points[idx].breakdown.cacheRead += t.cacheRead
+            points[idx].breakdown.cacheWrite += t.cacheWrite
+        }
+        return points
     }
 
     static func timeRange(_ params: [String: String]) -> (Date, Date) {

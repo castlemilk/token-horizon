@@ -13,6 +13,52 @@ open class AnthropicMeter: RequestMeter {
         method == "POST" && (path.hasPrefix("/v1/messages") || path.hasPrefix("/messages"))
     }
 
+    /// Anthropic's `request-id` response header == the `requestId` field
+    /// Claude Code transcripts persist — the strong cross-channel dedup key.
+    public override func requestID(for exchange: MeteredExchange) -> String? {
+        exchange.responseHeaders["request-id"]
+    }
+
+    /// The body `id` (msg_...) is the SECOND Anthropic id: pi-style harnesses
+    /// persist it as `responseId`, so file annotations from those tools join
+    /// on this value (claude code's own transcripts join on the header id).
+    public override func requestIDAlt(for exchange: MeteredExchange) -> String? {
+        if let obj = try? JSONSerialization.jsonObject(with: exchange.responseBody) as? [String: Any],
+           let id = obj["id"] as? String { return id }
+        guard let text = String(data: exchange.responseBody, encoding: .utf8),
+              text.hasPrefix("event:") || text.hasPrefix("data:") else { return nil }
+        for obj in sseObjects(text) {
+            if obj["type"] as? String == "message_start",
+               let message = obj["message"] as? [String: Any],
+               let id = message["id"] as? String { return id }
+        }
+        return nil
+    }
+
+    /// Anthropic rate limits ride every response as
+    /// `anthropic-ratelimit-{requests,tokens}-{limit,remaining,reset}`;
+    /// reset is an RFC3339 timestamp (not a duration like OpenAI).
+    public override func limitSnapshots(for exchange: MeteredExchange) -> [LimitSnapshot] {
+        let h = exchange.responseHeaders
+        var out: [LimitSnapshot] = []
+        for kind in ["requests", "tokens"] {
+            guard let limit = headerDouble(h, "anthropic-ratelimit-\(kind)-limit"),
+                  let remaining = headerDouble(h, "anthropic-ratelimit-\(kind)-remaining"),
+                  limit > 0 else { continue }
+            let usedPercent = min(max((1 - remaining / limit) * 100, 0), 100)
+            out.append(LimitSnapshot(
+                recordedAt: exchange.completedAt,
+                machineID: machineID,
+                provider: vendor,
+                accountID: accountID(for: exchange) ?? "",
+                label: "\(kind) (wire)",
+                usedPercent: usedPercent,
+                resetsAt: QuotaParsers.parseISO(h["anthropic-ratelimit-\(kind)-reset"]),
+                detail: "\(Int(remaining))/\(Int(limit)) remaining"))
+        }
+        return out
+    }
+
     public override func model(for exchange: MeteredExchange) -> String {
         if let obj = try? JSONSerialization.jsonObject(with: exchange.requestBody) as? [String: Any],
            let model = obj["model"] as? String {
@@ -92,16 +138,5 @@ open class AnthropicMeter: RequestMeter {
         default: level = "high"
         }
         return (level, "budget_tokens:\(budget)")
-    }
-
-    /// Cost from the built-in catalog pricing (incl. cache-read rate).
-    public override func cost(for exchange: MeteredExchange, tokens: TokenBreakdown) -> Double {
-        let model = model(for: exchange)
-        guard let entry = ModelCatalog.shared.lookup(id: model) else { return 0 }
-        var usd = (Double(tokens.input) * entry.inputPerM + Double(tokens.output) * entry.outputPerM) / 1_000_000
-        if let cacheRate = entry.cacheReadPerM {
-            usd += Double(tokens.cacheRead) * cacheRate / 1_000_000
-        }
-        return usd
     }
 }

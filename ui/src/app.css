@@ -1,27 +1,80 @@
+/*
+ * Token Horizon design language — "hairline".
+ * One shared look across macOS / Windows / Linux: system UI type, 1px lines,
+ * 6px radius, no shadows. Numbers are tabular; monospace is reserved for
+ * identifiers (model names, ports), never for labels.
+ *
+ * Theming: every color goes through light-dark(), which resolves from the
+ * element's `color-scheme`. The OS decides by default; `data-theme` on <html>
+ * overrides (set by app.html's early script + the top-bar switcher).
+ * The chrome accent is deliberately neutral graphite — color belongs to data
+ * (provider/runtime accents, state dots), not the frame.
+ */
+
 :root {
+	color-scheme: light dark;
+	--font-ui:
+		ui-sans-serif, system-ui, -apple-system, 'Segoe UI Variable', 'Segoe UI', Roboto,
+		'Noto Sans', 'Helvetica Neue', Arial, sans-serif;
+	--font-mono: ui-monospace, 'SF Mono', 'Cascadia Mono', Menlo, Consolas, monospace;
+
+	--bg: light-dark(#fafafb, #0f0f11);
+	--bg-raised: light-dark(#ffffff, #17171b);
+	--line: light-dark(rgb(0 0 0 / 0.11), rgb(255 255 255 / 0.1));
+	--line-strong: light-dark(rgb(0 0 0 / 0.2), rgb(255 255 255 / 0.2));
+	--text: light-dark(#1c1c21, #e8e8ec);
+	--text-2: light-dark(rgb(28 28 33 / 0.62), rgb(232 232 236 / 0.6));
+	--text-3: light-dark(rgb(28 28 33 / 0.42), rgb(232 232 236 / 0.38));
+
+	--accent: light-dark(#26262c, #dcdce2);
+	--accent-soft: light-dark(rgb(0 0 0 / 0.07), rgb(255 255 255 / 0.11));
+	--ok: light-dark(#1a7f37, #4ac26b);
+	--warn: light-dark(#9a6700, #d4a72c);
+	--bad: light-dark(#cf222e, #f47067);
+	--track: light-dark(rgb(0 0 0 / 0.07), rgb(255 255 255 / 0.08));
+
+	--radius: 6px;
+}
+
+/* Neutral graphite chrome: color comes from DATA (provider accents, state
+   dots), not from the UI frame. Deliberately no OS AccentColor override —
+   the desktop app keeps its own monochrome identity. */
+
+/* Manual theme override: flipping color-scheme re-resolves every light-dark(). */
+[data-theme='light'] {
+	color-scheme: light;
+}
+[data-theme='dark'] {
 	color-scheme: dark;
-	--bg: #0a0a0c;
-	--panel: #121216;
-	--border: rgba(255, 255, 255, 0.09);
-	--text: #e8e8ec;
-	--dim: rgba(255, 255, 255, 0.55);
-	--faint: rgba(255, 255, 255, 0.35);
-	--accent: #7ee787;
-	--warn: #f0b429;
-	--hot: #ff7b72;
-	--mono: 'SF Mono', ui-monospace, 'Cascadia Mono', Menlo, Consolas, monospace;
 }
 
 * {
 	box-sizing: border-box;
 }
 
+html,
 body {
 	margin: 0;
+	padding: 0;
+}
+
+body {
 	background: var(--bg);
 	color: var(--text);
-	font-family: var(--mono);
+	font-family: var(--font-ui);
 	font-size: 13px;
+	line-height: 1.45;
+	-webkit-font-smoothing: antialiased;
+}
+
+::selection {
+	background: var(--accent-soft);
+}
+
+:focus-visible {
+	outline: 2px solid var(--accent);
+	outline-offset: 1px;
+	border-radius: 4px;
 }
 
 a {
@@ -29,81 +82,156 @@ a {
 	text-decoration: none;
 }
 
+/* ---- Chrome ---- */
+
 .shell {
-	max-width: 960px;
+	max-width: 1040px;
 	margin: 0 auto;
-	padding: 14px 18px 40px;
+	padding: 0 20px 48px;
 }
 
 .topbar {
 	display: flex;
 	align-items: center;
-	gap: 14px;
-	padding: 8px 0 12px;
-	border-bottom: 1px solid var(--border);
-	margin-bottom: 14px;
+	gap: 18px;
+	min-height: 46px;
+	border-bottom: 1px solid var(--line);
+	margin-bottom: 20px;
 }
 
 .brand {
-	font-weight: 800;
-	letter-spacing: 2px;
-	font-size: 12px;
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	font-size: 13px;
+	font-weight: 650;
+	letter-spacing: 0.01em;
+}
+
+.brand::before {
+	content: '';
+	width: 9px;
+	height: 9px;
+	border-radius: 3px;
+	background: var(--accent);
+}
+
+/* Text tabs separated by hairlines; active tab takes the accent. */
+.tabs {
+	display: flex;
+	align-items: center;
+}
+
+.tabs a {
+	position: relative;
+	padding: 5px 11px;
+	font-size: 12.5px;
+	font-weight: 500;
+	color: var(--text-2);
+	border-radius: 5px;
+}
+
+.tabs a:hover {
+	color: var(--text);
+}
+
+.tabs a.active {
+	color: var(--accent);
+	font-weight: 600;
+}
+
+.tabs a + a::before {
+	content: '';
+	position: absolute;
+	left: -0.5px;
+	top: 50%;
+	translate: 0 -50%;
+	width: 1px;
+	height: 12px;
+	background: var(--line);
+}
+
+.topbar-right {
+	display: flex;
+	align-items: center;
+	gap: 14px;
+	margin-left: auto;
 }
 
 .status {
 	display: flex;
 	align-items: center;
-	gap: 6px;
-	font-size: 10px;
-	color: var(--dim);
-	margin-left: auto;
+	gap: 7px;
+	font-size: 12px;
+	color: var(--text-2);
+	white-space: nowrap;
 }
 
 .dot {
 	width: 7px;
 	height: 7px;
 	border-radius: 50%;
-	background: var(--faint);
+	background: var(--text-3);
+	flex: none;
 }
 .dot.up {
-	background: var(--accent);
+	background: var(--ok);
 }
 .dot.down {
-	background: var(--hot);
+	background: var(--bad);
 }
 
-.tabs {
+/* ---- Chrome extras ---- */
+
+.iconbtn {
 	display: flex;
-	gap: 4px;
+	align-items: center;
+	justify-content: center;
+	width: 26px;
+	height: 26px;
+	border-radius: var(--radius);
+	color: var(--text-2);
+	border: 1px solid transparent;
+}
+.iconbtn:hover {
+	color: var(--text);
+	border-color: var(--line);
+}
+.iconbtn.active {
+	color: var(--accent);
+	background: var(--accent-soft);
 }
 
-.tabs a {
-	font-size: 10px;
-	font-weight: 700;
-	letter-spacing: 1px;
-	padding: 4px 10px;
-	border-radius: 999px;
-	color: var(--dim);
+.avatar {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	width: 24px;
+	height: 24px;
+	border-radius: 50%;
+	background: var(--accent-soft);
+	color: var(--accent);
+	font-size: 11.5px;
+	font-weight: 650;
+	flex: none;
 }
 
-.tabs a.active {
-	background: #fff;
-	color: #000;
-}
+/* ---- Sections ---- */
 
 .section-label {
-	font-size: 9px;
-	font-weight: 800;
-	letter-spacing: 1.5px;
-	color: var(--faint);
-	margin: 18px 0 6px;
+	font-size: 12px;
+	font-weight: 600;
+	color: var(--text-3);
+	margin: 24px 0 8px;
 }
 
+/* ---- Cards & KPIs ---- */
+
 .card {
-	background: var(--panel);
-	border: 1px solid var(--border);
-	border-radius: 10px;
-	padding: 12px 14px;
+	background: var(--bg-raised);
+	border: 1px solid var(--line);
+	border-radius: var(--radius);
+	padding: 14px 16px;
 }
 
 .grid {
@@ -116,7 +244,7 @@ a {
 .grid.cols-2 {
 	grid-template-columns: repeat(2, 1fr);
 }
-@media (max-width: 720px) {
+@media (max-width: 760px) {
 	.grid.cols-4 {
 		grid-template-columns: repeat(2, 1fr);
 	}
@@ -126,58 +254,151 @@ a {
 }
 
 .kpi .value {
-	font-size: 20px;
-	font-weight: 700;
+	font-size: 22px;
+	font-weight: 650;
+	font-variant-numeric: tabular-nums;
+	letter-spacing: -0.01em;
 }
 .kpi .label {
-	font-size: 9px;
-	color: var(--dim);
-	letter-spacing: 1px;
-	margin-top: 2px;
+	font-size: 12px;
+	color: var(--text-2);
+	margin-top: 3px;
 }
+
+/* ---- Tables ---- */
 
 table {
 	width: 100%;
 	border-collapse: collapse;
-	font-size: 11px;
+	font-size: 12.5px;
 }
 th {
 	text-align: left;
-	font-size: 9px;
-	letter-spacing: 1px;
-	color: var(--faint);
-	font-weight: 700;
-	padding: 4px 8px;
-	border-bottom: 1px solid var(--border);
+	font-size: 11.5px;
+	font-weight: 600;
+	color: var(--text-3);
+	padding: 5px 10px;
+	border-bottom: 1px solid var(--line);
 }
 td {
-	padding: 5px 8px;
-	border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+	padding: 7px 10px;
+	border-bottom: 1px solid var(--line);
 }
 tr:last-child td {
 	border-bottom: none;
 }
 
+/* ---- Segmented control & buttons ----
+ * Joined cells with hairline dividers — the primary picker pattern. */
+
+.seg {
+	display: inline-flex;
+	align-items: stretch;
+	border: 1px solid var(--line);
+	border-radius: var(--radius);
+	background: var(--bg-raised);
+	overflow: hidden;
+}
+
+.seg button {
+	appearance: none;
+	border: 0;
+	border-left: 1px solid var(--line);
+	background: transparent;
+	color: var(--text-2);
+	font-family: inherit;
+	font-size: 12px;
+	font-weight: 500;
+	padding: 4px 11px;
+	cursor: pointer;
+	white-space: nowrap;
+}
+
+.seg button:first-child {
+	border-left: 0;
+}
+.seg button:hover {
+	color: var(--text);
+}
+.seg button.active {
+	background: var(--accent-soft);
+	color: var(--accent);
+	font-weight: 600;
+}
+
+.btn {
+	appearance: none;
+	border: 1px solid var(--line);
+	background: var(--bg-raised);
+	color: var(--text);
+	border-radius: var(--radius);
+	font-family: inherit;
+	font-size: 12px;
+	font-weight: 500;
+	padding: 5px 13px;
+	cursor: pointer;
+}
+.btn:hover {
+	border-color: var(--line-strong);
+	background: var(--accent-soft);
+}
+
+/* ---- Meters ---- */
+
+.bar-track {
+	height: 4px;
+	border-radius: 2px;
+	background: var(--track);
+	overflow: hidden;
+}
+.bar-fill {
+	height: 100%;
+	border-radius: 2px;
+	background: var(--accent);
+}
+
+.spark {
+	width: 100%;
+	height: 140px;
+	display: block;
+}
+
+/* ---- Utilities ---- */
+
 .dim {
-	color: var(--dim);
+	color: var(--text-2);
 }
 .faint {
-	color: var(--faint);
+	color: var(--text-3);
 }
 .accent {
 	color: var(--accent);
 }
+.ok {
+	color: var(--ok);
+}
 .warn {
 	color: var(--warn);
 }
-.hot {
-	color: var(--hot);
+.bad {
+	color: var(--bad);
 }
 .right {
 	text-align: right;
 }
-.mono-sm {
-	font-size: 10px;
+
+/* Tabular figures in the UI font — the default for numbers. */
+.num {
+	font-variant-numeric: tabular-nums;
+}
+.num-sm {
+	font-variant-numeric: tabular-nums;
+	font-size: 12px;
+}
+/* Monospace only for identifiers: model names, hosts, ports. */
+.mono {
+	font-family: var(--font-mono);
+	font-size: 11.5px;
 }
 
 .row {
@@ -186,44 +407,14 @@ tr:last-child td {
 	gap: 8px;
 }
 
-.bar-track {
-	height: 5px;
-	border-radius: 3px;
-	background: rgba(255, 255, 255, 0.08);
-	overflow: hidden;
-}
-.bar-fill {
-	height: 100%;
-	border-radius: 3px;
-	background: var(--accent);
-}
-
-.spark {
-	width: 100%;
-	height: 120px;
-	display: block;
-}
-
 .empty {
-	color: var(--faint);
-	font-size: 11px;
-	padding: 18px 0;
+	color: var(--text-3);
+	font-size: 12.5px;
+	padding: 22px 0;
 	text-align: center;
 }
 
-button.chip {
-	font-family: var(--mono);
-	font-size: 9px;
-	font-weight: 700;
-	letter-spacing: 1px;
-	padding: 3px 9px;
-	border-radius: 999px;
-	border: none;
-	cursor: pointer;
-	background: rgba(255, 255, 255, 0.08);
-	color: var(--dim);
-}
-button.chip.active {
-	background: #fff;
-	color: #000;
+.stack {
+	display: grid;
+	gap: 8px;
 }
