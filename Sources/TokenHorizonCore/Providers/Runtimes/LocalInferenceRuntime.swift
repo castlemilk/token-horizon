@@ -93,6 +93,11 @@ open class LocalInferenceRuntime: Meterable {
     public let processSignatures: [String]
 
     open var meterVendorKey: String { vendor }
+    /// Loopback port the AUTO-started request meter listens on for this
+    /// runtime (deterministic, stable across restarts, surfaced via
+    /// GET /meters so users can point their clients at it). Nil = this
+    /// runtime gets no auto-meter (settings/env meters still work).
+    open var defaultMeterListenPort: UInt16? { nil }
     open var defaultMeterTarget: URL? {
         configuredEndpoints.lazy.compactMap { URL(string: $0.url) }.first
             ?? defaultPorts.first.map { URL(string: "http://127.0.0.1:\($0)")! }

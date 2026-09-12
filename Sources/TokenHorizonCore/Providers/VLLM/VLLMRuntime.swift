@@ -10,6 +10,7 @@ public final class VLLMRuntime: LocalInferenceRuntime {
                    processSignatures: ["vllm"])
     }
 
+    public override var defaultMeterListenPort: UInt16? { 9311 }
     public override var promptCounterNames: [String] { ["vllm:prompt_tokens_total"] }
     public override var generationCounterNames: [String] { ["vllm:generation_tokens_total"] }
     public override var extraMetricNames: [String] {

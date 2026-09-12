@@ -36,7 +36,7 @@ OS-specific behavior goes through `Platform` (in `Platform/CredentialStore.swift
 | `Platform.credentials` | `CredentialStore` | Keychain via `/usr/bin/security` | nil (libsecret TBD) | nil (wincred TBD) |
 | `Platform.systemStats` | `SystemStatsProviding` | `SystemStats` (mach/vm64/iostat/ps) | `ProcFSSystemStats` (/proc + ps) | TBD (PDH/Toolhelp) |
 | HTTP transport | `LocalHTTPServing` | `POSIXLoopbackHTTPServer` (BSD sockets, all platforms) | same | same |
-| Ollama meter routing | `OllamaClient.baseURLProvider` | wired to consented OllamaMeter :11435 | direct :11434 (opt-in meter) | — |
+| Runtime meter routing | `MeterRegistry.routedURL` (+ `OllamaClient.baseURLProvider` override) | auto-meters for all detected runtimes (ollama :11435, vllm :9311, sglang :9312, llamacpp :9313, mlx :9314) | same (generic, consent-gated) | — |
 
 The app assigns backends at launch (`AppDelegate.applicationDidFinishLaunching`);
 the headless daemon assigns them in `main.swift`.

@@ -105,20 +105,36 @@ public struct ToolUsage: Codable {
 }
 
 public struct ProviderLimit: Codable, Identifiable {
-    public init(provider: String, label: String, usedPercent: Double, resetsAt: Date?, detail: String) {
+    public init(provider: String, label: String, usedPercent: Double, resetsAt: Date?, detail: String,
+                accountID: String = "") {
         self.provider = provider
         self.label = label
         self.usedPercent = usedPercent
         self.resetsAt = resetsAt
         self.detail = detail
+        self.accountID = accountID
     }
 
-    public var id: String { "\(provider):\(label)" }
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        provider = try c.decode(String.self, forKey: .provider)
+        label = try c.decode(String.self, forKey: .label)
+        usedPercent = try c.decode(Double.self, forKey: .usedPercent)
+        resetsAt = try c.decodeIfPresent(Date.self, forKey: .resetsAt)
+        detail = try c.decode(String.self, forKey: .detail)
+        accountID = try c.decodeIfPresent(String.self, forKey: .accountID) ?? ""
+    }
+
+    public var id: String { "\(provider):\(accountID):\(label)" }
     public var provider: String
     public var label: String
     public var usedPercent: Double
     public var resetsAt: Date?
     public var detail: String
+    /// Pseudonymous account this quota window belongs to (see AccountKey).
+    /// Empty = single/unknown account. Limits for the same vendor but
+    /// different accounts are separate ceilings and must never merge.
+    public var accountID: String
 }
 
 public struct HistoryPoint: Codable {

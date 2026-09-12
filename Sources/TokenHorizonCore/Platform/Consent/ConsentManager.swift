@@ -5,6 +5,7 @@ public enum ConsentScope: String, Codable, CaseIterable {
     case metering     // loopback request relays (RequestMeter listeners)
     case fileReading  // tailing provider log files / sqlite DBs
     case telemetry    // process detection + Prometheus scraping of local runtimes
+    case mitm         // TLS interception of AI vendor hosts ONLY (scoped local proxy)
 }
 
 /// A stored consent decision.

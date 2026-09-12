@@ -12,6 +12,27 @@ public final class SettingsStore {
     private var _alibabaCookie: String
     private var _notifyOnLimitRefresh: Bool = true
     private var _runtimeEndpoints: [String: [RuntimeEndpoint]] = [:]
+    private var _meterCaptureMode: String = MeterCaptureMode.point.rawValue
+
+    /// How usage is measured: "point" (tools configured at loopback meters —
+    /// the default, and the only mode corporate machines should use) or
+    /// "mitm" (scoped TLS interception of AI vendor hosts via a local proxy,
+    /// requires .mitm consent + mitmproxy). Swappable at runtime; env
+    /// TH_CAPTURE_MODE overrides.
+    public var meterCaptureMode: MeterCaptureMode {
+        get {
+            if let env = ProcessInfo.processInfo.environment["TH_CAPTURE_MODE"],
+               let mode = MeterCaptureMode(rawValue: env.lowercased()) { return mode }
+            lock.lock(); defer { lock.unlock() }
+            return MeterCaptureMode(rawValue: _meterCaptureMode) ?? .point
+        }
+        set {
+            lock.lock()
+            _meterCaptureMode = newValue.rawValue
+            saveLocked()
+            lock.unlock()
+        }
+    }
 
     /// User-managed self-hosted runtime endpoints, vendor → list.
     /// Cloud providers are NOT configurable here (their API bases are fixed
@@ -72,6 +93,7 @@ public final class SettingsStore {
         let payload: [String: Any] = [
             "alibabaCookie": _alibabaCookie,
             "notifyOnLimitRefresh": _notifyOnLimitRefresh,
+            "meterCaptureMode": _meterCaptureMode,
             "runtimeEndpoints": _runtimeEndpoints.mapValues { list in
                 list.map { $0.asDict }
             },
@@ -94,6 +116,9 @@ public final class SettingsStore {
             c = obj["alibabaCookie"] as? String ?? ""
             if let n = obj["notifyOnLimitRefresh"] as? Bool {
                 notify = n
+            }
+            if let m = obj["meterCaptureMode"] as? String {
+                _meterCaptureMode = m
             }
             if let dict = obj["runtimeEndpoints"] as? [String: [[String: Any]]] {
                 for (vendor, list) in dict {

@@ -70,14 +70,4 @@ open class GeminiMeter: RequestMeter {
         }
         return (level, "thinkingBudget:\(budget)")
     }
-
-    public override func cost(for exchange: MeteredExchange, tokens: TokenBreakdown) -> Double {
-        let model = model(for: exchange)
-        guard let entry = ModelCatalog.shared.lookup(id: model) else { return 0 }
-        var usd = (Double(tokens.input) * entry.inputPerM + Double(tokens.output) * entry.outputPerM) / 1_000_000
-        if let cacheRate = entry.cacheReadPerM {
-            usd += Double(tokens.cacheRead) * cacheRate / 1_000_000
-        }
-        return usd
-    }
 }

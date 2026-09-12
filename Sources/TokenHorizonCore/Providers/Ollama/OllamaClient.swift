@@ -37,8 +37,10 @@ public struct OllamaSpeedBenchmark: Codable {
 }
 
 public final class OllamaClient {
-    /// Platform seam: route through a request meter to measure the client's own
-    /// traffic (e.g. point at an OllamaMeter listen port). Default talks to Ollama directly.
+    /// Platform seam: explicit override for the client's upstream (tests,
+    /// custom Ollama hosts). Default talks to Ollama directly — or through
+    /// the auto-started meter when one is live (MeterRegistry.routedURL),
+    /// so the app's own traffic is measured on the one shared path.
     public static var baseURLProvider: () -> URL? = { nil }
 
     private static let lock = NSLock()
@@ -47,7 +49,10 @@ public final class OllamaClient {
     private static var cacheLoaded = false
 
     private static func endpoint(_ path: String) -> URL? {
-        let base = baseURLProvider() ?? URL(string: "http://127.0.0.1:11434")
+        let direct = baseURLProvider() ?? URL(string: "http://127.0.0.1:11434")
+        // Generic meter routing: if a meter forwards to this endpoint, go
+        // through it — measured-only, no Ollama-specific wiring required.
+        let base = direct.flatMap { MeterRegistry.routedURL(for: $0) } ?? direct
         return base?.appendingPathComponent(path.hasPrefix("/") ? String(path.dropFirst()) : path)
     }
 

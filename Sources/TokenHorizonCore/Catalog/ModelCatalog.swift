@@ -366,53 +366,28 @@ public final class ModelCatalog {
 
         // 1. Google Gemini, Gemma, Imagen & Veo (dynamic auto-discovery for all 3.x, 2.x, 1.x releases)
         if p.contains("google") || p.contains("vertex") || m.contains("gemini") || m.contains("gemma") || m.contains("imagen") || m.contains("veo") {
-            let clean = m.split(separator: "/").last.map(String.init) ?? m
-            var family = clean
-                .replacingOccurrences(of: "-latest", with: "")
-                .replacingOccurrences(of: "-preview", with: "")
-                .replacingOccurrences(of: "-thinking", with: "")
-                .replacingOccurrences(of: "-exp", with: "")
-                .replacingOccurrences(of: "-customtools", with: "")
-            family = family
-                .replacingOccurrences(of: "gemini-3-7-", with: "gemini-3.7-")
-                .replacingOccurrences(of: "gemini-3-5-", with: "gemini-3.5-")
-                .replacingOccurrences(of: "gemini-3-1-", with: "gemini-3.1-")
-                .replacingOccurrences(of: "gemini-2-5-", with: "gemini-2.5-")
-                .replacingOccurrences(of: "gemini-2-0-", with: "gemini-2.0-")
-                .replacingOccurrences(of: "gemini-1-5-", with: "gemini-1.5-")
+            let family = Canonical.familyID(m, extraStrips: Canonical.googleExtraStrips, folds: Canonical.geminiFolds)
             let name = formatModelDisplayName(family)
             return (family, name, "google", "Google")
         }
 
         // 2. Zhipu GLM Models (dynamic for releases like glm-5.3-flash, glm-5.3, glm-4-plus, glm-4-air, etc.)
         if p.contains("glm") || p.contains("zai") || p.contains("zhipu") || m.contains("glm") || m.contains("codegeex") {
-            let clean = m.split(separator: "/").last.map(String.init) ?? m
-            let family = clean
-                .replacingOccurrences(of: "-latest", with: "")
-                .replacingOccurrences(of: "-preview", with: "")
+            let family = Canonical.familyID(m)
             let name = formatModelDisplayName(family)
             return (family, name, "glm", "Zhipu AI")
         }
 
         // 3. Anthropic Claude Models (dynamic for all Claude 3.7, 3.5, 4.x, Sonnet, Opus, Haiku)
         if p.contains("anthropic") || p.contains("claude") || m.contains("claude") {
-            let clean = m.split(separator: "/").last.map(String.init) ?? m
-            var family = clean
-                .replacingOccurrences(of: "-latest", with: "")
-                .replacingOccurrences(of: "-preview", with: "")
-            family = family
-                .replacingOccurrences(of: "claude-3-7-", with: "claude-3.7-")
-                .replacingOccurrences(of: "claude-3-5-", with: "claude-3.5-")
+            let family = Canonical.familyID(m, folds: Canonical.claudeFolds)
             let name = formatModelDisplayName(family)
             return (family, name, "anthropic", "Anthropic")
         }
 
         // 4. OpenAI Models (dynamic for GPT-5 Sol, Terra, Luna, GPT-5, GPT-4o, GPT-4.5, o1, o3, o4)
         if p.contains("openai") || p.contains("codex") || m.contains("gpt") || m.contains("chatgpt") || m.contains("sol") || m.contains("terra") || m.contains("luna") || m.hasPrefix("o1") || m.hasPrefix("o3") || m.hasPrefix("o4") {
-            let clean = m.split(separator: "/").last.map(String.init) ?? m
-            let family = clean
-                .replacingOccurrences(of: "-latest", with: "")
-                .replacingOccurrences(of: "-preview", with: "")
+            let family = Canonical.familyID(m)
             if family == "sol" || family.contains("gpt-5-sol") || family.contains("gpt-sol") {
                 return ("gpt-5-sol", "GPT-5 Sol", "openai", "OpenAI")
             }
@@ -428,103 +403,70 @@ public final class ModelCatalog {
 
         // 5. DeepSeek Models (dynamic for V4 Pro, V3, R1, Coder)
         if p.contains("deepseek") || m.contains("deepseek") {
-            let clean = m.split(separator: "/").last.map(String.init) ?? m
-            let family = clean
-                .replacingOccurrences(of: "-latest", with: "")
-                .replacingOccurrences(of: "-preview", with: "")
+            let family = Canonical.familyID(m)
             let name = formatModelDisplayName(family)
             return (family, name, "deepseek", "DeepSeek")
         }
 
         // 6. Alibaba Qwen Models (dynamic for Qwen 3 Coder, 2.5, MoE)
         if p.contains("alibaba") || p.contains("qwen") || p.contains("bailian") || m.contains("qwen") {
-            let clean = m.split(separator: "/").last.map(String.init) ?? m
-            var family = clean
-                .replacingOccurrences(of: "-latest", with: "")
-                .replacingOccurrences(of: "-preview", with: "")
-            family = family
-                .replacingOccurrences(of: "qwen-3-", with: "qwen3-")
-                .replacingOccurrences(of: "qwen-2-5-", with: "qwen2.5-")
+            let family = Canonical.familyID(m, folds: Canonical.qwenFolds)
             let name = formatModelDisplayName(family)
             return (family, name, "alibaba", "Alibaba Cloud")
         }
 
         // 7. Moonshot Kimi (dynamic for K2, 1.5, etc.)
         if p.contains("moonshot") || p.contains("kimi") || m.contains("kimi") {
-            let clean = m.split(separator: "/").last.map(String.init) ?? m
-            let family = clean
-                .replacingOccurrences(of: "-latest", with: "")
-                .replacingOccurrences(of: "-preview", with: "")
+            let family = Canonical.familyID(m)
             let name = formatModelDisplayName(family)
             return (family, name, "kimi", "Moonshot Kimi")
         }
 
         // 8. MiniMax (dynamic for M3, 01, etc.)
         if p.contains("minimax") || m.contains("minimax") {
-            let clean = m.split(separator: "/").last.map(String.init) ?? m
-            let family = clean
-                .replacingOccurrences(of: "-latest", with: "")
-                .replacingOccurrences(of: "-preview", with: "")
+            let family = Canonical.familyID(m)
             let name = formatModelDisplayName(family)
             return (family, name, "minimax", "MiniMax")
         }
 
         // 9. xAI Grok (dynamic for Grok 4, Grok 3, Grok 2)
         if p.contains("xai") || m.contains("grok") {
-            let clean = m.split(separator: "/").last.map(String.init) ?? m
-            let family = clean
-                .replacingOccurrences(of: "-latest", with: "")
-                .replacingOccurrences(of: "-preview", with: "")
+            let family = Canonical.familyID(m)
             let name = formatModelDisplayName(family)
             return (family, name, "xai", "xAI")
         }
 
         // 10. Mistral & Codestral (dynamic)
         if p.contains("mistral") || m.contains("codestral") || m.contains("pixtral") || m.contains("mistral") {
-            let clean = m.split(separator: "/").last.map(String.init) ?? m
-            let family = clean
-                .replacingOccurrences(of: "-latest", with: "")
-                .replacingOccurrences(of: "-preview", with: "")
+            let family = Canonical.familyID(m)
             let name = formatModelDisplayName(family)
             return (family, name, "mistral", "Mistral")
         }
 
         // 11. Meta LLaMA (dynamic)
         if p.contains("meta") || m.contains("llama") {
-            let clean = m.split(separator: "/").last.map(String.init) ?? m
-            let family = clean
-                .replacingOccurrences(of: "-latest", with: "")
-                .replacingOccurrences(of: "-preview", with: "")
+            let family = Canonical.familyID(m)
             let name = formatModelDisplayName(family)
             return (family, name, "meta", "Meta")
         }
 
         // 12. Cohere Command & Embed
         if p.contains("cohere") || m.contains("command-r") || m.contains("command-light") || m.contains("cohere") {
-            let clean = m.split(separator: "/").last.map(String.init) ?? m
-            let family = clean
-                .replacingOccurrences(of: "-latest", with: "")
-                .replacingOccurrences(of: "-preview", with: "")
+            let family = Canonical.familyID(m)
             let name = formatModelDisplayName(family)
             return (family, name, "cohere", "Cohere")
         }
 
         // 13. Amazon Nova
         if p.contains("amazon") || p.contains("bedrock") || m.contains("nova-") || m.contains("amazon-nova") {
-            let clean = m.split(separator: "/").last.map(String.init) ?? m
-            let family = clean
-                .replacingOccurrences(of: "-latest", with: "")
-                .replacingOccurrences(of: "-preview", with: "")
+            let family = Canonical.familyID(m)
             let name = formatModelDisplayName(family)
             return (family, name, "amazon", "Amazon Web Services")
         }
 
         // 14. Perplexity Sonar
         if p.contains("perplexity") || m.contains("sonar") {
-            let clean = m.split(separator: "/").last.map(String.init) ?? m
-            let family = clean
-                .replacingOccurrences(of: "-latest", with: "")
-                .replacingOccurrences(of: "-preview", with: "")
+            let family = Canonical.familyID(m)
             let name = formatModelDisplayName(family)
             return (family, name, "perplexity", "Perplexity")
         }

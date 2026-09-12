@@ -25,6 +25,14 @@ public final class InferenceMonitor {
     /// Durable usage ledger receiving measured counter deltas. Replaceable in tests.
     public var ledger: RuntimeUsageLedger = .shared
 
+    /// Fired off-main on EVERY poll where a runtime is observed alive (not
+    /// just the first) — consumers must be idempotent.
+    /// CoreAPIRouter.startAutoMetering hooks this to pre-wire request meters
+    /// for every detected runtime (dedup by vendor inside); firing every
+    /// poll means consent granted later or a meter that failed to bind is
+    /// retried on the next pass instead of being lost for the session.
+    public var onRuntimeSighting: ((LocalInferenceRuntime) -> Void)?
+
     public init() {}
 
     /// Latest snapshot per runtime vendor.
@@ -96,6 +104,8 @@ public final class InferenceMonitor {
             return RuntimeSnapshot(vendor: runtime.vendor, displayName: runtime.displayName,
                                    running: false, sampledAt: now)
         }
+
+        onRuntimeSighting?(runtime)
 
         var snap = RuntimeSnapshot(vendor: runtime.vendor, displayName: runtime.displayName,
                                    running: true, pids: processes.map(\.pid), sampledAt: now)

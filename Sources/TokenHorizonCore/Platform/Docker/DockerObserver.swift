@@ -80,7 +80,7 @@ public struct SocketDockerTransport: DockerTransport {
         let bytes = Array(socketPath.utf8.prefix(MemoryLayout.size(ofValue: addr.sun_path) - 1))
         withUnsafeMutablePointer(to: &addr.sun_path) { ptr in
             bytes.withUnsafeBytes { src in
-                memcpy(ptr, src.baseAddress, src.count)
+                if let base = src.baseAddress { memcpy(ptr, base, src.count) }
             }
         }
         let len = socklen_t(MemoryLayout<sockaddr_un>.size)

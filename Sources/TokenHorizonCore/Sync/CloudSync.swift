@@ -7,23 +7,24 @@ import FoundationNetworking
 /// publishes deltas to a cloud DB with a deliberately different schema.
 ///
 /// Local tables stay write-optimized per-machine (`usage_event`,
-/// `limit_snapshot`, `leaderboard_snapshot`). The cloud schema is
-/// read-optimized for cross-user queries (rankings, team rollups); the
-/// `CloudSchema` mappers below are the translation layer between them.
+/// `limit_snapshot`). The cloud schema is read-optimized for cross-user
+/// queries (rankings, team rollups); the `CloudSchema` mappers below are the
+/// translation layer between them. Leaderboard contributions are derived
+/// cloud-side from usage deltas — no leaderboard state lives on the machine,
+/// not even pending: usage rows ARE the pending state, identified by the
+/// handle/team envelope on every batch.
 ///
-/// Flow per dataset (usage events, limits, leaderboard):
+/// Flow per dataset (usage events, limits):
 /// 1. read the persisted cursor from `sync_state`
 /// 2. pull the delta from the store (rowid / timestamp based)
-/// 3. map to the cloud schema and POST it
+/// 3. map to the cloud schema and POST it with the identity envelope
 /// 4. advance the cursor ONLY on acknowledged push
 ///
 /// Offline (flights) = deltas accumulate locally; the next `sync()` after
-/// reconnect pushes everything. Event UUIDs make redelivery idempotent;
-/// leaderboard rows merge last-write-wins on `(machine_id, handle, period)`.
+/// reconnect pushes everything. Event UUIDs make redelivery idempotent.
 public enum CloudSyncDataset: String, CaseIterable {
     case usageEvents = "usage_events"   // cursor: rowid
     case limits = "limits"               // cursor: epoch seconds
-    case leaderboard = "leaderboard"     // outbox: rows deleted on ack, no cursor
 }
 
 /// Transport seam for the cloud endpoint. URLSession in production, fakes in
@@ -73,20 +74,28 @@ public struct HTTPCloudTransport: CloudTransport {
 /// row (multi-device attribution) and drop local-only columns.
 public enum CloudSchema {
     public static func usageEvents(_ events: [UsageEvent]) -> [[String: Any]] {
+        // The cloud schema is canonical + resolved: vendor/model fold to
+        // canonical spellings, product/cost resolve their query-time ranks
+        // (explicit > file > sniffed; reported > computed). Local rows stay
+        // raw — the resolution happens here, at the read boundary.
         events.map { e in
             [
                 "id": e.id.uuidString,
                 "ts": Int(e.timestamp.timeIntervalSince1970),
                 "machine_id": e.machineID,
+                "machine_alias": e.machineAlias ?? NSNull(),
                 "source": e.source.rawValue,
-                "vendor": e.vendor,
-                "model": e.model,
+                "vendor": e.canonicalVendor,
+                "model": e.canonicalModel,
                 "tokens": ["input": e.tokens.input, "output": e.tokens.output,
                            "reasoning": e.tokens.reasoning, "cache_read": e.tokens.cacheRead,
                            "cache_write": e.tokens.cacheWrite],
-                "cost": e.cost,
+                "cost": e.effectiveCost,
+                "cost_source": e.effectiveCostSource?.rawValue ?? NSNull(),
                 "session": e.sessionID ?? NSNull(),
-                "product": e.product ?? NSNull(),
+                "product": e.effectiveProduct ?? NSNull(),
+                "account_id": e.accountID ?? NSNull(),
+                "request_id": e.requestID ?? NSNull(),
                 "attestation": e.attestation.rawValue,
             ] as [String: Any]
         }
@@ -97,7 +106,8 @@ public enum CloudSchema {
             [
                 "recorded_at": Int(s.recordedAt.timeIntervalSince1970),
                 "machine_id": s.machineID,
-                "provider": s.provider,
+                "provider": Canonical.vendor(s.provider),
+                "account_id": s.accountID,
                 "label": s.label,
                 "used_percent": s.usedPercent,
                 "resets_at": s.resetsAt.map { Int($0.timeIntervalSince1970) } ?? NSNull(),
@@ -106,24 +116,10 @@ public enum CloudSchema {
         }
     }
 
-    public static func leaderboard(_ entries: [SyncLeaderboardEntry]) -> [[String: Any]] {
-        entries.map { e in
-            [
-                "machine_id": e.machineID,
-                "handle": e.handle,
-                "team": e.team,
-                "period": e.period,
-                "tokens": e.tokens,
-                "cost": e.cost,
-                "top_model": e.topModel,
-                "breakdown": (try? JSONSerialization.jsonObject(with: Data(e.breakdownJSON.utf8))) ?? NSNull(),
-                "updated_at": Int(e.updatedAt.timeIntervalSince1970),
-            ] as [String: Any]
-        }
-    }
-
-    public static func encode(_ rows: [[String: Any]]) throws -> Data {
-        try JSONSerialization.data(withJSONObject: ["rows": rows])
+    public static func encode(_ rows: [[String: Any]], envelope: [String: Any] = [:]) throws -> Data {
+        var payload = envelope
+        payload["rows"] = rows
+        return try JSONSerialization.data(withJSONObject: payload)
     }
 }
 
@@ -148,6 +144,9 @@ public final class CloudSync {
     public var baseURL: URL?
     public var batchSize = 500
     public var transportFactory: (URL) -> CloudTransport = { HTTPCloudTransport(baseURL: $0) }
+    /// Identity envelope on every batch (cloud attributes rows to handle/team).
+    public var handle: String
+    public var team: String
 
     private let lock = NSLock()
     private var _lastReport = SyncReport()
@@ -158,9 +157,17 @@ public final class CloudSync {
     public var lastSync: Date? { lock.lock(); defer { lock.unlock() }; return _lastSync }
 
     public init() {
-        if let raw = ProcessInfo.processInfo.environment["TH_SYNC_URL"], let url = URL(string: raw) {
+        let env = ProcessInfo.processInfo.environment
+        if let raw = env["TH_SYNC_URL"], let url = URL(string: raw) {
             baseURL = url
         }
+        handle = env["TH_SYNC_HANDLE"] ?? NSUserName()
+        team = env["TH_SYNC_TEAM"] ?? ""
+    }
+
+    private var envelope: [String: Any] {
+        ["machine_id": MachineIdentity.current, "machine_alias": MachineIdentity.alias,
+         "handle": handle, "team": team]
     }
 
     /// Push all pending deltas. Returns per-dataset counts; advances cursors
@@ -177,7 +184,6 @@ public final class CloudSync {
         do {
             report.pushed[CloudSyncDataset.usageEvents.rawValue] = try pushUsage(store: store, transport: transport)
             report.pushed[CloudSyncDataset.limits.rawValue] = try pushLimits(store: store, transport: transport, now: now)
-            report.pushed[CloudSyncDataset.leaderboard.rawValue] = try pushLeaderboard(store: store, transport: transport, now: now)
         } catch {
             report.error = String(describing: error)
             lock.lock()
@@ -195,7 +201,7 @@ public final class CloudSync {
         let cursor = Int64(try store.syncCursor(dataset: CloudSyncDataset.usageEvents.rawValue) ?? "0") ?? 0
         let page = try store.events(afterSequence: cursor, limit: batchSize)
         guard !page.events.isEmpty else { return 0 }
-        try transport.post(path: "/ingest/events", payload: CloudSchema.encode(CloudSchema.usageEvents(page.events)))
+        try transport.post(path: "/ingest/events", payload: CloudSchema.encode(CloudSchema.usageEvents(page.events), envelope: envelope))
         try store.setSyncCursor(dataset: CloudSyncDataset.usageEvents.rawValue, cursor: String(page.lastSequence))
         return page.events.count
     }
@@ -205,22 +211,10 @@ public final class CloudSync {
         let from = Date(timeIntervalSince1970: TimeInterval(sinceEpoch))
         let snaps = try store.limitHistory(from: from, to: now, provider: nil).prefix(batchSize)
         guard !snaps.isEmpty else { return 0 }
-        try transport.post(path: "/ingest/limits", payload: CloudSchema.encode(CloudSchema.limits(Array(snaps), sinceCursor: String(sinceEpoch))))
+        try transport.post(path: "/ingest/limits", payload: CloudSchema.encode(CloudSchema.limits(Array(snaps), sinceCursor: String(sinceEpoch)), envelope: envelope))
         if let last = snaps.map(\.recordedAt).max() {
             try store.setSyncCursor(dataset: CloudSyncDataset.limits.rawValue, cursor: String(Int(last.timeIntervalSince1970)))
         }
         return snaps.count
-    }
-
-    private func pushLeaderboard(store: UsageStoring, transport: CloudTransport, now: Date) throws -> Int {
-        // Outbox semantics: the table holds only unacknowledged uploads
-        // (rankings themselves live cloud-side). Push everything pending,
-        // delete on ack. No cursor — the table IS the queue.
-        let entries = try store.leaderboardSnapshots(since: .distantPast).prefix(batchSize)
-        guard !entries.isEmpty else { return 0 }
-        let pushStart = now
-        try transport.post(path: "/ingest/leaderboard", payload: CloudSchema.encode(CloudSchema.leaderboard(Array(entries))))
-        try store.clearSyncedLeaderboard(before: pushStart)
-        return entries.count
     }
 }

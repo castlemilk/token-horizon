@@ -1,54 +1,31 @@
-# Token Horizon UI
+# token-horizon-ui
 
-Cross-platform desktop UI for Token Horizon — SvelteKit (TypeScript, SPA) in a
-Tauri shell. It is a thin client of the Token Horizon loopback API
-(`CoreAPIRouter`, `http://127.0.0.1:8765`): the headless daemon
-(`token-horizon-headless`) or the macOS app serves it.
-
-## Develop
+Cross-platform desktop UI for Token Horizon: a SvelteKit static SPA (TypeScript,
+runes mode, no Tailwind) packaged by a Tauri v2 shell. It is a thin client of the
+Token Horizon loopback API (`http://127.0.0.1:8765`) served by the macOS app or
+the `token-horizon-headless` daemon.
 
 ```bash
-# terminal 1: the API (repo root)
-swift run token-horizon-headless
-
-# terminal 2: hot-reload frontend
-npm install
-npm run dev
-
-# terminal 3 (optional): native window against the hot-reload server
-npm run tauri dev
+npm install          # reconcile node_modules with this manifest
+npm run dev          # SvelteKit dev server on :5173
+npm run tauri dev    # desktop shell (macOS / Windows / Linux)
+npm run build        # static bundle in build/ (consumed by Tauri frontendDist)
+npm run check        # svelte-check
 ```
 
-## Build
+The API base can be overridden from the browser console:
+`localStorage.setItem('token-horizon.api', 'http://192.168.1.10:8765')`.
 
-```bash
-npm run build        # static SPA bundle → build/
-npm run tauri build  # native app (Linux .deb/AppImage, Windows .msi, macOS .app)
-```
+Building on a Linux box without sudo (rootless Swift toolchain, webkit dev
+sysroot, rust-lld flags) is documented in
+[`../docs/tauri-desktop-build.md`](../docs/tauri-desktop-build.md); the reusable
+environment lives in `~/toolchains/env.sh`.
 
-Linux prerequisites for the Tauri shell: `webkit2gtk-4.1` dev packages
-(`sudo apt install libwebkit2gtk-4.1-dev libgtk-3-dev libsoup-3.0-dev`).
-If you can't use sudo, extract the debs locally and point `PKG_CONFIG_PATH` +
-`RUSTFLAGS="-L …"` at them (see git history for commit "SvelteKit + Tauri UI").
+## Design language
 
-## Configuration
-
-The UI talks to `http://127.0.0.1:8765` by default. Point it at another daemon
-(e.g. a GPU box running `token-horizon-headless`) from the browser console:
-
-```js
-localStorage.setItem('token-horizon.api', 'http://gpu-box:8765')
-```
-
-(Remote hosts need the daemon bound to a reachable interface — loopback is
-the default; expose deliberately.)
-
-## Tabs
-
-- **OVERVIEW** — tokens/cost today + all-time, today's token breakdown, local CPU/RAM
-- **PROVIDERS** — live runtimes (measured tok/s, loaded models, local cpu/mem
-  when detected) + metered provider→model rollups
-- **REQUESTS** — per-request table: vendor, model, product, tokens, measured
-  gen tok/s, thinking level; vendor filter chips + cursor pagination
-- **TRENDS** — 15-min/1h/day bucket bar charts (1D/1W/1M/3M/1Y)
-- **LIMITS** — plan quota gauges per provider
+Hairline style shared across macOS / Windows / Linux: system UI font stack,
+1px `--line` borders, 6px radius, no shadows, numbers in tabular figures.
+Light/dark follows the OS and can be overridden from the top bar
+(`data-theme` on `<html>`, persisted in `localStorage`). The chrome accent is
+deliberately neutral graphite — color comes from data (provider/runtime
+accents, state dots), not the frame. All tokens live in `src/app.css`.

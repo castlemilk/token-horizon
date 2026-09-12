@@ -84,6 +84,10 @@ public final class ClaudeLimits: VendorLimitsAdapter {
     }
 
     private func fetchWindows(token: String, providerName: String) -> [ProviderLimit] {
+        // Pseudonymous per-account key: quota windows consolidate against the
+        // SAME account across meter/quota-API/file sources; the raw token is
+        // never persisted.
+        let account = accountKey(for: token)
         guard let u = URL(string: "https://api.anthropic.com/api/oauth/usage") else { return [] }
         var req = URLRequest(url: u, timeoutInterval: 8)
         req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
@@ -103,14 +107,15 @@ public final class ClaudeLimits: VendorLimitsAdapter {
             var reset: Date?
             if let ts = window["resets_at"] as? String { reset = parseISO(ts) }
             else if let ts = window["resets_at"] as? NSNumber { reset = epoch(ts) }
-            out.append(limit(label: label, usedPercent: pct, resetsAt: reset, provider: providerName))
+            out.append(limit(label: label, usedPercent: pct, resetsAt: reset, provider: providerName, account: account))
         }
         if let limits = obj["limits"] as? [[String: Any]] {
             for entry in limits where (entry["kind"] as? String) == "weekly_scoped" {
                 let model = ((entry["scope"] as? [String: Any])?["model"] as? [String: Any])?["display_name"] as? String ?? "scoped"
                 if let pct = (entry["utilization"] as? NSNumber)?.doubleValue {
                     out.append(limit(label: "weekly · \(model)", usedPercent: pct,
-                                     resetsAt: parseISO(entry["resets_at"] as? String), provider: providerName))
+                                     resetsAt: parseISO(entry["resets_at"] as? String),
+                                     provider: providerName, account: account))
                 }
             }
         }

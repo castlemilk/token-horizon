@@ -112,16 +112,22 @@ public struct LimitSnapshot: Codable {
     public var recordedAt: Date
     public var machineID: String
     public var provider: String
+    /// Pseudonymous account this quota window belongs to (see AccountKey).
+    /// Multi-account vendors keep one quota timeline PER ACCOUNT; empty =
+    /// single/unknown account.
+    public var accountID: String
     public var label: String
     public var usedPercent: Double
     public var resetsAt: Date?
     public var detail: String
 
     public init(recordedAt: Date = Date(), machineID: String, provider: String,
-                label: String, usedPercent: Double, resetsAt: Date? = nil, detail: String = "") {
+                accountID: String = "", label: String, usedPercent: Double,
+                resetsAt: Date? = nil, detail: String = "") {
         self.recordedAt = recordedAt
         self.machineID = machineID
         self.provider = provider
+        self.accountID = accountID
         self.label = label
         self.usedPercent = usedPercent
         self.resetsAt = resetsAt
@@ -130,8 +136,8 @@ public struct LimitSnapshot: Codable {
 
     public init(from limit: ProviderLimit, recordedAt: Date = Date(), machineID: String) {
         self.init(recordedAt: recordedAt, machineID: machineID, provider: limit.provider,
-                  label: limit.label, usedPercent: limit.usedPercent,
-                  resetsAt: limit.resetsAt, detail: limit.detail)
+                  accountID: limit.accountID, label: limit.label,
+                  usedPercent: limit.usedPercent, resetsAt: limit.resetsAt, detail: limit.detail)
     }
 }
 
@@ -139,36 +145,6 @@ public enum UsageStoreError: Error {
     case openFailed(String)
     case prepareFailed(String)
     case stepFailed(String)
-}
-
-/// Minimal leaderboard row for cloud sync. The cloud schema is deliberately
-/// different from local tables: it is read-optimized for cross-user rankings
-/// (handle/team/period) while local tables stay write-optimized per-machine.
-/// Hosts map their richer entry types onto this before recording.
-public struct SyncLeaderboardEntry: Codable {
-    public var machineID: String
-    public var handle: String
-    public var team: String
-    public var period: String
-    public var tokens: Int
-    public var cost: Double
-    public var topModel: String
-    public var breakdownJSON: String
-    public var updatedAt: Date
-
-    public init(machineID: String, handle: String, team: String = "", period: String = "today",
-                tokens: Int, cost: Double, topModel: String = "",
-                breakdownJSON: String = "{}", updatedAt: Date = Date()) {
-        self.machineID = machineID
-        self.handle = handle
-        self.team = team
-        self.period = period
-        self.tokens = tokens
-        self.cost = cost
-        self.topModel = topModel
-        self.breakdownJSON = breakdownJSON
-        self.updatedAt = updatedAt
-    }
 }
 
 /// The storage contract every usage backend implements — local sqlite today,
@@ -179,6 +155,17 @@ public protocol UsageStoring {
     /// Append events. Re-inserting an existing event id is a no-op, so
     /// retries and multi-machine sync merges are safe.
     func insert(_ events: [UsageEvent]) throws
+
+    /// Append events measured LIVE by a request meter — the ONLY writer of
+    /// usage rows. Implementations must be thread-safe and insert-idempotent
+    /// (event UUID is the dedup key).
+    func insertMetered(_ events: [UsageEvent]) throws
+
+    /// Append tool annotations recovered from session files. Idempotent
+    /// (vendor+requestID is the natural key). Annotations are stored
+    /// alongside usage rows and joined onto them at READ time — they never
+    /// modify a usage row, so every observation keeps full resolution.
+    func annotate(_ annotations: [FileAnnotation]) throws
 
     /// Tabular request view: filtered events, newest first, rowid-paginated.
     /// nextCursor is nil when the page is exhausted.
@@ -214,19 +201,8 @@ public protocol UsageStoring {
     /// Quota history over [from, to), optionally filtered by provider.
     func limitHistory(from: Date, to: Date, provider: String?) throws -> [LimitSnapshot]
 
-    /// Leaderboard outbox: upsert per (machine, handle, period) for cloud sync.
-    /// Pending uploads only — rankings themselves live cloud-side (global
-    /// construct); rows are deleted on acknowledged push.
-    func recordLeaderboard(_ entries: [SyncLeaderboardEntry]) throws
-
-    /// Leaderboard rows updated since the given date (for delta pushes).
-    func leaderboardSnapshots(since: Date) throws -> [SyncLeaderboardEntry]
-
-    /// Drop outbox rows updated at or before the given date (after ack).
-    func clearSyncedLeaderboard(before: Date) throws
-
     /// Sync cursors: opaque per-dataset progress markers for delta pushes
-    /// (usage rowid, limits timestamp, …). Backends persist them; the sync
+    /// (usage rowid, limits timestamp). Backends persist them; the sync
     /// engine advances them only on acknowledged pushes.
     func syncCursor(dataset: String) throws -> String?
     func setSyncCursor(dataset: String, cursor: String) throws
@@ -237,9 +213,12 @@ public protocol UsageStoring {
 public extension UsageStoring {
     func recordLimits(_ snapshots: [LimitSnapshot]) throws {}
     func limitHistory(from: Date, to: Date, provider: String?) throws -> [LimitSnapshot] { [] }
-    func recordLeaderboard(_ entries: [SyncLeaderboardEntry]) throws {}
-    func leaderboardSnapshots(since: Date) throws -> [SyncLeaderboardEntry] { [] }
-    func clearSyncedLeaderboard(before: Date) throws {}
     func syncCursor(dataset: String) throws -> String? { nil }
     func setSyncCursor(dataset: String, cursor: String) throws {}
+}
+
+/// Backends without annotation storage simply drop annotations.
+public extension UsageStoring {
+    func insertMetered(_ events: [UsageEvent]) throws { try insert(events) }
+    func annotate(_ annotations: [FileAnnotation]) throws {}
 }

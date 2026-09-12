@@ -1,13 +1,13 @@
 import Foundation
 
-/// Routine file-location poller: turns provider log files into a DB-backed
-/// timeline view.
+/// Routine file-location poller: turns provider log files into TOOL
+/// ATTRIBUTION + LIMIT observations on the DB-backed timeline.
 ///
-/// File-tail sources (claude/codex/kimi/opencode) have no server to query —
-/// the files ARE the source of truth. Consolidators emit deterministic-ID
-/// UsageEvents (INSERT OR IGNORE dedups), so polling is idempotent: each pass
-/// only inserts what it hasn't seen. The timeline is then read from the store
-/// (`buckets`/`query`), never by re-scanning files per request.
+/// Files never create usage rows — usage is metered-only. Consolidators
+/// emit FileAnnotations (joined onto metered rows by provider request id,
+/// order-independent) and LimitSnapshots (e.g. codex rate-limit windows).
+/// Polling is idempotent: (vendor, request_id) and per-minute limit keys
+/// dedup, so each pass only applies what it hasn't seen.
 ///
 /// Gating: requires `.fileReading` consent. Disabled without it.
 /// Cadence: default every 60s on a utility queue; call `poll()` manually in
@@ -29,7 +29,8 @@ public final class FilePoller {
         self.store = store
     }
 
-    /// File locations polled, for status/debugging (mirrors UsageEngine + consolidators).
+    /// File locations polled, for status/debugging (mirrors consolidators).
+    /// Files contribute attribution + limits only — never usage rows.
     public var locations: [String] {
         let home = Platform.paths.homeDirectory.path
         var dirs = [

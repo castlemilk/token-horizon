@@ -10,19 +10,33 @@ Sources/TokenHorizonCore/   portable server-side module (macOS + Linux; Windows 
                           buckets, TokenBreakdown input/output/reasoning/cacheRead/cacheWrite,
                           history/trends) + shared DTOs (UsageSnapshot, ProviderLimit, ...)
     Events/               unified measurement contract: UsageEvent (per-request, UUID-keyed,
-                          machineID, attestation tier, thinkingLevel/thinkingRaw normalized
-                          across vendors, product attribution), ContextState (live context
-                          occupancy), UsageStoring protocol + SQLiteUsageStore (usage.db, WAL).
-                          Analytics primitives (all filterable via UsageFilter): query (tabular
-                          newest-first, rowid-paginated), aggregate (vendor/model/machine/
-                          product/session/day), buckets (arbitrary resolution: 900/3600/86400),
-                          summarize (provider→model rollup: tokens, cost, avg measured tok/s,
-                          avg context). Cloud backends slot in behind UsageStoring later.
-    Consolidation/        INACTIVE backfill logic: FileConsolidator base + per-provider
-                          consolidators (Claude/Codex/Kimi/OpenCode) emitting deterministic-ID
-                          events from local files. Nothing calls ConsolidationRunner;
-                          requires explicit TH_CONSOLIDATE=1. Do NOT wire into daemon/app
-                          without review — it is the meter↔files reconciliation source.
+                          machineID, attestation tier, RAW vendor/model spellings —
+                          canonicalized at query time, meter product/cost observations +
+                          separately-stored file observations with rank resolution on read,
+                          pseudonymous accountID, thinkingLevel/thinkingRaw normalized
+                          across vendors), FileAnnotation (tool/cost claim from files, keyed
+                          by provider request id, joined at READ time), ContextState (live
+                          context occupancy), UsageStoring protocol + SQLiteUsageStore
+                          (usage.db, WAL). Analytics primitives (all filterable via
+                          UsageFilter, all query-time-canonical): query (tabular newest-first,
+                          rowid-paginated, annotation LEFT JOIN), aggregate (vendor/model/
+                          machine/product/session/day), buckets (arbitrary resolution),
+                          summarize (provider→model rollup with avg measured rates).
+                          Cloud backends slot in behind UsageStoring later.
+    Consolidation/        file ANNOTATION + LIMITS ingestion (files never create or modify
+                          usage rows): FileConsolidator base + per-provider consolidators
+                          (Claude/Kimi/pi/OpenCode → FileAnnotations by provider request id;
+                          Codex → rate-limit LimitSnapshots). FilePoller runs them every 60s
+                          (`.fileReading` consent); annotations are read-joined, so poll
+                          timing cannot matter and re-polls are natural-key no-ops.
+                          ConsolidationRunner.run remains a deliberate one-off (TH_CONSOLIDATE=1).
+    AccountKey.swift      (Usage/) pseudonymous per-account ids (vendor + truncated SHA-256 of
+                          the credential) — multi-account vendors consolidate usage/limits per
+                          account; raw credentials are never persisted.
+    CostEngine.swift      (Usage/) per-request cost decision: plan/subscription vendors + local
+                          runtimes → 0 (.planFree, quota is the ceiling), API-billed vendors →
+                          catalog pricing (.computed), tool/provider-reported cost from files
+                          overrides (.reported), no pricing basis → .unknown.
   Providers/              per-vendor integrations — ONE folder per provider, everything
                           about that provider inside (quota adapter, meter target/wire
                           format, auth config). Cloud vs self-managed is a property of the
@@ -34,24 +48,41 @@ Sources/TokenHorizonCore/   portable server-side module (macOS + Linux; Windows 
                             limit() builder + makeMeter), PlanLimitsEngine registry
     Runtimes/               generic runtime infra: LocalInferenceRuntime (process detection
                             via Platform.systemStats, Prometheus /metrics scraping, counter-delta
-                            tok/s, makeMeter), InferenceMonitor (poll loop), RuntimeUsageLedger
+                            tok/s, makeMeter, defaultMeterListenPort — deterministic auto-meter
+                            port: ollama 11435 / vllm 9311 / sglang 9312 / llamacpp 9313 /
+                            mlx 9314), InferenceMonitor (poll loop + onRuntimeSighting hook —
+                            CoreAPIRouter.startAutoMetering starts a request meter for EVERY
+                            detected runtime, deduped by vendor; internal clients route through
+                            live meters via MeterRegistry.routedURL), RuntimeUsageLedger
                             (DURABLE 15-min buckets, runtime-usage.json), RuntimeTelemetry
     Meterable.swift         dual-tracking contract: every provider vends a request meter
     Claude/ Gemini/ Zhipu/ MiniMax/ OpenCodeGo/ Alibaba/ DeepSeek/ Kimi/   cloud vendors
     VLLM/ SGLang/ LlamaCpp/   runtime adapters (ports, process signatures, counter names)
-    Ollama/                 OllamaClient (REST + benchmarks; baseURLProvider seam for meter routing)
+    Ollama/                 OllamaClient (REST + benchmarks; routes through any live meter
+                            via MeterRegistry.routedURL — no per-vendor wiring)
     MLX/                    MLXTypes, MLXHistory, MLXObserver (macOS)
   Metering/               RequestMeter base (loopback HTTP relay: forwards to real API,
                           streams response byte-identical, measures TTFT/stream duration,
-                          emits UsageEvent per completed request) + per-wire-format meters:
+                          emits UsageEvent per completed request — THE ONLY usage source —
+                          plus wire rate-limit LimitSnapshots from response headers, tool
+                          attribution from header sniffing, and accountID from credential
+                          hashes) + per-wire-format meters:
                           OpenAICompatibleMeter (chat/completions + Responses API → OpenAI,
                           Codex, DeepSeek, Zhipu, MiniMax, Alibaba, vLLM, SGLang, llama.cpp),
                           AnthropicMeter (claude, kimi), GeminiMeter (usageMetadata),
                           OllamaMeter (NDJSON + provider-ns durations → exact tok/s).
                           Daemon: TH_METERS="vendor:port->target,..."; GET /meters.
+    Mitm/                 capture-mode seam: MeterCaptureMode (point|mitm; settings
+                          meterCaptureMode / TH_CAPTURE_MODE) + MitmCaptureManager
+                          (scoped TLS interception of AI VENDOR HOSTS ONLY — every
+                          other connection passes through undecrypted; TLS core
+                          delegated to mitmproxy; .mitm consent, never auto-granted;
+                          embedded addon emits the same UsageEvents via
+                          POST /analytics/events). Personal machines opt in;
+                          corporate machines stay on point mode.
   Catalog/                ModelCatalog (identity/pricing/benchmarks), ModelsPipeline (off-main
                           merge/filter/sort), ModelRow/ModelTableColumn/ModelFilterScope
-  Telemetry/              OllamaClient (proxy via baseURLProvider seam), TelemetryMetrics (OTel on
+  Telemetry/              OllamaClient (meter-routed via MeterRegistry.routedURL), TelemetryMetrics (OTel on
                           macOS, no-op stub elsewhere), MLXTypes, MLXHistory, OllamaTelemetryStore
   Events/                 EventStore (bounded shell-event ring buffer)
   Settings/               SettingsStore (config dir settings.json, path via Platform.paths)
@@ -64,7 +95,7 @@ Sources/TokenHorizonCore/   portable server-side module (macOS + Linux; Windows 
     Consent/                ConsentManager: per-scope grants (metering/fileReading/telemetry)
                             persisted in consents.json; OS-native prompts (macOS osascript,
                             Linux zenity/kdialog, Windows PowerShell MessageBox); headless
-                            NEVER auto-grants — TH_CONSENT=scope|'all' env, or TH_ASK_CONSENT=1
+                            NEVER auto-grants — TH_CONSENT=scope env, or TH_ASK_CONSENT=1
                             to prompt. Meters do not start without .metering consent.
     SystemStatsProviding.swift  ProcSample/ProcDetail/SystemSnapshot DTOs + protocol
     PlatformPaths.swift         paths protocol + per-OS typealias
@@ -97,7 +128,9 @@ See docs/cross-platform.md for the Linux/Windows port status and the Platform se
 ## Invariants — do not break
 
 1. **UsageEngine.snapshot()/history()/trendHistory() take `lock`**; sqlite opened `READONLY | FULLMUTEX`. All engine calls run off-main via `DispatchQueue.global`. Concurrent unlocked sqlite use = SIGSEGV (happened before).
-2. **Buckets are 15-minute epoch keys** everywhere (`UsageEngine.bucketSeconds = 900`; day math derives from them). "Today" = `bucket >= todayBucket()` (local midnight). Do not reintroduce day- or hour-keyed buckets. Each bucket carries a compat `tokens`/`cost` aggregate plus a granular `TokenBreakdown` (input/output/reasoning/cacheRead/cacheWrite) — compat totals must stay byte-exact vs provider ground truth; breakdown detail (e.g. codex cached/reasoning beyond displayTokens) lives only in `breakdown`.
+2. **Buckets are 5-minute epoch keys at finest** (`UsageEngine.bucketSeconds = 300`;
+  `BucketResolution` snaps to 300/900/3600/86400 by horizon: 5m ≤1D, 15m ≤7D,
+  1h ≤31D, else 1d). "Today" = `bucket >= todayBucket()` (local midnight). Each bucket carries a compat `tokens`/`cost` aggregate plus a granular `TokenBreakdown` (input/output/reasoning/cacheRead/cacheWrite) — compat totals must stay byte-exact vs provider ground truth; breakdown detail (e.g. codex cached/reasoning beyond displayTokens) lives only in `breakdown`. Pre-change 900s keys remain valid (900 is a multiple of 300, epoch-aligned).
 3. **Codex parsing is stateful per file** (offset + watermarks + last). Never reset state on truncation without clearing buckets. Multi-dir scans share `codexFiles`; filter preserved state by path prefix.
 4. **Incremental JSONL readers** only consume up to the last `\n` and advance the stored offset by exactly the consumed byte count (partial tail lines must survive to the next poll).
 5. **The engine is the single source of truth.** MCP shim and any UI read from the HTTP API (fallback: direct sqlite read-only for usage/sessions). Never parse provider files from the MCP shim.
@@ -111,9 +144,13 @@ See docs/cross-platform.md for the Linux/Windows port status and the Platform se
 
 11. **Inference telemetry comes from request meters.** The macOS `OllamaTelemetryProxy` was removed in favor of `OllamaMeter` (Metering/): a consented loopback listener that forwards bytes unchanged and parses only completed Ollama JSON metadata (exact ns-duration rates). Meters bridge measured samples into `InferenceTelemetryStore` + OTel metrics, and emit `UsageEvent`s into the store. They must never feed `UsageEngine` aggregates directly or block the main queue, and never listen without consent.
 
-12. **Runtime usage parity is measured-only.** Self-managed runtimes feed `UsageEngine` (stats/trends/history, same 15-min `BucketEntry`s as providers) exclusively through `RuntimeUsageLedger`: persisted deltas of cumulative Prometheus counters, keyed by scope (`vendor`, `vendor|model`). First sighting of a counter establishes a baseline — never backfill unmeasured tokens; a counter decrease means server restart (delta = current reading). tok/s rates stay in `InferenceMonitor` snapshots; estimation from resource usage remains forbidden.
+12. **Runtime usage parity is measured-only.** Self-managed runtimes feed `UsageEngine` (stats/trends/history, same 15-min `BucketEntry`s as providers) exclusively through `RuntimeUsageLedger`: persisted deltas of cumulative Prometheus counters, keyed by scope (`vendor`, `vendor|model`). First sighting of a counter establishes a baseline — never backfill unmeasured tokens; a counter decrease means server restart (delta = current reading). tok/s rates stay in `InferenceMonitor` snapshots; estimation from resource usage remains forbidden. Request metering of runtimes is GENERIC: `InferenceMonitor.onRuntimeSighting` → `CoreAPIRouter.startAutoMetering` starts a meter for every detected runtime on its deterministic `defaultMeterListenPort` (consent-gated, deduped by vendor, retried each poll); there is no per-vendor meter wiring in hosts, and internal clients route through live meters via `MeterRegistry.routedURL`.
 
 13. **Telemetry metrics are bounded and opt-in.** Prometheus text is served by the loopback API at `/metrics` (CoreAPIRouter); do not start a second listener. OTLP/HTTP is enabled only by `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` or `OTEL_EXPORTER_OTLP_ENDPOINT`. Keep metric attributes low-cardinality, with model labels capped and overflow grouped as `other`. Runtime rollups (InferenceMonitor RuntimeHistory, and MLXHistory on macOS) are in-memory only: fine samples are capped at 1,800 points and 30-second averages at 2,880 points. Runtime liveness is HTTP probes only — ps merely decorates local snapshots with pids/cpu/mem; remote runtimes must work with zero process inspection.
+
+14. **Usage is metered-only; files annotate at full resolution; stored spellings are raw.** Every counted row in `usage_event` originates from a request meter (`insertMetered`, attestation ≥ measured) — the ONLY writer. Provider/tool session files contribute ONLY: (a) `FileAnnotation`s — the file's own claim of tool label + tool-reported cost, stored in `file_annotation` keyed by provider request id and LEFT JOINed onto metered rows at READ time; (b) `LimitSnapshot`s (e.g. codex `rate_limits` windows). Files never create AND never modify usage rows — no write-time merging: the meter's product/cost and the file's product/cost coexist, and the rank (explicit label > file > header sniff; reported cost > computed) is resolved at query time (`effectiveProduct`/`effectiveCost`). Arrival order (file before/after the response) therefore cannot matter. Vendor/model/provider spellings are stored RAW as received — canonicalization happens exclusively in the read path and entirely in SQL (vendor CASE expression; model folds via the read-side `spelling` cache table joined in aggregation/filter queries); never rewrite stored rows to canonical form, and never merge observations early. Every row carries `machine_id` (persisted UUID); the alias lives ONCE per machine in the `machine` table (upserted on write, JOINed at read — never stored per row) and is inferred: TH_MACHINE_ALIAS > machine-alias file > sanitized hostname — alias is display-only, id is identity. The schema is v1 (`PRAGMA user_version = 1`) with NO migrations: pre-v1 databases are archived aside as `usage.legacy-<ts>.db` on open, never migrated. Limits and usage consolidate per vendor ACCOUNT (`AccountKey` = vendor + truncated SHA-256 of the credential; raw credentials are never stored); quota windows for different accounts of the same vendor are separate rows and must never merge.
+
+15. **Capture modes are swappable and consent-scoped.** `SettingsStore.meterCaptureMode` (env `TH_CAPTURE_MODE`) selects point (default; corporate-safe: every measured byte was deliberately routed) or mitm. MITM mode: requires the dedicated `.mitm` consent (never auto-granted, headless only via TH_CONSENT=mitm), intercepts ONLY allowlisted AI vendor API hosts (all other TLS passes through undecrypted), delegates the TLS core to mitmproxy (never hand-rolled in core), and presents privileged setup (CA trust, proxy config) as user-run remediation steps — never silent sudo. Both modes emit identical UsageEvents into the same store; analytics/sync/UI stay mode-agnostic.
 
 ## UI invariants
 

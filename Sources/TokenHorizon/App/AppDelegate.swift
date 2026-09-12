@@ -27,8 +27,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         coreEngine.usageStore = usageStore
         let router = CoreAPIRouter(engine: coreEngine, usageStore: usageStore)
         router.serverName = "token-horizon"
-        model.usageStore = usageStore
-        LeaderboardStore.shared.coreStore = usageStore
         router.processesOverride = { [weak self] in
             if let self = self, !self.model.allProcesses.isEmpty {
                 return (self.model.allProcesses, self.model.processes, self.model.processesMem, self.model.processesDisk, self.model.processesNet)
@@ -43,16 +41,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             self?.refreshHeavy()
         }
         InferenceMonitor.shared.startPolling()
-        router.startMetersFromEnv()
-        router.startMetersFromSettings()
-        // Ollama metering (replaces the old telemetry proxy): with consent,
-        // listen on 11435 and route our own Ollama client through it so the
-        // app's queries are measured too. Asks once, remembers the answer.
-        if ConsentManager.shared.ensure(.metering,
-                reason: "A loopback listener measures token usage and exact tok/s per Ollama API request. Traffic is forwarded unchanged to your local Ollama server."),
-           router.addMeter(vendor: "ollama", port: 11435, target: nil) {
-            OllamaClient.baseURLProvider = { URL(string: "http://127.0.0.1:11435") }
-            model.ollamaMeterPort = 11435
+        if ConsentManager.shared.isGranted(.fileReading) {
+            FilePoller.shared.startPolling()
+        }
+        // Capture mode + meters. Point mode: env/settings meters PLUS
+        // auto-meters for every detected local runtime (Ollama, vLLM,
+        // SGLang, llama.cpp, MLX — generic, first-sighting driven,
+        // deterministic ports, visible via GET /meters). Internal clients
+        // (OllamaClient, ...) route through meters automatically via
+        // MeterRegistry.routedURL — measured-only, one shared path.
+        router.startCaptureMode()
+        // Ask once for the shared .metering consent; remembers the answer.
+        // (Point mode only — mitm mode asks its own .mitm consent instead.)
+        if SettingsStore.shared.meterCaptureMode == .point {
+            _ = ConsentManager.shared.ensure(.metering,
+                reason: "Loopback listeners measure token usage and exact tok/s per API request — for your AI tools and any detected local inference runtimes (Ollama, vLLM, SGLang, llama.cpp, MLX). Traffic is forwarded unchanged to the real server.")
         }
         // One server on every machine: the POSIX loopback transport +
         // core CoreAPIRouter (the old NWListener LocalServer is gone).

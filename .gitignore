@@ -32,3 +32,13 @@ cloudflare/.wrangler/
 
 # Go gateway sidecar binary (built by scripts/make-app.sh, never commit)
 gateway/token-horizon-gateway
+
+# SvelteKit/Tauri build output
+ui/.svelte-kit/
+ui/build/
+ui/src-tauri/binaries/
+ui/src-tauri/target/
+
+# Local toolchain downloads
+swiftly
+swiftly-*.tar.gz

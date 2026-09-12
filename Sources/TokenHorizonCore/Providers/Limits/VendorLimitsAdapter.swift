@@ -69,11 +69,21 @@ open class VendorLimitsAdapter: Meterable {
 
     /// Build a limit row: clamps to 0-100; `provider` defaults to this adapter's
     /// vendor but can be overridden (e.g. GeminiLimits also emits "agy" rows).
+    /// `account` is the pseudonymous AccountKey of the credential used —
+    /// multi-account adapters must stamp it so windows never merge across
+    /// accounts.
     public func limit(label: String, usedPercent: Double, resetsAt: Date? = nil,
-                      detail: String = "", provider: String? = nil) -> ProviderLimit {
+                      detail: String = "", provider: String? = nil,
+                      account: String = "") -> ProviderLimit {
         ProviderLimit(provider: provider ?? self.provider, label: label,
                       usedPercent: min(max(usedPercent, 0), 100),
-                      resetsAt: resetsAt, detail: detail)
+                      resetsAt: resetsAt, detail: detail, accountID: account)
+    }
+
+    /// Pseudonymous account key for a credential (see AccountKey). Raw
+    /// credentials are never persisted.
+    public func accountKey(for credential: String) -> String {
+        AccountKey.forCredential(vendor: provider, credential: credential)
     }
 
     // MARK: - Auth sources

@@ -21,6 +21,7 @@ public final class MLXRuntime: LocalInferenceRuntime {
 
     /// MLX serves no Prometheus series: no cumulative counters, no model labels.
     public override var promptCounterNames: [String] { [] }
+    public override var defaultMeterListenPort: UInt16? { 9314 }
     public override var generationCounterNames: [String] { [] }
     public override var modelLabelKeys: [String] { [] }
 

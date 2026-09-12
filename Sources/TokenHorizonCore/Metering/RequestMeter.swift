@@ -11,6 +11,8 @@ public struct MeteredExchange {
     /// Client headers, lowercase names (User-Agent etc. for product sniffing).
     public var requestHeaders: [String: String] = [:]
     public var status = 0
+    /// Response headers, lowercase names (request-id extraction for dedup).
+    public var responseHeaders: [String: String] = [:]
     public var responseBody = Data()
     public var startedAt = Date()
     public var firstByteAt: Date?
@@ -57,8 +59,11 @@ open class RequestMeter: NSObject, URLSessionDataDelegate {
     public var sourceKind: SourceKind
     /// Metered traffic is measured, but the user chose to route through us:
     /// self-reported until reconciled against a server-side record.
-    public var attestation: Attestation = .selfReported
+    /// Meters measure live traffic: `.measured` until the provider's own file
+    /// record cross-checks the event (store reconciliation → `.reconciled`).
+    public var attestation: Attestation = .measured
     public var machineID: String = MachineIdentity.current
+    public var machineAlias: String = MachineIdentity.alias
 
     private var listenFD: Int32 = -1
     private let stateLock = NSLock()
@@ -105,6 +110,11 @@ open class RequestMeter: NSObject, URLSessionDataDelegate {
     /// Client session correlation, when the wire format carries it.
     open func sessionID(for exchange: MeteredExchange) -> String? { nil }
 
+    /// Provider request id for cross-channel dedup (see UsageEvent.requestID).
+    /// Wire formats override: Anthropic → `request-id` response header,
+    /// OpenAI-compatible → body `id`.
+    open func requestID(for exchange: MeteredExchange) -> String? { nil }
+
     /// Configured thinking/reasoning effort from the REQUEST. Every vendor
     /// encodes this differently — subclasses parse the native form and
     /// normalize to "off"/"low"/"medium"/"high"/"adaptive".
@@ -113,12 +123,15 @@ open class RequestMeter: NSObject, URLSessionDataDelegate {
     /// Explicit product label (set per meter via TH_METERS `vendor:port@product`).
     public var productLabel: String?
 
-    /// Product-level attribution: which client TOOL made this request
-    /// (claude-code, codex, pi, opencode...). Default: explicit label, else
-    /// User-Agent sniffing. Product is orthogonal to vendor — codex CLI can
-    /// hit OpenAI or a local runtime.
-    open func product(for exchange: MeteredExchange) -> String? {
-        if let productLabel { return productLabel }
+    /// Product-level attribution with provenance: which client TOOL made this
+    /// request (claude-code, codex, pi, opencode...) and HOW we know.
+    /// Product is orthogonal to vendor — claude code can hit kimi's API.
+    /// Default: explicit label (.explicitLabel), else User-Agent sniffing
+    /// (.headerSniffed). A later file annotation with the same provider
+    /// request id overrides sniffed labels (.fileJoined) but never an
+    /// explicit one.
+    open func productAttribution(for exchange: MeteredExchange) -> (product: String, source: ProductSource)? {
+        if let productLabel { return (productLabel, .explicitLabel) }
         guard let ua = exchange.requestHeaders["user-agent"]?.lowercased() else { return nil }
         let table: [(String, String)] = [
             ("claude-cli", "claude-code"), ("claude_code", "claude-code"),
@@ -126,12 +139,92 @@ open class RequestMeter: NSObject, URLSessionDataDelegate {
             ("opencode", "opencode"),
             ("kimi", "kimi-cli"),
             ("gemini-cli", "gemini-cli"), ("gemini_cli", "gemini-cli"),
+            ("pi-ai", "pi"), ("pi/", "pi"),
             ("aider", "aider"), ("cursor", "cursor"), ("continue", "continue"),
             ("python-", "python-sdk"), ("node", "node-sdk"),
             ("curl", "curl"),
         ]
-        for (needle, product) in table where ua.contains(needle) { return product }
+        for (needle, product) in table where ua.contains(needle) { return (product, .headerSniffed) }
         return nil
+    }
+
+    /// Product-level attribution: which client TOOL made this request
+    /// (claude-code, codex, pi, opencode...). Default: explicit label, else
+    /// User-Agent sniffing. Product is orthogonal to vendor — codex CLI can
+    /// hit OpenAI or a local runtime.
+    open func product(for exchange: MeteredExchange) -> String? {
+        productAttribution(for: exchange)?.product
+    }
+
+    /// Pseudonymous account the request is billed to, derived from the
+    /// credential on the wire (Authorization / x-api-key hash — the raw
+    /// credential is never persisted). Empty when the request carries no
+    /// credential (local runtimes).
+    open func accountID(for exchange: MeteredExchange) -> String? {
+        let key = AccountKey.forRequestHeaders(vendor: vendor, headers: exchange.requestHeaders)
+        return key.isEmpty ? nil : key
+    }
+
+    /// SECOND provider id for the same request, when the wire format has two
+    /// (see UsageEvent.requestIDAlt). Default: none.
+    open func requestIDAlt(for exchange: MeteredExchange) -> String? { nil }
+
+    // MARK: - Wire rate limits (limits channel, source #1: the meter itself)
+
+    /// Rate-limit snapshots parsed from RESPONSE headers of this exchange.
+    /// OpenAI-compatible vendors emit `x-ratelimit-*`; AnthropicMeter
+    /// overrides for `anthropic-ratelimit-*`. These are the freshest limits
+    /// signal available (every response, per account, zero extra calls) and
+    /// feed the same limit_snapshot table as the quota-API pollers.
+    open func limitSnapshots(for exchange: MeteredExchange) -> [LimitSnapshot] {
+        let h = exchange.responseHeaders
+        var out: [LimitSnapshot] = []
+        for (kind, resetKey) in [("requests", "x-ratelimit-reset-requests"),
+                                 ("tokens", "x-ratelimit-reset-tokens")] {
+            guard let limit = headerDouble(h, "x-ratelimit-limit-\(kind)"),
+                  let remaining = headerDouble(h, "x-ratelimit-remaining-\(kind)"),
+                  limit > 0 else { continue }
+            let usedPercent = min(max((1 - remaining / limit) * 100, 0), 100)
+            let resetsAt = h[resetKey].flatMap { parseResetDuration($0) }
+                .map { exchange.completedAt.addingTimeInterval($0) }
+            out.append(LimitSnapshot(
+                recordedAt: exchange.completedAt,
+                machineID: machineID,
+                provider: vendor,
+                accountID: accountID(for: exchange) ?? "",
+                label: "\(kind) (wire)",
+                usedPercent: usedPercent,
+                resetsAt: resetsAt,
+                detail: "\(Int(remaining))/\(Int(limit)) remaining"))
+        }
+        return out
+    }
+
+    func headerDouble(_ headers: [String: String], _ name: String) -> Double? {
+        guard let raw = headers[name] else { return nil }
+        return Double(raw)
+    }
+
+    /// OpenAI reset values are durations ("500ms", "1m2.5s", "20s"), not
+    /// timestamps. Returns seconds; nil when unparsable.
+    func parseResetDuration(_ raw: String) -> TimeInterval? {
+        var total = 0.0
+        var matched = false
+        let pattern = #"(\d+(?:\.\d+)?)(ms|s|m|h)"#
+        guard let re = try? NSRegularExpression(pattern: pattern) else { return nil }
+        let ns = raw as NSString
+        for m in re.matches(in: raw, range: NSRange(location: 0, length: ns.length)) {
+            guard m.numberOfRanges == 3, let value = Double(ns.substring(with: m.range(at: 1))) else { continue }
+            matched = true
+            switch ns.substring(with: m.range(at: 2)) {
+            case "ms": total += value / 1000
+            case "s": total += value
+            case "m": total += value * 60
+            case "h": total += value * 3600
+            default: break
+            }
+        }
+        return matched ? total : nil
     }
 
     /// Context occupancy semantics differ per wire format (OpenAI's
@@ -141,8 +234,18 @@ open class RequestMeter: NSObject, URLSessionDataDelegate {
         tokens.input + tokens.cacheWrite
     }
 
+    /// Cost decision for the exchange (CostEngine: plan vendors zero,
+    /// API-billed vendors from catalog pricing). Vendor/tool-reported cost
+    /// from files overrides later via the annotation sweep.
+    open func costDecision(for exchange: MeteredExchange,
+                           tokens: TokenBreakdown) -> (cost: Double, source: CostSource) {
+        CostEngine.decide(vendor: vendor, model: model(for: exchange), tokens: tokens)
+    }
+
     /// Cost in USD for the exchange (ModelCatalog pricing or vendor-reported).
-    open func cost(for exchange: MeteredExchange, tokens: TokenBreakdown) -> Double { 0 }
+    open func cost(for exchange: MeteredExchange, tokens: TokenBreakdown) -> Double {
+        costDecision(for: exchange, tokens: tokens).cost
+    }
 
     /// Measured rates. Generation tok/s = output tokens over body-streaming
     /// duration (first byte → completion). Prompt tok/s = input tokens over
@@ -170,23 +273,31 @@ open class RequestMeter: NSObject, URLSessionDataDelegate {
         let model = model(for: exchange)
         let rates = rates(from: exchange, tokens: tokens)
         let thinking = thinkingLevel(for: exchange)
+        let attribution = productAttribution(for: exchange)
+        let costDecision = costDecision(for: exchange, tokens: tokens)
         return UsageEvent(
             timestamp: exchange.completedAt,
             machineID: machineID,
+            machineAlias: machineAlias,
             source: sourceKind,
             vendor: vendor,
             model: model,
             tokens: tokens,
             contextOccupancy: contextOccupancy(tokens: tokens),
-            contextLimit: ModelCatalog.shared.lookup(id: model).map { $0.contextK * 1000 },
-            cost: cost(for: exchange, tokens: tokens),
+            contextLimit: ModelCatalog.shared.lookup(id: Canonical.model(vendor: vendor, model: model)).map { $0.contextK * 1000 },
+            cost: costDecision.cost,
             promptTokPerSec: rates.prompt,
             generationTokPerSec: rates.generation,
             latencyMs: exchange.durationMs,
             sessionID: sessionID(for: exchange),
             thinkingLevel: thinking?.level,
             thinkingRaw: thinking?.raw,
-            product: product(for: exchange),
+            product: attribution?.product,
+            productSource: attribution?.source,
+            costSource: costDecision.source,
+            accountID: accountID(for: exchange),
+            requestID: requestID(for: exchange),
+            requestIDAlt: requestIDAlt(for: exchange),
             attestation: attestation)
     }
 
@@ -308,6 +419,9 @@ open class RequestMeter: NSObject, URLSessionDataDelegate {
             return
         }
         conn.exchange.status = http.statusCode
+        for (key, value) in http.allHeaderFields {
+            conn.exchange.responseHeaders[String(describing: key).lowercased()] = String(describing: value)
+        }
         // Forward status + headers immediately; body follows close-delimited.
         var lines = ["HTTP/1.1 \(http.statusCode) \(HTTPURLResponse.localizedString(forStatusCode: http.statusCode))"]
         for (key, value) in http.allHeaderFields {
@@ -340,8 +454,14 @@ open class RequestMeter: NSObject, URLSessionDataDelegate {
         if conn.exchange.status >= 200, conn.exchange.status < 300 {
             let exchange = conn.exchange
             DispatchQueue.global(qos: .utility).async { [weak self] in
-                guard let self, let event = self.event(from: exchange) else { return }
-                try? self.store?.insert([event])
+                guard let self else { return }
+                if let event = self.event(from: exchange) {
+                    try? self.store?.insertMetered([event])
+                }
+                // Wire rate limits ride every response — capture them into the
+                // limits timeline regardless of whether the exchange metered.
+                let snapshots = self.limitSnapshots(for: exchange)
+                if !snapshots.isEmpty { try? self.store?.recordLimits(snapshots) }
             }
         }
     }

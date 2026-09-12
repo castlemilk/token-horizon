@@ -35,9 +35,13 @@ final class UIModel: ObservableObject {
     var netCoarse: [Double] { _netCoarse.values }
     @Published var mlx = MLXSnapshot()
     @Published private(set) var mlxHistory = MLXHistory()
-    /// Loopback Ollama meter port when the app relays its own Ollama traffic
-    /// for exact tok/s (nil = direct to Ollama, unmetered).
-    @Published var ollamaMeterPort: Int? = nil
+    /// Loopback meter port for Ollama when the auto-started meter is live
+    /// (generic lookup via MeterRegistry — the meter appears on first
+    /// runtime sighting; nil = direct to Ollama, unmetered). Not @Published:
+    /// the regular UI ticks re-evaluate it.
+    var ollamaMeterPort: Int? {
+        MeterRegistry.routedURL(for: URL(string: "http://127.0.0.1:11434")!)?.port
+    }
     @Published var sysWindow: SysWindow = .m3
     @Published var processes: [ProcSample] = []
     @Published var processesMem: [ProcSample] = []
