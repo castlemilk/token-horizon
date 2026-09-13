@@ -323,6 +323,9 @@ public final class CoreAPIRouter {
                   let url = obj["url"] as? String else {
                 return Self.json(["error": "body must be {vendor, url, meterPort?, label?}"], status: 400)
             }
+            if let port = obj["meterPort"] as? Int, !(1...65535).contains(port) {
+                return Self.json(["error": "meterPort must be 1-65535"], status: 400)
+            }
             let endpoint = RuntimeEndpoint(url: url, meterPort: obj["meterPort"] as? Int,
                                            label: obj["label"] as? String)
             SettingsStore.shared.addRuntimeEndpoint(vendor: vendor, endpoint)
@@ -379,6 +382,50 @@ public final class CoreAPIRouter {
                 "running": running != nil,
                 "listen_port": running.map { Int($0.listenPort) } ?? NSNull(),
             ], status: ok ? 200 : 502)
+
+        case ("POST", "/meters/port"):
+            // Move a vendor's loopback meter to a new listen port and persist
+            // it into the daemon settings (runtimeEndpoints meterPort, or the
+            // meter toggle default) so restarts restore it.
+            guard let obj = try? JSONSerialization.jsonObject(with: request.body) as? [String: Any],
+                  let vendor = obj["vendor"] as? String,
+                  let port = obj["port"] as? Int else {
+                return Self.json(["error": "body must be {vendor, port}"], status: 400)
+            }
+            guard (1...65535).contains(port) else {
+                return Self.json(["error": "port must be 1-65535"], status: 400)
+            }
+            guard meteringConsented else {
+                return Self.json(["error": "metering consent not granted"], status: 403)
+            }
+            let key = vendor.lowercased()
+            let target = meters.first(where: { $0.vendor.lowercased() == key })?.targetBase
+            if meters.contains(where: { $0.vendor.lowercased() != key && $0.listenPort == port }) {
+                return Self.json(["error": "port already in use by another meter"], status: 409)
+            }
+            removeMeter(vendor: key)
+            guard addMeter(vendor: key, port: UInt16(port), target: target) else {
+                return Self.json(["error": "port unavailable or meter would not start",
+                                  "listen_port": NSNull()], status: 502)
+            }
+            // Persist: rewrite the settings endpoint carrying this target, or
+            // record one so the custom port survives restarts.
+            let targetStr = target?.absoluteString ?? ""
+            if !targetStr.isEmpty,
+               var list = SettingsStore.shared.runtimeEndpoints[key] {
+                var touched = false
+                for i in list.indices where list[i].url == targetStr {
+                    list[i].meterPort = port
+                    touched = true
+                }
+                if touched {
+                    SettingsStore.shared.runtimeEndpoints[key] = list
+                } else {
+                    SettingsStore.shared.addRuntimeEndpoint(
+                        vendor: key, RuntimeEndpoint(url: targetStr, meterPort: port))
+                }
+            }
+            return Self.json(["ok": true, "running": true, "listen_port": port])
 
         case ("GET", "/analytics/count"):
             guard let store = usageStore else { return Self.json(["error": "usage store unavailable"], status: 503) }

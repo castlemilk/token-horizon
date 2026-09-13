@@ -114,8 +114,24 @@
 	onMount(() => {
 		void loadAll().finally(() => (booted = true));
 		const stop = poll(loadAll, 5000);
-		return stop;
+		// Bottom-edge fade: visible only while more content sits below.
+		const updateEdge = () => {
+			const max = document.documentElement.scrollHeight - window.innerHeight;
+			showEdge = max > 120 && window.scrollY < max - 60;
+		};
+		updateEdge();
+		window.addEventListener('scroll', updateEdge, { passive: true });
+		window.addEventListener('resize', updateEdge);
+		return () => {
+			stop();
+			window.removeEventListener('scroll', updateEdge);
+			window.removeEventListener('resize', updateEdge);
+		};
 	});
+
+	/** Bottom fade visibility — pointer-events stay off so everything
+	 *  beneath remains clickable. */
+	let showEdge = $state(false);
 
 
 	// ---- headline: billable work only, all time (cache reads excluded) ----
@@ -172,6 +188,10 @@
 		const top = recent[0]?.id;
 		if (top && top !== freshId) freshId = top;
 	});
+	/** Concluded-request ping for the chart: id + billable tokens. */
+	const ping = $derived(
+		recent[0] ? { id: recent[0].id, tokens: billableTok(recent[0].tokens) } : null
+	);
 
 	const multiMachine = $derived(scope.machines.length > 1);
 
@@ -230,7 +250,7 @@
 		<div class="skel skel-chart"></div>
 	{:else}
 	<div class="chartwrap">
-		<VBars points={chartPoints} from={chartFrom} to={chartTo} />
+		<VBars points={chartPoints} from={chartFrom} to={chartTo} {ping} />
 		<div class="chart-stats">
 			<div class="chart-stat">
 				<div class="chart-stat-value"><CountUp value={chartCost} format={(n) => `$${n.toFixed(2)}`} /></div>
@@ -260,7 +280,7 @@
 		<div class="empty-card">
 			<div class="empty-card-title">No usage measured yet</div>
 			<div class="dim empty-card-body">Point a tool at a loopback meter and its requests will land here, per provider and model.</div>
-			<a class="btn" href="/machine">Set up metering</a>
+			<a class="btn" href="/metering">Set up metering</a>
 		</div>
 	{:else}
 		<div class="sharebar" role="img" aria-label="Provider share of token usage" style="margin-top: 38px">
@@ -350,30 +370,6 @@
 	{/if}
 </section>
 
-<section class="mod leadmod">
-	<div class="faint mod-label">Leaders · {window_}</div>
-	{#if !booted}
-		<div class="rankskel" aria-hidden="true">
-			{#each Array(4) as _}
-				<div class="rankskel-row wide"><span class="skel"></span><span class="skel"></span></div>
-			{/each}
-		</div>
-	{:else if ranked.length === 0}
-		<div class="empty">…</div>
-	{:else}
-		<div class="leaders">
-			{#each ranked.slice(0, 4) as r (r.key)}
-				<button class="leader" onclick={() => select(r.vendor)} title="{r.label} — filter chart">
-					<ProviderIcon vendor={r.vendor} size={22} />
-					<span class="leader-name">{r.label}</span>
-					<span class="leader-bar"><span style="width: {r.share}%; background: {providerAccent(r.vendor)}"></span></span>
-					<span class="leader-toks num">{fmtTok(r.tokens)}</span>
-				</button>
-			{/each}
-		</div>
-	{/if}
-</section>
-
 <section class="mod recentmod">
 	<div class="faint" style="font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 12px">Recent</div>
 	{#if !booted}
@@ -386,7 +382,7 @@
 		<div class="empty-card">
 			<div class="empty-card-title">No requests yet</div>
 			<div class="dim empty-card-body">Each metered request shows up here the moment it completes.</div>
-			<a class="btn" href="/machine">Set up metering</a>
+			<a class="btn" href="/metering">Set up metering</a>
 		</div>
 	{:else}
 		<div class="recentfade" class:faded={!showAllRecent && recentTruncated}>
@@ -456,6 +452,7 @@
 	{/if}
 </section>
 </div>
+<div class="edge-fade" class:show={showEdge} aria-hidden="true"></div>
 
 <style>
 	/* ---- dashboard mosaic: container-driven bento, not a viewport vstack ----
@@ -466,8 +463,8 @@
 		container-type: inline-size;
 		display: grid;
 		grid-template-columns: repeat(12, minmax(0, 1fr));
-		column-gap: 16px;
-		row-gap: 44px;
+		column-gap: 20px;
+		row-gap: 60px;
 		align-items: start;
 		margin-top: 28px;
 	}
@@ -475,8 +472,17 @@
 	.dash .mod {
 		margin: 0;
 		min-width: 0;
-		grid-column: 1 / -1;
 	}
+	/* counters + activity stay side by side at every size — order pulls
+	   heat next to hero since the full-width chart sits between them in DOM */
+	.dash .hero { grid-column: span 5; order: 0; }
+	.dash .heatmod { grid-column: span 7; align-self: stretch; order: 1; }
+	.dash .chartmod { order: 2; }
+	.dash .rankmod { order: 3; }
+	.dash .recentmod { order: 4; }
+	.dash .chartmod,
+	.dash .rankmod,
+	.dash .recentmod { grid-column: 1 / -1; }
 
 	.mod-label {
 		font-size: 11px;
@@ -485,14 +491,14 @@
 		margin-bottom: 12px;
 	}
 
-	/* trio: same row, same hierarchy — three type voices, one rhythm.
+	/* trio: vertically stacked, one size — three type voices, one rhythm.
 	   tabular sans black for tokens, light grotesk for requests,
 	   italic serif for cost. Caps stay uniform so it reads as one line. */
 	.hero-stats {
 		display: flex;
 		flex-direction: column;
-		gap: 22px;
-		padding-bottom: 26px;
+		gap: 28px;
+		padding-bottom: 30px;
 		border-bottom: 1px solid var(--line);
 	}
 	.hero-stat {
@@ -502,21 +508,20 @@
 		font-variant-numeric: tabular-nums;
 		line-height: 1;
 		white-space: nowrap;
+		font-size: 32px;
+		font-size: clamp(30px, 8cqi, 40px);
 	}
 	.voice-tokens .stat-num {
-		font-size: 52px;
 		font-weight: 750;
 		letter-spacing: -0.045em;
 	}
 	.voice-requests .stat-num {
-		font-size: 44px;
 		font-weight: 450;
 		letter-spacing: -0.01em;
 	}
 	.voice-cost .stat-num {
 		font-family: ui-serif, Georgia, 'Charter', 'Times New Roman', serif;
 		font-style: italic;
-		font-size: 44px;
 		font-weight: 550;
 		letter-spacing: -0.01em;
 	}
@@ -539,96 +544,31 @@
 		margin-top: 10px;
 	}
 
-	/* heatmap lives in a card so it reads as one tile next to leaders */
+	/* heatmap lives in a frosted card so it reads as one tile */
 	.heatmod {
-		background: var(--bg-raised);
+		background: color-mix(in srgb, var(--bg-raised) 62%, transparent);
+		backdrop-filter: blur(22px) saturate(1.6);
+		-webkit-backdrop-filter: blur(22px) saturate(1.6);
 		border-radius: 18px;
 		padding: 18px 18px 14px;
 		overflow: hidden;
-	}
-	/* leaders tile: glanceable top providers, taps filter the chart */
-	.leadmod {
-		background: var(--bg-raised);
-		border-radius: 18px;
-		padding: 18px 18px 10px;
-		overflow: hidden;
-	}
-	.leaders {
-		display: grid;
-	}
-	.leader {
-		display: grid;
-		grid-template-columns: 24px minmax(0, 1fr) minmax(60px, 120px) auto;
-		gap: 10px;
-		align-items: center;
-		background: none;
-		border: none;
-		border-top: 1px solid var(--line);
-		font: inherit;
-		color: var(--text);
-		padding: 11px 2px;
-		cursor: pointer;
-		text-align: left;
-		width: 100%;
-	}
-	.leader:first-child {
-		border-top: none;
-	}
-	.leader:hover {
-		background: rgba(128, 128, 128, 0.06);
-	}
-	.leader-name {
-		font-size: 13px;
-		font-weight: 550;
-		letter-spacing: -0.01em;
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
-	}
-	.leader-bar {
-		display: block;
-		height: 5px;
-		border-radius: 3px;
-		background: var(--track);
-		overflow: hidden;
-	}
-	.leader-bar span {
-		display: block;
-		height: 100%;
-		border-radius: inherit;
-	}
-	.leader-toks {
-		font-size: 13px;
-		font-weight: 650;
-		font-variant-numeric: tabular-nums;
 	}
 	/* recent table scrolls inside its tile instead of breaking the grid */
 	.recentmod .recentfade {
 		overflow-x: auto;
 	}
 
-	/* mid: trio falls into one row, voices scale with the container */
-	@container (min-width: 560px) {
+	/* wide: type breathes a little larger next to the card */
+	@container (min-width: 900px) {
 		.hero-stats {
-			flex-direction: row;
-			align-items: flex-end;
-			gap: 28px;
-			gap: clamp(28px, 6cqi, 76px);
+			border-bottom: none;
+			padding-bottom: 0;
+			gap: 26px;
 		}
-		.voice-tokens .stat-num {
-			font-size: 64px;
-			font-size: clamp(52px, 9cqi, 88px);
+		.stat-num {
+			font-size: 34px;
+			font-size: clamp(30px, 4cqi, 42px);
 		}
-		.voice-requests .stat-num,
-		.voice-cost .stat-num {
-			font-size: 44px;
-			font-size: clamp(36px, 6cqi, 60px);
-		}
-	}
-	/* wide: activity + leaders share the row under the full-bleed chart */
-	@container (min-width: 760px) {
-		.dash .heatmod { grid-column: span 5; }
-		.dash .leadmod { grid-column: span 7; }
 	}
 
 	.hero {
@@ -639,7 +579,7 @@
 		justify-content: center;
 		align-items: center;
 		gap: 10px;
-		margin-bottom: 18px;
+		margin-bottom: 24px;
 	}
 	.chartwrap {
 		position: relative;
@@ -663,7 +603,7 @@
 	}
 
 	.chart-stat-value {
-		font-size: 24px;
+		font-size: 16px;
 		font-weight: 700;
 		font-variant-numeric: tabular-nums;
 		line-height: 1.1;
@@ -700,6 +640,27 @@
 	}
 	.modelrow:first-of-type {
 		border-top: none;
+	}
+	/* bottom-edge fade: hints there's more below, dissolves at page end.
+	   pointer-events off — everything beneath stays clickable. */
+	.edge-fade {
+		position: fixed;
+		left: 0;
+		right: 0;
+		bottom: 0;
+		height: 190px;
+		z-index: 40;
+		pointer-events: none;
+		background: linear-gradient(
+			to bottom,
+			transparent 20%,
+			light-dark(rgb(250 250 251 / 0.95), rgb(15 15 17 / 0.95))
+		);
+		opacity: 0;
+		transition: opacity 0.45s ease;
+	}
+	.edge-fade.show {
+		opacity: 1;
 	}
 	/* capped recent list fades out at the bottom edge */
 	.recentfade.faded {
@@ -761,7 +722,9 @@
 		border: none;
 		padding: 0;
 		cursor: pointer;
-		opacity: 0.85;
+		opacity: 0.8;
+		backdrop-filter: blur(6px) saturate(1.4);
+		-webkit-backdrop-filter: blur(6px) saturate(1.4);
 		transition: opacity 0.12s;
 	}
 	.seg-segment:hover { opacity: 1; }
@@ -783,7 +746,7 @@
 		background: var(--track, rgba(128, 128, 128, 0.15));
 		overflow: hidden;
 	}
-	.sharemini span { display: block; height: 100%; }
+	.sharemini span { display: block; height: 100%; opacity: 0.85; }
 
 	/* ---- loading skeletons + designed empty states ---- */
 	@keyframes skelsweep {
@@ -854,7 +817,15 @@
 		.t-md { display: none; }
 	}
 	@media (max-width: 640px) {
-		.dash { row-gap: 34px; }
+		.dash { row-gap: 48px; }
+		/* smaller reading type for dense lists on small screens */
+		table { font-size: 11.5px; }
+		th { font-size: 10.5px; }
+		td { padding: 10px 12px; }
+		section :global(button[data-slot="accordion-trigger"]) {
+			font-size: 12px;
+		}
+		.modelrow { font-size: 11px; }
 		.rankgrid,
 		section :global(button[data-slot="accordion-trigger"]) {
 			grid-template-columns: 1.2rem minmax(6rem, 1.6fr) 4.5rem 4rem 1.2rem;

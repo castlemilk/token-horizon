@@ -146,6 +146,13 @@
 
 </script>
 
+<header class="phead">
+	<div>
+		<h1>Settings</h1>
+		<p class="psub">Identity, appearance, startup, permissions, data</p>
+	</div>
+</header>
+
 <div class="section-label">Account</div>
 <div class="card">
 	<div class="field">

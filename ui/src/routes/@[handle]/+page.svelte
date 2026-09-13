@@ -54,11 +54,11 @@
 	const initial = $derived((handle[0] ?? '?').toUpperCase());
 </script>
 
-<div class="card profile-head">
+<div class="phead profile-mast">
 	<span class="avatar">{initial}</span>
 	<div>
 		<div class="handle">@{handle}</div>
-		<div class="dim" style="font-size: 12px">
+		<div class="psub">
 			{act.activeDays} active days · {act.streak} day streak · this machine
 		</div>
 	</div>
@@ -97,10 +97,12 @@
 </div>
 
 <style>
-	.profile-head {
-		display: flex;
+	.profile-mast {
 		align-items: center;
-		gap: 14px;
+	}
+	.profile-mast > div:nth-child(2) {
+		min-width: 0;
+		flex: 1;
 	}
 	.avatar {
 		width: 44px;
@@ -116,23 +118,28 @@
 		flex: none;
 	}
 	.handle {
-		font-size: 16px;
-		font-weight: 650;
+		font-size: 20px;
+		font-weight: 680;
+		letter-spacing: -0.02em;
 	}
 	.totals {
-		margin-left: auto;
 		display: flex;
 		gap: 26px;
 	}
 	.tv {
 		font-size: 18px;
 		font-weight: 650;
+		letter-spacing: -0.02em;
 		font-variant-numeric: tabular-nums;
 		text-align: right;
 	}
 	.tl {
-		font-size: 11.5px;
-		color: var(--text-2);
+		font-size: 11px;
+		font-weight: 600;
+		letter-spacing: 0.08em;
+		text-transform: uppercase;
+		color: var(--text-3);
 		text-align: right;
+		margin-top: 3px;
 	}
 </style>

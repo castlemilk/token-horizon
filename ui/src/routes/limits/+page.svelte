@@ -2,27 +2,13 @@
 	import { onMount } from 'svelte';
 	import type { ProviderLimit } from '$lib/api';
 	import { connection } from '$lib/connection.svelte';
-	import { limitsStore, fmtAgoShort, STALE_AFTER_MS } from '$lib/limits.svelte';
-	import { poll, fmtReset } from '$lib/format';
+	import { limitsStore } from '$lib/limits.svelte';
+	import { fmtReset } from '$lib/format';
 	import ProviderIcon from '$lib/components/ProviderIcon.svelte';
-	import RotateCcw from '@lucide/svelte/icons/rotate-ccw';
 	import RefreshCw from '@lucide/svelte/icons/refresh-cw';
 	import PlugZap from '@lucide/svelte/icons/plug-zap';
 
-	// Shared cache renders instantly on tab remount; this ticker just keeps
-	// the "updated Xs ago" line fresh.
-	let now = $state(Date.now());
-
-	onMount(() => {
-		const stopWatch = limitsStore.watch();
-		const stopTick = poll(() => {
-			now = Date.now();
-		}, 5000);
-		return () => {
-			stopWatch();
-			stopTick();
-		};
-	});
+	onMount(() => limitsStore.watch());
 
 	interface Group {
 		vendor: string;
@@ -45,8 +31,9 @@
 			.sort((a, b) => b.peak - a.peak);
 	});
 
+
+
 	const totalWindows = $derived(limitsStore.limits.length);
-	const hotCount = $derived(limitsStore.limits.filter((l) => l.usedPercent >= 90).length);
 
 	function color(pct: number): string {
 		if (pct >= 90) return 'var(--bad)';
@@ -60,33 +47,15 @@
 		return m ? [m[1], m[2]] : [p, null];
 	}
 
-	function updatedText(): string {
-		if (!limitsStore.updatedAt) return '';
-		const age = Date.now() - limitsStore.updatedAt;
-		if (age > STALE_AFTER_MS) return `stale · ${fmtAgoShort(limitsStore.updatedAt)}`;
-		return fmtAgoShort(limitsStore.updatedAt);
-	}
-
-	/* activity-ring geometry */
+	/* dial geometry; rendered diameter scales with heat (64–96px) */
 	const R = 34;
 	const C = 2 * Math.PI * R;
+
+
 </script>
 
-<header class="phead">
-	<div>
-		<h1>Limits</h1>
-		<p class="faint sub">
-			{#if limitsStore.loading}
-				checking quota windows…
-			{:else if totalWindows > 0}
-				{totalWindows} window{totalWindows === 1 ? '' : 's'}{#if hotCount > 0} · <span class="hot">{hotCount} hot</span>{/if} · updated {updatedText()}
-			{:else if !connection.online}
-				daemon offline — showing nothing yet
-			{:else}
-				no quota windows yet — they appear after the first metered request
-			{/if}
-		</p>
-	</div>
+<div class="lim">
+<header class="phead phead-slim">
 	<button
 		class="refresh"
 		onclick={() => void limitsStore.refreshNow()}
@@ -108,29 +77,40 @@
 {/if}
 
 {#if limitsStore.loading}
-	<!-- skeleton: same tile shape so first paint doesn't jump -->
-	<section>
+	<!-- skeleton: quiet dials -->
+	<section class="group">
 		<header class="lhead"><span class="sk sk-icon"></span><span class="sk sk-name"></span></header>
 		<div class="mosaic">
 			{#each [0, 1, 2] as _}
-				<div class="tile"><span class="sk sk-dial"></span><span class="sk sk-line"></span></div>
+				<div class="dtile"><span class="sk sk-ddial"></span><span class="sk sk-dline"></span></div>
 			{/each}
 		</div>
 	</section>
+{:else if groups.length === 0}
+	<div class="empty-quiet">
+		<div class="empty-quiet-title">No quota windows</div>
+		<div class="dim">
+			{#if !connection.online}
+				The listener is offline — windows appear once it reconnects.
+			{:else}
+				Windows appear after the first metered request or quota poll.
+			{/if}
+		</div>
+	</div>
 {:else}
+	<div class="groups">
 	{#each groups as g}
-		<section>
+		<section class="group">
 			<header class="lhead">
-				<ProviderIcon vendor={g.vendor} size={17} />
+				<span class="vchip"><ProviderIcon vendor={g.vendor} size={18} /></span>
 				<span class="lname">{g.vendor}</span>
-				{#if g.account}<span class="laccount faint">{g.account}</span>{/if}
+				{#if g.account}<span class="acct">{g.account}</span>{/if}
 				{#if limitsStore.stale}<span class="stale">stale</span>{/if}
 			</header>
-			<!-- mosaic: 3 across when roomy, 2 when not, leftover tiles land last -->
 			<div class="mosaic">
 				{#each g.rows as l}
 					{@const pct = Math.min(Math.max(l.usedPercent, 0), 100)}
-					<div class="tile" class:hot={pct >= 90}>
+					<div class="dtile">
 						<div class="dial">
 							<svg viewBox="0 0 84 84" aria-hidden="true">
 								<circle cx="42" cy="42" r={R} class="dial-track" />
@@ -138,18 +118,19 @@
 									cx="42" cy="42" r={R}
 									class="dial-fill"
 									style:stroke={color(pct)}
+									style:--glow={color(pct)}
 									stroke-dasharray="{C}"
 									stroke-dashoffset={C * (1 - pct / 100)}
 								/>
 							</svg>
-							<span class="dial-pct num" style="color: {color(pct)}">{pct.toFixed(0)}%</span>
+							<span class="dial-pct num" style="color: {color(pct)}">{pct.toFixed(0)}</span>
 						</div>
-						<div class="tile-label">{l.label}</div>
+						<div class="dtile-label">{l.label}</div>
 						{#if l.detail || l.resetsAt}
-							<div class="faint tile-sub">
+							<div class="faint dtile-sub">
 								{#if l.detail}{l.detail}{/if}
 								{#if l.resetsAt}
-									<span class="reset"><RotateCcw size={10.5} strokeWidth={2.2} />{fmtReset(l.resetsAt)}</span>
+									<span class="reset">{fmtReset(l.resetsAt)}</span>
 								{/if}
 							</div>
 						{/if}
@@ -158,29 +139,22 @@
 			</div>
 		</section>
 	{/each}
+	</div>
 {/if}
+</div>
 
 <style>
-	.phead {
-		display: flex;
-		align-items: flex-start;
-		justify-content: space-between;
-		gap: 12px;
-		margin-bottom: 22px;
+	/* page container: dials + type scale with it, not the viewport */
+	.lim {
+		container-type: inline-size;
 	}
-	.phead h1 {
-		font-size: 20px;
-		font-weight: 680;
-		letter-spacing: -0.02em;
-		margin: 0 0 4px;
-	}
-	.sub {
-		font-size: 12px;
-		margin: 0;
-	}
-	.hot {
-		color: var(--bad);
-		font-weight: 600;
+	/* page frame (.phead) is shared in app.css; slim variant is just the
+	   refresh action, no title block */
+	.phead-slim {
+		justify-content: flex-end;
+		border-bottom: none;
+		padding-bottom: 0;
+		margin-bottom: 18px;
 	}
 	.refresh {
 		display: inline-flex;
@@ -191,7 +165,9 @@
 		padding: 8px 14px;
 		border-radius: 10px;
 		border: 1px solid transparent;
-		background: var(--bg-raised);
+		background: color-mix(in srgb, var(--bg-raised) 62%, transparent);
+		backdrop-filter: blur(22px) saturate(1.6);
+		-webkit-backdrop-filter: blur(22px) saturate(1.6);
 		color: var(--text);
 		cursor: pointer;
 		flex: none;
@@ -222,7 +198,9 @@
 		font-size: 12.5px;
 		padding: 10px 14px;
 		border-radius: 12px;
-		background: var(--bg-raised);
+		background: color-mix(in srgb, var(--bg-raised) 62%, transparent);
+		backdrop-filter: blur(22px) saturate(1.6);
+		-webkit-backdrop-filter: blur(22px) saturate(1.6);
 		margin-bottom: 18px;
 	}
 	.banner .link {
@@ -237,20 +215,51 @@
 		margin-left: auto;
 	}
 	section {
-		margin-bottom: 44px;
+		margin-bottom: 0;
+	}
+	/* vendor groups: always two side by side */
+	.groups {
+		display: grid;
+		grid-template-columns: repeat(2, minmax(0, 1fr));
+		gap: 20px;
+		align-items: start;
+	}
+	/* vendor group: neutral frosted tile — the rings play through */
+	.group {
+		background: color-mix(in srgb, var(--bg-raised) 62%, transparent);
+		backdrop-filter: blur(22px) saturate(1.6);
+		-webkit-backdrop-filter: blur(22px) saturate(1.6);
+		border-radius: 20px;
+		padding: 18px 18px 16px;
 	}
 	.lhead {
 		display: flex;
 		align-items: center;
 		gap: 9px;
-		font-size: 15px;
-		font-weight: 620;
-		letter-spacing: -0.01em;
-		margin-bottom: 18px;
+		margin-bottom: 8px;
 	}
-	.laccount {
-		font-size: 12px;
-		font-weight: 400;
+	.vchip {
+		width: 34px;
+		height: 34px;
+		border-radius: 11px;
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		background: var(--accent-soft);
+		flex: none;
+	}
+	.lname {
+		font-size: 17px;
+		font-weight: 600;
+		letter-spacing: -0.01em;
+	}
+	.acct {
+		font-size: 11px;
+		font-weight: 600;
+		color: var(--text-2);
+		background: var(--accent-soft);
+		border-radius: 999px;
+		padding: 3px 9px;
 	}
 	.stale {
 		font-size: 10.5px;
@@ -258,43 +267,30 @@
 		text-transform: uppercase;
 		letter-spacing: 0.06em;
 		color: var(--warn);
-		border: 1px solid currentColor;
-		border-radius: 6px;
-		padding: 2px 6px;
 	}
 
-	/* mosaic: auto-fit so 2 tiles split the row 50/50 on wide screens,
-	   3 when there are enough windows, stragglers land on the last row */
+	/* dial mosaic: uniform rounded indicators — compact on small
+	   screens, roomier on large */
 	.mosaic {
 		display: grid;
-		grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
-		gap: 14px;
+		grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+		gap: 8px 12px;
+		align-items: end;
 	}
-
-	/* Apple widget tile: soft raised fill, no hard border */
-	.tile {
-		background: var(--bg-raised);
-		border-radius: 18px;
-		overflow: hidden;
-		padding: 20px 18px 16px;
+	.dtile {
 		display: flex;
 		flex-direction: column;
 		align-items: center;
 		text-align: center;
-		transition: transform 0.15s ease, box-shadow 0.15s ease;
+		padding: 12px 6px 8px;
 	}
-	.tile:hover {
-		transform: translateY(-1px);
-		box-shadow: 0 4px 16px rgba(0, 0, 0, 0.08);
-	}
-	.tile.hot {
-		box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--bad) 45%, transparent);
-	}
-
+	/* dials size with the page container: compact in a narrow shell,
+	   roomier when the window opens up */
 	.dial {
 		position: relative;
-		width: 84px;
-		height: 84px;
+		width: 60px;
+		width: clamp(52px, 17cqi, 84px);
+		aspect-ratio: 1;
 	}
 	.dial svg {
 		width: 100%;
@@ -304,12 +300,14 @@
 	.dial-track {
 		fill: none;
 		stroke: var(--track);
-		stroke-width: 7;
+		stroke-width: 9;
 	}
 	.dial-fill {
 		fill: none;
-		stroke-width: 7;
+		stroke-width: 9;
 		stroke-linecap: round;
+		opacity: 0.88;
+		filter: drop-shadow(0 0 5px var(--glow, transparent));
 		transition: stroke-dashoffset 0.5s ease;
 	}
 	.dial-pct {
@@ -318,20 +316,20 @@
 		display: flex;
 		align-items: center;
 		justify-content: center;
-		font-size: 17px;
-		font-weight: 650;
+		font-size: 14px;
+		font-weight: 700;
 		font-variant-numeric: tabular-nums;
 		letter-spacing: -0.02em;
 	}
-
-	.tile-label {
-		margin-top: 12px;
-		font-size: 13px;
-		font-weight: 550;
+	.dtile-label {
+		margin-top: 8px;
+		font-size: 12px;
+		font-weight: 600;
+		letter-spacing: -0.01em;
 	}
-	.tile-sub {
+	.dtile-sub {
 		margin-top: 4px;
-		font-size: 11px;
+		font-size: 10.5px;
 		font-variant-numeric: tabular-nums;
 		display: flex;
 		align-items: center;
@@ -341,7 +339,28 @@
 	.reset {
 		display: inline-flex;
 		align-items: center;
-		gap: 4px;
+		background: var(--accent-soft);
+		border-radius: 999px;
+		padding: 2px 8px;
+		flex: none;
+	}
+
+	/* quiet empty state — plain type, no card */
+	.empty-quiet {
+		text-align: center;
+		padding: 64px 24px;
+		display: grid;
+		gap: 8px;
+		justify-items: center;
+	}
+	.empty-quiet-title {
+		font-size: 17px;
+		font-weight: 600;
+		letter-spacing: -0.01em;
+	}
+	.empty-quiet .dim {
+		font-size: 13px;
+		max-width: 360px;
 	}
 
 	/* skeleton shimmer */
@@ -361,15 +380,16 @@
 		width: 110px;
 		height: 15px;
 	}
-	.sk-dial {
-		width: 84px;
-		height: 84px;
+	.sk-ddial {
+		width: 60px;
+		width: clamp(52px, 17cqi, 84px);
+		aspect-ratio: 1;
 		border-radius: 50%;
 	}
-	.sk-line {
+	.sk-dline {
 		width: 70px;
 		height: 12px;
-		margin-top: 12px;
+		margin-top: 10px;
 	}
 	@keyframes shimmer {
 		to {
