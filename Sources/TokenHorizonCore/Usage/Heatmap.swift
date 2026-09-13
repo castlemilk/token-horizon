@@ -14,12 +14,9 @@ public enum ActivityHeatmap {
         store: S,
         filter: UsageFilter = UsageFilter()
     ) throws -> [[Int]] {
-        let cal = Calendar.current
+        let cal = DayBoundary.utcCalendar   // UTC grid; local rendering is the frontend's job
         let span = max(1, days)
-        guard let startDay = cal.date(byAdding: .day, value: -(span - 1),
-                                      to: cal.startOfDay(for: now)) else {
-            return Array(repeating: Array(repeating: 0, count: 24), count: 7)
-        }
+        let startDay = DayBoundary.start(of: now).addingTimeInterval(TimeInterval(-(span - 1) * 86_400))
         let buckets = try store.buckets(from: startDay, to: now,
                                         bucketSeconds: 3_600, filter: filter)
         var grid = Array(repeating: Array(repeating: 0, count: 24), count: 7)

@@ -184,6 +184,25 @@ public final class SQLiteUsageStore: UsageStoring {
             canon TEXT NOT NULL,
             PRIMARY KEY (kind, raw)
         );
+        -- Read-side PRICING cache: VALIDITY-INTERVAL rates per raw
+        -- vendor||'/'||model (the PROVIDER channel is part of the key —
+        -- the same model id is priced differently per provider).
+        -- One row per (raw, valid_from): the rate applies to requests with
+        -- ts >= valid_from, until the next interval starts. The FIRST
+        -- observation for a key is recorded with valid_from = 0 so it
+        -- prices all prior history (best available estimate); later rate
+        -- changes only reprice FORWARD. Pure derivative state like the
+        -- spelling cache — but never dropped: the intervals ARE the
+        -- price-over-time history. cache_read_per_m NULL = unpriced
+        -- (not zero).
+        CREATE TABLE IF NOT EXISTS pricing (
+            raw TEXT NOT NULL,
+            valid_from INTEGER NOT NULL,
+            input_per_m REAL NOT NULL,
+            output_per_m REAL NOT NULL,
+            cache_read_per_m REAL,
+            PRIMARY KEY (raw, valid_from)
+        );
         CREATE TABLE IF NOT EXISTS sync_state (
             dataset TEXT PRIMARY KEY,
             cursor TEXT NOT NULL DEFAULT '',
@@ -202,6 +221,33 @@ public final class SQLiteUsageStore: UsageStoring {
         guard sqlite3_exec(db, ddl, nil, nil, nil) == SQLITE_OK else {
             throw UsageStoreError.stepFailed("schema: \(lastError())")
         }
+        migratePricingIntervals()
+    }
+
+    /// One-time shape fix: the first-cut pricing cache (raw PRIMARY KEY, no
+    /// validity) is replaced by the interval schema. The old table held at
+    /// most a few hours of derivative state — safe to drop and rebuild.
+    private func migratePricingIntervals() {
+        var stmt: OpaquePointer?
+        var hasValidFrom = false
+        if sqlite3_prepare_v2(db, "PRAGMA table_info(pricing)", -1, &stmt, nil) == SQLITE_OK {
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                if columnText(stmt, 1) == "valid_from" { hasValidFrom = true }
+            }
+        }
+        sqlite3_finalize(stmt)
+        guard !hasValidFrom else { return }
+        sqlite3_exec(db, """
+        DROP TABLE pricing;
+        CREATE TABLE pricing (
+            raw TEXT NOT NULL,
+            valid_from INTEGER NOT NULL,
+            input_per_m REAL NOT NULL,
+            output_per_m REAL NOT NULL,
+            cache_read_per_m REAL,
+            PRIMARY KEY (raw, valid_from)
+        );
+        """, nil, nil, nil)
     }
 
 
@@ -324,16 +370,69 @@ public final class SQLiteUsageStore: UsageStoring {
         }
     }
 
+    // MARK: - Annotation lookup (attribution scheduler)
+
+    /// Test seam: upsert one pricing interval directly. The cache is pure
+    /// derivative state — production refreshes it from ModelCatalog inside
+    /// ensureSpellingsCurrent (first observation valid_from 0, changes
+    /// forward-only).
+    func upsertPricingForTesting(raw: String, validFrom: Int64 = 0,
+                                 inputPerM: Double, outputPerM: Double,
+                                 cacheReadPerM: Double?) throws {
+        lock.lock(); defer { lock.unlock() }
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db,
+                "INSERT OR REPLACE INTO pricing (raw, valid_from, input_per_m, output_per_m, cache_read_per_m) VALUES (?,?,?,?,?)",
+                -1, &stmt, nil) == SQLITE_OK else {
+            throw UsageStoreError.prepareFailed(lastError())
+        }
+        defer { sqlite3_finalize(stmt) }
+        bindText(stmt, 1, raw)
+        sqlite3_bind_int64(stmt, 2, validFrom)
+        sqlite3_bind_double(stmt, 3, inputPerM)
+        sqlite3_bind_double(stmt, 4, outputPerM)
+        if let rate = cacheReadPerM { sqlite3_bind_double(stmt, 5, rate) } else { sqlite3_bind_null(stmt, 5) }
+        guard sqlite3_step(stmt) == SQLITE_DONE else {
+            throw UsageStoreError.stepFailed("pricing upsert: \(lastError())")
+        }
+    }
+
+    /// Which of the given provider request ids already have an annotation.
+    /// Read-only probe; chunked to stay under SQLite's variable limit.
+    public func annotatedRequestIDs(among ids: [String]) throws -> Set<String> {
+        let unique = Array(Set(ids.filter { !$0.isEmpty }))
+        guard !unique.isEmpty else { return [] }
+        var out = Set<String>()
+        lock.lock(); defer { lock.unlock() }
+        for start in stride(from: 0, to: unique.count, by: 400) {
+            let chunk = unique[start..<min(start + 400, unique.count)]
+            let placeholders = chunk.map { _ in "?" }.joined(separator: ",")
+            let sql = "SELECT DISTINCT request_id FROM file_annotation WHERE request_id IN (\(placeholders))"
+            var stmt: OpaquePointer?
+            guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
+                throw UsageStoreError.prepareFailed(lastError())
+            }
+            for (i, id) in chunk.enumerated() { bindText(stmt, Int32(i + 1), id) }
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                out.insert(columnText(stmt, 0))
+            }
+            sqlite3_finalize(stmt)
+        }
+        return out
+    }
+
     // MARK: - Query-time canonicalization helpers
 
     /// SQL expression folding raw vendor spellings to canonical form
-    /// (Canonical.vendorTable as a CASE, unknowns pass through lowercased).
+    /// (Canonical.effectiveVendorTable as a CASE — built-in table merged
+    /// with canonical.json overrides; unknowns pass through lowercased).
     /// Used in GROUP BY / WHERE so stored rows stay raw while aggregation
     /// and filtering see canonical vendors.
     private func vendorCaseSQL(_ column: String) -> String {
+        func q(_ s: String) -> String { s.replacingOccurrences(of: "'", with: "''") }
         var s = "CASE LOWER(TRIM(\(column)))"
-        for (alias, canonical) in Canonical.vendorTable {
-            s += " WHEN '\(alias)' THEN '\(canonical)'"
+        for (alias, canonical) in Canonical.effectiveVendorTable() {
+            s += " WHEN '\(q(alias))' THEN '\(q(canonical))'"
         }
         return s + " ELSE LOWER(TRIM(\(column))) END"
     }
@@ -356,9 +455,12 @@ public final class SQLiteUsageStore: UsageStoring {
             }
         }
         sqlite3_finalize(stmt)
+        // Spelling cache: INSERT OR REPLACE — canonical.json is
+        // AUTHORITATIVE, so an edited mapping must propagate on the next
+        // refresh rather than being frozen by the first-seen spelling.
         var ins: OpaquePointer?
         guard sqlite3_prepare_v2(db,
-                "INSERT OR IGNORE INTO spelling (kind, raw, canon) VALUES ('model', ?, ?)",
+                "INSERT OR REPLACE INTO spelling (kind, raw, canon) VALUES ('model', ?, ?)",
                 -1, &ins, nil) == SQLITE_OK else { return }
         defer { sqlite3_finalize(ins) }
         for (vendor, model) in rows {
@@ -367,6 +469,60 @@ public final class SQLiteUsageStore: UsageStoring {
             bindText(ins, 1, "\(vendor)/\(model)")
             bindText(ins, 2, Canonical.model(vendor: vendor, model: model))
             sqlite3_step(ins)
+        }
+        // Pricing cache: VALIDITY INTERVALS per raw key. The catalog's
+        // current rates are compared against the latest stored interval;
+        // a new interval is inserted ONLY when rates changed (or none
+        // exists). First observation uses valid_from = 0 so it prices all
+        // prior history (best available estimate); later changes start at
+        // `now` and reprice FORWARD only. Mirrors CostEngine's lookup
+        // chain (canonical, then raw). Read queries join the interval in
+        // effect at each request's timestamp.
+        var latest: OpaquePointer?
+        guard sqlite3_prepare_v2(db,
+                "SELECT input_per_m, output_per_m, cache_read_per_m FROM pricing WHERE raw = ? ORDER BY valid_from DESC LIMIT 1",
+                -1, &latest, nil) == SQLITE_OK else { return }
+        defer { sqlite3_finalize(latest) }
+        var pins: OpaquePointer?
+        guard sqlite3_prepare_v2(db,
+                "INSERT OR IGNORE INTO pricing (raw, valid_from, input_per_m, output_per_m, cache_read_per_m) VALUES (?,?,?,?,?)",
+                -1, &pins, nil) == SQLITE_OK else { return }
+        defer { sqlite3_finalize(pins) }
+        let nowTs = Int64(Date().timeIntervalSince1970)
+        for (vendor, model) in rows {
+            let canonical = Canonical.model(vendor: vendor, model: model)
+            guard let entry = ModelCatalog.shared.lookup(id: canonical)
+                    ?? ModelCatalog.shared.lookup(id: model) else { continue }
+            // Pricing keys live in CANONICAL namespace (config-folded
+            // vendor + model) — the read join folds usage rows the same
+            // way, so canonical.json mappings apply to both sides.
+            let raw = "\(Canonical.vendor(vendor))/\(canonical)"
+            sqlite3_reset(latest)
+            sqlite3_clear_bindings(latest)
+            bindText(latest, 1, raw)
+            var validFrom: Int64 = 0     // first observation prices all history
+            var changed = true
+            if sqlite3_step(latest) == SQLITE_ROW {
+                let curCache = sqlite3_column_type(latest, 2) == SQLITE_NULL
+                    ? nil : sqlite3_column_double(latest, 2)
+                changed = sqlite3_column_double(latest, 0) != entry.inputPerM
+                    || sqlite3_column_double(latest, 1) != entry.outputPerM
+                    || curCache != entry.cacheReadPerM
+                validFrom = nowTs          // rate CHANGE: forward-only
+            }
+            guard changed else { continue }
+            sqlite3_reset(pins)
+            sqlite3_clear_bindings(pins)
+            bindText(pins, 1, raw)
+            sqlite3_bind_int64(pins, 2, validFrom)
+            sqlite3_bind_double(pins, 3, entry.inputPerM)
+            sqlite3_bind_double(pins, 4, entry.outputPerM)
+            if let cacheRate = entry.cacheReadPerM {
+                sqlite3_bind_double(pins, 5, cacheRate)
+            } else {
+                sqlite3_bind_null(pins, 5)
+            }
+            sqlite3_step(pins)
         }
     }
 
@@ -386,6 +542,41 @@ public final class SQLiteUsageStore: UsageStoring {
     private static let modelSpellingJoinSQL = """
     LEFT JOIN spelling sm ON sm.kind = 'model'
         AND sm.raw = usage_event.vendor || '/' || usage_event.model
+    """
+
+    /// The pricing join: the rate INTERVAL in effect at each request's
+    /// timestamp (correlated subquery, at most one row — never fan-out).
+    /// Pricing keys live in CANONICAL namespace (vendor folded via the CASE
+    /// — including canonical.json overrides — model folded via the spelling
+    /// cache), so one config entry maps any raw spelling onto its rates.
+    /// Requires the spelling join (sm) in the same query.
+    private func pricingJoinSQL() -> String {
+        """
+        LEFT JOIN pricing pr ON pr.rowid = (
+            SELECT rowid FROM pricing
+            WHERE raw = \(vendorCaseSQL("usage_event.vendor")) || '/' || COALESCE(sm.canon, usage_event.model)
+              AND valid_from <= usage_event.ts
+            ORDER BY valid_from DESC LIMIT 1
+        )
+        """
+    }
+
+    /// USD-equivalent list cost per row, computed at READ time from catalog
+    /// rates × token breakdown — input, output, cache-read and cache-write
+    /// each at their own rate. IDENTICAL normalization for subscription and
+    /// API-billed requests; `cost_source` is the label distinguishing an
+    /// actual charge (.computed/.reported) from zero-marginal plan usage
+    /// (.planFree). Mirrors CostEngine semantics: cache-write priced as
+    /// input; cache-read at its own rate when the catalog carries one, else
+    /// unpriced. Reasoning tokens are a subset of output and already priced
+    /// by the output rate. NULL when the catalog doesn't price the model.
+    private static let costEquivalentSQL = """
+    CASE WHEN pr.input_per_m IS NOT NULL THEN
+        (usage_event.input * pr.input_per_m
+       + usage_event.output * pr.output_per_m
+       + usage_event.cache_write * pr.input_per_m
+       + COALESCE(usage_event.cache_read * pr.cache_read_per_m, 0)) / 1000000.0
+    END
     """
 
     /// The machine join: id → display alias (one row per machine, no
@@ -479,8 +670,8 @@ public final class SQLiteUsageStore: UsageStoring {
                usage_event.thinking_level, usage_event.thinking_raw, usage_event.product,
                usage_event.request_id, usage_event.product_source, usage_event.cost_source,
                usage_event.account_id, usage_event.request_id_alt, mc.alias,
-               fa.product, fa.cost
-        FROM usage_event \(Self.annotationJoinSQL) \(Self.machineJoinSQL) \(parts.0)
+               fa.product, fa.cost, \(Self.costEquivalentSQL)
+        FROM usage_event \(Self.annotationJoinSQL) \(Self.machineJoinSQL) \(Self.modelSpellingJoinSQL) \(pricingJoinSQL()) \(parts.0)
         ORDER BY usage_event.rowid DESC LIMIT ?
         """
         lock.lock(); defer { lock.unlock() }
@@ -529,14 +720,14 @@ public final class SQLiteUsageStore: UsageStoring {
                  fa.product, usage_event.product, '?')
         """
         case .session: keyExpr = "COALESCE(usage_event.session_id, '')"
-        case .day: keyExpr = "strftime('%Y-%m-%d', usage_event.ts, 'unixepoch', 'localtime')"
+        case .day: keyExpr = "strftime('%Y-%m-%d', usage_event.ts, 'unixepoch')"
         }
         let parts = whereSQL(from: from, to: to, filter: filter)
         let sql = """
         SELECT \(keyExpr), SUM(usage_event.input), SUM(usage_event.output), SUM(usage_event.reasoning),
                SUM(usage_event.cache_read), SUM(usage_event.cache_write), SUM(usage_event.cost), COUNT(*),
-               MIN(usage_event.ts), MAX(usage_event.ts)
-        FROM usage_event \(Self.annotationJoinSQL) \(Self.modelSpellingJoinSQL) \(Self.machineJoinSQL)
+               MIN(usage_event.ts), MAX(usage_event.ts), SUM(\(Self.costEquivalentSQL))
+        FROM usage_event \(Self.annotationJoinSQL) \(Self.modelSpellingJoinSQL) \(Self.machineJoinSQL) \(pricingJoinSQL())
         \(parts.0)
         GROUP BY 1 ORDER BY 2+3+4+5+6 DESC
         """
@@ -560,6 +751,9 @@ public final class SQLiteUsageStore: UsageStoring {
             agg.requests = Int(sqlite3_column_int64(stmt, 7))
             agg.firstEvent = Date(timeIntervalSince1970: sqlite3_column_double(stmt, 8))
             agg.lastEvent = Date(timeIntervalSince1970: sqlite3_column_double(stmt, 9))
+            if sqlite3_column_type(stmt, 10) != SQLITE_NULL {
+                agg.costEquivalent = sqlite3_column_double(stmt, 10)
+            }
             out.append(agg)
         }
         return out
@@ -572,8 +766,9 @@ public final class SQLiteUsageStore: UsageStoring {
         let sql = """
         SELECT (usage_event.ts / \(size)) * \(size), \(vendorCaseSQL("usage_event.vendor")),
                SUM(usage_event.input), SUM(usage_event.output), SUM(usage_event.reasoning),
-               SUM(usage_event.cache_read), SUM(usage_event.cache_write), SUM(usage_event.cost)
-        FROM usage_event
+               SUM(usage_event.cache_read), SUM(usage_event.cache_write), SUM(usage_event.cost),
+               SUM(\(Self.costEquivalentSQL)), COUNT(*)
+        FROM usage_event \(Self.modelSpellingJoinSQL) \(pricingJoinSQL())
         \(parts.0)
         GROUP BY 1, 2 ORDER BY 1
         """
@@ -595,6 +790,10 @@ public final class SQLiteUsageStore: UsageStoring {
                 cacheRead: Int(sqlite3_column_int64(stmt, 5)),
                 cacheWrite: Int(sqlite3_column_int64(stmt, 6)))
             b.cost = sqlite3_column_double(stmt, 7)
+            if sqlite3_column_type(stmt, 8) != SQLITE_NULL {
+                b.costEquivalent = sqlite3_column_double(stmt, 8)
+            }
+            b.requests = Int(sqlite3_column_int64(stmt, 9))
             out.append(b)
         }
         return out
@@ -636,8 +835,8 @@ public final class SQLiteUsageStore: UsageStoring {
                SUM(usage_event.gen_tps * (usage_event.output+usage_event.input)) / NULLIF(SUM(usage_event.output+usage_event.input),0),
                SUM(usage_event.prompt_tps * (usage_event.output+usage_event.input)) / NULLIF(SUM(usage_event.output+usage_event.input),0),
                SUM(usage_event.context_occupancy * (usage_event.output+usage_event.input)) / NULLIF(SUM(usage_event.output+usage_event.input),0),
-               MAX(usage_event.ts)
-        FROM usage_event \(Self.modelSpellingJoinSQL)
+               MAX(usage_event.ts), SUM(\(Self.costEquivalentSQL))
+        FROM usage_event \(Self.modelSpellingJoinSQL) \(pricingJoinSQL())
         \(parts.0)
         GROUP BY 1, 3
         ORDER BY 4+5+6+7+8 DESC
@@ -672,6 +871,13 @@ public final class SQLiteUsageStore: UsageStoring {
             if sqlite3_column_type(stmt, 11) != SQLITE_NULL { row.avgPromptTokPerSec = sqlite3_column_double(stmt, 11) }
             if sqlite3_column_type(stmt, 12) != SQLITE_NULL { row.avgContextOccupancy = sqlite3_column_double(stmt, 12) }
             row.lastEvent = Date(timeIntervalSince1970: sqlite3_column_double(stmt, 13))
+            if sqlite3_column_type(stmt, 14) != SQLITE_NULL {
+                row.costEquivalent = sqlite3_column_double(stmt, 14)
+                if var provider = providers[vendor], let eq = row.costEquivalent {
+                    provider.costEquivalent = (provider.costEquivalent ?? 0) + eq
+                    providers[vendor] = provider
+                }
+            }
             providers[vendor]?.tokens.add(row.tokens)
             providers[vendor]?.cost += row.cost
             providers[vendor]?.requests += row.requests
@@ -871,6 +1077,7 @@ public final class SQLiteUsageStore: UsageStoring {
         let requestIDAlt = sqlite3_column_type(stmt, 27) == SQLITE_NULL ? nil : columnText(stmt, 27)
         let fileProduct = sqlite3_column_type(stmt, 29) == SQLITE_NULL ? nil : columnText(stmt, 29)
         let fileCost = sqlite3_column_type(stmt, 30) == SQLITE_NULL ? nil : sqlite3_column_double(stmt, 30)
+        let costEquivalent = sqlite3_column_type(stmt, 31) == SQLITE_NULL ? nil : sqlite3_column_double(stmt, 31)
         return UsageEvent(
             id: UUID(uuidString: columnText(stmt, 1)) ?? UUID(),
             timestamp: Date(timeIntervalSince1970: sqlite3_column_double(stmt, 2)),
@@ -885,6 +1092,7 @@ public final class SQLiteUsageStore: UsageStoring {
             thinkingLevel: thinkingLevel, thinkingRaw: thinkingRaw,
             product: product, productSource: productSource, costSource: costSource,
             accountID: accountID, fileProduct: fileProduct, fileCost: fileCost,
+            costEquivalent: costEquivalent,
             requestID: requestID, requestIDAlt: requestIDAlt,
             attestation: Attestation(rawValue: columnText(stmt, 19)) ?? .selfReported)
     }

@@ -30,6 +30,49 @@ public struct MeteredExchange {
 
 /// Base class for request-path token measurement ("the listener").
 ///
+/// UA-substring → product table, matched in order (specific needles first).
+/// ONE table shared by the point-mode meter sniff AND the mitm addon —
+/// MitmAddonScript interpolates these rows into the generated Python so the
+/// two capture paths can never disagree about tool identity.
+public enum ProductSniff {
+    public static let uaTable: [(needle: String, product: String)] = [
+        ("claude-cli", "claude-code"), ("claude_code", "claude-code"),
+        ("codex_cli_rs", "codex"), ("codex", "codex"),
+        ("opencode", "opencode"),
+        ("kimi", "kimi-cli"),
+        ("gemini-cli", "gemini-cli"), ("gemini_cli", "gemini-cli"),
+        ("pi-ai", "pi"), ("pi/", "pi"), ("pi-coding-agent", "pi"), ("pi_coding", "pi"),
+        ("aider", "aider"), ("cursor", "cursor"), ("continue", "continue"),
+        ("python-", "python-sdk"), ("node", "node-sdk"),
+        ("curl", "curl"),
+    ]
+
+    public static func sniff(_ userAgent: String?) -> String? {
+        guard let ua = userAgent?.lowercased() else { return nil }
+        for row in uaTable where ua.contains(row.needle) { return row.product }
+        return nil
+    }
+}
+
+/// Thinking-budget → level banding, shared by every meter that normalizes
+/// a TOKEN BUDGET (Anthropic thinking.budget_tokens, Gemini thinkingBudget).
+/// Bands are vendor-neutral vocabulary: off / adaptive / low / medium / high.
+public enum ThinkingBands {
+    /// What a zero budget means on this wire: Anthropic treats budget<1 as
+    /// "model decides" (adaptive); Gemini's 0 is an explicit off switch.
+    public enum ZeroSemantics { case off, adaptive }
+
+    public static func level(forBudget budget: Int, zero: ZeroSemantics) -> String {
+        if budget == 0 { return zero == .off ? "off" : "adaptive" }
+        if budget < 0 { return "adaptive" }   // e.g. Gemini -1 = dynamic
+        switch budget {
+        case ..<4_000: return "low"
+        case ..<16_000: return "medium"
+        default: return "high"
+        }
+    }
+}
+
 /// A meter is a loopback HTTP relay: clients (CLI tools, SDKs, local
 /// OpenAI-compatible servers) point their base URL at the meter; the meter
 /// forwards every request to the real API and streams the response back
@@ -148,20 +191,8 @@ open class RequestMeter: NSObject, URLSessionDataDelegate {
     /// explicit one.
     open func productAttribution(for exchange: MeteredExchange) -> (product: String, source: ProductSource)? {
         if let productLabel { return (productLabel, .explicitLabel) }
-        guard let ua = exchange.requestHeaders["user-agent"]?.lowercased() else { return nil }
-        let table: [(String, String)] = [
-            ("claude-cli", "claude-code"), ("claude_code", "claude-code"),
-            ("codex_cli_rs", "codex"), ("codex", "codex"),
-            ("opencode", "opencode"),
-            ("kimi", "kimi-cli"),
-            ("gemini-cli", "gemini-cli"), ("gemini_cli", "gemini-cli"),
-            ("pi-ai", "pi"), ("pi/", "pi"), ("pi-coding-agent", "pi"), ("pi_coding", "pi"),
-            ("aider", "aider"), ("cursor", "cursor"), ("continue", "continue"),
-            ("python-", "python-sdk"), ("node", "node-sdk"),
-            ("curl", "curl"),
-        ]
-        for (needle, product) in table where ua.contains(needle) { return (product, .headerSniffed) }
-        return nil
+        guard let product = ProductSniff.sniff(exchange.requestHeaders["user-agent"]) else { return nil }
+        return (product, .headerSniffed)
     }
 
     /// Product-level attribution: which client TOOL made this request
@@ -186,7 +217,6 @@ open class RequestMeter: NSObject, URLSessionDataDelegate {
     open func requestIDAlt(for exchange: MeteredExchange) -> String? { nil }
 
     // MARK: - Wire rate limits (limits channel, source #1: the meter itself)
-
     /// Rate-limit snapshots parsed from RESPONSE headers of this exchange.
     /// OpenAI-compatible vendors emit `x-ratelimit-*`; AnthropicMeter
     /// overrides for `anthropic-ratelimit-*`. These are the freshest limits
@@ -476,6 +506,9 @@ open class RequestMeter: NSObject, URLSessionDataDelegate {
                 self.counterLock.unlock()
                 if let event = self.event(from: exchange) {
                     try? self.store?.insertMetered([event])
+                    // Unattributed events arm the reactive file-lookup ladder
+                    // (no-op when attribution was wire-inferable).
+                    AttributionScheduler.shared.note(events: [event])
                     self.counterLock.lock()
                     self._measured += 1
                     self.counterLock.unlock()

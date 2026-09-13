@@ -113,6 +113,13 @@ public struct UsageEvent: Codable, Identifiable {
     public var fileProduct: String?
     /// Tool/provider-reported cost joined from session files at READ time.
     public var fileCost: Double?
+    /// USD-equivalent list cost, computed at READ time from catalog rates ×
+    /// token breakdown (input/output/cache-read/cache-write at their own
+    /// rates). Identical normalization for subscription and API-billed
+    /// requests — `costSource` is the label saying whether `cost` was an
+    /// actual charge (.computed/.reported) or zero-marginal plan usage
+    /// (.planFree). nil when the catalog doesn't price this model.
+    public var costEquivalent: Double?
     /// Provider request id, when a channel exposes it: claude `requestId` in
     /// transcripts == `request-id` response header on the wire; OpenAI-style
     /// body `id` (chatcmpl-/resp-) == pi's `responseId`. The strong
@@ -136,6 +143,7 @@ public struct UsageEvent: Codable, Identifiable {
                 product: String? = nil, productSource: ProductSource? = nil,
                 costSource: CostSource? = nil, accountID: String? = nil,
                 fileProduct: String? = nil, fileCost: Double? = nil,
+                costEquivalent: Double? = nil,
                 requestID: String? = nil, requestIDAlt: String? = nil,
                 attestation: Attestation = .selfReported) {
         self.id = id
@@ -161,12 +169,60 @@ public struct UsageEvent: Codable, Identifiable {
         self.accountID = accountID
         self.fileProduct = fileProduct
         self.fileCost = fileCost
+        self.costEquivalent = costEquivalent
         self.requestID = requestID
         self.requestIDAlt = requestIDAlt
         self.attestation = attestation
     }
 
     // MARK: - Query-time resolution (ranks decided on read, nothing merged on write)
+
+    /// Wire encoding resolves the query-time RANKS: API consumers receive
+    /// `product`/`cost` as the EFFECTIVE values (file-joined attribution
+    /// outranks header sniff; file-reported cost outranks computed), with the
+    /// meter's own raw observations riding along as `productRaw`/`costRaw`.
+    /// Decoding stays synthesized over the stored fields (no rank applied).
+    private enum WireKeys: String, CodingKey {
+        case id, timestamp, machineID, machineAlias, source, vendor, model, tokens
+        case contextOccupancy, contextLimit, cost, promptTokPerSec, generationTokPerSec
+        case latencyMs, sessionID, thinkingLevel, thinkingRaw
+        case product, productRaw, productSource, costRaw, costSource
+        case accountID, fileProduct, fileCost, costEquivalent
+        case requestID, requestIDAlt, attestation
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: WireKeys.self)
+        try c.encode(id, forKey: .id)
+        try c.encode(timestamp, forKey: .timestamp)
+        try c.encode(machineID, forKey: .machineID)
+        try c.encodeIfPresent(machineAlias, forKey: .machineAlias)
+        try c.encode(source, forKey: .source)
+        try c.encode(vendor, forKey: .vendor)
+        try c.encode(model, forKey: .model)
+        try c.encode(tokens, forKey: .tokens)
+        try c.encodeIfPresent(contextOccupancy, forKey: .contextOccupancy)
+        try c.encodeIfPresent(contextLimit, forKey: .contextLimit)
+        try c.encode(effectiveCost, forKey: .cost)          // rank-resolved
+        try c.encode(cost, forKey: .costRaw)                // meter's observation
+        try c.encodeIfPresent(promptTokPerSec, forKey: .promptTokPerSec)
+        try c.encodeIfPresent(generationTokPerSec, forKey: .generationTokPerSec)
+        try c.encodeIfPresent(latencyMs, forKey: .latencyMs)
+        try c.encodeIfPresent(sessionID, forKey: .sessionID)
+        try c.encodeIfPresent(thinkingLevel, forKey: .thinkingLevel)
+        try c.encodeIfPresent(thinkingRaw, forKey: .thinkingRaw)
+        try c.encodeIfPresent(effectiveProduct, forKey: .product)  // rank-resolved
+        try c.encodeIfPresent(product, forKey: .productRaw)        // meter's observation
+        try c.encodeIfPresent(productSource, forKey: .productSource)
+        try c.encodeIfPresent(costSource, forKey: .costSource)
+        try c.encodeIfPresent(accountID, forKey: .accountID)
+        try c.encodeIfPresent(fileProduct, forKey: .fileProduct)
+        try c.encodeIfPresent(fileCost, forKey: .fileCost)
+        try c.encodeIfPresent(costEquivalent, forKey: .costEquivalent)
+        try c.encodeIfPresent(requestID, forKey: .requestID)
+        try c.encodeIfPresent(requestIDAlt, forKey: .requestIDAlt)
+        try c.encode(attestation, forKey: .attestation)
+    }
 
     /// Effective tool label: an operator-pinned port label outranks the
     /// tool's own file record, which outranks header sniffing.

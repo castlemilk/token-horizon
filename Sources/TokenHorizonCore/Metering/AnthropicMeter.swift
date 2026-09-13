@@ -102,9 +102,21 @@ open class AnthropicMeter: RequestMeter {
                 }
             case "message_delta":
                 if let usage = obj["usage"] as? [String: Any] {
-                    // output_tokens here is the cumulative final count.
+                    // output_tokens is the cumulative GROSS count (includes
+                    // thinking). TokenBreakdown stores NET output, so subtract.
+                    let thinking: Int
+                    if let details = usage["output_tokens_details"] as? [String: Any],
+                       let t = (details["thinking_tokens"] as? NSNumber)?.intValue {
+                        thinking = t
+                        breakdown.reasoning = t
+                        sawUsage = true
+                    } else {
+                        thinking = breakdown.reasoning
+                    }
                     if let out = (usage["output_tokens"] as? NSNumber)?.intValue {
-                        breakdown.output = out
+                        // Gross includes thinking — store NET. Already-net
+                        // payloads (thinking > gross) are kept as-is.
+                        breakdown.output = thinking <= out ? out - thinking : out
                         sawUsage = true
                     }
                 }
@@ -119,7 +131,16 @@ open class AnthropicMeter: RequestMeter {
         func int(_ key: String) -> Int { (usage[key] as? NSNumber)?.intValue ?? 0 }
         var out = b
         if let v = (usage["input_tokens"] as? NSNumber)?.intValue { out.input = v }
-        if let v = (usage["output_tokens"] as? NSNumber)?.intValue { out.output = v }
+        // Non-streaming twin of the SSE delta: thinking tokens ride
+        // output_tokens_details.thinking_tokens as a SUBSET of output —
+        // store NET output so total isn't double-counted.
+        var thinking = out.reasoning
+        if let details = usage["output_tokens_details"] as? [String: Any],
+           let t = (details["thinking_tokens"] as? NSNumber)?.intValue {
+            thinking = t
+            out.reasoning = t
+        }
+        if let v = (usage["output_tokens"] as? NSNumber)?.intValue { out.output = thinking <= v ? v - thinking : v }
         out.cacheRead = int("cache_read_input_tokens")
         out.cacheWrite = int("cache_creation_input_tokens")
         return out
@@ -133,13 +154,6 @@ open class AnthropicMeter: RequestMeter {
               let type = thinking["type"] as? String else { return nil }
         guard type == "enabled" else { return ("off", "type:\(type)") }
         let budget = (thinking["budget_tokens"] as? NSNumber)?.intValue ?? 0
-        let level: String
-        switch budget {
-        case ..<1: level = "adaptive"
-        case ..<4_000: level = "low"
-        case ..<16_000: level = "medium"
-        default: level = "high"
-        }
-        return (level, "budget_tokens:\(budget)")
+        return (ThinkingBands.level(forBudget: budget, zero: .adaptive), "budget_tokens:\(budget)")
     }
 }

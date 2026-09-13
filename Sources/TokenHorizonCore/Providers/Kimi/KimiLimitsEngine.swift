@@ -31,21 +31,7 @@ public final class KimiLimitsEngine: LimitsEngine, Meterable {
         public var path: String
     }
 
-    public static func credentialPaths() -> [String] {
-        let home = Platform.paths.homeDirectory.path
-        var paths: [String] = []
-        for envKey in ["KIMI_CODE_HOME", "KIMI_HOME"] {
-            if let codeHome = ProcessInfo.processInfo.environment[envKey],
-               !codeHome.trimmingCharacters(in: .whitespaces).isEmpty {
-                paths.append("\(codeHome)/credentials/kimi-code.json")
-            }
-        }
-        if paths.isEmpty {
-            paths.append("\(home)/.kimi-code/credentials/kimi-code.json")
-        }
-        paths.append("\(home)/.kimi/credentials/kimi-code.json")
-        return paths
-    }
+    public static func credentialPaths() -> [String] { KimiPaths.credentialFiles() }
 
     public static func readCredentials() -> Credentials? {
         for path in credentialPaths() {
@@ -72,9 +58,8 @@ public final class KimiLimitsEngine: LimitsEngine, Meterable {
     }
 
     private static func makeLimit(provider: String = "kimi", label: String, usedPercent: Double, resetsAt: Date? = nil, detail: String = "") -> ProviderLimit {
-        ProviderLimit(provider: provider, label: label,
-                      usedPercent: min(max(usedPercent, 0), 100),
-                      resetsAt: resetsAt, detail: detail)
+        .clamped(provider: provider, label: label, usedPercent: usedPercent,
+                 resetsAt: resetsAt, detail: detail)
     }
 
     public static func fetch() -> [ProviderLimit] {
@@ -127,14 +112,9 @@ public final class KimiLimitsEngine: LimitsEngine, Meterable {
         req.setValue("application/json", forHTTPHeaderField: "Accept")
         req.setValue("OpenUsage", forHTTPHeaderField: "User-Agent")
 
-        var data: Data?
-        let sema = DispatchSemaphore(value: 0)
-        URLSession.shared.dataTask(with: req) { d, resp, _ in
-            if let http = resp as? HTTPURLResponse, (200..<300).contains(http.statusCode) { data = d }
-            sema.signal()
-        }.resume()
-        if sema.wait(timeout: .now() + 8) == .timedOut { return [] }
-        guard let data, let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return [] }
+        let r = HTTP.send(req, timeout: 8)
+        guard (200..<300).contains(r.status), let data = r.data,
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return [] }
 
         var limits: [ProviderLimit] = []
         let providerName = profile.isEmpty ? "kimi" : "kimi (\(profile))"
@@ -187,14 +167,9 @@ public final class KimiLimitsEngine: LimitsEngine, Meterable {
         let body = "client_id=\(clientID)&grant_type=refresh_token&refresh_token=\(creds.refreshToken)"
         req.httpBody = body.data(using: .utf8)
 
-        var data: Data?
-        let sema = DispatchSemaphore(value: 0)
-        URLSession.shared.dataTask(with: req) { d, resp, _ in
-            if let http = resp as? HTTPURLResponse, (200..<300).contains(http.statusCode) { data = d }
-            sema.signal()
-        }.resume()
-        if sema.wait(timeout: .now() + 8) == .timedOut { return nil }
-        guard let data, let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+        let r = HTTP.send(req, timeout: 8)
+        guard (200..<300).contains(r.status), let data = r.data,
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let access = obj["access_token"] as? String else { return nil }
         let refresh = obj["refresh_token"] as? String ?? creds.refreshToken
         let expiresIn = (obj["expires_in"] as? NSNumber)?.doubleValue ?? 3600

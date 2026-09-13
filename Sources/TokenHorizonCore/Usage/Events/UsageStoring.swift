@@ -15,6 +15,9 @@ public struct UsageAggregate: Codable {
     public var key: String
     public var tokens = TokenBreakdown()
     public var cost = 0.0
+    /// Sum of per-row USD-equivalent list costs (see UsageEvent
+    /// .costEquivalent); nil when NO row in the group is catalog-priced.
+    public var costEquivalent: Double?
     public var requests = 0
     public var firstEvent: Date?
     public var lastEvent: Date?
@@ -28,6 +31,11 @@ public struct UsageBucket: Codable {
     public var vendor: String      // stacked-series key
     public var tokens = TokenBreakdown()
     public var cost = 0.0
+    /// USD-equivalent list cost summed over the bucket; nil when no row in
+    /// the bucket is catalog-priced.
+    public var costEquivalent: Double?
+    /// Requests in the bucket.
+    public var requests = 0
 
     public init(start: Int, vendor: String) {
         self.start = start
@@ -85,6 +93,8 @@ public struct ModelSummary: Codable {
     public var model: String
     public var tokens = TokenBreakdown()
     public var cost = 0.0
+    /// USD-equivalent list cost for this model's rows; nil when unpriced.
+    public var costEquivalent: Double?
     public var requests = 0
     public var avgGenerationTokPerSec: Double?
     public var avgPromptTokPerSec: Double?
@@ -100,6 +110,9 @@ public struct ProviderSummary: Codable {
     public var source: String
     public var tokens = TokenBreakdown()
     public var cost = 0.0
+    /// USD-equivalent list cost summed over priced models; nil when none
+    /// of the vendor's models are catalog-priced.
+    public var costEquivalent: Double?
     public var requests = 0
     public var models: [ModelSummary] = []
 
@@ -171,6 +184,10 @@ public protocol UsageStoring {
     /// modify a usage row, so every observation keeps full resolution.
     func annotate(_ annotations: [FileAnnotation]) throws
 
+    /// Which of the given provider request ids already carry a file
+    /// annotation. AttributionScheduler prunes resolved probes with this.
+    func annotatedRequestIDs(among ids: [String]) throws -> Set<String>
+
     /// Tabular request view: filtered events, newest first, rowid-paginated.
     /// nextCursor is nil when the page is exhausted.
     func query(from: Date, to: Date, filter: UsageFilter,
@@ -225,4 +242,5 @@ public extension UsageStoring {
 public extension UsageStoring {
     func insertMetered(_ events: [UsageEvent]) throws { try insert(events) }
     func annotate(_ annotations: [FileAnnotation]) throws {}
+    func annotatedRequestIDs(among ids: [String]) throws -> Set<String> { [] }
 }

@@ -1,4 +1,5 @@
 import Foundation
+import TokenHorizonCore
 import CryptoKit
 
 final class ClaudeDiscovery {
@@ -153,37 +154,23 @@ final class ClaudeDiscovery {
         req.setValue("oauth-2025-04-20", forHTTPHeaderField: "anthropic-beta")
         req.setValue("application/json", forHTTPHeaderField: "Accept")
         req.setValue("claude-code/0.2.29", forHTTPHeaderField: "User-Agent")
-        var resultData: Data?
-        var statusCode = -1
-        var retryAfter: TimeInterval?
-        let sema = DispatchSemaphore(value: 0)
-        URLSession.shared.dataTask(with: req) { d, resp, _ in
-            if let http = resp as? HTTPURLResponse {
-                statusCode = http.statusCode
-                if (200..<300).contains(http.statusCode) { resultData = d }
-                retryAfter = Self.parseRetryAfter(http)
-            }
-            sema.signal()
-        }.resume()
-        _ = sema.wait(timeout: .now() + timeout)
-        guard let resultData,
+        let r = HTTP.send(req, timeout: timeout)
+        let statusCode = r.status > 0 ? r.status : -1
+        let retryAfter = Self.parseRetryAfter(r.headers)
+        guard let resultData = r.data, (200..<300).contains(r.status),
               let obj = try? JSONSerialization.jsonObject(with: resultData) as? [String: Any] else {
             return LiveUsageResult(payload: nil, statusCode: statusCode, retryAfter: retryAfter)
         }
         return LiveUsageResult(payload: obj, statusCode: statusCode, retryAfter: retryAfter)
     }
 
-    /// Parses `Retry-After` (seconds) case-insensitively. Anthropic/Cloudflare
-    /// send integer seconds on 429; anything else yields nil (caller defaults).
-    static func parseRetryAfter(_ http: HTTPURLResponse) -> TimeInterval? {
-        for (key, value) in http.allHeaderFields {
-            guard let name = key as? String, name.lowercased() == "retry-after",
-                  let raw = value as? String,
-                  let secs = Double(raw.trimmingCharacters(in: .whitespacesAndNewlines)),
-                  secs >= 0 else { continue }
-            return secs
-        }
-        return nil
+    /// Parses `Retry-After` (seconds). Anthropic/Cloudflare send integer
+    /// seconds on 429; anything else yields nil (caller defaults).
+    static func parseRetryAfter(_ headers: [String: String]) -> TimeInterval? {
+        guard let raw = headers["retry-after"],
+              let secs = Double(raw.trimmingCharacters(in: .whitespacesAndNewlines)),
+              secs >= 0 else { return nil }
+        return secs
     }
 
     /// Clamp for throttle backoffs: honor the server's ask, floored at 60s

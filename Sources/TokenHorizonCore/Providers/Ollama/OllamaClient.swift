@@ -84,14 +84,9 @@ public final class OllamaClient {
     public static func fetchInstalled() -> [OllamaModel] {
         ensureCacheLoaded()
         guard let url = endpoint("/api/tags") else { return [] }
-        var data: Data?
-        let sema = DispatchSemaphore(value: 0)
-        URLSession.shared.dataTask(with: URLRequest(url: url, timeoutInterval: 4)) { d, resp, _ in
-            if let http = resp as? HTTPURLResponse, (200..<300).contains(http.statusCode) { data = d }
-            sema.signal()
-        }.resume()
-        if sema.wait(timeout: .now() + 4) == .timedOut { return [] }
-        guard let data, let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+        let r = HTTP.send(URLRequest(url: url, timeoutInterval: 4), timeout: 4)
+        guard (200..<300).contains(r.status), let data = r.data,
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let models = obj["models"] as? [[String: Any]] else { return [] }
         return models.compactMap { m in
             guard let name = m["name"] as? String else { return nil }
@@ -141,21 +136,13 @@ public final class OllamaClient {
                 ]
             ]
             req.httpBody = try? JSONSerialization.data(withJSONObject: payload)
-            var respData: Data?
-            let sema = DispatchSemaphore(value: 0)
-            URLSession.shared.dataTask(with: req) { d, resp, _ in
-                if let http = resp as? HTTPURLResponse, (200..<300).contains(http.statusCode) {
-                    respData = d
-                }
-                sema.signal()
-            }.resume()
-
-            if sema.wait(timeout: .now() + 25) == .timedOut {
+            let r = HTTP.send(req, timeout: 25)
+            guard (200..<300).contains(r.status), let respData = r.data else {
                 completion?(nil)
                 return
             }
 
-            guard let respData,
+            guard
                   let obj = try? JSONSerialization.jsonObject(with: respData) as? [String: Any],
                   let evalCount = (obj["eval_count"] as? NSNumber)?.intValue,
                   let evalDuration = (obj["eval_duration"] as? NSNumber)?.uint64Value,
@@ -192,14 +179,9 @@ public final class OllamaClient {
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.httpBody = try? JSONSerialization.data(withJSONObject: ["name": name])
-        var data: Data?
-        let sema = DispatchSemaphore(value: 0)
-        URLSession.shared.dataTask(with: req) { d, resp, _ in
-            if let http = resp as? HTTPURLResponse, (200..<300).contains(http.statusCode) { data = d }
-            sema.signal()
-        }.resume()
-        if sema.wait(timeout: .now() + 4) == .timedOut { return nil }
-        guard let data, let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+        let r = HTTP.send(req, timeout: 4)
+        guard (200..<300).contains(r.status), let data = r.data,
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
         return obj
     }
 }

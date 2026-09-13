@@ -14,6 +14,81 @@ import Foundation
 /// (ModelCatalog.canonicalIdentity consumes the rule tables below).
 public enum Canonical {
 
+    // MARK: - User overrides (config-dir canonical.json — THE central place)
+
+    /// User-editable canonicalization config, read from
+    /// <config>/canonical.json. CONFIG WINS over the hardcoded tables —
+    /// update spellings there, never here. Two flat maps:
+    ///   vendors: raw provider spelling → canonical vendor
+    ///            (read-time CASE fold AND pricing-table keys)
+    ///   models:  POST-transformation model name → canonical model id
+    ///            (applied after the mechanical folds, before grouping and
+    ///            pricing-key construction)
+    /// Reloaded live (mtime, 5s TTL); the SQL-side caches (spelling,
+    /// pricing) follow within their normal 30s refresh. Missing/invalid
+    /// file = no overrides (hardcoded tables only).
+    private struct Overrides: Codable {
+        var vendors: [String: String]?
+        var models: [String: String]?
+    }
+
+    private static let overrideLock = NSLock()
+    private static var overrides = Overrides()
+    private static var overridesCheckedAt = Date.distantPast
+    private static var overridesMtime = Date.distantPast
+    /// Test seam: alternate config location.
+    public static var overrideFilePath: String?
+
+    private static var overridePath: String {
+        overrideFilePath
+            ?? Platform.paths.configDirectory.appendingPathComponent("canonical.json").path
+    }
+
+    /// Force re-read (tests; production relies on the 5s TTL).
+    public static func reloadOverrides() {
+        overrideLock.lock()
+        overridesCheckedAt = .distantPast
+        overrideLock.unlock()
+    }
+
+    private static func currentOverrides() -> Overrides {
+        overrideLock.lock()
+        defer { overrideLock.unlock() }
+        guard Date().timeIntervalSince(overridesCheckedAt) > 5 else { return overrides }
+        overridesCheckedAt = Date()
+        let path = overridePath
+        guard let attrs = try? FileManager.default.attributesOfItem(atPath: path),
+              let mtime = attrs[.modificationDate] as? Date else {
+            overrides = Overrides()
+            seedOverrideFile(path)
+            return overrides
+        }
+        guard mtime != overridesMtime else { return overrides }
+        if let data = FileManager.default.contents(atPath: path),
+           let parsed = try? JSONDecoder().decode(Overrides.self, from: data) {
+            overrides = parsed
+            overridesMtime = mtime
+        } // invalid JSON: keep the last good overrides
+        return overrides
+    }
+
+    /// First run: materialize the effective config so the user has one
+    /// centralized, documented file to edit.
+    private static func seedOverrideFile(_ path: String) {
+        guard !FileManager.default.fileExists(atPath: path) else { return }
+        let seed: [String: Any] = [
+            "_comment": "Canonicalization overrides — this file WINS over built-in tables. vendors: raw provider spelling → canonical vendor (read-time fold + pricing keys). models: POST-transformation model name → canonical model id (pricing/catalog/display keys). Reloaded live (~5s); SQL caches follow within 30s.",
+            "vendors": vendorTable,
+            "models": [
+                "k3-256k": "kimi-k3",
+                "muse-spark-1.2-free": "muse-spark-1.3-contributor-free",
+            ],
+        ]
+        if let data = try? JSONSerialization.data(withJSONObject: seed, options: [.prettyPrinted, .sortedKeys]) {
+            FileManager.default.createFile(atPath: path, contents: data)
+        }
+    }
+
     // MARK: - Vendors
 
     /// Canonical choices follow the dominant existing id (limits adapters,
@@ -42,10 +117,21 @@ public enum Canonical {
         "antigravity": "agy",
     ]
 
+    /// The effective vendor fold map: built-in table MERGED with
+    /// canonical.json overrides (config wins). Consumed by the SQL CASE
+    /// builders so read-time folds see user edits live.
+    public static func effectiveVendorTable() -> [String: String] {
+        var t = vendorTable
+        for (k, v) in currentOverrides().vendors ?? [:] { t[k] = v }
+        return t
+    }
+
     /// Canonical vendor spelling for persistence and matching. Unknown vendors
     /// pass through lowercased/trimmed (custom gateways, e.g. pi providers).
+    /// User config (canonical.json) wins over the built-in table.
     public static func vendor(_ raw: String) -> String {
         let k = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if let hit = currentOverrides().vendors?[k] { return hit }
         return vendorTable[k] ?? k
     }
 
@@ -77,11 +163,21 @@ public enum Canonical {
         let family = ModelCatalog.canonicalIdentity(provider: v, model: m).family
         // The catalog's default branch namespaces unknowns as "vendor-model";
         // the vendor column already carries that — store the plain id.
-        if family == "\(v)-\(m)" { return m }
         // The Models tab folds free-tier spellings into the paid family
         // (x-preview-f-free → x-preview-f); usage must NOT — cost differs.
-        if m.hasSuffix("-free") && !family.hasSuffix("-free") { return family + "-free" }
-        return family.isEmpty ? m : family
+        var result: String
+        if family == "\(v)-\(m)" {
+            result = m
+        } else if m.hasSuffix("-free") && !family.hasSuffix("-free") {
+            result = family + "-free"
+        } else {
+            result = family.isEmpty ? m : family
+        }
+        // User config wins: POST-transformation name → canonical id
+        // (pricing/catalog/display keys all consume this result). Applied
+        // LAST so config keys are stable regardless of fold-rule edits.
+        if let hit = currentOverrides().models?[result] { result = hit }
+        return result
     }
 
     // MARK: - Family rules (consumed by ModelCatalog.canonicalIdentity)

@@ -95,23 +95,37 @@ open class OpenAICompatibleMeter: RequestMeter {
         func int(_ dict: [String: Any], _ key: String) -> Int {
             (dict[key] as? NSNumber)?.intValue ?? 0
         }
-        // Chat completions names; Responses API names fall back.
-        var b = TokenBreakdown(
-            input: int(usage, "prompt_tokens") + int(usage, "input_tokens"),
-            output: int(usage, "completion_tokens") + int(usage, "output_tokens"))
+        // Chat completions names vs Responses API names are ALTERNATE
+        // spellings of the same counters (Zen may send either) — take the
+        // max, never the sum, so a dual-spelled payload can't double-count.
+        let grossInput = max(int(usage, "prompt_tokens"), int(usage, "input_tokens"))
+        let grossOutput = max(int(usage, "completion_tokens"), int(usage, "output_tokens"))
+        var reasoning = 0
         if let details = usage["completion_tokens_details"] as? [String: Any] {
-            b.reasoning += int(details, "reasoning_tokens")
+            reasoning = max(reasoning, int(details, "reasoning_tokens"))
         }
         if let details = usage["output_tokens_details"] as? [String: Any] {
-            b.reasoning += int(details, "reasoning_tokens")
+            reasoning = max(reasoning, int(details, "reasoning_tokens"))
         }
+        var cacheRead = 0
         if let details = usage["prompt_tokens_details"] as? [String: Any] {
-            b.cacheRead += int(details, "cached_tokens")
+            cacheRead = max(cacheRead, int(details, "cached_tokens"))
         }
         if let details = usage["input_tokens_details"] as? [String: Any] {
-            b.cacheRead += int(details, "cached_tokens")
+            cacheRead = max(cacheRead, int(details, "cached_tokens"))
         }
-        return b
+        // TokenBreakdown stores NET figures (input excludes cache, output
+        // excludes reasoning — see Models.swift): reasoning_tokens and
+        // cached_tokens USUALLY arrive as subsets of the gross counters, so
+        // subtract to avoid double-counting. But some gateway payloads are
+        // already net (subset LARGER than gross, e.g. Zen tool-call steps) —
+        // never subtract past zero into a loss: when the "subset" exceeds
+        // gross, the counter was already net, keep it as-is.
+        return TokenBreakdown(
+            input: cacheRead <= grossInput ? grossInput - cacheRead : grossInput,
+            output: reasoning <= grossOutput ? grossOutput - reasoning : grossOutput,
+            reasoning: reasoning,
+            cacheRead: cacheRead)
     }
 
     /// OpenAI: `reasoning_effort: "low|medium|high"` (chat) or

@@ -37,7 +37,7 @@ public class LimitsEngine {
         lock.lock()
         lastFetch = .distantPast
         lock.unlock()
-        refreshIfDue(maxAge: .infinity)
+        refreshIfDue()
     }
 
     public func refreshIfDue(maxAge: TimeInterval = 60) {

@@ -45,12 +45,7 @@ open class GeminiMeter: RequestMeter {
 
     private func usageFromObject(_ obj: [String: Any]) -> TokenBreakdown? {
         guard let meta = obj["usageMetadata"] as? [String: Any] else { return nil }
-        func int(_ key: String) -> Int { (meta[key] as? NSNumber)?.intValue ?? 0 }
-        return TokenBreakdown(
-            input: int("promptTokenCount"),
-            output: int("candidatesTokenCount"),
-            reasoning: int("thoughtsTokenCount"),
-            cacheRead: int("cachedContentTokenCount"))
+        return GeminiUsage.breakdown(from: meta)
     }
 
     /// Gemini: `generationConfig.thinkingConfig.thinkingBudget` — 0 = off,
@@ -60,14 +55,6 @@ open class GeminiMeter: RequestMeter {
               let config = obj["generationConfig"] as? [String: Any],
               let thinking = config["thinkingConfig"] as? [String: Any] else { return nil }
         guard let budget = (thinking["thinkingBudget"] as? NSNumber)?.intValue else { return nil }
-        let level: String
-        switch budget {
-        case 0: level = "off"
-        case -1: level = "adaptive"
-        case ..<4_000: level = "low"
-        case ..<16_000: level = "medium"
-        default: level = "high"
-        }
-        return (level, "thinkingBudget:\(budget)")
+        return (ThinkingBands.level(forBudget: budget, zero: .off), "thinkingBudget:\(budget)")
     }
 }

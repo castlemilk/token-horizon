@@ -25,7 +25,7 @@
 		{
 			id: 'metering',
 			title: 'Measure requests',
-			body: 'Loopback relays observe per-request token usage. Bytes forward to the real API unchanged — only counts are kept.'
+			body: 'Loopback relays observe per-request token usage. Bytes forward to the real API unchanged; only counts are kept.'
 		},
 		{
 			id: 'fileReading',
@@ -147,13 +147,13 @@
 				</div>
 			{/if}
 			{#key step}
-				<div in:fly={{ x: reduce ? 0 : 18, duration: reduce ? 0 : 240 }}>
+				<div class="ob-step" in:fly={{ x: reduce ? 0 : 18, duration: reduce ? 0 : 240 }}>
 			{#if step === 0}
 				<div class="ob-kicker">Token Horizon</div>
 				<h2>See every token you spend.</h2>
 				<p class="dim">
 					Token Horizon measures AI usage through tiny loopback relays on
-					this machine — per request, per model, per tool. Nothing leaves
+					this machine: per request, per model, per tool. Nothing leaves
 					the machine to do it.
 				</p>
 				<div class="ob-brands" aria-hidden="true">
@@ -214,8 +214,8 @@
 				<div class="ob-kicker">Step 2 of 3 · Permissions</div>
 				<h2>What may it do?</h2>
 				<p class="dim">
-					Each scope can be revoked anytime. TLS interception stays off —
-					it is never requested here.
+					Each scope can be revoked anytime. TLS interception stays off
+					and is never requested here.
 				</p>
 				<div class="stack">
 					{#each SCOPES as s}
@@ -263,52 +263,52 @@
 				<div class="ob-kicker">Step 3 of 3 · Clients</div>
 				<h2>Route your tools through it.</h2>
 				<p class="dim">
-					Point each tool at its loopback meter — traffic forwards
+					Point each tool at its loopback meter. Traffic forwards
 					byte-identical upstream and is measured in flight.
 				</p>
 				<div class="stack">
-					<div class="ob-scope">
-						<div>
+					<div class="ob-scope ob-route">
+						<div class="ob-route-head">
 							<div class="ob-scope-title">pi → kimi meter</div>
-							<div class="dim ob-scope-body">
-								pi resolves kimi-coding from <span class="mono">models-store.json</span>,
-								bypassing <span class="mono">models.json</span>. Run once:
+							<div class="ob-scope-actions">
+								<button class="btn" onclick={() => copy(piPatch(9246), 'pi')}>
+									{copied === 'pi' ? 'Copied' : 'Copy'}
+								</button>
+								<button
+									class="btn"
+									title="Copy paste-ready instructions for a coding agent"
+									onclick={() => copy(agentBrief('kimi', 9246, '/coding'), 'pi-brief')}
+								>
+									{copied === 'pi-brief' ? 'Copied' : 'Agent brief'}
+								</button>
 							</div>
-							<code class="cmd">{piPatch(9246)}</code>
 						</div>
-						<div class="ob-scope-actions">
-							<button class="btn" onclick={() => copy(piPatch(9246), 'pi')}>
-								{copied === 'pi' ? 'Copied' : 'Copy'}
-							</button>
-							<button
-								class="btn"
-								title="Copy paste-ready instructions for a coding agent"
-								onclick={() => copy(agentBrief('kimi', 9246, '/coding'), 'pi-brief')}
-							>
-								{copied === 'pi-brief' ? 'Copied' : 'Agent brief'}
-							</button>
+						<div class="dim ob-scope-body">
+							pi resolves kimi-coding from <span class="mono">models-store.json</span>,
+							bypassing <span class="mono">models.json</span>. Run once:
 						</div>
+						<code class="cmd">{piPatch(9246)}</code>
 					</div>
-					<div class="ob-scope">
-						<div>
+					<div class="ob-scope ob-route">
+						<div class="ob-route-head">
 							<div class="ob-scope-title">opencode → zen meter</div>
-							<div class="dim ob-scope-body">
-								In <span class="mono">~/.config/opencode/opencode.json</span>, provider block:
+							<div class="ob-scope-actions">
+								<button class="btn" onclick={() => copy(opencodeSnippet(9245), 'oc')}>
+									{copied === 'oc' ? 'Copied' : 'Copy'}
+								</button>
+								<button
+									class="btn"
+									title="Copy paste-ready instructions for a coding agent"
+									onclick={() => copy(agentBrief('opencode', 9245, '/zen/v1'), 'oc-brief')}
+								>
+									{copied === 'oc-brief' ? 'Copied' : 'Agent brief'}
+								</button>
 							</div>
-							<code class="cmd">{opencodeSnippet(9245)}</code>
 						</div>
-						<div class="ob-scope-actions">
-							<button class="btn" onclick={() => copy(opencodeSnippet(9245), 'oc')}>
-								{copied === 'oc' ? 'Copied' : 'Copy'}
-							</button>
-							<button
-								class="btn"
-								title="Copy paste-ready instructions for a coding agent"
-								onclick={() => copy(agentBrief('opencode', 9245, '/zen/v1'), 'oc-brief')}
-							>
-								{copied === 'oc-brief' ? 'Copied' : 'Agent brief'}
-							</button>
+						<div class="dim ob-scope-body">
+							In <span class="mono">~/.config/opencode/opencode.json</span>, provider block:
 						</div>
+						<code class="cmd">{opencodeSnippet(9245)}</code>
 					</div>
 				</div>
 				<div class="ob-actions">
@@ -358,6 +358,13 @@
 		margin-top: auto;
 		padding-top: 20px;
 	}
+	/* step wrapper: flex column so margin-top:auto above pins to the card bottom */
+	.ob-step {
+		display: flex;
+		flex-direction: column;
+		flex: 1;
+		min-height: 0;
+	}
 	.ob-kicker {
 		font-size: 11px;
 		font-weight: 600;
@@ -403,15 +410,16 @@
 		flex-wrap: wrap;
 		justify-content: flex-end;
 	}
+	.ob-card .btn {
+		white-space: nowrap;
+	}
+	.ob-actions .btn {
+		min-width: 84px;
+		padding: 7px 16px;
+	}
 	.ob-card p {
 		font-size: 13px;
 		margin: 0 0 16px;
-	}
-	.ob-actions {
-		display: flex;
-		justify-content: flex-end;
-		gap: 10px;
-		margin-top: 20px;
 	}
 	.ob-primary {
 		background: var(--accent);
@@ -453,6 +461,20 @@
 		min-width: 0;
 		flex: 1;
 	}
+	/* step 3: column layout so the command bar spans the full card width */
+	.ob-route {
+		flex-direction: column;
+		align-items: stretch;
+	}
+	.ob-route > div:first-child {
+		flex: none;
+	}
+	.ob-route-head {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 12px;
+	}
 	.ob-reconnect {
 		display: flex;
 		gap: 12px;
@@ -476,12 +498,6 @@
 		font-size: 12px;
 		margin-top: 3px;
 	}
-	.ob-scope-actions {
-		display: flex;
-		align-items: center;
-		gap: 8px;
-		flex: none;
-	}
 	.ob-state {
 		font-size: 12px;
 	}
@@ -500,15 +516,20 @@
 	}
 	.cmd {
 		display: block;
+		box-sizing: border-box;
+		width: 100%;
 		font-family: var(--font-mono);
 		font-size: 11px;
+		line-height: 1.5;
+		color: var(--text-2);
 		background: var(--bg-raised);
 		border: 1px solid var(--line);
 		border-radius: 8px;
-		padding: 7px 9px;
+		box-shadow: inset 0 1px 2px rgb(0 0 0 / 0.06);
+		padding: 8px 10px;
 		margin-top: 8px;
 		overflow-x: auto;
 		white-space: nowrap;
-		max-width: 100%;
+		user-select: all;
 	}
 </style>

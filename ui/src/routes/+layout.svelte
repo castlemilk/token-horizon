@@ -2,52 +2,39 @@
 	import '../app.css';
 	import { onMount } from 'svelte';
 	import { page } from '$app/stores';
-	import { api, setApiBase, discoverApiBase, type Health, type RuntimeInfo } from '$lib/api';
+	import { api, type Health, type RuntimeInfo } from '$lib/api';
+	import { connection } from '$lib/connection.svelte';
 	import { settings } from '$lib/settings.svelte';
 	import { scope } from '$lib/scope.svelte';
 	import ScopeBanner from '$lib/components/ScopeBanner.svelte';
 	import OSIcon from '$lib/components/OSIcon.svelte';
 	import Onboarding from '$lib/components/Onboarding.svelte';
-	import { Coins, Trophy, Cpu, Gauge, Settings } from 'lucide-svelte';
+	import { Coins, Trophy, Cpu, Gauge, Settings, PlugZap } from 'lucide-svelte';
 
 	let { children } = $props();
 
-	let health = $state<Health | null>(null);
-	let down = $state(false);
+	// Single shared connection: auto-reconnects with backoff + port
+	// rediscovery; every page reads connection.status instead of failing alone.
+	const health = $derived<Health | null>(connection.health);
+	const down = $derived(connection.status === 'offline');
+	const connecting = $derived(connection.status === 'connecting');
 	let runtimes = $state<RuntimeInfo[]>([]);
 
 	const mountTime = Date.now();
 
 	onMount(() => {
 		const stopScope = scope.start();
-		const check = async () => {
-			try {
-				health = await api.health();
-				down = false;
-			} catch {
-				// Default base failed — maybe the daemon port-scanned. Discover
-				// it ourselves instead of asking the user for a URL.
-				const found = await discoverApiBase();
-				if (found) {
-					setApiBase(found);
-					try {
-						health = await api.health();
-						down = false;
-					} catch {
-						down = true;
-					}
-				} else {
-					down = true;
-				}
-			}
+		connection.start();
+		const checkRuntimes = async () => {
+			if (!connection.online) return;
 			try {
 				runtimes = await api.runtimes();
 			} catch {
 				/* tab visibility just stays off */
 			}
 		};
-		void check();
-		const id = setInterval(check, 5000);
+		void checkRuntimes();
+		const id = setInterval(checkRuntimes, 5000);
 		return () => {
 			clearInterval(id);
 			stopScope();
@@ -57,7 +44,7 @@
 	// Splash dismissal: once mounted AND the first health check has resolved
 	// (up or down), fade + remove. Min display time avoids a flash.
 	$effect(() => {
-		if (health === null && !down) return; // first check still in flight
+		if (connecting) return; // first check still in flight
 		const splash = document.getElementById('th-splash');
 		if (!splash) return;
 		const wait = Math.max(0, 450 - (Date.now() - mountTime));
@@ -119,13 +106,16 @@
 	<Onboarding />
 	<footer class="dock-wrap">
 		<div class="dockbar">
-			<div class="status" title="Local listener">
+			<div class="status" title={connection.lastError ? `Local listener — ${connection.lastError}` : 'Local listener'}>
 				<span class="dot" class:up={!down && health} class:down={down}></span>
 				{#if health}
 					<OSIcon platform={health.platform} size={13} />
 					<span class="dock-text">Listener</span>
 				{:else if down}
-					<span class="dock-text">Listener offline</span>
+					<span class="dock-text" title={connection.lastError ?? ''}>Listener offline · retrying</span>
+					<button class="dock-retry" onclick={() => connection.retry()} title="Retry now" aria-label="Retry connection">
+						<PlugZap size={13} strokeWidth={2} />
+					</button>
 				{:else}
 					<span class="dock-text">Connecting…</span>
 				{/if}

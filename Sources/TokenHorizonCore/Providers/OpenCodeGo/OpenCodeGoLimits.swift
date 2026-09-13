@@ -9,6 +9,12 @@ public final class OpenCodeGoLimits: VendorLimitsAdapter {
 
     public override var meterTarget: URL? { URL(string: "https://opencode.ai") }
 
+    public override func makeMeter(listenPort: UInt16, target: URL?, store: UsageStoring?) -> RequestMeter? {
+        guard let base = target ?? meterTarget else { return nil }
+        return OpenCodeGoMeter(vendor: provider, listenPort: listenPort, targetBase: base,
+                               store: store, sourceKind: .external)
+    }
+
     public override var auth: VendorAuth {
         VendorAuth(sources: [.opencodeKey("opencode-go")])
     }

@@ -299,8 +299,10 @@ function formatRelativeCountdown(epochSec) {
 
 async function usageFallback() {
   if (!existsSync(DB)) throw new Error("opencode.db not found");
-  const midnightMs =
-    new Date(new Date().setHours(0, 0, 0, 0)).getTime();
+  // UTC midnight — the API contract is UTC end-to-end; local rendering
+  // happens in human-facing frontends only.
+  const n = new Date();
+  const midnightMs = Date.UTC(n.getUTCFullYear(), n.getUTCMonth(), n.getUTCDate());
   const q = async (sql) =>
     (await sh("sqlite3", [DB, sql])).split("|").map(Number);
   const [allTok, allCost] = await q(

@@ -27,6 +27,7 @@ public final class CoreAPIRouter {
         // via machine_id + /analytics/sync).
         if let store = usageStore {
             FilePoller.shared.store = store
+            AttributionScheduler.shared.store = store
             PlanLimitsEngine.shared.snapshotStore = store
             KimiLimitsEngine.shared.snapshotStore = store
         }
@@ -233,6 +234,9 @@ public final class CoreAPIRouter {
             }
             do {
                 try store.insert(events)
+                // MITM-captured events get the same reactive attribution
+                // ladder as point-metered ones.
+                AttributionScheduler.shared.note(events: events)
                 return Self.json(["inserted": events.count, "total": (try? store.count()) ?? -1])
             } catch {
                 return Self.json(["error": "insert failed: \(error)"], status: 500)
@@ -435,9 +439,46 @@ public final class CoreAPIRouter {
             return Self.json(["events": Self.encode(page.events), "cursor": page.lastSequence])
 
         case ("GET", "/summary"):
-            // Per-vendor rollups for the Tokens dashboard — same file-engine
-            // world as /stats and /trends (metered per-request data lives
-            // under /analytics). Vendor spellings canonicalized at query time.
+            // Per-vendor rollups for the Tokens dashboard. DB-first: the
+            // event store holds metered + consolidated + ledger rows; the
+            // file engine is the fallback for hosts without a wired store.
+            if let store = usageStore {
+                let rollups = (try? store.summarize(from: .distantPast, to: Date(),
+                                                    filter: UsageFilter())) ?? []
+                let providers: [[String: Any]] = rollups
+                    .filter { $0.tokens.total > 0 }
+                    .map { p in
+                        let models: [[String: Any]] = p.models
+                            .sorted { $0.tokens.total > $1.tokens.total }
+                            .map { m in
+                                [
+                                    "model": m.model,
+                                    "vendor": p.vendor,
+                                    "tokens": [
+                                        "input": m.tokens.input, "output": m.tokens.output,
+                                        "reasoning": m.tokens.reasoning,
+                                        "cacheRead": m.tokens.cacheRead, "cacheWrite": m.tokens.cacheWrite,
+                                        "total": m.tokens.total,
+                                    ],
+                                    "requests": m.requests,
+                                    "cost": max(m.cost, 0),
+                                ]
+                            }
+                        return [
+                            "vendor": p.vendor,
+                            "tokens": [
+                                "input": p.tokens.input, "output": p.tokens.output,
+                                "reasoning": p.tokens.reasoning,
+                                "cacheRead": p.tokens.cacheRead, "cacheWrite": p.tokens.cacheWrite,
+                                "total": p.tokens.total,
+                            ],
+                            "requests": p.requests,
+                            "cost": max(p.cost, 0),
+                            "models": models,
+                        ]
+                    }
+                return Self.json(["providers": providers])
+            }
             let snapshot = engine.snapshot()
             let providers: [[String: Any]] = snapshot.perTool
                 .filter { $0.tokensAllTime > 0 || $0.tokensToday > 0 }
@@ -477,33 +518,14 @@ public final class CoreAPIRouter {
             return Self.json(["providers": providers])
 
         case ("GET", "/stats"):
-            let snapshot = engine.snapshot()
-            var usage = Self.encode(snapshot) as? [String: Any] ?? [:]
+            // DB-first: the event store holds metered + consolidated + ledger
+            // rows (complete, incl. today); the file engine is the fallback
+            // for hosts without a wired store.
+            var usage: [String: Any]
             if let store = usageStore {
-                // Reconcile "today": the event store includes metered +
-                // consolidated sources the file engine doesn't parse (pi,
-                // meters, runtime ledger); the engine covers unconsented file
-                // history. Report the larger of the two — never less data.
-                let todayStart = Calendar.current.startOfDay(for: Date())
-                let rows = (try? store.buckets(from: todayStart, to: Date(),
-                                               bucketSeconds: UsageEngine.bucketSeconds,
-                                               filter: UsageFilter())) ?? []
-                var tokens = 0
-                var cost = 0.0
-                var bd = TokenBreakdown()
-                for r in rows {
-                    let t = r.tokens
-                    tokens += t.input + t.output + t.reasoning + t.cacheRead + t.cacheWrite
-                    cost += r.cost
-                    bd.input += t.input; bd.output += t.output
-                    bd.reasoning += t.reasoning
-                    bd.cacheRead += t.cacheRead; bd.cacheWrite += t.cacheWrite
-                }
-                if tokens > snapshot.tokensToday {
-                    usage["tokensToday"] = tokens
-                    usage["costToday"] = cost
-                    usage["breakdownToday"] = Self.encode(bd)
-                }
+                usage = Self.encode(Self.storeSnapshot(store: store)) as? [String: Any] ?? [:]
+            } else {
+                usage = Self.encode(engine.snapshot()) as? [String: Any] ?? [:]
             }
             var system: [String: Any] = [:]
             if let stats = Platform.systemStats {
@@ -536,7 +558,13 @@ public final class CoreAPIRouter {
             for pair in query.split(separator: "&") where pair.hasPrefix("days=") {
                 if let n = Int(pair.dropFirst(5)) { days = min(max(n, 7), 370) }
             }
-            let result = engine.history(days: days)
+            let result: (streak: Int, points: [HistoryPoint])
+            if let store = usageStore {
+                let h = Self.storeHistory(days: days, store: store)
+                result = (h.streak, h.points)
+            } else {
+                result = engine.history(days: days)
+            }
             return Self.json(["days": days, "streak": result.streak,
                               "points": Self.encode(result.points)])
 
@@ -565,6 +593,14 @@ public final class CoreAPIRouter {
         case ("GET", "/limits"):
             PlanLimitsEngine.shared.refreshIfDue()
             KimiLimitsEngine.shared.refreshIfDue()
+            return Self.json(["limits": Self.encode(PlanLimitsEngine.shared.cachedLimits() + KimiLimitsEngine.shared.cachedLimits())])
+
+        case ("POST", "/limits/refresh"):
+            // Manual refresh (UI refresh button): force a re-fetch on the
+            // utility queue and return the current cache immediately — the UI
+            // fast-polls GET /limits until the fresh rows land.
+            PlanLimitsEngine.shared.refreshNow()
+            KimiLimitsEngine.shared.refreshNow()
             return Self.json(["limits": Self.encode(PlanLimitsEngine.shared.cachedLimits() + KimiLimitsEngine.shared.cachedLimits())])
 
         case ("GET", "/limits/history"):
@@ -613,7 +649,8 @@ public final class CoreAPIRouter {
                               "limits": Self.encode(limits),
                               "file_poller": ["last_poll": lastPoll,
                                               "locations": FilePoller.shared.locations,
-                                              "last_report": files]])
+                                              "last_report": files,
+                                              "attribution_pending": AttributionScheduler.shared.pendingCount]])
 
         case ("GET", "/runtimes"):
             let snaps = InferenceMonitor.shared.current()
@@ -763,13 +800,127 @@ public final class CoreAPIRouter {
     }
 
     /// Store-backed /trends: one fine-grained bucket scan binned into the
+    /// /history over the store: one HistoryPoint per local-midnight day plus
+    /// the consecutive-day streak (today counts when it has traffic, else the
+    /// streak walks back from yesterday — same semantics as the engine).
+    static func storeHistory(days: Int, store: UsageStoring, now: Date = Date()) -> (points: [HistoryPoint], streak: Int) {
+        let todayStart = DayBoundary.start(ofTs: Int(now.timeIntervalSince1970))
+        let from = Date(timeIntervalSince1970: TimeInterval(todayStart - (days - 1) * 86_400))
+        let rows = (try? store.buckets(from: from, to: now, bucketSeconds: 3_600,
+                                       filter: UsageFilter())) ?? []
+        var byDay: [Int: HistoryPoint] = [:]
+        for row in rows {
+            // Hourly buckets are epoch-aligned; day boundaries are UTC
+            // midnight (DayBoundary) — local rendering is the frontend's job.
+            let dayStart = DayBoundary.start(ofTs: row.start)
+            var point = byDay[dayStart] ?? HistoryPoint(day: dayStart, tokens: 0, cost: 0, byTool: [:])
+            let t = row.tokens
+            let total = t.input + t.output + t.reasoning + t.cacheRead + t.cacheWrite
+            point.tokens += total
+            point.cost += row.cost
+            point.byTool[row.vendor, default: 0] += total
+            point.breakdown.add(t)
+            byDay[dayStart] = point
+        }
+        var points: [HistoryPoint] = []
+        for offset in (0..<days).reversed() {
+            let start = todayStart - offset * 86_400
+            points.append(byDay[start] ?? HistoryPoint(day: start, tokens: 0, cost: 0, byTool: [:]))
+        }
+        var streak = 0
+        var cursor = todayStart
+        if (byDay[cursor]?.tokens ?? 0) == 0 { cursor -= 86_400 }
+        while (byDay[cursor]?.tokens ?? 0) > 0 {
+            streak += 1
+            cursor -= 86_400
+        }
+        return (points, streak)
+    }
+
+    /// /stats over the store: the UsageSnapshot the macOS app assembles from
+    /// files, computed here from metered/store rows instead — same DTO, so
+    /// UI/MCP consumers see an identical shape. Per-vendor today/all-time
+    /// splits, per-model rollups, recent sessions, and current quota windows
+    /// (latest LimitSnapshot per provider+label+account, which also carries
+    /// wire-sourced codex windows the file engine used to own).
+    static func storeSnapshot(store: UsageStoring, now: Date = Date()) -> UsageSnapshot {
+        var snap = UsageSnapshot()
+        snap.updatedAt = now
+        let todayStart = DayBoundary.start(of: now)   // UTC day; frontend renders local
+        let all = (try? store.aggregate(from: .distantPast, to: now, groupBy: .vendor,
+                                        filter: UsageFilter())) ?? []
+        let today = (try? store.aggregate(from: todayStart, to: now, groupBy: .vendor,
+                                          filter: UsageFilter())) ?? []
+        let todayByVendor = Dictionary(uniqueKeysWithValues: today.map { ($0.key, $0) })
+        snap.perTool = all.map { v in
+            let t = todayByVendor[v.key]
+            return ToolUsage(tool: v.key,
+                             tokensToday: t?.tokens.total ?? 0, tokensAllTime: v.tokens.total,
+                             costToday: t?.cost ?? 0, costAllTime: v.cost,
+                             cacheReadAll: v.tokens.cacheRead, cacheWriteAll: v.tokens.cacheWrite,
+                             breakdownToday: t?.tokens ?? TokenBreakdown(), breakdownAll: v.tokens)
+        }
+        for v in snap.perTool {
+            snap.tokensToday += v.tokensToday
+            snap.tokensAllTime += v.tokensAllTime
+            snap.costToday += v.costToday
+            snap.costAllTime += v.costAllTime
+            snap.breakdownToday.add(v.breakdownToday)
+            snap.breakdownAll.add(v.breakdownAll)
+        }
+        let modelsAll = (try? store.aggregate(from: .distantPast, to: now, groupBy: .model,
+                                              filter: UsageFilter())) ?? []
+        let modelsToday = (try? store.aggregate(from: todayStart, to: now, groupBy: .model,
+                                                filter: UsageFilter())) ?? []
+        let todayByModel = Dictionary(uniqueKeysWithValues: modelsToday.map { ($0.key, $0) })
+        snap.models = modelsAll.map { m in
+            let split = m.key.split(separator: "/", maxSplits: 1)
+            let vendor = split.first.map(String.init) ?? ""
+            let model = split.count > 1 ? String(split[1]) : m.key
+            let t = todayByModel[m.key]
+            return ModelUsage(provider: vendor, model: model,
+                              tokensAll: m.tokens.total, tokensToday: t?.tokens.total ?? 0,
+                              cost: m.cost, messages: m.requests,
+                              free: m.cost < 0.0001 && (m.costEquivalent ?? 0) < 0.0001,
+                              cacheReadAll: m.tokens.cacheRead,
+                              estCost: m.costEquivalent ?? 0,
+                              breakdown: m.tokens)
+        }
+        let sessions = (try? store.aggregate(from: .distantPast, to: now, groupBy: .session,
+                                             filter: UsageFilter())) ?? []
+        snap.recentSessions = sessions
+            .filter { !$0.key.isEmpty }
+            .sorted { ($0.lastEvent ?? .distantPast) > ($1.lastEvent ?? .distantPast) }
+            .prefix(15)
+            .map { s in
+                SessionSummary(id: s.key, title: s.key, cost: s.cost,
+                               tokens: s.tokens.total, directory: "",
+                               created: s.firstEvent ?? now)
+            }
+        // Current quota windows: latest observation per provider+label+account.
+        let limitRows = (try? store.limitHistory(
+            from: now.addingTimeInterval(-30 * 86_400), to: now, provider: nil)) ?? []
+        var latest: [String: LimitSnapshot] = [:]
+        for row in limitRows {
+            let key = "\(row.provider)|\(row.accountID)|\(row.label)"
+            if let existing = latest[key], existing.recordedAt >= row.recordedAt { continue }
+            latest[key] = row
+        }
+        snap.limits = latest.values
+            .sorted { $0.provider == $1.provider ? $0.label < $1.label : $0.provider < $1.provider }
+            .map { ProviderLimit(provider: $0.provider, label: $0.label,
+                                 usedPercent: $0.usedPercent, resetsAt: $0.resetsAt,
+                                 detail: $0.detail, accountID: $0.accountID) }
+        snap.sources = snap.perTool.map(\.tool)
+        return snap
+    }
+
     /// window's point ranges. Range math mirrors UsageEngine.trendHistory so
     /// both paths agree on bucket boundaries (local-midnight day alignment).
     static func storeTrends(window: TrendWindow, store: UsageStoring, now: Date = Date()) -> [HistoryPoint] {
         let spec = window.spec
         let fine = UsageEngine.bucketSeconds
-        let cal = Calendar.current
-        let todayStart = Int(cal.startOfDay(for: now).timeIntervalSince1970)
+        let todayStart = DayBoundary.start(ofTs: Int(now.timeIntervalSince1970))  // UTC
         let nowBucket = Int(now.timeIntervalSince1970) / fine * fine
 
         var ranges: [(start: Int, end: Int)] = []

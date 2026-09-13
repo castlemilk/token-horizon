@@ -116,15 +116,7 @@ public final class UsageEngine {
         ("gemini", ["~/.gemini/transcripts", "~/.gemini/sessions", "~/.gemini/projects"]),
         ("agy", ["~/.gemini/antigravity-cli/brain", "~/.gemini/antigravity-cli/conversations"]),
     ]
-    public static var kimiDirs: [String] {
-        let env = ProcessInfo.processInfo.environment
-        var dirs: [String] = []
-        if let home = env["KIMI_HOME"] { dirs.append("\(home)/sessions") }
-        else { dirs.append("~/.kimi/sessions") }
-        if let codeHome = env["KIMI_CODE_HOME"] { dirs.append("\(codeHome)/sessions") }
-        else { dirs.append("~/.kimi-code/sessions") }
-        return dirs
-    }
+    public static var kimiDirs: [String] { KimiPaths.sessionDirs() }
 
     private let isoFormatter: ISO8601DateFormatter = {
         let f = ISO8601DateFormatter()
@@ -144,11 +136,10 @@ public final class UsageEngine {
         _ = collectLocked()
         let merged = mergedBucketsLocked()
 
-        let cal = Calendar.current
         var points: [HistoryPoint] = []
+        let todayStart = todayBucket()   // UTC-midnight day boundaries
         for offset in (0..<days).reversed() {
-            guard let date = cal.date(byAdding: .day, value: -offset, to: Date()) else { continue }
-            let start = Int(cal.startOfDay(for: date).timeIntervalSince1970)
+            let start = todayStart - offset * 86_400
             points.append(aggregate(merged, from: start, to: start + 86_400))
         }
 
@@ -571,7 +562,7 @@ public final class UsageEngine {
     }
 
     private func todayBucket() -> Int {
-        Int(Calendar.current.startOfDay(for: Date()).timeIntervalSince1970)
+        DayBoundary.start(ofTs: Int(Date().timeIntervalSince1970))   // UTC midnight
     }
 
     private func bucketFromTimestamp(_ ts: String?) -> Int {
@@ -609,7 +600,6 @@ public final class UsageEngine {
         var out = SourceResult()
         var cacheRead = 0
         var perModel: [String: ModelAccum] = [:]
-        let fm = FileManager.default
         let today = todayBucket()
         var seen = Set<String>()
 
@@ -619,18 +609,11 @@ public final class UsageEngine {
                 let full = "\(root)/\(item)"
                 let key = "\(prefix)::\(full)"
                 seen.insert(key)
-                guard let attrs = try? fm.attributesOfItem(atPath: full),
-                      let size = attrs[.size] as? UInt64 else { continue }
                 var st = state[key] ?? AdditiveFileState()
-                if size < st.offset { st = AdditiveFileState() }
-                guard size > st.offset, let fh = FileHandle(forReadingAtPath: full) else { continue }
-                fh.seek(toFileOffset: st.offset)
-                let chunk = fh.readDataToEndOfFile()
-                try? fh.close()
-                guard let lastNewline = chunk.lastIndex(of: UInt8(ascii: "\n")) else { continue }
-                let consumable = chunk[chunk.startIndex...lastNewline]
-                for line in consumable.split(separator: UInt8(ascii: "\n")) where !line.isEmpty {
-                    if let p = parseAdditiveLine(Data(line)) {
+                var off = st.offset
+                IncrementalJSONL.readNewLines(path: full, offset: &off,
+                                              onTruncate: { st = AdditiveFileState() }) { line, _ in
+                    if let p = parseAdditiveLine(line) {
                         st.allTokens += p.tokens
                         st.allCost += p.cost
                         st.cacheRead += p.breakdown.cacheRead
@@ -650,7 +633,7 @@ public final class UsageEngine {
                         st.models[modelName] = accum
                     }
                 }
-                st.offset = st.offset + UInt64(consumable.count)
+                st.offset = off
                 state[key] = st
             }
         }
@@ -684,23 +667,15 @@ public final class UsageEngine {
     }
 
     private func scanKimi(dirs: [String]) {
-        let fm = FileManager.default
         for dir in dirs {
             let root = resolvePath(dir)
             for item in cachedFiles(in: root, suffix: "wire.jsonl") {
                 let full = "\(root)/\(item)"
-                guard let attrs = try? fm.attributesOfItem(atPath: full),
-                      let size = (attrs[.size] as? NSNumber)?.uint64Value else { continue }
                 var st = kimiFiles[full] ?? AdditiveFileState()
-                if size < st.offset { st = AdditiveFileState() }
-                guard size > st.offset, let fh = FileHandle(forReadingAtPath: full) else { continue }
-                fh.seek(toFileOffset: st.offset)
-                let chunk = fh.readDataToEndOfFile()
-                try? fh.close()
-                guard let lastNewline = chunk.lastIndex(of: UInt8(ascii: "\n")) else { continue }
-                let consumable = chunk[chunk.startIndex...lastNewline]
-                for line in consumable.split(separator: UInt8(ascii: "\n")) where !line.isEmpty {
-                    if let p = parseKimiLine(Data(line)) {
+                var off = st.offset
+                IncrementalJSONL.readNewLines(path: full, offset: &off,
+                                              onTruncate: { st = AdditiveFileState() }) { line, _ in
+                    if let p = parseKimiLine(line) {
                         st.allTokens += p.breakdown.total
                         st.cacheRead += p.breakdown.cacheRead
                         st.breakdown.add(p.breakdown)
@@ -710,7 +685,7 @@ public final class UsageEngine {
                         st.buckets[p.hour] = entry
                     }
                 }
-                st.offset = st.offset + UInt64(consumable.count)
+                st.offset = off
                 kimiFiles[full] = st
             }
         }
@@ -718,7 +693,6 @@ public final class UsageEngine {
 
     private func scanCodex(dirs: [String]) -> (today: Int, all: Int) {
         var state = codexFiles
-        let fm = FileManager.default
         let today = todayBucket()
         var seen = Set<String>()
 
@@ -727,18 +701,11 @@ public final class UsageEngine {
             for item in cachedFiles(in: root) {
                 let full = "\(root)/\(item)"
                 seen.insert(full)
-                guard let attrs = try? fm.attributesOfItem(atPath: full),
-                      let size = attrs[.size] as? UInt64 else { continue }
                 var st = state[full] ?? CodexFileState()
-                if size < st.offset { st = CodexFileState() }
-                guard size > st.offset, let fh = FileHandle(forReadingAtPath: full) else { continue }
-                fh.seek(toFileOffset: st.offset)
-                let chunk = fh.readDataToEndOfFile()
-                try? fh.close()
-                guard let lastNewline = chunk.lastIndex(of: UInt8(ascii: "\n")) else { continue }
-                let consumable = chunk[chunk.startIndex...lastNewline]
-                for line in consumable.split(separator: UInt8(ascii: "\n")) where !line.isEmpty {
-                    if let parsed = parseCodexLine(Data(line)) {
+                var off = st.offset
+                IncrementalJSONL.readNewLines(path: full, offset: &off,
+                                              onTruncate: { st = CodexFileState() }) { line, _ in
+                    if let parsed = parseCodexLine(line) {
                         let delta = codexAccept(parsed, state: &st)
                         if let rate = parsed.rate {
                             st.rate = rate
@@ -759,7 +726,7 @@ public final class UsageEngine {
                         }
                     }
                 }
-                st.offset = st.offset + UInt64(consumable.count)
+                st.offset = off
                 state[full] = st
             }
         }
@@ -826,13 +793,11 @@ public final class UsageEngine {
         let hour = bucketFromTimestamp(obj["timestamp"] as? String)
 
         var rate: CodexRate?
-        if let rl = payload["rate_limits"] as? [String: Any],
-           let primary = rl["primary"] as? [String: Any],
-           let used = primary["used_percent"] as? Double {
+        if let primary = CodexRateLimits.parse(payload)["primary"] {
             rate = CodexRate(
-                usedPercent: used,
-                windowMinutes: primary["window_minutes"] as? Int ?? 0,
-                resetsAt: primary["resets_at"] as? Int ?? 0)
+                usedPercent: primary.usedPercent,
+                windowMinutes: primary.windowMinutes,
+                resetsAt: Int(primary.resetsAt))
         }
         return CodexParsed(totals: totals, last: last, hour: hour, rate: rate)
     }
@@ -916,48 +881,57 @@ public final class UsageEngine {
         return (tokens, cost, hour, model, breakdown)
     }
 
-    private func intField(_ usage: [String: Any], _ key: String) -> Int {
-        if let n = usage[key] as? Int, n > 0 { return n }
-        if let n = usage[key] as? NSNumber, n.intValue > 0 { return n.intValue }
-        return 0
-    }
 
     /// Anthropic convention: input/output/cache_read/cache_creation.
+    /// input already excludes cache (net). thinking_tokens are a SUBSET of
+    /// output — store net output + separate reasoning (see AnthropicMeter).
     private func anthropicBreakdown(_ usage: [String: Any]) -> TokenBreakdown {
-        TokenBreakdown(
-            input: intField(usage, "input_tokens"),
-            output: intField(usage, "output_tokens"),
-            cacheRead: intField(usage, "cache_read_input_tokens"),
-            cacheWrite: intField(usage, "cache_creation_input_tokens"))
+        var reasoning = 0
+        if let details = usage["output_tokens_details"] as? [String: Any] {
+            reasoning = JSONFields.int(details, "thinking_tokens")
+        }
+        let grossOutput = JSONFields.int(usage, "output_tokens")
+        return TokenBreakdown(
+            input: JSONFields.int(usage, "input_tokens"),
+            output: reasoning <= grossOutput ? grossOutput - reasoning : grossOutput,
+            reasoning: reasoning,
+            cacheRead: JSONFields.int(usage, "cache_read_input_tokens"),
+            cacheWrite: JSONFields.int(usage, "cache_creation_input_tokens"))
     }
 
     /// OpenAI convention: prompt/completion + details.reasoning/cached.
+    /// NET semantics (see Models.swift): subsets are subtracted so total ==
+    /// provider truth. Alternate spellings take the max, never the sum.
     private func openAIBreakdown(_ usage: [String: Any]) -> TokenBreakdown {
-        var b = TokenBreakdown(
-            input: intField(usage, "prompt_tokens"),
-            output: intField(usage, "completion_tokens"))
+        let grossInput = max(JSONFields.int(usage, "prompt_tokens"),
+                             JSONFields.int(usage, "input_tokens"))
+        let grossOutput = max(JSONFields.int(usage, "completion_tokens"),
+                              JSONFields.int(usage, "output_tokens"))
+        var reasoning = 0
+        var cacheRead = 0
         if let details = usage["completion_tokens_details"] as? [String: Any] {
-            b.reasoning += intField(details, "reasoning_tokens")
+            reasoning = max(reasoning, JSONFields.int(details, "reasoning_tokens"))
+        }
+        if let details = usage["output_tokens_details"] as? [String: Any] {
+            reasoning = max(reasoning, JSONFields.int(details, "reasoning_tokens"))
         }
         if let details = usage["prompt_tokens_details"] as? [String: Any] {
-            b.cacheRead += intField(details, "cached_tokens")
+            cacheRead = max(cacheRead, JSONFields.int(details, "cached_tokens"))
         }
-        return b
+        if let details = usage["input_tokens_details"] as? [String: Any] {
+            cacheRead = max(cacheRead, JSONFields.int(details, "cached_tokens"))
+        }
+        return TokenBreakdown(
+            input: cacheRead <= grossInput ? grossInput - cacheRead : grossInput,
+            output: reasoning <= grossOutput ? grossOutput - reasoning : grossOutput,
+            reasoning: reasoning,
+            cacheRead: cacheRead)
     }
 
-    /// Gemini convention: prompt/candidates/thoughts/cached counts; falls back
-    /// to the bare total (attributed as input) when components are absent.
+    /// Gemini convention: prompt/candidates/thoughts/cached counts (see
+    /// GeminiUsage — shared with the GeminiMeter).
     private func geminiBreakdown(_ usage: [String: Any]) -> TokenBreakdown {
-        var b = TokenBreakdown(
-            input: intField(usage, "prompt_token_count") + intField(usage, "promptTokenCount"),
-            output: intField(usage, "candidates_token_count") + intField(usage, "candidatesTokenCount"),
-            reasoning: intField(usage, "thoughts_token_count") + intField(usage, "thoughtsTokenCount"),
-            cacheRead: intField(usage, "cached_content_token_count") + intField(usage, "cachedContentTokenCount"))
-        if b.total == 0 {
-            let total = intField(usage, "total_token_count") + intField(usage, "totalTokenCount")
-            if total > 0 { b.input += total }
-        }
-        return b
+        GeminiUsage.breakdown(from: usage)
     }
 
     private struct OCSums {
@@ -971,16 +945,10 @@ public final class UsageEngine {
         var sessions: [SessionSummary] = []
     }
 
-    private func localMidnightUTC() -> Int {
-        var t = time(nil)
-        var local = tm()
-        localtime_r(&t, &local)
-        let hourOffset = local.tm_hour * 3600
-        let minOffset = local.tm_min * 60
-        var midnightLocal: time_t = t - time_t(hourOffset) - time_t(minOffset) - time_t(local.tm_sec)
-        var gmt = tm()
-        gmtime_r(&midnightLocal, &gmt)
-        return midnightLocal - gmt.tm_gmtoff
+    /// UTC midnight as epoch seconds — opencode's sqlite "today" filter.
+    /// Everything served is UTC; the frontend infers local (see DayBoundary).
+    private func utcMidnight() -> Int {
+        DayBoundary.start(ofTs: Int(Date().timeIntervalSince1970))
     }
 
     private func opencodeUsage() -> OCSums? {
@@ -988,7 +956,7 @@ public final class UsageEngine {
         var out = OCSums()
 
         let tokenExpr = "COALESCE(SUM(tokens_input+tokens_output+tokens_reasoning+tokens_cache_read+tokens_cache_write),0)"
-        let midnightMs = localMidnightUTC() * 1000
+        let midnightMs = utcMidnight() * 1000
 
         var sql = "SELECT \(tokenExpr), COALESCE(SUM(cost),0), COALESCE(SUM(tokens_cache_read),0) FROM session"
         if let sums = query3(db, sql) {
@@ -1044,7 +1012,7 @@ public final class UsageEngine {
 
     private func modelUsage() -> [ModelUsage] {
         guard let db = openDB() else { return [] }
-        let midnightMs = localMidnightUTC() * 1000
+        let midnightMs = utcMidnight() * 1000
         let tokensExpr = "COALESCE(json_extract(data,'$.tokens.total'), COALESCE(json_extract(data,'$.tokens.input'),0) + COALESCE(json_extract(data,'$.tokens.output'),0), 0)"
         let sql = """
         SELECT COALESCE(json_extract(data,'$.providerID'),'?'),

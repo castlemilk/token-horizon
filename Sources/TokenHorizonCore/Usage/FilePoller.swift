@@ -36,16 +36,10 @@ public final class FilePoller {
         var dirs = [
             "\(home)/.claude/projects",
             "\(home)/.codex/sessions",
+            "\(home)/.pi/agent/sessions",
             "\(home)/.local/share/opencode/opencode.db",
         ]
-        if let kimiHome = ProcessInfo.processInfo.environment["KIMI_HOME"], !kimiHome.isEmpty {
-            dirs.append("\(kimiHome)/sessions")
-        }
-        if let codeHome = ProcessInfo.processInfo.environment["KIMI_CODE_HOME"], !codeHome.isEmpty {
-            dirs.append("\(codeHome)/sessions")
-        } else {
-            dirs.append("\(home)/.kimi-code/sessions")
-        }
+        dirs.append(contentsOf: KimiPaths.sessionDirs())
         return dirs
     }
 

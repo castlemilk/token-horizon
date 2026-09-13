@@ -27,6 +27,9 @@
 	let summary = $state<ProviderSummary[]>([]);    // ranking: windowed
 	let recent = $state<UsageEvent[]>([]);
 	let chartPoints = $state<{ ts: number; value: number }[]>([]);
+	/** Horizon counters: merged cost / tokens / requests over the visible window. */
+	let chartCost = $state(0);
+	let chartRequests = $state(0);
 	let chartFrom = $state(0);
 	let chartTo = $state(0);
 	let window_ = $state('1D');
@@ -72,6 +75,8 @@
 			for (const b of r.buckets) {
 				byStart.set(b.start, (byStart.get(b.start) ?? 0) + billableTok(b.tokens));
 			}
+			chartCost = r.buckets.reduce((s, b) => s + bestCost(b.cost, b.costEquivalent), 0);
+			chartRequests = r.buckets.reduce((s, b) => s + (b.requests ?? 0), 0);
 			chartPoints = [...byStart.entries()]
 				.sort((a, b) => a[0] - b[0])
 				.map(([start, value]) => ({ ts: start, value }));
@@ -116,7 +121,8 @@
 	// ---- headline: billable work only, all time (cache reads excluded) ----
 	const billableAll = $derived(summaryAll.reduce((s, p) => s + billableTok(p.tokens), 0));
 	const requestsAll = $derived(summaryAll.reduce((s, p) => s + p.requests, 0));
-	const costAll = $derived(summaryAll.reduce((s, p) => s + p.cost, 0));
+	/** Charged + known list-price equivalents in ONE counter. */
+	const costAll = $derived(summaryAll.reduce((s, p) => s + bestCost(p.cost, p.costEquivalent), 0));
 
 	// ---- provider comparison ranking ----
 	interface RankRow {
@@ -129,6 +135,7 @@
 		output: number;
 		thinking: number;
 		cost: number;
+		costEquivalent?: number | null;
 		share: number;
 		lastEvent?: number;
 	}
@@ -143,6 +150,7 @@
 			output: p.tokens.output,
 			thinking: p.tokens.reasoning,
 			cost: p.cost,
+			costEquivalent: p.costEquivalent ?? null,
 			share: 0,
 			lastEvent: Math.max(0, ...p.models.map((m) => m.lastEvent ?? 0)) || undefined
 		}));
@@ -170,43 +178,43 @@
 	function fmtTime(ts: number): string {
 		return new Date(ts * 1000).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
 	}
-	function fmtCost(c: number): string {
-		return c > 0.0001 ? `$${c.toFixed(2)}` : '—';
+	/** One merged figure: the actual charge, else the list-price equivalent. */
+	function bestCost(c: number, equiv?: number | null): number {
+		return c > 0.0001 ? c : (equiv ?? 0);
+	}
+	function fmtCost(c: number, equiv?: number | null): string {
+		const v = bestCost(c, equiv);
+		return v > 0.0001 ? `$${v.toFixed(2)}` : '—';
 	}
 </script>
 
+<div class="dash">
 <section class="hero">
 	{#if !booted}
 		<div class="hero-stats">
-			<div class="hero-stat"><div class="skel skel-hero"></div><div class="skel skel-label"></div></div>
-			<div class="hero-stat"><div class="skel skel-hero"></div><div class="skel skel-label"></div></div>
+			<div class="hero-stat"><div class="skel skel-big"></div><div class="skel skel-cap"></div></div>
+			<div class="hero-stat"><div class="skel skel-big"></div><div class="skel skel-cap"></div></div>
+			<div class="hero-stat"><div class="skel skel-big"></div><div class="skel skel-cap"></div></div>
 		</div>
 	{:else}
 	<div class="hero-stats">
-		<div class="hero-stat">
-			<div class="hero-value"><CountUp value={billableAll} /></div>
-			<div class="hero-label">tokens · all time</div>
+		<div class="hero-stat voice-tokens">
+			<div class="stat-num"><CountUp value={billableAll} /></div>
+			<div class="stat-cap">Tokens · all time</div>
 		</div>
-		<div class="hero-stat">
-			<div class="hero-value"><CountUp value={requestsAll} format={(n) => Math.round(n).toLocaleString()} /></div>
-			<div class="hero-label">requests</div>
+		<div class="hero-stat voice-requests">
+			<div class="stat-num"><CountUp value={requestsAll} format={(n) => Math.round(n).toLocaleString()} /></div>
+			<div class="stat-cap">Requests</div>
+		</div>
+		<div class="hero-stat voice-cost">
+			<div class="stat-num"><CountUp value={costAll} format={(n) => `$${n.toFixed(2)}`} /></div>
+			<div class="stat-cap">Cost</div>
 		</div>
 	</div>
 	{/if}
-	{#if booted && costAll > 0.0001}
-		<div class="hero-sub faint">${costAll.toFixed(2)} all time</div>
-	{/if}
 </section>
 
-<section>
-	{#if days.length > 0}
-		<Heatmap {days} />
-	{:else}
-		<div class="empty">…</div>
-	{/if}
-</section>
-
-<section>
+<section class="mod chartmod">
 	<div class="picker-row">
 		<div class="seg" role="group" aria-label="Window">
 			{#each windows as w}
@@ -221,10 +229,27 @@
 	{#if !booted}
 		<div class="skel skel-chart"></div>
 	{:else}
-	<VBars points={chartPoints} from={chartFrom} to={chartTo} />
-	<div class="picker-sub faint"><CountUp value={chartPoints.reduce((s, p) => s + p.value, 0)} /> · {window_.toLowerCase()}{selected ? ` · ${selected.model ?? selected.vendor}` : ''}</div>
+	<div class="chartwrap">
+		<VBars points={chartPoints} from={chartFrom} to={chartTo} />
+		<div class="chart-stats">
+			<div class="chart-stat">
+				<div class="chart-stat-value"><CountUp value={chartCost} format={(n) => `$${n.toFixed(2)}`} /></div>
+				<div class="chart-stat-label">cost{selected ? ` · ${selected.model ?? selected.vendor}` : ''}</div>
+			</div>
+			<div class="chart-stat">
+				<div class="chart-stat-value"><CountUp value={chartPoints.reduce((s, p) => s + p.value, 0)} /></div>
+				<div class="chart-stat-label">tokens</div>
+			</div>
+			<div class="chart-stat">
+				<div class="chart-stat-value"><CountUp value={chartRequests} format={(n) => Math.round(n).toLocaleString()} /></div>
+				<div class="chart-stat-label">requests</div>
+			</div>
+		</div>
+	</div>
 	{/if}
+</section>
 
+<section class="mod rankmod">
 	{#if !booted}
 		<div class="rankskel" aria-hidden="true">
 			{#each Array(5) as _}
@@ -276,7 +301,7 @@
 					<span class="right num dim m-md"><CountUp value={r.input} /></span>
 					<span class="right num dim m-md"><CountUp value={r.output} /></span>
 						<span class="right num dim m-md">{r.thinking > 0 ? fmtTok(r.thinking) : '—'}</span>
-						<span class="right num dim m-sm">{fmtCost(r.cost)}</span>
+						<span class="right num dim m-sm">{fmtCost(r.cost, r.costEquivalent)}</span>
 						<span class="right dim m-sm">{fmtAgo(r.lastEvent)}</span>
 					</Accordion.Trigger>
 					<Accordion.Content>
@@ -295,7 +320,7 @@
 								<span class="right num dim m-md"><CountUp value={m.tokens.input} /></span>
 								<span class="right num dim m-md"><CountUp value={m.tokens.output} /></span>
 									<span class="right num dim m-md">{m.tokens.reasoning > 0 ? fmtTok(m.tokens.reasoning) : '—'}</span>
-									<span class="right num dim m-sm">{fmtCost(m.cost)}</span>
+									<span class="right num dim m-sm">{fmtCost(m.cost, m.costEquivalent)}</span>
 									<span class="right dim m-sm">{fmtAgo(m.lastEvent)}</span>
 								</button>
 							{/each}
@@ -316,7 +341,40 @@
 	{/if}
 </section>
 
-<section>
+<section class="mod heatmod">
+	<div class="faint mod-label">Activity</div>
+	{#if days.length > 0}
+		<Heatmap {days} />
+	{:else}
+		<div class="empty">…</div>
+	{/if}
+</section>
+
+<section class="mod leadmod">
+	<div class="faint mod-label">Leaders · {window_}</div>
+	{#if !booted}
+		<div class="rankskel" aria-hidden="true">
+			{#each Array(4) as _}
+				<div class="rankskel-row wide"><span class="skel"></span><span class="skel"></span></div>
+			{/each}
+		</div>
+	{:else if ranked.length === 0}
+		<div class="empty">…</div>
+	{:else}
+		<div class="leaders">
+			{#each ranked.slice(0, 4) as r (r.key)}
+				<button class="leader" onclick={() => select(r.vendor)} title="{r.label} — filter chart">
+					<ProviderIcon vendor={r.vendor} size={22} />
+					<span class="leader-name">{r.label}</span>
+					<span class="leader-bar"><span style="width: {r.share}%; background: {providerAccent(r.vendor)}"></span></span>
+					<span class="leader-toks num">{fmtTok(r.tokens)}</span>
+				</button>
+			{/each}
+		</div>
+	{/if}
+</section>
+
+<section class="mod recentmod">
 	<div class="faint" style="font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 12px">Recent</div>
 	{#if !booted}
 		<div class="rankskel" aria-hidden="true">
@@ -353,7 +411,7 @@
 						animate:flip={{ duration: reduceMotion ? 0 : 300 }}
 					>
 						<td class="mono dim">{fmtTime(e.timestamp)}</td>
-						<td class="dim t-md">{e.product ?? '—'}</td>
+						<td class="dim t-md">{e.product ?? (e.vendor === 'opencode-go' ? 'opencode' : '—')}</td>
 						<td>
 							<span style="display: flex; align-items: center; gap: 6px">
 								<ProviderIcon vendor={e.vendor} size={20} />
@@ -384,7 +442,7 @@
 								—
 							{/if}
 						</td>
-						<td class="right num dim t-sm">{e.cost > 0.0001 ? `$${e.cost.toFixed(4)}` : '—'}</td>
+						<td class="right num dim t-sm">{bestCost(e.cost, e.costEquivalent) > 0.0001 ? `$${bestCost(e.cost, e.costEquivalent).toFixed(4)}` : '—'}</td>
 					</tr>
 				{/each}
 			</tbody>
@@ -397,40 +455,184 @@
 		{/if}
 	{/if}
 </section>
+</div>
 
 <style>
-	section {
-		margin: 52px 0;
-	}
-	.hero {
-		text-align: center;
+	/* ---- dashboard mosaic: container-driven bento, not a viewport vstack ----
+	   .dash is the container; sections are grid items that re-span and
+	   re-order by available width, so the page composes itself in a narrow
+	   Tauri window, a wide monitor, or anything between. Narrow-first. */
+	.dash {
+		container-type: inline-size;
+		display: grid;
+		grid-template-columns: repeat(12, minmax(0, 1fr));
+		column-gap: 16px;
+		row-gap: 44px;
+		align-items: start;
 		margin-top: 28px;
-		margin-bottom: 56px;
 	}
+	.dash .hero,
+	.dash .mod {
+		margin: 0;
+		min-width: 0;
+		grid-column: 1 / -1;
+	}
+
+	.mod-label {
+		font-size: 11px;
+		text-transform: uppercase;
+		letter-spacing: 0.08em;
+		margin-bottom: 12px;
+	}
+
+	/* trio: same row, same hierarchy — three type voices, one rhythm.
+	   tabular sans black for tokens, light grotesk for requests,
+	   italic serif for cost. Caps stay uniform so it reads as one line. */
 	.hero-stats {
 		display: flex;
-		justify-content: center;
-		gap: 56px;
+		flex-direction: column;
+		gap: 22px;
+		padding-bottom: 26px;
+		border-bottom: 1px solid var(--line);
 	}
 	.hero-stat {
 		min-width: 0;
 	}
-	.hero-value {
-		font-size: clamp(34px, 6vw, 46px);
-		font-weight: 680;
-		letter-spacing: -0.03em;
+	.stat-num {
 		font-variant-numeric: tabular-nums;
-		line-height: 1.05;
+		line-height: 1;
+		white-space: nowrap;
 	}
-	.hero-label {
-		font-size: 12px;
-		color: var(--text-2);
-		margin-top: 7px;
+	.voice-tokens .stat-num {
+		font-size: 52px;
+		font-weight: 750;
+		letter-spacing: -0.045em;
 	}
-	.hero-sub {
-		font-size: 12px;
+	.voice-requests .stat-num {
+		font-size: 44px;
+		font-weight: 450;
+		letter-spacing: -0.01em;
+	}
+	.voice-cost .stat-num {
+		font-family: ui-serif, Georgia, 'Charter', 'Times New Roman', serif;
+		font-style: italic;
+		font-size: 44px;
+		font-weight: 550;
+		letter-spacing: -0.01em;
+	}
+	.stat-cap {
+		margin-top: 9px;
+		font-size: 11px;
+		font-weight: 600;
+		letter-spacing: 0.1em;
+		text-transform: uppercase;
+		color: var(--text-3);
+	}
+	.skel-big {
+		width: min(200px, 60%);
+		height: 52px;
+		border-radius: 10px;
+	}
+	.skel-cap {
+		width: 120px;
+		height: 11px;
 		margin-top: 10px;
+	}
+
+	/* heatmap lives in a card so it reads as one tile next to leaders */
+	.heatmod {
+		background: var(--bg-raised);
+		border-radius: 18px;
+		padding: 18px 18px 14px;
+		overflow: hidden;
+	}
+	/* leaders tile: glanceable top providers, taps filter the chart */
+	.leadmod {
+		background: var(--bg-raised);
+		border-radius: 18px;
+		padding: 18px 18px 10px;
+		overflow: hidden;
+	}
+	.leaders {
+		display: grid;
+	}
+	.leader {
+		display: grid;
+		grid-template-columns: 24px minmax(0, 1fr) minmax(60px, 120px) auto;
+		gap: 10px;
+		align-items: center;
+		background: none;
+		border: none;
+		border-top: 1px solid var(--line);
+		font: inherit;
+		color: var(--text);
+		padding: 11px 2px;
+		cursor: pointer;
+		text-align: left;
+		width: 100%;
+	}
+	.leader:first-child {
+		border-top: none;
+	}
+	.leader:hover {
+		background: rgba(128, 128, 128, 0.06);
+	}
+	.leader-name {
+		font-size: 13px;
+		font-weight: 550;
+		letter-spacing: -0.01em;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+	.leader-bar {
+		display: block;
+		height: 5px;
+		border-radius: 3px;
+		background: var(--track);
+		overflow: hidden;
+	}
+	.leader-bar span {
+		display: block;
+		height: 100%;
+		border-radius: inherit;
+	}
+	.leader-toks {
+		font-size: 13px;
+		font-weight: 650;
 		font-variant-numeric: tabular-nums;
+	}
+	/* recent table scrolls inside its tile instead of breaking the grid */
+	.recentmod .recentfade {
+		overflow-x: auto;
+	}
+
+	/* mid: trio falls into one row, voices scale with the container */
+	@container (min-width: 560px) {
+		.hero-stats {
+			flex-direction: row;
+			align-items: flex-end;
+			gap: 28px;
+			gap: clamp(28px, 6cqi, 76px);
+		}
+		.voice-tokens .stat-num {
+			font-size: 64px;
+			font-size: clamp(52px, 9cqi, 88px);
+		}
+		.voice-requests .stat-num,
+		.voice-cost .stat-num {
+			font-size: 44px;
+			font-size: clamp(36px, 6cqi, 60px);
+		}
+	}
+	/* wide: activity + leaders share the row under the full-bleed chart */
+	@container (min-width: 760px) {
+		.dash .heatmod { grid-column: span 5; }
+		.dash .leadmod { grid-column: span 7; }
+	}
+
+	.hero {
+		text-align: left;
 	}
 	.picker-row {
 		display: flex;
@@ -439,11 +641,43 @@
 		gap: 10px;
 		margin-bottom: 18px;
 	}
-	.picker-sub {
-		text-align: center;
-		font-size: 11px;
-		margin-top: 8px;
+	.chartwrap {
+		position: relative;
 	}
+
+	/* Horizon stat strip, overlaid on the chart. White + difference blend =
+	   color-negative: every glyph inverts against whatever bars pass under
+	   it, so the counters stay legible at any overlap. */
+	.chart-stats {
+		position: absolute;
+		top: 0;
+		left: 0;
+		right: 0;
+		display: flex;
+		gap: 34px;
+		padding: 12px 16px;
+		color: #fff;
+		mix-blend-mode: difference;
+		pointer-events: none;
+		user-select: none;
+	}
+
+	.chart-stat-value {
+		font-size: 24px;
+		font-weight: 700;
+		font-variant-numeric: tabular-nums;
+		line-height: 1.1;
+	}
+
+	.chart-stat-label {
+		margin-top: 2px;
+		font-size: 10px;
+		font-weight: 600;
+		letter-spacing: 0.14em;
+		text-transform: uppercase;
+		opacity: 0.75;
+	}
+
 	.rankgrid {
 		display: grid;
 		grid-template-columns: 1.6rem minmax(9rem, 1.2fr) 5.5rem 5rem 5rem 5rem 5rem 4.5rem 5.5rem 1.2rem;
@@ -571,22 +805,6 @@
 	@media (prefers-reduced-motion: reduce) {
 		.skel { animation: none; }
 	}
-	.skel-hero {
-		width: min(220px, 40vw);
-		height: 46px;
-		margin: 0 auto;
-		border-radius: 10px;
-	}
-	.skel-label {
-		width: 110px;
-		height: 11px;
-		margin: 9px auto 0;
-	}
-	.skel-chart {
-		height: 230px;
-		border-radius: 12px;
-		margin-top: 8px;
-	}
 	.rankskel {
 		display: grid;
 		gap: 10px;
@@ -636,8 +854,7 @@
 		.t-md { display: none; }
 	}
 	@media (max-width: 640px) {
-		section { margin: 38px 0; }
-		.hero { margin-bottom: 40px; }
+		.dash { row-gap: 34px; }
 		.rankgrid,
 		section :global(button[data-slot="accordion-trigger"]) {
 			grid-template-columns: 1.2rem minmax(6rem, 1.6fr) 4.5rem 4rem 1.2rem;

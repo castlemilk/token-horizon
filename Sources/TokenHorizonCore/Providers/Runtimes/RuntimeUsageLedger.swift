@@ -207,6 +207,6 @@ public final class RuntimeUsageLedger {
     }
 
     private static func todayBucket() -> Int {
-        Int(Calendar.current.startOfDay(for: Date()).timeIntervalSince1970)
+        DayBoundary.start(ofTs: Int(Date().timeIntervalSince1970))   // UTC midnight
     }
 }
