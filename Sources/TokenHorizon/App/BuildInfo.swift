@@ -1,4 +1,5 @@
 import Foundation
+import TokenHorizonCore
 
 /// Build identity. `scripts/make-app.sh` stamps the app's Info.plist with the
 /// git commit + UTC build time (`THGitSHA` / `THBuiltAt`); unstamped runs
@@ -85,16 +86,9 @@ enum InstanceGuard {
     /// Raw /health dict from the current port holder, or nil when free.
     static func probeHolder(timeout: TimeInterval = 1.0) -> [String: Any]? {
         guard let url = URL(string: "http://127.0.0.1:\(port)/health") else { return nil }
-        var out: [String: Any]?
-        let sema = DispatchSemaphore(value: 0)
-        URLSession.shared.dataTask(with: URLRequest(url: url, timeoutInterval: timeout)) { d, resp, _ in
-            defer { sema.signal() }
-            guard let http = resp as? HTTPURLResponse, (200..<300).contains(http.statusCode),
-                  let d, let obj = try? JSONSerialization.jsonObject(with: d) as? [String: Any] else { return }
-            out = obj
-        }.resume()
-        _ = sema.wait(timeout: .now() + timeout)
-        return out
+        let r = HTTP.send(URLRequest(url: url, timeoutInterval: timeout), timeout: timeout)
+        guard (200..<300).contains(r.status) else { return nil }
+        return r.json
     }
 
     /// SIGTERM sibling TokenHorizon processes owned by this user, never self.

@@ -53,7 +53,7 @@ public final class InferenceTelemetryStore {
                 .prefix(latestSamples.count - 256)
             for sample in oldest { latestSamples.removeValue(forKey: sample.model.lowercased()) }
         }
-        let day = Int(Calendar.current.startOfDay(for: sample.completedAt).timeIntervalSince1970)
+        let day = DayBoundary.start(ofTs: Int(sample.completedAt.timeIntervalSince1970))
         dayTokens[day, default: 0] += sample.evalCount
         totalTokens += sample.evalCount
         totalMessages += 1
@@ -72,7 +72,7 @@ public final class InferenceTelemetryStore {
     /// request count, and models with a recent sample.
     public func summary(now: Date = Date()) -> TelemetrySummary {
         lock.lock(); defer { lock.unlock() }
-        let today = Int(Calendar.current.startOfDay(for: now).timeIntervalSince1970)
+        let today = DayBoundary.start(ofTs: Int(now.timeIntervalSince1970))
         return TelemetrySummary(
             todayTokens: dayTokens[today] ?? 0,
             allTokens: totalTokens,

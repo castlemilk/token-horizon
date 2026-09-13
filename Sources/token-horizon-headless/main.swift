@@ -112,6 +112,11 @@ if ProcessInfo.processInfo.environment["TH_CONSOLIDATE"] == "1", let store = usa
     _ = try? ConsolidationRunner.run(into: store)
 }
 
+// Warm the limits cache at startup (fire-and-forget on the utility queue)
+// so the first GET /limits already has rows instead of an empty cold cache.
+PlanLimitsEngine.shared.refreshIfDue()
+KimiLimitsEngine.shared.refreshIfDue()
+
 let server = POSIXLoopbackHTTPServer { router.route($0) }
 server.start()
 guard server.port > 0 else {

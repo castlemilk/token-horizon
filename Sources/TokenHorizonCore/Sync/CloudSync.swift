@@ -54,19 +54,9 @@ public struct HTTPCloudTransport: CloudTransport {
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.httpBody = payload
-        var status = 0
-        var transportError: Error?
-        let sema = DispatchSemaphore(value: 0)
-        URLSession.shared.dataTask(with: req) { _, resp, err in
-            status = (resp as? HTTPURLResponse)?.statusCode ?? 0
-            transportError = err
-            sema.signal()
-        }.resume()
-        if sema.wait(timeout: .now() + timeout + 5) == .timedOut {
-            throw URLError(.timedOut)
-        }
-        if let transportError { throw transportError }
-        guard (200..<300).contains(status) else { throw CloudTransportError(status: status) }
+        let r = HTTP.send(req, timeout: timeout + 5)
+        guard r.status > 0 else { throw URLError(.cannotConnectToHost) }
+        guard (200..<300).contains(r.status) else { throw CloudTransportError(status: r.status) }
     }
 }
 

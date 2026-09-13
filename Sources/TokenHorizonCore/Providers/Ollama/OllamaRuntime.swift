@@ -54,16 +54,8 @@ public final class OllamaRuntime: LocalInferenceRuntime {
     private func httpOK(_ url: URL) -> Bool { httpData(url) != nil }
 
     private func httpData(_ url: URL) -> Data? {
-        let req = URLRequest(url: url, timeoutInterval: 1.5)
-        var result: Data?
-        let sema = DispatchSemaphore(value: 0)
-        URLSession.shared.dataTask(with: req) { data, resp, _ in
-            if let http = resp as? HTTPURLResponse, (200..<300).contains(http.statusCode) {
-                result = data
-            }
-            sema.signal()
-        }.resume()
-        _ = sema.wait(timeout: .now() + 2.5)
-        return result
+        let r = HTTP.send(URLRequest(url: url, timeoutInterval: 1.5), timeout: 2.5)
+        guard (200..<300).contains(r.status) else { return nil }
+        return r.data
     }
 }

@@ -75,9 +75,9 @@ open class VendorLimitsAdapter: Meterable {
     public func limit(label: String, usedPercent: Double, resetsAt: Date? = nil,
                       detail: String = "", provider: String? = nil,
                       account: String = "") -> ProviderLimit {
-        ProviderLimit(provider: provider ?? self.provider, label: label,
-                      usedPercent: min(max(usedPercent, 0), 100),
-                      resetsAt: resetsAt, detail: detail, accountID: account)
+        .clamped(provider: provider ?? self.provider, label: label,
+                 usedPercent: usedPercent, resetsAt: resetsAt,
+                 detail: detail, accountID: account)
     }
 
     /// Pseudonymous account key for a credential (see AccountKey). Raw
@@ -130,42 +130,23 @@ open class VendorLimitsAdapter: Meterable {
     /// 401/403 are logged to stderr so expired keys don't silently drop rows.
     /// 429 responses arm a per-host backoff window (see `isBackedOff`).
     func performJSON(_ req: URLRequest, timeout: TimeInterval) -> [String: Any]? {
-        if let host = req.url?.host, isBackedOff(host: host) { return nil }
-        var data: Data?
-        var status = 0
-        let sema = DispatchSemaphore(value: 0)
-        URLSession.shared.dataTask(with: req) { d, resp, _ in
-            status = (resp as? HTTPURLResponse)?.statusCode ?? 0
-            if (200..<300).contains(status) { data = d }
-            sema.signal()
-        }.resume()
-        if sema.wait(timeout: .now() + timeout) == .timedOut { return nil }
-        if let host = req.url?.host { noteStatus(host: host, status: status) }
-        if status == 401 || status == 403 {
-            FileHandle.standardError.write("token-horizon: \(provider) quota 401/403 — credential expired, re-auth required\n".data(using: .utf8)!)
-            return nil
-        }
-        guard let data, let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+        guard let data = performRaw(req, timeout: timeout),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
         return obj
     }
 
     /// Blocking raw request (for adapters that parse non-JSON or need the body).
     func performRaw(_ req: URLRequest, timeout: TimeInterval) -> Data? {
         if let host = req.url?.host, isBackedOff(host: host) { return nil }
-        var data: Data?
-        var status = 0
-        let sema = DispatchSemaphore(value: 0)
-        URLSession.shared.dataTask(with: req) { d, resp, _ in
-            status = (resp as? HTTPURLResponse)?.statusCode ?? 0
-            if (200..<300).contains(status) { data = d }
-            sema.signal()
-        }.resume()
-        if sema.wait(timeout: .now() + timeout) == .timedOut { return nil }
-        if let host = req.url?.host { noteStatus(host: host, status: status) }
-        if status == 401 || status == 403 {
+        let r = HTTP.send(req, timeout: timeout)
+        guard r.status > 0 else { return nil }   // transport failure/timeout
+        if let host = req.url?.host { noteStatus(host: host, status: r.status) }
+        if r.status == 401 || r.status == 403 {
             FileHandle.standardError.write("token-horizon: \(provider) quota 401/403 — credential expired, re-auth required\n".data(using: .utf8)!)
+            return nil
         }
-        return data
+        guard (200..<300).contains(r.status) else { return nil }
+        return r.data
     }
 
     // MARK: - JSON tree digging

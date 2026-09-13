@@ -103,20 +103,10 @@ public final class MLXRuntime: LocalInferenceRuntime {
             + defaultPorts.compactMap { URL(string: "http://127.0.0.1:\($0)") }
         for base in bases {
             let req = URLRequest(url: base.appendingPathComponent("/v1/models"), timeoutInterval: 1.5)
-            var result: Data?
-            var ok = false
-            let sema = DispatchSemaphore(value: 0)
-            URLSession.shared.dataTask(with: req) { data, resp, _ in
-                if let http = resp as? HTTPURLResponse, (200..<300).contains(http.statusCode) {
-                    ok = true
-                    result = data
-                }
-                sema.signal()
-            }.resume()
-            _ = sema.wait(timeout: .now() + 2.5)
-            guard ok else { continue }
+            let r = HTTP.send(req, timeout: 2.5)
+            guard (200..<300).contains(r.status) else { continue }
             var extra: [String: Double] = [:]
-            if let result,
+            if let result = r.data,
                let obj = try? JSONSerialization.jsonObject(with: result) as? [String: Any],
                let models = obj["data"] as? [[String: Any]] {
                 extra["loaded_models"] = Double(models.count)

@@ -209,15 +209,9 @@ open class LocalInferenceRuntime: Meterable {
     }
 
     public func fetchMetricsText(url: URL) -> String? {
-        let req = URLRequest(url: url, timeoutInterval: 1.5)
-        var data: Data?
-        let sema = DispatchSemaphore(value: 0)
-        URLSession.shared.dataTask(with: req) { d, resp, _ in
-            if let http = resp as? HTTPURLResponse, (200..<300).contains(http.statusCode) { data = d }
-            sema.signal()
-        }.resume()
-        if sema.wait(timeout: .now() + 2) == .timedOut { return nil }
-        guard let data, let text = String(data: data, encoding: .utf8),
+        let r = HTTP.send(URLRequest(url: url, timeoutInterval: 1.5), timeout: 2)
+        guard (200..<300).contains(r.status), let data = r.data,
+              let text = String(data: data, encoding: .utf8),
               // Content check: any 2xx page on a default port (e.g. an MLX or
               // Ollama server) must not read as a Prometheus runtime.
               text.contains("# HELP") || text.contains("# TYPE") else { return nil }

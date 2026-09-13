@@ -673,14 +673,9 @@ public final class ModelCatalog {
         guard let u = URL(string: "https://open.bigmodel.cn/api/paas/v4/models") else { return }
         var req = URLRequest(url: u, timeoutInterval: 5.0)
         req.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
-        var data: Data?
-        let sema = DispatchSemaphore(value: 0)
-        URLSession.shared.dataTask(with: req) { d, resp, _ in
-            if let http = resp as? HTTPURLResponse, (200..<300).contains(http.statusCode) { data = d }
-            sema.signal()
-        }.resume()
-        if sema.wait(timeout: .now() + 5) == .timedOut { return }
-        guard let data, let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+        let r = HTTP.send(req, timeout: 5)
+        guard (200..<300).contains(r.status), let data = r.data,
+              let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
               let list = obj["data"] as? [[String: Any]] else { return }
         for item in list {
             guard let modelId = item["id"] as? String, !modelId.isEmpty else { continue }

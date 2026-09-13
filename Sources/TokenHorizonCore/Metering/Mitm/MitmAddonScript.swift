@@ -13,7 +13,15 @@ import Foundation
 /// Embedded as a Swift string so the .app / headless binary carries it with
 /// zero resource plumbing; written to the config dir on start.
 public enum MitmAddonScript {
-    public static let source = #"""
+    /// UA sniff rows generated from ProductSniff.uaTable — the SAME table
+    /// the point-mode RequestMeter uses; Swift and Python paths cannot drift.
+    private static let uaTablePython: String = ProductSniff.uaTable
+        .map { "    (\"\($0.needle)\", \"\($0.product)\")," }
+        .joined(separator: "\n")
+
+    public static let source = sourcePrefix + "\n" + uaTablePython + "\n" + sourceSuffix
+
+    private static let sourcePrefix = #"""
 # token-horizon scoped MITM addon (mitmproxy 8+).
 # Measures AI vendor API traffic and emits UsageEvents to the loopback API.
 # Everything not in VENDOR_HOSTS is passed through undecrypted.
@@ -51,11 +59,9 @@ METERED_MARKERS = (
 )
 
 UA_TABLE = [
-    ("claude-cli", "claude-code"), ("claude_code", "claude-code"),
-    ("codex_cli_rs", "codex"), ("codex", "codex"),
-    ("opencode", "opencode"), ("kimi", "kimi-cli"),
-    ("gemini-cli", "gemini-cli"), ("pi-ai", "pi"), ("pi-coding-agent", "pi"),
-    ("aider", "aider"), ("cursor", "cursor"),
+"""#
+
+    private static let sourceSuffix = #"""
 ]
 
 _api_port = None
@@ -168,33 +174,61 @@ def parse_anthropic(body):
                 saw = True
             elif kind == "message_delta":
                 usage = obj.get("usage") or {}
+                details = usage.get("output_tokens_details") or {}
+                if details.get("thinking_tokens") is not None:
+                    tokens["reasoning"] = int(details.get("thinking_tokens") or 0)
+                    saw = True
                 if usage.get("output_tokens") is not None:
-                    tokens["output"] = int(usage.get("output_tokens") or 0)
+                    # Gross includes thinking — store NET (already-net kept).
+                    gross = int(usage.get("output_tokens") or 0)
+                    tokens["output"] = gross - tokens["reasoning"] if tokens["reasoning"] <= gross else gross
                     saw = True
     else:
         try:
             obj = json.loads(body)
             body_id = obj.get("id")
             usage = obj.get("usage") or {}
+            details = usage.get("output_tokens_details") or {}
+            tokens["reasoning"] = int(details.get("thinking_tokens") or 0)
             tokens["input"] = int(usage.get("input_tokens") or 0)
-            tokens["output"] = int(usage.get("output_tokens") or 0)
+            gross = int(usage.get("output_tokens") or 0)
+            tokens["output"] = gross - tokens["reasoning"] if tokens["reasoning"] <= gross else gross
             tokens["cacheRead"] = int(usage.get("cache_read_input_tokens") or 0)
             tokens["cacheWrite"] = int(usage.get("cache_creation_input_tokens") or 0)
-            saw = tokens["input"] + tokens["output"] > 0
+            saw = tokens["input"] + tokens["output"] + tokens["reasoning"] > 0
         except Exception:
             pass
     return (tokens if saw else None), body_id
 
 
 def fill_openai_usage(tokens, usage):
-    tokens["input"] += int(usage.get("prompt_tokens") or 0) + int(usage.get("input_tokens") or 0)
-    tokens["output"] += int(usage.get("completion_tokens") or 0) + int(usage.get("output_tokens") or 0)
+    # Alternate spellings (chat vs Responses API) are the same counters —
+    # max, never sum. Gross counters still include the subsets; netting
+    # happens in normalize_openai before emit (see TokenBreakdown).
+    gross_in = max(int(usage.get("prompt_tokens") or 0), int(usage.get("input_tokens") or 0))
+    gross_out = max(int(usage.get("completion_tokens") or 0), int(usage.get("output_tokens") or 0))
+    reasoning = 0
     for key in ("completion_tokens_details", "output_tokens_details"):
         details = usage.get(key) or {}
-        tokens["reasoning"] += int(details.get("reasoning_tokens") or 0)
+        reasoning = max(reasoning, int(details.get("reasoning_tokens") or 0))
+    cached = 0
     for key in ("prompt_tokens_details", "input_tokens_details"):
         details = usage.get(key) or {}
-        tokens["cacheRead"] += int(details.get("cached_tokens") or 0)
+        cached = max(cached, int(details.get("cached_tokens") or 0))
+    tokens["input"] = max(tokens["input"], gross_in)
+    tokens["output"] = max(tokens["output"], gross_out)
+    tokens["reasoning"] = max(tokens["reasoning"], reasoning)
+    tokens["cacheRead"] = max(tokens["cacheRead"], cached)
+
+
+def normalize_openai(tokens):
+    # cached/reasoning are USUALLY subsets of the gross counters — store NET
+    # so total == provider truth. Already-net payloads (subset > gross) are
+    # kept as-is, never zeroed into a loss.
+    if tokens["cacheRead"] <= tokens["input"]:
+        tokens["input"] -= tokens["cacheRead"]
+    if tokens["reasoning"] <= tokens["output"]:
+        tokens["output"] -= tokens["reasoning"]
 
 
 def parse_openai(body):
@@ -226,6 +260,8 @@ def parse_openai(body):
                 saw = True
         except Exception:
             pass
+    if saw:
+        normalize_openai(tokens)
     return (tokens if saw else None), body_id
 
 
@@ -237,10 +273,13 @@ def parse_gemini(body, path):
         rest = path.split("/models/", 1)[1]
         model = rest.split(":", 1)[0]
     def apply(meta):
-        tokens["input"] = int(meta.get("promptTokenCount") or 0)
+        cached = int(meta.get("cachedContentTokenCount") or 0)
+        gross = int(meta.get("promptTokenCount") or 0)
+        # promptTokenCount INCLUDES cached — store NET (already-net kept).
+        tokens["input"] = gross - cached if cached <= gross else gross
         tokens["output"] = int(meta.get("candidatesTokenCount") or 0)
         tokens["reasoning"] = int(meta.get("thoughtsTokenCount") or 0)
-        tokens["cacheRead"] = int(meta.get("cachedContentTokenCount") or 0)
+        tokens["cacheRead"] = cached
     stripped = body.lstrip()
     try:
         if stripped.startswith(b"data:"):

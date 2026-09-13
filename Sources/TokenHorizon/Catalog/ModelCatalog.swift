@@ -1,4 +1,5 @@
 import Foundation
+import TokenHorizonCore
 
 final class ModelCatalog {
     static let shared = ModelCatalog()
@@ -1372,16 +1373,9 @@ final class ModelCatalog {
     static func fetchJSON(url: URL, timeout: TimeInterval) -> Any? {
         var req = URLRequest(url: url, timeoutInterval: timeout)
         req.setValue("application/json", forHTTPHeaderField: "Accept")
-        var result: Any?
-        let sema = DispatchSemaphore(value: 0)
-        URLSession.shared.dataTask(with: req) { d, resp, _ in
-            defer { sema.signal() }
-            guard let http = resp as? HTTPURLResponse, (200..<300).contains(http.statusCode),
-                  let d, let obj = try? JSONSerialization.jsonObject(with: d) else { return }
-            result = obj
-        }.resume()
-        _ = sema.wait(timeout: .now() + timeout + 2)
-        return result
+        let r = HTTP.send(req, timeout: timeout + 2)
+        guard (200..<300).contains(r.status), let d = r.data else { return nil }
+        return try? JSONSerialization.jsonObject(with: d)
     }
 
     /// Bounded synchronous text GET for background pricing scrapes.

@@ -42,22 +42,11 @@ open class FileConsolidator {
     // MARK: - Shared parse helpers (same conventions as UsageEngine/meters)
 
     public func intField(_ dict: [String: Any], _ key: String) -> Int {
-        (dict[key] as? NSNumber)?.intValue ?? 0
+        JSONFields.int(dict, key)
     }
 
     public func parseTimestamp(_ any: Any?) -> Date? {
-        if let s = any as? String {
-            let iso = ISO8601DateFormatter()
-            iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-            if let d = iso.date(from: s) { return d }
-            iso.formatOptions = [.withInternetDateTime]
-            return iso.date(from: s)
-        }
-        if let n = any as? NSNumber {
-            let v = n.doubleValue
-            return Date(timeIntervalSince1970: v > 1e12 ? v / 1000 : v)
-        }
-        return nil
+        JSONFields.timestamp(any)
     }
 
     /// Stream one JSONL file line by line (full-file read; consolidators are
@@ -81,26 +70,17 @@ open class FileConsolidator {
     private var offsets: [String: UInt64] = [:]
 
     /// Incremental variant of forEachLine: consumes only bytes past the
-    /// stored offset, stopping at the last newline so partial tail lines
-    /// survive to the next pass (invariant #4). Truncation resets the file.
+    /// stored offset (see IncrementalJSONL — partial tail lines survive,
+    /// truncation restarts the file; annotations are natural-key idempotent
+    /// so re-reading after truncation is harmless).
     public func forEachNewLine(_ path: String, _ body: ([String: Any], String) -> Void) {
-        let fm = FileManager.default
-        guard let attrs = try? fm.attributesOfItem(atPath: path),
-              let size = (attrs[.size] as? NSNumber)?.uint64Value else { return }
         var off = offsets[path] ?? 0
-        if size < off { off = 0 }
-        guard size > off, let fh = FileHandle(forReadingAtPath: path) else { return }
-        fh.seek(toFileOffset: off)
-        let chunk = fh.readDataToEndOfFile()
-        try? fh.close()
-        guard let lastNL = chunk.lastIndex(of: UInt8(ascii: "\n")), lastNL >= chunk.startIndex else { return }
-        let consumable = chunk[chunk.startIndex...lastNL]
-        offsets[path] = off + UInt64(consumable.count)
-        for line in consumable.split(separator: UInt8(ascii: "\n")) where !line.isEmpty {
-            if let obj = try? JSONSerialization.jsonObject(with: Data(line)) as? [String: Any] {
-                body(obj, String(decoding: line, as: UTF8.self))
+        IncrementalJSONL.readNewLines(path: path, offset: &off) { data, text in
+            if let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                body(obj, text)
             }
         }
+        offsets[path] = off
     }
 
     public func jsonlFiles(under dirs: [String], suffix: String = ".jsonl") -> [String] {
@@ -169,22 +149,17 @@ public final class CodexConsolidator: FileConsolidator {
         for file in jsonlFiles(under: dirs) {
             forEachNewLine(file) { obj, _ in
                 guard let payload = obj["payload"] as? [String: Any],
-                      payload["type"] as? String == "token_count",
-                      let rateLimits = payload["rate_limits"] as? [String: Any] else { return }
+                      payload["type"] as? String == "token_count" else { return }
                 let ts = parseTimestamp(obj["timestamp"]) ?? Date()
-                for window in ["primary", "secondary"] {
-                    guard let w = rateLimits[window] as? [String: Any],
-                          let used = (w["used_percent"] as? NSNumber)?.doubleValue else { continue }
-                    let minutes = (w["window_minutes"] as? NSNumber)?.intValue ?? 0
-                    let resets = (w["resets_at"] as? NSNumber)?.doubleValue
+                for (window, w) in CodexRateLimits.parse(payload) {
                     snapshots.append(LimitSnapshot(
                         recordedAt: ts,
                         machineID: MachineIdentity.current,
                         provider: vendor,
                         accountID: "",
-                        label: Self.windowLabel(minutes: minutes),
-                        usedPercent: used,
-                        resetsAt: resets.map { Date(timeIntervalSince1970: $0) },
+                        label: Self.windowLabel(minutes: w.windowMinutes),
+                        usedPercent: w.usedPercent,
+                        resetsAt: w.resetDate,
                         detail: "codex \(window) window (file)"))
                 }
             }
@@ -211,7 +186,7 @@ public final class CodexConsolidator: FileConsolidator {
 /// anthropic-compatible format).
 public final class KimiConsolidator: FileConsolidator {
     public override var vendor: String { "kimi" }
-    public override var dirs: [String] { ["~/.kimi/sessions", "~/.kimi-code/sessions"] }
+    public override var dirs: [String] { KimiPaths.sessionDirs() }
 
     public override func consolidate(into store: UsageStoring) throws -> Int {
         var annotations: [FileAnnotation] = []

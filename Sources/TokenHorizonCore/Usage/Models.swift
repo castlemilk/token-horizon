@@ -1,9 +1,11 @@
 import Foundation
 
 /// Granular token-type split. `total` is the sum of all categories.
-/// Note: `input` EXCLUDES cacheRead/cacheWrite (those are KV-cache mechanics);
-/// providers count differently, so the bucket also stores a compat `tokens`
-/// figure for sources whose canonical total excludes some categories.
+/// NET semantics (matches opencode's own file accounting): `input` EXCLUDES
+/// cacheRead/cacheWrite and `output` EXCLUDES reasoning — cached_tokens and
+/// reasoning_tokens arrive on the wire as SUBSETS of the gross counters, so
+/// meters must subtract before storing. With net storage,
+/// total == provider ground truth (prompt + completion).
 public struct TokenBreakdown: Codable, Equatable {
     public var input = 0
     public var output = 0
@@ -135,6 +137,18 @@ public struct ProviderLimit: Codable, Identifiable {
     /// Empty = single/unknown account. Limits for the same vendor but
     /// different accounts are separate ceilings and must never merge.
     public var accountID: String
+}
+
+public extension ProviderLimit {
+    /// Build a row with usedPercent clamped to 0-100 — the ONE clamp site
+    /// (VendorLimitsAdapter.limit and OAuth engines like Kimi delegate here).
+    static func clamped(provider: String, label: String, usedPercent: Double,
+                        resetsAt: Date? = nil, detail: String = "",
+                        accountID: String = "") -> ProviderLimit {
+        ProviderLimit(provider: provider, label: label,
+                      usedPercent: min(max(usedPercent, 0), 100),
+                      resetsAt: resetsAt, detail: detail, accountID: accountID)
+    }
 }
 
 public struct HistoryPoint: Codable {

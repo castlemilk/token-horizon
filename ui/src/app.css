@@ -289,6 +289,25 @@ a {
 	white-space: nowrap;
 }
 
+.dock-retry {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 22px;
+	height: 22px;
+	border-radius: 6px;
+	color: var(--text-2);
+	background: transparent;
+	border: none;
+	cursor: pointer;
+	padding: 0;
+}
+
+.dock-retry:hover {
+	color: var(--text);
+	background: var(--accent-soft);
+}
+
 .dock-gear {
 	display: flex;
 	align-items: center;

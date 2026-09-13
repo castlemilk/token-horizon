@@ -3,33 +3,74 @@
 
 export const DEFAULT_API_BASE = 'http://127.0.0.1:8765';
 
-export function apiBase(): string {
-	if (typeof localStorage !== 'undefined') {
-		const override = localStorage.getItem('token-horizon.api');
-		if (override) return override.replace(/\/$/, '');
+function storageGet(key: string): string | null {
+	try {
+		if (typeof localStorage === 'undefined') return null;
+		return localStorage.getItem(key);
+	} catch {
+		return null; // webview with storage disabled — never brick on it
 	}
+}
+
+function storageSet(key: string, value: string | null) {
+	try {
+		if (typeof localStorage === 'undefined') return;
+		if (value) localStorage.setItem(key, value);
+		else localStorage.removeItem(key);
+	} catch {
+		/* ignore */
+	}
+}
+
+export function apiBase(): string {
+	const override = storageGet('token-horizon.api');
+	if (override) return override.replace(/\/$/, '');
 	return DEFAULT_API_BASE;
 }
 
 export function setApiBase(url: string | null) {
-	if (url) localStorage.setItem('token-horizon.api', url);
-	else localStorage.removeItem('token-horizon.api');
+	storageSet('token-horizon.api', url);
+}
+
+async function healthy(base: string, timeoutMs = 1500): Promise<boolean> {
+	try {
+		const res = await fetch(`${base}/health`, { signal: timeoutSignal(timeoutMs) });
+		return res.ok;
+	} catch {
+		return false;
+	}
+}
+
+/** AbortSignal.timeout with a fallback for engines that lack it. */
+export function timeoutSignal(ms: number): AbortSignal | undefined {
+	try {
+		if (typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function') {
+			return AbortSignal.timeout(ms);
+		}
+	} catch {
+		/* fall through */
+	}
+	return undefined;
 }
 
 /**
  * Find the daemon: probe the loopback port range (8765-8784, the same range
- * the daemon scans and the MITM addon probes). An explicit localStorage
- * override always wins — that's the undocumented escape hatch for SSH
- * tunnels, no UI needed for it.
+ * the daemon scans and the MITM addon probes). A saved override is
+ * health-checked first — a stale override (daemon moved back to :8765 after
+ * a drift to :8766, or a dead sidecar port) is cleared instead of trusted,
+ * otherwise one bad save bricks the connection forever with no recovery.
  */
 export async function discoverApiBase(): Promise<string | null> {
-	if (typeof localStorage !== 'undefined' && localStorage.getItem('token-horizon.api')) {
-		return apiBase();
+	const override = storageGet('token-horizon.api');
+	if (override) {
+		const base = override.replace(/\/$/, '');
+		if (await healthy(base)) return base;
+		storageSet('token-horizon.api', null);
 	}
 	for (let port = 8765; port <= 8784; port++) {
 		const base = `http://127.0.0.1:${port}`;
 		try {
-			const res = await fetch(`${base}/health`, { signal: AbortSignal.timeout(800) });
+			const res = await fetch(`${base}/health`, { signal: timeoutSignal(800) });
 			if (res.ok) return base;
 		} catch {
 			/* nothing on this port */
@@ -38,17 +79,18 @@ export async function discoverApiBase(): Promise<string | null> {
 	return null;
 }
 
-async function get<T>(path: string): Promise<T> {
-	const res = await fetch(`${apiBase()}${path}`);
+async function get<T>(path: string, timeoutMs = 10000): Promise<T> {
+	const res = await fetch(`${apiBase()}${path}`, { signal: timeoutSignal(timeoutMs) });
 	if (!res.ok) throw new Error(`${path}: HTTP ${res.status}`);
 	return (await res.json()) as T;
 }
 
-async function post<T>(path: string, body: unknown): Promise<T> {
+async function post<T>(path: string, body: unknown, timeoutMs = 15000): Promise<T> {
 	const res = await fetch(`${apiBase()}${path}`, {
 		method: 'POST',
 		headers: { 'Content-Type': 'application/json' },
-		body: JSON.stringify(body)
+		body: JSON.stringify(body),
+		signal: timeoutSignal(timeoutMs)
 	});
 	if (!res.ok) throw new Error(`${path}: HTTP ${res.status}`);
 	return (await res.json()) as T;
@@ -132,7 +174,12 @@ export interface UsageEvent {
 	machineAlias?: string;
 	accountID?: string;
 	tokens: TokenBreakdown;
+	/** Effective charge (file-reported > meter-computed); 0 for plan-free usage. */
 	cost: number;
+	/** USD list-price equivalent at the request's own timestamp rates; null when unpriced. */
+	costEquivalent?: number | null;
+	/** Raw meter-observed cost before the file-cost rank. */
+	costRaw?: number;
 	latencyMs?: number;
 	generationTokPerSec?: number;
 	promptTokPerSec?: number;
@@ -149,6 +196,8 @@ export interface ModelSummary {
 	model: string;
 	tokens: TokenBreakdown;
 	cost: number;
+	/** USD list-price equivalent; null when unpriced. */
+	costEquivalent?: number | null;
 	requests: number;
 	avgGenerationTokPerSec?: number;
 	avgPromptTokPerSec?: number;
@@ -161,6 +210,8 @@ export interface ProviderSummary {
 	source: string;
 	tokens: TokenBreakdown;
 	cost: number;
+	/** USD list-price equivalent summed over priced models; null when none priced. */
+	costEquivalent?: number | null;
 	requests: number;
 	models: ModelSummary[];
 }
@@ -194,6 +245,10 @@ export interface BucketRow {
 	vendor: string;
 	tokens: TokenBreakdown;
 	cost: number;
+	/** USD list-price equivalent for the bucket; null when unpriced. */
+	costEquivalent?: number | null;
+	/** Requests in the bucket. */
+	requests: number;
 }
 
 export interface ProcSample {
@@ -299,6 +354,7 @@ export const api = {
 		),
 	trends: (window: string) => get<Trends>(`/trends?window=${window}`),
 	limits: () => get<{ limits: ProviderLimit[] }>('/limits'),
+	refreshLimits: () => post<{ limits: ProviderLimit[] }>('/limits/refresh', {}),
 	buckets: (resolution: number, fromEpoch: number, metered = true, extra = '') =>
 		get<{ resolution: number; buckets: BucketRow[] }>(
 			`/analytics/buckets?resolution=${resolution}&from=${Math.floor(fromEpoch)}${metered ? '&metered=1' : ''}${extra}`
