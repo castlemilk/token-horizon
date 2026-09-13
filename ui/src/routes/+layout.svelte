@@ -9,6 +9,7 @@
 	import ScopeBanner from '$lib/components/ScopeBanner.svelte';
 	import OSIcon from '$lib/components/OSIcon.svelte';
 	import Onboarding from '$lib/components/Onboarding.svelte';
+	import RingsBackground from '$lib/components/RingsBackground.svelte';
 	import { Coins, Trophy, Cpu, Gauge, Settings, PlugZap } from 'lucide-svelte';
 
 	let { children } = $props();
@@ -25,6 +26,19 @@
 	onMount(() => {
 		const stopScope = scope.start();
 		connection.start();
+		// Lenis smooth scroll (skipped for reduced-motion): buttery wheel
+		// inertia over the whole app shell. autoRaf drives its own loop.
+		let lenis: { destroy: () => void } | null = null;
+		const reduceMotion =
+			typeof matchMedia !== 'undefined' &&
+			matchMedia('(prefers-reduced-motion: reduce)').matches;
+		if (!reduceMotion) {
+			import('lenis')
+				.then(({ default: Lenis }) => {
+					lenis = new Lenis({ autoRaf: true, lerp: 0.09, smoothWheel: true });
+				})
+				.catch(() => {});
+		}
 		const checkRuntimes = async () => {
 			if (!connection.online) return;
 			try {
@@ -37,6 +51,8 @@
 		const id = setInterval(checkRuntimes, 5000);
 		return () => {
 			clearInterval(id);
+			lenis?.destroy();
+			lenis = null;
 			stopScope();
 		};
 	});
@@ -55,7 +71,7 @@
 		return () => clearTimeout(t);
 	});
 
-	// Machine tab appears when runtime analytics are actually available:
+	// Metering tab appears when runtime analytics are actually available:
 	// something running locally or a runtime with measured usage.
 	const machineAvailable = $derived(
 		runtimes.some((r) => r.running || r.usage.tokens_all > 0)
@@ -71,7 +87,7 @@
 	];
 	const tabs = $derived(
 		machineAvailable
-			? [...baseTabs, { path: '/machine', label: 'Machine', icon: Cpu }, ...tailTabs]
+			? [...baseTabs, { path: '/metering', label: 'Metering', icon: Cpu }, ...tailTabs]
 			: [...baseTabs, ...tailTabs]
 	);
 
@@ -142,3 +158,5 @@
 		</div>
 	</footer>
 </div>
+<!-- Backdrop mounts last so its setup can never block siblings' onMount -->
+<RingsBackground />

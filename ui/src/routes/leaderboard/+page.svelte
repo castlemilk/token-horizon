@@ -25,6 +25,21 @@
 	let entries = $state<unknown[]>([]);
 </script>
 
+<header class="phead">
+	<div>
+		<h1>Leaderboard</h1>
+		<p class="psub">
+			{#if scope.cloud === 'synced'}
+				Team ranking · {periods.find((p) => p.id === period)?.label}
+			{:else if scope.cloud === 'degraded'}
+				Cloud stale — rankings paused
+			{:else}
+				Off-machine rankings need cloud sync
+			{/if}
+		</p>
+	</div>
+</header>
+
 <div class="row" style="margin-bottom: 14px">
 	<div class="seg" role="group" aria-label="Period">
 		{#each periods as p}
@@ -41,10 +56,10 @@
 			</div>
 			{#if scope.cloud === 'degraded'}
 				Cloud sync is unreachable right now — rankings would be stale.
-				On-machine usage ({scope.thisMachineName}) is unaffected; see Tokens / Machine.
+				On-machine usage ({scope.thisMachineName}) is unaffected; see Tokens / Metering.
 			{:else}
 				Cloud sync is not configured on this daemon, so there is no off-machine
-				data to rank. Your on-machine usage is fully tracked — see Tokens / Machine.
+				data to rank. Your on-machine usage is fully tracked — see Tokens / Metering.
 			{/if}
 		</div>
 	</div>

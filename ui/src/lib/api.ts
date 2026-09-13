@@ -368,6 +368,11 @@ export const api = {
 			vendor,
 			enabled
 		}),
+	setMeterPort: (vendor: string, port: number) =>
+		post<{ ok: boolean; running: boolean; listen_port: number | null }>('/meters/port', {
+			vendor,
+			port
+		}),
 	consolidate: () => post<{ ok: boolean; observations: Record<string, number> }>('/consolidate', {}),
 	permissions: () => get<{ permissions: CapabilityStatus[] }>('/permissions'),
 	consents: () => get<{ scopes: ConsentState[] }>('/consents'),

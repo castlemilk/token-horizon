@@ -57,9 +57,9 @@
 
 	--accent: light-dark(#26262c, #dcdce2);
 	--accent-soft: light-dark(rgb(0 0 0 / 0.07), rgb(255 255 255 / 0.11));
-	--ok: light-dark(#34c759, #4ac26b);
+	--ok: light-dark(#00a651, #30d158);
 	--warn: light-dark(#9a6700, #d4a72c);
-	--bad: light-dark(#cf222e, #f47067);
+	--bad: light-dark(#ee334e, #ff453a);
 	--track: light-dark(rgb(0 0 0 / 0.07), rgb(255 255 255 / 0.08));
 
 	--radius: 6px;
@@ -88,7 +88,29 @@ body {
 }
 
 body {
-	background: var(--bg);
+	background:
+		radial-gradient(
+			1100px 750px at 88% -8%,
+			light-dark(rgb(0 129 200 / 0.13), rgb(0 129 200 / 0.24)),
+			transparent 62%
+		),
+		radial-gradient(
+			950px 700px at 6% 108%,
+			light-dark(rgb(238 51 78 / 0.09), rgb(238 51 78 / 0.17)),
+			transparent 60%
+		),
+		radial-gradient(
+			800px 800px at 50% 55%,
+			light-dark(rgb(0 166 81 / 0.06), rgb(0 166 81 / 0.1)),
+			transparent 65%
+		),
+		radial-gradient(
+			700px 520px at 12% -4%,
+			light-dark(rgb(252 177 49 / 0.1), rgb(252 177 49 / 0.13)),
+			transparent 60%
+		),
+		var(--bg);
+	background-attachment: fixed;
 	color: var(--text);
 	font-family: var(--font-ui);
 	font-size: 13px;
@@ -111,6 +133,23 @@ a {
 	text-decoration: none;
 }
 
+/* ---- Lenis smooth scroll ----
+ * Required companion styles: keep native height, never fight the rAF loop
+ * with CSS scroll-behavior. */
+html.lenis,
+html.lenis body {
+	height: auto;
+}
+.lenis.lenis-smooth {
+	scroll-behavior: auto !important;
+}
+.lenis.lenis-smooth [data-lenis-prevent] {
+	overscroll-behavior: contain;
+}
+.lenis.lenis-stopped {
+	overflow: hidden;
+}
+
 /* ---- Chrome ---- */
 
 .shell {
@@ -124,7 +163,7 @@ a {
 }
 @media (max-width: 640px) {
 	.shell {
-		padding: 0 18px 64px;
+		padding: 0 22px 64px;
 		overflow-x: clip;
 	}
 	.island-shell {
@@ -400,17 +439,46 @@ a {
 /* ---- Sections ---- */
 
 .section-label {
-	font-size: 12px;
+	font-size: 11px;
 	font-weight: 600;
+	letter-spacing: 0.08em;
+	text-transform: uppercase;
 	color: var(--text-3);
 	margin: 24px 0 8px;
 }
 
+/* ---- Page masthead ----
+ * Shared tab header language: display title, quiet sub, hairline rule.
+ * (First-tab hero trio and /limits header follow the same voice.) */
+.phead {
+	display: flex;
+	align-items: flex-start;
+	justify-content: space-between;
+	gap: 12px;
+	margin-bottom: 22px;
+	padding-bottom: 18px;
+	border-bottom: 1px solid var(--line);
+}
+.phead h1 {
+	font-size: 20px;
+	font-weight: 680;
+	letter-spacing: -0.02em;
+	margin: 0 0 4px;
+}
+.psub {
+	font-size: 12px;
+	color: var(--text-3);
+	margin: 0;
+}
+
 /* ---- Cards ----
- * Apple widget tile: soft raised fill, no hard border (matches /limits). */
+ * Apple widget tile: translucent raised fill + blur so the rings backdrop
+ * plays through the light. Matches /limits tiles. */
 
 .card {
-	background: color-mix(in srgb, var(--bg-raised) 72%, transparent);
+	background: color-mix(in srgb, var(--bg-raised) 62%, transparent);
+	backdrop-filter: blur(22px) saturate(1.6);
+	-webkit-backdrop-filter: blur(22px) saturate(1.6);
 	border: 0;
 	border-radius: 18px;
 	padding: 20px 18px;

@@ -16,12 +16,17 @@
 		points,
 		from,
 		to,
-		height = 210
+		height = 210,
+		/** Concluded-request ping from the page (recent feed id + its billable
+		 *  tokens). Flash + label fire only when a NEW request concludes —
+		 *  polls with no new requests stay quiet. */
+		ping = null
 	}: {
 		points: { ts: number; value: number }[];
 		from: number; /* window start, epoch s */
 		to: number; /* window end, epoch s */
 		height?: number;
+		ping?: { id: string; tokens: number } | null;
 	} = $props();
 
 	let cw = $state(0);
@@ -111,16 +116,54 @@
 		})
 	);
 	const tickY = $derived(H + 14);
+
+	/* arrival flash: fires only when a new request concludes (ping id
+	   changes), positioned from the laid-out newest bar at that moment.
+	   First run just primes — no flash on initial mount. */
+	let pingSeen = $state<string | null>(null);
+	let primed = $state(false);
+	let flash = $state<{ x: number; w: number; y: number; tokens: number; n: number } | null>(null);
+	$effect(() => {
+		const id = ping?.id ?? null;
+		const last = bars[bars.length - 1];
+		if (!primed) {
+			primed = true;
+			pingSeen = id;
+			return;
+		}
+		if (!id || id === pingSeen || !last) return;
+		pingSeen = id;
+		flash = { x: last.x, w: last.w, y: last.y, tokens: ping?.tokens ?? 0, n: (flash?.n ?? 0) + 1 };
+	});
+
+
 </script>
 
 {#if points.length > 0}
 	<div class="vwrap" bind:clientWidth={cw}>
-	<svg class="vchart" viewBox="0 0 {W} {H + LABELH}" style:height="{H + LABELH}px">
+	<svg class="vchart" viewBox="0 -30 {W} {H + LABELH + 30}" style:height="{H + LABELH + 30}px">
 		{#each bars as b}
 			<rect x={b.x} y={b.y} width={b.w} height={Math.max(b.h, 0.5)} rx={b.rx} class="bar">
 				<title>{multiFormat(new Date(b.ts * 1000))} — {fmtTok(b.value)} tokens</title>
 			</rect>
 		{/each}
+		{#if flash}
+			{#key flash.n}
+				<rect
+					x={flash.x}
+					y={0}
+					width={Math.max(flash.w, 2)}
+					height={H}
+					class="flashbar"
+				/>
+				<text
+					x={flash.x + flash.w / 2}
+					y={flash.y - 10}
+					text-anchor="middle"
+					class="flashlabel"
+				>+{fmtTok(flash.tokens)}</text>
+			{/key}
+		{/if}
 		{#each ticks as tk}
 			<text x={tk.x} y={tickY} class="tick" text-anchor={tk.anchor}>{multiFormat(tk.t)}</text>
 		{/each}
@@ -144,6 +187,50 @@
 	}
 	.bar:hover {
 		opacity: 1;
+	}
+	/* arrival wash: sharp full-height bar over the newest column, fading
+	   out; the +N label floats up off the bar top (headroom above the
+	   viewBox keeps it unclipped) */
+	.flashbar {
+		fill: var(--ok);
+		opacity: 0;
+		pointer-events: none;
+		animation: b-flash 1.15s ease-out forwards;
+	}
+	.flashlabel {
+		font-size: 12px;
+		font-weight: 700;
+		fill: var(--ok);
+		font-variant-numeric: tabular-nums;
+		pointer-events: none;
+		animation: b-rise 1.4s ease-out forwards;
+	}
+	@keyframes b-flash {
+		0% {
+			opacity: 0.3;
+		}
+		100% {
+			opacity: 0;
+		}
+	}
+	@keyframes b-rise {
+		0% {
+			opacity: 0;
+			transform: translateY(6px);
+		}
+		15% {
+			opacity: 1;
+		}
+		100% {
+			opacity: 0;
+			transform: translateY(-18px);
+		}
+	}
+	@media (prefers-reduced-motion: reduce) {
+		.flashbar,
+		.flashlabel {
+			animation: none;
+		}
 	}
 	.tick {
 		font-size: 10px;

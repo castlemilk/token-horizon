@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { api, type RuntimeInfo, type Meters } from '$lib/api';
+	import { connection } from '$lib/connection.svelte';
 	import { fmtBytes, fmtTps, poll } from '$lib/format';
 	import Sparkline from '$lib/components/Sparkline.svelte';
 	import ProviderIcon from '$lib/components/ProviderIcon.svelte';
@@ -15,7 +16,9 @@
 	let meters = $state<Meters | null>(null);
 	let consents = $state<ConsentState[]>([]);
 	let service = $state<ServiceStatus | null>(null);
-	let daemonDown = $state(false);
+	/** Shared connection state — auto-reconnects with backoff, so this page
+	 *  recovers on its own instead of latching a local down flag. */
+	const daemonDown = $derived(connection.status === 'offline');
 	let copied = $state<string | null>(null);
 
 	function copy(text: string, key: string) {
@@ -47,7 +50,6 @@
 		poll(async () => {
 			try {
 				[runtimes, meters] = await Promise.all([api.runtimes(), api.meters()]);
-				daemonDown = false;
 				// tok/s history per running runtime (coarse 30s rollups).
 				for (const rt of runtimes.filter((r) => r.running)) {
 					if (histories[rt.vendor]) continue;
@@ -61,7 +63,6 @@
 						.catch(() => {});
 				}
 			} catch {
-				daemonDown = true;
 				return;
 			}
 			try {
@@ -90,14 +91,82 @@
 		}
 	}
 
-	const running = $derived(runtimes.filter((r) => r.running));
+	/* ---- Custom meter ports: numbers-only drafts per runtime vendor ---- */
+
+	/** Raw draft text per vendor; absent = show the live/default port. */
+	let portDrafts = $state<Record<string, string>>({});
+	/** Vendors with a save in flight. */
+	let portSaving = $state<Record<string, boolean>>({});
+	/** Last per-vendor result: 'ok' flash or daemon error text. */
+	let portResult = $state<Record<string, string>>({});
+
+	function meterPortFor(vendor: string): number | null {
+		const key = vendor.toLowerCase();
+		const live = liveMeters.get(key)?.listen_port;
+		if (live != null) return live;
+		return meters?.catalog.find((c) => c.vendor.toLowerCase() === key)?.listen_port ?? null;
+	}
+
+	function draftFor(vendor: string): string {
+		return portDrafts[vendor] ?? String(meterPortFor(vendor) ?? '');
+	}
+
+	function portError(vendor: string): string | null {
+		const raw = (portDrafts[vendor] ?? '').trim();
+		if (!(vendor in portDrafts)) return null; // untouched — nothing to judge
+		if (!/^\d{1,5}$/.test(raw)) return 'Digits only';
+		const n = Number(raw);
+		if (n < 1 || n > 65535) return 'Port must be 1–65535';
+		if (n === meterPortFor(vendor)) return 'Already on this port';
+		return null;
+	}
+
+	function stripNonDigits(vendor: string, el: HTMLInputElement) {
+		const clean = el.value.replace(/\D+/g, '').slice(0, 5);
+		if (clean !== el.value) el.value = clean;
+		portDrafts[vendor] = clean;
+		portResult[vendor] = '';
+	}
+
+	async function applyPort(vendor: string) {
+		const err = portError(vendor);
+		if (err || portSaving[vendor]) return;
+		const port = Number(portDrafts[vendor].trim());
+		portSaving[vendor] = true;
+		portResult[vendor] = '';
+		try {
+			const r = await api.setMeterPort(vendor, port);
+			meters = await api.meters().catch(() => meters);
+			delete portDrafts[vendor];
+			portResult[vendor] = r.listen_port === port ? 'Live' : 'Saved';
+		} catch (e) {
+			portResult[vendor] = e instanceof Error ? e.message : 'Save failed';
+		} finally {
+			portSaving[vendor] = false;
+		}
+	}
+
+	const running = $derived(
+		runtimes.filter((r) => r.running).sort((a, b) => b.usage.tokens_all - a.usage.tokens_all)
+	);
 	const runningVendors = $derived(new Set((meters?.point ?? []).map((m) => m.vendor)));
-	const catalog = $derived(meters?.catalog ?? []);
+	const liveMeters = $derived(new Map((meters?.point ?? []).map((m) => [m.vendor.toLowerCase(), m])));
+	/** Catalog ordered by popularity: live meters first, then most-measured
+	 *  traffic, alphabetical tiebreak — the vendors you actually use lead. */
+	const catalog = $derived(
+		[...(meters?.catalog ?? [])].sort((a, b) => {
+			if (a.running !== b.running) return a.running ? -1 : 1;
+			const traffic = (v: string) => {
+				const m = liveMeters.get(v.toLowerCase());
+				return (m?.seen ?? 0) + (m?.measured ?? 0);
+			};
+			return traffic(b.vendor) - traffic(a.vendor) || a.vendor.localeCompare(b.vendor);
+		})
+	);
 
 	/* ---- Recovery: daemon-observable failure states + fixes ---- */
 	const consentDenied = (s: string) =>
 		consents.length > 0 && !(consents.find((c) => c.scope === s)?.granted ?? false);
-	const liveMeters = $derived(new Map((meters?.point ?? []).map((m) => [m.vendor.toLowerCase(), m])));
 	/** Runtime active (or has usage) but no meter listening — enable it. */
 	const unmeteredActive = $derived(
 		runtimes.filter((r) => {
@@ -144,34 +213,28 @@
 {#if catalog.length === 0}
 	<div class="empty">No meterable vendors discovered — the daemon catalog appears here</div>
 {:else}
-	<div class="card">
-		<table>
-			<thead>
-				<tr><th>System</th><th>Listen</th><th></th><th>Upstream</th><th class="right">Meter</th></tr>
-			</thead>
-			<tbody>
-				{#each catalog as m}
-					<tr>
-						<td>
-							<span style="display: flex; align-items: center; gap: 7px" title={m.vendor}>
-								<ProviderIcon vendor={m.vendor} size={20} />
-								{m.vendor}
-							</span>
-						</td>
-						<td class="mono" class:faint={!m.running}>127.0.0.1:{m.listen_port}</td>
-						<td class="faint">{m.running ? '→' : ''}</td>
-						<td class="mono dim">{m.running ? (m.target ?? '—') : 'off'}</td>
-						<td class="right">
-							<Switch
-								checked={m.running}
-								onCheckedChange={(v) => void toggleMeter(m.vendor, v)}
-								aria-label="Meter {m.vendor}"
-							/>
-						</td>
-					</tr>
-				{/each}
-			</tbody>
-		</table>
+	<div class="meter-tiles">
+		{#each catalog as m}
+			<div class="card mtile">
+				<div class="mtile-head">
+					<span style="display: flex; align-items: center; gap: 7px" title={m.vendor}>
+						<ProviderIcon vendor={m.vendor} size={20} />
+						<strong>{m.vendor}</strong>
+					</span>
+					<span class="dot" class:up={m.running}></span>
+				</div>
+				<div class="mono mroute" class:faint={!m.running}>127.0.0.1:{m.listen_port}</div>
+				<div class="mono dim mroute">→ {m.running ? (m.target ?? '—') : 'off'}</div>
+				<div class="mtile-foot">
+					<span class="faint">{m.running ? 'metering' : 'off'}</span>
+					<Switch
+						checked={m.running}
+						onCheckedChange={(v) => void toggleMeter(m.vendor, v)}
+						aria-label="Meter {m.vendor}"
+					/>
+				</div>
+			</div>
+		{/each}
 	</div>
 	<div class="hint" style="margin: 6px 0 0 2px; font-size: 11px; color: var(--text-3)">
 		Point a tool at its listen URL and its traffic gets measured on the way
@@ -188,6 +251,8 @@
 {:else}
 	<div class="stack">
 		{#each running as rt}
+			{@const perr = portError(rt.vendor)}
+			{@const canSave = rt.vendor in portDrafts && !perr && !portSaving[rt.vendor]}
 			<div class="card">
 				<div class="row" style="justify-content: space-between">
 					<span style="display: flex; align-items: center; gap: 7px">
@@ -213,11 +278,46 @@
 					{#if rt.extra?.loaded_vram_bytes != null}<span>vram {fmtBytes(rt.extra.loaded_vram_bytes)}</span>{/if}
 					{#if rt.extra?.proc_cpu_percent != null}<span>cpu {rt.extra.proc_cpu_percent.toFixed(0)}%</span>{/if}
 					{#if rt.extra?.proc_mem_mb != null}<span>mem {fmtBytes(rt.extra.proc_mem_mb * 1048576)}</span>{/if}
-					<span class="faint">tokens <CountUp value={rt.usage.tokens_all} /></span>
+				<span class="faint">tokens <CountUp value={rt.usage.tokens_all} /></span>
+				</div>
+				<div class="portrow">
+					<span class="dim">Meter port</span>
+					<input
+						class="pinput mono"
+						class:error={!!perr}
+						inputmode="numeric"
+						pattern="[0-9]*"
+						autocomplete="off"
+						spellcheck="false"
+						maxlength={5}
+						placeholder={String(meterPortFor(rt.vendor) ?? '')}
+						value={draftFor(rt.vendor)}
+						oninput={(e) => stripNonDigits(rt.vendor, e.currentTarget)}
+						onkeydown={(e) => {
+							if (e.key === 'Enter') void applyPort(rt.vendor);
+						}}
+						aria-label="Meter port for {rt.display_name}"
+					/>
+					<button
+						class="btn"
+						disabled={!canSave}
+						onclick={() => void applyPort(rt.vendor)}
+					>
+						{portSaving[rt.vendor] ? '…' : 'Apply'}
+					</button>
+					{#if perr}
+						<span class="perr">{perr}</span>
+					{:else if portResult[rt.vendor]}
+						<span class="pok" class:bad={portResult[rt.vendor] !== 'Live' && portResult[rt.vendor] !== 'Saved'}>
+							{portResult[rt.vendor]}
+						</span>
+					{:else}
+						<span class="faint">127.0.0.1:{meterPortFor(rt.vendor) ?? '—'}</span>
+					{/if}
 				</div>
 			</div>
 		{/each}
-	</div>
+		</div>
 {/if}
 
 {#if recoveryOpen}
@@ -359,6 +459,92 @@
 {/if}
 
 <style>
+	/* custom meter port: numbers-only, validated 1–65535 */
+	.portrow {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		margin-top: 10px;
+		padding-top: 10px;
+		border-top: 1px solid var(--line);
+		font-size: 12px;
+		flex-wrap: wrap;
+	}
+	.pinput {
+		width: 76px;
+		border: 1px solid var(--line);
+		background: var(--bg);
+		color: var(--text);
+		border-radius: 8px;
+		font-size: 12px;
+		padding: 5px 9px;
+		font-variant-numeric: tabular-nums;
+	}
+	.pinput:focus {
+		outline: 2px solid var(--accent);
+		outline-offset: 0;
+		border-color: transparent;
+	}
+	.pinput.error {
+		border-color: var(--bad);
+		background: color-mix(in srgb, var(--bad) 7%, var(--bg));
+	}
+	.pinput.error:focus {
+		outline-color: var(--bad);
+	}
+	.portrow .btn:disabled {
+		opacity: 0.45;
+		cursor: default;
+	}
+	.perr {
+		color: var(--bad);
+		font-size: 11.5px;
+		font-weight: 600;
+	}
+	.pok {
+		color: var(--ok);
+		font-size: 11.5px;
+		font-weight: 600;
+	}
+	.pok.bad {
+		color: var(--bad);
+		font-weight: 500;
+		max-width: 220px;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+	/* request routing as tiles: side by side when roomy, one long
+	   column when not */
+	.meter-tiles {
+		display: grid;
+		grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+		gap: 10px;
+	}
+	.mtile-head {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 8px;
+		font-size: 12.5px;
+		margin-bottom: 6px;
+	}
+	.mtile {
+		padding: 13px 14px;
+	}
+	.mroute {
+		font-size: 10.5px;
+		line-height: 1.5;
+		overflow-x: auto;
+		white-space: nowrap;
+	}
+	.mtile-foot {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		margin-top: 8px;
+		font-size: 11px;
+	}
 	.rtitle {
 		font-size: 13px;
 		font-weight: 600;
