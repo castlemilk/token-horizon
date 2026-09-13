@@ -2,7 +2,7 @@ import { chromium } from '/Users/benebsworth/projects/tautau/web/node_modules/pl
 import path from 'path';
 
 /**
- * Budget-gated benchmark for the TokenArena dashboard chart/render pipeline.
+ * Budget-gated benchmark for the Token Horizon dashboard chart/render pipeline.
  * Hermetic (fixtures only, never production) and machine-dependent — budgets
  * are deliberately loose enough for CI but tight enough to catch regressions
  * such as remounting charts on every re-render.
@@ -212,7 +212,7 @@ async function main() {
   const perf = await page.evaluate(() => ({ ...window.__thPerf }));
   await browser.close();
 
-  console.log('\nTokenArena dashboard bench (hermetic fixtures, 120 players)\n');
+  console.log('\nToken Horizon dashboard bench (hermetic fixtures, 120 players)\n');
   console.log('scenario                            measured      budget   result');
   console.log('---------------------------------------------------------------');
   for (const r of results) {

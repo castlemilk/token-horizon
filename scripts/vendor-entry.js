@@ -1,5 +1,5 @@
 // Vendor entry: exposes the TanStack Charts primitives used by the static
-// TokenArena dashboard on `window.TanStackCharts`. Bundled by
+// Token Horizon dashboard on `window.TanStackCharts`. Bundled by
 // scripts/build-vendor.mjs into docs/vendor/tanstack-charts.js so the page
 // stays dependency-free at runtime and works offline.
 import {

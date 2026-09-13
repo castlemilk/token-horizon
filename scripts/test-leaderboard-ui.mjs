@@ -2,7 +2,7 @@ import { chromium } from '/Users/benebsworth/projects/tautau/web/node_modules/pl
 import path from 'path';
 
 /**
- * Hermetic UI regression for the TokenArena dashboard. All API calls are
+ * Hermetic UI regression for the Token Horizon dashboard. All API calls are
  * intercepted with fixtures, so the test never touches production or the
  * local daemon. Covers every routed view plus the share modal.
  */
@@ -282,8 +282,22 @@ async function run() {
   for (let i = 0; i < 4; i++) { await page.click('#range-pill'); await page.waitForTimeout(180); }
   if (!apiUrls.some(u => u.includes('historyDays=7'))) throw new Error('Range pill did not request historyDays=7');
   if (!apiUrls.some(u => u.includes('historyDays=90'))) throw new Error('Range pill did not request historyDays=90');
+  // Sidebar brand mark: ASCII art renders, animates on hover, pauses on leave.
+  const navRest = await page.evaluate(() => document.querySelector('#nav-bh')?.textContent || '');
+  if (navRest.replace(/\s/g, '').length < 40) throw new Error('Nav ASCII logo did not render');
+  await page.hover('#brand-logo');
+  const navF1 = await page.evaluate(() => document.querySelector('#nav-bh').textContent);
+  await page.waitForTimeout(500);
+  const navF2 = await page.evaluate(() => document.querySelector('#nav-bh').textContent);
+  if (navF1 === navF2) throw new Error('Nav ASCII logo did not animate on hover');
+  await page.mouse.move(800, 500);
+  await page.waitForTimeout(250);
+  const navP1 = await page.evaluate(() => document.querySelector('#nav-bh').textContent);
+  await page.waitForTimeout(350);
+  const navP2 = await page.evaluate(() => document.querySelector('#nav-bh').textContent);
+  if (navP1 !== navP2) throw new Error('Nav ASCII logo did not pause on mouse leave');
   console.log(`   rows=${rows.length} tiers=${tiers.length} kpis=${kpis.length} charts=${chartSeries} avatars=${genAvatars} logos=${logos} brands=${brandImgs.length}`);
-  console.log(`   legend=${legendItems.length} columns=${columns.count} (maxGap=${columns.maxGap.toFixed(1)}px) chartMounts=${perfAfter.chartMounts} reuses=${perfAfter.chartReuses}`);
+  console.log(`   legend=${legendItems.length} columns=${columns.count} (maxGap=${columns.maxGap.toFixed(1)}px) chartMounts=${perfAfter.chartMounts} reuses=${perfAfter.chartReuses} navLogo=animated+paused`);
 
   console.log('2. Opening player profile from a row...');
   await page.locator('#lb-table tbody tr').first().click();

@@ -1,10 +1,10 @@
-# TokenArena — Objective vs Current State
+# Token Horizon — Objective vs Current State
 
 How the leaderboard/dashboard works end-to-end, what each mockup screen asked
 for, what shipped, and where reality deviates. Keep this in sync when changing
 the dashboard, the worker, or the published entry schema.
 
-- **Objective**: the nine ChatGPT "TokenArena" wireframes (`Dashboard`,
+- **Objective**: the nine ChatGPT dashboard wireframes (`Dashboard`,
   `Leaderboard`, `Player Profile`, `Leagues`, `Provider Breakdown`,
   `Share modal`, `Sharing & Access Control`).
 - **Current**: `docs/leaderboard.html` (static SPA) + `cloudflare/src/index.js`
@@ -195,13 +195,15 @@ R2 leaderboard.json ────────────────────
   every gated action — opens the sign-in modal, a two-column popout with an
   animated ASCII black hole on the left and the Google Identity Services
   button on the right (dev email fallback when `GOOGLE_CLIENT_ID` is unset).
-- The ASCII art (`BLACKHOLE` in `docs/leaderboard.html`) is a small
+- The ASCII art (`createBlackHole` in `docs/leaderboard.html`) is a small
   Schwarzschild ray tracer: 72×32 character cells integrate null geodesics
   once into a light map (disk-plane crossings + escape stars), then each
   ~30fps frame only re-evaluates the accretion-disk + inbound token-stream
   field. Classic Gargantua look — dark shadow, photon ring, edge-on disk,
   lensed arcs — with tokens (amber) spiralling inward. Static single frame
   under `prefers-reduced-motion`; the RAF loop stops when the modal closes.
+  A second 28×11 instance is the sidebar brand mark (`#nav-bh`): paused at
+  rest, resumes on hover, pauses on leave (shield fallback under 860px).
 - `requireSignIn()` stores the attempted action in `state.signInPending`;
   after the credential callback the modal closes and the action resumes
   (New Group, Share New, profile share, claim profile).

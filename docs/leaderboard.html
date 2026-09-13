@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>TokenArena — Token Horizon Leaderboard & AI Analytics</title>
+<title>Token Horizon — AI Usage Leaderboard & Analytics</title>
 <meta name="description" content="Competitive AI token usage leaderboard, league ladders, provider breakdowns, and developer analytics powered by Token Horizon." />
 <link rel="icon" href="./assets/favicon.svg" type="image/svg+xml" />
 <script src="https://accounts.google.com/gsi/client" async defer></script>
@@ -30,8 +30,12 @@ button{font-family:inherit}
 
 .app{display:grid;grid-template-columns:232px 1fr;min-height:100vh}
 .sidebar{background:linear-gradient(180deg,#0B101A,#080B12);border-right:1px solid var(--line);padding:18px 14px;display:flex;flex-direction:column;gap:6px;position:sticky;top:0;height:100vh;overflow-y:auto}
-.brand{display:flex;align-items:center;gap:10px;padding:4px 8px 16px}
-.brand-logo{width:34px;height:34px;border-radius:10px;background:linear-gradient(135deg,#1E2A45,#0E1626);display:grid;place-items:center;border:1px solid var(--line2)}
+.brand{display:flex;flex-direction:column;align-items:flex-start;gap:10px;padding:4px 8px 16px}
+.brand-logo{flex:none;width:92px;height:58px;border-radius:12px;background:radial-gradient(ellipse at 50% 45%,#101A2C 0%,#0A0F1A 75%);display:grid;place-items:center;border:1px solid var(--line2);overflow:hidden;transition:border-color .15s,box-shadow .15s}
+.brand-logo:hover{border-color:rgba(79,140,255,.45);box-shadow:0 0 0 1px rgba(79,140,255,.15),0 6px 18px rgba(0,0,0,.35)}
+.nav-bh{margin:0;font-family:var(--mono);font-size:4.9px;line-height:1.02;color:#A9C6F2;text-shadow:0 0 6px rgba(84,145,255,.45);user-select:none;white-space:pre;pointer-events:none}
+.nav-bh .bh-tok{color:#FFD185;text-shadow:0 0 7px rgba(255,190,90,.85)}
+.nav-shield{display:none}
 .brand-title{font-weight:800;font-size:16px;letter-spacing:.2px}
 .brand-sub{font-size:9.5px;color:var(--faint);letter-spacing:1.6px;text-transform:uppercase;margin-top:2px}
 .beta{font-size:9px;background:rgba(79,140,255,.16);color:#8FB6FF;border:1px solid rgba(79,140,255,.3);border-radius:999px;padding:2px 6px;margin-left:6px;vertical-align:2px}
@@ -273,18 +277,19 @@ tbody tr.selected{background:rgba(79,140,255,.08)}
 .insight .d{font-size:11px;margin-top:2px}
 
 @media(max-width:1180px){.kpis{grid-template-columns:repeat(2,1fr)}.stat-grid{grid-template-columns:repeat(2,1fr)}.two-col,.split,.three-col{grid-template-columns:1fr}.ladder{grid-template-columns:repeat(4,1fr)}}
-@media(max-width:860px){.app{grid-template-columns:64px 1fr}.brand-title,.brand-sub,.nav-item span,.promo{display:none}.nav-item{justify-content:center}.content{padding:16px}.page-head h1{font-size:22px}}
+@media(max-width:860px){.app{grid-template-columns:64px 1fr}.brand-title,.brand-sub,.nav-item span,.promo{display:none}.brand{padding:4px 0 16px;justify-content:center}.brand-logo{width:34px;height:34px}.nav-bh{display:none}.nav-shield{display:block}.nav-item{justify-content:center}.content{padding:16px}.page-head h1{font-size:22px}}
 </style>
 </head>
 <body>
 <div class="app">
   <aside class="sidebar">
     <div class="brand">
-      <div class="brand-logo">
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none"><path d="M12 2l8 3v6c0 5-3.5 8.5-8 11-4.5-2.5-8-6-8-11V5l8-3z" stroke="#4F8CFF" stroke-width="1.5" fill="rgba(79,140,255,.15)"/><circle cx="12" cy="11" r="3" fill="#38BDF8"/></svg>
+      <div class="brand-logo" id="brand-logo" title="Token Horizon">
+        <pre class="nav-bh" id="nav-bh" aria-hidden="true"></pre>
+        <svg class="nav-shield" width="20" height="20" viewBox="0 0 24 24" fill="none"><path d="M12 2l8 3v6c0 5-3.5 8.5-8 11-4.5-2.5-8-6-8-11V5l8-3z" stroke="#4F8CFF" stroke-width="1.5" fill="rgba(79,140,255,.15)"/><circle cx="12" cy="11" r="3" fill="#38BDF8"/></svg>
       </div>
       <div>
-        <div class="brand-title">TokenArena<span class="beta">BETA</span></div>
+        <div class="brand-title">Token Horizon<span class="beta">BETA</span></div>
         <div class="brand-sub">Usage fuels progress</div>
       </div>
     </div>
@@ -334,7 +339,7 @@ tbody tr.selected{background:rgba(79,140,255,.08)}
 <script>
 "use strict";
 /* ============================================================
-   TokenArena — data-driven leaderboard & analytics dashboard.
+   Token Horizon — data-driven leaderboard & analytics dashboard.
    Backed by the Token Horizon Cloudflare edge API:
      /api/leaderboard  /api/user/:handle  /api/providers
      /api/teams        /api/season        /api/share/*
@@ -1264,7 +1269,7 @@ function renderAuthSlot() {
   if (s) {
     slot.innerHTML = `<div class="user-chip" id="user-chip">${avatar(s.name || s.email, s.picture, 28)}<div><div style="font-size:12.5px;font-weight:600">${esc(s.name || s.email)}</div><small>Google · sign out</small></div></div>`;
     $("#user-chip").onclick = () => {
-      if (!confirm("Sign out of TokenArena?")) return;
+      if (!confirm("Sign out of Token Horizon?")) return;
       if (state.googleReady && window.google?.accounts?.id) {
         try { google.accounts.id.disableAutoSelect(); } catch (_) {}
       }
@@ -2185,7 +2190,7 @@ function insightCard(label, value, detail, icon, provider) {
 async function renderTeams() {
   const p = await loadProviders();
   const teams = p.teams || [];
-  $("#view").innerHTML = pageHead(["Players", "Teams"], "Team Leaderboard", "Aggregate usage across every team publishing to TokenArena.", "Together, teams go further.")
+  $("#view").innerHTML = pageHead(["Players", "Teams"], "Team Leaderboard", "Aggregate usage across every team publishing to Token Horizon.", "Together, teams go further.")
     + `<div class="grid kpis" style="margin-bottom:16px">
       ${kpiCard("Teams", String(teams.length), "", ICONS.users)}
       ${kpiCard("Team Tokens", fmtTokens(teams.reduce((s, t) => s + t.tokens, 0)), "", ICONS.tokens)}
@@ -2524,26 +2529,29 @@ function toast(msg, isErr = false) {
 }
 
 /* ============================================================
-   ANIMATED ASCII BLACK HOLE (sign-in art)
+   ANIMATED ASCII BLACK HOLE
    Classic Gargantua view: an edge-on accretion disk lensed by a
    Schwarzschild black hole, with token streams spiralling into
    the event horizon. Null geodesics are integrated once per
    character cell (a light map of disk crossings); each animation
    frame only re-evaluates the disk + token field, so it is cheap.
+   Used large in the sign-in modal (auto-animated) and small in the
+   sidebar brand mark (paused, animates on hover).
    ============================================================ */
-const BLACKHOLE = (() => {
-  const W = 72, H = 32;
+function createBlackHole(opts = {}) {
+  const W = opts.width || 72, H = opts.height || 32;
   const TAU = Math.PI * 2;
-  const RS = 1;                          // event horizon radius
-  const CAM_Y = 1.05, CAM_Z = 13;        // camera: slightly above the disk plane
-  const WORLD_HALF = 7.6;                // horizontal half-extent in world units
+  const RS = 1;                                    // event horizon radius
+  const CAM_Y = opts.camY ?? 1.05, CAM_Z = opts.camZ ?? 13;
+  const WORLD_HALF = opts.worldHalf ?? 7.6;        // horizontal half-extent
   const DX = (WORLD_HALF * 2) / W;
-  const DY = DX * 1.66;                  // monospace cell aspect (~0.6 w/h)
-  const MAXSTEP = 200;
-  const RAMP = " .:-=+*#%@";
+  const DY = DX * (opts.aspect ?? 1.66);           // monospace cell aspect
+  const MAXSTEP = opts.maxStep || 200;
+  const RAMP = opts.ramp || " .:-=+*#%@";
+  const FRAME_MS = opts.frameMs || 33;             // ~30fps cap
 
   const light = new Array(W * H);
-  let built = false, el = null, raf = 0, pending = 0, last = 0, t0 = 0, running = false;
+  let built = false, el = null, raf = 0, pending = 0, lastNow = 0, time = 4.2, running = false;
 
   const fract = v => v - Math.floor(v);
   const smoothstep = (a, b, x) => {
@@ -2605,7 +2613,7 @@ const BLACKHOLE = (() => {
       }
     }
     built = true;
-    window.__bhBuildMs = Math.round(performance.now() - started);
+    if (W >= 40) window.__bhBuildMs = Math.round(performance.now() - started);
   }
 
   /// Accretion-disk emission at a lensed crossing: radial profile,
@@ -2622,7 +2630,7 @@ const BLACKHOLE = (() => {
     return [d + tok, tok];
   }
 
-  function draw(time) {
+  function draw() {
     if (!el) return;
     let out = "";
     for (let j = 0; j < H; j++) {
@@ -2646,43 +2654,55 @@ const BLACKHOLE = (() => {
     if (!running) return;
     if (!el || !el.isConnected) { running = false; el = null; return; }
     raf = requestAnimationFrame(frame);
-    if (now - last < 33) return;                            // ~30fps cap
-    last = now;
-    draw((now - t0) / 1000);
+    if (now - lastNow < FRAME_MS) return;
+    if (lastNow) time += Math.min(0.12, (now - lastNow) / 1000);
+    lastNow = now;
+    draw();
   }
 
-  function run() {
+  function run(animate) {
     if (!el) return;
-    draw(4.2);
-    if (reduceMotion()) return;
+    draw();
+    if (!animate || reduceMotion()) return;
     running = true;
-    t0 = performance.now();
-    last = 0;
+    lastNow = 0;
     raf = requestAnimationFrame(frame);
   }
 
   return {
-    start(target) {
+    start(target, startOpts = {}) {
       this.stop();
       el = target;
-      if (built) return run();
-      pending = setTimeout(() => {                          // paint the modal first
-        pending = 0;
+      const go = () => {
         if (!el) return;
-        buildLightMap();
-        run();
-      }, 24);
+        if (!built) buildLightMap();
+        run(startOpts.animate !== false);
+      };
+      if (built) return go();
+      if (startOpts.defer === 0) return go();
+      pending = setTimeout(() => { pending = 0; go(); }, startOpts.defer ?? 24);
     },
-    stop() {
+    resume() {
+      if (!el || running || reduceMotion()) return;
+      running = true;
+      lastNow = 0;
+      raf = requestAnimationFrame(frame);
+    },
+    pause() {
       running = false;
       if (raf) cancelAnimationFrame(raf);
       raf = 0;
+    },
+    stop() {
+      this.pause();
       if (pending) { clearTimeout(pending); pending = 0; }
       el = null;
     },
     get ready() { return built; }
   };
-})();
+}
+const BLACKHOLE = createBlackHole();                                        // sign-in modal (72×32)
+const NAVHOLE = createBlackHole({ width: 28, height: 11, worldHalf: 7.2, maxStep: 160 });  // sidebar brand
 
 /* ============================================================
    SIGN-IN FLOW
@@ -2720,14 +2740,14 @@ function openSignInModal(opts = {}) {
       </div>
       <div class="signin-pane">
         <div class="modal-head"><div>
-          <h2>${action ? "Sign in to continue" : "Welcome to TokenArena"}</h2>
+          <h2>${action ? "Sign in to continue" : "Welcome to Token Horizon"}</h2>
           <p>${action ? esc(action) + " requires a verified Google account." : "Sign in to compete, collaborate, and claim your stats."}</p>
         </div><button class="x" data-close>×</button></div>
         <div class="modal-body" style="flex:1">
           <div class="signin-benefits">${benefits.map(([ico, t, d]) => `<div class="signin-benefit"><div class="ico">${ico}</div><div><div class="t">${t}</div><div class="d">${d}</div></div></div>`).join("")}</div>
           <div class="signin-gsi" id="signin-gsi"></div>
           <div id="signin-status" class="mini" style="margin-top:10px"></div>
-          <div class="notice" style="margin-top:14px">Google OAuth · TokenArena only stores your email, name, and avatar choice.</div>
+          <div class="notice" style="margin-top:14px">Google OAuth · Token Horizon only stores your email, name, and avatar choice.</div>
         </div>
         <div class="modal-foot" style="justify-content:space-between;align-items:center">
           <span class="mini">Protected by Google</span>
@@ -3088,6 +3108,13 @@ function openPublishModal() {
 async function init() {
   wireChrome();
   renderAuthSlot();
+  // Sidebar brand mark: static frame at rest, animates while hovered.
+  const brandLogo = $("#brand-logo");
+  NAVHOLE.start($("#nav-bh"), { animate: false, defer: 0 });
+  if (brandLogo) {
+    brandLogo.addEventListener("mouseenter", () => NAVHOLE.resume());
+    brandLogo.addEventListener("mouseleave", () => NAVHOLE.pause());
+  }
   // Public client config (Google OAuth client ID + season) from the worker.
   try {
     const cfg = await api("/api/config");

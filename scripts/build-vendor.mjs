@@ -23,11 +23,11 @@ async function bundle(entry, outfile, banner) {
 await bundle(
   'scripts/vendor-entry.js',
   'docs/vendor/tanstack-charts.js',
-  '/* @tanstack/charts v0.18.0 — vendored for TokenArena; rebuild: npm run vendor */'
+  '/* @tanstack/charts v0.18.0 — vendored for Token Horizon; rebuild: npm run vendor */'
 );
 
 await bundle(
   'scripts/dicebear-entry.js',
   'docs/vendor/dicebear.js',
-  '/* @dicebear/core v9 + selected styles — vendored for TokenArena; rebuild: npm run vendor */'
+  '/* @dicebear/core v9 + selected styles — vendored for Token Horizon; rebuild: npm run vendor */'
 );
