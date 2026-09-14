@@ -156,8 +156,6 @@
 	const streak = $derived(activityStats(days).streak);
 	const K = $derived(tileDays.length);
 
-	const todayKey = `${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, '0')}-${String(new Date().getDate()).padStart(2, '0')}`;
-	const live = $derived(tileDays[K - 1]?.day === todayKey && (tileDays[K - 1]?.tokens ?? 0) > 0);
 	const activeK = $derived(tileDays.filter((d) => d.tokens > 0).length);
 	const tileKey = $derived(tileDays.map((d) => d.tokens).join(','));
 
@@ -219,9 +217,6 @@
 
 	const trailing = $derived(year === currentYear);
 	const yearDays = $derived<DayActivity[]>(trailing ? days : (yearCache[year] ?? []));
-	const highlightFrom = $derived(
-		trailing && yearDays.length >= K && K > 0 ? yearDays[yearDays.length - K].ts : undefined
-	);
 	const stats = $derived(activityStats(yearDays));
 	const yearLabel = $derived(trailing ? 'Past 12 months' : `${year}`);
 	const rangeLabel = $derived.by(() => {
@@ -515,8 +510,12 @@
 
 		// 2 — modal extras fade/translate in behind the landing. Queried
 		// live off the settled card, positions derived from landT — adding
-		// more content later just joins the cascade.
-		const others = [...heatEl.querySelectorAll('.heatmap .cell:not(.hl)')];
+		// more content later just joins the cascade. Travelers are skipped
+		// by ts (no ring marks them anymore): clones cover those cells.
+		const travelTs = new Set(tileDays.map((d) => d.ts));
+		const others = [...heatEl.querySelectorAll('.heatmap .cell')].filter(
+			(el) => !travelTs.has(Number(el.getAttribute('data-ts')))
+		);
 		if (others.length > 0) {
 			tl.fromTo(
 				others,
@@ -796,7 +795,6 @@
 					{#each tileDays as d, k}
 						<span
 							class="mdot lvl-{tileLvls[k]}"
-							class:live={live && k === K - 1}
 							style={reduce ? '' : `animation-delay: ${k * (variant === 'small' ? 55 : 22)}ms`}
 							title={tip(d)}
 						></span>
@@ -806,24 +804,14 @@
 			{/key}
 		{:else}
 			<div class="wmodal-head">
-				<div class="wmodal-titles">
-					<div class="wmodal-title">Activity</div>
-					<div class="wmodal-sub">
-						{trailing
-							? 'Past 365 days — the current year is still incomplete'
-							: `Calendar year ${year}`}
-					</div>
-				</div>
-				<div class="wmodal-extra">
-					<div class="ypick" role="group" aria-label="Year">
-						<button class="ybtn" onclick={(e) => { e.stopPropagation(); step(-1); }} disabled={year <= minYear || phase !== 'settle'} aria-label="Previous year">
-							<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>
-						</button>
-						<span class="yval" aria-live="polite">{yearLabel}</span>
-						<button class="ybtn" onclick={(e) => { e.stopPropagation(); step(1); }} disabled={year >= currentYear || phase !== 'settle'} aria-label="Next year">
-							<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></svg>
-						</button>
-					</div>
+				<div class="ypick" role="group" aria-label="Year">
+					<button class="ybtn" onclick={(e) => { e.stopPropagation(); step(-1); }} disabled={year <= minYear || phase !== 'settle'} aria-label="Previous year">
+						<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>
+					</button>
+					<span class="yval" aria-live="polite">{yearLabel}</span>
+					<button class="ybtn" onclick={(e) => { e.stopPropagation(); step(1); }} disabled={year >= currentYear || phase !== 'settle'} aria-label="Next year">
+						<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></svg>
+					</button>
 				</div>
 				<button class="wmodal-x" onclick={(e) => { e.stopPropagation(); hide(); }} aria-label="Close Activity">
 					<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg>
@@ -843,16 +831,16 @@
 				{#key year}
 						<div class="xstats" class:conceal={phase === 'fly'} class:leaving={phase === 'exit'}>
 							<div class="xstat"><span class="xv num">{fmtTok(stats.total)}</span><span class="xl">tokens · {rangeLabel}</span></div>
-							<div class="xstat"><span class="xv num">{stats.activeDays}</span><span class="xl">active days</span></div>
-							<div class="xstat"><span class="xv num">{fmtTok(stats.peak)}</span><span class="xl">peak day</span></div>
-							<div class="xstat"><span class="xv num">{stats.streak}d</span><span class="xl">streak</span></div>
+							<div class="xstat"><span class="xv num">🔥 {stats.streak}</span><span class="xl">day streak</span></div>
+							<div class="xstat"><span class="xv num">{fmtTok(stats.peak)}</span><span class="xl"><svg class="xic" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 17l6-6 4 4 8-8"/><path d="M14 7h7v7"/></svg>peak day</span></div>
+							<div class="xstat"><span class="xv num">{stats.activeDays}</span><span class="xl"><svg class="xic" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4.5" width="18" height="16" rx="3"/><path d="M8 2.5v4M16 2.5v4M3 10h18"/></svg>active days</span></div>
 						</div>
 						<div class="xheat" class:pre={phase === 'fly'} class:leaving={phase === 'exit'} bind:this={heatEl}>
-							<Heatmap days={yearDays} {highlightFrom} enterStagger={false} />
+							<Heatmap days={yearDays} enterStagger={false} />
 						</div>
 						<p class="xnote" class:conceal={phase === 'fly'} class:leaving={phase === 'exit'}>
 							{#if trailing}
-								Ringed cells are the {TILE_N} days from the {variant} tile — close to fly them home.
+								Close to fly the tile days home.
 							{:else}
 								Calendar year {year} — closing returns without the flight, the tile days live in the current year.
 							{/if}
@@ -1018,22 +1006,14 @@
 	.lvl-2 { background: color-mix(in srgb, var(--heat) 60%, var(--track)); }
 	.lvl-3 { background: color-mix(in srgb, var(--heat) 82%, var(--track)); }
 	.lvl-4 { background: var(--heat); }
-	.mdot.live {
-		animation: dotpop 0.45s cubic-bezier(0.2, 0.9, 0.3, 1.3) backwards, livepulse 2.4s ease-in-out 0.6s infinite;
-	}
 	@keyframes dotpop {
 		from { transform: scale(0.2); opacity: 0; }
 		to { transform: scale(1); opacity: 1; }
 	}
-	@keyframes livepulse {
-		0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--heat) 55%, transparent); }
-		50% { box-shadow: 0 0 0 6px transparent; }
-	}
 	/* post-landing: tile remounted fresh — hold dots steady instead of
 	   replaying their staggered entrance (the reload flicker), and fade
 	   the streak label in over the settled tile. */
-	.landed .mdot,
-	.landed .mdot.live {
+	.landed .mdot {
 		animation: none;
 	}
 	.landed .w-foot {
@@ -1083,28 +1063,11 @@
 	/* ---- modal chrome ---- */
 	.wmodal-head {
 		display: flex;
-		align-items: flex-start;
-		gap: 12px;
-		padding: 18px 18px 12px;
-	}
-	.wmodal-titles {
-		min-width: 0;
-		flex: 1;
-	}
-	.wmodal-title {
-		font-size: 15px;
-		font-weight: 700;
-		letter-spacing: -0.01em;
-	}
-	.wmodal-sub {
-		margin-top: 2px;
-		font-size: 12px;
-		color: var(--text-3);
-	}
-	.wmodal-extra {
-		display: flex;
 		align-items: center;
-		flex: none;
+		justify-content: center;
+		position: relative;
+		gap: 12px;
+		padding: 16px 18px 10px;
 	}
 	.wmodal-x {
 		appearance: none;
@@ -1119,6 +1082,10 @@
 		justify-content: center;
 		cursor: pointer;
 		flex: none;
+		position: absolute;
+		right: 12px;
+		top: 50%;
+		transform: translateY(-50%);
 	}
 	.wmodal-x:hover {
 		background: var(--accent-soft);
@@ -1141,7 +1108,8 @@
 		bottom: 8px;
 		display: flex;
 		justify-content: center;
-		font-size: 11px;
+		font-size: 12.5px;
+		font-weight: 700;
 		font-variant-numeric: tabular-nums;
 		color: var(--text);
 	}
@@ -1164,12 +1132,30 @@
 	.pre-show .wmodal-backdrop {
 		opacity: 0;
 	}
+	/* The open flight must mount the modal at resting size to measure
+	   it, but that shell must never paint: hold it hidden until the
+	   timeline parks it over the tile. visibility keeps layout intact,
+	   so measuring still works. */
+	.pre-show .morph.modal {
+		visibility: hidden;
+	}
 	.xstats {
 		display: grid;
 		grid-template-columns: repeat(4, 1fr);
 		gap: 10px;
-		margin: 6px 0 14px;
-		transition: opacity 0.18s ease;
+		margin: 8px 0 16px;
+		transition: opacity 0.28s ease 0.08s;
+	}
+	.xstat {
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		text-align: center;
+		gap: 2px;
+		background: color-mix(in srgb, var(--bg-raised) 55%, transparent);
+		border: 0;
+		border-radius: 14px;
+		padding: 12px 6px 10px;
 	}
 	.xstat {
 		display: flex;
@@ -1185,6 +1171,10 @@
 	.xl {
 		font-size: 10.5px;
 		color: var(--text-3);
+	}
+	.xic {
+		vertical-align: -1.5px;
+		margin-right: 3px;
 	}
 	.xheat {
 		display: flex;
@@ -1247,7 +1237,7 @@
 	}
 	@media (prefers-reduced-motion: reduce) {
 		.morph.tile,
-		.mdot, .mdot.live { animation: none; transition: none; }
+		.mdot { animation: none; transition: none; }
 		.landed .w-foot { animation: none; }
 	}
 </style>

@@ -2,7 +2,7 @@
 // Source: /analytics/buckets at daily resolution (per-vendor rows), summed.
 
 import { api } from './api';
-import { totalTok } from './format';
+import { billableTok } from './format';
 
 export interface DayActivity {
 	/** Local calendar day key, YYYY-MM-DD. */
@@ -25,7 +25,9 @@ function dayKey(ts: number): string {
 	return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 
-/** Full local calendar for the last `days` days; zero-filled. */
+/** Full local calendar for the last `days` days; zero-filled.
+ *  Counts billable tokens (excludes cache reads) — the same semantics as
+ *  the main tab headline, so tile, modal and dashboard agree. */
 export async function fetchDailyActivity(days = 365, metered = true): Promise<DayActivity[]> {
 	const now = Math.floor(Date.now() / 1000);
 	const from = now - days * 86400;
@@ -33,7 +35,7 @@ export async function fetchDailyActivity(days = 365, metered = true): Promise<Da
 	const byDay = new Map<string, number>();
 	for (const b of res.buckets) {
 		const k = dayKey(b.start);
-		byDay.set(k, (byDay.get(k) ?? 0) + totalTok(b.tokens));
+		byDay.set(k, (byDay.get(k) ?? 0) + billableTok(b.tokens));
 	}
 	const out: DayActivity[] = [];
 	const today = new Date();
@@ -47,7 +49,8 @@ export async function fetchDailyActivity(days = 365, metered = true): Promise<Da
 	return out;
 }
 
-/** Full local calendar for an arbitrary [fromEpoch, toEpoch) span; zero-filled. */
+/** Full local calendar for an arbitrary [fromEpoch, toEpoch) span; zero-filled.
+ *  Billable tokens, like fetchDailyActivity. */
 export async function fetchDailyActivityRange(
 	fromEpoch: number,
 	toEpoch: number,
@@ -57,7 +60,7 @@ export async function fetchDailyActivityRange(
 	const byDay = new Map<string, number>();
 	for (const b of res.buckets) {
 		const k = dayKey(b.start);
-		byDay.set(k, (byDay.get(k) ?? 0) + totalTok(b.tokens));
+		byDay.set(k, (byDay.get(k) ?? 0) + billableTok(b.tokens));
 	}
 	const out: DayActivity[] = [];
 	const start = new Date(fromEpoch * 1000);
