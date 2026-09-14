@@ -202,8 +202,9 @@ R2 leaderboard.json ────────────────────
   field. Classic Gargantua look — dark shadow, photon ring, edge-on disk,
   lensed arcs — with tokens (amber) spiralling inward. Static single frame
   under `prefers-reduced-motion`; the RAF loop stops when the modal closes.
-  A second 28×11 instance is the sidebar brand mark (`#nav-bh`): paused at
-  rest, resumes on hover, pauses on leave (shield fallback under 860px).
+  A second 22×9 instance is the sidebar brand mark (`#nav-bh`, 62×40 tile
+  beside the name, no-star "clean" render): paused at rest, resumes on hover,
+  pauses on leave (shield fallback under 860px).
 - `requireSignIn()` stores the attempted action in `state.signInPending`;
   after the credential callback the modal closes and the action resumes
   (New Group, Share New, profile share, claim profile).
