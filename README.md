@@ -62,6 +62,27 @@ Token Horizon also starts a lightweight local Ollama telemetry proxy at `http://
 
 The proxy cannot observe traffic sent directly to `11434`; the calling client must use `http://127.0.0.1:11435` as its Ollama-compatible base URL. Token Horizon's own Ollama model discovery and benchmark requests are routed through it automatically. The listener is loopback-only and does not expose the Ollama API to other machines.
 
+### LLM gateway (drop-in proxy for Codex / Claude Code / others)
+
+Token Horizon supervises a standalone Go sidecar (`gateway/`, zero-dep single binary, `token-horizon-gateway`) listening at `http://127.0.0.1:11436` (next free port if occupied; see `llm_gateway_port` in `/health` and the MLX tab). It also runs headless without the app — handy on Linux boxes or servers. Point any provider client at it as its base URL — no other config change needed:
+
+```bash
+export OPENAI_BASE_URL="http://127.0.0.1:11436"       # Codex, OpenAI SDKs (/v1/chat/completions, /v1/responses)
+export ANTHROPIC_BASE_URL="http://127.0.0.1:11436"    # Claude Code (/v1/messages)
+export OLLAMA_HOST="http://127.0.0.1:11436"           # Ollama clients (/api/*)
+```
+
+The gateway infers the provider per request (path → auth headers → body shape; `/th-openai/` and `/th-anthropic/` prefixes force it), forwards to the provider over HTTPS, and streams the response back unchanged. Every relayed response carries an `x-token-horizon-trace-id` header for joining client logs to traces.
+
+What it stores beyond harness conversation logs: harness logs record what the harness chose to persist after the fact. The gateway measures the live wire — time-to-first-token, total duration, provider-reported token usage (never estimated), cache-hit splits, tool-call names/ids with finish reasons, retry suspects (same normalized request repeated within 10 minutes), best-effort cost via the model catalog, and an error taxonomy (auth / rate-limited / overloaded / context-length / …). Cloud traces do not feed usage totals (the file parsers already count that traffic, so totals would double-count); Ollama traces additionally feed local tok/s telemetry so MODELS stays correct whichever loopback port a client uses.
+
+- Traces: `GET /traces?provider=openai&model=gpt-5&limit=25` (bodies omitted), `GET /traces/<id>` (full bodies), `POST /traces/clear`
+- Stats: `GET /proxy/stats?provider=anthropic&hours=24` (TTFT, tok/s, cache-hit, tool-call, retry, error rates per model)
+- Config: `GET /proxy/config` (ports, upstream hosts, storage bounds — never secrets)
+- Metrics: `token_horizon_gateway_requests_total`, `token_horizon_gateway_completed_total{status}`, `token_horizon_gateway_ttft_seconds`, `token_horizon_gateway_duration_seconds`, `token_horizon_gateway_output_tokens_total` on the gateway's own `/metrics` (the sidecar owns its instruments; `:8765/metrics` keeps Ollama/MLX/engine series)
+
+Privacy and bounds: full request/response bodies stay in `~/.config/token-horizon/traces/` on this machine only (256KB per side per trace, 30 day-files, 256MB total, oldest pruned first). Auth headers pass through upstream and are never stored; traces are never published to the leaderboard, sheets, or cloud. Upstreams default to `https://api.openai.com` / `https://api.anthropic.com` plus the Ollama upstream; override with `TOKEN_HORIZON_OPENAI_UPSTREAM` / `TOKEN_HORIZON_ANTHROPIC_UPSTREAM` / `TOKEN_HORIZON_OLLAMA_UPSTREAM` (handy for mocks), and set `TOKEN_HORIZON_LLM_PROXY_PORT` to move the listener. Redirects are never followed with client credentials attached. The `:8765` endpoints above are reverse-proxied from the sidecar by the app (`GatewayBridge`, degrading to 503 when the sidecar is down); cost estimates are intentionally absent from traces — pricing lives with the model catalog, not the proxy. See `gateway/README.md` for the sidecar contract, standalone use, and its Go test suite.
+
 History is intentionally an in-memory rolling window:
 
 - Fine samples: 1,800 points at 2-second resolution, covering approximately 1 hour.
@@ -71,9 +92,9 @@ History is intentionally an in-memory rolling window:
 
 ### Metrics
 
-`GET http://127.0.0.1:8765/metrics` serves Prometheus text from the OpenTelemetry meter. Ollama request/completion counters, token counters, generation duration, tok/s, and current MLX resource gauges are included. Model labels are normalized and capped at 32 distinct values; additional models use `model="other"`.
+`GET http://127.0.0.1:8765/metrics` serves Prometheus text from the OpenTelemetry meter. Ollama request/completion counters, token counters, generation duration, tok/s, gateway request/completion/TTFT/duration/token counters (per provider/endpoint, model labels capped with the shared 32-value set), and current MLX resource gauges are included. Model labels are normalized and capped at 32 distinct values; additional models use `model="other"`.
 
-`GET http://127.0.0.1:8765/health` includes `ollama_proxy_port`, allowing clients to discover the selected relay port when the default port is occupied.
+`GET http://127.0.0.1:8765/health` includes `ollama_proxy_port` and `llm_gateway_port`, allowing clients to discover the selected relay ports when the defaults are occupied.
 
 OTLP/HTTP metrics export is disabled by default. Set `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` to an explicit metrics endpoint, or set `OTEL_EXPORTER_OTLP_ENDPOINT` to a base endpoint (Token Horizon appends `/v1/metrics`). The export interval is 60 seconds. Prometheus remains local and does not require an external collector.
 
@@ -112,12 +133,17 @@ The local script uses an ad-hoc signature for development. For a distributable f
 | `GET\|POST /leaderboard/sheets/pull` | pull team rankings from Google Sheet |
 | `POST /leaderboard/sheets/config` | configure leaderboard handle, team, Google Sheet URL, and auto-sync |
 | `GET /events` | recent shell events |
+| `GET /traces?provider=&model=&limit=` | recent gateway traces (bodies omitted) + store counts |
+| `GET /traces/<id>` | one full gateway trace with request/response bodies |
+| `POST /traces/clear` | drop in-memory traces + delete trace day files |
+| `GET /proxy/stats?provider=&model=&hours=` | gateway efficiency stats (TTFT, tok/s, cache-hit, tool-call, retry, errors) |
+| `GET /proxy/config` | gateway port, upstream hosts, trace storage bounds |
 | `GET /health` | liveness + version |
 | `GET /metrics` | Prometheus/OpenTelemetry metrics text |
 
 ## MCP server
 
-`mcp/token-horizon-mcp.mjs` (zero-dep Node, stdio JSON-RPC). Registered in `~/.config/opencode/opencode.jsonc`. Tools: `token_horizon_usage` (incl. per-model), `token_horizon_system`, `token_horizon_sessions`, `token_horizon_history`, `token_horizon_limits`, `token_horizon_proxy_guide`, `token_horizon_leaderboard` (get rankings, publish/pull Google Sheet, or get GitHub Pages web URL), and `token_horizon_share` (generate text/markdown/json/svg share cards). Call `token_horizon_proxy_guide` with `client="startup"` for the safe Ollama-upstream plus Token Horizon-proxy startup sequence, live proxy status, verification commands, and warnings against binding `ollama serve` to the proxy port. Falls back to direct sqlite for usage/sessions if the app isn't running.
+`mcp/token-horizon-mcp.mjs` (zero-dep Node, stdio JSON-RPC). Registered in `~/.config/opencode/opencode.jsonc`. Tools: `token_horizon_usage` (incl. per-model), `token_horizon_system`, `token_horizon_sessions`, `token_horizon_history`, `token_horizon_limits`, `token_horizon_proxy_guide` (Ollama startup sequence plus universal gateway drop-in configs for `client="codex"` / `client="claude"` / `client="opencode"`), `token_horizon_leaderboard` (get rankings, publish/pull Google Sheet, or get GitHub Pages web URL), and `token_horizon_share` (generate text/markdown/json/svg share cards). Call `token_horizon_proxy_guide` with `client="startup"` for the safe Ollama-upstream plus Token Horizon-proxy startup sequence, live proxy status, verification commands, and warnings against binding `ollama serve` to the proxy port. Falls back to direct sqlite for usage/sessions if the app isn't running.
 
 ## Leaderboard & Backend Options
 

@@ -72,7 +72,7 @@ LEADERBOARD.md              objective-vs-current screen alignment + full leaderb
 
 19. **Dashboard identity & sign-in**: branding is "Token Horizon" everywhere (never TokenArena). The sign-in modal (`openSignInModal`, `requireSignIn` + `state.signInPending` resume, `?signin=1` deep link) pairs the GSI button with an animated ASCII black hole (`createBlackHole` light-map ray tracer; static under `prefers-reduced-motion`, RAF stops on close/detach). A second 22×9 instance is the sidebar brand mark (paused at rest, hover to animate, shield fallback <860px).
 
-20. **Drop-in LLM gateway (Codex/Claude/Ollama traces)**: `Gateway/LLMGatewayProxy.swift` is a loopback-only HTTP reverse proxy on `:11436` (`TOKEN_HORIZON_LLM_PROXY_PORT`, `llm_gateway_port` in `/health`) — drop-in base URL via `OPENAI_BASE_URL` / `ANTHROPIC_BASE_URL` / `OLLAMA_HOST`. Single-port routing is per-request (path → auth headers → body shape, `TraceAnalytics.inferProvider`; `/th-openai/` + `/th-anthropic/` force it). Responses stream unchanged with an `x-token-horizon-trace-id` header; redirects are never followed with client credentials. Full bodies persist local-only under `~/.config/token-horizon/traces/` (256KB/side, 30 day-files, 256MB, oldest pruned); auth headers are never stored and traces never publish. Cloud traces must NOT feed `UsageEngine` totals (file parsers already count that traffic); Ollama traces additionally feed `OllamaTelemetryStore` so MODELS stays correct on either loopback port. Pure parsing lives in `TraceAnalytics` (unit-pinned), routes in `Server/GatewayRoutes.swift` (`/traces`, `/traces/<id>`, `/proxy/stats`, `/proxy/config`, `POST /traces/clear`) so `LocalServer.handle` stays under budget. Token counts are provider-reported or absent — never estimated.
+20. **Drop-in LLM gateway (Go sidecar, not Swift)**: `gateway/` is a zero-dep Go module (`token-horizon-gateway` binary) — portable, decoupled, headless-capable. It owns capture, JSONL storage (`~/.config/token-horizon/traces/`, 256KB/side, 30 day-files, 256MB, oldest pruned), and its read API (`/traces`, `/traces/<id>`, `/proxy/stats`, `/proxy/config`, `POST /traces/clear`, own `/metrics`). Single-port routing per request (path → auth headers → body shape, `infer.go`; `/th-openai/` + `/th-anthropic/` force it); responses stream unchanged with an `x-token-horizon-trace-id` header; redirects never followed with client credentials. Swift keeps only `Gateway/GatewaySupervisor.swift` (attach-or-spawn, port discovery via `/__token_horizon`, `TOKEN_HORIZON_GATEWAY_BIN` override) plus `GatewayBridge` (`:8765` reverse-proxy for the gateway paths, 503 when down) and `POST /ingest/ollama` (best-effort local-totals continuity). Cloud traces must NOT feed `UsageEngine` totals (file parsers already count that traffic). Token counts are provider-reported or absent — never estimated; `estCostUSD` stays null (pricing lives with the catalog). `scripts/make-app.sh` builds the sidecar into app Resources; pin wire formats in `gateway/*_test.go` (`gofmt -l . && go vet ./... && go test ./...`).
 
 ## UI invariants
 
@@ -104,11 +104,16 @@ up automatically — all home discovery goes through `HomeDiscovery.variantDirs`
 ```bash
 ./scripts/make-app.sh                     # build + install + relaunch (health-gated, exits 1 if :8765 isn't our stamp)
 curl -s localhost:8765/health             # must show build.commit == `git rev-parse --short HEAD` (else stale binary)
+curl -s localhost:8765/health | python3 -c "import json,sys; print(json.load(sys.stdin)['llm_gateway_port'])"
+                                          # must be non-null: the app always ships with its gateway proxy
 curl -s localhost:8765/stats | python3 -m json.tool | head -40
 curl -s "localhost:8765/trends?window=1D" | python3 -c "import json,sys; d=json.load(sys.stdin); print(len(d['points']), d['total'])"
 curl -s localhost:8765/limits | python3 -m json.tool
 curl -s "localhost:8765/activity/heatmap?days=7" | python3 -m json.tool | head
 curl -s localhost:8765/achievements | python3 -m json.tool | head
+curl -s localhost:8765/proxy/config | python3 -m json.tool | head -20
+(cd gateway && gofmt -l . && go vet ./... && go test ./...)
+                                          # sidecar gate (also `task gateway-test`, runs in CI)
 printf '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}\n' | node mcp/token-horizon-mcp.mjs
 ```
 

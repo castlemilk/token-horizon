@@ -130,18 +130,23 @@ final class TokenHorizonTelemetry {
         _ = meterProvider.shutdown()
     }
 
-    private func attributes(model: String) -> [String: AttributeValue] {
+    /// Capped low-cardinality model label for ollama instruments. Overflow
+    /// collapses to "other". (The gateway sidecar owns its own metric
+    /// labels and serves them on its own /metrics.)
+    private func normalizedModelLabel(_ model: String) -> String {
         let normalized = model.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         let candidate = normalized.isEmpty ? "unknown" : String(normalized.prefix(96))
         modelLabelLock.lock()
-        let label: String
+        defer { modelLabelLock.unlock() }
         if modelLabels.contains(candidate) || modelLabels.count < maxModelLabels {
             modelLabels.insert(candidate)
-            label = candidate
-        } else {
-            label = "other"
+            return candidate
         }
-        modelLabelLock.unlock()
+        return "other"
+    }
+
+    private func attributes(model: String) -> [String: AttributeValue] {
+        let label = normalizedModelLabel(model)
         let backend = label.contains("mlx") ? "mlx" : "ollama"
         return [
             "model": AttributeValue.string(label),

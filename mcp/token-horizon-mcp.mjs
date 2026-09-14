@@ -57,13 +57,13 @@ const TOOLS = [
   {
     name: "token_horizon_proxy_guide",
     description:
-      "Safe startup protocol and configuration examples for routing Ollama and local LLM traffic through Token Horizon's telemetry proxy for ground-truth tok/s measurement, prompt eval rates, and streaming metrics. Use client=startup for the server/proxy startup sequence.",
+      "Safe startup protocol and configuration examples for routing Ollama and local LLM traffic through Token Horizon's telemetry proxy for ground-truth tok/s measurement, prompt eval rates, and streaming metrics, plus the universal LLM gateway (drop-in base URL for Codex via OPENAI_BASE_URL, Claude Code via ANTHROPIC_BASE_URL, Ollama via OLLAMA_HOST) with full conversation-trace capture, TTFT/tok-s/cache analytics, and error taxonomy. Use client=startup for the server/proxy startup sequence.",
     inputSchema: {
       type: "object",
       properties: {
         client: {
           type: "string",
-          enum: ["all", "startup", "environment", "opencode", "continue", "python", "curl"],
+          enum: ["all", "startup", "environment", "opencode", "continue", "python", "curl", "codex", "claude"],
           default: "all",
           description: "Target client or startup protocol to show instructions for (default 'all')",
         },
@@ -389,11 +389,13 @@ async function callTool(name, args) {
         try {
           health = await api("/health");
         } catch {
-          health = { ok: false, ollama_proxy_port: 11435 };
+          health = { ok: false, ollama_proxy_port: 11435, llm_gateway_port: 11436 };
         }
         const configuredUpstream = process.env.TOKEN_HORIZON_OLLAMA_UPSTREAM || "127.0.0.1:11434";
         const port = health.ollama_proxy_port || Number(process.env.TOKEN_HORIZON_OLLAMA_PROXY_PORT || 11435);
         const proxyURL = process.env.OLLAMA_PROXY_URL || `http://127.0.0.1:${port}`;
+        const gatewayPort = health.llm_gateway_port || Number(process.env.TOKEN_HORIZON_LLM_PROXY_PORT || 11436);
+        const gatewayURL = process.env.LLM_GATEWAY_URL || `http://127.0.0.1:${gatewayPort}`;
         const tokenHorizonReachable = health.name === "token-horizon" && health.ok === true;
         let proxyReachable = false;
         let proxyError = null;
@@ -403,6 +405,15 @@ async function callTool(name, args) {
           if (!proxyResponse.ok) proxyError = `HTTP ${proxyResponse.status}`;
         } catch (error) {
           proxyError = error instanceof Error ? error.message : String(error);
+        }
+        let gatewayReachable = false;
+        let gatewayError = null;
+        try {
+          const gatewayResponse = await fetch(`${gatewayURL}/__token_horizon`, { signal: AbortSignal.timeout(2000) });
+          gatewayReachable = gatewayResponse.ok;
+          if (!gatewayResponse.ok) gatewayError = `HTTP ${gatewayResponse.status}`;
+        } catch (error) {
+          gatewayError = error instanceof Error ? error.message : String(error);
         }
         const target = (args?.client || "all").toLowerCase();
 
@@ -414,9 +425,30 @@ async function callTool(name, args) {
             token_horizon_reachable: tokenHorizonReachable,
             ollama_reachable_through_proxy: proxyReachable,
             proxy_error: proxyError,
+            gateway_port: gatewayPort,
+            gateway_url: gatewayURL,
+            gateway_reachable: gatewayReachable,
+            gateway_error: gatewayError,
           },
           summary:
-            "Token Horizon bundles a loopback proxy that transparently relays Ollama requests/responses and parses exact completion metadata (eval_count, eval_duration) to track ground-truth generation tok/s without estimating from hardware usage.",
+            "Token Horizon bundles a loopback proxy that transparently relays Ollama requests/responses and parses exact completion metadata (eval_count, eval_duration) to track ground-truth generation tok/s without estimating from hardware usage. The universal LLM gateway on the adjacent port is a drop-in base URL for Codex (OPENAI_BASE_URL), Claude Code (ANTHROPIC_BASE_URL), and Ollama (OLLAMA_HOST): it routes per request, streams responses unchanged, and stores full conversation traces locally with TTFT, tok/s, cache-hit, tool-call, retry-suspect, and error-taxonomy analytics that raw harness logs do not provide.",
+          gateway: {
+            purpose: "One loopback base URL for all providers, served by a standalone Go sidecar (token-horizon-gateway, supervised by the Token Horizon app; also runs headless via gateway/README.md). The gateway infers the provider per request (path, then auth headers, then body shape), forwards to the provider upstream over HTTPS, and records a full trace. Auth headers pass through and are never stored; traces never leave the machine.",
+            routing: {
+              "openai": ["/v1/chat/completions", "/v1/responses", "/v1/embeddings", "/v1/completions"],
+              "anthropic": ["/v1/messages"],
+              "ollama": ["/api/generate", "/api/chat", "/api/tags"],
+              "explicit_prefix": "Prefix any path with /th-openai/ or /th-anthropic/ to skip inference (e.g. /th-anthropic/v1/messages).",
+            },
+            upstreams: {
+              openai: process.env.TOKEN_HORIZON_OPENAI_UPSTREAM || "https://api.openai.com",
+              anthropic: process.env.TOKEN_HORIZON_ANTHROPIC_UPSTREAM || "https://api.anthropic.com",
+              ollama: `http://${configuredUpstream}`,
+              note: "Override with TOKEN_HORIZON_OPENAI_UPSTREAM / TOKEN_HORIZON_ANTHROPIC_UPSTREAM / TOKEN_HORIZON_OLLAMA_UPSTREAM before launching Token Horizon (useful for mocks and LiteLLM-style gateways).",
+            },
+            trace_correlation: "Every relayed response carries an x-token-horizon-trace-id header; join client-side logs to GET /traces/<id> on :8765.",
+            storage_bounds: "Bodies capped at 256KB per side per trace, 30 day-files, 256MB total under ~/.config/token-horizon/traces/. Cloud traces do not feed usage totals (file parsers already count that traffic); Ollama traces also feed local tok/s telemetry.",
+          },
           configurations: {},
         };
 
@@ -527,10 +559,41 @@ async function callTool(name, args) {
           };
         }
 
+        if (target === "all" || target === "codex") {
+          guide.configurations.codex = {
+            description: "Route Codex (or any OpenAI SDK / Responses API client) through the gateway for full-trace capture",
+            commands: [
+              `export OPENAI_BASE_URL="${gatewayURL}"`,
+              `codex --model gpt-5 "explain this repo"`,
+            ],
+            config_toml_alternative: [
+              "# ~/.codex/config.toml — when env override is not picked up:",
+              "[model_providers.token-horizon]",
+              `base_url = "${gatewayURL}/v1"`,
+              'wire_api = "responses"',
+            ].join("\n"),
+            note: "API key handling is unchanged (the gateway forwards your Authorization header upstream); only the base URL moves.",
+          };
+        }
+
+        if (target === "all" || target === "claude") {
+          guide.configurations.claude = {
+            description: "Route Claude Code through the gateway for full-trace capture",
+            commands: [
+              `export ANTHROPIC_BASE_URL="${gatewayURL}"`,
+              `claude --model sonnet`,
+            ],
+            note: "Auth env (ANTHROPIC_AUTH_TOKEN / login) is unchanged; only the base URL moves. Traces appear under provider=anthropic.",
+          };
+        }
+
         guide.observability = {
           ui_tracking: "Tracked tokens/second appear live in Token Horizon's MODELS and MLX/Ollama tabs.",
           prometheus_exporter: "http://127.0.0.1:8765/metrics",
           stats_api: "http://127.0.0.1:8765/stats",
+          traces_api: "http://127.0.0.1:8765/traces (list, bodies omitted) and http://127.0.0.1:8765/traces/<id> (full trace)",
+          proxy_stats_api: "http://127.0.0.1:8765/proxy/stats?provider=openai&hours=24 (TTFT, tok/s, cache-hit, tool-call, retry, error rates)",
+          gateway_metrics: "token_horizon_gateway_requests_total, token_horizon_gateway_completed_total{status}, token_horizon_gateway_ttft_seconds, token_horizon_gateway_duration_seconds, token_horizon_gateway_output_tokens_total",
         };
 
         return guide;

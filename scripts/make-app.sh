@@ -19,9 +19,28 @@ BUILT_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
 swift build -c release
 
+# Gateway sidecar (portable Go binary, supervised by the app at runtime).
+# The app ALWAYS ships with its proxy: a missing sidecar fails the build.
+# TOKEN_HORIZON_NO_GATEWAY=1 opts out explicitly (dev machines without Go);
+# releases must never set it.
+if [ -z "${TOKEN_HORIZON_NO_GATEWAY:-}" ]; then
+    command -v go >/dev/null 2>&1 || { echo "FATAL: go toolchain missing — the app must ship with its gateway proxy (or set TOKEN_HORIZON_NO_GATEWAY=1 to opt out explicitly)"; exit 1; }
+    (cd gateway && go build -ldflags "-X main.buildCommit=${GIT_SHA} -X main.buildAt=${BUILT_AT}" -o token-horizon-gateway .)
+    [ -x gateway/token-horizon-gateway ] || { echo "FATAL: gateway sidecar build produced no binary"; exit 1; }
+else
+    echo "WARN: TOKEN_HORIZON_NO_GATEWAY=1 — building WITHOUT the gateway proxy (gateway routes will 503)"
+fi
+
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/TokenHorizon"; cp Resources/benchmarks.json "$APP/Contents/Resources/" 2>/dev/null
+if [ -f gateway/token-horizon-gateway ]; then
+    cp gateway/token-horizon-gateway "$APP/Contents/Resources/"
+fi
+# Bundle verification: the sidecar must be inside unless explicitly opted out.
+if [ -z "${TOKEN_HORIZON_NO_GATEWAY:-}" ]; then
+    [ -x "$APP/Contents/Resources/token-horizon-gateway" ] || { echo "FATAL: gateway sidecar missing from app bundle"; exit 1; }
+fi
 
 if [ -f Resources/AppIcon.icns ]; then
     cp Resources/AppIcon.icns "$APP/Contents/Resources/"
@@ -71,7 +90,22 @@ for i in $(seq 1 30); do
     HEALTH=$(curl -s -m 2 localhost:8765/health 2>/dev/null || true)
     if echo "$HEALTH" | grep -q "\"commit\":\"${GIT_SHA}\""; then
         echo "verified serving build ${GIT_SHA} (${BUILT_AT})"
-        exit 0
+        if [ -n "${TOKEN_HORIZON_NO_GATEWAY:-}" ]; then
+            echo "TOKEN_HORIZON_NO_GATEWAY=1: skipping gateway gate"
+            exit 0
+        fi
+        # Gateway gate: the app must ship with its proxy available. The
+        # supervisor needs a moment after launch to attach/spawn the sidecar.
+        for j in $(seq 1 20); do
+            GW_PORT=$(curl -s -m 2 localhost:8765/health 2>/dev/null | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('llm_gateway_port') or '')" 2>/dev/null || true)
+            if [ -n "$GW_PORT" ]; then
+                echo "verified gateway sidecar on :$GW_PORT"
+                exit 0
+            fi
+            sleep 1
+        done
+        echo "FATAL: serving build ${GIT_SHA} has no gateway sidecar (llm_gateway_port null after 20s). Check ~/Library/Logs/token-horizon-gateway.log"
+        exit 1
     fi
     sleep 1
 done

@@ -26,6 +26,22 @@ jobs:
       - name: Test (unit + perf budgets + integration)
         run: swift test
 
+  gateway:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: gateway/go.mod
+
+      - name: Format check
+        run: test -z "$(gofmt -l gateway/)"
+
+      - name: Vet + test
+        run: cd gateway && go vet ./... && go test ./...
+
   coverage:
     runs-on: macos-15
     steps:

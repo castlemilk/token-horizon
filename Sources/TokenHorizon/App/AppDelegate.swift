@@ -89,6 +89,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         server.start()
         _ = TokenHorizonTelemetry.shared
         OllamaTelemetryProxy.shared.start()
+        GatewaySupervisor.shared.start()
 
         model.latestEvent = EventStore.shared.latest()
         model.shellEvents = EventStore.shared.recent(limit: 9)
@@ -447,6 +448,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     func applicationWillTerminate(_ notification: Notification) {
         ModelDiscoveryEngine.shared.stop()
         OllamaTelemetryProxy.shared.stop()
+        GatewaySupervisor.shared.stop()
         // Exact parser-state persistence for fast next boot (throttled to
         // 60s during the run; a few hundred ms here is invisible on quit).
         DurableStore.shared.flushEngineState()

@@ -16,6 +16,14 @@ jobs:
       - name: Select Xcode
         run: sudo xcode-select -s /Applications/Xcode_16.2.app/Contents/Developer || true
 
+      # The app must ALWAYS ship with its gateway proxy: pin the toolchain
+      # (version follows gateway/go.mod) and let make-app.sh fail hard if
+      # the sidecar build or bundle verification breaks.
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: gateway/go.mod
+
       - name: Build release app
         env:
           SKIP_LAUNCH: "1"

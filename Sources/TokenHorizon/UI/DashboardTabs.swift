@@ -172,6 +172,10 @@ struct DashboardTabs: View {
                 MonospacedText(text: "telemetry proxy 127.0.0.1:\(proxyPort) · point Ollama-compatible clients here for exact tok/s", color: .white.opacity(0.35), size: 7.5)
                     .fixedSize(horizontal: false, vertical: true)
             }
+            if let gatewayPort = GatewaySupervisor.shared.port {
+                MonospacedText(text: "llm gateway 127.0.0.1:\(gatewayPort) · drop-in base URL for Codex (OPENAI_BASE_URL), Claude Code (ANTHROPIC_BASE_URL), Ollama (OLLAMA_HOST)", color: .white.opacity(0.35), size: 7.5)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             HStack(spacing: 4) {
                 ForEach(MLXWindow.allCases) { window in
                     Button { mlxWindow = window } label: {

@@ -138,6 +138,17 @@ if [ -z "${TH_NO_LAUNCH:-}" ]; then
     done
     curl -s -m 2 localhost:8765/health 2>/dev/null | grep -q '"ok":true' \
         || fail ":8765 never came up — check $HOME/Library/Logs/TokenHorizon.log"
+    # The app always ships with its proxy: fail loudly if the sidecar never
+    # attached (check ~/Library/Logs/token-horizon-gateway.log).
+    GW_PORT=$(curl -s -m 2 localhost:8765/health 2>/dev/null | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('llm_gateway_port') or '')" 2>/dev/null || true)
+    if [ -n "$GW_PORT" ]; then
+        log "gateway sidecar verified on :$GW_PORT"
+    else
+        sleep 10
+        GW_PORT=$(curl -s -m 2 localhost:8765/health 2>/dev/null | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('llm_gateway_port') or '')" 2>/dev/null || true)
+        [ -n "$GW_PORT" ] && log "gateway sidecar verified on :$GW_PORT (late attach)" \
+            || fail "gateway sidecar unavailable (llm_gateway_port null) — check $HOME/Library/Logs/token-horizon-gateway.log"
+    fi
 else
     log "skipping launch (TH_NO_LAUNCH=1)"
 fi

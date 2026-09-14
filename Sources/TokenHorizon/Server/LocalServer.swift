@@ -219,6 +219,13 @@ final class LocalServer {
             return analytics
         }
 
+        if let gateway = GatewayBridge.owns(method: method, route: route)
+            ? GatewayBridge.response(method: method, path: path, body: body,
+                                     baseURL: GatewaySupervisor.shared.resolveBaseURL(), json: json)
+            : nil {
+            return gateway
+        }
+
         switch (method, route) {
         case ("GET", "/metrics"):
             let payload = Data(TokenHorizonTelemetry.shared.prometheusText().utf8)
@@ -250,6 +257,28 @@ final class LocalServer {
                 durationMs: Int(form["dur"] ?? "") ?? 0,
                 exit: Int(form["exit"] ?? "") ?? 0)
             server.onEvent(ev)
+            return json(["ok": true])
+
+        case ("POST", "/ingest/ollama"):
+            // Best-effort sample intake from the gateway sidecar so local
+            // totals stay correct for gateway-routed Ollama traffic. The
+            // gateway never retries; malformed samples are dropped loudly.
+            guard let obj = try? JSONSerialization.jsonObject(with: body) as? [String: Any],
+                  let model = obj["model"] as? String, !model.isEmpty,
+                  let eval = (obj["evalCount"] as? NSNumber)?.intValue,
+                  let duration = (obj["evalDurationNs"] as? NSNumber)?.uint64Value,
+                  duration > 0 else {
+                return json(["error": "invalid ollama sample"], status: 400)
+            }
+            let prompt = (obj["promptEvalCount"] as? NSNumber)?.intValue
+            let at = (obj["completedAt"] as? NSNumber)
+                .map { Date(timeIntervalSince1970: $0.doubleValue) } ?? Date()
+            let sample = OllamaTelemetrySample(
+                model: model, completedAt: at, evalCount: eval, evalDurationNs: duration,
+                promptEvalCount: prompt, promptEvalDurationNs: nil)
+            OllamaTelemetryStore.shared.record(sample)
+            TokenHorizonTelemetry.shared.recordOllama(sample)
+            NotificationCenter.default.post(name: .ollamaTelemetryUpdated, object: sample)
             return json(["ok": true])
 
         case ("GET", "/processes"):
@@ -804,11 +833,17 @@ final class LocalServer {
             } else {
                 NSNull()
             }
+            let gatewayPort: Any = if let port = GatewaySupervisor.shared.port {
+                Int(port)
+            } else {
+                NSNull()
+            }
             return json([
                 "ok": true,
                 "version": BuildInfo.version,
                 "name": "token-horizon",
                 "ollama_proxy_port": proxyPort,
+                "llm_gateway_port": gatewayPort,
                 "build": [
                     "version": BuildInfo.version,
                     "commit": BuildInfo.commit,

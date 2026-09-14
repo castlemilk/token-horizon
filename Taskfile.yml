@@ -25,7 +25,18 @@ tasks:
   # Full local gate: lint errors + entire XCTest suite. Mirrors CI.
   validate:
     desc: Full gate — lint (errors fail) + full test suite (mirrors CI)
-    deps: [lint, test]
+    deps: [lint, test, gateway-test]
+
+  gateway-test:
+    desc: Go sidecar gate — gofmt + vet + unit/integration tests (mirrors CI)
+    cmds:
+      - test -z "$(gofmt -l gateway/)"
+      - cd gateway && go vet ./... && go test ./...
+
+  test-gateway-smoke:
+    desc: Live sidecar smoke — real binary vs stub upstream, hermetic ports (no creds)
+    cmds:
+      - ./scripts/test-gateway.sh
 
   lint:
     desc: SwiftLint — errors fail the build, warnings are burn-down (see .swiftlint.yml)
@@ -111,6 +122,11 @@ tasks:
         probe "/activity/heatmap?days=7" "'grid' in d and len(d['grid']) == 7" "/activity/heatmap serves 7x24 grid"
         probe "/projects" "'projects' in d" "/projects serves project rollups"
         probe "/achievements" "'achievements' in d and 'season' in d" "/achievements serves season+achievements"
+        gw=$(printf '%s' "$health" | python3 -c "import json,sys; print(json.load(sys.stdin).get('llm_gateway_port') or '')" 2>/dev/null || true)
+        if [ -n "$gw" ]; then say ok "gateway sidecar on :$gw";
+        else say FAIL "llm_gateway_port null — sidecar missing (rebuild via ./scripts/make-app.sh)"; fi
+        probe "/proxy/config" "'gateway_port' in d" "/proxy/config serves sidecar config"
+        probe "/traces" "'traces' in d and 'count' in d" "/traces serves trace list"
         if command -v node >/dev/null 2>&1; then
           mcp=$(printf '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}\n' | node mcp/token-horizon-mcp.mjs 2>/dev/null | head -c 4000 || true)
           case "$mcp" in *token_horizon*|*tools*) say ok "MCP tools/list answers";; *) say FAIL "MCP tools/list (unexpected output)";; esac
@@ -121,11 +137,11 @@ tasks:
         exit "$fail"
 
   doctor:
-    desc: Check toolchain + environment (swift, swiftlint, node, xcode, app port)
+    desc: Check toolchain + environment (swift, swiftlint, node, go, xcode, app port)
     cmds:
       - |
         fail=0
-        for tool in swift swiftlint node task; do
+        for tool in swift swiftlint node task go; do
           if command -v "$tool" >/dev/null 2>&1; then echo "  [ok]   $tool: $(command -v "$tool")";
           else echo "  [FAIL] $tool missing"; fail=1; fi
         done
