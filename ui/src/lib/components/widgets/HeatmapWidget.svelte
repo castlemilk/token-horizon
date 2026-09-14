@@ -153,6 +153,7 @@
 	const tileMax = $derived(Math.max(1, ...days.map((d) => d.tokens)));
 	const tileDays = $derived(days.slice(-TILE_N));
 	const tileLvls = $derived(tileDays.map((d) => level(d.tokens, tileMax)));
+	const streak = $derived(activityStats(days).streak);
 	const K = $derived(tileDays.length);
 
 	const todayKey = `${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, '0')}-${String(new Date().getDate()).padStart(2, '0')}`;
@@ -324,6 +325,18 @@
 			// the tile unmounts) — clearing it on a timer would replay
 			// the entrance and flicker the whole widget.
 			landed = true;
+			// Single landing event for the shadow too: the inline
+			// compensated value (e.g. 58px blur specified) is visually
+			// identical to the tile shadow, but without the freeze the
+			// tile's own box-shadow transition would ramp 58px→18px
+			// after landing — a second shadow animation. Frozen in the
+			// same flush as the swap, it applies instantly instead.
+			if (boxEl) gsap.set(boxEl, { transition: 'none' });
+			timers.push(
+				window.setTimeout(() => {
+					if (boxEl) gsap.set(boxEl, { clearProps: 'transition' });
+				}, 60)
+			);
 		}
 	}
 
@@ -737,23 +750,12 @@
 		     container is fixed as the modal, and supplies the measured
 		     tile + dot targets for the return flight. -->
 		<div class="tile-ghost" bind:this={ghostEl} aria-hidden="true">
-			<span class="w-head">
-				<span class="w-titles">
-					<span class="w-title">Activity</span>
-					<span class="w-sub"
-						>{variant === 'small' ? 'Last 9 days · tap to expand' : 'Last 27 days · tap to expand'}</span
-					>
-				</span>
-				<span class="w-expand" aria-hidden="true">
-					<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h6v6"/><path d="M9 21H3v-6"/><path d="M21 3l-7 7"/><path d="M3 21l7-7"/></svg>
-				</span>
-			</span>
 			<span class="mini" class:cols9={variant === 'medium'} style:--heat={HEAT}>
 				{#each tileDays as d, k}
 					<span class="mdot lvl-{tileLvls[k]}"></span>
 				{/each}
 			</span>
-			<span class="w-foot"><span class="m-foot">{activeK}/{TILE_N} active days</span></span>
+			<span class="w-foot" aria-hidden="true">🔥 {streak}</span>
 		</div>
 		<div
 			class="wmodal-backdrop"
@@ -783,17 +785,6 @@
 	>
 		{#if !open}
 			{#key tileKey}
-				<span class="w-head">
-					<span class="w-titles">
-						<span class="w-title">Activity</span>
-						<span class="w-sub"
-							>{variant === 'small' ? 'Last 9 days · tap to expand' : 'Last 27 days · tap to expand'}</span
-						>
-					</span>
-					<span class="w-expand" aria-hidden="true">
-						<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h6v6"/><path d="M9 21H3v-6"/><path d="M21 3l-7 7"/><path d="M3 21l7-7"/></svg>
-					</span>
-				</span>
 				<span
 					class="mini"
 					class:cols9={variant === 'medium'}
@@ -811,7 +802,7 @@
 						></span>
 					{/each}
 				</span>
-				<span class="w-foot"><span class="m-foot">{activeK}/{TILE_N} active days</span></span>
+				<span class="w-foot" aria-label="{streak} day streak">🔥 {streak}</span>
 			{/key}
 		{:else}
 			<div class="wmodal-head">
@@ -880,7 +871,7 @@
 		min-width: 0;
 	}
 	.hwidget.sm {
-		max-width: 300px;
+		max-width: 200px;
 		justify-self: center;
 		width: 100%;
 	}
@@ -896,6 +887,7 @@
 		flex-direction: column;
 		gap: 10px;
 		width: 100%;
+		position: relative;
 		text-align: left;
 		font: inherit;
 		color: var(--text);
@@ -903,7 +895,7 @@
 		backdrop-filter: blur(22px) saturate(1.6);
 		-webkit-backdrop-filter: blur(22px) saturate(1.6);
 		border-radius: 18px;
-		padding: 16px 16px 13px;
+		padding: 26px 16px;
 		overflow: hidden;
 		/* Same 4-part structure as the modal card (ring, top light,
 		   drop, contact) at resting intensity — the morph interpolates
@@ -916,17 +908,10 @@
 			0 1px 3px rgb(0 0 0 / 0.06);
 		transition: transform 0.22s cubic-bezier(0.2, 0.9, 0.25, 1.2), box-shadow 0.22s ease;
 	}
-	.morph.tile:hover {
-		transform: translateY(-2px) scale(1.008);
-		box-shadow:
-			inset 0 0 0 1px var(--line-strong),
-			inset 0 1px 0 rgb(255 255 255 / 0.08),
-			0 10px 30px rgb(0 0 0 / 0.1),
-			0 2px 6px rgb(0 0 0 / 0.08);
-	}
-	.morph.tile:active {
-		transform: translateY(0) scale(0.992);
-	}
+	/* No hover/active lift: the shared node lands under a live cursor,
+	   and any :hover transform/shadow would snap in on the landing
+	   frame (or fight the flight's inline transform). The tile reads as
+	   clickable via cursor + the expand-icon reveal. */
 	.morph.tile:focus-visible {
 		outline: 2px solid var(--accent);
 		outline-offset: 2px;
@@ -980,11 +965,12 @@
 	.tile-ghost {
 		visibility: hidden;
 		pointer-events: none;
+		position: relative;
 		display: flex;
 		flex-direction: column;
 		gap: 10px;
 		width: 100%;
-		padding: 16px 16px 13px;
+		padding: 26px 16px;
 		border-radius: 18px;
 		box-shadow:
 			inset 0 0 0 1px var(--line),
@@ -999,25 +985,25 @@
 	.mini {
 		display: grid;
 		grid-template-columns: repeat(3, auto);
-		gap: 12px;
+		gap: 10px;
 		justify-content: center;
 		align-content: center;
 	}
 	.mini.cols9 {
 		grid-template-columns: repeat(9, auto);
-		gap: 10px;
+		gap: 8px;
 	}
 	.mdot {
-		width: 22px;
-		height: 22px;
+		width: 16px;
+		height: 16px;
 		border-radius: 50%;
 		background: var(--track);
 		transition: background 0.4s ease, transform 0.18s ease;
 		animation: dotpop 0.45s cubic-bezier(0.2, 0.9, 0.3, 1.3) backwards;
 	}
 	.cols9 .mdot {
-		width: 18px;
-		height: 18px;
+		width: 13px;
+		height: 13px;
 	}
 	.morph.tile .mdot:hover {
 		transform: scale(1.25);
@@ -1037,14 +1023,19 @@
 		0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--heat) 55%, transparent); }
 		50% { box-shadow: 0 0 0 6px transparent; }
 	}
-	.m-foot {
-		font-variant-numeric: tabular-nums;
-	}
 	/* post-landing: tile remounted fresh — hold dots steady instead of
-	   replaying their staggered entrance (the reload flicker) */
+	   replaying their staggered entrance (the reload flicker), and fade
+	   the streak label in over the settled tile. */
 	.landed .mdot,
 	.landed .mdot.live {
 		animation: none;
+	}
+	.landed .w-foot {
+		animation: chromefade 0.32s ease backwards;
+	}
+	@keyframes chromefade {
+		from { opacity: 0; transform: translateY(4px); }
+		to { opacity: 1; transform: none; }
 	}
 	/* year picker */
 	.ypick {
@@ -1134,54 +1125,19 @@
 		scrollbar-gutter: stable;
 	}
 	/* ---- tile chrome ---- */
-	.w-head {
-		display: flex;
-		align-items: flex-start;
-		justify-content: space-between;
-		gap: 8px;
-	}
-	.w-titles {
-		display: flex;
-		flex-direction: column;
-		gap: 1px;
-		min-width: 0;
-	}
-	.w-title {
-		font-size: 11px;
-		font-weight: 600;
-		letter-spacing: 0.08em;
-		text-transform: uppercase;
-		color: var(--text-3);
-	}
-	.w-sub {
-		font-size: 11px;
-		color: var(--text-3);
-		white-space: nowrap;
-		overflow: hidden;
-		text-overflow: ellipsis;
-	}
-	.w-expand {
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		width: 22px;
-		height: 22px;
-		border-radius: 7px;
-		color: var(--text-3);
-		flex: none;
-		opacity: 0;
-		transform: scale(0.8);
-		transition: opacity 0.18s ease, transform 0.18s ease, background 0.18s ease;
-	}
-	.morph.tile:hover .w-expand,
-	.morph.tile:focus-visible .w-expand {
-		opacity: 1;
-		transform: scale(1);
-	}
+	/* Streak floats over the bottom padding so the dots stay centered
+	   in the full box with symmetric padding (in flow it would push
+	   them up). Ghost mirrors this exactly. */
 	.w-foot {
-		display: block;
-		font-size: 10.5px;
-		color: var(--text-3);
+		position: absolute;
+		left: 16px;
+		right: 16px;
+		bottom: 8px;
+		display: flex;
+		justify-content: center;
+		font-size: 11px;
+		font-variant-numeric: tabular-nums;
+		color: var(--text);
 	}
 	/* ---- flight concealment: layout reserved while flying, zero shifts ----
 	   Pre-launch conceal covers the 1–2 frames before the timeline builds;
@@ -1276,23 +1232,16 @@
 		cursor: pointer;
 	}
 	@media (max-width: 640px) {
-		.morph.modal {
-			width: calc(100vw - 24px);
-			max-height: 92vh;
-		}
-		.mdot { width: 19px; height: 19px; }
-		.cols9 .mdot { width: 16px; height: 16px; }
-		.mini { gap: 10px; }
-		.mini.cols9 { gap: 8px; }
+		.mdot { width: 14px; height: 14px; }
+		.cols9 .mdot { width: 12px; height: 12px; }
+		.mini { gap: 8px; }
+		.mini.cols9 { gap: 7px; }
 		.xstats { grid-template-columns: repeat(2, 1fr); }
 		.yval { min-width: 96px; }
 	}
 	@media (prefers-reduced-motion: reduce) {
 		.morph.tile,
-		.w-expand,
 		.mdot, .mdot.live { animation: none; transition: none; }
-		.morph.tile:hover {
-			transform: none;
-		}
+		.landed .w-foot { animation: none; }
 	}
 </style>
