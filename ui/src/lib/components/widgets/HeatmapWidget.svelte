@@ -880,6 +880,12 @@
 		justify-self: center;
 		width: 100%;
 	}
+	/* Same vertical air as the small tile: dots block is identical
+	   (3 rows), so the same 200px height centers them at 66px. */
+	.hwidget.md .morph.tile,
+	.hwidget.md .tile-ghost {
+		min-height: 200px;
+	}
 	/* ---- shared container: tile resting state ---- */
 	.morph.tile {
 		cursor: pointer;
@@ -991,7 +997,7 @@
 	}
 	.mini.cols9 {
 		grid-template-columns: repeat(9, auto);
-		gap: 8px;
+		gap: 10px;
 	}
 	.mdot {
 		width: 16px;
@@ -1002,8 +1008,8 @@
 		animation: dotpop 0.45s cubic-bezier(0.2, 0.9, 0.3, 1.3) backwards;
 	}
 	.cols9 .mdot {
-		width: 13px;
-		height: 13px;
+		width: 16px;
+		height: 16px;
 	}
 	.morph.tile .mdot:hover {
 		transform: scale(1.25);
@@ -1233,9 +1239,9 @@
 	}
 	@media (max-width: 640px) {
 		.mdot { width: 14px; height: 14px; }
-		.cols9 .mdot { width: 12px; height: 12px; }
+		.cols9 .mdot { width: 14px; height: 14px; }
 		.mini { gap: 8px; }
-		.mini.cols9 { gap: 7px; }
+		.mini.cols9 { gap: 8px; }
 		.xstats { grid-template-columns: repeat(2, 1fr); }
 		.yval { min-width: 96px; }
 	}
