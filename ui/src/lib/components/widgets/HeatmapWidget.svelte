@@ -604,7 +604,15 @@
 		     tile + dot targets for the return flight. -->
 		<div class="tile-ghost" bind:this={ghostEl} aria-hidden="true">
 			<span class="w-head">
-				<span class="w-titles"><span class="w-title">Activity</span></span>
+				<span class="w-titles">
+					<span class="w-title">Activity</span>
+					<span class="w-sub"
+						>{variant === 'small' ? 'Last 9 days · tap to expand' : 'Last 27 days · tap to expand'}</span
+					>
+				</span>
+				<span class="w-expand" aria-hidden="true">
+					<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h6v6"/><path d="M9 21H3v-6"/><path d="M21 3l-7 7"/><path d="M3 21l7-7"/></svg>
+				</span>
 			</span>
 			<span class="mini" class:cols9={variant === 'medium'} style:--heat={HEAT}>
 				{#each tileDays as d, k}
@@ -820,6 +828,7 @@
 		border-radius: 20px;
 		box-shadow:
 			inset 0 0 0 1px var(--line-strong),
+			inset 0 1px 0 rgb(255 255 255 / 0.08),
 			0 30px 80px rgb(0 0 0 / 0.28),
 			0 2px 8px rgb(0 0 0 / 0.12);
 		transform-origin: center;
