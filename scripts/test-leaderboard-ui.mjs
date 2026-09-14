@@ -332,13 +332,22 @@ async function run() {
   console.log('   deep link ok');
 
   console.log('5. Visiting every view...');
-  for (const view of ['dashboard', 'leagues', 'models', 'teams', 'prompts', 'billing', 'settings', 'leaderboard']) {
+  for (const view of ['dashboard', 'leagues', 'models', 'teams', 'billing', 'settings', 'leaderboard']) {
     await page.evaluate(v => navigate(v), view);
     await page.waitForTimeout(180);
     const h1 = await page.locator('h1').first().textContent();
     if (!h1) throw new Error(`View ${view} rendered no heading`);
     console.log(`   ${view}: ${h1}`);
   }
+  // Prompt history is never public outside the individual profile.
+  const navText = await page.locator('#nav').textContent();
+  if (/Prompts/.test(navText)) throw new Error('Prompts nav item must not be public');
+  await page.evaluate(() => navigate('prompts'));
+  await page.waitForTimeout(250);
+  const fallbackH1 = await page.locator('h1').first().textContent();
+  if (!/Leaderboard/.test(fallbackH1)) throw new Error(`Prompts deep link should fall back to leaderboard, got: ${fallbackH1}`);
+  if (apiUrls.some(u => u.includes('/api/prompts'))) throw new Error('Dashboard must never fetch the public prompts API');
+  await page.evaluate(() => navigate('leaderboard'));
 
   console.log('6. Share modal...');
   await page.evaluate(() => openShareModal('benebsworth'));
@@ -555,7 +564,7 @@ async function run() {
   await narrow.goto(filePath + '?user=benebsworth');
   await narrow.waitForSelector('#lb-table tbody tr', { timeout: 15000 }).catch(() => {});
   await narrow.waitForTimeout(300);
-  for (const view of ['leaderboard', 'dashboard', 'players', 'teams', 'prompts', 'models', 'billing', 'leagues', 'settings']) {
+  for (const view of ['leaderboard', 'dashboard', 'players', 'teams', 'models', 'billing', 'leagues', 'settings']) {
     await narrow.evaluate((v) => { state.view = v; if (v === 'players') state.currentHandle = 'benebsworth'; renderNav(); return render(); }, view);
     await narrow.waitForTimeout(250);
     const sw = await narrow.evaluate(() => document.documentElement.scrollWidth);
@@ -587,7 +596,7 @@ async function run() {
   if (!followed.ok) throw new Error('Chart did not follow container width on resize');
   if (followed.mounts !== undefined && followed.mounts !== mountsBefore) throw new Error('Resize remounted charts');
   await narrow.close();
-  console.log('   9/9 views fit 390px, sticky columns pinned, charts follow resizes with 0 remounts');
+  console.log('   8/8 views fit 390px, sticky columns pinned, charts follow resizes with 0 remounts');
 
   console.log('13. Checking console errors...');
   const realErrors = errors.filter(e =>

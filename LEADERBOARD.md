@@ -64,7 +64,7 @@ decay, and relegation are explanatory copy only — there is no enforcement job.
 ### Screen 5 — Provider Usage Breakdown ✅
 
 KPI cards, provider-over-time stacked area, provider mix donut, usage by team,
-comparison table, top prompts by provider, insights. **Latency and
+comparison table, insights. **Latency and
 success-rate columns are omitted**: no telemetry source exists for them, and
 the earlier UI fabricated those numbers. Cost/1M is real.
 
@@ -116,7 +116,9 @@ R2 leaderboard.json ────────────────────
   entry + breakdown                            ranked + kpis + movers + usageHistory
   snapshots[] (daily rank/tokens/providers)    GET /api/user/:handle (full profile)
                                                GET /api/providers · /teams · /season
-                                               GET /api/prompts · /config
+                                               GET /api/user/:handle
+                                               GET /api/providers · /api/teams · /api/season
+                                               GET /api/config
                                                GET /api/shared/:id  (public reports)
 ```
 
@@ -160,8 +162,8 @@ R2 leaderboard.json ────────────────────
 |---|---|
 | `GET /api/leaderboard?period=&team=&league=&historyDays=` | ranked rows (score, input/output/requests, trend, efficiency, rankΔ) + `kpis` (real 7d deltas) + `movers` + `usageHistory` (stacked model series, 7–120 day window) + `season` + `leagueLadder` |
 | `GET /api/user/:handle` | full entry + standing/percentile/team rank + achievements + `rankHistory` |
-| `GET /api/providers?days=` | provider aggregation, provider-over-time, teams, top prompts, insights |
-| `GET /api/teams` · `GET /api/season` · `GET /api/prompts` | team rollups · ladder/distribution/standings/promotions · recent prompts |
+| `GET /api/providers?days=` | provider aggregation, provider-over-time, teams, insights |
+| `GET /api/teams` · `GET /api/season` | team rollups · ladder/distribution/standings/promotions |
 | `GET /api/config` | public client config (Google client ID, canonical URL, season) |
 | `POST /api/profile/avatar` | owner-only avatar update: Google photo, image URL, uploaded data URL (stored in R2), or generated style |
 | `GET /api/avatar/:handle` | uploaded avatar bytes (R2, cached 24h) |
@@ -305,12 +307,15 @@ of cache-hit rate, output ratio, and free/local share.
    selector shows the current season only.
 5. **Default sharing rules** are client-side defaults, not server-enforced.
 6. **Share preview** is a stylized thumbnail, not a live mini-chart.
-7. **Prompt history is opt-in** (`leaderboardSharePrompts`, default off).
-   When off, activity rows still publish with empty titles (time/model/tokens/
-   cost), so the Recent Activity timeline keeps working; titles and prompt
-   categories stay private and `/api/prompts` skips them. Existing entries
-   keep whatever they last published until the next publish overwrites the
-   breakdown.
+7. **Prompt history is opt-in** (`leaderboardSharePrompts`, default off) and
+   lives **only inside the individual profile**. The global Prompts view and
+   the Models "Top prompts" card were removed; `/api/prompts` and the
+   `topPrompts` payload are off unless the deployment is explicitly opted in
+   with the `PROMPTS_PUBLIC=1` worker var. When the per-owner setting is off,
+   activity rows still publish with empty titles (time/model/tokens/cost), so
+   the Recent Activity timeline keeps working; titles and prompt categories
+   stay private. Existing entries keep whatever they last published until the
+   next publish overwrites the breakdown.
 8. **TanStack Charts is pre-alpha (0.18)** — vendored + feature-detected with
    an SVG fallback so a breaking release can't take the dashboard down.
 9. **`docs/index.html`** remains the dependency-free landing page; the

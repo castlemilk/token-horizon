@@ -1331,7 +1331,6 @@ const NAV = [
   { id: "leaderboard", label: "Leaderboard", icon: '<path d="M8 21h8M12 17v4M7 4h10v5a5 5 0 01-10 0V4z" stroke="currentColor" stroke-width="1.6" fill="none"/><path d="M7 6H4v2a3 3 0 003 3M17 6h3v2a3 3 0 01-3 3" stroke="currentColor" stroke-width="1.6" fill="none"/>' },
   { id: "players", label: "Players", icon: '<circle cx="9" cy="8" r="3.2" stroke="currentColor" stroke-width="1.6" fill="none"/><path d="M3.5 20c0-3.3 2.5-5.5 5.5-5.5s5.5 2.2 5.5 5.5" stroke="currentColor" stroke-width="1.6" fill="none"/><path d="M16 6.5a3 3 0 010 5.8M17.5 14.6c2 .6 3.5 2.3 3.5 4.6" stroke="currentColor" stroke-width="1.6" fill="none"/>' },
   { id: "teams", label: "Teams", icon: '<circle cx="7" cy="9" r="2.6" stroke="currentColor" stroke-width="1.6" fill="none"/><circle cx="17" cy="9" r="2.6" stroke="currentColor" stroke-width="1.6" fill="none"/><path d="M2.5 19c0-2.6 2-4.4 4.5-4.4S11.5 16.4 11.5 19M12.5 19c0-2.6 2-4.4 4.5-4.4s4.5 1.8 4.5 4.4" stroke="currentColor" stroke-width="1.6" fill="none"/>' },
-  { id: "prompts", label: "Prompts", icon: '<path d="M4 5h16v11H8l-4 4V5z" stroke="currentColor" stroke-width="1.6" fill="none"/><path d="M8 9h8M8 12h5" stroke="currentColor" stroke-width="1.5"/>' },
   { id: "models", label: "Models", icon: '<ellipse cx="12" cy="6" rx="7" ry="3" stroke="currentColor" stroke-width="1.6" fill="none"/><path d="M5 6v6c0 1.7 3.1 3 7 3s7-1.3 7-3V6M5 12v6c0 1.7 3.1 3 7 3s7-1.3 7-3v-6" stroke="currentColor" stroke-width="1.6" fill="none"/>' },
   { id: "billing", label: "Billing", icon: '<rect x="3" y="5" width="18" height="14" rx="2" stroke="currentColor" stroke-width="1.6" fill="none"/><path d="M3 10h18M7 15h4" stroke="currentColor" stroke-width="1.6"/>' },
   { id: "settings", label: "Settings", icon: '<circle cx="12" cy="12" r="3" stroke="currentColor" stroke-width="1.6" fill="none"/><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M18.4 5.6l-2.1 2.1M7.7 16.3l-2.1 2.1" stroke="currentColor" stroke-width="1.5"/>' }
@@ -1479,7 +1478,7 @@ function wireChrome() {
 /* ---------- shared bits ---------- */
 const CRUMB_VIEWS = {
   dashboard: "dashboard", leaderboard: "leaderboard", players: "players",
-  users: "dashboard", analytics: "models", teams: "teams", prompts: "prompts",
+  users: "dashboard", analytics: "models", teams: "teams",
   models: "models", billing: "billing", settings: "settings", leagues: "leagues"
 };
 function pageHead(crumb, title, sub, quote) {
@@ -1712,7 +1711,6 @@ async function render() {
       case "dashboard": await renderDashboard(); break;
       case "players": await renderPlayers(); break;
       case "teams": await renderTeams(); break;
-      case "prompts": await renderPrompts(); break;
       case "models": await renderProviders(); break;
       case "billing": await renderBilling(); break;
       case "leagues": await renderLeagues(); break;
@@ -2240,7 +2238,6 @@ async function renderProviders() {
     values: history.points.map(pt => pt.values[name] || 0)
   })).filter(s => s.values.some(v => v > 0));
   const mix = rows.map(r => ({ label: providerLabel(r.provider), provider: r.provider, value: r.tokens, color: providerColor(r.provider) }));
-  const topPrompts = (p.topPrompts || []).slice();
   const insights = p.insights || {};
   const avgCostPer1k = totalTokens > 0 ? (totalCost / totalTokens) * 1000 : 0;
 
@@ -2267,9 +2264,6 @@ async function renderProviders() {
       <div class="grid" style="align-content:start">
         <div class="card"><div class="card-head"><h3>Usage by Team</h3></div>
           ${(p.teams || []).slice(0, 5).map(t => `<div style="margin-bottom:12px"><div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:5px"><span>${esc(t.team)}</span><span class="num muted">${esc(t.tokensFormatted)}</span></div>${Object.entries(t.providers || {}).length ? `<div style="display:flex;height:7px;border-radius:4px;overflow:hidden">${Object.entries(t.providers).sort((a, b) => b[1] - a[1]).map(([prov, val]) => `<span style="width:${(val / Math.max(1, t.tokens)) * 100}%;background:${providerColor(prov)}" title="${providerLabel(prov)}"></span>`).join("")}</div>` : ""}</div>`).join("") || '<div class="empty" style="padding:10px">No teams yet.</div>'}
-        </div>
-        <div class="card"><div class="card-head"><h3>Top Prompts by Provider</h3></div>
-          ${topPrompts.slice(0, 5).map((s, i) => `<div class="mover"><span class="rank">${i + 1}</span><div style="min-width:0"><div class="name" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:200px">${s.title ? esc(s.title) : '<span class="faint">title private</span> 🔒'}</div><div class="faint" style="font-size:10.5px;display:flex;align-items:center;gap:5px">${providerLogo(s.provider, 13, s.model)}${esc(providerDisplay(s.provider, s.model))}${s.model ? " · " + esc(s.model) : ""}</div></div><div class="val">${fmtTokens(s.tokens)}</div></div>`).join("") || '<div class="empty" style="padding:10px">Prompt history is private for this deployment.</div>'}
         </div>
       </div>
     </div>`
@@ -2312,41 +2306,6 @@ async function renderTeams() {
         <div class="chart-legend" style="margin:0 0 12px">${Object.keys(t.providers || {}).map(prov => `<span class="chip logo-chip">${providerLogo(prov, 13)}${providerLabel(prov)}</span>`).join("")}</div>
         <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">${(t.users || []).map(u => `<span class="chip" data-handle-link="${esc(u.handle)}" style="cursor:pointer">${avatar(u.handle, u.avatarUrl, 18, u.avatarStyle)} ${esc(u.handle)}</span>`).join("")}</div>
       </div>`).join("") || '<div class="empty">No teams yet.</div>'}
-    </div>`;
-  wireProfile();
-}
-
-/* ============================================================
-   VIEW: PROMPTS
-   ============================================================ */
-async function renderPrompts() {
-  let sessions = [], promptsError = "";
-  try { const res = await api("/api/prompts"); sessions = res.prompts || []; }
-  catch (e) { promptsError = e.message; }
-  sessions.sort((a, b) => (b.at || 0) - (a.at || 0));
-  const cats = new Map();
-  const providers = new Map();
-  for (const s of sessions) {
-    cats.set(categorize(s.title), (cats.get(categorize(s.title)) || 0) + (s.tokens || 0));
-    providers.set(String(s.provider || "other").toLowerCase(), (providers.get(String(s.provider || "other").toLowerCase()) || 0) + (s.tokens || 0));
-  }
-  $("#view").innerHTML = pageHead(["Analytics", "Prompts"], "Prompt & Workload Analytics", "Recent prompts and workloads published by participating nodes.", "Better prompts. Brighter tomorrows.")
-    + (promptsError ? `<div class="notice err" style="margin-bottom:16px">Couldn't load prompts: ${esc(promptsError)}</div>` : "")
-    + `<div class="grid kpis" style="margin-bottom:16px">
-      ${kpiCard("Tracked Prompts", String(sessions.length), "", ICONS.activity)}
-      ${kpiCard("Prompt Tokens", fmtTokens(sessions.reduce((s, x) => s + (x.tokens || 0), 0)), "", ICONS.tokens)}
-      ${kpiCard("Providers", String(providers.size), "", ICONS.users)}
-      ${kpiCard("Top Category", [...cats.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] || "—", "", ICONS.rank)}
-    </div>
-    <div class="split" style="margin-bottom:16px">
-      <div class="card" style="padding:0;overflow:hidden"><div class="card-head" style="padding:16px 16px 8px"><h3>Recent Prompts / Workloads</h3></div>
-        <div style="overflow-x:auto"><table><thead><tr><th>#</th><th>Prompt / Workflow</th><th>User</th><th>Provider</th><th class="right">Tokens</th><th class="right">Cost</th></tr></thead><tbody>
-        ${sessions.slice(0, 25).map((s, i) => `<tr><td class="faint">${i + 1}</td><td>${s.title ? esc(s.title) : '<span class="faint">title private</span> <span class="chip" style="font-size:9.5px;padding:2px 7px">🔒</span>'}</td><td><span class="chip" data-handle-link="${esc(s.handle)}" style="cursor:pointer">${esc(s.handle)}</span></td><td><span class="chip logo-chip">${providerLogo(s.provider, 14, s.model)}${esc(providerDisplay(s.provider, s.model))}${s.model ? " · " + esc(s.model) : ""}</span></td><td class="num right">${fmtTokens(s.tokens)}</td><td class="num right">${fmtCost(s.cost)}</td></tr>`).join("") || '<tr><td colspan="6"><div class="empty">Prompt history is private by default — owners can enable it in Token Horizon settings.</div></td></tr>'}
-        </tbody></table></div></div>
-      <div class="grid" style="align-content:start">
-        <div class="card"><div class="card-head"><h3>Prompt Categories</h3></div>${barList([...cats.entries()].map(([label, value]) => ({ label, value })).sort((a, b) => b.value - a.value), { labelWidth: 130 })}</div>
-        <div class="card"><div class="card-head"><h3>Tokens by Provider</h3></div>${barList([...providers.entries()].map(([label, value]) => ({ label: providerLabel(label), value, color: providerColor(label) })), { labelWidth: 100 })}</div>
-      </div>
     </div>`;
   wireProfile();
 }

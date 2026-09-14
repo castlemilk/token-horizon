@@ -311,16 +311,25 @@ describe('Cloudflare Worker API', () => {
     assert.deepEqual(user.entry.breakdown.daily.map(p => p.day), [endSec - 2 * 86400, endSec - 86400, endSec]);
   });
 
-  it('GET /api/prompts excludes redacted (title-less) activity rows', async () => {
+  it('GET /api/prompts is private by default and requires PROMPTS_PUBLIC opt-in', async () => {
     const day = Math.floor(Date.now() / 1000 / 86400) - 1;
-    const env = createMultiKeyEnv([
+    const mk = () => createMultiKeyEnv([
       { handle: 'a', tokensAll: 100, breakdown: { models: [{ provider: 'anthropic', model: 'm1', tokensAll: 100, tokensToday: 0, sharePercent: 100 }], tools: [], history: [], sessions: [
         { title: 'Code review assistant', provider: 'anthropic', model: 'm1', tokens: 10, cost: 1, requests: 2, at: day * 86400 },
         { title: '', provider: 'openai', model: 'm2', tokens: 5, cost: 0.5, requests: 1, at: day * 86400 }
       ] } }
     ]);
-    const res = await worker.fetch(req('/api/prompts'), env);
-    const data = await res.json();
+    // Default: prompt history is never public.
+    const privateEnv = mk();
+    const res = await worker.fetch(req('/api/prompts'), privateEnv);
+    assert.equal(res.status, 404);
+    const providers = await (await worker.fetch(req('/api/providers?days=30'), privateEnv)).json();
+    assert.deepEqual(providers.topPrompts, []);
+    // Explicit opt-in: only title-bearing (owner-opted-in) sessions surface.
+    const publicEnv = { ...mk(), PROMPTS_PUBLIC: '1' };
+    const pub = await worker.fetch(req('/api/prompts'), publicEnv);
+    assert.equal(pub.status, 200);
+    const data = await pub.json();
     assert.equal(data.count, 1);
     assert.equal(data.prompts[0].title, 'Code review assistant');
   });

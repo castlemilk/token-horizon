@@ -1475,9 +1475,12 @@ export default {
       const movers = computeMovers(entries);
       const efficient = [...rows].filter(r => r.tokens > 0 && r.cost > 0)
         .sort((a, b) => a.avgCostPerM - b.avgCostPerM);
-      const topPrompts = aggregateSessions(entries)
+      // Prompt history is never public outside the individual profile: the
+      // aggregated top-prompts surface only exists when the deployment is
+      // explicitly opted in via PROMPTS_PUBLIC=1.
+      const topPrompts = env.PROMPTS_PUBLIC ? aggregateSessions(entries)
         .sort((a, b) => b.tokens - a.tokens)
-        .slice(0, 8);
+        .slice(0, 8) : [];
       return jsonResponse({
         ok: true,
         total,
@@ -1787,8 +1790,13 @@ export default {
       });
     }
 
-    // 6f. GET /api/prompts — aggregated recent prompts/workloads
+    // 6f. GET /api/prompts — aggregated recent prompts/workloads.
+    // Prompt history lives in the individual profile only; it is never public
+    // unless the deployment is explicitly opted in via PROMPTS_PUBLIC=1.
     if (request.method === "GET" && pathname === "/api/prompts") {
+      if (!env.PROMPTS_PUBLIC) {
+        return jsonResponse({ ok: false, error: "Prompt history is private on this deployment" }, 404);
+      }
       const entries = await getEntriesFromR2(env);
       const sessions = aggregateSessions(entries).sort((a, b) => (b.at || 0) - (a.at || 0));
       return jsonResponse({
