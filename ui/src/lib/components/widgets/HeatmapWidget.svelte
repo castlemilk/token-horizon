@@ -85,6 +85,10 @@
 	let loadError = $state(false);
 	let phase = $state<'fly' | 'settle' | 'exit'>('settle');
 	let flightOk = $state(false);
+	/** True briefly after a close lands: the tile remounts fresh and its
+	    dots would replay their staggered pop-in (reads as reloading), so
+	    entrance animation is suppressed until they settle. */
+	let landed = $state(false);
 	/** THE shared container: tile when closed, modal when open. Never recreated. */
 	let boxEl = $state<HTMLElement | null>(null);
 	let tileDotsEl = $state<HTMLElement | null>(null);
@@ -95,6 +99,8 @@
 	let started = $state(false);
 	let activeTl: gsap.core.Timeline | null = null;
 	let timers: number[] = [];
+	/** Invalidates a pending open flight scheduled via tick(). */
+	let flightId = 0;
 	/** Tile measurements taken while boxEl still IS the tile (pre-swap). */
 	let pendingTile: { tileBox: Box; dotBoxes: Box[]; bg: string[]; fromShadow: string } | null =
 		null;
@@ -201,6 +207,8 @@
 		killTl();
 		clearTimers();
 		removeClones();
+		flightId++;
+		const wasExit = phase === 'exit';
 		// Same node persists across the swap — scrub every inline flight
 		// state so the tile is whole again as the backdrop releases.
 		if (boxEl) gsap.set(boxEl, { clearProps: 'all' });
@@ -209,6 +217,15 @@
 		started = false;
 		pendingTile = null;
 		phase = 'settle';
+		if (wasExit) {
+			// Cover the longest stagger (~600ms on medium) + pop duration.
+			landed = true;
+			timers.push(
+				window.setTimeout(() => {
+					landed = false;
+				}, 800)
+			);
+		}
 	}
 
 	function show() {
@@ -254,9 +271,12 @@
 			flightOk = true;
 			phase = 'fly';
 			open = true;
+			const id = ++flightId;
 			void tick().then(async () => {
+				if (id !== flightId) return;
 				await layoutStable();
-				launchOpen();
+				if (id !== flightId) return;
+				launchOpen(id);
 			});
 		} else {
 			flightOk = false;
@@ -271,9 +291,10 @@
 	 * container expands while the dots ride clones to their year-cells,
 	 * then extras fade/translate in.
 	 */
-	function launchOpen() {
+	function launchOpen(id: number) {
+		if (id !== flightId) return;
 		if (!open || phase !== 'fly' || !boxEl || !heatEl || !pendingTile) {
-			if (open) phase = 'settle';
+			if (open && id === flightId) phase = 'settle';
 			return;
 		}
 		const card = boxEl;
@@ -441,6 +462,7 @@
 		}
 		killTl();
 		clearTimers();
+		flightId++; // cancel a still-pending open flight so it can't clobber 'exit'
 		const card = boxEl;
 		const ghost = ghostEl;
 		if (card) {
@@ -483,10 +505,11 @@
 			scaleX: Number(gsap.getProperty(card, 'scaleX')) || 1,
 			scaleY: Number(gsap.getProperty(card, 'scaleY')) || 1
 		};
-		// Target-form deltas (swapped args): values that land the natural
-		// card onto the tile — cardVars' native from-state form would
-		// invert the collapse into a blow-up (sx 2.87 instead of 0.35).
-		const cv = cardVars(modalBox, naturalBox(tileBox, liveT));
+		// Target-form deltas: values that land the natural card onto the
+		// tile — cardVars' native from-state form is cardVars(tile, card),
+		// and the unswapped form inverts the collapse into a blow-up
+		// (sx 2.87 instead of 0.35).
+		const cv = cardVars(tileBox, naturalBox(modalBox, liveT));
 		const homeShadow = getComputedStyle(ghost).boxShadow;
 		// Beat 1 (CSS leaving, 0 → 0.18s) dissolves everything but the
 		// travelers; beat 2 below moves container + dots home while the
@@ -572,6 +595,7 @@
 	class="hwidget"
 	class:sm={variant === 'small'}
 	class:md={variant === 'medium'}
+	class:landed={landed}
 	class:pre-show={phase === 'fly' && !started}
 >
 	{#if open}
@@ -599,6 +623,7 @@
 		></div>
 	{/if}
 	<!-- THE container: tile when closed, modal when open. Same node both ways. -->
+	<!-- svelte-ignore a11y_no_noninteractive_tabindex -- reason: tabindex is only 0 while role=button (tile); undefined as dialog -->
 	<div
 		bind:this={boxEl}
 		class="morph"
@@ -871,6 +896,12 @@
 	}
 	.m-foot {
 		font-variant-numeric: tabular-nums;
+	}
+	/* post-landing: tile remounted fresh — hold dots steady instead of
+	   replaying their staggered entrance (the reload flicker) */
+	.landed .mdot,
+	.landed .mdot.live {
+		animation: none;
 	}
 	/* year picker */
 	.ypick {
