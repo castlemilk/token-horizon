@@ -8,7 +8,6 @@
 //! app with `--minimized`, which keeps the window hidden in the tray.
 
 use std::net::TcpStream;
-use std::process::Child;
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -16,9 +15,11 @@ use tauri::menu::{Menu, MenuItem};
 use tauri::tray::TrayIconBuilder;
 use tauri::{Manager, RunEvent, WindowEvent};
 use tauri_plugin_autostart::ManagerExt;
+use tauri_plugin_shell::process::CommandChild;
+use tauri_plugin_shell::ShellExt;
 
 /// The sidecar we spawned (empty when the API was already up or spawn failed).
-struct Sidecar(Mutex<Option<Child>>);
+struct Sidecar(Mutex<Option<CommandChild>>);
 
 /// Something is already accepting connections on the loopback API port.
 /// TCP-connect is enough for the spawn decision; the UI reports real health.
@@ -26,29 +27,42 @@ fn api_listening() -> bool {
     TcpStream::connect_timeout(&"127.0.0.1:8765".parse().unwrap(), Duration::from_millis(300)).is_ok()
 }
 
-/// Path to the sidecar binary bundled via `bundle.externalBin` (placed next
-/// to the app executable; target-triple suffix is resolved by Tauri at build).
-fn sidecar_path() -> Option<std::path::PathBuf> {
-    let exe = std::env::current_exe().ok()?;
-    let dir = exe.parent()?;
-    let name = if cfg!(windows) {
-        "token-horizon-headless.exe"
-    } else {
-        "token-horizon-headless"
+/// Spawn the bundled `token-horizon-headless` sidecar via Tauri's shell
+/// plugin, which resolves the target-triple-suffixed `externalBin` in both
+/// dev (`src-tauri/binaries/`) and release bundles. (The previous bare-name
+/// lookup next to the executable could never match a bundled sidecar, so
+/// release builds silently never started the daemon.)
+fn spawn_sidecar(app: &tauri::AppHandle) -> Option<CommandChild> {
+    let spawn = || -> Result<CommandChild, String> {
+        let cmd = app
+            .shell()
+            .sidecar("token-horizon-headless")
+            .map_err(|e| format!("bundled sidecar unavailable: {e}"))?;
+        let (mut rx, child) = cmd.spawn().map_err(|e| format!("sidecar spawn failed: {e}"))?;
+        log::info!(
+            "spawned token-horizon-headless sidecar (pid {})",
+            child.pid()
+        );
+        // Drain spawn events so failures surface in logs, not silence.
+        tauri::async_runtime::spawn(async move {
+            use tauri_plugin_shell::process::CommandEvent;
+            while let Some(ev) = rx.recv().await {
+                match ev {
+                    CommandEvent::Error(e) => log::warn!("sidecar error: {e}"),
+                    CommandEvent::Terminated(p) => {
+                        log::info!("sidecar exited: {p:?}");
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+        });
+        Ok(child)
     };
-    let p = dir.join(name);
-    p.exists().then_some(p)
-}
-
-fn spawn_sidecar() -> Option<Child> {
-    let path = sidecar_path()?;
-    match std::process::Command::new(path).spawn() {
-        Ok(child) => {
-            log::info!("spawned token-horizon-headless sidecar (pid {})", child.id());
-            Some(child)
-        }
+    match spawn() {
+        Ok(child) => Some(child),
         Err(e) => {
-            log::warn!("failed to spawn sidecar: {e}");
+            log::warn!("{e}; run scripts/build-sidecar.sh or start the daemon manually");
             None
         }
     }
@@ -57,9 +71,8 @@ fn spawn_sidecar() -> Option<Child> {
 fn stop_sidecar(app: &tauri::AppHandle) {
     if let Some(sidecar) = app.try_state::<Sidecar>() {
         if let Ok(mut guard) = sidecar.0.lock() {
-            if let Some(mut child) = guard.take() {
+            if let Some(child) = guard.take() {
                 let _ = child.kill();
-                let _ = child.wait();
                 log::info!("stopped sidecar");
             }
         }
@@ -82,6 +95,8 @@ pub fn run() {
                 .args(["--minimized"])
                 .build(),
         )
+        .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_shell::init())
         .manage(Sidecar(Mutex::new(None)))
         .setup(|app| {
             if cfg!(debug_assertions) {
@@ -114,7 +129,7 @@ pub fn run() {
             if api_listening() {
                 log::info!("loopback API already up — no sidecar needed");
             } else {
-                let child = spawn_sidecar();
+                let child = spawn_sidecar(app.handle());
                 *app.state::<Sidecar>().0.lock().unwrap() = child;
             }
 

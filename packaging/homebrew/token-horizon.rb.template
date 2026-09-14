@@ -1,0 +1,22 @@
+cask "token-horizon" do
+  # Filled by CI (release-desktop.yml) from the tagged .dmg + checksum.
+  # __VERSION__ / __URL__ / __SHA256__ are substituted at publish time.
+  version "__VERSION__"
+  sha256 "__SHA256__"
+
+  url "__URL__"
+  name "Token Horizon"
+  desc "Local-first AI token usage metering with quota tracking"
+  homepage "https://github.com/castlemilk/token-horizon"
+
+  # First launch starts the embedded usage daemon automatically;
+  # quit from the tray menu to stop everything.
+  app "Token Horizon.app"
+
+  uninstall quit: "com.tokenhorizon.app"
+
+  zap trash: [
+    "~/.config/token-horizon",
+    "~/Library/Application Support/token-horizon",
+  ]
+end

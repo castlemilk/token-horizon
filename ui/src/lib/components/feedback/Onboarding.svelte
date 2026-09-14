@@ -3,8 +3,8 @@
 	import { fade, fly } from 'svelte/transition';
 	import { api, apiBase, discoverApiBase, setApiBase, type ConsentState, type CapabilityStatus } from '$lib/api';
 	import { piPatch, opencodeSnippet, agentBrief, copyText } from '$lib/routing';
-	import OSIcon from '$lib/components/OSIcon.svelte';
-	import ProviderIcon from '$lib/components/ProviderIcon.svelte';
+	import OSIcon from '$lib/components/data/OSIcon.svelte';
+	import ProviderIcon from '$lib/components/data/ProviderIcon.svelte';
 
 	const FLAG = 'token-horizon.onboarded';
 

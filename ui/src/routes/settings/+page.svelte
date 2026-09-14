@@ -1,6 +1,18 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { api, type ServiceStatus, type ConsentState } from '$lib/api';
+	import {
+		cloud,
+		cloudBase,
+		setCloudBase,
+		cloudToken,
+		signIn,
+		type CloudUser,
+		type Team,
+		type Group
+	} from '$lib/cloud';
+	import AvatarUpload from '$lib/components/account/AvatarUpload.svelte';
+	import { copyText } from '$lib/routing';
 	import { getTheme, setTheme, type Theme } from '$lib/theme';
 	import { settings } from '$lib/settings.svelte';
 	import { Sun, Moon, Monitor } from 'lucide-svelte';
@@ -37,6 +49,184 @@
 	let consolidating = $state(false);
 	let consolidateResult = $state<string | null>(null);
 	let consents = $state<ConsentState[]>([]);
+
+	/* ---- Cloud identity (Go server) ---- */
+	let cloudUser = $state<CloudUser | null>(null);
+	let cloudBaseUrl = $state(cloudBase());
+	let cloudBusy = $state(false);
+	let cloudError = $state<string | null>(null);
+	let loginBusy = $state<null | 'google' | 'microsoft'>(null);
+	let loginState = $state('');
+	let copied = $state<string | null>(null);
+
+	let displayName = $state('');
+	let accountMsg = $state('');
+
+	let teams = $state<Team[]>([]);
+	let groupsByTeam = $state<Record<string, Group[]>>({});
+	let newTeamName = $state('');
+	let joinCode = $state('');
+	let newGroupName = $state<Record<string, string>>({});
+	let joinGroupCode = $state('');
+	let teamsMsg = $state('');
+
+	function copy(text: string, key: string) {
+		void copyText(text).then((ok) => {
+			if (ok) {
+				copied = key;
+				setTimeout(() => (copied = null), 1500);
+			}
+		});
+	}
+
+	async function refreshCloudUser() {
+		try {
+			cloudUser = await cloud.me();
+			displayName = cloudUser.display_name ?? '';
+		} catch {
+			cloudUser = null;
+		}
+	}
+
+	async function saveCloudBase() {
+		setCloudBase(cloudBaseUrl.trim() || null);
+		cloudBusy = true;
+		cloudError = null;
+		try {
+			await refreshCloudUser();
+			if (!cloudToken()) cloudError = 'Saved — sign in below';
+		} finally {
+			cloudBusy = false;
+		}
+	}
+
+	async function doLogin(provider: 'google' | 'microsoft') {
+		loginBusy = provider;
+		loginState = '';
+		cloudError = null;
+		try {
+			const r = await signIn(provider, (s) => {
+				loginState = s === 'opening' ? 'Opening browser…' : 'Waiting in the browser…';
+			});
+			cloudUser = r.user;
+			displayName = r.user.display_name ?? '';
+			void loadTeams();
+		} catch (e) {
+			cloudError = e instanceof Error ? e.message : 'Sign-in failed';
+		} finally {
+			loginBusy = null;
+			loginState = '';
+		}
+	}
+
+	async function doLogout() {
+		await cloud.logout().catch(() => {});
+		cloudUser = null;
+		teams = [];
+		groupsByTeam = {};
+	}
+
+	async function saveAccount() {
+		accountMsg = '';
+		if (cloudUser) {
+			try {
+				cloudUser = await cloud.updateAccount({
+					display_name: displayName.trim(),
+					handle: settings.handle.trim() || undefined
+				});
+				accountMsg = 'Saved';
+			} catch (e) {
+				accountMsg = e instanceof Error ? e.message : 'Save failed';
+			}
+		} else {
+			settings.handle = settings.handle.trim() || 'me';
+			settings.save();
+			saved = true;
+			setTimeout(() => (saved = false), 1500);
+		}
+		setTimeout(() => (accountMsg = ''), 2500);
+	}
+
+	async function loadTeams() {
+		teamsMsg = '';
+		try {
+			teams = (await cloud.teams()).teams;
+			const g: Record<string, Group[]> = {};
+			for (const t of teams) {
+				try {
+					g[t.id] = (await cloud.groups(t.id)).groups;
+				} catch {
+					g[t.id] = [];
+				}
+			}
+			groupsByTeam = g;
+		} catch (e) {
+			teamsMsg = e instanceof Error ? e.message : 'Teams unavailable';
+		}
+	}
+
+	async function createTeam() {
+		if (!newTeamName.trim()) return;
+		try {
+			await cloud.createTeam(newTeamName.trim());
+			newTeamName = '';
+			await loadTeams();
+		} catch (e) {
+			teamsMsg = e instanceof Error ? e.message : 'Create failed';
+		}
+	}
+
+	async function joinTeam() {
+		if (!joinCode.trim()) return;
+		try {
+			await cloud.joinTeam(joinCode.trim());
+			joinCode = '';
+			await loadTeams();
+		} catch (e) {
+			teamsMsg = e instanceof Error ? e.message : 'Join failed';
+		}
+	}
+
+	async function leaveTeam(id: string) {
+		try {
+			await cloud.leaveTeam(id);
+			await loadTeams();
+		} catch (e) {
+			teamsMsg = e instanceof Error ? e.message : 'Leave failed';
+		}
+	}
+
+	async function createGroup(teamID: string) {
+		const name = (newGroupName[teamID] ?? '').trim();
+		if (!name) return;
+		try {
+			await cloud.createGroup(teamID, name);
+			newGroupName[teamID] = '';
+			await loadTeams();
+		} catch (e) {
+			teamsMsg = e instanceof Error ? e.message : 'Create failed';
+		}
+	}
+
+	async function joinGroup() {
+		if (!joinGroupCode.trim()) return;
+		try {
+			await cloud.joinGroup(joinGroupCode.trim());
+			joinGroupCode = '';
+			await loadTeams();
+		} catch (e) {
+			teamsMsg = e instanceof Error ? e.message : 'Join failed';
+		}
+	}
+
+	async function leaveGroup(id: string) {
+		try {
+			await cloud.leaveGroup(id);
+			await loadTeams();
+		} catch (e) {
+			teamsMsg = e instanceof Error ? e.message : 'Leave failed';
+		}
+	}
 
 	const CONSENT_COPY: Record<string, { title: string; body: string }> = {
 		metering: {
@@ -130,18 +320,14 @@
 		void loadAutostart();
 		void loadService();
 		void loadConsents();
+		if (cloudToken()) {
+			void refreshCloudUser().then(() => void loadTeams());
+		}
 	});
 
 	function pickTheme(t: Theme) {
 		theme = t;
 		setTheme(t);
-	}
-
-	function saveAccount() {
-		settings.handle = settings.handle.trim() || 'me';
-		settings.save();
-		saved = true;
-		setTimeout(() => (saved = false), 1500);
 	}
 
 </script>
@@ -153,19 +339,164 @@
 	</div>
 </header>
 
-<div class="section-label">Account</div>
+<div class="section-label">Cloud</div>
 <div class="card">
 	<div class="field">
-		<label for="handle">Handle</label>
+		<label for="cloud-base">Server</label>
 		<div class="row">
-			<span class="at">@</span>
-			<input id="handle" class="input" bind:value={settings.handle} spellcheck="false" />
-			<button class="btn" onclick={saveAccount}>{saved ? 'Saved' : 'Save'}</button>
-			<a class="btn" href="/@{settings.handle.trim() || 'me'}">View profile</a>
+			<input
+				id="cloud-base"
+				class="input mono"
+				bind:value={cloudBaseUrl}
+				spellcheck="false"
+				placeholder="http://127.0.0.1:8080"
+			/>
+			<button class="btn" disabled={cloudBusy} onclick={() => void saveCloudBase()}>
+				{cloudBusy ? '…' : 'Save'}
+			</button>
 		</div>
-		<div class="hint">Your local identity — used on the profile page and, later, leaderboard publishing.</div>
+		<div class="hint">The Go cloud server — usage sync target and identity provider.</div>
+	</div>
+	{#if cloudUser}
+		<div class="toggle-row">
+			<span class="tname">Signed in as @{cloudUser.handle}</span>
+			<span class="hint" style="margin: 0">{cloudUser.email || 'cloud account'}</span>
+			<button class="btn" onclick={() => void doLogout()}>Sign out</button>
+		</div>
+	{:else}
+		<div class="toggle-row">
+			<span class="tname">Sign in</span>
+			<span class="hint" style="margin: 0">
+				{loginState || 'Google or Microsoft — the browser dance returns here'}
+			</span>
+			<span style="display: flex; gap: 8px">
+				<button class="btn" disabled={loginBusy !== null} onclick={() => void doLogin('google')}>
+					{loginBusy === 'google' ? '…' : 'Google'}
+				</button>
+				<button class="btn" disabled={loginBusy !== null} onclick={() => void doLogin('microsoft')}>
+					{loginBusy === 'microsoft' ? '…' : 'Microsoft'}
+				</button>
+			</span>
+		</div>
+	{/if}
+	{#if cloudError}<div class="hint" style="color: var(--bad)">{cloudError}</div>{/if}
+</div>
+
+<div class="section-label">Account</div>
+<div class="card">
+	<div class="field" style="display: flex; gap: 14px; align-items: flex-start">
+		{#if cloudUser}
+			<AvatarUpload
+				user={cloudUser}
+				onSaved={(u) => {
+					cloudUser = u;
+				}}
+			/>
+		{/if}
+		<div style="flex: 1; min-width: 0">
+			{#if cloudUser}
+				<label for="display-name">Display name</label>
+				<div class="row" style="margin-bottom: 10px">
+					<input id="display-name" class="input" bind:value={displayName} spellcheck="false" />
+				</div>
+			{/if}
+			<label for="handle">Handle</label>
+			<div class="row">
+				<span class="at">@</span>
+				<input id="handle" class="input" bind:value={settings.handle} spellcheck="false" />
+				<button class="btn" onclick={saveAccount}>
+					{cloudUser ? (accountMsg || 'Save') : saved ? 'Saved' : 'Save'}
+				</button>
+				{#if !cloudUser}
+					<a class="btn" href="/@{settings.handle.trim() || 'me'}">View profile</a>
+				{/if}
+			</div>
+			{#if accountMsg && cloudUser}<div class="hint">{accountMsg}</div>{/if}
+			<div class="hint">
+				{#if cloudUser}
+					Cloud identity — handle is unique across the server, photo uploads as 256px webp.
+				{:else}
+					Your local identity — used on the profile page and, later, leaderboard publishing. Sign in above for cloud identity.
+				{/if}
+			</div>
+		</div>
 	</div>
 </div>
+
+{#if cloudUser}
+	<div class="section-label">Teams & groups</div>
+	<div class="card">
+		{#if teams.length === 0}
+			<div class="empty">No teams yet — create one or join with an invite code</div>
+		{:else}
+			{#each teams as t (t.id)}
+				<div class="team">
+					<div class="toggle-row">
+						<span class="tname">{t.name}</span>
+						<span class="hint" style="margin: 0">
+							{t.role} · {t.members ?? 0} member{(t.members ?? 0) === 1 ? '' : 's'}
+							{#if t.join_code} · code <button class="codebtn" onclick={() => copy(t.join_code ?? '', `tc-${t.id}`)} title="Copy invite code">{copied === `tc-${t.id}` ? 'copied' : t.join_code}</button>{/if}
+						</span>
+						<button class="btn" onclick={() => void leaveTeam(t.id)}>Leave</button>
+					</div>
+					{#each groupsByTeam[t.id] ?? [] as g (g.id)}
+						<div class="toggle-row sub">
+							<span class="tname">{g.name}</span>
+							<span class="hint" style="margin: 0">
+								{g.role} · {g.members ?? 0} member{(g.members ?? 0) === 1 ? '' : 's'}
+								{#if g.join_code} · code <button class="codebtn" onclick={() => copy(g.join_code ?? '', `gc-${g.id}`)} title="Copy invite code">{copied === `gc-${g.id}` ? 'copied' : g.join_code}</button>{/if}
+							</span>
+							<button class="btn" onclick={() => void leaveGroup(g.id)}>Leave</button>
+						</div>
+					{/each}
+					<div class="row" style="margin-top: 8px">
+						<input
+							class="input"
+							placeholder="New group name"
+							bind:value={newGroupName[t.id]}
+							onkeydown={(e) => {
+								if (e.key === 'Enter') void createGroup(t.id);
+							}}
+						/>
+						<button class="btn" onclick={() => void createGroup(t.id)}>Add group</button>
+					</div>
+				</div>
+			{/each}
+		{/if}
+		<div class="row" style="margin-top: 12px">
+			<input
+				class="input"
+				placeholder="New team name"
+				bind:value={newTeamName}
+				onkeydown={(e) => {
+					if (e.key === 'Enter') void createTeam();
+				}}
+			/>
+			<button class="btn" onclick={() => void createTeam()}>Create</button>
+		</div>
+		<div class="row" style="margin-top: 8px">
+			<input
+				class="input mono"
+				placeholder="Invite code"
+				bind:value={joinCode}
+				onkeydown={(e) => {
+					if (e.key === 'Enter') void joinTeam();
+				}}
+			/>
+			<button class="btn" onclick={() => void joinTeam()}>Join team</button>
+			<input
+				class="input mono"
+				placeholder="Group code"
+				bind:value={joinGroupCode}
+				onkeydown={(e) => {
+					if (e.key === 'Enter') void joinGroup();
+				}}
+			/>
+			<button class="btn" onclick={() => void joinGroup()}>Join group</button>
+		</div>
+		{#if teamsMsg}<div class="hint" style="color: var(--bad)">{teamsMsg}</div>{/if}
+	</div>
+{/if}
 
 <div class="section-label">Appearance</div>
 <div class="card">
@@ -331,6 +662,25 @@
 	}
 	.toggle-row:last-of-type {
 		border-bottom: none;
+	}
+	.toggle-row.sub {
+		padding-left: 18px;
+	}
+	.team + .team {
+		margin-top: 6px;
+		padding-top: 6px;
+		border-top: 1px solid var(--line);
+	}
+	.codebtn {
+		background: none;
+		border: none;
+		padding: 0;
+		font: inherit;
+		font-family: var(--font-mono);
+		font-size: 11px;
+		color: var(--text);
+		cursor: pointer;
+		text-decoration: underline dotted;
 	}
 	.tname {
 		font-size: 13px;

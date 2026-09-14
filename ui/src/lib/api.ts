@@ -355,9 +355,9 @@ export const api = {
 	trends: (window: string) => get<Trends>(`/trends?window=${window}`),
 	limits: () => get<{ limits: ProviderLimit[] }>('/limits'),
 	refreshLimits: () => post<{ limits: ProviderLimit[] }>('/limits/refresh', {}),
-	buckets: (resolution: number, fromEpoch: number, metered = true, extra = '') =>
+	buckets: (resolution: number, fromEpoch: number, metered = true, extra = '', toEpoch?: number) =>
 		get<{ resolution: number; buckets: BucketRow[] }>(
-			`/analytics/buckets?resolution=${resolution}&from=${Math.floor(fromEpoch)}${metered ? '&metered=1' : ''}${extra}`
+			`/analytics/buckets?resolution=${resolution}&from=${Math.floor(fromEpoch)}${toEpoch != null ? `&to=${Math.floor(toEpoch)}` : ''}${metered ? '&metered=1' : ''}${extra}`
 		),
 	processes: () => get<Record<string, ProcSample[]>>('/processes'),
 	syncStatus: () => get<SyncStatus>('/sync/status'),

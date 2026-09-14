@@ -29,6 +29,38 @@ type Store interface {
 	UsageSummary(ctx context.Context, q SummaryQuery) ([]VendorSummary, error)
 	SetCursor(ctx context.Context, dataset, machineID, cursor string) error
 	Cursor(ctx context.Context, dataset, machineID string) (string, error)
+
+	// Leaderboard: per-user aggregates + active days for streaks.
+	BoardTotals(ctx context.Context, team string, since time.Time) ([]BoardRow, error)
+	BoardTotalsRange(ctx context.Context, team string, since, until time.Time) ([]BoardRow, error)
+	BoardDays(ctx context.Context, team string, since time.Time, limitDays int) (map[string][]time.Time, error)
+
+	// Identity: login, sessions, profile.
+	ResolveUserByProvider(ctx context.Context, provider, sub string) (models.User, error)
+	UserByHandle(ctx context.Context, handle string) (models.User, error)
+	UserByID(ctx context.Context, id string) (models.User, error)
+	LinkProvider(ctx context.Context, userID, provider, sub, email, avatarURL string) error
+	UpdateUser(ctx context.Context, userID, displayName, handle, avatarURL string) (models.User, error)
+	CreateSession(ctx context.Context, sess models.Session) error
+	SessionByToken(ctx context.Context, tokenHash string) (models.Session, error)
+	DeleteSession(ctx context.Context, tokenHash string) error
+	CreateTicket(ctx context.Context, t models.Ticket) error
+	AttachTicketSession(ctx context.Context, state, sessionID string) error
+	Ticket(ctx context.Context, state string) (models.Ticket, error)
+	ClaimTicket(ctx context.Context, state string) (models.Ticket, error)
+
+	// Teams + groups.
+	CreateTeam(ctx context.Context, id, slug, name, joinCode, ownerID string) (models.Team, error)
+	MyTeams(ctx context.Context, userID string) ([]models.Team, error)
+	TeamByJoinCode(ctx context.Context, code string) (models.Team, error)
+	AddTeamMember(ctx context.Context, teamID, userID, role string) error
+	LeaveTeamMember(ctx context.Context, teamID, userID string) error
+	IsTeamMember(ctx context.Context, teamID, userID string) (bool, error)
+	CreateGroup(ctx context.Context, id, teamID, slug, name, joinCode, ownerID string) (models.Group, error)
+	GroupsByTeam(ctx context.Context, teamID, userID string) ([]models.Group, error)
+	GroupByJoinCode(ctx context.Context, code string) (models.Group, error)
+	AddGroupMember(ctx context.Context, groupID, userID, role string) error
+	LeaveGroupMember(ctx context.Context, groupID, userID string) error
 	Close() error
 }
 
@@ -47,4 +79,16 @@ type VendorSummary struct {
 	Tokens   int64   `json:"tokens"`
 	Cost     float64 `json:"cost"`
 	Requests int64   `json:"requests"`
+}
+
+// BoardRow is one user's leaderboard aggregate.
+type BoardRow struct {
+	UserID      string  `json:"-"`
+	Handle      string  `json:"handle"`
+	DisplayName string  `json:"display_name"`
+	AvatarURL   string  `json:"avatar_url"`
+	Tokens      int64   `json:"tokens"`
+	Cost        float64 `json:"cost"`
+	Requests    int64   `json:"requests"`
+	Machines    int     `json:"machines"`
 }
