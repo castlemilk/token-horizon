@@ -338,6 +338,16 @@ describe('Cloudflare Worker API', () => {
     assert.ok(Array.isArray(data.topPrompts));
   });
 
+  it('GET /api/providers keeps precision on tiny $/M rates', async () => {
+    const env = createMultiKeyEnv([
+      { handle: 'tiny', tokensAll: 19e9, breakdown: { models: [{ provider: 'anthropic', model: 'm1', tokensAll: 19e9, tokensToday: 0, costToday: 0, costAll: 300, sharePercent: 100 }], tools: [], history: [] } }
+    ]);
+    const data = await (await worker.fetch(req('/api/providers?days=30'), env)).json();
+    const row = data.providers.find(r => r.provider === 'anthropic');
+    assert.ok(row.avgCostPerM > 0, 'rate must not round to zero');
+    assert.equal(row.avgCostPerMText, '$0.0158');
+  });
+
   it('GET /api/season returns ladder, distribution, and standings', async () => {
     const env = createEnv();
     const res = await worker.fetch(req('/api/season'), env);

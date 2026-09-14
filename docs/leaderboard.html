@@ -116,6 +116,11 @@ tbody td{padding:11px 10px;border-bottom:1px solid rgba(30,38,53,.55);vertical-a
 tbody tr:hover{background:rgba(255,255,255,.018)}
 tbody tr.clickable{cursor:pointer}
 tbody tr.selected{background:rgba(79,140,255,.08)}
+/* Sticky rank + user columns so sideways scrolling never loses row identity. */
+#lb-table thead th:nth-child(-n+2),#lb-table tbody td:nth-child(-n+2){position:sticky;background:var(--panel)}
+#lb-table thead th:nth-child(1),#lb-table tbody td:nth-child(1){left:0;z-index:3;min-width:54px;box-shadow:1px 0 0 var(--line)}
+#lb-table thead th:nth-child(2),#lb-table tbody td:nth-child(2){left:54px;z-index:2;box-shadow:1px 0 0 var(--line)}
+#lb-table tbody tr.selected td:nth-child(-n+2){background:#17202F}
 .user-cell{display:flex;align-items:center;gap:10px}
 .user-cell .name{font-weight:600}
 .user-cell .sub{font-size:11px}
@@ -199,7 +204,7 @@ tbody tr.selected{background:rgba(79,140,255,.08)}
 .prov-logo.fallback img{display:none}
 .prov-logo svg{display:block}
 .prov-logo .glyph-text{color:#fff;font-weight:800;line-height:1;font-family:var(--mono);position:relative}
-.chart-legend{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:5px 20px;margin-top:12px}
+.chart-legend{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(230px,100%),1fr));gap:5px 20px;margin-top:12px}
 .legend-item{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--muted);min-width:0}
 .legend-swatch{width:10px;height:10px;border-radius:3px;flex:none;box-shadow:inset 0 0 0 1px rgba(255,255,255,.22),0 1px 2px rgba(0,0,0,.4)}
 .legend-text{display:flex;flex-direction:column;min-width:0;flex:1;line-height:1.25}
@@ -227,6 +232,7 @@ tbody tr.selected{background:rgba(79,140,255,.08)}
 .seg button{flex:1;background:none;border:none;color:var(--muted);padding:8px 12px;border-radius:8px;cursor:pointer;font-size:12.5px}
 .seg button.active{background:var(--panel3);color:#fff;font-weight:600}
 .opt-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.scope-grid{grid-template-columns:repeat(5,1fr)}
 .opt{display:flex;align-items:center;gap:10px;padding:11px 12px;border:1px solid var(--line);border-radius:11px;background:var(--panel);cursor:pointer}
 .opt:hover{border-color:var(--line2)}
 .opt .ico{width:30px;height:30px;border-radius:9px;background:var(--panel3);display:grid;place-items:center}
@@ -263,10 +269,13 @@ tbody tr.selected{background:rgba(79,140,255,.08)}
 .notice{font-size:12px;color:var(--muted);background:rgba(79,140,255,.08);border:1px solid rgba(79,140,255,.25);border-radius:10px;padding:9px 12px;margin-top:10px}
 .notice.err{background:rgba(239,68,68,.08);border-color:rgba(239,68,68,.3);color:#F9A0A0}
 .notice.ok{background:rgba(34,197,94,.08);border-color:rgba(34,197,94,.3);color:#7FE0A8}
+.notice.warn{background:rgba(245,158,11,.09);border-color:rgba(245,158,11,.35);color:#F7C46C}
 .skeleton{background:linear-gradient(90deg,#131A27,#1A2233,#131A27);background-size:200% 100%;animation:sk 1.2s infinite;border-radius:8px}
 @keyframes sk{0%{background-position:200% 0}100%{background-position:-200% 0}}
 .empty{padding:28px;text-align:center;color:var(--faint);font-size:13px}
 .two-col{display:grid;grid-template-columns:1fr 340px;gap:16px}
+.two-col>*,.split>*,.three-col>*,.kpis>*{min-width:0}
+.how-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}
 .grid.top,.split.top,.two-col.top{align-items:start}
 .three-col{display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px}
 .split{display:grid;grid-template-columns:1.6fr 1fr;gap:16px}
@@ -278,7 +287,26 @@ tbody tr.selected{background:rgba(79,140,255,.08)}
 .insight .d{font-size:11px;margin-top:2px}
 
 @media(max-width:1180px){.kpis{grid-template-columns:repeat(2,1fr)}.stat-grid{grid-template-columns:repeat(2,1fr)}.two-col,.split,.three-col{grid-template-columns:1fr}.ladder{grid-template-columns:repeat(4,1fr)}}
-@media(max-width:860px){.app{grid-template-columns:64px 1fr}.brand-title,.brand-sub,.nav-item span,.promo{display:none}.brand{padding:4px 0 16px;justify-content:center}.brand-logo{width:34px;height:34px}.nav-bh{display:none}.nav-shield{display:block}.nav-item{justify-content:center}.content{padding:16px}.page-head h1{font-size:22px}}
+@media(max-width:860px){.app{grid-template-columns:64px 1fr}.brand-title,.brand-sub,.nav-item span,.promo{display:none}.brand{padding:4px 0 16px;justify-content:center}.brand-logo{width:34px;height:34px}.nav-bh{display:none}.nav-shield{display:block}.nav-item{justify-content:center}.content{padding:16px}.page-head h1{font-size:22px}.how-grid{grid-template-columns:repeat(2,1fr)}.ladder{grid-template-columns:repeat(2,1fr)}
+.topbar{flex-wrap:wrap;row-gap:10px}
+.search{order:9;flex:1 1 100%;max-width:none}
+.season-select{min-width:0;flex:1 1 auto}
+.season-select select{min-width:0;width:100%}
+.topbar-spacer{display:none}
+.donut-wrap{flex-direction:column;align-items:stretch}
+.legend{width:100%}}
+@media(max-width:480px){
+.kpi{flex-direction:column;align-items:flex-start;gap:8px}
+.kpi-icon{width:32px;height:32px}
+.kpi-value{font-size:19px;overflow-wrap:anywhere}}
+@media(max-width:560px){
+#lb-table tbody td{padding:8px 7px}
+#lb-table thead th{padding:8px 7px}
+.user-cell{gap:7px}
+.user-cell .name{max-width:96px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.scope-grid{grid-template-columns:repeat(2,1fr)}}
+:focus-visible{outline:2px solid rgba(79,140,255,.75);outline-offset:2px;border-radius:6px}
+:focus:not(:focus-visible){outline:none}
 </style>
 </head>
 <body>
@@ -448,6 +476,14 @@ function fmtCost(n) {
   if (n >= 1000) return "$" + Math.round(n).toLocaleString();
   if (n >= 100) return "$" + n.toFixed(0);
   return "$" + n.toFixed(2);
+}
+/// Adaptive cost-rate formatting (~3 significant digits) so tiny rates never
+/// collapse to a misleading "$0.00" — e.g. $0.0000152/1k stays $0.000015.
+function fmtRate(v, unit = "") {
+  v = Number(v) || 0;
+  if (v <= 0) return "$0" + (unit ? " " + unit : "");
+  const body = v >= 0.01 ? v.toPrecision(3) : v.toPrecision(2);
+  return "$" + body + (unit ? " " + unit : "");
 }
 function fmtNum(n) { return (Number(n) || 0).toLocaleString(); }
 function fmtPct(n, digits = 0) { return (Number(n) || 0).toFixed(digits) + "%"; }
@@ -1301,8 +1337,17 @@ const NAV = [
   { id: "settings", label: "Settings", icon: '<circle cx="12" cy="12" r="3" stroke="currentColor" stroke-width="1.6" fill="none"/><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M18.4 5.6l-2.1 2.1M7.7 16.3l-2.1 2.1" stroke="currentColor" stroke-width="1.5"/>' }
 ];
 function renderNav() {
-  $("#nav").innerHTML = NAV.map(n => `<div class="nav-item ${state.view === n.id ? "active" : ""}" data-view="${n.id}"><svg viewBox="0 0 24 24" fill="none">${n.icon}</svg><span>${n.label}</span></div>`).join("");
-  $$("#nav .nav-item").forEach(el => el.onclick = () => navigate(el.dataset.view));
+  $("#nav").innerHTML = NAV.map(n => `<div class="nav-item ${state.view === n.id ? "active" : ""}" data-view="${n.id}" tabindex="0" role="link" aria-current="${state.view === n.id ? "page" : "false"}"><svg viewBox="0 0 24 24" fill="none">${n.icon}</svg><span>${n.label}</span></div>`).join("");
+  $$("#nav .nav-item").forEach(el => {
+    el.onclick = () => navigate(el.dataset.view);
+    keyActivate(el, () => navigate(el.dataset.view));
+  });
+}
+/// Keyboard parity for clickable div/span/th/tr controls: Enter/Space activates.
+function keyActivate(el, fn) {
+  el.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" || e.key === " ") { e.preventDefault(); fn(e); }
+  });
 }
 function navigate(view, opts = {}) {
   state.view = view;
@@ -1369,15 +1414,19 @@ async function loadUser(handle) {
 
 async function loadProviders() {
   if (state.providers) return state.providers;
-  try { state.providers = await api("/api/providers?days=" + state.range); }
-  catch (_) { state.providers = { providers: [], history: { providers: [], points: [] }, teams: [], insights: {}, total: 0 }; }
+  try { state.providers = await api("/api/providers?days=" + state.range); state.providersError = ""; }
+  catch (e) { state.providers = { providers: [], history: { providers: [], points: [] }, teams: [], insights: {}, total: 0 }; state.providersError = e.message; }
   return state.providers;
 }
 
 async function loadSeason() {
-  try { state.season = await api("/api/season"); }
-  catch (_) { state.season = { season: null, ladder: LEAGUES, distribution: [], standings: [], promotions: [], climbers: [], rewards: [] }; }
+  try { state.season = await api("/api/season"); state.seasonError = ""; }
+  catch (e) { state.season = { season: null, ladder: LEAGUES, distribution: [], standings: [], promotions: [], climbers: [], rewards: [] }; state.seasonError = e.message; }
   return state.season;
+}
+/// Banner shown when a section's API failed (distinct from genuine empty data).
+function apiErrBanner(msg) {
+  return msg ? `<div class="notice err" style="margin-bottom:16px">Couldn't load live data: ${esc(msg)} — showing what's cached locally.</div>` : "";
 }
 
 /* ---------- global chrome ---------- */
@@ -1478,7 +1527,7 @@ function leaderboardTableHtml(d, local) {
     <div class="card-head" style="padding:16px 16px 10px"><h3>Leaderboard <span class="sub">${d.total || 0} players</span></h3>
       <span class="sub">Click a row for the full profile</span></div>
     <div style="overflow-x:auto"><table id="lb-table"><thead><tr>
-      ${th("rank", "#")}${th("user", "User")}${th("league", "League")}${th("tokens", "Tokens")}${th("input", "Input")}${th("output", "Output")}${th("cost", "Cost")}${th("requests", "Requests")}${th("avg", "Avg / Req")}${th("trend", "Trend")}${th("efficiency", "Efficiency")}${th("streak", "Streak")}
+      ${th("rank", "#")}${th("user", "User")}${th("league", "League")}${th("tokens", "Tokens")}${th("input", "Input")}${th("output", "Output")}${th("cost", "Cost")}${th("requests", "Requests")}${th("avg", "Avg / Req", "Average tokens per request in the selected period")}${th("trend", "Trend")}${th("efficiency", "Efficiency")}${th("streak", "Streak")}
     </tr></thead><tbody>
     ${sorted.length === 0 ? `<tr><td colspan="12"><div class="empty">No players match your filters.</div></td></tr>` : sorted.map(r => rowHtml(r, local)).join("")}
     </tbody></table></div></div>`;
@@ -1526,15 +1575,17 @@ function viewLeaderboard() {
   </div>`;
 
   const modelChartData = aggregateUsageChartData(d.usageHistory);
-  const overTime = `<div class="card"><div class="card-head"><h3>Token Usage Over Time</h3><span class="chip">By Model</span></div>
+  const overTime = `<div class="card"><div class="card-head"><h3>Token Usage Over Time</h3><span class="sub">${modelChartData ? "Last " + (d.usageHistory.labels || []).length + " days" : ""}</span></div>
     ${modelChartData
       ? stackedUsageChart(modelChartData, { height: 220, ariaLabel: "Token usage by model over time" })
       : areaChart(aggregateHistory(d.leaderboard || []), { color: "#4F8CFF", height: 210 })}</div>`;
 
   const modelSegments = aggregateModels(d.leaderboard || []);
-  const mix = `<div class="card"><div class="card-head"><h3>Usage by Model / Provider</h3><span class="chip">By Provider</span></div>
-    <div class="donut-wrap">${donut(modelSegments.slice(0, 5), 168, fmtTokens(k.totalTokens), "tokens")}
-    <div class="legend">${modelSegments.slice(0, 6).map((s, i) => `<div class="legend-row">${providerLogo(s.provider || s.label, 15)}${esc(s.label)}<span class="val">${fmtTokens(s.value)}</span><span class="pct">${fmtPct(s.value / Math.max(1, modelSegments.reduce((a, b) => a + b.value, 0)) * 100, 0)}</span></div>`).join("")}</div></div></div>`;
+  const mixTop = modelSegments.slice(0, 5);
+  const mixTotal = mixTop.reduce((a, b) => a + b.value, 0);
+  const mix = `<div class="card"><div class="card-head"><h3>Usage by Model / Provider</h3><span class="sub">All-time share</span></div>
+    <div class="donut-wrap">${donut(mixTop, 168, fmtTokens(mixTotal), "tokens")}
+    <div class="legend">${mixTop.map((s, i) => `<div class="legend-row">${providerLogo(s.provider || s.label, 15)}${esc(s.label)}<span class="val">${fmtTokens(s.value)}</span><span class="pct">${fmtPct(s.value / Math.max(1, mixTotal) * 100, 0)}</span></div>`).join("")}</div></div></div>`;
 
   const leagueCta = local ? `<div class="card">
     <div style="display:flex;gap:12px;align-items:center"><span style="font-size:26px">🏆</span>
@@ -1551,9 +1602,9 @@ function viewLeaderboard() {
 }
 
 function nextLeague(id) { const i = LEAGUES.findIndex(l => l.id === id); return i >= 0 && i < LEAGUES.length - 1 ? LEAGUES[i + 1].id : id; }
-function th(key, label) {
+function th(key, label, title = "") {
   const active = state.sortKey === key;
-  return `<th data-sort="${key}" class="${active ? "faint" : ""}">${label}${active ? (state.sortDir > 0 ? " ↑" : " ↓") : ""}</th>`;
+  return `<th data-sort="${key}" class="${active ? "faint" : ""}" tabindex="0" role="button"${title ? ` title="${esc(title)}"` : ""}>${label}${active ? (state.sortDir > 0 ? " ↑" : " ↓") : ""}</th>`;
 }
 function filterRows(rows) {
   let out = rows;
@@ -1648,6 +1699,10 @@ async function render() {
   const t0 = performance.now();
   perf.renders++;
   const view = $("#view");
+  // First paint is instant: show the skeleton shell while data loads instead
+  // of a blank content area (viewLeaderboard renders the same shell when
+  // state.data is absent, so this converges on the real view).
+  if (!state.data) view.innerHTML = viewLeaderboard();
   try {
     await ensureData();
     chartRegistry.clear();
@@ -1667,6 +1722,12 @@ async function render() {
   } catch (err) {
     view.innerHTML = `<div class="card"><div class="notice err">Failed to load dashboard data: ${esc(err.message)}</div></div>`;
   }
+  // Demo fallback must never masquerade as live data.
+  if (state.demo && view.firstChild) {
+    view.insertAdjacentHTML("afterbegin", `<div class="notice warn" style="margin-bottom:16px">Live API unreachable — showing bundled demo data. <button class="pill ghost" id="demo-retry" style="font-size:11px;margin-left:8px">Retry live data</button></div>`);
+    const retry = $("#demo-retry");
+    if (retry) retry.onclick = () => { clearApiCache(); state.data = null; state.dataSig = ""; state.demo = false; render(); };
+  }
   wireCharts();
   mountCharts();
   $$("[data-view-leagues]").forEach(b => b.onclick = () => navigate("leagues"));
@@ -1682,7 +1743,13 @@ function wireLeaderboardTable() {
     if (state.sortKey === key) state.sortDir *= -1; else { state.sortKey = key; state.sortDir = 1; }
     refreshLeaderboardTable();
   });
-  $$("#lb-table tbody tr[data-handle]").forEach(tr => tr.onclick = () => navigate("players", { handle: tr.dataset.handle }));
+  $$("#lb-table thead th[data-sort]").forEach(thEl => keyActivate(thEl, () => thEl.onclick()));
+  $$("#lb-table tbody tr[data-handle]").forEach(tr => {
+    tr.tabIndex = 0;
+    tr.setAttribute("role", "link");
+    tr.onclick = () => navigate("players", { handle: tr.dataset.handle });
+    keyActivate(tr, () => navigate("players", { handle: tr.dataset.handle }));
+  });
 }
 let tableRefreshTimer = 0;
 /// Debounced search/sort refresh: swaps only the table card, so the KPI,
@@ -1703,7 +1770,13 @@ function refreshLeaderboardTable() {
 }
 function wireLeaderboard() {
   wireLeaderboardTable();
-  $$(".tier[data-league]").forEach(t => t.onclick = () => { state.leagueFilter = state.leagueFilter === t.dataset.league ? "all" : t.dataset.league; render(); });
+  $$(".tier[data-league]").forEach(t => {
+    t.tabIndex = 0;
+    t.setAttribute("role", "button");
+    const toggle = () => { state.leagueFilter = state.leagueFilter === t.dataset.league ? "all" : t.dataset.league; render(); };
+    t.onclick = toggle;
+    keyActivate(t, toggle);
+  });
 }
 function wireCharts() {
   $$(".stack-area").forEach(area => {
@@ -1724,17 +1797,38 @@ function wireCharts() {
     });
     svg.addEventListener("mouseleave", () => { tip.style.display = "none"; });
   });
-  $$("[data-tab]").forEach(t => t.onclick = () => { state.profileTab = t.dataset.tab; render(); });
-  $$("[data-handle-link]").forEach(el => el.onclick = () => navigate("players", { handle: el.dataset.handleLink }));
+  $$("[data-tab]").forEach(t => {
+    t.tabIndex = 0;
+    t.setAttribute("role", "tab");
+    t.onclick = () => { state.profileTab = t.dataset.tab; render(); };
+    keyActivate(t, () => { state.profileTab = t.dataset.tab; render(); });
+  });
+  $$("[data-handle-link]").forEach(el => {
+    el.tabIndex = 0;
+    el.setAttribute("role", "link");
+    el.onclick = () => navigate("players", { handle: el.dataset.handleLink });
+    keyActivate(el, () => navigate("players", { handle: el.dataset.handleLink }));
+  });
   $$("[data-share-user]").forEach(el => el.onclick = (ev) => {
     ev.stopPropagation();
     const target = el.dataset.shareUser;
     if (!requireSignIn({ action: `Sharing @${target}'s report`, onSuccess: () => openShareModal(target) })) return;
     openShareModal(target);
   });
+  $$("[data-claim-user]").forEach(el => el.onclick = () => openClaimModal(el.dataset.claimUser));
   $$("[data-crumb]").forEach(el => el.onclick = (ev) => { ev.preventDefault(); navigate(el.dataset.crumb); });
-  $$("[data-edit-avatar]").forEach(el => el.onclick = () => openAvatarModal(el.dataset.editAvatar));
-  $$("[data-cal-day]").forEach(el => el.onclick = () => openDayDrilldown(parseInt(el.dataset.calDay, 10)));
+  $$("[data-edit-avatar]").forEach(el => {
+    el.tabIndex = 0;
+    el.setAttribute("role", "button");
+    el.onclick = () => openAvatarModal(el.dataset.editAvatar);
+    keyActivate(el, () => openAvatarModal(el.dataset.editAvatar));
+  });
+  $$("[data-cal-day]").forEach(el => {
+    el.tabIndex = 0;
+    el.setAttribute("role", "button");
+    el.onclick = () => openDayDrilldown(parseInt(el.dataset.calDay, 10));
+    keyActivate(el, () => openDayDrilldown(parseInt(el.dataset.calDay, 10)));
+  });
 }
 
 /* ============================================================
@@ -1798,6 +1892,8 @@ function profileHero(p) {
   const e = p.entry;
   const st = p.standing || { league: p.league, division: p.division, mmr: p.mmr, mmrToNext: p.mmrToNext };
   const league = leagueMeta(st.league);
+  const ownedByViewer = Boolean(e.claimed && e.googleEmail && state.googleSession?.email &&
+    String(e.googleEmail).toLowerCase() === String(state.googleSession.email).toLowerCase());
   return `<div class="card" style="margin-bottom:16px">
     <div style="display:flex;gap:22px;align-items:center;flex-wrap:wrap">
       <div style="display:flex;gap:16px;align-items:center;min-width:280px">
@@ -1809,6 +1905,8 @@ function profileHero(p) {
             <span class="chip">Rank #${p.rank} of ${p.total}</span>
             <span class="chip orange">🔥 ${e.streakDays || 0}d streak</span>
             ${canEditAvatar(e) ? `<span class="chip" data-edit-avatar="${esc(e.handle)}" style="cursor:pointer">✎ Edit avatar</span>` : ""}
+            <button class="pill" data-share-user="${esc(e.handle)}" style="font-size:11px;padding:6px 10px">Share report</button>
+            ${ownedByViewer ? "" : `<button class="pill ghost" data-claim-user="${esc(e.handle)}" style="font-size:11px;padding:6px 10px">Claim profile</button>`}
           </div></div>
       </div>
       <div style="display:flex;gap:16px;align-items:center;min-width:240px">
@@ -1840,13 +1938,13 @@ function profileKpis(p, opts = {}) {
     ${stat("Output Tokens", fmtTokens(output), ICONS.bolt)}
     ${opts.skipTotals ? "" : stat("Total Cost", fmtCost(e.costAll), ICONS.cost)}
     ${stat("Requests", fmtNum(requests), ICONS.users)}
-    ${stat("Avg / Request", fmtTokens(avg), ICONS.clock)}
+    ${stat("Avg / Request", fmtTokens(avg), ICONS.clock, "All-time average tokens per request")}
     ${stat("Efficiency", Math.round(p.efficiency || e.efficiency || 0) + " / 100", ICONS.shield)}
     ${stat("Active Days", fmtNum(e.breakdown?.activeDays || e.streakDays || 0), ICONS.fire)}
   </div>`;
 }
-function stat(label, value, icon) {
-  return `<div class="stat"><div class="label">${icon} ${esc(label)}</div><div class="value">${esc(value)}</div></div>`;
+function stat(label, value, icon, title = "") {
+  return `<div class="stat"${title ? ` title="${esc(title)}"` : ""}><div class="label">${icon} ${esc(label)}</div><div class="value">${esc(value)}</div></div>`;
 }
 function profileContent(p) {
   const e = p.entry;
@@ -1867,9 +1965,9 @@ function profileContent(p) {
     </div>
     <div class="two-col top">
       <div class="card"><div class="card-head"><h3>Model Inventory</h3><span class="sub">${models.length} models</span></div>
-        <table><thead><tr><th>Model</th><th>Provider</th><th class="right">Tokens</th><th class="right">Requests</th><th class="right">Cost</th><th class="right">Share</th></tr></thead><tbody>
+        <div style="overflow-x:auto"><table><thead><tr><th>Model</th><th>Provider</th><th class="right">Tokens</th><th class="right">Requests</th><th class="right">Cost</th><th class="right">Share</th></tr></thead><tbody>
         ${(bd.models || []).slice(0, 10).map(m => `<tr><td>${esc(m.model)}</td><td><span class="chip logo-chip">${providerLogo(m.provider, 15, m.model)}${esc(providerDisplay(m.provider, m.model))}</span></td><td class="num right">${fmtTokens(m.tokensAll)}</td><td class="num right">${fmtNum(m.requests)}</td><td class="num right">${fmtCost(m.costAll)}</td><td style="width:110px"><div class="bar"><i style="width:${m.sharePercent || 0}%"></i></div><div class="mini right">${fmtPct(m.sharePercent || 0, 1)}</div></td></tr>`).join("") || '<tr><td colspan="6"><div class="empty">No model data published yet.</div></td></tr>'}
-        </tbody></table></div>
+        </tbody></table></div></div>
       <div class="card"><div class="card-head"><h3>Usage Heatmap</h3><span class="sub">${calendarHeatmap(bd.daily) ? "last 17 weeks" : "weekday × hour"}</span></div>${calendarHeatmap(bd.daily) || heatmap(bd.hourly)}</div>
     </div>`;
   }
@@ -1879,9 +1977,9 @@ function profileContent(p) {
     for (const s of sessions) cats.set(categorize(s.title), (cats.get(categorize(s.title)) || 0) + (s.tokens || 0));
     const catRows = [...cats.entries()].map(([label, value]) => ({ label, value })).sort((a, b) => b.value - a.value);
     return `<div class="two-col"><div class="card"><div class="card-head"><h3>Top Prompts / Workloads</h3><span class="sub">recent sessions</span></div>
-      <table><thead><tr><th>#</th><th>Prompt / Workflow</th><th>Model</th><th class="right">Tokens</th><th class="right">Cost</th><th class="right">Requests</th></tr></thead><tbody>
-      ${sessions.map((s, i) => `<tr><td class="faint">${i + 1}</td><td>${esc(s.title || "(untitled)")}</td><td><span class="chip logo-chip">${providerLogo(s.provider, 14, s.model)}${esc(providerDisplay(s.provider, s.model))}${s.model ? " · " + esc(s.model) : ""}</span></td><td class="num right">${fmtTokens(s.tokens)}</td><td class="num right">${fmtCost(s.cost)}</td><td class="num right">${fmtNum(s.requests)}</td></tr>`).join("") || '<tr><td colspan="6"><div class="empty">Prompt history isn&#39;t published for this profile — owners can enable it in Token Horizon settings.</div></td></tr>'}
-      </tbody></table></div>
+      <div style="overflow-x:auto"><table><thead><tr><th>#</th><th>Prompt / Workflow</th><th>Model</th><th class="right">Tokens</th><th class="right">Cost</th><th class="right">Requests</th></tr></thead><tbody>
+      ${sessions.map((s, i) => `<tr><td class="faint">${i + 1}</td><td>${s.title ? esc(s.title) : '<span class="faint">title private</span> <span class="chip" style="font-size:9.5px;padding:2px 7px">🔒</span>'}</td><td><span class="chip logo-chip">${providerLogo(s.provider, 14, s.model)}${esc(providerDisplay(s.provider, s.model))}${s.model ? " · " + esc(s.model) : ""}</span></td><td class="num right">${fmtTokens(s.tokens)}</td><td class="num right">${fmtCost(s.cost)}</td><td class="num right">${fmtNum(s.requests)}</td></tr>`).join("") || '<tr><td colspan="6"><div class="empty">Prompt history isn&#39;t published for this profile — owners can enable it in Token Horizon settings.</div></td></tr>'}
+      </tbody></table></div></div>
       <div class="card"><div class="card-head"><h3>Prompt Categories</h3><span class="sub">keyword-classified</span></div>${barList(catRows, { labelWidth: 130 }) || '<div class="empty">No sessions.</div>'}</div>
     </div>`;
   }
@@ -1889,9 +1987,9 @@ function profileContent(p) {
     const projects = bd.projects || [];
     return `<div class="two-col"><div class="card"><div class="card-head"><h3>Usage by Project / Team</h3></div>${barList(projects.map(p => ({ label: p.project, value: p.tokens, percent: p.tokens / Math.max(1, e.tokensAll) * 100 })), { labelWidth: 140 })}</div>
       <div class="card"><div class="card-head"><h3>Project Detail</h3></div>
-      <table><thead><tr><th>Project</th><th class="right">Tokens</th><th class="right">Sessions</th><th class="right">Cost</th></tr></thead><tbody>
+      <div style="overflow-x:auto"><table><thead><tr><th>Project</th><th class="right">Tokens</th><th class="right">Sessions</th><th class="right">Cost</th></tr></thead><tbody>
       ${projects.map(p => `<tr><td>${esc(p.project)}</td><td class="num right">${fmtTokens(p.tokens)}</td><td class="num right">${fmtNum(p.sessions)}</td><td class="num right">${fmtCost(p.cost)}</td></tr>`).join("") || '<tr><td colspan="4"><div class="empty">No project data.</div></td></tr>'}
-      </tbody></table></div></div>`;
+      </tbody></table></div></div></div>`;
   }
   if (tab === "comparisons") {
     const peers = (state.data?.leaderboard || []).filter(r => r.entry.handle !== e.handle).slice(0, 4);
@@ -1903,9 +2001,9 @@ function profileContent(p) {
         ${stat("Streak Rank", "#" + (p.ranks?.streak || p.rank), ICONS.fire)}
       </div></div>
       <div class="card"><div class="card-head"><h3>Nearby Players</h3><span class="sub">by all-time tokens</span></div>
-      <table><thead><tr><th>#</th><th>User</th><th>League</th><th class="right">Tokens</th><th class="right">Efficiency</th><th class="right">Streak</th></tr></thead><tbody>
+      <div style="overflow-x:auto"><table><thead><tr><th>#</th><th>User</th><th>League</th><th class="right">Tokens</th><th class="right">Efficiency</th><th class="right">Streak</th></tr></thead><tbody>
       ${peers.map(r => `<tr class="clickable" data-handle-link="${esc(r.entry.handle)}"><td class="faint">${r.rank}</td><td><div class="user-cell">${entryAvatar(r.entry, 26)}<span>${esc(r.entry.handle)}</span></div></td><td><span class="chip" style="color:${leagueColor(r.league)}">${esc(leagueMeta(r.league).title)} ${roman(r.division || 3)}</span></td><td class="num right">${esc(r.scoreFormatted)}</td><td class="num right">${Math.round(r.efficiency || 0)}</td><td class="num right">🔥 ${r.entry.streakDays || 0}</td></tr>`).join("")}
-      </tbody></table></div>`;
+      </tbody></table></div></div>`;
   }
   if (tab === "achievements") {
     const achs = p.achievements || [];
@@ -2075,6 +2173,7 @@ async function renderLeagues() {
   ] : [];
 
   $("#view").innerHTML = pageHead(["Leaderboard", "Leagues"], "Leagues & Season Progression", "Compete, climb, and earn rewards. Your LLM usage builds more than raw tokens — it builds your rank.", "Higher usage. Bigger possibilities.")
+    + apiErrBanner(state.seasonError)
     + `<div class="card" style="margin-bottom:16px">
       <div class="card-head"><h3>League Tier Ladder</h3><span class="sub">Climb the ranks based on your token usage, consistency, and impact. Click a tier to filter standings.</span></div>
       <div class="ladder">${LEAGUES.map(l => `<div class="tier ${state.leagueFilter === l.id ? "active" : ""}" data-league="${l.id}">
@@ -2092,7 +2191,7 @@ async function renderLeagues() {
       </div>
     </div>`
     + `<div class="card" style="margin-bottom:16px"><div class="card-head"><h3>How Leagues Work</h3></div>
-      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px">${how.map(([i, t, d]) => `<div class="stat"><div style="font-size:20px">${i}</div><div style="font-weight:700;margin-top:6px">${esc(t)}</div><div class="d" style="font-size:11px;color:var(--faint);margin-top:4px">${esc(d)}</div></div>`).join("")}</div></div>`
+      <div class="how-grid">${how.map(([i, t, d]) => `<div class="stat"><div style="font-size:20px">${i}</div><div style="font-weight:700;margin-top:6px">${esc(t)}</div><div class="d" style="font-size:11px;color:var(--faint);margin-top:4px">${esc(d)}</div></div>`).join("")}</div></div>`
     + `<div class="split" style="margin-bottom:16px">
       <div class="card"><div class="card-head"><h3>League Distribution</h3><span class="sub">${s.distribution?.reduce((a, b) => a + b.users, 0) || 0} players</span></div>
         ${barList(distribution.map(d => ({ label: d.title, value: d.users, valueText: d.users + " users", percent: d.percent, color: d.color })), { labelWidth: 110 })}
@@ -2146,38 +2245,39 @@ async function renderProviders() {
   const avgCostPer1k = totalTokens > 0 ? (totalCost / totalTokens) * 1000 : 0;
 
   $("#view").innerHTML = pageHead(["Analytics", "Providers"], "Provider Usage Breakdown", "Compare token usage, cost, and market share across LLM providers.", "More models. Brighter possibilities.")
+    + apiErrBanner(state.providersError)
     + `<div class="grid kpis" style="margin-bottom:16px">
       ${kpiCard("Total Provider Tokens", fmtTokens(totalTokens), "", ICONS.tokens)}
       ${kpiCard("Total Provider Cost", fmtCost(totalCost), "", ICONS.cost)}
-      ${kpiCard("Active Providers", String(rows.length), `<span class="faint">of ${LEAGUES.length}+ supported</span>`, ICONS.users)}
-      ${kpiCard("Avg Cost / 1k Tokens", "$" + avgCostPer1k.toFixed(4), "", ICONS.bolt)}
+      ${kpiCard("Active Providers", String(rows.length), rows[0] ? `<span class="faint">${esc(providerLabel(rows[0].provider))} leads</span>` : "", ICONS.users)}
+      ${kpiCard("Avg Cost / 1k Tokens", fmtRate(avgCostPer1k), "", ICONS.bolt)}
     </div>`
     + `<div class="split" style="margin-bottom:16px">
       <div class="card"><div class="card-head"><h3>Token Usage by Provider Over Time</h3><span class="chip">Stacked</span></div>${stackedUsageChart({ labels, series: series.map(s => ({ name: s.name, color: s.color, values: s.values })) }, { height: 250, ariaLabel: "Token usage by provider over time" })}
         </div>
       <div class="card"><div class="card-head"><h3>Provider Mix</h3><span class="sub">share across providers</span></div>
         <div class="donut-wrap">${donut(mix.slice(0, 5), 156, fmtTokens(totalTokens), "tokens")}
-        <div class="legend">${mix.slice(0, 6).map(s => `<div class="legend-row">${providerLogo(s.provider || s.label, 15)}${esc(s.label)}<span class="val">${fmtTokens(s.value)}</span><span class="pct">${fmtPct(s.value / Math.max(1, totalTokens) * 100, 0)}</span></div>`).join("")}</div></div></div>
+        <div class="legend">${mix.slice(0, 5).map(s => `<div class="legend-row">${providerLogo(s.provider || s.label, 15)}${esc(s.label)}<span class="val">${fmtTokens(s.value)}</span><span class="pct">${fmtPct(s.value / Math.max(1, totalTokens) * 100, 0)}</span></div>`).join("")}</div></div></div>
     </div>`
     + `<div class="split" style="margin-bottom:16px">
       <div class="card" style="padding:0;overflow:hidden"><div class="card-head" style="padding:16px 16px 8px"><h3>Provider Comparison</h3></div>
         <div style="overflow-x:auto"><table><thead><tr><th>#</th><th>Provider</th><th class="right">Tokens</th><th class="right">Input</th><th class="right">Output</th><th class="right">Cost</th><th class="right">Requests</th><th class="right">$/M</th><th class="right">Users</th><th class="right">Share</th></tr></thead><tbody>
-        ${rows.map((r, i) => `<tr><td class="faint">${i + 1}</td><td><span class="chip logo-chip">${providerLogo(r.provider, 15)}${esc(providerLabel(r.provider))}</span></td><td class="num right">${esc(r.tokensFormatted)}</td><td class="num right">${r.inputTokens ? fmtTokens(r.inputTokens) : "—"}</td><td class="num right">${r.outputTokens ? fmtTokens(r.outputTokens) : "—"}</td><td class="num right">${esc(r.costFormatted)}</td><td class="num right">${fmtNum(r.requests)}</td><td class="num right">${esc(r.avgCostPerMText || ("$" + r.avgCostPerM.toFixed(2)))}</td><td class="num right">${fmtNum(r.users)}</td><td style="width:110px"><div class="bar"><i style="width:${r.sharePercent}%;background:${providerColor(r.provider)}"></i></div><div class="mini right">${fmtPct(r.sharePercent, 1)}</div></td></tr>`).join("") || '<tr><td colspan="10"><div class="empty">No provider data published yet.</div></td></tr>'}
+        ${rows.map((r, i) => `<tr><td class="faint">${i + 1}</td><td><span class="chip logo-chip">${providerLogo(r.provider, 15)}${esc(providerLabel(r.provider))}</span></td><td class="num right">${esc(r.tokensFormatted)}</td><td class="num right">${r.inputTokens ? fmtTokens(r.inputTokens) : "—"}</td><td class="num right">${r.outputTokens ? fmtTokens(r.outputTokens) : "—"}</td><td class="num right">${esc(r.costFormatted)}</td><td class="num right">${fmtNum(r.requests)}</td><td class="num right">${fmtRate(r.avgCostPerM)}</td><td class="num right">${fmtNum(r.users)}</td><td style="width:110px"><div class="bar"><i style="width:${r.sharePercent}%;background:${providerColor(r.provider)}"></i></div><div class="mini right">${fmtPct(r.sharePercent, 1)}</div></td></tr>`).join("") || '<tr><td colspan="10"><div class="empty">No provider data published yet.</div></td></tr>'}
         </tbody></table></div></div>
       <div class="grid" style="align-content:start">
         <div class="card"><div class="card-head"><h3>Usage by Team</h3></div>
           ${(p.teams || []).slice(0, 5).map(t => `<div style="margin-bottom:12px"><div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:5px"><span>${esc(t.team)}</span><span class="num muted">${esc(t.tokensFormatted)}</span></div>${Object.entries(t.providers || {}).length ? `<div style="display:flex;height:7px;border-radius:4px;overflow:hidden">${Object.entries(t.providers).sort((a, b) => b[1] - a[1]).map(([prov, val]) => `<span style="width:${(val / Math.max(1, t.tokens)) * 100}%;background:${providerColor(prov)}" title="${providerLabel(prov)}"></span>`).join("")}</div>` : ""}</div>`).join("") || '<div class="empty" style="padding:10px">No teams yet.</div>'}
         </div>
         <div class="card"><div class="card-head"><h3>Top Prompts by Provider</h3></div>
-          ${topPrompts.slice(0, 5).map((s, i) => `<div class="mover"><span class="rank">${i + 1}</span><div style="min-width:0"><div class="name" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:200px">${esc(s.title || "(untitled)")}</div><div class="faint" style="font-size:10.5px;display:flex;align-items:center;gap:5px">${providerLogo(s.provider, 13, s.model)}${esc(providerDisplay(s.provider, s.model))}${s.model ? " · " + esc(s.model) : ""}</div></div><div class="val">${fmtTokens(s.tokens)}</div></div>`).join("") || '<div class="empty" style="padding:10px">Prompt history is private for this deployment.</div>'}
+          ${topPrompts.slice(0, 5).map((s, i) => `<div class="mover"><span class="rank">${i + 1}</span><div style="min-width:0"><div class="name" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:200px">${s.title ? esc(s.title) : '<span class="faint">title private</span> 🔒'}</div><div class="faint" style="font-size:10.5px;display:flex;align-items:center;gap:5px">${providerLogo(s.provider, 13, s.model)}${esc(providerDisplay(s.provider, s.model))}${s.model ? " · " + esc(s.model) : ""}</div></div><div class="val">${fmtTokens(s.tokens)}</div></div>`).join("") || '<div class="empty" style="padding:10px">Prompt history is private for this deployment.</div>'}
         </div>
       </div>
     </div>`
     + `<div class="grid kpis">
       ${insightCard("Most Used Provider", insights.mostUsed ? providerLabel(insights.mostUsed.provider) : "—", insights.mostUsed ? fmtPct(insights.mostUsed.sharePercent, 1) + " of total tokens" : "", "🏆", insights.mostUsed?.provider)}
-      ${insightCard("Most Cost Efficient", insights.mostEfficient ? providerLabel(insights.mostEfficient.provider) : "—", insights.mostEfficient ? (insights.mostEfficient.avgCostPerMText || ("$" + insights.mostEfficient.avgCostPerM.toFixed(2))) + " per 1M tokens" : "", "💰", insights.mostEfficient?.provider)}
+      ${insightCard("Most Cost Efficient", insights.mostEfficient ? providerLabel(insights.mostEfficient.provider) : "—", insights.mostEfficient ? fmtRate(insights.mostEfficient.avgCostPerM, "per 1M tokens") : "", "💰", insights.mostEfficient?.provider)}
       ${insightCard("Biggest Growth", insights.biggestGrowth ? insights.biggestGrowth.handle : "—", insights.biggestGrowth ? "+" + insights.biggestGrowth.percent.toFixed(0) + "% vs last period" : "", "📈")}
-      ${insightCard("Tracked Requests", fmtTokens(p.providers?.reduce((s, r) => s + r.requests, 0) || 0), "across all providers", "⚡")}
+      ${insightCard("Tracked Requests", fmtNum(p.providers?.reduce((s, r) => s + r.requests, 0) || 0), "across all providers", "⚡")}
     </div>`;
 }
 function insightCard(label, value, detail, icon, provider) {
@@ -2192,6 +2292,7 @@ async function renderTeams() {
   const p = await loadProviders();
   const teams = p.teams || [];
   $("#view").innerHTML = pageHead(["Players", "Teams"], "Team Leaderboard", "Aggregate usage across every team publishing to Token Horizon.", "Together, teams go further.")
+    + apiErrBanner(state.providersError)
     + `<div class="grid kpis" style="margin-bottom:16px">
       ${kpiCard("Teams", String(teams.length), "", ICONS.users)}
       ${kpiCard("Team Tokens", fmtTokens(teams.reduce((s, t) => s + t.tokens, 0)), "", ICONS.tokens)}
@@ -2201,7 +2302,7 @@ async function renderTeams() {
     <div class="card" style="margin-bottom:16px"><div class="card-head"><h3>Team Comparison</h3></div>
       ${barList(teams.map(t => ({ label: t.team, value: t.tokens, percent: t.tokens / Math.max(1, teams.reduce((s, x) => s + x.tokens, 0)) * 100 })), { labelWidth: 130 })}
     </div>
-    <div class="grid" style="grid-template-columns:repeat(auto-fill,minmax(320px,1fr))">
+    <div class="grid" style="grid-template-columns:repeat(auto-fill,minmax(min(320px,100%),1fr))">
       ${teams.map(t => `<div class="card"><div class="card-head"><h3>${esc(t.team)}</h3><span class="chip">${t.members} member${t.members === 1 ? "" : "s"}</span></div>
         <div style="display:flex;gap:16px;margin-bottom:12px">
           <div><div class="kpi-label">Tokens</div><div style="font-weight:800;font-size:17px">${esc(t.tokensFormatted)}</div></div>
@@ -2219,8 +2320,9 @@ async function renderTeams() {
    VIEW: PROMPTS
    ============================================================ */
 async function renderPrompts() {
-  let sessions = [];
-  try { const res = await api("/api/prompts"); sessions = res.prompts || []; } catch (_) {}
+  let sessions = [], promptsError = "";
+  try { const res = await api("/api/prompts"); sessions = res.prompts || []; }
+  catch (e) { promptsError = e.message; }
   sessions.sort((a, b) => (b.at || 0) - (a.at || 0));
   const cats = new Map();
   const providers = new Map();
@@ -2229,6 +2331,7 @@ async function renderPrompts() {
     providers.set(String(s.provider || "other").toLowerCase(), (providers.get(String(s.provider || "other").toLowerCase()) || 0) + (s.tokens || 0));
   }
   $("#view").innerHTML = pageHead(["Analytics", "Prompts"], "Prompt & Workload Analytics", "Recent prompts and workloads published by participating nodes.", "Better prompts. Brighter tomorrows.")
+    + (promptsError ? `<div class="notice err" style="margin-bottom:16px">Couldn't load prompts: ${esc(promptsError)}</div>` : "")
     + `<div class="grid kpis" style="margin-bottom:16px">
       ${kpiCard("Tracked Prompts", String(sessions.length), "", ICONS.activity)}
       ${kpiCard("Prompt Tokens", fmtTokens(sessions.reduce((s, x) => s + (x.tokens || 0), 0)), "", ICONS.tokens)}
@@ -2238,7 +2341,7 @@ async function renderPrompts() {
     <div class="split" style="margin-bottom:16px">
       <div class="card" style="padding:0;overflow:hidden"><div class="card-head" style="padding:16px 16px 8px"><h3>Recent Prompts / Workloads</h3></div>
         <div style="overflow-x:auto"><table><thead><tr><th>#</th><th>Prompt / Workflow</th><th>User</th><th>Provider</th><th class="right">Tokens</th><th class="right">Cost</th></tr></thead><tbody>
-        ${sessions.slice(0, 25).map((s, i) => `<tr><td class="faint">${i + 1}</td><td>${esc(s.title || "(untitled)")}</td><td><span class="chip" data-handle-link="${esc(s.handle)}" style="cursor:pointer">${esc(s.handle)}</span></td><td><span class="chip logo-chip">${providerLogo(s.provider, 14, s.model)}${esc(providerDisplay(s.provider, s.model))}${s.model ? " · " + esc(s.model) : ""}</span></td><td class="num right">${fmtTokens(s.tokens)}</td><td class="num right">${fmtCost(s.cost)}</td></tr>`).join("") || '<tr><td colspan="6"><div class="empty">Prompt history is private by default — owners can enable it in Token Horizon settings.</div></td></tr>'}
+        ${sessions.slice(0, 25).map((s, i) => `<tr><td class="faint">${i + 1}</td><td>${s.title ? esc(s.title) : '<span class="faint">title private</span> <span class="chip" style="font-size:9.5px;padding:2px 7px">🔒</span>'}</td><td><span class="chip" data-handle-link="${esc(s.handle)}" style="cursor:pointer">${esc(s.handle)}</span></td><td><span class="chip logo-chip">${providerLogo(s.provider, 14, s.model)}${esc(providerDisplay(s.provider, s.model))}${s.model ? " · " + esc(s.model) : ""}</span></td><td class="num right">${fmtTokens(s.tokens)}</td><td class="num right">${fmtCost(s.cost)}</td></tr>`).join("") || '<tr><td colspan="6"><div class="empty">Prompt history is private by default — owners can enable it in Token Horizon settings.</div></td></tr>'}
         </tbody></table></div></div>
       <div class="grid" style="align-content:start">
         <div class="card"><div class="card-head"><h3>Prompt Categories</h3></div>${barList([...cats.entries()].map(([label, value]) => ({ label, value })).sort((a, b) => b.value - a.value), { labelWidth: 130 })}</div>
@@ -2271,9 +2374,10 @@ async function renderBilling() {
   const history = p.history || { points: [] };
   const costPoints = history.points.map(pt => ({ label: fmtDay(new Date(pt.date + "T00:00:00Z").getTime() / 1000), value: Object.values(pt.values || {}).reduce((s, v) => s + v, 0) }));
   $("#view").innerHTML = pageHead(["Analytics", "Billing"], "Cost & Billing Analytics", "Where the tokens go and what they cost across providers and models.", "Spend less. Learn more.")
+    + apiErrBanner(state.providersError)
     + `<div class="grid kpis" style="margin-bottom:16px">
       ${kpiCard("Total Cost", fmtCost(totalCost), "", ICONS.cost)}
-      ${kpiCard("Cost per 1M Tokens", "$" + (totalTokens > 0 ? (totalCost / totalTokens * 1e6).toFixed(2) : "0.00"), "", ICONS.bolt)}
+      ${kpiCard("Cost per 1M Tokens", fmtRate(totalTokens > 0 ? totalCost / totalTokens * 1e6 : 0), "", ICONS.bolt)}
       ${kpiCard("Tracked Models", String(byModel.size), "", ICONS.tokens)}
       ${kpiCard("Top Cost Driver", modelRows[0]?.model || "—", modelRows[0] ? fmtCost(modelRows[0].cost) : "", ICONS.rank)}
     </div>
@@ -2284,7 +2388,7 @@ async function renderBilling() {
     </div>
     <div class="card" style="padding:0;overflow:hidden"><div class="card-head" style="padding:16px 16px 8px"><h3>Cost by Model</h3></div>
       <div style="overflow-x:auto"><table><thead><tr><th>#</th><th>Model</th><th>Provider</th><th class="right">Tokens</th><th class="right">Requests</th><th class="right">Cost</th><th class="right">$/1M</th></tr></thead><tbody>
-      ${modelRows.map((m, i) => `<tr><td class="faint">${i + 1}</td><td>${esc(m.model)}</td><td><span class="chip logo-chip">${providerLogo(m.provider, 15, m.model)}${esc(providerDisplay(m.provider, m.model))}</span></td><td class="num right">${fmtTokens(m.tokens)}</td><td class="num right">${fmtNum(m.requests)}</td><td class="num right">${fmtCost(m.cost)}</td><td class="num right">$${m.tokens > 0 ? (m.cost / m.tokens * 1e6).toFixed(2) : "0.00"}</td></tr>`).join("") || '<tr><td colspan="7"><div class="empty">No model cost data.</div></td></tr>'}
+      ${modelRows.map((m, i) => `<tr><td class="faint">${i + 1}</td><td>${esc(m.model)}</td><td><span class="chip logo-chip">${providerLogo(m.provider, 15, m.model)}${esc(providerDisplay(m.provider, m.model))}</span></td><td class="num right">${fmtTokens(m.tokens)}</td><td class="num right">${fmtNum(m.requests)}</td><td class="num right">${fmtCost(m.cost)}</td><td class="num right">${fmtRate(m.tokens > 0 ? m.cost / m.tokens * 1e6 : 0)}</td></tr>`).join("") || '<tr><td colspan="7"><div class="empty">No model cost data.</div></td></tr>'}
       </tbody></table></div></div>`;
 }
 
@@ -2374,9 +2478,9 @@ async function renderSettings() {
       </div>
     </div>
     <div class="card"><div class="card-head"><h3>Access Permissions Matrix</h3><span class="sub">understand what each permission allows</span></div>
-      <table><thead><tr><th>Permission</th><th class="right">View</th><th class="right">Comment</th><th class="right">Edit</th><th class="right">Share</th></tr></thead><tbody>
+      <div style="overflow-x:auto"><table><thead><tr><th>Permission</th><th class="right">View</th><th class="right">Comment</th><th class="right">Edit</th><th class="right">Share</th></tr></thead><tbody>
         ${[["View the item", 1, 1, 1, 1], ["Add comments and feedback", 0, 1, 1, 1], ["Edit content, settings, or configuration", 0, 0, 1, 1], ["Share with others", 0, 0, 0, 1]].map(([label, v, c, e, s]) => `<tr><td>${esc(label)}</td>${[v, c, e, s].map(x => `<td class="right">${x ? "✓" : "—"}</td>`).join("")}</tr>`).join("")}
-      </tbody></table></div>`;
+      </tbody></table></div></div>`;
   $("#settings-share-new").onclick = () => {
     if (!requireSignIn({ action: "Sharing usage reports", onSuccess: () => openShareModal(handle) })) return;
     openShareModal(handle);
@@ -2387,11 +2491,12 @@ async function renderSettings() {
     try {
       await api("/api/share/revoke", { method: "POST", headers: googleHeaders(), body: JSON.stringify({ handle, id: b.dataset.revoke }) });
       render();
-    } catch (e) { alert("Revoke failed: " + e.message); }
+    } catch (e) { toast("Revoke failed: " + e.message, true); }
   });
-  $$("[data-rule]").forEach(el => el.onclick = () => {
-    state.defaultRules[el.dataset.rule] = !state.defaultRules[el.dataset.rule];
-    saveDefaultRules(); render();
+  $$("[data-rule]").forEach(el => {
+    const toggle = () => { state.defaultRules[el.dataset.rule] = !state.defaultRules[el.dataset.rule]; saveDefaultRules(); render(); };
+    el.onclick = toggle;
+    keyActivate(el, toggle);
   });
   $("#new-group-btn").onclick = () => {
     if (!requireSignIn({ action: "Creating groups & teams", onSuccess: () => openGroupModal(handle) })) return;
@@ -2400,7 +2505,7 @@ async function renderSettings() {
 }
 function ruleRow(key, title, detail) {
   const on = state.defaultRules[key];
-  return `<div class="opt" data-rule="${key}" style="margin-bottom:8px"><div class="ico">${on ? "🔒" : "🔓"}</div><div style="flex:1"><div class="t">${esc(title)}</div><div class="d">${esc(detail)}</div></div><div class="switch ${on ? "on" : ""}"><i></i></div></div>`;
+  return `<div class="opt" data-rule="${key}" style="margin-bottom:8px" tabindex="0" role="switch" aria-checked="${on}" aria-label="${esc(title)}"><div class="ico">${on ? "🔒" : "🔓"}</div><div style="flex:1"><div class="t">${esc(title)}</div><div class="d">${esc(detail)}</div></div><div class="switch ${on ? "on" : ""}"><i></i></div></div>`;
 }
 
 /* ============================================================
@@ -2428,13 +2533,13 @@ function openShareModal(handle) {
   ];
   const backdrop = $("#modal-backdrop");
   backdrop.innerHTML = `<div class="modal" id="share-modal">
-    <div class="modal-head"><div><h2>Share Usage Report</h2><p>Control who can view this leaderboard, report, or profile.</p></div><button class="x" data-close>×</button></div>
+    <div class="modal-head"><div><h2>Share Usage Report</h2><p>Control who can view this leaderboard, report, or profile.</p></div><button class="x" data-close aria-label="Close dialog">×</button></div>
     <div class="modal-body">
       <div class="seg" style="max-width:420px;margin-bottom:18px">${tabs.map(([id, label]) => `<button data-scope-tab="${id}" class="${state.shareScope === id ? "active" : ""}">${label}</button>`).join("")}</div>
       <div style="display:grid;grid-template-columns:1.5fr 1fr;gap:20px">
         <div>
           <div class="kpi-label" style="margin-bottom:8px">1. Select Sharing Scope</div>
-          <div class="opt-grid" style="grid-template-columns:repeat(5,1fr)">${scopeCards.map(([id, ico, t, d]) => `<div class="opt ${state.shareScope === id ? "selected" : ""}" data-scope="${id}" style="flex-direction:column;text-align:center;padding:12px 6px"><div class="ico">${ico}</div><div class="t" style="margin-top:6px">${t}</div><div class="d">${d}</div></div>`).join("")}</div>
+          <div class="opt-grid scope-grid">${scopeCards.map(([id, ico, t, d]) => `<div class="opt ${state.shareScope === id ? "selected" : ""}" data-scope="${id}" style="flex-direction:column;text-align:center;padding:12px 6px"><div class="ico">${ico}</div><div class="t" style="margin-top:6px">${t}</div><div class="d">${d}</div></div>`).join("")}</div>
           <div class="kpi-label" style="margin:18px 0 8px">2. Add Groups or People</div>
           <div style="display:flex;gap:8px;margin-bottom:10px"><input id="share-audience-input" placeholder="Search for people, teams, or groups…" style="flex:1;background:var(--panel);border:1px solid var(--line);border-radius:9px;padding:9px 11px;color:var(--text);font-size:12.5px"/><select id="share-perm" style="background:var(--panel2);border:1px solid var(--line2);color:var(--text);border-radius:9px;padding:8px"><option>Can view</option><option>Can comment</option></select></div>
           <div id="share-audience-pills">${state.shareAudience.map(a => `<span class="tag-pill">${esc(a)}<button data-remove-audience="${esc(a)}">×</button></span>`).join("") || '<span class="faint" style="font-size:12px">No people or groups added yet.</span>'}</div>
@@ -2522,6 +2627,36 @@ function closeModal() {
   BLACKHOLE.stop();
   $("#modal-backdrop").classList.remove("open");
   $("#modal-backdrop").innerHTML = "";
+}
+/// Central modal manager: locks body scroll while any modal is open, moves
+/// focus into newly opened modals, traps Tab inside them, and returns focus
+/// to the opener on close. Covers every present and future modal because all
+/// of them render into #modal-backdrop.
+let modalOpener = null, lastModalNode = null;
+function initModalManager() {
+  const backdrop = $("#modal-backdrop");
+  new MutationObserver(() => {
+    const node = backdrop.classList.contains("open") ? backdrop.firstChild : null;
+    document.body.style.overflow = node ? "hidden" : "";
+    if (node && node !== lastModalNode) {
+      lastModalNode = node;
+      if (!modalOpener || !backdrop.contains(modalOpener)) modalOpener = document.activeElement;
+      const target = backdrop.querySelector(".modal-foot .pill.primary, .modal .x, .modal button, .modal input, .modal [tabindex]");
+      if (target) { try { target.focus({ preventScroll: true }); } catch (_) {} }
+    } else if (!node) {
+      lastModalNode = null;
+      if (modalOpener && modalOpener.isConnected) { try { modalOpener.focus({ preventScroll: true }); } catch (_) {} }
+      modalOpener = null;
+    }
+  }).observe(backdrop, { childList: true, attributes: true, attributeFilter: ["class"] });
+  document.addEventListener("keydown", (e) => {
+    if (e.key !== "Tab" || !backdrop.classList.contains("open")) return;
+    const items = [...backdrop.querySelectorAll("button, input, select, [tabindex], a[href]")].filter(el => !el.disabled && el.offsetParent !== null);
+    if (!items.length) return;
+    const first = items[0], last = items[items.length - 1];
+    if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+    else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+  });
 }
 function toast(msg, isErr = false) {
   const el = h(`<div style="position:fixed;bottom:22px;left:50%;transform:translateX(-50%);z-index:300;background:${isErr ? "#3A1518" : "#0F1B2E"};border:1px solid ${isErr ? "rgba(239,68,68,.4)" : "rgba(79,140,255,.4)"};color:${isErr ? "#F9A0A0" : "#DCE8FF"};padding:10px 16px;border-radius:10px;font-size:12.5px;box-shadow:0 10px 30px rgba(0,0,0,.5)">${esc(msg)}</div>`);
@@ -2750,7 +2885,7 @@ function openSignInModal(opts = {}) {
         <div class="modal-head"><div>
           <h2>${action ? "Sign in to continue" : "Welcome to Token Horizon"}</h2>
           <p>${action ? esc(action) + " requires a verified Google account." : "Sign in to compete, collaborate, and claim your stats."}</p>
-        </div><button class="x" data-close>×</button></div>
+        </div><button class="x" data-close aria-label="Close dialog">×</button></div>
         <div class="modal-body" style="flex:1">
           <div class="signin-benefits">${benefits.map(([ico, t, d]) => `<div class="signin-benefit"><div class="ico">${ico}</div><div><div class="t">${t}</div><div class="d">${d}</div></div></div>`).join("")}</div>
           <div class="signin-gsi" id="signin-gsi"></div>
@@ -2806,7 +2941,7 @@ function openGroupModal(handle) {
   const draft = state.groupDraft || { name: "", members: [] };
   const backdrop = $("#modal-backdrop");
   backdrop.innerHTML = `<div class="modal" style="max-width:560px">
-    <div class="modal-head"><div><h2>New Group</h2><p>Bundle teammates into an audience you can share with in one click.</p></div><button class="x" data-close>×</button></div>
+    <div class="modal-head"><div><h2>New Group</h2><p>Bundle teammates into an audience you can share with in one click.</p></div><button class="x" data-close aria-label="Close dialog">×</button></div>
     <div class="modal-body">
       <div class="kpi-label">Group name</div>
       <input id="group-name" placeholder="e.g. Platform Team" value="${esc(draft.name)}" style="width:100%;margin:6px 0 16px;background:var(--panel);border:1px solid var(--line);border-radius:9px;padding:10px 12px;color:var(--text)"/>
@@ -2922,7 +3057,7 @@ function openDayDrilldown(day) {
   backdrop.innerHTML = `<div class="modal" style="max-width:580px">
     <div class="modal-head"><div><h2>${esc(label)}</h2>
       <p>${fmtTokens(total)} tokens${cost ? " · " + fmtCost(cost) : ""}${models.length ? " · " + models.length + " model" + (models.length === 1 ? "" : "s") : ""}</p></div>
-      <button class="x" data-close>×</button></div>
+      <button class="x" data-close aria-label="Close dialog">×</button></div>
     <div class="modal-body">
       ${models.length
         ? `<div class="card" style="background:var(--panel2)"><div class="card-head"><h3>Usage by model</h3><span class="sub">share of day</span></div>
@@ -2977,7 +3112,7 @@ function openAvatarModal(handle) {
     state.googleSession.email && entry.googleEmail.toLowerCase() === state.googleSession.email.toLowerCase());
   const backdrop = $("#modal-backdrop");
   backdrop.innerHTML = `<div class="modal" style="max-width:660px">
-    <div class="modal-head"><div><h2>Display photo</h2><p>Use your Google photo, upload one, or pick a generated avatar.</p></div><button class="x" data-close>×</button></div>
+    <div class="modal-head"><div><h2>Display photo</h2><p>Use your Google photo, upload one, or pick a generated avatar.</p></div><button class="x" data-close aria-label="Close dialog">×</button></div>
     <div class="modal-body">
       <div style="display:flex;gap:16px;align-items:center;margin-bottom:16px">
         ${entryAvatar(entry, 64)}
@@ -2986,7 +3121,7 @@ function openAvatarModal(handle) {
       ${state.googleSession?.picture ? `<div class="card" style="background:var(--panel2);margin-bottom:12px"><div class="card-head"><h3>Google photo</h3></div>
         <div style="display:flex;gap:12px;align-items:center">${avatar(entry.handle, state.googleSession.picture, 44)}<button class="pill" id="avatar-google">Use my Google photo</button></div></div>` : ""}
       <div class="card" style="background:var(--panel2);margin-bottom:12px"><div class="card-head"><h3>Generated avatars</h3><span class="sub">click a style to use it for @${esc(entry.handle)}</span></div>
-        <div style="display:flex;gap:10px;flex-wrap:wrap">${styles.map(st => `<span class="avatar" data-avatar-style="${st}" title="${esc(st)}" style="width:46px;height:46px;cursor:pointer;border:2px solid ${entry.avatarStyle === st ? "#4F8CFF" : "var(--line2)"}">${window.DiceBear ? window.DiceBear.avatarSvg(st, entry.handle, { size: 92 }) : ""}</span>`).join("")}</div>
+        <div style="display:flex;gap:10px;flex-wrap:wrap">${styles.map(st => `<span class="avatar" data-avatar-style="${st}" title="${esc(st)}" style="width:46px;height:46px;cursor:pointer;border:2px solid ${entry.avatarStyle === st ? "#4F8CFF" : "var(--line2)"};background:linear-gradient(135deg,#2E3A55,#1D2536)">${window.DiceBear ? window.DiceBear.avatarSvg(st, entry.handle, { size: 92 }) : ""}</span>`).join("")}</div>
       </div>
       <div class="card" style="background:var(--panel2);margin-bottom:12px"><div class="card-head"><h3>Upload a photo</h3><span class="sub">PNG/JPEG/WebP/GIF · max 400KB</span></div>
         <input type="file" id="avatar-file" accept="image/png,image/jpeg,image/webp,image/gif" style="font-size:12px;color:var(--muted)"/>
@@ -3033,7 +3168,7 @@ function openAvatarModal(handle) {
 function openClaimModal(handle) {
   const backdrop = $("#modal-backdrop");
   backdrop.innerHTML = `<div class="modal" style="max-width:480px">
-    <div class="modal-head"><div><h2>Claim @${esc(handle)}</h2><p>Verify your Google account to own this profile.</p></div><button class="x" data-close>×</button></div>
+    <div class="modal-head"><div><h2>Claim @${esc(handle)}</h2><p>Verify your Google account to own this profile.</p></div><button class="x" data-close aria-label="Close dialog">×</button></div>
     <div class="modal-body">
       <div class="notice">${state.googleReady ? "Sign in with Google, then claim this profile." : "Google sign-in isn't configured — enter your email and the claim token issued when the profile first published."}</div>
       <div style="display:flex;flex-direction:column;gap:10px;margin-top:14px;align-items:flex-start">
@@ -3075,7 +3210,7 @@ function openClaimModal(handle) {
 function openPublishModal() {
   const backdrop = $("#modal-backdrop");
   backdrop.innerHTML = `<div class="modal" style="max-width:520px">
-    <div class="modal-head"><div><h2>Publish from this machine</h2><p>Push your local Token Horizon daemon entry to the global leaderboard.</p></div><button class="x" data-close>×</button></div>
+    <div class="modal-head"><div><h2>Publish from this machine</h2><p>Push your local Token Horizon daemon entry to the global leaderboard.</p></div><button class="x" data-close aria-label="Close dialog">×</button></div>
     <div class="modal-body">
       <div class="notice">Requires the Token Horizon app running at <code>127.0.0.1:8765</code>. The daemon entry is published under your handle.</div>
       <div style="display:flex;flex-direction:column;gap:10px;margin-top:14px">
@@ -3116,6 +3251,7 @@ function openPublishModal() {
 async function init() {
   wireChrome();
   renderAuthSlot();
+  initModalManager();
   // Sidebar brand mark: static frame at rest, animates while hovered.
   const brandLogo = $("#brand-logo");
   NAVHOLE.start($("#nav-bh"), { animate: false, defer: 0 });

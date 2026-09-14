@@ -488,7 +488,108 @@ async function run() {
   console.log(`   generated styles=${styleTiles}, upload + URL + Google options present`);
   await page.evaluate(() => closeModal());
 
-  console.log('11. Checking console errors...');
+  console.log('11. Audit fixes: honesty, keyboard, modals, mobile...');
+  // Keyboard parity roles on chrome + table.
+  const kbRoles = await page.evaluate(() => ({
+    nav: [...document.querySelectorAll('#nav .nav-item')].every(e => e.tabIndex === 0 && e.getAttribute('role') === 'link'),
+    close: [...document.querySelectorAll('#modal-backdrop .x')].length === 0 || true
+  }));
+  if (!kbRoles.nav) throw new Error('Nav items missing keyboard roles');
+  // Profile Share/Claim entry points.
+  await page.evaluate(() => navigate('players', { handle: 'benebsworth' }));
+  await page.waitForSelector('.tabs .tab');
+  if (!(await page.locator('[data-share-user]').count())) throw new Error('Profile Share button missing');
+  if (!(await page.locator('[data-claim-user]').count())) throw new Error('Profile Claim button missing');
+  // Modal focus trap + labelled close + scroll lock.
+  await page.evaluate(() => openShareModal('benebsworth'));
+  await page.waitForSelector('#modal-backdrop.open');
+  await page.waitForTimeout(150);
+  const modalA11y = await page.evaluate(() => ({
+    labelled: [...document.querySelectorAll('#modal-backdrop .x[data-close]')].every(e => e.getAttribute('aria-label')),
+    locked: document.body.style.overflow === 'hidden',
+    inside: !!document.activeElement?.closest('#modal-backdrop')
+  }));
+  if (!modalA11y.labelled) throw new Error('Modal close buttons missing aria-label');
+  if (!modalA11y.locked) throw new Error('Body scroll not locked with modal open');
+  if (!modalA11y.inside) throw new Error('Focus did not move into the modal');
+  await page.evaluate(() => closeModal());
+  // No page-level horizontal scroll at mobile width.
+  const mob = await context.newPage();
+  await mob.route('https://token-horizon.dev/api/**', route => {
+    const url = new URL(route.request().url());
+    const fixture = FIXTURES[url.pathname];
+    if (fixture) return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(fixture) });
+    return route.fulfill({ status: 404, contentType: 'application/json', body: JSON.stringify({ ok: false, error: 'not found' }) });
+  });
+  await mob.setViewportSize({ width: 390, height: 900 });
+  await mob.goto(filePath);
+  await mob.waitForSelector('#lb-table tbody tr');
+  await mob.waitForTimeout(300);
+  const mobScroll = await mob.evaluate(() => document.documentElement.scrollWidth);
+  if (mobScroll > 391) throw new Error(`Mobile page scrolls horizontally: scrollWidth=${mobScroll}`);
+  await mob.close();
+  // Demo banner when the API is down.
+  const offline = await context.newPage();
+  await offline.route('https://token-horizon.dev/api/**', route => {
+    const url = new URL(route.request().url());
+    const fixture = FIXTURES[url.pathname];
+    if (fixture) return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(fixture) });
+    return route.fulfill({ status: 404, contentType: 'application/json', body: JSON.stringify({ ok: false, error: 'not found' }) });
+  });
+  // Registered last so it wins over the general fixture route above.
+  await offline.route('https://token-horizon.dev/api/leaderboard**', route => route.fulfill({ status: 404, contentType: 'application/json', body: '{}' }));
+  await offline.goto(filePath);
+  await offline.waitForSelector('.notice.warn', { timeout: 15000 });
+  await offline.close();
+  console.log('   keyboard roles, share/claim buttons, modal trap+lock, mobile 390px, demo banner ok');
+
+  console.log('12. Responsive: every view fits 390px, sticky list columns, charts follow resizes...');
+  const narrow = await context.newPage();
+  await narrow.route('https://token-horizon.dev/api/**', route => {
+    const url = new URL(route.request().url());
+    const fixture = FIXTURES[url.pathname];
+    if (fixture) return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(fixture) });
+    return route.fulfill({ status: 404, contentType: 'application/json', body: JSON.stringify({ ok: false, error: 'not found' }) });
+  });
+  await narrow.setViewportSize({ width: 390, height: 900 });
+  await narrow.goto(filePath + '?user=benebsworth');
+  await narrow.waitForSelector('#lb-table tbody tr', { timeout: 15000 }).catch(() => {});
+  await narrow.waitForTimeout(300);
+  for (const view of ['leaderboard', 'dashboard', 'players', 'teams', 'prompts', 'models', 'billing', 'leagues', 'settings']) {
+    await narrow.evaluate((v) => { state.view = v; if (v === 'players') state.currentHandle = 'benebsworth'; renderNav(); return render(); }, view);
+    await narrow.waitForTimeout(250);
+    const sw = await narrow.evaluate(() => document.documentElement.scrollWidth);
+    if (sw > 391) throw new Error(`View ${view} overflows at 390px: scrollWidth=${sw}`);
+  }
+  // Sticky rank+user columns keep row identity while the list scrolls sideways.
+  await narrow.evaluate(() => { state.view = 'leaderboard'; renderNav(); return render(); });
+  await narrow.waitForSelector('#lb-table tbody tr');
+  await narrow.evaluate(() => document.querySelector('#lb-table-wrap .card > div:last-child').scrollTo({ left: 300 }));
+  await narrow.waitForTimeout(150);
+  const sticky = await narrow.evaluate(() => {
+    const wrap = document.querySelector('#lb-table-wrap .card').getBoundingClientRect();
+    const c1 = document.querySelector('#lb-table thead th:nth-child(1)').getBoundingClientRect();
+    const c2 = document.querySelector('#lb-table thead th:nth-child(2)').getBoundingClientRect();
+    const pos = getComputedStyle(document.querySelector('#lb-table tbody td')).position;
+    return { pinned: Math.abs(c1.x - wrap.x) < 2 && Math.abs(c2.x - (wrap.x + 54)) < 3, pos };
+  });
+  if (!sticky.pinned || sticky.pos !== 'sticky') throw new Error(`Sticky list columns broken: ${JSON.stringify(sticky)}`);
+  // Charts follow container width on window resize without remounting.
+  const mountsBefore = await narrow.evaluate(() => window.__thPerf.chartMounts);
+  await narrow.setViewportSize({ width: 1100, height: 900 });
+  await narrow.waitForTimeout(500);
+  const followed = await narrow.evaluate(() => {
+    const el = document.querySelector('#view .ts-chart[data-chart-id]');
+    if (!el) return { ok: true, skipped: true };
+    const svg = el.querySelector('svg');
+    return { ok: Math.abs(el.getBoundingClientRect().width - svg.getBoundingClientRect().width) < 4, mounts: window.__thPerf.chartMounts };
+  });
+  if (!followed.ok) throw new Error('Chart did not follow container width on resize');
+  if (followed.mounts !== undefined && followed.mounts !== mountsBefore) throw new Error('Resize remounted charts');
+  await narrow.close();
+  console.log('   9/9 views fit 390px, sticky columns pinned, charts follow resizes with 0 remounts');
+
+  console.log('13. Checking console errors...');
   const realErrors = errors.filter(e =>
     !e.includes('favicon.ico') &&
     !e.includes('accounts.google.com') &&

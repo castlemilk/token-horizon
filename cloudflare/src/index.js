@@ -395,7 +395,7 @@ function aggregateProviders(entries) {
     }
   }
   const rows = [...map.values()].map(r => {
-    const avgCostPerM = r.tokens > 0 ? Math.round((r.cost / (r.tokens / 1000000)) * 10000) / 10000 : 0;
+    const avgCostPerM = r.tokens > 0 ? r.cost / (r.tokens / 1000000) : 0;
     return {
       provider: r.provider,
       tokens: r.tokens,
@@ -408,7 +408,9 @@ function aggregateProviders(entries) {
       avgCostPerM,
       tokensFormatted: formatTokens(r.tokens),
       costFormatted: formatCurrency(r.cost),
-      avgCostPerMText: avgCostPerM > 0 && avgCostPerM < 0.01 ? "$" + avgCostPerM.toFixed(4) : "$" + avgCostPerM.toFixed(2)
+      // Adaptive precision (~3 significant digits): tiny rates must not
+      // collapse to "$0.00" like fixed toFixed(2)/toFixed(4) does.
+      avgCostPerMText: avgCostPerM <= 0 ? "$0" : avgCostPerM >= 0.01 ? "$" + avgCostPerM.toPrecision(3) : "$" + avgCostPerM.toPrecision(2)
     };
   }).sort((a, b) => b.tokens - a.tokens);
   const total = rows.reduce((s, r) => s + r.tokens, 0);

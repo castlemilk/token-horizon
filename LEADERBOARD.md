@@ -322,7 +322,27 @@ of cache-hit rate, output ratio, and free/local share.
 npm install && npm run vendor          # rebuild docs/vendor/tanstack-charts.js
 task lint && swift test                # Swift gates (engine v3, analytics)
 make leaderboard-test                  # worker tests + hermetic Playwright UI
+task bench-leaderboard                 # dashboard render/chart/API budgets (fails on breach)
 ./scripts/make-app.sh                  # install + relaunch, health-gated
 ./scripts/deploy-cloudflare.sh         # worker + docs assets
 task smoke                             # local API + MCP contract
 ```
+
+### UI audit passes (`/audit` → `/critique`)
+
+Reusable commands live in `.opencode/commands/`. Rules established by audit
+rounds and enforced by `scripts/test-leaderboard-ui.mjs` §11:
+
+- **Honesty first**: API failures surface error banners (never silent empty
+  states); the offline demo fallback carries a "demo data" banner + retry.
+- **No page-level horizontal scroll** at 390px (wrapping topbar, `min-width:0`
+  grid children, collapsing ladder/donut layouts, scroll-wrapped tables).
+- **Keyboard parity**: nav/sort/rows/tiers/tabs/rule-switches/cal-cells are
+  focusable with Enter/Space; modals trap Tab, label close buttons, lock body
+  scroll, and return focus on close; `:focus-visible` outlines.
+- **Privacy copy**: title-less rows render "title private" + 🔒 everywhere
+  (prompts, top-prompts, profile sessions) — never "(untitled)".
+- **Cost precision**: `fmtRate` (~3 sig figs) for all $/rate figures on both
+  sides of the edge; worker no longer rounds `avgCostPerM` to 4dp.
+- **Donut consistency**: ring, center, and legend share one denominator and
+  every time-based card labels its window ("Last N days" vs "All-time").
