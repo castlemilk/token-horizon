@@ -19,6 +19,100 @@
 	} from '$lib/activity';
 	import { fmtTok } from '$lib/format';
 
+	/** One box-shadow layer as numbers: lengths lerp + divide by live
+	    scale each frame, color held constant (tile side). */
+	interface ShadowLayer {
+		inset: boolean;
+		color: string;
+		v: [number, number, number, number];
+	}
+
+	function splitShadowLayers(s: string): string[] {
+		const out: string[] = [];
+		let depth = 0;
+		let cur = '';
+		for (const ch of s) {
+			if (ch === '(') depth++;
+			if (ch === ')') depth--;
+			if (ch === ',' && depth === 0) {
+				out.push(cur);
+				cur = '';
+			} else cur += ch;
+		}
+		if (cur.trim()) out.push(cur);
+		return out;
+	}
+
+	function parseShadow(s: string): ShadowLayer[] | null {
+		if (!s || s === 'none') return null;
+		const parsed: ShadowLayer[] = [];
+		for (const layer of splitShadowLayers(s)) {
+			const nums = (layer.match(/-?\d*\.?\d+px/g) ?? []).map((n) => parseFloat(n));
+			if (nums.length < 3) return null;
+			const color = layer
+				.replace(/-?\d*\.?\d+px/g, '')
+				.replace(/inset/g, '')
+				.replace(/\s+/g, ' ')
+				.trim();
+			parsed.push({
+				inset: layer.includes('inset'),
+				color,
+				v: [nums[0], nums[1], nums[2], nums[3] ?? 0]
+			});
+		}
+		return parsed;
+	}
+
+	function parseLensPair(
+		tileStr: string,
+		modalStr: string
+	): { tile: ShadowLayer[]; modal: ShadowLayer[] } | null {
+		const tile = parseShadow(tileStr);
+		const modal = parseShadow(modalStr);
+		if (!tile || !modal || tile.length !== modal.length || tile.length === 0) return null;
+		return { tile, modal };
+	}
+
+	function projScale(el: HTMLElement): { sx: number; sy: number } {
+		return {
+			sx: Number(gsap.getProperty(el, 'scaleX')) || 1,
+			sy: Number(gsap.getProperty(el, 'scaleY')) || 1
+		};
+	}
+
+	/**
+	 * Scale-compensated shadow: the card's transform multiplies whatever
+	 * shadow value is set, so tweening the value naively double-shrinks it
+	 * (and pops ~3x at the landing scrub). Dividing the interpolated
+	 * lengths by the live scale keeps the PAINTED shadow exactly on the
+	 * interpolation curve — at both ends the handoff is pixel-exact, so no
+	 * fade or settle zoom is needed to hide it. x/y divide by their own
+	 * axis (the morph is non-uniform), blur/spread by the mean.
+	 */
+	function shadowCSS(
+		fromV: ShadowLayer[],
+		toV: ShadowLayer[],
+		colors: ShadowLayer[],
+		t: number,
+		sx: number,
+		sy: number
+	): string {
+		const kx = Math.max(sx, 0.001);
+		const ky = Math.max(sy, 0.001);
+		const kb = Math.max((sx + sy) / 2, 0.001);
+		const r2 = (n: number) => String(Math.round(n * 100) / 100);
+		return toV
+			.map((L, i) => {
+				const F = fromV[i];
+				const x = (F.v[0] + (L.v[0] - F.v[0]) * t) / kx;
+				const y = (F.v[1] + (L.v[1] - F.v[1]) * t) / ky;
+				const b = (F.v[2] + (L.v[2] - F.v[2]) * t) / kb;
+				const s = (F.v[3] + (L.v[3] - F.v[3]) * t) / kb;
+				return `${L.inset ? 'inset ' : ''}${r2(x)}px ${r2(y)}px ${r2(b)}px ${r2(s)}px ${colors[i].color}`;
+			})
+			.join(', ');
+	}
+
 	/** Home-screen activity widget, two sizes sharing one modal.
 	 *  small: 3×3 tile — last 9 days, one dot per day.
 	 *  medium: 9×3 tile — last 27 days, one dot per day.
@@ -85,9 +179,12 @@
 	let loadError = $state(false);
 	let phase = $state<'fly' | 'settle' | 'exit'>('settle');
 	let flightOk = $state(false);
-	/** True briefly after a close lands: the tile remounts fresh and its
-	    dots would replay their staggered pop-in (reads as reloading), so
-	    entrance animation is suppressed until they settle. */
+	/** True after a close lands: the tile remounts fresh and its dots
+	    would replay their staggered pop-in (reads as reloading), so
+	    entrance animation stays suppressed while this tile is mounted —
+	    cleared on the next open, when the tile unmounts anyway. Toggling
+	    it back on a timer would restart the animation (whole-widget
+	    flicker), so it persists until show(). */
 	let landed = $state(false);
 	/** THE shared container: tile when closed, modal when open. Never recreated. */
 	let boxEl = $state<HTMLElement | null>(null);
@@ -104,6 +201,10 @@
 	/** Tile measurements taken while boxEl still IS the tile (pre-swap). */
 	let pendingTile: { tileBox: Box; dotBoxes: Box[]; bg: string[]; fromShadow: string } | null =
 		null;
+	/** Parsed resting shadows (tile ↔ modal) for the open session: drives
+	    the scale-compensated shadow on both flights. Null when unparseable
+	    (or a no-flight open) → falls back to plain value tweens. */
+	let flightLens: { tile: ShadowLayer[]; modal: ShadowLayer[] } | null = null;
 
 	/** ?slowmo=1 slows every widget timeline — landing-frame inspection. */
 	function slowmo(tl: gsap.core.Timeline): gsap.core.Timeline {
@@ -218,13 +319,11 @@
 		pendingTile = null;
 		phase = 'settle';
 		if (wasExit) {
-			// Cover the longest stagger (~600ms on medium) + pop duration.
+			// Tile remounts fresh below: hold dots steady from first
+			// paint. Stays set until the next open (show clears it as
+			// the tile unmounts) — clearing it on a timer would replay
+			// the entrance and flicker the whole widget.
 			landed = true;
-			timers.push(
-				window.setTimeout(() => {
-					landed = false;
-				}, 800)
-			);
 		}
 	}
 
@@ -236,12 +335,15 @@
 				clearTimers();
 				removeClones();
 				if (boxEl) gsap.set(boxEl, { clearProps: 'all' });
+				if (backdropEl) gsap.set(backdropEl, { clearProps: 'all' });
 				phase = 'settle';
 			}
 			return;
 		}
 		killTl();
 		clearTimers();
+		landed = false;
+		if (boxEl) gsap.set(boxEl, { clearProps: 'all' });
 		year = currentYear;
 		// Measure while boxEl still IS the tile — after the swap the tile
 		// dots are gone, so their boxes + colors are stored for the plan.
@@ -280,6 +382,7 @@
 			});
 		} else {
 			flightOk = false;
+			flightLens = null;
 			phase = 'settle';
 			open = true;
 		}
@@ -341,10 +444,11 @@
 		}
 
 		// 1 — container + dots move together, all values precomputed.
-		// Elevation travels with size (read computed, current theme):
-		// a shrinking card must shed its shadow or the halo winks out
-		// at unmount.
+		// The shadow rides a compensated driver (not a value tween) so
+		// the painted result tracks the tile→modal curve exactly — at
+		// t=0 it matches the just-unmounted tile pixel-for-pixel.
 		const toShadow = getComputedStyle(card).boxShadow;
+		flightLens = parseLensPair(pendingTile.fromShadow, toShadow);
 		const cv = cardVars(pendingTile.tileBox, cardBox);
 		const mDur = 0.38 * S;
 		const rc = { r: 18 };
@@ -355,19 +459,35 @@
 		};
 		tl.fromTo(
 			card,
-			{ x: cv.dx, y: cv.dy, scaleX: cv.sx, scaleY: cv.sy, boxShadow: pendingTile.fromShadow },
+			{
+				x: cv.dx,
+				y: cv.dy,
+				scaleX: cv.sx,
+				scaleY: cv.sy,
+				...(flightLens ? {} : { boxShadow: pendingTile.fromShadow })
+			},
 			{
 				x: 0,
 				y: 0,
 				scaleX: 1,
 				scaleY: 1,
-				boxShadow: toShadow,
+				...(flightLens ? {} : { boxShadow: toShadow }),
 				transformOrigin: '50% 50%',
 				duration: mDur,
 				ease: 'power3.inOut'
 			},
 			0
 		);
+		if (flightLens) {
+			const lens = flightLens;
+			const shop = { t: 0 };
+			const applyShadow = () => {
+				const { sx, sy } = projScale(card);
+				card.style.boxShadow = shadowCSS(lens.tile, lens.modal, lens.tile, shop.t, sx, sy);
+			};
+			applyShadow(); // park the painted shadow exactly on the tile — no one-frame shrink
+			tl.to(shop, { t: 1, duration: mDur, ease: 'power3.inOut', onUpdate: applyShadow }, 0);
+		}
 		tl.to(rc, { r: 20, duration: mDur, ease: 'power3.inOut', onUpdate: applyRadius }, 0);
 		applyRadius(); // settle corners synchronously — no one-frame pinch
 		clones.forEach((c, i) => {
@@ -467,7 +587,11 @@
 		const ghost = ghostEl;
 		if (card) {
 			gsap.set(card.querySelectorAll('.heatmap .cell'), { clearProps: 'all' });
-			gsap.set(card.querySelectorAll('.xstat,.xnote,.heatmap .legend'), { clearProps: 'all' });
+			gsap.set(card.querySelectorAll('.xstat,.xnote,.heatmap .legend,.wmodal-head > *'), {
+				clearProps: 'all'
+			});
+			// A killed landing may have stranded opacity/transition states.
+			gsap.set(card, { clearProps: 'opacity,visibility,transition' });
 		}
 		if (!card || !ghost || !heatEl) {
 			reset();
@@ -526,9 +650,9 @@
 		const xtl = slowmo(
 			gsap.timeline({
 				onComplete: () => {
-					// Same node drops back to tile flow: scrub the flight
-					// transform in the same tick as the content swap so the
-					// tile paints exactly where the collapse landed.
+					// Geometry, radius and the compensated shadow all
+					// agree with the tile exactly: swap + scrub in one
+					// tick, no fade and no settle zoom to hide behind.
 					removeClones();
 					reset();
 				}
@@ -556,13 +680,23 @@
 				y: cv.dy,
 				scaleX: cv.sx,
 				scaleY: cv.sy,
-				boxShadow: homeShadow,
+				...(flightLens ? {} : { boxShadow: homeShadow }),
 				transformOrigin: '50% 50%',
 				duration: xDur,
 				ease: 'power3.inOut'
 			},
 			xBase
 		);
+		if (flightLens) {
+			const lens = flightLens;
+			const shx = { t: 0 };
+			const applyXShadow = () => {
+				const { sx, sy } = projScale(card);
+				card.style.boxShadow = shadowCSS(lens.modal, lens.tile, lens.tile, shx.t, sx, sy);
+			};
+			applyXShadow();
+			xtl.to(shx, { t: 1, duration: xDur, ease: 'power3.inOut', onUpdate: applyXShadow }, xBase);
+		}
 		xtl.to(xrc, { r: 18, duration: xDur, ease: 'power3.inOut', onUpdate: xApplyRadius }, xBase);
 		// The dim + blur release WITH the collapse — previously the
 		// backdrop only faded after unmount, so it never visibly faded.
