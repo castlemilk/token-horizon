@@ -5,9 +5,10 @@
 	import { totalTok, poll } from '$lib/format';
 	import { fetchDailyActivity, activityStats, type DayActivity } from '$lib/activity';
 	import { providerAccent } from '$lib/colors';
-	import Heatmap from '$lib/components/Heatmap.svelte';
-	import HBars, { type HBarRow } from '$lib/components/HBars.svelte';
-	import CountUp from '$lib/components/CountUp.svelte';
+	import Heatmap from '$lib/components/data/Heatmap.svelte';
+	import HBars, { type HBarRow } from '$lib/components/data/HBars.svelte';
+	import CountUp from '$lib/components/data/CountUp.svelte';
+	import EmptyState from '$lib/components/common/EmptyState.svelte';
 
 	// Route: /@<handle> — profile summarizes this machine's activity attributed
 	// to the handle (the local identity configured in Settings).
@@ -83,7 +84,7 @@
 	{#if days.length > 0}
 		<Heatmap {days} />
 	{:else}
-		<div class="empty">Loading activity…</div>
+		<EmptyState title="Loading activity…" body="" />
 	{/if}
 </div>
 
@@ -92,7 +93,7 @@
 	{#if topProviders.length > 0}
 		<HBars rows={topProviders} thin />
 	{:else}
-		<div class="empty">No metered usage yet</div>
+		<EmptyState title="No metered usage yet" body="" />
 	{/if}
 </div>
 

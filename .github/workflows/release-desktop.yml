@@ -1,0 +1,219 @@
+name: release-desktop
+# Compiled, store-delivered desktop builds: no local builds required.
+#
+# On `v*` tags (or manual dispatch) this builds the Tauri shell + Swift
+# daemon sidecar in CI and publishes:
+#   macOS (Apple Silicon)  -> .dmg  -> GitHub release + Homebrew cask bump
+#   Windows (x86_64)       -> .msi  -> GitHub release + Chocolatey push + winget
+#
+# Package-manager steps are each guarded by their secret: a missing secret
+# skips that channel without failing the release. Required secrets:
+#   CHOCO_API_KEY        Chocolatey.org push key
+#   WINGET_PAT           classic PAT (contents:write) for microsoft/winget-pkgs
+#   HOMEBREW_TAP_TOKEN   classic PAT (contents:write) for <you>/homebrew-tap
+# macOS signing/notarization reuses the notarized .app pipeline's secrets
+# (APPLE_ID_*); without them the dmg is ad-hoc signed (Gatekeeper warning).
+#
+# Version rule: the tag is the single source of truth (v0.2.0). CI rewrites
+# ui/package.json, ui/src-tauri/tauri.conf.json and ui/src-tauri/Cargo.toml
+# to match before building, so bundle filenames and GH release agree.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  VER: ${{ github.ref_name }}
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      ver: ${{ steps.v.outputs.ver }}
+    steps:
+      - id: v
+        run: |
+          if [[ "$VER" == v* ]]; then echo "ver=${VER#v}" >> "$GITHUB_OUTPUT";
+          else echo "ver=0.2.0-dev" >> "$GITHUB_OUTPUT"; fi
+
+  build:
+    needs: version
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            target: aarch64-apple-darwin
+            swift: xcode
+          - os: windows-2025
+            target: x86_64-pc-windows-msvc
+            swift: "6.1"
+    runs-on: ${{ matrix.os }}
+    env:
+      VERSION: ${{ needs.version.outputs.ver }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Sync versions from tag
+        shell: bash
+        run: |
+          python3 - <<'EOF'
+          import json, re, os
+          ver = os.environ["VERSION"]
+          for p in ["ui/package.json", "ui/src-tauri/tauri.conf.json"]:
+              s = open(p).read()
+              s = re.sub(r'"version":\s*"[^"]+"', f'"version": "{ver}"', s, count=1)
+              open(p, "w").write(s)
+          p = "ui/src-tauri/Cargo.toml"
+          s = open(p).read()
+          s = re.sub(r'^version = "[^"]+"', f'version = "{ver}"', s, count=1, flags=re.M)
+          open(p, "w").write(s)
+          print("versions set to", ver)
+          EOF
+
+      - name: Select Xcode (macOS)
+        if: runner.os == 'macOS'
+        run: sudo xcode-select -s /Applications/Xcode_16.2.app/Contents/Developer || true
+
+      - name: Setup Swift (Windows)
+        if: runner.os == 'Windows'
+        uses: swift-actions/setup-swift@main
+        with:
+          swift-version: ${{ matrix.swift }}
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build daemon sidecar (release)
+        shell: bash
+        run: bash scripts/build-sidecar.sh release
+
+      - name: Install frontend deps
+        working-directory: ui
+        run: npm ci --no-audit --no-fund
+
+      - name: Build Tauri bundle
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: ui
+          tagName: ${{ github.ref_name }}
+          releaseName: "Token Horizon ${{ github.ref_name }}"
+          releaseDraft: false
+          prerelease: false
+          args: ${{ runner.os == 'macOS' && '--target aarch64-apple-darwin' || '' }}
+
+      - name: Collect artifacts
+        shell: bash
+        run: |
+          mkdir -p dist
+          find ui/src-tauri/target/release/bundle -type f \( -name '*.dmg' -o -name '*.msi' -o -name '*.nsis.zip' -o -name '*.exe' \) -exec cp {} dist/ \;
+          ls -la dist/
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: bundles-${{ matrix.target }}
+          path: dist/
+
+  publish:
+    needs: [version, build]
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.version.outputs.ver }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Checksums
+        run: (cd dist && shasum -a 256 *.{dmg,msi,exe,zip} 2>/dev/null > SHA256SUMS; cat SHA256SUMS)
+
+      - name: GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
+          prerelease: false
+
+      - name: Homebrew cask bump
+        if: secrets.HOMEBREW_TAP_TOKEN != ''
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          DMG=$(ls dist/*.dmg | head -1)
+          SHA=$(shasum -a 256 "$DMG" | cut -d' ' -f1)
+          sed -e "s/__VERSION__/$VERSION/g" -e "s#__URL__#https://github.com/castlemilk/token-horizon/releases/download/v$VERSION/$(basename "$DMG")#g" -e "s/__SHA256__/$SHA/g" \
+            packaging/homebrew/token-horizon.rb.template > token-horizon.rb
+          git clone "https://x-access-token:$HOMEBREW_TAP_TOKEN@github.com/castlemilk/homebrew-tap.git" tap
+          cp token-horizon.rb tap/Casks/token-horizon.rb
+          (cd tap && git add Casks/token-horizon.rb && git -c user.name="ci" -c user.email="ci@local" commit -m "token-horizon $VERSION" && git push)
+
+      - name: Chocolatey note
+        run: echo "Chocolatey publishes from the publish-choco job (Windows runner)"
+
+      - name: winget submit
+        if: secrets.WINGET_PAT != ''
+        env:
+          WINGET_PAT: ${{ secrets.WINGET_PAT }}
+        run: |
+          # wingetcreate opens the microsoft/winget-pkgs PR for package id
+          # castlemilk.token-horizon at this tag. Needs a Linux runner + token.
+          curl -sSL -o wingetcreate.tar.gz \
+            https://github.com/microsoft/winget-create/releases/latest/download/wingetcreate_latest_linux_x64.tar.gz
+          tar xzf wingetcreate.tar.gz
+          ./wingetcreate submit \
+            --package-identifier castlemilk.token-horizon \
+            --package-version "$VERSION" \
+            --urls "https://github.com/castlemilk/token-horizon/releases/download/v$VERSION" \
+            --token "$WINGET_PAT" --submit
+
+  publish-choco:
+    # choco.exe only runs on Windows: separate job, same release inputs.
+    needs: [version, build]
+    if: secrets.CHOCO_API_KEY != ''
+    runs-on: windows-2025
+    env:
+      VERSION: ${{ needs.version.outputs.ver }}
+      CHOCO_API_KEY: ${{ secrets.CHOCO_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download Windows bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: bundles-x86_64-pc-windows-msvc
+          path: dist
+
+      - name: Pack and push
+        shell: pwsh
+        run: |
+          $msi = (Get-ChildItem dist/*.msi | Select-Object -First 1).Name
+          $url = "https://github.com/castlemilk/token-horizon/releases/download/v$env:VERSION/$msi"
+          $sha = (Get-FileHash "dist/$msi" -Algorithm SHA256).Hash.ToLower()
+          Copy-Item -Recurse packaging/chocolatey choco
+          (Get-Content choco/token-horizon.nuspec) -replace '__VERSION__', $env:VERSION `
+            | Set-Content choco/token-horizon.nuspec
+          Get-ChildItem choco/tools/*.ps1 | ForEach-Object {
+            (Get-Content $_) -replace '__VERSION__', $env:VERSION `
+              -replace '__URL__', $url -replace '__SHA256__', $sha |
+              Set-Content $_
+          }
+          choco pack choco/token-horizon.nuspec --out choco/
+          choco push (Get-ChildItem choco/*.nupkg) --source https://push.chocolatey.org/ --api-key $env:CHOCO_API_KEY

@@ -110,3 +110,38 @@ func TestDuckDBIdentityAndIdempotentIngest(t *testing.T) {
 		t.Fatalf("unset cursor=%q", c)
 	}
 }
+
+func TestDuckDBLeaderboard(t *testing.T) {
+	ctx := context.Background()
+	s := openMigrated(t)
+
+	u, _ := s.ResolveUser(ctx, "ada", "Ada", "")
+	mid := "m-1"
+	if _, err := s.RegisterMachine(ctx, models.Machine{
+		MachineID: mid, UserID: u.ID, Alias: "lab", LastSeen: time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	mk := func(id string, at time.Time, input int64) models.UsageEvent {
+		return models.UsageEvent{
+			ID: id, Timestamp: at, MachineID: mid,
+			Source: "external", Vendor: "kimi", Model: "k3",
+			Tokens: models.TokenBreakdown{Input: input}, Attestation: "measured",
+		}
+	}
+	now := time.Now().UTC()
+	day := func(off int) time.Time { return now.Add(time.Duration(-off*24) * time.Hour) }
+	if _, _, err := s.InsertEvents(ctx, u.ID, []models.UsageEvent{
+		mk("b-1", day(0), 300), mk("b-2", day(1), 100),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := s.BoardTotals(ctx, "", day(0).Truncate(24*time.Hour))
+	if err != nil || len(rows) != 1 || rows[0].Tokens != 300 || rows[0].Machines != 1 {
+		t.Fatalf("board=%+v err=%v", rows, err)
+	}
+	days, err := s.BoardDays(ctx, "", day(0).Add(-72*time.Hour), 400)
+	if err != nil || len(days["ada"]) != 2 {
+		t.Fatalf("days=%+v err=%v", days, err)
+	}
+}

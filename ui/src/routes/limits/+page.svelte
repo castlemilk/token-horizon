@@ -4,7 +4,8 @@
 	import { connection } from '$lib/connection.svelte';
 	import { limitsStore } from '$lib/limits.svelte';
 	import { fmtReset } from '$lib/format';
-	import ProviderIcon from '$lib/components/ProviderIcon.svelte';
+	import ProviderIcon from '$lib/components/data/ProviderIcon.svelte';
+	import EmptyState from '$lib/components/common/EmptyState.svelte';
 	import RefreshCw from '@lucide/svelte/icons/refresh-cw';
 	import PlugZap from '@lucide/svelte/icons/plug-zap';
 
@@ -87,16 +88,12 @@
 		</div>
 	</section>
 {:else if groups.length === 0}
-	<div class="empty-quiet">
-		<div class="empty-quiet-title">No quota windows</div>
-		<div class="dim">
-			{#if !connection.online}
-				The listener is offline — windows appear once it reconnects.
-			{:else}
-				Windows appear after the first metered request or quota poll.
-			{/if}
-		</div>
-	</div>
+	<EmptyState
+		title="No quota windows"
+		body={!connection.online
+			? 'The listener is offline — windows appear once it reconnects.'
+			: 'Windows appear after the first metered request or quota poll.'}
+	/>
 {:else}
 	<div class="groups">
 	{#each groups as g}
@@ -343,24 +340,6 @@
 		border-radius: 999px;
 		padding: 2px 8px;
 		flex: none;
-	}
-
-	/* quiet empty state — plain type, no card */
-	.empty-quiet {
-		text-align: center;
-		padding: 64px 24px;
-		display: grid;
-		gap: 8px;
-		justify-items: center;
-	}
-	.empty-quiet-title {
-		font-size: 17px;
-		font-weight: 600;
-		letter-spacing: -0.01em;
-	}
-	.empty-quiet .dim {
-		font-size: 13px;
-		max-width: 360px;
 	}
 
 	/* skeleton shimmer */

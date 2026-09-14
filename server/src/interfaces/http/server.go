@@ -22,8 +22,14 @@ import (
 type Server struct {
 	Ingest usecases.Ingest
 	Sync   usecases.Sync
+	// Board serves the leaderboard (nil = disabled).
+	Board *usecases.Leaderboard
+	// AuthN resolves session bearer tokens to users (login identity).
+	AuthN usecases.Auth
+	// AuthRoutes serves login/account/teams/avatar (nil = disabled).
+	AuthRoutes *Auth
 	// Token, when non-empty, enforces `Authorization: Bearer <token>` on
-	// everything but /healthz. Empty = open (local dev only).
+	// the machine ingest paths. Empty = open (local dev only).
 	Token string
 	Log   *log.Logger
 }
@@ -39,6 +45,9 @@ func (s *Server) Routes() *http.ServeMux {
 	mux.HandleFunc("POST /v1/sync/cursors", s.withAuth(s.setCursor))
 	mux.HandleFunc("GET /v1/usage/summary", s.withAuth(s.usageSummary))
 	mux.HandleFunc("GET /v1/machines", s.withAuth(s.fleet))
+	if s.AuthRoutes != nil {
+		s.mountAuth(mux, s.AuthRoutes)
+	}
 	return mux
 }
 
@@ -170,7 +179,7 @@ func (s *Server) ingestLimits(w http.ResponseWriter, r *http.Request) {
 func (s *Server) syncStatus(w http.ResponseWriter, r *http.Request) {
 	machineID := r.URL.Query().Get("machine_id")
 	if machineID == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "machine_id required"})
+		badRequest(w, "machine_id required")
 		return
 	}
 	st, err := s.Sync.Status(r.Context(), machineID)
@@ -197,12 +206,11 @@ func (s *Server) setCursor(w http.ResponseWriter, r *http.Request) {
 		MachineID string `json:"machine_id"`
 		Cursor    string `json:"cursor"`
 	}
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16)).Decode(&body); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "bad json"})
+	if !decodeJSON(w, r, 1<<16, &body) {
 		return
 	}
 	if body.Dataset == "" || body.MachineID == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "dataset + machine_id required"})
+		badRequest(w, "dataset + machine_id required")
 		return
 	}
 	if err := s.Sync.Store.SetCursor(r.Context(), body.Dataset, body.MachineID, body.Cursor); err != nil {
@@ -219,7 +227,7 @@ func (s *Server) usageSummary(w http.ResponseWriter, r *http.Request) {
 		var err error
 		since, err = time.Parse(time.RFC3339, raw)
 		if err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "since must be RFC3339"})
+			badRequest(w, "since must be RFC3339")
 			return
 		}
 	}
@@ -237,7 +245,7 @@ func (s *Server) usageSummary(w http.ResponseWriter, r *http.Request) {
 func (s *Server) fleet(w http.ResponseWriter, r *http.Request) {
 	handle := r.URL.Query().Get("handle")
 	if handle == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "handle required"})
+		badRequest(w, "handle required")
 		return
 	}
 	f, err := s.Sync.FleetMachines(r.Context(), handle)
@@ -249,6 +257,21 @@ func (s *Server) fleet(w http.ResponseWriter, r *http.Request) {
 }
 
 // --- helpers ---
+
+// decodeJSON reads a capped JSON body into v (false = 400 already written).
+func decodeJSON(w http.ResponseWriter, r *http.Request, limit int64, v any) bool {
+	r.Body = http.MaxBytesReader(w, r.Body, limit)
+	if err := json.NewDecoder(r.Body).Decode(v); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "bad json"})
+		return false
+	}
+	return true
+}
+
+// badRequest writes a 400 with a message.
+func badRequest(w http.ResponseWriter, msg string) {
+	writeJSON(w, http.StatusBadRequest, map[string]any{"error": msg})
+}
 
 func (s *Server) fail(w http.ResponseWriter, err error) {
 	msg := err.Error()

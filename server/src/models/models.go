@@ -41,11 +41,17 @@ var (
 
 // User is one logged-in human. Handle is the identity the daemon reports
 // (TH_SYNC_HANDLE, defaulting to the OS username) — unique, human-meaningful.
+// Email/avatar/provider links fill in once the user signs in with Google or
+// Microsoft (002_identity); provider subs are "" when unlinked.
 type User struct {
 	ID          string    `json:"id"`
 	Handle      string    `json:"handle"`
 	DisplayName string    `json:"display_name"`
 	Team        string    `json:"team"`
+	Email       string    `json:"email,omitempty"`
+	AvatarURL   string    `json:"avatar_url,omitempty"`
+	GoogleSub   string    `json:"-"`
+	MSSub       string    `json:"-"`
 	CreatedAt   time.Time `json:"created_at"`
 	UpdatedAt   time.Time `json:"updated_at"`
 }

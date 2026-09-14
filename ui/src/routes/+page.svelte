@@ -6,10 +6,11 @@
 	import { providerAccent } from '$lib/colors';
 	import { settings } from '$lib/settings.svelte';
 	import { scope } from '$lib/scope.svelte';
-	import Heatmap from '$lib/components/Heatmap.svelte';
-	import VBars from '$lib/components/VBars.svelte';
-	import ProviderIcon from '$lib/components/ProviderIcon.svelte';
-	import CountUp from '$lib/components/CountUp.svelte';
+	import HeatmapWidget from '$lib/components/widgets/HeatmapWidget.svelte';
+	import VBars from '$lib/components/data/VBars.svelte';
+	import ProviderIcon from '$lib/components/data/ProviderIcon.svelte';
+	import CountUp from '$lib/components/data/CountUp.svelte';
+	import EmptyState from '$lib/components/common/EmptyState.svelte';
 	import { fly } from 'svelte/transition';
 	import { flip } from 'svelte/animate';
 	import * as Accordion from '$lib/components/ui/accordion/index.js';
@@ -277,11 +278,12 @@
 			{/each}
 		</div>
 	{:else if ranked.length === 0}
-		<div class="empty-card">
-			<div class="empty-card-title">No usage measured yet</div>
-			<div class="dim empty-card-body">Point a tool at a loopback meter and its requests will land here, per provider and model.</div>
-			<a class="btn" href="/metering">Set up metering</a>
-		</div>
+		<EmptyState
+			title="No usage measured yet"
+			body="Point a tool at a loopback meter and its requests will land here, per provider and model."
+			actionLabel="Set up metering"
+			actionHref="/metering"
+		/>
 	{:else}
 		<div class="sharebar" role="img" aria-label="Provider share of token usage" style="margin-top: 38px">
 			{#each ranked as r}
@@ -361,10 +363,10 @@
 	{/if}
 </section>
 
-<section class="mod heatmod">
-	<div class="faint mod-label">Activity</div>
+<section class="mod heatmod widget-cell">
 	{#if days.length > 0}
-		<Heatmap {days} />
+		<HeatmapWidget {days} variant="small" />
+		<HeatmapWidget {days} variant="medium" />
 	{:else}
 		<div class="empty">…</div>
 	{/if}
@@ -379,11 +381,12 @@
 			{/each}
 		</div>
 	{:else if recent.length === 0}
-		<div class="empty-card">
-			<div class="empty-card-title">No requests yet</div>
-			<div class="dim empty-card-body">Each metered request shows up here the moment it completes.</div>
-			<a class="btn" href="/metering">Set up metering</a>
-		</div>
+		<EmptyState
+			title="No requests yet"
+			body="Each metered request shows up here the moment it completes."
+			actionLabel="Set up metering"
+			actionHref="/metering"
+		/>
 	{:else}
 		<div class="recentfade" class:faded={!showAllRecent && recentTruncated}>
 		<table>
@@ -484,13 +487,6 @@
 	.dash .rankmod,
 	.dash .recentmod { grid-column: 1 / -1; }
 
-	.mod-label {
-		font-size: 11px;
-		text-transform: uppercase;
-		letter-spacing: 0.08em;
-		margin-bottom: 12px;
-	}
-
 	/* trio: vertically stacked, one size — three type voices, one rhythm.
 	   tabular sans black for tokens, light grotesk for requests,
 	   italic serif for cost. Caps stay uniform so it reads as one line. */
@@ -544,14 +540,19 @@
 		margin-top: 10px;
 	}
 
-	/* heatmap lives in a frosted card so it reads as one tile */
-	.heatmod {
-		background: color-mix(in srgb, var(--bg-raised) 62%, transparent);
-		backdrop-filter: blur(22px) saturate(1.6);
-		-webkit-backdrop-filter: blur(22px) saturate(1.6);
-		border-radius: 18px;
-		padding: 18px 18px 14px;
-		overflow: hidden;
+	/* heatmap widgets share the cell: cubic small + wider medium, wrapping */
+	.heatmod.widget-cell {
+		background: none;
+		backdrop-filter: none;
+		-webkit-backdrop-filter: none;
+		border-radius: 0;
+		padding: 0;
+		overflow: visible;
+		display: flex;
+		gap: 16px;
+		justify-content: center;
+		align-items: start;
+		flex-wrap: wrap;
 	}
 	/* recent table scrolls inside its tile instead of breaking the grid */
 	.recentmod .recentfade {
@@ -783,28 +784,6 @@
 	}
 	.rankskel-row .skel {
 		height: 22px;
-	}
-	.empty-card {
-		background: color-mix(in srgb, var(--bg-raised) 72%, transparent);
-		border-radius: 18px;
-		box-shadow: 0 1px 4px rgb(0 0 0 / 0.04);
-		padding: 34px 24px;
-		text-align: center;
-		margin-top: 20px;
-		display: grid;
-		gap: 8px;
-		justify-items: center;
-	}
-	.empty-card-title {
-		font-size: 14px;
-		font-weight: 650;
-	}
-	.empty-card-body {
-		font-size: 12.5px;
-		max-width: 380px;
-	}
-	.empty-card .btn {
-		margin-top: 8px;
 	}
 
 	/* ---- responsive: md ≤900px, sm ≤640px ---- */

@@ -35,13 +35,25 @@ func Open(driver, dsn string) (*SQLStore, error) {
 // Close releases the pool.
 func (s *SQLStore) Close() error { return s.db.Close() }
 
+// userColumns is the full user projection; COALESCE keeps both dialects
+// on plain strings (provider subs are NULL when unlinked).
+const userColumns = `id, handle, display_name, team,
+	COALESCE(email, ''), COALESCE(avatar_url, ''),
+	COALESCE(google_sub, ''), COALESCE(ms_sub, ''),
+	created_at, updated_at`
+
+func scanUser(u *models.User) []any {
+	return []any{&u.ID, &u.Handle, &u.DisplayName, &u.Team,
+		&u.Email, &u.AvatarURL, &u.GoogleSub, &u.MSSub,
+		&u.CreatedAt, &u.UpdatedAt}
+}
+
 // ResolveUser finds the user by normalized handle, creating on first sight.
 // Team/display refresh on every report (latest wins, cheap and truthful).
 func (s *SQLStore) ResolveUser(ctx context.Context, handle, displayName, team string) (models.User, error) {
 	var u models.User
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id, handle, display_name, team, created_at, updated_at FROM users WHERE handle = $1`, handle).Scan(
-		&u.ID, &u.Handle, &u.DisplayName, &u.Team, &u.CreatedAt, &u.UpdatedAt)
+		`SELECT `+userColumns+` FROM users WHERE handle = $1`, handle).Scan(scanUser(&u)...)
 	switch {
 	case err == nil:
 		if u.DisplayName != displayName || u.Team != team {
@@ -68,8 +80,7 @@ func (s *SQLStore) ResolveUser(ctx context.Context, handle, displayName, team st
 		if u.ID != "" {
 			var check models.User
 			if rerr := s.db.QueryRowContext(ctx,
-				`SELECT id, handle, display_name, team, created_at, updated_at FROM users WHERE handle = $1`, handle).Scan(
-				&check.ID, &check.Handle, &check.DisplayName, &check.Team, &check.CreatedAt, &check.UpdatedAt); rerr == nil {
+				`SELECT `+userColumns+` FROM users WHERE handle = $1`, handle).Scan(scanUser(&check)...); rerr == nil {
 				return check, nil
 			}
 		}
@@ -318,4 +329,84 @@ func (s *SQLStore) Cursor(ctx context.Context, dataset, machineID string) (strin
 		return "", nil
 	}
 	return c, err
+}
+
+// BoardTotals aggregates one row per user over a window, optionally scoped
+// to a team slug (membership-gated, not the legacy free-text u.team).
+func (s *SQLStore) BoardTotals(ctx context.Context, team string, since time.Time) ([]BoardRow, error) {
+	return s.boardTotals(ctx, team, since, time.Time{})
+}
+
+// BoardTotalsRange bounds the window above as well (previous-period deltas).
+func (s *SQLStore) BoardTotalsRange(ctx context.Context, team string, since, until time.Time) ([]BoardRow, error) {
+	return s.boardTotals(ctx, team, since, until)
+}
+
+func (s *SQLStore) boardTotals(ctx context.Context, team string, since, until time.Time) ([]BoardRow, error) {
+	query := `
+		SELECT u.id, u.handle, u.display_name, COALESCE(u.avatar_url, ''),
+		       COALESCE(SUM(e.input+e.output+e.reasoning+e.cache_read+e.cache_write),0),
+		       COALESCE(SUM(e.cost),0), COUNT(e.id),
+		       COUNT(DISTINCT e.machine_id)
+		FROM users u LEFT JOIN usage_events e
+		  ON e.user_id = u.id AND e.ts >= $1`
+	args := []any{since.UTC()}
+	if team != "" {
+		query += ` JOIN team_members tm ON tm.team_id = (SELECT id FROM teams WHERE slug = $2) AND tm.user_id = u.id`
+		args = append(args, team)
+	}
+	if !until.IsZero() {
+		query += ` AND e.ts < $` + itoa(len(args)+1)
+		args = append(args, until.UTC())
+	}
+	query += ` GROUP BY u.id, u.handle, u.display_name, u.avatar_url
+		HAVING COUNT(e.id) > 0 ORDER BY 5 DESC`
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []BoardRow
+	for rows.Next() {
+		var b BoardRow
+		if err := rows.Scan(&b.UserID, &b.Handle, &b.DisplayName, &b.AvatarURL,
+			&b.Tokens, &b.Cost, &b.Requests, &b.Machines); err != nil {
+			return nil, err
+		}
+		out = append(out, b)
+	}
+	return out, rows.Err()
+}
+
+// BoardDays returns distinct active UTC days per user handle (bounded), for
+// streak computation in the use case. CAST AS DATE holds on both dialects.
+func (s *SQLStore) BoardDays(ctx context.Context, team string, since time.Time, limitDays int) (map[string][]time.Time, error) {
+	query := `
+		SELECT u.handle, CAST(e.ts AS DATE) AS day
+		FROM usage_events e JOIN users u ON u.id = e.user_id
+		WHERE e.ts >= $1`
+	args := []any{since.UTC()}
+	if team != "" {
+		query += ` AND EXISTS (SELECT 1 FROM team_members tm
+			WHERE tm.team_id = (SELECT id FROM teams WHERE slug = $2) AND tm.user_id = u.id)`
+		args = append(args, team)
+	}
+	query += ` GROUP BY u.handle, CAST(e.ts AS DATE) ORDER BY 1, 2 DESC`
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string][]time.Time{}
+	for rows.Next() {
+		var handle string
+		var day time.Time
+		if err := rows.Scan(&handle, &day); err != nil {
+			return nil, err
+		}
+		if len(out[handle]) < limitDays {
+			out[handle] = append(out[handle], day)
+		}
+	}
+	return out, rows.Err()
 }

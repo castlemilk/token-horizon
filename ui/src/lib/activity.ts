@@ -47,6 +47,39 @@ export async function fetchDailyActivity(days = 365, metered = true): Promise<Da
 	return out;
 }
 
+/** Full local calendar for an arbitrary [fromEpoch, toEpoch) span; zero-filled. */
+export async function fetchDailyActivityRange(
+	fromEpoch: number,
+	toEpoch: number,
+	metered = true
+): Promise<DayActivity[]> {
+	const res = await api.buckets(86400, fromEpoch, metered, '', toEpoch);
+	const byDay = new Map<string, number>();
+	for (const b of res.buckets) {
+		const k = dayKey(b.start);
+		byDay.set(k, (byDay.get(k) ?? 0) + totalTok(b.tokens));
+	}
+	const out: DayActivity[] = [];
+	const start = new Date(fromEpoch * 1000);
+	start.setHours(0, 0, 0, 0);
+	const end = new Date(toEpoch * 1000);
+	end.setHours(0, 0, 0, 0);
+	for (let d = new Date(start); d < end; d = new Date(d.getTime() + 86400000)) {
+		const ts = Math.floor(d.getTime() / 1000);
+		const k = dayKey(ts);
+		out.push({ day: k, ts, tokens: byDay.get(k) ?? 0 });
+	}
+	return out;
+}
+
+/** Local-midnight epoch bounds for a calendar year. */
+export function yearBounds(year: number): [number, number] {
+	const from = new Date(year, 0, 1);
+	from.setHours(0, 0, 0, 0);
+	const to = new Date(year + 1, 0, 1);
+	to.setHours(0, 0, 0, 0);
+	return [Math.floor(from.getTime() / 1000), Math.floor(to.getTime() / 1000)];
+}
 export function activityStats(days: DayActivity[]): ActivityStats {
 	const total = days.reduce((s, d) => s + d.tokens, 0);
 	const peak = days.reduce((m, d) => Math.max(m, d.tokens), 0);

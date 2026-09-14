@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Filled by CI (release-desktop.yml): __VERSION__ / __URL__ / __SHA256__ -->
+<package xmlns="http://schemas.microsoft.com/packaging/2015/06/nuspec.xsd">
+  <metadata>
+    <id>token-horizon</id>
+    <version>__VERSION__</version>
+    <title>Token Horizon</title>
+    <authors>castlemilk</authors>
+    <projectUrl>https://github.com/castlemilk/token-horizon</projectUrl>
+    <description>Local-first AI token usage metering with quota tracking. First launch starts the embedded usage daemon automatically.</description>
+    <tags>ai metering tokens admin</tags>
+  </metadata>
+  <files>
+    <file src="tools\" target="tools" />
+  </files>
+</package>

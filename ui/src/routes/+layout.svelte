@@ -6,10 +6,10 @@
 	import { connection } from '$lib/connection.svelte';
 	import { settings } from '$lib/settings.svelte';
 	import { scope } from '$lib/scope.svelte';
-	import ScopeBanner from '$lib/components/ScopeBanner.svelte';
-	import OSIcon from '$lib/components/OSIcon.svelte';
-	import Onboarding from '$lib/components/Onboarding.svelte';
-	import RingsBackground from '$lib/components/RingsBackground.svelte';
+	import ScopeBanner from '$lib/components/feedback/ScopeBanner.svelte';
+	import OSIcon from '$lib/components/data/OSIcon.svelte';
+	import Onboarding from '$lib/components/feedback/Onboarding.svelte';
+	import RingsBackground from '$lib/components/feedback/RingsBackground.svelte';
 	import { Coins, Trophy, Cpu, Gauge, Settings, PlugZap } from 'lucide-svelte';
 
 	let { children } = $props();

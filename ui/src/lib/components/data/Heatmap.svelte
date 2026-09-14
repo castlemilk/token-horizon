@@ -2,8 +2,21 @@
 	import { fmtTok } from '$lib/format';
 
 	/** GitHub-style daily heatmap: weeks as columns, days Mon–Sun as rows. */
-	let { days, weeks = 53 }: { days: { day: string; ts: number; tokens: number }[]; weeks?: number } =
-		$props();
+	let {
+		days,
+		weeks = 53,
+		highlightFrom,
+		enterStagger = false
+	}: {
+		days: { day: string; ts: number; tokens: number }[];
+		weeks?: number;
+		/** Epoch seconds: cells at/after this render with a ring, marking the
+		 *  range the small widget aggregates (last 90 days). */
+		highlightFrom?: number;
+	/** Entrance cascade for the ringed cells (widget landing). Older cells
+	 *  appear instantly; each newer day pops 18ms after the previous. */
+		enterStagger?: boolean;
+	} = $props();
 
 	const CELL = 11;
 	const GAP = 3;
@@ -30,7 +43,7 @@
 
 	interface Week {
 		month: string;
-		cells: ({ day: string; tokens: number; lvl: number } | null)[];
+		cells: ({ day: string; ts: number; tokens: number; lvl: number } | null)[];
 	}
 
 	// Pad the leading week so rows align Mon–Sun, then chunk into columns.
@@ -38,9 +51,9 @@
 		if (days.length === 0) return [] as Week[];
 		const first = new Date(days[0].ts * 1000);
 		const lead = (first.getDay() + 6) % 7; // Monday-first offset
-		const padded: ({ day: string; tokens: number } | null)[] = [
+		const padded: ({ day: string; ts: number; tokens: number } | null)[] = [
 			...Array<null>(lead).fill(null),
-			...days.map((d) => ({ day: d.day, tokens: d.tokens }))
+			...days.map((d) => ({ day: d.day, ts: d.ts, tokens: d.tokens }))
 		];
 		const cols: Week[] = [];
 		let prevMonth = '';
@@ -56,7 +69,7 @@
 			cols.push({
 				month: show,
 				cells: chunk.map((c) =>
-					c ? { day: c.day, tokens: c.tokens, lvl: level(c.tokens, max) } : null
+					c ? { day: c.day, ts: c.ts, tokens: c.tokens, lvl: level(c.tokens, max) } : null
 				)
 			});
 		}
@@ -70,6 +83,12 @@
 			day: 'numeric',
 			year: 'numeric'
 		});
+
+	/** Day offset inside the ringed range, for the landing stagger. */
+	function dayOffset(ts: number): number {
+		if (highlightFrom == null) return 0;
+		return Math.max(0, Math.floor((ts - highlightFrom) / 86400));
+	}
 </script>
 
 <div class="heatmap" bind:clientWidth={avail} style:--cell="{CELL}px" style:--gap="{GAP}px" style:--heat={HEAT}>
@@ -79,8 +98,13 @@
 				<span class="month">{week.month}</span>
 				{#each week.cells as cell}
 					{#if cell}
+						{@const inRange = highlightFrom != null && cell.ts >= highlightFrom}
 						<span
 							class="cell lvl-{cell.lvl}"
+							class:hl={inRange}
+							class:enter={enterStagger}
+							data-ts={cell.ts}
+							style={enterStagger && inRange ? `animation-delay: ${60 + Math.min(dayOffset(cell.ts), 40) * 18}ms` : ''}
 							title="{fmtDay(cell.day)} — {cell.tokens > 0 ? fmtTok(cell.tokens) + ' tokens' : 'no activity'}"
 						></span>
 					{:else}
@@ -141,6 +165,21 @@
 	.lvl-2 { background: color-mix(in srgb, var(--heat) 60%, var(--track)); }
 	.lvl-3 { background: color-mix(in srgb, var(--heat) 82%, var(--track)); }
 	.lvl-4 { background: var(--heat); }
+	/* ring marks the trailing range the small widget aggregates */
+	.cell.hl {
+		box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--heat) 70%, transparent);
+	}
+	/* landing cascade: cells pop as the flying tile dots arrive */
+	.cell.enter {
+		animation: cellin 0.45s cubic-bezier(0.2, 0.9, 0.3, 1.25) backwards;
+	}
+	@keyframes cellin {
+		from { transform: scale(0.2); opacity: 0; }
+		to { transform: scale(1); opacity: 1; }
+	}
+	@media (prefers-reduced-motion: reduce) {
+		.cell.enter { animation: none; }
+	}
 	.legend {
 		display: flex;
 		align-items: center;

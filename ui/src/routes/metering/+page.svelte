@@ -3,11 +3,13 @@
 	import { api, type RuntimeInfo, type Meters } from '$lib/api';
 	import { connection } from '$lib/connection.svelte';
 	import { fmtBytes, fmtTps, poll } from '$lib/format';
-	import Sparkline from '$lib/components/Sparkline.svelte';
-	import ProviderIcon from '$lib/components/ProviderIcon.svelte';
-	import CountUp from '$lib/components/CountUp.svelte';
+	import Sparkline from '$lib/components/data/Sparkline.svelte';
+	import ProviderIcon from '$lib/components/data/ProviderIcon.svelte';
+	import CountUp from '$lib/components/data/CountUp.svelte';
 	import { Switch } from '$lib/components/ui/switch/index.js';
+	import CopyField from '$lib/components/common/CopyField.svelte';
 	import { TOOL_ROUTES, agentBrief, copyText } from '$lib/routing';
+
 	import { apiBase } from '$lib/api';
 	import type { ConsentState, ServiceStatus } from '$lib/api';
 
@@ -331,12 +333,7 @@
 					but their usage is invisible. The app keeps trying the original
 					address below; start the daemon, then it reconnects on its own.
 				</div>
-				<div class="rrow">
-					<code class="cmd">{apiBase()}</code>
-					<button class="btn" onclick={() => copy(apiBase(), 'api-base')}>
-						{copied === 'api-base' ? 'Copied' : 'Copy URL'}
-					</button>
-				</div>
+				<CopyField text={apiBase()} label="Copy URL" />
 				{#if service?.supported}
 					<div class="rrow">
 						<button class="btn" onclick={() => void installSvc()}>
@@ -380,18 +377,10 @@
 					{t.tool}{#if live}<span class="ok"> · meter live</span>{:else}<span class="faint"> · meter off</span>{/if}
 				</div>
 				<div class="dim rbody">Use it — point {t.tool} here:</div>
-				<div class="rrow">
-					<code class="cmd">{loopback}</code>
-					<button class="btn" onclick={() => copy(loopback, `tool-use-${t.tool}`)}>
-						{copied === `tool-use-${t.tool}` ? 'Copied' : 'Copy'}
-					</button>
-				</div>
+				<CopyField text={loopback} />
 				<div class="dim rbody" style="margin-top: 10px">If the meter fails, connect {t.tool} back here:</div>
+				<CopyField text={t.upstream} />
 				<div class="rrow">
-					<code class="cmd">{t.upstream}</code>
-					<button class="btn" onclick={() => copy(t.upstream, `tool-back-${t.tool}`)}>
-						{copied === `tool-back-${t.tool}` ? 'Copied' : 'Copy'}
-					</button>
 					<button
 						class="btn"
 						title="Copy paste-ready instructions for a coding agent"
@@ -416,28 +405,15 @@
 							: `measuring · ${seen} seen · ${measured} recorded`}
 				</div>
 				<div class="dim rbody">Use it — point the client here (forwards byte-identical upstream):</div>
-				<div class="rrow">
-					<code class="cmd">{loopback}</code>
-					<button class="btn" onclick={() => copy(loopback, `use-${m.vendor}`)}>
-						{copied === `use-${m.vendor}` ? 'Copied' : 'Copy'}
-					</button>
-				</div>
+				<CopyField text={loopback} />
 				<div class="dim rbody" style="margin-top: 10px">
 					If this meter fails, connect back to the original upstream so work continues unmeasured:
 				</div>
-				<div class="rrow">
-					<code class="cmd">{m.target}</code>
-					<button class="btn" onclick={() => copy(m.target, `bypass-${m.vendor}`)}>
-						{copied === `bypass-${m.vendor}` ? 'Copied' : 'Copy'}
-					</button>
-				</div>
+				<CopyField text={m.target} />
 				{#if seen === 0}
 					<div class="dim rbody" style="margin-top: 10px">{hint.body}</div>
+					<CopyField text={hint.cmd} />
 					<div class="rrow">
-						<code class="cmd">{hint.cmd}</code>
-						<button class="btn" onclick={() => copy(hint.cmd, `route-${m.vendor}`)}>
-							{copied === `route-${m.vendor}` ? 'Copied' : 'Copy'}
-						</button>
 						<button
 							class="btn"
 							title="Copy paste-ready instructions for a coding agent"

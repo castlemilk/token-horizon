@@ -40,6 +40,31 @@ Identity envelope on every push (see `CloudSchema` + `MachineIdentity`):
 | `GET` | `/v1/machines?handle=` | the user's device fleet |
 | `GET` | `/healthz` | unauthenticated liveness |
 
+## Identity (Google / Microsoft login, profiles, teams)
+
+Desktop login is a browser dance bridged with claim tickets: the app opens
+`GET /v1/auth/{google,microsoft}/login` externally, the provider calls back
+to the server, and the app polls `POST /v1/auth/claim {state}` (202 =
+still open, 200 = `{token, user}`, 410 = burned). Sessions are opaque
+30-day bearer tokens (sha256 stored).
+
+| Method | Path | Notes |
+|---|---|---|
+| `GET` | `/v1/auth/{google,microsoft}/login` | `{url, state}` (public) |
+| `GET` | `/v1/auth/{google,microsoft}/callback` | provider redirect target, HTML landing |
+| `POST` | `/v1/auth/claim` | burn ticket → `{token, user}` |
+| `POST` | `/v1/auth/logout` | revoke session |
+| `GET`/`PATCH` | `/v1/users/me` | profile read / display-name + handle edit (409 on taken) |
+| `POST` | `/v1/users/me/avatar` | multipart webp/png/jpeg ≤2MB → stored, profile pointed |
+| `GET` | `/v1/avatars/{userID}` | public bytes (no auth, for `<img>`) |
+| `POST`/`GET` | `/v1/teams`, `/v1/teams/join`, `/v1/teams/{id}/leave` | create (owner), list mine, join by code, leave (empties prune) |
+| `POST`/`GET` | `/v1/teams/{id}/groups`, `/v1/groups/join`, `/v1/groups/{id}/leave` | team-scoped groups, same invite-code pattern |
+
+Env additions: `TH_SERVER_PUBLIC_URL` (OAuth callback base),
+`GOOGLE_CLIENT_ID/SECRET`, `MS_CLIENT_ID/SECRET`, `TH_SERVER_DATA`
+(avatar dir). User routes need a session bearer; ingest keeps accepting
+the service `TH_SYNC_TOKEN`.
+
 Point a daemon at it: `TH_SYNC_URL=http://host:8080` (+ `TH_SYNC_HANDLE`,
 `TH_SYNC_TEAM`). Event UUIDs make redelivery a no-op; limit snapshots dedup
 on `(machine, provider, account, label, minute)`.

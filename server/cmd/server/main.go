@@ -7,6 +7,11 @@
 //	TH_SERVER_DRIVER database driver: postgres (default) or duckdb
 //	                 (duckdb needs -tags duckdb at build time)
 //	TH_SYNC_TOKEN    shared bearer token (empty = open, local dev only)
+//	TH_SERVER_PUBLIC_URL public base URL for OAuth callbacks
+//	                 (default http://localhost:8080)
+//	GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET — Google login
+//	MS_CLIENT_ID / MS_CLIENT_SECRET         — Microsoft login
+//	TH_SERVER_DATA   avatar storage dir (default ./data)
 //
 // The schema must exist first: go run ./cmd/migrate --driver … --dsn …
 // Point a daemon at it with TH_SYNC_URL=http://host:8080.
@@ -47,7 +52,28 @@ func main() {
 
 	ingest := usecases.Ingest{Store: st}
 	sync := usecases.Sync{Store: st}
-	srv := &api.Server{Ingest: ingest, Sync: sync, Token: os.Getenv("TH_SYNC_TOKEN"), Log: logger}
+	board := &usecases.Leaderboard{Store: st}
+	authCfg := usecases.AuthConfig{
+		Google: usecases.OAuthConfig{
+			ClientID:     os.Getenv("GOOGLE_CLIENT_ID"),
+			ClientSecret: os.Getenv("GOOGLE_CLIENT_SECRET"),
+		},
+		Microsoft: usecases.OAuthConfig{
+			ClientID:     os.Getenv("MS_CLIENT_ID"),
+			ClientSecret: os.Getenv("MS_CLIENT_SECRET"),
+		},
+		PublicURL: getenv("TH_SERVER_PUBLIC_URL", "http://localhost:8080"),
+	}
+	auth := usecases.Auth{Store: st, Config: authCfg}
+	dataDir := getenv("TH_SERVER_DATA", "./data")
+	srv := &api.Server{
+		Ingest: ingest, Sync: sync, Board: board, AuthN: auth, Token: os.Getenv("TH_SYNC_TOKEN"), Log: logger,
+		AuthRoutes: &api.Auth{
+			Use: auth, Acct: usecases.Account{Store: st}, Team: usecases.Teams{Store: st},
+			AvatarDir:     dataDir + "/avatars",
+			AvatarURLBase: "/v1/avatars",
+		},
+	}
 	if srv.Token == "" {
 		logger.Print("WARNING: TH_SYNC_TOKEN unset — API is open")
 	}
