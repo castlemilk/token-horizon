@@ -1887,7 +1887,7 @@ export default {
     const modelsTab = searchParams.get("tab");
     if ((pathname === "/leaderboard" || pathname === "/leaderboard.html")
         && searchParams.get("view") === "models"
-        && modelsTab !== "providers" && modelsTab !== "plans") {
+        && !["providers", "plans", "cheapest"].includes(modelsTab)) {
       const canonical = new URL(request.url);
       canonical.pathname = "/models";
       canonical.searchParams.delete("view");

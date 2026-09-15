@@ -807,6 +807,8 @@ describe('Cloudflare Worker API', () => {
     assert.notEqual(providers.status, 302);
     const plans = await worker.fetch(req('/leaderboard?view=models&tab=plans'), env);
     assert.notEqual(plans.status, 302);
+    const cheapest = await worker.fetch(req('/leaderboard?view=models&tab=cheapest'), env);
+    assert.notEqual(cheapest.status, 302);
     // Trailing slash canonicalizes so relative asset paths keep working.
     const slash = await worker.fetch(req('/models/?provider=deepseek'), env);
     assert.equal(slash.status, 301);

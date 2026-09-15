@@ -105,6 +105,7 @@ const sam = entry('samrivera', { isLocal: false, league: 'master', division: 2, 
 // --- Model explorer fixtures (static catalog + adoption rollup) --------------
 const MX_PROVIDERS = [['anthropic', 'Anthropic'], ['openai', 'OpenAI'], ['google', 'Google'], ['deepseek', 'DeepSeek'], ['qwen', 'Alibaba Cloud'], ['local', 'Ollama (Local)']];
 const MX_FLAGSHIP = {
+  priceFrom: 2.65, priceFromProvider: 'openrouter', priceFromOutputPerM: 13.28, listingCount: 4,
   name: 'Claude Opus 5', category: 'frontier', contextK: 1000, isLocal: false, isFree: false,
   netSavingsPercent: 27, perfScore: 78, capabilities: { reasoning: true, toolCall: true, vision: true, openWeights: false },
   benchmarks: { swe: 82, lcb: 79, source: 'test' }, description: 'Flagship coding model.'
@@ -930,7 +931,36 @@ async function run() {
   await page.waitForSelector('#mx-rows .mx-row', { timeout: 15000 });
   console.log(`   plans=${planView.cards} tiers=${planView.tiers} filter=${planFilter.total} models · flat toggle ok`);
 
-  console.log('17. Checking console errors...');
+  console.log('17. Cheapest inference leaderboard...');
+  await page.goto(filePath + '?view=models&tab=cheapest');
+  await page.waitForSelector('.mx-cheap-table tbody tr', { timeout: 15000 });
+  const cheap = await page.evaluate(() => ({
+    title: document.querySelector('#view h1')?.textContent || '',
+    rows: document.querySelectorAll('.mx-cheap-table tbody tr').length,
+    kpis: [...document.querySelectorAll('.kpi-label')].map(e => e.textContent.trim()),
+    savings: [...document.querySelectorAll('.mx-cheap-table tbody .chip')].map(e => e.textContent.trim()),
+    listers: document.querySelectorAll('.mx-user-row').length,
+    headers: [...document.querySelectorAll('#mx-cheap-head th')].map(e => e.dataset.cheapSort)
+  }));
+  if (!/Cheapest Inference/.test(cheap.title) || !cheap.rows || cheap.listers < 1) {
+    throw new Error(`Cheapest view wrong: ${JSON.stringify(cheap)}`);
+  }
+  if (!cheap.headers.includes('bestIn') || !cheap.headers.includes('savings')) {
+    throw new Error(`Cheapest headers missing: ${JSON.stringify(cheap.headers)}`);
+  }
+  // Header click re-sorts without losing the view.
+  await page.click('#mx-cheap-head th[data-cheap-sort="bestIn"]');
+  await page.waitForTimeout(250);
+  const sorted = await page.evaluate(() => [...document.querySelectorAll('#mx-cheap-table tbody tr, .mx-cheap-table tbody tr')].map(tr => tr.querySelector('.num.right')?.textContent));
+  if (!sorted.length) throw new Error('Cheapest sort did not re-render rows');
+  // Row opens the model drawer (drawer may be created lazily on this tab).
+  await page.locator('.mx-cheap-table tbody tr').first().click();
+  await page.waitForSelector('#mx-drawer.open', { timeout: 10000 });
+  await page.keyboard.press('Escape');
+  console.log(`   rows=${cheap.rows} listers=${cheap.listers} savings=${cheap.savings.slice(0, 2).join(',')}`);
+  await page.evaluate(() => navigate('models'));
+
+  console.log('18. Checking console errors...');
   const realErrors = errors.filter(e =>
     !e.includes('favicon.ico') &&
     !e.includes('accounts.google.com') &&

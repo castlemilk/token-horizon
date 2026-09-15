@@ -362,6 +362,16 @@ tbody tr.selected{background:rgba(79,140,255,.08)}
 body.th-flat .mx-head-row{padding:0 18px;gap:16px}
 body.th-flat .mx-head-row .mx-stats{gap:26px}
 body.th-flat .mx-head-row .mx-flat-score{width:34px}
+/* Cheapest inference table */
+.mx-cheap-table{width:100%;border-collapse:collapse}
+.mx-cheap-table th{position:sticky;top:0;background:var(--panel);z-index:1;text-align:left;color:var(--faint);font-weight:600;font-size:10px;letter-spacing:.8px;text-transform:uppercase;padding:9px 10px;border-bottom:1px solid var(--line);cursor:pointer;white-space:nowrap;user-select:none}
+.mx-cheap-table th:hover{color:var(--text)}
+.mx-cheap-table th.right{text-align:right}
+.mx-cheap-table td{padding:9px 10px;border-bottom:1px solid rgba(30,38,53,.55);font-size:12.5px;vertical-align:middle}
+.mx-cheap-table tbody tr{cursor:pointer}
+.mx-cheap-table tbody tr:hover{background:rgba(255,255,255,.02)}
+.mx-cheap-table .user-cell{display:flex;align-items:center;gap:8px;min-width:0}
+.mx-cheap-table .user-cell .name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600}
 /* Plan cards (subscription offerings) */
 .mx-plan-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(340px,100%),1fr));gap:16px}
 .mx-plan-card{background:linear-gradient(180deg,var(--panel),#0D121C);border:1px solid var(--line);border-radius:var(--radius);padding:16px;display:flex;flex-direction:column;gap:10px}
@@ -878,7 +888,12 @@ const BRAND_ASSETS = {
 };
 function providerLogo(provider, size = 18, model = "") {
   const key = providerKey(provider, model);
-  const brand = PROVIDER_BRANDS[key] || PROVIDER_BRANDS.other;
+  // Unknown gateways get their own monogram instead of a generic "?" so the
+  // price leaderboard stays scannable.
+  const monogram = String(provider || "").replace(/[^a-z0-9]/gi, "").slice(0, 2).toUpperCase() || "?";
+  const brand = key === "other"
+    ? { ...PROVIDER_BRANDS.other, text: monogram }
+    : (PROVIDER_BRANDS[key] || PROVIDER_BRANDS.other);
   const asset = BRAND_ASSETS[key];
   const glyph = brandGlyphSvg(brand, size);
   const img = asset
@@ -1548,7 +1563,7 @@ function navigate(view, opts = {}) {
 window.addEventListener("popstate", () => {
   const p = new URLSearchParams(location.search);
   state.view = p.get("view") || (/^\/models\/?$/.test(location.pathname) ? "models" : "leaderboard");
-  state.modelsTab = ["providers", "plans"].includes(p.get("tab")) ? p.get("tab") : "explorer";
+  state.modelsTab = ["providers", "plans", "cheapest"].includes(p.get("tab")) ? p.get("tab") : "explorer";
   const u = p.get("user");
   if (u) state.currentHandle = u;
   if (p.get("model")) mxState().pendingModel = p.get("model");
@@ -3063,7 +3078,7 @@ function mxTabHtml(id, label) {
   return `<div class="tab ${(state.modelsTab || "explorer") === id ? "active" : ""}" data-models-tab="${id}" tabindex="0" role="tab" aria-selected="${(state.modelsTab || "explorer") === id}">${label}</div>`;
 }
 function mxTabBarHtml() {
-  return `<div class="tabs" style="margin-bottom:18px">${mxTabHtml("explorer", "Explorer")}${mxTabHtml("providers", "Providers")}${mxTabHtml("plans", "Plans")}</div>`;
+  return `<div class="tabs" style="margin-bottom:18px">${mxTabHtml("explorer", "Explorer")}${mxTabHtml("cheapest", "Cheapest")}${mxTabHtml("providers", "Providers")}${mxTabHtml("plans", "Plans")}</div>`;
 }
 function mxWireTabs() {
   $$("[data-models-tab]").forEach(el => {
@@ -3112,6 +3127,7 @@ function mxShellHtml() {
         ${providers.map(p => `<option value="${esc(p.key)}" ${mx.provider === p.key ? "selected" : ""}>${esc(p.label)} (${p.count.toLocaleString()})</option>`).join("")}
       </select>
       ${mx.planFilter ? `<span class="mx-chip active">Plan · ${esc(mxPlanName(mx.planFilter))}<span class="n" data-plan-clear="1" style="cursor:pointer" title="Clear plan filter">✕</span></span>` : ""}
+      ${flat ? `<button class="mx-chip" id="mx-cheapest-toggle" type="button" title="Best price per model across provider listings">Cheapest</button>` : ""}
       ${flat ? `<button class="mx-chip ${state.modelsTab === "plans" ? "active" : ""}" id="mx-plans-toggle" type="button" title="Show subscription plans and their usage tiers">Plans</button>` : ""}
       <button class="mx-chip ${mx.primary ? "active" : ""}" id="mx-primary" type="button" title="Collapse reseller/gateway duplicates of the same model into one unified listing">
         Unified <span class="n" id="mx-primary-n">${mx.primaryHidden.toLocaleString()} hidden</span>
@@ -3212,8 +3228,17 @@ function mxRenderList(force) {
   rowsEl.style.transform = `translateY(${start * h}px)`;
   rowsEl.innerHTML = mx.filtered.slice(start, end).map(mxRowHtml).join("");
 }
+/// The drawer lives in body and is normally created by mxWire; landing directly
+/// on a non-explorer tab (cheapest/plans) can call mxOpen before that.
+function mxEnsureDrawer() {
+  if ($("#mx-backdrop")) return;
+  document.body.insertAdjacentHTML("beforeend",
+    `<div class="mx-drawer-backdrop" id="mx-backdrop"></div><aside class="mx-drawer" id="mx-drawer" role="dialog" aria-modal="true" aria-label="Model details"></aside>`);
+  $("#mx-backdrop").onclick = mxClose;
+}
 function mxOpen(id, providerHint) {
   const mx = mxState();
+  mxEnsureDrawer();
   const m = mxFindModel(id, providerHint || mx.pendingProvider);
   mx.pendingProvider = "";
   if (!m) {
@@ -3487,6 +3512,166 @@ async function renderPlansTab() {
   if (back) back.onclick = () => { state.modelsTab = "explorer"; render(); };
 }
 
+/* ---------- Cheapest inference (from the listing spread we already track) ---------- */
+function mxCheapestRows() {
+  const mx = mxState();
+  if (mx.cheapestStamp === mx.models.length + ":" + mx.primary) return mx.cheapest || [];
+  const rows = [];
+  for (const m of mxBase()) {
+    const directIn = mxPriceKnown(m) ? (Number(m.inputPerM) || 0) : null;
+    const directOut = mxPriceKnown(m) ? (Number(m.outputPerM) || 0) : null;
+    const bestIn = Number(m.priceFrom) > 0 ? Number(m.priceFrom) : (directIn > 0 ? directIn : null);
+    const bestOut = Number(m.priceFromOutputPerM) > 0
+      ? Number(m.priceFromOutputPerM)
+      : (bestIn != null ? directOut : null);
+    if (!(bestIn > 0)) continue;
+    const savings = directIn && directIn > 0 && bestIn < directIn
+      ? Math.round((1 - bestIn / directIn) * 100)
+      : null;
+    rows.push({
+      m,
+      bestIn,
+      bestOut,
+      directIn,
+      directOut,
+      savings,
+      via: m.priceFromProvider || m.provider,
+      listings: Number(m.listingCount) || 1,
+      perf: m.perfScore != null ? Number(m.perfScore) : null
+    });
+  }
+  mx.cheapest = rows;
+  mx.cheapestStamp = mx.models.length + ":" + mx.primary;
+  return rows;
+}
+function mxCheapestLeaders(rows) {
+  const map = new Map();
+  for (const r of rows) {
+    if (r.via === r.m.provider && !r.m.priceFromProvider) continue;
+    const cur = map.get(r.via) || { provider: r.via, count: 0, savings: [] };
+    cur.count += 1;
+    if (r.savings != null) cur.savings.push(r.savings);
+    map.set(r.via, cur);
+  }
+  return [...map.values()].map(l => ({
+    ...l,
+    avgSavings: l.savings.length ? Math.round(l.savings.reduce((a, b) => a + b, 0) / l.savings.length) : null
+  })).sort((a, b) => b.count - a.count || (b.avgSavings || 0) - (a.avgSavings || 0));
+}
+async function renderCheapestTab() {
+  const mx = mxState();
+  await mxLoad();
+  const flat = state.flatModels;
+  const all = mxCheapestRows();
+  const rows = all.slice().sort(mxCheapestComparator());
+  const leaders = mxCheapestLeaders(all);
+  const cheapest = all.reduce((best, r) => (best == null || r.bestIn < best.bestIn ? r : best), null);
+  const biggest = all.reduce((best, r) => (r.savings != null && (best == null || r.savings > best.savings) ? r : best), null);
+  const totalListings = all.reduce((s, r) => s + r.listings, 0);
+  $("#view").innerHTML = pageHead(["Analytics", "Models"], "Cheapest Inference",
+      "Best price per model across every provider listing we track, with the discount against the direct rate.",
+      `${all.length} priced families · ${totalListings} listings`)
+    + (flat ? `<div class="mx-chips" style="margin-bottom:14px"><button class="mx-chip" type="button" id="mx-back-models">← Models</button></div>`
+            : mxTabBarHtml())
+    + `<div class="grid kpis" style="margin-bottom:16px">
+        ${kpiCard("Priced Families", all.length.toLocaleString(), `${totalListings.toLocaleString()} provider listings`, ICONS.tokens)}
+        ${kpiCard("Cheapest Input", cheapest ? mxCostText(cheapest.bestIn) : "—", cheapest ? `${esc(cheapest.m.name)} via ${esc(providerLabel(cheapest.via))}` : "", ICONS.bolt)}
+        ${kpiCard("Biggest Discount", biggest ? "-" + biggest.savings + "%" : "—", biggest ? `${esc(biggest.m.name)} via ${esc(providerLabel(biggest.via))}` : "", ICONS.cost)}
+        ${kpiCard("Price Leaders", leaders.length.toLocaleString(), leaders[0] ? `${providerLabel(leaders[0].provider)} leads (${leaders[0].count})` : "", ICONS.rank)}
+      </div>
+      <div class="two-col top">
+        <div class="card mx-cheap-card" style="padding:0;overflow:hidden">
+          <div class="card-head" style="padding:16px 16px 8px"><h3>Best Price by Model</h3><span class="sub">click a header to sort · click a row for details</span></div>
+          <div style="overflow-x:auto;max-height:min(70vh,880px);overflow-y:auto">
+            <table class="mx-cheap-table">
+              <thead id="mx-cheap-head"><tr>
+                ${mxCheapHeadCell("name", "Model", "")}
+                ${mxCheapHeadCell("bestIn", "Best in", "right")}
+                ${mxCheapHeadCell("bestOut", "Best out", "right")}
+                ${mxCheapHeadCell("via", "Via", "")}
+                ${mxCheapHeadCell("savings", "vs direct", "right")}
+                ${mxCheapHeadCell("listings", "Listings", "right")}
+                ${mxCheapHeadCell("perf", "Perf", "right")}
+              </tr></thead>
+              <tbody>
+                ${rows.map(mxCheapRowHtml).join("") || '<tr><td colspan="7"><div class="empty">No published prices yet.</div></td></tr>'}
+              </tbody>
+            </table>
+          </div>
+        </div>
+        <div class="card"><div class="card-head"><h3>Price Leaders</h3><span class="sub">cheapest listing count</span></div>
+          ${leaders.slice(0, 10).map(l => `<div class="mx-user-row" style="cursor:default">
+            ${providerLogo(l.provider, 22, l.provider)}
+            <span class="u">${esc(providerLabel(l.provider))}</span>
+            <span class="t">${l.count.toLocaleString()}${l.avgSavings != null ? ` · -${l.avgSavings}%` : ""}</span>
+          </div>`).join("") || '<div class="empty" style="padding:10px">No gateway listings yet.</div>'}
+          <div class="mini" style="margin-top:10px">Leaders are the cheapest <em>known</em> listing for a model family, aggregated across ${all.length.toLocaleString()} families.</div>
+        </div>
+      </div>`;
+  if (!flat) mxWireTabs();
+  const back = $("#mx-back-models");
+  if (back) back.onclick = () => { state.modelsTab = "explorer"; render(); };
+  const head = $("#mx-cheap-head");
+  if (head) {
+    head.addEventListener("click", (e) => {
+      const cell = e.target.closest("[data-cheap-sort]");
+      if (!cell) return;
+      const key = cell.dataset.cheapSort;
+      const cur = state.cheapSort || { key: "bestIn", dir: 1 };
+      state.cheapSort = { key, dir: cur.key === key ? -cur.dir : (key === "name" ? 1 : -1) };
+      renderCheapestTab();
+    });
+  }
+  $$("#view .mx-cheap-table tbody tr[data-cheap-id]").forEach(tr => {
+    tr.tabIndex = 0;
+    tr.setAttribute("role", "button");
+    const open = () => mxOpen(tr.dataset.cheapId);
+    tr.onclick = open;
+    keyActivate(tr, open);
+  });
+}
+function mxCheapHeadCell(key, label, cls) {
+  const sort = state.cheapSort || { key: "bestIn", dir: 1 };
+  const ind = sort.key === key ? (sort.dir > 0 ? " ▴" : " ▾") : "";
+  return `<th class="mx-cheap-cell ${cls}" data-cheap-sort="${key}" scope="col">${label}${ind}</th>`;
+}
+function mxCheapestComparator() {
+  const sort = state.cheapSort || { key: "bestIn", dir: 1 };
+  const val = (r) => {
+    switch (sort.key) {
+      case "name": return String(r.m.name).toLowerCase();
+      case "bestOut": return r.bestOut != null ? r.bestOut : Infinity;
+      case "via": return String(providerLabel(r.via)).toLowerCase();
+      case "savings": return r.savings != null ? r.savings : -1;
+      case "listings": return r.listings;
+      case "perf": return r.perf != null ? r.perf : -1;
+      default: return r.bestIn;
+    }
+  };
+  return (a, b) => {
+    const av = val(a), bv = val(b);
+    if (typeof av === "string" || typeof bv === "string") {
+      return sort.dir * String(av).localeCompare(String(bv));
+    }
+    if (av !== bv) return sort.dir * (av - bv);
+    return String(a.m.name).localeCompare(String(b.m.name));
+  };
+}
+function mxCheapRowHtml(r) {
+  const save = r.savings != null
+    ? `<span class="chip ${r.savings >= 50 ? "green" : r.savings >= 20 ? "orange" : ""}" title="Cheapest listing vs the direct rate">-${r.savings}%</span>`
+    : `<span class="faint">—</span>`;
+  return `<tr data-cheap-id="${esc(r.m.id)}">
+    <td><div class="user-cell">${providerLogo(r.m.provider, 22, r.m.id)}<span class="name" title="${esc(r.m.id)}">${esc(r.m.name)}</span></div></td>
+    <td class="num right">${mxCostText(r.bestIn)}</td>
+    <td class="num right">${r.bestOut != null ? mxCostText(r.bestOut) : "—"}</td>
+    <td><span class="chip logo-chip" style="font-size:11px">${providerLogo(r.via, 13, r.via)}${esc(providerLabel(r.via))}</span></td>
+    <td class="right">${save}</td>
+    <td class="num right">${r.listings.toLocaleString()}</td>
+    <td class="num right">${r.perf != null ? Math.round(r.perf) : "—"}</td>
+  </tr>`;
+}
+
 /* ---------- explorer mounting ---------- */
 async function renderModels() {
   const mx = mxState();
@@ -3498,6 +3683,11 @@ async function renderModels() {
   if (state.modelsTab === "plans") {
     mx.mounted = false;
     await renderPlansTab();
+    return;
+  }
+  if (state.modelsTab === "cheapest") {
+    mx.mounted = false;
+    await renderCheapestTab();
     return;
   }
   await mxLoad();
@@ -3584,6 +3774,8 @@ function mxWire() {
   };
   const plansToggle = $("#mx-plans-toggle");
   if (plansToggle) plansToggle.onclick = () => { state.modelsTab = "plans"; render(); };
+  const cheapestToggle = $("#mx-cheapest-toggle");
+  if (cheapestToggle) cheapestToggle.onclick = () => { state.modelsTab = "cheapest"; render(); };
   const planClear = $("[data-plan-clear]");
   if (planClear) planClear.onclick = () => {
     mx.planFilter = "";
@@ -3655,11 +3847,7 @@ function mxWire() {
   });
   const retry = $("#mx-retry");
   if (retry) retry.onclick = () => { state.mx = null; render(); };
-  if (!$("#mx-backdrop")) {
-    document.body.insertAdjacentHTML("beforeend",
-      `<div class="mx-drawer-backdrop" id="mx-backdrop"></div><aside class="mx-drawer" id="mx-drawer" role="dialog" aria-modal="true" aria-label="Model details"></aside>`);
-    $("#mx-backdrop").onclick = mxClose;
-  }
+  mxEnsureDrawer();
 }
 
 window.addEventListener("keydown", (e) => {
@@ -4668,7 +4856,7 @@ async function init() {
   // Dedicated /models route: the worker serves the SPA asset with an internal
   // ?view=models rewrite, so the browser URL has no query — derive it here.
   if (/^\/models\/?$/.test(location.pathname)) state.view = "models";
-  state.modelsTab = ["providers", "plans"].includes(params.get("tab")) ? params.get("tab") : "explorer";
+  state.modelsTab = ["providers", "plans", "cheapest"].includes(params.get("tab")) ? params.get("tab") : "explorer";
   // Flat catalog page: no dashboard chrome — just a searchable model list.
   state.flatModels = /^\/models\/?$/.test(location.pathname) || params.get("flat") === "1";
   if (state.flatModels) {
