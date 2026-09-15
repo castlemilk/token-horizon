@@ -115,3 +115,25 @@ export function spawnClones(pairs: DotPair[]): HTMLSpanElement[] {
 	document.body.appendChild(layer);
 	return clones;
 }
+
+/** Resolve when an element's rect holds still (auto-fitting content,
+ *  fonts settling). Guarantees measured end boxes are final. */
+export function rectSettled(el: () => Element | null, maxFrames = 12): Promise<void> {
+	return new Promise((resolve) => {
+		let last = '';
+		let steady = 0;
+		let n = 0;
+		const sample = () => {
+			n++;
+			const r = el()?.getBoundingClientRect();
+			const key = r
+				? `${r.x.toFixed(1)},${r.y.toFixed(1)},${r.width.toFixed(1)},${r.height.toFixed(1)}`
+				: 'null';
+			steady = key === last ? steady + 1 : 0;
+			last = key;
+			if (steady >= 1 || n >= maxFrames) resolve();
+			else requestAnimationFrame(sample);
+		};
+		requestAnimationFrame(sample);
+	});
+}

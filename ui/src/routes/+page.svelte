@@ -7,6 +7,7 @@
 	import { settings } from '$lib/settings.svelte';
 	import { scope } from '$lib/scope.svelte';
 	import HeatmapWidget from '$lib/components/widgets/HeatmapWidget.svelte';
+	import CountersWidget from '$lib/components/widgets/CountersWidget.svelte';
 	import VBars from '$lib/components/data/VBars.svelte';
 	import ProviderIcon from '$lib/components/data/ProviderIcon.svelte';
 	import CountUp from '$lib/components/data/CountUp.svelte';
@@ -369,6 +370,13 @@
 		<HeatmapWidget {days} variant="medium" />
 	{:else}
 		<div class="empty">…</div>
+	{/if}
+</section>
+
+<section class="mod heatmod widget-cell">
+	{#if summaryAll.length > 0}
+		<CountersWidget providers={summaryAll} variant="small" />
+		<CountersWidget providers={summaryAll} variant="medium" />
 	{/if}
 </section>
 

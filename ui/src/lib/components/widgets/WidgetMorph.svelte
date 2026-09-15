@@ -67,6 +67,13 @@
 		ghost: HTMLElement | null;
 	}
 
+	/** A travel endpoint: stable key + live element. Shell matches
+	 *  from↔to by key, so tile and modal orderings may differ. */
+	export interface TravelMark {
+		key: string;
+		el: Element | null;
+	}
+
 	/** One box-shadow layer as numbers: lengths interpolate, then divide
 	 *  by the live scale each frame; color held constant (tile side). */
 	interface ShadowLayer {
@@ -212,13 +219,13 @@
 		/** Return flight maps home (trailing content the tile can
 		 *  claim)? False → plain fade, never a fake flight. */
 		closeable: () => boolean;
-		/** Travel endpoints, measured live, zipped by index. Split in two
+		/** Travel endpoints, measured live, matched by key. Split in two
 		 *  because open mounts its targets after the sources are gone:
 		 *  `travelFrom` reads sources pre-swap, `travelTo` reads targets
-		 *  post-mount (open) or live (close). Nulls/length mismatch fall
-		 *  back to a plain fade, never a half flight. */
-		travelFrom: (dir: 'open' | 'close', roots: TravelRoots) => (Element | null)[] | null;
-		travelTo: (dir: 'open' | 'close', roots: TravelRoots) => (Element | null)[] | null;
+		 *  post-mount (open) or live (close). Missing keys fall back to
+		 *  a plain fade, never a half flight. */
+		travelFrom: (dir: 'open' | 'close', roots: TravelRoots) => TravelMark[] | null;
+		travelTo: (dir: 'open' | 'close', roots: TravelRoots) => TravelMark[] | null;
 		/** Resolve when post-mount layout holds still (heat rect steady). */
 		awaitSettled: () => Promise<void>;
 		/** Per-traveler stagger, open/close, at speed 1. */
@@ -248,8 +255,23 @@
 	/** Tile-side measurements taken while boxEl still IS the tile.
 	 *  Boxes + colors + resting shadow are captured pre-swap: after the
 	 *  swap the tile nodes are detached and measure void. */
-	let pendingTile: { tileBox: Box; dots: { box: Box; bg: string }[]; tileShadow: string } | null =
-		null;
+	let pendingTile: {
+		tileBox: Box;
+		dots: { key: string; box: Box; bg: string }[];
+		tileShadow: string;
+	} | null = null;
+
+	/** Box one side's marks; null when any endpoint is missing. */
+	function boxMarks(marks: TravelMark[]): { key: string; box: Box; el: Element }[] | null {
+		const out: { key: string; box: Box; el: Element }[] = [];
+		for (const m of marks) {
+			if (!m.el) return null;
+			const box = boxOf(m.el);
+			if (!box) return null;
+			out.push({ key: m.key, box, el: m.el });
+		}
+		return out;
+	}
 
 	/** ?slowmo=1 slows every widget timeline — landing-frame inspection. */
 	function slowmo(tl: gsap.core.Timeline): gsap.core.Timeline {
@@ -342,24 +364,22 @@
 		// content is gone. Scoped to boxEl: the ghost replica (same
 		// markup) isn't mounted yet while closed.
 		const tileBox = boxOf(boxEl);
-		const fromEls = travelFrom('open', { box: boxEl, ghost: null }) ?? [];
-		if (!tileBox || !boxEl || fromEls.length === 0) {
-			phase = 'settle';
-			open = true;
-			return;
-		}
-		const fromBoxes = fromEls.map(boxOf);
-		if (fromBoxes.some((b) => !b)) {
+		const marks = travelFrom('open', { box: boxEl, ghost: null }) ?? [];
+		const fromBoxed = boxMarks(marks);
+		if (!tileBox || !boxEl || !fromBoxed || fromBoxed.length === 0) {
 			phase = 'settle';
 			open = true;
 			return;
 		}
 		// Clone colors are sampled from the SOURCE pixels (computed style)
 		// — pixel-identical travelers under any theme.
-		const fromBg = fromEls.map((el) => getComputedStyle(el as Element).backgroundColor);
 		pendingTile = {
 			tileBox,
-			dots: fromBoxes.map((b, i) => ({ box: b as Box, bg: fromBg[i] ?? fromBg[0] })),
+			dots: fromBoxed.map((d) => ({
+				key: d.key,
+				box: d.box,
+				bg: getComputedStyle(d.el).backgroundColor
+			})),
 			tileShadow: getComputedStyle(boxEl).boxShadow
 		};
 		phase = 'fly';
@@ -387,21 +407,22 @@
 		}
 		const card = boxEl;
 		const cardBox = boxOf(card);
-		const toEls = travelTo('open', { box: card, ghost: null }) ?? [];
-		if (!cardBox || toEls.length !== pendingTile.dots.length || toEls.length === 0) {
+		const toMarks = travelTo('open', { box: card, ghost: null }) ?? [];
+		const toBoxed = boxMarks(toMarks);
+		if (!cardBox || !toBoxed || toBoxed.length === 0) {
 			phase = 'settle';
 			return;
 		}
-		const toBoxes = toEls.map(boxOf);
-		if (toBoxes.some((b) => !b)) {
-			phase = 'settle';
-			return;
+		const targets = new Map(toBoxed.map((t) => [t.key, t] as const));
+		const pairs: { from: Box; to: Box; bg: string }[] = [];
+		for (const d of pendingTile.dots) {
+			const t = targets.get(d.key);
+			if (!t) {
+				phase = 'settle';
+				return;
+			}
+			pairs.push({ from: d.box, to: t.box, bg: d.bg });
 		}
-		const pairs = pendingTile.dots.map((d, i) => ({
-			from: d.box,
-			to: toBoxes[i] as Box,
-			bg: d.bg
-		}));
 		const clones = spawnClones(pairs);
 		const landT = 0.06 + (pairs.length - 1) * STAG + 0.45 * S;
 		const mEnd = 0.38 * S;
@@ -483,7 +504,7 @@
 
 		// 2 — extras cascade in behind the landing, per spec.
 		const ctx: FlightCtx = { landT, mEnd, S };
-		const travelTargets = new Set(toEls);
+		const travelTargets = new Set(toBoxed.map((t) => t.el));
 		for (const spec of enterOpen) {
 			const els = [...card.querySelectorAll(spec.select)].filter(
 				(el) => !(spec.excludeTravel && travelTargets.has(el))
@@ -596,28 +617,30 @@
 			reset();
 			return;
 		}
-		const fromEls = travelFrom('close', { box: card, ghost }) ?? [];
-		const toEls = travelTo('close', { box: card, ghost }) ?? [];
+		const fromMarks = travelFrom('close', { box: card, ghost }) ?? [];
+		const toMarks = travelTo('close', { box: card, ghost }) ?? [];
 		const modalBox = boxOf(card);
 		const tileBox = boxOf(ghost);
-		if (!modalBox || !tileBox || fromEls.length === 0 || fromEls.length !== toEls.length) {
+		const fromBoxed = boxMarks(fromMarks);
+		const toBoxed = boxMarks(toMarks);
+		if (!modalBox || !tileBox || !fromBoxed || !toBoxed || fromBoxed.length === 0) {
 			reset();
 			return;
 		}
-		const fromBoxes = fromEls.map(boxOf);
-		const toBoxes = toEls.map(boxOf);
-		if (fromBoxes.some((b) => !b) || toBoxes.some((b) => !b)) {
-			reset();
-			return;
+		const targets = new Map(toBoxed.map((t) => [t.key, t] as const));
+		const pairs: { from: Box; to: Box; bg: string }[] = [];
+		for (const f of fromBoxed) {
+			const t = targets.get(f.key);
+			if (!t) {
+				reset();
+				return;
+			}
+			pairs.push({
+				from: f.box,
+				to: t.box,
+				bg: getComputedStyle(f.el).backgroundColor
+			});
 		}
-		// Valid boxes imply live elements (boxOf(null) is null).
-		const fromOk = fromEls as Element[];
-		const bg = fromOk.map((el) => getComputedStyle(el).backgroundColor);
-		const pairs = fromBoxes.map((cb, i) => ({
-			from: cb as Box,
-			to: toBoxes[i] as Box,
-			bg: bg[i] ?? bg[0]
-		}));
 		phase = 'exit';
 		const clones = spawnClones(pairs);
 		// Collapse against the NATURAL card box: GSAP offsets are relative
