@@ -378,10 +378,19 @@ body.th-flat .sidebar,body.th-flat .topbar{display:none}
 body.th-flat .app{grid-template-columns:1fr}
 body.th-flat .content{padding:20px 26px 60px;max-width:1420px}
 body.th-flat .mx-scroll{height:min(78vh,980px)}
+body.th-flat .mx-panel-head{display:none}
+body.th-flat .mx-row{height:72px;padding:0 18px;gap:16px}
+body.th-flat .mx-stats{gap:26px}
 .mx-flat-head{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-bottom:16px}
 .mx-flat-brand{display:flex;align-items:center;gap:9px;font-weight:800;font-size:15px;text-decoration:none}
 .mx-flat-brand img{width:26px;height:26px;border-radius:7px}
 .mx-flat-title{font-size:22px;font-weight:800;letter-spacing:-.3px}
+.mx-flat-catalog{font-size:11.5px;color:var(--faint)}
+.mx-flat-toggle{background:var(--panel);border:1px solid var(--line);border-radius:999px;color:var(--muted);font-size:11px;padding:5px 11px;cursor:pointer;font-family:inherit}
+.mx-flat-toggle:hover{color:var(--text);border-color:var(--line2)}
+.mx-flat-toggle.active{background:rgba(79,140,255,.14);border-color:rgba(79,140,255,.4);color:#CFE0FF;font-weight:600}
+.mx-flat-score{flex:none;width:34px;text-align:right;font-family:var(--mono);font-size:13px;font-weight:700;color:#CFE0FF}
+.mx-flat-score.zero{color:var(--faint);font-weight:400}
 .mx-flat-dash{font-size:12px;color:var(--muted);text-decoration:none;border:1px solid var(--line);border-radius:999px;padding:6px 12px;white-space:nowrap}
 .mx-flat-dash:hover{color:#fff;border-color:var(--line2)}
 .mx-sec{margin-bottom:20px}
@@ -412,6 +421,9 @@ body.th-flat .mx-scroll{height:min(78vh,980px)}
 .mx-bench{display:none}
 .mx-search{order:9;flex-basis:100%}
 body.th-flat .mx-search{order:0}
+body.th-flat .mx-row{padding:0 12px;gap:12px}
+body.th-flat .mx-stat:not(.wide){display:none}
+body.th-flat .mx-flat-score{display:none}
 .mx-drawer{width:100%}
 .mx-price-grid{grid-template-columns:1fr}
 }
@@ -2442,6 +2454,7 @@ function insightCard(label, value, detail, icon, provider) {
 
 const MX_ROW_H_DESKTOP = 64;
 const MX_ROW_H_MOBILE = 88;
+const MX_ROW_H_FLAT = 72;
 const MX_OVERSCAN = 12;
 const MX_CAPS = [
   ["reasoning", "Reasoning"],
@@ -2484,6 +2497,7 @@ function mxState() {
   return state.mx;
 }
 function mxRowH() {
+  if (state.flatModels) return MX_ROW_H_FLAT;
   return window.matchMedia && window.matchMedia("(max-width:560px)").matches ? MX_ROW_H_MOBILE : MX_ROW_H_DESKTOP;
 }
 function mxCtx(k) {
@@ -2847,7 +2861,11 @@ function mxSyncChips() {
   if (primary) {
     primary.classList.toggle("active", mx.primary);
     const n = $("#mx-primary-n");
-    if (n) n.textContent = `${(mx.primary ? mx.primaryHidden : 0).toLocaleString()} hidden`;
+    if (n) {
+      n.textContent = state.flatModels
+        ? (mx.primary ? "Unified" : "All listings")
+        : `${(mx.primary ? mx.primaryHidden : 0).toLocaleString()} hidden`;
+    }
   }
 }
 function mxUpdateBar() {
@@ -2887,11 +2905,20 @@ function mxCapChipHtml(key, label) {
   return `<span class="mx-chip cap ${mx.caps.has(key) ? "active" : ""}" data-cap="${key}" tabindex="0" role="button">${label}</span>`;
 }
 function mxFlatHeadHtml() {
-  const total = mxBase().length;
+  const mx = mxState();
+  const unified = mxBase().length;
+  const all = mx.models.length;
+  const hidden = Math.max(0, all - unified);
+  const refreshed = mx.catalog?.generatedAt
+    ? new Date(mx.catalog.generatedAt * 1000).toLocaleDateString(undefined, { month: "short", day: "numeric" })
+    : "";
   return `<div class="mx-flat-head">
     <a class="mx-flat-brand" href="./leaderboard.html"><img src="./assets/icon.png" alt="" /><span>Token Horizon</span></a>
     <span class="mx-flat-title">Models</span>
-    <span class="mx-counts" id="mx-flat-count">${total.toLocaleString()} models</span>
+    <span class="mx-flat-catalog">${unified.toLocaleString()} models${hidden ? ` · ${hidden.toLocaleString()} duplicate listings hidden` : ""}${refreshed ? ` · catalog ${refreshed}` : ""}</span>
+    <button class="mx-flat-toggle ${mx.primary ? "active" : ""}" id="mx-primary" type="button" title="Collapse reseller/gateway duplicates into one unified listing per model">
+      <span id="mx-primary-n">${mx.primary ? "Unified" : "All listings"}</span>
+    </button>
     <span style="margin-left:auto;display:flex;gap:8px;align-items:center">
       <a class="mx-flat-dash" href="./leaderboard.html">Full dashboard ↗</a>
       <a class="mx-flat-dash" href="https://github.com/castlemilk/token-horizon" target="_blank" rel="noopener">GitHub</a>
@@ -2923,18 +2950,16 @@ function mxShellHtml() {
         <option value="all">All providers (${providers.length})</option>
         ${providers.map(p => `<option value="${esc(p.key)}" ${mx.provider === p.key ? "selected" : ""}>${esc(p.label)} (${p.count.toLocaleString()})</option>`).join("")}
       </select>
-      ${flat ? `<button class="mx-chip ${mx.primary ? "active" : ""}" id="mx-primary" type="button" title="Collapse reseller/gateway duplicates of the same model into one primary listing">Primary <span class="n" id="mx-primary-n">${mx.primaryHidden.toLocaleString()}</span></button>` : ""}
+      ${flat ? "" : `<button class="mx-chip ${mx.primary ? "active" : ""}" id="mx-primary" type="button" title="Collapse reseller/gateway duplicates of the same model into one primary listing">Primary listings <span class="n" id="mx-primary-n">${mx.primaryHidden.toLocaleString()} hidden</span></button>`}
       <button class="mx-clear" id="mx-clear" type="button">Reset</button>
+      ${flat ? "" : `<a class="mx-clear" href="?view=models&flat=1" style="text-decoration:none" title="Open the clean, standalone model list">Clean view ↗</a>`}
     </div>
     ${flat ? "" : `<div class="mx-chips" id="mx-scopes">${MX_SCOPES.map(([k, l]) => mxScopeChipHtml(k, l)).join("")}</div>`}
     ${flat ? "" : `<div class="mx-chips" id="mx-caps" style="margin:8px 0 14px">${MX_CAPS.map(([k, l]) => mxCapChipHtml(k, l)).join("")}
-      <button class="mx-chip ${mx.primary ? "active" : ""}" id="mx-primary" type="button" title="Collapse reseller/gateway duplicates of the same model into one primary listing">
-        Primary listings <span class="n" id="mx-primary-n">${mx.primaryHidden.toLocaleString()} hidden</span>
-      </button>
       <span class="mx-counts" style="margin-left:auto">${mxCounts().all.toLocaleString()} models · ${new Set(mxBase().map(mxGroup)).size} providers · ${mxCounts().featured.toLocaleString()} benchmarked</span>
     </div>`}
     <div class="mx-panel">
-      <div class="mx-panel-head"><span id="mx-shown">…</span><span class="mx-hide-sm">scroll to page · click a row for details</span></div>
+      ${flat ? "" : `<div class="mx-panel-head"><span id="mx-shown">…</span><span class="mx-hide-sm">scroll to page · click a row for details</span></div>`}
       <div class="mx-scroll" id="mx-scroll" role="listbox" aria-label="Models">
         <div class="mx-spacer" id="mx-spacer"><div class="mx-rows" id="mx-rows"></div></div>
       </div>
@@ -2954,31 +2979,38 @@ function mxPickHtml(p) {
 }
 function mxRowHtml(m) {
   const mx = mxState();
+  const flat = state.flatModels;
   const u = mxUsageFor(m);
   const swe = m.benchmarks?.swe;
   const lcb = m.benchmarks?.lcb;
   const perf = swe ?? lcb;
+  const score = m.perfScore != null ? Math.round(Number(m.perfScore)) : null;
   const tags = [];
   if (m.capabilities?.reasoning) tags.push(`<span class="mx-tag hot">reasoning</span>`);
   if (m.isLocal) tags.push(`<span class="mx-tag free">local</span>`);
   if (m.isFree) tags.push(`<span class="mx-tag free">free</span>`);
   if (m.discount) tags.push(`<span class="mx-tag">${esc(m.discount.label || (m.discount.percent ? "-" + m.discount.percent + "%" : "promo"))}</span>`);
   if (m.capabilities?.openWeights) tags.push(`<span class="mx-tag">open</span>`);
+  const sub = flat
+    ? `${esc(m.providerName || providerLabel(m.provider))} · ${mxCtx(m.contextK)} context`
+    : `${esc(m.providerName || providerLabel(m.provider))} · ${esc(m.id)}`;
   return `<div class="mx-row ${mx.openId === m.id ? "active" : ""}" data-mx-id="${esc(m.id)}" tabindex="0" role="option" aria-label="${esc(m.name)}">
-    <span class="mx-logo">${providerLogo(m.provider, 26, m.id)}</span>
+    <span class="mx-logo">${providerLogo(m.provider, flat ? 28 : 26, m.id)}</span>
     <span class="mx-main">
       <span class="mx-name">${esc(m.name)}</span>
-      <span class="mx-sub">${esc(m.providerName || providerLabel(m.provider))} · ${esc(m.id)}</span>
+      <span class="mx-sub">${sub}</span>
       <span class="mx-tags">${tags.join("")}</span>
     </span>
     <span class="mx-stats">
-      <span class="mx-stat mx-hide-md"><span class="l">Ctx</span><span class="v">${mxCtx(m.contextK)}</span></span>
+      ${flat ? "" : `<span class="mx-stat mx-hide-md"><span class="l">Ctx</span><span class="v">${mxCtx(m.contextK)}</span></span>`}
       <span class="mx-stat wide"><span class="l">In / Out</span><span class="v">${mxCostText(m.inputPerM)} / ${mxCostText(m.outputPerM)}</span></span>
-      <span class="mx-stat mx-hide-sm"><span class="l">Blended</span><span class="v">${m.blendedNetCost ? mxCostText(m.blendedNetCost) : "—"}</span></span>
+      ${flat ? "" : `<span class="mx-stat mx-hide-sm"><span class="l">Blended</span><span class="v">${m.blendedNetCost ? mxCostText(m.blendedNetCost) : "—"}</span></span>`}
       ${perf != null ? `<span class="mx-stat mx-bench"><span class="l">${swe != null ? "SWE" : "LCB"}</span><span class="v">${Number(perf).toFixed(0)}%</span><span class="bar"><i style="width:${Math.max(2, Math.min(100, Number(perf)))}%"></i></span></span>` : ""}
-      <span class="mx-stat mx-hide-lg"><span class="l">Used</span><span class="v ${u ? "" : "dim"}">${u ? fmtTokens(u.tokens) : "—"}</span></span>
+      <span class="mx-stat ${flat ? "" : "mx-hide-lg"}"><span class="l">Used</span><span class="v ${u ? "" : "dim"}">${u ? fmtTokens(u.tokens) : "—"}</span></span>
     </span>
-    <span class="mx-score ${m.perfScore == null ? "zero" : ""}">${m.perfScore != null ? Math.round(Number(m.perfScore)) : "—"}</span>
+    ${flat
+      ? `<span class="mx-flat-score ${score == null ? "zero" : ""}">${score ?? "—"}</span>`
+      : `<span class="mx-score ${score == null ? "zero" : ""}">${score ?? "—"}</span>`}
   </div>`;
 }
 function mxRenderList(force) {
