@@ -135,11 +135,16 @@ final class LocalServer {
         return out
     }
 
-    /// Analytics routes (heatmap/projects/achievements), extracted from the
-    /// main router to keep its cyclomatic/body-length budgets intact.
-    static func analyticsResponse(method: String, route: String, path: String,
-                                  server: LocalServer, json: (Any, Int) -> Data) -> Data? {
+    /// Auxiliary routes (catalog export, analytics) extracted from the main
+    /// router to keep its cyclomatic/body-length budgets intact.
+    static func sideResponse(method: String, route: String, path: String,
+                             server: LocalServer, json: (Any, Int) -> Data) -> Data? {
         switch (method, route) {
+        case ("GET", "/models/catalog"), ("GET", "/catalog"):
+            let payload = ModelCatalogExport.data()
+            let header = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\nCache-Control: no-store\r\nContent-Length: \(payload.count)\r\nConnection: close\r\n\r\n"
+            return Data(header.utf8) + payload
+
         case ("GET", "/activity/heatmap"):
             var days = 28
             if let q = path.split(separator: "?", maxSplits: 1).last {
@@ -193,6 +198,8 @@ final class LocalServer {
         }
     }
 
+    /// Web catalog export for the dashboard explorer / refresh script.
+    /// Extracted from the router so `handle` stays under its lint budgets.
     static func handle(method: String, path: String, body: Data, server: LocalServer) -> Data {
         let route = path.split(separator: "?").first.map(String.init) ?? path
         let components = URLComponents(string: "http://localhost\(path.hasPrefix("/") ? path : "/" + path)")
@@ -214,9 +221,9 @@ final class LocalServer {
             return Int32(s.trimmingCharacters(in: .whitespaces))
         }
 
-        if let analytics = analyticsResponse(method: method, route: route, path: path,
-                                             server: server, json: json) {
-            return analytics
+        if let side = sideResponse(method: method, route: route, path: path,
+                                   server: server, json: json) {
+            return side
         }
 
         if let gateway = GatewayBridge.owns(method: method, route: route)

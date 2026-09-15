@@ -1,0 +1,37 @@
+name: models-refresh
+
+# Scheduled catalog refresh: re-runs the app's merge pipeline (models.dev +
+# OpenRouter + provider feeds + curated benchmarks) and commits the exported
+# docs/data/models.json when entries or pricing changed. The dashboard serves
+# this file statically — no runtime publishing required.
+on:
+  schedule:
+    - cron: "17 6 * * 1" # Mondays 06:17 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  refresh:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode_16.2.app/Contents/Developer || true
+
+      - name: Build + export catalog
+        run: ./scripts/refresh-models.sh
+
+      - name: Commit when changed
+        run: |
+          if git diff --quiet -- docs/data/models.json; then
+            echo "catalog unchanged"
+            exit 0
+          fi
+          git config user.name "token-horizon-bot"
+          git config user.email "bot@token-horizon.dev"
+          git add docs/data/models.json
+          git commit -m "catalog: refresh model list ($(date -u +%Y-%m-%d))"
+          git push

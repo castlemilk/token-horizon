@@ -726,4 +726,90 @@ describe('Cloudflare Worker API', () => {
     }), env);
     assert.equal(hijackRes.status, 409);
   });
+
+  it('GET /api/models/catalog proxies the exported static catalog with CORS', async () => {
+    const catalog = { schemaVersion: 1, count: 2, models: [{ id: 'openai/gpt-5' }], topPicks: [] };
+    const seen = [];
+    const env = {
+      ...createEnv(),
+      ASSETS: {
+        async fetch(request) {
+          seen.push(new URL(request.url).pathname);
+          return new Response(JSON.stringify(catalog), { status: 200, headers: { 'Content-Type': 'application/json' } });
+        }
+      }
+    };
+    const res = await worker.fetch(req('/api/models/catalog'), env);
+    assert.equal(res.status, 200);
+    assert.equal(res.headers.get('Access-Control-Allow-Origin'), '*');
+    const data = await res.json();
+    assert.equal(data.count, 2);
+    assert.equal(seen[0], '/data/models.json');
+
+    const missing = await worker.fetch(req('/api/models/catalog'), createEnv());
+    assert.equal(missing.status, 503);
+  });
+
+  it('GET /api/models/usage aggregates per-model adoption across profiles', async () => {
+    const entries = [
+      {
+        handle: 'a', tokensAll: 100, breakdown: { models: [
+          { provider: 'claude', model: 'claude-opus-5', tokensAll: 300, costAll: 9, requests: 3, inputTokens: 200, outputTokens: 100 },
+          { provider: 'openai', model: 'gpt-5-codex', tokensAll: 100, costAll: 2, requests: 1, inputTokens: 60, outputTokens: 40 }
+        ] }
+      },
+      {
+        handle: 'b', tokensAll: 200, breakdown: { models: [
+          { provider: 'anthropic', model: 'claude-opus-5', tokensAll: 100, costAll: 3, requests: 2, inputTokens: 80, outputTokens: 20 }
+        ] }
+      }
+    ];
+    const env = createEnv(entries);
+    const res = await worker.fetch(req('/api/models/usage'), env);
+    assert.equal(res.status, 200);
+    const data = await res.json();
+    assert.equal(data.models[0].model, 'claude-opus-5');
+    assert.equal(data.models[0].provider, 'anthropic');
+    assert.equal(data.models[0].tokens, 400);
+    assert.equal(data.models[0].users, 2);
+    assert.equal(data.models[0].sharePercent, 80);
+    assert.equal(data.models[0].inputTokens, 280);
+    assert.equal(data.models[0].outputTokens, 120);
+    assert.ok(data.models[0].tokensFormatted);
+  });
+
+  it('GET /models rewrites to the dashboard models view', async () => {
+    let target = null;
+    const env = {
+      ...createEnv(),
+      ASSETS: { async fetch(request) { target = new URL(request.url); return new Response('ok'); } }
+    };
+    const res = await worker.fetch(req('/models'), env);
+    assert.equal(res.status, 200);
+    assert.equal(target.pathname, '/leaderboard');
+    assert.equal(target.searchParams.get('view'), 'models');
+  });
+
+  it('GET /leaderboard?view=models redirects to the canonical /models route', async () => {
+    const env = createEnv();
+    const res = await worker.fetch(req('/leaderboard?view=models&flat=1&model=openai%2Fgpt-5'), env);
+    assert.equal(res.status, 302);
+    const loc = new URL(res.headers.get('location'));
+    assert.equal(loc.pathname, '/models');
+    assert.equal(loc.searchParams.get('model'), 'openai/gpt-5');
+    assert.equal(loc.searchParams.get('view'), null);
+    assert.equal(loc.searchParams.get('flat'), null);
+    // Plain leaderboard deep links are untouched.
+    const plain = await worker.fetch(req('/leaderboard?period=today'), env);
+    assert.notEqual(plain.status, 302);
+    // The Providers analytics tab only exists in the dashboard shell.
+    const providers = await worker.fetch(req('/leaderboard?view=models&tab=providers'), env);
+    assert.notEqual(providers.status, 302);
+    // Trailing slash canonicalizes so relative asset paths keep working.
+    const slash = await worker.fetch(req('/models/?provider=deepseek'), env);
+    assert.equal(slash.status, 301);
+    const slashLoc = new URL(slash.headers.get('location'));
+    assert.equal(slashLoc.pathname, '/models');
+    assert.equal(slashLoc.searchParams.get('provider'), 'deepseek');
+  });
 });

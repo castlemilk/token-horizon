@@ -8,10 +8,22 @@ import Foundation
 enum BuildInfo {
     static func value(_ key: String, fallback: String) -> String {
         if let s = Bundle.main.infoDictionary?[key] as? String, !s.isEmpty { return s }
+        if let env = environmentValue(key), !env.isEmpty { return env }
         return fallback
     }
 
-    static var version: String { value("CFBundleShortVersionString", fallback: "0.2.0") }
+    /// Headless runs (e.g. `--export-model-catalog` from a bare swift-build
+    /// binary) carry no Info.plist stamp; scripts pass TH_GIT_SHA/TH_BUILT_AT
+    /// so exported artifacts stay attributable to a commit.
+    private static func environmentValue(_ key: String) -> String? {
+        switch key {
+        case "THGitSHA": return ProcessInfo.processInfo.environment["TH_GIT_SHA"]
+        case "THBuiltAt": return ProcessInfo.processInfo.environment["TH_BUILT_AT"]
+        default: return nil
+        }
+    }
+
+    static var version: String { value("CFBundleShortVersionString", fallback: "0.3.0") }
     static var commit: String { value("THGitSHA", fallback: "dev") }
     static var builtAt: String { value("THBuiltAt", fallback: "unknown") }
 

@@ -83,8 +83,13 @@ tasks:
     cmds:
       - make bench
 
+  models-refresh:
+    desc: Regenerate docs/data/models.json (app merge pipeline; REFRESH=0 for offline)
+    cmds:
+      - ./scripts/refresh-models.sh
+
   bench-leaderboard:
-    desc: Dashboard bench — chart reuse, view switches, search, idle ticks (budget-gated)
+    desc: Dashboard bench — chart reuse, view switches, search, idle ticks, explorer windowing (budget-gated)
     cmds:
       - node scripts/bench-leaderboard.mjs
 
@@ -118,6 +123,7 @@ tasks:
         probe "/trends?window=1D" "'points' in d and 'total' in d" "/trends serves points+total"
         probe "/limits" "'limits' in d" "/limits serves limits"
         probe "/models?search=&scope=ALL" "d.get('count',0) > 0" "/models serves non-empty catalog"
+        probe "/models/catalog" "d.get('count',0) > 0 and 'models' in d and 'topPicks' in d" "/models/catalog serves web catalog export"
         probe "/discovery/status" "'catalogCount' in d" "/discovery/status serves catalog stats"
         probe "/activity/heatmap?days=7" "'grid' in d and len(d['grid']) == 7" "/activity/heatmap serves 7x24 grid"
         probe "/projects" "'projects' in d" "/projects serves project rollups"

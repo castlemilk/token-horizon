@@ -418,6 +418,46 @@ function aggregateProviders(entries) {
   return { rows, total };
 }
 
+/// Per-model adoption rollup for the catalog explorer: tokens/cost/requests
+/// and distinct publisher count, ranked by tokens. Provider ids are
+/// normalized so `claude`/`anthropic` merge the same way analytics does.
+function aggregateModelUsage(entries, limit = 400) {
+  const map = new Map();
+  for (const e of entries) {
+    const models = (e.breakdown && e.breakdown.models) || [];
+    for (const m of models) {
+      const provider = normalizeProvider(m.provider);
+      const model = String(m.model || "unknown");
+      const key = `${provider}|${model.toLowerCase()}`;
+      if (!map.has(key)) {
+        map.set(key, { provider, model, tokens: 0, cost: 0, requests: 0, inputTokens: 0, outputTokens: 0, users: new Set() });
+      }
+      const row = map.get(key);
+      row.tokens += Number(m.tokensAll) || Number(m.tokensToday) || 0;
+      row.cost += Number(m.costAll) || Number(m.costToday) || 0;
+      row.requests += Number(m.requests) || 0;
+      row.inputTokens += Number(m.inputTokens) || 0;
+      row.outputTokens += Number(m.outputTokens) || 0;
+      row.users.add(e.handle);
+    }
+  }
+  const rows = [...map.values()].sort((a, b) => b.tokens - a.tokens);
+  const total = rows.reduce((s, r) => s + r.tokens, 0);
+  return rows.slice(0, limit).map(r => ({
+    provider: r.provider,
+    model: r.model,
+    tokens: r.tokens,
+    cost: r.cost,
+    requests: r.requests,
+    inputTokens: r.inputTokens,
+    outputTokens: r.outputTokens,
+    users: r.users.size,
+    sharePercent: total > 0 ? Math.round((r.tokens / total) * 1000) / 10 : 0,
+    tokensFormatted: formatTokens(r.tokens),
+    costFormatted: formatCurrency(r.cost)
+  }));
+}
+
 function aggregateSessions(entries) {
   const sessions = [];
   for (const e of entries) {
@@ -1806,6 +1846,61 @@ export default {
       }, 200, { "Cache-Control": "public, max-age=15, s-maxage=30" });
     }
 
+    // 6c. Model catalog: the static artifact the Mac app exports
+    // (`scripts/refresh-models.sh` → docs/data/models.json). Served through
+    // the worker with CORS so static mirrors (GitHub Pages) and the MCP shim
+    // read the same list; edge-cached since the file only changes on refresh.
+    if (request.method === "GET" && pathname === "/api/models/catalog") {
+      if (env.ASSETS) {
+        const assetUrl = new URL(request.url);
+        assetUrl.pathname = "/data/models.json";
+        const asset = await env.ASSETS.fetch(new Request(assetUrl.toString()));
+        if (asset.ok) {
+          return new Response(asset.body, {
+            status: 200,
+            headers: {
+              ...CORS_HEADERS,
+              "Content-Type": "application/json;charset=utf-8",
+              "Cache-Control": "public, max-age=300, s-maxage=3600"
+            }
+          });
+        }
+      }
+      return jsonResponse({ ok: false, error: "Model catalog not published" }, 503);
+    }
+
+    // 6d. Community model adoption: aggregate per-model totals across every
+    // published profile so the explorer can show which models people run.
+    if (request.method === "GET" && pathname === "/api/models/usage") {
+      const entries = await getEntriesFromR2(env);
+      const models = aggregateModelUsage(entries);
+      return jsonResponse({ ok: true, count: models.length, models }, 200, {
+        "Cache-Control": "public, max-age=30, s-maxage=60"
+      });
+    }
+
+    // Canonicalize the model explorer: /leaderboard?view=models → /models
+    // (the flat catalog route). The Providers analytics tab only exists in the
+    // dashboard shell, so tab=providers keeps the leaderboard URL. Internal
+    // asset fetches below bypass routing, so this never loops through the
+    // /models rewrite.
+    if ((pathname === "/leaderboard" || pathname === "/leaderboard.html")
+        && searchParams.get("view") === "models"
+        && searchParams.get("tab") !== "providers") {
+      const canonical = new URL(request.url);
+      canonical.pathname = "/models";
+      canonical.searchParams.delete("view");
+      canonical.searchParams.delete("flat");
+      return Response.redirect(canonical.toString(), 302);
+    }
+    // Trailing slash would make the SPA's relative asset paths resolve under
+    // /models/ (vendor/data/brand 404s) — canonicalize to the bare route.
+    if (pathname === "/models/") {
+      const canonical = new URL(request.url);
+      canonical.pathname = "/models";
+      return Response.redirect(canonical.toString(), 301);
+    }
+
     // 7. Webhosting: Fallback to static assets binding (docs/leaderboard.html, styles.css, etc.)
     if (env.ASSETS) {
       if (pathname === "/" || pathname === "/leaderboard.html") {
@@ -1818,6 +1913,14 @@ export default {
         const newUrl = new URL(request.url);
         newUrl.pathname = "/leaderboard";
         newUrl.searchParams.set("share", id);
+        return env.ASSETS.fetch(new Request(newUrl.toString(), request));
+      }
+      // Dedicated discovery route: token-horizon.dev/models renders the flat
+      // catalog explorer (same SPA shell, deep-linkable).
+      if (pathname === "/models" || pathname === "/models/") {
+        const newUrl = new URL(request.url);
+        newUrl.pathname = "/leaderboard";
+        newUrl.searchParams.set("view", "models");
         return env.ASSETS.fetch(new Request(newUrl.toString(), request));
       }
       return env.ASSETS.fetch(request);
