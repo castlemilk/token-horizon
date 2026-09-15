@@ -147,7 +147,7 @@ Ground-truth checks when touching parsers:
 - Landing page: `docs/` (dependency-free static) → GitHub Pages via `.github/workflows/pages.yml` (Actions, watches `docs/**`). Project-page hosting: all internal links must stay relative (`./`), never root-absolute.
 - Installer: `install.sh` (`curl -fsSL .../main/install.sh | bash`) resolves `/releases/latest`, installs the ZIP to `/Applications`, fetches versioned shell/MCP helpers, health-verifies. Test safely with `INSTALL_DIR=$TMP/Apps TH_NO_LAUNCH=1 TH_NO_AGENT=1 TH_NO_SHELL=1`.
 - Releases: tag `v*` → `.github/workflows/release.yml` builds, packages DMG/ZIP/sha256, renders `video/` film, publishes. Releases must stay FULL (not prerelease) — installer, landing film embed, and README video all resolve through `/releases/latest`, which skips prereleases.
-- Homebrew: `packaging/homebrew/token-horizon.rb` is the Cask source of truth (bump version+sha256 per release; published tap is manual — see header).
+- Homebrew: `packaging/homebrew/token-horizon.rb` is the Cask source of truth; the published tap is `castlemilk/homebrew-tap` (tap `castlemilk/tap`). Per release: bump `version` + `sha256` (from the release's `.sha256` asset), then `task brew-sync` (`scripts/sync-homebrew-tap.sh`) to copy + push the cask. Validate with `brew audit --cask castlemilk/tap/token-horizon` and `brew fetch --cask castlemilk/tap/token-horizon` (checksum); do not `brew uninstall` a dev-installed app — the cask only removes the app artifact and LaunchAgent plist.
 - Product film: `video/` (Remotion, code-drawn, offline render). `npm run render` → `dist/TokenHorizon-film.mp4` is the release + landing-page asset. See `video/README.md` for scene/optimization notes.
 
 ## Performance budgets (Models tab)

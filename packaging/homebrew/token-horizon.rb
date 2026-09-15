@@ -1,17 +1,16 @@
 # Homebrew Cask for Token Horizon.
 #
-# This file lives in-repo as the source of truth. To publish it, copy it into
-# a tap repo (one time):
+# This file lives in-repo as the source of truth. The published tap is
+#   https://github.com/castlemilk/homebrew-tap  (tap name: castlemilk/tap)
 #
-#   gh repo create castlemilk/homebrew-tap --public --description "Homebrew tap for Token Horizon"
-#   mkdir -p homebrew-tap/Casks && cp packaging/homebrew/token-horizon.rb homebrew-tap/Casks/
-#   cd homebrew-tap && git add . && git commit -m "token-horizon 0.2.0" && git push -u origin main
+# Per release: bump `version` + `sha256` here (match
+# dist/TokenHorizon-<ver>.sha256, or the release's .sha256 asset) and run
+#   task brew-sync            # scripts/sync-homebrew-tap.sh
+# to copy this file into the tap and push it.
 #
-# Users then install with:
+# Users install with:
 #   brew tap castlemilk/tap
 #   brew install --cask token-horizon
-#
-# On each release, bump `version` + `sha256` below (match dist/TokenHorizon-<ver>.sha256).
 cask "token-horizon" do
   version "0.3.0"
   sha256 "fb816ba5e8a537db6a0902ca8c126b6b7085d8306cdb4829af50c8b2ddcf348f"
@@ -22,13 +21,16 @@ cask "token-horizon" do
   homepage "https://token-horizon.dev/"
 
   auto_updates false
-  depends_on macos: ">= :sonoma"
+  depends_on macos: :sonoma
   depends_on arch: :arm64
 
   app "TokenHorizon.app"
 
+  # The `app` artifact handles removal; only the LaunchAgent needs an explicit
+  # cleanup (deleting /Applications/TokenHorizon.app here would nuke a
+  # dev-installed copy on uninstall).
   uninstall launchctl: "local.benebsworth.token-horizon",
-            delete:    "/Applications/TokenHorizon.app"
+            delete:    "~/Library/LaunchAgents/local.benebsworth.token-horizon.plist"
 
   zap trash: [
     "~/.config/token-horizon",

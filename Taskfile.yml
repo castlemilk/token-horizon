@@ -88,6 +88,11 @@ tasks:
     cmds:
       - ./scripts/refresh-models.sh
 
+  brew-sync:
+    desc: Publish packaging/homebrew/token-horizon.rb to castlemilk/homebrew-tap
+    cmds:
+      - ./scripts/sync-homebrew-tap.sh
+
   bench-leaderboard:
     desc: Dashboard bench — chart reuse, view switches, search, idle ticks, explorer windowing (budget-gated)
     cmds:
