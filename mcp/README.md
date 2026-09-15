@@ -68,6 +68,8 @@ claude mcp add token-horizon node /Users/benebsworth/projects/token-horizon/mcp/
 | `publish_telemetry` | `from_daemon` (bool), `entry`, `claim_token`, `google_token` | Sync/publish metrics to the edge leaderboard. |
 | `claim_profile` | `handle`, `google_token`, `claim_token` | Claim an unclaimed profile using Google OAuth JWT to lock ownership. |
 | `compare_users` | `user1`, `user2` | Side-by-side performance and efficiency comparison between two developers. |
+| `search_models` | `query`, `provider`, `plan`, `scope`, `sort`, `limit`, `unified` | Search the unified model catalog with pricing evidence (priced / free / plan-covered / unpriced), SWE-bench & LiveCodeBench scores, context windows, and plan linkage. |
+| `get_plans` | `plan`, `provider`, `include_models`, `limit` | Subscription plans with verified usage tiers (prices, quota windows, included models) and per-plan catalog model counts. |
 
 ---
 

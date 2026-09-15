@@ -3,6 +3,8 @@
  * Connects MCP clients to Token Horizon's edge leaderboard and local macOS daemon.
  */
 
+import { fetchCatalog, searchCatalog, planList } from "../catalog.mjs";
+
 export const DEFAULT_API_BASE = "https://token-horizon.dev";
 export const DEFAULT_DAEMON_BASE = "http://127.0.0.1:8765";
 
@@ -343,4 +345,62 @@ export async function runCompareUsers({ user1, user2 }) {
     user2: e2,
     text
   };
+}
+
+/**
+ * 7. search_models — unified catalog search (pricing evidence, benchmarks, plans)
+ */
+function renderModelRows(result) {
+  const lines = [`### Model catalog — ${result.count} of ${result.total} matches`
+    + (result.filters.provider ? ` · provider=${result.filters.provider}` : "")
+    + (result.filters.plan ? ` · plan=${result.filters.plan}` : "")
+    + (result.filters.scope !== "all" ? ` · scope=${result.filters.scope}` : "")
+    + (result.query ? ` · query="${result.query}"` : ""), ""];
+  if (!result.models.length) { lines.push("No models matched."); return lines.join("\n"); }
+  for (const model of result.models) {
+    const price = model.price_known
+      ? `$${model.input_per_m}/$${model.output_per_m} per 1M`
+      : "no per-token price (plan-covered or unpublished)";
+    const bench = model.benchmarks
+      ? [model.benchmarks.swe != null ? `SWE ${model.benchmarks.swe}` : null, model.benchmarks.lcb != null ? `LCB ${model.benchmarks.lcb}` : null].filter(Boolean).join(" · ")
+      : null;
+    lines.push(`- **${model.name}** (\`${model.id}\`) · ${model.provider_name || model.provider} · ${price}`
+      + (model.context_k ? ` · ${model.context_k}k ctx` : "")
+      + (bench ? ` · ${bench}` : ""));
+    if (model.plans?.length) lines.push(`  plans: ${model.plans.join(", ")}${model.price_known ? " (also priced directly)" : ""}`);
+    if (model.doc_url) lines.push(`  docs: ${model.doc_url}`);
+  }
+  if (result.total > result.count) lines.push("", `_${result.total - result.count} more — raise limit or refine the query._`);
+  return lines.join("\n");
+}
+
+function renderPlans(result) {
+  const lines = [`### Subscription plans (${result.count})` + (result.updated_at ? ` — updated ${result.updated_at}` : ""), ""];
+  if (!result.plans.length) { lines.push("No plans matched."); return lines.join("\n"); }
+  for (const plan of result.plans) {
+    lines.push(`**${plan.name}** · ${plan.billing || "subscription"} · ${plan.model_count} catalog models`);
+    if (plan.summary) lines.push(`  ${plan.summary}`);
+    for (const tier of plan.tiers || []) {
+      const price = tier.priceMonthly == null ? "—" : tier.priceMonthly === 0 ? "Free" : `$${tier.priceMonthly}${tier.priceNote ? " " + tier.priceNote : "/mo"}`;
+      lines.push(`  - **${tier.name}**: ${price}${tier.usage ? ` · ${tier.usage}` : ""}${tier.models ? ` · ${tier.models}` : ""}`);
+    }
+    if (plan.docs) lines.push(`  docs: ${plan.docs}`);
+    lines.push("");
+  }
+  return lines.join("\n");
+}
+
+export async function runSearchModels(args = {}) {
+  const catalog = await fetchCatalog({ urls: [`${DEFAULT_API_BASE}/api/models/catalog`] });
+  const result = searchCatalog(catalog, args);
+  return { text: renderModelRows(result), catalogTotal: result.catalog_total, count: result.count, total: result.total };
+}
+
+/**
+ * 8. get_plans — subscription plans + usage tiers
+ */
+export async function runGetPlans(args = {}) {
+  const catalog = await fetchCatalog({ urls: [`${DEFAULT_API_BASE}/api/models/catalog`] });
+  const result = planList(catalog, args);
+  return { text: renderPlans(result), count: result.count, updatedAt: result.updated_at };
 }

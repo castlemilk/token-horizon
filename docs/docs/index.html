@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Docs — Token Horizon</title>
+<meta name="description" content="Token Horizon documentation: install, the panel, provider limits, model catalog and plans, leaderboard, HTTP API, MCP tools, gateway and shell helper." />
+<link rel="canonical" href="https://token-horizon.dev/docs/" />
+<link rel="icon" href="../assets/favicon.svg" type="image/svg+xml" />
+<link rel="stylesheet" href="../styles.css" />
+</head>
+<body>
+<nav class="nav" id="site-nav">
+  <a class="brand" href="../"><img src="../assets/icon.png" alt="" /><span>Token Horizon</span></a>
+  <button class="nav-toggle" id="nav-toggle" type="button" aria-label="Toggle navigation" aria-expanded="false" aria-controls="nav-links">☰</button>
+  <div class="nav-links" id="nav-links">
+    <a class="nav-primary" href="../leaderboard.html">Leaderboard</a>
+    <a class="nav-primary" href="../models/">Models</a>
+    <a href="./">Docs</a>
+    <a href="../blog/">Blog</a>
+    <a class="nav-cta" href="https://github.com/castlemilk/token-horizon">GitHub</a>
+  </div>
+</nav>
+
+<div class="docs-layout">
+  <nav class="docs-nav" aria-label="Documentation">
+    <span class="group">Getting started</span>
+    <a href="#overview">Overview</a>
+    <a href="#install">Install</a>
+    <a href="#panel">The panel</a>
+    <span class="group">Data</span>
+    <a href="#usage">Usage tracking</a>
+    <a href="#limits">Plan limits</a>
+    <a href="#catalog">Model catalog &amp; plans</a>
+    <a href="#leaderboard">Leaderboard &amp; privacy</a>
+    <span class="group">Interfaces</span>
+    <a href="#api">HTTP API</a>
+    <a href="#mcp">MCP server</a>
+    <a href="#gateway">LLM gateway</a>
+    <a href="#shell">Shell helper</a>
+    <span class="group">Help</span>
+    <a href="#troubleshooting">Troubleshooting</a>
+  </nav>
+
+  <main class="docs-body">
+    <h1>Token Horizon documentation</h1>
+    <p>Token Horizon is a native macOS app that tracks AI token usage, cost, plan limits and local model performance — locally, from provider-reported data, with an opt-in leaderboard and a web model catalog. This page documents the surfaces, the data rules, and every interface agents can use.</p>
+
+    <h2 id="overview">Overview</h2>
+    <p>The app runs as a notch panel (or menu-bar item on Macs without a notch) and exposes a loopback HTTP API on <code>127.0.0.1:8765</code>. One process, one build, always identifiable: <code>/health</code> reports the exact git commit serving your machine, and the Settings tab shows the same line. If those disagree with <code>git rev-parse --short HEAD</code>, you're looking at a stale binary — rebuild rather than debug the data.</p>
+
+    <h2 id="install">Install</h2>
+    <p>One line, no sudo:</p>
+    <pre><code>curl -fsSL https://raw.githubusercontent.com/castlemilk/token-horizon/main/install.sh | bash</code></pre>
+    <p>Homebrew:</p>
+    <pre><code>brew tap castlemilk/tap
+brew install --cask token-horizon</code></pre>
+    <p>Releases are Developer ID signed and Apple-notarized (Gatekeeper reports <code>source=Notarized Developer ID</code>). Local builds via <code>./scripts/make-app.sh</code> are ad-hoc signed.</p>
+
+    <h2 id="panel">The panel</h2>
+    <p>Hover the notch (or click the menu-bar rings) to open the panel. Tabs:</p>
+    <table>
+      <tr><th>Tab</th><th>Shows</th></tr>
+      <tr><td><strong>TOKENS</strong></td><td>Today's tokens/cost, per-model and per-tool breakdown, cache rates, plan-limit bars with reset countdowns, streaks and league standing.</td></tr>
+      <tr><td><strong>ACTIVITY</strong></td><td>CPU, memory, disk and network history, top processes by CPU/memory/disk/network, Docker containers, and MLX runner telemetry (measured tok/s).</td></tr>
+      <tr><td><strong>MLX</strong></td><td>Local model runners (MLX/Ollama) with per-process telemetry, bounded history, and measured throughput.</td></tr>
+      <tr><td><strong>Leaderboard</strong></td><td>Your published standing, leagues/MMR, sync and share controls.</td></tr>
+      <tr><td><strong>Shells</strong></td><td>Recent shell execution events captured by the zsh hooks.</td></tr>
+      <tr><td><strong>Settings</strong></td><td>Surface mode (auto/notch/tray), sharing rules, history persistence, start-at-login, and the serving build stamp.</td></tr>
+    </table>
+
+    <h2 id="usage">Usage tracking</h2>
+    <p>Parsers read the tools' own session data on your machine:</p>
+    <ul>
+      <li><strong>Claude Code</strong> — JSONL session logs under <code>~/.claude*</code> (multi-profile aware).</li>
+      <li><strong>Codex</strong> — stateful watermarks over <code>~/.codex*/sessions</code> (multi-directory, truncation-safe).</li>
+      <li><strong>OpenCode</strong> — SQLite (<code>READONLY | FULLMUTEX</code>, stat-gated).</li>
+      <li><strong>Generic JSONL providers</strong> — glm, qwen, grok, deepseek, gemini/agy and friends.</li>
+      <li><strong>Ollama</strong> — an in-process loopback telemetry relay measures real token counts and eval rates from completed responses.</li>
+      <li><strong>LLM gateway</strong> — the bundled Go sidecar proxies provider APIs and captures traces; totals still come from the file parsers, never double-counted.</li>
+    </ul>
+    <div class="note">Accuracy rule: token counts are provider-reported or absent. Costs come from the catalog's published rates — never estimated from resource usage, never extrapolated. When a number isn't published, the UI shows <code>—</code>.</div>
+
+    <h2 id="limits">Plan limits</h2>
+    <p>Limit fetchers query each provider's own plan APIs (or parse their local credentials) for 5-hour, weekly and monthly windows. Auth sources, checked in order:</p>
+    <table>
+      <tr><th>Provider</th><th>Source</th></tr>
+      <tr><td>Alibaba</td><td><code>ALIBABA_TOKEN_PLAN_COOKIE</code> / Settings cookie</td></tr>
+      <tr><td>Kimi</td><td><code>KIMI_CODE_HOME</code>/<code>KIMI_HOME</code>, <code>~/.kimi*/credentials/kimi-code.json</code> (OAuth refresh)</td></tr>
+      <tr><td>GLM / MiniMax / OpenCode Go</td><td>opencode <code>auth.json</code> keys</td></tr>
+      <tr><td>OpenAI / Codex</td><td>opencode <code>auth.json</code> OAuth + live usage API, JSONL fallback</td></tr>
+      <tr><td>Claude</td><td><code>~/.claude*</code> profiles → credentials file → Keychain</td></tr>
+      <tr><td>Gemini / AGY</td><td><code>~/.gemini*/oauth_creds.json</code> + Antigravity language-server telemetry</td></tr>
+      <tr><td>DeepSeek</td><td><code>DEEPSEEK_API_KEY</code> or opencode auth</td></tr>
+    </table>
+
+    <h2 id="catalog">Model catalog &amp; plans</h2>
+    <p>The catalog merges models.dev, OpenRouter, live provider APIs and curated benchmarks into one family per model. The web list at <a href="../models/">/models</a> is a static export of the app's own merge pipeline — regenerated on a schedule so app and web can't drift.</p>
+    <p>Pricing evidence is explicit, in three states:</p>
+    <ul>
+      <li><strong>Priced</strong> — published input/output/cache rates, with prompt-cache discounts applied to the blended net cost.</li>
+      <li><strong>Free</strong> — only with evidence: local models, or an explicit <code>free</code> listing.</li>
+      <li><strong>Plan-covered / unpriced</strong> — shown as <code>—</code>, sorted last, badged <code>PLAN</code> when a subscription covers it.</li>
+    </ul>
+    <p>Subscription plans live in a curated artifact with verified usage tiers (Copilot, Kimi Code, MiniMax Token Plan, GLM Coding Plan, OpenCode Zen, and more). See the <a href="../models/?tab=plans">Plans view</a> and the blog post <a href="../blog/pricing-evidence.html">Pricing evidence</a>.</p>
+
+    <h2 id="leaderboard">Leaderboard &amp; privacy</h2>
+    <p>Publishing is opt-in. The leaderboard ranks token volume across periods, with leagues/MMR, streaks, efficiency, per-model breakdowns and share cards. What's published: totals, model/tool breakdowns, projects, hardware, sessions with titles <em>only if you enable</em> <code>leaderboardSharePrompts</code> (default off — rows publish with empty titles so activity timelines still work). Prompt history itself never leaves the individual profile. Public share links (<code>/s/&lt;id&gt;</code>) honor anonymize / hide-cost / full-token options and expiry.</p>
+
+    <h2 id="api">HTTP API</h2>
+    <p>Local daemon on <code>127.0.0.1:8765</code> (CORS enabled for the dashboard):</p>
+    <table>
+      <tr><th>Endpoint</th><th>Returns</th></tr>
+      <tr><td><code>GET /health</code></td><td>Serving build stamp, gateway/proxy ports.</td></tr>
+      <tr><td><code>GET /stats</code></td><td>Usage snapshot, models, tools, projects, system stats.</td></tr>
+      <tr><td><code>GET /trends?window=1D|1W|1M|3M|1Y</code></td><td>Rolling token history with tool breakdown.</td></tr>
+      <tr><td><code>GET /limits</code></td><td>Provider plan limits with reset times.</td></tr>
+      <tr><td><code>GET /claude/accounts</code></td><td>Claude profiles, orgs, live quota.</td></tr>
+      <tr><td><code>GET /models</code> · <code>/top-picks</code></td><td>Filtered catalog rows · ranked value picks.</td></tr>
+      <tr><td><code>GET /models/catalog</code></td><td>Full web catalog export (models, plans, top picks).</td></tr>
+      <tr><td><code>GET /history?days=</code></td><td>Daily history with per-provider breakdown.</td></tr>
+      <tr><td><code>GET /activity/heatmap?days=</code> · <code>/projects</code> · <code>/achievements</code></td><td>Heatmap grid · project rollups · achievements + season.</td></tr>
+      <tr><td><code>GET /processes</code> · <code>/process?pid=</code> · <code>/docker</code></td><td>Top processes, deep PID inspection, containers.</td></tr>
+      <tr><td><code>GET /events?limit=</code> · <code>POST /event</code></td><td>Shell events (zsh hooks).</td></tr>
+      <tr><td><code>GET /metrics</code></td><td>Prometheus text (OTel meter).</td></tr>
+      <tr><td><code>GET /proxy/config</code> · <code>GET /traces</code></td><td>Gateway sidecar config · captured traces.</td></tr>
+      <tr><td><code>POST /cache/reset</code> · <code>GET /cache</code></td><td>Reset / inspect the durable cache.</td></tr>
+    </table>
+    <p>Hosted edge API on <code>https://token-horizon.dev</code>: <code>/api/leaderboard</code>, <code>/api/user/:handle</code>, <code>/api/providers</code>, <code>/api/teams</code>, <code>/api/season</code>, <code>/api/models/catalog</code>, <code>/api/models/usage</code>, <code>/api/config</code>, <code>/api/health</code>, <code>/api/share</code> (SVG badges).</p>
+
+    <h2 id="mcp">MCP server</h2>
+    <p>Two MCP servers ship in <code>mcp/</code>:</p>
+    <ul>
+      <li><code>mcp/token-horizon-mcp.mjs</code> — zero-dependency stdio server for the local daemon and hosted APIs. Installed to <code>~/.config/token-horizon/mcp/</code> by <code>install.sh</code>.</li>
+      <li><code>mcp/src/index.js</code> — SDK-based server for the hosted leaderboard.</li>
+    </ul>
+    <p>Catalog tools (both servers): <code>search_models</code> (<code>token_horizon_catalog</code> in the standalone server) and <code>get_plans</code> (<code>token_horizon_plans</code>). They search the unified catalog with pricing evidence, benchmark scores, context windows and plan linkage, and return plan tiers with included models. Local daemon first, hosted catalog fallback; set <code>TH_CATALOG_URL</code> to pin a source.</p>
+    <pre><code>{
+  "mcpServers": {
+    "token-horizon": {
+      "command": "node",
+      "args": ["~/.config/token-horizon/mcp/token-horizon-mcp.mjs"]
+    }
+  }
+}</code></pre>
+
+    <h2 id="gateway">LLM gateway</h2>
+    <p>The app ships with a Go sidecar (<code>token-horizon-gateway</code>) that speaks OpenAI and Anthropic protocols on one local port and captures full conversation traces. Point a client at the gateway by swapping its base URL:</p>
+    <ul>
+      <li>Codex: <code>OPENAI_BASE_URL=http://127.0.0.1:&lt;port&gt;/th-openai/v1</code></li>
+      <li>Claude Code: <code>ANTHROPIC_BASE_URL=http://127.0.0.1:&lt;port&gt;/th-anthropic</code></li>
+      <li>Ollama traffic can be routed through the telemetry proxy for measured tok/s.</li>
+    </ul>
+    <p>Traces are stored locally (bounded: 256KB per side, 30 day-files, 256MB) and served at <code>GET /traces</code>. Gateway traffic never feeds usage totals — the file parsers already count it.</p>
+
+    <h2 id="shell">Shell helper</h2>
+    <p>The zsh integration installs a <code>th</code> command and preexec/precmd hooks:</p>
+    <pre><code>th status          # daemon + gateway status
+th limits          # provider plan windows
+th leaderboard     # standing and sync controls
+th share           # generate a share card
+th reset-cache     # clear and rebuild the durable cache</code></pre>
+
+    <h2 id="troubleshooting">Troubleshooting</h2>
+    <table>
+      <tr><th>Symptom</th><th>Fix</th></tr>
+      <tr><td>Model list looks stale / commit mismatch</td><td><code>curl -s localhost:8765/health</code> and compare <code>build.commit</code> with <code>git rev-parse --short HEAD</code>. Rebuild with <code>./scripts/make-app.sh</code>.</td></tr>
+      <tr><td>API missing on :8765</td><td>Check the LaunchAgent: <code>/Applications/TokenHorizon.app/Contents/MacOS/TokenHorizon --agent-status</code>. The app never runs API-less — a bind failure exits loudly.</td></tr>
+      <tr><td><code>llm_gateway_port</code> null</td><td>Rebuild via <code>make-app.sh</code>; the gateway sidecar is bundled and health-gated at launch.</td></tr>
+      <tr><td>Provider limits silently missing</td><td>Credentials expired — re-auth with the provider (opencode keys rotate, Claude reads stored tokens, Alibaba needs a fresh cookie).</td></tr>
+      <tr><td>Catalog/plans stale on the web</td><td>The static export is refreshed on a schedule; run <code>task models-refresh</code> locally to regenerate <code>docs/data/models.json</code>.</td></tr>
+    </table>
+  </main>
+</div>
+
+<footer class="footer">
+  <a class="brand" href="../"><img src="../assets/icon.png" alt="" /><span>Token Horizon</span></a>
+  <p>Native observability for the AI-powered Mac.</p>
+  <div class="footer-links">
+    <a href="../docs/">Docs</a>
+    <a href="../blog/">Blog</a>
+    <a href="https://github.com/castlemilk/token-horizon">GitHub</a>
+    <a href="https://github.com/castlemilk/token-horizon/releases">Releases</a>
+  </div>
+</footer>
+<script src="../app.js"></script>
+</body>
+</html>

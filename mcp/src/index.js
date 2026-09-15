@@ -18,6 +18,8 @@ import {
   runPublishTelemetry,
   runClaimProfile,
   runCompareUsers,
+  runSearchModels,
+  runGetPlans,
   DEFAULT_API_BASE,
   DEFAULT_DAEMON_BASE
 } from "./tools.js";
@@ -143,6 +145,35 @@ const TOOL_DEFINITIONS = [
       },
       required: ["user1", "user2"]
     }
+  },
+  {
+    name: "search_models",
+    description: "Search the unified Token Horizon model catalog (token-horizon.dev/models): deduped listings with pricing evidence (price_known separates real free tiers from plan-covered/unpriced models), SWE-bench/LiveCodeBench scores, context windows, capabilities, and subscription-plan linkage.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        query: { type: "string", description: "Search terms; all tokens must match name/id/provider/description." },
+        provider: { type: "string", description: "Provider filter (e.g. 'anthropic', 'kimi', 'github-copilot')." },
+        plan: { type: "string", description: "Only models covered by this subscription plan id (see get_plans)." },
+        scope: { type: "string", enum: ["all", "cloud", "local", "free", "benchmarked", "plan", "unknown_price"], description: "Catalog scope filter." },
+        sort: { type: "string", enum: ["featured", "value", "swe", "lcb", "context", "input", "output", "blended", "name"], description: "Sort order (unknown prices always last)." },
+        limit: { type: "number", description: "Max rows (default 20, max 100)." },
+        unified: { type: "boolean", description: "Collapse duplicate listings into one row per model (default true)." }
+      }
+    }
+  },
+  {
+    name: "get_plans",
+    description: "Subscription plans in the Token Horizon catalog (GitHub Copilot, Kimi Code, MiniMax Token Plan, GLM Coding Plan, OpenCode Zen, ...): verified usage tiers with prices and quota windows, included models, provider docs, and per-plan catalog model counts.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        plan: { type: "string", description: "Specific plan id (e.g. 'github-copilot', 'kimi-for-coding')." },
+        provider: { type: "string", description: "Filter plans by provider id substring." },
+        include_models: { type: "boolean", description: "Include the covered catalog models per plan." },
+        limit: { type: "number", description: "Max covered models per plan (default 50)." }
+      }
+    }
   }
 ];
 
@@ -214,6 +245,28 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
       case "compare_users": {
         const result = await runCompareUsers(args);
+        return {
+          content: [
+            {
+              type: "text",
+              text: result.text,
+            },
+          ],
+        };
+      }
+      case "search_models": {
+        const result = await runSearchModels(args);
+        return {
+          content: [
+            {
+              type: "text",
+              text: result.text,
+            },
+          ],
+        };
+      }
+      case "get_plans": {
+        const result = await runGetPlans(args);
         return {
           content: [
             {

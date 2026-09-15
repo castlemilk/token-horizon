@@ -3,6 +3,7 @@ import { spawn } from "node:child_process";
 import { homedir } from "node:os";
 import { existsSync } from "node:fs";
 import readline from "node:readline";
+import { fetchCatalog, searchCatalog, planList } from "./catalog.mjs";
 
 const BASE = process.env.NOTCHMON_URL || "http://127.0.0.1:8765";
 const ENGINE_BASE = process.env.TOKEN_HORIZON_ENGINE_URL || "http://127.0.0.1:8766";
@@ -125,6 +126,37 @@ const TOOLS = [
         search: { type: "string", description: "Filter by model name, provider, or capability" },
         scope: { type: "string", enum: ["ALL", "CODING", "LOCAL", "FREE", "REASONING", "FLAGSHIP"], default: "ALL" },
         top_picks: { type: "boolean", default: false, description: "If true, return top 10 ranked models by benchmark performance and net blended cost" },
+      },
+    },
+  },
+  {
+    name: "token_horizon_catalog",
+    description:
+      "Search the unified Token Horizon model catalog — the same merged/deduped list as token-horizon.dev/models. Includes pricing evidence (price_known distinguishes real free tiers from plan-covered or unpriced models), SWE-bench/LiveCodeBench scores, capabilities, context windows, and subscription-plan linkage. Sources: local daemon /models/catalog first, hosted /api/models/catalog fallback.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        query: { type: "string", description: "Search terms; all tokens must match name/id/provider/description" },
+        provider: { type: "string", description: "Filter by provider id or label (e.g. 'anthropic', 'kimi', 'github-copilot')" },
+        plan: { type: "string", description: "Only models covered by this subscription plan id (see token_horizon_plans)" },
+        scope: { type: "string", enum: ["all", "cloud", "local", "free", "benchmarked", "plan", "unknown_price"], default: "all" },
+        sort: { type: "string", enum: ["featured", "value", "swe", "lcb", "context", "input", "output", "blended", "name"], default: "featured" },
+        limit: { type: "number", default: 20, description: "Max rows to return (1-100)" },
+        unified: { type: "boolean", default: true, description: "Collapse duplicate listings into one row per model (recommended)" },
+      },
+    },
+  },
+  {
+    name: "token_horizon_plans",
+    description:
+      "Subscription plans in the Token Horizon catalog (GitHub Copilot, Kimi Code, MiniMax Token Plan, GLM Coding Plan, OpenCode Zen, Alibaba, Volcengine, Tencent, Xiaomi, StepFun, ...): verified usage tiers with prices/quota windows, included models, provider docs, and per-plan model counts. Pass include_models=true to list the catalog models each plan covers.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        plan: { type: "string", description: "Specific plan id (e.g. 'github-copilot', 'kimi-for-coding', 'minimax-coding-plan')" },
+        provider: { type: "string", description: "Filter plans by provider id substring" },
+        include_models: { type: "boolean", default: false, description: "Include the covered catalog models per plan" },
+        limit: { type: "number", default: 50, description: "Max covered models per plan when include_models=true" },
       },
     },
   },
@@ -684,6 +716,14 @@ async function callTool(name, args) {
         const scope = encodeURIComponent(args?.scope || "ALL");
         const d = await api(`/models?search=${search}&scope=${scope}`);
         return d;
+      }
+      case "token_horizon_catalog": {
+        const catalog = await fetchCatalog();
+        return searchCatalog(catalog, args || {});
+      }
+      case "token_horizon_plans": {
+        const catalog = await fetchCatalog();
+        return planList(catalog, args || {});
       }
       case "token_horizon_discovery": {
         const action = args?.action || "status";

@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Why Token Horizon exists — Token Horizon</title>
+<meta name="description" content="AI usage is the most expensive invisible line item on a developer's machine. Token Horizon is the honest, local-first mirror for it." />
+<link rel="canonical" href="https://token-horizon.dev/blog/why-token-horizon.html" />
+<link rel="icon" href="../assets/favicon.svg" type="image/svg+xml" />
+<link rel="stylesheet" href="../styles.css" />
+</head>
+<body>
+<nav class="nav" id="site-nav">
+  <a class="brand" href="../"><img src="../assets/icon.png" alt="" /><span>Token Horizon</span></a>
+  <button class="nav-toggle" id="nav-toggle" type="button" aria-label="Toggle navigation" aria-expanded="false" aria-controls="nav-links">☰</button>
+  <div class="nav-links" id="nav-links">
+    <a class="nav-primary" href="../leaderboard.html">Leaderboard</a>
+    <a class="nav-primary" href="../models/">Models</a>
+    <a href="../docs/">Docs</a>
+    <a href="./">Blog</a>
+    <a class="nav-cta" href="https://github.com/castlemilk/token-horizon">GitHub</a>
+  </div>
+</nav>
+
+<article class="prose">
+  <h1>Why Token Horizon exists</h1>
+  <div class="meta">2026-09-15 · vision · 6 min read</div>
+
+  <p>Your AI tooling is probably the most expensive thing you install this year, and the least visible. Subscription plans, per-token APIs, prompt-cache discounts, five-hour windows, weekly quotas — each provider reports a different slice, in a different unit, on a different dashboard. Nothing tells you what you actually spent, what you're entitled to, or whether the model you're calling is even priced the way you think it is.</p>
+
+  <p>Token Horizon started as a notch widget: tokens, cost, and plan limits, glanceable without breaking flow. It only works because it refuses to guess. Every number comes from a parser of provider-reported data on your machine — session logs, plan APIs, wire traffic. No estimates, no extrapolated "savings", no vibes. That constraint turned out to be the product.</p>
+
+  <h2>What we believe</h2>
+
+  <p><strong>Local-first is a feature, not a limitation.</strong> The panel reads your AI tools' own files and APIs on your Mac. There is no proxy in the middle of your work and no account required to see your own usage. The leaderboard is opt-in, and what gets published is explicit.</p>
+
+  <p><strong>Provider-reported or absent.</strong> When a provider doesn't publish a number, we would rather show <code>—</code> than invent one. The same rule applies to token counts, cache rates, tokens-per-second, and pricing. A missing number is information; a fabricated one is a bug that erodes everything else.</p>
+
+  <p><strong>One catalog, with evidence.</strong> The model list is built from models.dev, OpenRouter, provider APIs, and curated benchmarks, merged into one deduped family per model. We recently added a second dimension: <em>pricing evidence</em>. A model is "free" only when something explicitly says so. "Covered by a plan" is its own state. "Nobody publishes a price" is a third. Conflating them is how a $3/1M model gets listed as free.</p>
+
+  <p><strong>Plans are first-class.</strong> Most agent work now happens inside flat-rate subscriptions — Copilot, Kimi Code, GLM Coding, MiniMax, OpenCode Zen. Per-token pricing is the wrong lens for those. So plans get their own view: usage tiers, quota windows, included models, and a badge on every model they cover.</p>
+
+  <p><strong>Comparison should be fun, not coercive.</strong> The leaderboard exists to make progress legible: leagues, streaks, per-model breakdowns, and resettable seasons. It should never make you optimize for the scoreboard instead of the work.</p>
+
+  <h2>What we're building next</h2>
+
+  <ul>
+    <li><strong>More plan intelligence.</strong> Verified tiers for every coding plan we can source, and a clear signal when a model is only available through one.</li>
+    <li><strong>A catalog that ages well.</strong> The web list is a static export of the app's own merge pipeline, regenerated on a schedule — so the published catalog and the local one can't drift.</li>
+    <li><strong>Better local runtimes.</strong> Ollama and MLX telemetry already flow through measured relay paths; next is sharper per-model efficiency views and cost attribution for local hardware.</li>
+    <li><strong>MCP everywhere.</strong> Agents should be able to ask "what does this model cost, and is it in my plan?" as easily as they ask for a file. That's live now.</li>
+  </ul>
+
+  <h2>The rule we keep relearning</h2>
+
+  <p>Observability products die by a thousand small lies: a fake zero, a rounded rate, an average that hides the outlier. Token Horizon's job is the opposite — to show the honest shape of your usage, including the places where nobody wants to publish a number. If the dashboard disagrees with your bill, that's our bug. Tell us.</p>
+
+  <p>— The Token Horizon team</p>
+</article>
+
+<footer class="footer">
+  <a class="brand" href="../"><img src="../assets/icon.png" alt="" /><span>Token Horizon</span></a>
+  <p>Native observability for the AI-powered Mac.</p>
+  <div class="footer-links">
+    <a href="../docs/">Docs</a>
+    <a href="./">Blog</a>
+    <a href="https://github.com/castlemilk/token-horizon">GitHub</a>
+    <a href="https://github.com/castlemilk/token-horizon/releases">Releases</a>
+  </div>
+</footer>
+<script src="../app.js"></script>
+</body>
+</html>

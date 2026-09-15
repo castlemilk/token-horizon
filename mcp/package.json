@@ -1,7 +1,7 @@
 {
   "name": "token-horizon-mcp",
   "version": "0.1.0",
-  "description": "Model Context Protocol (MCP) server for Token Horizon — inspect leaderboards, query live daemon telemetry, manage profile claims, and sync metrics",
+  "description": "Model Context Protocol (MCP) server for Token Horizon \u2014 inspect leaderboards, query live daemon telemetry, manage profile claims, and sync metrics",
   "main": "src/index.js",
   "bin": {
     "token-horizon-mcp": "./src/index.js"
@@ -18,8 +18,9 @@
   ],
   "scripts": {
     "start": "node src/index.js",
-    "test": "node test-mcp.mjs",
-    "session": "node client-session.mjs"
+    "test": "node test-catalog.mjs && node test-mcp.mjs",
+    "session": "node client-session.mjs",
+    "test:catalog": "node test-catalog.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.17.0"

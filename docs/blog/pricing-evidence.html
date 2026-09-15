@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Pricing evidence: why zero isn't zero — Token Horizon</title>
+<meta name="description" content="Our catalog called Kimi K3 free. It isn't — it's plan-covered. The evidence model we now enforce across every model listing." />
+<link rel="canonical" href="https://token-horizon.dev/blog/pricing-evidence.html" />
+<link rel="icon" href="../assets/favicon.svg" type="image/svg+xml" />
+<link rel="stylesheet" href="../styles.css" />
+</head>
+<body>
+<nav class="nav" id="site-nav">
+  <a class="brand" href="../"><img src="../assets/icon.png" alt="" /><span>Token Horizon</span></a>
+  <button class="nav-toggle" id="nav-toggle" type="button" aria-label="Toggle navigation" aria-expanded="false" aria-controls="nav-links">☰</button>
+  <div class="nav-links" id="nav-links">
+    <a class="nav-primary" href="../leaderboard.html">Leaderboard</a>
+    <a class="nav-primary" href="../models/">Models</a>
+    <a href="../docs/">Docs</a>
+    <a href="./">Blog</a>
+    <a class="nav-cta" href="https://github.com/castlemilk/token-horizon">GitHub</a>
+  </div>
+</nav>
+
+<article class="prose">
+  <h1>Pricing evidence: why zero isn't zero</h1>
+  <div class="meta">2026-09-15 · catalog · 5 min read</div>
+
+  <p>A user pointed at our model list: <em>Kimi K3 is not free.</em> They were right, and the reason is a data-modelling mistake that's easy to make and dangerous to keep.</p>
+
+  <h2>Where the "free" came from</h2>
+
+  <p>Kimi Code — Moonshot's coding subscription — publishes its model catalogue with <code>cost: { input: 0, output: 0 }</code>. That's not a price; it's the absence of one, because usage is covered by the plan. Meanwhile a provider that simply hasn't published pricing yet also parses as zero, and a genuinely free promotional tier (<code>…:free</code> on a gateway) is zero as well. Three completely different situations, one number.</p>
+
+  <p>Our pipeline treated <em>any</em> zero price as free, and then computed a "blended net cost" of $0.04/1M so the free row had something to sort by. So K3 appeared at the top of the value sort, tagged FREE, cheaper than models that actually cost money. Every downstream comparison — top picks, cost-per-token, "cheapest frontier model" — inherited the lie.</p>
+
+  <h2>The fix: evidence, not inference</h2>
+
+  <ul>
+    <li><strong>Free requires explicit evidence.</strong> Local models (Ollama) are free. A listing whose name or id says <code>free</code> is free. Nothing else is, merely because its price parses as zero.</li>
+    <li><strong>"Plan-covered" is its own state.</strong> When a model is available through a subscription (Copilot, Kimi Code, GLM Coding Plan, MiniMax Token Plan, OpenCode Zen, …), the row links to that plan, shows <code>—</code> instead of a per-token price, and carries a <code>PLAN</code> badge.</li>
+    <li><strong>"Unpriced" is a third state.</strong> Video generators, embedding models and brand-new releases often have no public price yet. They show <code>—</code> and sort last in both price directions — they are not "cheapest".</li>
+    <li><strong>Plans get a real view.</strong> A dedicated tab (and <code>/models?tab=plans</code>) renders each plan's usage tiers: prices, quota windows, included models, and a link to the provider's own docs — hand-curated, with the date we verified it.</li>
+  </ul>
+
+  <h2>What changed in the numbers</h2>
+
+  <p>On the day we fixed it, "free" rows dropped from <strong>543 to 75</strong> — every remaining one has explicit evidence. <strong>446 listings</strong> moved to "priced unknown" and stopped pretending to be $0.00/1M. And <strong>186 rows</strong> now link to the subscription plan that actually covers them.</p>
+
+  <p>The lesson generalises: in observability, the dangerous number is never the missing one — it's the default. A zero that means "unknown" will quietly win every sort, every comparison, and every recommendation built on top of it. Evidence first, defaults never.</p>
+
+  <p>You can explore the result at <a href="../models/">token-horizon.dev/models</a>, and ask an agent the same questions through our MCP tools (<code>search_models</code>, <code>get_plans</code>).</p>
+
+  <p>— The Token Horizon team</p>
+</article>
+
+<footer class="footer">
+  <a class="brand" href="../"><img src="../assets/icon.png" alt="" /><span>Token Horizon</span></a>
+  <p>Native observability for the AI-powered Mac.</p>
+  <div class="footer-links">
+    <a href="../docs/">Docs</a>
+    <a href="./">Blog</a>
+    <a href="https://github.com/castlemilk/token-horizon">GitHub</a>
+    <a href="https://github.com/castlemilk/token-horizon/releases">Releases</a>
+  </div>
+</footer>
+<script src="../app.js"></script>
+</body>
+</html>
