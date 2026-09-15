@@ -3,7 +3,8 @@
 		type Phase,
 		type EnterSpec,
 		type ExitSpec,
-		type TravelRoots
+		type TravelRoots,
+		type TravelMark
 	} from './WidgetMorph.svelte';
 	import Heatmap from '$lib/components/data/Heatmap.svelte';
 	import {
@@ -140,30 +141,33 @@
 	const canFly = () => !reduce && K > 0 && tileDays.some((d) => d.day);
 	const closeable = () => trailing;
 
-	/** Travel endpoints by index: tile dots ↔ year cells. Sources read
-	 *  pre-swap, targets post-mount on open, both live on close. The
-	 *  shell boxes them and validates — nulls or a length mismatch fall
-	 *  back to a plain fade, never a half flight. */
-	function travelFrom(
-		dir: 'open' | 'close',
-		roots: TravelRoots
-	): (Element | null)[] | null {
+	/** Travel endpoints keyed by day ts: tile dots ↔ year cells.
+	 *  Sources read pre-swap, targets post-mount on open, both live on
+	 *  close. The shell matches by key, so orderings may differ. */
+	function travelFrom(dir: 'open' | 'close', roots: TravelRoots): TravelMark[] | null {
 		if (dir === 'open') {
-			return roots.box ? [...roots.box.querySelectorAll('.mini .mdot')] : null;
+			if (!roots.box) return null;
+			const dots = [...roots.box.querySelectorAll('.mini .mdot')];
+			return tileDays.map((d, i) => ({ key: String(d.ts), el: dots[i] ?? null }));
 		}
 		if (!heatEl) return null;
-		return tileDays.map((d) => heatEl!.querySelector(`[data-ts="${d.ts}"]`));
+		return tileDays.map((d) => ({
+			key: String(d.ts),
+			el: heatEl!.querySelector(`[data-ts="${d.ts}"]`)
+		}));
 	}
 
-	function travelTo(
-		dir: 'open' | 'close',
-		roots: TravelRoots
-	): (Element | null)[] | null {
+	function travelTo(dir: 'open' | 'close', roots: TravelRoots): TravelMark[] | null {
 		if (dir === 'open') {
 			if (!heatEl) return null;
-			return tileDays.map((d) => heatEl!.querySelector(`[data-ts="${d.ts}"]`));
+			return tileDays.map((d) => ({
+				key: String(d.ts),
+				el: heatEl!.querySelector(`[data-ts="${d.ts}"]`)
+			}));
 		}
-		return roots.ghost ? [...roots.ghost.querySelectorAll('.mdot')] : null;
+		if (!roots.ghost) return null;
+		const dots = [...roots.ghost.querySelectorAll('.mdot')];
+		return tileDays.map((d, i) => ({ key: String(d.ts), el: dots[i] ?? null }));
 	}
 
 	const enterOpen: EnterSpec[] = [
