@@ -27,6 +27,13 @@
 	--animate-accordion-up: accordion-up 0.15s ease-out;
 }
 
+/* Reserve the scrollbar gutter so locking body scroll (modal open)
+   never changes the viewport width — the shared container would
+   otherwise jump ~15px sideways on the landing frame. */
+html {
+	scrollbar-gutter: stable;
+}
+
 /*
  * Token Horizon design language — "hairline".
  * One shared look across macOS / Windows / Linux: system UI type, 1px lines,

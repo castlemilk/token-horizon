@@ -1,16 +1,11 @@
 <script lang="ts">
-	import { tick } from 'svelte';
-	import gsap from 'gsap';
+	import WidgetMorph, {
+		type Phase,
+		type EnterSpec,
+		type ExitSpec,
+		type TravelRoots
+	} from './WidgetMorph.svelte';
 	import Heatmap from '$lib/components/data/Heatmap.svelte';
-	import {
-		boxOf,
-		naturalBox,
-		flightVars,
-		cardVars,
-		spawnClones,
-		removeClones,
-		type Box
-	} from './morph';
 	import {
 		activityStats,
 		fetchDailyActivityRange,
@@ -19,113 +14,15 @@
 	} from '$lib/activity';
 	import { fmtTok } from '$lib/format';
 
-	/** One box-shadow layer as numbers: lengths lerp + divide by live
-	    scale each frame, color held constant (tile side). */
-	interface ShadowLayer {
-		inset: boolean;
-		color: string;
-		v: [number, number, number, number];
-	}
-
-	function splitShadowLayers(s: string): string[] {
-		const out: string[] = [];
-		let depth = 0;
-		let cur = '';
-		for (const ch of s) {
-			if (ch === '(') depth++;
-			if (ch === ')') depth--;
-			if (ch === ',' && depth === 0) {
-				out.push(cur);
-				cur = '';
-			} else cur += ch;
-		}
-		if (cur.trim()) out.push(cur);
-		return out;
-	}
-
-	function parseShadow(s: string): ShadowLayer[] | null {
-		if (!s || s === 'none') return null;
-		const parsed: ShadowLayer[] = [];
-		for (const layer of splitShadowLayers(s)) {
-			const nums = (layer.match(/-?\d*\.?\d+px/g) ?? []).map((n) => parseFloat(n));
-			if (nums.length < 3) return null;
-			const color = layer
-				.replace(/-?\d*\.?\d+px/g, '')
-				.replace(/inset/g, '')
-				.replace(/\s+/g, ' ')
-				.trim();
-			parsed.push({
-				inset: layer.includes('inset'),
-				color,
-				v: [nums[0], nums[1], nums[2], nums[3] ?? 0]
-			});
-		}
-		return parsed;
-	}
-
-	function parseLensPair(
-		tileStr: string,
-		modalStr: string
-	): { tile: ShadowLayer[]; modal: ShadowLayer[] } | null {
-		const tile = parseShadow(tileStr);
-		const modal = parseShadow(modalStr);
-		if (!tile || !modal || tile.length !== modal.length || tile.length === 0) return null;
-		return { tile, modal };
-	}
-
-	function projScale(el: HTMLElement): { sx: number; sy: number } {
-		return {
-			sx: Number(gsap.getProperty(el, 'scaleX')) || 1,
-			sy: Number(gsap.getProperty(el, 'scaleY')) || 1
-		};
-	}
-
-	/**
-	 * Scale-compensated shadow: the card's transform multiplies whatever
-	 * shadow value is set, so tweening the value naively double-shrinks it
-	 * (and pops ~3x at the landing scrub). Dividing the interpolated
-	 * lengths by the live scale keeps the PAINTED shadow exactly on the
-	 * interpolation curve — at both ends the handoff is pixel-exact, so no
-	 * fade or settle zoom is needed to hide it. x/y divide by their own
-	 * axis (the morph is non-uniform), blur/spread by the mean.
-	 */
-	function shadowCSS(
-		fromV: ShadowLayer[],
-		toV: ShadowLayer[],
-		colors: ShadowLayer[],
-		t: number,
-		sx: number,
-		sy: number
-	): string {
-		const kx = Math.max(sx, 0.001);
-		const ky = Math.max(sy, 0.001);
-		const kb = Math.max((sx + sy) / 2, 0.001);
-		const r2 = (n: number) => String(Math.round(n * 100) / 100);
-		return toV
-			.map((L, i) => {
-				const F = fromV[i];
-				const x = (F.v[0] + (L.v[0] - F.v[0]) * t) / kx;
-				const y = (F.v[1] + (L.v[1] - F.v[1]) * t) / ky;
-				const b = (F.v[2] + (L.v[2] - F.v[2]) * t) / kb;
-				const s = (F.v[3] + (L.v[3] - F.v[3]) * t) / kb;
-				return `${L.inset ? 'inset ' : ''}${r2(x)}px ${r2(y)}px ${r2(b)}px ${r2(s)}px ${colors[i].color}`;
-			})
-			.join(', ');
-	}
-
 	/** Home-screen activity widget, two sizes sharing one modal.
 	 *  small: 3×3 tile — last 9 days, one dot per day.
 	 *  medium: 9×3 tile — last 27 days, one dot per day.
 	 *  modal: the full year (trailing 365d while the year is incomplete).
 	 *
-	 *  One shared container does both jobs: the tile div itself expands
-	 *  into the modal on open and collapses back into the tile on close
-	 *  (measure → plan → play, one GSAP timeline per direction, see
-	 *  ./morph.ts). The backdrop is a sibling driven by the SAME timeline
-	 *  in both directions, so the dim fades out with the collapse instead
-	 *  of winking out after unmount. An invisible ghost replica holds the
-	 *  grid slot while open and supplies the measured tile + dot targets
-	 *  for the return flight.
+	 *  Content for a shared-container morph (see WidgetMorph): this file
+	 *  owns data + markup + the travel pairing, the shell owns every
+	 *  pixel of choreography. Tile/ghost markup is single-sourced via
+	 *  snippets so the return flight always measures what the tile shows.
 	 *
 	 *  `speed` scales every duration (1 = brisk default, 0.5 dreamy,
 	 *  2 = instant-ish) — timing choice lives here, in the component. */
@@ -133,10 +30,6 @@
 		$props();
 
 	const HEAT = 'light-dark(#34c759, #30d158)';
-	const S = $derived(1 / (speed > 0 ? speed : 1));
-	const TILE_N = $derived(variant === 'small' ? 9 : 27);
-	const STAG_S = $derived((variant === 'small' ? 0.035 : 0.016) / (speed > 0 ? speed : 1));
-	const BSTAG_S = $derived((variant === 'small' ? 0.022 : 0.012) / (speed > 0 ? speed : 1));
 	const reduce =
 		typeof matchMedia !== 'undefined' && matchMedia('(prefers-reduced-motion: reduce)').matches;
 
@@ -149,13 +42,14 @@
 		return 4;
 	}
 
-	/** Same domain as the trailing-year heatmap, so tile colors match cells. */
+	/** Same domain as the trailing-year heatmap, so tile colors match cells.
+	 *  Billable tokens throughout (excludes cache reads), like the main tab. */
 	const tileMax = $derived(Math.max(1, ...days.map((d) => d.tokens)));
+	const TILE_N = $derived(variant === 'small' ? 9 : 27);
 	const tileDays = $derived(days.slice(-TILE_N));
 	const tileLvls = $derived(tileDays.map((d) => level(d.tokens, tileMax)));
 	const streak = $derived(activityStats(days).streak);
 	const K = $derived(tileDays.length);
-
 	const activeK = $derived(tileDays.filter((d) => d.tokens > 0).length);
 	const tileKey = $derived(tileDays.map((d) => d.tokens).join(','));
 
@@ -171,49 +65,16 @@
 	);
 	const minYear = $derived(Math.min(earliestYear, currentYear - 1));
 
-	let open = $state(false);
 	let year = $state(currentYear);
 	let yearCache = $state<Record<number, DayActivity[]>>({});
 	let loading = $state(false);
 	let loadError = $state(false);
-	let phase = $state<'fly' | 'settle' | 'exit'>('settle');
-	let flightOk = $state(false);
-	/** True after a close lands: the tile remounts fresh and its dots
-	    would replay their staggered pop-in (reads as reloading), so
-	    entrance animation stays suppressed while this tile is mounted —
-	    cleared on the next open, when the tile unmounts anyway. Toggling
-	    it back on a timer would restart the animation (whole-widget
-	    flicker), so it persists until show(). */
-	let landed = $state(false);
-	/** THE shared container: tile when closed, modal when open. Never recreated. */
-	let boxEl = $state<HTMLElement | null>(null);
-	let tileDotsEl = $state<HTMLElement | null>(null);
-	let ghostEl = $state<HTMLElement | null>(null);
-	let backdropEl = $state<HTMLElement | null>(null);
 	let heatEl = $state<HTMLElement | null>(null);
-	/** Flipped the frame the timeline takes over the backdrop. */
-	let started = $state(false);
-	let activeTl: gsap.core.Timeline | null = null;
-	let timers: number[] = [];
-	/** Invalidates a pending open flight scheduled via tick(). */
-	let flightId = 0;
-	/** Tile measurements taken while boxEl still IS the tile (pre-swap). */
-	let pendingTile: { tileBox: Box; dotBoxes: Box[]; bg: string[]; fromShadow: string } | null =
-		null;
-	/** Parsed resting shadows (tile ↔ modal) for the open session: drives
-	    the scale-compensated shadow on both flights. Null when unparseable
-	    (or a no-flight open) → falls back to plain value tweens. */
-	let flightLens: { tile: ShadowLayer[]; modal: ShadowLayer[] } | null = null;
 
-	/** ?slowmo=1 slows every widget timeline — landing-frame inspection. */
-	function slowmo(tl: gsap.core.Timeline): gsap.core.Timeline {
-		try {
-			if (new URLSearchParams(location.search).has('slowmo')) tl.timeScale(0.25);
-		} catch {
-			/* non-browser prerender */
-		}
-		return tl;
-	}
+	// Engine-owned, bound here so content can gate on it (year stepping,
+	// landing fades) without reaching into WidgetMorph.
+	let phase = $state<Phase>('settle');
+	let landed = $state(false);
 
 	const trailing = $derived(year === currentYear);
 	const yearDays = $derived<DayActivity[]>(trailing ? days : (yearCache[year] ?? []));
@@ -226,20 +87,9 @@
 		return `${f(yearDays[0])} – ${f(yearDays[yearDays.length - 1])}`;
 	});
 
-	function clearTimers() {
-		for (const t of timers) clearTimeout(t);
-		timers = [];
-	}
-
-	function killTl() {
-		activeTl?.kill();
-		activeTl = null;
-	}
-
 	/** Post-mount layout keeps shifting (heatmap auto-fits week columns to
 	 *  the measured container width, fonts settle). Sampling until the heat
-	 *  rect holds still guarantees the measured end boxes are final — the
-	 *  reverse gets this for free on an already-settled modal. */
+	 *  rect holds still guarantees the measured end boxes are final. */
 	function layoutStable(maxFrames = 12): Promise<void> {
 		return new Promise((resolve) => {
 			let last = '';
@@ -283,700 +133,153 @@
 	}
 
 	$effect(() => {
-		if (open && !trailing) void ensureYear(year);
+		if (year !== currentYear) void ensureYear(year);
 	});
 
-	$effect(() => {
-		if (!open) return;
-		const prev = document.body.style.overflow;
-		document.body.style.overflow = 'hidden';
-		const onkey = (e: KeyboardEvent) => {
-			if (e.key === 'Escape') hide();
-		};
-		window.addEventListener('keydown', onkey);
-		return () => {
-			document.body.style.overflow = prev;
-			window.removeEventListener('keydown', onkey);
-		};
-	});
+	// ---- morph contract (see WidgetMorph) ----
+	const canFly = () => !reduce && K > 0 && tileDays.some((d) => d.day);
+	const closeable = () => trailing;
 
-	function reset() {
-		killTl();
-		clearTimers();
-		removeClones();
-		flightId++;
-		const wasExit = phase === 'exit';
-		// Same node persists across the swap — scrub every inline flight
-		// state so the tile is whole again as the backdrop releases.
-		if (boxEl) gsap.set(boxEl, { clearProps: 'all' });
-		open = false;
-		flightOk = false;
-		started = false;
-		pendingTile = null;
-		phase = 'settle';
-		if (wasExit) {
-			// Tile remounts fresh below: hold dots steady from first
-			// paint. Stays set until the next open (show clears it as
-			// the tile unmounts) — clearing it on a timer would replay
-			// the entrance and flicker the whole widget.
-			landed = true;
-			// Single landing event for the shadow too: the inline
-			// compensated value (e.g. 58px blur specified) is visually
-			// identical to the tile shadow, but without the freeze the
-			// tile's own box-shadow transition would ramp 58px→18px
-			// after landing — a second shadow animation. Frozen in the
-			// same flush as the swap, it applies instantly instead.
-			if (boxEl) gsap.set(boxEl, { transition: 'none' });
-			timers.push(
-				window.setTimeout(() => {
-					if (boxEl) gsap.set(boxEl, { clearProps: 'transition' });
-				}, 60)
-			);
+	/** Travel endpoints by index: tile dots ↔ year cells. Sources read
+	 *  pre-swap, targets post-mount on open, both live on close. The
+	 *  shell boxes them and validates — nulls or a length mismatch fall
+	 *  back to a plain fade, never a half flight. */
+	function travelFrom(
+		dir: 'open' | 'close',
+		roots: TravelRoots
+	): (Element | null)[] | null {
+		if (dir === 'open') {
+			return roots.box ? [...roots.box.querySelectorAll('.mini .mdot')] : null;
 		}
+		if (!heatEl) return null;
+		return tileDays.map((d) => heatEl!.querySelector(`[data-ts="${d.ts}"]`));
 	}
 
-	function show() {
-		if (open) {
-			// Reopen mid-exit: abandon the collapse and settle open.
-			if (phase === 'exit') {
-				killTl();
-				clearTimers();
-				removeClones();
-				if (boxEl) gsap.set(boxEl, { clearProps: 'all' });
-				if (backdropEl) gsap.set(backdropEl, { clearProps: 'all' });
-				phase = 'settle';
-			}
-			return;
+	function travelTo(
+		dir: 'open' | 'close',
+		roots: TravelRoots
+	): (Element | null)[] | null {
+		if (dir === 'open') {
+			if (!heatEl) return null;
+			return tileDays.map((d) => heatEl!.querySelector(`[data-ts="${d.ts}"]`));
 		}
-		killTl();
-		clearTimers();
-		landed = false;
-		if (boxEl) gsap.set(boxEl, { clearProps: 'all' });
-		year = currentYear;
-		// Measure while boxEl still IS the tile — after the swap the tile
-		// dots are gone, so their boxes + colors are stored for the plan.
-		const tileBox = boxOf(boxEl);
-		const dots = tileDotsEl ? [...tileDotsEl.querySelectorAll('.mdot')] : [];
-		if (
-			!reduce &&
-			tileBox &&
-			boxEl &&
-			dots.length === K &&
-			K > 0 &&
-			tileDays.some((d) => d.day)
-		) {
-			const dotBoxes = dots.map(boxOf);
-			if (dotBoxes.some((b) => !b)) {
-				open = true;
-				phase = 'settle';
-				flightOk = false;
-				return;
-			}
-			pendingTile = {
-				tileBox,
-				dotBoxes: dotBoxes as Box[],
-				bg: dots.map((el) => getComputedStyle(el).backgroundColor),
-				fromShadow: getComputedStyle(boxEl).boxShadow
-			};
-			flightOk = true;
-			phase = 'fly';
-			open = true;
-			const id = ++flightId;
-			void tick().then(async () => {
-				if (id !== flightId) return;
-				await layoutStable();
-				if (id !== flightId) return;
-				launchOpen(id);
-			});
-		} else {
-			flightOk = false;
-			flightLens = null;
-			phase = 'settle';
-			open = true;
-		}
+		return roots.ghost ? [...roots.ghost.querySelectorAll('.mdot')] : null;
 	}
 
-	/**
-	 * OPEN — boxEl (the tile itself) has swapped to its modal layout;
-	 * park it over the stored tile box, then play one timeline: the
-	 * container expands while the dots ride clones to their year-cells,
-	 * then extras fade/translate in.
-	 */
-	function launchOpen(id: number) {
-		if (id !== flightId) return;
-		if (!open || phase !== 'fly' || !boxEl || !heatEl || !pendingTile) {
-			if (open && id === flightId) phase = 'settle';
-			return;
-		}
-		const card = boxEl;
-		const cardBox = boxOf(card);
-		if (!cardBox) {
-			phase = 'settle';
-			return;
-		}
-		const cellEls = tileDays.map((d) => heatEl!.querySelector(`[data-ts="${d.ts}"]`));
-		const cellBoxes = cellEls.map(boxOf);
-		if (cellBoxes.some((b) => !b)) {
-			phase = 'settle';
-			return;
-		}
-		const pairs = pendingTile.dotBoxes.map((db, i) => ({
-			from: db,
-			to: cellBoxes[i] as Box,
-			bg: pendingTile!.bg[i] ?? pendingTile!.bg[0]
-		}));
-		const clones = spawnClones(pairs);
-		const landT = 0.06 + (pairs.length - 1) * STAG_S + 0.45 * S;
-		const mEnd = 0.38 * S;
+	const enterOpen: EnterSpec[] = [
+		{
+			select: '.heatmap .cell',
+			kind: 'ripple',
+			excludeTravel: true,
+			at: (c) => c.landT + 0.04 * c.S
+		},
+		{ select: '.xstat', kind: 'rise', at: (c) => c.landT + 0.12 * c.S },
+		{ select: '.xnote', kind: 'rise', y: 5, at: (c) => c.landT + 0.28 * c.S },
+		{ select: '.heatmap .legend', kind: 'fade', dur: 0.4, at: (c) => c.landT + 0.4 * c.S }
+	];
 
-		const tl = slowmo(gsap.timeline({ defaults: { ease: 'power3.out' } }));
-		activeTl = tl;
-		started = true;
-
-		// Backdrop ramps with everything else: dim + blur rise together.
-		// Read the resting look BEFORE parking it transparent.
-		const backdrop = backdropEl;
-		const backdropBg = backdrop ? getComputedStyle(backdrop).backgroundColor : 'rgba(0,0,0,0)';
-		if (backdrop) {
-			gsap.set(backdrop, { backgroundColor: 'rgba(0,0,0,0)', '--wmodal-blur': '0px' });
-			tl.to(
-				backdrop,
-				{
-					backgroundColor: backdropBg,
-					'--wmodal-blur': '14px',
-					duration: 0.45 * S,
-					ease: 'power1.out'
-				},
-				0
-			);
-		}
-
-		// 1 — container + dots move together, all values precomputed.
-		// The shadow rides a compensated driver (not a value tween) so
-		// the painted result tracks the tile→modal curve exactly — at
-		// t=0 it matches the just-unmounted tile pixel-for-pixel.
-		const toShadow = getComputedStyle(card).boxShadow;
-		flightLens = parseLensPair(pendingTile.fromShadow, toShadow);
-		const cv = cardVars(pendingTile.tileBox, cardBox);
-		const mDur = 0.38 * S;
-		const rc = { r: 18 };
-		const applyRadius = () => {
-			const sx = Number(gsap.getProperty(card, 'scaleX')) || 1;
-			const sy = Number(gsap.getProperty(card, 'scaleY')) || 1;
-			card.style.borderRadius = `${(rc.r / sx).toFixed(2)}px / ${(rc.r / sy).toFixed(2)}px`;
-		};
-		tl.fromTo(
-			card,
-			{
-				x: cv.dx,
-				y: cv.dy,
-				scaleX: cv.sx,
-				scaleY: cv.sy,
-				...(flightLens ? {} : { boxShadow: pendingTile.fromShadow })
-			},
-			{
-				x: 0,
-				y: 0,
-				scaleX: 1,
-				scaleY: 1,
-				...(flightLens ? {} : { boxShadow: toShadow }),
-				transformOrigin: '50% 50%',
-				duration: mDur,
-				ease: 'power3.inOut'
-			},
-			0
-		);
-		if (flightLens) {
-			const lens = flightLens;
-			const shop = { t: 0 };
-			const applyShadow = () => {
-				const { sx, sy } = projScale(card);
-				card.style.boxShadow = shadowCSS(lens.tile, lens.modal, lens.tile, shop.t, sx, sy);
-			};
-			applyShadow(); // park the painted shadow exactly on the tile — no one-frame shrink
-			tl.to(shop, { t: 1, duration: mDur, ease: 'power3.inOut', onUpdate: applyShadow }, 0);
-		}
-		tl.to(rc, { r: 20, duration: mDur, ease: 'power3.inOut', onUpdate: applyRadius }, 0);
-		applyRadius(); // settle corners synchronously — no one-frame pinch
-		clones.forEach((c, i) => {
-			const f = flightVars(pairs[i].from, pairs[i].to);
-			tl.to(
-				c,
-				{ x: f.x, y: f.y, scale: f.scale, duration: 0.45 * S, ease: 'power3.out' },
-				0.06 * S + i * STAG_S
-			);
-		});
-		tl.to(clones, { autoAlpha: 0, duration: 0.15 * S, ease: 'power1.out' }, landT);
-
-		// 2 — modal extras fade/translate in behind the landing. Queried
-		// live off the settled card, positions derived from landT — adding
-		// more content later just joins the cascade. Travelers are skipped
-		// by ts (no ring marks them anymore): clones cover those cells.
-		const travelTs = new Set(tileDays.map((d) => d.ts));
-		const others = [...heatEl.querySelectorAll('.heatmap .cell')].filter(
-			(el) => !travelTs.has(Number(el.getAttribute('data-ts')))
-		);
-		if (others.length > 0) {
-			tl.fromTo(
-				others,
-				{ scale: 0, autoAlpha: 0 },
-				{
-					scale: 1,
-					autoAlpha: 1,
-					duration: 0.35 * S,
-					ease: 'back.out(1.6)',
-					stagger: { amount: 0.5 * S, from: 'end', grid: 'auto' }
-				},
-				landT + 0.04 * S
-			);
-		}
-		const xstats = card.querySelectorAll('.xstat');
-		if (xstats.length > 0) {
-			tl.from(
-				xstats,
-				{ y: 12, autoAlpha: 0, duration: 0.3 * S, ease: 'power3.out', stagger: 0.06 * S },
-				landT + 0.12 * S
-			);
-		}
-		// Card chrome (title/year-picker/close) stays hidden while the shell
-		// scales — visible squished text is the overlay tell — then fades in
-		// once the container has landed.
-		const head = card.querySelectorAll('.wmodal-head > *');
-		if (head.length > 0) {
-			tl.fromTo(head, { autoAlpha: 0 }, { autoAlpha: 1, duration: 0.25 * S, ease: 'power1.out' }, mEnd);
-		}
-		const note = card.querySelector('.xnote');
-		if (note) tl.from(note, { y: 5, autoAlpha: 0, duration: 0.3 * S, ease: 'power2.out' }, landT + 0.28 * S);
-		const legend = card.querySelector('.heatmap .legend');
-		if (legend) tl.from(legend, { autoAlpha: 0, duration: 0.4 * S, ease: 'power1.out' }, landT + 0.4 * S);
-		tl.call(() => removeClones(), [], landT + 0.3);
-		timers.push(
-			window.setTimeout(() => {
-				if (open && phase === 'fly') phase = 'settle';
-			}, landT * 1000)
-		);
-	}
-
-	/**
-	 * CLOSE — the same container collapses back into the tile: extras
-	 * dissolve, dots fly home to the ghost replica, the backdrop fades on
-	 * the SAME timeline, and only then does the node drop back to tile flow.
-	 *
-	 * Runs from ANY choreography phase, even mid-flight: the open timeline
-	 * is killed first and GSAP's inline leftovers are scrubbed off every
-	 * node the exit doesn't tween. The card itself is left alone so a
-	 * mid-morph collapse continues smoothly instead of snapping.
-	 */
-	function hide() {
-		if (!open || phase === 'exit') return;
-		if (reduce || !trailing) {
-			// Motion-safe, or a past year whose cells aren't the tile days:
-			// plain fade, never a fake flight — backdrop included.
-			killTl();
-			clearTimers();
-			const card = boxEl;
-			const backdrop = backdropEl;
-			if (card && backdrop && !reduce) {
-				phase = 'exit';
-				const ftl = slowmo(
-					gsap.timeline({ onComplete: () => reset() })
-				);
-				activeTl = ftl;
-				ftl.to(
-					[card, backdrop],
-					{ autoAlpha: 0, duration: 0.18 * S, ease: 'power1.out' },
-					0
-				);
-			} else {
-				reset();
-			}
-			return;
-		}
-		killTl();
-		clearTimers();
-		flightId++; // cancel a still-pending open flight so it can't clobber 'exit'
-		const card = boxEl;
-		const ghost = ghostEl;
-		if (card) {
-			gsap.set(card.querySelectorAll('.heatmap .cell'), { clearProps: 'all' });
-			gsap.set(card.querySelectorAll('.xstat,.xnote,.heatmap .legend,.wmodal-head > *'), {
-				clearProps: 'all'
-			});
-			// A killed landing may have stranded opacity/transition states.
-			gsap.set(card, { clearProps: 'opacity,visibility,transition' });
-		}
-		if (!card || !ghost || !heatEl) {
-			reset();
-			return;
-		}
-		const modalBox = boxOf(card);
-		const tileBox = boxOf(ghost);
-		const ghostDots = [...ghost.querySelectorAll('.mdot')];
-		if (!modalBox || !tileBox || ghostDots.length !== K || K === 0) {
-			reset();
-			return;
-		}
-		const dotBoxes = ghostDots.map(boxOf);
-		const cellEls = tileDays.map((d) => heatEl!.querySelector(`[data-ts="${d.ts}"]`));
-		const cellBoxes = cellEls.map(boxOf);
-		if (dotBoxes.some((b) => !b) || cellBoxes.some((b) => !b)) {
-			reset();
-			return;
-		}
-		const bg = cellEls.map((el) => (el ? getComputedStyle(el as Element).backgroundColor : ''));
-		const pairs = cellBoxes.map((cb, i) => ({
-			from: cb as Box,
-			to: dotBoxes[i] as Box,
-			bg: bg[i] ?? bg[0]
-		}));
-		phase = 'exit';
-		const clones = spawnClones(pairs);
-		// Collapse against the NATURAL card box: GSAP offsets are relative
-		// to untransformed layout, while the measured box includes any
-		// in-progress morph — converging them keeps the collapse monotonic
-		// instead of growing back out.
-		const liveT = {
-			x: Number(gsap.getProperty(card, 'x')) || 0,
-			y: Number(gsap.getProperty(card, 'y')) || 0,
-			scaleX: Number(gsap.getProperty(card, 'scaleX')) || 1,
-			scaleY: Number(gsap.getProperty(card, 'scaleY')) || 1
-		};
-		// Target-form deltas: values that land the natural card onto the
-		// tile — cardVars' native from-state form is cardVars(tile, card),
-		// and the unswapped form inverts the collapse into a blow-up
-		// (sx 2.87 instead of 0.35).
-		const cv = cardVars(tileBox, naturalBox(modalBox, liveT));
-		const homeShadow = getComputedStyle(ghost).boxShadow;
-		// Beat 1 (CSS leaving, 0 → 0.18s) dissolves everything but the
-		// travelers; beat 2 below moves container + dots home while the
-		// backdrop releases on the same timeline.
-		const xBase = 0.2 * S;
-		const xDur = 0.32 * S;
-		const xrc = { r: 20 };
-		const xApplyRadius = () => {
-			const sx = Number(gsap.getProperty(card, 'scaleX')) || 1;
-			const sy = Number(gsap.getProperty(card, 'scaleY')) || 1;
-			card.style.borderRadius = `${(xrc.r / sx).toFixed(2)}px / ${(xrc.r / sy).toFixed(2)}px`;
-		};
-		xApplyRadius();
-		const xtl = slowmo(
-			gsap.timeline({
-				onComplete: () => {
-					// Geometry, radius and the compensated shadow all
-					// agree with the tile exactly: swap + scrub in one
-					// tick, no fade and no settle zoom to hide behind.
-					removeClones();
-					reset();
-				}
-			})
-		);
-		activeTl = xtl;
-		clones.forEach((c, i) => {
-			const f = flightVars(pairs[i].from, pairs[i].to);
-			xtl.to(
-				c,
-				{ x: f.x, y: f.y, scale: f.scale, duration: 0.35 * S, ease: 'power3.inOut' },
-				xBase + i * BSTAG_S
-			);
-		});
-		// Header dissolves with the rest — lingering chrome over a
-		// collapsing shell reads as overlay, not morph.
-		const headEls = card.querySelectorAll('.wmodal-head > *');
-		if (headEls.length > 0) {
-			xtl.to(headEls, { autoAlpha: 0, duration: 0.15 * S, ease: 'power1.out' }, 0);
-		}
-		xtl.to(
-			card,
-			{
-				x: cv.dx,
-				y: cv.dy,
-				scaleX: cv.sx,
-				scaleY: cv.sy,
-				...(flightLens ? {} : { boxShadow: homeShadow }),
-				transformOrigin: '50% 50%',
-				duration: xDur,
-				ease: 'power3.inOut'
-			},
-			xBase
-		);
-		if (flightLens) {
-			const lens = flightLens;
-			const shx = { t: 0 };
-			const applyXShadow = () => {
-				const { sx, sy } = projScale(card);
-				card.style.boxShadow = shadowCSS(lens.modal, lens.tile, lens.tile, shx.t, sx, sy);
-			};
-			applyXShadow();
-			xtl.to(shx, { t: 1, duration: xDur, ease: 'power3.inOut', onUpdate: applyXShadow }, xBase);
-		}
-		xtl.to(xrc, { r: 18, duration: xDur, ease: 'power3.inOut', onUpdate: xApplyRadius }, xBase);
-		// The dim + blur release WITH the collapse — previously the
-		// backdrop only faded after unmount, so it never visibly faded.
-		const backdrop = backdropEl;
-		if (backdrop) {
-			xtl.to(
-				backdrop,
-				{
-					backgroundColor: 'rgba(0,0,0,0)',
-					'--wmodal-blur': '0px',
-					duration: xDur,
-					ease: 'power1.out'
-				},
-				xBase
-			);
-		}
-		xApplyRadius();
-	}
-
-	function onTileKey(e: KeyboardEvent) {
-		if (open) return;
-		if (e.key === 'Enter' || e.key === ' ') {
-			e.preventDefault();
-			show();
-		}
-	}
+	const exitClose: ExitSpec[] = [
+		{ select: '.xheat', dur: 0.18, at: () => 0 },
+		{ select: '.xstat, .xnote', at: (c) => 0.08 * c.S }
+	];
 </script>
 
-<div
-	class="hwidget"
-	class:sm={variant === 'small'}
-	class:md={variant === 'medium'}
-	class:landed={landed}
-	class:pre-show={phase === 'fly' && !started}
->
-	{#if open}
-		<!-- Invisible replica: holds the grid slot while the shared
-		     container is fixed as the modal, and supplies the measured
-		     tile + dot targets for the return flight. -->
-		<div class="tile-ghost" bind:this={ghostEl} aria-hidden="true">
-			<span class="mini" class:cols9={variant === 'medium'} style:--heat={HEAT}>
-				{#each tileDays as d, k}
-					<span class="mdot lvl-{tileLvls[k]}"></span>
-				{/each}
-			</span>
-			<span class="w-foot" aria-hidden="true">🔥 {streak}</span>
-		</div>
-		<div
-			class="wmodal-backdrop"
-			bind:this={backdropEl}
-			onclick={(e) => {
-				if (e.target === e.currentTarget) hide();
-			}}
-			role="presentation"
-		></div>
-	{/if}
-	<!-- THE container: tile when closed, modal when open. Same node both ways. -->
-	<!-- svelte-ignore a11y_no_noninteractive_tabindex -- reason: tabindex is only 0 while role=button (tile); undefined as dialog -->
-	<div
-		bind:this={boxEl}
-		class="morph"
-		class:tile={!open}
-		class:modal={open}
-		class:conceal-head={open && phase === 'fly'}
-		role={open ? 'dialog' : 'button'}
-		aria-modal={open ? 'true' : undefined}
-		aria-label={open ? 'Activity' : `Activity — ${variant === 'small' ? 'Last 9 days' : 'Last 27 days'} · tap to expand`}
-		tabindex={open ? undefined : 0}
-		onclick={() => {
-			if (!open) show();
-		}}
-		onkeydown={onTileKey}
-	>
-		{#if !open}
-			{#key tileKey}
-				<span
-					class="mini"
-					class:cols9={variant === 'medium'}
-					bind:this={tileDotsEl}
-					style:--heat={HEAT}
-					role="img"
-					aria-label="{activeK} active days in the last {TILE_N}"
-				>
-					{#each tileDays as d, k}
-						<span
-							class="mdot lvl-{tileLvls[k]}"
-							style={reduce ? '' : `animation-delay: ${k * (variant === 'small' ? 55 : 22)}ms`}
-							title={tip(d)}
-						></span>
-					{/each}
-				</span>
-				<span class="w-foot" aria-label="{streak} day streak">🔥 {streak}</span>
-			{/key}
-		{:else}
-			<div class="wmodal-head">
-				<div class="ypick" role="group" aria-label="Year">
-					<button class="ybtn" onclick={(e) => { e.stopPropagation(); step(-1); }} disabled={year <= minYear || phase !== 'settle'} aria-label="Previous year">
-						<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>
-					</button>
-					<span class="yval" aria-live="polite">{yearLabel}</span>
-					<button class="ybtn" onclick={(e) => { e.stopPropagation(); step(1); }} disabled={year >= currentYear || phase !== 'settle'} aria-label="Next year">
-						<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></svg>
-					</button>
-				</div>
-				<button class="wmodal-x" onclick={(e) => { e.stopPropagation(); hide(); }} aria-label="Close Activity">
-					<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg>
-				</button>
+{#snippet tileBody()}
+	{#key tileKey}
+		{@render tileDots()}
+		{@render streakFoot(true)}
+	{/key}
+{/snippet}
+{#snippet ghostSnip()}
+	{@render tileDots()}
+	{@render streakFoot(false)}
+{/snippet}
+{#snippet modalContent()}
+	{#if yearDays.length === 0}
+		<div class="empty">No activity in this range yet.</div>
+	{:else}
+	{#key year}
+			<div class="xstats" class:conceal={phase === 'fly'}>
+				<div class="xstat"><span class="xv num">{fmtTok(stats.total)}</span><span class="xl">tokens · {rangeLabel}</span></div>
+				<div class="xstat"><span class="xv num">🔥 {stats.streak}</span><span class="xl">day streak</span></div>
+				<div class="xstat"><span class="xv num">{fmtTok(stats.peak)}</span><span class="xl"><svg class="xic" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 17l-6-6 4 4 8-8"/><path d="M14 7h7v7"/></svg>peak day</span></div>
+				<div class="xstat"><span class="xv num">{stats.activeDays}</span><span class="xl"><svg class="xic" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4.5" width="18" height="16" rx="3"/><path d="M8 2.5v4M16 2.5v4M3 10h18"/></svg>active days</span></div>
 			</div>
-			<div class="wmodal-body" data-lenis-prevent>
-				{#if !trailing && loading && yearDays.length === 0}
-					<div class="xskel" aria-hidden="true">
-						<div class="skel-row"></div>
-						<div class="skel-row short"></div>
-					</div>
-				{:else if !trailing && loadError && yearDays.length === 0}
-					<div class="empty">Couldn't load {year}. <button class="retry" onclick={() => void ensureYear(year)}>Retry</button></div>
-				{:else if yearDays.length === 0}
-					<div class="empty">No activity in this range yet.</div>
+			<div class="xheat" class:pre={phase === 'fly'} bind:this={heatEl}>
+				<Heatmap days={yearDays} enterStagger={false} />
+			</div>
+			<p class="xnote" class:conceal={phase === 'fly'}>
+				{#if trailing}
+					Close to fly the tile days home.
 				{:else}
-				{#key year}
-						<div class="xstats" class:conceal={phase === 'fly'} class:leaving={phase === 'exit'}>
-							<div class="xstat"><span class="xv num">{fmtTok(stats.total)}</span><span class="xl">tokens · {rangeLabel}</span></div>
-							<div class="xstat"><span class="xv num">🔥 {stats.streak}</span><span class="xl">day streak</span></div>
-							<div class="xstat"><span class="xv num">{fmtTok(stats.peak)}</span><span class="xl"><svg class="xic" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 17l6-6 4 4 8-8"/><path d="M14 7h7v7"/></svg>peak day</span></div>
-							<div class="xstat"><span class="xv num">{stats.activeDays}</span><span class="xl"><svg class="xic" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4.5" width="18" height="16" rx="3"/><path d="M8 2.5v4M16 2.5v4M3 10h18"/></svg>active days</span></div>
-						</div>
-						<div class="xheat" class:pre={phase === 'fly'} class:leaving={phase === 'exit'} bind:this={heatEl}>
-							<Heatmap days={yearDays} enterStagger={false} />
-						</div>
-						<p class="xnote" class:conceal={phase === 'fly'} class:leaving={phase === 'exit'}>
-							{#if trailing}
-								Close to fly the tile days home.
-							{:else}
-								Calendar year {year} — closing returns without the flight, the tile days live in the current year.
-							{/if}
-						</p>
-					{/key}
+					Calendar year {year} — closing returns without the flight, the tile days live in the current year.
 				{/if}
-			</div>
-		{/if}
+			</p>
+		{/key}
+	{/if}
+{/snippet}
+{#snippet yearPicker()}
+	<div class="ypick" role="group" aria-label="Year">
+		<button class="ybtn" onclick={(e) => { e.stopPropagation(); step(-1); }} disabled={year <= minYear || phase !== 'settle'} aria-label="Previous year">
+			<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>
+		</button>
+		<span class="yval" aria-live="polite">{yearLabel}</span>
+		<button class="ybtn" onclick={(e) => { e.stopPropagation(); step(1); }} disabled={year >= currentYear || phase !== 'settle'} aria-label="Next year">
+			<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></svg>
+		</button>
 	</div>
-</div>
+{/snippet}
+{#snippet tileDots()}
+	<span
+		class="mini"
+		class:cols9={variant === 'medium'}
+		class:landed
+		style:--heat={HEAT}
+		role="img"
+		aria-label="{activeK} active days in the last {TILE_N}"
+	>
+		{#each tileDays as d, k}
+			<span
+				class="mdot lvl-{tileLvls[k]}"
+				style={reduce ? '' : `animation-delay: ${k * (variant === 'small' ? 55 : 22)}ms`}
+				title={tip(d)}
+			></span>
+		{/each}
+	</span>
+{/snippet}
+{#snippet streakFoot(describe: boolean)}
+	{#if describe}
+		<span class="w-foot" class:landed-in={landed} aria-label="{streak} day streak">🔥 {streak}</span>
+	{:else}
+		<span class="w-foot" aria-hidden="true">🔥 {streak}</span>
+	{/if}
+{/snippet}
+
+<WidgetMorph
+	size={variant === 'small' ? 'sm' : 'md'}
+	{speed}
+	tileLabel="Activity — {variant === 'small' ? 'Last 9 days' : 'Last 27 days'} · tap to expand"
+	title="Activity"
+	bind:phase
+	bind:landed
+	{canFly}
+	{closeable}
+	{travelFrom}
+	{travelTo}
+	awaitSettled={() => layoutStable()}
+	staggerOpen={variant === 'small' ? 0.035 : 0.016}
+	staggerClose={variant === 'small' ? 0.022 : 0.012}
+	{enterOpen}
+	{exitClose}
+	tile={tileBody}
+	modalBody={modalContent}
+	ghostBody={ghostSnip}
+	headerExtra={yearPicker}
+/>
 
 <style>
-	/* Grid slot this widget occupies (geometry formerly on button.widget). */
-	.hwidget {
-		width: 100%;
-		min-width: 0;
-	}
-	.hwidget.sm {
-		max-width: 200px;
-		justify-self: center;
-		width: 100%;
-	}
-	.hwidget.md {
-		max-width: 360px;
-		justify-self: center;
-		width: 100%;
-	}
-	/* Same vertical air as the small tile: dots block is identical
-	   (3 rows), so the same 200px height centers them at 66px. */
-	.hwidget.md .morph.tile,
-	.hwidget.md .tile-ghost {
-		min-height: 200px;
-	}
-	/* ---- shared container: tile resting state ---- */
-	.morph.tile {
-		cursor: pointer;
-		display: flex;
-		flex-direction: column;
-		gap: 10px;
-		width: 100%;
-		position: relative;
-		text-align: left;
-		font: inherit;
-		color: var(--text);
-		background: color-mix(in srgb, var(--bg-raised) 62%, transparent);
-		backdrop-filter: blur(22px) saturate(1.6);
-		-webkit-backdrop-filter: blur(22px) saturate(1.6);
-		border-radius: 18px;
-		padding: 26px 16px;
-		overflow: hidden;
-		/* Same 4-part structure as the modal card (ring, top light,
-		   drop, contact) at resting intensity — the morph interpolates
-		   toward full modal elevation, so a shrinking card never wears a
-		   full-size halo that winks out at unmount. */
-		box-shadow:
-			inset 0 0 0 1px var(--line),
-			inset 0 1px 0 rgb(255 255 255 / 0.05),
-			0 6px 18px rgb(0 0 0 / 0.07),
-			0 1px 3px rgb(0 0 0 / 0.06);
-		transition: transform 0.22s cubic-bezier(0.2, 0.9, 0.25, 1.2), box-shadow 0.22s ease;
-	}
-	/* No hover/active lift: the shared node lands under a live cursor,
-	   and any :hover transform/shadow would snap in on the landing
-	   frame (or fight the flight's inline transform). The tile reads as
-	   clickable via cursor + the expand-icon reveal. */
-	.morph.tile:focus-visible {
-		outline: 2px solid var(--accent);
-		outline-offset: 2px;
-	}
-	.hwidget.sm .morph.tile {
-		aspect-ratio: 1;
-	}
-	.hwidget.sm .morph.tile .mini,
-	.hwidget.sm .tile-ghost .mini {
-		flex: 1;
-	}
-	.hwidget.md .morph.tile .mini,
-	.hwidget.md .tile-ghost .mini {
-		flex: 1;
-	}
-	/* ---- shared container: modal resting state.
-	   Transform-free centering (inset + auto margins) so GSAP owns x/y/scale. */
-	.morph.modal {
-		position: fixed;
-		inset: 0;
-		margin: auto;
-		width: min(860px, calc(100vw - 40px));
-		height: fit-content;
-		max-height: min(86vh, 780px);
-		z-index: 81;
-		display: flex;
-		flex-direction: column;
-		overflow: hidden;
-		color: var(--text);
-		background: color-mix(in srgb, var(--bg-raised) 78%, transparent);
-		backdrop-filter: blur(28px) saturate(1.8);
-		-webkit-backdrop-filter: blur(28px) saturate(1.8);
-		border-radius: 20px;
-		box-shadow:
-			inset 0 0 0 1px var(--line-strong),
-			inset 0 1px 0 rgb(255 255 255 / 0.08),
-			0 30px 80px rgb(0 0 0 / 0.28),
-			0 2px 8px rgb(0 0 0 / 0.12);
-		transform-origin: center;
-	}
-	.wmodal-backdrop {
-		position: fixed;
-		inset: 0;
-		z-index: 80;
-		background: light-dark(rgb(250 250 251 / 0.55), rgb(10 10 12 / 0.6));
-		--wmodal-blur: 14px;
-		backdrop-filter: blur(var(--wmodal-blur)) saturate(1.4);
-		-webkit-backdrop-filter: blur(var(--wmodal-blur)) saturate(1.4);
-	}
-	/* Invisible replica holding the tile's grid slot + dot targets. */
-	.tile-ghost {
-		visibility: hidden;
-		pointer-events: none;
-		position: relative;
-		display: flex;
-		flex-direction: column;
-		gap: 10px;
-		width: 100%;
-		padding: 26px 16px;
-		border-radius: 18px;
-		box-shadow:
-			inset 0 0 0 1px var(--line),
-			inset 0 1px 0 rgb(255 255 255 / 0.05),
-			0 6px 18px rgb(0 0 0 / 0.07),
-			0 1px 3px rgb(0 0 0 / 0.06);
-		overflow: hidden;
-	}
-	.hwidget.sm .tile-ghost {
-		aspect-ratio: 1;
-	}
 	.mini {
+		flex: 1;
 		display: grid;
 		grid-template-columns: repeat(3, auto);
 		gap: 10px;
@@ -999,7 +302,7 @@
 		width: 16px;
 		height: 16px;
 	}
-	.morph.tile .mdot:hover {
+	.mini .mdot:hover {
 		transform: scale(1.25);
 	}
 	.lvl-1 { background: color-mix(in srgb, var(--heat) 35%, var(--track)); }
@@ -1010,18 +313,116 @@
 		from { transform: scale(0.2); opacity: 0; }
 		to { transform: scale(1); opacity: 1; }
 	}
-	/* post-landing: tile remounted fresh — hold dots steady instead of
-	   replaying their staggered entrance (the reload flicker), and fade
-	   the streak label in over the settled tile. */
-	.landed .mdot {
+	/* post-landing: hold dots steady instead of replaying their
+	   staggered entrance, fade the streak label over the settled tile. */
+	.mini.landed .mdot {
 		animation: none;
 	}
-	.landed .w-foot {
-		animation: chromefade 0.32s ease backwards;
+	.w-foot.landed-in {
+		animation: chromefade 0.25s ease backwards;
 	}
 	@keyframes chromefade {
-		from { opacity: 0; transform: translateY(4px); }
-		to { opacity: 1; transform: none; }
+		from { opacity: 0; }
+		to { opacity: 1; }
+	}
+	/* ---- streak label: floats over the bottom padding so the dots stay
+	   centered with symmetric padding (ghost mirrors this exactly). ---- */
+	.w-foot {
+		position: absolute;
+		left: 16px;
+		right: 16px;
+		bottom: 8px;
+		display: flex;
+		justify-content: center;
+		font-size: 12.5px;
+		font-weight: 700;
+		font-variant-numeric: tabular-nums;
+		color: var(--text);
+	}
+	/* ---- modal: layout reserved while flying, zero shifts ----
+	   Pre-launch conceal covers the 1–2 frames before the timeline builds;
+	   GSAP inline states take over seamlessly from there. */
+	.conceal {
+		visibility: hidden;
+	}
+	/* all cells hidden until the dots land (travelers included) */
+	.xheat.pre :global(.heatmap .cell) {
+		visibility: hidden;
+	}
+	/* card chrome hidden until the shell lands — squished scaling text
+	   is the overlay tell */
+	.xstats {
+		display: grid;
+		grid-template-columns: repeat(4, 1fr);
+		gap: 10px;
+		margin: 8px 0 16px;
+	}
+	.xstat {
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		text-align: center;
+		gap: 2px;
+		background: color-mix(in srgb, var(--bg-raised) 55%, transparent);
+		border: 0;
+		border-radius: 14px;
+		padding: 12px 6px 10px;
+	}
+	.xv {
+		font-size: 19px;
+		font-weight: 700;
+		letter-spacing: -0.02em;
+		line-height: 1.1;
+	}
+	.xl {
+		font-size: 10.5px;
+		color: var(--text-3);
+	}
+	.xic {
+		vertical-align: -1.5px;
+		margin-right: 3px;
+	}
+	.xheat {
+		display: flex;
+		justify-content: center;
+		overflow-x: auto;
+		padding-bottom: 4px;
+	}
+	.xnote {
+		margin: 12px 2px 2px;
+		font-size: 11.5px;
+		color: var(--text-3);
+		text-align: center;
+	}
+	.xskel {
+		display: grid;
+		gap: 10px;
+		padding: 12px 0;
+	}
+	.skel-row {
+		height: 92px;
+		border-radius: 10px;
+		background: var(--track);
+	}
+	.skel-row.short {
+		height: 20px;
+		width: 45%;
+		justify-self: center;
+	}
+	.empty {
+		padding: 18px 0;
+		text-align: center;
+		font-size: 12.5px;
+		color: var(--text-3);
+	}
+	.retry {
+		appearance: none;
+		border: 0;
+		background: none;
+		color: inherit;
+		font: inherit;
+		text-decoration: underline;
+		cursor: pointer;
 	}
 	/* year picker */
 	.ypick {
@@ -1060,173 +461,6 @@
 		opacity: 0.3;
 		cursor: default;
 	}
-	/* ---- modal chrome ---- */
-	.wmodal-head {
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		position: relative;
-		gap: 12px;
-		padding: 16px 18px 10px;
-	}
-	.wmodal-x {
-		appearance: none;
-		border: 0;
-		background: transparent;
-		color: var(--text-2);
-		width: 30px;
-		height: 30px;
-		border-radius: 9px;
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		cursor: pointer;
-		flex: none;
-		position: absolute;
-		right: 12px;
-		top: 50%;
-		transform: translateY(-50%);
-	}
-	.wmodal-x:hover {
-		background: var(--accent-soft);
-		color: var(--text);
-	}
-	.wmodal-body {
-		padding: 4px 18px 20px;
-		overflow-y: auto;
-		overscroll-behavior: contain;
-		scrollbar-gutter: stable;
-	}
-	/* ---- tile chrome ---- */
-	/* Streak floats over the bottom padding so the dots stay centered
-	   in the full box with symmetric padding (in flow it would push
-	   them up). Ghost mirrors this exactly. */
-	.w-foot {
-		position: absolute;
-		left: 16px;
-		right: 16px;
-		bottom: 8px;
-		display: flex;
-		justify-content: center;
-		font-size: 12.5px;
-		font-weight: 700;
-		font-variant-numeric: tabular-nums;
-		color: var(--text);
-	}
-	/* ---- flight concealment: layout reserved while flying, zero shifts ----
-	   Pre-launch conceal covers the 1–2 frames before the timeline builds;
-	   GSAP inline states take over seamlessly from there. */
-	.conceal {
-		visibility: hidden;
-	}
-	/* all cells hidden until the dots land (travelers included) */
-	.xheat.pre :global(.heatmap .cell) {
-		visibility: hidden;
-	}
-	/* card chrome hidden until the shell lands — squished scaling text
-	   is the overlay tell */
-	.conceal-head .wmodal-head > * {
-		visibility: hidden;
-	}
-	/* backdrop invisible until the timeline's first tick owns it */
-	.pre-show .wmodal-backdrop {
-		opacity: 0;
-	}
-	/* The open flight must mount the modal at resting size to measure
-	   it, but that shell must never paint: hold it hidden until the
-	   timeline parks it over the tile. visibility keeps layout intact,
-	   so measuring still works. */
-	.pre-show .morph.modal {
-		visibility: hidden;
-	}
-	.xstats {
-		display: grid;
-		grid-template-columns: repeat(4, 1fr);
-		gap: 10px;
-		margin: 8px 0 16px;
-		transition: opacity 0.28s ease 0.08s;
-	}
-	.xstat {
-		display: flex;
-		flex-direction: column;
-		align-items: center;
-		text-align: center;
-		gap: 2px;
-		background: color-mix(in srgb, var(--bg-raised) 55%, transparent);
-		border: 0;
-		border-radius: 14px;
-		padding: 12px 6px 10px;
-	}
-	.xstat {
-		display: flex;
-		flex-direction: column;
-		gap: 1px;
-	}
-	.xv {
-		font-size: 19px;
-		font-weight: 700;
-		letter-spacing: -0.02em;
-		line-height: 1.1;
-	}
-	.xl {
-		font-size: 10.5px;
-		color: var(--text-3);
-	}
-	.xic {
-		vertical-align: -1.5px;
-		margin-right: 3px;
-	}
-	.xheat {
-		display: flex;
-		justify-content: center;
-		overflow-x: auto;
-		padding-bottom: 4px;
-		transition: opacity 0.18s ease;
-	}
-	.xnote {
-		margin: 12px 2px 2px;
-		font-size: 11.5px;
-		color: var(--text-3);
-		text-align: center;
-		transition: opacity 0.18s ease;
-	}
-	/* exit dissolve (compositor-driven): everything but the travelers,
-	   which the clones cover */
-	.xstats.leaving,
-	.xnote.leaving,
-	.xheat.leaving {
-		opacity: 0;
-	}
-	.xskel {
-		display: grid;
-		gap: 10px;
-		padding: 12px 0;
-	}
-	.skel-row {
-		height: 92px;
-		border-radius: 10px;
-		background: var(--track);
-	}
-	.skel-row.short {
-		height: 20px;
-		width: 45%;
-		justify-self: center;
-	}
-	.empty {
-		padding: 18px 0;
-		text-align: center;
-		font-size: 12.5px;
-		color: var(--text-3);
-	}
-	.retry {
-		appearance: none;
-		border: 0;
-		background: none;
-		color: inherit;
-		font: inherit;
-		text-decoration: underline;
-		cursor: pointer;
-	}
 	@media (max-width: 640px) {
 		.mdot { width: 14px; height: 14px; }
 		.cols9 .mdot { width: 14px; height: 14px; }
@@ -1236,8 +470,7 @@
 		.yval { min-width: 96px; }
 	}
 	@media (prefers-reduced-motion: reduce) {
-		.morph.tile,
 		.mdot { animation: none; transition: none; }
-		.landed .w-foot { animation: none; }
+		.w-foot.landed-in { animation: none; }
 	}
 </style>
