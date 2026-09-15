@@ -9,7 +9,7 @@ Native macOS statusline + notch dashboard tracking AI token usage, costs, system
 
 ## Product film
 
-<video src="https://github.com/castlemilk/token-horizon/releases/download/v0.2.0/TokenHorizon-film.mp4" poster="https://raw.githubusercontent.com/castlemilk/token-horizon/main/docs/assets/og.png" controls width="100%"></video>
+<video src="https://github.com/castlemilk/token-horizon/releases/download/v0.3.0/TokenHorizon-film.mp4" poster="https://raw.githubusercontent.com/castlemilk/token-horizon/main/docs/assets/og.png" controls width="100%"></video>
 
 *Forty seconds, rendered entirely in code ([`video/`](video/) — Remotion, zero stock footage). Also embedded on the [landing page](https://token-horizon.dev/#film).*
 
