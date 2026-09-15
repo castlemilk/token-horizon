@@ -363,7 +363,15 @@ body.th-flat .mx-head-row{padding:0 18px;gap:16px}
 body.th-flat .mx-head-row .mx-stats{gap:26px}
 body.th-flat .mx-head-row .mx-flat-score{width:34px}
 /* Cheapest inference table */
-.mx-cheap-table{width:100%;border-collapse:collapse}
+.mx-cheap-layout{display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:16px;align-items:start}
+.mx-cheap-table{width:100%;border-collapse:collapse;table-layout:fixed}
+.mx-cheap-table th:nth-child(1),.mx-cheap-table td:nth-child(1){width:auto}
+.mx-cheap-table th:nth-child(2),.mx-cheap-table td:nth-child(2),
+.mx-cheap-table th:nth-child(3),.mx-cheap-table td:nth-child(3){width:76px}
+.mx-cheap-table th:nth-child(4),.mx-cheap-table td:nth-child(4){width:124px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.mx-cheap-table th:nth-child(5),.mx-cheap-table td:nth-child(5){width:72px}
+.mx-cheap-table th:nth-child(6),.mx-cheap-table td:nth-child(6){width:64px}
+.mx-cheap-table th:nth-child(7),.mx-cheap-table td:nth-child(7){width:52px}
 .mx-cheap-table th{position:sticky;top:0;background:var(--panel);z-index:1;text-align:left;color:var(--faint);font-weight:600;font-size:10px;letter-spacing:.8px;text-transform:uppercase;padding:9px 10px;border-bottom:1px solid var(--line);cursor:pointer;white-space:nowrap;user-select:none}
 .mx-cheap-table th:hover{color:var(--text)}
 .mx-cheap-table th.right{text-align:right}
@@ -3579,7 +3587,7 @@ async function renderCheapestTab() {
         ${kpiCard("Biggest Discount", biggest ? "-" + biggest.savings + "%" : "—", biggest ? `${esc(biggest.m.name)} via ${esc(providerLabel(biggest.via))}` : "", ICONS.cost)}
         ${kpiCard("Price Leaders", leaders.length.toLocaleString(), leaders[0] ? `${providerLabel(leaders[0].provider)} leads (${leaders[0].count})` : "", ICONS.rank)}
       </div>
-      <div class="two-col top">
+      <div class="mx-cheap-layout">
         <div class="card mx-cheap-card" style="padding:0;overflow:hidden">
           <div class="card-head" style="padding:16px 16px 8px"><h3>Best Price by Model</h3><span class="sub">click a header to sort · click a row for details</span></div>
           <div style="overflow-x:auto;max-height:min(70vh,880px);overflow-y:auto">
