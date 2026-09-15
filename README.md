@@ -112,7 +112,7 @@ cd ~/projects/token-horizon
 inherited. The app writes its launch log to
 `~/Library/Logs/TokenHorizon.log`.
 
-The local script uses an ad-hoc signature for development. For a distributable full-feature build, use `scripts/package-notarized.sh` with a Developer ID Application certificate; see `docs/notarized-release.md`. This build intentionally is not App Sandbox-compatible because it reads local AI tool data and observes system processes.
+The local script uses an ad-hoc signature for development; published releases are Developer ID signed and Apple-notarized (`scripts/package-notarized.sh`, wired into the release workflow); see `docs/notarized-release.md`. This build intentionally is not App Sandbox-compatible because it reads local AI tool data and observes system processes.
 
 - Icon: `scripts/make-icon.swift` → `Resources/AppIcon.icns` (black hole, CoreGraphics)
 - Settings: `~/.config/token-horizon/settings.json` (0600) — alibaba cookie lives here

@@ -38,8 +38,7 @@ cask "token-horizon" do
   ]
 
   caveats <<~EOS
-    First launch: approve Token Horizon in Privacy & Security if macOS asks
-    (preview builds carry an ad-hoc signature).
+    Token Horizon is Developer ID signed and Apple-notarized.
     Crash auto-recovery is managed by the app itself:
       /Applications/TokenHorizon.app/Contents/MacOS/TokenHorizon --agent-status
   EOS

@@ -29,24 +29,61 @@ jobs:
         with:
           go-version-file: gateway/go.mod
 
-      - name: Build release app
-        env:
-          SKIP_LAUNCH: "1"
-        run: ./scripts/make-app.sh
-
-      - name: Package artifacts
+      - name: Resolve signing credentials
+        id: creds
         run: |
-          VER="${GITHUB_REF_NAME#v}"
-          OUT="dist"
-          mkdir -p "$OUT"
-          ditto -c -k --keepParent TokenHorizon.app "$OUT/TokenHorizon-${VER}.zip"
-          STAGE="$(mktemp -d)"
-          cp -R TokenHorizon.app "$STAGE/"
-          ln -s /Applications "$STAGE/Applications"
-          hdiutil create -volname "Token Horizon ${VER}" -srcfolder "$STAGE" -ov -format UDZO "$OUT/TokenHorizon-${VER}.dmg" >/dev/null
-          rm -rf "$STAGE"
-          (cd "$OUT" && shasum -a 256 "TokenHorizon-${VER}.zip" "TokenHorizon-${VER}.dmg" > "TokenHorizon-${VER}.sha256")
-          ls -la "$OUT"
+          if [ -n "${{ secrets.APPLE_CERT_P12_BASE64 }}" ]; then
+            echo "signed=1" >> "$GITHUB_OUTPUT"
+          else
+            echo "signed=0" >> "$GITHUB_OUTPUT"
+            echo "::warning::APPLE_CERT_P12_BASE64 not set — packaging an ad-hoc, un-notarized build"
+          fi
+
+      - name: Import Developer ID certificate + notary key
+        if: steps.creds.outputs.signed == '1'
+        env:
+          CERT_P12: ${{ secrets.APPLE_CERT_P12_BASE64 }}
+          CERT_PASSWORD: ${{ secrets.APPLE_CERT_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+          API_KEY_P8: ${{ secrets.APPLE_API_KEY_BASE64 }}
+        run: |
+          set -euo pipefail
+          KEYCHAIN="$RUNNER_TEMP/app-signing.keychain-db"
+          echo -n "$CERT_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security import "$RUNNER_TEMP/cert.p12" -P "$CERT_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN" >/dev/null
+          security list-keychain -d user -s "$KEYCHAIN" login.keychain-db
+          IDENTITY="$(security find-identity -v -p codesigning "$KEYCHAIN" | sed -n 's/.*"\(Developer ID Application[^"]*\)".*/\1/p' | head -1)"
+          if [ -z "$IDENTITY" ]; then
+            echo "::error::no Developer ID Application identity in the imported certificate"
+            exit 1
+          fi
+          echo "DEVELOPER_ID_APPLICATION=$IDENTITY" >> "$GITHUB_ENV"
+          if [ -n "$API_KEY_P8" ]; then
+            mkdir -p "$RUNNER_TEMP/private_keys"
+            echo -n "$API_KEY_P8" | base64 --decode > "$RUNNER_TEMP/private_keys/AuthKey.p8"
+            echo "NOTARY_KEY=$RUNNER_TEMP/private_keys/AuthKey.p8" >> "$GITHUB_ENV"
+            echo "NOTARY_KEY_ID=${{ secrets.APPLE_API_KEY_ID || vars.APPLE_API_KEY_ID }}" >> "$GITHUB_ENV"
+            echo "NOTARY_ISSUER=${{ secrets.APPLE_API_ISSUER_ID || vars.APPLE_API_ISSUER_ID }}" >> "$GITHUB_ENV"
+          else
+            echo "NOTARY_APPLE_ID=${{ secrets.APPLE_ID }}" >> "$GITHUB_ENV"
+            echo "NOTARY_TEAM_ID=${{ secrets.APPLE_TEAM_ID || vars.APPLE_TEAM_ID }}" >> "$GITHUB_ENV"
+            echo "NOTARY_APP_PASSWORD=${{ secrets.APPLE_APP_PASSWORD }}" >> "$GITHUB_ENV"
+          fi
+
+      - name: Build + sign + notarize + package
+        run: |
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            export MARKETING_VERSION="${GITHUB_REF_NAME#v}"
+          fi
+          ./scripts/package-notarized.sh
+
+      - name: Clean up keychain
+        if: always() && steps.creds.outputs.signed == '1'
+        run: security delete-keychain "$RUNNER_TEMP/app-signing.keychain-db" 2>/dev/null || true
 
       - name: Render product film (best effort)
         run: |
