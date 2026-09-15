@@ -101,6 +101,64 @@ const ranked = (e, rank) => ({
 
 const ben = entry('benebsworth');
 const sam = entry('samrivera', { isLocal: false, league: 'master', division: 2, mmr: 2120 });
+
+// --- Model explorer fixtures (static catalog + adoption rollup) --------------
+const MX_PROVIDERS = [['anthropic', 'Anthropic'], ['openai', 'OpenAI'], ['google', 'Google'], ['deepseek', 'DeepSeek'], ['qwen', 'Alibaba Cloud'], ['local', 'Ollama (Local)']];
+const MX_FLAGSHIP = {
+  name: 'Claude Opus 5', category: 'frontier', contextK: 1000, isLocal: false, isFree: false,
+  netSavingsPercent: 27, perfScore: 78, capabilities: { reasoning: true, toolCall: true, vision: true, openWeights: false },
+  benchmarks: { swe: 82, lcb: 79, source: 'test' }, description: 'Flagship coding model.'
+};
+const MX_MODELS = [
+  { ...MX_FLAGSHIP, id: 'anthropic/claude-opus-5', provider: 'anthropic', providerName: 'Anthropic', inputPerM: 5, outputPerM: 25, blendedNetCost: 7.3 },
+  { ...MX_FLAGSHIP, id: 'openrouter/claude-opus-5', provider: 'openrouter', providerName: 'OpenRouter', inputPerM: 5.5, outputPerM: 27, blendedNetCost: 8.1, netSavingsPercent: 0, description: 'Flagship coding model via gateway.' },
+  ...Array.from({ length: 72 }, (_, i) => {
+    const [provider, providerName] = MX_PROVIDERS[i % MX_PROVIDERS.length];
+    const isLocal = provider === 'local';
+    const swe = isLocal ? null : Math.round((86 - i * 0.7) * 10) / 10;
+    const lcb = isLocal ? null : Math.round((80 - i * 0.6) * 10) / 10;
+    return {
+      id: `${provider}/model-${i}`,
+      name: `${providerName} Test ${i}`,
+      provider, providerName,
+      category: isLocal ? 'local' : (i < 12 ? 'frontier' : 'balanced'),
+      contextK: 128 * (1 + (i % 8)),
+      isLocal,
+      isFree: isLocal || i % 17 === 0,
+      inputPerM: isLocal ? 0 : Math.round((i % 11) * 0.35 * 100) / 100,
+      outputPerM: isLocal ? 0 : Math.round((i % 11) * 1.4 * 100) / 100,
+      blendedNetCost: isLocal ? 0.04 : Math.round(((i % 11) * 0.5 + 0.04) * 100) / 100,
+      netSavingsPercent: i % 5 === 0 ? 50 : 0,
+      perfScore: isLocal ? null : Math.round((70 - i * 0.4) * 10) / 10,
+      capabilities: { reasoning: i % 3 === 0, toolCall: true, vision: i % 4 === 0, openWeights: isLocal || i % 5 === 0 },
+      benchmarks: isLocal ? null : { swe, lcb, source: 'test' },
+      description: `Fixture model ${i} for explorer tests.`
+    };
+  })
+];
+const MX_CATALOG = {
+  schemaVersion: 1,
+  count: MX_MODELS.length,
+  catalogCount: MX_MODELS.length,
+  generatedAt: 1757000000,
+  providers: MX_PROVIDERS.map(([id, name]) => ({ id, name, models: 12 })),
+  topPicks: [
+    { rank: 1, id: 'anthropic/model-0', name: 'Anthropic Test 0', provider: 'anthropic', providerName: 'Anthropic', valueScore: 99.5, perfScore: 84, blendedCostPerM: 0.17, badge: 'VALUE KING', badgeColor: 'cyan', reason: 'SWE 86.0% · LCB 80.0% · $0.17/1M net', swe: 86, lcb: 80 },
+    { rank: 2, id: 'openai/model-1', name: 'OpenAI Test 1', provider: 'openai', providerName: 'OpenAI', valueScore: 97.2, perfScore: 83, blendedCostPerM: 0.5, badge: 'FRONTIER S-TIER', badgeColor: 'purple', reason: 'SWE 85.3% · LCB 79.4%', swe: 85.3, lcb: 79.4 }
+  ],
+  models: MX_MODELS
+};
+const MX_USAGE = {
+  ok: true,
+  count: 4,
+  models: [
+    { provider: 'anthropic', model: 'claude-opus-5', tokens: 14000000000, cost: 300, requests: 2100, users: 2, sharePercent: 70, inputTokens: 9000000000, outputTokens: 5000000000, tokensFormatted: '14.00B', costFormatted: '$300' },
+    { provider: 'openrouter', model: 'claude-opus-5', tokens: 1000000000, cost: 30, requests: 150, users: 1, sharePercent: 5, inputTokens: 700000000, outputTokens: 300000000, tokensFormatted: '1.00B', costFormatted: '$30' },
+    { provider: 'anthropic', model: 'model-0', tokens: 5000000000, cost: 100, requests: 900, users: 1, sharePercent: 25, inputTokens: 3000000000, outputTokens: 2000000000, tokensFormatted: '5.00B', costFormatted: '$100' },
+    { provider: 'openai', model: 'model-1', tokens: 2000000000, cost: 40, requests: 400, users: 1, sharePercent: 10, inputTokens: 1200000000, outputTokens: 800000000, tokensFormatted: '2.00B', costFormatted: '$40' }
+  ]
+};
+
 const FIXTURES = {
   '/api/config': {
     ok: true,
@@ -184,7 +242,9 @@ const FIXTURES = {
       { title: 'Code review assistant', provider: 'anthropic', model: 'claude-opus-5', tokens: 1200000, cost: 4.2, requests: 12, at: 1726000000, handle: 'benebsworth', team: 'Castlemilk' },
       { title: 'Research summary', provider: 'openai', model: 'gpt-5-codex', tokens: 800000, cost: 2.1, requests: 8, at: 1725990000, handle: 'benebsworth', team: 'Castlemilk' }
     ]
-  }
+  },
+  '/api/models/catalog': MX_CATALOG,
+  '/api/models/usage': MX_USAGE
 };
 
 async function run() {
@@ -598,7 +658,183 @@ async function run() {
   await narrow.close();
   console.log('   8/8 views fit 390px, sticky columns pinned, charts follow resizes with 0 remounts');
 
-  console.log('13. Checking console errors...');
+  console.log('13. Model explorer: catalog, fuzzy search, windowed list, drawer...');
+  await page.evaluate(() => navigate('models'));
+  await page.waitForSelector('#mx-scroll .mx-row', { timeout: 10000 });
+  const fuseLoaded = await page.evaluate(() => typeof window.Fuse === 'function');
+  if (!fuseLoaded) throw new Error('fuse.js bundle did not load');
+  const picks = await page.$$('#mx-picks .mx-pick');
+  if (picks.length !== 2) throw new Error(`Expected 2 top picks, got ${picks.length}`);
+  const windowing = await page.evaluate(() => ({
+    dom: document.querySelectorAll('#mx-rows .mx-row').length,
+    total: state.mx.filtered.length,
+    spacer: parseFloat(document.getElementById('mx-spacer').style.height)
+  }));
+  if (windowing.dom >= windowing.total) throw new Error(`List is not windowed: ${windowing.dom}/${windowing.total} rows in DOM`);
+  if (windowing.spacer < windowing.total * 60) throw new Error('Spacer height does not cover the full list');
+  // Fuzzy search narrows via the vendored Fuse index.
+  await page.fill('#mx-q', 'deepseek test 3');
+  await page.waitForTimeout(250);
+  const search = await page.evaluate(() => ({ n: state.mx.filtered.length, shown: document.getElementById('mx-shown').textContent }));
+  if (search.n === 0 || search.n >= 72) throw new Error(`Search did not narrow: ${JSON.stringify(search)}`);
+  // Scope chip filtering (reset the query first so only the scope applies).
+  await page.click('#mx-clear');
+  await page.waitForTimeout(120);
+  await page.click('[data-scope="local"]');
+  await page.waitForTimeout(200);
+  const localOnly = await page.evaluate(() => state.mx.filtered.length > 0 && state.mx.filtered.every(m => m.isLocal));
+  if (!localOnly) throw new Error('Local scope chip did not filter to local models');
+  await page.click('#mx-clear');
+  await page.waitForTimeout(120);
+  // Scrolling windows to deeper rows without unbounded DOM growth.
+  const firstBefore = await page.evaluate(() => document.querySelector('#mx-rows .mx-row')?.dataset.mxId);
+  await page.evaluate(() => { document.getElementById('mx-scroll').scrollTop = 2000; });
+  await page.waitForTimeout(250);
+  const after = await page.evaluate(() => ({
+    first: document.querySelector('#mx-rows .mx-row')?.dataset.mxId,
+    dom: document.querySelectorAll('#mx-rows .mx-row').length
+  }));
+  if (after.first === firstBefore) throw new Error('Scroll did not window to deeper rows');
+  if (after.dom > 45) throw new Error(`Window grew unbounded: ${after.dom} rows`);
+  // Row click opens the detail drawer with metadata and a deep link.
+  await page.evaluate(() => { document.getElementById('mx-scroll').scrollTop = 0; });
+  await page.waitForTimeout(150);
+  const firstRowName = await page.evaluate(() => document.querySelector('#mx-rows .mx-row .mx-name')?.textContent || '');
+  await page.locator('#mx-rows .mx-row').first().click();
+  await page.waitForSelector('#mx-drawer.open');
+  const drawer = await page.evaluate(() => ({
+    name: document.querySelector('#mx-drawer .mx-drawer-head')?.textContent || '',
+    prices: document.querySelectorAll('#mx-drawer .mx-price').length,
+    benches: document.querySelectorAll('#mx-drawer .mx-bench-row').length,
+    model: new URL(location.href).searchParams.get('model')
+  }));
+  if (!firstRowName || !drawer.name.includes(firstRowName)) throw new Error(`Drawer opened wrong model: row=${firstRowName} drawer=${drawer.name}`);
+  if (drawer.prices < 3) throw new Error('Drawer missing pricing grid');
+  if (drawer.benches < 2) throw new Error('Drawer missing benchmark bars');
+  if (!drawer.model) throw new Error('Drawer did not deep-link ?model=');
+  await page.keyboard.press('Escape');
+  await page.waitForTimeout(150);
+  const closed = await page.evaluate(() => !document.querySelector('#mx-drawer').classList.contains('open') && !new URL(location.href).searchParams.get('model'));
+  if (!closed) throw new Error('Drawer did not close on Escape');
+  // Deep link reopens the drawer on load.
+  await page.goto(filePath + '?view=models&model=anthropic%2Fmodel-0');
+  await page.waitForSelector('#mx-drawer.open', { timeout: 10000 });
+  const deepLinked = await page.evaluate(() => document.querySelector('#mx-drawer .mx-drawer-head')?.textContent || '');
+  if (!deepLinked.includes('Anthropic Test 0')) throw new Error('Model deep link did not open the drawer');
+  await page.keyboard.press('Escape');
+  // Providers tab keeps the analytics view; Explorer returns.
+  await page.click('[data-models-tab="providers"]');
+  await page.waitForTimeout(250);
+  const provHeading = await page.locator('h1').first().textContent();
+  if (!/Provider/.test(provHeading)) throw new Error(`Providers tab heading wrong: ${provHeading}`);
+  await page.click('[data-models-tab="explorer"]');
+  await page.waitForSelector('#mx-scroll .mx-row');
+  console.log(`   fuse=${fuseLoaded} picks=${picks.length} windowed=${windowing.dom}/${windowing.total} search=${search.shown} drawer=${drawer.prices}p/${drawer.benches}b`);
+
+  console.log('14. Model cross-links + per-model provider view...');
+  await page.evaluate(() => navigate('players', { handle: 'benebsworth' }));
+  await page.waitForSelector('.tabs .tab');
+  await page.waitForSelector('a[data-model-link][data-model="claude-opus-5"]', { timeout: 10000 });
+  const inventoryLinks = await page.$$eval('td a[data-model-link]', els => els.length);
+  const allLink = await page.$('[data-models-all]');
+  if (!allLink) throw new Error('Model list header is missing the top-level list link');
+  await page.click('a[data-model-link][data-model="claude-opus-5"]');
+  await page.waitForSelector('#mx-drawer.open', { timeout: 15000 });
+  const perModel = await page.evaluate(() => ({
+    name: document.querySelector('#mx-drawer .mx-drawer-head')?.textContent || '',
+    community: (document.querySelector('#mx-drawer')?.textContent || '').includes('Community usage'),
+    listings: document.querySelectorAll('#mx-drawer [data-listing]').length,
+    providerHeader: (document.querySelector('#mx-drawer')?.textContent || '').includes('Publishers'),
+    avgCost: (document.querySelector('#mx-drawer')?.textContent || '').includes('Avg cost / 1M')
+  }));
+  if (!perModel.name.includes('Claude Opus 5')) throw new Error(`Per-model view opened wrong entry: ${perModel.name}`);
+  if (!perModel.community || !perModel.providerHeader || !perModel.avgCost) {
+    throw new Error(`Per-model provider metrics missing: ${JSON.stringify(perModel)}`);
+  }
+  if (perModel.listings < 2) throw new Error(`Listings should cover all providers, got ${perModel.listings}`);
+  const drawerProvLinks = await page.$$eval('#mx-drawer [data-provider-link]', els => els.length);
+  if (drawerProvLinks < 2) throw new Error(`Per-model provider rows are not linked: ${drawerProvLinks}`);
+  // Provider row → explorer filtered to that provider (drawer closes).
+  await page.click('#mx-drawer [data-provider-link]');
+  await page.waitForSelector('#mx-scroll .mx-row', { timeout: 15000 });
+  const filteredByProvider = await page.evaluate(() => ({
+    provider: state.mx.provider,
+    open: document.querySelector('#mx-drawer')?.classList.contains('open')
+  }));
+  if (filteredByProvider.provider === 'all' || filteredByProvider.open) {
+    throw new Error(`Provider link did not filter the explorer: ${JSON.stringify(filteredByProvider)}`);
+  }
+  await page.evaluate(() => navigate('players', { handle: 'benebsworth' }));
+  await page.waitForSelector('a[data-model-link][data-model="claude-opus-5"]', { timeout: 10000 });
+  await page.click('a[data-model-link][data-model="claude-opus-5"]');
+  await page.waitForSelector('#mx-drawer.open', { timeout: 15000 });
+  // Switching listings re-renders the same drawer for the other provider.
+  await page.click('#mx-drawer [data-listing="openrouter/claude-opus-5"]');
+  await page.waitForTimeout(250);
+  const switched = await page.evaluate(() => new URL(location.href).searchParams.get('model'));
+  if (switched !== 'openrouter/claude-opus-5') throw new Error(`Listing switch did not re-open: ${switched}`);
+  await page.keyboard.press('Escape');
+  // Chart legends link model names back into the explorer.
+  await page.evaluate(async () => { state.view = 'leaderboard'; renderNav(); await render(); });
+  await page.waitForSelector('.chart-legend [data-model-link]', { timeout: 10000 });
+  const legendLinks = await page.$$eval('.chart-legend [data-model-link]', els => els.map(e => e.dataset.model));
+  if (!legendLinks.length) throw new Error('Chart legend model names are not linked');
+  // Billing and shared reports use the same link contract.
+  await page.evaluate(() => navigate('billing'));
+  await page.waitForTimeout(300);
+  const billingLinks = await page.$$eval('#view a[data-model-link]', els => els.length);
+  if (!billingLinks) throw new Error('Billing Cost by Model rows are not linked');
+  await page.goto(filePath + '?share=abc');
+  await page.waitForSelector('#view a[data-model-link]', { timeout: 15000 });
+  const shareLinks = await page.$$eval('#view a[data-model-link]', els => els.length);
+  if (!shareLinks) throw new Error('Shared report model rows are not linked');
+  await page.evaluate(() => navigate('leaderboard'));
+  console.log(`   inventoryLinks=${inventoryLinks} listings=${perModel.listings} billingLinks=${billingLinks} shareLinks=${shareLinks} legend=[${legendLinks.slice(0, 3).join(', ')}]`);
+
+  console.log('15. Flat /models page (searchable list, no dashboard chrome)...');
+  await page.goto(filePath + '?view=models&flat=1');
+  await page.waitForSelector('#mx-scroll .mx-row', { timeout: 15000 });
+  const flat = await page.evaluate(() => ({
+    flat: state.flatModels,
+    head: Boolean(document.querySelector('.mx-flat-head')),
+    sidebarHidden: getComputedStyle(document.querySelector('.sidebar')).display === 'none',
+    topbarHidden: getComputedStyle(document.querySelector('.topbar')).display === 'none',
+    tabs: document.querySelectorAll('[data-models-tab]').length,
+    picks: document.querySelectorAll('#mx-picks').length,
+    scopes: document.querySelectorAll('#mx-scopes').length,
+    caps: document.querySelectorAll('#mx-caps').length,
+    rows: document.querySelectorAll('#mx-rows .mx-row').length,
+    total: state.mx.filtered.length
+  }));
+  if (!flat.flat || !flat.head || !flat.sidebarHidden || !flat.topbarHidden) throw new Error(`Flat shell wrong: ${JSON.stringify(flat)}`);
+  if (flat.tabs || flat.picks || flat.scopes || flat.caps) throw new Error(`Flat page still renders dashboard chrome: ${JSON.stringify(flat)}`);
+  if (!flat.rows || flat.rows >= flat.total) throw new Error(`Flat list not windowed: ${flat.rows}/${flat.total}`);
+  await page.fill('#mx-q', 'claude opus');
+  await page.waitForTimeout(250);
+  const flatSearch = await page.evaluate(() => state.mx.filtered.length);
+  if (flatSearch === 0 || flatSearch > 10) throw new Error(`Flat search did not narrow: ${flatSearch}`);
+  // Provider deep link filters the flat list straight from the URL.
+  await page.goto(filePath + '?view=models&flat=1&provider=anthropic');
+  await page.waitForSelector('#mx-scroll .mx-row', { timeout: 15000 });
+  const flatProvider = await page.evaluate(() => ({
+    provider: state.mx.provider,
+    all: state.mx.filtered.every(m => providerKey(m.provider, m.id) === 'anthropic' || m.provider === 'anthropic')
+  }));
+  if (flatProvider.provider !== 'anthropic' || !flatProvider.all) throw new Error(`Provider deep link failed: ${JSON.stringify(flatProvider)}`);
+  // Flat page is responsive at 390px (no horizontal scroll, search first).
+  await page.setViewportSize({ width: 390, height: 900 });
+  await page.waitForTimeout(300);
+  const flatMob = await page.evaluate(() => ({
+    scroll: document.documentElement.scrollWidth,
+    qTop: Math.round(document.querySelector('#mx-q').getBoundingClientRect().top),
+    sortTop: Math.round(document.querySelector('#mx-sort').getBoundingClientRect().top)
+  }));
+  if (flatMob.scroll > 391) throw new Error(`Flat page scrolls horizontally at 390px: ${flatMob.scroll}`);
+  if (flatMob.qTop > flatMob.sortTop) throw new Error('Flat mobile search should come before the selects');
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  console.log(`   head=${flat.head} windowed=${flat.rows}/${flat.total} search=${flatSearch} provider=${flatProvider.provider}`);
+
+  console.log('16. Checking console errors...');
   const realErrors = errors.filter(e =>
     !e.includes('favicon.ico') &&
     !e.includes('accounts.google.com') &&

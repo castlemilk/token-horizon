@@ -22,7 +22,9 @@ const BUDGETS = {
   viewSwitchP95: 150,       // ms
   searchToTable: 260,       // ms (includes the 120ms debounce)
   idleTickNoRender: 150,    // ms
-  extraChartMounts: 0       // after warm-up
+  extraChartMounts: 0,      // after warm-up
+  explorerSearch: 300,      // ms (includes the 90ms debounce)
+  explorerWindowRows: 60    // max DOM rows for a 3k-model windowed list
 };
 
 const DAYS = 30;
@@ -40,6 +42,30 @@ function buildFixtures(entryCount = 120) {
   const labels = days.map(d => {
     const dt = new Date(d * 1000);
     return `${dt.getUTCMonth() + 1}/${dt.getUTCDate()}`;
+  });
+  // Synthetic catalog at real-world scale (the committed export is ~2.9k rows)
+  // so the explorer's windowed list and Fuse index are exercised, not toy data.
+  const catalogProviders = [['anthropic', 'Anthropic'], ['openai', 'OpenAI'], ['google', 'Google'], ['deepseek', 'DeepSeek'], ['qwen', 'Alibaba Cloud'], ['zhipu', 'Zhipu AI'], ['kimi', 'Moonshot Kimi'], ['ollama', 'Ollama (Local)']];
+  const catalogModels = Array.from({ length: 3000 }, (_, i) => {
+    const [provider, providerName] = catalogProviders[i % catalogProviders.length];
+    const isLocal = provider === 'ollama';
+    return {
+      id: `${provider}/model-${i}`,
+      name: `${providerName} Model ${i}`,
+      provider, providerName,
+      category: isLocal ? 'local' : (i % 40 === 0 ? 'frontier' : 'balanced'),
+      contextK: 128 * (1 + (i % 12)),
+      isLocal,
+      isFree: isLocal || i % 29 === 0,
+      inputPerM: isLocal ? 0 : (i % 17) * 0.4,
+      outputPerM: isLocal ? 0 : (i % 17) * 1.6,
+      blendedNetCost: isLocal ? 0.04 : (i % 17) * 0.6 + 0.05,
+      netSavingsPercent: 0,
+      perfScore: isLocal ? null : 90 - (i % 60),
+      capabilities: { reasoning: i % 3 === 0, toolCall: true, vision: i % 4 === 0, openWeights: isLocal },
+      benchmarks: isLocal ? null : { swe: 80 - (i % 50), lcb: 75 - (i % 45), source: 'bench' },
+      description: `Synthetic catalog entry ${i}`
+    };
   });
   const series = MODELS.map(([model, provider, base]) => ({
     model, provider,
@@ -113,7 +139,9 @@ function buildFixtures(entryCount = 120) {
     '/api/season': {
       ok: true, season: { displayName: 'Season 3 — Ascension' }, ladder: [], distribution: [],
       standings: [], promotions: [], climbers: [], rewards: []
-    }
+    },
+    '/api/models/catalog': { schemaVersion: 1, count: catalogModels.length, catalogCount: catalogModels.length, generatedAt: 1757000000, providers: [], topPicks: [], models: catalogModels },
+    '/api/models/usage': { ok: true, count: 0, models: [] }
   };
 }
 
@@ -208,6 +236,36 @@ async function main() {
     return window.__thPerf.apiCacheHits - before;
   });
   record('api cache hits on repeat', cache, 1, 'hits', false);
+
+  // 7. Model explorer: windowed list stays tiny; search stays under budget.
+  await page.evaluate(async () => { state.view = 'models'; state.modelsTab = 'explorer'; renderNav(); await render(); });
+  await page.waitForSelector('#mx-scroll .mx-row', { timeout: 15000 });
+  const windowRows = await page.evaluate(() => document.querySelectorAll('#mx-rows .mx-row').length);
+  record('explorer DOM rows (windowed)', windowRows, BUDGETS.explorerWindowRows, 'rows');
+  const explorerSearch = [];
+  for (const q of ['claude', 'gemini', 'qwen coder', 'gpt-5', 'deepseek flash']) {
+    explorerSearch.push(await page.evaluate(async (query) => {
+      const input = document.getElementById('mx-q');
+      const started = performance.now();
+      input.value = query;
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      await new Promise(r => setTimeout(r, 140)); // 90ms debounce + a frame
+      return performance.now() - started;
+    }, q));
+  }
+  record('explorer search → rows (median)', median(explorerSearch), BUDGETS.explorerSearch);
+  // Clear the query so the deep scroll exercises the full list, not the empty state.
+  await page.evaluate(async () => {
+    const input = document.getElementById('mx-q');
+    input.value = '';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    await new Promise(r => setTimeout(r, 140));
+    document.getElementById('mx-scroll').scrollTop = 30000;
+  });
+  await page.waitForTimeout(200);
+  const deepRows = await page.evaluate(() => document.querySelectorAll('#mx-rows .mx-row').length);
+  record('explorer DOM rows after deep scroll', deepRows, BUDGETS.explorerWindowRows, 'rows');
+  record('explorer deep scroll rendered rows', deepRows > 0 ? 1 : 0, 1, 'bool');
 
   const perf = await page.evaluate(() => ({ ...window.__thPerf }));
   await browser.close();

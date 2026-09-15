@@ -9,6 +9,7 @@
 <script src="https://accounts.google.com/gsi/client" async defer></script>
 <script src="./vendor/tanstack-charts.js" defer></script>
 <script src="./vendor/dicebear.js" defer></script>
+<script src="./vendor/fuse.js" defer></script>
 <style>
 :root{
   --bg:#080B12; --panel:#0F141E; --panel2:#141B28; --panel3:#1A2233;
@@ -286,6 +287,135 @@ tbody tr.selected{background:rgba(79,140,255,.08)}
 .insight .v{font-size:15px;font-weight:800;margin-top:3px}
 .insight .d{font-size:11px;margin-top:2px}
 
+/* ---------- Model explorer (token-horizon.dev/models) ---------- */
+.mx-hero{display:flex;gap:16px;align-items:flex-end;justify-content:space-between;flex-wrap:wrap;margin-bottom:16px}
+.mx-counts{font-size:12px;color:var(--faint)}
+.mx-toolbar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:12px}
+.mx-search{position:relative;flex:1 1 320px;min-width:220px}
+.mx-search input{width:100%;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:10px 40px 10px 34px;color:var(--text);font-size:13px;outline:none}
+.mx-search input:focus{border-color:rgba(79,140,255,.5)}
+.mx-search>svg{position:absolute;left:11px;top:10px;width:15px;height:15px;color:var(--faint)}
+.mx-search .mx-kbd{position:absolute;right:10px;top:9px;font-family:var(--mono);font-size:10px;color:var(--faint);border:1px solid var(--line2);border-radius:5px;padding:2px 6px;background:var(--panel2)}
+.mx-select{background:var(--panel2);border:1px solid var(--line2);color:var(--text);border-radius:9px;padding:9px 10px;font-size:12.5px}
+.mx-chips{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+.mx-chip{display:inline-flex;align-items:center;gap:6px;background:var(--panel);border:1px solid var(--line);border-radius:999px;padding:6px 11px;font-size:11.5px;color:var(--muted);cursor:pointer;white-space:nowrap;transition:.12s}
+.mx-chip:hover{color:var(--text);border-color:var(--line2)}
+.mx-chip.active{background:rgba(79,140,255,.15);border-color:rgba(79,140,255,.45);color:#CFE0FF;font-weight:600}
+.mx-chip .n{color:var(--faint);font-size:10.5px;font-variant-numeric:tabular-nums}
+.mx-chip.active .n{color:#8FB6FF}
+.mx-chip.cap.active{background:rgba(34,197,94,.12);border-color:rgba(34,197,94,.4);color:#8FE6B4}
+.mx-clear{background:none;border:none;color:var(--faint);font-size:11.5px;cursor:pointer;padding:6px 4px}
+.mx-clear:hover{color:var(--text)}
+.mx-picks{display:grid;grid-auto-flow:column;grid-auto-columns:minmax(238px,1fr);gap:12px;overflow-x:auto;padding:2px 2px 10px;margin-bottom:8px}
+.mx-pick{position:relative;background:linear-gradient(180deg,var(--panel),#0D121C);border:1px solid var(--line);border-radius:var(--radius);padding:13px 14px;cursor:pointer;transition:.14s}
+.mx-pick:hover{border-color:var(--line2);transform:translateY(-1px)}
+.mx-pick .mx-pick-rank{position:absolute;top:12px;right:13px;font-family:var(--mono);font-size:11px;color:var(--faint)}
+.mx-pick .mx-pick-name{font-weight:700;font-size:13.5px;display:flex;align-items:center;gap:8px;padding-right:26px}
+.mx-pick .mx-pick-sub{font-size:10.5px;color:var(--faint);margin-top:3px}
+.mx-pick .mx-pick-meta{display:flex;gap:12px;margin-top:10px;font-family:var(--mono);font-size:11px}
+.mx-pick .mx-pick-meta span b{display:block;font-size:12.5px}
+.mx-pick .mx-pick-reason{font-size:10.5px;color:var(--muted);margin-top:9px;border-top:1px solid var(--line);padding-top:8px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.mx-badge{font-size:9px;letter-spacing:.7px;text-transform:uppercase;border-radius:999px;padding:3px 8px;border:1px solid}
+.mx-badge.green{color:#7FE0A8;border-color:rgba(34,197,94,.4);background:rgba(34,197,94,.1)}
+.mx-badge.blue{color:#8FB6FF;border-color:rgba(79,140,255,.4);background:rgba(79,140,255,.1)}
+.mx-badge.purple{color:#C4B0FF;border-color:rgba(139,92,246,.4);background:rgba(139,92,246,.1)}
+.mx-badge.cyan{color:#7FE6F5;border-color:rgba(56,189,248,.4);background:rgba(56,189,248,.1)}
+.mx-badge.yellow{color:#EED08A;border-color:rgba(224,180,76,.4);background:rgba(224,180,76,.1)}
+.mx-badge.orange{color:#F7C46C;border-color:rgba(245,158,11,.4);background:rgba(245,158,11,.1)}
+.mx-panel{background:linear-gradient(180deg,var(--panel),#0D121C);border:1px solid var(--line);border-radius:var(--radius);overflow:hidden}
+.mx-panel-head{display:flex;justify-content:space-between;gap:10px;padding:11px 14px;border-bottom:1px solid var(--line);font-size:10.5px;letter-spacing:.8px;text-transform:uppercase;color:var(--faint)}
+.mx-scroll{height:min(70vh,880px);overflow-y:auto;position:relative;overscroll-behavior:contain}
+.mx-spacer{position:relative;width:100%}
+.mx-rows{position:absolute;top:0;left:0;right:0;will-change:transform}
+.mx-row{display:flex;align-items:center;gap:13px;height:var(--mx-row-h,64px);padding:0 14px;border-bottom:1px solid rgba(30,38,53,.5);cursor:pointer;contain:layout style paint;content-visibility:auto;contain-intrinsic-size:64px}
+.mx-row:hover{background:rgba(255,255,255,.022)}
+.mx-row.active{background:rgba(79,140,255,.07)}
+.mx-main{flex:1 1 auto;min-width:0}
+.mx-main .mx-name{font-weight:600;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:flex;align-items:center;gap:8px}
+.mx-main .mx-sub{display:block;font-size:10.5px;color:var(--faint);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:2px}
+.mx-tags{display:flex;gap:4px;margin-top:4px;overflow:hidden}
+.mx-tag{font-size:8.5px;letter-spacing:.5px;text-transform:uppercase;color:var(--faint);border:1px solid var(--line);border-radius:999px;padding:1px 6px;white-space:nowrap}
+.mx-tag.hot{color:#C4B0FF;border-color:rgba(139,92,246,.35)}
+.mx-tag.free{color:#8FE6B4;border-color:rgba(34,197,94,.35)}
+.mx-stats{display:flex;align-items:center;gap:20px;flex:none}
+.mx-stat{text-align:right;width:66px;flex:none}
+.mx-stat.wide{width:140px}
+.mx-stat .l{display:block;font-size:8.5px;letter-spacing:.7px;color:var(--faint);text-transform:uppercase}
+.mx-stat .v{display:block;font-family:var(--mono);font-size:12px;font-weight:600;margin-top:2px;white-space:nowrap}
+.mx-stat .v.dim{color:var(--faint);font-weight:400}
+.mx-bench{width:104px}
+.mx-bench .bar{height:4px;border-radius:2px;background:var(--panel3);margin-top:5px;overflow:hidden}
+.mx-bench .bar i{display:block;height:100%;border-radius:2px;background:linear-gradient(90deg,var(--cyan),var(--blue))}
+.mx-score{flex:none;width:52px;text-align:center;font-family:var(--mono);font-size:13px;font-weight:800;color:#CFE0FF;background:rgba(79,140,255,.1);border:1px solid rgba(79,140,255,.25);border-radius:9px;padding:6px 0}
+.mx-score.zero{color:var(--faint);background:transparent;border-color:var(--line)}
+.mx-empty{padding:70px 20px;text-align:center;color:var(--faint);font-size:13px}
+.mx-sentinel{height:1px}
+.mx-drawer-backdrop{position:fixed;inset:0;background:rgba(3,5,9,.6);backdrop-filter:blur(3px);z-index:110;opacity:0;pointer-events:none;transition:opacity .16s}
+.mx-drawer-backdrop.open{opacity:1;pointer-events:auto}
+.mx-drawer{position:fixed;top:0;right:0;height:100%;width:min(560px,100%);background:linear-gradient(180deg,#101724,#0B0F18);border-left:1px solid var(--line2);z-index:111;transform:translateX(103%);transition:transform .18s ease;display:flex;flex-direction:column;box-shadow:-30px 0 80px rgba(0,0,0,.5)}
+.mx-drawer.open{transform:none}
+.mx-drawer-head{padding:18px 20px 14px;border-bottom:1px solid var(--line);display:flex;gap:12px;align-items:flex-start}
+.mx-drawer-head .mx-x{margin-left:auto;background:var(--panel2);border:1px solid var(--line);color:var(--muted);border-radius:9px;width:32px;height:32px;cursor:pointer;font-size:15px;flex:none}
+.mx-drawer-head .mx-x:hover{color:#fff;border-color:var(--line2)}
+.mx-drawer-scroll{overflow-y:auto;padding:16px 20px 44px}
+.mx-drawer h3{margin:0 0 10px;font-size:14px;display:flex;align-items:center;gap:8px}
+.mx-drawer h3 .mini{font-weight:400}
+/* Model cross-links (profiles, dashboards, billing, shared reports, legends) */
+.model-link{color:inherit;text-decoration:none;cursor:pointer;border-bottom:1px dotted rgba(139,149,168,.4);transition:.12s}
+.model-link:hover{color:#9CC0FF;border-bottom-color:rgba(79,140,255,.6)}
+a.model-chip{text-decoration:none;cursor:pointer}
+a.model-chip:hover{border-color:rgba(79,140,255,.45);color:#CFE0FF}
+.model-all-link{color:var(--faint);font-size:11px;text-decoration:none;white-space:nowrap;cursor:pointer}
+.model-all-link:hover{color:#9CC0FF;text-decoration:underline}
+.mx-listing-row{display:grid;grid-template-columns:1.4fr 1fr 1fr 1fr 60px;gap:8px;align-items:center;padding:8px 6px;border-bottom:1px solid rgba(30,38,53,.5);cursor:pointer;font-size:11.5px}
+.mx-listing-row:last-child{border-bottom:none}
+.mx-listing-row:hover{background:rgba(255,255,255,.022)}
+.mx-listing-row.active{border-color:rgba(79,140,255,.5);background:rgba(79,140,255,.07);border-radius:8px}
+.mx-split-bar{display:flex;height:7px;border-radius:4px;overflow:hidden;background:var(--panel3);margin-top:8px}
+.mx-split-bar i{display:block;height:100%}
+/* Flat /models page: slim brand head, no dashboard chrome */
+body.th-flat .sidebar,body.th-flat .topbar{display:none}
+body.th-flat .app{grid-template-columns:1fr}
+body.th-flat .content{padding:20px 26px 60px;max-width:1420px}
+body.th-flat .mx-scroll{height:min(78vh,980px)}
+.mx-flat-head{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-bottom:16px}
+.mx-flat-brand{display:flex;align-items:center;gap:9px;font-weight:800;font-size:15px;text-decoration:none}
+.mx-flat-brand img{width:26px;height:26px;border-radius:7px}
+.mx-flat-title{font-size:22px;font-weight:800;letter-spacing:-.3px}
+.mx-flat-dash{font-size:12px;color:var(--muted);text-decoration:none;border:1px solid var(--line);border-radius:999px;padding:6px 12px;white-space:nowrap}
+.mx-flat-dash:hover{color:#fff;border-color:var(--line2)}
+.mx-sec{margin-bottom:20px}
+.mx-price-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+.mx-price{background:var(--panel);border:1px solid var(--line);border-radius:11px;padding:10px 12px}
+.mx-price .l{font-size:9.5px;letter-spacing:.8px;color:var(--faint);text-transform:uppercase}
+.mx-price .v{font-family:var(--mono);font-size:15px;font-weight:700;margin-top:4px}
+.mx-price .was{font-size:10.5px;color:var(--faint);text-decoration:line-through;margin-left:6px}
+.mx-bench-row{display:grid;grid-template-columns:88px 1fr 58px;gap:10px;align-items:center;margin-bottom:9px;font-size:11.5px}
+.mx-bench-row .bar{height:7px;border-radius:4px;background:var(--panel3);overflow:hidden}
+.mx-bench-row .bar i{display:block;height:100%;background:linear-gradient(90deg,var(--cyan),var(--blue))}
+.mx-bench-row .val{font-family:var(--mono);text-align:right;font-weight:600}
+.mx-user-row{display:flex;align-items:center;gap:9px;padding:7px 0;border-bottom:1px solid rgba(30,38,53,.5);cursor:pointer}
+.mx-user-row:last-child{border-bottom:none}
+.mx-user-row:hover .u{color:#9CC0FF}
+.mx-user-row .u{font-size:12.5px;font-weight:600}
+.mx-user-row .t{margin-left:auto;font-family:var(--mono);font-size:11px;color:var(--muted)}
+.mx-link-row{display:flex;gap:8px;flex-wrap:wrap}
+@media(max-width:1180px){.mx-hide-lg{display:none}}
+@media(max-width:860px){.mx-kpis{grid-template-columns:repeat(2,1fr)}.mx-hide-md{display:none}.mx-score{display:none}.mx-picks{grid-auto-columns:minmax(210px,1fr)}}
+@media(max-width:560px){
+:root{--mx-row-h:88px}
+.mx-row{padding:8px 10px;gap:9px}
+.mx-stats{gap:12px}
+.mx-stat.wide{width:124px}
+.mx-select{flex:1 1 calc(50% - 6px);min-width:0}
+.mx-hide-sm{display:none}
+.mx-bench{display:none}
+.mx-search{order:9;flex-basis:100%}
+body.th-flat .mx-search{order:0}
+.mx-drawer{width:100%}
+.mx-price-grid{grid-template-columns:1fr}
+}
+
 @media(max-width:1180px){.kpis{grid-template-columns:repeat(2,1fr)}.stat-grid{grid-template-columns:repeat(2,1fr)}.two-col,.split,.three-col{grid-template-columns:1fr}.ladder{grid-template-columns:repeat(4,1fr)}}
 @media(max-width:860px){.app{grid-template-columns:64px 1fr}.brand-title,.brand-sub,.nav-item span,.promo{display:none}.brand{padding:4px 0 16px;justify-content:center}.brand-logo{width:34px;height:34px}.nav-bh{display:none}.nav-shield{display:block}.nav-item{justify-content:center}.content{padding:16px}.page-head h1{font-size:22px}.how-grid{grid-template-columns:repeat(2,1fr)}.ladder{grid-template-columns:repeat(2,1fr)}
 .topbar{flex-wrap:wrap;row-gap:10px}
@@ -433,6 +563,8 @@ const state = {
   sortKey: "rank",
   sortDir: 1,
   profileTab: "overview",
+  modelsTab: "explorer",
+  flatModels: false,
   data: null,
   user: null,
   providers: null,
@@ -1079,7 +1211,10 @@ function stackedUsageChart(data, opts = {}) {
   const legend = series.map(s => {
     const total = (s.values || []).reduce((a, b) => a + b, 0);
     const desc = s.description || `${providerDisplay(s.provider || providerKey(s.name), s.name)} · ${fmtPct(total / grandTotal * 100, 1)}`;
-    return `<div class="legend-item" title="${esc(s.name)} · ${esc(desc)}"><i class="legend-swatch" style="background:${s.color}"></i>${providerLogo(s.provider || s.name, 16, s.name)}<span class="legend-text"><span class="legend-name">${esc(s.name)}</span><span class="legend-desc">${esc(desc)}</span></span><span class="legend-value">${fmtTokens(total)}</span></div>`;
+    const nameHtml = s.provider && s.name && s.name !== "Other"
+      ? modelLink(s.provider, s.name, s.name)
+      : esc(s.name);
+    return `<div class="legend-item" title="${esc(s.name)} · ${esc(desc)}"><i class="legend-swatch" style="background:${s.color}"></i>${providerLogo(s.provider || s.name, 16, s.name)}<span class="legend-text"><span class="legend-name">${nameHtml}</span><span class="legend-desc">${esc(desc)}</span></span><span class="legend-value">${fmtTokens(total)}</span></div>`;
   }).join("");
   return chart + `<div class="chart-legend">${legend}</div>`;
 }
@@ -1352,21 +1487,42 @@ function navigate(view, opts = {}) {
   state.view = view;
   if (opts.handle) state.currentHandle = opts.handle;
   if (opts.tab) state.profileTab = opts.tab;
+  if (opts.modelsTab) state.modelsTab = opts.modelsTab;
   const params = new URLSearchParams();
   if (view !== "leaderboard") params.set("view", view);
   const handle = opts.handle || state.currentHandle;
   if (handle && (view === "players" || view === "dashboard")) params.set("user", handle);
   if (opts.share) params.set("share", opts.share);
+  if (view === "models" && state.modelsTab === "providers") params.set("tab", "providers");
+  if (view === "models" && opts.model) params.set("model", opts.model);
+  if (view === "models" && opts.model) {
+    const mx = mxState();
+    mx.pendingModel = opts.model;
+    mx.pendingProvider = opts.provider || "";
+  }
+  if (view === "models" && opts.providerFilter) {
+    params.set("provider", opts.providerFilter);
+    mxState().pendingProviderFilter = opts.providerFilter;
+  }
   const qs = params.toString();
-  history.pushState({ view, handle }, "", qs ? "?" + qs : location.pathname);
+  // /models is a path-routed view: keep it canonical, and leave it for other
+  // views (a relative "?view=x" would otherwise stay on /models).
+  const onModelsPath = /^\/models\/?$/.test(location.pathname);
+  const target = onModelsPath
+    ? (view === "models" ? "/models" : "/leaderboard") + (qs ? "?" + qs : "")
+    : (qs ? "?" + qs : location.pathname);
+  history.pushState({ view, handle }, "", target);
   renderNav();
   render();
 }
 window.addEventListener("popstate", () => {
   const p = new URLSearchParams(location.search);
-  state.view = p.get("view") || "leaderboard";
+  state.view = p.get("view") || (/^\/models\/?$/.test(location.pathname) ? "models" : "leaderboard");
+  state.modelsTab = p.get("tab") === "providers" ? "providers" : "explorer";
   const u = p.get("user");
   if (u) state.currentHandle = u;
+  if (p.get("model")) mxState().pendingModel = p.get("model");
+  if (p.get("provider")) mxState().pendingProviderFilter = p.get("provider");
   renderNav();
   render();
 });
@@ -1582,7 +1738,7 @@ function viewLeaderboard() {
   const modelSegments = aggregateModels(d.leaderboard || []);
   const mixTop = modelSegments.slice(0, 5);
   const mixTotal = mixTop.reduce((a, b) => a + b.value, 0);
-  const mix = `<div class="card"><div class="card-head"><h3>Usage by Model / Provider</h3><span class="sub">All-time share</span></div>
+  const mix = `<div class="card"><div class="card-head"><h3>Usage by Model / Provider</h3><span class="sub">All-time share · ${modelsAllLink()}</span></div>
     <div class="donut-wrap">${donut(mixTop, 168, fmtTokens(mixTotal), "tokens")}
     <div class="legend">${mixTop.map((s, i) => `<div class="legend-row">${providerLogo(s.provider || s.label, 15)}${esc(s.label)}<span class="val">${fmtTokens(s.value)}</span><span class="pct">${fmtPct(s.value / Math.max(1, mixTotal) * 100, 0)}</span></div>`).join("")}</div></div></div>`;
 
@@ -1711,7 +1867,7 @@ async function render() {
       case "dashboard": await renderDashboard(); break;
       case "players": await renderPlayers(); break;
       case "teams": await renderTeams(); break;
-      case "models": await renderProviders(); break;
+      case "models": await renderModels(); break;
       case "billing": await renderBilling(); break;
       case "leagues": await renderLeagues(); break;
       case "settings": await renderSettings(); break;
@@ -1957,14 +2113,14 @@ function profileContent(p) {
       <div class="card"><div class="card-head"><h3>Token Usage Over Time</h3><span class="chip">By Model</span></div>${modelData
         ? stackedUsageChart(modelData, { height: 220, ariaLabel: "Token usage by model over time" })
         : areaChart(hist, { color: "#4F8CFF", height: 220 })}</div>
-      <div class="card"><div class="card-head"><h3>Usage by Model / Provider</h3></div>
+      <div class="card"><div class="card-head"><h3>Usage by Model / Provider</h3><span class="sub">${modelsAllLink("Browse all models →")}</span></div>
         <div class="donut-wrap">${donut(providers.slice(0, 5), 150, fmtTokens(e.tokensAll), "tokens")}
         <div class="legend">${providers.slice(0, 6).map(s => `<div class="legend-row">${providerLogo(s.provider || s.label, 15)}${esc(s.label)}<span class="val">${fmtTokens(s.value)}</span></div>`).join("")}</div></div></div>
     </div>
     <div class="two-col top">
-      <div class="card"><div class="card-head"><h3>Model Inventory</h3><span class="sub">${models.length} models</span></div>
+      <div class="card"><div class="card-head"><h3>Model Inventory</h3><span class="sub">${models.length} models · ${modelsAllLink()}</span></div>
         <div style="overflow-x:auto"><table><thead><tr><th>Model</th><th>Provider</th><th class="right">Tokens</th><th class="right">Requests</th><th class="right">Cost</th><th class="right">Share</th></tr></thead><tbody>
-        ${(bd.models || []).slice(0, 10).map(m => `<tr><td>${esc(m.model)}</td><td><span class="chip logo-chip">${providerLogo(m.provider, 15, m.model)}${esc(providerDisplay(m.provider, m.model))}</span></td><td class="num right">${fmtTokens(m.tokensAll)}</td><td class="num right">${fmtNum(m.requests)}</td><td class="num right">${fmtCost(m.costAll)}</td><td style="width:110px"><div class="bar"><i style="width:${m.sharePercent || 0}%"></i></div><div class="mini right">${fmtPct(m.sharePercent || 0, 1)}</div></td></tr>`).join("") || '<tr><td colspan="6"><div class="empty">No model data published yet.</div></td></tr>'}
+        ${(bd.models || []).slice(0, 10).map(m => `<tr><td>${modelLink(m.provider, m.model)}</td><td><span class="chip logo-chip">${providerLogo(m.provider, 15, m.model)}${esc(providerDisplay(m.provider, m.model))}</span></td><td class="num right">${fmtTokens(m.tokensAll)}</td><td class="num right">${fmtNum(m.requests)}</td><td class="num right">${fmtCost(m.costAll)}</td><td style="width:110px"><div class="bar"><i style="width:${m.sharePercent || 0}%"></i></div><div class="mini right">${fmtPct(m.sharePercent || 0, 1)}</div></td></tr>`).join("") || '<tr><td colspan="6"><div class="empty">No model data published yet.</div></td></tr>'}
         </tbody></table></div></div>
       <div class="card"><div class="card-head"><h3>Usage Heatmap</h3><span class="sub">${calendarHeatmap(bd.daily) ? "last 17 weeks" : "weekday × hour"}</span></div>${calendarHeatmap(bd.daily) || heatmap(bd.hourly)}</div>
     </div>`;
@@ -1976,7 +2132,7 @@ function profileContent(p) {
     const catRows = [...cats.entries()].map(([label, value]) => ({ label, value })).sort((a, b) => b.value - a.value);
     return `<div class="two-col"><div class="card"><div class="card-head"><h3>Top Prompts / Workloads</h3><span class="sub">recent sessions</span></div>
       <div style="overflow-x:auto"><table><thead><tr><th>#</th><th>Prompt / Workflow</th><th>Model</th><th class="right">Tokens</th><th class="right">Cost</th><th class="right">Requests</th></tr></thead><tbody>
-      ${sessions.map((s, i) => `<tr><td class="faint">${i + 1}</td><td>${s.title ? esc(s.title) : '<span class="faint">title private</span> <span class="chip" style="font-size:9.5px;padding:2px 7px">🔒</span>'}</td><td><span class="chip logo-chip">${providerLogo(s.provider, 14, s.model)}${esc(providerDisplay(s.provider, s.model))}${s.model ? " · " + esc(s.model) : ""}</span></td><td class="num right">${fmtTokens(s.tokens)}</td><td class="num right">${fmtCost(s.cost)}</td><td class="num right">${fmtNum(s.requests)}</td></tr>`).join("") || '<tr><td colspan="6"><div class="empty">Prompt history isn&#39;t published for this profile — owners can enable it in Token Horizon settings.</div></td></tr>'}
+      ${sessions.map((s, i) => `<tr><td class="faint">${i + 1}</td><td>${s.title ? esc(s.title) : '<span class="faint">title private</span> <span class="chip" style="font-size:9.5px;padding:2px 7px">🔒</span>'}</td><td>${sessionModelChip(s.provider, s.model)}</td><td class="num right">${fmtTokens(s.tokens)}</td><td class="num right">${fmtCost(s.cost)}</td><td class="num right">${fmtNum(s.requests)}</td></tr>`).join("") || '<tr><td colspan="6"><div class="empty">Prompt history isn&#39;t published for this profile — owners can enable it in Token Horizon settings.</div></td></tr>'}
       </tbody></table></div></div>
       <div class="card"><div class="card-head"><h3>Prompt Categories</h3><span class="sub">keyword-classified</span></div>${barList(catRows, { labelWidth: 130 }) || '<div class="empty">No sessions.</div>'}</div>
     </div>`;
@@ -2044,7 +2200,7 @@ async function renderDashboard() {
         <div class="card" style="padding:0;overflow:hidden">
           <div class="card-head" style="padding:16px 16px 8px"><h3>Recent Activity</h3><span class="sub">detailed request history for this user</span></div>
           <div style="overflow-x:auto"><table><thead><tr><th>Time</th><th>Prompt / App</th><th>Model</th><th class="right">Tokens</th><th class="right">Cost</th><th class="right">Requests</th></tr></thead><tbody>
-          ${sessions.map(s => `<tr><td class="faint" style="white-space:nowrap">${fmtDate(s.at)}</td><td>${s.title ? esc(s.title) : '<span class="faint">title private</span>'}${s.title ? "" : ' <span class="chip" style="font-size:9.5px;padding:2px 7px">🔒</span>'}</td><td><span class="chip logo-chip">${providerLogo(s.provider, 14, s.model)}${esc(providerDisplay(s.provider, s.model))}${s.model ? " · " + esc(s.model) : ""}</span></td><td class="num right">${fmtTokens(s.tokens)}</td><td class="num right">${fmtCost(s.cost)}</td><td class="num right">${fmtNum(s.requests)}</td></tr>`).join("") || '<tr><td colspan="6"><div class="empty">Prompt history isn&#39;t published for this profile — owners can enable it in Token Horizon settings.</div></td></tr>'}
+          ${sessions.map(s => `<tr><td class="faint" style="white-space:nowrap">${fmtDate(s.at)}</td><td>${s.title ? esc(s.title) : '<span class="faint">title private</span>'}${s.title ? "" : ' <span class="chip" style="font-size:9.5px;padding:2px 7px">🔒</span>'}</td><td>${sessionModelChip(s.provider, s.model)}</td><td class="num right">${fmtTokens(s.tokens)}</td><td class="num right">${fmtCost(s.cost)}</td><td class="num right">${fmtNum(s.requests)}</td></tr>`).join("") || '<tr><td colspan="6"><div class="empty">Prompt history isn&#39;t published for this profile — owners can enable it in Token Horizon settings.</div></td></tr>'}
           </tbody></table></div>
         </div>
         <div class="grid" style="align-content:start">
@@ -2074,7 +2230,7 @@ async function renderDashboard() {
         <div class="card"><div class="card-head"><h3>Usage Heatmap</h3><span class="sub">${calendarHeatmap(e.breakdown?.daily) ? "last 17 weeks" : "when this user is most active"}</span></div>${calendarHeatmap(e.breakdown?.daily) || heatmap(e.breakdown?.hourly)}</div>
       </div>`
     + `<div class="three-col">
-        <div class="card"><div class="card-head"><h3>Usage by Model</h3></div><div class="donut-wrap">${donut(aggregateModels([{ entry: e }]).slice(0, 5), 140, fmtTokens(e.tokensAll), "tokens")}<div class="legend">${aggregateModels([{ entry: e }]).slice(0, 5).map(s => `<div class="legend-row">${providerLogo(s.provider || s.label, 15)}${esc(s.label)}<span class="val">${fmtTokens(s.value)}</span></div>`).join("")}</div></div></div>
+        <div class="card"><div class="card-head"><h3>Usage by Model</h3><span class="sub">${modelsAllLink()}</span></div><div class="donut-wrap">${donut(aggregateModels([{ entry: e }]).slice(0, 5), 140, fmtTokens(e.tokensAll), "tokens")}<div class="legend">${aggregateModels([{ entry: e }]).slice(0, 5).map(s => `<div class="legend-row">${providerLogo(s.provider || s.label, 15)}${esc(s.label)}<span class="val">${fmtTokens(s.value)}</span></div>`).join("")}</div></div></div>
         <div class="card"><div class="card-head"><h3>Cost by Project</h3></div>${barList((e.breakdown?.projects || []).slice(0, 6).map(pr => ({ label: pr.project, value: pr.cost, valueText: fmtCost(pr.cost) })), { labelWidth: 110 })}</div>
         <div class="card"><div class="card-head"><h3>Prompt Categories</h3></div>${catRows.length ? barList(catRows, { labelWidth: 120 }) : '<div class="empty" style="padding:10px">Prompt titles are private — enable prompt history in Token Horizon settings.</div>'}</div>
       </div>`;
@@ -2224,7 +2380,7 @@ async function renderLeagues() {
 /* ============================================================
    VIEW: PROVIDERS (Provider Usage Breakdown)
    ============================================================ */
-async function renderProviders() {
+async function renderProvidersTab() {
   const p = await loadProviders();
   const rows = p.providers || [];
   const totalTokens = p.total || rows.reduce((s, r) => s + r.tokens, 0);
@@ -2241,7 +2397,7 @@ async function renderProviders() {
   const insights = p.insights || {};
   const avgCostPer1k = totalTokens > 0 ? (totalCost / totalTokens) * 1000 : 0;
 
-  $("#view").innerHTML = pageHead(["Analytics", "Providers"], "Provider Usage Breakdown", "Compare token usage, cost, and market share across LLM providers.", "More models. Brighter possibilities.")
+  $("#view").innerHTML = mxTabBarHtml() + pageHead(["Analytics", "Providers"], "Provider Usage Breakdown", "Compare token usage, cost, and market share across LLM providers.", "More models. Brighter possibilities.")
     + apiErrBanner(state.providersError)
     + `<div class="grid kpis" style="margin-bottom:16px">
       ${kpiCard("Total Provider Tokens", fmtTokens(totalTokens), "", ICONS.tokens)}
@@ -2254,12 +2410,12 @@ async function renderProviders() {
         </div>
       <div class="card"><div class="card-head"><h3>Provider Mix</h3><span class="sub">share across providers</span></div>
         <div class="donut-wrap">${donut(mix.slice(0, 5), 156, fmtTokens(totalTokens), "tokens")}
-        <div class="legend">${mix.slice(0, 5).map(s => `<div class="legend-row">${providerLogo(s.provider || s.label, 15)}${esc(s.label)}<span class="val">${fmtTokens(s.value)}</span><span class="pct">${fmtPct(s.value / Math.max(1, totalTokens) * 100, 0)}</span></div>`).join("")}</div></div></div>
+        <div class="legend">${mix.slice(0, 5).map(s => `<div class="legend-row">${providerLogo(s.provider || s.label, 15)}${providerLink(s.provider || s.label, s.label)}<span class="val">${fmtTokens(s.value)}</span><span class="pct">${fmtPct(s.value / Math.max(1, totalTokens) * 100, 0)}</span></div>`).join("")}</div></div></div>
     </div>`
     + `<div class="split" style="margin-bottom:16px">
       <div class="card" style="padding:0;overflow:hidden"><div class="card-head" style="padding:16px 16px 8px"><h3>Provider Comparison</h3></div>
         <div style="overflow-x:auto"><table><thead><tr><th>#</th><th>Provider</th><th class="right">Tokens</th><th class="right">Input</th><th class="right">Output</th><th class="right">Cost</th><th class="right">Requests</th><th class="right">$/M</th><th class="right">Users</th><th class="right">Share</th></tr></thead><tbody>
-        ${rows.map((r, i) => `<tr><td class="faint">${i + 1}</td><td><span class="chip logo-chip">${providerLogo(r.provider, 15)}${esc(providerLabel(r.provider))}</span></td><td class="num right">${esc(r.tokensFormatted)}</td><td class="num right">${r.inputTokens ? fmtTokens(r.inputTokens) : "—"}</td><td class="num right">${r.outputTokens ? fmtTokens(r.outputTokens) : "—"}</td><td class="num right">${esc(r.costFormatted)}</td><td class="num right">${fmtNum(r.requests)}</td><td class="num right">${fmtRate(r.avgCostPerM)}</td><td class="num right">${fmtNum(r.users)}</td><td style="width:110px"><div class="bar"><i style="width:${r.sharePercent}%;background:${providerColor(r.provider)}"></i></div><div class="mini right">${fmtPct(r.sharePercent, 1)}</div></td></tr>`).join("") || '<tr><td colspan="10"><div class="empty">No provider data published yet.</div></td></tr>'}
+        ${rows.map((r, i) => `<tr><td class="faint">${i + 1}</td><td><span class="chip logo-chip">${providerLogo(r.provider, 15)}${providerLink(r.provider, providerLabel(r.provider))}</span></td><td class="num right">${esc(r.tokensFormatted)}</td><td class="num right">${r.inputTokens ? fmtTokens(r.inputTokens) : "—"}</td><td class="num right">${r.outputTokens ? fmtTokens(r.outputTokens) : "—"}</td><td class="num right">${esc(r.costFormatted)}</td><td class="num right">${fmtNum(r.requests)}</td><td class="num right">${fmtRate(r.avgCostPerM)}</td><td class="num right">${fmtNum(r.users)}</td><td style="width:110px"><div class="bar"><i style="width:${r.sharePercent}%;background:${providerColor(r.provider)}"></i></div><div class="mini right">${fmtPct(r.sharePercent, 1)}</div></td></tr>`).join("") || '<tr><td colspan="10"><div class="empty">No provider data published yet.</div></td></tr>'}
         </tbody></table></div></div>
       <div class="grid" style="align-content:start">
         <div class="card"><div class="card-head"><h3>Usage by Team</h3></div>
@@ -2273,11 +2429,952 @@ async function renderProviders() {
       ${insightCard("Biggest Growth", insights.biggestGrowth ? insights.biggestGrowth.handle : "—", insights.biggestGrowth ? "+" + insights.biggestGrowth.percent.toFixed(0) + "% vs last period" : "", "📈")}
       ${insightCard("Tracked Requests", fmtNum(p.providers?.reduce((s, r) => s + r.requests, 0) || 0), "across all providers", "⚡")}
     </div>`;
+  mxWireTabs();
 }
 function insightCard(label, value, detail, icon, provider) {
   const ico = provider ? providerLogo(provider, 34) : `<span style="font-size:18px">${icon}</span>`;
   return `<div class="card insight"><div class="ico" style="background:transparent;border:none">${ico}</div><div><div class="t">${esc(label)}</div><div class="v">${esc(value)}</div><div class="d faint">${esc(detail)}</div></div></div>`;
 }
+
+/* ============================================================
+   VIEW: MODELS — Explorer (static catalog) + Providers analytics
+   ============================================================ */
+
+const MX_ROW_H_DESKTOP = 64;
+const MX_ROW_H_MOBILE = 88;
+const MX_OVERSCAN = 12;
+const MX_CAPS = [
+  ["reasoning", "Reasoning"],
+  ["toolCall", "Tools"],
+  ["vision", "Vision"],
+  ["openWeights", "Open weights"]
+];
+const MX_SCOPES = [
+  ["all", "All"],
+  ["featured", "Benchmarked"],
+  ["active", "In use"],
+  ["cloud", "Cloud"],
+  ["local", "Local"],
+  ["free", "Free / Open"]
+];
+const MX_SORTS = [
+  ["featured", "Featured"],
+  ["value", "Best value"],
+  ["usage", "Most used"],
+  ["swe", "SWE-bench"],
+  ["lcb", "LiveCodeBench"],
+  ["context", "Context window"],
+  ["input", "Input $/1M"],
+  ["output", "Output $/1M"],
+  ["blended", "Blended $/1M"],
+  ["name", "Name (A–Z)"]
+];
+
+function mxState() {
+  if (!state.mx) {
+    state.mx = {
+      catalog: null, models: [], usage: new Map(), usageBare: new Map(),
+      fuse: null, fuseReady: false, query: "", scope: "all", sort: "featured", provider: "all",
+      caps: new Set(), filtered: [], counts: null, providers: null,
+      primary: true, primarySet: null, primaryHidden: 0,
+      openId: null, pendingModel: null, pendingProvider: "", pendingProviderFilter: "", error: "", mounted: false,
+      renderedRange: [-1, -1], sig: "", debounce: 0
+    };
+  }
+  return state.mx;
+}
+function mxRowH() {
+  return window.matchMedia && window.matchMedia("(max-width:560px)").matches ? MX_ROW_H_MOBILE : MX_ROW_H_DESKTOP;
+}
+function mxCtx(k) {
+  k = Number(k) || 0;
+  if (k <= 0) return "—";
+  return k >= 1000 ? (k / 1000).toFixed(k % 1000 === 0 ? 0 : 1) + "M" : k + "k";
+}
+function mxCostText(v) {
+  v = Number(v);
+  if (!isFinite(v) || v <= 0) return "$0";
+  if (v >= 1) return "$" + v.toFixed(2);
+  return "$" + v.toPrecision(2);
+}
+function mxUsageKey(provider, model) {
+  return String(provider || "").toLowerCase() + "|" + String(model || "").toLowerCase().replace(/_/g, "-");
+}
+function mxHasBench(m) { return Boolean(m.benchmarks && (m.benchmarks.swe != null || m.benchmarks.lcb != null)); }
+function mxUsageFor(m) {
+  const mx = mxState();
+  const bareName = String(m.name || "").toLowerCase();
+  const bareId = String(m.id || "").split("/").pop().toLowerCase();
+  return mx.usage.get(mxUsageKey(m.provider, bareId))
+    || mx.usage.get(mxUsageKey(m.provider, m.id))
+    || mx.usageBare.get(bareName)
+    || mx.usageBare.get(bareId)
+    || null;
+}
+function mxUsageTokens(m) { const u = mxUsageFor(m); return u ? Number(u.tokens) || 0 : 0; }
+function mxModelHref(model) {
+  return "?view=models&model=" + encodeURIComponent(String(model || ""));
+}
+/// Anchor to the explorer's per-model view. Raw usage ids are resolved to a
+/// catalog listing when the drawer opens; the href keeps it a real link
+/// (middle-click/share) and the global click handler keeps it SPA-fast.
+function modelLink(provider, model, label, opts = {}) {
+  const text = label == null ? model : label;
+  const cls = opts.chip ? "chip logo-chip model-chip" : "model-link";
+  const logo = (opts.chip || opts.logo) ? providerLogo(provider, opts.logoSize || 14, model) : "";
+  return `<a class="${cls}" href="${mxModelHref(model)}" data-model-link data-model="${esc(model)}" data-provider="${esc(provider || "")}" title="${esc(opts.title || ("View " + text + " across all providers"))}">${logo}${esc(text)}</a>`;
+}
+/// Session/activity model chip that links into the explorer when a model is known.
+function sessionModelChip(provider, model, logoSize = 14) {
+  if (model) return modelLink(provider, model, providerDisplay(provider, model) + " · " + model, { chip: true, logoSize });
+  return `<span class="chip logo-chip">${providerLogo(provider, logoSize, model)}${esc(providerDisplay(provider, model))}</span>`;
+}
+function modelsAllLink(label = "All models →") {
+  return `<a class="model-all-link" href="?view=models" data-models-all>${esc(label)}</a>`;
+}
+/// Link from a provider row/legend into the explorer filtered to that provider.
+function providerLink(provider, label, opts = {}) {
+  const key = providerKey(provider);
+  const text = label == null ? providerLabel(provider) : label;
+  return `<a class="model-link provider-link" href="?view=models&provider=${encodeURIComponent(key)}" data-provider-link="${esc(key)}" title="${esc(opts.title || ("Browse models available via " + text))}">${esc(text)}</a>`;
+}
+function mxFindModel(raw, providerHint) {
+  const mx = mxState();
+  const s = String(raw || "").trim();
+  if (!s) return null;
+  const lower = s.toLowerCase();
+  let m = mx.models.find(x => x.id === s) || mx.models.find(x => String(x.id).toLowerCase() === lower);
+  if (m) return m;
+  const bare = lower.split("/").pop();
+  const candidates = mx.models.filter(x =>
+    String(x.id).split("/").pop().toLowerCase() === bare || String(x.name).toLowerCase() === lower);
+  if (!candidates.length) return null;
+  if (providerHint) {
+    const hit = candidates.find(x => String(x.provider).toLowerCase() === String(providerHint).toLowerCase())
+      || candidates.find(x => mxGroup(x) === providerKey(String(providerHint), s));
+    if (hit) return hit;
+  }
+  return candidates.find(x => x._canon) || candidates[0];
+}
+/// Cross-user totals for a model, split by provider: total usage of this model
+/// across every published profile, not just the listing being viewed.
+function mxCommunityFor(m) {
+  const mx = mxState();
+  const bare = String(m.id).split("/").pop().toLowerCase();
+  const names = new Set([String(m.name).toLowerCase(), bare]);
+  const rows = [...mx.usage.values()].filter(r => names.has(String(r.model || "").toLowerCase()));
+  const exact = mx.usage.get(mxUsageKey(m.provider, bare)) || mx.usage.get(mxUsageKey(m.provider, m.id));
+  if (exact) {
+    const key = (r) => String(r.provider).toLowerCase() + "|" + String(r.model).toLowerCase();
+    if (!rows.some(r => key(r) === key(exact))) rows.push(exact);
+  }
+  const total = { rows: [], tokens: 0, cost: 0, requests: 0, users: 0, input: 0, output: 0, share: 0 };
+  for (const r of rows) {
+    total.tokens += Number(r.tokens) || 0;
+    total.cost += Number(r.cost) || 0;
+    total.requests += Number(r.requests) || 0;
+    total.users += Number(r.users) || 0;
+    total.input += Number(r.inputTokens) || 0;
+    total.output += Number(r.outputTokens) || 0;
+    total.share += Number(r.sharePercent) || 0;
+  }
+  total.rows = rows.sort((a, b) => (Number(b.tokens) || 0) - (Number(a.tokens) || 0));
+  return total;
+}
+/// Catalog listings of the same model across labs/gateways/resellers.
+function mxListingsFor(m) {
+  const mx = mxState();
+  const bare = String(m.id).split("/").pop().toLowerCase();
+  const name = String(m.name).toLowerCase();
+  return mx.models
+    .filter(x => x.id === m.id || String(x.id).split("/").pop().toLowerCase() === bare || String(x.name).toLowerCase() === name)
+    .sort((a, b) => (Number(a.blendedNetCost) || 0) - (Number(b.blendedNetCost) || 0) || String(a.id).localeCompare(String(b.id)));
+}
+
+async function mxLoad() {
+  const mx = mxState();
+  if (mx.catalog) return mx.catalog;
+  try {
+    mx.catalog = await api("/api/models/catalog");
+  } catch (e) {
+    try {
+      const res = await fetch("./data/models.json", { cache: "force-cache" });
+      if (!res.ok) throw new Error("HTTP " + res.status);
+      mx.catalog = await res.json();
+    } catch (_) {
+      mx.error = e.message || "catalog unavailable";
+      mx.catalog = { models: [], topPicks: [], providers: [], count: 0, schemaVersion: 0 };
+    }
+  }
+  mx.models = (mx.catalog.models || []).map(m => {
+    m._hay = [m.name, m.id, m.providerName, m.provider, m.category, m.description].filter(Boolean).join(" ").toLowerCase();
+    m._key = String(m.name || "").toLowerCase().replace(/\s+/g, " ").trim();
+    m._canon = mxKnownProvider(m) || mxHasBench(m) || Number(m.inputPerM) > 0 || Boolean(m.isLocal);
+    return m;
+  });
+  mxBuildProviders();
+  mxBuildPrimary();
+  mxLoadUsage().then(() => {
+    mxBuildPrimary();
+    mx.counts = null;
+    if (mx.mounted) mxCompute(true);
+    mxRefreshOpenDrawer();
+  });
+  return mx.catalog;
+}
+/// The same model is listed by labs, gateways and resellers; the explorer
+/// defaults to one primary listing per model name (best metadata wins) so the
+/// list reads as a catalog, not a marketplace dump.
+function mxKnownProvider(m) { return providerKey(m.provider, m.id) !== "other"; }
+function mxBuildPrimary() {
+  const mx = mxState();
+  const rank = (m) => (mxHasBench(m) ? 8 : 0)
+    + ((Number(m.inputPerM) > 0 || Number(m.outputPerM) > 0 || m.isLocal) ? 4 : 0)
+    + (mxKnownProvider(m) ? 2 : 0)
+    + (mxUsageTokens(m) > 0 ? 1 : 0)
+    + (String(m.id).length < 40 ? 0.5 : 0);
+  const best = new Map();
+  for (const m of mx.models) {
+    const cur = best.get(m._key);
+    if (!cur || rank(m) > rank(cur) || (rank(m) === rank(cur) && String(m.id).length < String(cur.id).length)) {
+      best.set(m._key, m);
+    }
+  }
+  mx.primarySet = new Set([...best.values()].map(m => m.id));
+  mx.primaryHidden = mx.models.length - mx.primarySet.size;
+}
+function mxBase() {
+  const mx = mxState();
+  if (!mx.primary || !mx.primarySet) return mx.models;
+  return mx.models.filter(m => mx.primarySet.has(m.id));
+}
+function mxBuildProviders() {
+  const mx = mxState();
+  const map = new Map();
+  for (const m of mx.models) {
+    const key = mxGroup(m);
+    const cur = map.get(key) || { key, label: mxGroupLabel(m), count: 0 };
+    cur.count++;
+    map.set(key, cur);
+  }
+  mx.providers = [...map.values()].sort((a, b) => b.count - a.count);
+}
+function mxGroup(m) {
+  const key = providerKey(m.provider, m.id);
+  return key === "other" ? String(m.provider || "other").toLowerCase() : key;
+}
+function mxGroupLabel(m) {
+  const raw = String(m.provider || "").toLowerCase();
+  return mxGroup(m) === raw ? (m.providerName || m.provider) : providerLabel(mxGroup(m));
+}
+async function mxLoadUsage() {
+  const mx = mxState();
+  let rows = [];
+  try {
+    const u = await api("/api/models/usage");
+    rows = u.models || [];
+  } catch (_) {
+    rows = mxUsageFromLeaderboard();
+  }
+  mx.usage = new Map();
+  mx.usageBare = new Map();
+  const totalTokens = rows.reduce((s, r) => s + (Number(r.tokens) || 0), 0);
+  for (const r of rows) {
+    const exact = mxUsageKey(r.provider, r.model);
+    if (!mx.usage.has(exact)) mx.usage.set(exact, r);
+    const bare = String(r.model || "").toLowerCase();
+    const agg = mx.usageBare.get(bare) || { provider: r.provider, model: r.model, tokens: 0, cost: 0, requests: 0, users: 0, sharePercent: 0 };
+    agg.tokens += Number(r.tokens) || 0;
+    agg.cost += Number(r.cost) || 0;
+    agg.requests += Number(r.requests) || 0;
+    agg.users += Number(r.users) || 0;
+    mx.usageBare.set(bare, agg);
+  }
+  for (const agg of mx.usageBare.values()) {
+    agg.sharePercent = totalTokens > 0 ? Math.round((agg.tokens / totalTokens) * 1000) / 10 : 0;
+  }
+  mx.counts = null;
+}
+function mxUsageFromLeaderboard() {
+  const byModel = new Map();
+  for (const row of state.data?.leaderboard || []) {
+    const e = row.entry || {};
+    for (const m of e.breakdown?.models || []) {
+      const key = mxUsageKey(m.provider, m.model);
+      const cur = byModel.get(key) || { provider: m.provider, model: m.model, tokens: 0, cost: 0, requests: 0, inputTokens: 0, outputTokens: 0, users: 0 };
+      cur.tokens += Number(m.tokensAll) || 0;
+      cur.cost += Number(m.costAll) || 0;
+      cur.requests += Number(m.requests) || 0;
+      cur.inputTokens += Number(m.inputTokens) || 0;
+      cur.outputTokens += Number(m.outputTokens) || 0;
+      cur.users += 1;
+      byModel.set(key, cur);
+    }
+  }
+  const rows = [...byModel.values()];
+  const total = rows.reduce((s, r) => s + r.tokens, 0);
+  return rows.map(r => ({ ...r, sharePercent: total > 0 ? Math.round((r.tokens / total) * 1000) / 10 : 0 }));
+}
+
+function mxPassesScope(m) {
+  const mx = mxState();
+  switch (mx.scope) {
+    case "featured": return mxHasBench(m);
+    case "active": return Boolean(mxUsageFor(m));
+    case "cloud": return !m.isLocal;
+    case "local": return Boolean(m.isLocal);
+    case "free": return Boolean(m.isFree || m.isLocal);
+    default: return true;
+  }
+}
+function mxPassesProvider(m) { return mxState().provider === "all" || mxGroup(m) === mxState().provider; }
+function mxPassesCaps(m) {
+  const caps = m.capabilities || {};
+  for (const key of mxState().caps) {
+    if (key === "openWeights") { if (!caps.openWeights) return false; }
+    else if (!caps[key]) return false;
+  }
+  return true;
+}
+function mxFuse() {
+  const mx = mxState();
+  if (mx.fuseReady) return mx.fuse;
+  mx.fuseReady = true;
+  if (!window.Fuse) return null;
+  mx.fuse = new window.Fuse(mx.models, {
+    includeScore: true,
+    ignoreLocation: true,
+    threshold: 0.34,
+    minMatchCharLength: 2,
+    // Canonical listings outrank reseller clones at equal text similarity.
+    sortFn: (a, b) => {
+      const pen = (hit) => (hit.item._canon ? 0 : 0.12)
+        + ((Number(hit.item.inputPerM) || Number(hit.item.outputPerM) || hit.item.isLocal || mxHasBench(hit.item)) ? 0 : 0.05);
+      return (a.score + pen(a)) - (b.score + pen(b));
+    },
+    keys: [
+      { name: "name", weight: 0.4 },
+      { name: "id", weight: 0.24 },
+      { name: "providerName", weight: 0.1 },
+      { name: "description", weight: 0.14 },
+      { name: "provider", weight: 0.06 },
+      { name: "category", weight: 0.06 }
+    ]
+  });
+  return mx.fuse;
+}
+function mxValueIndex(m) {
+  const perf = Number(m.perfScore) || 0;
+  const cost = Math.max(0.02, Number(m.blendedNetCost) || 0.04);
+  return perf / Math.pow(cost + 0.15, 0.65);
+}
+function mxSorter() {
+  const byName = (a, b) => String(a.name).localeCompare(String(b.name));
+  switch (mxState().sort) {
+    case "value": return (a, b) => mxValueIndex(b) - mxValueIndex(a) || byName(a, b);
+    case "usage": return (a, b) => mxUsageTokens(b) - mxUsageTokens(a) || byName(a, b);
+    case "swe": return (a, b) => ((b.benchmarks?.swe ?? -1) - (a.benchmarks?.swe ?? -1)) || byName(a, b);
+    case "lcb": return (a, b) => ((b.benchmarks?.lcb ?? -1) - (a.benchmarks?.lcb ?? -1)) || byName(a, b);
+    case "context": return (a, b) => (Number(b.contextK) || 0) - (Number(a.contextK) || 0) || byName(a, b);
+    case "input": return (a, b) => (Number(a.inputPerM) || 0) - (Number(b.inputPerM) || 0) || byName(a, b);
+    case "output": return (a, b) => (Number(a.outputPerM) || 0) - (Number(b.outputPerM) || 0) || byName(a, b);
+    case "blended": return (a, b) => (Number(a.blendedNetCost) || 0) - (Number(b.blendedNetCost) || 0) || byName(a, b);
+    case "name": return byName;
+    default: return (a, b) => (mxHasBench(b) - mxHasBench(a))
+      || ((Number(b.perfScore) || 0) - (Number(a.perfScore) || 0))
+      || (mxUsageTokens(b) - mxUsageTokens(a))
+      || byName(a, b);
+  }
+}
+function mxCompute(keepScroll) {
+  const mx = mxState();
+  const q = mx.query.trim().toLowerCase();
+  let list = mxBase().filter(m => mxPassesScope(m) && mxPassesProvider(m) && mxPassesCaps(m));
+  if (q) {
+    // Relevance order is the sort order while searching (Fuse score, best
+    // first) — applying the selected column sort here destroyed ranking.
+    const fuse = q.length >= 2 ? mxFuse() : null;
+    if (fuse) {
+      const allowed = new Set(list.map(m => m.id));
+      list = fuse.search(q).filter(h => allowed.has(h.item.id)).map(h => h.item);
+    } else {
+      list = list.filter(m => m._hay.includes(q));
+    }
+  } else {
+    list.sort(mxSorter());
+  }
+  mx.filtered = list;
+  mx.sig = [mx.scope, mx.sort, mx.provider, [...mx.caps].sort().join(","), mx.query.trim(), mx.models.length, mx.primary].join("|");
+  mx.renderedRange = [-1, -1];
+  if (!keepScroll) {
+    const scroller = $("#mx-scroll");
+    if (scroller) scroller.scrollTop = 0;
+  }
+  if (mx.mounted) { mxRenderList(true); mxUpdateBar(); }
+}
+function mxCounts() {
+  const mx = mxState();
+  if (mx.counts) return mx.counts;
+  const counts = { all: 0, featured: 0, active: 0, cloud: 0, local: 0, free: 0 };
+  for (const m of mxBase()) {
+    counts.all++;
+    if (mxHasBench(m)) counts.featured++;
+    if (mxUsageFor(m)) counts.active++;
+    if (m.isLocal) counts.local++; else counts.cloud++;
+    if (m.isFree || m.isLocal) counts.free++;
+  }
+  mx.counts = counts;
+  return counts;
+}
+function mxClearFilters() {
+  const mx = mxState();
+  mx.query = "";
+  mx.scope = "all";
+  mx.sort = "featured";
+  mx.provider = "all";
+  mx.caps = new Set();
+  const q = $("#mx-q"); if (q) q.value = "";
+  const sort = $("#mx-sort"); if (sort) sort.value = "featured";
+  const prov = $("#mx-provider"); if (prov) prov.value = "all";
+  mxCompute();
+  mxSyncChips();
+}
+function mxSyncChips() {
+  const mx = mxState();
+  $$("#mx-scopes .mx-chip").forEach(el => el.classList.toggle("active", el.dataset.scope === mx.scope));
+  $$("#mx-caps .mx-chip").forEach(el => el.classList.toggle("active", mx.caps.has(el.dataset.cap)));
+  const primary = $("#mx-primary");
+  if (primary) {
+    primary.classList.toggle("active", mx.primary);
+    const n = $("#mx-primary-n");
+    if (n) n.textContent = `${(mx.primary ? mx.primaryHidden : 0).toLocaleString()} hidden`;
+  }
+}
+function mxUpdateBar() {
+  const mx = mxState();
+  const shown = $("#mx-shown");
+  if (shown) shown.textContent = `${mx.filtered.length.toLocaleString()} of ${mx.models.length.toLocaleString()} models`;
+  mxSyncChips();
+  // Usage-dependent scope counts arrive after the adoption rollup resolves.
+  const counts = mxCounts();
+  $$("#mx-scopes .mx-chip").forEach(el => {
+    const badge = el.querySelector(".n");
+    if (badge) badge.textContent = (counts[el.dataset.scope] ?? 0).toLocaleString();
+  });
+}
+
+/* ---------- explorer rendering ---------- */
+function mxTabHtml(id, label) {
+  return `<div class="tab ${(state.modelsTab || "explorer") === id ? "active" : ""}" data-models-tab="${id}" tabindex="0" role="tab" aria-selected="${(state.modelsTab || "explorer") === id}">${label}</div>`;
+}
+function mxTabBarHtml() {
+  return `<div class="tabs" style="margin-bottom:18px">${mxTabHtml("explorer", "Explorer")}${mxTabHtml("providers", "Providers")}</div>`;
+}
+function mxWireTabs() {
+  $$("[data-models-tab]").forEach(el => {
+    const go = () => { state.modelsTab = el.dataset.modelsTab; render(); };
+    el.onclick = go;
+    keyActivate(el, go);
+  });
+}
+function mxScopeChipHtml(id, label) {
+  const mx = mxState();
+  const n = mxCounts()[id] ?? 0;
+  return `<span class="mx-chip ${mx.scope === id ? "active" : ""}" data-scope="${id}" tabindex="0" role="button">${label}<span class="n">${n.toLocaleString()}</span></span>`;
+}
+function mxCapChipHtml(key, label) {
+  const mx = mxState();
+  return `<span class="mx-chip cap ${mx.caps.has(key) ? "active" : ""}" data-cap="${key}" tabindex="0" role="button">${label}</span>`;
+}
+function mxFlatHeadHtml() {
+  const total = mxBase().length;
+  return `<div class="mx-flat-head">
+    <a class="mx-flat-brand" href="./leaderboard.html"><img src="./assets/icon.png" alt="" /><span>Token Horizon</span></a>
+    <span class="mx-flat-title">Models</span>
+    <span class="mx-counts" id="mx-flat-count">${total.toLocaleString()} models</span>
+    <span style="margin-left:auto;display:flex;gap:8px;align-items:center">
+      <a class="mx-flat-dash" href="./leaderboard.html">Full dashboard ↗</a>
+      <a class="mx-flat-dash" href="https://github.com/castlemilk/token-horizon" target="_blank" rel="noopener">GitHub</a>
+    </span>
+  </div>`;
+}
+function mxShellHtml() {
+  const mx = mxState();
+  const providers = mx.providers || [];
+  const total = mxBase().length;
+  const flat = state.flatModels;
+  return (flat
+    ? mxFlatHeadHtml()
+    : pageHead(["Analytics", "Models"], "Model Explorer",
+        "Every model Token Horizon tracks — live pricing, coding benchmarks, capabilities and community adoption.",
+        "Explore more. Spend smarter.")
+      + mxTabBarHtml())
+    + `
+    ${state.mx.error ? `<div class="notice err" style="margin-bottom:14px">Catalog unavailable (${esc(state.mx.error)}). <button class="pill ghost" id="mx-retry" style="font-size:11px;margin-left:8px">Retry</button></div>` : ""}
+    ${flat ? "" : `<div class="mx-picks" id="mx-picks"></div>`}
+    <div class="mx-toolbar">
+      <div class="mx-search">
+        <svg viewBox="0 0 24 24" fill="none"><circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="1.8"/><path d="M20 20l-3.5-3.5" stroke="currentColor" stroke-width="1.8"/></svg>
+        <input id="mx-q" type="text" placeholder="Search ${total.toLocaleString()} models — name, provider, capability…" autocomplete="off" spellcheck="false" value="${esc(mx.query)}" aria-label="Search models" />
+        <span class="mx-kbd">/</span>
+      </div>
+      <select class="mx-select" id="mx-sort" aria-label="Sort models">${MX_SORTS.map(([k, l]) => `<option value="${k}" ${mx.sort === k ? "selected" : ""}>${l}</option>`).join("")}</select>
+      <select class="mx-select" id="mx-provider" aria-label="Filter by provider">
+        <option value="all">All providers (${providers.length})</option>
+        ${providers.map(p => `<option value="${esc(p.key)}" ${mx.provider === p.key ? "selected" : ""}>${esc(p.label)} (${p.count.toLocaleString()})</option>`).join("")}
+      </select>
+      ${flat ? `<button class="mx-chip ${mx.primary ? "active" : ""}" id="mx-primary" type="button" title="Collapse reseller/gateway duplicates of the same model into one primary listing">Primary <span class="n" id="mx-primary-n">${mx.primaryHidden.toLocaleString()}</span></button>` : ""}
+      <button class="mx-clear" id="mx-clear" type="button">Reset</button>
+    </div>
+    ${flat ? "" : `<div class="mx-chips" id="mx-scopes">${MX_SCOPES.map(([k, l]) => mxScopeChipHtml(k, l)).join("")}</div>`}
+    ${flat ? "" : `<div class="mx-chips" id="mx-caps" style="margin:8px 0 14px">${MX_CAPS.map(([k, l]) => mxCapChipHtml(k, l)).join("")}
+      <button class="mx-chip ${mx.primary ? "active" : ""}" id="mx-primary" type="button" title="Collapse reseller/gateway duplicates of the same model into one primary listing">
+        Primary listings <span class="n" id="mx-primary-n">${mx.primaryHidden.toLocaleString()} hidden</span>
+      </button>
+      <span class="mx-counts" style="margin-left:auto">${mxCounts().all.toLocaleString()} models · ${new Set(mxBase().map(mxGroup)).size} providers · ${mxCounts().featured.toLocaleString()} benchmarked</span>
+    </div>`}
+    <div class="mx-panel">
+      <div class="mx-panel-head"><span id="mx-shown">…</span><span class="mx-hide-sm">scroll to page · click a row for details</span></div>
+      <div class="mx-scroll" id="mx-scroll" role="listbox" aria-label="Models">
+        <div class="mx-spacer" id="mx-spacer"><div class="mx-rows" id="mx-rows"></div></div>
+      </div>
+    </div>`;
+}
+function mxPickHtml(p) {
+  return `<div class="mx-pick" data-mx-id="${esc(p.id)}" tabindex="0" role="button" aria-label="${esc(p.name)}">
+    <span class="mx-pick-rank">#${p.rank}</span>
+    <div class="mx-pick-name">${providerLogo(p.provider, 18, p.id)}<span>${esc(p.name)}</span></div>
+    <div class="mx-pick-sub">${esc(p.providerName || providerLabel(p.provider))}${p.swe != null ? " · SWE " + Number(p.swe).toFixed(1) + "%" : ""}${p.lcb != null ? " · LCB " + Number(p.lcb).toFixed(1) + "%" : ""}</div>
+    <div class="mx-pick-meta">
+      <span><span class="l">Value</span><b>${Number(p.valueScore).toFixed(1)}</b></span>
+      <span><span class="l">Blended</span><b>${mxCostText(p.blendedCostPerM)}</b></span>
+    </div>
+    <div class="mx-pick-reason"><span class="mx-badge ${esc(p.badgeColor || "cyan")}">${esc(p.badge || "PICK")}</span> ${esc(p.reason || "")}</div>
+  </div>`;
+}
+function mxRowHtml(m) {
+  const mx = mxState();
+  const u = mxUsageFor(m);
+  const swe = m.benchmarks?.swe;
+  const lcb = m.benchmarks?.lcb;
+  const perf = swe ?? lcb;
+  const tags = [];
+  if (m.capabilities?.reasoning) tags.push(`<span class="mx-tag hot">reasoning</span>`);
+  if (m.isLocal) tags.push(`<span class="mx-tag free">local</span>`);
+  if (m.isFree) tags.push(`<span class="mx-tag free">free</span>`);
+  if (m.discount) tags.push(`<span class="mx-tag">${esc(m.discount.label || (m.discount.percent ? "-" + m.discount.percent + "%" : "promo"))}</span>`);
+  if (m.capabilities?.openWeights) tags.push(`<span class="mx-tag">open</span>`);
+  return `<div class="mx-row ${mx.openId === m.id ? "active" : ""}" data-mx-id="${esc(m.id)}" tabindex="0" role="option" aria-label="${esc(m.name)}">
+    <span class="mx-logo">${providerLogo(m.provider, 26, m.id)}</span>
+    <span class="mx-main">
+      <span class="mx-name">${esc(m.name)}</span>
+      <span class="mx-sub">${esc(m.providerName || providerLabel(m.provider))} · ${esc(m.id)}</span>
+      <span class="mx-tags">${tags.join("")}</span>
+    </span>
+    <span class="mx-stats">
+      <span class="mx-stat mx-hide-md"><span class="l">Ctx</span><span class="v">${mxCtx(m.contextK)}</span></span>
+      <span class="mx-stat wide"><span class="l">In / Out</span><span class="v">${mxCostText(m.inputPerM)} / ${mxCostText(m.outputPerM)}</span></span>
+      <span class="mx-stat mx-hide-sm"><span class="l">Blended</span><span class="v">${m.blendedNetCost ? mxCostText(m.blendedNetCost) : "—"}</span></span>
+      ${perf != null ? `<span class="mx-stat mx-bench"><span class="l">${swe != null ? "SWE" : "LCB"}</span><span class="v">${Number(perf).toFixed(0)}%</span><span class="bar"><i style="width:${Math.max(2, Math.min(100, Number(perf)))}%"></i></span></span>` : ""}
+      <span class="mx-stat mx-hide-lg"><span class="l">Used</span><span class="v ${u ? "" : "dim"}">${u ? fmtTokens(u.tokens) : "—"}</span></span>
+    </span>
+    <span class="mx-score ${m.perfScore == null ? "zero" : ""}">${m.perfScore != null ? Math.round(Number(m.perfScore)) : "—"}</span>
+  </div>`;
+}
+function mxRenderList(force) {
+  const mx = mxState();
+  const scroller = $("#mx-scroll");
+  const rowsEl = $("#mx-rows");
+  const spacer = $("#mx-spacer");
+  if (!scroller || !rowsEl || !spacer) return;
+  const total = mx.filtered.length;
+  const h = mxRowH();
+  spacer.style.height = (total * h) + "px";
+  if (!total) {
+    rowsEl.style.transform = "translateY(0)";
+    rowsEl.innerHTML = `<div class="mx-empty">No models match those filters.<br/><button class="pill ghost" id="mx-reset" style="font-size:11px;margin-top:10px">Clear filters</button></div>`;
+    const reset = $("#mx-reset");
+    if (reset) reset.onclick = mxClearFilters;
+    mx.renderedRange = [0, 0];
+    return;
+  }
+  const viewH = scroller.clientHeight || 640;
+  const top = scroller.scrollTop;
+  const start = Math.max(0, Math.floor(top / h) - MX_OVERSCAN);
+  const end = Math.min(total, Math.ceil((top + viewH) / h) + MX_OVERSCAN);
+  if (!force && mx.renderedRange[0] === start && mx.renderedRange[1] === end) return;
+  mx.renderedRange = [start, end];
+  rowsEl.style.transform = `translateY(${start * h}px)`;
+  rowsEl.innerHTML = mx.filtered.slice(start, end).map(mxRowHtml).join("");
+}
+function mxOpen(id, providerHint) {
+  const mx = mxState();
+  const m = mxFindModel(id, providerHint || mx.pendingProvider);
+  mx.pendingProvider = "";
+  if (!m) {
+    // Unlisted/local id: fall back to a search so a click still lands somewhere.
+    mx.query = String(id || "").split("/").pop();
+    const input = $("#mx-q");
+    if (input) input.value = mx.query;
+    mxCompute();
+    mxUpdateBar();
+    toast("No catalog entry for " + id + " — showing closest matches");
+    return;
+  }
+  id = m.id;
+  mx.openId = id;
+  const backdrop = $("#mx-backdrop");
+  const drawer = $("#mx-drawer");
+  if (!backdrop || !drawer) return;
+  drawer.innerHTML = mxDrawerHtml(m);
+  backdrop.classList.add("open");
+  drawer.classList.add("open");
+  document.body.style.overflow = "hidden";
+  try {
+    const url = new URL(location.href);
+    url.searchParams.set("model", id);
+    history.replaceState(history.state, "", url);
+  } catch (_) {}
+  $$("#mx-rows .mx-row.active").forEach(el => el.classList.remove("active"));
+  const row = $(`#mx-rows .mx-row[data-mx-id="${(window.CSS && CSS.escape) ? CSS.escape(id) : id.replace(/"/g, '\\"')}"]`);
+  if (row) row.classList.add("active");
+  mxDrawerWire(m);
+}
+function mxClose() {
+  const mx = mxState();
+  mx.openId = null;
+  $("#mx-backdrop")?.classList.remove("open");
+  $("#mx-drawer")?.classList.remove("open");
+  document.body.style.overflow = "";
+  $$("#mx-rows .mx-row.active").forEach(el => el.classList.remove("active"));
+  try {
+    const url = new URL(location.href);
+    if (url.searchParams.get("model")) {
+      url.searchParams.delete("model");
+      history.replaceState(history.state, "", url);
+    }
+  } catch (_) {}
+}
+/// Re-render the open drawer once late-arriving data (community usage) lands.
+function mxRefreshOpenDrawer() {
+  const mx = mxState();
+  if (!mx.openId) return;
+  const drawer = $("#mx-drawer");
+  if (!drawer || !drawer.classList.contains("open")) return;
+  const m = mx.models.find(x => x.id === mx.openId);
+  if (!m) return;
+  drawer.innerHTML = mxDrawerHtml(m);
+  mxDrawerWire(m);
+}
+function mxDrawerHtml(m) {
+  const u = mxCommunityFor(m);
+  const listings = mxListingsFor(m);
+  const caps = m.capabilities || {};
+  const bench = m.benchmarks || null;
+  const priceCells = [];
+  priceCells.push(`<div class="mx-price"><div class="l">Input / 1M</div><div class="v">${mxCostText(m.inputPerM)}${m.originalInputPerM ? `<span class="was">${mxCostText(m.originalInputPerM)}</span>` : ""}</div></div>`);
+  priceCells.push(`<div class="mx-price"><div class="l">Output / 1M</div><div class="v">${mxCostText(m.outputPerM)}${m.originalOutputPerM ? `<span class="was">${mxCostText(m.originalOutputPerM)}</span>` : ""}</div></div>`);
+  priceCells.push(`<div class="mx-price"><div class="l">Cache read / 1M</div><div class="v">${m.cacheReadPerM != null ? mxCostText(m.cacheReadPerM) : "—"}</div></div>`);
+
+  const benchRows = [];
+  for (const [key, label] of [["swe", "SWE-bench"], ["lcb", "LiveCodeBench"], ["aime", "AIME"], ["gpqa", "GPQA"]]) {
+    if (bench && bench[key] != null) {
+      benchRows.push(`<div class="mx-bench-row"><span class="mx-counts">${label}</span><span class="bar"><i style="width:${Math.max(2, Math.min(100, Number(bench[key])))}%"></i></span><span class="val">${Number(bench[key]).toFixed(1)}%</span></div>`);
+    }
+  }
+  const capChips = MX_CAPS.filter(([k]) => k !== "openWeights" ? caps[k] : caps.openWeights)
+    .map(([, l]) => `<span class="chip">${l}</span>`).join("") || `<span class="mini">No capability metadata</span>`;
+
+  const links = [];
+  if (m.docUrl) links.push(`<a class="pill" href="${esc(m.docUrl)}" target="_blank" rel="noopener">Docs ↗</a>`);
+  links.push(`<a class="pill ghost" href="https://openrouter.ai/models?q=${encodeURIComponent(m.id.split("/").pop())}" target="_blank" rel="noopener">OpenRouter ↗</a>`);
+  links.push(`<a class="pill ghost" href="https://models.dev/?search=${encodeURIComponent(m.id.split("/").pop())}" target="_blank" rel="noopener">models.dev ↗</a>`);
+  if (m.isLocal) links.push(`<a class="pill ghost" href="https://ollama.com/library/${encodeURIComponent(String(m.id).split("/").pop())}" target="_blank" rel="noopener">Ollama library ↗</a>`);
+
+  const users = mxTopUsers(m, 6);
+  const hasUsage = u.tokens > 0;
+  const avgCostPerM = u.tokens > 0 ? (u.cost / u.tokens) * 1e6 : 0;
+  const avgPerReq = u.requests > 0 ? u.tokens / u.requests : 0;
+  const ioTotal = u.input + u.output;
+  // Per-model input/output splits are only published for some clients; only
+  // draw the split when they plausibly account for the model's tokens.
+  const ioReliable = ioTotal > 0 && ioTotal >= u.tokens * 0.5;
+  const inputShare = ioTotal > 0 ? (u.input / ioTotal) * 100 : 0;
+  const providerRows = u.rows.map(r => {
+    const tokens = Number(r.tokens) || 0;
+    const share = u.tokens > 0 ? (tokens / u.tokens) * 100 : 0;
+    const costPerM = tokens > 0 ? ((Number(r.cost) || 0) / tokens) * 1e6 : 0;
+    return `<div class="mx-listing-row" style="cursor:default;grid-template-columns:1.2fr 1fr 60px 80px 70px">
+      <span style="display:flex;align-items:center;gap:7px;min-width:0">${providerLogo(r.provider, 15, r.model)}${providerLink(r.provider, providerLabel(r.provider), { title: "Browse all " + providerLabel(r.provider) + " models" })}</span>
+      <span class="num right">${fmtTokens(tokens)}</span>
+      <span class="num right">${fmtNum(r.users)}</span>
+      <span><span class="bar"><i style="width:${share.toFixed(1)}%"></i></span></span>
+      <span class="num right">${fmtRate(costPerM)}</span>
+    </div>`;
+  }).join("");
+
+  const listingRows = listings.map(x => `<div class="mx-listing-row ${x.id === m.id ? "active" : ""}" data-listing="${esc(x.id)}" tabindex="0" role="button" title="Open ${esc(x.id)}">
+      <span style="display:flex;align-items:center;gap:7px;min-width:0">${providerLogo(x.provider, 15, x.id)}<span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(providerLabel(x.provider))}</span></span>
+      <span class="num right">${mxCostText(x.inputPerM)} / ${mxCostText(x.outputPerM)}</span>
+      <span class="num right">${x.cacheReadPerM != null ? mxCostText(x.cacheReadPerM) : "—"}</span>
+      <span class="num right">${mxCtx(x.contextK)}</span>
+      <span class="num right">${x.discount?.label ? esc(x.discount.label) : (x.blendedNetCost ? mxCostText(x.blendedNetCost) : "—")}</span>
+    </div>`).join("");
+
+  return `<div class="mx-drawer-head">
+      ${providerLogo(m.provider, 40, m.id)}
+      <div style="min-width:0">
+        <div style="font-size:17px;font-weight:800">${esc(m.name)}</div>
+        <div class="sub" style="margin-top:2px">${esc(m.providerName || providerLabel(m.provider))} · <span class="num">${esc(m.id)}</span>${u.rows.length > 1 ? ` · used via ${u.rows.length} providers` : ""}</div>
+        <div style="margin-top:7px;display:flex;gap:6px;flex-wrap:wrap">
+          ${m.category && m.category !== "free" && !(m.category === "local" && (m.isFree || m.isLocal)) ? `<span class="chip">${esc(m.category)}</span>` : ""}
+          ${bench && bench.approx ? `<span class="chip orange" title="Approximate self-reported figures">approx</span>` : ""}
+          ${m.discount ? `<span class="chip green">${esc(m.discount.label || ("-" + m.discount.percent + "%"))}</span>` : ""}
+          ${m.isFree || m.isLocal ? `<span class="chip green">${m.isLocal ? "local · free" : "free"}</span>` : ""}
+        </div>
+      </div>
+      <button class="mx-x" id="mx-drawer-close" type="button" aria-label="Close">✕</button>
+    </div>
+    <div class="mx-drawer-scroll">
+      <div class="mx-sec">
+        <div class="mx-price-grid">
+          <div class="mx-price"><div class="l">Context</div><div class="v">${mxCtx(m.contextK)}</div></div>
+          <div class="mx-price"><div class="l">Blended net / 1M</div><div class="v">${m.blendedNetCost ? mxCostText(m.blendedNetCost) : "—"}</div></div>
+          <div class="mx-price"><div class="l">Perf score</div><div class="v">${m.perfScore != null ? Number(m.perfScore).toFixed(1) : "—"}</div></div>
+        </div>
+      </div>
+      <div class="mx-sec">
+        <h3>Pricing <span class="mini">per 1M tokens${m.netSavingsPercent > 0 ? ` · ${m.netSavingsPercent}% net savings` : ""}</span></h3>
+        <div class="mx-price-grid">${priceCells.join("")}</div>
+        ${m.discount?.detail ? `<div class="notice" style="margin-top:10px">${esc(m.discount.detail)}</div>` : ""}
+      </div>
+      ${benchRows.length ? `<div class="mx-sec"><h3>Benchmarks ${bench.source ? `<span class="mini">source: ${esc(bench.source)}${bench.approx ? " (approx)" : ""}</span>` : ""}</h3>${benchRows.join("")}</div>` : ""}
+      <div class="mx-sec"><h3>Capabilities</h3><div style="display:flex;gap:6px;flex-wrap:wrap">${capChips}</div></div>
+      <div class="mx-sec"><h3>Community usage <span class="mini">all ${fmtNum(u.users)} publishers</span></h3>
+        ${hasUsage ? `
+          <div class="mx-price-grid">
+            <div class="mx-price"><div class="l">Tokens</div><div class="v">${fmtTokens(u.tokens)}</div></div>
+            <div class="mx-price"><div class="l">Requests</div><div class="v">${fmtNum(u.requests)}</div></div>
+            <div class="mx-price"><div class="l">Share of all tokens</div><div class="v">${fmtPct(u.share, 1)}</div></div>
+          </div>
+          <div class="mx-price-grid" style="margin-top:10px">
+            <div class="mx-price"><div class="l">Avg cost / 1M</div><div class="v">${avgCostPerM > 0 ? fmtRate(avgCostPerM) : "—"}</div></div>
+            <div class="mx-price"><div class="l">Avg tokens / request</div><div class="v">${avgPerReq > 0 ? fmtTokens(avgPerReq) : "—"}</div></div>
+            <div class="mx-price"><div class="l">Publishers</div><div class="v">${fmtNum(u.users)}</div></div>
+          </div>
+          ${ioReliable ? `<div style="margin-top:12px">
+            <div class="mini" style="display:flex;justify-content:space-between"><span>Input ${fmtTokens(u.input)}</span><span>Output ${fmtTokens(u.output)}</span></div>
+            <div class="mx-split-bar"><i style="width:${inputShare.toFixed(1)}%;background:#4F8CFF"></i><i style="width:${(100 - inputShare).toFixed(1)}%;background:#8B5CF6"></i></div>
+          </div>` : ""}
+          ${providerRows ? `<div style="margin-top:14px">
+            <div class="mx-listing-row" style="cursor:default;grid-template-columns:1.2fr 1fr 60px 80px 70px;border-bottom:1px solid var(--line2);color:var(--faint);font-size:9.5px;letter-spacing:.7px;text-transform:uppercase"><span>Provider</span><span class="right">Tokens</span><span class="right">Users</span><span>Share</span><span class="right">$/M</span></div>
+            ${providerRows}
+          </div>` : ""}
+          ${users.length ? `<div style="margin-top:12px">${users.map(x => `<div class="mx-user-row" data-mx-user="${esc(x.handle)}" tabindex="0" role="link"><span class="avatar" style="width:26px;height:26px;font-size:10px">${esc(initials(x.handle))}</span><span class="u">${esc(x.handle)}</span><span class="t">${fmtTokens(x.tokens)}</span></div>`).join("")}</div>` : ""}
+        ` : `<div class="mini">No community usage yet — run this model and publish to appear here.</div>`}
+      </div>
+      ${listings.length > 1 ? `<div class="mx-sec"><h3>Listings <span class="mini">${listings.length} providers</span></h3>
+        <div class="mx-listing-row" style="cursor:default;border-bottom:1px solid var(--line2);color:var(--faint);font-size:9.5px;letter-spacing:.7px;text-transform:uppercase"><span>Provider</span><span class="right">In / Out</span><span class="right">Cache</span><span class="right">Ctx</span><span class="right">Deal</span></div>
+        ${listingRows}
+      </div>` : ""}
+      ${m.description ? `<div class="mx-sec"><h3>About</h3><div class="sub" style="line-height:1.6">${esc(m.description)}</div></div>` : ""}
+      <div class="mx-sec"><h3>Links</h3><div class="mx-link-row">${links.join("")}<button class="pill ghost" id="mx-copy-id" type="button">Copy model id</button></div></div>
+    </div>`;
+}
+function mxTopUsers(m, limit = 5) {
+  const ids = new Set([String(m.name).toLowerCase(), String(m.id).split("/").pop().toLowerCase()]);
+  const rows = [];
+  for (const row of state.data?.leaderboard || []) {
+    const e = row.entry || {};
+    let tokens = 0;
+    for (const u of e.breakdown?.models || []) {
+      if (ids.has(String(u.model || "").toLowerCase())) tokens += Number(u.tokensAll) || 0;
+    }
+    if (tokens > 0) rows.push({ handle: e.handle, tokens });
+  }
+  return rows.sort((a, b) => b.tokens - a.tokens).slice(0, limit);
+}
+function mxDrawerWire(m) {
+  $("#mx-drawer-close").onclick = mxClose;
+  $("#mx-backdrop").onclick = mxClose;
+  const copy = $("#mx-copy-id");
+  if (copy) copy.onclick = async () => {
+    try { await navigator.clipboard.writeText(m.id); toast("Copied " + m.id); }
+    catch (_) { toast("Copy failed", true); }
+  };
+  $$("[data-mx-user]").forEach(el => {
+    el.onclick = () => { mxClose(); navigate("players", { handle: el.dataset.mxUser }); };
+    keyActivate(el, () => { mxClose(); navigate("players", { handle: el.dataset.mxUser }); });
+  });
+  $$("[data-listing]").forEach(el => {
+    const open = () => mxOpen(el.dataset.listing);
+    el.onclick = open;
+    keyActivate(el, open);
+  });
+}
+
+/* ---------- explorer mounting ---------- */
+async function renderModels() {
+  const mx = mxState();
+  if (!state.flatModels && state.modelsTab === "providers") {
+    mx.mounted = false;
+    await renderProvidersTab();
+    return;
+  }
+  await mxLoad();
+  const appliedFilter = mxApplyPendingProvider();
+  const needsRender = !mx.mounted || !$("#mx-scroll");
+  if (needsRender) {
+    mx.mounted = true;
+    $("#view").innerHTML = mxShellHtml();
+    mxWire();
+    mxCompute();
+    if (!state.flatModels) mxRenderPicks();
+  } else {
+    if (appliedFilter) mxCompute(true);
+    mxUpdateBar();
+  }
+  if (mx.pendingModel) {
+    const id = mx.pendingModel;
+    mx.pendingModel = null;
+    mxOpen(id, mx.pendingProvider);
+  }
+}
+/// Applies a ?provider= deep link once the catalog/providers are loaded.
+function mxApplyPendingProvider() {
+  const mx = mxState();
+  if (!mx.pendingProviderFilter) return false;
+  const key = mx.pendingProviderFilter;
+  mx.pendingProviderFilter = "";
+  mx.provider = (mx.providers || []).some(p => p.key === key) ? key : "all";
+  const sel = $("#mx-provider");
+  if (sel) sel.value = mx.provider;
+  return true;
+}
+function mxRenderPicks() {
+  const mx = mxState();
+  const host = $("#mx-picks");
+  if (!host) return;
+  // Variant siblings (V4 Flash / V4 Flash 0731 / V4 Flash Vision) would
+  // otherwise fill the strip with near-identical cards — one per name stem,
+  // ignoring version/date tokens (V4.1, 0731) that only differentiate tiers.
+  const stem = (name) => String(name || "").toLowerCase().split(/\s+/)
+    .filter(t => !/^v?\d+(\.\d+)*$/.test(t) && !/^\d{4}$/.test(t)).join(" ");
+  const seen = new Set();
+  const picks = (mx.catalog?.topPicks || []).filter(p => {
+    const key = stem(p.name);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+  host.style.display = picks.length ? "" : "none";
+  host.innerHTML = picks.map(mxPickHtml).join("");
+  $$("#mx-picks .mx-pick").forEach(el => {
+    const open = () => mxOpen(el.dataset.mxId);
+    el.onclick = open;
+    keyActivate(el, open);
+  });
+}
+function mxWire() {
+  const mx = mxState();
+  const q = $("#mx-q");
+  q.addEventListener("input", () => {
+    clearTimeout(mx.debounce);
+    mx.debounce = setTimeout(() => { mx.query = q.value; mxCompute(); }, 90);
+  });
+  q.addEventListener("keydown", (e) => {
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      const first = $("#mx-rows .mx-row");
+      if (first) first.focus();
+    } else if (e.key === "Escape") {
+      q.value = "";
+      mx.query = "";
+      mxCompute();
+      q.blur();
+    }
+  });
+  $("#mx-sort").onchange = (e) => { mx.sort = e.target.value; mxCompute(); };
+  $("#mx-provider").onchange = (e) => { mx.provider = e.target.value; mxCompute(); };
+  $("#mx-primary").onclick = () => {
+    mx.primary = !mx.primary;
+    mx.counts = null;
+    mxCompute();
+  };
+  $("#mx-clear").onclick = mxClearFilters;
+  const wireChip = (el, apply) => {
+    const fire = () => { apply(el); mxCompute(); };
+    el.onclick = fire;
+    keyActivate(el, fire);
+  };
+  $$("#mx-scopes .mx-chip").forEach(el => wireChip(el, (x) => { mx.scope = x.dataset.scope; }));
+  $$("#mx-caps .mx-chip").forEach(el => wireChip(el, (x) => {
+    if (mx.caps.has(x.dataset.cap)) mx.caps.delete(x.dataset.cap);
+    else mx.caps.add(x.dataset.cap);
+  }));
+  mxWireTabs();
+  const scroller = $("#mx-scroll");
+  let raf = 0;
+  scroller.addEventListener("scroll", () => {
+    if (raf) return;
+    raf = requestAnimationFrame(() => { raf = 0; mxRenderList(); });
+  }, { passive: true });
+  scroller.addEventListener("click", (e) => {
+    const row = e.target.closest("[data-mx-id]");
+    if (row) mxOpen(row.dataset.mxId);
+    const reset = e.target.closest("#mx-reset");
+    if (reset) mxClearFilters();
+  });
+  scroller.addEventListener("keydown", (e) => {
+    const row = e.target.closest(".mx-row");
+    if (!row) return;
+    if (e.key === "Enter" || e.key === " ") { e.preventDefault(); mxOpen(row.dataset.mxId); }
+    else if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      const rows = $$("#mx-rows .mx-row");
+      const idx = rows.indexOf(row) + (e.key === "ArrowDown" ? 1 : -1);
+      if (rows[idx]) rows[idx].focus();
+    }
+  });
+  const retry = $("#mx-retry");
+  if (retry) retry.onclick = () => { state.mx = null; render(); };
+  if (!$("#mx-backdrop")) {
+    document.body.insertAdjacentHTML("beforeend",
+      `<div class="mx-drawer-backdrop" id="mx-backdrop"></div><aside class="mx-drawer" id="mx-drawer" role="dialog" aria-modal="true" aria-label="Model details"></aside>`);
+    $("#mx-backdrop").onclick = mxClose;
+  }
+}
+
+window.addEventListener("keydown", (e) => {
+  const mx = state.mx;
+  if (e.key === "Escape" && mx?.openId) { mxClose(); return; }
+  if (e.key !== "/" || state.view !== "models" || state.modelsTab === "providers") return;
+  const tag = (e.target && e.target.tagName || "").toLowerCase();
+  if (tag === "input" || tag === "textarea" || tag === "select") return;
+  const q = $("#mx-q");
+  if (q) { e.preventDefault(); q.focus(); }
+});
+
+// Model cross-links appear in player profiles, dashboards, billing, shared
+// reports and chart legends; one delegated handler keeps them SPA-fast and
+// resolves raw usage ids to catalog listings.
+document.addEventListener("click", (e) => {
+  const prov = e.target.closest?.("[data-provider-link]");
+  if (prov) {
+    e.preventDefault();
+    mxClose();
+    navigate("models", { providerFilter: prov.dataset.providerLink });
+    return;
+  }
+  const link = e.target.closest?.("[data-model-link]");
+  if (link) {
+    e.preventDefault();
+    navigate("models", { model: link.dataset.model, provider: link.dataset.provider });
+    return;
+  }
+  const all = e.target.closest?.("[data-models-all]");
+  if (all) { e.preventDefault(); navigate("models"); }
+});
 
 /* ============================================================
    VIEW: TEAMS
@@ -2345,9 +3442,9 @@ async function renderBilling() {
       <div class="card"><div class="card-head"><h3>Cost Share</h3></div><div class="donut-wrap">${donut(rows.map(r => ({ label: providerLabel(r.provider), value: r.cost, color: providerColor(r.provider) })).slice(0, 5), 156, fmtCost(totalCost), "total cost")}
         <div class="legend">${rows.slice(0, 6).map(r => `<div class="legend-row">${providerLogo(r.provider, 15)}${esc(providerLabel(r.provider))}<span class="val">${esc(r.costFormatted)}</span></div>`).join("")}</div></div></div>
     </div>
-    <div class="card" style="padding:0;overflow:hidden"><div class="card-head" style="padding:16px 16px 8px"><h3>Cost by Model</h3></div>
+    <div class="card" style="padding:0;overflow:hidden"><div class="card-head" style="padding:16px 16px 8px"><h3>Cost by Model</h3><span class="sub">${modelsAllLink()}</span></div>
       <div style="overflow-x:auto"><table><thead><tr><th>#</th><th>Model</th><th>Provider</th><th class="right">Tokens</th><th class="right">Requests</th><th class="right">Cost</th><th class="right">$/1M</th></tr></thead><tbody>
-      ${modelRows.map((m, i) => `<tr><td class="faint">${i + 1}</td><td>${esc(m.model)}</td><td><span class="chip logo-chip">${providerLogo(m.provider, 15, m.model)}${esc(providerDisplay(m.provider, m.model))}</span></td><td class="num right">${fmtTokens(m.tokens)}</td><td class="num right">${fmtNum(m.requests)}</td><td class="num right">${fmtCost(m.cost)}</td><td class="num right">${fmtRate(m.tokens > 0 ? m.cost / m.tokens * 1e6 : 0)}</td></tr>`).join("") || '<tr><td colspan="7"><div class="empty">No model cost data.</div></td></tr>'}
+      ${modelRows.map((m, i) => `<tr><td class="faint">${i + 1}</td><td>${modelLink(m.provider, m.model)}</td><td><span class="chip logo-chip">${providerLogo(m.provider, 15, m.model)}${esc(providerDisplay(m.provider, m.model))}</span></td><td class="num right">${fmtTokens(m.tokens)}</td><td class="num right">${fmtNum(m.requests)}</td><td class="num right">${fmtCost(m.cost)}</td><td class="num right">${fmtRate(m.tokens > 0 ? m.cost / m.tokens * 1e6 : 0)}</td></tr>`).join("") || '<tr><td colspan="7"><div class="empty">No model cost data.</div></td></tr>'}
       </tbody></table></div></div>`;
 }
 
@@ -2978,9 +4075,9 @@ async function renderSharedReport(id) {
       </div>
       <div class="split">
         <div class="card"><div class="card-head"><h3>Usage Over Time</h3></div>${areaChart((r.history || []).map(x => ({ label: x.dayLabel || fmtDay(x.day), value: x.tokens || 0, cost: x.cost || 0 })), { color: "#4F8CFF", height: 200 })}</div>
-        <div class="card"><div class="card-head"><h3>Model Allocation</h3></div>
+        <div class="card"><div class="card-head"><h3>Model Allocation</h3><span class="sub">${modelsAllLink()}</span></div>
           <table><thead><tr><th>Model</th><th>Provider</th><th class="right">Tokens</th><th class="right">Share</th></tr></thead><tbody>
-          ${(r.models || []).map(m => `<tr><td>${esc(m.model)}</td><td>${esc(providerDisplay(m.provider, m.model))}</td><td class="num right">${fmtTokens(m.tokensAll)}</td><td class="num right">${fmtPct(m.sharePercent || 0, 1)}</td></tr>`).join("") || '<tr><td colspan="4"><div class="empty">Not shared</div></td></tr>'}
+          ${(r.models || []).map(m => `<tr><td>${modelLink(m.provider, m.model)}</td><td>${esc(providerDisplay(m.provider, m.model))}</td><td class="num right">${fmtTokens(m.tokensAll)}</td><td class="num right">${fmtPct(m.sharePercent || 0, 1)}</td></tr>`).join("") || '<tr><td colspan="4"><div class="empty">Not shared</div></td></tr>'}
           </tbody></table></div>
       </div>`;
   } catch (e) {
@@ -3022,7 +4119,7 @@ function openDayDrilldown(day) {
         ? `<div class="card" style="background:var(--panel2)"><div class="card-head"><h3>Usage by model</h3><span class="sub">share of day</span></div>
             ${models.map(m => `<div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">
               ${providerLogo(m.provider, 18, m.model)}
-              <span style="width:150px;font-size:12.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(m.model)}">${esc(m.model)}</span>
+              <span style="width:150px;font-size:12.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(m.model)}">${modelLink(m.provider, m.model)}</span>
               <span style="flex:1"><span class="bar"><i style="width:${(m.tokens / Math.max(1, total) * 100).toFixed(1)}%"></i></span></span>
               <span class="num" style="width:64px;text-align:right">${fmtTokens(m.tokens)}</span>
               <span class="num faint" style="width:44px;text-align:right">${(m.tokens / Math.max(1, total) * 100).toFixed(1)}%</span>
@@ -3031,7 +4128,7 @@ function openDayDrilldown(day) {
       ${sessions.length
         ? `<div class="card" style="background:var(--panel2);margin-top:12px"><div class="card-head"><h3>Activity</h3><span class="sub">${sessions.length} session${sessions.length === 1 ? "" : "s"}</span></div>
             ${sessions.map(s => `<div class="mover"><div style="min-width:0"><div class="name" style="font-size:12px">${s.title ? esc(s.title) : '<span class="faint">title private</span>'}</div>
-              <div class="faint" style="font-size:10.5px;display:flex;align-items:center;gap:5px">${fmtDate(s.at)} · ${providerLogo(s.provider, 13, s.model)}${esc(providerDisplay(s.provider, s.model))}${s.model ? " · " + esc(s.model) : ""}</div></div>
+              <div class="faint" style="font-size:10.5px;display:flex;align-items:center;gap:5px">${fmtDate(s.at)} · ${s.model ? modelLink(s.provider, s.model, providerDisplay(s.provider, s.model) + " · " + s.model, { logo: true, logoSize: 13 }) : providerLogo(s.provider, 13, s.model) + esc(providerDisplay(s.provider, s.model))}</div></div>
               <div class="val">${fmtTokens(s.tokens)}<div class="faint">${fmtCost(s.cost)}</div></div></div>`).join("")}</div>`
         : ""}
     </div>
@@ -3234,6 +4331,18 @@ async function init() {
   const params = new URLSearchParams(location.search);
   if (params.get("user")) state.currentHandle = params.get("user");
   state.view = params.get("view") || (params.get("user") ? "players" : "leaderboard");
+  // Dedicated /models route: the worker serves the SPA asset with an internal
+  // ?view=models rewrite, so the browser URL has no query — derive it here.
+  if (/^\/models\/?$/.test(location.pathname)) state.view = "models";
+  state.modelsTab = params.get("tab") === "providers" ? "providers" : "explorer";
+  // Flat catalog page: no dashboard chrome — just a searchable model list.
+  state.flatModels = /^\/models\/?$/.test(location.pathname) || params.get("flat") === "1";
+  if (state.flatModels) {
+    state.view = "models";
+    document.body.classList.add("th-flat");
+  }
+  if (params.get("provider")) mxState().pendingProviderFilter = params.get("provider");
+  if (params.get("model")) mxState().pendingModel = params.get("model");
   renderNav();
   if (params.get("share")) { renderSharedReport(params.get("share")); return; }
   render();

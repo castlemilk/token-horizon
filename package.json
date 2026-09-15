@@ -13,6 +13,7 @@
     "@dicebear/core": "^9.4.3",
     "@tanstack/charts": "0.18.0",
     "esbuild": "^0.28.2",
+    "fuse.js": "^7.5.0",
     "wrangler": "^4.131.1"
   }
 }

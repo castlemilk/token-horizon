@@ -31,3 +31,9 @@ await bundle(
   'docs/vendor/dicebear.js',
   '/* @dicebear/core v9 + selected styles — vendored for Token Horizon; rebuild: npm run vendor */'
 );
+
+await bundle(
+  'scripts/fuse-entry.js',
+  'docs/vendor/fuse.js',
+  '/* fuse.js — vendored for Token Horizon model search; rebuild: npm run vendor */'
+);

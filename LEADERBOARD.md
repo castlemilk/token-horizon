@@ -68,6 +68,29 @@ comparison table, insights. **Latency and
 success-rate columns are omitted**: no telemetry source exists for them, and
 the earlier UI fabricated those numbers. Cost/1M is real.
 
+### Model Explorer (`/models`, Models → Explorer tab) ✅
+
+Discovery surface for the app's full merged catalog (labs + gateways +
+resellers, family-deduped by `ModelsPipeline`). The list is a **static export of
+the app's own merge pipeline** — no provider calls from the browser:
+
+| Element | State | Notes |
+|---|---|---|
+| Catalog artifact | ✅ | `scripts/refresh-models.sh` runs `TokenHorizon --export-model-catalog --refresh` (models.dev + OpenRouter + live provider feeds + curated benchmarks) → `docs/data/models.json`; scheduled weekly by `.github/workflows/models-refresh.yml`, committed only when changed |
+| Serving | ✅ | `GET /api/models/catalog` proxies the ASSETS file with CORS + `s-maxage=3600`; `/models` is the canonical **flat** route (slim brand head, no dashboard chrome — landing-page nav links `./models/`, `/models/` 301s to `/models`, `/leaderboard?view=models` 302s there unless `tab=providers`, and the GitHub Pages mirror gets `docs/models/index.html` → `?view=models&flat=1`) |
+| Provider deep links | ✅ | Provider rows in the Providers-tab comparison table, its mix legend, and the per-model drawer's usage table link to `?provider=<key>`, which filters the explorer (URL-driven, applied after the catalog loads) |
+| Search | ✅ | Vendored `docs/vendor/fuse.js` (lazy index, weights name/id/provider/description), relevance order preserved (column sort only applies without a query), canonical listings outrank reseller clones at equal text score |
+| Infinite scroll | ✅ | Windowed list (23–36 DOM rows for the 2.9k catalog, spacer height = full list); scroll handler is rAF-throttled |
+| Filters | ✅ | Scope chips with live counts (All / Benchmarked / In use / Cloud / Local / Free & Open), capability toggles (reasoning/tools/vision/open weights), provider grouping via `providerKey()` (164 groups, not 167 raw), sort select (featured/value/usage/SWE/LCB/context/price/name) |
+| Primary listings | ✅ | On by default: exact-name duplicates collapse to the best listing (benchmarked > priced > known lab > community-used), 347 hidden with a one-click reveal and hidden count |
+| Top picks | ✅ | App's `computeTopPicks` output, deduped by name stem so variant siblings (V4 Flash / V4 Flash 0731) don't fill the strip |
+| Detail drawer | ✅ | Pricing with promo strike-through, benchmark bars (SWE/LCB + AIME/GPQA from `benchmarks.json` with source/approx), capabilities, description, links (docs/OpenRouter/models.dev/Ollama), community adoption, top adopters linking to their profiles; `?model=<id>` deep link, Esc/backdrop/✕ close |
+| Per-model provider view | ✅ | The drawer is the cross-user view: totals (tokens/requests/share), avg cost/1M, avg tokens/request, input/output split, usage split by provider (tokens/users/share/$/M), catalog **listings** comparison (in/out/cache/context/deal per provider, click to switch the drawer), top publishers |
+| Cross-links | ✅ | Every per-user model list links out: Model Inventory rows, session/activity model chips, calendar day drilldown, Billing **Cost by Model**, shared-report **Model Allocation**, and stacked-chart legends — each model item opens `?view=models&model=<raw>` (raw usage ids resolve to a catalog listing; unknown ids fall back to explorer search), and section headers link to the top-level list. One delegated click handler keeps it SPA-fast |
+| Community adoption | ✅ | `GET /api/models/usage` aggregates `breakdown.models` across R2 entries (tokens/cost/requests/users/share + input/output splits), falling back to the already-loaded leaderboard payload offline |
+
+The Providers tab keeps the original Screen 5 analytics unchanged.
+
 ### Screen 6 — Share Usage Report modal ✅
 
 Scope cards (only me / people / group / org / public), audience + groups,
@@ -163,6 +186,8 @@ R2 leaderboard.json ────────────────────
 | `GET /api/leaderboard?period=&team=&league=&historyDays=` | ranked rows (score, input/output/requests, trend, efficiency, rankΔ) + `kpis` (real 7d deltas) + `movers` + `usageHistory` (stacked model series, 7–120 day window) + `season` + `leagueLadder` |
 | `GET /api/user/:handle` | full entry + standing/percentile/team rank + achievements + `rankHistory` |
 | `GET /api/providers?days=` | provider aggregation, provider-over-time, teams, insights |
+| `GET /api/models/catalog` | static model catalog exported by the app (`docs/data/models.json`): `models[]`, `topPicks[]`, provider rollups; CORS + edge cache |
+| `GET /api/models/usage` | per-model community adoption aggregated across published entries (tokens/cost/requests/users/share) |
 | `GET /api/teams` · `GET /api/season` | team rollups · ladder/distribution/standings/promotions |
 | `GET /api/config` | public client config (Google client ID, canonical URL, season) |
 | `POST /api/profile/avatar` | owner-only avatar update: Google photo, image URL, uploaded data URL (stored in R2), or generated style |
@@ -284,7 +309,31 @@ of cache-hit rate, output ratio, and free/local share.
   to initials if the bundle is missing. `avatarUrl`/`avatarStyle` live on the
   entry; `/api/avatar/:handle` serves uploads.
 - Navigation: sidebar, `?view=`, `?user=` (opens Player Profile),
-  clickable breadcrumbs, `?share=<id>` report pages, `/` focuses search.
+  clickable breadcrumbs, `?share=<id>` report pages, `/models`
+  (Model Explorer), `?view=models&model=<id>` (deep-linked detail drawer),
+  `/` focuses search.
+
+### 2.7.1 Model Explorer runtime
+
+- `docs/data/models.json` is the only catalog source in the browser. Rebuild
+  it with `task models-refresh` (`scripts/refresh-models.sh` → release binary →
+  `--export-model-catalog --refresh`); the weekly workflow commits it when
+  entries/pricing change. Never hand-edit the file, and never fetch provider
+  APIs from the dashboard — the app's parsers and canonicalization are the
+  source of truth.
+- The explorer is `renderModels()` + the `mx*` helpers in `docs/leaderboard.html`.
+  `mxCompute()` runs the scope/provider/capability pass, then Fuse search
+  (relevance order) or the selected column sort. Rendering is windowed
+  (`mxRenderList`, `MX_ROW_H_*` must stay in sync with the `.mx-row` CSS
+  height); the 30s idle tick re-enters `renderModels()` but bails without
+  rebuilding the mounted shell, so typing/scrolling is never interrupted.
+- `docs/vendor/fuse.js` is a minified IIFE bundle of `fuse.js` built by
+  `npm run vendor` (`scripts/fuse-entry.js` → `scripts/build-vendor.mjs`).
+  Missing bundle = substring fallback, not a broken page.
+- Perf smoke lives in `scripts/test-leaderboard-ui.mjs` §13 (windowing bounds,
+  Fuse ranking, scope filtering, drawer + deep link); the real-catalog checks
+  were run manually against the 2.9k export (~23 DOM rows, search ≈200ms
+  including the 90ms debounce).
 
 ### 2.8 Infra
 
@@ -320,14 +369,23 @@ of cache-hit rate, output ratio, and free/local share.
    an SVG fallback so a breaking release can't take the dashboard down.
 9. **`docs/index.html`** remains the dependency-free landing page; the
    dashboard is the only page with a JS vendor bundle.
+10. **The web catalog is a periodic snapshot** (`docs/data/models.json`,
+   refreshed by the weekly job / `task models-refresh`), not a live feed —
+   pricing changes land at the next refresh. The explorer is intentionally
+   client-side (static artifact + Fuse + windowing); there is no per-request
+   catalog compute on the edge, and the browser never queries provider APIs.
+   Reseller/gateway duplicates are collapsed by the "Primary listings" toggle
+   (name-exact dedupe, best metadata wins) rather than removed from the
+   catalog, so the app and web stay in sync.
 
 ## 4. Verify / rebuild
 
 ```bash
-npm install && npm run vendor          # rebuild docs/vendor/tanstack-charts.js
-task lint && swift test                # Swift gates (engine v3, analytics)
+npm install && npm run vendor          # rebuild docs/vendor/*.js (charts, dicebear, fuse)
+task lint && swift test                # Swift gates (engine v3, analytics, catalog export)
 make leaderboard-test                  # worker tests + hermetic Playwright UI
 task bench-leaderboard                 # dashboard render/chart/API budgets (fails on breach)
+task models-refresh                    # regenerate docs/data/models.json from the app pipeline
 ./scripts/make-app.sh                  # install + relaunch, health-gated
 ./scripts/deploy-cloudflare.sh         # worker + docs assets
 task smoke                             # local API + MCP contract

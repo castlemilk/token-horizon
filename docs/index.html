@@ -12,12 +12,13 @@
 <link rel="stylesheet" href="./styles.css" />
 </head>
 <body>
-<nav class="nav">
+<nav class="nav" id="site-nav">
   <a class="brand" href="./"><img src="./assets/icon.png" alt="" /><span>Token Horizon</span></a>
-  <div class="nav-links">
-    <a href="./leaderboard.html">Leaderboard</a>
+  <button class="nav-toggle" id="nav-toggle" type="button" aria-label="Toggle navigation" aria-expanded="false" aria-controls="nav-links">☰</button>
+  <div class="nav-links" id="nav-links">
+    <a class="nav-primary" href="./leaderboard.html">Leaderboard</a>
+    <a class="nav-primary" href="./models/">Models</a>
     <a href="#features">Features</a>
-    <a href="#start">Start</a>
     <a href="#film">Film</a>
     <a href="#privacy">Privacy</a>
     <a href="#install">Install</a>

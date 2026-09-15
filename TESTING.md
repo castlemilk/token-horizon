@@ -11,6 +11,8 @@ How to validate changes locally. Start with `task --list`; the standard gates ar
 | `task test-perf` | Budget-gated Models-pipeline guard | Touching pipeline/views |
 | `task test-integration` | Loopback Ollama proxy round-trips | Touching telemetry proxy |
 | `task test-race` | Thread-sanitized suite (slow) | Concurrency-adjacent changes |
+| `task bench-leaderboard` | Dashboard render/chart/search/explorer budgets | Touching `docs/leaderboard.html` |
+| `task models-refresh` | Regenerate `docs/data/models.json` from the app pipeline | Catalog export changes |
 | `task smoke` | Live checklist vs the running app | After `make-app.sh` relaunch |
 | `task doctor` | Toolchain + env check | New machine / weird failures |
 
@@ -42,7 +44,7 @@ profile`; the Taskfile delegates to it so there is one implementation per comman
   `./scripts/bench-models.sh` for numbers without asserts.
 - **Smoke** (`task smoke`, implemented task-natively in `Taskfile.yml`): the AGENTS.md checklist
   as code — build-stamp identity (`/health` commit vs `git rev-parse`),
-  `/stats`, `/trends`, `/limits`, `/models`, `/discovery/status`, and the MCP
+  `/stats`, `/trends`, `/limits`, `/models`, `/models/catalog`, `/discovery/status`, and the MCP
   `tools/list` round-trip. First failure mode is always "stale binary":
   rebuild, don't debug data.
 

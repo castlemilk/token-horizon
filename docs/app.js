@@ -17,3 +17,12 @@ document.getElementById('copy-btn').addEventListener('click', async (event) => {
   btn.textContent = '✓';
   setTimeout(() => { btn.textContent = original; }, 1400);
 });
+
+// Mobile nav: the link list collapses behind the toggle on narrow screens.
+const nav = document.getElementById('site-nav');
+const navToggle = document.getElementById('nav-toggle');
+navToggle.addEventListener('click', () => {
+  const open = nav.classList.toggle('open');
+  navToggle.setAttribute('aria-expanded', String(open));
+  navToggle.textContent = open ? '✕' : '☰';
+});
