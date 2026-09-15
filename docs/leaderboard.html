@@ -363,10 +363,6 @@ body.th-flat .mx-head-row{padding:0 18px;gap:16px}
 body.th-flat .mx-head-row .mx-stats{gap:26px}
 body.th-flat .mx-head-row .mx-flat-score{width:34px}
 /* Segmented nav retained between Leaderboard and the model list */
-.mx-nav{display:flex;gap:2px;background:var(--panel2);border:1px solid var(--line);border-radius:999px;padding:3px}
-.mx-nav-item{font-size:12px;color:var(--muted);text-decoration:none;padding:5px 13px;border-radius:999px;white-space:nowrap}
-.mx-nav-item:hover{color:var(--text)}
-.mx-nav-item.active{background:var(--panel3);color:#fff;font-weight:600}
 .mx-empty{padding:70px 20px;text-align:center;color:var(--faint);font-size:13px}
 .mx-sentinel{height:1px}
 .mx-drawer-backdrop{position:fixed;inset:0;background:rgba(3,5,9,.6);backdrop-filter:blur(3px);z-index:110;opacity:0;pointer-events:none;transition:opacity .16s}
@@ -392,26 +388,11 @@ a.model-chip:hover{border-color:rgba(79,140,255,.45);color:#CFE0FF}
 .mx-listing-row.active{border-color:rgba(79,140,255,.5);background:rgba(79,140,255,.07);border-radius:8px}
 .mx-split-bar{display:flex;height:7px;border-radius:4px;overflow:hidden;background:var(--panel3);margin-top:8px}
 .mx-split-bar i{display:block;height:100%}
-/* Flat /models page: slim brand head, no dashboard chrome */
-body.th-flat .sidebar,body.th-flat .topbar{display:none}
-body.th-flat .app{grid-template-columns:1fr}
-body.th-flat .content{padding:20px 26px 60px;max-width:1420px}
-body.th-flat .mx-scroll{height:min(78vh,980px)}
-body.th-flat .mx-panel-head{display:none}
+/* Flat model list (/models): dashboard shell, calmer table */
 body.th-flat .mx-row{height:72px;padding:0 18px;gap:16px}
 body.th-flat .mx-stats{gap:26px}
-.mx-flat-head{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-bottom:16px}
-.mx-flat-brand{display:flex;align-items:center;gap:9px;font-weight:800;font-size:15px;text-decoration:none}
-.mx-flat-brand img{width:26px;height:26px;border-radius:7px}
-.mx-flat-title{font-size:22px;font-weight:800;letter-spacing:-.3px}
-.mx-flat-catalog{font-size:11.5px;color:var(--faint)}
-.mx-flat-toggle{background:var(--panel);border:1px solid var(--line);border-radius:999px;color:var(--muted);font-size:11px;padding:5px 11px;cursor:pointer;font-family:inherit}
-.mx-flat-toggle:hover{color:var(--text);border-color:var(--line2)}
-.mx-flat-toggle.active{background:rgba(79,140,255,.14);border-color:rgba(79,140,255,.4);color:#CFE0FF;font-weight:600}
 .mx-flat-score{flex:none;width:34px;text-align:right;font-family:var(--mono);font-size:13px;font-weight:700;color:#CFE0FF}
 .mx-flat-score.zero{color:var(--faint);font-weight:400}
-.mx-flat-dash{font-size:12px;color:var(--muted);text-decoration:none;border:1px solid var(--line);border-radius:999px;padding:6px 12px;white-space:nowrap}
-.mx-flat-dash:hover{color:#fff;border-color:var(--line2)}
 .mx-sec{margin-bottom:20px}
 .mx-price-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
 .mx-price{background:var(--panel);border:1px solid var(--line);border-radius:11px;padding:10px 12px}
@@ -502,7 +483,6 @@ body.th-flat .mx-flat-score{display:none}
         <input id="global-search" type="text" placeholder="Search users, teams, models…" autocomplete="off" />
       </div>
       <div class="topbar-spacer"></div>
-      <a class="pill" id="nav-models" href="./models/" title="Clean, searchable model list">Models</a>
       <div class="pill" id="range-pill" title="Analytics time range">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none"><rect x="3" y="5" width="18" height="16" rx="2" stroke="currentColor" stroke-width="1.6"/><path d="M3 10h18M8 3v4M16 3v4" stroke="currentColor" stroke-width="1.6"/></svg>
         <span id="range-label">Last 30 days</span>
@@ -2960,11 +2940,7 @@ function mxSyncChips() {
   if (primary) {
     primary.classList.toggle("active", mx.primary);
     const n = $("#mx-primary-n");
-    if (n) {
-      n.textContent = state.flatModels
-        ? (mx.primary ? "Unified" : "All listings")
-        : `${(mx.primary ? mx.primaryHidden : 0).toLocaleString()} hidden`;
-    }
+    if (n) n.textContent = `${(mx.primary ? mx.primaryHidden : 0).toLocaleString()} hidden`;
   }
 }
 function mxHeadHtml() {
@@ -3043,34 +3019,18 @@ function mxCapChipHtml(key, label) {
   const mx = mxState();
   return `<span class="mx-chip cap ${mx.caps.has(key) ? "active" : ""}" data-cap="${key}" tabindex="0" role="button">${label}</span>`;
 }
-function mxFlatHeadHtml() {
-  const mx = mxState();
-  const unified = mxBase().length;
-  const all = mx.models.length;
-  const hidden = Math.max(0, all - unified);
-  const refreshed = mx.catalog?.generatedAt
-    ? new Date(mx.catalog.generatedAt * 1000).toLocaleDateString(undefined, { month: "short", day: "numeric" })
-    : "";
-  return `<div class="mx-flat-head">
-    <a class="mx-flat-brand" href="./leaderboard.html"><img src="./assets/icon.png" alt="" /><span>Token Horizon</span></a>
-    <nav class="mx-nav" aria-label="Sections">
-      <a class="mx-nav-item active" href="./models/" aria-current="page">Models</a>
-      <a class="mx-nav-item" href="./leaderboard.html">Leaderboard</a>
-    </nav>
-    <span class="mx-flat-catalog">${unified.toLocaleString()} models${hidden ? ` · ${hidden.toLocaleString()} duplicate listings hidden` : ""}${refreshed ? ` · catalog ${refreshed}` : ""}</span>
-    <button class="mx-flat-toggle ${mx.primary ? "active" : ""}" id="mx-primary" type="button" title="Collapse reseller/gateway duplicates into one unified listing per model">
-      <span id="mx-primary-n">${mx.primary ? "Unified" : "All listings"}</span>
-    </button>
-    <a class="mx-flat-dash" style="margin-left:auto" href="https://github.com/castlemilk/token-horizon" target="_blank" rel="noopener">GitHub</a>
-  </div>`;
-}
 function mxShellHtml() {
   const mx = mxState();
   const providers = mx.providers || [];
   const total = mxBase().length;
   const flat = state.flatModels;
+  const refreshed = mx.catalog?.generatedAt
+    ? new Date(mx.catalog.generatedAt * 1000).toLocaleDateString(undefined, { month: "short", day: "numeric" })
+    : "";
   return (flat
-    ? mxFlatHeadHtml()
+    ? pageHead(["Analytics", "Models"], "Models",
+        `The unified catalog — ${mx.primaryHidden.toLocaleString()} duplicate listings collapsed, one row per model.`,
+        refreshed ? `Catalog ${refreshed}` : "")
     : pageHead(["Analytics", "Models"], "Model Explorer",
         "Every model Token Horizon tracks — live pricing, coding benchmarks, capabilities and community adoption.",
         "Explore more. Spend smarter.")
@@ -3089,7 +3049,9 @@ function mxShellHtml() {
         <option value="all">All providers (${providers.length})</option>
         ${providers.map(p => `<option value="${esc(p.key)}" ${mx.provider === p.key ? "selected" : ""}>${esc(p.label)} (${p.count.toLocaleString()})</option>`).join("")}
       </select>
-      ${flat ? "" : `<button class="mx-chip ${mx.primary ? "active" : ""}" id="mx-primary" type="button" title="Collapse reseller/gateway duplicates of the same model into one primary listing">Primary listings <span class="n" id="mx-primary-n">${mx.primaryHidden.toLocaleString()} hidden</span></button>`}
+      <button class="mx-chip ${mx.primary ? "active" : ""}" id="mx-primary" type="button" title="Collapse reseller/gateway duplicates of the same model into one unified listing">
+        Unified <span class="n" id="mx-primary-n">${mx.primaryHidden.toLocaleString()} hidden</span>
+      </button>
       <button class="mx-clear" id="mx-clear" type="button">Reset</button>
       ${flat ? "" : `<a class="mx-clear" href="?view=models&flat=1" style="text-decoration:none" title="Open the clean, standalone model list">Clean view ↗</a>`}
     </div>

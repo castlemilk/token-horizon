@@ -791,14 +791,14 @@ async function run() {
   await page.evaluate(() => navigate('leaderboard'));
   console.log(`   inventoryLinks=${inventoryLinks} listings=${perModel.listings} billingLinks=${billingLinks} shareLinks=${shareLinks} legend=[${legendLinks.slice(0, 3).join(', ')}]`);
 
-  console.log('15. Flat /models page (searchable list, no dashboard chrome)...');
+  console.log('15. Flat /models page (clean list inside the dashboard shell)...');
   await page.goto(filePath + '?view=models&flat=1');
   await page.waitForSelector('#mx-scroll .mx-row', { timeout: 15000 });
   const flat = await page.evaluate(() => ({
     flat: state.flatModels,
-    head: Boolean(document.querySelector('.mx-flat-head')),
-    sidebarHidden: getComputedStyle(document.querySelector('.sidebar')).display === 'none',
-    topbarHidden: getComputedStyle(document.querySelector('.topbar')).display === 'none',
+    title: document.querySelector('#view h1')?.textContent || '',
+    sidebarVisible: getComputedStyle(document.querySelector('.sidebar')).display !== 'none',
+    topbarVisible: getComputedStyle(document.querySelector('.topbar')).display !== 'none',
     tabs: document.querySelectorAll('[data-models-tab]').length,
     picks: document.querySelectorAll('#mx-picks').length,
     scopes: document.querySelectorAll('#mx-scopes').length,
@@ -807,16 +807,19 @@ async function run() {
     total: state.mx.filtered.length,
     table: typeof window.TanStackTable,
     heads: [...document.querySelectorAll('#mx-head .mx-head-cell')].map(e => e.dataset.col),
-    nav: [...document.querySelectorAll('.mx-nav-item')].map(a => ({ text: a.textContent.trim(), href: a.getAttribute('href'), active: a.classList.contains('active') }))
+    activeNav: [...document.querySelectorAll('#nav .nav-item.active')].map(e => e.textContent.trim()),
+    navItems: [...document.querySelectorAll('#nav .nav-item')].map(e => e.textContent.trim())
   }));
-  if (!flat.flat || !flat.head || !flat.sidebarHidden || !flat.topbarHidden) throw new Error(`Flat shell wrong: ${JSON.stringify(flat)}`);
-  if (flat.tabs || flat.picks || flat.scopes || flat.caps) throw new Error(`Flat page still renders dashboard chrome: ${JSON.stringify(flat)}`);
+  if (!flat.flat || !flat.title.includes('Models') || !flat.sidebarVisible || !flat.topbarVisible) {
+    throw new Error(`Flat shell wrong: ${JSON.stringify(flat)}`);
+  }
+  if (flat.tabs || flat.picks || flat.scopes || flat.caps) throw new Error(`Flat page still renders explorer chrome: ${JSON.stringify(flat)}`);
   if (!flat.rows || flat.rows >= flat.total) throw new Error(`Flat list not windowed: ${flat.rows}/${flat.total}`);
   if (flat.table !== 'object') throw new Error('TanStack Table bundle did not load');
   if (!flat.heads.includes('name') || !flat.heads.includes('score')) throw new Error(`Sortable headers missing: ${flat.heads}`);
-  const modelsNav = flat.nav.find(n => n.text === 'Models');
-  const leaderboardNav = flat.nav.find(n => n.text === 'Leaderboard');
-  if (!modelsNav?.active || !leaderboardNav) throw new Error(`Flat nav wrong: ${JSON.stringify(flat.nav)}`);
+  if (!flat.activeNav.some(n => n === 'Models') || !flat.navItems.includes('Leaderboard')) {
+    throw new Error(`Sidenav wrong on /models: ${JSON.stringify(flat.activeNav)} of ${JSON.stringify(flat.navItems)}`);
+  }
   // Clicking a column header sorts via the table and updates the dropdown.
   await page.click('#mx-head .mx-head-cell[data-col="input"]');
   await page.waitForTimeout(250);
@@ -858,7 +861,7 @@ async function run() {
   if (flatMob.scroll > 391) throw new Error(`Flat page scrolls horizontally at 390px: ${flatMob.scroll}`);
   if (flatMob.qTop > flatMob.sortTop) throw new Error('Flat mobile search should come before the selects');
   await page.setViewportSize({ width: 1440, height: 1000 });
-  console.log(`   head=${flat.head} windowed=${flat.rows}/${flat.total} search=${flatSearch} provider=${flatProvider.provider}`);
+  console.log(`   shell=sidebar+topbar title="${flat.title}" windowed=${flat.rows}/${flat.total} search=${flatSearch} provider=${flatProvider.provider}`);
 
   console.log('16. Checking console errors...');
   const realErrors = errors.filter(e =>
