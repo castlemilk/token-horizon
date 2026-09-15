@@ -2487,9 +2487,9 @@ const MX_SORTS = [
 const MX_TABLE_COLUMNS = [
   { id: "name", accessorFn: r => r.name, header: "Model", sortFn: "alphanumeric", sortDescFirst: false },
   { id: "context", accessorFn: r => Number(r.contextK) || 0, header: "Ctx", sortFn: "basic", sortDescFirst: true },
-  { id: "input", accessorFn: r => Number(r.inputPerM) || 0, header: "In", sortFn: "basic", sortDescFirst: false },
-  { id: "output", accessorFn: r => Number(r.outputPerM) || 0, header: "Out", sortFn: "basic", sortDescFirst: false },
-  { id: "blended", accessorFn: r => Number(r.blendedNetCost) || 0, header: "Blended", sortFn: "basic", sortDescFirst: false },
+  { id: "input", accessorFn: r => mxPriceKnown(r) ? Number(r.inputPerM) || 0 : undefined, header: "In", sortFn: "basic", sortDescFirst: false, sortUndefined: "last" },
+  { id: "output", accessorFn: r => mxPriceKnown(r) ? Number(r.outputPerM) || 0 : undefined, header: "Out", sortFn: "basic", sortDescFirst: false, sortUndefined: "last" },
+  { id: "blended", accessorFn: r => mxPriceKnown(r) ? Number(r.blendedNetCost) || 0 : undefined, header: "Blended", sortFn: "basic", sortDescFirst: false, sortUndefined: "last" },
   { id: "swe", accessorFn: r => r.benchmarks?.swe ?? r.benchmarks?.lcb ?? -1, header: "SWE", sortFn: "basic", sortDescFirst: true },
   { id: "lcb", accessorFn: r => r.benchmarks?.lcb ?? r.benchmarks?.swe ?? -1, header: "LCB", sortFn: "basic", sortDescFirst: true },
   { id: "used", accessorFn: r => mxUsageTokens(r), header: "Used", sortFn: "basic", sortDescFirst: true },
@@ -2535,6 +2535,14 @@ function mxCostText(v) {
   if (!isFinite(v) || v <= 0) return "$0";
   if (v >= 1) return "$" + v.toFixed(2);
   return "$" + v.toPrecision(2);
+}
+/// Pricing evidence: `priceKnown === false` means the provider publishes no
+/// per-token price (plan-covered or unknown) — never render it as $0/Free.
+function mxPriceKnown(m) { return m.priceKnown !== false; }
+function mxPriceText(v, m) {
+  if (!mxPriceKnown(m)) return "—";
+  if (v == null) return "—";
+  return mxCostText(v);
 }
 function mxUsageKey(provider, model) {
   return String(provider || "").toLowerCase() + "|" + String(model || "").toLowerCase().replace(/_/g, "-");
@@ -3073,7 +3081,7 @@ function mxPickHtml(p) {
     <div class="mx-pick-sub">${esc(p.providerName || providerLabel(p.provider))}${p.swe != null ? " · SWE " + Number(p.swe).toFixed(1) + "%" : ""}${p.lcb != null ? " · LCB " + Number(p.lcb).toFixed(1) + "%" : ""}</div>
     <div class="mx-pick-meta">
       <span><span class="l">Value</span><b>${Number(p.valueScore).toFixed(1)}</b></span>
-      <span><span class="l">Blended</span><b>${mxCostText(p.blendedCostPerM)}</b></span>
+      <span><span class="l">Blended</span><b>${p.priceKnown === false ? "—" : mxCostText(p.blendedCostPerM)}</b></span>
     </div>
     <div class="mx-pick-reason"><span class="mx-badge ${esc(p.badgeColor || "cyan")}">${esc(p.badge || "PICK")}</span> ${esc(p.reason || "")}</div>
   </div>`;
@@ -3104,9 +3112,9 @@ function mxRowHtml(m) {
     </span>
     <span class="mx-stats">
       ${flat ? "" : `<span class="mx-stat mx-hide-md"><span class="l">Ctx</span><span class="v">${mxCtx(m.contextK)}</span></span>`}
-      <span class="mx-stat mx-keep"><span class="l">In</span><span class="v">${mxCostText(m.inputPerM)}</span></span>
-      <span class="mx-stat mx-keep"><span class="l">Out</span><span class="v">${mxCostText(m.outputPerM)}</span></span>
-      ${flat ? "" : `<span class="mx-stat mx-hide-sm"><span class="l">Blended</span><span class="v">${m.blendedNetCost ? mxCostText(m.blendedNetCost) : "—"}</span></span>`}
+      <span class="mx-stat mx-keep"><span class="l">In</span><span class="v">${mxPriceText(m.inputPerM, m)}</span></span>
+      <span class="mx-stat mx-keep"><span class="l">Out</span><span class="v">${mxPriceText(m.outputPerM, m)}</span></span>
+      ${flat ? "" : `<span class="mx-stat mx-hide-sm"><span class="l">Blended</span><span class="v">${mxPriceText(m.blendedNetCost, m)}</span></span>`}
       ${perf != null ? `<span class="mx-stat mx-bench"><span class="l">${swe != null ? "SWE" : "LCB"}</span><span class="v">${Number(perf).toFixed(0)}%</span><span class="bar"><i style="width:${Math.max(2, Math.min(100, Number(perf)))}%"></i></span></span>` : ""}
       <span class="mx-stat ${flat ? "" : "mx-hide-lg"}"><span class="l">Used</span><span class="v ${u ? "" : "dim"}">${u ? fmtTokens(u.tokens) : "—"}</span></span>
     </span>
@@ -3205,10 +3213,17 @@ function mxDrawerHtml(m) {
   const listings = mxListingsFor(m);
   const caps = m.capabilities || {};
   const bench = m.benchmarks || null;
+  const priced = mxPriceKnown(m);
   const priceCells = [];
-  priceCells.push(`<div class="mx-price"><div class="l">Input / 1M</div><div class="v">${mxCostText(m.inputPerM)}${m.originalInputPerM ? `<span class="was">${mxCostText(m.originalInputPerM)}</span>` : ""}</div></div>`);
-  priceCells.push(`<div class="mx-price"><div class="l">Output / 1M</div><div class="v">${mxCostText(m.outputPerM)}${m.originalOutputPerM ? `<span class="was">${mxCostText(m.originalOutputPerM)}</span>` : ""}</div></div>`);
-  priceCells.push(`<div class="mx-price"><div class="l">Cache read / 1M</div><div class="v">${m.cacheReadPerM != null ? mxCostText(m.cacheReadPerM) : "—"}</div></div>`);
+  if (priced) {
+    priceCells.push(`<div class="mx-price"><div class="l">Input / 1M</div><div class="v">${mxCostText(m.inputPerM)}${m.originalInputPerM ? `<span class="was">${mxCostText(m.originalInputPerM)}</span>` : ""}</div></div>`);
+    priceCells.push(`<div class="mx-price"><div class="l">Output / 1M</div><div class="v">${mxCostText(m.outputPerM)}${m.originalOutputPerM ? `<span class="was">${mxCostText(m.originalOutputPerM)}</span>` : ""}</div></div>`);
+    priceCells.push(`<div class="mx-price"><div class="l">Cache read / 1M</div><div class="v">${m.cacheReadPerM != null ? mxCostText(m.cacheReadPerM) : "—"}</div></div>`);
+  } else {
+    priceCells.push(`<div class="mx-price"><div class="l">Input / 1M</div><div class="v">—</div></div>`);
+    priceCells.push(`<div class="mx-price"><div class="l">Output / 1M</div><div class="v">—</div></div>`);
+    priceCells.push(`<div class="mx-price"><div class="l">Cache read / 1M</div><div class="v">—</div></div>`);
+  }
 
   const benchRows = [];
   for (const [key, label] of [["swe", "SWE-bench"], ["lcb", "LiveCodeBench"], ["aime", "AIME"], ["gpqa", "GPQA"]]) {
@@ -3262,6 +3277,7 @@ function mxDrawerHtml(m) {
         <div class="sub" style="margin-top:2px">${esc(m.providerName || providerLabel(m.provider))} · <span class="num">${esc(m.id)}</span>${u.rows.length > 1 ? ` · used via ${u.rows.length} providers` : ""}</div>
         <div style="margin-top:7px;display:flex;gap:6px;flex-wrap:wrap">
           ${m.category && m.category !== "free" && !(m.category === "local" && (m.isFree || m.isLocal)) ? `<span class="chip">${esc(m.category)}</span>` : ""}
+          ${!priced && !m.isFree && !m.isLocal ? `<span class="chip" title="The provider publishes no per-token price for this listing">pricing n/a</span>` : ""}
           ${bench && bench.approx ? `<span class="chip orange" title="Approximate self-reported figures">approx</span>` : ""}
           ${m.discount ? `<span class="chip green">${esc(m.discount.label || ("-" + m.discount.percent + "%"))}</span>` : ""}
           ${m.isFree || m.isLocal ? `<span class="chip green">${m.isLocal ? "local · free" : "free"}</span>` : ""}
@@ -3278,9 +3294,10 @@ function mxDrawerHtml(m) {
         </div>
       </div>
       <div class="mx-sec">
-        <h3>Pricing <span class="mini">per 1M tokens${m.netSavingsPercent > 0 ? ` · ${m.netSavingsPercent}% net savings` : ""}</span></h3>
+        <h3>Pricing <span class="mini">per 1M tokens${priced && m.netSavingsPercent > 0 ? ` · ${m.netSavingsPercent}% net savings` : ""}</span></h3>
         <div class="mx-price-grid">${priceCells.join("")}</div>
-        ${m.discount?.detail ? `<div class="notice" style="margin-top:10px">${esc(m.discount.detail)}</div>` : ""}
+        ${!priced ? `<div class="notice" style="margin-top:10px">Pricing isn't published for this listing — it may be subscription/plan-covered or not yet priced. Token counts still track.</div>` : ""}
+        ${priced && m.discount?.detail ? `<div class="notice" style="margin-top:10px">${esc(m.discount.detail)}</div>` : ""}
       </div>
       ${benchRows.length ? `<div class="mx-sec"><h3>Benchmarks ${bench.source ? `<span class="mini">source: ${esc(bench.source)}${bench.approx ? " (approx)" : ""}</span>` : ""}</h3>${benchRows.join("")}</div>` : ""}
       <div class="mx-sec"><h3>Capabilities</h3><div style="display:flex;gap:6px;flex-wrap:wrap">${capChips}</div></div>

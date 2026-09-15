@@ -49,7 +49,12 @@ struct ModelRow: Identifiable {
     var isFree: Bool {
         if isLocal { return true }
         if inputPrice > 0 || outputPrice > 0 { return false }
-        return usage.free
+        // Zero prices are ambiguous: subscription plans (Kimi Code, Copilot,
+        // coding plans) publish `cost: 0` exactly like genuinely free tiers,
+        // and missing provider pricing also parses as 0. Only claim "free"
+        // with explicit evidence in the name/id (e.g. `...:free`).
+        let hay = (displayName + " " + usage.model).lowercased()
+        return hay.contains("free")
     }
 
     var inputPrice: Double {

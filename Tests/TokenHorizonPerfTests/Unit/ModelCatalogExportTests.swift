@@ -73,4 +73,39 @@ final class ModelCatalogExportTests: XCTestCase {
             XCTAssertFalse(category.isEmpty)
         }
     }
+
+    func testPricing_neverClaimsFreeWithoutEvidence() throws {
+        // Regression: subscription-plan models (Kimi Code, Copilot, …) publish
+        // `cost: 0`, which used to surface as "Free" with a fake $0.04 blended
+        // price. Zero-price rows may only be free with explicit evidence.
+        let models = try XCTUnwrap(ModelCatalogExport.payload()["models"] as? [[String: Any]])
+        var unknown = 0
+        for row in models {
+            XCTAssertNotNil(row["priceKnown"] as? Bool, "every row carries priceKnown")
+            let input = row["inputPerM"] as? Double ?? 0
+            let output = row["outputPerM"] as? Double ?? 0
+            guard input == 0, output == 0, row["isLocal"] as? Bool != true else { continue }
+            let isFree = row["isFree"] as? Bool ?? false
+            let known = row["priceKnown"] as? Bool ?? true
+            if isFree {
+                let hay = ((row["name"] as? String ?? "") + " " + (row["id"] as? String ?? "")).lowercased()
+                XCTAssertTrue(hay.contains("free"),
+                              "zero-price row claimed free without evidence: \(row["id"] as? String ?? "?")")
+                XCTAssertTrue(known, "explicitly free rows must have known pricing")
+            }
+            if !known {
+                unknown += 1
+                XCTAssertNil(row["blendedNetCost"], "unknown pricing must not carry a blended cost")
+                XCTAssertNil(row["effectiveInputPerM"], "unknown pricing must not carry an effective price")
+            }
+        }
+        XCTAssertGreaterThan(unknown, 0, "catalog contains plan/unknown-priced rows to guard")
+    }
+
+    func testTopPicks_carryPriceKnown() throws {
+        let picks = try XCTUnwrap(ModelCatalogExport.payload()["topPicks"] as? [[String: Any]])
+        for pick in picks {
+            XCTAssertNotNil(pick["priceKnown"] as? Bool)
+        }
+    }
 }

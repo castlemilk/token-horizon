@@ -100,19 +100,22 @@ enum ModelCatalogExport {
             "hostCount": row.hostCount
         ]
         if let perf = perfScore(row) { dict["perfScore"] = perf }
-        if row.inputPrice > 0 || row.outputPrice > 0 {
-            dict["inputPerM"] = row.inputPrice
-            dict["outputPerM"] = row.outputPrice
-        } else {
-            dict["inputPerM"] = 0
-            dict["outputPerM"] = 0
-        }
+        // Pricing accuracy: zero prices are only meaningful with positive
+        // evidence (paid prices, explicit free tier, or local). Plan-covered
+        // models and missing provider pricing both serialize
+        // priceKnown=false so the web list renders "—" instead of a fake $0.
+        let priceKnown = row.isLocal || row.isFree || row.inputPrice > 0 || row.outputPrice > 0
+        dict["priceKnown"] = priceKnown
+        dict["inputPerM"] = row.inputPrice
+        dict["outputPerM"] = row.outputPrice
         if let cp = row.cachePrice { dict["cacheReadPerM"] = cp }
         if let oi = row.catalog?.originalInputPerM { dict["originalInputPerM"] = oi }
         if let oo = row.catalog?.originalOutputPerM { dict["originalOutputPerM"] = oo }
-        dict["effectiveInputPerM"] = row.effectiveInputPrice
-        dict["blendedNetCost"] = row.blendedNetCost
-        dict["netSavingsPercent"] = row.netSavingsPercent
+        if priceKnown {
+            dict["effectiveInputPerM"] = row.effectiveInputPrice
+            dict["blendedNetCost"] = row.blendedNetCost
+            dict["netSavingsPercent"] = row.netSavingsPercent
+        }
         if row.hasDiscount {
             var discount: [String: Any] = [:]
             if let p = row.discountPercent { discount["percent"] = p }
@@ -169,6 +172,16 @@ enum ModelCatalogExport {
     }
 
     private static func pickPayload(_ pick: ModelsPipeline.TopPickModel) -> [String: Any] {
+        let priceKnown = pick.row.isLocal || pick.row.isFree
+            || pick.row.inputPrice > 0 || pick.row.outputPrice > 0
+        // Unknown-price picks must not advertise a fabricated $0.04/1M rate.
+        var reason = pick.reason
+        if !priceKnown {
+            reason = reason.split(separator: "·")
+                .map { $0.trimmingCharacters(in: .whitespaces) }
+                .filter { !$0.hasSuffix("/1M") }
+                .joined(separator: " · ")
+        }
         var dict: [String: Any] = [
             "rank": pick.rank,
             "id": pick.row.id,
@@ -178,9 +191,10 @@ enum ModelCatalogExport {
             "valueScore": pick.valueScore,
             "perfScore": pick.perfScore,
             "blendedCostPerM": pick.blendedCostPerM,
+            "priceKnown": priceKnown,
             "badge": pick.badge,
             "badgeColor": pick.badgeColor,
-            "reason": pick.reason
+            "reason": reason
         ]
         if let swe = pick.row.sweScore { dict["swe"] = swe }
         if let lcb = pick.row.lcbScore { dict["lcb"] = lcb }

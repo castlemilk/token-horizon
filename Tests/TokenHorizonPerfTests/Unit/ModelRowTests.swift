@@ -66,8 +66,14 @@ final class ModelRowTests: XCTestCase {
         XCTAssertEqual(local.inputPrice, 0)
         XCTAssertEqual(local.blendedNetCost, 0.04)
 
-        let free = ModelRow(usage: usage(free: true), catalog: entry())
-        XCTAssertTrue(free.isFree)
+        // Zero prices are ambiguous (subscription plans and missing pricing
+        // also parse as 0) — never claim free without explicit evidence.
+        let zeroPriced = ModelRow(usage: usage(free: true), catalog: entry())
+        XCTAssertFalse(zeroPriced.isFree)
+        // Explicit free signal in the name/id is evidence.
+        let explicitlyFree = ModelRow(usage: usage(model: "m:free", free: true),
+                                      catalog: entry(name: "M Free"))
+        XCTAssertTrue(explicitlyFree.isFree)
 
         let paid = ModelRow(usage: usage(), catalog: entry(input: 3, output: 15))
         XCTAssertFalse(paid.isFree)
@@ -120,7 +126,8 @@ final class ModelRowTests: XCTestCase {
 
     func testCostTexts() {
         XCTAssertEqual(ModelRow(usage: usage(cost: 12.5), catalog: nil).costText, "$12.50")
-        XCTAssertEqual(ModelRow(usage: usage(free: true), catalog: nil).costText, "Free")
+        // usage.free with zero prices is ambiguous (plans / missing pricing).
+        XCTAssertEqual(ModelRow(usage: usage(free: true), catalog: nil).costText, "—")
         XCTAssertEqual(ModelRow(usage: usage(), catalog: entry(input: 2.5)).costText, "$2.50")
     }
 
@@ -139,8 +146,9 @@ final class ModelRowTests: XCTestCase {
         let tiny = ModelRow(usage: usage(), catalog: entry(input: 0.002, originalIn: 0.004))
         XCTAssertEqual(tiny.inputPriceText, "$0.0020")
         XCTAssertEqual(tiny.originalInputPriceText, "$0.0040")
-        // Free/local short-circuits.
-        XCTAssertEqual(ModelRow(usage: usage(free: true), catalog: nil).inputPriceText, "Free")
+        // Zero prices are ambiguous; free/local short-circuits only with evidence.
+        XCTAssertEqual(ModelRow(usage: usage(free: true), catalog: nil).inputPriceText, "—")
+        XCTAssertEqual(ModelRow(usage: usage(model: "m:free", free: true), catalog: nil).inputPriceText, "Free")
         XCTAssertEqual(ModelRow(usage: usage(), catalog: nil).cachePriceText, "—")
     }
 
