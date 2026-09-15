@@ -339,7 +339,7 @@ tbody tr.selected{background:rgba(79,140,255,.08)}
 .mx-tag.hot{color:#C4B0FF;border-color:rgba(139,92,246,.35)}
 .mx-tag.free{color:#8FE6B4;border-color:rgba(34,197,94,.35)}
 .mx-stats{display:flex;align-items:center;gap:20px;flex:none}
-.mx-stat{text-align:right;width:66px;flex:none}
+.mx-stat{text-align:right;width:76px;flex:none}
 .mx-stat.wide{width:140px}
 .mx-stat .l{display:block;font-size:8.5px;letter-spacing:.7px;color:var(--faint);text-transform:uppercase}
 .mx-stat .v{display:block;font-family:var(--mono);font-size:12px;font-weight:600;margin-top:2px;white-space:nowrap}
@@ -2567,18 +2567,37 @@ function mxPriceText(v, m) {
   if (v == null) return "—";
   return mxCostText(v);
 }
+/// Cheapest known positive provider listing for a family, when it beats the
+/// canonical rate (or the canonical rate is unknown). Exported as
+/// `priceFrom`/`priceFromOutputPerM`/`priceFromProvider`.
+function mxCheapest(m) {
+  const fromIn = Number(m.priceFrom);
+  if (!(fromIn > 0)) return { in: null, out: null, provider: null };
+  const canonicalIn = Number(m.inputPerM) || 0;
+  if (canonicalIn > 0 && fromIn >= canonicalIn - 1e-9) return { in: null, out: null, provider: null };
+  const fromOut = Number(m.priceFromOutputPerM) || 0;
+  return { in: fromIn, out: fromOut > 0 ? fromOut : null, provider: m.priceFromProvider || "gateway" };
+}
 function mxUsageKey(provider, model) {
   return String(provider || "").toLowerCase() + "|" + String(model || "").toLowerCase().replace(/_/g, "-");
 }
 function mxHasBench(m) { return Boolean(m.benchmarks && (m.benchmarks.swe != null || m.benchmarks.lcb != null)); }
+/// Community usage must belong to the same provider group — a bare name match
+/// from an unrelated gateway would misattribute adoption.
+function mxUsageProviderMatches(row, m) {
+  if (!row) return false;
+  const group = mxGroup(m);
+  return providerKey(row.provider || "") === group
+    || providerKey(row.provider || "", row.model || "") === group;
+}
 function mxUsageFor(m) {
   const mx = mxState();
   const bareName = String(m.name || "").toLowerCase();
   const bareId = String(m.id || "").split("/").pop().toLowerCase();
   return mx.usage.get(mxUsageKey(m.provider, bareId))
     || mx.usage.get(mxUsageKey(m.provider, m.id))
-    || mx.usageBare.get(bareName)
-    || mx.usageBare.get(bareId)
+    || (mxUsageProviderMatches(mx.usageBare.get(bareName), m) ? mx.usageBare.get(bareName) : null)
+    || (mxUsageProviderMatches(mx.usageBare.get(bareId), m) ? mx.usageBare.get(bareId) : null)
     || null;
 }
 function mxUsageTokens(m) { const u = mxUsageFor(m); return u ? Number(u.tokens) || 0 : 0; }
@@ -2679,7 +2698,7 @@ async function mxLoad() {
   mx.plans = mx.catalog.plans || [];
   mx.models = (mx.catalog.models || []).map(m => {
     m._hay = [m.name, m.id, m.providerName, m.provider, m.category, m.description].filter(Boolean).join(" ").toLowerCase();
-    m._key = String(m.name || "").toLowerCase().replace(/\s+/g, " ").trim();
+    m._key = m.stem || String(m.name || "").toLowerCase().replace(/\s+/g, " ").trim();
     m._canon = mxKnownProvider(m) || mxHasBench(m) || Number(m.inputPerM) > 0 || Boolean(m.isLocal);
     return m;
   });
@@ -2744,6 +2763,7 @@ function mxBuildPrimary() {
     + ((Number(m.inputPerM) > 0 || Number(m.outputPerM) > 0 || m.isLocal) ? 4 : 0)
     + (mxKnownProvider(m) ? 2 : 0)
     + (mxUsageTokens(m) > 0 ? 1 : 0)
+    + (String(m.name || "").includes(".") ? 0.3 : 0)
     + (String(m.id).length < 40 ? 0.5 : 0);
   const best = new Map();
   for (const m of mx.models) {
@@ -2984,7 +3004,16 @@ function mxHeadHtml() {
     const s = sortState.find(x => x.id === id);
     return s ? (s.desc ? " ▾" : " ▴") : "";
   };
-  const cell = (id, label, cls) => `<span class="mx-head-cell ${cls}" data-col="${id}" data-label="${label}" role="button" tabindex="0" title="Sort by ${label}">${label}${ind(id)}</span>`;
+  const titles = {
+    input: "Published per-1M rate; \"from\" = cheapest known provider listing",
+    output: "Published per-1M rate; \"from\" = cheapest known provider listing",
+    blended: "Derived: 3:1 input:output with typical prompt-cache hits — not a published rate",
+    swe: "SWE-bench Verified (coding); ~ marks approximate scores",
+    lcb: "LiveCodeBench; ~ marks approximate scores",
+    used: "Tokens tracked across published profiles",
+    score: "Perf score per blended $/1M (app ranking)"
+  };
+  const cell = (id, label, cls) => `<span class="mx-head-cell ${cls}" data-col="${id}" data-label="${label}" role="button" tabindex="0" title="${esc(titles[id] || ("Sort by " + label))}">${label}${ind(id)}</span>`;
   return `<div class="mx-head-row" id="mx-head">
     <span class="mx-head-spacer"></span>
     ${cell("name", "Model", "mx-head-name")}
@@ -3131,6 +3160,12 @@ function mxRowHtml(m) {
   const sub = flat
     ? `${esc(m.providerName || providerLabel(m.provider))} · ${mxCtx(m.contextK)} context`
     : `${esc(m.providerName || providerLabel(m.provider))} · ${esc(m.id)}`;
+  const cheapest = mxCheapest(m);
+  const inText = cheapest.in != null ? `from ${mxCostText(cheapest.in)}` : mxPriceText(m.inputPerM, m);
+  const outText = cheapest.out != null ? `from ${mxCostText(cheapest.out)}` : mxPriceText(m.outputPerM, m);
+  const priceTitle = cheapest.in != null
+    ? `Cheapest known listing: $${cheapest.in}/1M in, $${cheapest.out}/1M out via ${cheapest.provider}`
+    : "Published provider rate";
   return `<div class="mx-row ${mx.openId === m.id ? "active" : ""}" data-mx-id="${esc(m.id)}" tabindex="0" role="option" aria-label="${esc(m.name)}">
     <span class="mx-logo">${providerLogo(m.provider, flat ? 28 : 26, m.id)}</span>
     <span class="mx-main">
@@ -3140,10 +3175,10 @@ function mxRowHtml(m) {
     </span>
     <span class="mx-stats">
       ${flat ? "" : `<span class="mx-stat mx-hide-md"><span class="l">Ctx</span><span class="v">${mxCtx(m.contextK)}</span></span>`}
-      <span class="mx-stat mx-keep"><span class="l">In</span><span class="v">${mxPriceText(m.inputPerM, m)}</span></span>
-      <span class="mx-stat mx-keep"><span class="l">Out</span><span class="v">${mxPriceText(m.outputPerM, m)}</span></span>
+      <span class="mx-stat mx-keep" title="${esc(priceTitle)}"><span class="l">In</span><span class="v">${inText}</span></span>
+      <span class="mx-stat mx-keep" title="${esc(priceTitle)}"><span class="l">Out</span><span class="v">${outText}</span></span>
       ${flat ? "" : `<span class="mx-stat mx-hide-sm"><span class="l">Blended</span><span class="v">${mxPriceText(m.blendedNetCost, m)}</span></span>`}
-      ${perf != null ? `<span class="mx-stat mx-bench"><span class="l">${swe != null ? "SWE" : "LCB"}</span><span class="v">${Number(perf).toFixed(0)}%</span><span class="bar"><i style="width:${Math.max(2, Math.min(100, Number(perf)))}%"></i></span></span>` : ""}
+      ${perf != null ? `<span class="mx-stat mx-bench" title="${m.benchmarks?.approx ? "Approximate self-reported score" : "Published benchmark score"}"><span class="l">${swe != null ? "SWE" : "LCB"}</span><span class="v">${m.benchmarks?.approx ? "~" : ""}${Number(perf).toFixed(0)}%</span><span class="bar"><i style="width:${Math.max(2, Math.min(100, Number(perf)))}%"></i></span></span>` : ""}
       <span class="mx-stat ${flat ? "" : "mx-hide-lg"}"><span class="l">Used</span><span class="v ${u ? "" : "dim"}">${u ? fmtTokens(u.tokens) : "—"}</span></span>
     </span>
     ${flat
@@ -3297,6 +3332,12 @@ function mxDrawerHtml(m) {
       <span class="num right">${mxCtx(x.contextK)}</span>
       <span class="num right">${x.discount?.label ? esc(x.discount.label) : (x.blendedNetCost ? mxCostText(x.blendedNetCost) : "—")}</span>
     </div>`).join("");
+  const providerListings = (m.listings || []).map(l => `<div class="mx-listing-row" style="cursor:default">
+      <span style="display:flex;align-items:center;gap:7px;min-width:0">${providerLogo(l.provider, 15, l.provider)}<span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(providerLabel(l.provider))}</span></span>
+      <span class="num right">${mxCostText(l.inputPerM)} / ${mxCostText(l.outputPerM)}</span>
+      <span class="num right">${l.cacheReadPerM != null ? mxCostText(l.cacheReadPerM) : "—"}</span>
+      <span class="num right">${(m.listingCount || 0).toLocaleString() > 8 && l === m.listings[0] ? (m.listingCount).toLocaleString() + " total" : ""}</span>
+    </div>`).join("");
 
   return `<div class="mx-drawer-head">
       ${providerLogo(m.provider, 40, m.id)}
@@ -3307,7 +3348,8 @@ function mxDrawerHtml(m) {
           ${m.category && m.category !== "free" && !(m.category === "local" && (m.isFree || m.isLocal)) ? `<span class="chip">${esc(m.category)}</span>` : ""}
           ${(m.plans || (m.plan ? [m.plan] : [])).length ? `<span class="chip orange" title="Included in a subscription plan">plan · ${esc(mxPlanName((m.plans || [m.plan])[0]))}</span>` : (!priced && !m.isFree && !m.isLocal ? `<span class="chip" title="The provider publishes no per-token price for this listing">pricing n/a</span>` : "")}
           ${bench && bench.approx ? `<span class="chip orange" title="Approximate self-reported figures">approx</span>` : ""}
-          ${m.discount ? `<span class="chip green">${esc(m.discount.label || ("-" + m.discount.percent + "%"))}</span>` : ""}
+          ${(m.flags || []).includes("implausible_cache_price") ? `<span class="chip orange" title="Provider published a cache price above its input price; hidden rather than shown">cache price outlier</span>` : ""}
+          ${m.discount ? `<span class="chip green" title="${esc(m.discount.detail || "")}">${esc(m.discount.label || ("-" + m.discount.percent + "%"))}</span>` : ""}
           ${m.isFree || m.isLocal ? `<span class="chip green">${m.isLocal ? "local · free" : "free"}</span>` : ""}
         </div>
       </div>
@@ -3353,10 +3395,14 @@ function mxDrawerHtml(m) {
           ${users.length ? `<div style="margin-top:12px">${users.map(x => `<div class="mx-user-row" data-mx-user="${esc(x.handle)}" tabindex="0" role="link"><span class="avatar" style="width:26px;height:26px;font-size:10px">${esc(initials(x.handle))}</span><span class="u">${esc(x.handle)}</span><span class="t">${fmtTokens(x.tokens)}</span></div>`).join("")}</div>` : ""}
         ` : `<div class="mini">No community usage yet — run this model and publish to appear here.</div>`}
       </div>
-      ${listings.length > 1 ? `<div class="mx-sec"><h3>Listings <span class="mini">${listings.length} providers</span></h3>
+      ${(m.listings || []).length > 1 ? `<div class="mx-sec"><h3>Listings <span class="mini">${(m.listingCount || m.listings.length).toLocaleString()} providers · cheapest first</span></h3>
+        <div class="mx-listing-row" style="cursor:default;border-bottom:1px solid var(--line2);color:var(--faint);font-size:9.5px;letter-spacing:.7px;text-transform:uppercase"><span>Provider</span><span class="right">In / Out</span><span class="right">Cache</span><span class="right">Listings</span></div>
+        ${providerListings}
+      </div>`
+        : (listings.length > 1 ? `<div class="mx-sec"><h3>Listings <span class="mini">${listings.length} catalog variants</span></h3>
         <div class="mx-listing-row" style="cursor:default;border-bottom:1px solid var(--line2);color:var(--faint);font-size:9.5px;letter-spacing:.7px;text-transform:uppercase"><span>Provider</span><span class="right">In / Out</span><span class="right">Cache</span><span class="right">Ctx</span><span class="right">Deal</span></div>
         ${listingRows}
-      </div>` : ""}
+      </div>` : "")}
       ${m.description ? `<div class="mx-sec"><h3>About</h3><div class="sub" style="line-height:1.6">${esc(m.description)}</div></div>` : ""}
       <div class="mx-sec"><h3>Links</h3><div class="mx-link-row">${links.join("")}<button class="pill ghost" id="mx-copy-id" type="button">Copy model id</button></div></div>
     </div>`;

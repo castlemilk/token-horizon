@@ -178,6 +178,13 @@ function compareModels(a, b, sort, query) {
   }
 }
 
+/// Trim float noise (0.7999999999999999) without inventing digits.
+function price(value) {
+  const n = Number(value);
+  if (!isFinite(n)) return null;
+  return Number(n.toPrecision(6));
+}
+
 function compact(model, pricingNote) {
   const known = priceKnown(model);
   return {
@@ -189,11 +196,16 @@ function compact(model, pricingNote) {
     plans: model.plans || (model.plan ? [model.plan] : []),
     price_known: known,
     is_free: Boolean(model.isFree),
-    input_per_m: known ? Number(model.inputPerM) || 0 : null,
-    output_per_m: known ? Number(model.outputPerM) || 0 : null,
-    cache_read_per_m: known && model.cacheReadPerM != null ? Number(model.cacheReadPerM) : null,
-    blended_net_cost: known && model.blendedNetCost != null ? Number(model.blendedNetCost) : null,
+    input_per_m: known ? price(model.inputPerM) : null,
+    output_per_m: known ? price(model.outputPerM) : null,
+    cache_read_per_m: known && model.cacheReadPerM != null ? price(model.cacheReadPerM) : null,
+    blended_net_cost: known && model.blendedNetCost != null ? price(model.blendedNetCost) : null,
     context_k: Number(model.contextK) || 0,
+    price_from: model.priceFrom != null ? price(model.priceFrom) : null,
+    price_from_output_per_m: model.priceFromOutputPerM != null ? price(model.priceFromOutputPerM) : null,
+    price_from_provider: model.priceFromProvider || null,
+    listing_count: model.listingCount != null ? Number(model.listingCount) : null,
+    flags: model.flags || null,
     benchmarks: model.benchmarks || null,
     capabilities: model.capabilities || null,
     category: model.category || null,

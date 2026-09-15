@@ -358,9 +358,13 @@ function renderModelRows(result) {
     + (result.query ? ` · query="${result.query}"` : ""), ""];
   if (!result.models.length) { lines.push("No models matched."); return lines.join("\n"); }
   for (const model of result.models) {
+    const from = model.price_from != null && (model.input_per_m == null || model.price_from < model.input_per_m)
+      ? ` — from $${model.price_from}/$${model.price_from_output_per_m ?? model.output_per_m} per 1M via ${model.price_from_provider}` +
+        (model.listing_count ? ` (${model.listing_count} listings)` : "")
+      : "";
     const price = model.price_known
-      ? `$${model.input_per_m}/$${model.output_per_m} per 1M`
-      : "no per-token price (plan-covered or unpublished)";
+      ? `$${model.input_per_m}/$${model.output_per_m} per 1M${from}`
+      : `no per-token price (plan-covered or unpublished)${from}`;
     const bench = model.benchmarks
       ? [model.benchmarks.swe != null ? `SWE ${model.benchmarks.swe}` : null, model.benchmarks.lcb != null ? `LCB ${model.benchmarks.lcb}` : null].filter(Boolean).join(" · ")
       : null;

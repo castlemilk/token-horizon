@@ -27,11 +27,11 @@ enum ModelCatalogExport {
         let aux = auxiliaryBenchmarks()
         let plansDoc = loadPlans()
         let plans = plansDoc.plans
-        let sources = sourceProvidersByFamily(catalog)
+        let listings = listingsByFamily(catalog)
         var planCounts: [String: Int] = [:]
         let models = result.base.map { row -> [String: Any] in
-            var dict = rowPayload(row, aux: aux)
-            let planIds = planIds(for: row, sources: sources, plans: plans)
+            var dict = rowPayload(row, aux: aux, listings: listings[row.usage.model] ?? [])
+            let planIds = planIds(for: row, listings: listings, plans: plans)
             if !planIds.isEmpty {
                 dict["plan"] = planIds[0]
                 dict["plans"] = planIds
@@ -121,17 +121,104 @@ enum ModelCatalogExport {
         return (plans, obj["updatedAt"] as? String ?? "")
     }
 
-    /// Every raw provider id that merged into a canonical family — plan
-    /// providers (kimi-for-coding, github-copilot, …) live there, not on the
-    /// canonical provider, so plan linkage needs the source set.
-    static func sourceProvidersByFamily(_ catalog: [ModelCatalog.Entry]) -> [String: Set<String>] {
-        var out: [String: Set<String>] = [:]
+    /// One provider listing of a family, with implausible cache prices dropped
+    /// (a cache read can never cost more than a fresh input token).
+    struct Listing {
+        var provider: String
+        var inputPerM: Double
+        var outputPerM: Double
+        var cacheReadPerM: Double?
+
+        var payload: [String: Any] {
+            var dict: [String: Any] = [
+                "provider": provider,
+                "inputPerM": inputPerM,
+                "outputPerM": outputPerM
+            ]
+            if let c = cacheReadPerM { dict["cacheReadPerM"] = c }
+            return dict
+        }
+    }
+
+    /// Unique provider listings per family (cheapest per provider wins).
+    static func listingsByFamily(_ catalog: [ModelCatalog.Entry]) -> [String: [Listing]] {
+        var out: [String: [Listing]] = [:]
         for entry in catalog {
             let canon = ModelCatalog.canonicalIdentity(provider: entry.provider, model: entry.id)
-            out[canon.family, default: []].insert(entry.provider.lowercased())
+            var cache = entry.cacheReadPerM
+            if let c = cache, c > entry.inputPerM, entry.inputPerM > 0 { cache = nil }
+            let listing = Listing(provider: entry.provider.lowercased(),
+                                  inputPerM: entry.inputPerM,
+                                  outputPerM: entry.outputPerM,
+                                  cacheReadPerM: cache)
+            var list = out[canon.family] ?? []
+            if let idx = list.firstIndex(where: { $0.provider == listing.provider }) {
+                let existing = list[idx]
+                if listing.inputPerM < existing.inputPerM
+                    || (listing.inputPerM == existing.inputPerM && listing.outputPerM < existing.outputPerM) {
+                    list[idx] = listing
+                }
+                out[canon.family] = list
+            } else {
+                list.append(listing)
+                out[canon.family] = list
+            }
         }
         return out
     }
+
+    static func planIds(for row: ModelRow, listings: [String: [Listing]], plans: [[String: Any]]) -> [String] {
+        let familySources = Set((listings[row.usage.model] ?? []).map { $0.provider })
+        guard !familySources.isEmpty else { return [] }
+        return plans.compactMap { plan -> String? in
+            let providers = (plan["providers"] as? [String] ?? []).map { $0.lowercased() }
+            guard providers.contains(where: { familySources.contains($0) }) else { return nil }
+            return plan["id"] as? String
+        }
+    }
+
+    // MARK: - Name accuracy
+
+    /// Lab / reseller prefix words that carry no model identity. Stripped from
+    /// the front of names before stemming so "OpenAI GPT 5.5" and "GPT-5.5"
+    /// collapse to one listing.
+    static let stemPrefixWords: Set<String> = [
+        "openai", "anthropic", "google", "deepmind", "gemini", "grok", "xai", "x-ai",
+        "zhipu", "zai", "glm", "moonshot", "kimi", "minimax", "mistral", "meta",
+        "nvidia", "amazon", "aws", "cohere", "perplexity", "deepseek", "alibaba",
+        "qwen", "microsoft", "azure", "stepfun", "xiaomi", "bytedance", "upstage",
+        "llama", "gpt", "claude", "vercel", "gitlab", "huggingface", "togetherai",
+        "deepinfra", "fireworks", "novita", "edenai", "nano", "nanogpt", "kilo",
+        "openrouter", "requesty", "orcarouter", "crossmodel", "llmgateway", "poe",
+        "thegridai", "regolo", "umans", "scnet", "volcengine", "tencent", "baidu",
+    ]
+
+    /// Identity stem for dedupe: lowercase alphanumerics, leading lab/brand
+    /// words removed. Punctuation and prefix variants of one model share it.
+    static func nameStem(_ name: String) -> String {
+        var tokens = name.lowercased().split(whereSeparator: { !$0.isLetter && !$0.isNumber }).map(String.init)
+        while tokens.count > 1, stemPrefixWords.contains(tokens[0]) { tokens.removeFirst() }
+        return tokens.joined()
+    }
+
+    /// Restores version dots the display formatter splits: family `gpt-5-1`
+    /// renders as "GPT 5 1"; join adjacent single digits when the family pairs
+    /// them (`5-1` → `5.1`). Purely a display fix — never changes identity.
+    static func cleanDisplayName(_ name: String, family: String) -> String {
+        let parts = family.lowercased().split(separator: "-").map(String.init)
+        var out = name
+        var i = 0
+        while i + 1 < parts.count {
+            let a = parts[i], b = parts[i + 1]
+            if a.count == 1, a.allSatisfy(\.isNumber), b.count == 1, b.allSatisfy(\.isNumber) {
+                out = out.replacingOccurrences(of: "\(a) \(b)", with: "\(a).\(b)")
+            }
+            i += 1
+        }
+        return out
+    }
+
+    // MARK: - Row serialization
 
     static func planIds(for row: ModelRow, sources: [String: Set<String>], plans: [[String: Any]]) -> [String] {
         let familySources = sources[row.usage.model] ?? []
@@ -145,10 +232,12 @@ enum ModelCatalogExport {
 
     // MARK: - Row serialization
 
-    private static func rowPayload(_ row: ModelRow, aux: [String: AuxBenchmarks]) -> [String: Any] {
+    private static func rowPayload(_ row: ModelRow, aux: [String: AuxBenchmarks], listings: [Listing]) -> [String: Any] {
+        let name = cleanDisplayName(row.displayName, family: row.usage.model)
         var dict: [String: Any] = [
             "id": row.id,
-            "name": row.displayName,
+            "name": name,
+            "stem": nameStem(name),
             "provider": row.usage.provider,
             "providerName": row.providerDisplay,
             "category": category(for: row),
@@ -166,13 +255,40 @@ enum ModelCatalogExport {
         dict["priceKnown"] = priceKnown
         dict["inputPerM"] = row.inputPrice
         dict["outputPerM"] = row.outputPrice
-        if let cp = row.cachePrice { dict["cacheReadPerM"] = cp }
+        var flags: [String] = []
+        if let cp = row.cachePrice, row.inputPrice > 0, cp > row.inputPrice {
+            // Drop impossible cache pricing rather than reporting it.
+            flags.append("implausible_cache_price")
+        } else if let cp = row.cachePrice {
+            dict["cacheReadPerM"] = cp
+        }
         if let oi = row.catalog?.originalInputPerM { dict["originalInputPerM"] = oi }
         if let oo = row.catalog?.originalOutputPerM { dict["originalOutputPerM"] = oo }
         if priceKnown {
             dict["effectiveInputPerM"] = row.effectiveInputPrice
             dict["blendedNetCost"] = row.blendedNetCost
             dict["netSavingsPercent"] = row.netSavingsPercent
+        }
+        // Provider listing spread: the canonical row shows the lab/direct
+        // price, but gateways often sell the same family cheaper. Report the
+        // cheapest known positive listing so "from $X" is truthful.
+        if !listings.isEmpty {
+            let sorted = listings.sorted { a, b in
+                let ap = a.inputPerM > 0 ? a.inputPerM : Double.greatestFiniteMagnitude
+                let bp = b.inputPerM > 0 ? b.inputPerM : Double.greatestFiniteMagnitude
+                if ap != bp { return ap < bp }
+                return a.outputPerM < b.outputPerM
+            }
+            dict["listingCount"] = listings.count
+            dict["listings"] = sorted.prefix(8).map { $0.payload }
+            if let cheapest = sorted.first(where: { $0.inputPerM > 0 }) {
+                let canonical = row.isLocal ? 0 : row.inputPrice
+                if canonical <= 0 || cheapest.inputPerM < canonical {
+                    dict["priceFrom"] = cheapest.inputPerM
+                    dict["priceFromProvider"] = cheapest.provider
+                    dict["priceFromOutputPerM"] = cheapest.outputPerM
+                }
+            }
         }
         if row.hasDiscount {
             var discount: [String: Any] = [:]
@@ -192,6 +308,7 @@ enum ModelCatalogExport {
         if let bench = benchmarkPayload(row, aux: aux) { dict["benchmarks"] = bench }
         if let d = row.catalog?.description, !d.isEmpty { dict["description"] = d }
         if let u = row.docUrl?.absoluteString, !u.isEmpty { dict["docUrl"] = u }
+        if !flags.isEmpty { dict["flags"] = flags }
         return dict
     }
 

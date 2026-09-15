@@ -109,6 +109,55 @@ final class ModelCatalogExportTests: XCTestCase {
         }
     }
 
+    func testNameAccuracy_stemsAndVersionDots() {
+        // Version dots lost by the display formatter are restored from the family.
+        XCTAssertEqual(ModelCatalogExport.cleanDisplayName("GPT 5 1", family: "gpt-5-1"), "GPT 5.1")
+        XCTAssertEqual(ModelCatalogExport.cleanDisplayName("Grok 4 3", family: "grok-4-3"), "Grok 4.3")
+        XCTAssertEqual(ModelCatalogExport.cleanDisplayName("Claude Sonnet 4 6 Thinking", family: "claude-sonnet-4-6-thinking"),
+                       "Claude Sonnet 4.6 Thinking")
+        XCTAssertEqual(ModelCatalogExport.cleanDisplayName("Qwen3 30B A3b Thinking", family: "qwen3-30b-a3b-thinking"),
+                       "Qwen3 30B A3b Thinking", "no false dot insertion mid-token")
+        // Prefix/separator variants collapse to one stem.
+        XCTAssertEqual(ModelCatalogExport.nameStem("OpenAI GPT 5.5"), ModelCatalogExport.nameStem("GPT-5.5"))
+        XCTAssertEqual(ModelCatalogExport.nameStem("Kimi K3"), ModelCatalogExport.nameStem("Moonshot Kimi K3"))
+        XCTAssertEqual(ModelCatalogExport.nameStem("MiniMax M2.7"), ModelCatalogExport.nameStem("MiniMax M27"))
+        XCTAssertNotEqual(ModelCatalogExport.nameStem("GPT-5.5"), ModelCatalogExport.nameStem("GPT-5.5 Pro"))
+        XCTAssertNotEqual(ModelCatalogExport.nameStem("Claude Opus 4.6"), ModelCatalogExport.nameStem("Claude Sonnet 4.6"))
+    }
+
+    func testListingSpread_reportsCheapestTruthfulPrice() throws {
+        let models = try XCTUnwrap(ModelCatalogExport.payload()["models"] as? [[String: Any]])
+        let withListings = models.filter { ($0["listingCount"] as? Int ?? 0) > 1 }
+        XCTAssertFalse(withListings.isEmpty, "catalog should contain multi-provider families")
+        for row in withListings {
+            let listings = row["listings"] as? [[String: Any]] ?? []
+            XCTAssertFalse(listings.isEmpty)
+            for listing in listings {
+                XCTAssertNotNil(listing["provider"] as? String)
+                // Cache pricing above input is dropped, never reported.
+                if let cache = listing["cacheReadPerM"] as? Double,
+                   let input = listing["inputPerM"] as? Double, input > 0 {
+                    XCTAssertLessThanOrEqual(cache, input, "cache price above input for \(row["id"] ?? "?")")
+                }
+            }
+            if let from = row["priceFrom"] as? Double {
+                XCTAssertGreaterThan(from, 0)
+                XCTAssertNotNil(row["priceFromProvider"] as? String)
+                let canonical = row["inputPerM"] as? Double ?? 0
+                XCTAssertTrue(canonical <= 0 || from < canonical, "priceFrom only when cheaper than the canonical listing")
+            }
+        }
+    }
+
+    func testCachePricing_neverExceedsInput() throws {
+        let models = try XCTUnwrap(ModelCatalogExport.payload()["models"] as? [[String: Any]])
+        for row in models {
+            guard let cache = row["cacheReadPerM"] as? Double,
+                  let input = row["inputPerM"] as? Double, input > 0 else { continue }
+            XCTAssertLessThanOrEqual(cache, input, "implausible cache pricing leaked for \(row["id"] ?? "?")")
+        }
+    }
+
     func testPlans_carryTiersAndModelLinkage() throws {
         let payload = ModelCatalogExport.payload()
         let plans = try XCTUnwrap(payload["plans"] as? [[String: Any]], "plans array missing")
