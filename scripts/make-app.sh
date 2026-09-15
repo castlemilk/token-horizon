@@ -56,8 +56,8 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <key>CFBundleIdentifier</key><string>local.benebsworth.token-horizon</string>
     <key>CFBundleName</key><string>Token Horizon</string>
     <key>CFBundlePackageType</key><string>APPL</string>
-    <key>CFBundleShortVersionString</key><string>0.2.0</string>
-    <key>CFBundleVersion</key><string>2</string>
+    <key>CFBundleShortVersionString</key><string>0.3.0</string>
+    <key>CFBundleVersion</key><string>3</string>
     <key>LSUIElement</key><true/>
     <key>NSHighResolutionCapable</key><true/>
     <key>THGitSHA</key><string>${GIT_SHA}</string>
