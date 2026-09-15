@@ -37,3 +37,9 @@ await bundle(
   'docs/vendor/fuse.js',
   '/* fuse.js — vendored for Token Horizon model search; rebuild: npm run vendor */'
 );
+
+await bundle(
+  'scripts/table-entry.js',
+  'docs/vendor/tanstack-table.js',
+  '/* @tanstack/table-core v9 — vendored for Token Horizon model sorting; rebuild: npm run vendor */'
+);

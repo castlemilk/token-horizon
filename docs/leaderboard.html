@@ -10,6 +10,7 @@
 <script src="./vendor/tanstack-charts.js" defer></script>
 <script src="./vendor/dicebear.js" defer></script>
 <script src="./vendor/fuse.js" defer></script>
+<script src="./vendor/tanstack-table.js" defer></script>
 <style>
 :root{
   --bg:#080B12; --panel:#0F141E; --panel2:#141B28; --panel3:#1A2233;
@@ -348,6 +349,24 @@ tbody tr.selected{background:rgba(79,140,255,.08)}
 .mx-bench .bar i{display:block;height:100%;border-radius:2px;background:linear-gradient(90deg,var(--cyan),var(--blue))}
 .mx-score{flex:none;width:52px;text-align:center;font-family:var(--mono);font-size:13px;font-weight:800;color:#CFE0FF;background:rgba(79,140,255,.1);border:1px solid rgba(79,140,255,.25);border-radius:9px;padding:6px 0}
 .mx-score.zero{color:var(--faint);background:transparent;border-color:var(--line)}
+/* Sortable column header — TanStack Table v9 sorting state drives indicators */
+.mx-head-row{display:flex;align-items:center;gap:13px;height:34px;padding:0 14px;border-bottom:1px solid var(--line);background:var(--panel2);flex:none}
+.mx-head-row .mx-stats{gap:20px}
+.mx-head-spacer{width:26px;flex:none}
+.mx-head-cell{font-size:9.5px;letter-spacing:.7px;text-transform:uppercase;color:var(--faint);cursor:pointer;user-select:none;white-space:nowrap;flex:none}
+.mx-head-cell:hover{color:var(--text)}
+.mx-head-cell.sorted{color:#9CC0FF}
+.mx-head-name{flex:1 1 auto;min-width:0;text-align:left}
+.mx-head-row .mx-stat{text-align:right}
+.mx-head-row .mx-score,.mx-head-row .mx-flat-score{background:none;border:none;padding:0;font-size:9.5px;font-weight:600;letter-spacing:.7px;color:var(--faint);text-transform:uppercase;display:block;width:52px}
+body.th-flat .mx-head-row{padding:0 18px;gap:16px}
+body.th-flat .mx-head-row .mx-stats{gap:26px}
+body.th-flat .mx-head-row .mx-flat-score{width:34px}
+/* Segmented nav retained between Leaderboard and the model list */
+.mx-nav{display:flex;gap:2px;background:var(--panel2);border:1px solid var(--line);border-radius:999px;padding:3px}
+.mx-nav-item{font-size:12px;color:var(--muted);text-decoration:none;padding:5px 13px;border-radius:999px;white-space:nowrap}
+.mx-nav-item:hover{color:var(--text)}
+.mx-nav-item.active{background:var(--panel3);color:#fff;font-weight:600}
 .mx-empty{padding:70px 20px;text-align:center;color:var(--faint);font-size:13px}
 .mx-sentinel{height:1px}
 .mx-drawer-backdrop{position:fixed;inset:0;background:rgba(3,5,9,.6);backdrop-filter:blur(3px);z-index:110;opacity:0;pointer-events:none;transition:opacity .16s}
@@ -422,7 +441,7 @@ body.th-flat .mx-stats{gap:26px}
 .mx-search{order:9;flex-basis:100%}
 body.th-flat .mx-search{order:0}
 body.th-flat .mx-row{padding:0 12px;gap:12px}
-body.th-flat .mx-stat:not(.wide){display:none}
+body.th-flat .mx-stat:not(.mx-keep){display:none}
 body.th-flat .mx-flat-score{display:none}
 .mx-drawer{width:100%}
 .mx-price-grid{grid-template-columns:1fr}
@@ -483,6 +502,7 @@ body.th-flat .mx-flat-score{display:none}
         <input id="global-search" type="text" placeholder="Search users, teams, models…" autocomplete="off" />
       </div>
       <div class="topbar-spacer"></div>
+      <a class="pill" id="nav-models" href="./models/" title="Clean, searchable model list">Models</a>
       <div class="pill" id="range-pill" title="Analytics time range">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none"><rect x="3" y="5" width="18" height="16" rx="2" stroke="currentColor" stroke-width="1.6"/><path d="M3 10h18M8 3v4M16 3v4" stroke="currentColor" stroke-width="1.6"/></svg>
         <span id="range-label">Last 30 days</span>
@@ -2482,6 +2502,30 @@ const MX_SORTS = [
   ["blended", "Blended $/1M"],
   ["name", "Name (A–Z)"]
 ];
+/// Headless TanStack Table v9 columns. `mxHeadHtml` renders the visible ones;
+/// hidden columns (lcb) still participate in sorting via the dropdown.
+const MX_TABLE_COLUMNS = [
+  { id: "name", accessorFn: r => r.name, header: "Model", sortFn: "alphanumeric", sortDescFirst: false },
+  { id: "context", accessorFn: r => Number(r.contextK) || 0, header: "Ctx", sortFn: "basic", sortDescFirst: true },
+  { id: "input", accessorFn: r => Number(r.inputPerM) || 0, header: "In", sortFn: "basic", sortDescFirst: false },
+  { id: "output", accessorFn: r => Number(r.outputPerM) || 0, header: "Out", sortFn: "basic", sortDescFirst: false },
+  { id: "blended", accessorFn: r => Number(r.blendedNetCost) || 0, header: "Blended", sortFn: "basic", sortDescFirst: false },
+  { id: "swe", accessorFn: r => r.benchmarks?.swe ?? r.benchmarks?.lcb ?? -1, header: "SWE", sortFn: "basic", sortDescFirst: true },
+  { id: "lcb", accessorFn: r => r.benchmarks?.lcb ?? r.benchmarks?.swe ?? -1, header: "LCB", sortFn: "basic", sortDescFirst: true },
+  { id: "used", accessorFn: r => mxUsageTokens(r), header: "Used", sortFn: "basic", sortDescFirst: true },
+  { id: "score", accessorFn: r => r.perfScore ?? -1, header: "Value", sortFn: "basic", sortDescFirst: true }
+];
+/// Dropdown key → table column + default direction. Base modes (featured,
+/// value, usage) keep the app's blended order and clear column sorting.
+const MX_SORT_COLUMNS = {
+  swe: { id: "swe", desc: true },
+  lcb: { id: "lcb", desc: true },
+  context: { id: "context", desc: true },
+  input: { id: "input", desc: false },
+  output: { id: "output", desc: false },
+  blended: { id: "blended", desc: false },
+  name: { id: "name", desc: false }
+};
 
 function mxState() {
   if (!state.mx) {
@@ -2491,6 +2535,7 @@ function mxState() {
       caps: new Set(), filtered: [], counts: null, providers: null,
       primary: true, primarySet: null, primaryHidden: 0,
       openId: null, pendingModel: null, pendingProvider: "", pendingProviderFilter: "", error: "", mounted: false,
+      features: null, table: null, tableSort: [],
       renderedRange: [-1, -1], sig: "", debounce: 0
     };
   }
@@ -2628,13 +2673,54 @@ async function mxLoad() {
   });
   mxBuildProviders();
   mxBuildPrimary();
+  mxBuildTable();
   mxLoadUsage().then(() => {
     mxBuildPrimary();
     mx.counts = null;
+    mxRefreshTableData();
     if (mx.mounted) mxCompute(true);
     mxRefreshOpenDrawer();
   });
   return mx.catalog;
+}
+/// Headless TanStack Table v9: column sorting state is owned here, rows are
+/// rendered by the windowed list (`getRowModel()` order drives the list).
+function mxBuildTable() {
+  const mx = mxState();
+  const T = window.TanStackTable;
+  if (!T) { mx.table = null; return; }
+  if (!mx.features) {
+    mx.features = T.tableFeatures({
+      ...T.coreFeatures,
+      coreReactivityFeature: T.storeReactivityBindings(),
+      rowSortingFeature: T.rowSortingFeature,
+      coreRowModel: T.createCoreRowModel(),
+      sortedRowModel: T.createSortedRowModel(),
+      sortFns: { basic: T.sortFn_basic, alphanumeric: T.sortFn_alphanumeric }
+    });
+  }
+  mx.table = T.constructTable({
+    features: mx.features,
+    data: mx.models,
+    columns: MX_TABLE_COLUMNS,
+    state: { sorting: mx.tableSort },
+    onSortingChange: (updater) => {
+      const next = typeof updater === "function" ? updater(mx.tableSort) : updater;
+      mx.tableSort = next;
+      mx.table.setOptions({ state: { sorting: next } });
+      mxCompute(false);
+    }
+  });
+}
+/// Rebuild the sorted row model after async data (community usage) lands.
+function mxRefreshTableData() {
+  const mx = mxState();
+  if (mx.table) mx.table.setOptions({ data: mx.models.slice(), state: { sorting: mx.tableSort } });
+}
+function mxSortedRows() {
+  const mx = mxState();
+  if (!mx.table) return mx.models;
+  return mx.table.getRowModel().rows.map(r => r.original);
 }
 /// The same model is listed by labs, gateways and resellers; the explorer
 /// defaults to one primary listing per model name (best metadata wins) so the
@@ -2803,28 +2889,41 @@ function mxSorter() {
 function mxCompute(keepScroll) {
   const mx = mxState();
   const q = mx.query.trim().toLowerCase();
-  let list = mxBase().filter(m => mxPassesScope(m) && mxPassesProvider(m) && mxPassesCaps(m));
+  const hasColumnSort = (mx.tableSort || []).length > 0;
+  // TanStack Table drives the order: sorted rows when a column sort is
+  // active, source order (featured/value/usage) otherwise.
+  const baseSet = mx.primarySet;
+  let list = mxSortedRows().filter(m =>
+    (!mx.primary || !baseSet || baseSet.has(m.id))
+    && mxPassesScope(m) && mxPassesProvider(m) && mxPassesCaps(m));
   if (q) {
-    // Relevance order is the sort order while searching (Fuse score, best
-    // first) — applying the selected column sort here destroyed ranking.
     const fuse = q.length >= 2 ? mxFuse() : null;
     if (fuse) {
       const allowed = new Set(list.map(m => m.id));
-      list = fuse.search(q).filter(h => allowed.has(h.item.id)).map(h => h.item);
+      const hits = fuse.search(q).filter(h => allowed.has(h.item.id)).map(h => h.item);
+      if (hasColumnSort) {
+        // Explicit column sort wins; the query only narrows the set.
+        const hitIds = new Set(hits.map(m => m.id));
+        list = list.filter(m => hitIds.has(m.id));
+      } else {
+        // Relevance order is the sort order while searching.
+        list = hits;
+      }
     } else {
       list = list.filter(m => m._hay.includes(q));
     }
-  } else {
+  } else if (!hasColumnSort) {
     list.sort(mxSorter());
   }
   mx.filtered = list;
-  mx.sig = [mx.scope, mx.sort, mx.provider, [...mx.caps].sort().join(","), mx.query.trim(), mx.models.length, mx.primary].join("|");
+  mx.sig = [mx.scope, mx.sort, mx.provider, [...mx.caps].sort().join(","), mx.query.trim(), mx.models.length, mx.primary,
+    (mx.tableSort || []).map(s => s.id + (s.desc ? "d" : "a")).join(",")].join("|");
   mx.renderedRange = [-1, -1];
   if (!keepScroll) {
     const scroller = $("#mx-scroll");
     if (scroller) scroller.scrollTop = 0;
   }
-  if (mx.mounted) { mxRenderList(true); mxUpdateBar(); }
+  if (mx.mounted) { mxRenderList(true); mxUpdateBar(); mxSyncSortUI(); }
 }
 function mxCounts() {
   const mx = mxState();
@@ -2866,6 +2965,46 @@ function mxSyncChips() {
         ? (mx.primary ? "Unified" : "All listings")
         : `${(mx.primary ? mx.primaryHidden : 0).toLocaleString()} hidden`;
     }
+  }
+}
+function mxHeadHtml() {
+  const mx = mxState();
+  const flat = state.flatModels;
+  const sortState = mx.tableSort || [];
+  const ind = (id) => {
+    const s = sortState.find(x => x.id === id);
+    return s ? (s.desc ? " ▾" : " ▴") : "";
+  };
+  const cell = (id, label, cls) => `<span class="mx-head-cell ${cls}" data-col="${id}" data-label="${label}" role="button" tabindex="0" title="Sort by ${label}">${label}${ind(id)}</span>`;
+  return `<div class="mx-head-row" id="mx-head">
+    <span class="mx-head-spacer"></span>
+    ${cell("name", "Model", "mx-head-name")}
+    <span class="mx-stats">
+      ${flat ? "" : cell("context", "Ctx", "mx-stat mx-hide-md")}
+      ${cell("input", "In", "mx-stat mx-keep")}
+      ${cell("output", "Out", "mx-stat mx-keep")}
+      ${flat ? "" : cell("blended", "Blended", "mx-stat mx-hide-sm")}
+      ${cell("swe", "SWE", "mx-stat mx-bench")}
+      ${cell("used", "Used", flat ? "mx-stat" : "mx-stat mx-hide-lg")}
+    </span>
+    ${cell("score", "Value", `mx-head-score ${flat ? "mx-flat-score" : "mx-score"}`)}
+  </div>`;
+}
+function mxSyncSortUI() {
+  const mx = mxState();
+  const sortState = mx.tableSort || [];
+  $$("#mx-head .mx-head-cell").forEach(el => {
+    const s = sortState.find(x => x.id === el.dataset.col);
+    el.classList.toggle("sorted", Boolean(s));
+    el.textContent = (el.dataset.label || "") + (s ? (s.desc ? " ▾" : " ▴") : "");
+  });
+  const sel = $("#mx-sort");
+  if (!sel) return;
+  if (sortState.length) {
+    const key = Object.keys(MX_SORT_COLUMNS).find(k => MX_SORT_COLUMNS[k].id === sortState[0].id);
+    if (key) sel.value = key;
+  } else {
+    sel.value = mx.sort;
   }
 }
 function mxUpdateBar() {
@@ -2914,15 +3053,15 @@ function mxFlatHeadHtml() {
     : "";
   return `<div class="mx-flat-head">
     <a class="mx-flat-brand" href="./leaderboard.html"><img src="./assets/icon.png" alt="" /><span>Token Horizon</span></a>
-    <span class="mx-flat-title">Models</span>
+    <nav class="mx-nav" aria-label="Sections">
+      <a class="mx-nav-item active" href="./models/" aria-current="page">Models</a>
+      <a class="mx-nav-item" href="./leaderboard.html">Leaderboard</a>
+    </nav>
     <span class="mx-flat-catalog">${unified.toLocaleString()} models${hidden ? ` · ${hidden.toLocaleString()} duplicate listings hidden` : ""}${refreshed ? ` · catalog ${refreshed}` : ""}</span>
     <button class="mx-flat-toggle ${mx.primary ? "active" : ""}" id="mx-primary" type="button" title="Collapse reseller/gateway duplicates into one unified listing per model">
       <span id="mx-primary-n">${mx.primary ? "Unified" : "All listings"}</span>
     </button>
-    <span style="margin-left:auto;display:flex;gap:8px;align-items:center">
-      <a class="mx-flat-dash" href="./leaderboard.html">Full dashboard ↗</a>
-      <a class="mx-flat-dash" href="https://github.com/castlemilk/token-horizon" target="_blank" rel="noopener">GitHub</a>
-    </span>
+    <a class="mx-flat-dash" style="margin-left:auto" href="https://github.com/castlemilk/token-horizon" target="_blank" rel="noopener">GitHub</a>
   </div>`;
 }
 function mxShellHtml() {
@@ -2959,7 +3098,7 @@ function mxShellHtml() {
       <span class="mx-counts" style="margin-left:auto">${mxCounts().all.toLocaleString()} models · ${new Set(mxBase().map(mxGroup)).size} providers · ${mxCounts().featured.toLocaleString()} benchmarked</span>
     </div>`}
     <div class="mx-panel">
-      ${flat ? "" : `<div class="mx-panel-head"><span id="mx-shown">…</span><span class="mx-hide-sm">scroll to page · click a row for details</span></div>`}
+      ${mxHeadHtml()}
       <div class="mx-scroll" id="mx-scroll" role="listbox" aria-label="Models">
         <div class="mx-spacer" id="mx-spacer"><div class="mx-rows" id="mx-rows"></div></div>
       </div>
@@ -3003,7 +3142,8 @@ function mxRowHtml(m) {
     </span>
     <span class="mx-stats">
       ${flat ? "" : `<span class="mx-stat mx-hide-md"><span class="l">Ctx</span><span class="v">${mxCtx(m.contextK)}</span></span>`}
-      <span class="mx-stat wide"><span class="l">In / Out</span><span class="v">${mxCostText(m.inputPerM)} / ${mxCostText(m.outputPerM)}</span></span>
+      <span class="mx-stat mx-keep"><span class="l">In</span><span class="v">${mxCostText(m.inputPerM)}</span></span>
+      <span class="mx-stat mx-keep"><span class="l">Out</span><span class="v">${mxCostText(m.outputPerM)}</span></span>
       ${flat ? "" : `<span class="mx-stat mx-hide-sm"><span class="l">Blended</span><span class="v">${m.blendedNetCost ? mxCostText(m.blendedNetCost) : "—"}</span></span>`}
       ${perf != null ? `<span class="mx-stat mx-bench"><span class="l">${swe != null ? "SWE" : "LCB"}</span><span class="v">${Number(perf).toFixed(0)}%</span><span class="bar"><i style="width:${Math.max(2, Math.min(100, Number(perf)))}%"></i></span></span>` : ""}
       <span class="mx-stat ${flat ? "" : "mx-hide-lg"}"><span class="l">Used</span><span class="v ${u ? "" : "dim"}">${u ? fmtTokens(u.tokens) : "—"}</span></span>
@@ -3326,7 +3466,33 @@ function mxWire() {
       q.blur();
     }
   });
-  $("#mx-sort").onchange = (e) => { mx.sort = e.target.value; mxCompute(); };
+  $("#mx-sort").onchange = (e) => {
+    mx.sort = e.target.value;
+    if (mx.table) {
+      const spec = MX_SORT_COLUMNS[mx.sort];
+      mx.tableSort = spec ? [{ id: spec.id, desc: spec.desc }] : [];
+      mx.table.setOptions({ state: { sorting: mx.tableSort } });
+    }
+    mxCompute();
+  };
+  const head = $("#mx-head");
+  if (head) {
+    head.addEventListener("click", (e) => {
+      const cell = e.target.closest(".mx-head-cell");
+      if (!cell || !mx.table) return;
+      const col = mx.table.getColumn(cell.dataset.col);
+      if (!col || !col.getCanSort()) return;
+      const handler = col.getToggleSortingHandler();
+      if (handler) handler(e);
+    });
+    head.addEventListener("keydown", (e) => {
+      if (e.key !== "Enter" && e.key !== " ") return;
+      const cell = e.target.closest(".mx-head-cell");
+      if (!cell) return;
+      e.preventDefault();
+      cell.click();
+    });
+  }
   $("#mx-provider").onchange = (e) => { mx.provider = e.target.value; mxCompute(); };
   $("#mx-primary").onclick = () => {
     mx.primary = !mx.primary;

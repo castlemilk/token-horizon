@@ -675,7 +675,7 @@ async function run() {
   // Fuzzy search narrows via the vendored Fuse index.
   await page.fill('#mx-q', 'deepseek test 3');
   await page.waitForTimeout(250);
-  const search = await page.evaluate(() => ({ n: state.mx.filtered.length, shown: document.getElementById('mx-shown').textContent }));
+  const search = await page.evaluate(() => ({ n: state.mx.filtered.length, shown: `${state.mx.filtered.length} of ${state.mx.models.length}` }));
   if (search.n === 0 || search.n >= 72) throw new Error(`Search did not narrow: ${JSON.stringify(search)}`);
   // Scope chip filtering (reset the query first so only the scope applies).
   await page.click('#mx-clear');
@@ -804,11 +804,37 @@ async function run() {
     scopes: document.querySelectorAll('#mx-scopes').length,
     caps: document.querySelectorAll('#mx-caps').length,
     rows: document.querySelectorAll('#mx-rows .mx-row').length,
-    total: state.mx.filtered.length
+    total: state.mx.filtered.length,
+    table: typeof window.TanStackTable,
+    heads: [...document.querySelectorAll('#mx-head .mx-head-cell')].map(e => e.dataset.col),
+    nav: [...document.querySelectorAll('.mx-nav-item')].map(a => ({ text: a.textContent.trim(), href: a.getAttribute('href'), active: a.classList.contains('active') }))
   }));
   if (!flat.flat || !flat.head || !flat.sidebarHidden || !flat.topbarHidden) throw new Error(`Flat shell wrong: ${JSON.stringify(flat)}`);
   if (flat.tabs || flat.picks || flat.scopes || flat.caps) throw new Error(`Flat page still renders dashboard chrome: ${JSON.stringify(flat)}`);
   if (!flat.rows || flat.rows >= flat.total) throw new Error(`Flat list not windowed: ${flat.rows}/${flat.total}`);
+  if (flat.table !== 'object') throw new Error('TanStack Table bundle did not load');
+  if (!flat.heads.includes('name') || !flat.heads.includes('score')) throw new Error(`Sortable headers missing: ${flat.heads}`);
+  const modelsNav = flat.nav.find(n => n.text === 'Models');
+  const leaderboardNav = flat.nav.find(n => n.text === 'Leaderboard');
+  if (!modelsNav?.active || !leaderboardNav) throw new Error(`Flat nav wrong: ${JSON.stringify(flat.nav)}`);
+  // Clicking a column header sorts via the table and updates the dropdown.
+  await page.click('#mx-head .mx-head-cell[data-col="input"]');
+  await page.waitForTimeout(250);
+  const headerSort = await page.evaluate(() => ({
+    sort: state.mx.tableSort,
+    first: document.querySelector('#mx-rows .mx-row .mx-stat.mx-keep .v')?.textContent,
+    dropdown: document.getElementById('mx-sort').value
+  }));
+  if (!headerSort.sort.length || headerSort.sort[0].id !== 'input' || headerSort.sort[0].desc !== false) {
+    throw new Error(`Header sort wrong: ${JSON.stringify(headerSort)}`);
+  }
+  if (headerSort.dropdown !== 'input') throw new Error(`Sort dropdown did not sync: ${headerSort.dropdown}`);
+  await page.click('#mx-head .mx-head-cell[data-col="input"]');
+  await page.waitForTimeout(200);
+  const headerDesc = await page.evaluate(() => state.mx.tableSort[0]?.desc);
+  if (headerDesc !== true) throw new Error('Header sort did not toggle to descending');
+  await page.click('#mx-head .mx-head-cell[data-col="input"]');
+  await page.waitForTimeout(200);
   await page.fill('#mx-q', 'claude opus');
   await page.waitForTimeout(250);
   const flatSearch = await page.evaluate(() => state.mx.filtered.length);
