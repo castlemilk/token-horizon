@@ -21,12 +21,23 @@ final class ClaudeDiscoveryTests: XCTestCase {
         XCTAssertEqual(ClaudeDiscovery.deriveLabel(dir: "/Users/test/.claude-personal", email: ""), "claude-personal")
     }
 
-    func testDiscoverDirectories_includesStandardDirs() {
-        let dirs = ClaudeDiscovery.discoverDirectories()
-        XCTAssertFalse(dirs.isEmpty)
+    func testDiscoverDirectories_picksUpHomeVariants() throws {
+        // Hermetic: explicit temp home. The real `~/.claude` only exists on
+        // machines with Claude installed, so asserting against `$HOME` made
+        // this suite fail on CI runners.
+        let home = NSTemporaryDirectory() + "th-claude-discovery-\(UUID().uuidString)"
+        try FileManager.default.createDirectory(atPath: home + "/.claude-2", withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: home) }
+        let dirs = ClaudeDiscovery.discoverDirectories(home: home)
+        XCTAssertTrue(dirs.contains("\(home)/.claude-2"))
+    }
+
+    func testDiscoverDirectories_defaultFirstWhenPresent() throws {
+        // Default-first ordering is only observable on machines that have a
+        // real ~/.claude; skip instead of failing on clean runners.
         let defaultClaude = NSString(string: "~/.claude").expandingTildeInPath
-        XCTAssertTrue(dirs.contains(defaultClaude))
-        // Verify ~/.claude is first in the list
+        try XCTSkipUnless(FileManager.default.fileExists(atPath: defaultClaude), "no ~/.claude on this machine")
+        let dirs = ClaudeDiscovery.discoverDirectories()
         XCTAssertEqual(dirs.first, defaultClaude)
     }
 

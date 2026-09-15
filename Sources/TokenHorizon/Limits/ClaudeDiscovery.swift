@@ -33,12 +33,13 @@ final class ClaudeDiscovery {
     /// All Claude config homes: `$CLAUDE_CONFIG_DIR` → `~/.claude` →
     /// auto-discovered `~/.claude*` variants → `~/.config/claude`.
     /// Shared glob lives in `HomeDiscovery` (cached `$HOME` listing).
-    static func discoverDirectories() -> [String] {
+    static func discoverDirectories(home: String? = nil) -> [String] {
         HomeDiscovery.variantDirs(
             prefixes: [".claude"],
             envVars: ["CLAUDE_CONFIG_DIR"],
             defaultPaths: ["~/.claude"],
-            configNames: ["claude"])
+            configNames: ["claude"],
+            home: home)
     }
 
     static func deriveLabel(dir: String, email: String) -> String {
