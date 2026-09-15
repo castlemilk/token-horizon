@@ -121,6 +121,23 @@
 		return { tile, modal };
 	}
 
+	const NUM_RE = /-?\d*\.?\d+/g;
+
+	/** Interpolate two computed colors channel-wise. Shapes must match
+	 *  (same function + units); otherwise null → caller holds its side. */
+	function lerpColor(a: string, b: string, t: number): string | null {
+		const na = a.match(NUM_RE) ?? [];
+		const nb = b.match(NUM_RE) ?? [];
+		if (na.length === 0 || na.length !== nb.length) return null;
+		if (a.replace(NUM_RE, '#') !== b.replace(NUM_RE, '#')) return null;
+		let i = 0;
+		return a.replace(NUM_RE, () => {
+			const v = parseFloat(na[i]) + (parseFloat(nb[i]) - parseFloat(na[i])) * t;
+			i++;
+			return String(Math.round(v * 1000) / 1000);
+		});
+	}
+
 	function projScale(el: HTMLElement): { sx: number; sy: number } {
 		return {
 			sx: Number(gsap.getProperty(el, 'scaleX')) || 1,
@@ -133,13 +150,12 @@
 	 * shadow value is set, so the interpolated lengths are divided by the
 	 * live scale — the PAINTED shadow tracks the tile↔modal curve exactly
 	 * instead of double-shrinking. x/y divide by their own axis (the
-	 * morph is non-uniform), blur/spread by the mean. The landing freeze
-	 * in reset() absorbs the specified↔CSS handoff.
+	 * morph is non-uniform), blur/spread by the mean. Colors interpolate
+	 * channel-wise too, so the handoff back to CSS is exact everywhere.
 	 */
 	function shadowCSS(
 		fromV: ShadowLayer[],
 		toV: ShadowLayer[],
-		colors: ShadowLayer[],
 		t: number,
 		sx: number,
 		sy: number
@@ -155,7 +171,8 @@
 				const y = (F.v[1] + (L.v[1] - F.v[1]) * t) / ky;
 				const b = (F.v[2] + (L.v[2] - F.v[2]) * t) / kb;
 				const s = (F.v[3] + (L.v[3] - F.v[3]) * t) / kb;
-				return `${L.inset ? 'inset ' : ''}${r2(x)}px ${r2(y)}px ${r2(b)}px ${r2(s)}px ${colors[i].color}`;
+				const color = lerpColor(F.color, L.color, t) ?? F.color;
+				return `${L.inset ? 'inset ' : ''}${r2(x)}px ${r2(y)}px ${r2(b)}px ${r2(s)}px ${color}`;
 			})
 			.join(', ');
 	}
@@ -282,19 +299,15 @@
 		pendingTile = null;
 		phase = 'settle';
 		if (wasExit) {
-			// Tile remounts fresh below: hold its entrance steady from
-			// first paint (timer-cleared flags replay entrances), and
-			// freeze transform/shadow across the swap — clearing the
-			// flight's collapsed transform under the tile's own transform
-			// transition would replay the un-shrink after landing, and
-			// the compensated shadow must not re-transition either.
-			// Everything else swaps in the same busy frame as the content.
+			// Tile remounts fresh below: hold dots steady from first
+			// paint. Stays set until the next open (show clears it as
+			// the tile unmounts) — clearing it on a timer would replay
+			// the entrance and flicker the whole widget.
 			landed = true;
-			if (boxEl)
-				gsap.set(boxEl, {
-					transition:
-						'transform 0s, box-shadow 0s, backdrop-filter 0.25s ease, background-color 0.25s ease'
-				});
+			// Single landing event: geometry, shadow, dots and content
+			// all agree in the swap tick — transitions frozen so nothing
+			// re-animates after it. Restored once settled.
+			if (boxEl) gsap.set(boxEl, { transition: 'none' });
 			timers.push(
 				window.setTimeout(() => {
 					if (boxEl) gsap.set(boxEl, { clearProps: 'transition' });
@@ -453,7 +466,7 @@
 			const shop = { t: 0 };
 			const applyShadow = () => {
 				const { sx, sy } = projScale(card);
-				card.style.boxShadow = shadowCSS(lens.tile, lens.modal, lens.tile, shop.t, sx, sy);
+				card.style.boxShadow = shadowCSS(lens.tile, lens.modal, shop.t, sx, sy);
 			};
 			applyShadow();
 			tl.to(shop, { t: 1, duration: mDur, ease: 'power3.inOut', onUpdate: applyShadow }, 0);
@@ -517,7 +530,18 @@
 		if (head.length > 0) {
 			tl.fromTo(head, { autoAlpha: 0 }, { autoAlpha: 1, duration: 0.25 * S, ease: 'power1.out' }, mEnd);
 		}
-		tl.call(() => removeClones(), [], landT + 0.3);
+		tl.call(
+			() => {
+				removeClones();
+				// Flight tweens are done: hand transform/radius/shadow back
+				// to CSS (values are identical, so this paints nothing) and
+				// the settled modal stays live to theme changes instead of
+				// wearing stale inline props.
+				gsap.set(card, { clearProps: 'transform,boxShadow,borderRadius,transformOrigin' });
+			},
+			[],
+			landT + 0.3
+		);
 		timers.push(
 			window.setTimeout(() => {
 				if (open && phase === 'fly') phase = 'settle';
@@ -661,6 +685,13 @@
 				spec.at ? spec.at({ S }) : 0.08 * S
 			);
 		}
+		// Collapse eases IN (accelerating): dwell time lives at full size
+		// where everything paints sharp, and the extreme minification —
+		// where raster downsampling softens the 1px borders — passes
+		// quickly into the exact swap. inOut would dwell longest exactly
+		// where it looks softest. Travelers keep their own decelerating
+		// ease; shadow/radius drivers stay locked to the card ease.
+		const COLLAPSE_EASE = 'power3.in';
 		xtl.to(
 			card,
 			{
@@ -670,19 +701,19 @@
 				scaleY: cv.sy,
 				transformOrigin: '50% 50%',
 				duration: xDur,
-				ease: 'power3.inOut'
+				ease: COLLAPSE_EASE
 			},
 			xBase
 		);
-		xtl.to(xrc, { r: 18, duration: xDur, ease: 'power3.inOut', onUpdate: xApplyRadius }, xBase);
+		xtl.to(xrc, { r: 18, duration: xDur, ease: COLLAPSE_EASE, onUpdate: xApplyRadius }, xBase);
 		if (lens) {
 			const shx = { t: 0 };
 			const applyXShadow = () => {
 				const { sx, sy } = projScale(card);
-				card.style.boxShadow = shadowCSS(lens.modal, lens.tile, lens.tile, shx.t, sx, sy);
+				card.style.boxShadow = shadowCSS(lens.modal, lens.tile, shx.t, sx, sy);
 			};
 			applyXShadow();
-			xtl.to(shx, { t: 1, duration: xDur, ease: 'power3.inOut', onUpdate: applyXShadow }, xBase);
+			xtl.to(shx, { t: 1, duration: xDur, ease: COLLAPSE_EASE, onUpdate: applyXShadow }, xBase);
 		}
 		// The dim + blur release WITH the collapse — fading only after
 		// unmount would never visibly fade.
