@@ -802,9 +802,11 @@ describe('Cloudflare Worker API', () => {
     // Plain leaderboard deep links are untouched.
     const plain = await worker.fetch(req('/leaderboard?period=today'), env);
     assert.notEqual(plain.status, 302);
-    // The Providers analytics tab only exists in the dashboard shell.
+    // The Providers analytics and Plans tabs only exist in the dashboard shell.
     const providers = await worker.fetch(req('/leaderboard?view=models&tab=providers'), env);
     assert.notEqual(providers.status, 302);
+    const plans = await worker.fetch(req('/leaderboard?view=models&tab=plans'), env);
+    assert.notEqual(plans.status, 302);
     // Trailing slash canonicalizes so relative asset paths keep working.
     const slash = await worker.fetch(req('/models/?provider=deepseek'), env);
     assert.equal(slash.status, 301);

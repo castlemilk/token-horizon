@@ -25,7 +25,20 @@ enum ModelCatalogExport {
             usageModels: usageModels
         )
         let aux = auxiliaryBenchmarks()
-        let models = result.base.map { rowPayload($0, aux: aux) }
+        let plansDoc = loadPlans()
+        let plans = plansDoc.plans
+        let sources = sourceProvidersByFamily(catalog)
+        var planCounts: [String: Int] = [:]
+        let models = result.base.map { row -> [String: Any] in
+            var dict = rowPayload(row, aux: aux)
+            let planIds = planIds(for: row, sources: sources, plans: plans)
+            if !planIds.isEmpty {
+                dict["plan"] = planIds[0]
+                dict["plans"] = planIds
+                for id in planIds { planCounts[id, default: 0] += 1 }
+            }
+            return dict
+        }
         let picks = result.topPicks.map { pickPayload($0) }
 
         var providerCounts: [String: [String: Any]] = [:]
@@ -38,6 +51,11 @@ enum ModelCatalogExport {
         let providers = providerCounts.values.sorted {
             (($0["models"] as? Int) ?? 0) > (($1["models"] as? Int) ?? 0)
         }
+        let plansPayload = plans.map { plan -> [String: Any] in
+            var enriched = plan
+            enriched["modelCount"] = planCounts[plan["id"] as? String ?? ""] ?? 0
+            return enriched
+        }
 
         return [
             "schemaVersion": schemaVersion,
@@ -46,6 +64,8 @@ enum ModelCatalogExport {
             "count": models.count,
             "catalogCount": catalog.count,
             "providers": providers,
+            "plans": plansPayload,
+            "plansUpdatedAt": plansDoc.updatedAt,
             "topPicks": picks,
             "models": models
         ]
@@ -83,6 +103,44 @@ enum ModelCatalogExport {
             FileHandle.standardError.write(Data("wrote \(payloadSize) bytes to \(path)\n".utf8))
         }
         return Int32(rc)
+    }
+
+    // MARK: - Curated subscription plans
+
+    /// Loads Resources/plans.json (bundle → user override → repo fallback).
+    /// The file is curated by hand — plan tiers come from provider docs, not
+    /// from the model feeds — so it is never generated.
+    static func loadPlans() -> (plans: [[String: Any]], updatedAt: String) {
+        let bundled = Bundle.main.path(forResource: "plans", ofType: "json")
+        let userOverride = NSString(string: "~/.config/token-horizon/plans.json").expandingTildeInPath
+        let projectFallback = "Resources/plans.json"
+        let path = bundled ?? (FileManager.default.fileExists(atPath: userOverride) ? userOverride : projectFallback)
+        guard let data = FileManager.default.contents(atPath: path),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let plans = obj["plans"] as? [[String: Any]] else { return ([], "") }
+        return (plans, obj["updatedAt"] as? String ?? "")
+    }
+
+    /// Every raw provider id that merged into a canonical family — plan
+    /// providers (kimi-for-coding, github-copilot, …) live there, not on the
+    /// canonical provider, so plan linkage needs the source set.
+    static func sourceProvidersByFamily(_ catalog: [ModelCatalog.Entry]) -> [String: Set<String>] {
+        var out: [String: Set<String>] = [:]
+        for entry in catalog {
+            let canon = ModelCatalog.canonicalIdentity(provider: entry.provider, model: entry.id)
+            out[canon.family, default: []].insert(entry.provider.lowercased())
+        }
+        return out
+    }
+
+    static func planIds(for row: ModelRow, sources: [String: Set<String>], plans: [[String: Any]]) -> [String] {
+        let familySources = sources[row.usage.model] ?? []
+        guard !familySources.isEmpty else { return [] }
+        return plans.compactMap { plan -> String? in
+            let providers = (plan["providers"] as? [String] ?? []).map { $0.lowercased() }
+            guard providers.contains(where: { familySources.contains($0) }) else { return nil }
+            return plan["id"] as? String
+        }
     }
 
     // MARK: - Row serialization

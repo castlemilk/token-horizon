@@ -108,4 +108,33 @@ final class ModelCatalogExportTests: XCTestCase {
             XCTAssertNotNil(pick["priceKnown"] as? Bool)
         }
     }
+
+    func testPlans_carryTiersAndModelLinkage() throws {
+        let payload = ModelCatalogExport.payload()
+        let plans = try XCTUnwrap(payload["plans"] as? [[String: Any]], "plans array missing")
+        XCTAssertFalse(plans.isEmpty, "curated plans.json must ship")
+        XCTAssertNotNil(payload["plansUpdatedAt"] as? String)
+        let ids = Set(plans.compactMap { $0["id"] as? String })
+        XCTAssertTrue(ids.contains("github-copilot"))
+        // Curated tier data for the plans we have verified, docs for the rest.
+        let copilot = try XCTUnwrap(plans.first { $0["id"] as? String == "github-copilot" })
+        let tiers = try XCTUnwrap(copilot["tiers"] as? [[String: Any]])
+        XCTAssertEqual(tiers.count, 7)
+        XCTAssertEqual(tiers.first?["name"] as? String, "Free")
+        XCTAssertEqual(tiers.first?["priceMonthly"] as? Double, 0)
+
+        // Rows covered by a plan reference a curated plan id, and k3's plan is
+        // Kimi Code rather than a fabricated price.
+        let models = try XCTUnwrap(payload["models"] as? [[String: Any]])
+        let linked = models.filter { ($0["plans"] as? [String])?.isEmpty == false }
+        XCTAssertFalse(linked.isEmpty, "plan-covered rows must link to a plan")
+        for row in linked {
+            for planId in (row["plans"] as? [String]) ?? [] {
+                XCTAssertTrue(ids.contains(planId), "row references unknown plan \(planId)")
+            }
+        }
+        if let k3 = models.first(where: { $0["id"] as? String == "kimi/k3" }) {
+            XCTAssertEqual(k3["plan"] as? String, "kimi-for-coding")
+        }
+    }
 }

@@ -39,6 +39,7 @@ fi
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/TokenHorizon"; cp Resources/benchmarks.json "$APP/Contents/Resources/" 2>/dev/null
+cp Resources/plans.json "$APP/Contents/Resources/" 2>/dev/null
 if [ -f gateway/token-horizon-gateway ]; then
     cp gateway/token-horizon-gateway "$APP/Contents/Resources/"
 fi

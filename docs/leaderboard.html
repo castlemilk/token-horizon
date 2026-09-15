@@ -362,6 +362,23 @@ tbody tr.selected{background:rgba(79,140,255,.08)}
 body.th-flat .mx-head-row{padding:0 18px;gap:16px}
 body.th-flat .mx-head-row .mx-stats{gap:26px}
 body.th-flat .mx-head-row .mx-flat-score{width:34px}
+/* Plan cards (subscription offerings) */
+.mx-plan-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(340px,100%),1fr));gap:16px}
+.mx-plan-card{background:linear-gradient(180deg,var(--panel),#0D121C);border:1px solid var(--line);border-radius:var(--radius);padding:16px;display:flex;flex-direction:column;gap:10px}
+.mx-plan-head{display:flex;align-items:center;gap:10px}
+.mx-plan-name{font-weight:800;font-size:15px}
+.mx-plan-sub{font-size:11px;color:var(--faint)}
+.mx-plan-summary{font-size:12px;color:var(--muted);line-height:1.5}
+.mx-plan-tiers{display:flex;flex-direction:column;gap:8px}
+.mx-plan-tier{background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:10px 12px}
+.mx-plan-tier-head{display:flex;justify-content:space-between;gap:8px;align-items:baseline;font-size:13px}
+.mx-plan-price{font-family:var(--mono);font-weight:700;color:#CFE0FF}
+.mx-plan-usage{font-size:11px;color:var(--muted);margin-top:4px}
+.mx-plan-models{font-size:11px;color:var(--faint);margin-top:3px}
+.mx-plan-foot{display:flex;gap:8px;align-items:center;margin-top:auto}
+.mx-plan-note{font-size:11px;color:var(--faint)}
+.mx-tag.plan{color:#EED08A;border-color:rgba(224,180,76,.4);cursor:pointer}
+.mx-tag.plan:hover{border-color:rgba(224,180,76,.7);color:#F7DFA5}
 /* Segmented nav retained between Leaderboard and the model list */
 .mx-empty{padding:70px 20px;text-align:center;color:var(--faint);font-size:13px}
 .mx-sentinel{height:1px}
@@ -1505,7 +1522,8 @@ function navigate(view, opts = {}) {
   const handle = opts.handle || state.currentHandle;
   if (handle && (view === "players" || view === "dashboard")) params.set("user", handle);
   if (opts.share) params.set("share", opts.share);
-  if (view === "models" && state.modelsTab === "providers") params.set("tab", "providers");
+  if (view === "models" && state.modelsTab && state.modelsTab !== "explorer") params.set("tab", state.modelsTab);
+  if (view === "models" && mxState().planFilter) params.set("plan", mxState().planFilter);
   if (view === "models" && opts.model) params.set("model", opts.model);
   if (view === "models" && opts.model) {
     const mx = mxState();
@@ -1530,11 +1548,12 @@ function navigate(view, opts = {}) {
 window.addEventListener("popstate", () => {
   const p = new URLSearchParams(location.search);
   state.view = p.get("view") || (/^\/models\/?$/.test(location.pathname) ? "models" : "leaderboard");
-  state.modelsTab = p.get("tab") === "providers" ? "providers" : "explorer";
+  state.modelsTab = ["providers", "plans"].includes(p.get("tab")) ? p.get("tab") : "explorer";
   const u = p.get("user");
   if (u) state.currentHandle = u;
   if (p.get("model")) mxState().pendingModel = p.get("model");
   if (p.get("provider")) mxState().pendingProviderFilter = p.get("provider");
+  if (p.get("plan")) mxState().planFilter = p.get("plan");
   renderNav();
   render();
 });
@@ -2515,7 +2534,7 @@ function mxState() {
       caps: new Set(), filtered: [], counts: null, providers: null,
       primary: true, primarySet: null, primaryHidden: 0,
       openId: null, pendingModel: null, pendingProvider: "", pendingProviderFilter: "", error: "", mounted: false,
-      features: null, table: null, tableSort: [],
+      features: null, table: null, tableSort: [], plans: [], planFilter: "",
       renderedRange: [-1, -1], sig: "", debounce: 0
     };
   }
@@ -2539,6 +2558,10 @@ function mxCostText(v) {
 /// Pricing evidence: `priceKnown === false` means the provider publishes no
 /// per-token price (plan-covered or unknown) — never render it as $0/Free.
 function mxPriceKnown(m) { return m.priceKnown !== false; }
+function mxPlanName(id) {
+  const p = (mxState().plans || []).find(x => x.id === id);
+  return p ? p.name : id;
+}
 function mxPriceText(v, m) {
   if (!mxPriceKnown(m)) return "—";
   if (v == null) return "—";
@@ -2653,6 +2676,7 @@ async function mxLoad() {
       mx.catalog = { models: [], topPicks: [], providers: [], count: 0, schemaVersion: 0 };
     }
   }
+  mx.plans = mx.catalog.plans || [];
   mx.models = (mx.catalog.models || []).map(m => {
     m._hay = [m.name, m.id, m.providerName, m.provider, m.category, m.description].filter(Boolean).join(" ").toLowerCase();
     m._key = String(m.name || "").toLowerCase().replace(/\s+/g, " ").trim();
@@ -2883,6 +2907,7 @@ function mxCompute(keepScroll) {
   const baseSet = mx.primarySet;
   let list = mxSortedRows().filter(m =>
     (!mx.primary || !baseSet || baseSet.has(m.id))
+    && (!mx.planFilter || (m.plans ? m.plans.includes(mx.planFilter) : m.plan === mx.planFilter))
     && mxPassesScope(m) && mxPassesProvider(m) && mxPassesCaps(m));
   if (q) {
     const fuse = q.length >= 2 ? mxFuse() : null;
@@ -3009,7 +3034,7 @@ function mxTabHtml(id, label) {
   return `<div class="tab ${(state.modelsTab || "explorer") === id ? "active" : ""}" data-models-tab="${id}" tabindex="0" role="tab" aria-selected="${(state.modelsTab || "explorer") === id}">${label}</div>`;
 }
 function mxTabBarHtml() {
-  return `<div class="tabs" style="margin-bottom:18px">${mxTabHtml("explorer", "Explorer")}${mxTabHtml("providers", "Providers")}</div>`;
+  return `<div class="tabs" style="margin-bottom:18px">${mxTabHtml("explorer", "Explorer")}${mxTabHtml("providers", "Providers")}${mxTabHtml("plans", "Plans")}</div>`;
 }
 function mxWireTabs() {
   $$("[data-models-tab]").forEach(el => {
@@ -3057,6 +3082,8 @@ function mxShellHtml() {
         <option value="all">All providers (${providers.length})</option>
         ${providers.map(p => `<option value="${esc(p.key)}" ${mx.provider === p.key ? "selected" : ""}>${esc(p.label)} (${p.count.toLocaleString()})</option>`).join("")}
       </select>
+      ${mx.planFilter ? `<span class="mx-chip active">Plan · ${esc(mxPlanName(mx.planFilter))}<span class="n" data-plan-clear="1" style="cursor:pointer" title="Clear plan filter">✕</span></span>` : ""}
+      ${flat ? `<button class="mx-chip ${state.modelsTab === "plans" ? "active" : ""}" id="mx-plans-toggle" type="button" title="Show subscription plans and their usage tiers">Plans</button>` : ""}
       <button class="mx-chip ${mx.primary ? "active" : ""}" id="mx-primary" type="button" title="Collapse reseller/gateway duplicates of the same model into one unified listing">
         Unified <span class="n" id="mx-primary-n">${mx.primaryHidden.toLocaleString()} hidden</span>
       </button>
@@ -3100,6 +3127,7 @@ function mxRowHtml(m) {
   if (m.isFree) tags.push(`<span class="mx-tag free">free</span>`);
   if (m.discount) tags.push(`<span class="mx-tag">${esc(m.discount.label || (m.discount.percent ? "-" + m.discount.percent + "%" : "promo"))}</span>`);
   if (m.capabilities?.openWeights) tags.push(`<span class="mx-tag">open</span>`);
+  if (m.plan || (m.plans || []).length) tags.push(`<span class="mx-tag plan" data-plan-tag="${esc(m.plan || m.plans[0])}" role="button" tabindex="0" title="Open the subscription plans view">plan</span>`);
   const sub = flat
     ? `${esc(m.providerName || providerLabel(m.provider))} · ${mxCtx(m.contextK)} context`
     : `${esc(m.providerName || providerLabel(m.provider))} · ${esc(m.id)}`;
@@ -3277,7 +3305,7 @@ function mxDrawerHtml(m) {
         <div class="sub" style="margin-top:2px">${esc(m.providerName || providerLabel(m.provider))} · <span class="num">${esc(m.id)}</span>${u.rows.length > 1 ? ` · used via ${u.rows.length} providers` : ""}</div>
         <div style="margin-top:7px;display:flex;gap:6px;flex-wrap:wrap">
           ${m.category && m.category !== "free" && !(m.category === "local" && (m.isFree || m.isLocal)) ? `<span class="chip">${esc(m.category)}</span>` : ""}
-          ${!priced && !m.isFree && !m.isLocal ? `<span class="chip" title="The provider publishes no per-token price for this listing">pricing n/a</span>` : ""}
+          ${(m.plans || (m.plan ? [m.plan] : [])).length ? `<span class="chip orange" title="Included in a subscription plan">plan · ${esc(mxPlanName((m.plans || [m.plan])[0]))}</span>` : (!priced && !m.isFree && !m.isLocal ? `<span class="chip" title="The provider publishes no per-token price for this listing">pricing n/a</span>` : "")}
           ${bench && bench.approx ? `<span class="chip orange" title="Approximate self-reported figures">approx</span>` : ""}
           ${m.discount ? `<span class="chip green">${esc(m.discount.label || ("-" + m.discount.percent + "%"))}</span>` : ""}
           ${m.isFree || m.isLocal ? `<span class="chip green">${m.isLocal ? "local · free" : "free"}</span>` : ""}
@@ -3296,7 +3324,8 @@ function mxDrawerHtml(m) {
       <div class="mx-sec">
         <h3>Pricing <span class="mini">per 1M tokens${priced && m.netSavingsPercent > 0 ? ` · ${m.netSavingsPercent}% net savings` : ""}</span></h3>
         <div class="mx-price-grid">${priceCells.join("")}</div>
-        ${!priced ? `<div class="notice" style="margin-top:10px">Pricing isn't published for this listing — it may be subscription/plan-covered or not yet priced. Token counts still track.</div>` : ""}
+        ${(m.plans || (m.plan ? [m.plan] : [])).length ? `<div class="notice" style="margin-top:10px">Included in ${(m.plans || [m.plan]).map(id => `<b>${esc(mxPlanName(id))}</b>`).join(", ")} — flat-rate subscription${(m.plans || []).length > 1 ? "s" : ""} with no per-token price. ${(m.plans || [m.plan]).map(id => `<button class="pill ghost" style="font-size:11px;margin-left:6px" data-plan-models="${esc(id)}">${esc(mxPlanName(id))} tiers</button>`).join("")}</div>`
+          : (!priced ? `<div class="notice" style="margin-top:10px">Pricing isn't published for this listing — it may be subscription/plan-covered or not yet priced. Token counts still track.</div>` : "")}
         ${priced && m.discount?.detail ? `<div class="notice" style="margin-top:10px">${esc(m.discount.detail)}</div>` : ""}
       </div>
       ${benchRows.length ? `<div class="mx-sec"><h3>Benchmarks ${bench.source ? `<span class="mini">source: ${esc(bench.source)}${bench.approx ? " (approx)" : ""}</span>` : ""}</h3>${benchRows.join("")}</div>` : ""}
@@ -3364,12 +3393,65 @@ function mxDrawerWire(m) {
   });
 }
 
+/* ---------- Plans view (subscription offerings) ---------- */
+function mxPlanTierHtml(t) {
+  const price = t.priceMonthly == null ? "—" : (t.priceMonthly === 0 ? "Free" : `$${t.priceMonthly}`);
+  const per = t.priceNote ? ` <span class="mx-counts">${esc(t.priceNote)}</span>`
+    : (t.priceMonthly > 0 ? ` <span class="mx-counts">/mo</span>` : "");
+  return `<div class="mx-plan-tier">
+    <div class="mx-plan-tier-head"><b>${esc(t.name)}</b><span class="mx-plan-price">${price}${per}</span></div>
+    ${t.usage ? `<div class="mx-plan-usage">${esc(t.usage)}</div>` : ""}
+    ${t.models ? `<div class="mx-plan-models">${esc(t.models)}</div>` : ""}
+    ${(t.features || []).length ? `<div class="mx-chips" style="margin-top:6px">${t.features.map(f => `<span class="mx-tag">${esc(f)}</span>`).join("")}</div>` : ""}
+  </div>`;
+}
+function mxPlanCardHtml(p) {
+  const firstProvider = (p.providers || [])[0] || p.id;
+  const tiers = p.tiers || [];
+  return `<div class="mx-plan-card">
+    <div class="mx-plan-head">
+      ${providerLogo(firstProvider, 30, p.id)}
+      <div style="min-width:0">
+        <div class="mx-plan-name">${esc(p.name)}</div>
+        <div class="mx-plan-sub">${esc(p.billing || "")}</div>
+      </div>
+      <span class="mx-counts" style="margin-left:auto">${(p.modelCount || 0).toLocaleString()} models</span>
+    </div>
+    <div class="mx-plan-summary">${esc(p.summary || "")}</div>
+    ${tiers.length ? `<div class="mx-plan-tiers">${tiers.map(mxPlanTierHtml).join("")}</div>` : `<div class="mx-plan-note">Tier details at the provider docs.</div>`}
+    <div class="mx-plan-foot">
+      <a class="mx-flat-dash" href="${esc(p.docUrl || "#")}" target="_blank" rel="noopener">Pricing / docs ↗</a>
+      ${p.modelCount ? `<button class="mx-chip" type="button" data-plan-models="${esc(p.id)}">View included models</button>` : ""}
+    </div>
+  </div>`;
+}
+async function renderPlansTab() {
+  const mx = mxState();
+  await mxLoad();
+  const flat = state.flatModels;
+  const plans = mx.plans || [];
+  $("#view").innerHTML = pageHead(["Analytics", "Models"], "Subscription Plans",
+      "Flat-rate plans and their included usage tiers. Models covered by a plan show no per-token price.",
+      `${plans.length} plans · updated ${esc(mx.catalog?.plansUpdatedAt || "")}`)
+    + (flat ? `<div class="mx-chips" style="margin-bottom:14px"><button class="mx-chip" type="button" id="mx-back-models">← Models</button></div>`
+            : mxTabBarHtml())
+    + `<div class="mx-plan-grid">${plans.map(mxPlanCardHtml).join("") || `<div class="empty">No plans published.</div>`}</div>`;
+  if (!flat) mxWireTabs();
+  const back = $("#mx-back-models");
+  if (back) back.onclick = () => { state.modelsTab = "explorer"; render(); };
+}
+
 /* ---------- explorer mounting ---------- */
 async function renderModels() {
   const mx = mxState();
-  if (!state.flatModels && state.modelsTab === "providers") {
+  if (state.modelsTab === "providers" && !state.flatModels) {
     mx.mounted = false;
     await renderProvidersTab();
+    return;
+  }
+  if (state.modelsTab === "plans") {
+    mx.mounted = false;
+    await renderPlansTab();
     return;
   }
   await mxLoad();
@@ -3454,6 +3536,18 @@ function mxWire() {
     }
     mxCompute();
   };
+  const plansToggle = $("#mx-plans-toggle");
+  if (plansToggle) plansToggle.onclick = () => { state.modelsTab = "plans"; render(); };
+  const planClear = $("[data-plan-clear]");
+  if (planClear) planClear.onclick = () => {
+    mx.planFilter = "";
+    try {
+      const url = new URL(location.href);
+      url.searchParams.delete("plan");
+      history.replaceState(history.state, "", url);
+    } catch (_) {}
+    render();
+  };
   const head = $("#mx-head");
   if (head) {
     head.addEventListener("click", (e) => {
@@ -3536,6 +3630,23 @@ window.addEventListener("keydown", (e) => {
 // reports and chart legends; one delegated handler keeps them SPA-fast and
 // resolves raw usage ids to catalog listings.
 document.addEventListener("click", (e) => {
+  const planModels = e.target.closest?.("[data-plan-models]");
+  if (planModels) {
+    e.preventDefault();
+    mxClose();
+    mxState().planFilter = planModels.dataset.planModels;
+    state.modelsTab = "explorer";
+    render();
+    return;
+  }
+  const planTag = e.target.closest?.("[data-plan-tag]");
+  if (planTag) {
+    e.preventDefault();
+    e.stopPropagation();
+    state.modelsTab = "plans";
+    render();
+    return;
+  }
   const prov = e.target.closest?.("[data-provider-link]");
   if (prov) {
     e.preventDefault();
@@ -4511,7 +4622,7 @@ async function init() {
   // Dedicated /models route: the worker serves the SPA asset with an internal
   // ?view=models rewrite, so the browser URL has no query — derive it here.
   if (/^\/models\/?$/.test(location.pathname)) state.view = "models";
-  state.modelsTab = params.get("tab") === "providers" ? "providers" : "explorer";
+  state.modelsTab = ["providers", "plans"].includes(params.get("tab")) ? params.get("tab") : "explorer";
   // Flat catalog page: no dashboard chrome — just a searchable model list.
   state.flatModels = /^\/models\/?$/.test(location.pathname) || params.get("flat") === "1";
   if (state.flatModels) {
@@ -4519,6 +4630,7 @@ async function init() {
     document.body.classList.add("th-flat");
   }
   if (params.get("provider")) mxState().pendingProviderFilter = params.get("provider");
+  if (params.get("plan")) mxState().planFilter = params.get("plan");
   if (params.get("model")) mxState().pendingModel = params.get("model");
   renderNav();
   if (params.get("share")) { renderSharedReport(params.get("share")); return; }

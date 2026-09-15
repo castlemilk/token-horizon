@@ -1884,9 +1884,10 @@ export default {
     // dashboard shell, so tab=providers keeps the leaderboard URL. Internal
     // asset fetches below bypass routing, so this never loops through the
     // /models rewrite.
+    const modelsTab = searchParams.get("tab");
     if ((pathname === "/leaderboard" || pathname === "/leaderboard.html")
         && searchParams.get("view") === "models"
-        && searchParams.get("tab") !== "providers") {
+        && modelsTab !== "providers" && modelsTab !== "plans") {
       const canonical = new URL(request.url);
       canonical.pathname = "/models";
       canonical.searchParams.delete("view");

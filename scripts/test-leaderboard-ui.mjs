@@ -110,7 +110,7 @@ const MX_FLAGSHIP = {
   benchmarks: { swe: 82, lcb: 79, source: 'test' }, description: 'Flagship coding model.'
 };
 const MX_MODELS = [
-  { ...MX_FLAGSHIP, id: 'anthropic/claude-opus-5', provider: 'anthropic', providerName: 'Anthropic', inputPerM: 5, outputPerM: 25, blendedNetCost: 7.3 },
+  { ...MX_FLAGSHIP, id: 'anthropic/claude-opus-5', provider: 'anthropic', providerName: 'Anthropic', inputPerM: 5, outputPerM: 25, blendedNetCost: 7.3, plan: 'github-copilot', plans: ['github-copilot'] },
   { ...MX_FLAGSHIP, id: 'openrouter/claude-opus-5', provider: 'openrouter', providerName: 'OpenRouter', inputPerM: 5.5, outputPerM: 27, blendedNetCost: 8.1, netSavingsPercent: 0, description: 'Flagship coding model via gateway.' },
   ...Array.from({ length: 72 }, (_, i) => {
     const [provider, providerName] = MX_PROVIDERS[i % MX_PROVIDERS.length];
@@ -136,6 +136,19 @@ const MX_MODELS = [
     };
   })
 ];
+const MX_PLANS = [{
+  id: 'github-copilot',
+  providers: ['github-copilot'],
+  name: 'GitHub Copilot',
+  docUrl: 'https://docs.github.com/en/copilot/get-started/plans',
+  summary: 'Monthly AI credits per tier.',
+  billing: 'monthly',
+  modelCount: 1,
+  tiers: [
+    { name: 'Free', priceMonthly: 0, currency: 'USD', usage: 'AI credit allowance', models: 'Auto selection' },
+    { name: 'Pro', priceMonthly: 10, currency: 'USD', usage: '1,500 AI credits/month', models: 'Selection of models', features: ['All agents'] }
+  ]
+}];
 const MX_CATALOG = {
   schemaVersion: 1,
   count: MX_MODELS.length,
@@ -146,6 +159,8 @@ const MX_CATALOG = {
     { rank: 1, id: 'anthropic/model-0', name: 'Anthropic Test 0', provider: 'anthropic', providerName: 'Anthropic', valueScore: 99.5, perfScore: 84, blendedCostPerM: 0.17, badge: 'VALUE KING', badgeColor: 'cyan', reason: 'SWE 86.0% · LCB 80.0% · $0.17/1M net', swe: 86, lcb: 80 },
     { rank: 2, id: 'openai/model-1', name: 'OpenAI Test 1', provider: 'openai', providerName: 'OpenAI', valueScore: 97.2, perfScore: 83, blendedCostPerM: 0.5, badge: 'FRONTIER S-TIER', badgeColor: 'purple', reason: 'SWE 85.3% · LCB 79.4%', swe: 85.3, lcb: 79.4 }
   ],
+  plans: MX_PLANS,
+  plansUpdatedAt: '2026-09-15',
   models: MX_MODELS
 };
 const MX_USAGE = {
@@ -863,7 +878,59 @@ async function run() {
   await page.setViewportSize({ width: 1440, height: 1000 });
   console.log(`   shell=sidebar+topbar title="${flat.title}" windowed=${flat.rows}/${flat.total} search=${flatSearch} provider=${flatProvider.provider}`);
 
-  console.log('16. Checking console errors...');
+  console.log('16. Subscription plans view...');
+  await page.goto(filePath + '?view=models');
+  await page.waitForSelector('#mx-head .mx-head-cell', { timeout: 15000 });
+  await page.click('[data-models-tab="plans"]');
+  await page.waitForSelector('.mx-plan-card', { timeout: 15000 });
+  const planView = await page.evaluate(() => ({
+    title: document.querySelector('#view h1')?.textContent || '',
+    cards: document.querySelectorAll('.mx-plan-card').length,
+    tiers: document.querySelectorAll('.mx-plan-tier').length,
+    name: document.querySelector('.mx-plan-name')?.textContent,
+    tabs: [...document.querySelectorAll('[data-models-tab]')].map(t => t.textContent.trim())
+  }));
+  if (!/Subscription Plans/.test(planView.title) || planView.cards < 1 || planView.tiers < 2) {
+    throw new Error(`Plans view wrong: ${JSON.stringify(planView)}`);
+  }
+  if (!planView.tabs.includes('Plans')) throw new Error('Plans tab missing');
+  // Card -> explorer filtered to the plan's models
+  await page.click('[data-plan-models="github-copilot"]');
+  await page.waitForSelector('#mx-rows .mx-row', { timeout: 15000 });
+  const planFilter = await page.evaluate(() => ({
+    filter: state.mx.planFilter,
+    total: state.mx.filtered.length,
+    all: state.mx.filtered.every(m => (m.plans || []).includes('github-copilot')),
+    chip: document.querySelector('[data-plan-clear]')?.parentElement?.textContent?.trim() || ''
+  }));
+  if (planFilter.filter !== 'github-copilot' || !planFilter.total || !planFilter.all || !planFilter.chip.includes('GitHub Copilot')) {
+    throw new Error(`Plan filter wrong: ${JSON.stringify(planFilter)}`);
+  }
+  // Plan tag opens plans from a row; drawer shows the plan notice.
+  const planTag = await page.$('#mx-rows .mx-row .mx-tag.plan');
+  if (!planTag) throw new Error('Plan tag missing on covered rows');
+  await page.locator('#mx-rows .mx-row').first().click();
+  await page.waitForSelector('#mx-drawer.open');
+  const drawerPlan = await page.evaluate(() => (document.querySelector('#mx-drawer')?.textContent || '').includes('Included in'));
+  if (!drawerPlan) throw new Error('Drawer plan notice missing');
+  await page.keyboard.press('Escape');
+  await page.click('[data-plan-clear]');
+  await page.waitForTimeout(300);
+  // Flat page has a Plans entry and a back link.
+  await page.goto(filePath + '?view=models&flat=1');
+  await page.waitForSelector('#mx-plans-toggle', { timeout: 15000 });
+  await page.click('#mx-plans-toggle');
+  await page.waitForSelector('.mx-plan-card', { timeout: 15000 });
+  const flatPlans = await page.evaluate(() => ({
+    cards: document.querySelectorAll('.mx-plan-card').length,
+    back: Boolean(document.getElementById('mx-back-models'))
+  }));
+  if (!flatPlans.cards || !flatPlans.back) throw new Error(`Flat plans view wrong: ${JSON.stringify(flatPlans)}`);
+  await page.click('#mx-back-models');
+  await page.waitForSelector('#mx-rows .mx-row', { timeout: 15000 });
+  console.log(`   plans=${planView.cards} tiers=${planView.tiers} filter=${planFilter.total} models · flat toggle ok`);
+
+  console.log('17. Checking console errors...');
   const realErrors = errors.filter(e =>
     !e.includes('favicon.ico') &&
     !e.includes('accounts.google.com') &&

@@ -1,0 +1,338 @@
+{
+  "_meta": "Curated subscription-plan catalog for plan-covered model offerings. Sources are the provider docs linked per plan; _verified is the date the tier data was checked. Providers list models.dev provider ids whose models are included in the plan.",
+  "schemaVersion": 1,
+  "updatedAt": "2026-09-15",
+  "plans": [
+    {
+      "id": "github-copilot",
+      "providers": [
+        "github-copilot"
+      ],
+      "name": "GitHub Copilot",
+      "docUrl": "https://docs.github.com/en/copilot/get-started/plans",
+      "summary": "Monthly GitHub AI Credits per tier; model access and agents vary by plan.",
+      "billing": "monthly",
+      "tiers": [
+        {
+          "name": "Free",
+          "priceMonthly": 0,
+          "currency": "USD",
+          "usage": "AI credit allowance",
+          "models": "Auto model selection only",
+          "features": [
+            "Limited agents",
+            "2,000 completions/month"
+          ]
+        },
+        {
+          "name": "Student",
+          "priceMonthly": 0,
+          "currency": "USD",
+          "usage": "AI credit allowance",
+          "models": "Auto model selection only",
+          "features": [
+            "Verified students"
+          ]
+        },
+        {
+          "name": "Pro",
+          "priceMonthly": 10,
+          "currency": "USD",
+          "usage": "1,500 AI credits/month (1,000 base + 500 flex)",
+          "models": "Selection of models",
+          "features": [
+            "All agents",
+            "Copilot CLI + app"
+          ]
+        },
+        {
+          "name": "Pro+",
+          "priceMonthly": 39,
+          "currency": "USD",
+          "usage": "7,000 AI credits/month (3,900 base + 3,100 flex)",
+          "models": "Premium models (Opus 4.7+, Fable 5, ...)",
+          "features": [
+            "All agents",
+            "Priority feature access"
+          ]
+        },
+        {
+          "name": "Max",
+          "priceMonthly": 100,
+          "currency": "USD",
+          "usage": "20,000 AI credits/month (10,000 base + 10,000 flex)",
+          "models": "Priority access to premium models",
+          "features": [
+            "Highest individual allowance"
+          ]
+        },
+        {
+          "name": "Business",
+          "priceMonthly": 19,
+          "currency": "USD",
+          "priceNote": "per granted seat",
+          "usage": "1,900 AI credits/user/month",
+          "models": "Premium models",
+          "features": [
+            "Centralized policy control"
+          ]
+        },
+        {
+          "name": "Enterprise",
+          "priceMonthly": 39,
+          "currency": "USD",
+          "priceNote": "per granted seat",
+          "usage": "3,900 AI credits/user/month",
+          "models": "Priority premium models",
+          "features": [
+            "GitHub Enterprise Cloud"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "kimi-for-coding",
+      "providers": [
+        "kimi-for-coding"
+      ],
+      "name": "Kimi Code",
+      "docUrl": "https://www.kimi.com/code/docs/en/kimi-code/membership.html",
+      "summary": "Weekly quota shared across CLI, VS Code and third-party tools, plus a rolling 5-hour rate window. Model/context/speed access depends on membership tier.",
+      "billing": "monthly membership (see provider pricing)",
+      "tiers": [
+        {
+          "name": "Moderato+",
+          "priceMonthly": null,
+          "usage": "Weekly quota + rolling 5-hour window (shared with Kimi membership)",
+          "models": "K3 (256K context), k3-256k, kimi-for-coding",
+          "features": [
+            "All members get kimi-for-coding",
+            "Extra Usage top-up available"
+          ]
+        },
+        {
+          "name": "Allegretto+",
+          "priceMonthly": null,
+          "usage": "Same quota, higher tiers unlock full model access",
+          "models": "K3 with 1M context, kimi-for-coding-highspeed (6× speed, 3× quota)",
+          "features": [
+            "1M context",
+            "HighSpeed model",
+            "Extra Usage top-up"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "minimax-coding-plan",
+      "providers": [
+        "minimax-coding-plan",
+        "minimax-cn-coding-plan"
+      ],
+      "name": "MiniMax Token Plan",
+      "docUrl": "https://platform.minimax.io/docs/token-plan/intro",
+      "summary": "Flat monthly subscription with a shared usage bar across MiniMax language, image and speech models; 5-hour rolling + weekly windows.",
+      "billing": "monthly",
+      "tiers": [
+        {
+          "name": "Plus",
+          "priceMonthly": 22,
+          "currency": "USD",
+          "usage": "5-hour rolling + weekly windows; 3–4 agents",
+          "models": "MiniMax M3 / M2.7 / image / speech",
+          "features": [
+            "Personal projects and prototyping"
+          ]
+        },
+        {
+          "name": "Max",
+          "priceMonthly": 55,
+          "currency": "USD",
+          "usage": "5-hour rolling + weekly windows; 4–5 agents",
+          "models": "MiniMax M3 / M2.7 / image / speech",
+          "features": [
+            "Daily coding with agents"
+          ]
+        },
+        {
+          "name": "Ultra",
+          "priceMonthly": 132,
+          "currency": "USD",
+          "usage": "5-hour rolling + weekly windows; 6–7 agents",
+          "models": "MiniMax M3 / M2.7 / image / speech",
+          "features": [
+            "Heavy agent workflows"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "zai-coding-plan",
+      "providers": [
+        "zai-coding-plan",
+        "zhipuai-coding-plan"
+      ],
+      "name": "GLM Coding Plan",
+      "docUrl": "https://docs.z.ai/devpack/overview",
+      "summary": "Subscription credits for GLM coding models across Claude Code, Cline, OpenCode and more; 5-hour and weekly credit windows. Off-peak usage is charged at 50%.",
+      "billing": "monthly (from $18)",
+      "tiers": [
+        {
+          "name": "Lite",
+          "priceMonthly": null,
+          "usage": "2,000 credits / 5h · 10,000 credits / week",
+          "models": "GLM-5.3, GLM-5.3-Flash",
+          "features": [
+            "Vision, Web Search/Reader, Zread MCP"
+          ]
+        },
+        {
+          "name": "Pro",
+          "priceMonthly": null,
+          "usage": "12,000 credits / 5h · 60,000 credits / week",
+          "models": "GLM-5.3, GLM-5.3-Flash",
+          "features": [
+            "Vision, Web Search/Reader, Zread MCP"
+          ]
+        },
+        {
+          "name": "Max",
+          "priceMonthly": null,
+          "usage": "28,000 credits / 5h · 140,000 credits / week",
+          "models": "GLM-5.3, GLM-5.3-Flash",
+          "features": [
+            "Vision, Web Search/Reader, Zread MCP"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "opencode-zen",
+      "providers": [
+        "opencode",
+        "opencode-go"
+      ],
+      "name": "OpenCode Zen",
+      "docUrl": "https://opencode.ai/docs/zen",
+      "summary": "Pay-as-you-go gateway sold at provider cost (plus card fees); a rotating set of free models is included for feedback.",
+      "billing": "pay-as-you-go (auto-reload $20 below $5) & monthly team limits",
+      "tiers": [
+        {
+          "name": "Pay-as-you-go",
+          "priceMonthly": null,
+          "usage": "Per-request billing per model; workspace/monthly spend limits",
+          "models": "Curated tested models (Claude, GPT, Gemini, Kimi, GLM, DeepSeek, ...)",
+          "features": [
+            "Session title models billed at low cost",
+            "Bring your own OpenAI/Anthropic key"
+          ]
+        },
+        {
+          "name": "Free models",
+          "priceMonthly": 0,
+          "currency": "USD",
+          "usage": "Free for a limited time (feedback period)",
+          "models": "Big Pickle, MiMo-V2.5, Ling 3.0 Flash Fin, Nemotron 3 Ultra/3.5 Lightning, Muse Spark Contributor",
+          "features": [
+            "Data may be used to improve models"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "alibaba-token-plan",
+      "providers": [
+        "alibaba-token-plan",
+        "alibaba-token-plan-cn",
+        "alibaba-coding-plan",
+        "alibaba-coding-plan-cn"
+      ],
+      "name": "Alibaba Model Studio Token / Coding Plan",
+      "docUrl": "https://www.alibabacloud.com/help/en/model-studio/token-plan-overview",
+      "summary": "Subscription with included token quota for Qwen models in Model Studio; tier details at the provider docs.",
+      "billing": "monthly",
+      "tiers": []
+    },
+    {
+      "id": "volcengine-coding-plan",
+      "providers": [
+        "volcengine-coding-plan"
+      ],
+      "name": "Volcengine Coding Plan",
+      "docUrl": "https://www.volcengine.com/docs/82379/1928261",
+      "summary": "Subscription coding plan for Doubao/Seed models; tier details at the provider docs.",
+      "billing": "monthly",
+      "tiers": []
+    },
+    {
+      "id": "tencent-coding-plan",
+      "providers": [
+        "tencent-coding-plan",
+        "tencent-token-plan"
+      ],
+      "name": "Tencent Cloud Coding / Token Plan",
+      "docUrl": "https://cloud.tencent.com/document/product/1772/128947",
+      "summary": "Subscription coding/token plan for Hunyuan models; tier details at the provider docs.",
+      "billing": "monthly",
+      "tiers": []
+    },
+    {
+      "id": "xiaomi-token-plan",
+      "providers": [
+        "xiaomi-token-plan-ams",
+        "xiaomi-token-plan-sgp",
+        "xiaomi-token-plan-cn"
+      ],
+      "name": "Xiaomi MiMo Token Plan",
+      "docUrl": "https://platform.xiaomimimo.com/#/docs",
+      "summary": "Subscription token plan for MiMo models; tier details at the provider docs.",
+      "billing": "monthly",
+      "tiers": []
+    },
+    {
+      "id": "stepfun-step-plan",
+      "providers": [
+        "stepfun-step-plan",
+        "stepfun-ai-step-plan"
+      ],
+      "name": "StepFun Step Plan",
+      "docUrl": "https://platform.stepfun.com/docs/zh/step-plan/integrations/reasoning-a",
+      "summary": "Subscription plan for Step models; tier details at the provider docs.",
+      "billing": "monthly",
+      "tiers": []
+    },
+    {
+      "id": "scnet-token-plan",
+      "providers": [
+        "scnet-token-plan"
+      ],
+      "name": "SCNet Token Plan",
+      "docUrl": "https://www.scnet.cn/ac/openapi/doc/2.0/moduleapi/plans/token-plan.htm",
+      "summary": "Subscription token plan on SCNet; tier details at the provider docs.",
+      "billing": "monthly",
+      "tiers": []
+    },
+    {
+      "id": "umans-ai-coding-plan",
+      "providers": [
+        "umans-ai-coding-plan"
+      ],
+      "name": "Umans Coding Plan",
+      "docUrl": "https://app.umans.ai/offers/code/docs",
+      "summary": "Subscription coding plan; tier details at the provider docs.",
+      "billing": "monthly",
+      "tiers": []
+    },
+    {
+      "id": "kuae-cloud-coding-plan",
+      "providers": [
+        "kuae-cloud-coding-plan"
+      ],
+      "name": "KUAE Cloud Coding Plan",
+      "docUrl": "https://docs.mthreads.com/kuaecloud/kuaecloud-doc-online/coding_plan/",
+      "summary": "Subscription coding plan on Moore Threads KUAE Cloud; tier details at the provider docs.",
+      "billing": "monthly",
+      "tiers": []
+    }
+  ]
+}
