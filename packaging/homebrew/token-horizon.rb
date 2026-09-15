@@ -14,7 +14,7 @@
 # On each release, bump `version` + `sha256` below (match dist/TokenHorizon-<ver>.sha256).
 cask "token-horizon" do
   version "0.3.0"
-  sha256 "dcdff3a7f5b2602baa50c6d4e456a6ac2c6cc44a05a67aa62e3226b9bf4cf57c"
+  sha256 "fb816ba5e8a537db6a0902ca8c126b6b7085d8306cdb4829af50c8b2ddcf348f"
 
   url "https://github.com/castlemilk/token-horizon/releases/download/v#{version}/TokenHorizon-#{version}.zip"
   name "Token Horizon"
