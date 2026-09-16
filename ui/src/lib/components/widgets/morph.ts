@@ -22,6 +22,30 @@ export interface DotPair {
 	from: Box;
 	to: Box;
 	bg: string;
+	/** Text travelers: the label plus its computed font, sampled at measure
+	 *  time (open-flight sources are detached by spawn time, where
+	 *  getComputedStyle goes silent). When present, the clone IS the text —
+	 *  flown with the same x/y/scale flightVars — instead of a color dot.
+	 *  Same string + same font at both ends makes the scale factor carry
+	 *  the size change exactly; family/weight/style must agree, GSAP
+	 *  cannot interpolate those. */
+	text?: { value: string; css: string } | null;
+}
+
+/** Font + paint props that make a fresh <span> pixel-identical to the
+ *  source's text. Returns null for non-text travelers (color cells),
+ *  which keep the dot clone. */
+export function sampleText(el: Element): { value: string; css: string } | null {
+	const value = el.textContent?.trim();
+	if (!value) return null;
+	const cs = getComputedStyle(el);
+	const css =
+		`font-family:${cs.fontFamily};font-size:${cs.fontSize};` +
+		`font-weight:${cs.fontWeight};font-style:${cs.fontStyle};` +
+		`letter-spacing:${cs.letterSpacing};line-height:${cs.lineHeight};` +
+		`font-variant-numeric:${cs.fontVariantNumeric};` +
+		`white-space:${cs.whiteSpace};color:${cs.color};`;
+	return { value, css };
 }
 
 export interface MorphPlan {
@@ -96,7 +120,9 @@ export function removeClones() {
 
 /** Body-level clones parked exactly over each pair's `from` box.
  *  Body-level (never inside blurred/filtered ancestors) keeps viewport
- *  coords exact under any modal margin or placement. */
+ *  coords exact under any modal margin or placement. Text pairs clone
+ *  the label itself (font sampled at measure time); color pairs keep
+ *  the solid-dot clone. */
 export function spawnClones(pairs: DotPair[]): HTMLSpanElement[] {
 	removeClones();
 	layer = document.createElement('div');
@@ -105,10 +131,20 @@ export function spawnClones(pairs: DotPair[]): HTMLSpanElement[] {
 		'position:fixed;inset:0;z-index:200;pointer-events:none;margin:0;padding:0;';
 	const clones = pairs.map((p) => {
 		const d = document.createElement('span');
-		d.style.cssText =
+		const base =
 			`position:fixed;left:${p.from.x}px;top:${p.from.y}px;` +
-			`width:${p.from.w}px;height:${p.from.h}px;border-radius:50%;` +
-			`margin:0;padding:0;transform-origin:center;background:${p.bg};`;
+			`margin:0;padding:0;transform-origin:center;`;
+		if (p.text) {
+			// Natural sizing: same text + same font reproduces the source
+			// box, so flightVars' center-based scale lands exactly on `to`.
+			d.style.cssText = base + p.text.css + 'background:transparent;';
+			d.textContent = p.text.value;
+		} else {
+			d.style.cssText =
+				base +
+				`width:${p.from.w}px;height:${p.from.h}px;border-radius:50%;` +
+				`background:${p.bg};`;
+		}
 		layer!.appendChild(d);
 		return d;
 	});

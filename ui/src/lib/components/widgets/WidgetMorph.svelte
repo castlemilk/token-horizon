@@ -7,9 +7,11 @@
 		naturalBox,
 		flightVars,
 		cardVars,
+		sampleText,
 		spawnClones,
 		removeClones,
-		type Box
+		type Box,
+		type DotPair
 	} from './morph';
 
 	/** One shared container that IS the tile when closed and the modal
@@ -26,8 +28,9 @@
 	 *  Modal chrome (header/close) and the backdrop are shell-owned and
 	 *  handled internally. Travelers are paired by the widget's
 	 *  `travelFrom`/`travelTo` (source ↔ target elements, zipped by
-	 *  index); the shell boxes them, samples their colors, and flies
-	 *  clones between them.
+	 *  index); the shell boxes them and flies clones between them —
+	 *  verbatim text clones for labeled travelers (same font both ends,
+	 *  scale carries the size change), color dots for the rest.
 	 *
 	 *  `speed` scales every duration (1 = brisk). `phase`/`landed` are
 	 *  bindable so content can gate on them (year stepping, landing
@@ -253,11 +256,11 @@
 	/** Invalidates a pending open flight scheduled via tick(). */
 	let flightId = 0;
 	/** Tile-side measurements taken while boxEl still IS the tile.
-	 *  Boxes + colors + resting shadow are captured pre-swap: after the
-	 *  swap the tile nodes are detached and measure void. */
+	 *  Boxes + colors + text + resting shadow are captured pre-swap: after
+	 *  the swap the tile nodes are detached and measure void. */
 	let pendingTile: {
 		tileBox: Box;
-		dots: { key: string; box: Box; bg: string }[];
+		dots: { key: string; box: Box; bg: string; text: DotPair['text'] }[];
 		tileShadow: string;
 	} | null = null;
 
@@ -371,14 +374,15 @@
 			open = true;
 			return;
 		}
-		// Clone colors are sampled from the SOURCE pixels (computed style)
-		// — pixel-identical travelers under any theme.
+		// Clone paint is sampled from the SOURCE (computed style) — pixel-
+		// identical travelers under any theme; text is cloned verbatim.
 		pendingTile = {
 			tileBox,
 			dots: fromBoxed.map((d) => ({
 				key: d.key,
 				box: d.box,
-				bg: getComputedStyle(d.el).backgroundColor
+				bg: getComputedStyle(d.el).backgroundColor,
+				text: sampleText(d.el)
 			})),
 			tileShadow: getComputedStyle(boxEl).boxShadow
 		};
@@ -414,14 +418,14 @@
 			return;
 		}
 		const targets = new Map(toBoxed.map((t) => [t.key, t] as const));
-		const pairs: { from: Box; to: Box; bg: string }[] = [];
+		const pairs: DotPair[] = [];
 		for (const d of pendingTile.dots) {
 			const t = targets.get(d.key);
 			if (!t) {
 				phase = 'settle';
 				return;
 			}
-			pairs.push({ from: d.box, to: t.box, bg: d.bg });
+			pairs.push({ from: d.box, to: t.box, bg: d.bg, text: d.text });
 		}
 		const clones = spawnClones(pairs);
 		const landT = 0.06 + (pairs.length - 1) * STAG + 0.45 * S;
@@ -628,7 +632,7 @@
 			return;
 		}
 		const targets = new Map(toBoxed.map((t) => [t.key, t] as const));
-		const pairs: { from: Box; to: Box; bg: string }[] = [];
+		const pairs: DotPair[] = [];
 		for (const f of fromBoxed) {
 			const t = targets.get(f.key);
 			if (!t) {
@@ -638,7 +642,8 @@
 			pairs.push({
 				from: f.box,
 				to: t.box,
-				bg: getComputedStyle(f.el).backgroundColor
+				bg: getComputedStyle(f.el).backgroundColor,
+				text: sampleText(f.el)
 			});
 		}
 		phase = 'exit';
@@ -944,6 +949,11 @@
 		position: relative;
 		gap: 12px;
 		padding: 16px 18px 10px;
+		/* The X is absolutely positioned, so it contributes no height: with
+		   no headerExtra the strip would collapse to its 26px padding and the
+		   30px button would center past the card's top edge (clipped by
+		   overflow:hidden). Reserve room for the button either way. */
+		min-height: 52px;
 	}
 	.wmodal-x {
 		appearance: none;
