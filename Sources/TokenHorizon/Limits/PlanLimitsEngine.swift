@@ -84,9 +84,14 @@ final class PlanLimitsEngine {
         // can't stall the whole /limits response (MCP/UI timeouts used to fire
         // and the list looked frozen). Order is preserved by index.
         var results = Array(repeating: [ProviderLimit](), count: tasks.count)
-        DispatchQueue.concurrentPerform(iterations: tasks.count) { i in
-            results[i] = tasks[i]()
+        let group = DispatchGroup()
+        let queue = DispatchQueue(label: "token-horizon.plan-limits.fetch", attributes: .concurrent)
+        for i in tasks.indices {
+            queue.async(group: group) {
+                results[i] = tasks[i]()
+            }
         }
+        group.wait()
         return results.flatMap { $0 }
     }
 

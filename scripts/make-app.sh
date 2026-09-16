@@ -32,6 +32,13 @@ if [ -z "${TOKEN_HORIZON_NO_GATEWAY:-}" ]; then
     command -v go >/dev/null 2>&1 || { echo "FATAL: go toolchain missing — the app must ship with its gateway proxy (or set TOKEN_HORIZON_NO_GATEWAY=1 to opt out explicitly)"; exit 1; }
     (cd gateway && go build -ldflags "-X main.buildCommit=${GIT_SHA} -X main.buildAt=${BUILT_AT}" -o token-horizon-gateway .)
     [ -x gateway/token-horizon-gateway ] || { echo "FATAL: gateway sidecar build produced no binary"; exit 1; }
+    # macOS kills quarantined Mach-O binaries missing LC_UUID (dyld: "missing
+    # LC_UUID load command" then SIGABRT) — a real release shipped a dead
+    # sidecar because an old Go internal linker omits it. gate the toolchain.
+    if command -v otool >/dev/null 2>&1 && ! otool -l gateway/token-horizon-gateway | grep -q LC_UUID; then
+        echo "FATAL: gateway sidecar lacks LC_UUID (Go toolchain too old for Mach-O LC_UUID emission; need the version pinned in gateway/go.mod)"
+        exit 1
+    fi
 else
     echo "WARN: TOKEN_HORIZON_NO_GATEWAY=1 — building WITHOUT the gateway proxy (gateway routes will 503)"
 fi
