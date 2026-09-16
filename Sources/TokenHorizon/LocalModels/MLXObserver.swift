@@ -12,6 +12,8 @@ struct MLXProcess: Equatable, Identifiable {
     var diskWriteMBps: Double
     var startTime: Date
     var tokPerSec: Double?
+    var prefillTokPerSec: Double? = nil
+    var ttftSeconds: Double? = nil
 
     var id: Int32 { pid }
 }
@@ -32,15 +34,28 @@ struct MLXSnapshot: Equatable {
         guard !rates.isEmpty else { return nil }
         return rates.reduce(0, +)
     }
+
+    /// One prefill rate per active model, measured by the runner itself
+    /// (Ollama benchmark or `/metrics`), summed across models.
+    var measuredPrefillTokPerSec: Double? {
+        let rates = Dictionary(grouping: processes.compactMap { process -> (String, Double)? in
+            guard let model = process.model, let rate = process.prefillTokPerSec else { return nil }
+            return (model, rate)
+        }, by: { $0.0 }).values.compactMap { $0.first?.1 }
+        guard !rates.isEmpty else { return nil }
+        return rates.reduce(0, +)
+    }
 }
 
 enum MLXObserver {
-    /// Identify the command forms used by mlx-lm and Ollama's MLX runner.
+    /// Identify the command forms used by mlx-lm, mlx-vlm, and Ollama's MLX runner.
     static func isMLXCommand(_ command: String) -> Bool {
         let value = command.lowercased()
         return value.contains("--mlx-engine")
             || value.contains("mlx_lm")
             || value.contains("mlx-lm")
+            || value.contains("mlx_vlm")
+            || value.contains("mlx-vlm")
             || value.contains("/mlx")
     }
 
@@ -125,6 +140,9 @@ enum MLXObserver {
             let model = modelFor(sample)
             let directModel = modelName(in: sample.command)
             let telemetryRate = directModel.flatMap { OllamaTelemetryStore.shared.recentTokPerSec(for: $0) }
+            let benchmark = directModel.flatMap { OllamaClient.cachedBenchmark(for: $0) }
+            let serverMetrics = MLXServerEndpoint.metricsURL(in: sample.command)
+                .flatMap { MLXServerMetricsStore.shared.metrics(for: $0) }
             return MLXProcess(
                 pid: sample.pid,
                 ppid: sample.ppid,
@@ -137,7 +155,10 @@ enum MLXObserver {
                 diskWriteMBps: sample.diskWriteMBps,
                 startTime: sample.startTime,
                 tokPerSec: telemetryRate
-                    ?? directModel.flatMap { OllamaClient.cachedBenchmark(for: $0)?.tokPerSec }
+                    ?? serverMetrics?.decodeTokPerSec
+                    ?? benchmark?.tokPerSec,
+                prefillTokPerSec: serverMetrics?.prefillTokPerSec ?? benchmark?.promptTokPerSec,
+                ttftSeconds: serverMetrics?.ttftSeconds
             )
         }.sorted {
             if $0.cpu != $1.cpu { return $0.cpu > $1.cpu }

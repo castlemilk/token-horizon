@@ -7,6 +7,7 @@ struct MLXHistoryPoint: Equatable {
     var diskReadMBps: Double
     var diskWriteMBps: Double
     var tokPerSec: Double?
+    var prefillTokPerSec: Double?
 }
 
 struct MLXHistory: Equatable {
