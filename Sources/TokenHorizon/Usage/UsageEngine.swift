@@ -21,6 +21,10 @@ final class UsageEngine {
     private var scanVersions: [String: Int] = [:]
     private struct ScanMemo { var version: Int; var today: Int; var result: SourceResult }
     private var scanMemos: [String: ScanMemo] = [:]
+    /// Last computed snapshot, for routes that must never block on a scan:
+    /// the /limits merge used to stall behind a cold-start scan holding the
+    /// engine lock, which timed out API/MCP clients after app restarts.
+    private var lastSnapshot: UsageSnapshot?
     /// Raw file size via stat(2) — one syscall, no objects. Replaces
     /// FileManager.attributesOfItem (full NSDictionary + NSNumbers per file),
     /// which profiled at ~24us/file on a loaded box across ~900 files/tick.
@@ -293,6 +297,7 @@ final class UsageEngine {
         defer { lock.unlock() }
         let t0 = Self.perfNow()
         let snap = collectLocked()
+        lastSnapshot = snap
         let t1 = Self.perfNow()
         DurableStore.shared.saveSnapshot(snap)
         TokenHorizonTelemetry.shared.recordEngineTick(op: "snapshot", durationSeconds: Self.perfSpanMs(from: t0, to: t1) / 1000, filesTracked: trackedFileCountLocked())
@@ -302,6 +307,14 @@ final class UsageEngine {
                   Self.perfSpanMs(from: t1, to: Self.perfNow()))
         }
         return snap
+    }
+
+    /// Last-known snapshot without waiting for an in-flight scan (nil until
+    /// the first snapshot lands). Prefer this on routes that must answer fast.
+    func cachedSnapshot() -> UsageSnapshot? {
+        lock.lock()
+        defer { lock.unlock() }
+        return lastSnapshot
     }
 
     func history(days: Int) -> (points: [HistoryPoint], streak: Int) {

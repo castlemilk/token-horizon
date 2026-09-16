@@ -55,7 +55,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                               limitsProvider: { [engine] in
                                   let plan = PlanLimitsEngine.shared.cachedLimits()
                                   let kimi = KimiLimitsEngine.shared.cachedLimits()
-                                  var all = engine.snapshot().limits
+                                  // Cached (non-blocking): a cold-start scan
+                                  // must not stall /limits for minutes.
+                                  var all = engine.cachedSnapshot()?.limits ?? []
                                   if plan.contains(where: { $0.provider == "codex" }) {
                                       all.removeAll(where: { $0.provider == "codex" })
                                   }
