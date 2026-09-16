@@ -12,8 +12,8 @@
 #   brew tap castlemilk/tap
 #   brew install --cask token-horizon
 cask "token-horizon" do
-  version "0.3.4"
-  sha256 "51977d6d5e63e9ae97ab5db942cc196daf314e52d57691264900101eaa439606"
+  version "0.3.5"
+  sha256 "0756bee2d1d23fdbc8baa2293f4572c29bb9b927984eaafd5d2f3f1512075515"
 
   url "https://github.com/castlemilk/token-horizon/releases/download/v#{version}/TokenHorizon-#{version}.zip"
   name "Token Horizon"
