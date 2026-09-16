@@ -1,4 +1,6 @@
-import { chromium } from '/Users/benebsworth/projects/tautau/web/node_modules/playwright/index.mjs';
+import { resolveChromium } from './playwright.mjs';
+
+const chromium = await resolveChromium();
 import path from 'path';
 
 /**

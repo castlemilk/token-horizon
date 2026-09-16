@@ -297,8 +297,8 @@ function sh(cmd, args) {
   });
 }
 
-async function api(path) {
-  const res = await fetch(`${BASE}${path}`, { signal: AbortSignal.timeout(6000) });
+async function api(path, timeoutMs = 6000) {
+  const res = await fetch(`${BASE}${path}`, { signal: AbortSignal.timeout(timeoutMs) });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return res.json();
 }
@@ -635,7 +635,9 @@ async function callTool(name, args) {
         return d.system;
       }
       case "token_horizon_limits": {
-        const d = await api("/limits");
+        // Cold /limits refreshes every provider in turn; give it room instead
+        // of timing out and being misreported as an unknown tool below.
+        const d = await api("/limits", 20000);
         let limits = (d.limits || []).map((lim) => {
           const usedPct = lim.usedPercent ?? 0;
           const remainingPct = Math.max(0, Math.round((100 - usedPct) * 10) / 10);
@@ -851,11 +853,16 @@ async function callTool(name, args) {
     if (name === "token_horizon_workflows" || name === "token_horizon_nodes") {
       throw new Error(`Token Horizon Engine daemon not reachable at ${ENGINE_BASE} (${err.message}). Ensure the engine is running ('npm start' in engine/).`);
     }
-    if (!existsSync(DB)) throw new Error("Token Horizon app not reachable and no local data found");
-    if (name === "token_horizon_usage") return usageFallback();
+    const known = TOOLS.some((t) => t.name === name);
+    if (!known) throw new Error(`unknown tool ${name}`);
+    if (name === "token_horizon_limits") {
+      throw new Error(`limits need the Token Horizon app running at ${BASE} (${err.message})`);
+    }
     if (name === "token_horizon_system") throw new Error("system stats require the Token Horizon app running (http://127.0.0.1:8765)");
-    if (name === "token_horizon_sessions") return sessionsFallback(Math.min(args?.limit ?? 10, 25));
     if (name === "token_horizon_history") throw new Error("history requires the Token Horizon app running (http://127.0.0.1:8765)");
+    if (!existsSync(DB)) throw new Error(`${name} needs the Token Horizon app running at ${BASE} (${err.message})`);
+    if (name === "token_horizon_usage") return usageFallback();
+    if (name === "token_horizon_sessions") return sessionsFallback(Math.min(args?.limit ?? 10, 25));
     if (name === "token_horizon_processes") {
       const sort = ["cpu", "mem", "disk", "net"].includes(args?.sort) ? args.sort : "cpu";
       const limit = Math.min(Math.max(args?.limit ?? 8, 1), 20);
@@ -870,7 +877,7 @@ async function callTool(name, args) {
       const sorted = sort === "mem" ? rows.sort((a, b) => b.memMB - a.memMB) : sort === "disk" || sort === "net" ? rows : rows.sort((a, b) => b.cpu - a.cpu);
       return sorted.slice(0, limit);
     }
-    throw new Error(`unknown tool ${name}`);
+    throw new Error(`${name} failed: ${err.message}`);
   }
 }
 

@@ -58,6 +58,15 @@ tasks:
     cmds:
       - ./scripts/test-models-perf.sh
 
+  web-test:
+    desc: Web gates — worker tests, MCP contracts, hermetic dashboard UI + budgets
+    cmds:
+      - node --test cloudflare/worker.test.mjs
+      - node mcp/test-catalog.mjs
+      - node mcp/test-server-errors.mjs
+      - node scripts/test-leaderboard-ui.mjs
+      - node scripts/bench-leaderboard.mjs
+
   test-integration:
     desc: Loopback integration tests (Ollama proxy relay round-trips, no creds needed)
     cmds:

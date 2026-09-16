@@ -119,7 +119,9 @@ struct PlanLimitCard: View {
         let used = limit.usedPercent
         let barColor: Color = used >= 100 ? .red : used >= 85 ? .orange : tint
         let resetText: String = {
-            guard let r = limit.resetsAt else { return "no reset scheduled" }
+            guard let r = limit.resetsAt else {
+                return limit.detail.lowercased().contains("rolling") ? "resets on use" : "no reset scheduled"
+            }
             let f = DashboardTabs.formatReset(r)
             return f == "now" ? "resets now" : "resets in \(f)"
         }()

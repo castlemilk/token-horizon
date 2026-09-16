@@ -11,6 +11,7 @@ How to validate changes locally. Start with `task --list`; the standard gates ar
 | `task test-perf` | Budget-gated Models-pipeline guard | Touching pipeline/views |
 | `task test-integration` | Loopback Ollama proxy round-trips | Touching telemetry proxy |
 | `task test-race` | Thread-sanitized suite (slow) | Concurrency-adjacent changes |
+| `task web-test` | Worker + MCP contract tests + Playwright UI suite + budgets (CI `web` job) | Touching `docs/`, `cloudflare/`, `mcp/` |
 | `task bench-leaderboard` | Dashboard render/chart/search/explorer budgets | Touching `docs/leaderboard.html` |
 | `task models-refresh` | Regenerate `docs/data/models.json` from the app pipeline | Catalog export changes |
 | `task smoke` | Live checklist vs the running app | After `make-app.sh` relaunch |

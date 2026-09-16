@@ -71,16 +71,23 @@ final class PlanLimitsEngine {
 
     static func fetchAll() -> [ProviderLimit] {
         let keys = authKeys()
-        var out: [ProviderLimit] = []
-        if let key = keys["zai-coding-plan"] ?? keys["zai"] { out += zai(key) }
-        if let key = keys["minimax-coding-plan"] { out += minimax(key) }
-        if let key = keys["opencode-go"] { out += opencodeGo(key) }
-        out += alibaba()
-        out += gemini()
-        out += claude()
-        out += deepseek()
-        out += openai()
-        return out
+        var tasks: [() -> [ProviderLimit]] = []
+        if let key = keys["zai-coding-plan"] ?? keys["zai"] { tasks.append { zai(key) } }
+        if let key = keys["minimax-coding-plan"] { tasks.append { minimax(key) } }
+        if let key = keys["opencode-go"] { tasks.append { opencodeGo(key) } }
+        tasks.append { alibaba() }
+        tasks.append { gemini() }
+        tasks.append { claude() }
+        tasks.append { deepseek() }
+        tasks.append { openai() }
+        // Independent network calls: run concurrently so one slow provider
+        // can't stall the whole /limits response (MCP/UI timeouts used to fire
+        // and the list looked frozen). Order is preserved by index.
+        var results = Array(repeating: [ProviderLimit](), count: tasks.count)
+        DispatchQueue.concurrentPerform(iterations: tasks.count) { i in
+            results[i] = tasks[i]()
+        }
+        return results.flatMap { $0 }
     }
 
     // GET https://bailian-singapore-cs.alibabacloud.com/data/api.json
@@ -123,7 +130,7 @@ final class PlanLimitsEngine {
                 if let http = resp as? HTTPURLResponse, (200..<300).contains(http.statusCode) { dashData = d }
                 dashSema.signal()
             }.resume()
-            dashSema.wait()
+            _ = dashSema.wait(timeout: .now() + 10)
             if let dashData, let html = String(data: dashData, encoding: .utf8) {
                 secToken = extractSecToken(from: html) ?? ""
             }
@@ -403,17 +410,17 @@ final class PlanLimitsEngine {
                 label = type.replacingOccurrences(of: "_LIMIT", with: "").lowercased()
             }
 
+            let resetsAt = epochMS(limit["nextResetTime"])
             let usedPercent: Double
             var detail = ""
 
             if type == "TOKENS_LIMIT" {
                 let remainingPct = min(max(pct, 0), 100)
                 usedPercent = 100.0 - remainingPct
-                if remainingPct == 0 {
-                    detail = "0% left (exhausted)"
-                } else {
-                    detail = String(format: "%.0f%% left", remainingPct)
-                }
+                let base = remainingPct == 0 ? "0% left (exhausted)" : String(format: "%.0f%% left", remainingPct)
+                // Z.ai omits nextResetTime for the rolling burst window; say so
+                // instead of leaving the UI with a blank countdown.
+                detail = resetsAt == nil ? base + " · rolling window" : base
             } else if type == "TIME_LIMIT" {
                 if let usage = (limit["usage"] as? NSNumber)?.doubleValue, usage > 0,
                    let curr = (limit["currentValue"] as? NSNumber)?.doubleValue {
@@ -431,7 +438,6 @@ final class PlanLimitsEngine {
                 }
             }
 
-            let resetsAt = epochMS(limit["nextResetTime"])
             return ProviderLimit(provider: "glm",
                                  label: label,
                                  usedPercent: usedPercent,

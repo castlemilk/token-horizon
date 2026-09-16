@@ -18,9 +18,10 @@
   ],
   "scripts": {
     "start": "node src/index.js",
-    "test": "node test-catalog.mjs && node test-mcp.mjs",
+    "test": "node test-catalog.mjs && node test-server-errors.mjs && node test-mcp.mjs",
     "session": "node client-session.mjs",
-    "test:catalog": "node test-catalog.mjs"
+    "test:catalog": "node test-catalog.mjs",
+    "test:server-errors": "node test-server-errors.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.17.0"

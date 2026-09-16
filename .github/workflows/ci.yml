@@ -47,6 +47,39 @@ jobs:
       - name: Vet + test
         run: cd gateway && go vet ./... && go test ./...
 
+  web:
+    # Worker APIs, MCP catalog/error contracts, and the dashboard's hermetic
+    # Playwright UI suite + render/API budgets. Chrome ships on the runner;
+    # Playwright's own browser download is skipped.
+    runs-on: macos-15
+    env:
+      PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Install dev tooling (vendored bundles + Playwright client)
+        run: npm ci
+
+      - name: Worker tests (leaderboard API)
+        run: node --test cloudflare/worker.test.mjs
+
+      - name: MCP tests (catalog helpers + server error contracts)
+        run: |
+          node mcp/test-catalog.mjs
+          node mcp/test-server-errors.mjs
+
+      - name: Dashboard UI regression (hermetic fixtures)
+        run: node scripts/test-leaderboard-ui.mjs
+
+      - name: Dashboard render/API budgets
+        run: node scripts/bench-leaderboard.mjs
+
   coverage:
     runs-on: macos-15
     steps:

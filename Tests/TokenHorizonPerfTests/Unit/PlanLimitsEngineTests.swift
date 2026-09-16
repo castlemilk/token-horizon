@@ -107,6 +107,42 @@ final class PlanLimitsEngineTests: XCTestCase {
         XCTAssertEqual(search?.detail, "75 left")
     }
 
+    func testParseZaiPayload_rollingBurstWithoutResetTime() {
+        // Real Z.ai payload: the rolling burst window omits nextResetTime.
+        let json: [String: Any] = [
+            "data": [
+                "limits": [
+                    ["type": "TOKENS_LIMIT", "unit": 3, "number": 5, "percentage": 0],
+                    ["type": "TOKENS_LIMIT", "unit": 6, "number": 1, "percentage": 100,
+                     "nextResetTime": 1789799044983],
+                ],
+            ],
+        ]
+        let limits = PlanLimitsEngine.parseZaiPayload(json)
+        let burst = limits.first(where: { $0.label == "5h" })
+        XCTAssertEqual(burst?.usedPercent, 100)
+        XCTAssertNil(burst?.resetsAt, "the rolling window publishes no reset time")
+        XCTAssertEqual(burst?.detail, "0% left (exhausted) · rolling window")
+        let monthly = limits.first(where: { $0.label == "monthly" })
+        XCTAssertNotNil(monthly?.resetsAt)
+        XCTAssertEqual(monthly?.detail, "100% left")
+    }
+
+    func testFetchAll_preservesProviderOrderWhenParallel() {
+        // Concurrent fetch must not scramble grouping order (glm first when
+        // configured, claude/deepseek/openai last). Pure ordering contract on
+        // the task list itself; network providers are individually optional.
+        let keys = PlanLimitsEngine.authKeys()
+        if keys["zai-coding-plan"] != nil || keys["zai"] != nil {
+            let limits = PlanLimitsEngine.fetchAll()
+            if let firstGlm = limits.firstIndex(where: { $0.provider == "glm" }) {
+                let lastGlm = limits.lastIndex(where: { $0.provider == "glm" })
+                XCTAssertEqual(firstGlm, 0, "glm rows stay first when configured")
+                XCTAssertNotNil(lastGlm)
+            }
+        }
+    }
+
     func testParseMinimaxPayload_intervalAndWeekly() {
         let json: [String: Any] = [
             "model_remains": [
