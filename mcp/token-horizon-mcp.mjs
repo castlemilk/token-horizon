@@ -889,7 +889,7 @@ rl.on("line", async (line) => {
   const { id, method, params } = msg;
 
   if (method === "initialize")
-    return send({ id, result: { protocolVersion: "2024-11-05", capabilities: { tools: {} }, serverInfo: { name: "token-horizon", version: "0.3.4" } } });
+    return send({ id, result: { protocolVersion: "2024-11-05", capabilities: { tools: {} }, serverInfo: { name: "token-horizon", version: "0.3.5" } } });
   if (method === "tools/list")
     return send({ id, result: { tools: TOOLS } });
   if (method === "tools/call") {

@@ -24,6 +24,10 @@ final class UsageEngine {
     /// Last computed snapshot, for routes that must never block on a scan:
     /// the /limits merge used to stall behind a cold-start scan holding the
     /// engine lock, which timed out API/MCP clients after app restarts.
+    /// Guarded by its own lock (not `lock`) — `lock` is held for whole scans,
+    /// so sharing it would reintroduce the stall. Lock order is always
+    /// engine `lock` -> `lastSnapshotLock`; readers take only the latter.
+    private let lastSnapshotLock = NSLock()
     private var lastSnapshot: UsageSnapshot?
     /// Raw file size via stat(2) — one syscall, no objects. Replaces
     /// FileManager.attributesOfItem (full NSDictionary + NSNumbers per file),
@@ -297,6 +301,9 @@ final class UsageEngine {
         defer { lock.unlock() }
         let t0 = Self.perfNow()
         let snap = collectLocked()
+        lastSnapshotLock.lock()
+        lastSnapshot = snap
+        lastSnapshotLock.unlock()
         lastSnapshot = snap
         let t1 = Self.perfNow()
         DurableStore.shared.saveSnapshot(snap)
@@ -312,8 +319,8 @@ final class UsageEngine {
     /// Last-known snapshot without waiting for an in-flight scan (nil until
     /// the first snapshot lands). Prefer this on routes that must answer fast.
     func cachedSnapshot() -> UsageSnapshot? {
-        lock.lock()
-        defer { lock.unlock() }
+        lastSnapshotLock.lock()
+        defer { lastSnapshotLock.unlock() }
         return lastSnapshot
     }
 
