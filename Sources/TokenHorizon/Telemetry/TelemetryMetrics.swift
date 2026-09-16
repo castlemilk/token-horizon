@@ -29,6 +29,7 @@ final class TokenHorizonTelemetry {
     private lazy var mlxMemory = meter.gaugeBuilder(name: "token_horizon_mlx_memory_bytes").build()
     private lazy var mlxDiskRead = meter.gaugeBuilder(name: "token_horizon_mlx_disk_read_bytes_per_second").build()
     private lazy var mlxDiskWrite = meter.gaugeBuilder(name: "token_horizon_mlx_disk_write_bytes_per_second").build()
+    private lazy var mlxPrefillTokPerSecond = meter.gaugeBuilder(name: "token_horizon_mlx_prefill_tokens_per_second").build()
     // Engine tick health: op is one of snapshot|history|trends (fixed,
     // low-cardinality). Warm-tick regression shows up here first.
     private lazy var engineTickDuration = meter.histogramBuilder(name: "token_horizon_engine_tick_duration_seconds")
@@ -106,6 +107,9 @@ final class TokenHorizonTelemetry {
         mlxMemory.record(value: snapshot.memoryMB * 1_048_576, attributes: attributes)
         mlxDiskRead.record(value: snapshot.diskReadMBps * 1_048_576, attributes: attributes)
         mlxDiskWrite.record(value: snapshot.diskWriteMBps * 1_048_576, attributes: attributes)
+        if let prefill = snapshot.measuredPrefillTokPerSec {
+            mlxPrefillTokPerSecond.record(value: prefill, attributes: attributes)
+        }
         metricLock.unlock()
     }
 

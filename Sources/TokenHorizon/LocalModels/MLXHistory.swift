@@ -26,6 +26,8 @@ struct MLXHistory: Equatable {
     private var diskWriteSum = 0.0
     private var tokSum = 0.0
     private var tokCount = 0
+    private var prefillSum = 0.0
+    private var prefillCount = 0
 
     mutating func append(_ snapshot: MLXSnapshot) {
         let point = MLXHistoryPoint(
@@ -34,7 +36,8 @@ struct MLXHistory: Equatable {
             memoryMB: snapshot.memoryMB,
             diskReadMBps: snapshot.diskReadMBps,
             diskWriteMBps: snapshot.diskWriteMBps,
-            tokPerSec: snapshot.measuredTokPerSec
+            tokPerSec: snapshot.measuredTokPerSec,
+            prefillTokPerSec: snapshot.measuredPrefillTokPerSec
         )
         fine.append(point)
         trim(&fine, to: Self.fineLimit)
@@ -50,6 +53,8 @@ struct MLXHistory: Equatable {
             diskWriteSum = 0
             tokSum = 0
             tokCount = 0
+            prefillSum = 0
+            prefillCount = 0
         }
 
         sampleCount += 1
@@ -60,6 +65,10 @@ struct MLXHistory: Equatable {
         if let tok = point.tokPerSec {
             tokSum += tok
             tokCount += 1
+        }
+        if let prefill = point.prefillTokPerSec {
+            prefillSum += prefill
+            prefillCount += 1
         }
     }
 
@@ -81,6 +90,14 @@ struct MLXHistory: Equatable {
 
     func measuredTokSeries(coarse: Bool = false) -> [Double] {
         (coarse ? self.coarse : fine).compactMap(\.tokPerSec)
+    }
+
+    func prefillSeries(coarse: Bool = false) -> [Double] {
+        (coarse ? self.coarse : fine).map { $0.prefillTokPerSec ?? 0.0 }
+    }
+
+    func measuredPrefillSeries(coarse: Bool = false) -> [Double] {
+        (coarse ? self.coarse : fine).compactMap(\.prefillTokPerSec)
     }
 
     func maxCPU(coarse: Bool = false) -> Double {
@@ -105,6 +122,16 @@ struct MLXHistory: Equatable {
         return measured.reduce(0, +) / Double(measured.count)
     }
 
+    func maxPrefill(coarse: Bool = false) -> Double {
+        (coarse ? self.coarse : fine).compactMap(\.prefillTokPerSec).max() ?? 0.0
+    }
+
+    func avgPrefill(coarse: Bool = false) -> Double {
+        let measured = (coarse ? self.coarse : fine).compactMap(\.prefillTokPerSec).filter { $0 > 0 }
+        guard !measured.isEmpty else { return 0.0 }
+        return measured.reduce(0, +) / Double(measured.count)
+    }
+
     private mutating func flushRollup() {
         guard sampleCount > 0, let activeBucket else { return }
         coarse.append(MLXHistoryPoint(
@@ -113,7 +140,8 @@ struct MLXHistory: Equatable {
             memoryMB: memorySum / Double(sampleCount),
             diskReadMBps: diskReadSum / Double(sampleCount),
             diskWriteMBps: diskWriteSum / Double(sampleCount),
-            tokPerSec: tokCount > 0 ? tokSum / Double(tokCount) : nil
+            tokPerSec: tokCount > 0 ? tokSum / Double(tokCount) : nil,
+            prefillTokPerSec: prefillCount > 0 ? prefillSum / Double(prefillCount) : nil
         ))
         trim(&coarse, to: Self.coarseLimit)
     }

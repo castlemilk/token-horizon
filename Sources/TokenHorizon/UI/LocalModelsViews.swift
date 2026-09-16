@@ -220,7 +220,11 @@ struct MLXRunnerDetailView: View {
                     runnerDetailRow("cpu", String(format: "%.2f%%", process.cpu))
                     runnerDetailRow("memory", formatMemory(process.memoryMB))
                     runnerDetailRow("disk", String(format: "read %.2fM/s · write %.2fM/s", process.diskReadMBps, process.diskWriteMBps))
-                    runnerDetailRow("tok/s", process.tokPerSec.map { String(format: "%.2f", $0) } ?? "unavailable")
+                    runnerDetailRow("decode tok/s", process.tokPerSec.map { String(format: "%.2f", $0) } ?? "unavailable")
+                    runnerDetailRow("prefill tok/s", process.prefillTokPerSec.map { String(format: "%.2f", $0) } ?? "unavailable")
+                    if let ttft = process.ttftSeconds {
+                        runnerDetailRow("ttft", String(format: "%.2f s", ttft))
+                    }
                     runnerDetailRow("parent", "\(process.ppid)")
                     runnerDetailRow("started", process.startTime.formatted(date: .abbreviated, time: .standard))
                     runnerDetailRow("command", process.command, selectable: true)

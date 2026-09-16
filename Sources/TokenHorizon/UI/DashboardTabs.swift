@@ -153,7 +153,9 @@ struct DashboardTabs: View {
         let memSeries = model.mlxMemorySeries(mlxWindow)
         let diskSeries = model.mlxDiskSeries(mlxWindow)
         let tokSeries = model.mlxTokSeries(mlxWindow)
+        let prefillSeries = model.mlxPrefillSeries(mlxWindow)
         let peakTok = model.mlxPeakTok(mlxWindow)
+        let peakPrefill = model.mlxPeakPrefill(mlxWindow)
         let peakCPU = model.mlxPeakCPU(mlxWindow)
         let peakMem = model.mlxPeakMemory(mlxWindow)
         let peakDisk = model.mlxPeakDisk(mlxWindow)
@@ -195,14 +197,16 @@ struct DashboardTabs: View {
                 mlxStat("MEM", model.mlx.processes.isEmpty ? (peakMem > 0 ? "peak " + formatMemory(peakMem) : "0M") : formatMemory(model.mlx.memoryMB), .cyan)
                 mlxStat("READ", model.mlx.processes.isEmpty ? (peakDisk > 0 ? String(format: "peak %.1fM", peakDisk) : "0.0M/s") : String(format: "%.1fM/s", model.mlx.diskReadMBps), .orange)
                 mlxStat("WRITE", model.mlx.processes.isEmpty ? "0.0M/s" : String(format: "%.1fM/s", model.mlx.diskWriteMBps), .yellow)
-                mlxStat("TOK/S", (model.mlx.measuredTokPerSec ?? (peakTok > 0 ? peakTok : nil)).map { String(format: "%.1f", $0) } ?? "--", .green)
+                mlxStat("DECODE", (model.mlx.measuredTokPerSec ?? (peakTok > 0 ? peakTok : nil)).map { String(format: "%.1f", $0) } ?? "--", .green)
+                mlxStat("PREFILL", (model.mlx.measuredPrefillTokPerSec ?? (peakPrefill > 0 ? peakPrefill : nil)).map { String(format: "%.1f", $0) } ?? "--", .teal)
             }
 
             HStack(spacing: 8) {
                 mlxSparkline("CPU \(mlxWindow.rawValue)", cpuSeries, .red)
                 mlxSparkline("MEM \(mlxWindow.rawValue)", memSeries, .cyan)
                 mlxSparkline("DISK \(mlxWindow.rawValue)", diskSeries, .orange)
-                mlxSparkline("TOK/S \(mlxWindow.rawValue)", tokSeries, .green)
+                mlxSparkline("DECODE \(mlxWindow.rawValue)", tokSeries, .green)
+                mlxSparkline("PREFILL \(mlxWindow.rawValue)", prefillSeries, .teal)
             }
 
             Divider().overlay(Color.white.opacity(0.12))
@@ -240,7 +244,7 @@ struct DashboardTabs: View {
             sectionLabel("RUNNERS")
             if model.mlx.processes.isEmpty {
                 MonospacedText(text: "no active MLX runner", color: .secondary, size: 9)
-                MonospacedText(text: "watching Ollama --mlx-engine and mlx-lm process trees", color: .white.opacity(0.4), size: 7.5)
+                MonospacedText(text: "watching Ollama --mlx-engine, mlx-lm, and mlx_vlm process trees", color: .white.opacity(0.4), size: 7.5)
             } else {
                 ForEach(model.mlx.processes) { process in
                     Button { selectedMLXProcess = process } label: {
@@ -252,13 +256,16 @@ struct DashboardTabs: View {
                             MonospacedText(text: String(format: "%.1f%%", process.cpu), color: .orange, size: 8)
                             MonospacedText(text: formatMemory(process.memoryMB), color: .cyan, size: 8)
                             MonospacedText(text: process.tokPerSec.map { String(format: "%.1f t/s", $0) } ?? "-- t/s", color: .green, size: 8)
+                            if let prefill = process.prefillTokPerSec {
+                                MonospacedText(text: String(format: "p %.0f", prefill), color: .teal, size: 8)
+                            }
                         }
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
                 }
             }
-            MonospacedText(text: "tok/s is a recent token-weighted Ollama measurement; live request instrumentation is not inferred from process load.", color: .white.opacity(0.35), size: 7.5)
+            MonospacedText(text: "decode/prefill tok/s are measured by the Ollama telemetry proxy or the runner's own /metrics endpoint; never inferred from process load.", color: .white.opacity(0.35), size: 7.5)
                 .fixedSize(horizontal: false, vertical: true)
         }
     }

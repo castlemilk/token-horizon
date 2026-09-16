@@ -116,6 +116,9 @@ final class UIModel: ObservableObject {
     func mlxTokSeries(_ window: MLXWindow) -> [Double] {
         Array((window.coarse ? mlxHistory.tokSeries(coarse: true) : mlxHistory.tokSeries()).suffix(window.points))
     }
+    func mlxPrefillSeries(_ window: MLXWindow) -> [Double] {
+        Array((window.coarse ? mlxHistory.prefillSeries(coarse: true) : mlxHistory.prefillSeries()).suffix(window.points))
+    }
     func mlxPeakCPU(_ window: MLXWindow) -> Double {
         mlxCPUSeries(window).max() ?? 0.0
     }
@@ -127,6 +130,9 @@ final class UIModel: ObservableObject {
     }
     func mlxPeakTok(_ window: MLXWindow) -> Double {
         mlxTokSeries(window).max() ?? 0.0
+    }
+    func mlxPeakPrefill(_ window: MLXWindow) -> Double {
+        mlxPrefillSeries(window).max() ?? 0.0
     }
     func mlxAvgTok(_ window: MLXWindow) -> Double {
         let nonZero = mlxTokSeries(window).filter { $0 > 0 }
