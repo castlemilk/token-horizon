@@ -10,6 +10,7 @@
 	import type { ProviderSummary } from '$lib/api';
 	import { billableTok, fmtTok } from '$lib/format';
 	import { providerAccent } from '$lib/colors';
+  import { AspectRatio } from 'bits-ui'
 
 	/** Home-screen totals widget, two sizes sharing one modal.
 	 *  Tile: three counters (tokens · requests · cost). Modal: what those
@@ -88,7 +89,6 @@
 	// Engine-owned, bound here so content can gate on it without reaching
 	// into WidgetMorph.
 	let phase = $state<Phase>('settle');
-	let landed = $state(false);
 	let bodyEl = $state<HTMLElement | null>(null);
 
 	// Live request pings: every new request fires 3 green arrows that
@@ -145,7 +145,10 @@
 		marksOf(dir === 'open' ? roots.box : roots.ghost);
 
 	const enterOpen: EnterSpec[] = [
-		{ select: '.csec-h', kind: 'rise', at: (c) => c.landT + 0.1 * c.S },
+		// Numbers are travel targets — they arrive riding their flight
+		// clones; rising .csec-h would re-animate them after landing.
+		// The rise belongs to the subtitles beside them.
+		{ select: '.csec-h .csub', kind: 'rise', at: (c) => c.landT + 0.1 * c.S },
 		{ select: '.comp-fill', kind: 'fade', at: (c) => c.landT + 0.16 * c.S },
 		{ select: '.prow', kind: 'rise', at: (c) => c.landT + 0.2 * c.S }
 	];
@@ -156,7 +159,6 @@
 	<div
 		class="counts"
 		class:row={variant === 'medium'}
-		class:landed-in={describe && landed}
 		style:--heat={HEAT}
 		role="img"
 		aria-label="{fmtTok(billable)} tokens, {fmtInt(totals.requests)} requests, {fmtMoney(displayCost)}"
@@ -208,8 +210,8 @@
 	<div class="cbody" bind:this={bodyEl}>
 			<section class="csec">
 				<div class="csec-h" class:conceal={phase === 'fly'}>
-					<span class="ctotal num" data-travel="tokens">{fmtTok(billable)}</span>
-					<span class="csub">tokens · input + output + reasoning + cache writes</span>
+					<span class="ctotal num v-tokens" data-travel="tokens">{fmtTok(billable)}</span>
+					<span class="csub">tokens</span>
 				</div>
 				<div class="compbar" role="img" aria-label="Token composition">
 					{#each parts as p}
@@ -225,15 +227,18 @@
 				</div>
 				<div class="legend">
 					{#each parts as p}
-						<span class="litem"><i style:background={p.color}></i>{p.label} {fmtTok(p.value)}</span>
+						{#if p.value >0}
+							<span class="litem"><i 
+							style:background={p.color}
+							></i>{p.label} {fmtTok(p.value)}</span>
+						{/if}
 					{/each}
 				</div>
-				<p class="cacheline">cache reads {fmtTok(totals.t.cacheRead)} · served free, excluded</p>
 			</section>
 			<section class="csec">
 				<div class="csec-h" class:conceal={phase === 'fly'}>
-					<span class="ctotal num" data-travel="requests">{fmtInt(totals.requests)}</span>
-					<span class="csub">requests · {rows.length} provider{rows.length === 1 ? '' : 's'}</span>
+					<span class="ctotal num v-requests" data-travel="requests">{fmtInt(totals.requests)}</span>
+					<span class="csub">requests</span>
 				</div>
 				<div class="compbar" role="img" aria-label="Requests by provider">
 					{#each rows as r}
@@ -255,7 +260,7 @@
 			</section>
 			<section class="csec">
 				<div class="csec-h" class:conceal={phase === 'fly'}>
-					<span class="ctotal num" data-travel="cost">{fmtMoney(displayCost)}</span>
+					<span class="ctotal num v-cost" data-travel="cost">{fmtMoney(displayCost)}</span>
 					<span class="csub">total cost</span>
 				</div>
 			</section>
@@ -268,7 +273,6 @@
 	tileLabel="Totals — tap to expand"
 	title="Totals"
 	bind:phase
-	bind:landed
 	{canFly}
 	{closeable}
 	{travelFrom}
@@ -370,13 +374,6 @@
 		18% { opacity: 0.9; }
 		100% { opacity: 0; transform: translateY(-64px); }
 	}
-	.counts.landed-in {
-		animation: chromefade 0.25s ease backwards;
-	}
-	@keyframes chromefade {
-		from { opacity: 0; }
-		to { opacity: 1; }
-	}
 	/* ---- modal sections ---- */
 	.cbody {
 		display: flex;
@@ -397,13 +394,14 @@
 	}
 	.ctotal {
 		font-size: 23px;
-		font-weight: 750;
-		letter-spacing: -0.03em;
 		line-height: 1.05;
 		font-variant-numeric: tabular-nums;
+		/* Weight/family/tracking come from the v-* voice classes — the SAME
+		   voice as the tile counter with that data-travel key, so the flight
+		   clone (tile-sized) scales onto this headline with zero font pop. */
 	}
 	.csub {
-		font-size: 11px;
+		font-size: 23px;
 		color: var(--text-3);
 	}
 	.conceal {
@@ -411,7 +409,7 @@
 	}
 	.compbar {
 		display: flex;
-		height: 10px;
+		height: 20px;
 		border-radius: 999px;
 		overflow: hidden;
 		background: var(--track);
@@ -426,19 +424,19 @@
 		flex-wrap: wrap;
 		justify-content: center;
 		gap: 4px 12px;
-		margin-top: 8px;
+		margin-top: 20px;
 	}
 	.litem {
 		display: flex;
 		align-items: center;
-		gap: 5px;
-		font-size: 10.5px;
+		gap: 10px;
+		font-size: 12px;
 		color: var(--text-3);
 		font-variant-numeric: tabular-nums;
 	}
 	.litem i {
-		width: 8px;
-		height: 8px;
+		width: 10px;
+		height: 10px;
 		border-radius: 50%;
 		flex: none;
 	}
@@ -452,8 +450,5 @@
 		.counts.row {
 			gap: 16px;
 		}
-	}
-	@media (prefers-reduced-motion: reduce) {
-		.counts.landed-in { animation: none; }
 	}
 </style>
