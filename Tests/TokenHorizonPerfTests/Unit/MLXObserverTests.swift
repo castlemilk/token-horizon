@@ -15,6 +15,8 @@ final class MLXObserverTests: XCTestCase {
         XCTAssertEqual(MLXObserver.modelName(in: "ollama runner --mlx-engine --model qwen3.8:27b-mlx"), "qwen3.8:27b-mlx")
         XCTAssertEqual(MLXObserver.modelName(in: "mlx_lm.server --model=qwen3.8:27b-mlx"), "qwen3.8:27b-mlx")
         XCTAssertEqual(MLXObserver.modelName(in: "mlx_lm.server --model '/tmp/model with spaces'"), "/tmp/model with spaces")
+        // Explicit --model beats `python -m <module>`.
+        XCTAssertEqual(MLXObserver.modelName(in: "python -m mlx_vlm server --model qwen"), "qwen")
         XCTAssertNil(MLXObserver.modelName(in: "ollama runner --mlx-engine"))
     }
 

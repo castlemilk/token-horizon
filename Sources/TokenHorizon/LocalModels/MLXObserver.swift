@@ -61,13 +61,21 @@ enum MLXObserver {
 
     static func modelName(in command: String) -> String? {
         let parts = commandArguments(command)
+        // Explicit --model wins: bare -m collides with `python -m <module>`
+        // (e.g. `python -m mlx_vlm server --model X` resolved to "mlx_vlm",
+        // orphaning per-model telemetry/benchmark lookups).
         for index in parts.indices {
-            if parts[index] == "--model" || parts[index] == "-m", parts.indices.contains(index + 1) {
+            if parts[index] == "--model", parts.indices.contains(index + 1) {
                 return parts[index + 1]
             }
             if parts[index].hasPrefix("--model=") {
                 let value = String(parts[index].dropFirst("--model=".count))
                 return value.isEmpty ? nil : value
+            }
+        }
+        for index in parts.indices {
+            if parts[index] == "-m", parts.indices.contains(index + 1) {
+                return parts[index + 1]
             }
         }
         return nil
