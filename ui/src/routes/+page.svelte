@@ -8,6 +8,7 @@
 	import { scope } from '$lib/scope.svelte';
 	import HeatmapWidget from '$lib/components/widgets/HeatmapWidget.svelte';
 	import CountersWidget from '$lib/components/widgets/CountersWidget.svelte';
+	import ActivityBarsWidget from '$lib/components/widgets/ActivityBarsWidget.svelte';
 	import VBars from '$lib/components/data/VBars.svelte';
 	import ProviderIcon from '$lib/components/data/ProviderIcon.svelte';
 	import CountUp from '$lib/components/data/CountUp.svelte';
@@ -378,6 +379,11 @@
 		<CountersWidget providers={summaryAll} variant="small" />
 		<CountersWidget providers={summaryAll} variant="medium" />
 	{/if}
+</section>
+
+<section class="mod heatmod widget-cell">
+	<ActivityBarsWidget variant="small" />
+	<ActivityBarsWidget variant="medium" />
 </section>
 
 <section class="mod recentmod">

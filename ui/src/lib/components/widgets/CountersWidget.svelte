@@ -338,26 +338,31 @@
 		text-transform: uppercase;
 		color: var(--text-3);
 	}
-	/* live request pings: green wash + arrows rising through the background */
+	/* live request pings: green wash + arrows rising through the background.
+	   Both layers span the whole tile (negative inset cancels the tile
+	   padding + .counts margin) and breathe in/out softly. */
 	.wash {
 		position: absolute;
-		inset: 0;
+		inset: -26px -26px;
+		border-radius: 18px;
 		pointer-events: none;
 		z-index: 0;
 		background: radial-gradient(
-			ellipse 90% 70% at 50% 85%,
-			color-mix(in srgb, var(--heat) 20%, transparent),
+			ellipse 100% 80% at 50% 90%,
+			color-mix(in srgb, var(--heat) 14%, transparent),
 			transparent 70%
 		);
-		animation: washfade 1.4s ease-out backwards;
+		animation: washfade 2.4s ease-in-out backwards;
 	}
 	@keyframes washfade {
-		from { opacity: 0.9; }
-		to { opacity: 0; }
+		0% { opacity: 0; }
+		25% { opacity: 0.55; }
+		100% { opacity: 0; }
 	}
 	.ping-layer {
 		position: absolute;
-		inset: 0;
+		inset: -26px -26px;
+		border-radius: 18px;
 		overflow: hidden;
 		pointer-events: none;
 		z-index: 0;
@@ -367,12 +372,12 @@
 		bottom: 16%;
 		color: var(--heat, #34c759);
 		opacity: 0;
-		animation: pingrise 1.4s ease-out backwards;
+		animation: pingrise 2s ease-in-out backwards;
 	}
 	@keyframes pingrise {
-		0% { opacity: 0; transform: translateY(12px); }
-		18% { opacity: 0.9; }
-		100% { opacity: 0; transform: translateY(-64px); }
+		0% { opacity: 0; transform: translateY(10px); }
+		25% { opacity: 0.7; }
+		100% { opacity: 0; transform: translateY(-44px); }
 	}
 	/* ---- modal sections ---- */
 	.cbody {
