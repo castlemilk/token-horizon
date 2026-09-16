@@ -879,10 +879,10 @@
 	.morph.modal {
 		position: fixed;
 		inset: 0;
-		margin: auto;
+		margin: min(15vh, 60px) auto;
 		width: min(860px, calc(100vw - 40px));
 		height: fit-content;
-		max-height: min(86vh, 780px);
+		max-height: min(calc(100vh - 2 * min(15vh, 60px)), 780px);
 		z-index: 81;
 		display: flex;
 		flex-direction: column;
@@ -1002,7 +1002,7 @@
 	@media (max-width: 640px) {
 		.morph.modal {
 			width: calc(100vw - 24px);
-			max-height: 92vh;
+			max-height: calc(100vh - 2 * min(15vh, 60px));
 		}
 	}
 	@media (prefers-reduced-motion: reduce) {

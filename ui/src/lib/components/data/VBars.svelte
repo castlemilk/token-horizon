@@ -1,3 +1,8 @@
+<script lang="ts" module>
+	/** Per-instance gradient ids (several VBars can share a page). */
+	let gradSeq = 0;
+</script>
+
 <script lang="ts">
 	import { scaleTime } from 'd3-scale';
 	import { timeDay, timeMonth, timeYear } from 'd3-time';
@@ -29,6 +34,10 @@
 		ping?: { id: string; tokens: number } | null;
 	} = $props();
 
+	const gid = `vgrad-${++gradSeq}`;
+	const reduceMotion =
+		typeof matchMedia !== 'undefined' && matchMedia('(prefers-reduced-motion: reduce)').matches;
+
 	let cw = $state(0);
 	/* container width in px (SSR-safe fallback); drives density, not geometry */
 	const effW = $derived(cw > 0 ? cw : 900);
@@ -39,9 +48,11 @@
 
 	const W = 900;
 	const LABELH = 20;
-	/* generous cap: sparse horizons (few bars) fill their slots instead of
-	   floating as capped slivers with huge gaps */
-	const MAXBW = 160;
+	/* width band kept tight so bars read the same across horizons:
+	   sparse windows stay elegant instead of ballooning, dense ones
+	   stay visible instead of collapsing to slivers */
+	const MAXBW = 56;
+	const MINBW = 4;
 
 	const merged = $derived.by(() => {
 		const span = Math.max(1, to - from);
@@ -78,7 +89,7 @@
 			const h = (p.value / max) * (H - 6);
 			/* edge bins can overhang the domain — clamp into the frame */
 			const rawX = x(p.ts * 1000) + (step - bw) / 2 + bw * 0.1;
-			const rawW = Math.max(bw * 0.8, 2);
+			const rawW = Math.max(bw * 0.8, MINBW);
 			const cx = Math.max(0, rawX);
 			const cw2 = Math.max(Math.min(rawX + rawW, W) - cx, 0.5);
 			return {
@@ -92,6 +103,9 @@
 			};
 		});
 	});
+
+	/* faint hairline gridlines behind the bars */
+	const grid = $derived([0.25, 0.5, 0.75, 1].map((f) => ({ y: H - f * (H - 6) })));
 
 	/* classic d3 multi-scale tick format */
 	const fTime = timeFormat('%H:%M');
@@ -142,8 +156,26 @@
 {#if points.length > 0}
 	<div class="vwrap" bind:clientWidth={cw}>
 	<svg class="vchart" viewBox="0 -30 {W} {H + LABELH + 30}" style:height="{H + LABELH + 30}px">
-		{#each bars as b}
-			<rect x={b.x} y={b.y} width={b.w} height={Math.max(b.h, 0.5)} rx={b.rx} class="bar">
+		<defs>
+			<linearGradient id={gid} x1="0" y1="0" x2="0" y2="1">
+				<stop offset="0" stop-color="var(--accent)" stop-opacity="0.55" />
+				<stop offset="1" stop-color="var(--accent)" stop-opacity="1" />
+			</linearGradient>
+		</defs>
+		{#each grid as g}
+			<line x1="0" x2={W} y1={g.y} y2={g.y} class="grid" />
+		{/each}
+		{#each bars as b, i}
+			<rect
+				x={b.x}
+				y={b.y}
+				width={b.w}
+				height={Math.max(b.h, 0.5)}
+				rx={b.rx}
+				class="bar"
+				style={reduceMotion ? '' : `animation-delay: ${Math.min(i * 14, 420)}ms`}
+				fill="url(#{gid})"
+			>
 				<title>{multiFormat(new Date(b.ts * 1000))} — {fmtTok(b.value)} tokens</title>
 			</rect>
 		{/each}
@@ -181,12 +213,24 @@
 		width: 100%;
 		display: block;
 	}
+	.grid {
+		stroke: var(--line);
+		stroke-width: 1;
+		opacity: 0.55;
+	}
 	.bar {
 		fill: var(--accent);
-		opacity: 0.85;
+		opacity: 0.92;
+		/* geometry transitions carry polls + horizon switches */
+		transition: x 0.45s ease, y 0.45s ease, width 0.45s ease, height 0.45s ease, opacity 0.2s ease;
+		animation: vin 0.5s ease backwards;
 	}
 	.bar:hover {
 		opacity: 1;
+	}
+	@keyframes vin {
+		from { opacity: 0; }
+		to { opacity: 0.92; }
 	}
 	/* arrival wash: sharp full-height bar over the newest column, fading
 	   out; the +N label floats up off the bar top (headroom above the
@@ -227,6 +271,10 @@
 		}
 	}
 	@media (prefers-reduced-motion: reduce) {
+		.bar {
+			animation: none;
+			transition: none;
+		}
 		.flashbar,
 		.flashlabel {
 			animation: none;
