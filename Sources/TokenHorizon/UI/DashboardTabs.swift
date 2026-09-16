@@ -3053,8 +3053,8 @@ struct DashboardTabs: View {
         }
     }
 
-    static func formatReset(_ d: Date) -> String {
-        let diff = d.timeIntervalSinceNow
+    static func formatReset(_ d: Date, now: Date = Date()) -> String {
+        let diff = d.timeIntervalSince(now)
         if diff <= 0 { return "now" }
         if diff < 3600 { return "\(Int(diff / 60))m" }
         if diff < 86400 { return "\(Int(diff / 3600))h \(Int((diff.truncatingRemainder(dividingBy: 3600)) / 60))m" }
@@ -3063,8 +3063,8 @@ struct DashboardTabs: View {
         return "\(days)d \(hours)h"
     }
 
-    static func formatResetShort(_ d: Date) -> String {
-        let diff = d.timeIntervalSinceNow
+    static func formatResetShort(_ d: Date, now: Date = Date()) -> String {
+        let diff = d.timeIntervalSince(now)
         if diff <= 0 { return "now" }
         if diff < 3600 { return "\(max(1, Int(diff / 60)))m" }
         if diff < 86400 {

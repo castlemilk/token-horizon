@@ -7,19 +7,24 @@ import XCTest
 final class DashboardFormatTests: XCTestCase {
 
     func testFormatReset() {
-        XCTAssertEqual(DashboardTabs.formatReset(Date().addingTimeInterval(-5)), "now")
-        XCTAssertEqual(DashboardTabs.formatReset(Date().addingTimeInterval(30 * 60)), "30m")
-        XCTAssertEqual(DashboardTabs.formatReset(Date().addingTimeInterval(90 * 60)), "1h 30m")
-        XCTAssertEqual(DashboardTabs.formatReset(Date().addingTimeInterval(25 * 3600)), "1d 1h")
+        // Pin `now` — using the wall clock twice flaked on slow/coverage
+        // instrumented CI runs when the elapsed time crossed a minute edge.
+        let now = Date()
+        XCTAssertEqual(DashboardTabs.formatReset(now.addingTimeInterval(-5), now: now), "now")
+        XCTAssertEqual(DashboardTabs.formatReset(now.addingTimeInterval(30 * 60), now: now), "30m")
+        XCTAssertEqual(DashboardTabs.formatReset(now.addingTimeInterval(90 * 60), now: now), "1h 30m")
+        XCTAssertEqual(DashboardTabs.formatReset(now.addingTimeInterval(25 * 3600), now: now), "1d 1h")
+        XCTAssertEqual(DashboardTabs.formatReset(now.addingTimeInterval(3600), now: now), "1h 0m")
     }
 
     func testFormatResetShort() {
-        XCTAssertEqual(DashboardTabs.formatResetShort(Date().addingTimeInterval(-1)), "now")
-        XCTAssertEqual(DashboardTabs.formatResetShort(Date().addingTimeInterval(30 * 60)), "30m")
+        let now = Date()
+        XCTAssertEqual(DashboardTabs.formatResetShort(now.addingTimeInterval(-1), now: now), "now")
+        XCTAssertEqual(DashboardTabs.formatResetShort(now.addingTimeInterval(30 * 60), now: now), "30m")
         // Sub-minute rounds up to 1m, never 0m.
-        XCTAssertEqual(DashboardTabs.formatResetShort(Date().addingTimeInterval(20)), "1m")
-        XCTAssertEqual(DashboardTabs.formatResetShort(Date().addingTimeInterval(3.2 * 3600)), "3h")
-        XCTAssertEqual(DashboardTabs.formatResetShort(Date().addingTimeInterval(2.5 * 86400)), "2.5d")
+        XCTAssertEqual(DashboardTabs.formatResetShort(now.addingTimeInterval(20), now: now), "1m")
+        XCTAssertEqual(DashboardTabs.formatResetShort(now.addingTimeInterval(3.2 * 3600), now: now), "3h")
+        XCTAssertEqual(DashboardTabs.formatResetShort(now.addingTimeInterval(2.5 * 86400), now: now), "2.5d")
     }
 
     func testFormatResetDateTime() {
