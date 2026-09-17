@@ -2,6 +2,19 @@ import Foundation
 #if canImport(FoundationNetworking)
 import FoundationNetworking
 #endif
+#if canImport(Darwin)
+import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#endif
+
+/// Ignore SIGPIPE process-wide. EVERY host (headless daemon, macOS app)
+/// must call this at startup: when a client cancels mid-stream, the next
+/// relay send() would otherwise terminate the whole process. With SIGPIPE
+/// ignored, send() surfaces EPIPE and the meter cancels upstream instead.
+public func ignoreSIGPIPE() {
+    signal(SIGPIPE, SIG_IGN)
+}
 
 /// One fully-observed HTTP exchange, captured by a RequestMeter relay.
 public struct MeteredExchange {
@@ -480,16 +493,28 @@ open class RequestMeter: NSObject, URLSessionDataDelegate {
         lines.append("Connection: close")
         lines.append("")
         lines.append("")
-        writeAll(conn.clientFD, Data(lines.joined(separator: "\r\n").utf8))
+        // The client may have cancelled while upstream was working: a
+        // failed write means the peer is gone — cancel upstream instead
+        // of buffering a response nobody will read.
+        guard writeAll(conn.clientFD, Data(lines.joined(separator: "\r\n").utf8)) else {
+            dataTask.cancel()
+            completionHandler(.cancel)
+            return
+        }
         conn.responseStarted = true
         completionHandler(.allow)
     }
 
     public func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
         guard let conn = takeConn(dataTask, removing: false) else { return }
+        // Client cancelled mid-stream: stop feeding upstream reads into a
+        // dead socket — cancel the task (cleanup runs in didComplete).
+        guard writeAll(conn.clientFD, data) else {
+            dataTask.cancel()
+            return
+        }
         if conn.exchange.firstByteAt == nil { conn.exchange.firstByteAt = Date() }
         conn.exchange.responseBody.append(data)
-        writeAll(conn.clientFD, data)
     }
 
     public func urlSession(_ session: URLSession, task: URLSessionTask,
@@ -622,15 +647,23 @@ open class RequestMeter: NSObject, URLSessionDataDelegate {
         }
     }
 
-    private func writeAll(_ fd: Int32, _ data: Data) {
+    /// Best-effort write. False when the peer is gone (EPIPE/RST) so
+    /// callers can cancel upstream instead of buffering into the void.
+    /// (Requires ignoreSIGPIPE() at startup — otherwise this send is the
+    /// one that used to terminate the daemon on client cancel.)
+    @discardableResult
+    private func writeAll(_ fd: Int32, _ data: Data) -> Bool {
+        var done = false
         data.withUnsafeBytes { ptr in
-            guard let base = ptr.baseAddress else { return }
+            guard let base = ptr.baseAddress else { done = true; return }
             var sent = 0
             while sent < data.count {
                 let n = send(fd, base + sent, data.count - sent, 0)
                 if n <= 0 { return }
                 sent += n
             }
+            done = true
         }
+        return done
     }
 }

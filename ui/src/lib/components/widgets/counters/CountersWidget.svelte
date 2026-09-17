@@ -1,15 +1,17 @@
 <script lang="ts">
+	import { onMount } from 'svelte';
 	import WidgetMorph, {
 		type Phase,
 		type EnterSpec,
 		type ExitSpec,
 		type TravelRoots,
 		type TravelMark
-	} from './WidgetMorph.svelte';
-	import { rectSettled } from './morph';
-	import type { ProviderSummary } from '$lib/api';
-	import { billableTok, fmtTok } from '$lib/format';
+	} from '../generic/WidgetMorph.svelte';
+	import { rectSettled } from '../generic/morph';
+	import { api, type ProviderSummary } from '$lib/api';
+	import { billableTok, fmtTok, poll } from '$lib/format';
 	import { providerAccent } from '$lib/colors';
+	import { settings } from '$lib/settings.svelte';
   import { AspectRatio } from 'bits-ui'
 
 	/** Home-screen totals widget, two sizes sharing one modal.
@@ -24,14 +26,27 @@
 	 *  `speed` scales every duration (1 = brisk). Billable semantics
 	 *  throughout (excludes cache reads), like the main tab. */
 	let {
-		providers,
+		providers = undefined,
 		variant,
 		speed = 1
 	}: {
-		providers: ProviderSummary[];
+		providers?: ProviderSummary[];
 		variant: 'small' | 'medium';
 		speed?: number;
 	} = $props();
+
+	// Own data feed when the host passes none (home bento).
+	let owned = $state<ProviderSummary[]>([]);
+	onMount(() =>
+		poll(async () => {
+			try {
+				owned = (await api.summary(!settings.showImports)).providers;
+			} catch {
+				/* daemon down — keep last paint */
+			}
+		}, 10000)
+	);
+	const feed = $derived(providers ?? owned);
 
 	const reduce =
 		typeof matchMedia !== 'undefined' && matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -42,7 +57,7 @@
 		let requests = 0;
 		let measured = 0;
 		let list = 0;
-		for (const p of providers) {
+		for (const p of feed) {
 			t.input += p.tokens.input;
 			t.output += p.tokens.output;
 			t.reasoning += p.tokens.reasoning;
@@ -59,13 +74,13 @@
 	);
 	/** Hero semantics: actual charge where present, else list equivalent. */
 	const displayCost = $derived(
-		providers.reduce(
+		feed.reduce(
 			(s, p) => s + (p.cost > 0.0001 ? p.cost : (p.costEquivalent ?? 0)),
 			0
 		)
 	);
 	const rows = $derived(
-		providers
+		feed
 			.map((p) => ({
 				vendor: p.vendor,
 				tokens: billableTok(p.tokens),

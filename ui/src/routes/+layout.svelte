@@ -10,7 +10,7 @@
 	import OSIcon from '$lib/components/data/OSIcon.svelte';
 	import Onboarding from '$lib/components/feedback/Onboarding.svelte';
 	import RingsBackground from '$lib/components/feedback/RingsBackground.svelte';
-	import { Coins, Trophy, Cpu, Gauge, Settings, PlugZap } from 'lucide-svelte';
+	import { House, Activity, Settings, PlugZap } from 'lucide-svelte';
 
 	let { children } = $props();
 
@@ -78,17 +78,14 @@
 	);
 
 	// Icon tabs — labels live on tooltips (title/aria), the UI stays wordless.
-	const baseTabs = [
-		{ path: '/', label: 'Tokens', icon: Coins },
-		{ path: '/leaderboard', label: 'Leaderboard', icon: Trophy }
-	];
-	const tailTabs = [
-		{ path: '/limits', label: 'Limits', icon: Gauge }
-	];
+	// Home · Meters (when runtime analytics exist) · Profile.
 	const tabs = $derived(
 		machineAvailable
-			? [...baseTabs, { path: '/metering', label: 'Metering', icon: Cpu }, ...tailTabs]
-			: [...baseTabs, ...tailTabs]
+			? [
+					{ path: '/', label: 'Home', icon: House },
+					{ path: '/metering', label: 'Meters', icon: Activity }
+				]
+			: [{ path: '/', label: 'Home', icon: House }]
 	);
 
 	const profilePath = $derived(`/@${settings.handle.trim() || 'me'}`);
@@ -105,7 +102,6 @@
 					<t.icon size={17} strokeWidth={1.8} />
 				</a>
 			{/each}
-			<span class="island-sep" aria-hidden="true"></span>
 			<a
 				class="island-profile"
 				class:active={profileActive}

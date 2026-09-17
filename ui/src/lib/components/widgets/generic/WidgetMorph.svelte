@@ -817,7 +817,7 @@
 			<div class="wmodal-head">
 				{#if headerExtra}{@render headerExtra()}{/if}
 				<button class="wmodal-x" onclick={(e) => { e.stopPropagation(); hide(); }} aria-label="Close {title}">
-					<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg>
+					<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg>
 				</button>
 			</div>
 			<div class="wmodal-body" data-lenis-prevent>
@@ -960,9 +960,9 @@
 		border: 0;
 		background: transparent;
 		color: var(--text-2);
-		width: 30px;
-		height: 30px;
-		border-radius: 9px;
+		width: 38px;
+		height: 38px;
+		border-radius: 12px;
 		display: flex;
 		align-items: center;
 		justify-content: center;
@@ -982,6 +982,22 @@
 		overflow-y: auto;
 		overscroll-behavior: contain;
 		scrollbar-gutter: stable;
+		/* soft edge fades so scrolled content (e.g. the chart)
+		   dissolves instead of clipping hard at the frame */
+		-webkit-mask-image: linear-gradient(
+			to bottom,
+			transparent 0,
+			#000 48px,
+			#000 calc(100% - 40px),
+			transparent 100%
+		);
+		mask-image: linear-gradient(
+			to bottom,
+			transparent 0,
+			#000 48px,
+			#000 calc(100% - 40px),
+			transparent 100%
+		);
 	}
 	/* card chrome hidden until the shell lands — squished scaling text
 	   is the overlay tell */
