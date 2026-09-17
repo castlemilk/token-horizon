@@ -1,4 +1,8 @@
 import AppKit
+import TokenHorizonCore
+
+// A cancelled client mid-stream must never SIGPIPE the app.
+ignoreSIGPIPE()
 
 // Self-management CLI (portable crash-recovery + identity, no repo scripts):
 // the installed bundle maintains its own LaunchAgent wherever it lives.

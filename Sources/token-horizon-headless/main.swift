@@ -14,6 +14,9 @@ import ucrt
 // All route logic lives in TokenHorizonCore's CoreAPIRouter; this host only
 // wires platform seams and starts transports/engines.
 
+// First: a cancelled client mid-stream must never SIGPIPE the daemon.
+ignoreSIGPIPE()
+
 #if os(Linux)
 Platform.systemStats = ProcFSSystemStats.self
 #endif

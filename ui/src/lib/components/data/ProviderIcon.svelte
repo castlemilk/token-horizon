@@ -20,8 +20,11 @@
 	/* Raster brand marks in /icons/ (webp, alpha). iconKey() maps a
 	   vendor/model hint to a file basename; HAS_DARK lists which have a
 	   `-dark.webp` variant. Missing keys fall back to the glyph chips. */
+	// Single-variant keys that always serve their -dark file in both
+	// themes (transparent light glyph).
+	const SINGLE_DARK = new Set(['kimi']);
 	const HAS_DARK = new Set([
-		'anthropic', 'kimi', 'linux', 'mlx', 'moonshot', 'ollama', 'openai', 'opencode', 'pi'
+		'anthropic', 'linux', 'mlx', 'moonshot', 'ollama', 'openai', 'opencode', 'pi'
 	]);
 
 	export function iconKey(vendor: string, model = ''): string | null {
@@ -145,11 +148,14 @@
 {#if key}
 <span
 	class="picon raster"
+	class:single={SINGLE_DARK.has(key)}
 	role="img"
 	aria-label={vendor}
 	style="width:{size}px;height:{size}px;border-radius:{radius}px"
 >
-	{#if iconHasDark(key)}
+	{#if SINGLE_DARK.has(key)}
+		<img src="/icons/{key}-dark.webp" alt="" width={size} height={size} draggable="false" />
+	{:else if iconHasDark(key)}
 		<img class="light-var" src="/icons/{key}.webp" alt="" width={size} height={size} draggable="false" />
 		<img class="dark-var" src="/icons/{key}-dark.webp" alt="" width={size} height={size} draggable="false" />
 	{:else}
@@ -228,6 +234,19 @@
 	.picon.raster {
 		box-shadow: none;
 		overflow: hidden;
+	}
+	/* single-variant light glyphs ride a dark chip so they read
+	   identically in both themes */
+	.picon.raster.single {
+		background: #1c1c22;
+		box-shadow:
+			inset 0 0 0 1px rgb(255 255 255 / 0.14),
+			0 1px 1px rgb(0 0 0 / 0.2);
+	}
+	.picon.raster.single img {
+		width: 78%;
+		height: 78%;
+		margin: auto;
 	}
 	.picon.raster img {
 		width: 100%;

@@ -6,8 +6,8 @@
 		type ExitSpec,
 		type TravelRoots,
 		type TravelMark
-	} from './WidgetMorph.svelte';
-	import { rectSettled } from './morph';
+	} from '../generic/WidgetMorph.svelte';
+	import { rectSettled } from '../generic/morph';
 	import VBars from '$lib/components/data/VBars.svelte';
 	import CountUp from '$lib/components/data/CountUp.svelte';
 	import ProviderIcon from '$lib/components/data/ProviderIcon.svelte';
@@ -71,6 +71,13 @@
 	let phase = $state<Phase>('settle');
 	let landed = $state(false);
 	let bodyEl = $state<HTMLElement | null>(null);
+	// Modal width drives table density (viewport queries can't see the
+	// modal): xl shows everything incl. cost → lg drops input/output/
+	// thinking → compact also drops cost → minimal keeps tokens only.
+	let modalW = $state(0);
+	const tier = $derived(
+		modalW <= 0 ? 3 : modalW < 520 ? 0 : modalW < 640 ? 1 : modalW < 800 ? 2 : 3
+	);
 
 	function bestCost(c: number, equiv?: number | null): number {
 		return c > 0.0001 ? c : (equiv ?? 0);
@@ -421,7 +428,7 @@
 	</div>
 {/snippet}
 {#snippet modalContent()}
-	<div class="cbody" bind:this={bodyEl}>
+	<div class="cbody t{tier}" bind:this={bodyEl} bind:clientWidth={modalW}>
 		<section class="mod chartmod">
 			<div class="picker-row">
 				<div class="seg" role="group" aria-label="Window">
@@ -444,16 +451,16 @@
 				<VBars points={chartPoints} from={chartFrom} to={chartTo} {ping} />
 				<div class="chart-stats">
 					<div class="chart-stat">
-						<div class="chart-stat-value"><CountUp value={chartCost} format={(n) => `$${n.toFixed(2)}`} /></div>
-						<div class="chart-stat-label">cost{selected ? ` · ${selected.model ?? selected.vendor}` : ''}</div>
+						<span class="chart-stat-value"><CountUp value={chartCost} format={(n) => `$${n.toFixed(2)}`} /></span>
+						<span class="chart-stat-label">cost{selected ? ` · ${selected.model ?? selected.vendor}` : ''}</span>
 					</div>
 					<div class="chart-stat" class:conceal={phase === 'fly'}>
-						<div class="chart-stat-value num" data-travel="atotal"><CountUp value={tileTotal} /></div>
-						<div class="chart-stat-label">tokens</div>
+						<span class="chart-stat-value num" data-travel="atotal"><CountUp value={tileTotal} /></span>
+						<span class="chart-stat-label">tokens</span>
 					</div>
 					<div class="chart-stat">
-						<div class="chart-stat-value"><CountUp value={chartRequests} format={(n) => Math.round(n).toLocaleString()} /></div>
-						<div class="chart-stat-label">requests</div>
+						<span class="chart-stat-value"><CountUp value={chartRequests} format={(n) => Math.round(n).toLocaleString()} /></span>
+						<span class="chart-stat-label">requests</span>
 					</div>
 				</div>
 			</div>
@@ -475,7 +482,7 @@
 					actionHref="/metering"
 				/>
 			{:else}
-				<div class="sharebar" role="img" aria-label="Provider share of token usage" style="margin-top: 38px">
+				<div class="sharebar" role="img" aria-label="Provider share of token usage" style="margin-top: 8px">
 					{#each ranked as r}
 						<button
 							class="seg-segment"
@@ -489,9 +496,9 @@
 				</div>
 
 				<div class="rankgrid faint" style="margin-top: 20px; font-size: 11px">
-					<span></span><span>Provider</span><span class="right">Share</span>
-					<span class="right">Tokens</span><span class="right m-md">Input</span><span class="right m-md">Output</span>
-					<span class="right m-md">Thinking</span><span class="right m-sm">Cost</span><span class="right m-sm">Last activity</span>
+					<span></span><span>Provider</span>
+					<span class="right">Tokens</span><span class="right col-md">Input</span><span class="right col-md">Output</span>
+					<span class="right col-md">Thinking</span><span class="right col-cost">Cost</span><span class="right col-sm">Last activity</span>
 				</div>
 
 				<Accordion.Root type="multiple" class="ranklist">
@@ -505,16 +512,12 @@
 									<ProviderIcon vendor={r.vendor} size={26} />
 									{r.label}
 								</span>
-								<span class="right num sharecell" style="justify-content: flex-end">
-									<span class="sharemini"><span style="width: {r.share}%; background: {providerAccent(r.vendor)}"></span></span>
-									{r.share.toFixed(1)}%
-								</span>
 							<span class="right num"><strong><CountUp value={r.tokens} /></strong></span>
-							<span class="right num dim m-md"><CountUp value={r.input} /></span>
-							<span class="right num dim m-md"><CountUp value={r.output} /></span>
-								<span class="right num dim m-md">{r.thinking > 0 ? fmtTok(r.thinking) : '—'}</span>
-								<span class="right num dim m-sm">{fmtCost(r.cost, r.costEquivalent)}</span>
-								<span class="right dim m-sm">{fmtAgo(r.lastEvent)}</span>
+							<span class="right num dim col-md"><CountUp value={r.input} /></span>
+							<span class="right num dim col-md"><CountUp value={r.output} /></span>
+								<span class="right num dim col-md">{r.thinking > 0 ? fmtTok(r.thinking) : '—'}</span>
+								<span class="right num dim col-cost">{fmtCost(r.cost, r.costEquivalent)}</span>
+								<span class="right dim col-sm">{fmtAgo(r.lastEvent)}</span>
 							</Accordion.Trigger>
 							<Accordion.Content>
 								{#if models.length === 0}
@@ -527,13 +530,12 @@
 										<button class="rankgrid modelrow" onclick={() => select(r.vendor, m.model)}>
 											<span></span>
 											<span class="mono dim" style="padding-left: 22px; display: flex; align-items: center; gap: 7px" title={m.model}><ProviderIcon vendor={r.vendor} model={m.model} size={24} />{fmtModel(m.model)}</span>
-											<span class="right num dim">{rankTotal > 0 ? ((mtoks / rankTotal) * 100).toFixed(1) : '0.0'}%</span>
 										<span class="right num"><CountUp value={mtoks} /></span>
-										<span class="right num dim m-md"><CountUp value={m.tokens.input} /></span>
-										<span class="right num dim m-md"><CountUp value={m.tokens.output} /></span>
-											<span class="right num dim m-md">{m.tokens.reasoning > 0 ? fmtTok(m.tokens.reasoning) : '—'}</span>
-											<span class="right num dim m-sm">{fmtCost(m.cost, m.costEquivalent)}</span>
-											<span class="right dim m-sm">{fmtAgo(m.lastEvent)}</span>
+										<span class="right num dim col-md"><CountUp value={m.tokens.input} /></span>
+										<span class="right num dim col-md"><CountUp value={m.tokens.output} /></span>
+											<span class="right num dim col-md">{m.tokens.reasoning > 0 ? fmtTok(m.tokens.reasoning) : '—'}</span>
+											<span class="right num dim col-cost">{fmtCost(m.cost, m.costEquivalent)}</span>
+											<span class="right dim col-sm">{fmtAgo(m.lastEvent)}</span>
 										</button>
 									{/each}
 									{#if sorted.length > MODEL_LIMIT}
@@ -589,7 +591,7 @@
 		/* negative margins cancel the shell tile padding so the sky
 		   fills the whole widget; inner padding gives the content room */
 		margin: -26px -16px;
-		padding: 24px 20px 22px;
+		padding: 24px 8px 22px 20px;
 	}
 	/* day-cycle sky: tile-only backdrop at low opacity, fading in on
 	   mount/landing and cross-fading between day periods.
@@ -667,6 +669,7 @@
 		flex: none;
 		color: #fff;
 		mix-blend-mode: difference;
+		opacity: 0.78;
 	}
 	.vval {
 		font-size: 10px;
@@ -819,6 +822,9 @@
 		padding: 22px 22px 20px;
 		background: color-mix(in srgb, var(--bg-raised) 45%, transparent);
 	}
+	.cbody .chartmod {
+		padding-top: 12px;
+	}
 	.picker-row {
 		display: flex;
 		justify-content: center;
@@ -842,23 +848,26 @@
 		pointer-events: none;
 		user-select: none;
 	}
+	.chart-stat {
+		display: flex;
+		align-items: baseline;
+		gap: 6px;
+	}
 	.chart-stat-value {
-		font-size: 16px;
+		font-size: 14px;
 		font-weight: 700;
 		font-variant-numeric: tabular-nums;
 		line-height: 1.1;
 	}
 	.chart-stat-label {
-		margin-top: 2px;
-		font-size: 10px;
-		font-weight: 600;
-		letter-spacing: 0.14em;
-		text-transform: uppercase;
+		font-size: 14px;
+		font-weight: 500;
 		opacity: 0.75;
+		white-space: nowrap;
 	}
 	.rankgrid {
 		display: grid;
-		grid-template-columns: 1.6rem minmax(9rem, 1.2fr) 5.5rem 5rem 5rem 5rem 5rem 4.5rem 5.5rem 1.2rem;
+		grid-template-columns: 1.6rem minmax(9rem, 1.2fr) 5rem 5rem 5rem 5rem 4.5rem 5.5rem 1.2rem;
 		gap: 8px;
 		align-items: center;
 		width: 100%;
@@ -890,7 +899,7 @@
 		text-align: left;
 		cursor: pointer;
 		display: grid;
-		grid-template-columns: 1.6rem minmax(9rem, 1.2fr) 5.5rem 5rem 5rem 5rem 5rem 4.5rem 5.5rem 1.2rem;
+		grid-template-columns: 1.6rem minmax(9rem, 1.2fr) 5rem 5rem 5rem 5rem 4.5rem 5.5rem 1.2rem;
 		gap: 8px;
 		align-items: center;
 		padding: 16px 4px;
@@ -922,16 +931,6 @@
 		padding: 1px 8px;
 		cursor: pointer;
 	}
-	.sharecell { display: inline-flex; align-items: center; gap: 6px; }
-	.sharemini {
-		display: inline-block;
-		width: 42px;
-		height: 4px;
-		border-radius: 2px;
-		background: var(--track, rgba(128, 128, 128, 0.15));
-		overflow: hidden;
-	}
-	.sharemini span { display: block; height: 100%; opacity: 0.85; }
 	.seg {
 		display: inline-flex;
 		background: var(--track);
@@ -998,22 +997,28 @@
 	.rankskel-row .skel {
 		height: 22px;
 	}
-	@media (max-width: 900px) {
-		.rankgrid,
-		.cbody :global(button[data-slot="accordion-trigger"]) {
-			grid-template-columns: 1.6rem minmax(7rem, 1.4fr) 5rem 4.5rem 4.5rem 5.5rem 1.2rem;
-		}
-		.m-md { display: none; }
+	/* table density follows the modal width (t2 full / t1 compact /
+	   t0 minimal) — rows always span the full graph width */
+	.cbody.t2 .rankgrid,
+	.cbody.t2 :global(button[data-slot="accordion-trigger"]) {
+		grid-template-columns: 1.6rem minmax(8rem, 1.3fr) 5rem 4.5rem 5.5rem 1.2rem;
 	}
-	@media (max-width: 640px) {
-		.rankgrid,
-		.cbody :global(button[data-slot="accordion-trigger"]) {
-			grid-template-columns: 1.2rem minmax(6rem, 1.6fr) 4.5rem 4rem 1.2rem;
-			gap: 6px;
-		}
-		.m-sm { display: none; }
-		.modelrow { font-size: 11px; }
+	.cbody.t2 .col-md { display: none; }
+	.cbody.t1 .rankgrid,
+	.cbody.t1 :global(button[data-slot="accordion-trigger"]) {
+		grid-template-columns: 1.6rem minmax(7rem, 1.4fr) 5rem 5.5rem 1.2rem;
 	}
+	.cbody.t1 .col-md,
+	.cbody.t1 .col-cost { display: none; }
+	.cbody.t0 .rankgrid,
+	.cbody.t0 :global(button[data-slot="accordion-trigger"]) {
+		grid-template-columns: 1.2rem minmax(6rem, 1.6fr) 4.5rem 1.2rem;
+		gap: 6px;
+	}
+	.cbody.t0 .col-md,
+	.cbody.t0 .col-cost,
+	.cbody.t0 .col-sm { display: none; }
+	.cbody.t0 .modelrow { font-size: 11px; }
 	@media (prefers-reduced-motion: reduce) {
 		.bar { transition: none; animation: none; }
 		.bflash, .bdelta { animation: none; }

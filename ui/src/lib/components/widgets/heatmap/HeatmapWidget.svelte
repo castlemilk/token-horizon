@@ -5,7 +5,7 @@
 		type ExitSpec,
 		type TravelRoots,
 		type TravelMark
-	} from './WidgetMorph.svelte';
+	} from '../generic/WidgetMorph.svelte';
 	import Heatmap from '$lib/components/data/Heatmap.svelte';
 	import {
 		activityStats,
@@ -16,7 +16,7 @@
 	import { fmtTok } from '$lib/format';
 
 	/** Home-screen activity widget, two sizes sharing one modal.
-	 *  small: 3×3 tile — last 9 days, one dot per day.
+	 *  small: 4×4 tile — last 16 days, one dot per day.
 	 *  medium: 9×3 tile — last 27 days, one dot per day.
 	 *  modal: the full year (trailing 365d while the year is incomplete).
 	 *
@@ -46,7 +46,7 @@
 	/** Same domain as the trailing-year heatmap, so tile colors match cells.
 	 *  Billable tokens throughout (excludes cache reads), like the main tab. */
 	const tileMax = $derived(Math.max(1, ...days.map((d) => d.tokens)));
-	const TILE_N = $derived(variant === 'small' ? 9 : 27);
+	const TILE_N = $derived(variant === 'small' ? 16 : 27);
 	const tileDays = $derived(days.slice(-TILE_N));
 	const tileLvls = $derived(tileDays.map((d) => level(d.tokens, tileMax)));
 	const streak = $derived(activityStats(days).streak);
@@ -245,7 +245,7 @@
 		{#each tileDays as d, k}
 			<span
 				class="mdot lvl-{tileLvls[k]}"
-				style={reduce ? '' : `animation-delay: ${k * (variant === 'small' ? 55 : 22)}ms`}
+				style={reduce ? '' : `animation-delay: ${k * (variant === 'small' ? 30 : 22)}ms`}
 				title={tip(d)}
 			></span>
 		{/each}
@@ -262,7 +262,7 @@
 <WidgetMorph
 	size={variant === 'small' ? 'sm' : 'md'}
 	{speed}
-	tileLabel="Activity — {variant === 'small' ? 'Last 9 days' : 'Last 27 days'} · tap to expand"
+	tileLabel="Activity — {variant === 'small' ? 'Last 16 days' : 'Last 27 days'} · tap to expand"
 	title="Activity"
 	bind:phase
 	bind:landed
@@ -285,7 +285,7 @@
 	.mini {
 		flex: 1;
 		display: grid;
-		grid-template-columns: repeat(3, auto);
+		grid-template-columns: repeat(4, auto);
 		gap: 10px;
 		justify-content: center;
 		align-content: center;

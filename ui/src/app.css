@@ -258,14 +258,6 @@ html.lenis body {
 		0 0 0 1px rgba(0, 0, 0, 0.05);
 }
 
-.island-sep {
-	width: 1px;
-	height: 16px;
-	margin: 0 4px;
-	background: var(--line-strong);
-	flex: none;
-}
-
 .island-profile {
 	min-width: 48px;
 	height: 36px;
@@ -294,6 +286,39 @@ html.lenis body {
 	font-weight: 700;
 	letter-spacing: 0.01em;
 	flex: none;
+}
+
+/* ---- Tab rail: vertical, middle-left on larger screens.
+   Placed AFTER the pill rules so it wins at equal specificity. ---- */
+
+@media (min-width: 641px) {
+	.island-shell {
+		padding: 32px 104px 72px;
+	}
+	.island-wrap {
+		left: calc(18px + env(safe-area-inset-left));
+		top: calc(50% - 22px);
+		transform: translateY(-50%);
+	}
+	.island {
+		flex-direction: column;
+		padding: 9px 7px;
+		border-radius: 26px;
+	}
+	.island a {
+		min-width: 0;
+		width: 44px;
+		height: 44px;
+		padding: 0;
+		border-radius: 50%;
+	}
+	.island-profile {
+		min-width: 0 !important;
+		width: 44px;
+		height: 44px;
+		padding: 0 !important;
+		border-radius: 50%;
+	}
 }
 
 /* ---- Bottom status bar: flush bottom edge, top hairline only ---- */
