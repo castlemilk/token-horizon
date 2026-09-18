@@ -16,6 +16,7 @@
 	import { settings } from '$lib/settings.svelte';
 	import YearHeatmap, { type HintInfo } from '$lib/components/widgets/heatmap/YearHeatmap.svelte';
 	import ProviderIcon from '$lib/components/data/ProviderIcon.svelte';
+	import AnimatedNumber from '$lib/components/data/AnimatedNumber.svelte';
 	import EmptyState from '$lib/components/common/EmptyState.svelte';
 
 	// Route: /@<handle> — own handle reads the local daemon; any other
@@ -46,7 +47,9 @@
 			return done;
 		}
 		const metered = `?limit=1${settings.showImports ? '' : '&metered=1'}`;
-		const stop = poll(async () => {
+		// Fast lane (10s): totals + newest event. Slow lane (60s): the day
+		// feed and trailing-24h figure. Both fire immediately via poll().
+		const fast = poll(async () => {
 			try {
 				const [s, e] = await Promise.all([
 					api.summary(!settings.showImports),
@@ -58,14 +61,21 @@
 				/* daemon down */
 			}
 		}, 10000);
-		fetchDailyActivity(365, !settings.showImports)
-			.then((d) => (days = d))
-			.catch(() => {});
-		fetchLast24hTokens(!settings.showImports)
-			.then((v) => (last24h = v))
-			.catch(() => {});
+		const slow = poll(async () => {
+			try {
+				days = await fetchDailyActivity(365, !settings.showImports);
+			} catch {
+				/* daemon down */
+			}
+			try {
+				last24h = await fetchLast24hTokens(!settings.showImports);
+			} catch {
+				/* daemon down */
+			}
+		}, 60000);
 		return () => {
-			stop();
+			fast();
+			slow();
 			clearInterval(tick);
 		};
 	});
@@ -103,17 +113,16 @@
 		});
 	});
 	/** Trailing-24h counter: measured hourly locally, reported by the
-	 *  sharer remotely, last-day fallback while either is missing. */
-	const last24hValue = $derived(
-		isLocal ? (last24h ?? null) : (remote?.tokens_24h ?? null)
+	 *  sharer remotely, last-day fallback while either is missing. Raw
+	 *  numbers here — AnimatedNumber tweens them, formatters render. */
+	const lastDayTokens = $derived(
+		feedDays.length > 0 ? (feedDays[feedDays.length - 1]?.tokens ?? null) : null
 	);
-	const last24hLabel = $derived(
-		last24hValue != null
-			? fmtTok(last24hValue)
-			: feedDays.length > 0
-				? fmtTok(feedDays[feedDays.length - 1]?.tokens ?? 0)
-				: '…'
+	const last24hNum = $derived<number | null>(
+		isLocal ? (last24h ?? lastDayTokens) : (remote?.tokens_24h ?? lastDayTokens)
 	);
+	const totalCostNum = $derived<number | null>(isLocal ? heroCost(summary) : null);
+	const fmtInt = (v: number) => Math.round(v).toLocaleString('en-US');
 	/** All-time totals: billable tokens + requests locally, reported
 	 *  figures remotely; cost is hero semantics locally, unknown remotely. */
 	const totalTokens = $derived(
@@ -126,7 +135,7 @@
 			? summary.reduce((s, p) => s + p.requests, 0)
 			: (remote?.providers.reduce((s, p) => s + p.requests, 0) ?? 0)
 	);
-	const totalCostLabel = $derived(isLocal ? fmtMoney(heroCost(summary)) : '—');
+
 
 	/** Provider split (billable locally, reported remotely) with shares. */
 	const provRows = $derived(
@@ -193,44 +202,46 @@
 	{/if}
 {/snippet}
 
-<div class="phead profile-mast">
-	{#if avatarURL}
-		<img class="avatar" src={avatarURL} alt="" />
-	{:else}
-		<span class="avatar">{initial}</span>
-	{/if}
-	<div class="pcol">
-		<div class="handle">@{handle}</div>
-		{#if displayName}
-			<div class="dname">{displayName}</div>
+<div class="profile-top">
+	<div class="phead profile-mast">
+		{#if avatarURL}
+			<img class="avatar" src={avatarURL} alt="" />
+		{:else}
+			<span class="avatar">{initial}</span>
 		{/if}
-		<div class="mstats">
-			<div class="ms">
-				<span class="mhead"><span class="mico mico-flame"><Flame size={13} strokeWidth={2.2} /></span><span class="ml">day streak</span></span>
-				<span class="mv">{act.streak}</span>
-			</div>
-			<div class="ms">
-				<span class="mhead"><span class="mico mico-clock"><Clock size={13} strokeWidth={2.2} /></span><span class="ml">last activity</span></span>
-				<span class="mv">{lastActiveLabel}</span>
-			</div>
-			<div class="ms">
-				<span class="mhead"><span class="mico mico-zap"><Zap size={13} strokeWidth={2.2} /></span><span class="ml">last 24 hours</span></span>
-				<span class="mv">{last24hLabel}</span>
-			</div>
-			<div class="ms">
-				<span class="mhead"><span class="mico mico-tokens"><Hash size={13} strokeWidth={2.2} /></span><span class="ml">total tokens</span></span>
-				<span class="mv">{fmtTok(totalTokens)}</span>
-			</div>
-			<div class="ms">
-				<span class="mhead"><span class="mico mico-req"><Activity size={13} strokeWidth={2.2} /></span><span class="ml">requests</span></span>
-				<span class="mv">{totalRequests.toLocaleString('en-US')}</span>
-			</div>
-			<div class="ms">
-				<span class="mhead"><span class="mico mico-cost"><Coins size={13} strokeWidth={2.2} /></span><span class="ml">total cost</span></span>
-				<span class="mv">{totalCostLabel}</span>
-			</div>
+		<div class="pcol">
+			<div class="handle">@{handle}</div>
+			{#if displayName}
+				<div class="dname">{displayName}</div>
+			{/if}
+			<div class="psub">{origin} · {act.activeDays} active days</div>
 		</div>
-		<div class="psub">{origin} · {act.activeDays} active days</div>
+	</div>
+	<div class="mstats">
+		<div class="ms">
+			<span class="mhead"><span class="mico mico-flame"><Flame size={13} strokeWidth={2.2} /></span><span class="ml">day streak</span></span>
+			<span class="mv"><AnimatedNumber value={act.streak} /></span>
+		</div>
+		<div class="ms">
+			<span class="mhead"><span class="mico mico-clock"><Clock size={13} strokeWidth={2.2} /></span><span class="ml">last activity</span></span>
+			<span class="mv">{lastActiveLabel}</span>
+		</div>
+		<div class="ms">
+			<span class="mhead"><span class="mico mico-zap"><Zap size={13} strokeWidth={2.2} /></span><span class="ml">last 24 hours</span></span>
+			<span class="mv"><AnimatedNumber value={last24hNum} format={fmtTok} /></span>
+		</div>
+		<div class="ms">
+			<span class="mhead"><span class="mico mico-tokens"><Hash size={13} strokeWidth={2.2} /></span><span class="ml">total tokens</span></span>
+			<span class="mv"><AnimatedNumber value={totalTokens} format={fmtTok} /></span>
+		</div>
+		<div class="ms">
+			<span class="mhead"><span class="mico mico-req"><Activity size={13} strokeWidth={2.2} /></span><span class="ml">requests</span></span>
+			<span class="mv"><AnimatedNumber value={totalRequests} format={fmtInt} /></span>
+		</div>
+		<div class="ms">
+			<span class="mhead"><span class="mico mico-cost"><Coins size={13} strokeWidth={2.2} /></span><span class="ml">total cost</span></span>
+			<span class="mv"><AnimatedNumber value={totalCostNum} format={fmtMoney} empty={isLocal ? '…' : '—'} /></span>
+		</div>
 	</div>
 </div>
 
@@ -259,7 +270,7 @@
 		<div class="dwrap">
 			<div class="donut" style:background={donut}></div>
 			<div class="dhole">
-				<span class="dnum num">{fmtTok(totalTokens)}</span>
+				<span class="dnum num"><AnimatedNumber value={totalTokens} format={fmtTok} /></span>
 				<span class="dlab">tokens</span>
 			</div>
 		</div>
@@ -307,27 +318,31 @@
 	/* no hairline: the heatmap panel is the next visual beat.
 	   Top-aligned so the avatar sits level with the username, not
 	   centered against the whole stat column. */
+	/* identity row + full-width counter grid share one query container */
+	.profile-top {
+		container-type: inline-size;
+		margin-bottom: 18px;
+	}
 	.profile-mast {
 		align-items: flex-start;
 		border-bottom: 0;
 		padding-bottom: 0;
-		margin-bottom: 18px;
-		container-type: inline-size;
+		margin-bottom: 14px;
 	}
 	.profile-mast .pcol {
 		min-width: 0;
 		flex: 1;
 	}
 	.avatar {
-		width: 44px;
-		height: 44px;
+		width: 64px;
+		height: 64px;
 		border-radius: 50%;
 		background: var(--accent-soft);
 		color: var(--accent);
 		display: flex;
 		align-items: center;
 		justify-content: center;
-		font-size: 18px;
+		font-size: 26px;
 		font-weight: 650;
 		flex: none;
 	}
