@@ -284,6 +284,9 @@ export interface MeterCatalogEntry {
 	enabled: boolean;
 	listen_port: number;
 	target: string | null;
+	/** Runtime default target (configured endpoint, else 127.0.0.1:defaultPort)
+	 *  — present for stopped runtimes so editors can prefill. */
+	default_target?: string | null;
 }
 
 export interface Meters {
