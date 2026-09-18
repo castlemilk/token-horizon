@@ -26,6 +26,7 @@
 {:else}
 	<div class="meter-tiles">
 		{#each catalog as m}
+			{@const live = meters?.point.find((p) => p.vendor.toLowerCase() === m.vendor.toLowerCase())}
 			<div class="card mtile">
 				<div class="mtile-head">
 					<span style="display: flex; align-items: center; gap: 7px" title={m.vendor}>
@@ -47,7 +48,7 @@
 				<div class="mono mroute" class:faint={!m.running}>127.0.0.1:{m.listen_port}</div>
 				<div class="mono dim mroute">→ {m.running ? (m.target ?? '—') : 'off'}</div>
 				<div class="mtile-foot">
-					<span class="faint">{m.running ? 'metering' : 'off'}</span>
+					<span class="faint">{m.running ? 'metering' : 'off'}{live && ((live.seen ?? 0) > 0 || (live.measured ?? 0) > 0) ? ` · ${live.seen ?? 0} seen · ${live.measured ?? 0} recorded` : ''}</span>
 					<Switch
 						checked={m.running}
 						onCheckedChange={(v) => onToggle(m.vendor, v)}

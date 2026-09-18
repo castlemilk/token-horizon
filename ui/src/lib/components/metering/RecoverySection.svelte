@@ -1,10 +1,10 @@
 <script lang="ts">
-	import { BookOpen, ChevronRight, Gauge } from 'lucide-svelte';
+	import { BookOpen, ChevronRight } from 'lucide-svelte';
 	import { apiBase, type ConsentState, type MeterInfo, type Meters, type RuntimeInfo, type ServiceStatus } from '$lib/api';
 	import Modal from '$lib/components/common/Modal.svelte';
 	import ProviderIcon from '$lib/components/data/ProviderIcon.svelte';
 	import InstructionModal, { type InstructionStep } from './InstructionModal.svelte';
-	import { TOOL_ROUTES, agentBrief } from '$lib/routing';
+	import { TOOL_ROUTES } from '$lib/routing';
 
 	/** Recovery as a compact list: every row opens its detail modal in
 	 *  place (fix buttons, URLs, setup guides) — the page stays compact. */
@@ -56,11 +56,9 @@
 		model?: string;
 	} | null;
 	let dialog = $state<Dialog>(null);
-	/** Guide browser: the tool/meter row lists live in here; picking a row
+	/** Tool guide browser: the tool row list lives here; picking a row
 	 *  swaps this modal for the detail dialog (Back returns to the list). */
-	let browser = $state<'tool' | 'meter' | null>(null);
-
-	const liveCount = $derived((meters?.point ?? []).length);
+	let toolBrowser = $state(false);
 
 	function closeAfter(fn: () => void) {
 		return () => {
@@ -133,57 +131,6 @@
 		};
 	}
 
-	function routeHint(m: { vendor: string; listen_port: number }): {
-		title: string;
-		body: string;
-		cmd: string;
-		brief: string;
-	} {
-		const v = m.vendor.toLowerCase();
-		const tool = TOOL_ROUTES.find((t) => t.vendor === v);
-		if (tool)
-			return {
-				title: `Point ${tool.tool} at this meter`,
-				body: tool.fixBody,
-				cmd: tool.fixCmd(m.listen_port),
-				brief: tool.brief(m.listen_port)
-			};
-		return {
-			title: `Point ${m.vendor} clients at this meter`,
-			body: 'Set the vendor base URL in the client to the loopback meter — traffic forwards byte-identical upstream:',
-			cmd: `http://127.0.0.1:${m.listen_port}`,
-			brief: agentBrief(m.vendor, m.listen_port, '')
-		};
-	}
-
-	function openMeterGuide(vendor: string) {
-		const live = liveMeters.get(vendor);
-		const m = (meters?.point ?? []).find((x) => x.vendor.toLowerCase() === vendor);
-		if (!live || !m) return;
-		const hint = routeHint(m);
-		dialog = {
-			vendor: m.vendor,
-			title: hint.title,
-			intro: 'Use it — point the client here (forwards byte-identical upstream):',
-			steps: [
-				{ body: 'Meter URL:', copy: `http://127.0.0.1:${m.listen_port}` },
-				{
-					body: 'If this meter fails, connect back to the original upstream so work continues unmeasured:',
-					copy: m.target
-				},
-				{ body: hint.body, copy: hint.cmd }
-			],
-			brief: hint.brief
-		};
-	}
-
-	function meterStatus(m: { seen?: number; measured?: number }): string {
-		const seen = m.seen ?? 0;
-		const measured = m.measured ?? 0;
-		if (seen === 0) return 'live, no arrivals yet';
-		if (measured === 0) return 'traffic arriving, nothing measured';
-		return `measuring · ${seen} seen · ${measured} recorded`;
-	}
 </script>
 
 {#if open}
@@ -221,50 +168,26 @@
 		{/each}
 	</div>
 	<div class="ractions">
-		<button class="btn btn-guide" onclick={() => (browser = 'tool')}>
+		<button class="btn btn-guide" onclick={() => (toolBrowser = true)}>
 			<BookOpen size={14} strokeWidth={2} />Tool setup
 		</button>
-		{#if liveCount > 0}
-			<button class="btn btn-guide" onclick={() => (browser = 'meter')}>
-				<Gauge size={14} strokeWidth={2} />Meter setup
-			</button>
-		{/if}
 	</div>
 {/if}
 
 <Modal
-	title={browser === 'tool' ? 'Tool setup guides' : 'Meter setup guides'}
-	open={browser != null && dialog == null}
-	onClose={() => (browser = null)}
+	title="Tool setup guides"
+	open={toolBrowser && dialog == null}
+	onClose={() => (toolBrowser = false)}
 >
 	<div class="rlist">
-		{#if browser === 'tool'}
-			{#each TOOL_ROUTES as t (t.tool)}
-				{@const live = liveMeters.get(t.vendor)}
-				<button class="ritem" onclick={() => openToolGuide(t)}>
-					<ProviderIcon vendor={t.vendor} size={22} />
-					<span class="rtext"><span class="rtitle">{t.tool}</span><span class="rsub2">{live ? 'meter live' : 'meter off'}</span></span>
-					<ChevronRight size={15} strokeWidth={2.2} />
-				</button>
-			{/each}
-		{:else}
-			{#each meters?.point ?? [] as m (m.vendor)}
-				{@const guideable = (m.seen ?? 0) === 0}
-				{#if guideable}
-					<button class="ritem" onclick={() => openMeterGuide(m.vendor)}>
-						<ProviderIcon vendor={m.vendor} size={22} />
-						<span class="rtext"><span class="rtitle">{m.vendor}</span><span class="rsub2">{meterStatus(m)}</span></span>
-						<ChevronRight size={15} strokeWidth={2.2} />
-					</button>
-				{:else}
-					<div class="ritem static">
-						<ProviderIcon vendor={m.vendor} size={22} />
-						<span class="rtext"><span class="rtitle">{m.vendor}</span><span class="rsub2">{meterStatus(m)}</span></span>
-						<span class="dot up trail"></span>
-					</div>
-				{/if}
-			{/each}
-		{/if}
+		{#each TOOL_ROUTES as t (t.tool)}
+			{@const live = liveMeters.get(t.vendor)}
+			<button class="ritem" onclick={() => openToolGuide(t)}>
+				<ProviderIcon vendor={t.vendor} size={22} />
+				<span class="rtext"><span class="rtitle">{t.tool}</span><span class="rsub2">{live ? 'meter live' : 'meter off'}</span></span>
+				<ChevronRight size={15} strokeWidth={2.2} />
+			</button>
+		{/each}
 	</div>
 </Modal>
 
@@ -272,7 +195,7 @@
 	open={dialog != null}
 	onClose={() => {
 		dialog = null;
-		browser = null;
+		toolBrowser = false;
 	}}
 	title={dialog?.title ?? ''}
 	intro={dialog?.intro ?? ''}
@@ -283,7 +206,7 @@
 	vendor={dialog?.vendor}
 	model={dialog?.model}
 	backLabel="All guides"
-	onBack={browser != null ? () => (dialog = null) : undefined}
+	onBack={toolBrowser ? () => (dialog = null) : undefined}
 />
 
 <style>
@@ -310,18 +233,13 @@
 	button.ritem:hover {
 		background: var(--track);
 	}
-	.ritem.static {
-		cursor: default;
-	}
+
 	.ritem > :global(svg) {
 		margin-left: auto;
 		color: var(--text-3);
 		flex: none;
 	}
-	.ritem .trail {
-		margin-left: auto;
-		flex: none;
-	}
+
 	.rtext {
 		display: flex;
 		flex-direction: column;

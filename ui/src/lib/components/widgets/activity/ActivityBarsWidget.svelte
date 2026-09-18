@@ -147,7 +147,12 @@
 
 	onMount(() => {
 		void loadAll().finally(() => (booted = true));
-		return poll(loadAll, 5000);
+		return poll(() => {
+			// Flights first: a poll resolving mid-morph retweens every
+			// CountUp at once (numbers streaming over the close flight).
+			// Skipped ticks are picked up by the next one 5s later.
+			if (phase === 'settle') void loadAll();
+		}, 5000);
 	});
 	$effect(() => {
 		void window_;
@@ -208,8 +213,11 @@
 			pingSeen = id;
 			return;
 		}
-		if (!id || id === pingSeen || reduce || phase !== 'settle') return;
+		if (!id || id === pingSeen) return;
+		// Consume first: a request landing mid-flight must never replay
+		// its flash late, right as the tile lands.
 		pingSeen = id;
+		if (reduce || phase !== 'settle') return;
 		window.clearTimeout(flashTimer);
 		flash = { delta: ping?.tokens ?? 0, n: (flash?.n ?? 0) + 1 };
 		flashTimer = window.setTimeout(() => (flash = null), 1600);
