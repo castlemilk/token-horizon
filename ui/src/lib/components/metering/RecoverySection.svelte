@@ -2,6 +2,7 @@
 	import { BookOpen, ChevronRight, Gauge } from 'lucide-svelte';
 	import { apiBase, type ConsentState, type MeterInfo, type Meters, type RuntimeInfo, type ServiceStatus } from '$lib/api';
 	import Modal from '$lib/components/common/Modal.svelte';
+	import ProviderIcon from '$lib/components/data/ProviderIcon.svelte';
 	import InstructionModal, { type InstructionStep } from './InstructionModal.svelte';
 	import { TOOL_ROUTES, agentBrief } from '$lib/routing';
 
@@ -51,6 +52,8 @@
 		brief?: string;
 		actionLabel?: string;
 		onAction?: () => void;
+		vendor?: string;
+		model?: string;
 	} | null;
 	let dialog = $state<Dialog>(null);
 	/** Guide browser: the tool/meter row lists live in here; picking a row
@@ -98,6 +101,7 @@
 
 	function openUnmeteredDialog(rt: RuntimeInfo) {
 		dialog = {
+			vendor: rt.vendor,
 			title: `${rt.display_name} is active but unmetered`,
 			intro: `The runtime is running${rt.usage.tokens_all > 0 ? ' and has recorded usage' : ''}, yet no meter is listening — its traffic passes through unseen.`,
 			actionLabel: 'Start meter',
@@ -118,6 +122,7 @@
 	function openToolGuide(tool: (typeof TOOL_ROUTES)[number]) {
 		const port = toolPort(tool.vendor);
 		dialog = {
+			vendor: tool.vendor,
 			title: `${tool.tool} setup`,
 			intro: `Point ${tool.tool} at its meter — traffic forwards byte-identical upstream and is measured in flight.`,
 			steps: [
@@ -157,6 +162,7 @@
 		if (!live || !m) return;
 		const hint = routeHint(m);
 		dialog = {
+			vendor: m.vendor,
 			title: hint.title,
 			intro: 'Use it — point the client here (forwards byte-identical upstream):',
 			steps: [
@@ -208,7 +214,7 @@
 		{/if}
 		{#each unmeteredActive as rt (rt.vendor)}
 			<button class="ritem" onclick={() => openUnmeteredDialog(rt)}>
-				<span class="dot"></span>
+				<ProviderIcon vendor={rt.vendor} size={22} />
 				<span class="rtext"><span class="rtitle">{rt.display_name} unmetered</span><span class="rsub2">Active but no meter listening</span></span>
 				<ChevronRight size={15} strokeWidth={2.2} />
 			</button>
@@ -236,6 +242,7 @@
 			{#each TOOL_ROUTES as t (t.tool)}
 				{@const live = liveMeters.get(t.vendor)}
 				<button class="ritem" onclick={() => openToolGuide(t)}>
+					<ProviderIcon vendor={t.vendor} size={22} />
 					<span class="rtext"><span class="rtitle">{t.tool}</span><span class="rsub2">{live ? 'meter live' : 'meter off'}</span></span>
 					<ChevronRight size={15} strokeWidth={2.2} />
 				</button>
@@ -245,13 +252,15 @@
 				{@const guideable = (m.seen ?? 0) === 0}
 				{#if guideable}
 					<button class="ritem" onclick={() => openMeterGuide(m.vendor)}>
+						<ProviderIcon vendor={m.vendor} size={22} />
 						<span class="rtext"><span class="rtitle">{m.vendor}</span><span class="rsub2">{meterStatus(m)}</span></span>
 						<ChevronRight size={15} strokeWidth={2.2} />
 					</button>
 				{:else}
 					<div class="ritem static">
-						<span class="dot up"></span>
+						<ProviderIcon vendor={m.vendor} size={22} />
 						<span class="rtext"><span class="rtitle">{m.vendor}</span><span class="rsub2">{meterStatus(m)}</span></span>
+						<span class="dot up trail"></span>
 					</div>
 				{/if}
 			{/each}
@@ -271,6 +280,8 @@
 	brief={dialog?.brief}
 	actionLabel={dialog?.actionLabel}
 	onAction={dialog?.onAction}
+	vendor={dialog?.vendor}
+	model={dialog?.model}
 	backLabel="All guides"
 	onBack={browser != null ? () => (dialog = null) : undefined}
 />
@@ -302,9 +313,13 @@
 	.ritem.static {
 		cursor: default;
 	}
-	.ritem :global(svg) {
+	.ritem > :global(svg) {
 		margin-left: auto;
 		color: var(--text-3);
+		flex: none;
+	}
+	.ritem .trail {
+		margin-left: auto;
 		flex: none;
 	}
 	.rtext {

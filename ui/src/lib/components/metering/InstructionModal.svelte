@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { ChevronLeft } from 'lucide-svelte';
 	import Modal from '$lib/components/common/Modal.svelte';
+	import ProviderIcon from '$lib/components/data/ProviderIcon.svelte';
 	import CopyField from '$lib/components/common/CopyField.svelte';
 	import { copyText } from '$lib/routing';
 
@@ -22,7 +23,9 @@
 		onAction,
 		brief,
 		backLabel,
-		onBack
+		onBack,
+		vendor,
+		model = ''
 	}: {
 		open: boolean;
 		onClose: () => void;
@@ -35,6 +38,9 @@
 		/** Back navigation (returning to the guide list inside a browser). */
 		backLabel?: string;
 		onBack?: () => void;
+		/** Brand chip beside the title when this guide is about a vendor. */
+		vendor?: string;
+		model?: string;
 	} = $props();
 
 	let copied = $state(false);
@@ -47,7 +53,11 @@
 	}
 </script>
 
-<Modal {open} {onClose} {title}>
+{#snippet titleChip()}
+	{#if vendor}<ProviderIcon {vendor} {model} size={22} />{/if}
+{/snippet}
+
+<Modal {open} {onClose} {title} titleExtra={vendor ? titleChip : undefined}>
 	{#if onBack}
 		<button class="back" onclick={() => onBack()}>
 			<ChevronLeft size={14} strokeWidth={2.2} />{backLabel ?? 'Back'}

@@ -10,6 +10,7 @@
 		onClose,
 		title,
 		dismissible = true,
+		titleExtra,
 		children
 	}: {
 		open: boolean;
@@ -18,6 +19,8 @@
 		/** False traps the dialog (scrim/Escape/X ignored) until the
 		 *  caller re-enables it — e.g. an invalid field to fix or clear. */
 		dismissible?: boolean;
+		/** Optional chip rendered before the title (brand marks, icons). */
+		titleExtra?: Snippet;
 		children: Snippet;
 	} = $props();
 
@@ -61,7 +64,9 @@
 			transition:scale={{ duration: reduce ? 0 : 160, start: 0.96 }}
 		>
 			<div class="mhead">
-				<span class="mtitle">{title}</span>
+				<span class="mtitle">
+					{#if titleExtra}{@render titleExtra()}{/if}{title}
+				</span>
 				<button
 					bind:this={closeBtn}
 					class="mx"
@@ -113,6 +118,9 @@
 		margin-bottom: 10px;
 	}
 	.mtitle {
+		display: inline-flex;
+		align-items: center;
+		gap: 8px;
 		font-size: 15px;
 		font-weight: 700;
 		letter-spacing: -0.01em;
