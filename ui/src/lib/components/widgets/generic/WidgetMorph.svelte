@@ -848,6 +848,7 @@
 		class:tile={!open}
 		class:modal={open}
 		class:conceal-head={open && phase === 'fly'}
+		class:conceal-fly={open && phase === 'fly'}
 		class:conceal-exit={open && phase === 'exit'}
 		role={open ? 'dialog' : 'button'}
 		aria-modal={open ? 'true' : undefined}

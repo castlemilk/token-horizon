@@ -136,6 +136,14 @@ timelines at 4× slow for frame inspection.
    hiding sources (never by interpolating font properties; GSAP can't
    tween family/weight/style).
 
+5. **Targets must conceal on OPEN too.** `conceal-exit` hid sources on
+   close, but open left traveler targets visible at final size from t=0:
+   the clone flew correctly yet the destination was already painted, so a
+   scaling flight (provider logo 40→66) read as "pops in, doesn't scale".
+   Fixed generically in the shell: `.conceal-fly [data-travel]` hides
+   targets for the whole open phase. Widget-level conceals (counters,
+   heatmap) now overlap harmlessly.
+
 ## Resolution
 
 The "Tauri flies, web doesn't" divergence was never environmental. The
