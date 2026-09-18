@@ -1,13 +1,14 @@
 <script lang="ts">
+	import { untrack } from 'svelte';
 	import { api, type Meters } from '$lib/api';
 	import { validateEndpoint } from '$lib/validation';
 	import Modal from '$lib/components/common/Modal.svelte';
 
-	/** Per-vendor meter settings: loopback listen port plus the upstream
-	 *  API endpoint it forwards to. A custom URL registers a settings
-	 *  endpoint (POST /runtimes/endpoints) and starts the meter on the
-	 *  chosen port; a port-only change keeps the current target
-	 *  (POST /meters/port). Either way the daemon persists it. */
+	/** Per-vendor meter settings: the upstream API endpoint it forwards
+	 *  to. Saving registers a settings endpoint (POST /runtimes/endpoints)
+	 *  paired with the daemon-fixed listen port and starts the meter.
+	 *  The field opens pre-filled with the current target; only edits
+	 *  validate (untouched is neutral, never an error). */
 	let {
 		open,
 		onClose,
@@ -38,43 +39,49 @@
 	);
 
 	let urlDraft = $state('');
+	let touched = $state(false);
 	let saving = $state(false);
 	let result = $state('');
 
-	// Fresh draft per vendor/opening — never leak one vendor's edit.
+	// Fresh pre-filled draft per vendor/opening — snapshot the target
+	// without subscribing (poll refreshes must never clobber typing).
 	$effect(() => {
 		void vendor;
 		if (!open) return;
-		urlDraft = '';
+		urlDraft = untrack(() => currentTarget) ?? '';
+		touched = false;
 		saving = false;
 		result = '';
 	});
 
-	function urlError(): string | null {
+	function sameAsCurrent(): boolean {
 		const raw = urlDraft.trim();
-		if (!raw) return null; // untouched
-		if (currentTarget) {
-			try {
-				if (new URL(raw).href === currentTarget) return 'Already this endpoint';
-			} catch {
-				/* shape error below */
-			}
+		if (!raw || !currentTarget) return false;
+		try {
+			return new URL(raw).href === currentTarget;
+		} catch {
+			return false;
 		}
-		return validateEndpoint(urlDraft);
 	}
 
-	/** Wrong endpoints trap the dialog (clear the field to leave); empty
-	 *  is neutral, valid is green — see the tri-state input rings. */
-	const endpointLocked = $derived(urlDraft.trim() !== '' && urlError() != null);
-	const urlState = $derived(!urlDraft.trim() ? '' : urlError() ? 'error' : 'ok');
+	/** Shape errors only (red ring + trap); "already this endpoint" is a
+	 *  neutral note, untouched is neutral. */
+	const shapeError = $derived(touched ? validateEndpoint(urlDraft) : null);
+	const unchanged = $derived(touched && urlDraft.trim() !== '' && sameAsCurrent());
+	const urlState = $derived(
+		!touched || !urlDraft.trim() ? '' : shapeError ? 'error' : unchanged ? '' : 'ok'
+	);
+
+	/** Wrong endpoints trap the dialog (clear the field to leave). */
+	const endpointLocked = $derived(shapeError != null);
 
 	// Listen ports are daemon-fixed (no user editing); a custom endpoint
 	// always pairs with the vendor's default listen port so the meter
 	// actually starts.
 	const canSave = $derived.by(() => {
 		if (saving) return false;
-		if (!urlDraft.trim()) return false;
-		return urlError() == null;
+		if (!touched || !urlDraft.trim()) return false;
+		return shapeError == null && !unchanged;
 	});
 
 	async function save() {
@@ -111,6 +118,7 @@
 		value={urlDraft}
 		oninput={(e) => {
 			urlDraft = e.currentTarget.value;
+			touched = true;
 			result = '';
 		}}
 		onkeydown={(e) => {
@@ -121,7 +129,8 @@
 		spellcheck="false"
 		aria-label="Upstream API endpoint URL"
 	/>
-	{#if urlError()}<div class="perr">{urlError()}</div>{/if}
+	{#if shapeError}<div class="perr">{shapeError}</div>
+	{:else if unchanged}<div class="faint" style="font-size: 11.5px; margin-top: 4px;">Already this endpoint</div>{/if}
 	<div class="prow2">
 		<button class="btn" disabled={!canSave} onclick={() => void save()}>
 			{saving ? '…' : 'Save'}
