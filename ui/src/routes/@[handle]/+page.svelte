@@ -29,6 +29,7 @@
 
 	let days = $state<DayActivity[]>([]);
 	let summary = $state<ProviderSummary[]>([]);
+	let summaryReady = $state(false);
 	let last24h = $state<number | null>(null);
 	let localEventTs = $state<number | null>(null);
 	let remote = $state<SharedProfile | null>(null);
@@ -56,9 +57,10 @@
 					api.events(metered)
 				]);
 				summary = s.providers;
+				summaryReady = true;
 				localEventTs = e.events[0]?.timestamp ?? null;
 			} catch {
-				/* daemon down */
+				/* daemon down — skeletons hold until it answers */
 			}
 		}, 10000);
 		const slow = poll(async () => {
@@ -189,6 +191,9 @@
 	const displayName = $derived(
 		isLocal ? null : (remote?.display_name || null)
 	);
+	/** Breakdown sections are ready when their feed resolved once —
+	 *  until then skeleton placeholders hold the layout. */
+	const breakdownsReady = $derived(isLocal ? summaryReady : (remote != null || remoteMissing));
 	const avatarURL = $derived(!isLocal ? cloud.avatarURL(remote) : null);
 	const initial = $derived((handle[0] ?? '?').toUpperCase());
 	const origin = $derived(isLocal ? 'this machine' : 'shared profile');
@@ -211,9 +216,7 @@
 		{/if}
 		<div class="pcol">
 			<div class="handle">@{handle}</div>
-			{#if displayName}
-				<div class="dname">{displayName}</div>
-			{/if}
+			<div class="dname">{displayName ?? ''}</div>
 			<div class="psub">{origin} · {act.activeDays} active days</div>
 		</div>
 	</div>
@@ -246,9 +249,7 @@
 </div>
 
 {#if !isLocal && !remote && !remoteMissing}
-	<div class="card">
-		<EmptyState title="Loading shared profile…" body="" />
-	</div>
+	<YearHeatmap days={[]} stepping={false} showStats={false} skeleton hint={profileHint} />
 {:else if !isLocal && !remote}
 	<div class="card">
 		<EmptyState
@@ -289,6 +290,9 @@
 			{/each}
 		</div>
 	</div>
+{:else if !breakdownsReady}
+	<div class="sk-label skel"></div>
+	<div class="sk-card skel"></div>
 {/if}
 
 {#if modelRows.length > 0}
@@ -353,9 +357,44 @@
 		font-weight: 680;
 		letter-spacing: -0.02em;
 	}
+	/* always rendered (empty when none) so a late display name can't
+	   push the grid down */
 	.dname {
 		font-size: 13px;
+		line-height: 1.3;
+		min-height: 17px;
 		color: var(--text-2);
+	}
+	/* section skeletons: hold the breakdowns' layout while feeds resolve */
+	.skel {
+		background: linear-gradient(
+			100deg,
+			var(--track) 35%,
+			color-mix(in srgb, var(--bg-raised) 85%, var(--track)) 50%,
+			var(--track) 65%
+		);
+		background-size: 200% 100%;
+		animation: pskelsweep 1.5s linear infinite;
+	}
+	.sk-label {
+		height: 11px;
+		width: 110px;
+		border-radius: 4px;
+		margin: 24px 0 8px;
+	}
+	.sk-card {
+		min-height: 170px;
+		border-radius: 18px;
+	}
+	@keyframes pskelsweep {
+		to {
+			background-position: -200% 0;
+		}
+	}
+	@media (prefers-reduced-motion: reduce) {
+		.skel {
+			animation: none;
+		}
 	}
 	/* masthead stats: 3×2 grid, icon + title on one row with the value
 	   below — fixed fractions, so varying value lengths ("just now" vs
