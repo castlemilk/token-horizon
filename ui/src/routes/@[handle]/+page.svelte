@@ -556,14 +556,14 @@
 		flex: none;
 	}
 	.mbar {
-		height: 6px;
-		border-radius: 3px;
+		height: 10px;
+		border-radius: 5px;
 		background: var(--track);
-		margin-top: 7px;
+		margin-top: 8px;
 		overflow: hidden;
 	}
 	.mfill {
 		height: 100%;
-		border-radius: 3px;
+		border-radius: 5px;
 	}
 </style>
