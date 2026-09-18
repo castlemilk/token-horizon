@@ -3,6 +3,7 @@
 	import { api, type RuntimeInfo, type Meters } from '$lib/api';
 	import { connection } from '$lib/connection.svelte';
 	import { poll } from '$lib/format';
+	import Modal from '$lib/components/common/Modal.svelte';
 	import MeterTiles from '$lib/components/metering/MeterTiles.svelte';
 	import RuntimeCards from '$lib/components/metering/RuntimeCards.svelte';
 	import RecoverySection from '$lib/components/metering/RecoverySection.svelte';
@@ -105,9 +106,39 @@
 			return (r.running || r.usage.tokens_all > 0) && !liveMeters.has(k);
 		})
 	);
+
+	const consentDenied = (s: string) =>
+		consents.length > 0 && !(consents.find((c) => c.scope === s)?.granted ?? false);
+	const hasLiveMeters = $derived((meters?.point ?? []).length > 0);
+	const recoveryOpen = $derived(
+		daemonDown ||
+			hasLiveMeters ||
+			unmeteredActive.length > 0 ||
+			consentDenied('metering') ||
+			consentDenied('fileReading')
+	);
+	const issueCount = $derived(
+		(daemonDown ? 1 : 0) +
+			(consentDenied('metering') ? 1 : 0) +
+			(consentDenied('fileReading') ? 1 : 0) +
+			unmeteredActive.length
+	);
+
+	let metersModal = $state(false);
+	let recoveryModal = $state(false);
 </script>
 
-<MeterTiles {catalog} {meters} onToggle={(v, on) => void toggleMeter(v, on)} />
+<div class="toolbar">
+	<button class="btn" onclick={() => (metersModal = true)}>
+		Meters · {meters?.point.length ?? 0} live
+	</button>
+	{#if recoveryOpen}
+		<button class="btn btn-issue" onclick={() => (recoveryModal = true)}>
+			<span class="dot"></span>
+			Recovery · {issueCount} issue{issueCount === 1 ? '' : 's'}
+		</button>
+	{/if}
+</div>
 
 <RuntimeCards
 	{running}
@@ -118,14 +149,36 @@
 	onMeters={(m) => (meters = m)}
 />
 
-<RecoverySection
-	{daemonDown}
-	{service}
-	{consents}
-	{unmeteredActive}
-	{liveMeters}
-	{meters}
-	onToggleMeter={(v, on) => void toggleMeter(v, on)}
-	onConsent={(s, g) => void setConsent(s, g)}
-	onInstallSvc={() => void installSvc()}
-/>
+<Modal title="Request routing" open={metersModal} onClose={() => (metersModal = false)}>
+	<MeterTiles bare {catalog} {meters} onToggle={(v, on) => void toggleMeter(v, on)} />
+</Modal>
+
+<Modal title="Recovery" open={recoveryModal} onClose={() => (recoveryModal = false)}>
+	<RecoverySection
+		bare
+		open={recoveryOpen}
+		{daemonDown}
+		{service}
+		{consents}
+		{unmeteredActive}
+		{liveMeters}
+		{meters}
+		onToggleMeter={(v, on) => void toggleMeter(v, on)}
+		onConsent={(s, g) => void setConsent(s, g)}
+		onInstallSvc={() => void installSvc()}
+	/>
+</Modal>
+
+<style>
+	.toolbar {
+		display: flex;
+		gap: 8px;
+		flex-wrap: wrap;
+		margin-bottom: 16px;
+	}
+	.btn-issue {
+		display: inline-flex;
+		align-items: center;
+		gap: 7px;
+	}
+</style>
