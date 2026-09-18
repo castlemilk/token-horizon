@@ -84,7 +84,12 @@
 
 	onMount(() => {
 		void load().finally(() => (booted = true));
-		return poll(load, 5000);
+		return poll(() => {
+			// Flights first: a poll mid-morph remounts tile rows (keyed by
+			// tileKey) and flip-animates modal rows — every measured box
+			// goes stale. Skipped ticks are picked up by the next one.
+			if (phase === 'settle') void load();
+		}, 5000);
 	});
 
 	// ---- morph contract: icons travel by request id (no text flights —

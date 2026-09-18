@@ -36,6 +36,22 @@ timelines at 4× slow for frame inspection.
    itself with the settled value), falling back to `textContent`. The
    descendant lookup matters: the label sits INSIDE the traveler, not on it.
 
+3. **Icon travelers flew invisibly** (RecentWidget's provider icons) — the
+   clone contract was text-or-dot, and the dot takes the wrapper span's
+   `backgroundColor`, which is transparent for icon wrappers. The flight
+   played; nothing visible traveled. Fixed: a third clone variant,
+   `visual`, serializes the traveler's internals (img/svg markup — scoped
+   Svelte styles ride along via attribute selectors) plus sampled
+   frame/paint props (size, flex centering, background, radius, shadow).
+   Priority: text > visual > dot.
+
+4. **Ungated polls corrupt in-flight measurements** — every widget polls
+   its feed on a timer; a poll resolving mid-flight re-sizes/re-mounts the
+   very nodes the clones were measured from, so travelers land on stale
+   positions. Fixed by gating each poll on `phase === 'settle'` (skipped
+   ticks resume on the next cycle): ActivityBarsWidget, CountersWidget,
+   RecentWidget. New widgets MUST gate their feeds the same way.
+
 ## Eliminated hypotheses (with evidence)
 
 - **`prefers-reduced-motion` divergence** — the only environment-dependent
@@ -72,6 +88,13 @@ timelines at 4× slow for frame inspection.
    its value as transformed DOM (odometers, split-flap, letter-scatter)
    must publish the semantic value via `aria-label`, or the clone layer
    will fly the rendering internals.
+5. **A clone that shows nothing is a working flight.** "Nothing travels"
+   can mean the flight bailed OR the clone is transparent — check whether
+   the source is measurable-but-empty (no text, no background). Icon
+   travelers need the `visual` variant, not the dot fallback.
+6. **Feed timers are flight-unaware by default.** Any widget poll that can
+   resolve during a flight invalidates measured boxes. Gate on
+   `phase === 'settle'`.
 
 ## Procedure when it happens again
 

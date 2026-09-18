@@ -8,6 +8,7 @@
 		flightVars,
 		cardVars,
 		sampleText,
+		sampleVisual,
 		spawnClones,
 		removeClones,
 		type Box,
@@ -260,7 +261,7 @@
 	 *  the swap the tile nodes are detached and measure void. */
 	let pendingTile: {
 		tileBox: Box;
-		dots: { key: string; box: Box; bg: string; text: DotPair['text'] }[];
+		dots: { key: string; box: Box; bg: string; text: DotPair['text']; visual: DotPair['visual'] }[];
 		tileShadow: string;
 	} | null = null;
 
@@ -401,7 +402,8 @@
 				key: d.key,
 				box: d.box,
 				bg: getComputedStyle(d.el).backgroundColor,
-				text: sampleText(d.el)
+				text: sampleText(d.el),
+				visual: sampleVisual(d.el)
 			})),
 			tileShadow: getComputedStyle(boxEl).boxShadow
 		};
@@ -451,7 +453,7 @@
 				phase = 'settle';
 				return;
 			}
-			pairs.push({ from: d.box, to: t.box, bg: d.bg, text: d.text });
+			pairs.push({ from: d.box, to: t.box, bg: d.bg, text: d.text, visual: d.visual });
 		}
 		mdbg('open: flight', { pairs: pairs.map((p) => `${p.from.w.toFixed(0)}→${p.to.w.toFixed(0)}`) });
 		const clones = spawnClones(pairs);
@@ -679,7 +681,8 @@
 				from: f.box,
 				to: t.box,
 				bg: getComputedStyle(f.el).backgroundColor,
-				text: sampleText(f.el)
+				text: sampleText(f.el),
+				visual: sampleVisual(f.el)
 			});
 		}
 		phase = 'exit';
