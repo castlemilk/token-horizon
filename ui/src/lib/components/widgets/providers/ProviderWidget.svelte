@@ -142,7 +142,11 @@
 	onMount(() => {
 		const stopWatch = limitsStore.watch();
 		void fetchSummary().finally(() => (booted = true));
-		const stopPoll = poll(fetchSummary, 10000);
+		const stopPoll = poll(() => {
+			// Flights first: a poll resolving mid-morph re-orders modal rows
+			// (tokens change) — every measured traveler box goes stale.
+			if (phase === 'settle') void fetchSummary();
+		}, 10000);
 		armRotation();
 		return () => {
 			stopWatch();
@@ -154,15 +158,20 @@
 	// ---- morph contract: the identity chip travels to its modal row ----
 	const canFly = () => !reduce && current != null && booted;
 	const closeable = () => true;
+	/** Travel key must be unique across modal rows: multi-account groups
+	 *  share a vendor ("kimi", "kimi (kimi-code)"), so vendor alone would
+	 *  pair the chip with the first row regardless. */
+	const travelKey = (g: Group) =>
+		(g.vendor + (g.account ? ` (${g.account})` : '')).toLowerCase().replace(/"/g, '');
 	function mark(key: string, root: HTMLElement | null): TravelMark {
 		return { key, el: root?.querySelector(`[data-travel="${key}"]`) ?? null };
 	}
 	const travelFrom = (_dir: 'open' | 'close', roots: TravelRoots) => {
-		const key = current?.vendor.toLowerCase() ?? '';
+		const key = current ? travelKey(current) : '';
 		return key ? [mark(key, roots.box)] : null;
 	};
 	const travelTo = (dir: 'open' | 'close', roots: TravelRoots) => {
-		const key = current?.vendor.toLowerCase() ?? '';
+		const key = current ? travelKey(current) : '';
 		if (!key) return null;
 		return [mark(key, dir === 'open' ? roots.box : roots.ghost)];
 	};
@@ -213,7 +222,7 @@
 {#snippet identity(g: Group, logo: number)}
 	<div class="ident">
 		<div class="pviz" style:--viz="{logo}px">
-			<span class="ilogo" data-travel={g.vendor.toLowerCase()}>
+			<span class="ilogo" data-travel={travelKey(g)}>
 				<ProviderIcon vendor={g.vendor} fill />
 			</span>
 		</div>
