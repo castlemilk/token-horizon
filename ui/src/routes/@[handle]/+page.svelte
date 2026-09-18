@@ -449,8 +449,8 @@
 		width: 100%;
 		height: 100%;
 		border-radius: 50%;
-		-webkit-mask: radial-gradient(closest-side, transparent 66%, black 67%);
-		mask: radial-gradient(closest-side, transparent 66%, black 67%);
+		-webkit-mask: radial-gradient(closest-side, transparent 76%, black 77%);
+		mask: radial-gradient(closest-side, transparent 76%, black 77%);
 	}
 	.dhole {
 		position: absolute;
@@ -478,15 +478,18 @@
 	.prows {
 		flex: 1;
 		min-width: 220px;
+		display: flex;
+		flex-direction: column;
+		gap: 8px;
 	}
 	.prow {
 		display: flex;
 		align-items: center;
 		gap: 10px;
-		padding: 7px 0;
-	}
-	.prow + .prow {
-		border-top: 1px solid var(--line);
+		padding: 9px 12px;
+		border-radius: 12px;
+		background: color-mix(in srgb, var(--bg-raised) 72%, var(--track));
+		box-shadow: inset 0 0 0 0.5px var(--line);
 	}
 	.pname {
 		font-size: 14px;
@@ -526,9 +529,6 @@
 		gap: 10px;
 		padding: 9px 0;
 	}
-	.models .mrow + .mrow {
-		border-top: 1px solid var(--line);
-	}
 	.mmain {
 		flex: 1;
 		min-width: 0;
@@ -556,14 +556,14 @@
 		flex: none;
 	}
 	.mbar {
-		height: 3px;
-		border-radius: 2px;
+		height: 6px;
+		border-radius: 3px;
 		background: var(--track);
 		margin-top: 7px;
 		overflow: hidden;
 	}
 	.mfill {
 		height: 100%;
-		border-radius: 2px;
+		border-radius: 3px;
 	}
 </style>
