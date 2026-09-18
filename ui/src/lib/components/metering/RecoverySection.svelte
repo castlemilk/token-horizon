@@ -38,6 +38,12 @@
 	const consentDenied = (s: string) =>
 		consents.length > 0 && !(consents.find((c) => c.scope === s)?.granted ?? false);
 
+	/** Problems vs plain setup: the section is only "recovery" when
+	 *  something is actually wrong, otherwise it's just guides. */
+	const hasProblems = $derived(
+		daemonDown || unmeteredActive.length > 0 || consentDenied('metering') || consentDenied('fileReading')
+	);
+
 	type Dialog = {
 		title: string;
 		intro: string;
@@ -176,7 +182,7 @@
 
 {#if open}
 	{#if !bare}
-		<div class="section-label">Recovery</div>
+		<div class="section-label">{hasProblems ? 'Recovery' : 'Setup guides'}</div>
 	{/if}
 	<div class="rlist">
 		{#if daemonDown}
@@ -324,6 +330,9 @@
 	.btn-guide {
 		display: inline-flex;
 		align-items: center;
-		gap: 7px;
+		gap: 8px;
+		padding: 10px 18px;
+		font-size: 13.5px;
+		border-radius: 12px;
 	}
 </style>
