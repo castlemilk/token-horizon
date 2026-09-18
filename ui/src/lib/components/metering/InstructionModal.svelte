@@ -9,27 +9,32 @@
 	}
 
 	/** Setup-guide dialog: ordered instruction steps (body + copyable
-	 *  command/URL each) plus the paste-ready agent brief. */
+	 *  command/URL each), an optional primary action (fix buttons) and the
+	 *  optional paste-ready agent brief. */
 	let {
 		open,
 		onClose,
 		title,
 		intro = '',
-		steps,
+		steps = [],
+		actionLabel,
+		onAction,
 		brief
 	}: {
 		open: boolean;
 		onClose: () => void;
 		title: string;
 		intro?: string;
-		steps: InstructionStep[];
-		brief: string;
+		steps?: InstructionStep[];
+		actionLabel?: string;
+		onAction?: () => void;
+		brief?: string;
 	} = $props();
 
 	let copied = $state(false);
 
-	function copyBrief() {
-		void copyText(brief).then(() => {
+	function copyBrief(text: string) {
+		void copyText(text).then(() => {
 			copied = true;
 			setTimeout(() => (copied = false), 1500);
 		});
@@ -47,13 +52,20 @@
 		</div>
 	{/each}
 	<div class="rrow">
-		<button
-			class="btn"
-			title="Copy paste-ready instructions for a coding agent"
-			onclick={copyBrief}
-		>
-			{copied ? 'Copied' : 'Agent brief'}
-		</button>
+		{#if actionLabel && onAction}
+			<button class="btn" onclick={() => onAction()}>
+				{actionLabel}
+			</button>
+		{/if}
+		{#if brief}
+			<button
+				class="btn"
+				title="Copy paste-ready instructions for a coding agent"
+				onclick={() => copyBrief(brief ?? '')}
+			>
+				{copied ? 'Copied' : 'Agent brief'}
+			</button>
+		{/if}
 	</div>
 </Modal>
 

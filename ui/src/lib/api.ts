@@ -373,6 +373,14 @@ export const api = {
 			vendor,
 			port
 		}),
+	/** Register a custom runtime endpoint URL (+ optional meter port);
+	 *  starts the meter immediately when a port is given. */
+	addRuntimeEndpoint: (vendor: string, url: string, meterPort?: number) =>
+		post<{ ok: boolean; meter_started: boolean }>('/runtimes/endpoints', {
+			vendor,
+			url,
+			...(meterPort != null ? { meterPort } : {})
+		}),
 	consolidate: () => post<{ ok: boolean; observations: Record<string, number> }>('/consolidate', {}),
 	permissions: () => get<{ permissions: CapabilityStatus[] }>('/permissions'),
 	consents: () => get<{ scopes: ConsentState[] }>('/consents'),
