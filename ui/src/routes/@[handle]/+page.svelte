@@ -4,7 +4,8 @@
 	import { api, type ProviderSummary } from '$lib/api';
 	import { cloud, type SharedProfile } from '$lib/cloud';
 	import { Flame, Clock, Zap, Hash, Activity, Coins } from 'lucide-svelte';
-	import { billableTok, fmtMoney, fmtTok, heroCost, poll, timeAgo } from '$lib/format';
+	import { billableTok, fmtModel, fmtMoney, fmtTok, heroCost, poll, timeAgo } from '$lib/format';
+	import { providerAccent } from '$lib/colors';
 	import {
 		fetchDailyActivity,
 		fetchLast24hTokens,
@@ -126,6 +127,55 @@
 	);
 	const totalCostLabel = $derived(isLocal ? fmtMoney(heroCost(summary)) : '—');
 
+	/** Provider split (billable locally, reported remotely) with shares. */
+	const provRows = $derived(
+		(isLocal
+			? summary.map((p) => ({
+					vendor: p.vendor,
+					tokens: billableTok(p.tokens),
+					cost: p.cost > 0.0001 ? p.cost : (p.costEquivalent ?? 0),
+					requests: p.requests
+				}))
+			: (remote?.providers ?? []).map((p) => ({
+					vendor: p.vendor,
+					tokens: p.tokens,
+					cost: 0,
+					requests: p.requests
+				}))
+		)
+			.sort((a, b) => b.tokens - a.tokens)
+			.map((r) => ({ ...r, share: totalTokens > 0 ? (r.tokens / totalTokens) * 100 : 0 }))
+	);
+	/** Donut segments: conic-gradient stops in provider accents. */
+	const donut = $derived.by(() => {
+		if (totalTokens <= 0) return 'var(--track)';
+		let acc = 0;
+		const stops = provRows.map((r) => {
+			const from = (acc / totalTokens) * 100;
+			acc += r.tokens;
+			const to = (acc / totalTokens) * 100;
+			return `${providerAccent(r.vendor)} ${from.toFixed(2)}% ${to.toFixed(2)}%`;
+		});
+		return `conic-gradient(${stops.join(', ')})`;
+	});
+	/** Top models across providers (local only — not shared remotely). */
+	const modelRows = $derived(
+		isLocal
+			? summary
+					.flatMap((p) =>
+						p.models.map((m) => ({
+							vendor: p.vendor,
+							model: m.model,
+							tokens: billableTok(m.tokens),
+							requests: m.requests
+						}))
+					)
+					.sort((a, b) => b.tokens - a.tokens)
+					.slice(0, 8)
+			: []
+	);
+	const modelMax = $derived(modelRows[0]?.tokens ?? 1);
+
 	const displayName = $derived(
 		isLocal ? null : (remote?.display_name || null)
 	);
@@ -199,6 +249,52 @@
 {:else}
 	<div class="card">
 		<EmptyState title="Loading activity…" body="" />
+	</div>
+{/if}
+
+{#if provRows.length > 0}
+	<div class="section-label">Providers</div>
+	<div class="card prov">
+		<div class="dwrap">
+			<div class="donut" style:background={donut}></div>
+			<div class="dhole">
+				<span class="dnum num">{fmtTok(totalTokens)}</span>
+				<span class="dlab">tokens</span>
+			</div>
+		</div>
+		<div class="prows">
+			{#each provRows as r}
+				<div class="prow">
+					<span class="pdot" style:background={providerAccent(r.vendor)}></span>
+					<span class="pname">{r.vendor}</span>
+					<span class="pvals">
+						<span class="pv num">{fmtTok(r.tokens)}</span>
+						<span class="psub2">{Math.round(r.share)}%{#if isLocal} · {fmtMoney(r.cost)}{/if} · {r.requests} req</span>
+					</span>
+				</div>
+			{/each}
+		</div>
+	</div>
+{/if}
+
+{#if modelRows.length > 0}
+	<div class="section-label">Top models</div>
+	<div class="card models">
+		{#each modelRows as m}
+			<div class="mrow">
+				<span class="pdot" style:background={providerAccent(m.vendor)}></span>
+				<div class="mmain">
+					<div class="mline">
+						<span class="mname">{fmtModel(m.model)}</span>
+						<span class="mval num">{fmtTok(m.tokens)}</span>
+					</div>
+					<div class="msub2">{m.vendor} · {m.requests} req</div>
+					<div class="mbar">
+						<div class="mfill" style:width="{(m.tokens / modelMax) * 100}%" style:background={providerAccent(m.vendor)}></div>
+					</div>
+				</div>
+			</div>
+		{/each}
 	</div>
 {/if}
 
@@ -334,5 +430,138 @@
 	}
 	.pcol .psub {
 		margin-top: 8px;
+	}
+	/* providers: conic donut with the total punched through the middle */
+	.card.prov {
+		display: flex;
+		align-items: center;
+		gap: 22px;
+		flex-wrap: wrap;
+	}
+	.dwrap {
+		position: relative;
+		width: 128px;
+		height: 128px;
+		flex: none;
+	}
+	.donut {
+		width: 100%;
+		height: 100%;
+		border-radius: 50%;
+		-webkit-mask: radial-gradient(closest-side, transparent 66%, black 67%);
+		mask: radial-gradient(closest-side, transparent 66%, black 67%);
+	}
+	.dhole {
+		position: absolute;
+		inset: 0;
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		justify-content: center;
+		gap: 1px;
+		pointer-events: none;
+	}
+	.dnum {
+		font-size: 20px;
+		font-weight: 750;
+		letter-spacing: -0.02em;
+		font-variant-numeric: tabular-nums;
+	}
+	.dlab {
+		font-size: 10px;
+		font-weight: 600;
+		letter-spacing: 0.08em;
+		text-transform: uppercase;
+		color: var(--text-3);
+	}
+	.prows {
+		flex: 1;
+		min-width: 220px;
+	}
+	.prow {
+		display: flex;
+		align-items: baseline;
+		gap: 8px;
+		padding: 7px 0;
+	}
+	.prow + .prow {
+		border-top: 1px solid var(--line);
+	}
+	.pdot {
+		width: 9px;
+		height: 9px;
+		border-radius: 50%;
+		flex: none;
+		align-self: center;
+	}
+	.pname {
+		font-size: 13.5px;
+		font-weight: 600;
+		min-width: 0;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+	.pvals {
+		margin-left: auto;
+		text-align: right;
+		display: flex;
+		flex-direction: column;
+		flex: none;
+	}
+	.pv {
+		font-size: 14px;
+		font-weight: 700;
+		font-variant-numeric: tabular-nums;
+	}
+	.psub2, .msub2 {
+		font-size: 11px;
+		color: var(--text-3);
+		font-variant-numeric: tabular-nums;
+	}
+	/* top models: Screen-Time-style bar list */
+	.models .mrow {
+		display: flex;
+		gap: 10px;
+		padding: 9px 0;
+	}
+	.models .mrow + .mrow {
+		border-top: 1px solid var(--line);
+	}
+	.mmain {
+		flex: 1;
+		min-width: 0;
+	}
+	.mline {
+		display: flex;
+		align-items: baseline;
+		gap: 8px;
+	}
+	.mname {
+		font-size: 13px;
+		font-weight: 600;
+		font-family: var(--font-mono);
+		min-width: 0;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+	.mval {
+		margin-left: auto;
+		font-size: 13px;
+		font-weight: 700;
+		font-variant-numeric: tabular-nums;
+		flex: none;
+	}
+	.mbar {
+		height: 3px;
+		border-radius: 2px;
+		background: var(--track);
+		margin-top: 7px;
+		overflow: hidden;
+	}
+	.mfill {
+		height: 100%;
+		border-radius: 2px;
 	}
 </style>
