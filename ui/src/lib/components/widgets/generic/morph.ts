@@ -34,9 +34,11 @@ export interface DotPair {
 
 /** Font + paint props that make a fresh <span> pixel-identical to the
  *  source's text. Returns null for non-text travelers (color cells),
- *  which keep the dot clone. */
+ *  which keep the dot clone. Prefers aria-label: odometer rollers
+ *  (CountUp) render every digit 0-9 stacked, so raw textContent would
+ *  clone a "0123456789" stream — the label holds the settled value. */
 export function sampleText(el: Element): { value: string; css: string } | null {
-	const value = el.textContent?.trim();
+	const value = el.getAttribute('aria-label')?.trim() || el.textContent?.trim();
 	if (!value) return null;
 	const cs = getComputedStyle(el);
 	const css =
