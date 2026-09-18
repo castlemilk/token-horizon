@@ -359,13 +359,13 @@
 		font-size: 13px;
 		color: var(--text-2);
 	}
-	/* masthead stats: 6-up grid, icon + title on one row with the value
+	/* masthead stats: 3×2 grid, icon + title on one row with the value
 	   below — fixed fractions, so varying value lengths ("just now" vs
 	   "a minute ago") can't shift the layout. Container queries, not the
 	   viewport: the side rail's gutters change the available width. */
 	.mstats {
 		display: grid;
-		grid-template-columns: repeat(6, minmax(0, 1fr));
+		grid-template-columns: repeat(3, minmax(0, 1fr));
 		gap: 14px 12px;
 		margin-top: 12px;
 	}
@@ -401,17 +401,12 @@
 		justify-content: center;
 		flex: none;
 	}
-	@container (max-width: 640px) {
+	@container (max-width: 560px) {
 		.mstats {
-			grid-template-columns: repeat(3, minmax(0, 1fr));
+			grid-template-columns: repeat(2, minmax(0, 1fr));
 		}
 		.mv {
 			font-size: 14px;
-		}
-	}
-	@container (max-width: 420px) {
-		.mstats {
-			grid-template-columns: repeat(2, minmax(0, 1fr));
 		}
 	}
 	.mico-flame {
