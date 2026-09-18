@@ -259,9 +259,7 @@
 {:else if feedDays.length > 0}
 	<YearHeatmap days={feedDays} stepping={isLocal} showStats={false} hint={profileHint} />
 {:else}
-	<div class="card">
-		<EmptyState title="Loading activity…" body="" />
-	</div>
+	<YearHeatmap days={[]} stepping={false} showStats={false} skeleton hint={profileHint} />
 {/if}
 
 {#if provRows.length > 0}
