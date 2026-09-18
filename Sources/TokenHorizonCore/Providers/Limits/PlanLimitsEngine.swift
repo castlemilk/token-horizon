@@ -28,6 +28,7 @@ public final class PlanLimitsEngine: LimitsEngine {
         GeminiLimits(),
         ClaudeLimits(),
         DeepSeekLimits(),
+        CodexLimits(),
     ]
 
     public static func fetchAll() -> [ProviderLimit] {
