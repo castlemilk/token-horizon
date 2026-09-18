@@ -193,23 +193,35 @@
 
 {#snippet winCell(w: Win | null, big = false)}
 	<div class="wcell">
-		{#if w}
-			{@render dial(w.usedPercent, big ? 66 : 54)}
-			<span class="wlabel" title="{w.label}{w.detail ? ` — ${w.detail}` : ''}{w.resetsAt ? ` · resets ${fmtReset(w.resetsAt)}` : ''}">{w.label}{#if w.resetsAt}<em>. {fmtReset(w.resetsAt).replace(/^in /, '')}</em>{/if}</span>
-		{:else}
-			<span class="wempty" aria-hidden="true"></span>
-		{/if}
+		<div class="pviz" style:--viz="{big ? 66 : 54}px">
+			{#if w}
+				{@render dial(w.usedPercent, big ? 66 : 54)}
+			{:else}
+				<span class="wempty-ring" aria-hidden="true"></span>
+			{/if}
+		</div>
+		<div class="psubz">
+			{#if w}
+				<span class="wlabel" title="{w.label}{w.detail ? ` — ${w.detail}` : ''}{w.resetsAt ? ` · resets ${fmtReset(w.resetsAt)}` : ''}">{w.label}{#if w.resetsAt}<em>. {fmtReset(w.resetsAt).replace(/^in /, '')}</em>{/if}</span>
+			{:else}
+				<span class="wlabel" aria-hidden="true">&nbsp;</span>
+			{/if}
+		</div>
 	</div>
 {/snippet}
 
 {#snippet identity(g: Group, logo: number)}
 	<div class="ident">
-		<span class="ilogo" data-travel={g.vendor.toLowerCase()}>
-			<ProviderIcon vendor={g.vendor} size={logo} />
-		</span>
-		<span class="pill" title={g.account ? `${g.vendor} (${g.account})` : g.vendor}>
-			{g.vendor}{#if g.account}<em> · {g.account}</em>{/if}
-		</span>
+		<div class="pviz" style:--viz="{logo}px">
+			<span class="ilogo" data-travel={g.vendor.toLowerCase()}>
+				<ProviderIcon vendor={g.vendor} size={logo} />
+			</span>
+		</div>
+		<div class="psubz">
+			<span class="pill" title={g.account ? `${g.vendor} (${g.account})` : g.vendor}>
+				{g.vendor}{#if g.account}<em> · {g.account}</em>{/if}
+			</span>
+		</div>
 	</div>
 {/snippet}
 
@@ -401,15 +413,34 @@
 		from { transform: scale(0.6); opacity: 0; }
 		to { transform: scale(1); opacity: 1; }
 	}
-	/* identity: big logo, name pill below — full-width column so logo
-	   and subtext share one center axis */
+	/* Every cell is three fixed layers: the parent column, a visual zone
+	   (--viz tall, content centered — same size for logo and dial), and a
+	   fixed-height one-line subtext zone. Identical metrics per grid unit
+	   mean every visual sits at the same offset and every label shares one
+	   baseline; a missing label renders a space, never a hole. */
+	.pviz {
+		height: var(--viz, 54px);
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		flex: none;
+	}
+	.psubz {
+		height: 20px;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		width: 100%;
+		min-width: 0;
+		flex: none;
+	}
 	.ident {
 		display: flex;
 		flex-direction: column;
 		align-items: center;
 		width: 100%;
 		text-align: center;
-		gap: 5px;
+		gap: 4px;
 		min-width: 0;
 	}
 	.ilogo {
@@ -434,14 +465,15 @@
 		font-weight: 500;
 		opacity: 0.7;
 	}
-	/* quota window cell: ring + single quiet status line, one axis */
+	/* quota window cell: ring in the visual zone + single quiet status
+	   line in the subtext zone, one axis */
 	.wcell {
 		display: flex;
 		flex-direction: column;
 		align-items: center;
 		width: 100%;
 		text-align: center;
-		gap: 2px;
+		gap: 4px;
 		min-width: 0;
 	}
 	.wlabel {
@@ -461,10 +493,13 @@
 		font-weight: 500;
 		opacity: 0.75;
 	}
-	.wempty {
-		width: 44px;
+	/* a quota window with no data keeps the cell's silhouette: faint ring
+	   at dial size, blank subtext — neighbors don't shift */
+	.wempty-ring {
+		width: calc(var(--viz) * 0.8);
 		aspect-ratio: 1;
 		border-radius: 50%;
+		border: 2px solid var(--track);
 	}
 	.pempty {
 		align-self: center;
