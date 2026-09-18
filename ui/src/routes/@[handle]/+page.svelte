@@ -1,7 +1,6 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
-	import { page } from '$app/stores';
 	import { api, type ProviderSummary } from '$lib/api';
+	import type { ProfileData } from './+page';
 	import { cloud, type SharedProfile } from '$lib/cloud';
 	import { Flame, Clock, Zap, Hash, Activity, Coins } from 'lucide-svelte';
 	import { billableTok, fmtModel, fmtMoney, fmtTok, heroCost, poll, timeAgo } from '$lib/format';
@@ -22,10 +21,12 @@
 	// Route: /@<handle> — own handle reads the local daemon; any other
 	// handle tries the cloud's shared profile and falls back to an empty
 	// state (server endpoint pending — see cloud.sharedProfile).
-	const handle = $derived(($page.params.handle ?? 'me').replace(/^@+/, ''));
-	const localHandle = $derived((settings.handle.trim() || 'me').replace(/^@+/, ''));
-	const norm = $derived(handle.toLowerCase());
-	const isLocal = $derived(norm === localHandle.toLowerCase() || norm === 'me');
+	// First paint is pre-seeded by +page.ts load(), so skeletons only ever
+	// show for genuinely-down feeds; the lanes below just refresh.
+	let { data }: { data: ProfileData } = $props();
+
+	const handle = $derived(data.handle);
+	const isLocal = $derived(data.isLocal);
 
 	let days = $state<DayActivity[]>([]);
 	let summary = $state<ProviderSummary[]>([]);
@@ -37,16 +38,27 @@
 	/** Ticks so aging "last activity" labels refresh without new data. */
 	let nowTick = $state(Date.now());
 
-	onMount(() => {
+	// Seed + reseed from load() before paint: first paint already has
+	// data, and same-route navigation (reused component, fresh data)
+	// reseeds here. Polls only ever refresh.
+	$effect.pre(() => {
+		const d = data;
+		days = d.days;
+		summary = d.summary;
+		summaryReady = d.summaryOk;
+		last24h = d.last24h;
+		localEventTs = d.lastEventTs;
+		remote = d.remote;
+		remoteMissing = d.remoteMissing;
+	});
+
+	// Refresh lanes, keyed on identity (re-armed on navigation). Remote
+	// profiles are one-shot from load(); only the aging ticker runs.
+	$effect(() => {
+		void data.handle;
+		const local = data.isLocal;
 		const tick = setInterval(() => (nowTick = Date.now()), 30000);
-		const done = () => clearInterval(tick);
-		if (!isLocal) {
-			cloud
-				.sharedProfile(handle)
-				.then((r) => (remote = r))
-				.catch(() => (remoteMissing = true));
-			return done;
-		}
+		if (!local) return () => clearInterval(tick);
 		const metered = `?limit=1${settings.showImports ? '' : '&metered=1'}`;
 		// Fast lane (10s): totals + newest event. Slow lane (60s): the day
 		// feed and trailing-24h figure. Both fire immediately via poll().

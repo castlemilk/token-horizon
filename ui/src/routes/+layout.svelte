@@ -71,11 +71,11 @@
 		return () => clearTimeout(t);
 	});
 
-	// Metering tab appears when runtime analytics are actually available:
-	// something running locally or a runtime with measured usage.
-	const machineAvailable = $derived(
-		runtimes.some((r) => r.running || r.usage.tokens_all > 0)
-	);
+	// Metering tab shows whenever the daemon reports runtimes — even all
+	// stopped (the page itself explains setup). Gating on running/usage
+	// made the tab vanish on idle machines, which reads as broken chrome.
+	// Hidden only while the daemon is unreachable (empty list).
+	const machineAvailable = $derived(runtimes.length > 0);
 
 	// Icon tabs — labels live on tooltips (title/aria), the UI stays wordless.
 	// Home · Meters (when runtime analytics exist) · Profile.
