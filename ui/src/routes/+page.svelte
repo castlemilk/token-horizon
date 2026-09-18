@@ -93,12 +93,19 @@
 		color: var(--text-3);
 		font-size: 13px;
 	}
-	/* small screens: medium heatmap leads, counter joins the pairs —
-	   5 widgets over 3 rows, one uniform gap both axes */
+	/* narrow viewports (top pill): extra top margin under the floating bar */
 	@media (max-width: 640px) {
 		.dash {
 			margin-top: 20px;
 		}
+	}
+	/* narrow CONTAINERS: medium heatmap leads, counter joins the pairs —
+	   5 widgets over 3 rows, one uniform gap both axes.
+	   A container query (not viewport): above the 640px viewport the side
+	   rail swaps in and its 104px gutters shrink the available width, which
+	   used to squeeze the 3-col grid just before the viewport breakpoint
+	   hit. .dash is the query container (container-type: inline-size). */
+	@container (max-width: 620px) {
 		.widget-grid {
 			width: min(410px, 100%);
 			grid-template-columns: repeat(2, minmax(0, 200px));
