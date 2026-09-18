@@ -155,28 +155,28 @@
 		{/if}
 		<div class="mstats">
 			<div class="ms">
-				<span class="mv"><span class="mico mico-flame"><Flame size={14} strokeWidth={2.2} /></span>{act.streak}</span>
-				<span class="ml">day streak</span>
+				<span class="mhead"><span class="mico mico-flame"><Flame size={13} strokeWidth={2.2} /></span><span class="ml">day streak</span></span>
+				<span class="mv">{act.streak}</span>
 			</div>
 			<div class="ms">
-				<span class="mv"><span class="mico mico-clock"><Clock size={14} strokeWidth={2.2} /></span>{lastActiveLabel}</span>
-				<span class="ml">last activity</span>
+				<span class="mhead"><span class="mico mico-clock"><Clock size={13} strokeWidth={2.2} /></span><span class="ml">last activity</span></span>
+				<span class="mv">{lastActiveLabel}</span>
 			</div>
 			<div class="ms">
-				<span class="mv"><span class="mico mico-zap"><Zap size={14} strokeWidth={2.2} /></span>{last24hLabel}</span>
-				<span class="ml">last 24 hours</span>
+				<span class="mhead"><span class="mico mico-zap"><Zap size={13} strokeWidth={2.2} /></span><span class="ml">last 24 hours</span></span>
+				<span class="mv">{last24hLabel}</span>
 			</div>
 			<div class="ms">
-				<span class="mv"><span class="mico mico-tokens"><Hash size={14} strokeWidth={2.2} /></span>{fmtTok(totalTokens)}</span>
-				<span class="ml">total tokens</span>
+				<span class="mhead"><span class="mico mico-tokens"><Hash size={13} strokeWidth={2.2} /></span><span class="ml">total tokens</span></span>
+				<span class="mv">{fmtTok(totalTokens)}</span>
 			</div>
 			<div class="ms">
-				<span class="mv"><span class="mico mico-req"><Activity size={14} strokeWidth={2.2} /></span>{totalRequests.toLocaleString('en-US')}</span>
-				<span class="ml">requests</span>
+				<span class="mhead"><span class="mico mico-req"><Activity size={13} strokeWidth={2.2} /></span><span class="ml">requests</span></span>
+				<span class="mv">{totalRequests.toLocaleString('en-US')}</span>
 			</div>
 			<div class="ms">
-				<span class="mv"><span class="mico mico-cost"><Coins size={14} strokeWidth={2.2} /></span>{totalCostLabel}</span>
-				<span class="ml">total cost</span>
+				<span class="mhead"><span class="mico mico-cost"><Coins size={13} strokeWidth={2.2} /></span><span class="ml">total cost</span></span>
+				<span class="mv">{totalCostLabel}</span>
 			</div>
 		</div>
 		<div class="psub">{origin} · {act.activeDays} active days</div>
@@ -211,6 +211,7 @@
 		border-bottom: 0;
 		padding-bottom: 0;
 		margin-bottom: 18px;
+		container-type: inline-size;
 	}
 	.profile-mast .pcol {
 		min-width: 0;
@@ -242,40 +243,60 @@
 		font-size: 13px;
 		color: var(--text-2);
 	}
-	/* masthead stats: iOS-style value-over-label trio with tinted glyph
-	   badges (flame orange, clock blue, bolt green) */
+	/* masthead stats: 6-up grid, icon + title on one row with the value
+	   below — fixed fractions, so varying value lengths ("just now" vs
+	   "a minute ago") can't shift the layout. Container queries, not the
+	   viewport: the side rail's gutters change the available width. */
 	.mstats {
-		display: flex;
-		align-items: stretch;
-		gap: 20px;
+		display: grid;
+		grid-template-columns: repeat(6, minmax(0, 1fr));
+		gap: 14px 12px;
 		margin-top: 12px;
-		flex-wrap: wrap;
 	}
 	.ms {
 		display: flex;
 		flex-direction: column;
-		gap: 2px;
+		gap: 4px;
+		min-width: 0;
 	}
-	.mv {
+	.mhead {
 		display: flex;
 		align-items: center;
-		gap: 7px;
-		font-size: 18px;
+		gap: 6px;
+		min-width: 0;
+	}
+	.mv {
+		font-size: 16px;
 		font-weight: 700;
 		letter-spacing: -0.02em;
 		line-height: 1.2;
 		font-variant-numeric: tabular-nums;
 		color: var(--text);
 		white-space: nowrap;
+		overflow: hidden;
+		text-overflow: ellipsis;
 	}
 	.mico {
-		width: 26px;
-		height: 26px;
-		border-radius: 8px;
+		width: 24px;
+		height: 24px;
+		border-radius: 7px;
 		display: flex;
 		align-items: center;
 		justify-content: center;
 		flex: none;
+	}
+	@container (max-width: 640px) {
+		.mstats {
+			grid-template-columns: repeat(3, minmax(0, 1fr));
+		}
+		.mv {
+			font-size: 14px;
+		}
+	}
+	@container (max-width: 420px) {
+		.mstats {
+			grid-template-columns: repeat(2, minmax(0, 1fr));
+		}
 	}
 	.mico-flame {
 		color: #ff9500;
@@ -308,6 +329,8 @@
 		text-transform: uppercase;
 		color: var(--text-3);
 		white-space: nowrap;
+		overflow: hidden;
+		text-overflow: ellipsis;
 	}
 	.pcol .psub {
 		margin-top: 8px;
