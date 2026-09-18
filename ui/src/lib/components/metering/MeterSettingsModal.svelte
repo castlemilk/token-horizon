@@ -27,11 +27,10 @@
 
 	const key = $derived(vendor.toLowerCase());
 	const live = $derived(meters?.point.find((m) => m.vendor.toLowerCase() === key));
-	const currentTarget = $derived(
-		live?.target ??
-			meters?.catalog.find((c) => c.vendor.toLowerCase() === key)?.target ??
-			null
-	);
+	const catalogEntry = $derived(meters?.catalog.find((c) => c.vendor.toLowerCase() === key));
+	const currentTarget = $derived(live?.target ?? catalogEntry?.target ?? null);
+	/** Prefill chain: live target → saved target → runtime default. */
+	const prefillTarget = $derived(currentTarget ?? catalogEntry?.default_target ?? null);
 	const currentPort = $derived(
 		live?.listen_port ??
 			meters?.catalog.find((c) => c.vendor.toLowerCase() === key)?.listen_port ??
@@ -48,7 +47,7 @@
 	$effect(() => {
 		void vendor;
 		if (!open) return;
-		urlDraft = untrack(() => currentTarget) ?? '';
+		urlDraft = untrack(() => prefillTarget) ?? '';
 		touched = false;
 		saving = false;
 		result = '';
@@ -105,8 +104,10 @@
 	<div class="dim rbody">
 		{#if currentTarget}
 			Currently forwarding to <span class="mono">{currentTarget}</span>
+		{:else if prefillTarget}
+			No meter running — save to register this endpoint and start metering on the default port.
 		{:else}
-			No meter running — set an endpoint and port to start one.
+			No meter running — set an endpoint to start one.
 		{/if}
 	</div>
 	<label class="flabel" for="msm-url">API endpoint</label>

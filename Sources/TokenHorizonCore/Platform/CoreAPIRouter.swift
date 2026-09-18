@@ -352,13 +352,25 @@ public final class CoreAPIRouter {
                 // toggles from this; no hardcoded vendor list client-side.
                 "catalog": MeterRegistry.availableVendors.sorted().map { v -> [String: Any] in
                     let running = meters.first(where: { $0.vendor.lowercased() == v.lowercased() })
-                    return [
+                    var entry: [String: Any] = [
                         "vendor": v,
                         "running": running != nil,
                         "enabled": running != nil || toggles[v.lowercased()] == true,
                         "listen_port": running.map { Int($0.listenPort) } ?? Int(MeterRegistry.defaultListenPort(for: v)),
                         "target": running?.targetBase.absoluteString ?? NSNull(),
                     ]
+                    // Runtime default target (first configured endpoint, else
+                    // 127.0.0.1:defaultPort) so UIs can prefill endpoint
+                    // editors for stopped meters. Cloud vendors have none —
+                    // their API bases are fixed by the provider class.
+                    if running == nil,
+                       let rt = InferenceMonitor.shared.runtimes.first(where: {
+                           $0.meterVendorKey.lowercased() == v.lowercased()
+                       }),
+                       let def = rt.defaultMeterTarget {
+                        entry["default_target"] = def.absoluteString
+                    }
+                    return entry
                 },
             ]
             if let mitm = mitmCapture {
