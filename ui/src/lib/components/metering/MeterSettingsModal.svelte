@@ -3,6 +3,7 @@
 	import { api, type Meters } from '$lib/api';
 	import { validateEndpoint } from '$lib/validation';
 	import Modal from '$lib/components/common/Modal.svelte';
+	import ProviderIcon from '$lib/components/data/ProviderIcon.svelte';
 
 	/** Per-vendor meter settings: the upstream API endpoint it forwards
 	 *  to. Saving registers a settings endpoint (POST /runtimes/endpoints)
@@ -100,7 +101,11 @@
 	}
 </script>
 
-<Modal {open} {onClose} title={`${title} meter`} dismissible={!endpointLocked}>
+{#snippet titleChip()}
+	<ProviderIcon {vendor} size={22} />
+{/snippet}
+
+<Modal {open} {onClose} title={`${title} meter`} titleExtra={titleChip} dismissible={!endpointLocked}>
 	<div class="dim rbody">
 		{#if currentTarget}
 			Currently forwarding to <span class="mono">{currentTarget}</span>
