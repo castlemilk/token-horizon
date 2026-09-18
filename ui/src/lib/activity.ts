@@ -83,6 +83,18 @@ export function yearBounds(year: number): [number, number] {
 	to.setHours(0, 0, 0, 0);
 	return [Math.floor(from.getTime() / 1000), Math.floor(to.getTime() / 1000)];
 }
+/** Heat band for a day's tokens relative to the visible max — the ONE
+ *  banding both the heatmap cells and the widget dots use, so tile colors
+ *  always match cells for the same data. */
+export function heatLevel(tokens: number, maxV: number): number {
+	if (tokens <= 0) return 0;
+	const r = tokens / maxV;
+	if (r <= 0.25) return 1;
+	if (r <= 0.5) return 2;
+	if (r <= 0.75) return 3;
+	return 4;
+}
+
 export function activityStats(days: DayActivity[]): ActivityStats {
 	const total = days.reduce((s, d) => s + d.tokens, 0);
 	const peak = days.reduce((m, d) => Math.max(m, d.tokens), 0);

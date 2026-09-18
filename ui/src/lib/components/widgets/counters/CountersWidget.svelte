@@ -10,7 +10,7 @@
 	import { rectSettled } from '../generic/morph';
 	import { api, type ProviderSummary } from '$lib/api';
 	import { billableTok, fmtTok, poll } from '$lib/format';
-	import { providerAccent } from '$lib/colors';
+	import { HEAT, providerAccent } from '$lib/colors';
 	import { settings } from '$lib/settings.svelte';
   import { AspectRatio } from 'bits-ui'
 
@@ -50,7 +50,6 @@
 
 	const reduce =
 		typeof matchMedia !== 'undefined' && matchMedia('(prefers-reduced-motion: reduce)').matches;
-	const HEAT = 'light-dark(#34c759, #30d158)';
 
 	const totals = $derived.by(() => {
 		const t = { input: 0, output: 0, reasoning: 0, cacheRead: 0, cacheWrite: 0 };

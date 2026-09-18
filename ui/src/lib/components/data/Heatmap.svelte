@@ -1,5 +1,7 @@
 <script lang="ts">
 	import { fmtTok } from '$lib/format';
+	import { heatLevel } from '$lib/activity';
+	import { HEAT } from '$lib/colors';
 
 	/** GitHub-style daily heatmap: weeks as columns, days Mon–Sun as rows. */
 	let {
@@ -20,8 +22,6 @@
 
 	const CELL = 11;
 	const GAP = 3;
-	/* Apple system green (light/dark) — activity-rings accent. */
-	const HEAT = 'light-dark(#34c759, #30d158)';
 
 	/* Fit the container: show as many of the most recent weeks as the width
 	   allows — no scrolling, no clipping, always the freshest data. */
@@ -31,15 +31,6 @@
 	);
 
 	const max = $derived(Math.max(1, ...days.map((d) => d.tokens)));
-
-	function level(tokens: number, maxV: number): number {
-		if (tokens <= 0) return 0;
-		const r = tokens / maxV;
-		if (r <= 0.25) return 1;
-		if (r <= 0.5) return 2;
-		if (r <= 0.75) return 3;
-		return 4;
-	}
 
 	interface Week {
 		month: string;
@@ -69,7 +60,7 @@
 			cols.push({
 				month: show,
 				cells: chunk.map((c) =>
-					c ? { day: c.day, ts: c.ts, tokens: c.tokens, lvl: level(c.tokens, max) } : null
+					c ? { day: c.day, ts: c.ts, tokens: c.tokens, lvl: heatLevel(c.tokens, max) } : null
 				)
 			});
 		}
