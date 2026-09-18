@@ -136,10 +136,19 @@ timelines at 4× slow for frame inspection.
    hiding sources (never by interpolating font properties; GSAP can't
    tween family/weight/style).
 
-## Still open at time of writing
+## Resolution
 
-The web-browser OPEN flight not playing (Tauri flies; both engines report
-`reduce=false`). With all code-level gates eliminated, the answer is
-expected from the `?morphdebug=1` trace — most likely a measurement bail
-(`modal measure fail` would match "modal appears at resting size instantly,
-no flight"). Update this doc with the `[morph]` output when captured.
+The "Tauri flies, web doesn't" divergence was never environmental. The
+browser trace read `open: flight { pairs: ["20→20", "20→20", "20→20"] }` —
+the flight launched and measured identically in both shells; the browser
+clones were simply *invisible* (transparent-dot fallback on icon wrappers)
+or *wrong* (glyph letters sampled as text). The close-flight digit stream
+was the separate odometer-textContent bug, which only the visibly-flying
+shell could expose. Final trace after the fix:
+`clones: ["visual", "visual", "visual"]`, same in both shells.
+
+The whole hunt took four rounds because each fix revealed the next layer:
+conceal sources → clone text → clone visuals → clone marker explicitness.
+The durable lesson: when a flight "doesn't happen", trace whether it
+*launched* before touching geometry or environment — with `?morphdebug=1`,
+one line answers it.
