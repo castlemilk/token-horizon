@@ -173,9 +173,9 @@
 	const exitClose: ExitSpec[] = [{ select: '.psec', at: (c) => 0.08 * c.S }];
 </script>
 
-{#snippet dial(pct: number, size: number)}
+{#snippet dial(pct: number)}
 	{@const p = Math.min(Math.max(pct, 0), 100)}
-	<div class="dial" style:width="{size}px" role="img" aria-label="{p.toFixed(0)} percent used">
+	<div class="dial" role="img" aria-label="{p.toFixed(0)} percent used">
 		<svg viewBox="0 0 84 84" aria-hidden="true">
 			<circle cx="42" cy="42" r={R} class="dial-track" />
 			<circle
@@ -193,9 +193,9 @@
 
 {#snippet winCell(w: Win | null, big = false)}
 	<div class="wcell">
-		<div class="pviz" style:--viz="{big ? 66 : 54}px">
+		<div class="pviz" style:--viz="{big ? 66 : 40}px">
 			{#if w}
-				{@render dial(w.usedPercent, big ? 66 : 54)}
+				{@render dial(w.usedPercent)}
 			{:else}
 				<span class="wempty-ring" aria-hidden="true"></span>
 			{/if}
@@ -214,7 +214,7 @@
 	<div class="ident">
 		<div class="pviz" style:--viz="{logo}px">
 			<span class="ilogo" data-travel={g.vendor.toLowerCase()}>
-				<ProviderIcon vendor={g.vendor} size={logo} />
+				<ProviderIcon vendor={g.vendor} fill />
 			</span>
 		</div>
 		<div class="psubz">
@@ -261,7 +261,7 @@
 				{#if current}
 					{#if variant === 'small'}
 						<div class="pgrid2">
-							<div class="pcell ident-cell">{@render identity(current, 54)}</div>
+							<div class="pcell ident-cell">{@render identity(current, 40)}</div>
 							<div class="pcell">{@render winCell(current.rows[2] ?? null)}</div>
 							<div class="pcell">{@render winCell(current.rows[1] ?? null)}</div>
 							<div class="pcell">{@render winCell(current.rows[0] ?? null)}</div>
@@ -269,9 +269,9 @@
 					{:else}
 						<div class="pgrid4">
 							<div class="pcell ident-cell">{@render identity(current, 66)}</div>
-							<div class="pcell">{@render winCell(current.rows[0] ?? null)}</div>
-							<div class="pcell">{@render winCell(current.rows[1] ?? null)}</div>
-							<div class="pcell">{@render winCell(current.rows[2] ?? null)}</div>
+							<div class="pcell">{@render winCell(current.rows[0] ?? null, true)}</div>
+							<div class="pcell">{@render winCell(current.rows[1] ?? null, true)}</div>
+							<div class="pcell">{@render winCell(current.rows[2] ?? null, true)}</div>
 						</div>
 					{/if}
 				{:else}
@@ -288,7 +288,7 @@
 			{#if current}
 				{#if variant === 'small'}
 					<div class="pgrid2">
-						<div class="pcell ident-cell">{@render identity(current, 54)}</div>
+						<div class="pcell ident-cell">{@render identity(current, 40)}</div>
 						<div class="pcell">{@render winCell(current.rows[2] ?? null)}</div>
 						<div class="pcell">{@render winCell(current.rows[1] ?? null)}</div>
 						<div class="pcell">{@render winCell(current.rows[0] ?? null)}</div>
@@ -296,9 +296,9 @@
 				{:else}
 					<div class="pgrid4">
 						<div class="pcell ident-cell">{@render identity(current, 66)}</div>
-						<div class="pcell">{@render winCell(current.rows[0] ?? null)}</div>
-						<div class="pcell">{@render winCell(current.rows[1] ?? null)}</div>
-						<div class="pcell">{@render winCell(current.rows[2] ?? null)}</div>
+						<div class="pcell">{@render winCell(current.rows[0] ?? null, true)}</div>
+						<div class="pcell">{@render winCell(current.rows[1] ?? null, true)}</div>
+						<div class="pcell">{@render winCell(current.rows[2] ?? null, true)}</div>
 					</div>
 				{/if}
 			{:else}
@@ -413,20 +413,24 @@
 		from { transform: scale(0.6); opacity: 0; }
 		to { transform: scale(1); opacity: 1; }
 	}
-	/* Every cell is three fixed layers: the parent column, a visual zone
-	   (--viz tall, content centered — same size for logo and dial), and a
-	   fixed-height one-line subtext zone. Identical metrics per grid unit
-	   mean every visual sits at the same offset and every label shares one
-	   baseline; a missing label renders a space, never a hole. */
+	/* Every cell is three layers: the parent column, a visual zone capped
+	   at --viz but free to SHRINK with the cell (fixed px overflowed the
+	   small tile and crowded labels into the next row), and a fixed-height
+	   one-line subtext zone that never yields. Visuals fill their zone
+	   (fill-mode icon, fluid dial), so logo and ring read at the same
+	   size in every grid unit and the label always sits below, on one
+	   baseline. */
 	.pviz {
+		flex: 1 1 auto;
 		height: var(--viz, 54px);
+		min-height: 0;
+		width: 100%;
 		display: flex;
 		align-items: center;
 		justify-content: center;
-		flex: none;
 	}
 	.psubz {
-		height: 20px;
+		height: 18px;
 		display: flex;
 		align-items: center;
 		justify-content: center;
@@ -439,14 +443,20 @@
 		flex-direction: column;
 		align-items: center;
 		width: 100%;
+		height: 100%;
 		text-align: center;
 		gap: 4px;
 		min-width: 0;
+		min-height: 0;
 	}
 	.ilogo {
 		display: flex;
 		justify-content: center;
 		line-height: 0;
+		height: 100%;
+		aspect-ratio: 1;
+		max-height: var(--viz, 54px);
+		flex: none;
 	}
 	.pill {
 		max-width: 100%;
@@ -472,9 +482,11 @@
 		flex-direction: column;
 		align-items: center;
 		width: 100%;
+		height: 100%;
 		text-align: center;
 		gap: 4px;
 		min-width: 0;
+		min-height: 0;
 	}
 	.wlabel {
 		width: 100%;
@@ -496,20 +508,26 @@
 	/* a quota window with no data keeps the cell's silhouette: faint ring
 	   at dial size, blank subtext — neighbors don't shift */
 	.wempty-ring {
-		width: calc(var(--viz) * 0.8);
+		height: 86%;
 		aspect-ratio: 1;
 		border-radius: 50%;
 		border: 2px solid var(--track);
+		flex: none;
 	}
 	.pempty {
 		align-self: center;
 		font-size: 12px;
 		color: var(--text-3);
 	}
-	/* dials */
+	/* dials: fluid square inside the visual zone, capped at --viz. The
+	   pct number scales with the ring (cqmin = % of the dial's own box). */
 	.dial {
 		position: relative;
+		height: 100%;
 		aspect-ratio: 1;
+		max-height: var(--viz, 54px);
+		container-type: size;
+		flex: none;
 	}
 	.dial svg {
 		width: 100%;
@@ -535,7 +553,7 @@
 		display: flex;
 		align-items: center;
 		justify-content: center;
-		font-size: 10px;
+		font-size: 18cqmin;
 		font-weight: 700;
 		font-variant-numeric: tabular-nums;
 		letter-spacing: -0.02em;
@@ -640,9 +658,6 @@
 	}
 	.prow .wlabel {
 		font-size: 12px;
-	}
-	.prow .dial-pct {
-		font-size: 13px;
 	}
 	.pskel {
 		display: grid;
