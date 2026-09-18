@@ -48,7 +48,10 @@ export function sampleText(el: Element): { value: string; css: string } | null {
 	const value =
 		el.getAttribute('aria-label')?.trim() ||
 		el.querySelector('[aria-label]')?.getAttribute('aria-label')?.trim() ||
-		el.textContent?.trim();
+		// textContent is a label only for PURE-text travelers — glyph chips
+		// render a letter inside <svg><text> (element children!), which
+		// would otherwise fly as a bare character in the wrong font.
+		(el.childElementCount === 0 ? el.textContent?.trim() : undefined);
 	if (!value) return null;
 	const cs = getComputedStyle(el);
 	const css =

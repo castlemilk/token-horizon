@@ -455,7 +455,10 @@
 			}
 			pairs.push({ from: d.box, to: t.box, bg: d.bg, text: d.text, visual: d.visual });
 		}
-		mdbg('open: flight', { pairs: pairs.map((p) => `${p.from.w.toFixed(0)}→${p.to.w.toFixed(0)}`) });
+		mdbg('open: flight', {
+			pairs: pairs.map((p) => `${p.from.w.toFixed(0)}→${p.to.w.toFixed(0)}`),
+			clones: pairs.map((p) => (p.text ? 'text' : p.visual ? 'visual' : 'dot'))
+		});
 		const clones = spawnClones(pairs);
 		const landT = 0.06 + (pairs.length - 1) * STAG + 0.45 * S;
 		const mEnd = 0.38 * S;
@@ -686,6 +689,10 @@
 			});
 		}
 		phase = 'exit';
+		mdbg('close: flight', {
+			pairs: pairs.map((p) => `${p.from.w.toFixed(0)}→${p.to.w.toFixed(0)}`),
+			clones: pairs.map((p) => (p.text ? 'text' : p.visual ? 'visual' : 'dot'))
+		});
 		const clones = spawnClones(pairs);
 		// Collapse against the NATURAL card box: GSAP offsets are relative
 		// to untransformed layout, while the measured box includes any

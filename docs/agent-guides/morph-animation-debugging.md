@@ -43,9 +43,24 @@ timelines at 4× slow for frame inspection.
    `visual`, serializes the traveler's internals (img/svg markup — scoped
    Svelte styles ride along via attribute selectors) plus sampled
    frame/paint props (size, flex centering, background, radius, shadow).
-   Priority: text > visual > dot.
+   Priority:    text > visual > dot.
 
-4. **Ungated polls corrupt in-flight measurements** — every widget polls
+   4b. **The trace itself caught this one.** `?morphdebug=1` logged
+   `open: flight { pairs: ["20→20", ...] }` in the browser — proving the
+   flight launched and measured correctly, and that "no transition" meant
+   "invisible/wrong clones", not "no flight". The log now also reports the
+   clone variant per traveler (`text`/`visual`/`dot`), so the next
+   "clones look wrong" bug answers itself without a code change.
+
+4. **Glyph chips are not text** — brand glyphs (Kimi's "K", MiniMax's "M")
+   render a letter inside `<svg><text>`, which `textContent` happily reads
+   as a label: the icon flew as a bare character in the wrapper's UI font.
+   Fixed: `sampleText` accepts `textContent` only for PURE-text travelers
+   (`childElementCount === 0`); anything with element children falls to the
+   `visual` clone. Raster icons (img) already worked — mixed recent lists
+   made this look like "some icons fly, some don't".
+
+5. **Ungated polls corrupt in-flight measurements** — every widget polls
    its feed on a timer; a poll resolving mid-flight re-sizes/re-mounts the
    very nodes the clones were measured from, so travelers land on stale
    positions. Fixed by gating each poll on `phase === 'settle'` (skipped
