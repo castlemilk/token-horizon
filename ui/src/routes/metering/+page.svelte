@@ -6,6 +6,7 @@
 	import MeterTiles from '$lib/components/metering/MeterTiles.svelte';
 	import RuntimeCards from '$lib/components/metering/RuntimeCards.svelte';
 	import RecoverySection from '$lib/components/metering/RecoverySection.svelte';
+	import MeterSettingsModal from '$lib/components/metering/MeterSettingsModal.svelte';
 	import type { ConsentState, ServiceStatus } from '$lib/api';
 
 	let runtimes = $state<RuntimeInfo[]>([]);
@@ -105,20 +106,45 @@
 			return (r.running || r.usage.tokens_all > 0) && !liveMeters.has(k);
 		})
 	);
+
+	const consentDenied = (s: string) =>
+		consents.length > 0 && !(consents.find((c) => c.scope === s)?.granted ?? false);
+	const recoveryOpen = $derived(
+		daemonDown ||
+			(meters?.point ?? []).length > 0 ||
+			unmeteredActive.length > 0 ||
+			consentDenied('metering') ||
+			consentDenied('fileReading')
+	);
+
+	/** Meter settings modal target (vendor key + display title). */
+	let settingsTarget = $state<{ vendor: string; title: string } | null>(null);
+
+	async function refreshMeters() {
+		try {
+			meters = await api.meters();
+		} catch {
+			/* daemon down */
+		}
+	}
 </script>
 
-<MeterTiles {catalog} {meters} onToggle={(v, on) => void toggleMeter(v, on)} />
+<MeterTiles
+	{catalog}
+	{meters}
+	onToggle={(v, on) => void toggleMeter(v, on)}
+	onSettings={(v) => (settingsTarget = { vendor: v, title: v })}
+/>
 
 <RuntimeCards
 	{running}
 	{histories}
-	{liveMeters}
 	{runningVendors}
-	{meters}
-	onMeters={(m) => (meters = m)}
+	onSettings={(v, t) => (settingsTarget = { vendor: v, title: t })}
 />
 
 <RecoverySection
+	open={recoveryOpen}
 	{daemonDown}
 	{service}
 	{consents}
@@ -128,4 +154,13 @@
 	onToggleMeter={(v, on) => void toggleMeter(v, on)}
 	onConsent={(s, g) => void setConsent(s, g)}
 	onInstallSvc={() => void installSvc()}
+/>
+
+<MeterSettingsModal
+	open={settingsTarget != null}
+	onClose={() => (settingsTarget = null)}
+	vendor={settingsTarget?.vendor ?? ''}
+	title={settingsTarget?.title ?? ''}
+	{meters}
+	onSaved={() => void refreshMeters()}
 />

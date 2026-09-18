@@ -1,17 +1,20 @@
 <script lang="ts">
+	import { Settings2 } from 'lucide-svelte';
 	import type { MeterCatalogEntry, Meters } from '$lib/api';
 	import ProviderIcon from '$lib/components/data/ProviderIcon.svelte';
 	import { Switch } from '$lib/components/ui/switch/index.js';
 
-	/** Request-routing meter tiles: on/off per vendor. */
+	/** Request-routing meter tiles: on/off per vendor, gear opens meter settings. */
 	let {
 		catalog,
 		meters,
-		onToggle
+		onToggle,
+		onSettings
 	}: {
 		catalog: MeterCatalogEntry[];
 		meters: Meters | null;
 		onToggle: (vendor: string, enabled: boolean) => void;
+		onSettings: (vendor: string) => void;
 	} = $props();
 </script>
 
@@ -29,7 +32,17 @@
 						<ProviderIcon vendor={m.vendor} size={20} />
 						<strong>{m.vendor}</strong>
 					</span>
-					<span class="dot" class:up={m.running}></span>
+					<span style="display: flex; align-items: center; gap: 6px">
+						<span class="dot" class:up={m.running}></span>
+						<button
+							class="gear"
+							onclick={() => onSettings(m.vendor)}
+							title="Meter settings for {m.vendor}"
+							aria-label="Meter settings for {m.vendor}"
+						>
+							<Settings2 size={13} strokeWidth={2} />
+						</button>
+					</span>
 				</div>
 				<div class="mono mroute" class:faint={!m.running}>127.0.0.1:{m.listen_port}</div>
 				<div class="mono dim mroute">→ {m.running ? (m.target ?? '—') : 'off'}</div>
@@ -82,5 +95,22 @@
 		justify-content: space-between;
 		margin-top: 8px;
 		font-size: 11px;
+	}
+	.gear {
+		appearance: none;
+		border: 0;
+		background: transparent;
+		color: var(--text-3);
+		width: 24px;
+		height: 24px;
+		border-radius: 50%;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		cursor: pointer;
+	}
+	.gear:hover {
+		background: var(--track);
+		color: var(--text);
 	}
 </style>
