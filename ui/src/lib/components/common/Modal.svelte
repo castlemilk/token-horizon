@@ -75,7 +75,9 @@
 		align-items: center;
 		justify-content: center;
 		padding: 20px;
-		background: rgb(0 0 0 / 0.4);
+		background: rgb(0 0 0 / 0.6);
+		backdrop-filter: blur(3px);
+		-webkit-backdrop-filter: blur(3px);
 	}
 	.mbox {
 		width: 100%;
