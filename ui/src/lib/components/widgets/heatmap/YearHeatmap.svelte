@@ -39,6 +39,9 @@
 		 *  serves ranges. */
 		stepping = true,
 		showStats = true,
+		/** Forced skeleton (parent still fetching the first feed) — same
+		 *  footprint as the loaded panel, so no layout shift on arrival. */
+		skeleton = false,
 		heatEl = $bindable(null),
 		year = $bindable(currentYear),
 		hint
@@ -51,6 +54,7 @@
 		/** Stat cards above the grid — the widget modal keeps them, the
 		 *  profile page hides them (its masthead trio is the counter). */
 		showStats?: boolean;
+		skeleton?: boolean;
 		heatEl?: HTMLElement | null;
 		year?: number;
 		hint: Snippet<[HintInfo]>;
@@ -116,8 +120,10 @@
 	</div>
 </div>
 {/if}
-{#if yearDays.length === 0}
-	<div class="empty">{loading ? 'Loading…' : loadError ? 'Could not load this year.' : 'No activity in this range yet.'}</div>
+{#if skeleton || (loading && yearDays.length === 0)}
+	<div class="sk-heat" class:tall={showStats} role="status" aria-label="Loading activity"></div>
+{:else if yearDays.length === 0}
+	<div class="empty">{loadError ? 'Could not load this year.' : 'No activity in this range yet.'}</div>
 {:else}
 	{#key year}
 		{#if showStats}
@@ -240,6 +246,33 @@
 		text-align: center;
 		font-size: 12.5px;
 		color: var(--text-3);
+	}
+	/* loading skeleton: heat grid + legend + note footprint, so arrival
+	   doesn't shift layout. Tall variant also covers the stat cards. */
+	.sk-heat {
+		border-radius: 12px;
+		min-height: 172px;
+		background: linear-gradient(
+			100deg,
+			var(--track) 35%,
+			color-mix(in srgb, var(--bg-raised) 85%, var(--track)) 50%,
+			var(--track) 65%
+		);
+		background-size: 200% 100%;
+		animation: skelsweep 1.5s linear infinite;
+	}
+	.sk-heat.tall {
+		min-height: 262px;
+	}
+	@keyframes skelsweep {
+		to {
+			background-position: -200% 0;
+		}
+	}
+	@media (prefers-reduced-motion: reduce) {
+		.sk-heat {
+			animation: none;
+		}
 	}
 	@media (max-width: 640px) {
 		.xstats { grid-template-columns: repeat(2, 1fr); }
