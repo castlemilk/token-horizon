@@ -89,8 +89,9 @@
 	 *  these have configurable endpoints; cloud API bases are fixed. */
 	const runtimeVendors = $derived(new Set(runtimes.map((r) => r.vendor.toLowerCase())));
 	const liveMeters = $derived(new Map((meters?.point ?? []).map((m) => [m.vendor.toLowerCase(), m])));
-	/** Catalog ordered by popularity: live meters first, then most-measured
-	 *  traffic, alphabetical tiebreak — the vendors you actually use lead.
+	/** Catalog in stable alphabetical order: the old popularity sort (live
+	 *  first, then traffic) reshuffled the grid on every toggle, which
+	 *  reads as broken. State changes show on the tiles themselves.
 	 *  Drops the backend alias twin (MeterRegistry.aliases lists google ⇔
 	 *  gemini, but one adapter ("gemini") and one default port (9250) serve
 	 *  both — two tiles would split attribution and fight over the port). */
@@ -101,14 +102,7 @@
 					c.vendor.toLowerCase() !== 'google' ||
 					!arr.some((o) => o.vendor.toLowerCase() === 'gemini')
 			)
-			.sort((a, b) => {
-			if (a.running !== b.running) return a.running ? -1 : 1;
-			const traffic = (v: string) => {
-				const m = liveMeters.get(v.toLowerCase());
-				return (m?.seen ?? 0) + (m?.measured ?? 0);
-			};
-			return traffic(b.vendor) - traffic(a.vendor) || a.vendor.localeCompare(b.vendor);
-		})
+			.sort((a, b) => a.vendor.localeCompare(b.vendor))
 	);
 
 	/** Runtime active (or has usage) but no meter listening — enable it. */
