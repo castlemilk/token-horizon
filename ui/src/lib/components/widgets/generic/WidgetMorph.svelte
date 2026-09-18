@@ -802,6 +802,7 @@
 		class:tile={!open}
 		class:modal={open}
 		class:conceal-head={open && phase === 'fly'}
+		class:conceal-exit={open && phase === 'exit'}
 		role={open ? 'dialog' : 'button'}
 		aria-modal={open ? 'true' : undefined}
 		aria-label={open ? title : tileLabel}
@@ -1004,6 +1005,7 @@
 	.conceal-head .wmodal-head > * {
 		visibility: hidden;
 	}
+
 	/* backdrop invisible until the timeline's first tick owns it */
 	.pre-show .wmodal-backdrop {
 		opacity: 0;
