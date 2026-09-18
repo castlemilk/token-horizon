@@ -35,6 +35,13 @@ timelines at 4× slow for frame inspection.
    first on the traveler, then on a nested descendant (the roller labels
    itself with the settled value), falling back to `textContent`. The
    descendant lookup matters: the label sits INSIDE the traveler, not on it.
+   *Correction, one round later:* the descendant aria-label lookup was too
+   greedy — icon chips label themselves (`aria-label="kimi"` on
+   ProviderIcon), so requests-widget icons flew as the bare word. The
+   contract is now an explicit marker: transformed-DOM components publish
+   their settled value via `data-travel-text` (CountUp does), self or
+   descendant; `textContent` counts only for pure-text travelers (no
+   element children). aria-label is never consulted.
 
 3. **Icon travelers flew invisibly** (RecentWidget's provider icons) — the
    clone contract was text-or-dot, and the dot takes the wrapper span's
