@@ -1,10 +1,10 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { page } from '$app/stores';
-	import { api, type ProviderSummary } from '$lib/api';
+	import { api } from '$lib/api';
 	import { cloud, type SharedProfile } from '$lib/cloud';
 	import { Flame, Clock, Zap } from 'lucide-svelte';
-	import { billableTok, fmtTok, poll } from '$lib/format';
+	import { fmtTok, poll, timeAgo } from '$lib/format';
 	import {
 		fetchDailyActivity,
 		fetchLast24hTokens,
@@ -12,10 +12,8 @@
 		activityStats,
 		type DayActivity
 	} from '$lib/activity';
-	import { providerAccent } from '$lib/colors';
 	import { settings } from '$lib/settings.svelte';
 	import YearHeatmap, { type HintInfo } from '$lib/components/widgets/heatmap/YearHeatmap.svelte';
-	import HBars, { type HBarRow } from '$lib/components/data/HBars.svelte';
 	import EmptyState from '$lib/components/common/EmptyState.svelte';
 
 	// Route: /@<handle> — own handle reads the local daemon; any other
@@ -27,22 +25,28 @@
 	const isLocal = $derived(norm === localHandle.toLowerCase() || norm === 'me');
 
 	let days = $state<DayActivity[]>([]);
-	let summary = $state<ProviderSummary[]>([]);
 	let last24h = $state<number | null>(null);
+	let localEventTs = $state<number | null>(null);
 	let remote = $state<SharedProfile | null>(null);
 	let remoteMissing = $state(false);
+	/** Ticks so aging "last activity" labels refresh without new data. */
+	let nowTick = $state(Date.now());
 
 	onMount(() => {
+		const tick = setInterval(() => (nowTick = Date.now()), 30000);
+		const done = () => clearInterval(tick);
 		if (!isLocal) {
 			cloud
 				.sharedProfile(handle)
 				.then((r) => (remote = r))
 				.catch(() => (remoteMissing = true));
-			return;
+			return done;
 		}
+		const metered = `?limit=1${settings.showImports ? '' : '&metered=1'}`;
 		const stop = poll(async () => {
 			try {
-				summary = (await api.summary(!settings.showImports)).providers;
+				const r = await api.events(metered);
+				localEventTs = r.events[0]?.timestamp ?? null;
 			} catch {
 				/* daemon down */
 			}
@@ -53,7 +57,10 @@
 		fetchLast24hTokens(!settings.showImports)
 			.then((v) => (last24h = v))
 			.catch(() => {});
-		return stop;
+		return () => {
+			stop();
+			clearInterval(tick);
+		};
 	});
 
 	// Billable semantics throughout (excludes cache reads) — the same
@@ -62,6 +69,11 @@
 	const feedDays = $derived<DayActivity[]>(isLocal ? days : (remote?.days ?? []));
 	const act = $derived(activityStats(feedDays));
 
+	/** Precise last-activity timestamp: the newest metered event locally,
+	 *  reported by the sharer remotely. Falls back to day granularity. */
+	const lastEventTs = $derived<number | null>(
+		isLocal ? localEventTs : (remote?.last_event_at ?? null)
+	);
 	function dayDiff(d: DayActivity): number {
 		const t = new Date();
 		t.setHours(0, 0, 0, 0);
@@ -70,6 +82,8 @@
 		return Math.round((t.getTime() - c.getTime()) / 86400000);
 	}
 	const lastActiveLabel = $derived.by(() => {
+		void nowTick;
+		if (lastEventTs != null) return timeAgo(lastEventTs, nowTick);
 		const d = lastActiveDay(feedDays);
 		if (!d) return 'No activity yet';
 		const n = dayDiff(d);
@@ -92,34 +106,6 @@
 			: feedDays.length > 0
 				? fmtTok(feedDays[feedDays.length - 1]?.tokens ?? 0)
 				: '…'
-	);
-
-	const topProviders = $derived<HBarRow[]>(
-		isLocal
-			? summary
-					.map((p) => ({ p, tokens: billableTok(p.tokens) }))
-					.sort((a, b) => b.tokens - a.tokens)
-					.slice(0, 5)
-					.map(
-						({ p, tokens }): HBarRow => ({
-							label: p.vendor,
-							value: tokens,
-							color: providerAccent(p.vendor),
-							sub: `${p.requests} req`
-						})
-					)
-			: (remote?.providers ?? [])
-					.map((p) => ({ ...p }))
-					.sort((a, b) => b.tokens - a.tokens)
-					.slice(0, 5)
-					.map(
-						(p): HBarRow => ({
-							label: p.vendor,
-							value: p.tokens,
-							color: providerAccent(p.vendor),
-							sub: `${p.requests} req`
-						})
-					)
 	);
 
 	const displayName = $derived(
@@ -179,21 +165,12 @@
 		/>
 	</div>
 {:else if feedDays.length > 0}
-	<YearHeatmap days={feedDays} stepping={isLocal} hint={profileHint} />
+	<YearHeatmap days={feedDays} stepping={isLocal} showStats={false} hint={profileHint} />
 {:else}
 	<div class="card">
 		<EmptyState title="Loading activity…" body="" />
 	</div>
 {/if}
-
-<div class="section-label">Top providers</div>
-<div class="card">
-	{#if topProviders.length > 0}
-		<HBars rows={topProviders} thin />
-	{:else}
-		<EmptyState title="No metered usage yet" body="" />
-	{/if}
-</div>
 
 <style>
 	/* no hairline: the panel's stat cards are the next visual beat */
@@ -253,10 +230,11 @@
 	.mv {
 		display: flex;
 		align-items: center;
-		gap: 5px;
-		font-size: 16px;
+		gap: 6px;
+		font-size: 18px;
 		font-weight: 700;
 		letter-spacing: -0.02em;
+		line-height: 1.2;
 		font-variant-numeric: tabular-nums;
 		color: var(--text);
 		white-space: nowrap;

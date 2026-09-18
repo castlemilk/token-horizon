@@ -115,6 +115,8 @@ export interface SharedProfile {
 	/** Trailing-24h tokens as reported by the sharer (day feeds can't
 	 *  answer this; falls back to the last day when absent). */
 	tokens_24h?: number;
+	/** Newest event timestamp (epoch seconds) — drives "last activity". */
+	last_event_at?: number;
 }
 
 async function req<T>(path: string, init?: RequestInit, timeoutMs = 15000): Promise<T> {

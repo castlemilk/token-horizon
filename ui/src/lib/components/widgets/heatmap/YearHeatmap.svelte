@@ -38,6 +38,7 @@
 		 *  Remote/shared profiles render trailing only until the cloud
 		 *  serves ranges. */
 		stepping = true,
+		showStats = true,
 		heatEl = $bindable(null),
 		year = $bindable(currentYear),
 		hint
@@ -47,6 +48,9 @@
 		locked?: boolean;
 		flying?: boolean;
 		stepping?: boolean;
+		/** Stat cards above the grid — the widget modal keeps them, the
+		 *  profile page hides them (its masthead trio is the counter). */
+		showStats?: boolean;
 		heatEl?: HTMLElement | null;
 		year?: number;
 		hint: Snippet<[HintInfo]>;
@@ -116,12 +120,14 @@
 	<div class="empty">{loading ? 'Loading…' : loadError ? 'Could not load this year.' : 'No activity in this range yet.'}</div>
 {:else}
 	{#key year}
+		{#if showStats}
 		<div class="xstats" class:conceal={flying}>
 			<div class="xstat"><span class="xv num">{fmtTok(stats.total)}</span><span class="xl">tokens · {rangeLabel}</span></div>
 			<div class="xstat"><span class="xv num">🔥 {stats.streak}</span><span class="xl">day streak</span></div>
 			<div class="xstat"><span class="xv num">{fmtTok(stats.peak)}</span><span class="xl"><svg class="xic" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 17l-6-6 4 4 8-8"/><path d="M14 7h7v7"/></svg>peak day</span></div>
 			<div class="xstat"><span class="xv num">{stats.activeDays}</span><span class="xl"><svg class="xic" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4.5" width="18" height="16" rx="3"/><path d="M8 2.5v4M16 2.5v4M3 10h18"/></svg>active days</span></div>
 		</div>
+		{/if}
 		<div class="xheat" class:pre={flying} bind:this={heatEl}>
 			<Heatmap days={yearDays} />
 		</div>

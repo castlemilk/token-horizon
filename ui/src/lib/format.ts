@@ -56,6 +56,30 @@ export function billableTok(b: { input: number; output: number; reasoning: numbe
 	return b.input + b.output + b.reasoning + b.cacheWrite;
 }
 
+/** Relative age of an epoch-seconds timestamp: "just now", "5 minutes
+ *  ago", "3 hours ago", "yesterday", "4 days ago", "2 weeks ago", then a
+ *  calendar date. Pass `nowMs` from a ticker so aging labels refresh. */
+export function timeAgo(epochSeconds: number, nowMs = Date.now()): string {
+	const s = Math.max(0, Math.round(nowMs / 1000 - epochSeconds));
+	if (s < 60) return 'just now';
+	const m = Math.floor(s / 60);
+	if (m < 60) return m === 1 ? 'a minute ago' : `${m} minutes ago`;
+	const h = Math.floor(m / 60);
+	if (h < 24) return h === 1 ? 'an hour ago' : `${h} hours ago`;
+	const d = Math.floor(h / 24);
+	if (d === 1) return 'yesterday';
+	if (d < 7) return `${d} days ago`;
+	if (d < 30) {
+		const w = Math.floor(d / 7);
+		return w === 1 ? 'a week ago' : `${w} weeks ago`;
+	}
+	const dt = new Date(epochSeconds * 1000);
+	if (dt.getFullYear() === new Date(nowMs).getFullYear()) {
+		return dt.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+	}
+	return dt.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+}
+
 /** Display-trim a raw model id: `/models/Qwen3.8-27B-Q8_0.gguf` → `Qwen3.8-27B-Q8_0`. */
 export function fmtModel(m: string): string {
 	const base = m.split('/').pop() ?? m;
