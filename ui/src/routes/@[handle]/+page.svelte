@@ -15,6 +15,7 @@
 	} from '$lib/activity';
 	import { settings } from '$lib/settings.svelte';
 	import YearHeatmap, { type HintInfo } from '$lib/components/widgets/heatmap/YearHeatmap.svelte';
+	import ProviderIcon from '$lib/components/data/ProviderIcon.svelte';
 	import EmptyState from '$lib/components/common/EmptyState.svelte';
 
 	// Route: /@<handle> — own handle reads the local daemon; any other
@@ -265,11 +266,11 @@
 		<div class="prows">
 			{#each provRows as r}
 				<div class="prow">
-					<span class="pdot" style:background={providerAccent(r.vendor)}></span>
+					<ProviderIcon vendor={r.vendor} size={24} />
 					<span class="pname">{r.vendor}</span>
 					<span class="pvals">
 						<span class="pv num">{fmtTok(r.tokens)}</span>
-						<span class="psub2">{Math.round(r.share)}%{#if isLocal} · {fmtMoney(r.cost)}{/if} · {r.requests} req</span>
+						<span class="psub2"><b>{Math.round(r.share)}%</b>{#if isLocal} · {fmtMoney(r.cost)}{/if} · {r.requests} req</span>
 					</span>
 				</div>
 			{/each}
@@ -282,7 +283,7 @@
 	<div class="card models">
 		{#each modelRows as m}
 			<div class="mrow">
-				<span class="pdot" style:background={providerAccent(m.vendor)}></span>
+				<ProviderIcon vendor={m.vendor} model={m.model} size={24} />
 				<div class="mmain">
 					<div class="mline">
 						<span class="mname">{fmtModel(m.model)}</span>
@@ -462,9 +463,9 @@
 		pointer-events: none;
 	}
 	.dnum {
-		font-size: 20px;
-		font-weight: 750;
-		letter-spacing: -0.02em;
+		font-size: 22px;
+		font-weight: 800;
+		letter-spacing: -0.03em;
 		font-variant-numeric: tabular-nums;
 	}
 	.dlab {
@@ -480,23 +481,17 @@
 	}
 	.prow {
 		display: flex;
-		align-items: baseline;
-		gap: 8px;
+		align-items: center;
+		gap: 10px;
 		padding: 7px 0;
 	}
 	.prow + .prow {
 		border-top: 1px solid var(--line);
 	}
-	.pdot {
-		width: 9px;
-		height: 9px;
-		border-radius: 50%;
-		flex: none;
-		align-self: center;
-	}
 	.pname {
-		font-size: 13.5px;
-		font-weight: 600;
+		font-size: 14px;
+		font-weight: 700;
+		letter-spacing: -0.01em;
 		min-width: 0;
 		overflow: hidden;
 		text-overflow: ellipsis;
@@ -510,8 +505,9 @@
 		flex: none;
 	}
 	.pv {
-		font-size: 14px;
-		font-weight: 700;
+		font-size: 15px;
+		font-weight: 750;
+		letter-spacing: -0.01em;
 		font-variant-numeric: tabular-nums;
 	}
 	.psub2, .msub2 {
@@ -519,9 +515,14 @@
 		color: var(--text-3);
 		font-variant-numeric: tabular-nums;
 	}
+	.psub2 b {
+		color: var(--text-2);
+		font-weight: 700;
+	}
 	/* top models: Screen-Time-style bar list */
 	.models .mrow {
 		display: flex;
+		align-items: center;
 		gap: 10px;
 		padding: 9px 0;
 	}
@@ -538,9 +539,9 @@
 		gap: 8px;
 	}
 	.mname {
-		font-size: 13px;
-		font-weight: 600;
-		font-family: var(--font-mono);
+		font-size: 13.5px;
+		font-weight: 650;
+		letter-spacing: -0.005em;
 		min-width: 0;
 		overflow: hidden;
 		text-overflow: ellipsis;
@@ -548,8 +549,9 @@
 	}
 	.mval {
 		margin-left: auto;
-		font-size: 13px;
-		font-weight: 700;
+		font-size: 14px;
+		font-weight: 750;
+		letter-spacing: -0.01em;
 		font-variant-numeric: tabular-nums;
 		flex: none;
 	}
