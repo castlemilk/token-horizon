@@ -9,11 +9,15 @@
 		open,
 		onClose,
 		title,
+		dismissible = true,
 		children
 	}: {
 		open: boolean;
 		onClose: () => void;
 		title: string;
+		/** False traps the dialog (scrim/Escape/X ignored) until the
+		 *  caller re-enables it — e.g. an invalid field to fix or clear. */
+		dismissible?: boolean;
 		children: Snippet;
 	} = $props();
 
@@ -24,9 +28,10 @@
 
 	$effect(() => {
 		if (!open) return;
+		const can = dismissible;
 		closeBtn?.focus();
 		const onKey = (e: KeyboardEvent) => {
-			if (e.key === 'Escape') onClose();
+			if (e.key === 'Escape' && can) onClose();
 		};
 		window.addEventListener('keydown', onKey);
 		const prev = document.body.style.overflow;
@@ -44,7 +49,7 @@
 		class="mback"
 		role="presentation"
 		onclick={(e) => {
-			if (e.target === e.currentTarget) onClose();
+			if (dismissible && e.target === e.currentTarget) onClose();
 		}}
 		transition:fade={{ duration: reduce ? 0 : 150 }}
 	>
@@ -57,7 +62,15 @@
 		>
 			<div class="mhead">
 				<span class="mtitle">{title}</span>
-				<button bind:this={closeBtn} class="mx" onclick={onClose} aria-label="Close dialog">
+				<button
+					bind:this={closeBtn}
+					class="mx"
+					class:locked={!dismissible}
+					disabled={!dismissible}
+					title={dismissible ? 'Close dialog' : 'Fix or clear the field to close'}
+					onclick={onClose}
+					aria-label="Close dialog"
+				>
 					<X size={15} strokeWidth={2.2} />
 				</button>
 			</div>
@@ -120,5 +133,12 @@
 	}
 	.mx:hover {
 		color: var(--text);
+	}
+	.mx.locked {
+		opacity: 0.35;
+		cursor: default;
+	}
+	.mx.locked:hover {
+		color: var(--text-2);
 	}
 </style>

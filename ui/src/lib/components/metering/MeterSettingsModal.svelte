@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { api, type Meters } from '$lib/api';
+	import { validateEndpoint, validatePort } from '$lib/validation';
 	import Modal from '$lib/components/common/Modal.svelte';
 
 	/** Per-vendor meter settings: loopback listen port plus the upstream
@@ -54,36 +55,28 @@
 	function portError(): string | null {
 		const raw = portDraft.trim();
 		if (!raw) return null; // untouched — endpoint-only save
-		if (!/^\d{1,5}$/.test(raw)) return 'Digits only';
-		const n = Number(raw);
-		if (n < 1 || n > 65535) return 'Port must be 1–65535';
-		if (n === currentPort) return 'Already on this port';
-		return null;
+		if (Number(raw) === currentPort) return 'Already on this port';
+		return validatePort(portDraft);
 	}
 
 	function urlError(): string | null {
 		const raw = urlDraft.trim();
 		if (!raw) return null; // untouched — port-only save
-		let u: URL;
-		try {
-			u = new URL(raw);
-		} catch {
-			return 'Must be a full http(s) URL';
+		if (currentTarget) {
+			try {
+				if (new URL(raw).href === currentTarget) return 'Already this endpoint';
+			} catch {
+				/* shape error below */
+			}
 		}
-		if (u.protocol !== 'http:' && u.protocol !== 'https:') return 'Must be a full http(s) URL';
-		if (u.href === currentTarget) return 'Already this endpoint';
-		const host = u.hostname.toLowerCase();
-		const hasPort = u.port !== '';
-		const isLoopback =
-			host === 'localhost' || host === '::1' || host === '[::1]' || /^127\./.test(host);
-		// Local targets are meaningless without a port — and a bare
-		// single-label name is neither a local address nor a real domain.
-		if (isLoopback && !hasPort)
-			return 'Local endpoints need an explicit port — e.g. http://127.0.0.1:11434';
-		if (!isLoopback && !hasPort && !host.includes('.'))
-			return 'Use a full domain or IP, or add a port — e.g. https://api.example.com';
-		return null;
+		return validateEndpoint(urlDraft);
 	}
+
+	/** Wrong endpoints trap the dialog (clear the field to leave); empty
+	 *  is neutral, valid is green — see the tri-state input rings. */
+	const endpointLocked = $derived(urlDraft.trim() !== '' && urlError() != null);
+	const urlState = $derived(!urlDraft.trim() ? '' : urlError() ? 'error' : 'ok');
+	const portState = $derived(!portDraft.trim() ? '' : portError() ? 'error' : 'ok');
 
 	const canSave = $derived.by(() => {
 		if (saving) return false;
@@ -117,7 +110,7 @@
 	}
 </script>
 
-<Modal {open} {onClose} title={`${title} meter`}>
+<Modal {open} {onClose} title={`${title} meter`} dismissible={!endpointLocked}>
 	<div class="dim rbody">
 		{#if currentTarget}
 			Currently forwarding to <span class="mono">{currentTarget}</span>
@@ -129,7 +122,8 @@
 	<input
 		id="msm-url"
 		class="tinput mono"
-		class:error={urlError() != null}
+		class:error={urlState === 'error'}
+		class:ok={urlState === 'ok'}
 		value={urlDraft}
 		oninput={(e) => {
 			urlDraft = e.currentTarget.value;
@@ -146,7 +140,8 @@
 		<input
 			id="msm-port"
 			class="tinput mono port"
-			class:error={portError() != null}
+			class:error={portState === 'error'}
+			class:ok={portState === 'ok'}
 			value={portDraft}
 			oninput={(e) => {
 				const clean = e.currentTarget.value.replace(/\D+/g, '').slice(0, 5);
@@ -190,9 +185,10 @@
 		color: var(--text-3);
 		margin: 12px 0 5px;
 	}
+	/* tri-state rings: empty = transparent, valid = green, wrong = red */
 	.tinput {
 		width: 100%;
-		border: 1px solid var(--line);
+		border: 1px solid transparent;
 		background: var(--bg);
 		color: var(--text);
 		border-radius: 8px;
@@ -202,7 +198,12 @@
 	.tinput:focus {
 		outline: 2px solid var(--accent);
 		outline-offset: 0;
-		border-color: transparent;
+	}
+	.tinput.ok {
+		border-color: var(--ok);
+	}
+	.tinput.ok:focus {
+		outline-color: var(--ok);
 	}
 	.tinput.error {
 		border-color: var(--bad);
