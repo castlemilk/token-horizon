@@ -276,6 +276,19 @@
 		return out;
 	}
 
+	/** ?morphdebug=1 logs flight decisions (pairing bail reasons) — set in
+	 *  either shell to compare Tauri vs browser behavior. */
+	function morphDebug(): boolean {
+		try {
+			return new URLSearchParams(location.search).has('morphdebug');
+		} catch {
+			return false;
+		}
+	}
+	function mdbg(...a: unknown[]) {
+		if (morphDebug()) console.info('[morph]', ...a);
+	}
+
 	/** ?slowmo=1 slows every widget timeline — landing-frame inspection. */
 	function slowmo(tl: gsap.core.Timeline): gsap.core.Timeline {
 		try {
@@ -359,6 +372,7 @@
 		landed = false;
 		if (boxEl) gsap.set(boxEl, { clearProps: 'all' });
 		if (!canFly()) {
+			mdbg('open: no flight (canFly false)');
 			phase = 'settle';
 			open = true;
 			return;
@@ -370,6 +384,11 @@
 		const marks = travelFrom('open', { box: boxEl, ghost: null }) ?? [];
 		const fromBoxed = boxMarks(marks);
 		if (!tileBox || !boxEl || !fromBoxed || fromBoxed.length === 0) {
+			mdbg('open: no flight (tile measure fail)', {
+				tileBox,
+				marks: marks.map((m) => m.key),
+				fromBoxed: fromBoxed?.map((d) => d.key) ?? null
+			});
 			phase = 'settle';
 			open = true;
 			return;
@@ -406,6 +425,7 @@
 	function launchOpen(id: number) {
 		if (id !== flightId) return;
 		if (!open || phase !== 'fly' || !boxEl || !pendingTile) {
+			mdbg('open: launch aborted', { open, phase, boxEl: !!boxEl, pendingTile: !!pendingTile });
 			if (open && id === flightId) phase = 'settle';
 			return;
 		}
@@ -414,6 +434,11 @@
 		const toMarks = travelTo('open', { box: card, ghost: null }) ?? [];
 		const toBoxed = boxMarks(toMarks);
 		if (!cardBox || !toBoxed || toBoxed.length === 0) {
+			mdbg('open: no flight (modal measure fail)', {
+				cardBox,
+				toMarks: toMarks.map((m) => m.key),
+				toBoxed: toBoxed?.map((t) => t.key) ?? null
+			});
 			phase = 'settle';
 			return;
 		}
@@ -422,11 +447,13 @@
 		for (const d of pendingTile.dots) {
 			const t = targets.get(d.key);
 			if (!t) {
+				mdbg('open: no flight (key miss)', { missing: d.key, targets: [...targets.keys()] });
 				phase = 'settle';
 				return;
 			}
 			pairs.push({ from: d.box, to: t.box, bg: d.bg, text: d.text });
 		}
+		mdbg('open: flight', { pairs: pairs.map((p) => `${p.from.w.toFixed(0)}→${p.to.w.toFixed(0)}`) });
 		const clones = spawnClones(pairs);
 		const landT = 0.06 + (pairs.length - 1) * STAG + 0.45 * S;
 		const mEnd = 0.38 * S;
