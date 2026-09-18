@@ -143,7 +143,7 @@
 	.ypick-row {
 		display: flex;
 		justify-content: center;
-		margin: 14px 0 12px;
+		margin: 26px 0 12px;
 	}
 	.ypick {
 		display: flex;
