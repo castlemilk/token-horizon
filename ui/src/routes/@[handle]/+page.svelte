@@ -524,21 +524,25 @@
 	}
 	.ptags {
 		display: flex;
-		gap: 4px;
+		align-items: baseline;
 		justify-content: flex-end;
-		margin-top: 4px;
+		margin-top: 3px;
 	}
 	.ptag {
-		font-size: 10.5px;
-		font-weight: 650;
+		font-size: 11.5px;
+		font-weight: 600;
 		color: var(--text-2);
-		background: var(--track);
-		padding: 2px 8px;
-		border-radius: 999px;
 		font-variant-numeric: tabular-nums;
 		white-space: nowrap;
 	}
+	.ptag + .ptag::before {
+		content: '·';
+		margin: 0 7px;
+		color: var(--text-3);
+	}
 	.ptag:first-child {
+		font-size: 12px;
+		font-weight: 750;
 		color: var(--text);
 	}
 	/* top models: Screen-Time-style bar list */
