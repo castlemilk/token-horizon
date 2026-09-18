@@ -39,6 +39,10 @@
 	let owned = $state<ProviderSummary[]>([]);
 	onMount(() =>
 		poll(async () => {
+			// Flights first: a poll resolving mid-morph re-sizes every
+			// measured traveler (text widths change → clones land stale).
+			// Skipped ticks are picked up by the next one.
+			if (phase !== 'settle') return;
 			try {
 				owned = (await api.summary(!settings.showImports)).providers;
 			} catch {

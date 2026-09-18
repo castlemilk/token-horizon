@@ -30,6 +30,11 @@ export interface DotPair {
 	 *  the size change exactly; family/weight/style must agree, GSAP
 	 *  cannot interpolate those. */
 	text?: { value: string; css: string } | null;
+	/** Visual travelers (icons/brand chips): the traveler's serialized
+	 *  internals plus sampled frame/paint props. Priority between text and
+	 *  dot — without this an icon traveler clones as a dot colored by the
+	 *  (usually transparent) wrapper span and flies invisibly. */
+	visual?: { html: string; css: string } | null;
 }
 
 /** Font + paint props that make a fresh <span> pixel-identical to the
@@ -53,6 +58,24 @@ export function sampleText(el: Element): { value: string; css: string } | null {
 		`font-variant-numeric:${cs.fontVariantNumeric};` +
 		`white-space:${cs.whiteSpace};color:${cs.color};`;
 	return { value, css };
+}
+
+/** Non-text traveler paint: the element's serialized internals (icon
+ *  img/svg markup — self-contained, scoped styles ride along via their
+ *  attribute selectors) plus the frame/paint props that make the clone
+ *  identical: size, flex centering, background, radius, shadow. Null for
+ *  empty elements (they keep the dot clone). */
+export function sampleVisual(el: Element): { html: string; css: string } | null {
+	const html = el.innerHTML.trim();
+	if (!html) return null;
+	const cs = getComputedStyle(el);
+	const display = cs.display === 'inline' ? 'inline-flex' : cs.display;
+	const css =
+		`width:${cs.width};height:${cs.height};line-height:${cs.lineHeight};` +
+		`display:${display};align-items:${cs.alignItems};justify-content:${cs.justifyContent};` +
+		`background:${cs.backgroundColor};border-radius:${cs.borderRadius};` +
+		`box-shadow:${cs.boxShadow};`;
+	return { html, css };
 }
 
 export interface MorphPlan {
@@ -146,6 +169,10 @@ export function spawnClones(pairs: DotPair[]): HTMLSpanElement[] {
 			// box, so flightVars' center-based scale lands exactly on `to`.
 			d.style.cssText = base + p.text.css + 'background:transparent;';
 			d.textContent = p.text.value;
+		} else if (p.visual) {
+			// Icon/chip: verbatim internals inside the measured frame.
+			d.style.cssText = base + p.visual.css;
+			d.innerHTML = p.visual.html;
 		} else {
 			d.style.cssText =
 				base +
