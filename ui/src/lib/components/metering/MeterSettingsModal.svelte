@@ -72,6 +72,16 @@
 		}
 		if (u.protocol !== 'http:' && u.protocol !== 'https:') return 'Must be a full http(s) URL';
 		if (u.href === currentTarget) return 'Already this endpoint';
+		const host = u.hostname.toLowerCase();
+		const hasPort = u.port !== '';
+		const isLoopback =
+			host === 'localhost' || host === '::1' || host === '[::1]' || /^127\./.test(host);
+		// Local targets are meaningless without a port — and a bare
+		// single-label name is neither a local address nor a real domain.
+		if (isLoopback && !hasPort)
+			return 'Local endpoints need an explicit port — e.g. http://127.0.0.1:11434';
+		if (!isLoopback && !hasPort && !host.includes('.'))
+			return 'Use a full domain or IP, or add a port — e.g. https://api.example.com';
 		return null;
 	}
 
