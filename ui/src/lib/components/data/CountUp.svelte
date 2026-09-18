@@ -29,7 +29,7 @@
 {#if reduce}
 	<span>{format(value)}</span>
 {:else}
-	<span class="roller" aria-label={format(value)}>
+	<span class="roller" aria-label={format(value)} data-travel-text={format(value)}>
 		{#each chars as c, i (i)}
 			{#if isDigit(c)}
 				<span class="rd"><span class="rd-strip" style="transform: translateY(-{+c}em)">{#each digits as d}<span>{d}</span>{/each}</span></span>

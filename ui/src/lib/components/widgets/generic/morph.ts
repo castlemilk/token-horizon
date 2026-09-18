@@ -46,8 +46,13 @@ export interface DotPair {
  *  settled value. */
 export function sampleText(el: Element): { value: string; css: string } | null {
 	const value =
-		el.getAttribute('aria-label')?.trim() ||
-		el.querySelector('[aria-label]')?.getAttribute('aria-label')?.trim() ||
+		// Explicit semantic value wins: travelers whose DOM is a rendering
+		// effect (CountUp odometer: 0-9 digit soup in textContent) publish
+		// their settled value via data-travel-text, on the traveler or a
+		// descendant. aria-label is NOT the fallback — icon chips label
+		// themselves with the vendor name, which flew as a bare word.
+		el.getAttribute('data-travel-text')?.trim() ||
+		el.querySelector('[data-travel-text]')?.getAttribute('data-travel-text')?.trim() ||
 		// textContent is a label only for PURE-text travelers — glyph chips
 		// render a letter inside <svg><text> (element children!), which
 		// would otherwise fly as a bare character in the wrong font.
