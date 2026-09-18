@@ -1,3 +1,18 @@
+import type { ProviderSummary } from './api';
+
+/** Hero cost across providers: actual charge where present, else the
+ *  list-price equivalent (plan usage still shows its USD weight). */
+export function heroCost(providers: ProviderSummary[]): number {
+	return providers.reduce(
+		(s, p) => s + (p.cost > 0.0001 ? p.cost : (p.costEquivalent ?? 0)),
+		0
+	);
+}
+
+export function fmtMoney(v: number): string {
+	return v > 0.0001 ? `$${v.toFixed(2)}` : '—';
+}
+
 export function fmtTok(n: number): string {
 	if (n >= 1_000_000_000) return `${(n / 1e9).toFixed(1)}B`;
 	if (n >= 1_000_000) return `${(n / 1e6).toFixed(1)}M`;

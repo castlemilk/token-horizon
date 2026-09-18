@@ -1,10 +1,10 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { page } from '$app/stores';
-	import { api } from '$lib/api';
+	import { api, type ProviderSummary } from '$lib/api';
 	import { cloud, type SharedProfile } from '$lib/cloud';
-	import { Flame, Clock, Zap } from 'lucide-svelte';
-	import { fmtTok, poll, timeAgo } from '$lib/format';
+	import { Flame, Clock, Zap, Hash, Activity, Coins } from 'lucide-svelte';
+	import { billableTok, fmtMoney, fmtTok, heroCost, poll, timeAgo } from '$lib/format';
 	import {
 		fetchDailyActivity,
 		fetchLast24hTokens,
@@ -25,6 +25,7 @@
 	const isLocal = $derived(norm === localHandle.toLowerCase() || norm === 'me');
 
 	let days = $state<DayActivity[]>([]);
+	let summary = $state<ProviderSummary[]>([]);
 	let last24h = $state<number | null>(null);
 	let localEventTs = $state<number | null>(null);
 	let remote = $state<SharedProfile | null>(null);
@@ -45,8 +46,12 @@
 		const metered = `?limit=1${settings.showImports ? '' : '&metered=1'}`;
 		const stop = poll(async () => {
 			try {
-				const r = await api.events(metered);
-				localEventTs = r.events[0]?.timestamp ?? null;
+				const [s, e] = await Promise.all([
+					api.summary(!settings.showImports),
+					api.events(metered)
+				]);
+				summary = s.providers;
+				localEventTs = e.events[0]?.timestamp ?? null;
 			} catch {
 				/* daemon down */
 			}
@@ -107,6 +112,19 @@
 				? fmtTok(feedDays[feedDays.length - 1]?.tokens ?? 0)
 				: '…'
 	);
+	/** All-time totals: billable tokens + requests locally, reported
+	 *  figures remotely; cost is hero semantics locally, unknown remotely. */
+	const totalTokens = $derived(
+		isLocal
+			? summary.reduce((s, p) => s + billableTok(p.tokens), 0)
+			: (remote?.providers.reduce((s, p) => s + p.tokens, 0) ?? 0)
+	);
+	const totalRequests = $derived(
+		isLocal
+			? summary.reduce((s, p) => s + p.requests, 0)
+			: (remote?.providers.reduce((s, p) => s + p.requests, 0) ?? 0)
+	);
+	const totalCostLabel = $derived(isLocal ? fmtMoney(heroCost(summary)) : '—');
 
 	const displayName = $derived(
 		isLocal ? null : (remote?.display_name || null)
@@ -147,6 +165,18 @@
 			<div class="ms">
 				<span class="mv"><span class="mico mico-zap"><Zap size={14} strokeWidth={2.2} /></span>{last24hLabel}</span>
 				<span class="ml">last 24 hours</span>
+			</div>
+			<div class="ms">
+				<span class="mv"><span class="mico mico-tokens"><Hash size={14} strokeWidth={2.2} /></span>{fmtTok(totalTokens)}</span>
+				<span class="ml">total tokens</span>
+			</div>
+			<div class="ms">
+				<span class="mv"><span class="mico mico-req"><Activity size={14} strokeWidth={2.2} /></span>{totalRequests.toLocaleString('en-US')}</span>
+				<span class="ml">requests</span>
+			</div>
+			<div class="ms">
+				<span class="mv"><span class="mico mico-cost"><Coins size={14} strokeWidth={2.2} /></span>{totalCostLabel}</span>
+				<span class="ml">total cost</span>
 			</div>
 		</div>
 		<div class="psub">{origin} · {act.activeDays} active days</div>
@@ -258,6 +288,18 @@
 	.mico-zap {
 		color: #30d158;
 		background: rgb(48 209 88 / 0.14);
+	}
+	.mico-tokens {
+		color: #bf5af2;
+		background: rgb(191 90 242 / 0.14);
+	}
+	.mico-req {
+		color: #5e5ce6;
+		background: rgb(94 92 230 / 0.14);
+	}
+	.mico-cost {
+		color: var(--warn);
+		background: color-mix(in srgb, var(--warn) 14%, transparent);
 	}
 	.ml {
 		font-size: 10.5px;
