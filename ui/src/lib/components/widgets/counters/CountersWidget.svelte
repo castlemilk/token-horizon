@@ -9,7 +9,7 @@
 	} from '../generic/WidgetMorph.svelte';
 	import { rectSettled } from '../generic/morph';
 	import { api, type ProviderSummary } from '$lib/api';
-	import { billableTok, fmtTok, poll } from '$lib/format';
+	import { billableTok, fmtMoney, fmtTok, heroCost, poll } from '$lib/format';
 	import { HEAT, providerAccent } from '$lib/colors';
 	import { settings } from '$lib/settings.svelte';
   import { AspectRatio } from 'bits-ui'
@@ -72,12 +72,7 @@
 		totals.t.input + totals.t.output + totals.t.reasoning + totals.t.cacheWrite
 	);
 	/** Hero semantics: actual charge where present, else list equivalent. */
-	const displayCost = $derived(
-		feed.reduce(
-			(s, p) => s + (p.cost > 0.0001 ? p.cost : (p.costEquivalent ?? 0)),
-			0
-		)
-	);
+	const displayCost = $derived(heroCost(feed));
 	const rows = $derived(
 		feed
 			.map((p) => ({
@@ -90,7 +85,6 @@
 			.map((r) => ({ ...r, share: billable > 0 ? (r.tokens / billable) * 100 : 0 }))
 	);
 
-	const fmtMoney = (v: number) => (v > 0.0001 ? `$${v.toFixed(2)}` : '—');
 	const fmtInt = (v: number) => Math.round(v).toLocaleString('en-US');
 
 	const parts = $derived([
