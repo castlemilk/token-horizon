@@ -527,6 +527,15 @@ html.lenis body {
 	visibility: hidden;
 }
 
+/* Open-flight mirror (set by WidgetMorph.svelte): traveler TARGETS hide
+ * for the whole flight — the clone is the only visible copy until it
+ * lands. Without this the target renders at final size from t=0 and the
+ * flight reads as "pops in, doesn't transition". Widget-level conceals
+ * (counters/heatmap) overlap harmlessly. */
+.conceal-fly [data-travel] {
+	visibility: hidden;
+}
+
 .grid {
 	display: grid;
 	gap: 10px;
