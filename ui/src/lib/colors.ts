@@ -44,6 +44,10 @@ const ACCENTS: Record<string, string> = {
 	llama: '#0082fa'
 };
 
+/** Activity green (light/dark) — the single heat source for heatmaps,
+ *  widget dots and streak accents. Banding lives in heatLevel(). */
+export const HEAT = 'light-dark(#34c759, #30d158)';
+
 export function providerAccent(key: string): string {
 	const k = key.toLowerCase();
 	const hit = ACCENTS[k];

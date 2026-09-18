@@ -6,14 +6,10 @@
 		type TravelRoots,
 		type TravelMark
 	} from '../generic/WidgetMorph.svelte';
-	import Heatmap from '$lib/components/data/Heatmap.svelte';
-	import {
-		activityStats,
-		fetchDailyActivityRange,
-		yearBounds,
-		type DayActivity
-	} from '$lib/activity';
+	import YearHeatmap, { type HintInfo } from './YearHeatmap.svelte';
+	import { activityStats, heatLevel, type DayActivity } from '$lib/activity';
 	import { fmtTok } from '$lib/format';
+	import { HEAT } from '$lib/colors';
 
 	/** Home-screen activity widget, two sizes sharing one modal.
 	 *  small: 4×4 tile — last 16 days, one dot per day.
@@ -30,25 +26,15 @@
 	let { days, variant, speed = 1 }: { days: DayActivity[]; variant: 'small' | 'medium'; speed?: number } =
 		$props();
 
-	const HEAT = 'light-dark(#34c759, #30d158)';
 	const reduce =
 		typeof matchMedia !== 'undefined' && matchMedia('(prefers-reduced-motion: reduce)').matches;
-
-	function level(tokens: number, maxV: number): number {
-		if (tokens <= 0) return 0;
-		const r = tokens / maxV;
-		if (r <= 0.25) return 1;
-		if (r <= 0.5) return 2;
-		if (r <= 0.75) return 3;
-		return 4;
-	}
 
 	/** Same domain as the trailing-year heatmap, so tile colors match cells.
 	 *  Billable tokens throughout (excludes cache reads), like the main tab. */
 	const tileMax = $derived(Math.max(1, ...days.map((d) => d.tokens)));
 	const TILE_N = $derived(variant === 'small' ? 16 : 27);
 	const tileDays = $derived(days.slice(-TILE_N));
-	const tileLvls = $derived(tileDays.map((d) => level(d.tokens, tileMax)));
+	const tileLvls = $derived(tileDays.map((d) => heatLevel(d.tokens, tileMax)));
 	const streak = $derived(activityStats(days).streak);
 	const K = $derived(tileDays.length);
 	const activeK = $derived(tileDays.filter((d) => d.tokens > 0).length);
@@ -59,34 +45,16 @@
 			? `${new Date(d.day + 'T12:00:00').toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' })} — ${d.tokens > 0 ? fmtTok(d.tokens) + ' tokens' : 'no activity'}`
 			: 'no data yet';
 
-	// ---- modal: full year ----
+	// ---- modal: full year (owned by YearHeatmap; this shell only borrows
+	// the heat element for travel pairing + settle measurement) ----
 	const currentYear = new Date().getFullYear();
-	const earliestYear = $derived(
-		days.length > 0 ? new Date(days[0].ts * 1000).getFullYear() : currentYear
-	);
-	const minYear = $derived(Math.min(earliestYear, currentYear - 1));
-
-	let year = $state(currentYear);
-	let yearCache = $state<Record<number, DayActivity[]>>({});
-	let loading = $state(false);
-	let loadError = $state(false);
+	let panelYear = $state(currentYear);
 	let heatEl = $state<HTMLElement | null>(null);
 
 	// Engine-owned, bound here so content can gate on it (year stepping,
 	// landing fades) without reaching into WidgetMorph.
 	let phase = $state<Phase>('settle');
 	let landed = $state(false);
-
-	const trailing = $derived(year === currentYear);
-	const yearDays = $derived<DayActivity[]>(trailing ? days : (yearCache[year] ?? []));
-	const stats = $derived(activityStats(yearDays));
-	const yearLabel = $derived(trailing ? 'Past 12 months' : `${year}`);
-	const rangeLabel = $derived.by(() => {
-		if (yearDays.length === 0) return '';
-		const f = (d: DayActivity) =>
-			new Date(d.day + 'T12:00:00').toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
-		return `${f(yearDays[0])} – ${f(yearDays[yearDays.length - 1])}`;
-	});
 
 	/** Post-mount layout keeps shifting (heatmap auto-fits week columns to
 	 *  the measured container width, fonts settle). Sampling until the heat
@@ -111,35 +79,9 @@
 		});
 	}
 
-	async function ensureYear(y: number) {
-		if (y === currentYear || yearCache[y] || loading) return;
-		loading = true;
-		loadError = false;
-		try {
-			const [from, to] = yearBounds(y);
-			yearCache[y] = await fetchDailyActivityRange(from, to, true);
-		} catch {
-			loadError = true;
-		} finally {
-			loading = false;
-		}
-	}
-
-	function step(d: number) {
-		if (phase !== 'settle') return; // never swap content mid-flight
-		const next = Math.min(currentYear, Math.max(minYear, year + d));
-		if (next === year) return;
-		year = next;
-		if (next !== currentYear) void ensureYear(next);
-	}
-
-	$effect(() => {
-		if (year !== currentYear) void ensureYear(year);
-	});
-
 	// ---- morph contract (see WidgetMorph) ----
 	const canFly = () => !reduce && K > 0 && tileDays.some((d) => d.day);
-	const closeable = () => trailing;
+	const closeable = () => panelYear === currentYear;
 
 	/** Travel endpoints keyed by day ts: tile dots ↔ year cells.
 	 *  Sources read pre-swap, targets post-mount on open, both live on
@@ -199,39 +141,21 @@
 	{@render streakFoot(false)}
 {/snippet}
 {#snippet modalContent()}
-	{#if yearDays.length === 0}
-		<div class="empty">No activity in this range yet.</div>
-	{:else}
-	{#key year}
-			<div class="xstats" class:conceal={phase === 'fly'}>
-				<div class="xstat"><span class="xv num">{fmtTok(stats.total)}</span><span class="xl">tokens · {rangeLabel}</span></div>
-				<div class="xstat"><span class="xv num">🔥 {stats.streak}</span><span class="xl">day streak</span></div>
-				<div class="xstat"><span class="xv num">{fmtTok(stats.peak)}</span><span class="xl"><svg class="xic" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 17l-6-6 4 4 8-8"/><path d="M14 7h7v7"/></svg>peak day</span></div>
-				<div class="xstat"><span class="xv num">{stats.activeDays}</span><span class="xl"><svg class="xic" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4.5" width="18" height="16" rx="3"/><path d="M8 2.5v4M16 2.5v4M3 10h18"/></svg>active days</span></div>
-			</div>
-			<div class="xheat" class:pre={phase === 'fly'} bind:this={heatEl}>
-				<Heatmap days={yearDays} enterStagger={false} />
-			</div>
-			<p class="xnote" class:conceal={phase === 'fly'}>
-				{#if trailing}
-					Close to fly the tile days home.
-				{:else}
-					Calendar year {year} — closing returns without the flight, the tile days live in the current year.
-				{/if}
-			</p>
-		{/key}
-	{/if}
+	<YearHeatmap
+		{days}
+		locked={phase !== 'settle'}
+		flying={phase === 'fly'}
+		bind:heatEl
+		bind:year={panelYear}
+		hint={modalHint}
+	/>
 {/snippet}
-{#snippet yearPicker()}
-	<div class="ypick" role="group" aria-label="Year">
-		<button class="ybtn" onclick={(e) => { e.stopPropagation(); step(-1); }} disabled={year <= minYear || phase !== 'settle'} aria-label="Previous year">
-			<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>
-		</button>
-		<span class="yval" aria-live="polite">{yearLabel}</span>
-		<button class="ybtn" onclick={(e) => { e.stopPropagation(); step(1); }} disabled={year >= currentYear || phase !== 'settle'} aria-label="Next year">
-			<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></svg>
-		</button>
-	</div>
+{#snippet modalHint(info: HintInfo)}
+	{#if info.trailing}
+		Close to fly the tile days home.
+	{:else}
+		Calendar year {info.year} — closing returns without the flight, the tile days live in the current year.
+	{/if}
 {/snippet}
 {#snippet tileDots()}
 	<span
@@ -278,7 +202,6 @@
 	tile={tileBody}
 	modalBody={modalContent}
 	ghostBody={ghostSnip}
-	headerExtra={yearPicker}
 />
 
 <style>
@@ -343,61 +266,6 @@
 		font-variant-numeric: tabular-nums;
 		color: var(--text);
 	}
-	/* ---- modal: layout reserved while flying, zero shifts ----
-	   Pre-launch conceal covers the 1–2 frames before the timeline builds;
-	   GSAP inline states take over seamlessly from there. */
-	.conceal {
-		visibility: hidden;
-	}
-	/* all cells hidden until the dots land (travelers included) */
-	.xheat.pre :global(.heatmap .cell) {
-		visibility: hidden;
-	}
-	/* card chrome hidden until the shell lands — squished scaling text
-	   is the overlay tell */
-	.xstats {
-		display: grid;
-		grid-template-columns: repeat(4, 1fr);
-		gap: 10px;
-		margin: 8px 0 16px;
-	}
-	.xstat {
-		display: flex;
-		flex-direction: column;
-		align-items: center;
-		text-align: center;
-		gap: 2px;
-		background: color-mix(in srgb, var(--bg-raised) 55%, transparent);
-		border: 0;
-		border-radius: 14px;
-		padding: 12px 6px 10px;
-	}
-	.xv {
-		font-size: 19px;
-		font-weight: 700;
-		letter-spacing: -0.02em;
-		line-height: 1.1;
-	}
-	.xl {
-		font-size: 10.5px;
-		color: var(--text-3);
-	}
-	.xic {
-		vertical-align: -1.5px;
-		margin-right: 3px;
-	}
-	.xheat {
-		display: flex;
-		justify-content: center;
-		overflow-x: auto;
-		padding-bottom: 4px;
-	}
-	.xnote {
-		margin: 12px 2px 2px;
-		font-size: 11.5px;
-		color: var(--text-3);
-		text-align: center;
-	}
 	.xskel {
 		display: grid;
 		gap: 10px;
@@ -413,12 +281,6 @@
 		width: 45%;
 		justify-self: center;
 	}
-	.empty {
-		padding: 18px 0;
-		text-align: center;
-		font-size: 12.5px;
-		color: var(--text-3);
-	}
 	.retry {
 		appearance: none;
 		border: 0;
@@ -428,50 +290,11 @@
 		text-decoration: underline;
 		cursor: pointer;
 	}
-	/* year picker */
-	.ypick {
-		display: flex;
-		align-items: center;
-		gap: 4px;
-		background: var(--track);
-		border-radius: 999px;
-		padding: 3px;
-	}
-	.yval {
-		min-width: 118px;
-		text-align: center;
-		font-size: 12px;
-		font-weight: 650;
-		font-variant-numeric: tabular-nums;
-	}
-	.ybtn {
-		appearance: none;
-		border: 0;
-		background: transparent;
-		color: var(--text-2);
-		width: 26px;
-		height: 26px;
-		border-radius: 50%;
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		cursor: pointer;
-	}
-	.ybtn:hover:not(:disabled) {
-		background: var(--accent-soft);
-		color: var(--text);
-	}
-	.ybtn:disabled {
-		opacity: 0.3;
-		cursor: default;
-	}
 	@media (max-width: 640px) {
 		.mdot { width: 14px; height: 14px; }
 		.cols9 .mdot { width: 14px; height: 14px; }
 		.mini { gap: 8px; }
 		.mini.cols9 { gap: 8px; }
-		.xstats { grid-template-columns: repeat(2, 1fr); }
-		.yval { min-width: 96px; }
 	}
 	@media (prefers-reduced-motion: reduce) {
 		.mdot { animation: none; transition: none; }

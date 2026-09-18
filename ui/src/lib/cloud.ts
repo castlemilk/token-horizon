@@ -91,6 +91,29 @@ export interface Board {
 	entries: BoardEntry[];
 }
 
+/** Another user's shared activity (for /@handle when it isn't local).
+ *  SERVER PENDING: no such route exists yet — callers must treat any
+ *  failure as "not shared" and fall back to the local empty state. */
+export interface SharedDay {
+	day: string;
+	ts: number;
+	tokens: number;
+}
+
+export interface SharedProvider {
+	vendor: string;
+	tokens: number;
+	requests: number;
+}
+
+export interface SharedProfile {
+	handle: string;
+	display_name?: string;
+	avatar_url?: string;
+	days: SharedDay[];
+	providers: SharedProvider[];
+}
+
 async function req<T>(path: string, init?: RequestInit, timeoutMs = 15000): Promise<T> {
 	const headers: Record<string, string> = { ...(init?.headers as Record<string, string>) };
 	const token = cloudToken();
@@ -215,6 +238,8 @@ export const cloud = {
 	groups: (teamID: string) => req<{ groups: Group[] }>(`/v1/teams/${teamID}/groups`),
 	board: (team: string, period: string) =>
 		req<Board>(`/v1/leaderboard?team=${encodeURIComponent(team)}&period=${period}`),
+	sharedProfile: (handle: string) =>
+		req<SharedProfile>(`/v1/users/${encodeURIComponent(handle)}/activity`),
 	createGroup: (teamID: string, name: string) =>
 		req<Group>(`/v1/teams/${teamID}/groups`, {
 			method: 'POST',
