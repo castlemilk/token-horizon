@@ -615,6 +615,7 @@
 	function hide() {
 		if (!open || phase === 'exit') return;
 		if (reduce || !closeable()) {
+			mdbg('close: plain fade', { reduce, closeable: closeable() });
 			// Motion-safe, or content the tile can't map home: plain
 			// fade, never a fake flight — backdrop included.
 			killTl();
@@ -645,6 +646,7 @@
 			gsap.set(card, { clearProps: 'opacity,visibility,transition' });
 		}
 		if (!card || !ghost) {
+			mdbg('close: no flight (no card/ghost)');
 			reset();
 			return;
 		}
@@ -655,6 +657,12 @@
 		const fromBoxed = boxMarks(fromMarks);
 		const toBoxed = boxMarks(toMarks);
 		if (!modalBox || !tileBox || !fromBoxed || !toBoxed || fromBoxed.length === 0) {
+			mdbg('close: no flight (measure fail)', {
+				modalBox,
+				tileBox,
+				from: fromBoxed?.map((d) => d.key) ?? null,
+				to: toBoxed?.map((d) => d.key) ?? null
+			});
 			reset();
 			return;
 		}
@@ -663,6 +671,7 @@
 		for (const f of fromBoxed) {
 			const t = targets.get(f.key);
 			if (!t) {
+				mdbg('close: no flight (key miss)', { missing: f.key, targets: [...targets.keys()] });
 				reset();
 				return;
 			}
