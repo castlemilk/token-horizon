@@ -371,7 +371,9 @@
 		flex-direction: row;
 		align-items: stretch;
 		min-height: 0;
-		padding-bottom: 20px;
+		/* No picker reservation: a 20px padding-bottom pushed the grid's
+		   center 10px up; the picker floats in the tile's bottom padding
+		   (see .vpick) and never overlaps the grid. */
 	}
 	.tile-main {
 		flex: 1;
@@ -559,9 +561,9 @@
 		letter-spacing: -0.02em;
 		line-height: 1;
 	}
-	/* rotation picker floats along the bottom edge so the grid stays centered.
-	   bottom compensates the shell tile padding (26px) so it lands 5px
-	   above the widget's visible bottom edge, not the content row. */
+	/* rotation picker floats in the tile's bottom padding (5px from the
+	   visible edge) so the grid keeps the full content row and centers
+	   exactly — no layout space reserved for it. */
 	.vpick {
 		position: absolute;
 		left: 50%;
