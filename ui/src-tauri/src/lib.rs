@@ -1,30 +1,38 @@
 //! Token Horizon desktop shell.
 //!
-//! Lifecycle contract: the app is a tray-resident companion to the loopback
-//! daemon. Logging only happens while SOMETHING serves :8765, so on launch we
-//! spawn the bundled `token-horizon-headless` sidecar when the API is dark.
-//! Closing the window hides to the tray (logging continues); Quit exits and
-//! stops the sidecar only if this process started it. Autostart launches the
-//! app with `--minimized`, which keeps the window hidden in the tray.
+//! Lifecycle contract: the app is a config UI for the persistent loopback
+//! daemon. Logging only happens while SOMETHING serves the API port range
+//! (:8765-8784), so on launch we spawn the bundled `token-horizon-headless`
+//! sidecar DETACHED when the API is dark. The daemon outlives the UI on
+//! purpose: closing the window hides to the tray, and Quit exits only the
+//! UI — the daemon keeps running. Boot/login persistence is the daemon's
+//! own user-scoped service (`--install-service` / Settings toggle); this
+//! shell never registers or removes it.
 
 use std::net::TcpStream;
-use std::sync::Mutex;
 use std::time::Duration;
 
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::TrayIconBuilder;
-use tauri::{Manager, RunEvent, WindowEvent};
+use tauri::{Manager, WindowEvent};
 use tauri_plugin_autostart::ManagerExt;
-use tauri_plugin_shell::process::CommandChild;
 use tauri_plugin_shell::ShellExt;
 
-/// The sidecar we spawned (empty when the API was already up or spawn failed).
-struct Sidecar(Mutex<Option<CommandChild>>);
+/// Daemon port range (mirrors POSIXLoopbackHTTPServer + the UI's discovery).
+fn api_ports() -> std::ops::RangeInclusive<u16> {
+    8765..=8784
+}
 
-/// Something is already accepting connections on the loopback API port.
+/// Something is already accepting connections on the loopback API port range.
 /// TCP-connect is enough for the spawn decision; the UI reports real health.
 fn api_listening() -> bool {
-    TcpStream::connect_timeout(&"127.0.0.1:8765".parse().unwrap(), Duration::from_millis(300)).is_ok()
+    api_ports().any(|port| {
+        TcpStream::connect_timeout(
+            &format!("127.0.0.1:{port}").parse().unwrap(),
+            Duration::from_millis(150),
+        )
+        .is_ok()
+    })
 }
 
 /// Spawn the bundled `token-horizon-headless` sidecar via Tauri's shell
@@ -32,18 +40,25 @@ fn api_listening() -> bool {
 /// dev (`src-tauri/binaries/`) and release bundles. (The previous bare-name
 /// lookup next to the executable could never match a bundled sidecar, so
 /// release builds silently never started the daemon.)
-fn spawn_sidecar(app: &tauri::AppHandle) -> Option<CommandChild> {
-    let spawn = || -> Result<CommandChild, String> {
+///
+/// The child is deliberately DETACHED: we never store a handle to kill on
+/// exit, so Quit/close leaves the daemon running in the background.
+fn spawn_sidecar(app: &tauri::AppHandle) {
+    let spawn = || -> Result<u32, String> {
         let cmd = app
             .shell()
             .sidecar("token-horizon-headless")
             .map_err(|e| format!("bundled sidecar unavailable: {e}"))?;
-        let (mut rx, child) = cmd.spawn().map_err(|e| format!("sidecar spawn failed: {e}"))?;
+        let (mut rx, child) = cmd
+            .spawn()
+            .map_err(|e| format!("sidecar spawn failed: {e}"))?;
+        let pid = child.pid();
         log::info!(
-            "spawned token-horizon-headless sidecar (pid {})",
-            child.pid()
+            "spawned token-horizon-headless sidecar (pid {pid}) — detached, survives UI quit"
         );
         // Drain spawn events so failures surface in logs, not silence.
+        // Dropping the CommandChild does NOT kill the process; it keeps
+        // running detached after this shell exits.
         tauri::async_runtime::spawn(async move {
             use tauri_plugin_shell::process::CommandEvent;
             while let Some(ev) = rx.recv().await {
@@ -57,24 +72,26 @@ fn spawn_sidecar(app: &tauri::AppHandle) -> Option<CommandChild> {
                 }
             }
         });
-        Ok(child)
+        Ok(pid)
     };
     match spawn() {
-        Ok(child) => Some(child),
+        Ok(_) => {
+            // Give the UI a fast healthy backend: wait in the background
+            // until the API answers (or time out quietly — the frontend
+            // keeps polling and reports real health).
+            std::thread::spawn(|| {
+                for _ in 0..100 {
+                    if api_listening() {
+                        log::info!("loopback API is up");
+                        return;
+                    }
+                    std::thread::sleep(Duration::from_millis(200));
+                }
+                log::warn!("sidecar spawned but API still dark after ~20s");
+            });
+        }
         Err(e) => {
             log::warn!("{e}; run scripts/build-sidecar.sh or start the daemon manually");
-            None
-        }
-    }
-}
-
-fn stop_sidecar(app: &tauri::AppHandle) {
-    if let Some(sidecar) = app.try_state::<Sidecar>() {
-        if let Ok(mut guard) = sidecar.0.lock() {
-            if let Some(child) = guard.take() {
-                let _ = child.kill();
-                log::info!("stopped sidecar");
-            }
         }
     }
 }
@@ -97,7 +114,6 @@ pub fn run() {
         )
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_shell::init())
-        .manage(Sidecar(Mutex::new(None)))
         .setup(|app| {
             if cfg!(debug_assertions) {
                 app.handle().plugin(
@@ -108,9 +124,15 @@ pub fn run() {
             }
 
             // Tray: the app's steady state. Show focuses the window; Quit
-            // exits (and stops a sidecar we started).
+            // exits only the UI — the daemon keeps running in the background.
             let show = MenuItem::with_id(app, "show", "Show Token Horizon", true, None::<&str>)?;
-            let quit = MenuItem::with_id(app, "quit", "Quit Token Horizon", true, None::<&str>)?;
+            let quit = MenuItem::with_id(
+                app,
+                "quit",
+                "Quit (daemon keeps running)",
+                true,
+                None::<&str>,
+            )?;
             let menu = Menu::with_items(app, &[&show, &quit])?;
             let mut tray = TrayIconBuilder::with_id("main-tray")
                 .menu(&menu)
@@ -125,15 +147,17 @@ pub fn run() {
             }
             tray.build(app)?;
 
-            // Logging guarantee: spawn the daemon when nothing serves :8765.
+            // Logging guarantee: spawn the daemon (detached) when nothing
+            // serves the API port range.
             if api_listening() {
                 log::info!("loopback API already up — no sidecar needed");
             } else {
-                let child = spawn_sidecar(app.handle());
-                *app.state::<Sidecar>().0.lock().unwrap() = child;
+                spawn_sidecar(app.handle());
             }
 
-            // Launch at login, default on (tray-resident background logger).
+            // Launch the config UI at login, default on. The daemon itself
+            // persists independently (detached sidecar + its own
+            // --install-service user service for boot coverage).
             let autostart = app.autolaunch();
             if !autostart.is_enabled().unwrap_or(false) {
                 if let Err(e) = autostart.enable() {
@@ -156,9 +180,7 @@ pub fn run() {
         })
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
-        .run(|app, event| {
-            if let RunEvent::Exit = event {
-                stop_sidecar(app);
-            }
-        });
+        // No Exit handler: the sidecar is detached on purpose, so nothing
+        // stops the daemon when this UI quits.
+        .run(|_app, _event| {});
 }
