@@ -79,11 +79,18 @@
 		backdrop-filter: blur(3px);
 		-webkit-backdrop-filter: blur(3px);
 	}
+	/* opaque: the shared card fill is translucent, dialogs sit solid */
 	.mbox {
 		width: 100%;
 		max-width: 520px;
 		max-height: 82svh;
 		overflow-y: auto;
+		background: var(--bg-raised);
+		backdrop-filter: none;
+		-webkit-backdrop-filter: none;
+		box-shadow:
+			0 24px 70px rgb(0 0 0 / 0.35),
+			0 2px 8px rgb(0 0 0 / 0.2);
 	}
 	.mhead {
 		display: flex;
