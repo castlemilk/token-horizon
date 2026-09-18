@@ -137,12 +137,19 @@
 </script>
 
 <script lang="ts">
-	let { vendor, model = '', size = 16 }: { vendor: string; model?: string; size?: number } =
-		$props();
+	let {
+		vendor,
+		model = '',
+		size = 16,
+		fill = false
+	}: { vendor: string; model?: string; size?: number; fill?: boolean } = $props();
 
 	const b = $derived(brand(vendor, model));
 	const key = $derived(iconKey(vendor, model));
-	const radius = $derived(size * 0.28);
+	/** fill: sized by the parent box (widget visual zones) instead of px. */
+	const dim = $derived(fill ? '100%' : `${size}px`);
+	const inner = $derived(fill ? '100%' : `${(size * 0.72).toFixed(1)}`);
+	const radius = $derived(fill ? '28%' : `${(size * 0.28).toFixed(1)}px`);
 </script>
 
 {#if key}
@@ -151,15 +158,15 @@
 	class:single={SINGLE_DARK.has(key)}
 	role="img"
 	aria-label={vendor}
-	style="width:{size}px;height:{size}px;border-radius:{radius}px"
+	style="width:{dim};height:{dim};border-radius:{radius}"
 >
 	{#if SINGLE_DARK.has(key)}
-		<img src="/icons/{key}-dark.webp" alt="" width={size} height={size} draggable="false" />
+		<img src="/icons/{key}-dark.webp" alt="" width={inner} height={inner} draggable="false" />
 	{:else if iconHasDark(key)}
-		<img class="light-var" src="/icons/{key}.webp" alt="" width={size} height={size} draggable="false" />
-		<img class="dark-var" src="/icons/{key}-dark.webp" alt="" width={size} height={size} draggable="false" />
+		<img class="light-var" src="/icons/{key}.webp" alt="" width={inner} height={inner} draggable="false" />
+		<img class="dark-var" src="/icons/{key}-dark.webp" alt="" width={inner} height={inner} draggable="false" />
 	{:else}
-		<img src="/icons/{key}.webp" alt="" width={size} height={size} draggable="false" />
+		<img src="/icons/{key}.webp" alt="" width={inner} height={inner} draggable="false" />
 	{/if}
 </span>
 {:else}
@@ -167,9 +174,9 @@
 	class="picon"
 	role="img"
 	aria-label={vendor}
-	style="width:{size}px;height:{size}px;border-radius:{radius}px;background:{b.bg}"
+	style="width:{dim};height:{dim};border-radius:{radius};background:{b.bg}"
 >
-	<svg viewBox="0 0 24 24" width={size * 0.72} height={size * 0.72} aria-hidden="true">
+	<svg viewBox="0 0 24 24" width={inner} height={inner} aria-hidden="true">
 		{#if b.glyph === 'asterisk'}
 			<path d={asteriskPath()} stroke="#fff" stroke-width="3.8" stroke-linecap="round" />
 		{:else if b.glyph === 'swirl'}
