@@ -517,6 +517,16 @@ html.lenis body {
 	box-shadow: 0 1px 4px rgb(0 0 0 / 0.04);
 }
 
+/* Widget-morph close flight (set by WidgetMorph.svelte — lives here
+ * because traveler nodes render in widget files, so scoped analysis
+ * flags it unused there): traveler sources hide for the whole exit,
+ * the mirror of the open-flight conceal. The clone is the only visible
+ * copy from t=0, so any clone/source misalignment can't double-render
+ * as numbers popping out before the collapse. */
+.conceal-exit [data-travel] {
+	visibility: hidden;
+}
+
 .grid {
 	display: grid;
 	gap: 10px;
