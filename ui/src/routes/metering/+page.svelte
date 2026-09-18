@@ -3,6 +3,7 @@
 	import { api, type RuntimeInfo, type Meters } from '$lib/api';
 	import { connection } from '$lib/connection.svelte';
 	import { poll } from '$lib/format';
+	import { compareProviders } from '$lib/popularity';
 	import MeterTiles from '$lib/components/metering/MeterTiles.svelte';
 	import RuntimeCards from '$lib/components/metering/RuntimeCards.svelte';
 	import RecoverySection from '$lib/components/metering/RecoverySection.svelte';
@@ -81,23 +82,20 @@
 		}
 	}
 
-	/** Runtimes by popularity (all-time measured tokens, alphabetical tiebreak). */
+	/** Runtimes by curated popularity (see $lib/popularity). */
 	const running = $derived(
-		runtimes
-			.filter((r) => r.running)
-			.sort((a, b) => b.usage.tokens_all - a.usage.tokens_all || a.vendor.localeCompare(b.vendor))
+		runtimes.filter((r) => r.running).sort((a, b) => compareProviders(a.vendor, b.vendor))
 	);
 	const runningVendors = $derived(new Set((meters?.point ?? []).map((m) => m.vendor)));
 	/** Self-managed runtimes known to the daemon (running or not) — only
 	 *  these have configurable endpoints; cloud API bases are fixed. */
 	const runtimeVendors = $derived(new Set(runtimes.map((r) => r.vendor.toLowerCase())));
 	const liveMeters = $derived(new Map((meters?.point ?? []).map((m) => [m.vendor.toLowerCase(), m])));
-	/** Catalog by popularity (most-measured traffic first, alphabetical
-	 *  tiebreak). Deliberately no running-first boost: toggles don't move
-	 *  tiles, only usage drift does. Drops the backend alias twin
-	 *  (MeterRegistry.aliases lists google ⇔ gemini, but one adapter
-	 *  ("gemini") and one default port (9250) serve both — two tiles would
-	 *  split attribution and fight over the port). */
+	/** Catalog by curated popularity (see $lib/popularity — editorial, not
+	 *  traffic, so tiles never reshuffle as you work. Drops the backend
+	 *  alias twin (MeterRegistry.aliases lists google ⇔ gemini, but one
+	 *  adapter ("gemini") and one default port (9250) serve both — two
+	 *  tiles would split attribution and fight over the port). */
 	const catalog = $derived(
 		[...(meters?.catalog ?? [])]
 			.filter(
@@ -105,13 +103,7 @@
 					c.vendor.toLowerCase() !== 'google' ||
 					!arr.some((o) => o.vendor.toLowerCase() === 'gemini')
 			)
-			.sort((a, b) => {
-				const traffic = (v: string) => {
-					const m = liveMeters.get(v.toLowerCase());
-					return (m?.seen ?? 0) + (m?.measured ?? 0);
-				};
-				return traffic(b.vendor) - traffic(a.vendor) || a.vendor.localeCompare(b.vendor);
-			})
+			.sort((a, b) => compareProviders(a.vendor, b.vendor))
 	);
 
 	/** Runtime active (or has usage) but no meter listening — enable it. */
