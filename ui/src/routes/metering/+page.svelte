@@ -85,11 +85,23 @@
 		runtimes.filter((r) => r.running).sort((a, b) => b.usage.tokens_all - a.usage.tokens_all)
 	);
 	const runningVendors = $derived(new Set((meters?.point ?? []).map((m) => m.vendor)));
+	/** Self-managed runtimes known to the daemon (running or not) — only
+	 *  these have configurable endpoints; cloud API bases are fixed. */
+	const runtimeVendors = $derived(new Set(runtimes.map((r) => r.vendor.toLowerCase())));
 	const liveMeters = $derived(new Map((meters?.point ?? []).map((m) => [m.vendor.toLowerCase(), m])));
 	/** Catalog ordered by popularity: live meters first, then most-measured
-	 *  traffic, alphabetical tiebreak — the vendors you actually use lead. */
+	 *  traffic, alphabetical tiebreak — the vendors you actually use lead.
+	 *  Drops the backend alias twin (MeterRegistry.aliases lists google ⇔
+	 *  gemini, but one adapter ("gemini") and one default port (9250) serve
+	 *  both — two tiles would split attribution and fight over the port). */
 	const catalog = $derived(
-		[...(meters?.catalog ?? [])].sort((a, b) => {
+		[...(meters?.catalog ?? [])]
+			.filter(
+				(c, _, arr) =>
+					c.vendor.toLowerCase() !== 'google' ||
+					!arr.some((o) => o.vendor.toLowerCase() === 'gemini')
+			)
+			.sort((a, b) => {
 			if (a.running !== b.running) return a.running ? -1 : 1;
 			const traffic = (v: string) => {
 				const m = liveMeters.get(v.toLowerCase());
@@ -132,6 +144,7 @@
 <MeterTiles
 	{catalog}
 	{meters}
+	{runtimeVendors}
 	onToggle={(v, on) => void toggleMeter(v, on)}
 	onSettings={(v) => (settingsTarget = { vendor: v, title: v })}
 />

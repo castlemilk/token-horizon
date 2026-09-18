@@ -8,11 +8,14 @@
 	let {
 		catalog,
 		meters,
+		runtimeVendors,
 		onToggle,
 		onSettings
 	}: {
 		catalog: MeterCatalogEntry[];
 		meters: Meters | null;
+		/** Vendors with configurable endpoints (self-managed runtimes). */
+		runtimeVendors: Set<string>;
 		onToggle: (vendor: string, enabled: boolean) => void;
 		onSettings: (vendor: string) => void;
 	} = $props();
@@ -35,14 +38,16 @@
 					</span>
 					<span style="display: flex; align-items: center; gap: 6px">
 						<span class="dot" class:up={m.running}></span>
-						<button
-							class="gear"
-							onclick={() => onSettings(m.vendor)}
-							title="Meter settings for {m.vendor}"
-							aria-label="Meter settings for {m.vendor}"
-						>
-							<Settings2 size={13} strokeWidth={2} />
-						</button>
+						{#if runtimeVendors.has(m.vendor.toLowerCase())}
+							<button
+								class="gear"
+								onclick={() => onSettings(m.vendor)}
+								title="Meter settings for {m.vendor}"
+								aria-label="Meter settings for {m.vendor}"
+							>
+								<Settings2 size={13} strokeWidth={2} />
+							</button>
+						{/if}
 					</span>
 				</div>
 				<div class="mono mroute" class:faint={!m.running}>127.0.0.1:{m.listen_port}</div>
