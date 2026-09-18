@@ -7,17 +7,22 @@
 	let {
 		catalog,
 		meters,
-		onToggle
+		onToggle,
+		bare = false
 	}: {
 		catalog: MeterCatalogEntry[];
 		meters: Meters | null;
 		onToggle: (vendor: string, enabled: boolean) => void;
+		/** Bare for modal embedding (the dialog owns the title). */
+		bare?: boolean;
 	} = $props();
 </script>
 
-<div class="section-label">
-	Request routing{meters ? ` · ${meters.mode} mode · ${meters.point.length} live` : ''}
-</div>
+{#if !bare}
+	<div class="section-label">
+		Request routing{meters ? ` · ${meters.mode} mode · ${meters.point.length} live` : ''}
+	</div>
+{/if}
 {#if catalog.length === 0}
 	<div class="empty">No meterable vendors discovered — the daemon catalog appears here</div>
 {:else}
