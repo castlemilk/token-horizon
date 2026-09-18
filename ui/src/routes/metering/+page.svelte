@@ -81,20 +81,23 @@
 		}
 	}
 
+	/** Runtimes by popularity (all-time measured tokens, alphabetical tiebreak). */
 	const running = $derived(
-		runtimes.filter((r) => r.running).sort((a, b) => b.usage.tokens_all - a.usage.tokens_all)
+		runtimes
+			.filter((r) => r.running)
+			.sort((a, b) => b.usage.tokens_all - a.usage.tokens_all || a.vendor.localeCompare(b.vendor))
 	);
 	const runningVendors = $derived(new Set((meters?.point ?? []).map((m) => m.vendor)));
 	/** Self-managed runtimes known to the daemon (running or not) — only
 	 *  these have configurable endpoints; cloud API bases are fixed. */
 	const runtimeVendors = $derived(new Set(runtimes.map((r) => r.vendor.toLowerCase())));
 	const liveMeters = $derived(new Map((meters?.point ?? []).map((m) => [m.vendor.toLowerCase(), m])));
-	/** Catalog in stable alphabetical order: the old popularity sort (live
-	 *  first, then traffic) reshuffled the grid on every toggle, which
-	 *  reads as broken. State changes show on the tiles themselves.
-	 *  Drops the backend alias twin (MeterRegistry.aliases lists google ⇔
-	 *  gemini, but one adapter ("gemini") and one default port (9250) serve
-	 *  both — two tiles would split attribution and fight over the port). */
+	/** Catalog by popularity (most-measured traffic first, alphabetical
+	 *  tiebreak). Deliberately no running-first boost: toggles don't move
+	 *  tiles, only usage drift does. Drops the backend alias twin
+	 *  (MeterRegistry.aliases lists google ⇔ gemini, but one adapter
+	 *  ("gemini") and one default port (9250) serve both — two tiles would
+	 *  split attribution and fight over the port). */
 	const catalog = $derived(
 		[...(meters?.catalog ?? [])]
 			.filter(
@@ -102,7 +105,13 @@
 					c.vendor.toLowerCase() !== 'google' ||
 					!arr.some((o) => o.vendor.toLowerCase() === 'gemini')
 			)
-			.sort((a, b) => a.vendor.localeCompare(b.vendor))
+			.sort((a, b) => {
+				const traffic = (v: string) => {
+					const m = liveMeters.get(v.toLowerCase());
+					return (m?.seen ?? 0) + (m?.measured ?? 0);
+				};
+				return traffic(b.vendor) - traffic(a.vendor) || a.vendor.localeCompare(b.vendor);
+			})
 	);
 
 	/** Runtime active (or has usage) but no meter listening — enable it. */
