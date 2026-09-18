@@ -270,7 +270,11 @@
 					<span class="pname">{r.vendor}</span>
 					<span class="pvals">
 						<span class="pv num">{fmtTok(r.tokens)}</span>
-						<span class="psub2"><b>{Math.round(r.share)}%</b>{#if isLocal} · {fmtMoney(r.cost)}{/if} · {r.requests} req</span>
+						<span class="ptags">
+							<span class="ptag">{Math.round(r.share)}%</span>
+							{#if isLocal}<span class="ptag">{fmtMoney(r.cost)}</span>{/if}
+							<span class="ptag">{r.requests} req</span>
+						</span>
 					</span>
 				</div>
 			{/each}
@@ -513,14 +517,29 @@
 		letter-spacing: -0.01em;
 		font-variant-numeric: tabular-nums;
 	}
-	.psub2, .msub2 {
+	.msub2 {
 		font-size: 11px;
 		color: var(--text-3);
 		font-variant-numeric: tabular-nums;
 	}
-	.psub2 b {
+	.ptags {
+		display: flex;
+		gap: 4px;
+		justify-content: flex-end;
+		margin-top: 4px;
+	}
+	.ptag {
+		font-size: 10.5px;
+		font-weight: 650;
 		color: var(--text-2);
-		font-weight: 700;
+		background: var(--track);
+		padding: 2px 8px;
+		border-radius: 999px;
+		font-variant-numeric: tabular-nums;
+		white-space: nowrap;
+	}
+	.ptag:first-child {
+		color: var(--text);
 	}
 	/* top models: Screen-Time-style bar list */
 	.models .mrow {
