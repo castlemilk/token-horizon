@@ -15,9 +15,7 @@
 		meters,
 		onToggleMeter,
 		onConsent,
-		onInstallSvc,
-		open,
-		bare = false
+		onInstallSvc
 	}: {
 		daemonDown: boolean;
 		service: ServiceStatus | null;
@@ -28,14 +26,18 @@
 		onToggleMeter: (vendor: string, enabled: boolean) => void;
 		onConsent: (scope: string, granted: boolean) => void;
 		onInstallSvc: () => void;
-		/** External gate (the page owns it so the toolbar badge matches). */
-		open: boolean;
-		/** Bare for modal embedding (the dialog owns the title). */
-		bare?: boolean;
 	} = $props();
 
 	const consentDenied = (s: string) =>
 		consents.length > 0 && !(consents.find((c) => c.scope === s)?.granted ?? false);
+	const hasLiveMeters = $derived((meters?.point ?? []).length > 0);
+	const open = $derived(
+		daemonDown ||
+			hasLiveMeters ||
+			unmeteredActive.length > 0 ||
+			consentDenied('metering') ||
+			consentDenied('fileReading')
+	);
 
 	type Guide = { title: string; intro: string; steps: InstructionStep[]; brief: string } | null;
 	let guide = $state<Guide>(null);
@@ -108,9 +110,7 @@
 </script>
 
 {#if open}
-	{#if !bare}
-		<div class="section-label">Recovery</div>
-	{/if}
+	<div class="section-label">Recovery</div>
 	<div class="stack">
 		{#if daemonDown}
 			<div class="card">
