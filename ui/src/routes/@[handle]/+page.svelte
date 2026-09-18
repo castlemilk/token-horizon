@@ -118,7 +118,7 @@
 
 {#snippet profileHint(info: HintInfo)}
 	{#if info.trailing}
-		Past 12 months · billable tokens.
+		Past 12 months.
 	{:else}
 		Calendar year {info.year}.
 	{/if}
@@ -137,15 +137,15 @@
 		{/if}
 		<div class="mstats">
 			<div class="ms">
-				<span class="mv"><Flame size={13} strokeWidth={2} />{act.streak}</span>
+				<span class="mv"><span class="mico mico-flame"><Flame size={14} strokeWidth={2.2} /></span>{act.streak}</span>
 				<span class="ml">day streak</span>
 			</div>
 			<div class="ms">
-				<span class="mv"><Clock size={13} strokeWidth={2} />{lastActiveLabel}</span>
+				<span class="mv"><span class="mico mico-clock"><Clock size={14} strokeWidth={2.2} /></span>{lastActiveLabel}</span>
 				<span class="ml">last activity</span>
 			</div>
 			<div class="ms">
-				<span class="mv"><Zap size={13} strokeWidth={2} />{last24hLabel}</span>
+				<span class="mv"><span class="mico mico-zap"><Zap size={14} strokeWidth={2.2} /></span>{last24hLabel}</span>
 				<span class="ml">last 24 hours</span>
 			</div>
 		</div>
@@ -173,9 +173,11 @@
 {/if}
 
 <style>
-	/* no hairline: the panel's stat cards are the next visual beat */
+	/* no hairline: the heatmap panel is the next visual beat.
+	   Top-aligned so the avatar sits level with the username, not
+	   centered against the whole stat column. */
 	.profile-mast {
-		align-items: center;
+		align-items: flex-start;
 		border-bottom: 0;
 		padding-bottom: 0;
 		margin-bottom: 18px;
@@ -210,27 +212,24 @@
 		font-size: 13px;
 		color: var(--text-2);
 	}
-	/* masthead stats: iOS-style value-over-label trio, hairline dividers */
+	/* masthead stats: iOS-style value-over-label trio with tinted glyph
+	   badges (flame orange, clock blue, bolt green) */
 	.mstats {
 		display: flex;
 		align-items: stretch;
-		gap: 14px;
-		margin-top: 10px;
+		gap: 20px;
+		margin-top: 12px;
 		flex-wrap: wrap;
 	}
 	.ms {
 		display: flex;
 		flex-direction: column;
-		gap: 1px;
-	}
-	.ms + .ms {
-		border-left: 1px solid var(--line);
-		padding-left: 14px;
+		gap: 2px;
 	}
 	.mv {
 		display: flex;
 		align-items: center;
-		gap: 6px;
+		gap: 7px;
 		font-size: 18px;
 		font-weight: 700;
 		letter-spacing: -0.02em;
@@ -239,9 +238,26 @@
 		color: var(--text);
 		white-space: nowrap;
 	}
-	.mv :global(svg) {
-		color: var(--text-2);
+	.mico {
+		width: 26px;
+		height: 26px;
+		border-radius: 8px;
+		display: flex;
+		align-items: center;
+		justify-content: center;
 		flex: none;
+	}
+	.mico-flame {
+		color: #ff9500;
+		background: rgb(255 149 0 / 0.14);
+	}
+	.mico-clock {
+		color: #0a84ff;
+		background: rgb(10 132 255 / 0.14);
+	}
+	.mico-zap {
+		color: #30d158;
+		background: rgb(48 209 88 / 0.14);
 	}
 	.ml {
 		font-size: 10.5px;
