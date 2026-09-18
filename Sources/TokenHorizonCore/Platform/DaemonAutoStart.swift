@@ -1,6 +1,8 @@
 import Foundation
 #if os(Linux)
 import Glibc
+#elseif os(macOS)
+import Darwin
 #endif
 
 /// Boot/login auto-start registration for the headless daemon.
@@ -140,11 +142,34 @@ public enum DaemonAutoStart {
 
         let deadline = Date().addingTimeInterval(20)
         while proc.isRunning && Date() < deadline { usleep(50_000) }
-        if proc.isRunning { proc.terminate() }
+        if proc.isRunning {
+            // SIGTERM is async — reading terminationStatus of a still-live
+            // process traps (UD2 → SIGILL) in corelibs-foundation and takes
+            // the whole daemon down. Grace period, SIGKILL escalation, and
+            // only read the status once it actually exited.
+            proc.terminate()
+            let termDeadline = Date().addingTimeInterval(5)
+            while proc.isRunning && Date() < termDeadline { usleep(50_000) }
+            if proc.isRunning { killPID(proc.processIdentifier) }
+            let killDeadline = Date().addingTimeInterval(5)
+            while proc.isRunning && Date() < killDeadline { usleep(50_000) }
+        }
 
         let out = (try? String(contentsOf: tmp, encoding: .utf8))?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        return (proc.terminationStatus, out)
+        // Guarded read: only an exited process has a status to report.
+        let code: Int32 = proc.isRunning ? -1 : proc.terminationStatus
+        return (code, out)
+    }
+
+    static func killPID(_ pid: Int32) {
+        #if os(Linux)
+        _ = Glibc.kill(pid, SIGKILL)
+        #elseif os(macOS)
+        _ = Darwin.kill(pid, SIGKILL)
+        #else
+        ()
+        #endif
     }
 
     static func which(_ tool: String) -> String? {
