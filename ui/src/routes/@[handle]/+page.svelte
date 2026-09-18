@@ -3,8 +3,15 @@
 	import { page } from '$app/stores';
 	import { api, type ProviderSummary } from '$lib/api';
 	import { cloud, type SharedProfile } from '$lib/cloud';
+	import { Flame, Clock, Zap } from 'lucide-svelte';
 	import { billableTok, fmtTok, poll } from '$lib/format';
-	import { fetchDailyActivity, activityStats, type DayActivity } from '$lib/activity';
+	import {
+		fetchDailyActivity,
+		fetchLast24hTokens,
+		lastActiveDay,
+		activityStats,
+		type DayActivity
+	} from '$lib/activity';
 	import { providerAccent } from '$lib/colors';
 	import { settings } from '$lib/settings.svelte';
 	import YearHeatmap, { type HintInfo } from '$lib/components/widgets/heatmap/YearHeatmap.svelte';
@@ -21,6 +28,7 @@
 
 	let days = $state<DayActivity[]>([]);
 	let summary = $state<ProviderSummary[]>([]);
+	let last24h = $state<number | null>(null);
 	let remote = $state<SharedProfile | null>(null);
 	let remoteMissing = $state(false);
 
@@ -42,6 +50,9 @@
 		fetchDailyActivity(365, !settings.showImports)
 			.then((d) => (days = d))
 			.catch(() => {});
+		fetchLast24hTokens(!settings.showImports)
+			.then((v) => (last24h = v))
+			.catch(() => {});
 		return stop;
 	});
 
@@ -50,7 +61,38 @@
 	// reported; the local feed is billable by construction.
 	const feedDays = $derived<DayActivity[]>(isLocal ? days : (remote?.days ?? []));
 	const act = $derived(activityStats(feedDays));
-	const today = $derived(feedDays.length > 0 ? (feedDays[feedDays.length - 1]?.tokens ?? 0) : 0);
+
+	function dayDiff(d: DayActivity): number {
+		const t = new Date();
+		t.setHours(0, 0, 0, 0);
+		const c = new Date(d.ts * 1000);
+		c.setHours(0, 0, 0, 0);
+		return Math.round((t.getTime() - c.getTime()) / 86400000);
+	}
+	const lastActiveLabel = $derived.by(() => {
+		const d = lastActiveDay(feedDays);
+		if (!d) return 'No activity yet';
+		const n = dayDiff(d);
+		if (n <= 0) return 'Today';
+		if (n === 1) return 'Yesterday';
+		if (n < 7) return `${n} days ago`;
+		return new Date(d.day + 'T12:00:00').toLocaleDateString(undefined, {
+			month: 'short',
+			day: 'numeric'
+		});
+	});
+	/** Trailing-24h counter: measured hourly locally, reported by the
+	 *  sharer remotely, last-day fallback while either is missing. */
+	const last24hValue = $derived(
+		isLocal ? (last24h ?? null) : (remote?.tokens_24h ?? null)
+	);
+	const last24hLabel = $derived(
+		last24hValue != null
+			? fmtTok(last24hValue)
+			: feedDays.length > 0
+				? fmtTok(feedDays[feedDays.length - 1]?.tokens ?? 0)
+				: '…'
+	);
 
 	const topProviders = $derived<HBarRow[]>(
 		isLocal
@@ -85,14 +127,7 @@
 	);
 	const avatarURL = $derived(!isLocal ? cloud.avatarURL(remote) : null);
 	const initial = $derived((handle[0] ?? '?').toUpperCase());
-	const sub = $derived(
-		isLocal
-			? `${act.activeDays} active days · ${act.streak} day streak · this machine`
-			: remote
-				? `${act.activeDays} active days · ${act.streak} day streak · shared profile`
-				: 'shared profile'
-	);
-	const todayBit = $derived(today > 0 ? ` · ${fmtTok(today)} today` : '');
+	const origin = $derived(isLocal ? 'this machine' : 'shared profile');
 </script>
 
 {#snippet profileHint(info: HintInfo)}
@@ -109,16 +144,29 @@
 	{:else}
 		<span class="avatar">{initial}</span>
 	{/if}
-	<div>
+	<div class="pcol">
 		<div class="handle">@{handle}</div>
 		{#if displayName}
 			<div class="dname">{displayName}</div>
 		{/if}
-		<div class="psub">{sub}{todayBit}</div>
+		<div class="mstats">
+			<div class="ms">
+				<span class="mv"><Flame size={13} strokeWidth={2} />{act.streak}</span>
+				<span class="ml">day streak</span>
+			</div>
+			<div class="ms">
+				<span class="mv"><Clock size={13} strokeWidth={2} />{lastActiveLabel}</span>
+				<span class="ml">last activity</span>
+			</div>
+			<div class="ms">
+				<span class="mv"><Zap size={13} strokeWidth={2} />{last24hLabel}</span>
+				<span class="ml">last 24 hours</span>
+			</div>
+		</div>
+		<div class="psub">{origin} · {act.activeDays} active days</div>
 	</div>
 </div>
 
-<div class="section-label">Activity · Last 12 months</div>
 {#if !isLocal && !remote && !remoteMissing}
 	<div class="card">
 		<EmptyState title="Loading shared profile…" body="" />
@@ -148,10 +196,14 @@
 </div>
 
 <style>
+	/* no hairline: the panel's stat cards are the next visual beat */
 	.profile-mast {
 		align-items: center;
+		border-bottom: 0;
+		padding-bottom: 0;
+		margin-bottom: 18px;
 	}
-	.profile-mast > div:nth-child(2) {
+	.profile-mast .pcol {
 		min-width: 0;
 		flex: 1;
 	}
@@ -180,5 +232,48 @@
 	.dname {
 		font-size: 13px;
 		color: var(--text-2);
+	}
+	/* masthead stats: iOS-style value-over-label trio, hairline dividers */
+	.mstats {
+		display: flex;
+		align-items: stretch;
+		gap: 14px;
+		margin-top: 10px;
+		flex-wrap: wrap;
+	}
+	.ms {
+		display: flex;
+		flex-direction: column;
+		gap: 1px;
+	}
+	.ms + .ms {
+		border-left: 1px solid var(--line);
+		padding-left: 14px;
+	}
+	.mv {
+		display: flex;
+		align-items: center;
+		gap: 5px;
+		font-size: 16px;
+		font-weight: 700;
+		letter-spacing: -0.02em;
+		font-variant-numeric: tabular-nums;
+		color: var(--text);
+		white-space: nowrap;
+	}
+	.mv :global(svg) {
+		color: var(--text-2);
+		flex: none;
+	}
+	.ml {
+		font-size: 10.5px;
+		font-weight: 600;
+		letter-spacing: 0.06em;
+		text-transform: uppercase;
+		color: var(--text-3);
+		white-space: nowrap;
+	}
+	.pcol .psub {
+		margin-top: 8px;
 	}
 </style>

@@ -195,10 +195,13 @@
 		align-items: center;
 		text-align: center;
 		gap: 2px;
-		background: color-mix(in srgb, var(--bg-raised) 55%, transparent);
+		/* a shade deeper than the old translucent fill, still well above
+		   the --track picker pill */
+		background: color-mix(in srgb, var(--bg-raised) 72%, var(--track));
 		border: 0;
 		border-radius: 14px;
 		padding: 12px 6px 10px;
+		box-shadow: inset 0 0 0 0.5px var(--line);
 	}
 	.xv {
 		font-size: 19px;

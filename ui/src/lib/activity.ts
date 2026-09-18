@@ -95,6 +95,23 @@ export function heatLevel(tokens: number, maxV: number): number {
 	return 4;
 }
 
+/** Trailing-24h billable tokens from hourly buckets — the "last 24h"
+ *  counter. Day feeds are local-midnight aligned, so a day value can't
+ *  answer this. */
+export async function fetchLast24hTokens(metered = true): Promise<number> {
+	const now = Math.floor(Date.now() / 1000);
+	const res = await api.buckets(3600, now - 86400, metered);
+	return res.buckets.reduce((s, b) => s + billableTok(b.tokens), 0);
+}
+
+/** Most recent day with any tokens (for "last activity"), or null. */
+export function lastActiveDay(days: DayActivity[]): DayActivity | null {
+	for (let i = days.length - 1; i >= 0; i--) {
+		if (days[i].tokens > 0) return days[i];
+	}
+	return null;
+}
+
 export function activityStats(days: DayActivity[]): ActivityStats {
 	const total = days.reduce((s, d) => s + d.tokens, 0);
 	const peak = days.reduce((m, d) => Math.max(m, d.tokens), 0);
