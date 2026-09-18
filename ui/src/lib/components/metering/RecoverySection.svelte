@@ -1,6 +1,7 @@
 <script lang="ts">
-	import { ChevronRight } from 'lucide-svelte';
+	import { BookOpen, ChevronRight, Gauge } from 'lucide-svelte';
 	import { apiBase, type ConsentState, type MeterInfo, type Meters, type RuntimeInfo, type ServiceStatus } from '$lib/api';
+	import Modal from '$lib/components/common/Modal.svelte';
 	import InstructionModal, { type InstructionStep } from './InstructionModal.svelte';
 	import { TOOL_ROUTES, agentBrief } from '$lib/routing';
 
@@ -46,6 +47,11 @@
 		onAction?: () => void;
 	} | null;
 	let dialog = $state<Dialog>(null);
+	/** Guide browser: the tool/meter row lists live in here; picking a row
+	 *  swaps this modal for the detail dialog (Back returns to the list). */
+	let browser = $state<'tool' | 'meter' | null>(null);
+
+	const liveCount = $derived((meters?.point ?? []).length);
 
 	function closeAfter(fn: () => void) {
 		return () => {
@@ -201,41 +207,66 @@
 				<ChevronRight size={15} strokeWidth={2.2} />
 			</button>
 		{/each}
-		<div class="rgroup">By tool — setup guides</div>
-		{#each TOOL_ROUTES as t (t.tool)}
-			{@const live = liveMeters.get(t.vendor)}
-			<button class="ritem" onclick={() => openToolGuide(t)}>
-				<span class="rtext"><span class="rtitle">{t.tool}</span><span class="rsub2">{live ? 'meter live' : 'meter off'}</span></span>
-				<ChevronRight size={15} strokeWidth={2.2} />
+	</div>
+	<div class="ractions">
+		<button class="btn btn-guide" onclick={() => (browser = 'tool')}>
+			<BookOpen size={14} strokeWidth={2} />Tool setup
+		</button>
+		{#if liveCount > 0}
+			<button class="btn btn-guide" onclick={() => (browser = 'meter')}>
+				<Gauge size={14} strokeWidth={2} />Meter setup
 			</button>
-		{/each}
-		<div class="rgroup">By meter — live connection recovery</div>
-		{#each meters?.point ?? [] as m (m.vendor)}
-			{@const guideable = (m.seen ?? 0) === 0}
-			{#if guideable}
-				<button class="ritem" onclick={() => openMeterGuide(m.vendor)}>
-					<span class="rtext"><span class="rtitle">{m.vendor}</span><span class="rsub2">{meterStatus(m)}</span></span>
-					<ChevronRight size={15} strokeWidth={2.2} />
-				</button>
-			{:else}
-				<div class="ritem static">
-					<span class="dot up"></span>
-					<span class="rtext"><span class="rtitle">{m.vendor}</span><span class="rsub2">{meterStatus(m)}</span></span>
-				</div>
-			{/if}
-		{/each}
+		{/if}
 	</div>
 {/if}
 
+<Modal
+	title={browser === 'tool' ? 'Tool setup guides' : 'Meter setup guides'}
+	open={browser != null && dialog == null}
+	onClose={() => (browser = null)}
+>
+	<div class="rlist">
+		{#if browser === 'tool'}
+			{#each TOOL_ROUTES as t (t.tool)}
+				{@const live = liveMeters.get(t.vendor)}
+				<button class="ritem" onclick={() => openToolGuide(t)}>
+					<span class="rtext"><span class="rtitle">{t.tool}</span><span class="rsub2">{live ? 'meter live' : 'meter off'}</span></span>
+					<ChevronRight size={15} strokeWidth={2.2} />
+				</button>
+			{/each}
+		{:else}
+			{#each meters?.point ?? [] as m (m.vendor)}
+				{@const guideable = (m.seen ?? 0) === 0}
+				{#if guideable}
+					<button class="ritem" onclick={() => openMeterGuide(m.vendor)}>
+						<span class="rtext"><span class="rtitle">{m.vendor}</span><span class="rsub2">{meterStatus(m)}</span></span>
+						<ChevronRight size={15} strokeWidth={2.2} />
+					</button>
+				{:else}
+					<div class="ritem static">
+						<span class="dot up"></span>
+						<span class="rtext"><span class="rtitle">{m.vendor}</span><span class="rsub2">{meterStatus(m)}</span></span>
+					</div>
+				{/if}
+			{/each}
+		{/if}
+	</div>
+</Modal>
+
 <InstructionModal
 	open={dialog != null}
-	onClose={() => (dialog = null)}
+	onClose={() => {
+		dialog = null;
+		browser = null;
+	}}
 	title={dialog?.title ?? ''}
 	intro={dialog?.intro ?? ''}
 	steps={dialog?.steps ?? []}
 	brief={dialog?.brief}
 	actionLabel={dialog?.actionLabel}
 	onAction={dialog?.onAction}
+	backLabel="All guides"
+	onBack={browser != null ? () => (dialog = null) : undefined}
 />
 
 <style>
@@ -284,15 +315,15 @@
 		font-size: 11px;
 		color: var(--text-3);
 	}
-	.rgroup {
-		font-size: 11px;
-		font-weight: 600;
-		letter-spacing: 0.08em;
-		text-transform: uppercase;
-		color: var(--text-3);
-		margin: 12px 0 0 2px;
+	.ractions {
+		display: flex;
+		gap: 8px;
+		flex-wrap: wrap;
+		margin-top: 10px;
 	}
-	.rgroup:first-child {
-		margin-top: 0;
+	.btn-guide {
+		display: inline-flex;
+		align-items: center;
+		gap: 7px;
 	}
 </style>

@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { ChevronLeft } from 'lucide-svelte';
 	import Modal from '$lib/components/common/Modal.svelte';
 	import CopyField from '$lib/components/common/CopyField.svelte';
 	import { copyText } from '$lib/routing';
@@ -19,7 +20,9 @@
 		steps = [],
 		actionLabel,
 		onAction,
-		brief
+		brief,
+		backLabel,
+		onBack
 	}: {
 		open: boolean;
 		onClose: () => void;
@@ -29,6 +32,9 @@
 		actionLabel?: string;
 		onAction?: () => void;
 		brief?: string;
+		/** Back navigation (returning to the guide list inside a browser). */
+		backLabel?: string;
+		onBack?: () => void;
 	} = $props();
 
 	let copied = $state(false);
@@ -42,6 +48,11 @@
 </script>
 
 <Modal {open} {onClose} {title}>
+	{#if onBack}
+		<button class="back" onclick={() => onBack()}>
+			<ChevronLeft size={14} strokeWidth={2.2} />{backLabel ?? 'Back'}
+		</button>
+	{/if}
 	{#if intro}
 		<div class="dim rbody">{intro}</div>
 	{/if}
@@ -70,6 +81,24 @@
 </Modal>
 
 <style>
+	.back {
+		appearance: none;
+		border: 0;
+		background: none;
+		color: var(--text-2);
+		font: inherit;
+		font-size: 12.5px;
+		font-weight: 600;
+		display: inline-flex;
+		align-items: center;
+		gap: 2px;
+		padding: 0;
+		margin-bottom: 8px;
+		cursor: pointer;
+	}
+	.back:hover {
+		color: var(--text);
+	}
 	.rbody {
 		font-size: 12.5px;
 	}
