@@ -19,9 +19,11 @@ open class GeminiMeter: RequestMeter {
         return String(rest[..<colon])
     }
 
-    /// Gemini semantics: promptTokenCount includes cached tokens.
+    /// Gemini semantics: promptTokenCount includes cached tokens. Storage
+    /// is NET (input excludes cacheRead — see GeminiUsage), so the gross
+    /// occupancy is net input PLUS the cached share.
     public override func contextOccupancy(tokens: TokenBreakdown) -> Int? {
-        tokens.input
+        tokens.input + tokens.cacheRead
     }
 
     public override func usage(from exchange: MeteredExchange) -> TokenBreakdown? {

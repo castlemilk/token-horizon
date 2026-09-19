@@ -41,13 +41,18 @@ public enum CostEngine {
 
     /// Catalog pricing: input/output at list rates plus the cache-read rate
     /// when the catalog carries one. Cache-write is priced as input (vendor
-    /// surcharges on cache creation are not yet modeled). MUST stay in
-    /// lockstep with SQLiteUsageStore.costEquivalentSQL — the read-side
-    /// equivalent cost applies the same rates to the same breakdown, so
-    /// API-billed rows show charged cost == list-price equivalent.
+    /// surcharges on cache creation are not yet modeled). REASONING
+    /// (thinking) tokens are billed at the OUTPUT rate — every vendor that
+    /// separates them (OpenAI reasoning_tokens, Anthropic thinking, Gemini
+    /// thoughts) charges them as completion tokens, and storage is NET
+    /// (output excludes reasoning), so they must be added back here or
+    /// thinking is silently free. MUST stay in lockstep with
+    /// SQLiteUsageStore.costEquivalentSQL — the read-side equivalent cost
+    /// applies the same rates to the same breakdown, so API-billed rows show
+    /// charged cost == list-price equivalent.
     public static func price(tokens: TokenBreakdown, entry: ModelCatalog.Entry) -> Double {
         var usd = (Double(tokens.input + tokens.cacheWrite) * entry.inputPerM
-                 + Double(tokens.output) * entry.outputPerM) / 1_000_000
+                 + Double(tokens.output + tokens.reasoning) * entry.outputPerM) / 1_000_000
         if let cacheRate = entry.cacheReadPerM {
             usd += Double(tokens.cacheRead) * cacheRate / 1_000_000
         }

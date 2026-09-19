@@ -273,13 +273,23 @@ def parse_gemini(body, path):
         rest = path.split("/models/", 1)[1]
         model = rest.split(":", 1)[0]
     def apply(meta):
-        cached = int(meta.get("cachedContentTokenCount") or 0)
-        gross = int(meta.get("promptTokenCount") or 0)
+        # snake_case vs camelCase are alternate spellings — max, never sum
+        # (mirrors GeminiUsage.breakdown in core).
+        def pick(*keys):
+            return max(int(meta.get(k) or 0) for k in keys)
+        cached = pick("cached_content_token_count", "cachedContentTokenCount")
+        gross = pick("prompt_token_count", "promptTokenCount")
         # promptTokenCount INCLUDES cached — store NET (already-net kept).
         tokens["input"] = gross - cached if cached <= gross else gross
-        tokens["output"] = int(meta.get("candidatesTokenCount") or 0)
-        tokens["reasoning"] = int(meta.get("thoughtsTokenCount") or 0)
+        tokens["output"] = pick("candidates_token_count", "candidatesTokenCount")
+        tokens["reasoning"] = pick("thoughts_token_count", "thoughtsTokenCount")
         tokens["cacheRead"] = cached
+        if sum(tokens.values()) == 0:
+            # Bare-total payloads (some channels omit components) —
+            # attribute the whole as input, like GeminiUsage.
+            total = pick("total_token_count", "totalTokenCount")
+            if total > 0:
+                tokens["input"] += total
     stripped = body.lstrip()
     try:
         if stripped.startswith(b"data:"):

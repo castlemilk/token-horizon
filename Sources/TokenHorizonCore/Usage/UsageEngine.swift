@@ -80,6 +80,13 @@ public final class UsageEngine {
 
         public var total: Int { input + output + cached + reasoning }
         public var displayTokens: Int { input + output }
+        /// NET figures for TokenBreakdown storage (see Models.swift):
+        /// cached/reasoning arrive as SUBSETS of the gross counters, so the
+        /// breakdown subtracts them — thinking tokens then count exactly
+        /// once in breakdown.total (meters do the same subtraction on the
+        /// wire). Already-net payloads (subset > gross) are kept as-is.
+        public var netInput: Int { cached <= input ? input - cached : input }
+        public var netOutput: Int { reasoning <= output ? output - reasoning : output }
 
         public static func >= (l: CodexWatermark, r: CodexWatermark) -> Bool {
             l.input >= r.input && l.output >= r.output && l.cached >= r.cached && l.reasoning >= r.reasoning
@@ -712,14 +719,14 @@ public final class UsageEngine {
                         }
                         if delta.displayTokens > 0 {
                             st.allTokens += delta.displayTokens
-                            st.breakdown.input += delta.input
-                            st.breakdown.output += delta.output
+                            st.breakdown.input += delta.netInput
+                            st.breakdown.output += delta.netOutput
                             st.breakdown.reasoning += delta.reasoning
                             st.breakdown.cacheRead += delta.cached
                             var entry = st.buckets[parsed.hour] ?? BucketEntry()
                             entry.tokens += delta.displayTokens
-                            entry.breakdown.input += delta.input
-                            entry.breakdown.output += delta.output
+                            entry.breakdown.input += delta.netInput
+                            entry.breakdown.output += delta.netOutput
                             entry.breakdown.reasoning += delta.reasoning
                             entry.breakdown.cacheRead += delta.cached
                             st.buckets[parsed.hour] = entry

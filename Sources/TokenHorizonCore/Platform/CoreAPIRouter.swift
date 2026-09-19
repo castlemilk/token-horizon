@@ -237,6 +237,7 @@ public final class CoreAPIRouter {
                 // MITM-captured events get the same reactive attribution
                 // ladder as point-metered ones.
                 AttributionScheduler.shared.note(events: events)
+                CloudSync.shared.noteActivity()
                 return Self.json(["inserted": events.count, "total": (try? store.count()) ?? -1])
             } catch {
                 return Self.json(["error": "insert failed: \(error)"], status: 500)
@@ -687,6 +688,56 @@ public final class CoreAPIRouter {
             guard let store = usageStore else { return Self.json(["error": "usage store unavailable"], status: 503) }
             let report = CloudSync.shared.sync(store: store)
             return Self.json(["report": Self.encode(report)])
+
+        // Cloud sign-in handoff: the UI completes the OAuth dance, then
+        // saves the resulting identity HERE so the daemon keeps syncing as
+        // that user with the UI closed (reapplied at boot from disk).
+        case ("GET", "/cloud/identity"):
+            let id = CloudIdentityStore.load()
+            var out: [String: Any] = [
+                "signed_in": id != nil,
+                "sync_enabled": CloudSync.shared.baseURL != nil,
+            ]
+            out["handle"] = id?.handle ?? NSNull()
+            out["user_id"] = id?.userID ?? NSNull()
+            out["team"] = id?.team ?? NSNull()
+            out["display_name"] = id?.displayName ?? NSNull()
+            out["avatar_url"] = id?.avatarURL ?? NSNull()
+            out["base_url"] = id?.baseURL ?? NSNull()
+            out["saved_at"] = id?.savedAt ?? NSNull()
+            return Self.json(out)
+
+        case ("POST", "/cloud/identity"):
+            guard let obj = try? JSONSerialization.jsonObject(with: request.body) as? [String: Any],
+                  let handle = obj["handle"] as? String, !handle.isEmpty,
+                  let userID = obj["user_id"] as? String, !userID.isEmpty else {
+                return Self.json(["error": "body must be {base_url, handle, user_id, team?, display_name?, avatar_url?}"], status: 400)
+            }
+            let base = (obj["base_url"] as? String ?? "").trimmingCharacters(in: CharacterSet(charactersIn: "/ "))
+            if !base.isEmpty, URL(string: base) == nil {
+                return Self.json(["error": "base_url is not a valid URL"], status: 400)
+            }
+            let identity = CloudIdentity(
+                baseURL: base,
+                handle: handle,
+                userID: userID,
+                team: obj["team"] as? String ?? "",
+                displayName: obj["display_name"] as? String ?? "",
+                avatarURL: obj["avatar_url"] as? String ?? "")
+            do {
+                try CloudIdentityStore.save(identity)
+            } catch {
+                return Self.json(["error": "persist failed: \(error)"], status: 500)
+            }
+            CloudIdentityStore.apply(identity, to: CloudSync.shared)
+            CloudSync.shared.noteActivity()   // push pending rows as the new user
+            return Self.json(["ok": true, "signed_in": true,
+                              "sync_enabled": CloudSync.shared.baseURL != nil])
+
+        case ("DELETE", "/cloud/identity"):
+            CloudIdentityStore.clear()
+            CloudSync.shared.clearIdentity()
+            return Self.json(["ok": true, "signed_in": false])
 
         case ("GET", "/timeline"):
             guard let store = usageStore else { return Self.json(["error": "usage store unavailable"], status: 503) }

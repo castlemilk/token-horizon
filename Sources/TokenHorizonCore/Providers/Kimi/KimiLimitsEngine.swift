@@ -62,9 +62,21 @@ public final class KimiLimitsEngine: LimitsEngine, Meterable {
                  resetsAt: resetsAt, detail: detail)
     }
 
+    /// Last-good quota rows: a transient failure (network blip, 429, the
+    /// gateway omitting a window at exhaustion) must not blank the meters —
+    /// serve the previous rows for a grace period. Credentials gone =
+    /// deliberate (signed out): drop immediately.
+    private static let lastGoodLock = NSLock()
+    private static var lastGood: (rows: [ProviderLimit], at: Date)?
+    /// Internal (not private) so tests can shrink the grace.
+    static var lastGoodGrace: TimeInterval = 20 * 60
+
     public static func fetch() -> [ProviderLimit] {
         let profiles = readAllCredentials()
-        guard !profiles.isEmpty else { return [] }
+        guard !profiles.isEmpty else {
+            lastGoodLock.lock(); lastGood = nil; lastGoodLock.unlock()
+            return []
+        }
         let multi = profiles.count > 1
         var out: [ProviderLimit] = []
         for (index, var creds) in profiles.enumerated() {
@@ -78,6 +90,16 @@ public final class KimiLimitsEngine: LimitsEngine, Meterable {
             }
             out += fetchUsages(token: creds.accessToken,
                                profile: multi ? profileLabel(for: creds.path) : "")
+        }
+        if !out.isEmpty {
+            lastGoodLock.lock(); lastGood = (out, Date()); lastGoodLock.unlock()
+            return out
+        }
+        lastGoodLock.lock()
+        let stale = lastGood
+        lastGoodLock.unlock()
+        if let stale, Date().timeIntervalSince(stale.at) < lastGoodGrace {
+            return stale.rows
         }
         return out
     }
@@ -112,12 +134,27 @@ public final class KimiLimitsEngine: LimitsEngine, Meterable {
         req.setValue("application/json", forHTTPHeaderField: "Accept")
         req.setValue("OpenUsage", forHTTPHeaderField: "User-Agent")
 
-        let r = HTTP.send(req, timeout: 8)
-        guard (200..<300).contains(r.status), let data = r.data,
-              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return [] }
+        // Retry ×3: the gateway intermittently omits windows or 429s at the
+        // exact moment a window exhausts (same failure class as alibaba's
+        // missing 5h) — a single-shot read blanks the meter right when the
+        // user most wants to see it.
+        var obj: [String: Any]?
+        for attempt in 0..<3 {
+            let r = HTTP.send(req, timeout: 8)
+            if (200..<300).contains(r.status), let data = r.data,
+               let parsed = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                obj = parsed
+                break
+            }
+            if attempt < 2 { Thread.sleep(forTimeInterval: 0.4) }
+        }
+        guard let obj else { return [] }
+        return rowsFromUsagesPayload(obj, providerName: profile.isEmpty ? "kimi" : "kimi (\(profile))")
+    }
 
+    /// Pure payload → rows mapping (network-free, unit-tested).
+    static func rowsFromUsagesPayload(_ obj: [String: Any], providerName: String) -> [ProviderLimit] {
         var limits: [ProviderLimit] = []
-        let providerName = profile.isEmpty ? "kimi" : "kimi (\(profile))"
         if let usage = obj["usage"] as? [String: Any],
            let limit = parseQuota(usage, "limit"),
            let used = parseQuota(usage, "used") {
@@ -154,6 +191,29 @@ public final class KimiLimitsEngine: LimitsEngine, Meterable {
                     resetsAt: parseDate(detail["resetTime"] as? String),
                     detail: ""))   // ring carries the number; no redundant quota text
             }
+        }
+        // Fallback synthesis: when the gateway omits the limits[] window
+        // entry (observed at window exhaustion), the `usages.limit_5h` /
+        // `limit_7d` summary block still reports the window. used_ratio is a
+        // 0-1 fraction (defensively accept 0-100).
+        func ratioPercent(_ w: [String: Any]) -> Double? {
+            guard let ratio = parseQuota(w, "used_ratio") else { return nil }
+            return ratio <= 1 ? ratio * 100 : ratio
+        }
+        let usages = obj["usages"] as? [String: Any]
+        if !limits.contains(where: { $0.label == "week" }),
+           let w = usages?["limit_7d"] as? [String: Any],
+           let pct = ratioPercent(w) {
+            limits.append(makeLimit(provider: providerName, label: "week",
+                                    usedPercent: pct,
+                                    resetsAt: parseDate(w["reset_time"] as? String)))
+        }
+        if !limits.contains(where: { $0.label.hasSuffix("h") || $0.label.hasSuffix("m") }),
+           let w = usages?["limit_5h"] as? [String: Any],
+           let pct = ratioPercent(w) {
+            limits.append(makeLimit(provider: providerName, label: "5h",
+                                    usedPercent: pct,
+                                    resetsAt: parseDate(w["reset_time"] as? String)))
         }
         return limits
     }
