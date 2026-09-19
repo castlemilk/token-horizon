@@ -137,9 +137,18 @@ final class LocalServer {
 
     /// Auxiliary routes (catalog export, analytics) extracted from the main
     /// router to keep its cyclomatic/body-length budgets intact.
-    static func sideResponse(method: String, route: String, path: String,
+    static func sideResponse(method: String, route: String, path: String, body: Data,
                              server: LocalServer, json: (Any, Int) -> Data) -> Data? {
+        if let widgetWindow = widgetWindowResponse(method: method, route: route, path: path,
+                                                   body: body, json: json) {
+            return widgetWindow
+        }
         switch (method, route) {
+        case ("GET", "/widget"):
+            let payload = WidgetBridge.shared.data()
+            let header = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nCache-Control: no-store\r\nContent-Length: \(payload.count)\r\nConnection: close\r\n\r\n"
+            return Data(header.utf8) + payload
+
         case ("GET", "/models/catalog"), ("GET", "/catalog"):
             let payload = ModelCatalogExport.data()
             let header = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\nCache-Control: no-store\r\nContent-Length: \(payload.count)\r\nConnection: close\r\n\r\n"
@@ -198,6 +207,26 @@ final class LocalServer {
         }
     }
 
+    /// Widget chart-window toggle (`/widget/window`), used by scripts and the
+    /// deep-link handler's twin. Extracted to keep `handle` under its lint
+    /// budgets. Accepts `?value=` or a form body.
+    static func widgetWindowResponse(method: String, route: String, path: String, body: Data,
+                                     json: (Any, Int) -> Data) -> Data? {
+        guard route == "/widget/window", method == "POST" || method == "GET" else { return nil }
+        let components = URLComponents(string: "http://localhost\(path.hasPrefix("/") ? path : "/" + path)")
+        let value = components?.queryItems?.first(where: { $0.name == "value" })?.value
+            ?? parseForm(body)["value"]
+        guard let value, WidgetWindow(rawValue: value) != nil else {
+            return json(["error": "invalid window, use hours/days/weeks/months/years"], 400)
+        }
+        // The preference setter posts the change notification AppDelegate
+        // observes, which force-republishes the widget snapshot.
+        var prefs = SettingsStore.shared.widgetPreferences
+        prefs.window = value
+        SettingsStore.shared.widgetPreferences = prefs
+        return json(["ok": true, "window": value], 200)
+    }
+
     /// Web catalog export for the dashboard explorer / refresh script.
     /// Extracted from the router so `handle` stays under its lint budgets.
     static func handle(method: String, path: String, body: Data, server: LocalServer) -> Data {
@@ -221,7 +250,7 @@ final class LocalServer {
             return Int32(s.trimmingCharacters(in: .whitespaces))
         }
 
-        if let side = sideResponse(method: method, route: route, path: path,
+        if let side = sideResponse(method: method, route: route, path: path, body: body,
                                    server: server, json: json) {
             return side
         }

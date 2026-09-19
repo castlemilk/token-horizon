@@ -101,8 +101,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             let s = SystemStats.snapshot()
             DispatchQueue.main.async { self.model.sys = s }
         }
+        publishWidget()
+        NotificationCenter.default.addObserver(forName: .tokenHorizonWidgetDidChange, object: nil, queue: .main) { [weak self] _ in
+            self?.publishWidget(force: true)
+        }
         refresh()
         refreshHistory()
+        refreshTrends()
         refreshOllama()
         refreshMLX()
         KimiLimitsEngine.shared.refreshIfDue()
@@ -331,6 +336,47 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         dashboardWindow = nil
     }
 
+    private func publishWidget(force: Bool = false) {
+        let usage = model.usage
+        let history = model.historyPoints
+        let hourly = model.hourTrendPoints
+        var limits = usage.limits
+        if model.planLimits.contains(where: { $0.provider == "codex" }) {
+            limits.removeAll { $0.provider == "codex" }
+        }
+        limits += model.planLimits + model.kimiLimits
+        WidgetBridge.shared.publish(usage: usage, history: history, hourly: hourly,
+                                    limits: limits, force: force)
+    }
+
+    func application(_ application: NSApplication, open urls: [URL]) {
+        for url in urls where url.scheme == "tokenhorizon" {
+            switch url.host {
+            case "dashboard":
+                openDashboard()
+            case "window":
+                // tokenhorizon://window?value=hours|days|weeks — same effect as
+                // the widget picker's link.
+                guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+                      let value = components.queryItems?.first(where: { $0.name == "value" })?.value,
+                      let window = WidgetSnapshot.windowValue(from: value) else { continue }
+                var prefs = SettingsStore.shared.widgetPreferences
+                prefs.window = window
+                SettingsStore.shared.widgetPreferences = prefs
+            case "page":
+                // tokenhorizon://page?value=next|prev|<index> — carousel nav.
+                guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+                      let value = components.queryItems?.first(where: { $0.name == "value" })?.value else { continue }
+                var prefs = SettingsStore.shared.widgetPreferences
+                guard let target = WidgetSnapshot.pageValue(from: value, current: prefs.page) else { continue }
+                prefs.page = target
+                SettingsStore.shared.widgetPreferences = prefs
+            default:
+                continue
+            }
+        }
+    }
+
     func refresh() {
         refreshHeavy()
     }
@@ -345,6 +391,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             let containers = DockerObserver.sampleContainers()
             DispatchQueue.main.async {
                 self.model.usage = usage
+                self.publishWidget()
                 self.model.storeProcesses(all: procs.all, byCPU: procs.byCPU, byMem: procs.byMem,
                                           byDisk: procs.byDisk, byNet: procs.byNet)
                 self.model.dockerContainers = containers
@@ -381,8 +428,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         DispatchQueue.global(qos: .utility).async { [weak self] in
             guard let self else { return }
             let points = engine.trendHistory(window: window)
+            // Hourly series feeds the widget's 24H chart window; fetched on the
+            // 60s trends tick (trendHistory persists to disk — keep it off the
+            // 5s heavy tick).
+            let hourly = engine.trendHistory(window: .day)
             DispatchQueue.main.async {
                 self.model.trendPoints = points
+                self.model.hourTrendPoints = hourly
+                // Republish so the widget's 1H window reflects the fresh
+                // hourly series on the first trends tick after launch.
+                self.publishWidget()
             }
         }
     }

@@ -48,7 +48,11 @@ If `/health` reports a different commit than `git rev-parse --short HEAD`, the r
 | **Bottom statusline** | removed | — |
 | **Dashboard window** | ⤢ button in any popout | Resizable window, all tabs |
 
-Tabs: **ACTIVITY** (CPU, memory, disk I/O, and network sparklines; top processes by CPU/RSS/disk/network) · **MLX** (independent MLX/Ollama runner observability: CPU, memory, disk rates, 5M/1H/6H/24H bounded rollups, and measured tok/s when available) · **TOKENS** (today/all-time, window pills 1D–1Y + stacked provider chart, 365-day heatmap with KPI cards, BY TOOL, MODELS incl. free vs pay-go, PLAN LIMITS, recent sessions) · **LEADERBOARD** (team & multi-account rankings across Today/7D/All-Time/Streak periods, edge-cached Cloudflare Worker+R2 backend with TTL/change-gated sync — Google Sheets stays as legacy fallback — and live SVG/Markdown share card previews) · **SHELLS** (recent zsh commands) · **⚙ SETTINGS** (Alibaba cookie editor + Google Sheets leaderboard config + provider notes).
+Tabs: **ACTIVITY** (CPU, memory, disk I/O, and network sparklines; top processes by CPU/RSS/disk/network) · **MLX** (independent MLX/Ollama runner observability: CPU, memory, disk rates, 5M/1H/6H/24H bounded rollups, and measured tok/s when available) · **TOKENS** (today/all-time, window pills 1D–1Y + stacked provider chart, 365-day heatmap with KPI cards, BY TOOL, MODELS incl. free vs pay-go, PLAN LIMITS, recent sessions) · **LEADERBOARD** (team & multi-account rankings across Today/7D/All-Time/Streak periods, edge-cached Cloudflare Worker+R2 backend with TTL/change-gated sync — Google Sheets stays as legacy fallback — and live SVG/Markdown share card previews) · **SHELLS** (recent zsh commands) · **⚙ SETTINGS** (Desktop widget configuration with live preview, Alibaba cookie editor + Google Sheets leaderboard config + provider notes).
+
+### Desktop widget
+
+`Widget/` ships a native WidgetKit extension (macOS 14+) embedded at build time by `scripts/make-widget.sh`. Add it from the desktop's **Edit Widgets** gallery in small/medium/large. The widget has a 3-page carousel (‹ ›): **usage** (token total, per-provider stacked bars, compressed Σ/⌀/peak stats, provider legend with brand marks), **plan limits** (usage bars per provider with reset countdowns), and **plans & resets** (soonest-expiring callout plus expiry-sorted rows, urgency-colored <24h/<48h). The chart carries a segmented **1H · 1D · 1W · 1M · 1Y** picker — 24 hourly bars, 7 daily, 17 weekly, 30 daily, 12 monthly — and the GitHub-style heatmap always matches the selected window (12×2 / 7×1 / 17×7 / 15×2 / 6×2 cells). Configure everything in ⚙ SETTINGS → Desktop widget (enable, period, accent, show cost/limits/chart) with a live preview; the app publishes a versioned snapshot to the extension via `GET /widget`. Widget taps are `tokenhorizon://` deep links (window/page), so the app owns the state and the widget, preview and app always agree.
 
 ## Performance Stats
 
@@ -139,6 +143,8 @@ The local script uses an ad-hoc signature for development; published releases ar
 | `GET /proxy/stats?provider=&model=&hours=` | gateway efficiency stats (TTFT, tok/s, cache-hit, tool-call, retry, errors) |
 | `GET /proxy/config` | gateway port, upstream hosts, trace storage bounds |
 | `GET /health` | liveness + version |
+| `GET /widget` | versioned desktop-widget snapshot (hourly/days/weeks/months stacks, heatmap, limits, prefs) |
+| `POST /widget/window?value=hours\|days\|weeks\|months\|years` | set the widget chart window (same path as the widget's deep links) |
 | `GET /metrics` | Prometheus/OpenTelemetry metrics text |
 
 ## MCP server

@@ -70,7 +70,12 @@ struct ProviderLogoView: View {
         if p.contains("opencode") || p.contains("muse") || m.contains("muse") || m.contains("x-preview") {
             return Color(red: 0.06, green: 0.65, blue: 0.42)
         }
-        return DashboardTabs.toolColor(p).opacity(0.85)
+        // Local runtimes keep the DashboardTabs.toolColor teal, inlined here so
+        // this file stays dependency-free and reusable in the widget extension.
+        if p.contains("mlx") || p.contains("localllm") {
+            return Color(red: 0.18, green: 0.82, blue: 0.72)
+        }
+        return .gray.opacity(0.85)
     }
 
     @ViewBuilder

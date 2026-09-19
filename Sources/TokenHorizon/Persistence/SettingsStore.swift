@@ -5,6 +5,7 @@ import os
 private let settingsLog = Logger(subsystem: "com.tokenhorizon.app", category: "settings")
 
 extension Notification.Name {
+    static let tokenHorizonWidgetDidChange = Notification.Name("tokenHorizonWidgetDidChange")
     static let tokenHorizonSurfaceDidChange = Notification.Name("tokenHorizonSurfaceDidChange")
 }
 
@@ -50,6 +51,18 @@ final class SettingsStore {
     private var _leaderboardSharePrompts: Bool = false
     private var _surfaceMode: String = SurfaceMode.auto.rawValue
     private var _showTrayIcon: Bool = false
+    private var _widgetPreferences = WidgetPreferences()
+
+    var widgetPreferences: WidgetPreferences {
+        get { lock.lock(); defer { lock.unlock() }; return _widgetPreferences }
+        set {
+            lock.lock()
+            _widgetPreferences = newValue.normalized
+            saveLocked()
+            lock.unlock()
+            NotificationCenter.default.post(name: .tokenHorizonWidgetDidChange, object: nil)
+        }
+    }
 
     /// Unknown stored values fall back to auto (forward-compat).
     var surfaceMode: SurfaceMode {
@@ -286,7 +299,10 @@ final class SettingsStore {
             "leaderboardShareHardware": _leaderboardShareHardware,
             "leaderboardSharePrompts": _leaderboardSharePrompts,
             "surfaceMode": _surfaceMode,
-            "showTrayIcon": _showTrayIcon
+            "showTrayIcon": _showTrayIcon,
+            "widgetPreferences": (try? JSONEncoder().encode(_widgetPreferences)).flatMap {
+                try? JSONSerialization.jsonObject(with: $0)
+            } ?? [:]
         ]
         if let data = try? JSONSerialization.data(withJSONObject: payload) {
             try? data.write(to: URL(fileURLWithPath: path))
@@ -317,6 +333,11 @@ final class SettingsStore {
 
         if let data = FileManager.default.contents(atPath: path),
            let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            if let widget = obj["widgetPreferences"],
+               let data = try? JSONSerialization.data(withJSONObject: widget),
+               let preferences = try? JSONDecoder().decode(WidgetPreferences.self, from: data) {
+                _widgetPreferences = preferences.normalized
+            }
             c = obj["alibabaCookie"] as? String ?? ""
             if let n = obj["notifyOnLimitRefresh"] as? Bool {
                 notify = n

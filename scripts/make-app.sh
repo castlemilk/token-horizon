@@ -22,6 +22,20 @@ VERSION="${MARKETING_VERSION:-0.3.5}"
 BUILD_NUMBER="${CURRENT_PROJECT_VERSION:-8}"
 SIGN_IDENTITY="${SIGN_IDENTITY:-}"
 
+# Never run this script via sudo: it cannot bypass macOS App Management
+# (TCC) protection on /Applications, and a root build leaves root-owned
+# files in .build/ + TokenHorizon.app that break the next normal build.
+if [ "$(id -u)" -eq 0 ] && [ -z "${SKIP_INSTALL:-}" ]; then
+    CONSOLE_USER=$(stat -f%Su /dev/console 2>/dev/null || echo "$USER")
+    echo "FATAL: do not run make-app.sh with sudo."
+    echo "  sudo does not bypass TCC — grant your terminal 'App Management'"
+    echo "  (System Settings → Privacy & Security → App Management) instead."
+    echo "  First repair the root-owned build artifacts this run created:"
+    echo "    sudo chown -R ${CONSOLE_USER}:staff .build TokenHorizon.app"
+    echo "  Then re-run WITHOUT sudo:  ./scripts/make-app.sh"
+    exit 1
+fi
+
 swift build -c release
 
 # Gateway sidecar (portable Go binary, supervised by the app at runtime).
@@ -71,6 +85,10 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleShortVersionString</key><string>${VERSION}</string>
     <key>CFBundleVersion</key><string>${BUILD_NUMBER}</string>
+    <key>CFBundleURLTypes</key><array><dict>
+        <key>CFBundleURLName</key><string>Token Horizon Dashboard</string>
+        <key>CFBundleURLSchemes</key><array><string>tokenhorizon</string></array>
+    </dict></array>
     <key>LSUIElement</key><true/>
     <key>NSHighResolutionCapable</key><true/>
     <key>THGitSHA</key><string>${GIT_SHA}</string>
@@ -79,6 +97,8 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 printf 'APPL????' > "$APP/Contents/PkgInfo"
+
+MARKETING_VERSION="$VERSION" CURRENT_PROJECT_VERSION="$BUILD_NUMBER" SIGN_IDENTITY="$SIGN_IDENTITY" bash scripts/make-widget.sh "$APP"
 
 if [ -n "$SIGN_IDENTITY" ]; then
     # Inside-out Developer ID signing: nested binaries first, then the bundle,
@@ -102,7 +122,23 @@ fi
 # manual launch there can never serve stale code again. SKIP_INSTALL=1
 # (release packaging) builds the bundle in place without touching /Applications.
 if [ -z "${SKIP_INSTALL:-}" ]; then
-    ditto "$APP" "$INSTALLED"
+    if ! ditto "$APP" "$INSTALLED" 2>/dev/null; then
+        echo "direct write to $INSTALLED blocked by macOS App Management (TCC);"
+        echo "trying Finder-assisted replacement (approve the Finder prompt if shown)…"
+        if [ -d "$INSTALLED" ] && osascript -e 'tell application "Finder" to delete POSIX file "'"$INSTALLED"'"' >/dev/null 2>&1; then
+            if ! ditto "$APP" "$INSTALLED"; then
+                echo "FATAL: ditto still failed after Finder moved the old bundle to Trash."
+                echo "  The previous app is in the Trash — drag it back to /Applications to recover."
+                exit 1
+            fi
+        else
+            echo "FATAL: could not write $INSTALLED (macOS App Management / TCC)."
+            echo "  sudo does NOT bypass this. Either:"
+            echo "    System Settings → Privacy & Security → App Management → enable your terminal"
+            echo "  or delete /Applications/TokenHorizon.app in Finder, then re-run ./scripts/make-app.sh"
+            exit 1
+        fi
+    fi
 fi
 # Supervised launch via the app's own agent manager (portable — needs no repo
 # scripts at runtime): ensures the LaunchAgent (crash auto-recovery + snapshotted

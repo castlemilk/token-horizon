@@ -29,6 +29,7 @@
     <a href="#install">Install</a>
     <a href="#panel">The panel</a>
     <span class="group">Data</span>
+    <a href="#widget">Desktop widget</a>
     <a href="#usage">Usage tracking</a>
     <a href="#limits">Plan limits</a>
     <a href="#catalog">Model catalog &amp; plans</a>
@@ -68,6 +69,9 @@ brew install --cask token-horizon</code></pre>
       <tr><td><strong>Shells</strong></td><td>Recent shell execution events captured by the zsh hooks.</td></tr>
       <tr><td><strong>Settings</strong></td><td>Surface mode (auto/notch/tray), sharing rules, history persistence, start-at-login, and the serving build stamp.</td></tr>
     </table>
+
+    <h2 id="widget">Desktop widget</h2>
+    <p>The app ships a native WidgetKit extension (macOS 14+), embedded at build time by <code>scripts/make-widget.sh</code>. Add it from the desktop's <strong>Edit Widgets</strong> gallery in small, medium or large. It has a 3-page carousel — usage, plan limits, plans &amp; resets — and a segmented time-window picker <strong>1H · 1D · 1W · 1M · 1Y</strong> (24 hourly bars, 7 daily, 17 weekly, 30 daily, 12 monthly). The GitHub-style activity heatmap always matches the selected window, and the plans page spotlights what expires soonest with urgency colors (&lt;24h red, &lt;48h orange). Configure it in <code>Settings → Desktop widget</code> (enable, period, accent, show cost/limits/chart) with a live preview; every control writes the same app-owned preference the widget reads, so preview, widget and app never disagree. The extension consumes the versioned snapshot at <code>GET /widget</code> and falls back to its last cached copy when the app is down.</p>
 
     <h2 id="usage">Usage tracking</h2>
     <p>Parsers read the tools' own session data on your machine:</p>
@@ -124,6 +128,7 @@ brew install --cask token-horizon</code></pre>
       <tr><td><code>GET /processes</code> · <code>/process?pid=</code> · <code>/docker</code></td><td>Top processes, deep PID inspection, containers.</td></tr>
       <tr><td><code>GET /events?limit=</code> · <code>POST /event</code></td><td>Shell events (zsh hooks).</td></tr>
       <tr><td><code>GET /metrics</code></td><td>Prometheus text (OTel meter).</td></tr>
+      <tr><td><code>GET /widget</code> · <code>POST /widget/window?value=</code></td><td>Desktop-widget snapshot (v5 stacks + heatmap + limits) · set the chart window.</td></tr>
       <tr><td><code>GET /proxy/config</code> · <code>GET /traces</code></td><td>Gateway sidecar config · captured traces.</td></tr>
       <tr><td><code>POST /cache/reset</code> · <code>GET /cache</code></td><td>Reset / inspect the durable cache.</td></tr>
     </table>

@@ -2350,12 +2350,79 @@ struct DashboardTabs: View {
     }
 
     private var settingsTab: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            sectionLabel("ALIBABA TOKEN PLAN — COOKIE")
+        VStack(alignment: .leading, spacing: 14) {
+            WidgetSettingsView(model: model)
+            settingsCard("Surface", icon: "macwindow") { surfaceSettings }
+            settingsCard("Startup & notifications", icon: "power") {
+                startupSettings
+                Divider().overlay(Color.white.opacity(0.08))
+                notificationSettings
+            }
+            settingsCard("History & cache", icon: "externaldrive") { cacheSettings }
+            settingsCard("Provider credentials", icon: "key") {
+                DisclosureGroup("Alibaba token plan cookie") {
+                    cookieSettings.padding(.top, 10)
+                }
+                Divider().overlay(Color.white.opacity(0.08))
+                DisclosureGroup("Claude accounts") {
+                    claudeAccountSettings.padding(.top, 10)
+                }
+                Divider().overlay(Color.white.opacity(0.08))
+                providerDiscoverySettings
+            }
+            settingsCard("Leaderboard", icon: "person.crop.circle") {
+                leaderboardProfileSettings
+                Divider().overlay(Color.white.opacity(0.08))
+                DisclosureGroup("Publishing & sync") {
+                    leaderboardSyncSettings.padding(.top, 10)
+                }
+            }
+            settingsCard("App build", icon: "info.circle") {
+                MonospacedText(text: "v\(BuildInfo.display) — this exact build serves :8765; if these differ from `git rev-parse --short HEAD`, relaunch via ./scripts/make-app.sh", color: .secondary, size: 11)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(.vertical, 4)
+        .onAppear {
+            cookieDraft = SettingsStore.shared.getCookie()
+            notifyDraft = SettingsStore.shared.notifyOnLimitRefresh
+            surfaceDraft = SettingsStore.shared.surfaceMode
+            trayDraft = SettingsStore.shared.showTrayIcon
+            launchDraft = SettingsStore.shared.launchAtLogin
+            persistenceDraft = SettingsStore.shared.historyPersistenceEnabled
+            leaderboardHandleDraft = SettingsStore.shared.leaderboardHandle
+            leaderboardTeamDraft = SettingsStore.shared.leaderboardTeam
+            leaderboardShareCostDraft = SettingsStore.shared.leaderboardShareCost
+            leaderboardShareHwDraft = SettingsStore.shared.leaderboardShareHardware
+            leaderboardSharePromptsDraft = SettingsStore.shared.leaderboardSharePrompts
+            leaderboardCloudDraft = SettingsStore.shared.leaderboardCloudURL
+            leaderboardSheetsDraft = SettingsStore.shared.leaderboardSheetsURL
+            leaderboardAutoSyncDraft = SettingsStore.shared.leaderboardAutoSync
+        }
+    }
+
+    private func settingsCard<Content: View>(_ title: String, icon: String, @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Label(title, systemImage: icon)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(.white.opacity(0.95))
+            content()
+        }
+        .font(.system(size: 12))
+        .foregroundStyle(.white.opacity(0.9))
+        .tint(.green)
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 12).fill(Color.white.opacity(0.045)))
+        .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Color.white.opacity(0.1)))
+    }
+
+    private var cookieSettings: some View {
+        VStack(alignment: .leading, spacing: 12) {
             Text("Paste Cookie header from bailian-singapore-cs.alibabacloud.com tokenplan/personal/api/v2/usage request.")
-                .font(.system(size: 8, design: .monospaced)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             TextEditor(text: $cookieDraft)
-                .font(.system(size: 8, design: .monospaced))
+                .font(.system(size: 11, design: .monospaced))
                 .scrollContentBackground(.hidden)
                 .foregroundStyle(.white.opacity(0.85))
                 .padding(6).frame(height: 90)
@@ -2367,8 +2434,8 @@ struct DashboardTabs: View {
                     NotificationCenter.default.post(name: .refreshTrends, object: nil)
                 } label: {
                     Text("Save & refresh")
-                        .font(.system(size: 9, weight: .heavy, design: .monospaced))
-                        .foregroundStyle(.black).padding(.horizontal, 10).padding(.vertical, 4)
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(.black).padding(.horizontal, 12).padding(.vertical, 6)
                         .background(Capsule().fill(Color.white))
                 }
                 .buttonStyle(.plain)
@@ -2379,84 +2446,88 @@ struct DashboardTabs: View {
                     MonospacedText(text: "fetching…", color: .secondary, size: 9)
                 }
             }
-            sectionLabel("NOTIFICATIONS")
-            Toggle(isOn: Binding(
-                get: { notifyDraft },
-                set: {
-                    notifyDraft = $0
-                    SettingsStore.shared.notifyOnLimitRefresh = $0
-                }
-            )) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Notify when token limits refresh")
-                        .font(.system(size: 9, weight: .medium, design: .monospaced))
-                        .foregroundStyle(.white.opacity(0.9))
-                    Text("Sends a system notification when a quota window resets or a rate limit clears.")
-                        .font(.system(size: 8, design: .monospaced))
-                        .foregroundStyle(.secondary)
-                }
-            }
-            .toggleStyle(.switch)
-            .tint(.green)
+        }
+    }
 
-            sectionLabel("SURFACE")
-            VStack(alignment: .leading, spacing: 6) {
-                Picker("Surface", selection: Binding(
-                    get: { surfaceDraft },
-                    set: {
-                        surfaceDraft = $0
-                        SettingsStore.shared.surfaceMode = $0
-                    }
-                )) {
-                    ForEach(SurfaceMode.allCases) { mode in
-                        Text(mode.label).tag(mode)
-                    }
-                }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-                Toggle(isOn: Binding(
-                    get: { trayDraft },
-                    set: {
-                        trayDraft = $0
-                        SettingsStore.shared.showTrayIcon = $0
-                    }
-                )) {
-                    Text("Also show the menu bar item with the notch panel")
-                        .font(.system(size: 9, weight: .medium, design: .monospaced))
-                        .foregroundStyle(.white.opacity(0.9))
-                }
-                .toggleStyle(.switch)
-                .tint(.green)
-                Text("Auto uses the notch panel when a notch display is present, otherwise the menu bar. Notch also works on external displays as a floating top-center panel; menu bar shows CPU/MEM rings with the same tabs. TOKEN_HORIZON_FORCE_TRAY=1 always forces the menu bar.")
-                    .font(.system(size: 8, design: .monospaced))
+    private var notificationSettings: some View {
+        Toggle(isOn: Binding(
+            get: { notifyDraft },
+            set: {
+                notifyDraft = $0
+                SettingsStore.shared.notifyOnLimitRefresh = $0
+            }
+        )) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Notify when token limits refresh")
+                    .font(.system(size: 12, weight: .medium))
+                Text("Sends a system notification when a quota window resets or a rate limit clears.")
+                    .font(.system(size: 11))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
+        }
+        .toggleStyle(.switch)
+        .tint(.green)
+    }
 
-            sectionLabel("STARTUP")
-            Toggle(isOn: Binding(
-                get: { launchDraft },
+    private var surfaceSettings: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Picker("Surface", selection: Binding(
+                get: { surfaceDraft },
                 set: {
-                    launchDraft = $0
-                    SettingsStore.shared.launchAtLogin = $0
+                    surfaceDraft = $0
+                    SettingsStore.shared.surfaceMode = $0
                 }
             )) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Launch Token Horizon at login")
-                        .font(.system(size: 9, weight: .medium, design: .monospaced))
-                        .foregroundStyle(.white.opacity(0.9))
-                    Text("Starts the app automatically when you log in.")
-                        .font(.system(size: 8, design: .monospaced))
-                        .foregroundStyle(.secondary)
+                ForEach(SurfaceMode.allCases) { mode in
+                    Text(mode.label).tag(mode)
                 }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            Toggle(isOn: Binding(
+                get: { trayDraft },
+                set: {
+                    trayDraft = $0
+                    SettingsStore.shared.showTrayIcon = $0
+                }
+            )) {
+                Text("Also show the menu bar item with the notch panel")
+                    .font(.system(size: 12, weight: .medium))
+                    .fixedSize(horizontal: false, vertical: true)
             }
             .toggleStyle(.switch)
             .tint(.green)
+            Text("Auto uses the notch panel when a notch display is present, otherwise the menu bar. Notch also works on external displays as a floating top-center panel; menu bar shows CPU/MEM rings with the same tabs. TOKEN_HORIZON_FORCE_TRAY=1 always forces the menu bar.")
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
 
-            sectionLabel("APP BUILD")
-            MonospacedText(text: "v\(BuildInfo.display) — this exact build serves :8765; if these differ from `git rev-parse --short HEAD`, relaunch via ./scripts/make-app.sh", color: .secondary, size: 8).fixedSize(horizontal: false, vertical: true)
+    private var startupSettings: some View {
+        Toggle(isOn: Binding(
+            get: { launchDraft },
+            set: {
+                launchDraft = $0
+                SettingsStore.shared.launchAtLogin = $0
+            }
+        )) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Launch Token Horizon at login")
+                    .font(.system(size: 12, weight: .medium))
+                Text("Starts the app automatically when you log in.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .toggleStyle(.switch)
+        .tint(.green)
+    }
 
-            sectionLabel("DATA DURABILITY & CACHE")
+    private var cacheSettings: some View {
+        VStack(alignment: .leading, spacing: 12) {
             Toggle(isOn: Binding(
                 get: { persistenceDraft },
                 set: {
@@ -2464,19 +2535,19 @@ struct DashboardTabs: View {
                     SettingsStore.shared.historyPersistenceEnabled = $0
                 }
             )) {
-                VStack(alignment: .leading, spacing: 2) {
+                VStack(alignment: .leading, spacing: 4) {
                     Text("Durable disk cache & history preservation")
-                        .font(.system(size: 9, weight: .medium, design: .monospaced))
-                        .foregroundStyle(.white.opacity(0.9))
+                        .font(.system(size: 12, weight: .medium))
                     Text("Stores 370-day history, snapshots, and file offsets on disk for instant launch without cold-start delay.")
-                        .font(.system(size: 8, design: .monospaced))
+                        .font(.system(size: 11))
                         .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
             .toggleStyle(.switch)
             .tint(.green)
 
-            HStack(spacing: 10) {
+            VStack(alignment: .leading, spacing: 8) {
                 Button {
                     let res = DurableStore.shared.resetAll()
                     cacheStatusMessage = "Cleared \(res.clearedFiles) cache files (\(res.clearedBytes / 1024) KB). Rebuilding..."
@@ -2486,95 +2557,104 @@ struct DashboardTabs: View {
                     }
                 } label: {
                     Text("Reset / Rebuild History Cache")
-                        .font(.system(size: 8.5, weight: .semibold, design: .monospaced))
+                        .font(.system(size: 12, weight: .semibold))
                         .foregroundStyle(.white.opacity(0.9))
-                        .padding(.horizontal, 8).padding(.vertical, 4)
-                        .background(RoundedRectangle(cornerRadius: 4).fill(Color.red.opacity(0.25)))
-                        .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(Color.red.opacity(0.5)))
+                        .padding(.horizontal, 12).padding(.vertical, 6)
+                        .background(RoundedRectangle(cornerRadius: 6).fill(Color.red.opacity(0.25)))
+                        .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color.red.opacity(0.5)))
                 }
                 .buttonStyle(.plain)
 
                 if let msg = cacheStatusMessage {
-                    MonospacedText(text: msg, color: .orange, size: 8)
+                    MonospacedText(text: msg, color: .orange, size: 11)
+                        .fixedSize(horizontal: false, vertical: true)
                 } else {
                     let stats = DurableStore.shared.cacheStats()
-                    MonospacedText(text: "\(stats.filesCount) cached files (\(stats.totalBytes / 1024) KB)", color: .secondary, size: 8)
+                    MonospacedText(text: "\(stats.filesCount) cached files (\(stats.totalBytes / 1024) KB)", color: .secondary, size: 11)
                 }
             }
+        }
+    }
 
-            sectionLabel("CLAUDE ACCOUNTS")
+    private var claudeAccountSettings: some View {
+        VStack(alignment: .leading, spacing: 12) {
             if model.usage.claudeAccounts.isEmpty {
-                MonospacedText(text: "auto-detected from ~/.claude* profiles or macOS Keychain 'Claude Code-credentials'", color: .secondary, size: 8.5).fixedSize(horizontal: false, vertical: true)
+                MonospacedText(text: "auto-detected from ~/.claude* profiles or macOS Keychain 'Claude Code-credentials'", color: .secondary, size: 11)
+                    .fixedSize(horizontal: false, vertical: true)
             } else {
-                VStack(alignment: .leading, spacing: 6) {
+                VStack(alignment: .leading, spacing: 8) {
                     ForEach(model.usage.claudeAccounts) { acct in
-                        HStack(alignment: .top, spacing: 8) {
-                            ProviderLogoView(provider: "claude", size: 16)
-                            VStack(alignment: .leading, spacing: 2) {
+                        HStack(alignment: .top, spacing: 10) {
+                            ProviderLogoView(provider: "claude", size: 20)
+                            VStack(alignment: .leading, spacing: 6) {
+                                Text(acct.email.isEmpty ? acct.id : acct.email)
+                                    .font(.system(size: 12, weight: .semibold))
+                                    .foregroundStyle(.white.opacity(0.95))
                                 HStack(spacing: 6) {
-                                    Text(acct.email.isEmpty ? acct.id : acct.email)
-                                        .font(.system(size: 9.5, weight: .semibold, design: .monospaced))
-                                        .foregroundStyle(.white.opacity(0.95))
                                     if !acct.organizationType.isEmpty {
                                         Text(acct.organizationType)
-                                            .font(.system(size: 8, weight: .medium, design: .monospaced))
-                                            .padding(.horizontal, 4)
-                                            .padding(.vertical, 1)
+                                            .font(.system(size: 11, weight: .medium))
+                                            .padding(.horizontal, 6)
+                                            .padding(.vertical, 2)
                                             .background(Color.orange.opacity(0.2))
                                             .foregroundStyle(Color.orange)
                                             .clipShape(Capsule())
                                     }
                                     if acct.hasExtraUsageEnabled {
                                         Text("extra usage")
-                                            .font(.system(size: 7.5, design: .monospaced))
-                                            .padding(.horizontal, 4)
-                                            .padding(.vertical, 1)
+                                            .font(.system(size: 11))
+                                            .padding(.horizontal, 6)
+                                            .padding(.vertical, 2)
                                             .background(Color.green.opacity(0.2))
                                             .foregroundStyle(Color.green)
                                             .clipShape(Capsule())
                                     }
                                 }
-                                HStack(spacing: 8) {
-                                    Text(acct.configDir)
-                                        .font(.system(size: 8, design: .monospaced))
+                                Text(acct.configDir)
+                                    .font(.system(size: 11, design: .monospaced))
+                                    .foregroundStyle(.secondary)
+                                if !acct.organizationName.isEmpty && acct.organizationName != acct.email {
+                                    Text("· \(acct.organizationName)")
+                                        .font(.system(size: 11))
                                         .foregroundStyle(.secondary)
-                                    if !acct.organizationName.isEmpty && acct.organizationName != acct.email {
-                                        Text("· \(acct.organizationName)")
-                                            .font(.system(size: 8, design: .monospaced))
-                                            .foregroundStyle(.secondary.opacity(0.8))
-                                    }
                                 }
-                                HStack(spacing: 12) {
-                                    Text("Tokens: \(acct.tokensAllTimeText) (today: \(acct.tokensTodayText))")
-                                        .font(.system(size: 8, design: .monospaced))
-                                        .foregroundStyle(.white.opacity(0.7))
-                                    if acct.costAllTime > 0 {
-                                        Text("Cost: \(acct.costAllTimeText)")
-                                            .font(.system(size: 8, design: .monospaced))
-                                            .foregroundStyle(.orange.opacity(0.8))
-                                    }
+                                Text("Tokens: \(acct.tokensAllTimeText) (today: \(acct.tokensTodayText))")
+                                    .font(.system(size: 11, design: .monospaced))
+                                    .foregroundStyle(.white.opacity(0.85))
+                                if acct.costAllTime > 0 {
+                                    Text("Cost: \(acct.costAllTimeText)")
+                                        .font(.system(size: 11, design: .monospaced))
+                                        .foregroundStyle(.orange)
                                 }
                             }
-                            Spacer()
+                            .fixedSize(horizontal: false, vertical: true)
+                            Spacer(minLength: 0)
                         }
-                        .padding(6)
-                        .background(RoundedRectangle(cornerRadius: 6).fill(Color.white.opacity(0.04)))
+                        .padding(10)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(RoundedRectangle(cornerRadius: 8).fill(Color.white.opacity(0.04)))
                     }
                 }
             }
-            sectionLabel("LEADERBOARD PROFILE")
-            HStack(spacing: 8) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Handle").font(.system(size: 8, design: .monospaced)).foregroundStyle(.secondary)
-                    TextField("Username", text: $leaderboardHandleDraft)
-                        .textFieldStyle(.roundedBorder)
-                        .font(.system(size: 8.5, design: .monospaced))
-                }
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Team / Organization").font(.system(size: 8, design: .monospaced)).foregroundStyle(.secondary)
-                    TextField("Team", text: $leaderboardTeamDraft)
-                        .textFieldStyle(.roundedBorder)
-                        .font(.system(size: 8.5, design: .monospaced))
+        }
+    }
+
+    private var leaderboardProfileSettings: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(alignment: .top, spacing: 10) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Handle").font(.system(size: 11)).foregroundStyle(.secondary)
+                        TextField("Username", text: $leaderboardHandleDraft)
+                            .textFieldStyle(.roundedBorder)
+                            .font(.system(size: 12))
+                    }
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Team / Organization").font(.system(size: 11)).foregroundStyle(.secondary)
+                        TextField("Team", text: $leaderboardTeamDraft)
+                            .textFieldStyle(.roundedBorder)
+                            .font(.system(size: 12))
+                    }
                 }
                 Button {
                     SettingsStore.shared.leaderboardHandle = leaderboardHandleDraft
@@ -2582,12 +2662,11 @@ struct DashboardTabs: View {
                     LeaderboardStore.shared.syncLocal(snapshot: model.usage, history: model.historyPoints, streak: model.historyStreak)
                 } label: {
                     Text("Save")
-                        .font(.system(size: 8.5, weight: .heavy, design: .monospaced))
-                        .foregroundStyle(.black).padding(.horizontal, 10).padding(.vertical, 4)
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(.black).padding(.horizontal, 12).padding(.vertical, 6)
                         .background(Capsule().fill(Color.white))
                 }
                 .buttonStyle(.plain)
-                .padding(.top, 14)
             }
             Toggle(isOn: Binding(
                 get: { leaderboardShareCostDraft },
@@ -2597,7 +2676,9 @@ struct DashboardTabs: View {
                     LeaderboardStore.shared.syncLocal(snapshot: model.usage, history: model.historyPoints, streak: model.historyStreak)
                 }
             )) {
-                Text("Share billing / estimated cost on leaderboard").font(.system(size: 9, design: .monospaced))
+                Text("Share billing / estimated cost on leaderboard")
+                    .font(.system(size: 12))
+                    .fixedSize(horizontal: false, vertical: true)
             }.toggleStyle(.switch).tint(.green)
 
             Toggle(isOn: Binding(
@@ -2608,7 +2689,9 @@ struct DashboardTabs: View {
                     LeaderboardStore.shared.syncLocal(snapshot: model.usage, history: model.historyPoints, streak: model.historyStreak)
                 }
             )) {
-                Text("Share hardware chip name (\(SystemStats.cpuBrandString()))").font(.system(size: 9, design: .monospaced))
+                Text("Share hardware chip name (\(SystemStats.cpuBrandString()))")
+                    .font(.system(size: 12))
+                    .fixedSize(horizontal: false, vertical: true)
             }.toggleStyle(.switch).tint(.green)
 
             Toggle(isOn: Binding(
@@ -2619,21 +2702,28 @@ struct DashboardTabs: View {
                     LeaderboardStore.shared.syncLocal(snapshot: model.usage, history: model.historyPoints, streak: model.historyStreak)
                 }
             )) {
-                Text("Share prompt history / session titles (off by default)").font(.system(size: 9, design: .monospaced))
+                Text("Share prompt history / session titles (off by default)")
+                    .font(.system(size: 12))
+                    .fixedSize(horizontal: false, vertical: true)
             }.toggleStyle(.switch).tint(.green)
 
-            VStack(alignment: .leading, spacing: 2) {
+        }
+    }
+
+    private var leaderboardSyncSettings: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 10) {
                 HStack {
-                    Text("Cloudflare Edge Leaderboard URL").font(.system(size: 8, design: .monospaced)).foregroundStyle(.orange)
+                    Text("Cloudflare Edge Leaderboard URL").font(.system(size: 11)).foregroundStyle(.orange)
                     Spacer()
                     if SettingsStore.shared.leaderboardCloudConfigured {
-                        Text("● connected").font(.system(size: 7.5, weight: .bold, design: .monospaced)).foregroundStyle(.green)
+                        Text("● connected").font(.system(size: 11, weight: .bold)).foregroundStyle(.green)
                     }
                 }
-                HStack(spacing: 6) {
+                HStack(spacing: 8) {
                     TextField("https://token-horizon.dev", text: $leaderboardCloudDraft)
                         .textFieldStyle(.roundedBorder)
-                        .font(.system(size: 8.5, design: .monospaced))
+                        .font(.system(size: 12))
                         .onChange(of: leaderboardCloudDraft) { val in
                             SettingsStore.shared.leaderboardCloudURL = val
                         }
@@ -2648,13 +2738,13 @@ struct DashboardTabs: View {
                             }
                         }
                     } label: {
-                        HStack(spacing: 3) {
+                        HStack(spacing: 4) {
                             Image(systemName: "arrow.up.circle.fill")
                             Text("Publish")
                         }
-                        .font(.system(size: 8, weight: .bold, design: .monospaced))
+                        .font(.system(size: 12, weight: .semibold))
                         .foregroundStyle(.black)
-                        .padding(.horizontal, 8).padding(.vertical, 4)
+                        .padding(.horizontal, 10).padding(.vertical, 5)
                         .background(Capsule().fill(Color.cyan))
                     }
                     .buttonStyle(.plain)
@@ -2662,11 +2752,11 @@ struct DashboardTabs: View {
                 }
             }
 
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Google Spreadsheet Backend URL (Apps Script / Published Sheet CSV)").font(.system(size: 8, design: .monospaced)).foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Google Spreadsheet Backend URL (Apps Script / Published Sheet CSV)").font(.system(size: 11)).foregroundStyle(.secondary)
                 TextField("https://script.google.com/.../exec or https://docs.google.com/spreadsheets/d/...", text: $leaderboardSheetsDraft)
                     .textFieldStyle(.roundedBorder)
-                    .font(.system(size: 8.5, design: .monospaced))
+                    .font(.system(size: 12))
                     .onChange(of: leaderboardSheetsDraft) { val in
                         SettingsStore.shared.leaderboardSheetsURL = val
                     }
@@ -2679,27 +2769,24 @@ struct DashboardTabs: View {
                     SettingsStore.shared.leaderboardAutoSync = $0
                 }
             )) {
-                Text("Auto-sync leaderboard on background refresh").font(.system(size: 9, design: .monospaced))
+                Text("Auto-sync leaderboard on background refresh")
+                    .font(.system(size: 12))
+                    .fixedSize(horizontal: false, vertical: true)
             }.toggleStyle(.switch).tint(.green)
 
-            sectionLabel("GEMINI")
-            MonospacedText(text: "auto-detected from ~/.gemini*/oauth_creds.json when present", color: .secondary, size: 8.5)
-            sectionLabel("ALIBABA / GLM / MINIMAX / OPENCODE-GO")
-            MonospacedText(text: "keys read from opencode auth.json", color: .secondary, size: 8.5)
         }
-        .onAppear {
-            cookieDraft = SettingsStore.shared.getCookie()
-            notifyDraft = SettingsStore.shared.notifyOnLimitRefresh
-            launchDraft = SettingsStore.shared.launchAtLogin
-            persistenceDraft = SettingsStore.shared.historyPersistenceEnabled
-            leaderboardHandleDraft = SettingsStore.shared.leaderboardHandle
-            leaderboardTeamDraft = SettingsStore.shared.leaderboardTeam
-            leaderboardShareCostDraft = SettingsStore.shared.leaderboardShareCost
-            leaderboardShareHwDraft = SettingsStore.shared.leaderboardShareHardware
-            leaderboardSharePromptsDraft = SettingsStore.shared.leaderboardSharePrompts
-            leaderboardCloudDraft = SettingsStore.shared.leaderboardCloudURL
-            leaderboardSheetsDraft = SettingsStore.shared.leaderboardSheetsURL
-            leaderboardAutoSyncDraft = SettingsStore.shared.leaderboardAutoSync
+    }
+
+    private var providerDiscoverySettings: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Gemini").font(.system(size: 12, weight: .medium))
+            MonospacedText(text: "auto-detected from ~/.gemini*/oauth_creds.json when present", color: .secondary, size: 11)
+                .fixedSize(horizontal: false, vertical: true)
+            Text("Alibaba / GLM / MiniMax / OpenCode-Go")
+                .font(.system(size: 12, weight: .medium))
+                .padding(.top, 6)
+            MonospacedText(text: "keys read from opencode auth.json", color: .secondary, size: 11)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 

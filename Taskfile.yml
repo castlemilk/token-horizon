@@ -140,6 +140,7 @@ tasks:
         probe "/models/catalog" "d.get('count',0) > 0 and 'models' in d and 'topPicks' in d" "/models/catalog serves web catalog export"
         probe "/discovery/status" "'catalogCount' in d" "/discovery/status serves catalog stats"
         probe "/activity/heatmap?days=7" "'grid' in d and len(d['grid']) == 7" "/activity/heatmap serves 7x24 grid"
+        probe "/widget" "d.get('version',0) >= 5 and len(d['hourly']) == 24 and len(d['months']) == 12" "/widget serves the v5 widget snapshot"
         probe "/projects" "'projects' in d" "/projects serves project rollups"
         probe "/achievements" "'achievements' in d and 'season' in d" "/achievements serves season+achievements"
         gw=$(printf '%s' "$health" | python3 -c "import json,sys; print(json.load(sys.stdin).get('llm_gateway_port') or '')" 2>/dev/null || true)

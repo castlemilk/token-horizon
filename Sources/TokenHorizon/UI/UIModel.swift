@@ -64,6 +64,7 @@ final class UIModel: ObservableObject {
     @Published var historyPoints: [HistoryPoint] = []
     @Published var historyStreak = 0
     @Published var trendPoints: [HistoryPoint] = []
+    @Published var hourTrendPoints: [HistoryPoint] = []
     @Published var trendWindow: TrendWindow = .month
     @Published var kimiLimits: [ProviderLimit] = []
     @Published var planLimits: [ProviderLimit] = []
