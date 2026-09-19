@@ -600,9 +600,12 @@
 			landT + 0.3
 		);
 		timers.push(
+			// Settle when the clone FADE ends, not when it starts: conceals
+			// release at settle, and releasing mid-fade stacks the fading
+			// clone over the real content (the visible flash on landing).
 			window.setTimeout(() => {
 				if (open && phase === 'fly') phase = 'settle';
-			}, landT * 1000)
+			}, (landT + 0.15 * S) * 1000)
 		);
 	}
 

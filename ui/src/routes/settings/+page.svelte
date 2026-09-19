@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { api, type ServiceStatus, type ConsentState } from '$lib/api';
+	import { api, type ServiceStatus, type ConsentState, type DaemonCloudIdentity } from '$lib/api';
 	import {
 		cloud,
 		cloudBase,
@@ -59,6 +59,38 @@
 	let loginState = $state('');
 	let copied = $state<string | null>(null);
 
+	/* ---- Daemon-held sign-in: the daemon syncs as this user with the
+	 *  UI closed (persisted to cloud-identity.json via /cloud/identity) ---- */
+	let daemonIdentity = $state<DaemonCloudIdentity | null>(null);
+	let daemonIdentityNote = $state('');
+
+	async function loadDaemonIdentity() {
+		try {
+			daemonIdentity = await api.cloudIdentity();
+		} catch {
+			daemonIdentity = null; // daemon offline — nothing to show
+		}
+	}
+
+	/** Hand the cloud session's identity to the daemon for background sync. */
+	async function pushDaemonIdentity(user: CloudUser) {
+		daemonIdentityNote = '';
+		try {
+			await api.saveCloudIdentity({
+				base_url: cloudBase(),
+				handle: user.handle,
+				user_id: user.id,
+				team: user.team ?? '',
+				display_name: user.display_name ?? '',
+				avatar_url: user.avatar_url ?? ''
+			});
+			await loadDaemonIdentity();
+		} catch {
+			daemonIdentityNote =
+				'Listener unreachable — background sync identity not saved (sign-in itself is fine).';
+		}
+	}
+
 	let displayName = $state('');
 	let accountMsg = $state('');
 
@@ -110,6 +142,7 @@
 			});
 			cloudUser = r.user;
 			displayName = r.user.display_name ?? '';
+			void pushDaemonIdentity(r.user);
 			void loadTeams();
 		} catch (e) {
 			cloudError = e instanceof Error ? e.message : 'Sign-in failed';
@@ -119,8 +152,16 @@
 		}
 	}
 
+	/** Detach background sync from the cloud user without signing the UI out. */
+	async function unlinkDaemon() {
+		await api.clearCloudIdentity().catch(() => {});
+		await loadDaemonIdentity();
+	}
+
 	async function doLogout() {
 		await cloud.logout().catch(() => {});
+		await api.clearCloudIdentity().catch(() => {});
+		await loadDaemonIdentity();
 		cloudUser = null;
 		teams = [];
 		groupsByTeam = {};
@@ -320,8 +361,19 @@
 		void loadAutostart();
 		void loadService();
 		void loadConsents();
+		void loadDaemonIdentity();
 		if (cloudToken()) {
-			void refreshCloudUser().then(() => void loadTeams());
+			void refreshCloudUser().then(async () => {
+				void loadTeams();
+				// Already signed in but the daemon never got the identity (older
+				// build, fresh machine) — hand it over so background sync is right.
+				if (
+					cloudUser &&
+					(!daemonIdentity?.signed_in || daemonIdentity.handle !== cloudUser.handle)
+				) {
+					await pushDaemonIdentity(cloudUser);
+				}
+			});
 		}
 	});
 
@@ -379,6 +431,17 @@
 			</span>
 		</div>
 	{/if}
+	{#if daemonIdentity?.signed_in}
+		<div class="toggle-row">
+			<span class="tname">Background sync</span>
+			<span class="hint" style="margin: 0">
+				The listener syncs as @{daemonIdentity.handle} while this app is closed — saved on
+				this machine{daemonIdentity.sync_enabled ? '' : ', but no sync server is configured'}.
+			</span>
+			<button class="btn" onclick={() => void unlinkDaemon()}>Unlink</button>
+		</div>
+	{/if}
+	{#if daemonIdentityNote}<div class="hint" style="color: var(--bad)">{daemonIdentityNote}</div>{/if}
 	{#if cloudError}<div class="hint" style="color: var(--bad)">{cloudError}</div>{/if}
 </div>
 

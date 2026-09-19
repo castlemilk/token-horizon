@@ -96,6 +96,15 @@ async function post<T>(path: string, body: unknown, timeoutMs = 15000): Promise<
 	return (await res.json()) as T;
 }
 
+async function del<T>(path: string, timeoutMs = 15000): Promise<T> {
+	const res = await fetch(`${apiBase()}${path}`, {
+		method: 'DELETE',
+		signal: timeoutSignal(timeoutMs)
+	});
+	if (!res.ok) throw new Error(`${path}: HTTP ${res.status}`);
+	return (await res.json()) as T;
+}
+
 // ---- Types (mirror core DTO JSON) ----
 
 export interface Health {
@@ -318,6 +327,20 @@ export interface SyncStatus {
 	last_report?: { pushed: Record<string, number>; skipped: string[]; error?: string | null };
 }
 
+/** Cloud sign-in persisted on the daemon (GET/POST/DELETE /cloud/identity) —
+ *  the daemon syncs as this user while the UI app is closed. */
+export interface DaemonCloudIdentity {
+	signed_in: boolean;
+	handle: string | null;
+	user_id: string | null;
+	team: string | null;
+	display_name: string | null;
+	avatar_url: string | null;
+	base_url: string | null;
+	saved_at: number | null;
+	sync_enabled: boolean;
+}
+
 /** Daemon boot/login auto-start registration (GET /service). */
 export interface ServiceStatus {
 	supported: boolean;
@@ -364,6 +387,16 @@ export const api = {
 		),
 	processes: () => get<Record<string, ProcSample[]>>('/processes'),
 	syncStatus: () => get<SyncStatus>('/sync/status'),
+	cloudIdentity: () => get<DaemonCloudIdentity>('/cloud/identity'),
+	saveCloudIdentity: (id: {
+		base_url: string;
+		handle: string;
+		user_id: string;
+		team?: string;
+		display_name?: string;
+		avatar_url?: string;
+	}) => post<{ ok: boolean; signed_in: boolean; sync_enabled: boolean }>('/cloud/identity', id),
+	clearCloudIdentity: () => del<{ ok: boolean; signed_in: boolean }>('/cloud/identity'),
 	machines: () => get<{ group: string; rows: MachineRow[] }>('/analytics/aggregate?group=machine'),
 	meters: () => get<Meters>('/meters'),
 	toggleMeter: (vendor: string, enabled: boolean) =>
