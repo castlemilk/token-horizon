@@ -213,7 +213,8 @@ final class WidgetSnapshotTests: XCTestCase {
         XCTAssertEqual(WidgetWindow.next(after: "months"), .years)
         XCTAssertEqual(WidgetWindow.next(after: "years"), .hours)
         XCTAssertEqual(WidgetWindow.next(after: "bogus"), .weeks)
-        XCTAssertEqual(WidgetWindow.allCases.map(\.label), ["1H", "1D", "1W", "1M", "1Y"])
+        XCTAssertEqual(WidgetWindow.allCases.map(\.label), ["h", "d", "w", "m", "y"])
+        XCTAssertEqual(WidgetWindow.allCases.map(\.helpText).count, WidgetWindow.allCases.count)
 
         let snapshot = WidgetSnapshot.preview
         XCTAssertEqual(WidgetSnapshot.points(for: "hours", in: snapshot).count, WidgetSnapshot.chartHours)

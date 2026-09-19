@@ -28,11 +28,23 @@ enum WidgetWindow: String, CaseIterable {
 
     var label: String {
         switch self {
-        case .hours: return "1H"
-        case .days: return "1D"
-        case .weeks: return "1W"
-        case .months: return "1M"
-        case .years: return "1Y"
+        case .hours: return "h"
+        case .days: return "d"
+        case .weeks: return "w"
+        case .months: return "m"
+        case .years: return "y"
+        }
+    }
+
+    /// Tooltip for the app preview (widgets have no hover; `.help()` still
+    /// documents the control for the shared WidgetCard in the Settings card).
+    var helpText: String {
+        switch self {
+        case .hours: return "24 hourly bars"
+        case .days: return "7 daily bars (last week)"
+        case .weeks: return "17 weekly bars"
+        case .months: return "30 daily bars (last month)"
+        case .years: return "12 monthly bars (last year)"
         }
     }
 

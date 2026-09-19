@@ -201,7 +201,8 @@ struct WidgetCard: View {
             }
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("\(option.label) window")
+        .help("\(option.label.uppercased()) — \(option.helpText)")
+        .accessibilityLabel("\(option.label) window: \(option.helpText)")
     }
 
     /// Stacked bars for the selected window (24 hours / 14 days / 17 weeks),
@@ -234,6 +235,7 @@ struct WidgetCard: View {
                 Text((WidgetWindow(rawValue: window) ?? .days).caption)
                     .font(.system(size: 8, weight: .semibold)).foregroundStyle(.secondary)
                     .lineLimit(1).minimumScaleFactor(0.8)
+                    .help("\(WidgetSnapshot.number(series.reduce(0) { $0 + $1.tokens })) tokens · \((WidgetWindow(rawValue: window) ?? .days).helpText)")
             }
         }
     }
@@ -245,6 +247,7 @@ struct WidgetCard: View {
         let total = max(1, entries.reduce(0) { $0 + $1.tokens })
         return VStack(alignment: .leading, spacing: 3) {
             ForEach(entries, id: \.provider) { entry in
+                let share = Int(Double(entry.tokens) / Double(total) * 100)
                 HStack(spacing: 5) {
                     ProviderLogoView(provider: entry.provider, size: size == "large" ? 12 : 11)
                     Text(entry.provider)
@@ -253,11 +256,14 @@ struct WidgetCard: View {
                     Spacer(minLength: 2)
                     Text(WidgetSnapshot.number(entry.tokens))
                         .font(.system(size: 8, weight: .semibold, design: .rounded)).monospacedDigit()
-                    Text("\(Int(Double(entry.tokens) / Double(total) * 100))%")
+                    Text("\(share)%")
                         .font(.system(size: 7.5)).monospacedDigit()
                         .foregroundStyle(.secondary.opacity(0.8))
                         .frame(width: 24, alignment: .trailing)
                 }
+                .help("\(entry.provider): \(entry.tokens) tokens · \(share)% of this window")
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel("\(entry.provider), \(WidgetSnapshot.number(entry.tokens)) tokens, \(share) percent of window")
             }
             if entries.isEmpty {
                 Text("No usage yet").font(.system(size: 8.5)).foregroundStyle(.secondary)
@@ -369,6 +375,9 @@ struct WidgetCard: View {
         }
         .padding(7)
         .background(RoundedRectangle(cornerRadius: 8).fill(Color.white.opacity(0.06)))
+        .help(planTooltip(limit))
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Next reset: " + planTooltip(limit))
     }
 
     private func planRow(_ limit: WidgetSnapshot.Limit, showDetail: Bool) -> some View {
@@ -396,6 +405,20 @@ struct WidgetCard: View {
             ProgressView(value: limit.usedPercent, total: 100)
                 .tint(limit.usedPercent >= 90 ? .orange : Self.providerColor(limit.provider))
         }
+        .help(planTooltip(limit))
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(planTooltip(limit))
+    }
+
+    private func planTooltip(_ limit: WidgetSnapshot.Limit) -> String {
+        var parts = ["\(limit.provider) \(limit.label): \(Int(limit.usedPercent))% used"]
+        if let resets = limit.resetsAt {
+            parts.append("resets in \(WidgetSnapshot.resetText(resets))")
+        }
+        if !limit.detail.isEmpty {
+            parts.append(limit.detail)
+        }
+        return parts.joined(separator: " · ")
     }
 
     private func urgencyColor(_ limit: WidgetSnapshot.Limit) -> Color {
