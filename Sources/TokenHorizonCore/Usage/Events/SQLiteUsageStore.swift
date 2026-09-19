@@ -573,7 +573,7 @@ public final class SQLiteUsageStore: UsageStoring {
     private static let costEquivalentSQL = """
     CASE WHEN pr.input_per_m IS NOT NULL THEN
         (usage_event.input * pr.input_per_m
-       + usage_event.output * pr.output_per_m
+       + (usage_event.output + usage_event.reasoning) * pr.output_per_m
        + usage_event.cache_write * pr.input_per_m
        + COALESCE(usage_event.cache_read * pr.cache_read_per_m, 0)) / 1000000.0
     END

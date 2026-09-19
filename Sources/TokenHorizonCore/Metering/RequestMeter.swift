@@ -531,6 +531,9 @@ open class RequestMeter: NSObject, URLSessionDataDelegate {
                 self.counterLock.unlock()
                 if let event = self.event(from: exchange) {
                     try? self.store?.insertMetered([event])
+                    // Fresh usage nudges cloud sync (debounced) so rows ship
+                    // in seconds, not at the next timer tick.
+                    CloudSync.shared.noteActivity()
                     // Unattributed events arm the reactive file-lookup ladder
                     // (no-op when attribution was wire-inferable).
                     AttributionScheduler.shared.note(events: [event])

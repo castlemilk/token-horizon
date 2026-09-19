@@ -137,27 +137,92 @@ public final class CloudSync {
     /// Identity envelope on every batch (cloud attributes rows to handle/team).
     public var handle: String
     public var team: String
+    /// Server-minted user UUID learned at Google/Microsoft sign-in — pins
+    /// attribution to that exact account (server falls back to handle when
+    /// absent). Persisted by the daemon (CloudIdentityStore) so background
+    /// sync keeps attributing correctly with the UI closed.
+    public var userID: String
+    /// Env-boot values, kept so sign-out can restore them.
+    private let envHandle: String
+    private let envTeam: String
+    private let envBaseURL: URL?
 
     private let lock = NSLock()
     private var _lastReport = SyncReport()
     private var _lastSync: Date?
     private var backoffUntil = Date.distantPast
+    /// Host-attached store so event ingestion can nudge a sync without
+    /// knowing the wiring (set once at boot via `attach(store:)`).
+    private var _store: UsageStoring?
+    private var nudgePending = false
+    private let nudgeQueue = DispatchQueue(label: "tokenhorizon.cloudsync.nudge", qos: .utility)
+    /// How long activity nudges coalesce before firing — bursts of metered
+    /// requests collapse into ONE push instead of one per request.
+    public var nudgeDelay: TimeInterval = 4
 
     public var lastReport: SyncReport { lock.lock(); defer { lock.unlock() }; return _lastReport }
     public var lastSync: Date? { lock.lock(); defer { lock.unlock() }; return _lastSync }
+
+    /// Attach the store at boot so `noteActivity()` can drive syncs.
+    public func attach(store: UsageStoring) {
+        lock.lock(); _store = store; lock.unlock()
+    }
+
+    /// Event-ingestion nudge: meters and /analytics/events call this after
+    /// inserting rows so fresh usage ships within seconds instead of waiting
+    /// for the next timer tick. Debounced (bursts coalesce), backoff-aware,
+    /// no-op when sync is disabled. The CURSOR is still the boundary — the
+    /// nudge only decides WHEN sync runs, never what it pushes.
+    public func noteActivity() {
+        guard baseURL != nil else { return }
+        lock.lock()
+        if nudgePending { lock.unlock(); return }
+        nudgePending = true
+        let store = _store
+        lock.unlock()
+        nudgeQueue.asyncAfter(deadline: .now() + nudgeDelay) { [weak self] in
+            guard let self else { return }
+            self.lock.lock()
+            self.nudgePending = false
+            self.lock.unlock()
+            guard let store else { return }
+            self.sync(store: store)
+        }
+    }
 
     public init() {
         let env = ProcessInfo.processInfo.environment
         if let raw = env["TH_SYNC_URL"], let url = URL(string: raw) {
             baseURL = url
         }
-        handle = env["TH_SYNC_HANDLE"] ?? NSUserName()
-        team = env["TH_SYNC_TEAM"] ?? ""
+        envHandle = env["TH_SYNC_HANDLE"] ?? NSUserName()
+        envTeam = env["TH_SYNC_TEAM"] ?? ""
+        envBaseURL = baseURL
+        handle = envHandle
+        team = envTeam
+        userID = env["TH_SYNC_USER_ID"] ?? ""
+    }
+
+    /// Restore the env/default identity (UI sign-out clears the persisted
+    /// cloud sign-in; sync falls back to the machine user). A base URL that
+    /// came from the persisted identity (not env) is dropped too — after
+    /// unlink, the daemon must not keep pushing to a server it only learned
+    /// about from the signed-in UI.
+    public func clearIdentity() {
+        lock.lock()
+        handle = envHandle
+        team = envTeam
+        userID = ""
+        baseURL = envBaseURL
+        lock.unlock()
     }
 
     private var envelope: [String: Any] {
-        ["machine_id": MachineIdentity.current, "machine_alias": MachineIdentity.alias,
-         "handle": handle, "team": team]
+        lock.lock()
+        let (h, t, u) = (handle, team, userID)
+        lock.unlock()
+        return ["machine_id": MachineIdentity.current, "machine_alias": MachineIdentity.alias,
+                "handle": h, "team": t, "user_id": u]
     }
 
     /// Push all pending deltas. Returns per-dataset counts; advances cursors
@@ -172,8 +237,8 @@ public final class CloudSync {
         let transport = transportFactory(baseURL)
         var report = SyncReport()
         do {
-            report.pushed[CloudSyncDataset.usageEvents.rawValue] = try pushUsage(store: store, transport: transport)
-            report.pushed[CloudSyncDataset.limits.rawValue] = try pushLimits(store: store, transport: transport, now: now)
+            report.pushed[CloudSyncDataset.usageEvents.rawValue] = try drainUsage(store: store, transport: transport)
+            report.pushed[CloudSyncDataset.limits.rawValue] = try drainLimits(store: store, transport: transport, now: now)
         } catch {
             report.error = String(describing: error)
             lock.lock()
@@ -185,6 +250,43 @@ public final class CloudSync {
         if report.error == nil { _lastSync = now }
         lock.unlock()
         return report
+    }
+
+    /// Safety cap on pages per sync() call: inserts arriving mid-drain keep
+    /// the cursor moving forward, so a hard cap guarantees the loop exits
+    /// and leaves the rest to the next tick/nudge.
+    private let maxPagesPerSync = 40
+
+    /// Push pages until the backlog is drained (a short page = caught up).
+    /// Rows that landed BETWEEN ticks (or during this drain) all have
+    /// rowid > cursor, so they are pushed here — the cursor only ever
+    /// advances to acknowledged rows, nothing in between is skipped.
+    private func drainUsage(store: UsageStoring, transport: CloudTransport) throws -> Int {
+        var total = 0
+        for _ in 0..<maxPagesPerSync {
+            let n = try pushUsage(store: store, transport: transport)
+            total += n
+            if n < batchSize { break }
+        }
+        return total
+    }
+
+    private func drainLimits(store: UsageStoring, transport: CloudTransport, now: Date) throws -> Int {
+        // The limits cursor is epoch-SECOND inclusive (`recorded_at >= ?`),
+        // so a full page whose rows share the boundary second re-returns the
+        // same rows — cloud ingest is idempotent (ON CONFLICT DO NOTHING),
+        // but stop when the cursor stops advancing.
+        var total = 0
+        var lastCursor = ""
+        for _ in 0..<maxPagesPerSync {
+            let n = try pushLimits(store: store, transport: transport, now: now)
+            total += n
+            if n < batchSize { break }
+            let cursor = (try? store.syncCursor(dataset: CloudSyncDataset.limits.rawValue)) ?? nil
+            if cursor == lastCursor { break }
+            lastCursor = cursor ?? ""
+        }
+        return total
     }
 
     private func pushUsage(store: UsageStoring, transport: CloudTransport) throws -> Int {

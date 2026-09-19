@@ -101,8 +101,15 @@ router.startCaptureMode()
 
 // Cloud sync outbox (TH_SYNC_URL): retry pending deltas every 5 min so
 // offline stretches (flights) upload on reconnect. Manual: POST /sync/now.
+// A UI sign-in persisted to cloud-identity.json overrides the env identity
+// (and supplies the base URL when TH_SYNC_URL is unset) so background sync
+// attributes to the signed-in user with the UI closed.
+if let identity = CloudIdentityStore.load() {
+    CloudIdentityStore.apply(identity, to: CloudSync.shared)
+}
 var cloudSyncTimer: DispatchSourceTimer?
 if CloudSync.shared.baseURL != nil, let store = usageStore {
+    CloudSync.shared.attach(store: store)   // lets event ingestion nudge syncs
     let timer = DispatchSource.makeTimerSource(queue: DispatchQueue(label: "tokenhorizon.cloudsync", qos: .utility))
     timer.schedule(deadline: .now() + 30, repeating: 300)
     timer.setEventHandler { _ = CloudSync.shared.sync(store: store) }

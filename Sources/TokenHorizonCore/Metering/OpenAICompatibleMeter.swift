@@ -38,8 +38,10 @@ open class OpenAICompatibleMeter: RequestMeter {
     }
 
     /// OpenAI semantics: prompt_tokens already include cached tokens.
+    /// Storage is NET (input excludes cacheRead — see parseUsageDict), so
+    /// the gross occupancy is net input PLUS the cached share.
     public override func contextOccupancy(tokens: TokenBreakdown) -> Int? {
-        tokens.input
+        tokens.input + tokens.cacheRead
     }
 
     public override func usage(from exchange: MeteredExchange) -> TokenBreakdown? {

@@ -142,6 +142,35 @@ final class CostEquivalentTests: XCTestCase {
         XCTAssertEqual(rows.first?.costEquivalent ?? 0, 4.0, accuracy: 0.001)
     }
 
+    // MARK: - Thinking tokens are billed (at the output rate)
+
+    func testReasoningTokens_pricedAtOutputRate_inLockstep() throws {
+        let store = try makeStore()
+        // NET storage: output excludes reasoning, so both pricing paths
+        // (write-side CostEngine.price and read-side costEquivalentSQL) must
+        // add reasoning back at the OUTPUT rate or thinking is silently free.
+        let tokens = TokenBreakdown(input: 1_000_000, output: 500_000,
+                                    reasoning: 500_000) // 1M billed completion
+        let decision = CostEngine.decide(vendor: "deepseek", model: "deepseek-v4-pro",
+                                         tokens: tokens)
+        XCTAssertEqual(decision.source, .computed)
+        try store.insertMetered([event(vendor: "deepseek", model: "deepseek-v4-pro",
+                                       tokens: tokens,
+                                       cost: decision.cost, costSource: decision.source)])
+        let rows = try store.query(from: .distantPast, to: Date().addingTimeInterval(60),
+                                   filter: UsageFilter(), cursor: nil, limit: 10).events
+        let row = try XCTUnwrap(rows.first)
+        XCTAssertGreaterThan(row.costEquivalent ?? 0, 0, "thinking tokens must price")
+        XCTAssertEqual(row.costEquivalent ?? -1, row.cost, accuracy: 0.000001,
+                       "SQL and CostEngine must stay in lockstep")
+        // And the SQL value equals list arithmetic: in@rate + (out+reasoning)@rate.
+        let expected = row.costEquivalent ?? 0
+        let noReasoning = CostEngine.price(
+            tokens: TokenBreakdown(input: 1_000_000, output: 500_000),
+            entry: ModelCatalog.shared.lookup(id: "deepseek-v4-pro")!)
+        XCTAssertGreaterThan(expected, noReasoning, "dropping reasoning must under-price")
+    }
+
     // MARK: - Validity intervals: the rate in effect AT REQUEST TIME
 
     func testRateChange_repricesForwardOnly() throws {
