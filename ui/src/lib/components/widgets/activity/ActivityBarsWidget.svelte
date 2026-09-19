@@ -386,10 +386,19 @@
 				{/if}
 				<span
 					class="bar"
-					class:hot={last && flash && describe && phase === 'settle'}
 					style:height="{h}%"
 					style={reduce ? '' : `animation-delay: ${i * 35}ms`}
-				></span>
+				>
+					<!-- green arrival layer: overlays the accent bar and fades BOTH
+					     ways via opacity (gradients themselves can't transition), so
+					     the hot state eases in on arrival and eases back out when
+					     flash clears instead of snapping -->
+					<span
+						class="barglow"
+						class:hot={last && flash && describe && phase === 'settle'}
+						aria-hidden="true"
+					></span>
+				</span>
 			</div>
 		{/each}
 	</div>
@@ -728,6 +737,7 @@
 	}
 	.bar {
 		display: block;
+		position: relative;
 		width: 100%;
 		max-width: 14px;
 		border-radius: 999px;
@@ -756,13 +766,25 @@
 		from { opacity: 0; }
 		to { opacity: 1; }
 	}
-	.bar.hot {
+	/* green arrival layer on the rightmost bar — opacity cross-fades over
+	   the accent base in both directions (gradients can't transition) */
+	.barglow {
+		position: absolute;
+		inset: 0;
+		border-radius: inherit;
 		background: linear-gradient(
 			to top,
 			var(--ok),
 			color-mix(in srgb, var(--ok) 40%, transparent)
 		);
 		box-shadow: 0 0 12px color-mix(in srgb, var(--ok) 45%, transparent);
+		opacity: 0;
+		transition: opacity 0.7s ease;
+		pointer-events: none;
+	}
+	.barglow.hot {
+		opacity: 1;
+		transition: opacity 0.25s ease-in;
 	}
 	/* rightmost growth: same language as VBars — green column wash + +delta rise */
 	.bflash {
@@ -1029,6 +1051,7 @@
 	.cbody.t0 .modelrow { font-size: 11px; }
 	@media (prefers-reduced-motion: reduce) {
 		.bar { transition: none; animation: none; }
+		.barglow { transition: none; }
 		.bflash, .bdelta { animation: none; }
 		.skel { animation: none; }
 		.tile-sky { animation: none; }

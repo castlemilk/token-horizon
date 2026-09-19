@@ -144,6 +144,23 @@ timelines at 4× slow for frame inspection.
    targets for the whole open phase. Widget-level conceals (counters,
    heatmap) now overlap harmlessly.
 
+6. **Mount animations on the modal poison its measurements.** The provider
+   modal measured its logo at 44px instead of 66px: `cellin` scales cells
+   0.6→1 on mount and the morph measures within the first frames —
+   `getBoundingClientRect` includes the in-progress transform (66 × ⅔ =
+   44 exactly). The scale tween then ran at ~1.1 — "not scaling". Any
+   entrance animation that transforms a measured element must be off in
+   the modal (the morph's enterOpen choreography owns entrances there).
+   Diagnostic signature: `?morphdebug=1` pair widths that don't match the
+   design sizes (40→44 instead of 40→66).
+
+7. **Settle must wait for the clone fade.** Clones fade `landT →
+   landT+0.15·S`, but settle (which releases every conceal) fired at
+   `landT` — stacking the fading clone over the real content for 150ms:
+   the landing flash, worst on travelers that change size (provider logo)
+   or float in (recent icons). Settle now lands at fade end. Any future
+   conceal release tied to `phase === 'settle'` inherits the fix.
+
 ## Resolution
 
 The "Tauri flies, web doesn't" divergence was never environmental. The

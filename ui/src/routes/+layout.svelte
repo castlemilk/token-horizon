@@ -10,7 +10,7 @@
 	import OSIcon from '$lib/components/data/OSIcon.svelte';
 	import Onboarding from '$lib/components/feedback/Onboarding.svelte';
 	import RingsBackground from '$lib/components/feedback/RingsBackground.svelte';
-	import { House, Activity, Settings, PlugZap } from 'lucide-svelte';
+	import { House, Activity, Settings, PlugZap, Trophy } from 'lucide-svelte';
 
 	let { children } = $props();
 
@@ -78,14 +78,18 @@
 	const machineAvailable = $derived(runtimes.length > 0);
 
 	// Icon tabs — labels live on tooltips (title/aria), the UI stays wordless.
-	// Home · Meters (when runtime analytics exist) · Profile.
+	// Home · Meters (when runtime analytics exist) · Leaderboard · Profile.
 	const tabs = $derived(
 		machineAvailable
 			? [
 					{ path: '/', label: 'Home', icon: House },
-					{ path: '/metering', label: 'Meters', icon: Activity }
+					{ path: '/metering', label: 'Meters', icon: Activity },
+					{ path: '/leaderboard', label: 'Leaderboard', icon: Trophy }
 				]
-			: [{ path: '/', label: 'Home', icon: House }]
+			: [
+					{ path: '/', label: 'Home', icon: House },
+					{ path: '/leaderboard', label: 'Leaderboard', icon: Trophy }
+				]
 	);
 
 	const profilePath = $derived(`/@${settings.handle.trim() || 'me'}`);

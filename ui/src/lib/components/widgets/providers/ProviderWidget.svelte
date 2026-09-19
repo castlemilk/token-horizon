@@ -544,6 +544,9 @@
 		width: 100%;
 		height: 100%;
 		transform: rotate(-90deg);
+		/* the ring's drop-shadow glow bleeds past the viewBox — SVG clips
+		   by default, which cuts the glow off at the dial edge */
+		overflow: visible;
 	}
 	.dial-track {
 		fill: none;
@@ -622,7 +625,14 @@
 		opacity: 0.55;
 		cursor: default;
 	}
-	/* modal: medium-style rows with hairline dividers */
+	/* modal: medium-style rows with hairline dividers.
+	   No cellin here: it scales cells 0.6→1 on mount, and the morph
+	   measures the modal mid-animation — getBoundingClientRect includes
+	   the in-progress transform, poisoning every traveler box (measured
+	   44px for a 66px logo). Rows enter via the morph's own rise. */
+	.pbody .pcell {
+		animation: none;
+	}
 	.conceal {
 		visibility: hidden;
 	}

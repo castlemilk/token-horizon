@@ -335,6 +335,7 @@
 	/* identity row + full-width counter grid share one query container */
 	.profile-top {
 		container-type: inline-size;
+		margin-top: 20px;
 		margin-bottom: 18px;
 	}
 	.profile-mast {
@@ -365,9 +366,9 @@
 		background: var(--track);
 	}
 	.handle {
-		font-size: 20px;
-		font-weight: 680;
-		letter-spacing: -0.02em;
+		font-size: 28px;
+		font-weight: 720;
+		letter-spacing: -0.03em;
 	}
 	/* always rendered (empty when none) so a late display name can't
 	   push the grid down */

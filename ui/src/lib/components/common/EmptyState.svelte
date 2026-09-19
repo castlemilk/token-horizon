@@ -1,5 +1,5 @@
 <script lang="ts">
-	import type { Component } from 'svelte';
+	import type { ComponentType } from 'svelte';
 
 	// Shared empty state: centered quiet type, optional icon + action.
 	// Replaces the per-page empty-card / empty-quiet one-offs.
@@ -13,7 +13,7 @@
 	}: {
 		title: string;
 		body?: string;
-		icon?: Component | null;
+		icon?: ComponentType | null;
 		actionLabel?: string;
 		actionHref?: string;
 		onAction?: (() => void) | null;
