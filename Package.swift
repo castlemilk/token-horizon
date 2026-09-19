@@ -59,7 +59,7 @@ products.append(.executable(name: "token-horizon-headless", targets: ["token-hor
 targets.append(.executableTarget(
     name: "token-horizon-headless",
     dependencies: ["TokenHorizonCore"],
-    path: "Sources/token-horizon-headless"
+    path: "daemons/swift"
 ))
 #endif
 
