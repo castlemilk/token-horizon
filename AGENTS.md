@@ -152,27 +152,30 @@ Sources/TokenHorizonCore/   portable server-side module (macOS + Linux; Windows 
                             --service-status; API: GET /service, POST /service/install,
                             POST /service/uninstall. Never root/system-level — the
                             daemon needs the user's credentials and config dirs.
-Sources/token-horizon-headless/  cross-platform daemon: same loopback API as the macOS app, no UI
-daemon/                          Go core (NEW — the migration target): the TokenHorizonCore port.
-                                 Same usage.db schema, same config files, same loopback API contract
-                                 + port range as the Swift daemon. Layout: cmd/token-horizon-daemon
-                                 (thin main wiring), internal/core (store/schema/canonical/query/
-                                 sync/api/config/consent + shared usage parsers + AccountKey),
-                                 internal/meter (relay + OpenAI/Anthropic/Gemini/Ollama wire parsers,
-                                 ProductSniff/ThinkingBands, registry + runtime auto-metering),
-                                 internal/auth (VendorAuth credential chains), internal/limits
-                                 (all 9 vendor quota adapters + last-good retention), internal/files
-                                 (IncrementalJSONL, backfill scanners, consolidators, poller,
-                                 files-methodology counting, bit-exact backfill UUID parity with
-                                 Swift), internal/runtime (Prometheus monitor + durable ledger),
-                                 internal/system (/proc stats + ps), internal/service (systemd
-                                 --user / LaunchAgent auto-start), internal/mitm (scoped mitmproxy
-                                 manager + addon — UA table interpolated from meter, test-asserted),
-                                 internal/catalog (models.dev pricing + flagship rules → .computed
-                                 cost). ~11k LOC, 60+ tests. Remaining gaps vs Swift core: OTel
-                                 metrics exporter, macOS system-stats backend (/proc is Linux),
-                                 Models-tab pipeline (stays in the app). macOS app + SvelteKit UI
-                                 become pure clients; Swift daemon retires at parity.
+daemons/                         the two local daemons, side by side:
+  swift/                         token-horizon-headless (thin main over TokenHorizonCore) —
+                                 retires at Go parity; macOS app + SvelteKit UI become pure clients
+  go/                            the migration target: TokenHorizonCore ported to Go. Same usage.db
+                                 schema, config files, loopback API contract + port range. One
+                                 concern per package: cmd/token-horizon-daemon (thin main wiring),
+                                 internal/platform (paths/settings/consent/identity), internal/usage
+                                 (shared DTOs — Event/TokenBreakdown/FileAnnotation/LimitSnapshot —
+                                 + ONE wire-parser set + canonical folds + AccountKey + KimiPaths),
+                                 internal/store (v1 schema + sqlite + read-path queries),
+                                 internal/cloudsync (cursor outbox, ack-only advancement, debounced
+                                 nudge), internal/api (loopback router + Daemon composition),
+                                 internal/meter (relays + wire-format parsers + registry + runtime
+                                 auto-metering + catalog-priced .computed cost), internal/auth
+                                 (credential chains), internal/limits (9 vendor quota adapters +
+                                 last-good retention), internal/files (IncrementalJSONL, backfill
+                                 scanners, consolidators, poller, files-methodology counting,
+                                 bit-exact backfill UUID parity with Swift), internal/runtime
+                                 (Prometheus monitor + durable ledger), internal/system (/proc + ps),
+                                 internal/service (systemd --user / LaunchAgent), internal/mitm
+                                 (scoped mitmproxy; UA table interpolated from meter, test-asserted),
+                                 internal/catalog (models.dev pricing + flagship rules). ~11k LOC,
+                                 60+ tests. Remaining gaps vs Swift core: OTel exporter, macOS
+                                 system-stats backend, Models-tab pipeline (stays in the app).
 server/                          Go cloud backend (sync ingest, leaderboard; postgres/duckdb) — the
                                  OTHER Go module; daemon/ is the local core, server/ is the cloud.
 ui/                              cross-platform desktop UI: SvelteKit (TS, adapter-static SPA, no
