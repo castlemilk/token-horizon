@@ -79,6 +79,10 @@ if ProcessInfo.processInfo.environment["TH_ASK_CONSENT"] != nil {
         _ = ConsentManager.shared.ensure(.mitm,
             reason: "A local proxy intercepts TLS for AI vendor API hosts ONLY (all other traffic passes through untouched, undecrypted) to measure token usage without per-tool configuration. Requires installing a local CA certificate. Corporate machines: use point mode instead.")
     }
+    if SettingsStore.shared.meterCaptureMode == .files {
+        _ = ConsentManager.shared.ensure(.fileReading,
+            reason: "Provider session files (codex, claude, opencode, kimi) are scanned continuously and become the usage counting source (self-reported rows). No meters run in this mode.")
+    }
 }
 
 // Provider-parity usage for self-managed runtimes via the durable ledger.

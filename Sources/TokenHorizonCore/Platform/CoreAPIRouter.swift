@@ -44,7 +44,10 @@ public final class CoreAPIRouter {
 
     @discardableResult
     public func addMeter(vendor: String, port: UInt16, target: URL?, product: String? = nil) -> Bool {
-        guard meteringConsented,
+        // In the files methodology the scanners are the counting source —
+        // starting a meter would double count.
+        guard SettingsStore.shared.meterCaptureMode != .files,
+              meteringConsented,
               !meters.contains(where: { $0.listenPort == port }),
               let meter = MeterRegistry.make(vendor: vendor, port: port,
                                              target: target, store: usageStore) else { return false }
@@ -170,13 +173,17 @@ public final class CoreAPIRouter {
         }
     }
 
-    /// Start the configured capture mode. This is THE swappable seam:
+    /// Start the configured capture methodology. This is THE swappable seam:
     /// - point (default; the corporate-safe mode): loopback request meters
     ///   from env + settings + auto-meters for detected local runtimes;
     /// - mitm (personal machines, explicit .mitm consent): scoped TLS
     ///   interception of AI vendor hosts via MitmCaptureManager; point
-    ///   meters are NOT started alongside it.
-    /// Both modes emit the same UsageEvents into the same store.
+    ///   meters are NOT started alongside it;
+    /// - files: provider session files are the counting source — no meters,
+    ///   no interception; file polling is on and file history is imported
+    ///   into the store (selfReported) on a schedule.
+    /// point/mitm always run file ANNOTATION; all modes emit/read the same
+    /// UsageEvents in the same store.
     public func startCaptureMode() {
         switch SettingsStore.shared.meterCaptureMode {
         case .mitm:
@@ -193,7 +200,37 @@ public final class CoreAPIRouter {
             startMetersFromSettings()
             startMetersFromToggles()
             startAutoMetering()
+        case .files:
+            FileHandle.standardError.write(
+                "token-horizon: capture methodology is files — meters off; provider session files are the usage source (selfReported)\n".data(using: .utf8)!)
+            startFilesModeCounting()
         }
+    }
+
+    /// Files-mode counting: every 15 minutes import file-derived history
+    /// into the store. Idempotent (deterministic backfill ids + INSERT OR
+    /// IGNORE), attestation .selfReported, so the metered=1 filter keeps
+    /// these rows reference-only for anyone who prefers the point/MITM view.
+    private var filesModeTimer: DispatchSourceTimer?
+    private func startFilesModeCounting() {
+        guard usageStore != nil else { return }
+        guard ConsentManager.shared.isGranted(.fileReading) else {
+            FileHandle.standardError.write(
+                "token-horizon: files methodology needs .fileReading consent — nothing counted (TH_CONSENT=fileReading or approve the prompt)\n".data(using: .utf8)!)
+            return
+        }
+        let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.global(qos: .utility))
+        timer.schedule(deadline: .now() + 30, repeating: 15 * 60)
+        timer.setEventHandler { [weak self] in
+            guard let self, let store = self.usageStore else { return }
+            // FilePolling is forced on in files mode; consolidators keep
+            // annotations/limit snapshots fresh alongside the counting pass.
+            _ = FilePoller.shared.poll()
+            let events = self.engine.backfillEvents()
+            try? store.insert(events)
+        }
+        timer.resume()
+        filesModeTimer = timer
     }
 
     // MARK: - Routing
@@ -212,6 +249,7 @@ public final class CoreAPIRouter {
                 "usage_store": usageStore != nil,
                 "machine_id": MachineIdentity.current,
                 "machine_alias": MachineIdentity.alias,
+                "methodology": SettingsStore.shared.meterCaptureMode.rawValue,
             ]
             return Self.json(payload)
 
@@ -271,6 +309,26 @@ public final class CoreAPIRouter {
             }
             let report = FilePoller.shared.poll()
             return Self.json(["ok": true, "observations": report])
+
+        case ("GET", "/config/capture"):
+            // The capture methodology knob (shared contract with the Go
+            // daemon): point|mitm always annotate from files; files makes
+            // the scanners the usage source (selfReported).
+            return Self.json([
+                "methodology": SettingsStore.shared.meterCaptureMode.rawValue,
+                "options": MeterCaptureMode.allCases.map(\.rawValue),
+                "filePolling": SettingsStore.shared.filePolling,
+            ])
+
+        case ("POST", "/config/capture"):
+            guard let body = try? JSONSerialization.jsonObject(with: request.body) as? [String: Any],
+                  let raw = body["methodology"] as? String,
+                  let mode = MeterCaptureMode(rawValue: raw.lowercased()) else {
+                return Self.json(["error": "body must be {methodology: point|mitm|files}"], status: 400)
+            }
+            SettingsStore.shared.meterCaptureMode = mode
+            return Self.json(["ok": true, "methodology": mode.rawValue,
+                              "note": "takes effect on restart (capture mode is wired at boot)"])
 
         case ("GET", "/permissions"):
             return Self.json(["permissions": Self.encode(PermissionManager.status())])
