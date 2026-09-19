@@ -32,15 +32,18 @@ public final class SettingsStore {
         lock.unlock()
     }
 
-    /// How usage is measured: "point" (tools configured at loopback meters —
-    /// the default, and the only mode corporate machines should use) or
-    /// "mitm" (scoped TLS interception of AI vendor hosts via a local proxy,
-    /// requires .mitm consent + mitmproxy). Swappable at runtime; env
-    /// TH_CAPTURE_MODE overrides.
+    /// How usage is measured (the capture methodology): "point" (loopback
+    /// meters — default, corporate-safe), "mitm" (scoped TLS interception,
+    /// consent-gated), or "files" (provider session files are the counting
+    /// source, selfReported). Swappable at runtime; persisted under the
+    /// captureMethodology key (shared with the Go daemon; the legacy
+    /// meterCaptureMode key is still read). Env TH_CAPTURE_METHODOLOGY
+    /// overrides, then TH_CAPTURE_MODE.
     public var meterCaptureMode: MeterCaptureMode {
         get {
-            if let env = ProcessInfo.processInfo.environment["TH_CAPTURE_MODE"],
-               let mode = MeterCaptureMode(rawValue: env.lowercased()) { return mode }
+            let env = ProcessInfo.processInfo.environment
+            if let raw = env["TH_CAPTURE_METHODOLOGY"] ?? env["TH_CAPTURE_MODE"],
+               let mode = MeterCaptureMode(rawValue: raw.lowercased()) { return mode }
             lock.lock(); defer { lock.unlock() }
             return MeterCaptureMode(rawValue: _meterCaptureMode) ?? .point
         }
@@ -53,11 +56,13 @@ public final class SettingsStore {
     }
 
     /// Automatic periodic file consolidation (annotations + limit snapshots).
-    /// DEFAULT OFF: consolidation is a deliberate, manual action (POST
-    /// /consolidate) — files are not the usage source, so there is no reason
-    /// to read them continuously. Env TH_FILE_POLL=1 forces polling on.
+    /// DEFAULT OFF in point/mitm: consolidation is a deliberate, manual
+    /// action (POST /consolidate) — files are not the usage source there.
+    /// In the files methodology polling is always on: the scanners ARE the
+    /// counting source. Env TH_FILE_POLL=1 forces polling on.
     public var filePolling: Bool {
         get {
+            if meterCaptureMode == .files { return true }
             if ProcessInfo.processInfo.environment["TH_FILE_POLL"] == "1" { return true }
             lock.lock(); defer { lock.unlock() }
             return _filePolling
@@ -129,7 +134,7 @@ public final class SettingsStore {
         let payload: [String: Any] = [
             "alibabaCookie": _alibabaCookie,
             "notifyOnLimitRefresh": _notifyOnLimitRefresh,
-            "meterCaptureMode": _meterCaptureMode,
+            "captureMethodology": _meterCaptureMode,
             "filePolling": _filePolling,
             "meterToggles": _meterToggles,
             "runtimeEndpoints": _runtimeEndpoints.mapValues { list in
@@ -155,7 +160,7 @@ public final class SettingsStore {
             if let n = obj["notifyOnLimitRefresh"] as? Bool {
                 notify = n
             }
-            if let m = obj["meterCaptureMode"] as? String {
+            if let m = (obj["captureMethodology"] as? String) ?? (obj["meterCaptureMode"] as? String) {
                 _meterCaptureMode = m
             }
             if let fp = obj["filePolling"] as? Bool {
