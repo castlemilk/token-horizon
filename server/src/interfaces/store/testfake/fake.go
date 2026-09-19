@@ -1,17 +1,20 @@
 // Package testfake is an in-memory store.Store for unit tests. No SQL,
 // no drivers — it verifies use-case and handler logic only. SQL dialect is
-// proven separately by the duckdb integration test (store_duck_test.go).
+// proven separately by the duckdb integration test (sqlstore_duck_test.go).
 package testfake
 
 import (
 	"context"
 	"database/sql"
 	"errors"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/castlemilk/token-horizon/server/src/interfaces/store"
-	"github.com/castlemilk/token-horizon/server/src/models"
+	"github.com/castlemilk/token-horizon/server/src/models/identity"
+	"github.com/castlemilk/token-horizon/server/src/models/social"
+	"github.com/castlemilk/token-horizon/server/src/models/usage"
 )
 
 // errTaken stands in for unique violations so use cases exercise their
@@ -23,40 +26,42 @@ var (
 // Fake is a mutex-guarded in-memory Store.
 type Fake struct {
 	mu       sync.Mutex
-	Users    map[string]models.User
-	Machine  map[string]models.Machine
-	Events   []models.UsageEvent
-	Limits   []models.LimitSnapshot
+	Users    map[string]identity.User
+	Machine  map[string]identity.Machine
+	Events   []usage.UsageEvent
+	Limits   []usage.LimitSnapshot
 	Cursors  map[string]string
-	Sessions map[string]models.Session
-	Tickets  map[string]models.Ticket
-	Teams    map[string]models.Team
+	Refs     map[string]bool // machine|dataset|row -> delivered
+	Sessions map[string]identity.Session
+	Tickets  map[string]identity.Ticket
+	Teams    map[string]social.Team
 	TeamJoin map[string]string // code -> team id
 	TeamMemb map[string]map[string]string
-	Groups   map[string]models.Group
+	Groups   map[string]social.Group
 	GrpJoin  map[string]string
 	GrpMemb  map[string]map[string]string
-	Err      error // injected failure for error paths
+	Follows  map[string]map[string]time.Time // follower id -> followee id -> since
+	Err      error                           // injected failure for error paths
 }
 
 func New() *Fake {
 	return &Fake{
-		Users: map[string]models.User{}, Machine: map[string]models.Machine{},
-		Cursors: map[string]string{}, Sessions: map[string]models.Session{},
-		Tickets: map[string]models.Ticket{}, Teams: map[string]models.Team{},
+		Users: map[string]identity.User{}, Machine: map[string]identity.Machine{},
+		Cursors: map[string]string{}, Refs: map[string]bool{}, Sessions: map[string]identity.Session{},
+		Tickets: map[string]identity.Ticket{}, Teams: map[string]social.Team{},
 		TeamJoin: map[string]string{}, TeamMemb: map[string]map[string]string{},
-		Groups: map[string]models.Group{}, GrpJoin: map[string]string{},
-		GrpMemb: map[string]map[string]string{},
+		Groups: map[string]social.Group{}, GrpJoin: map[string]string{},
+		GrpMemb: map[string]map[string]string{}, Follows: map[string]map[string]time.Time{},
 	}
 }
 
 func (f *Fake) Close() error { return nil }
 
-func (f *Fake) ResolveUser(_ context.Context, handle, displayName, team string) (models.User, error) {
+func (f *Fake) ResolveUser(_ context.Context, handle, displayName, team string) (identity.User, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.Err != nil {
-		return models.User{}, f.Err
+		return identity.User{}, f.Err
 	}
 	if u, ok := f.Users[handle]; ok {
 		u.DisplayName, u.Team = displayName, team
@@ -64,12 +69,12 @@ func (f *Fake) ResolveUser(_ context.Context, handle, displayName, team string) 
 		return u, nil
 	}
 	now := time.Now().UTC()
-	u := models.User{ID: "user-" + handle, Handle: handle, DisplayName: displayName, Team: team, CreatedAt: now, UpdatedAt: now}
+	u := identity.User{ID: "user-" + handle, Handle: handle, DisplayName: displayName, Team: team, CreatedAt: now, UpdatedAt: now}
 	f.Users[handle] = u
 	return u, nil
 }
 
-func (f *Fake) RegisterMachine(_ context.Context, m models.Machine) (models.Machine, error) {
+func (f *Fake) RegisterMachine(_ context.Context, m identity.Machine) (identity.Machine, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if old, ok := f.Machine[m.MachineID]; ok {
@@ -81,10 +86,10 @@ func (f *Fake) RegisterMachine(_ context.Context, m models.Machine) (models.Mach
 	return m, nil
 }
 
-func (f *Fake) Machines(_ context.Context, userID string) ([]models.Machine, error) {
+func (f *Fake) Machines(_ context.Context, userID string) ([]identity.Machine, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	var out []models.Machine
+	var out []identity.Machine
 	for _, m := range f.Machine {
 		if m.UserID == userID {
 			out = append(out, m)
@@ -93,13 +98,13 @@ func (f *Fake) Machines(_ context.Context, userID string) ([]models.Machine, err
 	return out, nil
 }
 
-func (f *Fake) MachineByID(_ context.Context, machineID string) (models.Machine, error) {
+func (f *Fake) MachineByID(_ context.Context, machineID string) (identity.Machine, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.Machine[machineID], nil
 }
 
-func (f *Fake) InsertEvents(_ context.Context, _ string, events []models.UsageEvent) (int, int, error) {
+func (f *Fake) InsertEvents(_ context.Context, _ string, events []usage.UsageEvent) (int, int, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	seen := map[string]bool{}
@@ -108,6 +113,7 @@ func (f *Fake) InsertEvents(_ context.Context, _ string, events []models.UsageEv
 	}
 	accepted, dups := 0, 0
 	for _, e := range events {
+		f.Refs[e.MachineID+"|"+store.DatasetUsageEvents+"|"+e.ID] = true
 		if seen[e.ID] {
 			dups++
 			continue
@@ -119,11 +125,39 @@ func (f *Fake) InsertEvents(_ context.Context, _ string, events []models.UsageEv
 	return accepted, dups, nil
 }
 
-func (f *Fake) InsertLimits(_ context.Context, _ string, snaps []models.LimitSnapshot) (int, error) {
+func (f *Fake) InsertLimits(_ context.Context, _ string, snaps []usage.LimitSnapshot) (int, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	for _, sn := range snaps {
+		f.Refs[sn.MachineID+"|"+store.DatasetLimitSnapshots+"|"+sn.DedupKey()] = true
+	}
 	f.Limits = append(f.Limits, snaps...)
 	return len(snaps), nil
+}
+
+func (f *Fake) FilterMissingRows(_ context.Context, machineID, dataset string, ids []string) ([]string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var missing []string
+	for _, id := range ids {
+		if !f.Refs[machineID+"|"+dataset+"|"+id] {
+			missing = append(missing, id)
+		}
+	}
+	return missing, nil
+}
+
+func (f *Fake) RefCount(_ context.Context, machineID, dataset string) (int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	prefix := machineID + "|" + dataset + "|"
+	var n int64
+	for k := range f.Refs {
+		if strings.HasPrefix(k, prefix) {
+			n++
+		}
+	}
+	return n, nil
 }
 
 func (f *Fake) HighWater(_ context.Context, machineID string) (time.Time, int64, time.Time, error) {
@@ -200,15 +234,33 @@ func (f *Fake) inTeamLocked(team, userID string) bool {
 	return false
 }
 
-func (f *Fake) BoardTotals(_ context.Context, team string, since time.Time) ([]store.BoardRow, error) {
-	return f.boardTotals(team, since, time.Time{})
+// inScopeLocked reports whether a user passes a BoardScope (mirrors the
+// SQL scopeFilter semantics; follow scope includes the user themselves).
+func (f *Fake) inScopeLocked(scope store.BoardScope, userID string) bool {
+	switch {
+	case scope.TeamSlug != "":
+		return f.inTeamLocked(scope.TeamSlug, userID)
+	case scope.GroupID != "":
+		return f.GrpMemb[scope.GroupID][userID] != ""
+	case scope.FollowingOf != "":
+		if userID == scope.FollowingOf {
+			return true
+		}
+		_, ok := f.Follows[scope.FollowingOf][userID]
+		return ok
+	}
+	return true
 }
 
-func (f *Fake) BoardTotalsRange(_ context.Context, team string, since, until time.Time) ([]store.BoardRow, error) {
-	return f.boardTotals(team, since, until)
+func (f *Fake) BoardTotals(_ context.Context, scope store.BoardScope, since time.Time) ([]store.BoardRow, error) {
+	return f.boardTotals(scope, since, time.Time{})
 }
 
-func (f *Fake) boardTotals(team string, since, until time.Time) ([]store.BoardRow, error) {
+func (f *Fake) BoardTotalsRange(_ context.Context, scope store.BoardScope, since, until time.Time) ([]store.BoardRow, error) {
+	return f.boardTotals(scope, since, until)
+}
+
+func (f *Fake) boardTotals(scope store.BoardScope, since, until time.Time) ([]store.BoardRow, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	byUser := map[string]*store.BoardRow{}
@@ -220,7 +272,7 @@ func (f *Fake) boardTotals(team string, since, until time.Time) ([]store.BoardRo
 		if !until.IsZero() && !e.Timestamp.Before(until) {
 			continue
 		}
-		var u *models.User
+		var u *identity.User
 		for _, cand := range f.Users {
 			if cand.ID == eventUserID(f, e) {
 				c := cand
@@ -228,7 +280,7 @@ func (f *Fake) boardTotals(team string, since, until time.Time) ([]store.BoardRo
 				break
 			}
 		}
-		if u == nil || !f.inTeamLocked(team, u.ID) {
+		if u == nil || !f.inScopeLocked(scope, u.ID) {
 			continue
 		}
 		r := byUser[u.ID]
@@ -253,14 +305,14 @@ func (f *Fake) boardTotals(team string, since, until time.Time) ([]store.BoardRo
 }
 
 // eventUserID resolves the fake event's owner via the machine table.
-func eventUserID(f *Fake, e models.UsageEvent) string {
+func eventUserID(f *Fake, e usage.UsageEvent) string {
 	if m, ok := f.Machine[e.MachineID]; ok {
 		return m.UserID
 	}
 	return ""
 }
 
-func (f *Fake) BoardDays(_ context.Context, team string, since time.Time, limitDays int) (map[string][]time.Time, error) {
+func (f *Fake) BoardDays(_ context.Context, scope store.BoardScope, since time.Time, limitDays int) (map[string][]time.Time, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	out := map[string][]time.Time{}
@@ -277,7 +329,7 @@ func (f *Fake) BoardDays(_ context.Context, team string, since time.Time, limitD
 				break
 			}
 		}
-		if handle == "" || !f.inTeamLocked(team, uid) {
+		if handle == "" || !f.inScopeLocked(scope, uid) {
 			continue
 		}
 		day := e.Timestamp.UTC().Format("2006-01-02")
@@ -294,7 +346,7 @@ func (f *Fake) BoardDays(_ context.Context, team string, since time.Time, limitD
 	return out, nil
 }
 
-func (f *Fake) ResolveUserByProvider(_ context.Context, provider, sub string) (models.User, error) {
+func (f *Fake) ResolveUserByProvider(_ context.Context, provider, sub string) (identity.User, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	for _, u := range f.Users {
@@ -305,10 +357,10 @@ func (f *Fake) ResolveUserByProvider(_ context.Context, provider, sub string) (m
 			return u, nil
 		}
 	}
-	return models.User{}, sql.ErrNoRows
+	return identity.User{}, sql.ErrNoRows
 }
 
-func (f *Fake) UserByHandle(_ context.Context, handle string) (models.User, error) {
+func (f *Fake) UserByHandle(_ context.Context, handle string) (identity.User, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	for _, u := range f.Users {
@@ -316,10 +368,10 @@ func (f *Fake) UserByHandle(_ context.Context, handle string) (models.User, erro
 			return u, nil
 		}
 	}
-	return models.User{}, sql.ErrNoRows
+	return identity.User{}, sql.ErrNoRows
 }
 
-func (f *Fake) UserByID(_ context.Context, id string) (models.User, error) {
+func (f *Fake) UserByID(_ context.Context, id string) (identity.User, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	for _, u := range f.Users {
@@ -327,7 +379,7 @@ func (f *Fake) UserByID(_ context.Context, id string) (models.User, error) {
 			return u, nil
 		}
 	}
-	return models.User{}, sql.ErrNoRows
+	return identity.User{}, sql.ErrNoRows
 }
 
 func (f *Fake) LinkProvider(_ context.Context, userID, provider, sub, email, avatarURL string) error {
@@ -353,7 +405,7 @@ func (f *Fake) LinkProvider(_ context.Context, userID, provider, sub, email, ava
 	return sql.ErrNoRows
 }
 
-func (f *Fake) UpdateUser(_ context.Context, userID, displayName, handle, avatarURL string) (models.User, error) {
+func (f *Fake) UpdateUser(_ context.Context, userID, displayName, handle, avatarURL, bio string) (identity.User, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	for h, u := range f.Users {
@@ -361,7 +413,7 @@ func (f *Fake) UpdateUser(_ context.Context, userID, displayName, handle, avatar
 			if handle != "" {
 				for h2, u2 := range f.Users {
 					if h2 != h && u2.Handle == handle {
-						return models.User{}, errTaken
+						return identity.User{}, errTaken
 					}
 				}
 				delete(f.Users, h)
@@ -371,27 +423,32 @@ func (f *Fake) UpdateUser(_ context.Context, userID, displayName, handle, avatar
 			if displayName != "" {
 				u.DisplayName = displayName
 			}
-			u.AvatarURL = avatarURL
+			if avatarURL != "" {
+				u.AvatarURL = avatarURL
+			}
+			if bio != "" {
+				u.Bio = bio
+			}
 			f.Users[h] = u
 			return u, nil
 		}
 	}
-	return models.User{}, sql.ErrNoRows
+	return identity.User{}, sql.ErrNoRows
 }
 
-func (f *Fake) CreateSession(_ context.Context, sess models.Session) error {
+func (f *Fake) CreateSession(_ context.Context, sess identity.Session) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.Sessions[sess.TokenHash] = sess
 	return nil
 }
 
-func (f *Fake) SessionByToken(_ context.Context, tokenHash string) (models.Session, error) {
+func (f *Fake) SessionByToken(_ context.Context, tokenHash string) (identity.Session, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	s, ok := f.Sessions[tokenHash]
 	if !ok {
-		return models.Session{}, sql.ErrNoRows
+		return identity.Session{}, sql.ErrNoRows
 	}
 	return s, nil
 }
@@ -403,7 +460,7 @@ func (f *Fake) DeleteSession(_ context.Context, tokenHash string) error {
 	return nil
 }
 
-func (f *Fake) CreateTicket(_ context.Context, t models.Ticket) error {
+func (f *Fake) CreateTicket(_ context.Context, t identity.Ticket) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.Tickets[t.State] = t
@@ -422,12 +479,12 @@ func (f *Fake) AttachTicketSession(_ context.Context, state, sessionID string) e
 	return nil
 }
 
-func (f *Fake) ClaimTicket(_ context.Context, state string) (models.Ticket, error) {
+func (f *Fake) ClaimTicket(_ context.Context, state string) (identity.Ticket, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	t, ok := f.Tickets[state]
 	if !ok || !t.RedeemedAt.IsZero() {
-		return models.Ticket{}, sql.ErrNoRows
+		return identity.Ticket{}, sql.ErrNoRows
 	}
 	out := t // pre-redeem snapshot for validation
 	t.RedeemedAt = time.Now().UTC()
@@ -435,30 +492,30 @@ func (f *Fake) ClaimTicket(_ context.Context, state string) (models.Ticket, erro
 	return out, nil
 }
 
-func (f *Fake) Ticket(_ context.Context, state string) (models.Ticket, error) {
+func (f *Fake) Ticket(_ context.Context, state string) (identity.Ticket, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	t, ok := f.Tickets[state]
 	if !ok {
-		return models.Ticket{}, sql.ErrNoRows
+		return identity.Ticket{}, sql.ErrNoRows
 	}
 	return t, nil
 }
 
-func (f *Fake) CreateTeam(_ context.Context, id, slug, name, joinCode, ownerID string) (models.Team, error) {
+func (f *Fake) CreateTeam(_ context.Context, id, slug, name, joinCode, ownerID string) (social.Team, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	t := models.Team{ID: id, Slug: slug, Name: name, JoinCode: joinCode, OwnerID: ownerID, Role: "owner", Members: 1}
+	t := social.Team{ID: id, Slug: slug, Name: name, JoinCode: joinCode, OwnerID: ownerID, Role: "owner", Members: 1}
 	f.Teams[id] = t
 	f.TeamJoin[joinCode] = id
 	f.TeamMemb[id] = map[string]string{ownerID: "owner"}
 	return t, nil
 }
 
-func (f *Fake) MyTeams(_ context.Context, userID string) ([]models.Team, error) {
+func (f *Fake) MyTeams(_ context.Context, userID string) ([]social.Team, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	var out []models.Team
+	var out []social.Team
 	for id, memb := range f.TeamMemb {
 		role, ok := memb[userID]
 		if !ok {
@@ -472,12 +529,12 @@ func (f *Fake) MyTeams(_ context.Context, userID string) ([]models.Team, error) 
 	return out, nil
 }
 
-func (f *Fake) TeamByJoinCode(_ context.Context, code string) (models.Team, error) {
+func (f *Fake) TeamByJoinCode(_ context.Context, code string) (social.Team, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	id, ok := f.TeamJoin[code]
 	if !ok {
-		return models.Team{}, sql.ErrNoRows
+		return social.Team{}, sql.ErrNoRows
 	}
 	return f.Teams[id], nil
 }
@@ -514,20 +571,20 @@ func (f *Fake) IsTeamMember(_ context.Context, teamID, userID string) (bool, err
 	return ok, nil
 }
 
-func (f *Fake) CreateGroup(_ context.Context, id, teamID, slug, name, joinCode, ownerID string) (models.Group, error) {
+func (f *Fake) CreateGroup(_ context.Context, id, teamID, slug, name, joinCode, ownerID string) (social.Group, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	g := models.Group{ID: id, TeamID: teamID, Slug: slug, Name: name, JoinCode: joinCode, Role: "owner", Members: 1}
+	g := social.Group{ID: id, TeamID: teamID, Slug: slug, Name: name, JoinCode: joinCode, Role: "owner", Members: 1}
 	f.Groups[id] = g
 	f.GrpJoin[joinCode] = id
 	f.GrpMemb[id] = map[string]string{ownerID: "owner"}
 	return g, nil
 }
 
-func (f *Fake) GroupsByTeam(_ context.Context, teamID, userID string) ([]models.Group, error) {
+func (f *Fake) GroupsByTeam(_ context.Context, teamID, userID string) ([]social.Group, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	var out []models.Group
+	var out []social.Group
 	for _, g := range f.Groups {
 		if g.TeamID != teamID {
 			continue
@@ -543,12 +600,12 @@ func (f *Fake) GroupsByTeam(_ context.Context, teamID, userID string) ([]models.
 	return out, nil
 }
 
-func (f *Fake) GroupByJoinCode(_ context.Context, code string) (models.Group, error) {
+func (f *Fake) GroupByJoinCode(_ context.Context, code string) (social.Group, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	id, ok := f.GrpJoin[code]
 	if !ok {
-		return models.Group{}, sql.ErrNoRows
+		return social.Group{}, sql.ErrNoRows
 	}
 	return f.Groups[id], nil
 }
@@ -576,4 +633,68 @@ func (f *Fake) LeaveGroupMember(_ context.Context, groupID, userID string) error
 		delete(f.Groups, groupID)
 	}
 	return nil
+}
+
+// --- follows ---
+
+func (f *Fake) Follow(_ context.Context, followerID, followeeID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	m := f.Follows[followerID]
+	if m == nil {
+		m = map[string]time.Time{}
+		f.Follows[followerID] = m
+	}
+	if _, ok := m[followeeID]; !ok {
+		m[followeeID] = time.Now().UTC()
+	}
+	return nil
+}
+
+func (f *Fake) Unfollow(_ context.Context, followerID, followeeID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	delete(f.Follows[followerID], followeeID)
+	return nil
+}
+
+func (f *Fake) followUserLocked(id string, since time.Time) social.FollowUser {
+	for _, u := range f.Users {
+		if u.ID == id {
+			return social.FollowUser{
+				ID: u.ID, Handle: u.Handle, DisplayName: u.DisplayName,
+				AvatarURL: u.AvatarURL, Bio: u.Bio, Since: since,
+			}
+		}
+	}
+	return social.FollowUser{ID: id, Since: since}
+}
+
+func (f *Fake) Followers(_ context.Context, userID string) ([]social.FollowUser, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []social.FollowUser
+	for follower, edges := range f.Follows {
+		if since, ok := edges[userID]; ok {
+			out = append(out, f.followUserLocked(follower, since))
+		}
+	}
+	return out, nil
+}
+
+func (f *Fake) Following(_ context.Context, userID string) ([]social.FollowUser, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []social.FollowUser
+	for followee, since := range f.Follows[userID] {
+		out = append(out, f.followUserLocked(followee, since))
+	}
+	return out, nil
+}
+
+func (f *Fake) IsFollowing(_ context.Context, followerID, followeeID string) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	_, ok := f.Follows[followerID][followeeID]
+	return ok, nil
 }

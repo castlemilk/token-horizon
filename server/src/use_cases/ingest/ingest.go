@@ -1,6 +1,7 @@
-// Package usecases holds the business logic: envelopes in, decisions out.
-// It programs against the store port only — no HTTP, no SQL here.
-package usecases
+// Package ingest holds the ingest business logic: identity envelopes in,
+// idempotent storage decisions out. It programs against the store port
+// only — no HTTP, no SQL here.
+package ingest
 
 import (
 	"context"
@@ -10,7 +11,8 @@ import (
 	"time"
 
 	"github.com/castlemilk/token-horizon/server/src/interfaces/store"
-	"github.com/castlemilk/token-horizon/server/src/models"
+	"github.com/castlemilk/token-horizon/server/src/models/identity"
+	"github.com/castlemilk/token-horizon/server/src/models/usage"
 )
 
 // Batch caps: the daemon posts ≤500 rows per sync batch; refuse absurd
@@ -22,10 +24,14 @@ const (
 
 // Envelope is the identity frame on every daemon push (mirrors CloudSync:
 // machine_id + alias identify the device, handle/team the logged-in user).
+// UserID — the server-minted user UUID learned at Google/Microsoft login —
+// pins attribution to that exact account when present; handle resolution
+// is the fallback for daemons that never signed in.
 type Envelope struct {
 	MachineID    string `json:"machine_id"`
 	MachineAlias string `json:"machine_alias"`
 	Handle       string `json:"handle"`
+	UserID       string `json:"user_id"`
 	Team         string `json:"team"`
 	Platform     string `json:"platform"`
 }
@@ -34,7 +40,7 @@ func (e Envelope) Validate() error {
 	if e.MachineID == "" {
 		return errors.New("envelope: missing machine_id")
 	}
-	if models.NormalizeHandle(e.Handle) == "" {
+	if e.UserID == "" && identity.NormalizeHandle(e.Handle) == "" {
 		return errors.New("envelope: missing handle")
 	}
 	return nil
@@ -56,7 +62,7 @@ func (in Ingest) now() time.Time {
 }
 
 // Events stores meter/MITM usage rows against the envelope's user.
-func (in Ingest) Events(ctx context.Context, env Envelope, events []models.UsageEvent) (Result, error) {
+func (in Ingest) Events(ctx context.Context, env Envelope, events []usage.UsageEvent) (Result, error) {
 	if err := env.Validate(); err != nil {
 		return Result{}, err
 	}
@@ -81,7 +87,7 @@ func (in Ingest) Events(ctx context.Context, env Envelope, events []models.Usage
 }
 
 // Limits stores quota-window observations against the envelope's user.
-func (in Ingest) Limits(ctx context.Context, env Envelope, snaps []models.LimitSnapshot) (Result, error) {
+func (in Ingest) Limits(ctx context.Context, env Envelope, snaps []usage.LimitSnapshot) (Result, error) {
 	if err := env.Validate(); err != nil {
 		return Result{}, err
 	}
@@ -95,7 +101,7 @@ func (in Ingest) Limits(ctx context.Context, env Envelope, snaps []models.LimitS
 	for i := range snaps {
 		snaps[i].MachineID = machine.MachineID
 		if snaps[i].ID == "" {
-			snaps[i].ID = newID()
+			snaps[i].ID = identity.NewID()
 		}
 		if err := snaps[i].Validate(); err != nil {
 			return Result{}, fmt.Errorf("limits[%d]: %w", i, err)
@@ -110,22 +116,36 @@ func (in Ingest) Limits(ctx context.Context, env Envelope, snaps []models.LimitS
 
 // Result reports what one push did.
 type Result struct {
-	User       models.User    `json:"user"`
-	Machine    models.Machine `json:"machine"`
-	Accepted   int            `json:"accepted"`
-	Duplicates int            `json:"duplicates,omitempty"`
+	User       identity.User    `json:"user"`
+	Machine    identity.Machine `json:"machine"`
+	Accepted   int              `json:"accepted"`
+	Duplicates int              `json:"duplicates,omitempty"`
 }
 
-// identify resolves the human (handle → user, created on first sight) and
-// upserts the device under them. A machine that moves handles is re-homed:
-// the device row follows the latest reporting user. Blank alias/platform
-// never clobbers a known value (thin envelopes, e.g. MITM posts, omit them).
-func (in Ingest) identify(ctx context.Context, env Envelope) (models.User, models.Machine, error) {
-	handle := models.NormalizeHandle(env.Handle)
-	team := strings.TrimSpace(env.Team)
-	user, err := in.Store.ResolveUser(ctx, handle, env.Handle, team)
-	if err != nil {
-		return models.User{}, models.Machine{}, fmt.Errorf("resolve user: %w", err)
+// identify resolves the human and upserts the device under them. An
+// explicit user_id (the server-minted UUID from login) wins: rows attribute
+// to that exact account even if the local handle changed. Otherwise the
+// handle IS the account (created on first sight). A machine that moves
+// handles is re-homed: the device row follows the latest reporting user.
+// Blank alias/platform never clobbers a known value (thin envelopes, e.g.
+// MITM posts, omit them).
+func (in Ingest) identify(ctx context.Context, env Envelope) (identity.User, identity.Machine, error) {
+	var user identity.User
+	var err error
+	if env.UserID != "" {
+		user, err = in.Store.UserByID(ctx, env.UserID)
+		if err != nil {
+			return identity.User{}, identity.Machine{}, errors.New("resolve user: unknown user_id")
+		}
+		// Signed-in accounts own their profile via PATCH /v1/users/me —
+		// ingest never rewrites display fields for them.
+	} else {
+		handle := identity.NormalizeHandle(env.Handle)
+		team := strings.TrimSpace(env.Team)
+		user, err = in.Store.ResolveUser(ctx, handle, env.Handle, team)
+		if err != nil {
+			return identity.User{}, identity.Machine{}, fmt.Errorf("resolve user: %w", err)
+		}
 	}
 	if known, err := in.Store.MachineByID(ctx, env.MachineID); err == nil {
 		if env.MachineAlias == "" {
@@ -135,8 +155,8 @@ func (in Ingest) identify(ctx context.Context, env Envelope) (models.User, model
 			env.Platform = known.Platform
 		}
 	}
-	machine, err := in.Store.RegisterMachine(ctx, models.Machine{
-		ID:        newID(),
+	machine, err := in.Store.RegisterMachine(ctx, identity.Machine{
+		ID:        identity.NewID(),
 		MachineID: env.MachineID,
 		UserID:    user.ID,
 		Alias:     env.MachineAlias,
@@ -144,7 +164,7 @@ func (in Ingest) identify(ctx context.Context, env Envelope) (models.User, model
 		LastSeen:  in.now(),
 	})
 	if err != nil {
-		return models.User{}, models.Machine{}, fmt.Errorf("register machine: %w", err)
+		return identity.User{}, identity.Machine{}, fmt.Errorf("register machine: %w", err)
 	}
 	return user, machine, nil
 }

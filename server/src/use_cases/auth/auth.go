@@ -1,4 +1,8 @@
-package usecases
+// Package auth holds the login business logic: the browser OAuth dance
+// (Google/Microsoft) bridged back to the desktop app with claim tickets,
+// sessions, and bearer-token authentication. It programs against the store
+// port only — no HTTP routing, no SQL here.
+package auth
 
 import (
 	"context"
@@ -15,7 +19,7 @@ import (
 	"time"
 
 	"github.com/castlemilk/token-horizon/server/src/interfaces/store"
-	"github.com/castlemilk/token-horizon/server/src/models"
+	"github.com/castlemilk/token-horizon/server/src/models/identity"
 )
 
 // Supported login providers.
@@ -129,7 +133,7 @@ func (a Auth) LoginURL(ctx context.Context, provider string) (loginURL, state st
 		return "", "", err
 	}
 	now := a.now()
-	if err := a.Store.CreateTicket(ctx, models.Ticket{
+	if err := a.Store.CreateTicket(ctx, identity.Ticket{
 		State: state, CreatedAt: now, ExpiresAt: now.Add(a.ticketTTL()),
 	}); err != nil {
 		return "", "", err
@@ -155,20 +159,20 @@ type providerProfile struct {
 // Complete finishes the browser dance: validates state, exchanges the code,
 // links (or creates) the user, mints a session, and parks it on the ticket
 // for Claim. Returns the user for the callback success page.
-func (a Auth) Complete(ctx context.Context, provider, code, state string) (models.User, error) {
+func (a Auth) Complete(ctx context.Context, provider, code, state string) (identity.User, error) {
 	cfg, eps, err := a.Config.provider(provider)
 	if err != nil {
-		return models.User{}, err
+		return identity.User{}, err
 	}
 	if code == "" || state == "" {
-		return models.User{}, errors.New("code + state required")
+		return identity.User{}, errors.New("code + state required")
 	}
 	prof, err := a.fetchProfile(ctx, cfg, eps, provider, code)
 	if err != nil {
-		return models.User{}, err
+		return identity.User{}, err
 	}
 	if prof.Sub == "" {
-		return models.User{}, errors.New("provider returned no subject")
+		return identity.User{}, errors.New("provider returned no subject")
 	}
 	now := a.now()
 	user, err := a.Store.ResolveUserByProvider(ctx, provider, prof.Sub)
@@ -176,33 +180,33 @@ func (a Auth) Complete(ctx context.Context, provider, code, state string) (model
 		// First sight: mint a unique handle, create, link.
 		user, err = a.createLinkedUser(ctx, provider, prof)
 		if err != nil {
-			return models.User{}, err
+			return identity.User{}, err
 		}
 	} else if err := a.Store.LinkProvider(ctx, user.ID, provider, prof.Sub, prof.Email, prof.Picture); err != nil {
-		return models.User{}, err
+		return identity.User{}, err
 	}
 	token, err := randomHex(32)
 	if err != nil {
-		return models.User{}, err
+		return identity.User{}, err
 	}
-	if err := a.Store.CreateSession(ctx, models.Session{
+	if err := a.Store.CreateSession(ctx, identity.Session{
 		TokenHash: shaToken(token), UserID: user.ID, Provider: provider,
 		CreatedAt: now, ExpiresAt: now.Add(a.sessionTTL()),
 	}); err != nil {
-		return models.User{}, err
+		return identity.User{}, err
 	}
 	if err := a.Store.AttachTicketSession(ctx, state, token); err != nil {
-		return models.User{}, errors.New("login ticket expired — restart sign-in")
+		return identity.User{}, errors.New("login ticket expired — restart sign-in")
 	}
 	return user, nil
 }
 
 // createLinkedUser mints a fresh user with a collision-free handle and links
 // the provider sub in one step.
-func (a Auth) createLinkedUser(ctx context.Context, provider string, prof providerProfile) (models.User, error) {
-	base := models.NormalizeHandle(strings.Split(prof.Email, "@")[0])
+func (a Auth) createLinkedUser(ctx context.Context, provider string, prof providerProfile) (identity.User, error) {
+	base := identity.NormalizeHandle(strings.Split(prof.Email, "@")[0])
 	if base == "" {
-		base = models.NormalizeHandle(prof.Name)
+		base = identity.NormalizeHandle(prof.Name)
 	}
 	if base == "" {
 		base = "user"
@@ -216,10 +220,10 @@ func (a Auth) createLinkedUser(ctx context.Context, provider string, prof provid
 	}
 	user, err := a.Store.ResolveUser(ctx, handle, prof.Name, "")
 	if err != nil {
-		return models.User{}, err
+		return identity.User{}, err
 	}
 	if err := a.Store.LinkProvider(ctx, user.ID, provider, prof.Sub, prof.Email, prof.Picture); err != nil {
-		return models.User{}, err
+		return identity.User{}, err
 	}
 	user.Email = prof.Email
 	if user.AvatarURL == "" {
@@ -236,31 +240,31 @@ func (a Auth) createLinkedUser(ctx context.Context, provider string, prof provid
 // Claim burns a ticket exactly once, returning the session token + user.
 // A live ticket with no session yet (browser dance still open) reports
 // ErrTicketPending — retryable — so the app polls instead of dying.
-func (a Auth) Claim(ctx context.Context, state string) (token string, user models.User, err error) {
+func (a Auth) Claim(ctx context.Context, state string) (token string, user identity.User, err error) {
 	now := a.now()
 	ticket, err := a.Store.Ticket(ctx, state)
 	if err != nil {
-		return "", models.User{}, errors.New("ticket invalid, expired, or already claimed")
+		return "", identity.User{}, errors.New("ticket invalid, expired, or already claimed")
 	}
 	if !ticket.RedeemedAt.IsZero() || now.After(ticket.ExpiresAt) {
-		return "", models.User{}, errors.New("ticket invalid, expired, or already claimed")
+		return "", identity.User{}, errors.New("ticket invalid, expired, or already claimed")
 	}
 	if ticket.SessionID == "" {
-		return "", models.User{}, ErrTicketPending
+		return "", identity.User{}, ErrTicketPending
 	}
 	if _, err := a.Store.ClaimTicket(ctx, state); err != nil {
-		return "", models.User{}, errors.New("ticket invalid, expired, or already claimed")
+		return "", identity.User{}, errors.New("ticket invalid, expired, or already claimed")
 	}
 	sess, err := a.Store.SessionByToken(ctx, shaToken(ticket.SessionID))
 	if err != nil {
-		return "", models.User{}, errors.New("session missing")
+		return "", identity.User{}, errors.New("session missing")
 	}
 	if sess.Expired(now) {
-		return "", models.User{}, errors.New("session expired")
+		return "", identity.User{}, errors.New("session expired")
 	}
 	user, err = a.Store.UserByID(ctx, sess.UserID)
 	if err != nil {
-		return "", models.User{}, errors.New("account missing")
+		return "", identity.User{}, errors.New("account missing")
 	}
 	return ticket.SessionID, user, nil
 }
@@ -270,16 +274,16 @@ var ErrTicketPending = errors.New("ticket pending — complete sign-in in the br
 
 // Authenticate resolves a bearer token to its user (sessions only; the
 // service sync token is checked by the HTTP layer, not here).
-func (a Auth) Authenticate(ctx context.Context, token string) (models.User, error) {
+func (a Auth) Authenticate(ctx context.Context, token string) (identity.User, error) {
 	if token == "" {
-		return models.User{}, errors.New("no token")
+		return identity.User{}, errors.New("no token")
 	}
 	sess, err := a.Store.SessionByToken(ctx, shaToken(token))
 	if err != nil {
-		return models.User{}, errors.New("unknown session")
+		return identity.User{}, errors.New("unknown session")
 	}
 	if sess.Expired(a.now()) {
-		return models.User{}, errors.New("session expired")
+		return identity.User{}, errors.New("session expired")
 	}
 	return a.Store.UserByID(ctx, sess.UserID)
 }
@@ -349,11 +353,4 @@ func (a Auth) fetchProfile(ctx context.Context, cfg OAuthConfig, eps providerEnd
 		sub = ui.ID // Microsoft graph shape
 	}
 	return providerProfile{Sub: sub, Email: ui.Email, Name: ui.Name, Picture: ui.Picture}, nil
-}
-
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
 }

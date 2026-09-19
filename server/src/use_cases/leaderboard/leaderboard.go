@@ -1,4 +1,8 @@
-package usecases
+// Package leaderboard holds the ranking business logic: per-user metered
+// totals over a period, scoped by team, group, or the caller's follow
+// graph, with previous-window deltas and active-day streaks. Ranking state
+// never persists — boards derive at read time.
+package leaderboard
 
 import (
 	"context"
@@ -8,9 +12,10 @@ import (
 	"github.com/castlemilk/token-horizon/server/src/interfaces/store"
 )
 
-// Leaderboard ranks users by metered tokens over a period, optionally
-// scoped to a team. Streaks count trailing consecutive active UTC days
-// (today counts if active, else the run must end yesterday).
+// Leaderboard ranks users by metered tokens over a period, scoped by team,
+// group, or the caller's follow graph (store.BoardScope; zero value =
+// everyone). Streaks count trailing consecutive active UTC days (today
+// counts if active, else the run must end yesterday).
 type Leaderboard struct {
 	Store store.Store
 	Now   func() time.Time
@@ -57,12 +62,13 @@ type Entry struct {
 type Board struct {
 	Period  string  `json:"period"`
 	Team    string  `json:"team,omitempty"`
+	Group   string  `json:"group,omitempty"`
 	Entries []Entry `json:"entries"`
 }
 
 // Rank returns the board for a period ("" = today), with deltas against the
 // previous equal window (skipped for "all") and streaks always attached.
-func (l Leaderboard) Rank(ctx context.Context, team, period string) (Board, error) {
+func (l Leaderboard) Rank(ctx context.Context, scope store.BoardScope, period string) (Board, error) {
 	now := l.now()
 	since, prevSince, err := periodStart(period, now)
 	if err != nil {
@@ -71,13 +77,13 @@ func (l Leaderboard) Rank(ctx context.Context, team, period string) (Board, erro
 	if period == "" {
 		period = "today"
 	}
-	rows, err := l.Store.BoardTotals(ctx, team, since)
+	rows, err := l.Store.BoardTotals(ctx, scope, since)
 	if err != nil {
 		return Board{}, err
 	}
 	prevByHandle := map[string]int64{}
 	if period != "all" {
-		prev, err := l.Store.BoardTotalsRange(ctx, team, prevSince, since)
+		prev, err := l.Store.BoardTotalsRange(ctx, scope, prevSince, since)
 		if err != nil {
 			return Board{}, err
 		}
@@ -85,7 +91,7 @@ func (l Leaderboard) Rank(ctx context.Context, team, period string) (Board, erro
 			prevByHandle[r.Handle] = r.Tokens
 		}
 	}
-	days, err := l.Store.BoardDays(ctx, team, now.Add(-400*24*time.Hour), 400)
+	days, err := l.Store.BoardDays(ctx, scope, now.Add(-400*24*time.Hour), 400)
 	if err != nil {
 		return Board{}, err
 	}
@@ -104,7 +110,7 @@ func (l Leaderboard) Rank(ctx context.Context, team, period string) (Board, erro
 		}
 		entries = append(entries, e)
 	}
-	return Board{Period: period, Team: team, Entries: entries}, nil
+	return Board{Period: period, Team: scope.TeamSlug, Group: scope.GroupID, Entries: entries}, nil
 }
 
 // streakDays counts the trailing run of consecutive active UTC days ending

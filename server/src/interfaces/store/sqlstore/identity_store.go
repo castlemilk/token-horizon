@@ -1,39 +1,40 @@
-package store
+package sqlstore
 
 import (
 	"context"
 	"database/sql"
 	"time"
 
-	"github.com/castlemilk/token-horizon/server/src/models"
+	"github.com/castlemilk/token-horizon/server/src/models/identity"
+	"github.com/castlemilk/token-horizon/server/src/models/social"
 )
 
-// Identity + teams/groups persistence (002_identity schema). NULLIF keeps
+// Identity + follows + teams/groups persistence (001_schema). NULLIF keeps
 // provider subs NULL when unlinked on both dialects.
 
 // ResolveUserByProvider finds the user linked to a Google/Microsoft sub.
-func (s *SQLStore) ResolveUserByProvider(ctx context.Context, provider, sub string) (models.User, error) {
+func (s *SQLStore) ResolveUserByProvider(ctx context.Context, provider, sub string) (identity.User, error) {
 	col := "google_sub"
 	if provider == "microsoft" {
 		col = "ms_sub"
 	}
-	var u models.User
+	var u identity.User
 	err := s.db.QueryRowContext(ctx,
 		`SELECT `+userColumns+` FROM users WHERE `+col+` = $1`, sub).Scan(scanUser(&u)...)
 	return u, err
 }
 
 // UserByHandle reads one user by handle (sql.ErrNoRows when free).
-func (s *SQLStore) UserByHandle(ctx context.Context, handle string) (models.User, error) {
-	var u models.User
+func (s *SQLStore) UserByHandle(ctx context.Context, handle string) (identity.User, error) {
+	var u identity.User
 	err := s.db.QueryRowContext(ctx,
 		`SELECT `+userColumns+` FROM users WHERE handle = $1`, handle).Scan(scanUser(&u)...)
 	return u, err
 }
 
 // UserByID reads one user by id.
-func (s *SQLStore) UserByID(ctx context.Context, id string) (models.User, error) {
-	var u models.User
+func (s *SQLStore) UserByID(ctx context.Context, id string) (identity.User, error) {
+	var u identity.User
 	err := s.db.QueryRowContext(ctx,
 		`SELECT `+userColumns+` FROM users WHERE id = $1`, id).Scan(scanUser(&u)...)
 	return u, err
@@ -56,26 +57,28 @@ func (s *SQLStore) LinkProvider(ctx context.Context, userID, provider, sub, emai
 
 // UpdateUser edits display profile fields. Empty display name keeps the old
 // one; empty avatar URL keeps the old photo (removal is a separate,
-// deliberate action); handle applies as given (uniqueness validated upstream).
-func (s *SQLStore) UpdateUser(ctx context.Context, userID, displayName, handle, avatarURL string) (models.User, error) {
+// deliberate action); empty bio keeps the old one; handle applies as given
+// (uniqueness validated upstream).
+func (s *SQLStore) UpdateUser(ctx context.Context, userID, displayName, handle, avatarURL, bio string) (identity.User, error) {
 	_, err := s.db.ExecContext(ctx,
 		`UPDATE users SET
 		 display_name = CASE WHEN $1 = '' THEN display_name ELSE $1 END,
 		 handle = CASE WHEN $2 = '' THEN handle ELSE $2 END,
 		 avatar_url = CASE WHEN $3 = '' THEN avatar_url ELSE $3 END,
-		 updated_at = $4 WHERE id = $5`,
-		displayName, handle, avatarURL, time.Now().UTC(), userID)
+		 bio = CASE WHEN $4 = '' THEN bio ELSE $4 END,
+		 updated_at = $5 WHERE id = $6`,
+		displayName, handle, avatarURL, bio, time.Now().UTC(), userID)
 	if err != nil {
-		return models.User{}, err
+		return identity.User{}, err
 	}
-	var u models.User
+	var u identity.User
 	err = s.db.QueryRowContext(ctx,
 		`SELECT `+userColumns+` FROM users WHERE id = $1`, userID).Scan(scanUser(&u)...)
 	return u, err
 }
 
 // CreateSession stores a session by token hash.
-func (s *SQLStore) CreateSession(ctx context.Context, sess models.Session) error {
+func (s *SQLStore) CreateSession(ctx context.Context, sess identity.Session) error {
 	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO sessions (token_hash, user_id, provider, created_at, expires_at)
 		 VALUES ($1, $2, $3, $4, $5)`,
@@ -84,8 +87,8 @@ func (s *SQLStore) CreateSession(ctx context.Context, sess models.Session) error
 }
 
 // SessionByToken resolves a bearer token hash ("" user when missing).
-func (s *SQLStore) SessionByToken(ctx context.Context, tokenHash string) (models.Session, error) {
-	var sess models.Session
+func (s *SQLStore) SessionByToken(ctx context.Context, tokenHash string) (identity.Session, error) {
+	var sess identity.Session
 	err := s.db.QueryRowContext(ctx,
 		`SELECT token_hash, user_id, provider, created_at, expires_at
 		 FROM sessions WHERE token_hash = $1`, tokenHash).Scan(
@@ -100,7 +103,7 @@ func (s *SQLStore) DeleteSession(ctx context.Context, tokenHash string) error {
 }
 
 // CreateTicket stores a login claim ticket.
-func (s *SQLStore) CreateTicket(ctx context.Context, t models.Ticket) error {
+func (s *SQLStore) CreateTicket(ctx context.Context, t identity.Ticket) error {
 	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO auth_tickets (state, session_id, created_at, expires_at)
 		 VALUES ($1, $2, $3, $4)`,
@@ -123,8 +126,8 @@ func (s *SQLStore) AttachTicketSession(ctx context.Context, state, sessionID str
 }
 
 // Ticket reads one claim ticket without touching it.
-func (s *SQLStore) Ticket(ctx context.Context, state string) (models.Ticket, error) {
-	var t models.Ticket
+func (s *SQLStore) Ticket(ctx context.Context, state string) (identity.Ticket, error) {
+	var t identity.Ticket
 	err := s.db.QueryRowContext(ctx,
 		`SELECT state, session_id, redeemed_at, created_at, expires_at
 		 FROM auth_tickets WHERE state = $1`, state).Scan(
@@ -134,30 +137,92 @@ func (s *SQLStore) Ticket(ctx context.Context, state string) (models.Ticket, err
 
 // ClaimTicket burns a ticket exactly once, returning its pre-redeem state
 // for validation (concurrent claims lose the UPDATE race → ErrNoRows).
-func (s *SQLStore) ClaimTicket(ctx context.Context, state string) (models.Ticket, error) {
+func (s *SQLStore) ClaimTicket(ctx context.Context, state string) (identity.Ticket, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return models.Ticket{}, err
+		return identity.Ticket{}, err
 	}
 	defer tx.Rollback()
-	var t models.Ticket
+	var t identity.Ticket
 	err = tx.QueryRowContext(ctx,
 		`SELECT state, session_id, redeemed_at, created_at, expires_at
 		 FROM auth_tickets WHERE state = $1`, state).Scan(
 		&t.State, &t.SessionID, &t.RedeemedAt, &t.CreatedAt, &t.ExpiresAt)
 	if err != nil {
-		return models.Ticket{}, err
+		return identity.Ticket{}, err
 	}
 	res, err := tx.ExecContext(ctx,
 		`UPDATE auth_tickets SET redeemed_at = $1
 		 WHERE state = $2 AND redeemed_at IS NULL AND expires_at > $1`, time.Now().UTC(), state)
 	if err != nil {
-		return models.Ticket{}, err
+		return identity.Ticket{}, err
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
-		return models.Ticket{}, sql.ErrNoRows
+		return identity.Ticket{}, sql.ErrNoRows
 	}
 	return t, tx.Commit()
+}
+
+// --- follows ---
+
+// Follow creates the edge (idempotent); Unfollow removes it.
+func (s *SQLStore) Follow(ctx context.Context, followerID, followeeID string) error {
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO user_follows (follower_id, followee_id, created_at)
+		 VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`,
+		followerID, followeeID, time.Now().UTC())
+	return err
+}
+
+func (s *SQLStore) Unfollow(ctx context.Context, followerID, followeeID string) error {
+	_, err := s.db.ExecContext(ctx,
+		`DELETE FROM user_follows WHERE follower_id = $1 AND followee_id = $2`,
+		followerID, followeeID)
+	return err
+}
+
+// followList lists one side of the graph: col names the user being listed
+// (followee for Following, follower for Followers), other the join target.
+func (s *SQLStore) followList(ctx context.Context, col, other, userID string) ([]social.FollowUser, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT u.id, u.handle, u.display_name, COALESCE(u.avatar_url, ''),
+		        COALESCE(u.bio, ''), f.created_at
+		 FROM user_follows f JOIN users u ON u.id = f.`+other+`
+		 WHERE f.`+col+` = $1 ORDER BY f.created_at DESC`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []social.FollowUser
+	for rows.Next() {
+		var fu social.FollowUser
+		if err := rows.Scan(&fu.ID, &fu.Handle, &fu.DisplayName, &fu.AvatarURL, &fu.Bio, &fu.Since); err != nil {
+			return nil, err
+		}
+		out = append(out, fu)
+	}
+	return out, rows.Err()
+}
+
+// Followers lists who follows the user; Following lists whom they follow.
+func (s *SQLStore) Followers(ctx context.Context, userID string) ([]social.FollowUser, error) {
+	return s.followList(ctx, "followee_id", "follower_id", userID)
+}
+
+func (s *SQLStore) Following(ctx context.Context, userID string) ([]social.FollowUser, error) {
+	return s.followList(ctx, "follower_id", "followee_id", userID)
+}
+
+// IsFollowing reports whether the edge exists.
+func (s *SQLStore) IsFollowing(ctx context.Context, followerID, followeeID string) (bool, error) {
+	var one int
+	err := s.db.QueryRowContext(ctx,
+		`SELECT 1 FROM user_follows WHERE follower_id = $1 AND followee_id = $2`,
+		followerID, followeeID).Scan(&one)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	return err == nil, err
 }
 
 // --- teams ---
@@ -213,31 +278,31 @@ func (s *SQLStore) leaveAndPrune(ctx context.Context, t memberTable, id, userID 
 }
 
 // CreateTeam makes a team (creator becomes owner) with a fresh join code.
-func (s *SQLStore) CreateTeam(ctx context.Context, id, slug, name, joinCode, ownerID string) (models.Team, error) {
+func (s *SQLStore) CreateTeam(ctx context.Context, id, slug, name, joinCode, ownerID string) (social.Team, error) {
 	now := time.Now().UTC()
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return models.Team{}, err
+		return social.Team{}, err
 	}
 	defer tx.Rollback()
 	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO teams (id, slug, name, join_code, owner_id, created_at)
 		 VALUES ($1, $2, $3, $4, $5, $6)`, id, slug, name, joinCode, ownerID, now); err != nil {
-		return models.Team{}, err
+		return social.Team{}, err
 	}
 	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO team_members (team_id, user_id, role, joined_at)
 		 VALUES ($1, $2, 'owner', $3)`, id, ownerID, now); err != nil {
-		return models.Team{}, err
+		return social.Team{}, err
 	}
 	if err := tx.Commit(); err != nil {
-		return models.Team{}, err
+		return social.Team{}, err
 	}
-	return models.Team{ID: id, Slug: slug, Name: name, JoinCode: joinCode, OwnerID: ownerID, Role: "owner", Members: 1, CreatedAt: now}, nil
+	return social.Team{ID: id, Slug: slug, Name: name, JoinCode: joinCode, OwnerID: ownerID, Role: "owner", Members: 1, CreatedAt: now}, nil
 }
 
 // MyTeams lists a user's teams with their role and member counts.
-func (s *SQLStore) MyTeams(ctx context.Context, userID string) ([]models.Team, error) {
+func (s *SQLStore) MyTeams(ctx context.Context, userID string) ([]social.Team, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT t.id, t.slug, t.name, t.owner_id, tm.role,
 		        (SELECT COUNT(*) FROM team_members WHERE team_id = t.id), t.created_at
@@ -247,9 +312,9 @@ func (s *SQLStore) MyTeams(ctx context.Context, userID string) ([]models.Team, e
 		return nil, err
 	}
 	defer rows.Close()
-	var out []models.Team
+	var out []social.Team
 	for rows.Next() {
-		var t models.Team
+		var t social.Team
 		if err := rows.Scan(&t.ID, &t.Slug, &t.Name, &t.OwnerID, &t.Role, &t.Members, &t.CreatedAt); err != nil {
 			return nil, err
 		}
@@ -259,8 +324,8 @@ func (s *SQLStore) MyTeams(ctx context.Context, userID string) ([]models.Team, e
 }
 
 // TeamByJoinCode resolves an invite code.
-func (s *SQLStore) TeamByJoinCode(ctx context.Context, code string) (models.Team, error) {
-	var t models.Team
+func (s *SQLStore) TeamByJoinCode(ctx context.Context, code string) (social.Team, error) {
+	var t social.Team
 	err := s.db.QueryRowContext(ctx,
 		`SELECT id, slug, name, owner_id, created_at FROM teams WHERE join_code = $1`, code).Scan(
 		&t.ID, &t.Slug, &t.Name, &t.OwnerID, &t.CreatedAt)
@@ -285,31 +350,31 @@ func (s *SQLStore) LeaveTeamMember(ctx context.Context, teamID, userID string) e
 // --- groups (team-scoped) ---
 
 // CreateGroup makes a group inside a team (creator becomes owner).
-func (s *SQLStore) CreateGroup(ctx context.Context, id, teamID, slug, name, joinCode, ownerID string) (models.Group, error) {
+func (s *SQLStore) CreateGroup(ctx context.Context, id, teamID, slug, name, joinCode, ownerID string) (social.Group, error) {
 	now := time.Now().UTC()
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return models.Group{}, err
+		return social.Group{}, err
 	}
 	defer tx.Rollback()
 	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO groups (id, team_id, slug, name, join_code, owner_id, created_at)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7)`, id, teamID, slug, name, joinCode, ownerID, now); err != nil {
-		return models.Group{}, err
+		return social.Group{}, err
 	}
 	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO group_members (group_id, user_id, role, joined_at)
 		 VALUES ($1, $2, 'owner', $3)`, id, ownerID, now); err != nil {
-		return models.Group{}, err
+		return social.Group{}, err
 	}
 	if err := tx.Commit(); err != nil {
-		return models.Group{}, err
+		return social.Group{}, err
 	}
-	return models.Group{ID: id, TeamID: teamID, Slug: slug, Name: name, JoinCode: joinCode, Role: "owner", Members: 1, CreatedAt: now}, nil
+	return social.Group{ID: id, TeamID: teamID, Slug: slug, Name: name, JoinCode: joinCode, Role: "owner", Members: 1, CreatedAt: now}, nil
 }
 
 // GroupsByTeam lists a team's groups with the caller's role + counts.
-func (s *SQLStore) GroupsByTeam(ctx context.Context, teamID, userID string) ([]models.Group, error) {
+func (s *SQLStore) GroupsByTeam(ctx context.Context, teamID, userID string) ([]social.Group, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT g.id, g.team_id, g.slug, g.name,
 		        COALESCE((SELECT role FROM group_members WHERE group_id = g.id AND user_id = $2), ''),
@@ -319,9 +384,9 @@ func (s *SQLStore) GroupsByTeam(ctx context.Context, teamID, userID string) ([]m
 		return nil, err
 	}
 	defer rows.Close()
-	var out []models.Group
+	var out []social.Group
 	for rows.Next() {
-		var g models.Group
+		var g social.Group
 		if err := rows.Scan(&g.ID, &g.TeamID, &g.Slug, &g.Name, &g.Role, &g.Members, &g.CreatedAt); err != nil {
 			return nil, err
 		}
@@ -331,8 +396,8 @@ func (s *SQLStore) GroupsByTeam(ctx context.Context, teamID, userID string) ([]m
 }
 
 // GroupByJoinCode resolves a group invite.
-func (s *SQLStore) GroupByJoinCode(ctx context.Context, code string) (models.Group, error) {
-	var g models.Group
+func (s *SQLStore) GroupByJoinCode(ctx context.Context, code string) (social.Group, error) {
+	var g social.Group
 	err := s.db.QueryRowContext(ctx,
 		`SELECT id, team_id, slug, name, owner_id, created_at FROM groups WHERE join_code = $1`, code).Scan(
 		&g.ID, &g.TeamID, &g.Slug, &g.Name, &g.OwnerID, &g.CreatedAt)

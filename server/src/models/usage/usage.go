@@ -1,11 +1,11 @@
-// Package models holds the server's primitives: plain data + validation,
-// no I/O, no business rules. Field names mirror the Swift Core contracts
-// (UsageEvent, CloudSchema, MachineIdentity) so the wire stays obvious.
-package models
+// Package usage holds the metered-usage primitives: token breakdowns,
+// usage events, limit snapshots, and sync cursors. Plain data +
+// validation, no I/O, no business rules. Field names mirror the Swift Core
+// contracts (UsageEvent, CloudSchema) so the wire stays obvious.
+package usage
 
 import (
 	"errors"
-	"strings"
 	"time"
 )
 
@@ -38,36 +38,6 @@ var (
 	validSources      = map[string]bool{"external": true, "selfManaged": true, "gateway": true}
 	validAttestations = map[string]bool{"selfReported": true, "measured": true, "reconciled": true, "gatewayMetered": true}
 )
-
-// User is one logged-in human. Handle is the identity the daemon reports
-// (TH_SYNC_HANDLE, defaulting to the OS username) — unique, human-meaningful.
-// Email/avatar/provider links fill in once the user signs in with Google or
-// Microsoft (002_identity); provider subs are "" when unlinked.
-type User struct {
-	ID          string    `json:"id"`
-	Handle      string    `json:"handle"`
-	DisplayName string    `json:"display_name"`
-	Team        string    `json:"team"`
-	Email       string    `json:"email,omitempty"`
-	AvatarURL   string    `json:"avatar_url,omitempty"`
-	GoogleSub   string    `json:"-"`
-	MSSub       string    `json:"-"`
-	CreatedAt   time.Time `json:"created_at"`
-	UpdatedAt   time.Time `json:"updated_at"`
-}
-
-// Machine is one device reporting to the server, always owned by a user.
-// MachineID is the stable per-device UUID minted by the daemon;
-// Alias is the display label (never identity).
-type Machine struct {
-	ID        string    `json:"id"`
-	MachineID string    `json:"machine_id"`
-	UserID    string    `json:"user_id"`
-	Alias     string    `json:"alias"`
-	Platform  string    `json:"platform"`
-	LastSeen  time.Time `json:"last_seen_at"`
-	CreatedAt time.Time `json:"created_at"`
-}
 
 // UsageEvent is one measured request, UUID-keyed so redelivery merges
 // conflict-free (INSERT … ON CONFLICT DO NOTHING on id).
@@ -137,6 +107,14 @@ func (s LimitSnapshot) Validate() error {
 	return nil
 }
 
+// DedupKey is the natural identity of a limit snapshot: one row per
+// (machine, provider, account, label, minute). Retries collapse onto it;
+// the delta-sync reference table stores it as the row id.
+func (s LimitSnapshot) DedupKey() string {
+	return s.MachineID + "|" + s.Provider + "|" + s.AccountID + "|" + s.Label +
+		"|" + s.RecordedAt.UTC().Truncate(time.Minute).Format(time.RFC3339)
+}
+
 // SyncCursor is server-side high-water per dataset per machine, so clients
 // can reconcile ("what have you seen from me?").
 type SyncCursor struct {
@@ -144,10 +122,4 @@ type SyncCursor struct {
 	MachineID string    `json:"machine_id"`
 	Cursor    string    `json:"cursor"`
 	UpdatedAt time.Time `json:"updated_at"`
-}
-
-// NormalizeHandle folds a reported handle to canonical form (the daemon
-// sends the OS username verbatim; matching must be case/space-insensitive).
-func NormalizeHandle(h string) string {
-	return strings.ToLower(strings.TrimSpace(h))
 }

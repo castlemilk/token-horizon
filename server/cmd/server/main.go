@@ -26,8 +26,14 @@ import (
 	_ "github.com/lib/pq"
 
 	api "github.com/castlemilk/token-horizon/server/src/interfaces/http"
-	"github.com/castlemilk/token-horizon/server/src/interfaces/store"
-	usecases "github.com/castlemilk/token-horizon/server/src/use_cases"
+	"github.com/castlemilk/token-horizon/server/src/interfaces/store/sqlstore"
+	"github.com/castlemilk/token-horizon/server/src/use_cases/account"
+	"github.com/castlemilk/token-horizon/server/src/use_cases/auth"
+	"github.com/castlemilk/token-horizon/server/src/use_cases/follows"
+	"github.com/castlemilk/token-horizon/server/src/use_cases/ingest"
+	"github.com/castlemilk/token-horizon/server/src/use_cases/leaderboard"
+	syncuc "github.com/castlemilk/token-horizon/server/src/use_cases/sync"
+	"github.com/castlemilk/token-horizon/server/src/use_cases/teams"
 )
 
 func getenv(key, def string) string {
@@ -44,32 +50,33 @@ func main() {
 	if dsn == "" {
 		logger.Fatal("TH_SERVER_DSN is required")
 	}
-	st, err := store.Open(driver, dsn)
+	st, err := sqlstore.Open(driver, dsn)
 	if err != nil {
 		logger.Fatalf("open store (%s): %v (run cmd/migrate first?)", driver, err)
 	}
 	defer st.Close()
 
-	ingest := usecases.Ingest{Store: st}
-	sync := usecases.Sync{Store: st}
-	board := &usecases.Leaderboard{Store: st}
-	authCfg := usecases.AuthConfig{
-		Google: usecases.OAuthConfig{
+	ingestUC := ingest.Ingest{Store: st}
+	syncUC := syncuc.Sync{Store: st}
+	board := &leaderboard.Leaderboard{Store: st}
+	authCfg := auth.AuthConfig{
+		Google: auth.OAuthConfig{
 			ClientID:     os.Getenv("GOOGLE_CLIENT_ID"),
 			ClientSecret: os.Getenv("GOOGLE_CLIENT_SECRET"),
 		},
-		Microsoft: usecases.OAuthConfig{
+		Microsoft: auth.OAuthConfig{
 			ClientID:     os.Getenv("MS_CLIENT_ID"),
 			ClientSecret: os.Getenv("MS_CLIENT_SECRET"),
 		},
 		PublicURL: getenv("TH_SERVER_PUBLIC_URL", "http://localhost:8080"),
 	}
-	auth := usecases.Auth{Store: st, Config: authCfg}
+	authUC := auth.Auth{Store: st, Config: authCfg}
 	dataDir := getenv("TH_SERVER_DATA", "./data")
 	srv := &api.Server{
-		Ingest: ingest, Sync: sync, Board: board, AuthN: auth, Token: os.Getenv("TH_SYNC_TOKEN"), Log: logger,
+		Ingest: ingestUC, Sync: syncUC, Board: board, AuthN: authUC, Token: os.Getenv("TH_SYNC_TOKEN"), Log: logger,
 		AuthRoutes: &api.Auth{
-			Use: auth, Acct: usecases.Account{Store: st}, Team: usecases.Teams{Store: st},
+			Use: authUC, Acct: account.Account{Store: st}, Team: teams.Teams{Store: st},
+			Follows: follows.Follows{Store: st}, Board: board,
 			AvatarDir:     dataDir + "/avatars",
 			AvatarURLBase: "/v1/avatars",
 		},
