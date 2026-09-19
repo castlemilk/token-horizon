@@ -2,25 +2,28 @@ package api
 
 import (
 	"fmt"
-	"io"
 	"net/http"
-	"os"
-	"path/filepath"
 	"strings"
 
-	"github.com/castlemilk/token-horizon/server/src/models"
-	usecases "github.com/castlemilk/token-horizon/server/src/use_cases"
+	"github.com/castlemilk/token-horizon/server/src/use_cases/account"
+	"github.com/castlemilk/token-horizon/server/src/use_cases/auth"
+	"github.com/castlemilk/token-horizon/server/src/use_cases/follows"
+	"github.com/castlemilk/token-horizon/server/src/use_cases/leaderboard"
+	"github.com/castlemilk/token-horizon/server/src/use_cases/teams"
 )
 
 // Auth and account routes. Login is a browser dance bridged back to the
 // desktop app with claim tickets: open login URL → provider → callback
 // parks a session on the ticket → app claims it once for a bearer token.
 
-// Auth wires the Auth use case plus avatar storage into the Server.
+// Auth wires the login, account, teams, and follows use cases plus avatar
+// storage into the Server.
 type Auth struct {
-	Use  usecases.Auth
-	Acct usecases.Account
-	Team usecases.Teams
+	Use     auth.Auth
+	Acct    account.Account
+	Team    teams.Teams
+	Follows follows.Follows
+	Board   *leaderboard.Leaderboard
 	// AvatarDir stores avatar files; AvatarURLBase prefixes their public URL.
 	AvatarDir     string
 	AvatarURLBase string
@@ -47,51 +50,12 @@ func (s *Server) mountAuth(mux *http.ServeMux, a *Auth) {
 	mux.HandleFunc("GET /v1/teams/{id}/groups", s.withUser(a.listGroups))
 	mux.HandleFunc("POST /v1/groups/join", s.withUser(a.joinGroup))
 	mux.HandleFunc("POST /v1/groups/{id}/leave", s.withUser(a.leaveGroup))
+	mux.HandleFunc("PUT /v1/follows/{handle}", s.withUser(a.follow))
+	mux.HandleFunc("DELETE /v1/follows/{handle}", s.withUser(a.unfollow))
+	mux.HandleFunc("GET /v1/follows/followers", s.withUser(a.followers))
+	mux.HandleFunc("GET /v1/follows/following", s.withUser(a.following))
+	mux.HandleFunc("GET /v1/follows/leaderboard", s.withUser(a.followingBoard))
 	mux.HandleFunc("GET /v1/leaderboard", s.withAuth(s.leaderboard))
-}
-
-func (s *Server) leaderboard(w http.ResponseWriter, r *http.Request) {
-	if s.Board == nil {
-		writeJSON(w, http.StatusNotImplemented, map[string]any{"error": "leaderboard disabled"})
-		return
-	}
-	q := r.URL.Query()
-	board, err := s.Board.Rank(r.Context(), q.Get("team"), q.Get("period"))
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
-		return
-	}
-	writeJSON(w, http.StatusOK, board)
-}
-
-// withAuthOptional lets the service token through but never requires a
-// user (used where the caller may be pre-login machinery).
-func (s *Server) withAuthOptional(next http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		next(w, r)
-	}
-}
-
-type ctxKey string
-
-const userKey ctxKey = "userID"
-
-// withUser requires a valid session token and passes the user id through.
-// The service sync token alone is NOT a user (ingest keeps its own path).
-func (s *Server) withUser(next func(http.ResponseWriter, *http.Request, string)) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-		if token == "" || (s.Token != "" && token == s.Token) {
-			writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "sign in required"})
-			return
-		}
-		user, err := s.AuthN.Authenticate(r.Context(), token)
-		if err != nil {
-			writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "invalid session"})
-			return
-		}
-		next(w, r, user.ID)
-	}
 }
 
 // --- login flow ---
@@ -132,7 +96,7 @@ func (a *Auth) claim(w http.ResponseWriter, r *http.Request) {
 	}
 	token, user, err := a.Use.Claim(r.Context(), body.State)
 	if err != nil {
-		if err == usecases.ErrTicketPending {
+		if err == auth.ErrTicketPending {
 			writeJSON(w, http.StatusAccepted, map[string]any{"status": "pending"})
 			return
 		}
@@ -145,234 +109,6 @@ func (a *Auth) claim(w http.ResponseWriter, r *http.Request) {
 func (a *Auth) logout(w http.ResponseWriter, r *http.Request, _ string) {
 	token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 	if err := a.Use.Logout(r.Context(), token); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
-}
-
-// --- account ---
-
-// toPublicUser strips provider subs before a user crosses the wire.
-func toPublicUser(u models.User) models.User {
-	u.GoogleSub, u.MSSub = "", ""
-	return u
-}
-
-func (a *Auth) me(w http.ResponseWriter, r *http.Request, userID string) {
-	u, err := a.Use.Store.UserByID(r.Context(), userID)
-	if err != nil {
-		writeJSON(w, http.StatusNotFound, map[string]any{"error": "account missing"})
-		return
-	}
-	writeJSON(w, http.StatusOK, toPublicUser(u))
-}
-
-func (a *Auth) update(w http.ResponseWriter, r *http.Request, userID string) {
-	var body struct {
-		DisplayName string `json:"display_name"`
-		Handle      string `json:"handle"`
-	}
-	if !decodeJSON(w, r, 1<<16, &body) {
-		return
-	}
-	u, err := a.Acct.Update(r.Context(), userID, body.DisplayName, body.Handle, "")
-	if err != nil {
-		status := http.StatusInternalServerError
-		if strings.Contains(err.Error(), "taken") {
-			status = http.StatusConflict
-		} else if strings.Contains(err.Error(), "handle") {
-			status = http.StatusBadRequest
-		}
-		writeJSON(w, status, map[string]any{"error": err.Error()})
-		return
-	}
-	writeJSON(w, http.StatusOK, toPublicUser(u))
-}
-
-// uploadAvatar accepts a webp/png/jpeg image (the client downscales to
-// ~256px webp first), stores it, and points the profile at it.
-func (a *Auth) uploadAvatar(w http.ResponseWriter, r *http.Request, userID string) {
-	if err := r.ParseMultipartForm(2<<20 + 1<<16); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "multipart parse failed"})
-		return
-	}
-	f, _, err := r.FormFile("avatar")
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "avatar file required"})
-		return
-	}
-	defer f.Close()
-	raw, err := io.ReadAll(io.LimitReader(f, 2<<20+1))
-	if err != nil || len(raw) == 0 {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "empty file"})
-		return
-	}
-	ext, ctype, ok := sniffImage(raw)
-	if !ok {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "avatar must be webp, png, or jpeg"})
-		return
-	}
-	_ = ctype
-	if err := os.MkdirAll(a.AvatarDir, 0o755); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "storage unavailable"})
-		return
-	}
-	name := userID + ext
-	if err := os.WriteFile(filepath.Join(a.AvatarDir, name), raw, 0o644); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "storage unavailable"})
-		return
-	}
-	url := strings.TrimSuffix(a.AvatarURLBase, "/") + "/" + userID
-	u, err := a.Acct.Update(r.Context(), userID, "", "", url)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
-		return
-	}
-	writeJSON(w, http.StatusOK, toPublicUser(u))
-}
-
-// serveAvatar serves stored avatars (public — <img> tags carry no auth).
-func (a *Auth) serveAvatar(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	if id == "" || strings.ContainsAny(id, "/\\") {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "bad id"})
-		return
-	}
-	for _, ext := range []string{".webp", ".png", ".jpg", ".jpeg"} {
-		path := filepath.Join(a.AvatarDir, id+ext)
-		raw, err := os.ReadFile(path)
-		if err != nil {
-			continue
-		}
-		_, ctype, ok := sniffImage(raw)
-		if !ok {
-			continue
-		}
-		w.Header().Set("Content-Type", ctype)
-		w.Header().Set("Cache-Control", "public, max-age=86400")
-		_, _ = w.Write(raw)
-		return
-	}
-	writeJSON(w, http.StatusNotFound, map[string]any{"error": "no avatar"})
-}
-
-// sniffImage allows webp/png/jpeg by magic bytes.
-func sniffImage(b []byte) (ext, ctype string, ok bool) {
-	if len(b) >= 12 && string(b[:4]) == "RIFF" && string(b[8:12]) == "WEBP" {
-		return ".webp", "image/webp", true
-	}
-	if len(b) >= 8 && string(b[:8]) == "\x89PNG\r\n\x1a\n" {
-		return ".png", "image/png", true
-	}
-	if len(b) >= 3 && b[0] == 0xFF && b[1] == 0xD8 && b[2] == 0xFF {
-		return ".jpg", "image/jpeg", true
-	}
-	return "", "", false
-}
-
-// --- teams & groups ---
-
-func (a *Auth) createTeam(w http.ResponseWriter, r *http.Request, userID string) {
-	var body struct {
-		Name string `json:"name"`
-	}
-	if !decodeJSON(w, r, 1<<16, &body) {
-		return
-	}
-	team, err := a.Team.CreateTeam(r.Context(), userID, body.Name)
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
-		return
-	}
-	writeJSON(w, http.StatusOK, team)
-}
-
-func (a *Auth) myTeams(w http.ResponseWriter, r *http.Request, userID string) {
-	teams, err := a.Team.MyTeams(r.Context(), userID)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"teams": teams})
-}
-
-func (a *Auth) joinTeam(w http.ResponseWriter, r *http.Request, userID string) {
-	var body struct {
-		Code string `json:"code"`
-	}
-	if !decodeJSON(w, r, 1<<16, &body) {
-		return
-	}
-	team, err := a.Team.JoinTeam(r.Context(), userID, body.Code)
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
-		return
-	}
-	writeJSON(w, http.StatusOK, team)
-}
-
-func (a *Auth) leaveTeam(w http.ResponseWriter, r *http.Request, userID string) {
-	if err := a.Team.LeaveTeam(r.Context(), userID, r.PathValue("id")); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
-}
-
-func (a *Auth) createGroup(w http.ResponseWriter, r *http.Request, userID string) {
-	var body struct {
-		Name string `json:"name"`
-	}
-	if !decodeJSON(w, r, 1<<16, &body) {
-		return
-	}
-	group, err := a.Team.CreateGroup(r.Context(), userID, r.PathValue("id"), body.Name)
-	if err != nil {
-		status := http.StatusBadRequest
-		if strings.Contains(err.Error(), "not a team member") {
-			status = http.StatusForbidden
-		}
-		writeJSON(w, status, map[string]any{"error": err.Error()})
-		return
-	}
-	writeJSON(w, http.StatusOK, group)
-}
-
-func (a *Auth) listGroups(w http.ResponseWriter, r *http.Request, userID string) {
-	groups, err := a.Team.Groups(r.Context(), userID, r.PathValue("id"))
-	if err != nil {
-		status := http.StatusBadRequest
-		if strings.Contains(err.Error(), "not a team member") {
-			status = http.StatusForbidden
-		}
-		writeJSON(w, status, map[string]any{"error": err.Error()})
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"groups": groups})
-}
-
-func (a *Auth) joinGroup(w http.ResponseWriter, r *http.Request, userID string) {
-	var body struct {
-		Code string `json:"code"`
-	}
-	if !decodeJSON(w, r, 1<<16, &body) {
-		return
-	}
-	group, err := a.Team.JoinGroup(r.Context(), userID, body.Code)
-	if err != nil {
-		status := http.StatusBadRequest
-		if strings.Contains(err.Error(), "join the team first") {
-			status = http.StatusForbidden
-		}
-		writeJSON(w, status, map[string]any{"error": err.Error()})
-		return
-	}
-	writeJSON(w, http.StatusOK, group)
-}
-
-func (a *Auth) leaveGroup(w http.ResponseWriter, r *http.Request, userID string) {
-	if err := a.Team.LeaveGroup(r.Context(), userID, r.PathValue("id")); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return
 	}

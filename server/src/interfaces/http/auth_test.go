@@ -12,21 +12,25 @@ import (
 	"testing"
 	"time"
 
-	"github.com/castlemilk/token-horizon/server/src/models"
-	"github.com/castlemilk/token-horizon/server/src/testfake"
-	usecases "github.com/castlemilk/token-horizon/server/src/use_cases"
+	"github.com/castlemilk/token-horizon/server/src/interfaces/store/testfake"
+	"github.com/castlemilk/token-horizon/server/src/models/identity"
+	"github.com/castlemilk/token-horizon/server/src/use_cases/account"
+	"github.com/castlemilk/token-horizon/server/src/use_cases/auth"
+	"github.com/castlemilk/token-horizon/server/src/use_cases/ingest"
+	syncuc "github.com/castlemilk/token-horizon/server/src/use_cases/sync"
+	"github.com/castlemilk/token-horizon/server/src/use_cases/teams"
 )
 
 func testAuthServer(t *testing.T) (*Server, *testfake.Fake) {
 	t.Helper()
 	fake := testfake.New()
 	srv := &Server{
-		Ingest: usecases.Ingest{Store: fake},
-		Sync:   usecases.Sync{Store: fake},
-		AuthN:  usecases.Auth{Store: fake},
+		Ingest: ingest.Ingest{Store: fake},
+		Sync:   syncuc.Sync{Store: fake},
+		AuthN:  auth.Auth{Store: fake},
 	}
 	srv.AuthRoutes = &Auth{
-		Use: srv.AuthN, Acct: usecases.Account{Store: fake}, Team: usecases.Teams{Store: fake},
+		Use: srv.AuthN, Acct: account.Account{Store: fake}, Team: teams.Teams{Store: fake},
 		AvatarDir: t.TempDir() + "/avatars", AvatarURLBase: "/v1/avatars",
 	}
 	return srv, fake
@@ -41,7 +45,7 @@ func seedSession(t *testing.T, fake *testfake.Fake, handle string) (token, userI
 	}
 	token = "tok-" + handle
 	sum := sha256.Sum256([]byte(token))
-	fake.Sessions[hex.EncodeToString(sum[:])] = models.Session{
+	fake.Sessions[hex.EncodeToString(sum[:])] = identity.Session{
 		TokenHash: hex.EncodeToString(sum[:]), UserID: u.ID,
 		CreatedAt: time.Now().UTC(), ExpiresAt: time.Now().UTC().Add(time.Hour),
 	}

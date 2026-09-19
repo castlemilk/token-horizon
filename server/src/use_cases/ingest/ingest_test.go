@@ -1,4 +1,4 @@
-package usecases
+package ingest
 
 import (
 	"context"
@@ -6,18 +6,18 @@ import (
 	"testing"
 	"time"
 
-	"github.com/castlemilk/token-horizon/server/src/models"
-	"github.com/castlemilk/token-horizon/server/src/testfake"
+	"github.com/castlemilk/token-horizon/server/src/interfaces/store/testfake"
+	"github.com/castlemilk/token-horizon/server/src/models/usage"
 )
 
 func testEnv() Envelope {
 	return Envelope{MachineID: "m-1", MachineAlias: "devbox", Handle: "Wockhardt", Team: "core", Platform: "Linux"}
 }
 
-func testEvent(id string) models.UsageEvent {
-	return models.UsageEvent{
+func testEvent(id string) usage.UsageEvent {
+	return usage.UsageEvent{
 		ID: id, Timestamp: time.Now().UTC(), Source: "external",
-		Vendor: "kimi", Model: "k3", Tokens: models.TokenBreakdown{Input: 100, Output: 20},
+		Vendor: "kimi", Model: "k3", Tokens: usage.TokenBreakdown{Input: 100, Output: 20},
 		Attestation: "measured",
 	}
 }
@@ -25,7 +25,7 @@ func testEvent(id string) models.UsageEvent {
 func TestEventsCreatesUserAndMachine(t *testing.T) {
 	fake := testfake.New()
 	ing := Ingest{Store: fake}
-	res, err := ing.Events(context.Background(), testEnv(), []models.UsageEvent{testEvent("e-1")})
+	res, err := ing.Events(context.Background(), testEnv(), []usage.UsageEvent{testEvent("e-1")})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -46,10 +46,10 @@ func TestEventsCreatesUserAndMachine(t *testing.T) {
 func TestEventsIdempotentRedelivery(t *testing.T) {
 	fake := testfake.New()
 	ing := Ingest{Store: fake}
-	if _, err := ing.Events(context.Background(), testEnv(), []models.UsageEvent{testEvent("e-1")}); err != nil {
+	if _, err := ing.Events(context.Background(), testEnv(), []usage.UsageEvent{testEvent("e-1")}); err != nil {
 		t.Fatal(err)
 	}
-	res, err := ing.Events(context.Background(), testEnv(), []models.UsageEvent{testEvent("e-1")})
+	res, err := ing.Events(context.Background(), testEnv(), []usage.UsageEvent{testEvent("e-1")})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -68,10 +68,10 @@ func TestEventsRejectsBadEnvelopeAndRows(t *testing.T) {
 	}
 	ev := testEvent("e-2")
 	ev.Vendor = ""
-	if _, err := ing.Events(context.Background(), testEnv(), []models.UsageEvent{ev}); err == nil {
+	if _, err := ing.Events(context.Background(), testEnv(), []usage.UsageEvent{ev}); err == nil {
 		t.Fatal("expected row error")
 	}
-	huge := make([]models.UsageEvent, MaxEventsBatch+1)
+	huge := make([]usage.UsageEvent, MaxEventsBatch+1)
 	if _, err := ing.Events(context.Background(), testEnv(), huge); err == nil {
 		t.Fatal("expected batch cap error")
 	}
@@ -80,8 +80,8 @@ func TestEventsRejectsBadEnvelopeAndRows(t *testing.T) {
 func TestLimitsStoredAgainstUser(t *testing.T) {
 	fake := testfake.New()
 	ing := Ingest{Store: fake}
-	sn := models.LimitSnapshot{RecordedAt: time.Now().UTC(), Provider: "kimi", Label: "5h", UsedPercent: 48}
-	res, err := ing.Limits(context.Background(), testEnv(), []models.LimitSnapshot{sn})
+	sn := usage.LimitSnapshot{RecordedAt: time.Now().UTC(), Provider: "kimi", Label: "5h", UsedPercent: 48}
+	res, err := ing.Limits(context.Background(), testEnv(), []usage.LimitSnapshot{sn})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -96,12 +96,12 @@ func TestLimitsStoredAgainstUser(t *testing.T) {
 func TestMachineRehomedOnHandleMove(t *testing.T) {
 	fake := testfake.New()
 	ing := Ingest{Store: fake}
-	if _, err := ing.Events(context.Background(), testEnv(), []models.UsageEvent{testEvent("e-1")}); err != nil {
+	if _, err := ing.Events(context.Background(), testEnv(), []usage.UsageEvent{testEvent("e-1")}); err != nil {
 		t.Fatal(err)
 	}
 	moved := testEnv()
 	moved.Handle = "newhire"
-	if _, err := ing.Events(context.Background(), moved, []models.UsageEvent{testEvent("e-2")}); err != nil {
+	if _, err := ing.Events(context.Background(), moved, []usage.UsageEvent{testEvent("e-2")}); err != nil {
 		t.Fatal(err)
 	}
 	m, _ := fake.MachineByID(context.Background(), "m-1")
@@ -117,12 +117,12 @@ func TestMachineRehomedOnHandleMove(t *testing.T) {
 func TestBlankAliasNeverClobbers(t *testing.T) {
 	fake := testfake.New()
 	ing := Ingest{Store: fake}
-	if _, err := ing.Events(context.Background(), testEnv(), []models.UsageEvent{testEvent("e-1")}); err != nil {
+	if _, err := ing.Events(context.Background(), testEnv(), []usage.UsageEvent{testEvent("e-1")}); err != nil {
 		t.Fatal(err)
 	}
 	thin := testEnv()
 	thin.MachineAlias, thin.Platform = "", ""
-	if _, err := ing.Events(context.Background(), thin, []models.UsageEvent{testEvent("e-2")}); err != nil {
+	if _, err := ing.Events(context.Background(), thin, []usage.UsageEvent{testEvent("e-2")}); err != nil {
 		t.Fatal(err)
 	}
 	m, _ := fake.MachineByID(context.Background(), "m-1")
@@ -131,13 +131,36 @@ func TestBlankAliasNeverClobbers(t *testing.T) {
 	}
 }
 
-func TestSummaryValidation(t *testing.T) {
+func TestIngestPinsUserByUUID(t *testing.T) {
 	fake := testfake.New()
-	s := Sync{Store: fake}
-	if _, err := s.Summary(context.Background(), "", "", "", time.Time{}); err == nil {
-		t.Fatal("expected scope error")
+	ing := Ingest{Store: fake}
+	ctx := context.Background()
+
+	// A signed-in daemon carries the user UUID from the auth claim: rows
+	// attribute to that exact account, no handle resolution involved.
+	u, _ := fake.ResolveUser(ctx, "ada", "Ada", "")
+	env := Envelope{MachineID: "m-9", MachineAlias: "laptop", UserID: u.ID, Platform: "macOS"}
+	ev := testEvent("e-uuid-1")
+	res, err := ing.Events(ctx, env, []usage.UsageEvent{ev})
+	if err != nil {
+		t.Fatal(err)
 	}
-	if _, err := s.Summary(context.Background(), "wockhardt", "", "", time.Now().Add(48*time.Hour)); err == nil {
-		t.Fatal("expected future error")
+	if res.User.ID != u.ID {
+		t.Fatalf("user=%+v", res.User)
+	}
+	if res.Machine.UserID != u.ID {
+		t.Fatalf("machine=%+v", res.Machine)
+	}
+
+	// Unknown UUIDs are rejected, not silently re-homed.
+	env.UserID = "00000000-0000-4000-8000-000000000000"
+	if _, err := ing.Events(ctx, env, []usage.UsageEvent{testEvent("e-uuid-2")}); err == nil {
+		t.Fatal("expected unknown user_id error")
+	}
+
+	// And the UUID alone is a sufficient envelope (handle may be blank).
+	env = Envelope{MachineID: "m-10", MachineAlias: "desktop", UserID: u.ID}
+	if _, err := ing.Events(ctx, env, []usage.UsageEvent{testEvent("e-uuid-3")}); err != nil {
+		t.Fatal(err)
 	}
 }

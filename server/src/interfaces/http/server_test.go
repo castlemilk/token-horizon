@@ -8,13 +8,14 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/castlemilk/token-horizon/server/src/testfake"
-	usecases "github.com/castlemilk/token-horizon/server/src/use_cases"
+	"github.com/castlemilk/token-horizon/server/src/interfaces/store/testfake"
+	"github.com/castlemilk/token-horizon/server/src/use_cases/ingest"
+	syncuc "github.com/castlemilk/token-horizon/server/src/use_cases/sync"
 )
 
 func testServer() *Server {
 	fake := testfake.New()
-	return &Server{Ingest: usecases.Ingest{Store: fake}, Sync: usecases.Sync{Store: fake}, Token: "s3cret"}
+	return &Server{Ingest: ingest.Ingest{Store: fake}, Sync: syncuc.Sync{Store: fake}, Token: "s3cret"}
 }
 
 func TestAuthEnforced(t *testing.T) {
