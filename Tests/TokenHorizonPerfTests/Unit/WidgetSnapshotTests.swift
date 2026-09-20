@@ -196,6 +196,20 @@ final class WidgetSnapshotTests: XCTestCase {
         XCTAssertEqual(prefs.normalized.page, 0)
     }
 
+    func testReloadPolicySparesBudget() {
+        let now = Date()
+        XCTAssertTrue(WidgetBridge.shouldReload(force: true, changed: false, lastReload: now, now: now),
+                      "taps always repaint")
+        XCTAssertFalse(WidgetBridge.shouldReload(force: false, changed: false, lastReload: .distantPast, now: now),
+                       "no-op ticks never spend a reload")
+        XCTAssertTrue(WidgetBridge.shouldReload(force: false, changed: true, lastReload: .distantPast, now: now),
+                      "changed payload after the interval reloads")
+        XCTAssertFalse(WidgetBridge.shouldReload(force: false, changed: true, lastReload: now, now: now),
+                       "changed payload inside the interval is deferred")
+        XCTAssertTrue(WidgetBridge.shouldReload(force: false, changed: true,
+                                                lastReload: now.addingTimeInterval(-301), now: now))
+    }
+
     func testDeepLinkParsing() {
         XCTAssertEqual(WidgetSnapshot.windowValue(from: "weeks"), "weeks")
         XCTAssertNil(WidgetSnapshot.windowValue(from: "bogus"))

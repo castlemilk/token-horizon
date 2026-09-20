@@ -5,44 +5,70 @@ final class WidgetBridge {
     static let shared = WidgetBridge()
     private let lock = NSLock()
     private var snapshot = WidgetSnapshot()
+    private var encoded = Data("{}".utf8)
     private var lastReload = Date.distantPast
 
+    /// Publishing is on the widget-tap critical path (preference change ->
+    /// snapshot -> reload), so it encodes once and — importantly — only asks
+    /// WidgetKit to reload when the bytes actually changed. Redundant reloads
+    /// burn the system's per-widget reload budget, which is what makes later
+    /// updates feel slow.
     func publish(usage: UsageSnapshot, history: [HistoryPoint], hourly: [HistoryPoint] = [],
                  limits: [ProviderLimit], force: Bool = false) {
         let next = Self.makeSnapshot(usage: usage, history: history, hourly: hourly, limits: limits,
                                      preferences: SettingsStore.shared.widgetPreferences)
+        let data = (try? JSONEncoder().encode(next)) ?? Data("{}".utf8)
         lock.lock()
+        let changed = data != encoded
         snapshot = next
-        let reload = force || Date().timeIntervalSince(lastReload) >= 300
+        encoded = data
+        let reload = Self.shouldReload(force: force, changed: changed, lastReload: lastReload)
         if reload { lastReload = Date() }
         lock.unlock()
         if reload { WidgetCenter.shared.reloadTimelines(ofKind: WidgetSnapshot.kind) }
     }
 
-    func data() -> Data {
-        lock.lock()
-        let value = snapshot
-        lock.unlock()
-        return (try? JSONEncoder().encode(value)) ?? Data("{}".utf8)
+    /// Reload policy (pure, unit-tested): taps always repaint; the periodic
+    /// path only spends a reload when the payload actually changed, so the
+    /// system's per-widget reload budget is not burned on no-op ticks.
+    static func shouldReload(force: Bool, changed: Bool, lastReload: Date,
+                             now: Date = Date(), interval: TimeInterval = 300) -> Bool {
+        if force { return true }
+        return changed && now.timeIntervalSince(lastReload) >= interval
     }
 
-    /// Merge history into arbitrary [start, end) buckets (hours/weeks use this).
-    /// Pure static: covered by unit tests. Buckets with no points stay zero.
+    /// Serves the pre-encoded snapshot — `/widget` is a memcpy, never an encode.
+    func data() -> Data {
+        lock.lock()
+        defer { lock.unlock() }
+        return encoded
+    }
+
+    /// Merge history into arbitrary ordered, non-overlapping [start, end) buckets.
+    /// Single-pass merge walk (points sorted once, bucket cursor advances
+    /// monotonically) instead of one full scan per bucket — this runs in the
+    /// widget-tap critical path, and the old shape was O(buckets x history)
+    /// with an array allocation per bucket. Pure static: unit-tested.
     static func bucketPoints(_ history: [HistoryPoint], in buckets: [(Date, Date)]) -> [HistoryPoint] {
-        buckets.map { start, end in
-            var byTool: [String: Int] = [:]
-            var tokens = 0
-            var cost = 0.0
-            for point in history where Double(point.day) >= start.timeIntervalSince1970
-                && Double(point.day) < end.timeIntervalSince1970 {
-                tokens += max(0, point.tokens)
-                cost += max(0, point.cost)
-                for (tool, value) in point.byTool where value > 0 {
-                    byTool[tool, default: 0] += value
-                }
-            }
-            return HistoryPoint(day: Int(start.timeIntervalSince1970), tokens: tokens, cost: cost, byTool: byTool)
+        guard !buckets.isEmpty else { return [] }
+        var result = buckets.map {
+            HistoryPoint(day: Int($0.0.timeIntervalSince1970), tokens: 0, cost: 0, byTool: [:])
         }
+        let starts = buckets.map { $0.0.timeIntervalSince1970 }
+        let ends = buckets.map { $0.1.timeIntervalSince1970 }
+        var bucket = 0
+        for point in history.sorted(by: { $0.day < $1.day }) {
+            let day = Double(point.day)
+            while bucket < buckets.count && day >= ends[bucket] { bucket += 1 }
+            guard bucket < buckets.count else { break }
+            guard day >= starts[bucket] else { continue }
+            result[bucket].tokens += max(0, point.tokens)
+            result[bucket].cost += max(0, point.cost)
+            for (tool, value) in point.byTool where value > 0 {
+                result[bucket].byTool[tool, default: 0] += value
+            }
+        }
+        return result
     }
 
     /// Provider stacks per bucket, capping to the window's top-5 providers and
@@ -112,15 +138,17 @@ final class WidgetBridge {
             result.weeks = Self.cappedStacks(Self.bucketPoints(history, in: weekBuckets))
             result.months = Self.cappedStacks(Self.bucketPoints(history, in: monthBuckets))
             // GitHub-style intensity grid: trailing 17 weeks of daily totals,
-            // oldest-first (columns = weeks, rows = weekdays when rendered).
+            // oldest-first. One pass builds the day->tokens map; each cell is
+            // then a dictionary lookup (the old per-cell history.filter was
+            // O(cells x history) with an array allocation per cell).
+            var tokensByDay: [Int: Int] = [:]
+            for point in history where point.tokens > 0 {
+                tokensByDay[point.day, default: 0] += max(0, point.tokens)
+            }
             let heatmapDays = WidgetSnapshot.heatmapWeeks * 7
             result.heatmap = (0..<heatmapDays).map { index in
-                let offset = index - (heatmapDays - 1)
-                guard let day = calendar.date(byAdding: .day, value: offset, to: start),
-                      let end = calendar.date(byAdding: .day, value: 1, to: day) else { return 0 }
-                return history.filter {
-                    Double($0.day) >= day.timeIntervalSince1970 && Double($0.day) < end.timeIntervalSince1970
-                }.reduce(0) { $0 + max(0, $1.tokens) }
+                guard let day = calendar.date(byAdding: .day, value: index - (heatmapDays - 1), to: start) else { return 0 }
+                return tokensByDay[Int(day.timeIntervalSince1970)] ?? 0
             }
         }
         if preferences.showLimits {

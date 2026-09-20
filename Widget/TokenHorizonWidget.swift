@@ -35,14 +35,20 @@ struct HorizonProvider: TimelineProvider {
             completion(HorizonEntry(date: Date(), snapshot: WidgetSnapshot(), offline: true))
             return
         }
-        var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 5)
+        // WidgetKit renders only after this completion, so the timeout is a
+        // paint deadline: keep it tight and fall back to the cached snapshot
+        // fast when the host app is momentarily busy.
+        var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 1.5)
         request.httpMethod = "GET"
+        let started = Date()
         URLSession.shared.dataTask(with: request) { data, response, _ in
+            let elapsed = Date().timeIntervalSince(started)
             if let data, data.count <= 65_536, (response as? HTTPURLResponse)?.statusCode == 200,
                let snapshot = try? JSONDecoder().decode(WidgetSnapshot.self, from: data),
                snapshot.version == WidgetSnapshot.schemaVersion {
                 try? FileManager.default.createDirectory(at: cacheURL.deletingLastPathComponent(), withIntermediateDirectories: true)
                 try? data.write(to: cacheURL, options: .atomic)
+                NSLog("[TokenHorizonWidget] timeline fetch ok in %.0fms (%d bytes)", elapsed * 1000, data.count)
                 completion(HorizonEntry(date: Date(), snapshot: snapshot,
                                         page: snapshot.preferences.page,
                                         window: snapshot.preferences.window))
@@ -51,6 +57,8 @@ struct HorizonProvider: TimelineProvider {
                     try? JSONDecoder().decode(WidgetSnapshot.self, from: $0)
                 }
                 let snapshot = cached?.version == WidgetSnapshot.schemaVersion ? cached : nil
+                NSLog("[TokenHorizonWidget] timeline fetch failed after %.0fms — cached=%@",
+                      elapsed * 1000, snapshot == nil ? "none" : "yes")
                 completion(HorizonEntry(date: Date(), snapshot: snapshot ?? WidgetSnapshot(),
                                         offline: true,
                                         page: (snapshot ?? WidgetSnapshot()).preferences.page,
