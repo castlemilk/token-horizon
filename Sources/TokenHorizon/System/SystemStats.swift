@@ -71,11 +71,23 @@ enum SystemStats {
     private static var netCache: [Int32: (inB: UInt64, outB: UInt64)] = [:]
     private static var netCacheTime: Date?
     private static let ioLock = NSLock()
+    /// Serializes per-pid rate dictionaries (`prevDisk`/`prevNet`/`prevMLXDisk`).
+    /// `processSamples()` runs from the 5s heavy tick AND from the `/processes`
+    /// HTTP route on the server's concurrent queue; unguarded dictionary
+    /// mutation there crashed the app (EXC_BAD_ACCESS in
+    /// `_NativeDictionary.ensureUnique` inside `diskRate`).
+    private static let procLock = NSLock()
     private static var ioCache = IORates()
     private static var ioCacheTime: Date?
     private static var previousIO: (diskMB: Double, netB: UInt64, time: Date)?
 
     static func processSamples() -> (all: [ProcSample], byCPU: [ProcSample], byMem: [ProcSample], byDisk: [ProcSample], byNet: [ProcSample]) {
+        procLock.lock()
+        defer { procLock.unlock() }
+        return processSamplesLocked()
+    }
+
+    private static func processSamplesLocked() -> (all: [ProcSample], byCPU: [ProcSample], byMem: [ProcSample], byDisk: [ProcSample], byNet: [ProcSample]) {
         // Extended ps: pid, ppid, %cpu, rss, etime, user, comm
         // (macOS ps doesn't have nthreads/nlwp in standard column mode; we get threads
         // via task_threads mach API in processDetail for drill-down)
@@ -297,6 +309,12 @@ enum SystemStats {
     /// Narrow process sampling for MLX observability. This intentionally does
     /// not run nettop or populate the general process table.
     static func mlxProcessSamples() -> [ProcSample] {
+        procLock.lock()
+        defer { procLock.unlock() }
+        return mlxProcessSamplesLocked()
+    }
+
+    private static func mlxProcessSamplesLocked() -> [ProcSample] {
         let task = Process()
         task.executableURL = URL(fileURLWithPath: "/bin/ps")
         task.arguments = ["-axo", "pid=,ppid=,%cpu=,rss=,etime=,user=,args="]
