@@ -120,20 +120,24 @@ struct WidgetCard: View {
                 if snapshot.preferences.showChart { providerStackBar }
             } else if snapshot.preferences.showChart {
                 HStack(alignment: .top, spacing: 14) {
-                    VStack(alignment: .leading, spacing: 5) {
+                    VStack(alignment: .leading, spacing: size == "large" ? 8 : 5) {
                         statsLine
-                        windowChart
+                        windowChart.frame(maxHeight: .infinity)
                         providerLegend
                     }
                     .frame(width: size == "large" ? 156 : 132)
+                    .frame(maxHeight: .infinity, alignment: .top)
                     heatmapGrid(WidgetSnapshot.heatmapColumns(for: window, in: snapshot,
                                                               weeks: size == "large" ? 17 : 8,
                                                               large: size == "large"),
                                 caption: heatmapCaption,
                                 compact: size != "large")
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
+                .frame(maxHeight: .infinity)
             }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
     private var heatmapCaption: String {
@@ -206,33 +210,37 @@ struct WidgetCard: View {
         .accessibilityLabel("\(option.label) window: \(option.helpText)")
     }
 
-    /// Stacked bars for the selected window (24 hours / 14 days / 17 weeks),
-    /// provider-colored, newest bucket at full opacity.
+    /// Stacked bars for the selected window. The bar height follows the space
+    /// the layout gives it, so large widgets use their extra room instead of
+    /// leaving dead space above the chrome.
     private var windowChart: some View {
         let series = activeSeries
         let maxTokens = max(1, series.map(\.tokens).max() ?? 1)
-        let height: CGFloat = size == "large" ? 46 : 36
         return VStack(alignment: .leading, spacing: 3) {
             if series.isEmpty || series.allSatisfy({ $0.tokens == 0 }) {
                 Text("No usage in window").font(.system(size: 9)).foregroundStyle(.secondary)
-                    .frame(height: height, alignment: .center)
+                    .frame(maxWidth: .infinity, minHeight: 28, alignment: .center)
             } else {
-                HStack(alignment: .bottom, spacing: 1) {
-                    ForEach(Array(series.enumerated()), id: \.offset) { index, bucket in
-                        VStack(spacing: 0) {
-                            ForEach(Array(sortedProviders(bucket).enumerated()), id: \.offset) { _, entry in
-                                let segment = bucket.tokens > 0 ? CGFloat(entry.1) / CGFloat(bucket.tokens) : 0
-                                Self.providerColor(entry.0)
-                                    .frame(height: max(1, height * CGFloat(bucket.tokens) / CGFloat(maxTokens) * segment))
+                GeometryReader { geo in
+                    let height = max(24, geo.size.height)
+                    HStack(alignment: .bottom, spacing: 1) {
+                        ForEach(Array(series.enumerated()), id: \.offset) { index, bucket in
+                            VStack(spacing: 0) {
+                                ForEach(Array(sortedProviders(bucket).enumerated()), id: \.offset) { _, entry in
+                                    let segment = bucket.tokens > 0 ? CGFloat(entry.1) / CGFloat(bucket.tokens) : 0
+                                    Self.providerColor(entry.0)
+                                        .frame(height: max(1, height * CGFloat(bucket.tokens) / CGFloat(maxTokens) * segment))
+                                }
                             }
+                            .frame(maxWidth: .infinity, alignment: .bottom)
+                            .opacity(index == series.count - 1 ? 1 : 0.6)
+                            .accessibilityLabel("\(bucket.tokens) tokens")
                         }
-                        .frame(maxWidth: .infinity, alignment: .bottom)
-                        .opacity(index == series.count - 1 ? 1 : 0.6)
-                        .accessibilityLabel("\(bucket.tokens) tokens")
                     }
+                    .frame(width: geo.size.width, height: geo.size.height, alignment: .bottom)
+                    .clipShape(RoundedRectangle(cornerRadius: 3))
                 }
-                .frame(height: height, alignment: .bottom)
-                .clipShape(RoundedRectangle(cornerRadius: 3))
+                .frame(minHeight: size == "large" ? 52 : 30)
                 Text((WidgetWindow(rawValue: window) ?? .days).caption)
                     .font(.system(size: 8, weight: .semibold)).foregroundStyle(.secondary)
                     .lineLimit(1).minimumScaleFactor(0.8)
@@ -299,16 +307,19 @@ struct WidgetCard: View {
     }
 
     private var limitsPage: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        let rows = Array(snapshot.limits.prefix(size == "large" ? 5 : 3))
+        return VStack(alignment: .leading, spacing: 8) {
             Text("Plan limits").font(.system(size: 13, weight: .semibold))
-            if snapshot.limits.isEmpty {
+            if rows.isEmpty {
                 Text("No plan limits available").font(.caption).foregroundStyle(.secondary)
             } else {
-                ForEach(Array(snapshot.limits.prefix(size == "large" ? 5 : 3))) { limit in
+                ForEach(Array(rows.enumerated()), id: \.element.id) { index, limit in
                     limitRow(limit, showReset: true)
+                    if size == "large", index < rows.count - 1 { Spacer(minLength: 0) }
                 }
             }
         }
+        .frame(maxHeight: .infinity, alignment: .top)
     }
 
     /// Plans & expiry: what the user has and what resets/expires soonest.
@@ -336,11 +347,13 @@ struct WidgetCard: View {
             if rows.isEmpty {
                 Text("No plan limits available").font(.caption).foregroundStyle(.secondary)
             } else {
-                ForEach(rows) { limit in
+                ForEach(Array(rows.enumerated()), id: \.element.id) { index, limit in
                     planRow(limit, showDetail: size == "large")
+                    if size == "large", index < rows.count - 1 { Spacer(minLength: 0) }
                 }
             }
         }
+        .frame(maxHeight: .infinity, alignment: .top)
     }
 
     /// Spotlight card for the soonest-expiring plan: brand mark, countdown,
@@ -490,20 +503,32 @@ struct WidgetCard: View {
 
     private func heatmapGrid(_ columns: [[Int]], caption: String, compact: Bool = false) -> some View {
         let maxTokens = max(1, columns.flatMap { $0 }.max() ?? 1)
+        let rows = max(1, columns.map(\.count).max() ?? 1)
+        let spacing: CGFloat = 3
         return VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 3) {
-                ForEach(Array(columns.enumerated()), id: \.offset) { _, column in
-                    VStack(spacing: 3) {
-                        ForEach(Array(column.enumerated()), id: \.offset) { _, tokens in
-                            RoundedRectangle(cornerRadius: 2.5)
-                                .fill(heatColor(tokens: tokens, maxTokens: maxTokens))
-                                .frame(maxWidth: .infinity)
-                                .aspectRatio(1, contentMode: .fit)
-                                .accessibilityLabel("\(tokens) tokens")
+            // Square cells derived from BOTH available dimensions: the grid
+            // grows top-to-bottom to fill the widget instead of being sized by
+            // width alone (which overflowed medium and under-filled large).
+            GeometryReader { geo in
+                let cellWidth = (geo.size.width - spacing * CGFloat(max(0, columns.count - 1)))
+                    / CGFloat(max(1, columns.count))
+                let cellHeight = (geo.size.height - spacing * CGFloat(rows - 1)) / CGFloat(rows)
+                let cell = max(3, min(cellWidth, cellHeight))
+                HStack(alignment: .top, spacing: spacing) {
+                    ForEach(Array(columns.enumerated()), id: \.offset) { _, column in
+                        VStack(spacing: spacing) {
+                            ForEach(Array(column.enumerated()), id: \.offset) { _, tokens in
+                                RoundedRectangle(cornerRadius: min(2.5, cell * 0.3))
+                                    .fill(heatColor(tokens: tokens, maxTokens: maxTokens))
+                                    .frame(width: cell, height: cell)
+                                    .accessibilityLabel("\(tokens) tokens")
+                            }
                         }
                     }
+                    Spacer(minLength: 0)
                 }
             }
+            .frame(minHeight: 24)
             HStack {
                 Text(caption)
                 Spacer()
