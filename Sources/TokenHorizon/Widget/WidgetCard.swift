@@ -127,7 +127,8 @@ struct WidgetCard: View {
                     }
                     .frame(width: size == "large" ? 156 : 132)
                     heatmapGrid(WidgetSnapshot.heatmapColumns(for: window, in: snapshot,
-                                                              weeks: size == "large" ? 17 : 8),
+                                                              weeks: size == "large" ? 17 : 8,
+                                                              large: size == "large"),
                                 caption: heatmapCaption,
                                 compact: size != "large")
                 }

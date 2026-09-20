@@ -256,29 +256,38 @@ final class WidgetSnapshotTests: XCTestCase {
 
     func testHeatmapColumnsFollowWindow() {
         let snapshot = WidgetSnapshot.preview
-        let hourly = WidgetSnapshot.heatmapColumns(for: "hours", in: snapshot, weeks: 17)
+        let hourly = WidgetSnapshot.heatmapColumns(for: "hours", in: snapshot, weeks: 17, large: true)
         XCTAssertEqual(hourly.count, 12)
         XCTAssertTrue(hourly.allSatisfy { $0.count == 2 })
         XCTAssertEqual(hourly.flatMap { $0 }.count, WidgetSnapshot.chartHours)
 
-        let daily = WidgetSnapshot.heatmapColumns(for: "days", in: snapshot, weeks: 17)
+        let daily = WidgetSnapshot.heatmapColumns(for: "days", in: snapshot, weeks: 17, large: true)
         XCTAssertEqual(daily.count, WidgetSnapshot.weeklyDayBars)
         XCTAssertTrue(daily.allSatisfy { $0.count == 1 })
 
-        let weekly = WidgetSnapshot.heatmapColumns(for: "weeks", in: snapshot, weeks: 17)
+        let weekly = WidgetSnapshot.heatmapColumns(for: "weeks", in: snapshot, weeks: 17, large: true)
         XCTAssertEqual(weekly.count, 17)
         XCTAssertEqual(weekly.first?.count, 7)
         XCTAssertEqual(weekly.flatMap { $0 }.count, WidgetSnapshot.heatmapWeeks * 7)
 
-        let monthly = WidgetSnapshot.heatmapColumns(for: "months", in: snapshot, weeks: 17)
-        XCTAssertEqual(monthly.count, 15)
-        XCTAssertTrue(monthly.allSatisfy { $0.count == 2 })
-        XCTAssertEqual(monthly.flatMap { $0 }.count, WidgetSnapshot.chartDays)
+        // Monthly/yearly keep square-ish, area-filling grids (bigger cells).
+        let monthlyLarge = WidgetSnapshot.heatmapColumns(for: "months", in: snapshot, weeks: 17, large: true)
+        XCTAssertEqual(monthlyLarge.count, 6)
+        XCTAssertTrue(monthlyLarge.allSatisfy { $0.count == 5 })
+        XCTAssertEqual(monthlyLarge.flatMap { $0 }.count, WidgetSnapshot.chartDays)
 
-        let yearly = WidgetSnapshot.heatmapColumns(for: "years", in: snapshot, weeks: 17)
-        XCTAssertEqual(yearly.count, 6)
-        XCTAssertTrue(yearly.allSatisfy { $0.count == 2 })
-        XCTAssertEqual(yearly.flatMap { $0 }.count, WidgetSnapshot.chartMonths)
+        let monthlyMedium = WidgetSnapshot.heatmapColumns(for: "months", in: snapshot, weeks: 8, large: false)
+        XCTAssertEqual(monthlyMedium.count, 10)
+        XCTAssertTrue(monthlyMedium.allSatisfy { $0.count == 3 })
+
+        let yearlyLarge = WidgetSnapshot.heatmapColumns(for: "years", in: snapshot, weeks: 17, large: true)
+        XCTAssertEqual(yearlyLarge.count, 4)
+        XCTAssertTrue(yearlyLarge.allSatisfy { $0.count == 3 })
+        XCTAssertEqual(yearlyLarge.flatMap { $0 }.count, WidgetSnapshot.chartMonths)
+
+        let yearlyMedium = WidgetSnapshot.heatmapColumns(for: "years", in: snapshot, weeks: 8, large: false)
+        XCTAssertEqual(yearlyMedium.count, 6)
+        XCTAssertTrue(yearlyMedium.allSatisfy { $0.count == 2 })
 
         XCTAssertEqual(WidgetSnapshot.chunked([1, 2, 3, 4, 5], size: 2), [[1, 2], [3, 4], [5]])
         XCTAssertEqual(WidgetSnapshot.chunked([1, 2], size: 0), [])

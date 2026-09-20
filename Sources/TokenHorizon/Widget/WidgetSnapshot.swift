@@ -215,11 +215,13 @@ struct WidgetSnapshot: Codable {
     }
 
 /// Heatmap grid for the selected window — same span as the chart, at the
-    /// window's resolution, always filling the footprint:
-    /// 1H -> 24 hourly cells (12x2), 1D -> 7 daily cells (7x1),
-    /// 1W -> `weeks` daily cells (Nx7), 1M -> 30 daily cells (15x2),
-    /// 1Y -> 12 monthly cells (6x2).
-    static func heatmapColumns(for window: String, in snapshot: WidgetSnapshot, weeks: Int) -> [[Int]] {
+    /// window's resolution. Grid shapes are chosen to *fill* the heatmap area
+    /// (no thin strips, no stretched mega-cells, no mostly-empty grids):
+    /// 1H 24 hourly cells 12x2, 1D 7 daily cells 7x1, 1W `weeks` daily cells
+    /// Nx7, 1M 30 daily cells 6x5 (large) / 10x3 (medium),
+    /// 1Y 12 monthly cells 4x3 (large) / 6x2 (medium).
+    static func heatmapColumns(for window: String, in snapshot: WidgetSnapshot,
+                               weeks: Int, large: Bool) -> [[Int]] {
         switch WidgetWindow(rawValue: window) ?? .days {
         case .hours:
             return chunked(snapshot.hourly.map { $0.tokens }, size: 2)
@@ -228,9 +230,9 @@ struct WidgetSnapshot: Codable {
         case .weeks:
             return chunked(Array(snapshot.heatmap.suffix(max(1, weeks) * 7)), size: 7)
         case .months:
-            return chunked(Array(snapshot.heatmap.suffix(chartDays)), size: 2)
+            return chunked(Array(snapshot.heatmap.suffix(chartDays)), size: large ? 5 : 3)
         case .years:
-            return chunked(snapshot.months.map { $0.tokens }, size: 2)
+            return chunked(snapshot.months.map { $0.tokens }, size: large ? 3 : 2)
         }
     }
 
