@@ -258,7 +258,7 @@ final class UsageEngine {
 
     /// Set TH_PERF_LOG=1 to log per-phase timings from snapshot/history/
     /// trends (off by default; a single env read, zero cost otherwise).
-    /// Used by scripts/profile-tick.sh; see TickPerfHarnessTests.
+    /// Used by scripts/dev/profile-tick.sh; see TickPerfHarnessTests.
     static let perfLogEnabled =
         ProcessInfo.processInfo.environment["TH_PERF_LOG"] != nil
 
@@ -529,8 +529,6 @@ final class UsageEngine {
             for (h, b) in st.buckets { add(h, tool, b.tokens, b.cost) }
         }
         for (_, st) in codexFiles { for (h, b) in st.buckets { add(h, "codex", b.tokens, 0) } }
-        let localllm = OllamaTelemetryStore.shared.summary()
-        for (h, tokens) in localllm.hourlyBuckets { add(h, "ollama", tokens, 0) }
         for (day, tokens, cost) in cachedOpencodeLocked().hourly { add(day, "opencode", tokens, cost) }
         return merged
     }
@@ -807,27 +805,6 @@ final class UsageEngine {
             }
         }
         ph.mark("generic")
-
-        let localllm = OllamaTelemetryStore.shared.summary()
-        if localllm.allTokens > 0 {
-            var ollamaRequestsAll = 0
-            for (_, v) in localllm.models { ollamaRequestsAll += v.messages }
-            tools.append(ToolUsage(tool: "ollama",
-                                   tokensToday: localllm.todayTokens, tokensAllTime: localllm.allTokens,
-                                   costToday: 0, costAllTime: 0,
-                                   requestsAllTime: ollamaRequestsAll))
-            snap.tokensToday += localllm.todayTokens
-            snap.tokensAllTime += localllm.allTokens
-            for (model, v) in localllm.models.sorted(by: { $0.value.all > $1.value.all }) {
-                snap.models.append(ModelUsage(provider: "ollama", model: model,
-                                              tokensAll: v.all, tokensToday: v.today, cost: 0,
-                                              messages: v.messages, free: true, isLocal: true,
-                                              localModelName: model,
-                                              inputTokensAll: v.prompt, outputTokensAll: v.eval,
-                                              requestsAll: v.messages))
-            }
-        }
-        ph.mark("ollama")
 
         snap.models.sort {
             if $0.tokensToday != $1.tokensToday { return $0.tokensToday > $1.tokensToday }

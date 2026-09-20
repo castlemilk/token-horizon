@@ -246,6 +246,8 @@ func (r *Registry) Status() []api.MeterStatus {
 		out = append(out, api.MeterStatus{
 			Vendor: m.Vendor, ListenPort: m.ListenPort, Target: m.TargetBase,
 			Source: m.Source, Seen: m.Seen(), Measured: m.Measured(),
+			Errors: m.ErrorCounts(), RetrySuspects: m.RetrySuspects(),
+			RecentRetryIDs: m.RecentRetryIDs(),
 		})
 	}
 	return out

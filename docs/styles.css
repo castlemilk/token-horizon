@@ -152,11 +152,38 @@ h1 em { font-style: normal; background: linear-gradient(92deg, var(--cyan), var(
 .footer {
   max-width: 1120px; margin: 90px auto 0; padding: 34px 28px 60px;
   border-top: 1px solid var(--line);
-  display: flex; gap: 18px; align-items: center; flex-wrap: wrap;
 }
-.footer p { color: var(--faint); font-size: 13px; margin: 0; flex: 1; }
-.footer-links { display: flex; gap: 18px; }
-.footer-links a { color: var(--muted); font-size: 13px; text-decoration: none; }
+/* Grid footer: brand block + bordered link columns (Product / Company). */
+.footer-grid {
+  display: grid; grid-template-columns: 2fr 1fr 1fr; gap: 24px;
+}
+.footer-brand { display: flex; flex-direction: column; gap: 6px; }
+.footer-copy { color: var(--faint); font-size: 13px; margin: 0; }
+.footer-legal { color: var(--faint); font-size: 12px; margin: 4px 0 0; }
+.footer-policies { display: flex; gap: 10px; margin-top: 8px; align-items: center; }
+.footer-policies a { color: var(--muted); font-size: 12.5px; text-decoration: none; }
+.footer-policies a:hover { color: var(--text); }
+.footer-policies span { color: var(--faint); font-size: 12px; }
+.footer-col {
+  display: flex; flex-direction: column; gap: 8px;
+  border-left: 1px solid var(--line); padding-left: 22px;
+}
+.footer-head { font-size: 15px; font-weight: 600; margin-bottom: 2px; }
+.footer-col a { color: var(--muted); font-size: 13px; text-decoration: none; }
+.footer-col a:hover { color: var(--text); }
+@media (max-width: 860px) {
+  .footer-grid { grid-template-columns: 1fr 1fr; }
+  .footer-brand { grid-column: 1 / -1; }
+}
+
+/* Policy pages (terms / privacy / eula): quiet single-column legal prose. */
+.policy { max-width: 720px; margin: 0 auto; padding: 64px 28px 40px; }
+.policy .kicker { margin-bottom: 10px; }
+.policy h1 { font-size: 34px; letter-spacing: -0.02em; margin: 0 0 6px; }
+.policy .updated { color: var(--faint); font-size: 12.5px; margin: 0 0 34px; }
+.policy h2 { font-size: 17px; margin: 30px 0 8px; }
+.policy p, .policy li { color: var(--muted); font-size: 14.5px; line-height: 1.7; }
+.policy ul { padding-left: 20px; }
 @media (max-width: 860px) {
   .hero { grid-template-columns: 1fr; padding-top: 56px; }
   .nav { flex-wrap: wrap; padding: 10px 18px; }

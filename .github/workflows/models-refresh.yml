@@ -27,7 +27,7 @@ jobs:
           swift --version
 
       - name: Build + export catalog
-        run: ./scripts/refresh-models.sh
+        run: ./scripts/models/refresh-models.sh
 
       - name: Commit when changed
         run: |

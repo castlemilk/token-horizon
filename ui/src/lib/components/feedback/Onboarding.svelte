@@ -188,7 +188,7 @@
 				{#if !connected}
 					<p class="dim ob-note">
 						Start the daemon (<span class="mono">token-horizon-headless</span>,
-						or <span class="mono">scripts/run-dev.sh</span> from the repo),
+						or <span class="mono">scripts/dev/run-dev.sh</span> from the repo),
 						then Retry.
 					</p>
 					<div class="ob-reconnect">

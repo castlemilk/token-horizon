@@ -110,9 +110,9 @@
 		{#if currentTarget}
 			Currently forwarding to <span class="mono">{currentTarget}</span>
 		{:else if prefillTarget}
-			No meter running — save to register this endpoint and start metering on the default port.
+			No meter running. Save to register this endpoint and start metering on the default port.
 		{:else}
-			No meter running — set an endpoint to start one.
+			No meter running. Set an endpoint to start one.
 		{/if}
 	</div>
 	<label class="flabel" for="msm-url">API endpoint</label>
@@ -144,8 +144,8 @@
 	</div>
 	{#if result}<div class="pok" class:bad={!result.startsWith('Meter live') && result !== 'Endpoint saved'}>{result}</div>{/if}
 	<div class="dim rbody" style="margin-top: 10px">
-		Point clients at <span class="mono">127.0.0.1:{currentPort ?? '…'}</span> —
-		traffic forwards byte-identical to the endpoint above and is measured in flight.
+		Point clients at <span class="mono">127.0.0.1:{currentPort ?? '…'}</span>.
+		Traffic passes through unchanged and gets counted on the way.
 	</div>
 </Modal>
 

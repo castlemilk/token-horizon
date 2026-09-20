@@ -7,7 +7,7 @@
 # *warning* level until they are split — an error threshold here would just
 # force a mass-suppression commit that hides real issues.
 #
-# Run:  make lint   (or: swiftlint lint)
+# Run:  task lint   (or: swiftlint lint)
 
 excluded:
   - .build

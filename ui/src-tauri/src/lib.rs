@@ -91,7 +91,7 @@ fn spawn_sidecar(app: &tauri::AppHandle) {
             });
         }
         Err(e) => {
-            log::warn!("{e}; run scripts/build-sidecar.sh or start the daemon manually");
+            log::warn!("{e}; run scripts/app/build-sidecar.sh or start the daemon manually");
         }
     }
 }

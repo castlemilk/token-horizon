@@ -38,7 +38,7 @@ Then run the complete suite and release checks:
 
 ```bash
 swift test
-./scripts/make-app.sh
+./scripts/app/make-app.sh
 curl -s http://127.0.0.1:8765/health
 curl -s http://127.0.0.1:8765/metrics
 ```

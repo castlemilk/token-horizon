@@ -15,8 +15,6 @@ final class UIModel: ObservableObject {
     @Published var diskCoarse: [Double] = []
     @Published var netCoarse: [Double] = []
     @Published var mlx = MLXSnapshot()
-    /// Loopback port of the Ollama request meter (nil = metering off/declined).
-    var ollamaMeterPort: Int? = nil
     /// Unified runtime/provider surfaces (fed by InferenceMonitor + UsageStoring).
     @Published var runtimes: [RuntimeSnapshot] = []
     @Published var providerSummary: [ProviderSummary] = []
@@ -372,10 +370,6 @@ struct DashboardTabs: View {
                     size: 8
                 )
             }
-            if let meterPort = model.ollamaMeterPort {
-                MonospacedText(text: "request meter 127.0.0.1:\(meterPort) · point Ollama-compatible clients here for exact tok/s", color: .white.opacity(0.35), size: 7.5)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
             HStack(spacing: 4) {
                 ForEach(MLXWindow.allCases) { window in
                     Button { mlxWindow = window } label: {
@@ -422,7 +416,7 @@ struct DashboardTabs: View {
                         MonospacedText(text: process.tokPerSec.map { String(format: "%.1f t/s", $0) } ?? "-- t/s", color: .green, size: 8)
                     }
                 }
-                MonospacedText(text: "tok/s is the latest completed Ollama measurement; live request instrumentation is not inferred from process load.", color: .white.opacity(0.35), size: 7.5)
+                MonospacedText(text: "tok/s is the latest completed metered measurement; live request instrumentation is not inferred from process load.", color: .white.opacity(0.35), size: 7.5)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
@@ -1193,24 +1187,6 @@ struct DashboardTabs: View {
                 .buttonStyle(.plain)
                 .help("Toggle personal token usage & spend column")
 
-                if _localCount > 0 {
-                    Button {
-                        benchmarkAllLocal()
-                    } label: {
-                        HStack(spacing: 2) {
-                            Image(systemName: "bolt.fill")
-                                .font(.system(size: 7.5))
-                            Text("BENCHMARK")
-                                .font(.system(size: 7.5, weight: .heavy, design: .monospaced))
-                        }
-                        .foregroundStyle(Color.cyan)
-                        .padding(.horizontal, 6).padding(.vertical, 2.5)
-                        .background(Capsule().fill(Color.cyan.opacity(0.12)))
-                    }
-                    .buttonStyle(.plain)
-                    .help("Benchmark speed (tok/s) for all installed local Ollama models")
-                }
-
                 Button {
                     ModelCatalog.shared.refreshRemote()
                 } label: {
@@ -1341,10 +1317,6 @@ struct DashboardTabs: View {
                 if curKey != _lastBaseKey { await MainActor.run { recomputeFilteredRows() } }
             }
         }
-    }
-
-    private func benchmarkAllLocal() {
-        for r in _filteredRows.filter({ $0.isLocal }) { OllamaClient.benchmark(model: r.usage.model) }
     }
 
     private func tableHeaderCell(title: String, column: ModelTableColumn, width: CGFloat? = nil, alignment: Alignment = .trailing) -> some View {
@@ -1921,43 +1893,23 @@ struct ModelRowView: View {
             }
             .frame(width: compact ? 46 : 56, alignment: .trailing)
 
-            // Speed (tok/s for local models)
+            // Speed (measured tok/s for local models, via request meters)
             VStack(alignment: .trailing, spacing: 1) {
                 if row.isLocal {
-                    if OllamaClient.isBenchmarking(model: row.usage.model) {
-                        HStack(spacing: 2) {
-                            ProgressView().scaleEffect(0.5).frame(width: 10, height: 10)
-                            Text("test…").font(.system(size: 7.5, design: .monospaced)).foregroundStyle(.cyan)
-                        }
-                    } else if let tps = row.usage.tokPerSec, tps > 0 {
-                        Button {
-                            OllamaClient.benchmark(model: row.usage.model)
-                        } label: {
-                            VStack(alignment: .trailing, spacing: 0) {
-                                Text(String(format: "%.1f t/s", tps))
-                                    .font(.system(size: 8.5, weight: .bold, design: .monospaced))
-                                    .foregroundStyle(.teal)
-                                if let ptps = row.promptSpeedText {
-                                    Text(ptps)
-                                        .font(.system(size: 6.5, design: .monospaced))
-                                        .foregroundStyle(.secondary)
-                                }
+                    if let tps = row.usage.tokPerSec, tps > 0 {
+                        VStack(alignment: .trailing, spacing: 0) {
+                            Text(String(format: "%.1f t/s", tps))
+                                .font(.system(size: 8.5, weight: .bold, design: .monospaced))
+                                .foregroundStyle(.teal)
+                            if let ptps = row.promptSpeedText {
+                                Text(ptps)
+                                    .font(.system(size: 6.5, design: .monospaced))
+                                    .foregroundStyle(.secondary)
                             }
                         }
-                        .buttonStyle(.plain)
-                        .help("Click to re-benchmark speed")
+                        .help("Measured decode speed from metered requests")
                     } else {
-                        Button {
-                            OllamaClient.benchmark(model: row.usage.model)
-                        } label: {
-                            Text("⚡ Test")
-                                .font(.system(size: 7.5, weight: .heavy, design: .monospaced))
-                                .padding(.horizontal, 4).padding(.vertical, 1.5)
-                                .background(RoundedRectangle(cornerRadius: 3).fill(Color.cyan.opacity(0.2)))
-                                .foregroundStyle(.cyan)
-                        }
-                        .buttonStyle(.plain)
-                        .help("Benchmark tokens/sec for \(row.usage.model)")
+                        Text("—").font(.system(size: 8, design: .monospaced)).foregroundStyle(.secondary)
                     }
                 } else {
                     Text("API").font(.system(size: 8, design: .monospaced)).foregroundStyle(.white.opacity(0.3))
@@ -2010,7 +1962,6 @@ struct ModelRowView: View {
 struct ModelDetailView: View {
     let row: ModelRow
     @Environment(\.dismiss) var dismiss
-    @State private var ollamaCard: [String: Any]? = nil
 
     var body: some View {
         ScrollView(.vertical, showsIndicators: true) {
@@ -2099,22 +2050,6 @@ struct ModelDetailView: View {
                             }
                         }
                     }.padding(8).background(RoundedRectangle(cornerRadius: 6).fill(Color.white.opacity(0.04)))
-                }
-                if row.isLocal {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Local Model Card").font(.system(size: 9, weight: .heavy, design: .monospaced)).foregroundStyle(.tertiary).kerning(1)
-                        if let card = ollamaCard {
-                            ForEach(Array((card["details"] as? [String: Any] ?? [:]).sorted(by: { $0.key < $1.key }).prefix(8)), id: \.key) { k, v in
-                                HStack { Text(k).font(.system(size: 8, design: .monospaced)).foregroundStyle(.secondary); Spacer(); Text(String(describing: v)).font(.system(size: 8, design: .monospaced)).foregroundStyle(.white.opacity(0.75)) }
-                            }
-                            if let mf = card["modelfile"] as? String {
-                                Text(mf).font(.system(size: 7, design: .monospaced)).foregroundStyle(.white.opacity(0.35)).lineLimit(3).padding(.top, 4)
-                            }
-                        } else {
-                            Text("Loading model card…").font(.system(size: 8.5, design: .monospaced)).foregroundStyle(.secondary)
-                        }
-                    }.padding(8).background(RoundedRectangle(cornerRadius: 6).fill(Color.white.opacity(0.04)))
-                    .onAppear { if ollamaCard == nil { ollamaCard = OllamaClient.modelCard(for: row.usage.model) } }
                 }
             }.padding(16)
         }

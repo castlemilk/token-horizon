@@ -12,6 +12,8 @@ import (
 	"github.com/castlemilk/token-horizon/daemons/go/internal/usage"
 	"os"
 	"path/filepath"
+	"strconv"
+	"sync/atomic"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -21,6 +23,8 @@ import (
 // connection serializes writers; WAL lets concurrent readers through.
 type Store struct {
 	db *sql.DB
+	// traceInserts counts RecordTrace calls for prune throttling.
+	traceInserts atomic.Int64
 }
 
 func OpenStore(path string) (*Store, error) {
@@ -36,6 +40,21 @@ func OpenStore(path string) (*Store, error) {
 	if _, err := db.Exec(schemaDDL); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("schema: %w", err)
+	}
+	// Opt-in retention (the sidecar prunes traces; usage rows are unbounded
+	// by default). TH_RETENTION_DAYS=N deletes usage_event rows older than N
+	// days on open; unset/0 retains everything. Schema untouched — DELETE
+	// only, never ALTER.
+	if days, _ := strconv.Atoi(platform.EnvOr("TH_RETENTION_DAYS", "")); days > 0 {
+		cutoff := time.Now().AddDate(0, 0, -days).Unix()
+		if _, err := db.Exec(`DELETE FROM usage_event WHERE ts < ?`, cutoff); err != nil {
+			db.Close()
+			return nil, fmt.Errorf("retention: %w", err)
+		}
+		if _, err := db.Exec(`DELETE FROM trace WHERE ts < ?`, cutoff); err != nil {
+			db.Close()
+			return nil, fmt.Errorf("retention: %w", err)
+		}
 	}
 	return &Store{db: db}, nil
 }

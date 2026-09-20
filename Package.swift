@@ -42,7 +42,8 @@ coreDeps += [
 targets.append(.target(
     name: "TokenHorizonCore",
     dependencies: coreDeps,
-    path: "Sources/TokenHorizonCore"
+    path: "daemons/swift",
+    exclude: ["cmd"]
 ))
 
 // Pure-core unit tests — cross-platform (macOS + Linux). App-target tests
@@ -59,7 +60,7 @@ products.append(.executable(name: "token-horizon-headless", targets: ["token-hor
 targets.append(.executableTarget(
     name: "token-horizon-headless",
     dependencies: ["TokenHorizonCore"],
-    path: "daemons/swift"
+    path: "daemons/swift/cmd/token-horizon-headless"
 ))
 #endif
 

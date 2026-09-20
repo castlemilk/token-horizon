@@ -71,11 +71,11 @@
 		dialog = {
 			title: 'Daemon unreachable',
 			intro:
-				'Nothing is being measured right now — coding agents keep working, but their usage is invisible.' +
+				'Nothing is being measured right now. Your coding agents still work, but their usage goes uncounted.' +
 				(service && !service.supported
-					? ` Auto-start is unsupported here (${service.mechanism}) — run the daemon manually.`
+					? ` Auto-start is not supported here (${service.mechanism}). Run the daemon yourself.`
 					: ''),
-			steps: [{ body: 'The app keeps trying this address — start the daemon, then it reconnects on its own:', copy: apiBase() }],
+			steps: [{ body: 'The app keeps trying this address. Start the daemon and it reconnects on its own:', copy: apiBase() }],
 			...(service?.supported
 				? {
 						actionLabel: service.installed ? 'Reinstall background service' : 'Install background service',
@@ -90,7 +90,7 @@
 			title: scope === 'metering' ? 'Metering not allowed' : 'File reading not allowed',
 			intro:
 				scope === 'metering'
-					? 'Loopback request meters cannot listen — no traffic can be measured.'
+					? 'Loopback meters are not allowed to listen. No traffic can be measured.'
 					: 'Tool labels and file-claimed costs cannot join metered requests (pi attribution stays blank).',
 			actionLabel: `Allow ${scope === 'metering' ? 'metering' : 'file reading'}`,
 			onAction: closeAfter(() => onConsent(scope, true))
@@ -101,7 +101,7 @@
 		dialog = {
 			vendor: rt.vendor,
 			title: `${rt.display_name} is active but unmetered`,
-			intro: `The runtime is running${rt.usage.tokens_all > 0 ? ' and has recorded usage' : ''}, yet no meter is listening — its traffic passes through unseen.`,
+			intro: `The runtime is running${rt.usage.tokens_all > 0 ? ' and has recorded usage' : ''}, but no meter is listening, so its traffic goes uncounted.`,
 			actionLabel: 'Start meter',
 			onAction: closeAfter(() => onToggleMeter(rt.vendor, true))
 		};
@@ -122,9 +122,9 @@
 		dialog = {
 			vendor: tool.vendor,
 			title: `${tool.tool} setup`,
-			intro: `Point ${tool.tool} at its meter — traffic forwards byte-identical upstream and is measured in flight.`,
+			intro: `Point ${tool.tool} at its meter. Traffic passes through unchanged and gets counted on the way.`,
 			steps: [
-				{ body: `Use it — point ${tool.tool} here:`, copy: `http://127.0.0.1:${port}${tool.meterPath}` },
+				{ body: `Point ${tool.tool} here:`, copy: `http://127.0.0.1:${port}${tool.meterPath}` },
 				{ body: `If the meter fails, connect ${tool.tool} back here:`, copy: tool.upstream }
 			],
 			brief: tool.brief(port)

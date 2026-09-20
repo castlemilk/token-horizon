@@ -1,5 +1,6 @@
 import XCTest
 @testable import TokenHorizon
+@testable import TokenHorizonCore
 
 /// Tests for runner-reported `/metrics` parsing and prefill capture in the
 /// MLX observer/history. Hermetic: no live runner is contacted.
@@ -81,8 +82,8 @@ final class MLXServerMetricsTests: XCTestCase {
                              promptTokens: nil, completionTokens: nil, measuredAt: Date()),
             for: url
         )
-        OllamaTelemetryStore.shared.record(
-            OllamaTelemetrySample(model: model, completedAt: Date(timeIntervalSince1970: 1),
+        InferenceTelemetryStore.shared.record(
+            InferenceTelemetrySample(model: model, completedAt: Date(timeIntervalSince1970: 1),
                                   evalCount: 100, evalDurationNs: 1_000_000_000,
                                   promptEvalCount: 30, promptEvalDurationNs: 100_000_000)
         )

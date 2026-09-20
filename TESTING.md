@@ -11,14 +11,13 @@ How to validate changes locally. Start with `task --list`; the standard gates ar
 | `task test-perf` | Budget-gated Models-pipeline guard | Touching pipeline/views |
 | `task test-integration` | Loopback Ollama proxy round-trips | Touching telemetry proxy |
 | `task test-race` | Thread-sanitized suite (slow) | Concurrency-adjacent changes |
-| `task web-test` | Worker + MCP contract tests + Playwright UI suite + budgets (CI `web` job) | Touching `docs/`, `cloudflare/`, `mcp/` |
+| `task web-test` | Worker + MCP contract tests + Playwright UI suite + budgets (CI `web` job) | Touching `docs/`, `cloud/cloudflare/`, `clients/mcp/` |
 | `task bench-leaderboard` | Dashboard render/chart/search/explorer budgets | Touching `docs/leaderboard.html` |
 | `task models-refresh` | Regenerate `docs/data/models.json` from the app pipeline | Catalog export changes |
 | `task smoke` | Live checklist vs the running app | After `make-app.sh` relaunch |
 | `task doctor` | Toolchain + env check | New machine / weird failures |
 
-`make <target>` still works for `lint test test-race build app bench perf-test
-profile`; the Taskfile delegates to it so there is one implementation per command.
+The Taskfile is the single task runner (the Makefile was retired); `task --list` shows every entry point.
 
 ## Layers
 
@@ -42,7 +41,7 @@ profile`; the Taskfile delegates to it so there is one implementation per comman
   `task smoke` against your own running app.
 - **Perf** (`Tests/.../Perf/`): budget-gated suites; a `REGRESSION` failure
   means the pipeline got slower (see AGENTS.md performance budgets). Run
-  `./scripts/bench-models.sh` for numbers without asserts.
+  `./scripts/models/test-models-perf.sh --bench` for numbers without asserts.
 - **Smoke** (`task smoke`, implemented task-natively in `Taskfile.yml`): the AGENTS.md checklist
   as code — build-stamp identity (`/health` commit vs `git rev-parse`),
   `/stats`, `/trends`, `/limits`, `/models`, `/models/catalog`, `/discovery/status`, and the MCP
@@ -62,4 +61,4 @@ profile`; the Taskfile delegates to it so there is one implementation per comman
 
 `.github/workflows/ci.yml` runs `swiftlint lint` then `swift test` on
 `macos-15` for pushes to `main` and PRs. Releases stay tag-driven
-(`release.yml` builds via `scripts/make-app.sh`, the ONLY supported launcher).
+(`release.yml` builds via `scripts/app/make-app.sh`, the ONLY supported launcher).

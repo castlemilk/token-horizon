@@ -5,7 +5,7 @@
 #
 # Per release: bump `version` + `sha256` here (match
 # dist/TokenHorizon-<ver>.sha256, or the release's .sha256 asset) and run
-#   task brew-sync            # scripts/sync-homebrew-tap.sh
+#   task brew-sync            # scripts/app/sync-homebrew-tap.sh
 # to copy this file into the tap and push it.
 #
 # Users install with:

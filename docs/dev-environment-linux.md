@@ -1,6 +1,6 @@
 # Linux dev environment — what it takes to get the stack running
 
-Field notes from bringing up `scripts/run-dev.sh` (daemon + Tauri UI) on this
+Field notes from bringing up `scripts/dev/run-dev.sh` (daemon + Tauri UI) on this
 repo's primary Linux dev box: **Ubuntu 25.10, x86_64, VS Code installed as a
 snap, Swift via swiftly**. Every issue below is handled by the current
 scripts; this documents *why* the handling exists so it isn't "simplified"
@@ -9,7 +9,7 @@ away later.
 ## Symptom-free quickstart
 
 ```bash
-./scripts/run-dev.sh          # daemon on :8765 + Tauri shell (or vite fallback)
+./scripts/dev/run-dev.sh          # daemon on :8765 + Tauri shell (or vite fallback)
 ```
 
 If that works, you don't need the rest of this page.
@@ -28,7 +28,7 @@ If that works, you don't need the rest of this page.
   `PATH`, `CPATH`, `LIBRARY_PATH`, `LD_LIBRARY_PATH`, `PKG_CONFIG_PATH`/
   `PKG_CONFIG_SYSROOT_DIR` (webkit2gtk etc. for the Tauri build), and
   `RUSTFLAGS` (rust-lld ignores `LIBRARY_PATH`).
-- `run-dev.sh` and `build_scripts/tauri/build-linux.sh` probe `swift build
+- `run-dev.sh` and `scripts/tauri/build-linux.sh` probe `swift build
   --version` (not `command -v swift` — the binary *exists*, it just can't
   run) and source `~/toolchains/env.sh` as a fallback. Do not revert that
   check to a plain PATH lookup.
@@ -115,8 +115,8 @@ was running concurrently.
 
 ## Related files
 
-- `scripts/run-dev.sh` — dev stack launcher (all fixes above live here)
-- `scripts/build-sidecar.sh` — daemon sidecar staging for the Tauri bundler
-- `build_scripts/tauri/` — per-platform release bundle scripts
+- `scripts/dev/run-dev.sh` — dev stack launcher (all fixes above live here)
+- `scripts/app/build-sidecar.sh` — daemon sidecar staging for the Tauri bundler
+- `scripts/tauri/` — per-platform release bundle scripts
 - `docs/tauri-desktop-build.md` — Tauri build notes
 - `docs/cross-platform.md` — Platform seam contract

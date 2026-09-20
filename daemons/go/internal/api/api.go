@@ -7,7 +7,9 @@ package api
 // consolidators / system stats land in M2-M3 behind these same routes.
 
 import (
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"github.com/castlemilk/token-horizon/daemons/go/internal/cloudsync"
 	"github.com/castlemilk/token-horizon/daemons/go/internal/platform"
 	"github.com/castlemilk/token-horizon/daemons/go/internal/store"
@@ -49,6 +51,16 @@ func writeErr(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, map[string]any{"error": msg})
 }
 
+// clearTraces serves POST (and legacy GET) /traces/clear.
+func (a *apiServer) clearTraces(w http.ResponseWriter, r *http.Request) {
+	n, err := a.store.ClearTraces()
+	if err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	writeJSON(w, 200, map[string]any{"ok": true, "clearedTraces": n})
+}
+
 func queryFilter(r *http.Request) store.Filter {
 	q := r.URL.Query()
 	from, _ := strconv.ParseInt(q.Get("from"), 10, 64)
@@ -62,6 +74,7 @@ func queryFilter(r *http.Request) store.Filter {
 		MachineID:   q.Get("machine"),
 		Product:     q.Get("product"),
 		SessionID:   q.Get("session"),
+		ID:          q.Get("id"),
 	}
 }
 
@@ -117,11 +130,12 @@ func (a *apiServer) mux() *http.ServeMux {
 	})
 
 	mux.HandleFunc("GET /runtimes", func(w http.ResponseWriter, r *http.Request) {
+		// Bare array — the Swift wire contract the UI parses.
 		if a.runtimesFn == nil {
-			writeJSON(w, 200, map[string]any{"runtimes": []any{}})
+			writeJSON(w, 200, []any{})
 			return
 		}
-		writeJSON(w, 200, map[string]any{"runtimes": a.runtimesFn()})
+		writeJSON(w, 200, a.runtimesFn())
 	})
 
 	// ---- auto-start service registration ----
@@ -252,6 +266,52 @@ func (a *apiServer) mux() *http.ServeMux {
 			return
 		}
 		writeJSON(w, 200, map[string]any{"count": n})
+	})
+
+	// ---- traces (sidecar /traces + /proxy/stats contract, daemon-owned:
+	// one row per completed exchange, bodies capped, auth never stored) ----
+	mux.HandleFunc("GET /traces", func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		limit, _ := strconv.Atoi(q.Get("limit"))
+		traces, err := a.store.TracePage(q.Get("provider"), q.Get("model"), limit)
+		if err != nil {
+			writeErr(w, 500, err.Error())
+			return
+		}
+		if traces == nil {
+			traces = []usage.TraceSummary{}
+		}
+		n, _ := a.store.TraceCount()
+		writeJSON(w, 200, map[string]any{"traces": traces, "count": n})
+	})
+
+	mux.HandleFunc("GET /traces/{id}", func(w http.ResponseWriter, r *http.Request) {
+		tr, err := a.store.TraceByID(r.PathValue("id"))
+		if errors.Is(err, sql.ErrNoRows) {
+			writeErr(w, 404, "no such trace")
+			return
+		}
+		if err != nil {
+			writeErr(w, 500, err.Error())
+			return
+		}
+		writeJSON(w, 200, tr)
+	})
+
+	// GET kept for sidecar parity (its UI used plain links); POST is the
+	// semantically correct form.
+	mux.HandleFunc("POST /traces/clear", a.clearTraces)
+	mux.HandleFunc("GET /traces/clear", a.clearTraces)
+
+	mux.HandleFunc("GET /proxy/stats", func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		hours, _ := strconv.Atoi(q.Get("hours"))
+		stats, err := a.store.TraceStats(q.Get("provider"), q.Get("model"), hours)
+		if err != nil {
+			writeErr(w, 500, err.Error())
+			return
+		}
+		writeJSON(w, 200, stats)
 	})
 
 	// ---- limits (M1: latest recorded snapshots from the store; the vendor

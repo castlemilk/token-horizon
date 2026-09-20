@@ -97,7 +97,7 @@ jobs:
 
       - name: Build daemon sidecar (release)
         shell: bash
-        run: bash scripts/build-sidecar.sh release
+        run: bash scripts/app/build-sidecar.sh release
 
       - name: Install frontend deps
         working-directory: ui

@@ -1,7 +1,7 @@
 import Foundation
 import TokenHorizonCore
 
-/// Build identity. `scripts/make-app.sh` stamps the app's Info.plist with the
+/// Build identity. `scripts/app/make-app.sh` stamps the app's Info.plist with the
 /// git commit + UTC build time (`THGitSHA` / `THBuiltAt`); unstamped runs
 /// (e.g. `swift run` from a dirty tree) report "dev"/"unknown". The stamp is
 /// surfaced in `/health`, the Settings tab, and the launch log line so a

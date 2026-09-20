@@ -61,19 +61,27 @@ var Specs = []Spec{
 		ProcessSignatures: []string{"mlx_lm", "mlx.server", "mlx-lm", "--mlx-engine"}},
 }
 
-// Snapshot: external view of one runtime (JSON contract of GET /runtimes).
+// Snapshot: external view of one runtime (JSON contract of GET /runtimes —
+// snake_case + bare array + usage totals, matching the Swift daemon).
 type Snapshot struct {
 	Vendor          string             `json:"vendor"`
-	DisplayName     string             `json:"displayName"`
+	DisplayName     string             `json:"display_name"`
 	Running         bool               `json:"running"`
-	PIDs            []int32            `json:"pids,omitempty"`
+	PIDs            []int32            `json:"pids"`
 	Port            *int               `json:"port,omitempty"`
-	GenerationTotal *float64           `json:"generationTokensTotal,omitempty"`
-	PromptTotal     *float64           `json:"promptTokensTotal,omitempty"`
-	TokPerSec       *float64           `json:"tokPerSec,omitempty"`
-	PromptTokPerSec *float64           `json:"promptTokPerSec,omitempty"`
+	GenerationTotal *float64           `json:"generation_tokens_total,omitempty"`
+	PromptTotal     *float64           `json:"prompt_tokens_total,omitempty"`
+	TokPerSec       *float64           `json:"tok_per_sec,omitempty"`
+	PromptTokPerSec *float64           `json:"prompt_tok_per_sec,omitempty"`
 	Extra           map[string]float64 `json:"extra"`
-	SampledAt       int64              `json:"sampledAt"`
+	SampledAt       int64              `json:"sampled_at"`
+	Usage           SnapshotUsage      `json:"usage"`
+}
+
+// SnapshotUsage is the durable ledger rollup the UI renders per runtime.
+type SnapshotUsage struct {
+	TokensAll   int `json:"tokens_all"`
+	TokensToday int `json:"tokens_today"`
 }
 
 // ---- Prometheus parsing ----
@@ -380,7 +388,15 @@ func (m *Monitor) Current() []Snapshot {
 	defer m.mu.Unlock()
 	out := make([]Snapshot, 0, len(m.snapshots))
 	for _, s := range m.snapshots {
-		out = append(out, *s)
+		snap := *s
+		if snap.PIDs == nil {
+			snap.PIDs = []int32{}
+		}
+		if m.Ledger != nil {
+			all, today := m.Ledger.Totals(snap.Vendor)
+			snap.Usage = SnapshotUsage{TokensAll: all, TokensToday: today}
+		}
+		out = append(out, snap)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Vendor < out[j].Vendor })
 	return out

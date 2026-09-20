@@ -95,7 +95,7 @@ itself had to be broken — `find -xtype l` listed the dangling links.
 **Symptom:** `resource path 'binaries/token-horizon-headless-<triple>'
 doesn't exist` at the `app` crate build.
 
-**Fix:** `scripts/build-sidecar.sh [release|debug]` builds the Swift daemon
+**Fix:** `scripts/app/build-sidecar.sh [release|debug]` builds the Swift daemon
 and stages it under `ui/src-tauri/binaries/` with the target-triple suffix
 Tauri expects. `run-dev.sh` stages a debug sidecar automatically. Not
 optional: the build fails without it (by design — the app must be able to

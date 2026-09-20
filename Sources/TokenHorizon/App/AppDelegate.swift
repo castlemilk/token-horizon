@@ -48,7 +48,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         // auto-meters for every detected local runtime (Ollama, vLLM,
         // SGLang, llama.cpp, MLX — generic, first-sighting driven,
         // deterministic ports, visible via GET /meters). Internal clients
-        // (OllamaClient, ...) route through meters automatically via
+        // route through meters automatically via
         // MeterRegistry.routedURL — measured-only, one shared path.
         router.startCaptureMode()
         // Ask once for the shared .metering consent; remembers the answer.
@@ -73,7 +73,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         }
         refresh()
         refreshHistory()
-        refreshOllama()
         refreshMLX()
         KimiLimitsEngine.shared.refreshIfDue()
         PlanLimitsEngine.shared.refreshIfDue()
@@ -81,9 +80,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         rebuildSurfaces()
         NotificationCenter.default.addObserver(forName: .refreshTrends, object: nil, queue: .main) { [weak self] _ in
             self?.refreshTrends()
-        }
-        NotificationCenter.default.addObserver(forName: .refreshModelExtras, object: nil, queue: .main) { [weak self] _ in
-            self?.refreshOllama()
         }
 
         // Light tick: sys + coarse every 2s
@@ -126,7 +122,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                 self?.model.planLimits = PlanLimitsEngine.shared.cachedLimits()
             }
             if heavyTick % 12 == 0 {
-                self?.refreshOllama()
                 ModelCatalog.shared.ensureLoaded()
             }
         }
@@ -286,10 +281,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                                   to: Date(), filter: UsageFilter())
             }
             let procs = sampleProcesses ? SystemStats.processSamples() : nil
+            let containers = DockerObserver.sampleContainers()
             DispatchQueue.main.async {
                 self.model.usage = usage
-                self.model.storeProcesses(all: procs.all, byCPU: procs.byCPU, byMem: procs.byMem,
-                                          byDisk: procs.byDisk, byNet: procs.byNet)
+                if let procs {
+                    guard self.processMonitoringActive else { return }
+                    self.model.storeProcesses(all: procs.all, byCPU: procs.byCPU, byMem: procs.byMem,
+                                              byDisk: procs.byDisk, byNet: procs.byNet)
+                }
                 self.model.dockerContainers = containers
                 LeaderboardStore.shared.syncLocal(snapshot: usage, history: self.model.historyPoints, streak: self.model.historyStreak)
                 self.model.leaderboardRankings = LeaderboardStore.shared.rankings(for: .today)
@@ -314,7 +313,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                             }
                         }
                     }
-                }
                 }
             }
         }
@@ -356,38 +354,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                 LeaderboardStore.shared.syncLocal(snapshot: self.model.usage, history: result.points,
                                                   streak: result.streak, heatmap: heatmap)
                 self.model.leaderboardRankings = LeaderboardStore.shared.rankings(for: .today)
-            }
-        }
-    }
-
-    func refreshOllama() {
-        DispatchQueue.global(qos: .utility).async { [weak self] in
-            let installed = OllamaClient.fetchInstalled()
-            let ollama = installed.map { m -> ModelUsage in
-                let param = m.details["parameter_size"] ?? ""
-                let quant = m.details["quantization_level"] ?? ""
-                let ctxLen = Int(m.details["context_length"] ?? "0") ?? 0
-                return ModelUsage(
-                    provider: "ollama",
-                    model: m.name,
-                    tokensAll: 0,
-                    tokensToday: 0,
-                    cost: 0,
-                    messages: 0,
-                    free: true,
-                    cacheReadAll: 0,
-                    estCost: 0,
-                    contextK: ctxLen > 0 ? (ctxLen / 1000) : 0,
-                    tokPerSec: m.tokPerSec,
-                    promptTokPerSec: m.promptTokPerSec,
-                    paramSize: param.isEmpty ? nil : param,
-                    quant: quant.isEmpty ? nil : quant,
-                    isLocal: true,
-                    capabilities: m.capabilities
-                )
-            }
-            DispatchQueue.main.async {
-                self?.model.syntheticModels = ollama
             }
         }
     }

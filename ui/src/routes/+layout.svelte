@@ -10,7 +10,9 @@
 	import OSIcon from '$lib/components/data/OSIcon.svelte';
 	import Onboarding from '$lib/components/feedback/Onboarding.svelte';
 	import RingsBackground from '$lib/components/feedback/RingsBackground.svelte';
-	import { House, Activity, Settings, PlugZap, Trophy } from 'lucide-svelte';
+	import CloudAuthModal from '$lib/components/account/CloudAuthModal.svelte';
+	import { cloud, cloudToken, type CloudUser } from '$lib/cloud';
+	import { House, Activity, Settings, PlugZap, Unplug, Trophy, Cloud } from 'lucide-svelte';
 
 	let { children } = $props();
 
@@ -79,15 +81,17 @@
 
 	// Icon tabs — labels live on tooltips (title/aria), the UI stays wordless.
 	// Home · Meters (when runtime analytics exist) · Leaderboard · Profile.
+	// Both shells (Tauri + web) expose the same tabs — the Tauri webview has
+	// no URL bar, so nothing needs constraining at the route level.
 	const tabs = $derived(
 		machineAvailable
 			? [
-					{ path: '/', label: 'Home', icon: House },
+					{ path: '/home', label: 'Home', icon: House },
 					{ path: '/metering', label: 'Meters', icon: Activity },
 					{ path: '/leaderboard', label: 'Leaderboard', icon: Trophy }
 				]
 			: [
-					{ path: '/', label: 'Home', icon: House },
+					{ path: '/home', label: 'Home', icon: House },
 					{ path: '/leaderboard', label: 'Leaderboard', icon: Trophy }
 				]
 	);
@@ -96,8 +100,31 @@
 	const initial = $derived((settings.handle.trim()[0] ?? '?').toUpperCase());
 	const active = $derived($page.url.pathname);
 	const profileActive = $derived(active.startsWith('/@'));
+	// Marketing-site routes (landing + policies) render WITHOUT the app shell:
+	// no island nav, no dock, no onboarding. They bring their own chrome via
+	// src/routes/(site)/+layout.svelte.
+	const isSite = $derived(
+		active === '/' || active === '/terms' || active === '/privacy' || active === '/eula'
+	);
+
+	// Cloud connect/disconnect: the dock toggle opens the auth modal. The
+	// signed-in user is resolved lazily from the stored cloud token.
+	let cloudModalOpen = $state(false);
+	let cloudMe = $state<CloudUser | null>(null);
+
+	async function toggleCloud() {
+		if (cloudToken()) {
+			cloudMe = await cloud.me().catch(() => null);
+		} else {
+			cloudMe = null;
+		}
+		cloudModalOpen = true;
+	}
 </script>
 
+{#if isSite}
+	{@render children()}
+{:else}
 <div class="shell island-shell">
 	<header class="island-wrap" data-tauri-drag-region>
 		<nav class="island" aria-label="Primary">
@@ -137,20 +164,39 @@
 				{/if}
 			</div>
 			{#if !down && health}
-				<div class="status dock-sub" title={scope.cloudLabel}>
+				<!-- Two separate signals: cloud = is the server reachable (green),
+				     sign-in = is an identity applied (only meaningful — and only
+				     shown — while the cloud is reachable). -->
+				<button
+					class="status dock-sub dock-cloud"
+					title={scope.cloudLabel}
+					aria-label="Cloud connection"
+					onclick={() => void toggleCloud()}
+				>
 					<span
 						class="dot"
-						class:up={scope.cloud === 'synced'}
-						class:down={scope.cloud === 'degraded'}
+						class:up={scope.cloudReachable}
+						class:down={scope.cloudConnected && !scope.cloudReachable}
 					></span>
-					<span class="dock-text"
-						>{scope.cloud === 'off'
-							? 'Cloud off'
-							: scope.cloud === 'degraded'
-								? 'Cloud stale'
-								: 'Cloud'}</span
+					<Cloud size={13} strokeWidth={1.8} />
+				</button>
+				{#if scope.cloudReachable}
+					<button
+						class="status dock-sub dock-cloud"
+						title={scope.cloudSignedIn
+							? 'Signed in — sync enabled (click to manage)'
+							: 'Not signed in — click to connect'}
+						aria-label={scope.cloudSignedIn ? 'Signed in' : 'Sign in'}
+						onclick={() => void toggleCloud()}
 					>
-				</div>
+						<span class="dot" class:up={scope.cloudSignedIn}></span>
+						{#if scope.cloudSignedIn}
+							<Unplug size={13} strokeWidth={1.8} />
+						{:else}
+							<PlugZap size={13} strokeWidth={1.8} />
+						{/if}
+					</button>
+				{/if}
 			{/if}
 			<a class="dock-gear" href="/settings" class:active={active === '/settings'} title="Settings" aria-label="Settings">
 				<Settings size={14} strokeWidth={1.8} />
@@ -160,3 +206,12 @@
 </div>
 <!-- Backdrop mounts last so its setup can never block siblings' onMount -->
 <RingsBackground />
+<CloudAuthModal
+	open={cloudModalOpen}
+	user={cloudMe}
+	onClose={() => {
+		cloudModalOpen = false;
+		void scope.poke();
+	}}
+/>
+{/if}

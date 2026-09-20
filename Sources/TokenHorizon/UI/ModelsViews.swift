@@ -402,43 +402,23 @@ struct ModelRowView: View {
             }
             .frame(width: compact ? 46 : 56, alignment: .trailing)
 
-            // Speed (tok/s for local models)
+            // Speed (measured tok/s for local models, via request meters)
             VStack(alignment: .trailing, spacing: 1) {
                 if row.isLocal {
-                    if OllamaClient.isBenchmarking(model: row.localModelName) {
-                        HStack(spacing: 2) {
-                            ProgressView().scaleEffect(0.5).frame(width: 10, height: 10)
-                            Text("test…").font(.system(size: 7.5, design: .monospaced)).foregroundStyle(.cyan)
-                        }
-                    } else if let tps = row.usage.tokPerSec, tps > 0 {
-                        Button {
-                            OllamaClient.benchmark(model: row.localModelName)
-                        } label: {
-                            VStack(alignment: .trailing, spacing: 0) {
-                                Text(String(format: "%.1f t/s", tps))
-                                    .font(.system(size: 8.5, weight: .bold, design: .monospaced))
-                                    .foregroundStyle(.teal)
-                                if let ptps = row.promptSpeedText {
-                                    Text(ptps)
-                                        .font(.system(size: 6.5, design: .monospaced))
-                                        .foregroundStyle(.secondary)
-                                }
+                    if let tps = row.usage.tokPerSec, tps > 0 {
+                        VStack(alignment: .trailing, spacing: 0) {
+                            Text(String(format: "%.1f t/s", tps))
+                                .font(.system(size: 8.5, weight: .bold, design: .monospaced))
+                                .foregroundStyle(.teal)
+                            if let ptps = row.promptSpeedText {
+                                Text(ptps)
+                                    .font(.system(size: 6.5, design: .monospaced))
+                                    .foregroundStyle(.secondary)
                             }
                         }
-                        .buttonStyle(.plain)
-                        .help("Click to re-benchmark speed")
+                        .help("Measured decode speed from metered requests")
                     } else {
-                        Button {
-                            OllamaClient.benchmark(model: row.localModelName)
-                        } label: {
-                            Text("⚡ Test")
-                                .font(.system(size: 7.5, weight: .heavy, design: .monospaced))
-                                .padding(.horizontal, 4).padding(.vertical, 1.5)
-                                .background(RoundedRectangle(cornerRadius: 3).fill(Color.cyan.opacity(0.2)))
-                                .foregroundStyle(.cyan)
-                        }
-                        .buttonStyle(.plain)
-                        .help("Benchmark tokens/sec for \(row.usage.model)")
+                        Text("—").font(.system(size: 8, design: .monospaced)).foregroundStyle(.secondary)
                     }
                 } else {
                     Text("API").font(.system(size: 8, design: .monospaced)).foregroundStyle(.white.opacity(0.3))
@@ -857,7 +837,7 @@ struct ModelDetailView: View {
                 MLXModelInspector.metadata(for: modelName)
             }.value
         } else {
-            metadata = await OllamaClient.fetchModelMetadata(for: modelName)
+            metadata = nil
         }
         guard !Task.isCancelled else { return }
         localMetadata = metadata

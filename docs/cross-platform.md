@@ -18,7 +18,7 @@ curl localhost:8765/health                     # ✅ {"platform":"Linux",...}
 curl localhost:8765/stats                      # ✅ real UsageEngine data (claude/kimi/codex/opencode)
 curl localhost:8765/processes                  # ✅ /proc + ps backend
 curl localhost:8765/limits                     # ✅ live provider quota fetches
-printf '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}\n' | node mcp/token-horizon-mcp.mjs  # ✅
+printf '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}\n' | node clients/mcp/token-horizon-mcp.mjs  # ✅
 ```
 
 Build prerequisites on Linux: Swift 6.x toolchain + sqlite3 dev files
@@ -50,7 +50,7 @@ the headless daemon assigns them in `main.swift`.
 
 ## Next steps
 
-1. **Verify macOS app build** on a Mac: `./scripts/make-app.sh` (this branch
+1. **Verify macOS app build** on a Mac: `./scripts/app/make-app.sh` (this branch
    restructured targets; access-level or import fixes may be needed).
 2. Linux: libsecret `CredentialStore`, per-process disk/net rates in
    `ProcFSSystemStats`, systemd unit + packaging, validate OTel Swift on Linux

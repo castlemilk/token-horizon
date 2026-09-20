@@ -3,8 +3,8 @@
   "private": true,
   "description": "Vendored chart runtime for the TokenArena dashboard (docs/leaderboard.html).",
   "scripts": {
-    "vendor": "node scripts/build-vendor.mjs",
-    "bench:leaderboard": "node scripts/bench-leaderboard.mjs",
+    "vendor": "node scripts/web/build-vendor.mjs",
+    "bench:leaderboard": "node scripts/leaderboard/bench-leaderboard.mjs",
     "deploy": "wrangler deploy",
     "preview": "wrangler dev"
   },

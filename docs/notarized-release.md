@@ -31,7 +31,7 @@ For a signed but not-yet-notarized artifact:
 
 ```bash
 DEVELOPER_ID_APPLICATION="Developer ID Application: Ben Ebsworth (TEAMID1234)" \
-./scripts/package-notarized.sh
+./scripts/app/package-notarized.sh
 ```
 
 For a signed ZIP and notarized DMG:
@@ -41,7 +41,7 @@ DEVELOPER_ID_APPLICATION="Developer ID Application: Ben Ebsworth (TEAMID1234)" \
 NOTARYTOOL_PROFILE=token-horizon-notary \
 MARKETING_VERSION=1.0.0 \
 CURRENT_PROJECT_VERSION=3 \
-./scripts/package-notarized.sh
+./scripts/app/package-notarized.sh
 ```
 
 Artifacts are written to `dist/`. The script uses the hardened runtime, verifies the signed app, submits the DMG, staples the ticket, and runs Gatekeeper assessment when a notary profile is provided. The ZIP contains the signed app; the stapled DMG is the notarized distribution artifact.
@@ -60,7 +60,7 @@ Test the stapled app on a clean macOS user account before release. Confirm that 
 
 ## Publish pipeline (GitHub Actions)
 
-`.github/workflows/release.yml` runs `scripts/package-notarized.sh` for every
+`.github/workflows/release.yml` runs `scripts/app/package-notarized.sh` for every
 `v*` tag: it builds the app (gateway sidecar + build stamps), signs it with the
 imported Developer ID certificate, notarizes + staples the app, packages the ZIP
 and DMG, then notarizes + staples the DMG and runs a Gatekeeper assessment.

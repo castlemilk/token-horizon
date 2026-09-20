@@ -47,44 +47,6 @@ final class OllamaMetadataTests: XCTestCase {
         XCTAssertEqual(back?["s"] as? String, "x")
         XCTAssertEqual(back?["b"] as? Bool, false)
     }
-
-    func testRunningModelMatching() {
-        func obj(_ models: [[String: String]]) -> LocalMetadataValue {
-            .object(["models": .array(models.map { m in
-                .object(Dictionary(uniqueKeysWithValues: m.map { ($0.key, LocalMetadataValue.string($0.value)) }))
-            })])
-        }
-        let ps = obj([["name": "Qwen3:8B"], ["model": "llama3"]])
-        XCTAssertNotNil(OllamaClient.runningModel(from: ps, matching: "qwen3:8b"))
-        XCTAssertNotNil(OllamaClient.runningModel(from: ps, matching: "LLAMA3"))
-        XCTAssertNil(OllamaClient.runningModel(from: ps, matching: "missing"))
-        XCTAssertNil(OllamaClient.runningModel(from: nil, matching: "qwen3"))
-        XCTAssertNil(OllamaClient.runningModel(from: .string("x"), matching: "x"))
-    }
-
-    func testMakeModelMetadataSectionsAndErrors() {
-        let installed = OllamaModel(name: "m", size: 1, modifiedAt: "", capabilities: [],
-                                    details: [:], modelID: "mid", rawMetadata: .string("raw"))
-        // Nothing at all → daemon error.
-        let empty = OllamaClient.makeModelMetadata(name: "m", installed: nil, card: nil)
-        XCTAssertNotNil(empty.error)
-        XCTAssertTrue(empty.sections.isEmpty)
-        // Installed only → config error, tags section present.
-        let tagsOnly = OllamaClient.makeModelMetadata(name: "m", installed: installed, card: nil)
-        XCTAssertNotNil(tagsOnly.error)
-        XCTAssertNotNil(tagsOnly.sections["installed /api/tags"])
-        // Card only → no error.
-        let cardOnly = OllamaClient.makeModelMetadata(name: "m", installed: nil, card: .string("c"))
-        XCTAssertNil(cardOnly.error)
-        XCTAssertNotNil(cardOnly.sections["configuration /api/show"])
-        // All three sections present when all inputs given.
-        let full = OllamaClient.makeModelMetadata(name: "m", installed: installed,
-                                                  card: .string("c"), running: .string("r"))
-        XCTAssertNil(full.error)
-        XCTAssertEqual(full.sections.count, 3)
-        XCTAssertEqual(full.backend, "ollama")
-        XCTAssertEqual(full.model, "m")
-    }
 }
 
 private extension LocalMetadataValue {

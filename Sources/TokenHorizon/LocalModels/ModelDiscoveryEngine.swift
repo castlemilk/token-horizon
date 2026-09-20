@@ -7,7 +7,6 @@ final class ModelDiscoveryEngine {
     private let lock = NSLock()
 
     private var localTimer: DispatchSourceTimer?
-    private var ollamaTimer: DispatchSourceTimer?
     private var remoteTimer: DispatchSourceTimer?
 
     private var fileSystemSources: [DispatchSourceFileSystemObject] = []
@@ -30,7 +29,6 @@ final class ModelDiscoveryEngine {
         var totalDiscovered: Int
         var recentDiscovered: [String]
         var monitoredFiles: [FileStatus]
-        var ollamaModelsCount: Int
         var catalogRevision: Int
         var catalogCount: Int
 
@@ -53,7 +51,6 @@ final class ModelDiscoveryEngine {
     }
 
     private var trackedFiles: [String: FileState] = [:]
-    private var trackedOllamaTags: Set<String> = []
     private var lastLocalScan: Date?
     private var lastRemoteScan: Date?
     private var scanCount: Int = 0
@@ -93,7 +90,6 @@ final class ModelDiscoveryEngine {
             self.setupTimers()
             // Perform initial scans
             _ = self.checkLocalFiles(force: true, reason: "startup")
-            _ = self.checkOllama(force: true)
             self.checkRemoteAPIs(force: false, reason: "startup")
         }
     }
@@ -111,8 +107,6 @@ final class ModelDiscoveryEngine {
             guard let self else { return }
             self.localTimer?.cancel()
             self.localTimer = nil
-            self.ollamaTimer?.cancel()
-            self.ollamaTimer = nil
             self.remoteTimer?.cancel()
             self.remoteTimer = nil
 
@@ -138,16 +132,7 @@ final class ModelDiscoveryEngine {
         lt.resume()
         self.localTimer = lt
 
-        // 2. Ollama local runtime check every 15 seconds
-        let ot = DispatchSource.makeTimerSource(queue: queue)
-        ot.schedule(deadline: .now() + 15.0, repeating: 15.0, leeway: .seconds(1))
-        ot.setEventHandler { [weak self] in
-            _ = self?.checkOllama(force: false)
-        }
-        ot.resume()
-        self.ollamaTimer = ot
-
-        // 3. Remote provider & catalog check every 300 seconds (5 min)
+        // 2. Remote provider & catalog check every 300 seconds (5 min)
         let rt = DispatchSource.makeTimerSource(queue: queue)
         rt.schedule(deadline: .now() + 60.0, repeating: 300.0, leeway: .seconds(5))
         rt.setEventHandler { [weak self] in
@@ -250,43 +235,6 @@ final class ModelDiscoveryEngine {
         return (result.added, result.updated, result.addedIds)
     }
 
-    @discardableResult
-    func checkOllama(force: Bool = false) -> (added: Int, updated: Int, addedModels: [String]) {
-        let installed = OllamaClient.fetchInstalled()
-        let names = Set(installed.map { $0.name })
-
-        lock.lock()
-        let prev = trackedOllamaTags
-        let isDifferent = (prev != names)
-        trackedOllamaTags = names
-        lock.unlock()
-
-        guard isDifferent || force else { return (0, 0, []) }
-
-        let newTags = names.subtracting(prev)
-        let addedModels = Array(newTags)
-
-        if !newTags.isEmpty {
-            lock.lock()
-            totalDiscovered += addedModels.count
-            for tag in addedModels {
-                if !recentDiscovered.contains(tag) {
-                    recentDiscovered.insert(tag, at: 0)
-                }
-            }
-            if recentDiscovered.count > 20 {
-                recentDiscovered = Array(recentDiscovered.prefix(20))
-            }
-            lock.unlock()
-        }
-
-        DispatchQueue.main.async {
-            NotificationCenter.default.post(name: .refreshModelExtras, object: nil)
-        }
-
-        return (addedModels.count, 0, addedModels)
-    }
-
     func checkRemoteAPIs(force: Bool = false, reason: String = "manual") {
         let bm = ModelCatalog.loadBenchmarks()
         var map: [String: ModelCatalog.Entry] = [:]
@@ -341,10 +289,6 @@ final class ModelDiscoveryEngine {
             totalUpdated += local.updated
             newModels.append(contentsOf: local.addedModels)
 
-            let ollama = self.checkOllama(force: true)
-            totalAdded += ollama.added
-            newModels.append(contentsOf: ollama.addedModels)
-
             if includeRemote {
                 self.checkRemoteAPIs(force: true, reason: "on_demand")
             }
@@ -386,7 +330,6 @@ final class ModelDiscoveryEngine {
             totalDiscovered: totalDiscovered,
             recentDiscovered: recentDiscovered,
             monitoredFiles: files,
-            ollamaModelsCount: trackedOllamaTags.count,
             catalogRevision: ModelCatalog.shared.currentRevision(),
             catalogCount: ModelCatalog.shared.count
         )

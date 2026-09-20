@@ -3,7 +3,7 @@ import XCTest
 
 /// Contract tests for the locked process snapshot: the off-main /processes
 /// path must observe exactly what the main thread stored (no torn reads).
-/// Thread-safety itself is enforced by TSan (`make test-race`); these pin
+/// Thread-safety itself is enforced by TSan (`task test-race`); these pin
 /// the store/snapshot wiring deterministically on one thread.
 final class ProcessSnapshotTests: XCTestCase {
 

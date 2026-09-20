@@ -5,7 +5,8 @@ Guide for coding agents working in this repo. Read alongside README.md (user set
 ## Layout
 
 ```
-Sources/TokenHorizonCore/   portable server-side module (macOS + Linux; Windows TBD)
+daemons/swift/              the Swift core, flattened (macOS + Linux; Windows TBD)
+  cmd/token-horizon-headless/  thin main over the core library
   Usage/                  UsageEngine (BACKFILL PARSER + macOS-app UI source: opencode sqlite,
                           claude/codex/kimi/generic JSONL → backfillEvents; 15-min buckets,
                           TokenBreakdown input/output/reasoning/cacheRead/cacheWrite) + shared
@@ -83,8 +84,8 @@ Sources/TokenHorizonCore/   portable server-side module (macOS + Linux; Windows 
                             credential file locations, consumed by engine, consolidator,
                             limits engine, and FilePoller)
     VLLM/ SGLang/ LlamaCpp/   runtime adapters (ports, process signatures, counter names)
-    Ollama/                 OllamaClient (REST + benchmarks; routes through any live meter
-                            via MeterRegistry.routedURL — no per-vendor wiring)
+    Ollama/                 OllamaRuntime (native /api/ps + /api/version probe,
+                            usage truth via OllamaMeter like any other runtime)
     MLX/                    MLXTypes, MLXHistory, MLXObserver (macOS)
   Metering/               RequestMeter base (loopback HTTP relay: forwards to real API,
                           streams response byte-identical, measures TTFT/stream duration,
@@ -117,8 +118,8 @@ Sources/TokenHorizonCore/   portable server-side module (macOS + Linux; Windows 
                           live (5s mtime TTL), and drives every read-time fold: vendor CASE,
                           spelling cache (INSERT OR REPLACE), and pricing keys (canonical
                           namespace, so one config line maps any raw spelling onto its rates)
-  Telemetry/              OllamaClient (meter-routed via MeterRegistry.routedURL), TelemetryMetrics (OTel on
-                          macOS, no-op stub elsewhere), MLXTypes, MLXHistory, OllamaTelemetryStore
+  Telemetry/              TelemetryMetrics (OTel on
+                          macOS, no-op stub elsewhere), MLXTypes, MLXHistory
   Events/                 EventStore (bounded shell-event ring buffer)
   Settings/               SettingsStore (config dir settings.json, path via Platform.paths)
   Notifications.swift     shared Notification.Name constants
@@ -153,7 +154,8 @@ Sources/TokenHorizonCore/   portable server-side module (macOS + Linux; Windows 
                             POST /service/uninstall. Never root/system-level — the
                             daemon needs the user's credentials and config dirs.
 daemons/                         the two local daemons, side by side:
-  swift/                         token-horizon-headless (thin main over TokenHorizonCore) —
+  swift/                         the Swift core (flattened: Usage/ Metering/ Providers/ Platform/ ...
+                                 at the root, like daemons/go's internal/) + cmd/token-horizon-headless —
                                  retires at Go parity; macOS app + SvelteKit UI become pure clients
   go/                            the migration target: TokenHorizonCore ported to Go. Same usage.db
                                  schema, config files, loopback API contract + port range. One
@@ -165,7 +167,13 @@ daemons/                         the two local daemons, side by side:
                                  internal/cloudsync (cursor outbox, ack-only advancement, debounced
                                  nudge), internal/api (loopback router + Daemon composition),
                                  internal/meter (relays + wire-format parsers + registry + runtime
-                                 auto-metering + catalog-priced .computed cost), internal/auth
+                                 auto-metering + catalog-priced .computed cost; base-owned relay
+                                 rules: never follow redirects, 32MB symmetric body caps with
+                                 truncate-and-skip, per-request event UUID returned as
+                                 x-token-horizon-event-id, in-memory retry window + shared
+                                 error taxonomy counted (never stored) via GET /meters;
+                                 full-body trace capture into usage.db trace table with
+                                 /traces + /proxy/stats read API), internal/auth
                                  (credential chains), internal/limits (9 vendor quota adapters +
                                  last-good retention), internal/files (IncrementalJSONL, backfill
                                  scanners, consolidators, poller, files-methodology counting,
@@ -176,8 +184,11 @@ daemons/                         the two local daemons, side by side:
                                  internal/catalog (models.dev pricing + flagship rules). ~11k LOC,
                                  60+ tests. Remaining gaps vs Swift core: OTel exporter, macOS
                                  system-stats backend, Models-tab pipeline (stays in the app).
-server/                          Go cloud backend (sync ingest, leaderboard; postgres/duckdb) — the
-                                 OTHER Go module; daemon/ is the local core, server/ is the cloud.
+cloud/                           everything that runs off-device:
+  server/                        Go cloud backend (sync ingest, leaderboard; postgres/duckdb) — the
+                                 OTHER Go module; daemon/ is the local core, cloud/server/ is the cloud.
+  cloudflare/                    edge worker: webhosting + R2 leaderboard + SVG badges
+  leaderboard-worker/            original R2 leaderboard worker (previous generation of cloudflare/)
 ui/                              cross-platform desktop UI: SvelteKit (TS, adapter-static SPA, no
                                  Tailwind) + Tauri v2 shell; thin client of the loopback API
 Sources/CSQLite/                 system sqlite3 module-map shim (non-macOS only)
@@ -187,14 +198,22 @@ Sources/TokenHorizon/            macOS app — UI + lifecycle only (server = cor
   LimitNotifier.swift   UNUserNotification limit alerts
   UI/Panels.swift       NotchPanel (hover driver + hysteresis), ring gauges live in Views
   UI/Views.swift        UIModel, DashboardTabs (shared by notch/popover/window), all tab views
-mcp/token-horizon-mcp.mjs   zero-dep stdio MCP server (talks to :8765, sqlite fallback for usage/sessions)
-shell/token-horizon.zsh     zsh preexec/precmd hooks + `th` CLI
-  scripts/make-app.sh         release build + .app bundle (LSUIElement) + ad-hoc codesign + relaunch
-  scripts/package-notarized.sh Developer ID hardened-runtime app + DMG/ZIP + optional notarytool submission
-scripts/make-icon.swift     renders the black-hole AppIcon.icns
-scripts/run-dev.sh          cross-platform dev stack (daemon on Linux, app on macOS, Tauri/vite UI);
-                            kills stale backends/dev servers before starting (TH_REUSE=1 to reuse)
-build_scripts/tauri/        per-platform Tauri release bundle scripts (linux/macos/windows)
+clients/                         thin clients of the loopback API:
+  mcp/token-horizon-mcp.mjs      zero-dep stdio MCP server (talks to :8765, sqlite fallback for usage/sessions)
+  shell/token-horizon.zsh        zsh preexec/precmd hooks + `th` CLI
+scripts/                       automation, grouped by concern:
+  app/                         macOS app lifecycle — make-app.sh (release build + .app bundle +
+                               ad-hoc codesign + relaunch), make-icon.swift,
+                               make-widget.sh, package-notarized.sh, sync-homebrew-tap.sh, build-sidecar.sh
+  tauri/                       per-platform Tauri release bundle scripts (linux/macos/windows)
+  dev/                         local dev & daemon — run-dev.sh (cross-platform dev stack;
+                               kills stale backends/dev servers first, TH_REUSE=1 to reuse),
+                               profile-tick.sh, install-linux-service.sh
+  models/                      catalog pipeline & perf budgets — refresh-models.sh, update-catalog.py,
+                               fetch-brand-logos.py, test-models-perf.sh (guard + `--bench` summary)
+  leaderboard/                 leaderboard bench/tests, badges
+  deploy/                      cloudflare deploy + domain onboarding
+  web/                         docs-site vendor bundling (build-vendor.mjs + *-entry.js), playwright, UI verification
 ```
 
 See docs/cross-platform.md for the Linux/Windows port status and the Platform seam contract;
@@ -212,7 +231,7 @@ docs/dev-environment-linux.md for the Linux dev-box toolchain/snap pitfalls run-
 5. **Endpoints are store-first; files only backfill.** /stats, /summary, /history, /trends read from SQLiteUsageStore whenever a store is wired (CoreAPIRouter.storeSnapshot/storeHistory/storeTrends + summarize); UsageEngine is the fallback for storeless hosts and remains the backfill parser + the macOS app's direct UI source. The MCP shim and any UI read from the HTTP API (fallback: direct sqlite read-only for usage/sessions). Never parse provider files from the MCP shim.
 6. **Swift concurrency**: language mode 5, no Sendable gymnastics — keep it that way unless you enjoy type-checker timeouts.
 7. **Dependencies stay deliberate.** System SQLite3, Network, AppKit/SwiftUI, and the pinned OpenTelemetry Swift SDK are allowed; do not add another dependency without review.
-8. **Process list must always be populated.** `SystemStats.processSamples()` returns top 8 sorted by CPU and by MEM with *no* threshold filter — filtering `cpu >=0.5` at idle produced empty lists. It must use the temp-file pattern (`FileHandle(forWritingAtPath:)` → `Data(contentsOf:)`) not `Pipe` + `waitUntilExit` + `readDataToEndOfFile` (pipe deadlock on utility queue). It is exposed as `GET /processes` (`Platform/CoreAPIRouter.swift`) and `token_horizon_processes` MCP tool (`mcp/token-horizon-mcp.mjs:131`) — both must stay in sync with `AppDelegate.swift:182` `model.processes`/`processesMem`.
+8. **Process list must always be populated.** `SystemStats.processSamples()` returns top 8 sorted by CPU and by MEM with *no* threshold filter — filtering `cpu >=0.5` at idle produced empty lists. It must use the temp-file pattern (`FileHandle(forWritingAtPath:)` → `Data(contentsOf:)`) not `Pipe` + `waitUntilExit` + `readDataToEndOfFile` (pipe deadlock on utility queue). It is exposed as `GET /processes` (`Platform/CoreAPIRouter.swift`) and `token_horizon_processes` MCP tool (`clients/mcp/token-horizon-mcp.mjs:131`) — both must stay in sync with `AppDelegate.swift:182` `model.processes`/`processesMem`.
 
 9. **System performance history is bounded.** `SystemStats.snapshot()` exposes CPU, memory, disk MB/s, and network MB/s. `UIModel` records fine samples every 2 seconds, caps each fine series at 1,800 points, and emits one 30-second average after every 15 samples. Each coarse series is capped at 2,880 points (24 hours); old points are discarded, not persisted. I/O sampling runs off-main, uses a 4-second cache, disk `iostat` totals, and non-loopback `getifaddrs` counters. Keep this path free of per-process history or unbounded allocations.
 
@@ -250,7 +269,7 @@ docs/dev-environment-linux.md for the Linux dev-box toolchain/snap pitfalls run-
 ## Provider contract
 
 `ProviderLimit { provider, label, usedPercent 0-100, resetsAt Date?, detail }` — one folder per
-provider in `Sources/TokenHorizonCore/Providers/<Vendor>/`, quota adapter subclassing
+provider in `daemons/swift/Providers/<Vendor>/`, quota adapter subclassing
 `VendorLimitsAdapter`.
 Required overrides: `fetch()` (fatalError if forgotten) and usually `auth` (a `VendorAuth`
 credential chain from `Providers/Auth/`). Build rows via `limit(label:usedPercent:resetsAt:detail:)`
@@ -275,12 +294,12 @@ Auth sources (checked in order):
 ## Verification checklist (run after changes)
 
 ```bash
-./scripts/make-app.sh                     # build + relaunch
+./scripts/app/make-app.sh                     # build + relaunch
 curl -s localhost:8765/health
 curl -s localhost:8765/stats | python3 -m json.tool | head -40
 curl -s "localhost:8765/trends?window=1D" | python3 -c "import json,sys; d=json.load(sys.stdin); print(len(d['points']), d['total'])"
 curl -s localhost:8765/limits | python3 -m json.tool
-printf '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}\n' | node mcp/token-horizon-mcp.mjs
+printf '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}\n' | node clients/mcp/token-horizon-mcp.mjs
 ```
 
 Ground-truth checks when touching parsers:
@@ -311,9 +330,9 @@ The MODELS tab renders a 7,300-row deduped catalog with filter+sort. The pipelin
 swift test --filter SystemHistoryTests                                  # I/O + rolling-history regression tests
 swift test --filter ProcessMetricsTests                                 # per-process metrics regression tests
 swift test                                                              # complete suite
-./scripts/bench-models.sh                                              # bench + summary
-./scripts/test-models-perf.sh                                          # regression guard (fails on budget breach)
-./scripts/make-app-with-tests.sh                                       # release build gated on perf tests
+./scripts/models/test-models-perf.sh --bench                            # bench + summary
+./scripts/models/test-models-perf.sh                                      # regression guard (fails on budget breach)
+task app-tested                                                   # release build gated on perf tests
 ```
 
 **Test layout:**
@@ -340,8 +359,8 @@ If a test fails with "REGRESSION", the pipeline is slower than the budget. Commo
   engine.snapshot() directly); the HTTP endpoints are store-first. Deleting the duplicate
   bucket aggregation requires rewiring the macOS app onto the store first.
 - macOS-app files converted to the shared HTTP helper (ClaudeDiscovery, BuildInfo,
-  Catalog/ModelCatalog) compile only on macOS — verify with ./scripts/make-app.sh.
-- alibaba 5h window intermittently absent (gateway omits it; retry ×3 handles most cases)
+  Catalog/ModelCatalog) compile only on macOS — verify with ./scripts/app/make-app.sh.
+- alibaba 5h window intermittently absent (upstream omits it; retry ×3 handles most cases)
 - minimax/glm/opencode-go keys expire per opencode re-auth — limits silently drop rows when 401
 - claude token refresh not implemented (reads stored access token only; re-login fixes 401s)
 - alibaba cookie is manual paste; browser auto-import not implemented

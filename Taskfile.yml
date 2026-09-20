@@ -3,12 +3,11 @@
 # `task --list` shows every entry point with its description.
 # Convention: new commands live HERE, not in scripts/. scripts/ is reserved
 # for launcher/installer/packaging paths (make-app.sh, package-notarized.sh,
-# install.sh) that must stay standalone. Thin `make <target>` delegation is
-# kept where a Makefile target already exists, so there is exactly one
-# implementation per command (no drift).
+# install.sh) that must stay standalone. There is exactly one implementation
+# per command (no drift).
 #
 # Rule of thumb: `task validate` before every PR; `task smoke` after
-# `./scripts/make-app.sh` relaunches the app; never overlap two swift
+# `./scripts/app/make-app.sh` relaunches the app; never overlap two swift
 # builds/tests at once (shared .build dir corrupts results).
 
 version: "3"
@@ -22,31 +21,25 @@ tasks:
     cmds:
       - task --list
 
+  dev:
+    desc: Full dev stack — daemon backend + cloud sync server + UI (Ctrl-C tears down)
+    cmds:
+      - ./scripts/dev/run-dev.sh
+
   # Full local gate: lint errors + entire XCTest suite. Mirrors CI.
   validate:
     desc: Full gate — lint (errors fail) + full test suite (mirrors CI)
-    deps: [lint, test, gateway-test]
-
-  gateway-test:
-    desc: Go sidecar gate — gofmt + vet + unit/integration tests (mirrors CI)
-    cmds:
-      - test -z "$(gofmt -l gateway/)"
-      - cd gateway && go vet ./... && go test ./...
-
-  test-gateway-smoke:
-    desc: Live sidecar smoke — real binary vs stub upstream, hermetic ports (no creds)
-    cmds:
-      - ./scripts/test-gateway.sh
+    deps: [lint, test]
 
   lint:
     desc: SwiftLint — errors fail the build, warnings are burn-down (see .swiftlint.yml)
     cmds:
-      - make lint
+      - swiftlint lint
 
   test:
     desc: Full XCTest suite — unit + budget-gated perf + integration (~2 min, run serially)
     cmds:
-      - make test
+      - swift test
 
   test-catalog:
     desc: Fast catalog/discovery slice — lookup, synthesis, ingestion, canonical identity
@@ -56,16 +49,16 @@ tasks:
   test-perf:
     desc: Budget-gated perf regression guard (Models tab pipeline + scope counts)
     cmds:
-      - ./scripts/test-models-perf.sh
+      - ./scripts/models/test-models-perf.sh
 
   web-test:
     desc: Web gates — worker tests, MCP contracts, hermetic dashboard UI + budgets
     cmds:
-      - node --test cloudflare/worker.test.mjs
-      - node mcp/test-catalog.mjs
-      - node mcp/test-server-errors.mjs
-      - node scripts/test-leaderboard-ui.mjs
-      - node scripts/bench-leaderboard.mjs
+      - node --test cloud/cloudflare/worker.test.mjs
+      - node clients/mcp/test-catalog.mjs
+      - node clients/mcp/test-server-errors.mjs
+      - node scripts/leaderboard/test-leaderboard-ui.mjs
+      - node scripts/leaderboard/bench-leaderboard.mjs
 
   test-integration:
     desc: Loopback integration tests (Ollama proxy relay round-trips, no creds needed)
@@ -75,37 +68,63 @@ tasks:
   test-race:
     desc: Thread-sanitized suite — run before merging concurrency-adjacent changes
     cmds:
-      - make test-race
+      - swift test --sanitize=thread
 
   build:
     desc: Plain debug build (no install, no launch)
     cmds:
-      - make build
+      - swift build
 
   app:
     desc: Canonical release build + install + relaunch, health-gated (ONLY supported launcher)
     cmds:
-      - ./scripts/make-app.sh
+      - ./scripts/app/make-app.sh
+
+  app-tested:
+    desc: Release build gated on perf budgets (test-perf, then app)
+    deps: [test-perf]
+    cmds:
+      - ./scripts/app/make-app.sh
 
   bench:
     desc: Models-pipeline bench + summary (machine-dependent, no asserts)
     cmds:
-      - make bench
+      - ./scripts/models/test-models-perf.sh --bench
+
+  profile:
+    desc: Repeatable tick profiler (timing table; machine-dependent, no assertions)
+    cmds:
+      - ./scripts/dev/profile-tick.sh
+
+  profile-sample:
+    desc: Timing table + 20s `sample` hotspot profile (/tmp/th-tick-profile.txt)
+    cmds:
+      - ./scripts/dev/profile-tick.sh --sample
+
+  mcp-test:
+    desc: MCP shim contract tests (catalog, server errors, protocol)
+    cmds:
+      - cd clients/mcp && npm test
+
+  mcp-session:
+    desc: MCP shim live client session against the running daemon
+    cmds:
+      - cd clients/mcp && npm run session
 
   models-refresh:
     desc: Regenerate docs/data/models.json (app merge pipeline; REFRESH=0 for offline)
     cmds:
-      - ./scripts/refresh-models.sh
+      - ./scripts/models/refresh-models.sh
 
   brew-sync:
     desc: Publish packaging/homebrew/token-horizon.rb to castlemilk/homebrew-tap
     cmds:
-      - ./scripts/sync-homebrew-tap.sh
+      - ./scripts/app/sync-homebrew-tap.sh
 
   bench-leaderboard:
     desc: Dashboard bench — chart reuse, view switches, search, idle ticks, explorer windowing (budget-gated)
     cmds:
-      - node scripts/bench-leaderboard.mjs
+      - node scripts/leaderboard/bench-leaderboard.mjs
 
   smoke:
     desc: Live validation vs the running app — stamp identity, endpoints, MCP (needs :8765 up)
@@ -116,7 +135,7 @@ tasks:
         echo "=== smoke (:$PORT) ==="
         health=$(curl -s --max-time 5 "localhost:$PORT/health" || true)
         if [ -z "$health" ]; then
-          say FAIL "/health unreachable — is the app running? (./scripts/make-app.sh)"; exit 1
+          say FAIL "/health unreachable — is the app running? (./scripts/app/make-app.sh)"; exit 1
         fi
         serving=$(printf '%s' "$health" | python3 -c "import json,sys; print(json.load(sys.stdin).get('build',{}).get('commit',''))" 2>/dev/null || true)
         repo=$(git rev-parse --short HEAD 2>/dev/null || true)
@@ -143,13 +162,10 @@ tasks:
         probe "/widget" "d.get('version',0) >= 5 and len(d['hourly']) == 24 and len(d['months']) == 12" "/widget serves the v5 widget snapshot"
         probe "/projects" "'projects' in d" "/projects serves project rollups"
         probe "/achievements" "'achievements' in d and 'season' in d" "/achievements serves season+achievements"
-        gw=$(printf '%s' "$health" | python3 -c "import json,sys; print(json.load(sys.stdin).get('llm_gateway_port') or '')" 2>/dev/null || true)
-        if [ -n "$gw" ]; then say ok "gateway sidecar on :$gw";
-        else say FAIL "llm_gateway_port null — sidecar missing (rebuild via ./scripts/make-app.sh)"; fi
-        probe "/proxy/config" "'gateway_port' in d" "/proxy/config serves sidecar config"
         probe "/traces" "'traces' in d and 'count' in d" "/traces serves trace list"
+        probe "/proxy/stats?hours=24" "'requests' in d" "/proxy/stats serves window aggregates"
         if command -v node >/dev/null 2>&1; then
-          mcp=$(printf '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}\n' | node mcp/token-horizon-mcp.mjs 2>/dev/null | head -c 4000 || true)
+          mcp=$(printf '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}\n' | node clients/mcp/token-horizon-mcp.mjs 2>/dev/null | head -c 4000 || true)
           case "$mcp" in *token_horizon*|*tools*) say ok "MCP tools/list answers";; *) say FAIL "MCP tools/list (unexpected output)";; esac
         else
           say FAIL "MCP tools/list (node not installed)"
@@ -168,7 +184,7 @@ tasks:
         done
         if xcode-select -p >/dev/null 2>&1; then echo "  [ok]   xcode: $(xcode-select -p)"; else echo "  [FAIL] xcode-select path"; fail=1; fi
         if curl -s --max-time 3 "localhost:{{.PORT}}/health" >/dev/null 2>&1; then echo "  [ok]   app :{{.PORT}} reachable";
-        else echo "  [info] app :{{.PORT}} not reachable (launch with ./scripts/make-app.sh)"; fi
+        else echo "  [info] app :{{.PORT}} not reachable (launch with ./scripts/app/make-app.sh)"; fi
         exit "$fail"
 
   clean:

@@ -7,7 +7,7 @@ on:
 
 # CI is the fast feedback gate (lint errors + full XCTest suite).
 # Releases stay on tag-driven release.yml, which builds via
-# scripts/make-app.sh (the ONLY supported launcher path).
+# scripts/app/make-app.sh (the ONLY supported launcher path).
 jobs:
   lint-and-test:
     runs-on: macos-15
@@ -31,7 +31,7 @@ jobs:
       - name: Test (unit + perf budgets + integration)
         run: swift test
 
-  gateway:
+  daemon:
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
@@ -39,13 +39,13 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version-file: gateway/go.mod
+          go-version-file: daemons/go/go.mod
 
       - name: Format check
-        run: test -z "$(gofmt -l gateway/)"
+        run: test -z "$(gofmt -l daemons/go/)"
 
       - name: Vet + test
-        run: cd gateway && go vet ./... && go test ./...
+        run: cd daemons/go && go vet ./... && go test ./...
 
   web:
     # Worker APIs, MCP catalog/error contracts, and the dashboard's hermetic
@@ -67,18 +67,18 @@ jobs:
         run: npm ci
 
       - name: Worker tests (leaderboard API)
-        run: node --test cloudflare/worker.test.mjs
+        run: node --test cloud/cloudflare/worker.test.mjs
 
       - name: MCP tests (catalog helpers + server error contracts)
         run: |
-          node mcp/test-catalog.mjs
-          node mcp/test-server-errors.mjs
+          node clients/mcp/test-catalog.mjs
+          node clients/mcp/test-server-errors.mjs
 
       - name: Dashboard UI regression (hermetic fixtures)
-        run: node scripts/test-leaderboard-ui.mjs
+        run: node scripts/leaderboard/test-leaderboard-ui.mjs
 
       - name: Dashboard render/API budgets
-        run: node scripts/bench-leaderboard.mjs
+        run: node scripts/leaderboard/bench-leaderboard.mjs
 
   coverage:
     runs-on: macos-15

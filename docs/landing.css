@@ -1,0 +1,323 @@
+/* Token Horizon landing — retro-terminal guide.
+   Beige paper surfaces, pixel hero headline, standard system type elsewhere,
+   hairlines only, square geometry, 30px gaps. */
+
+:root {
+  --ink-deep: #e6e0cb;
+  --ink: #1c1b17;
+  --canvas: #f7f4e9;
+  --text-inverse: #1c1b17;
+  --text-muted: #6e6858;
+  --border: #b3ac96;
+  --border-light: #8f8875;
+  --hairline: #c9c2ab;
+  --signal: #0e7a3d;
+
+  --font-body: "Helvetica Neue", Arial, sans-serif;
+  --font-display: "Helvetica Neue", Arial, sans-serif;
+  --font-hero: "Coral Pixels", ui-monospace, monospace;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+
+  --gap: 30px;
+  --page-pad-x: 30px;
+}
+
+* { box-sizing: border-box; }
+
+html { scrollbar-gutter: stable; }
+
+body {
+  margin: 0;
+  padding: 0;
+  background: var(--ink-deep);
+  color: var(--text-inverse);
+  font: 400 1rem/1.429 var(--font-body);
+  -webkit-font-smoothing: antialiased;
+}
+
+::selection { background: var(--signal); color: var(--canvas); }
+
+a { color: inherit; }
+img { display: block; }
+
+/* Skip link (accessibility) */
+.skip {
+  position: absolute; left: var(--page-pad-x); top: -60px;
+  padding: 10px 14px; background: var(--ink); color: var(--canvas);
+  text-decoration: none; z-index: 100;
+}
+.skip:focus { top: 10px; }
+
+/* ---- eyebrow label ---- */
+.slabel {
+  display: block;
+  font-size: 0.625rem; line-height: 1.6;
+  letter-spacing: 0.05em; text-transform: uppercase;
+  color: var(--text-muted);
+  margin-bottom: 14px;
+}
+.slabel::before { content: "// "; }
+
+/* ---- scroll reveals (JS adds .in; reduced-motion guard at the end) ---- */
+[data-reveal] {
+  opacity: 0;
+  transform: translateY(16px);
+  transition: opacity 0.7s ease, transform 0.7s ease;
+}
+[data-reveal].in { opacity: 1; transform: none; }
+
+/* ---- header: fixed bar, hairline bottom, links right, sharp CTA ---- */
+.nav {
+  position: fixed; top: 0; left: 0; right: 0; z-index: 50;
+  display: flex; align-items: center; justify-content: flex-end;
+  gap: var(--gap); padding: 0 var(--page-pad-x); height: 64px;
+  background: color-mix(in srgb, var(--ink-deep) 82%, transparent);
+  backdrop-filter: blur(18px) saturate(1.4);
+  -webkit-backdrop-filter: blur(18px) saturate(1.4);
+  border-bottom: 1px solid var(--border);
+}
+.nav-links { display: flex; gap: 26px; align-items: center; }
+.nav-links a {
+  font-size: 0.875rem; line-height: 1.4;
+  color: var(--text-muted); text-decoration: none;
+  transition: color 0.15s;
+}
+.nav-links a:hover { color: var(--text-inverse); text-decoration: underline; text-underline-offset: 4px; }
+.nav-links a:focus-visible { outline: 2px solid var(--text-inverse); outline-offset: 3px; }
+.nav-links a.nav-cta {
+  color: var(--canvas); background: var(--ink);
+  padding: 9px 20px; font-weight: 600;
+}
+.nav-links a.nav-cta:hover { color: var(--canvas); background: #000; text-decoration: none; }
+.nav-toggle { display: none; }
+
+/* ---- hero: content-sized so the provider band sits in view on load ---- */
+.hero {
+  display: grid; align-content: center; gap: var(--gap);
+  padding: 150px var(--page-pad-x) 84px;
+}
+.hero-inner { max-width: 1000px; margin: 0 auto; width: 100%; }
+.hero h1 {
+  font-family: var(--font-hero);
+  font-size: clamp(2.75rem, 7.5vw, 6rem);
+  line-height: 1.1; letter-spacing: 0.01em; text-transform: uppercase;
+  margin: 0 0 32px;
+}
+.hero h1::after {
+  content: "▊"; margin-left: 8px; color: var(--signal);
+  animation: cursor-blink 1.1s steps(1) infinite;
+}
+@keyframes cursor-blink { 50% { opacity: 0; } }
+.hero p { max-width: 640px; font-size: 1.125rem; line-height: 1.389; margin: 0; }
+
+/* Sharp rectangular CTAs — solid + outline, square geometry. */
+.hero-ctas { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 40px; }
+.cta {
+  display: inline-block; padding: 13px 28px;
+  font-size: 1rem; line-height: 1.25; text-decoration: none;
+  border: 1px solid var(--text-inverse);
+}
+.cta:focus-visible { outline: 2px solid var(--text-inverse); outline-offset: 3px; }
+.cta-solid { background: var(--text-inverse); color: var(--canvas); font-weight: 600; }
+.cta-solid:hover { background: #000; }
+.cta-ghost { background: transparent; color: var(--text-inverse); }
+.cta-ghost:hover { background: var(--text-inverse); color: var(--canvas); }
+
+/* Supported-platforms row: OS marks + names, muted, below the CTAs. */
+.platforms-supported {
+  display: flex; gap: 22px; flex-wrap: wrap; list-style: none;
+  margin: 40px 0 0; padding: 0;
+}
+.platforms-supported li { display: flex; align-items: center; gap: 9px; font-size: 0.875rem; color: var(--text-muted); }
+.platforms-supported img { width: 20px; height: 20px; object-fit: contain; }
+
+/* ---- logo bands: providers ride an always-scrolling translucent
+   marquee; tools stand as a static showcase row (never a carousel) ---- */
+.carousel {
+  overflow: hidden;
+  border-top: 1px solid var(--border); border-bottom: 1px solid var(--border);
+  padding: 30px 0 34px;
+}
+.carousel + .carousel { border-top: 0; }
+.carousel-label {
+  text-align: center;
+  font-size: 0.625rem; line-height: 1.6;
+  letter-spacing: 0.05em; text-transform: uppercase;
+  color: var(--text-muted);
+  margin: 0 0 24px;
+}
+.carousel-track {
+  display: flex; gap: 56px; align-items: center;
+  width: max-content;
+  animation: carousel-scroll 46s linear infinite;
+}
+.carousel:hover .carousel-track { animation-play-state: paused; }
+.vcell {
+  display: flex; align-items: center; gap: 10px;
+  font-size: 0.875rem; color: var(--text-muted); white-space: nowrap;
+}
+.vcell img { width: auto; display: block; }
+/* Provider wall: bigger marks, monochrome, semi-translucent, full on hover. */
+.carousel:not(.static) .vcell { opacity: 0.55; transition: opacity 0.2s; }
+.carousel:not(.static) .vcell:hover { opacity: 1; }
+.carousel:not(.static) .vcell img { height: 44px; filter: grayscale(1); }
+/* Tools showcase: static centered row, stacked mark over label. */
+.static { overflow: visible; }
+.static .carousel-track {
+  width: auto; flex-wrap: wrap; justify-content: center;
+  gap: 26px 72px; max-width: 1000px; margin: 0 auto;
+  padding: 0 var(--page-pad-x);
+  animation: none;
+}
+.static .vcell { flex-direction: column; gap: 12px; font-size: 0.9375rem; color: var(--text-inverse); }
+.static .vcell img { height: 48px; }
+@keyframes carousel-scroll { to { transform: translateX(-50%); } }
+
+/* ---- sections ---- */
+.section { padding: 6.25rem var(--page-pad-x); }
+.section-inner { max-width: 1000px; margin: 0 auto; }
+.section h2 {
+  font: 400 clamp(2rem, 5vw, 4.5rem)/0.972 var(--font-display);
+  letter-spacing: -0.02em; margin: 0 0 var(--gap);
+}
+.lede { font-size: 1.125rem; line-height: 1.389; max-width: 640px; margin: 0 0 var(--gap); }
+
+/* ---- feature rows ---- */
+.platforms { display: grid; margin-top: var(--gap); }
+.platform {
+  display: grid; grid-template-columns: 260px 1fr; gap: var(--gap);
+  padding: 28px 0; border-top: 1px solid var(--border);
+}
+.platform:last-child { border-bottom: 1px solid var(--border); }
+.platform h3 { font-size: 1.125rem; font-weight: 400; margin: 0; }
+.pnum {
+  font-family: var(--font-mono);
+  font-size: 0.875rem; font-weight: 800; color: var(--text-inverse);
+  margin-right: 12px; letter-spacing: 0; vertical-align: 3px;
+}
+.platform p { margin: 0; max-width: 600px; font-size: 1rem; line-height: 1.5; color: var(--text-muted); }
+
+/* ---- dark terminal surface: install (inverted against the beige page) ---- */
+.light { --hairline: #4a463c; background: #161511; color: #ece7d6; }
+.light .slabel { color: #a09a86; }
+.copyline {
+  display: flex; align-items: stretch; margin-bottom: 80px;
+  border: 1px solid var(--hairline); max-width: 720px;
+}
+.copyline code {
+  flex: 1; padding: 14px 19px;
+  font: 400 0.875rem/1.429 var(--font-mono);
+  overflow-x: auto; white-space: nowrap;
+}
+.copyline button {
+  border: 0; border-left: 1px solid var(--hairline);
+  background: transparent; color: #ece7d6; padding: 0 18px;
+  font-size: 1rem; cursor: pointer; min-width: 76px;
+}
+.copyline button:hover { background: #ece7d6; color: #161511; }
+.copyline button:focus-visible { outline: 2px solid #ece7d6; outline-offset: -2px; }
+.install-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--gap); }
+.install-card { border: 1px solid var(--hairline); padding: var(--gap); }
+.install-card h3 { font-size: 1.125rem; font-weight: 400; margin: 0 0 14px; }
+.install-card p { margin: 14px 0 0; }
+.install-card pre {
+  margin: 0; padding: 14px; overflow-x: auto;
+  border: 1px solid var(--hairline);
+  font: 400 0.8125rem/1.5 var(--font-mono);
+}
+
+/* ---- footer: no dividers, columns match the project ---- */
+.footer { padding: 90px var(--page-pad-x) 40px; overflow: hidden; }
+.footer-grid {
+  max-width: 1000px; margin: 0 auto;
+  display: grid; grid-template-columns: 2fr 1fr 1fr 1fr; gap: 60px;
+}
+.footer-brand { display: flex; flex-direction: column; gap: 14px; align-items: flex-start; }
+.brand { display: flex; align-items: center; gap: 12px; text-decoration: none; }
+.brand img { width: 24px; height: 24px; border-radius: 2px; }
+.brand span { font-size: 1.125rem; letter-spacing: -0.01em; }
+.footer-copy { color: var(--text-muted); margin: 0; max-width: 280px; }
+.footer-col { display: flex; flex-direction: column; gap: 14px; padding-left: 0; }
+.footer-col a { color: var(--text-inverse); text-decoration: none; }
+.footer-col a:hover { text-decoration: underline; text-underline-offset: 4px; }
+.flabel {
+  font-size: 0.625rem; line-height: 1.6;
+  letter-spacing: 0.05em; text-transform: uppercase;
+  color: var(--text-muted); margin-bottom: 6px;
+}
+.footer-legal {
+  max-width: 1000px; margin: 70px auto 0; padding: 0;
+  display: flex; align-items: center; gap: 18px; flex-wrap: wrap;
+  font-size: 0.8125rem; color: var(--text-muted);
+}
+.footer-note { margin-left: auto; letter-spacing: 0.06em; text-transform: uppercase; font-size: 0.6875rem; }
+
+/* ---- policy pages (terms / privacy / eula) ---- */
+.policy { max-width: 720px; margin: 0 auto; padding: 150px var(--page-pad-x) 100px; }
+.policy .kicker {
+  display: block;
+  font-size: 0.625rem; line-height: 1.6;
+  letter-spacing: 0.05em; text-transform: uppercase;
+  color: var(--text-muted); margin-bottom: 14px;
+}
+.policy .kicker::before { content: "// "; }
+.policy h1 {
+  font: 400 clamp(2rem, 5vw, 3.5rem)/1.05 var(--font-display);
+  letter-spacing: -0.02em; margin: 0 0 14px;
+}
+.policy .updated {
+  color: var(--text-muted); margin: 0 0 40px;
+  font-family: var(--font-mono); font-size: 0.8125rem;
+  letter-spacing: 0.04em; text-transform: uppercase;
+  padding-bottom: 40px; border-bottom: 1px solid var(--border);
+}
+.policy h2 { font-size: 1.125rem; font-weight: 400; margin: 0; padding: 28px 0 10px; border-top: 1px solid var(--border); }
+.policy h2::before { content: "↳ "; color: var(--text-muted); }
+.policy p, .policy li { line-height: 1.6; margin: 0 0 14px; }
+.policy ul { padding-left: 20px; margin: 0 0 14px; }
+.policy a { color: var(--text-inverse); text-decoration: underline; text-underline-offset: 4px; }
+.policy .legal-nav {
+  display: flex; gap: 14px; align-items: center;
+  margin-top: 60px; padding-top: 24px; border-top: 1px solid var(--border);
+  color: var(--text-muted);
+}
+.policy .legal-nav a { color: var(--text-muted); text-decoration: none; }
+.policy .legal-nav a:hover { color: var(--text-inverse); text-decoration: underline; text-underline-offset: 4px; }
+
+/* ---- responsive ---- */
+@media (max-width: 860px) {
+  .nav { height: 58px; }
+  .nav-toggle {
+    display: inline-grid; place-items: center;
+    background: none; border: 1px solid var(--border-light);
+    color: var(--text-inverse); width: 40px; height: 36px;
+    font-size: 16px; cursor: pointer;
+  }
+  .nav-links {
+    display: none; position: absolute; top: 100%; left: 0; right: 0;
+    flex-direction: column; align-items: flex-start; gap: 0;
+    background: var(--ink-deep); border-bottom: 1px solid var(--border);
+    padding: 10px var(--page-pad-x) 20px;
+  }
+  .nav.open .nav-links { display: flex; }
+  .nav-links a { padding: 12px 0; }
+  .nav-links a.nav-cta { margin-top: 8px; padding: 12px 20px; }
+  .carousel:not(.static) .carousel-track { gap: 40px; }
+  .carousel:not(.static) .vcell img { height: 36px; }
+  .static .carousel-track { gap: 20px 40px; }
+  .static .vcell img { height: 40px; }
+  .platform { grid-template-columns: 1fr; gap: 8px; }
+  .install-grid { grid-template-columns: 1fr; }
+  .footer-grid { grid-template-columns: 1fr; gap: 50px; }
+  .footer-col { padding-top: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-reveal] { opacity: 1; transform: none; transition: none; }
+  .hero h1::after { animation: none; }
+  .carousel-track {
+    animation: none; width: auto; flex-wrap: wrap; justify-content: center;
+    gap: 22px 44px; padding: 0 var(--page-pad-x);
+  }
+  .carousel-track .vcell[aria-hidden="true"] { display: none; }
+}

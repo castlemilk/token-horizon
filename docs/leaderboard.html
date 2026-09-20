@@ -887,7 +887,7 @@ function brandGlyphSvg(brand, size) {
       return `<span class="glyph-text" style="font-size:${Math.round(s * (String(brand.text || "").length > 1 ? 0.5 : 0.64))}px">${esc(brand.text || "?")}</span>`;
   }
 }
-/// Official white marks fetched by scripts/fetch-brand-logos.py. Brands without
+/// Official white marks fetched by scripts/models/fetch-brand-logos.py. Brands without
 /// an asset (zhipu, local, other) fall back to the inline glyph.
 const BRAND_ASSETS = {
   anthropic: "svg", openai: "svg", google: "svg", meta: "svg", deepseek: "svg",
@@ -1060,7 +1060,7 @@ function calendarHeatmap(daily, opts = {}) {
 
 /* ---------- TanStack Charts host ----------
    docs/vendor/tanstack-charts.js exposes window.TanStackCharts (see
-   scripts/vendor-entry.js). Charts are declared here, mounted after each
+   scripts/web/vendor-entry.js). Charts are declared here, mounted after each
    render, and fall back to the hand-rolled SVG when the vendor bundle is
    unavailable (offline / blocked). */
 const CHARTS_READY = (() => {
@@ -1092,7 +1092,7 @@ const CHART_POOL_MAX = 14;
 const CHART_DEF_MAX = 24;
 let chartSeq = 0;
 
-/// Lightweight counters, also consumed by scripts/bench-leaderboard.mjs.
+/// Lightweight counters, also consumed by scripts/leaderboard/bench-leaderboard.mjs.
 const perf = window.__thPerf = {
   renders: 0, renderMs: 0, renderMsTotal: 0,
   chartMounts: 0, chartReuses: 0, chartEvictions: 0, chartMountMs: 0,

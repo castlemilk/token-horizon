@@ -149,7 +149,6 @@ struct DashboardTabs: View {
     }
 
     private var mlxTab: some View {
-        let localllm = OllamaTelemetryStore.shared.summary()
         let cpuSeries = model.mlxCPUSeries(mlxWindow)
         let memSeries = model.mlxMemorySeries(mlxWindow)
         let diskSeries = model.mlxDiskSeries(mlxWindow)
@@ -170,14 +169,6 @@ struct DashboardTabs: View {
                     color: model.mlx.processes.isEmpty ? .secondary : .green,
                     size: 8
                 )
-            }
-            if let meterPort = model.ollamaMeterPort {
-                MonospacedText(text: "request meter 127.0.0.1:\(meterPort) · Ollama-compatible clients here for exact tok/s", color: .white.opacity(0.35), size: 7.5)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            if let gatewayPort = GatewaySupervisor.shared.port {
-                MonospacedText(text: "llm gateway 127.0.0.1:\(gatewayPort) · drop-in base URL for Codex (OPENAI_BASE_URL), Claude Code (ANTHROPIC_BASE_URL), Ollama (OLLAMA_HOST)", color: .white.opacity(0.35), size: 7.5)
-                    .fixedSize(horizontal: false, vertical: true)
             }
             HStack(spacing: 4) {
                 ForEach(MLXWindow.allCases) { window in
@@ -212,36 +203,6 @@ struct DashboardTabs: View {
 
             Divider().overlay(Color.white.opacity(0.12))
 
-            sectionLabel("LOCAL TOKEN USAGE")
-            HStack(spacing: 12) {
-                stat("today", UsageSnapshot.tokens(localllm.todayTokens), .green)
-                stat("all-time", UsageSnapshot.tokens(localllm.allTokens), .secondary)
-                stat("requests", "\(localllm.messagesAll)", .orange)
-                if peakTok > 0 {
-                    stat("peak speed", String(format: "%.1f t/s", peakTok), Color(red: 0.18, green: 0.82, blue: 0.72))
-                }
-                Spacer()
-            }
-
-            if !localllm.models.isEmpty {
-                VStack(alignment: .leading, spacing: 4) {
-                    ForEach(Array(localllm.models.keys.sorted()), id: \.self) { modelKey in
-                        if let stats = localllm.models[modelKey], stats.all > 0 {
-                            HStack(spacing: 6) {
-                                Circle().fill(Color(red: 0.18, green: 0.82, blue: 0.72)).frame(width: 3.5, height: 3.5)
-                                MonospacedText(text: modelKey, color: .white.opacity(0.85), size: 9)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                MonospacedText(text: "\(UsageSnapshot.tokens(stats.prompt)) in · \(UsageSnapshot.tokens(stats.eval)) out", color: .white.opacity(0.45), size: 7.5)
-                                MonospacedText(text: UsageSnapshot.tokens(stats.today), color: .green, size: 9).frame(width: 44, alignment: .trailing)
-                                MonospacedText(text: UsageSnapshot.tokens(stats.all), color: .white.opacity(0.7), size: 9).frame(width: 44, alignment: .trailing)
-                            }
-                        }
-                    }
-                }
-            }
-
-            Divider().overlay(Color.white.opacity(0.12))
-
             sectionLabel("RUNNERS")
             if model.mlx.processes.isEmpty {
                 MonospacedText(text: "no active MLX runner", color: .secondary, size: 9)
@@ -266,7 +227,7 @@ struct DashboardTabs: View {
                     .buttonStyle(.plain)
                 }
             }
-            MonospacedText(text: "decode/prefill tok/s are measured by the Ollama telemetry proxy or the runner's own /metrics endpoint; never inferred from process load.", color: .white.opacity(0.35), size: 7.5)
+            MonospacedText(text: "decode/prefill tok/s are measured by request meters or the runner's own /metrics endpoint; never inferred from process load.", color: .white.opacity(0.35), size: 7.5)
                 .fixedSize(horizontal: false, vertical: true)
         }
     }
@@ -2379,7 +2340,7 @@ struct DashboardTabs: View {
                 }
             }
             settingsCard("App build", icon: "info.circle") {
-                MonospacedText(text: "v\(BuildInfo.display) — this exact build serves :8765; if these differ from `git rev-parse --short HEAD`, relaunch via ./scripts/make-app.sh", color: .secondary, size: 11)
+                MonospacedText(text: "v\(BuildInfo.display) — this exact build serves :8765; if these differ from `git rev-parse --short HEAD`, relaunch via ./scripts/app/make-app.sh", color: .secondary, size: 11)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
@@ -2872,24 +2833,6 @@ struct DashboardTabs: View {
                 .buttonStyle(.plain)
                 .help("Toggle personal token usage & spend column")
 
-                if _localCount > 0 {
-                    Button {
-                        benchmarkAllLocal()
-                    } label: {
-                        HStack(spacing: 2) {
-                            Image(systemName: "bolt.fill")
-                                .font(.system(size: 7.5))
-                            Text("BENCHMARK")
-                                .font(.system(size: 7.5, weight: .heavy, design: .monospaced))
-                        }
-                        .foregroundStyle(Color.cyan)
-                        .padding(.horizontal, 6).padding(.vertical, 2.5)
-                        .background(Capsule().fill(Color.cyan.opacity(0.12)))
-                    }
-                    .buttonStyle(.plain)
-                    .help("Benchmark speed (tok/s) for all installed local Ollama models")
-                }
-
                 Button {
                     ModelCatalog.shared.refreshRemote()
                 } label: {
@@ -3030,10 +2973,6 @@ struct DashboardTabs: View {
                 if curKey != _lastBaseKey { await MainActor.run { recomputeFilteredRows() } }
             }
         }
-    }
-
-    private func benchmarkAllLocal() {
-        for r in _filteredRows.filter({ $0.isLocal }) { OllamaClient.benchmark(model: r.localModelName) }
     }
 
     private func tableHeaderCell(title: String, column: ModelTableColumn, width: CGFloat? = nil, alignment: Alignment = .trailing) -> some View {

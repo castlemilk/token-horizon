@@ -13,6 +13,7 @@
     "windows": [
       {
         "label": "main",
+        "url": "/home",
         "title": "Token Horizon",
         "width": 980,
         "height": 720,

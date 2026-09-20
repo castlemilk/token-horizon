@@ -23,7 +23,7 @@ Requires macOS on Apple silicon. Three steps, under two minutes:
 curl -fsSL https://raw.githubusercontent.com/castlemilk/token-horizon/main/install.sh | bash
 ```
 
-This installs the latest release to `/Applications`, enables crash auto-recovery, and wires up the `th` shell helper. Alternatives: `brew tap castlemilk/tap && brew install --cask token-horizon` · [DMG from GitHub Releases](https://github.com/castlemilk/token-horizon/releases/latest) · build from source with `./scripts/make-app.sh`.
+This installs the latest release to `/Applications`, enables crash auto-recovery, and wires up the `th` shell helper. Alternatives: `brew tap castlemilk/tap && brew install --cask token-horizon` · [DMG from GitHub Releases](https://github.com/castlemilk/token-horizon/releases/latest) · build from source with `./scripts/app/make-app.sh`.
 
 **2. Glance at your notch** (menu bar if you have no notch): the CPU/MEM rings are live. Hover to open the panel and flip through the tabs — **TOKENS** (usage, costs, plan limits), **ACTIVITY** (Mac performance), **MLX** (local models), **LEADERBOARD**, **SHELLS**, **⚙ SETTINGS**. The ⤢ button pops everything out into a resizable dashboard window.
 
@@ -35,7 +35,7 @@ th /stats     # usage + system snapshot in your terminal
 th /limits    # remaining quota on every provider plan
 ```
 
-If `/health` reports a different commit than `git rev-parse --short HEAD`, the running binary is stale — rebuild with `./scripts/make-app.sh`, don't debug the data.
+If `/health` reports a different commit than `git rev-parse --short HEAD`, the running binary is stale — rebuild with `./scripts/app/make-app.sh`, don't debug the data.
 
 **Next steps:** connect your coding agent via the [MCP server](#mcp-server) · compare usage with your team ([Leaderboard](#leaderboard--backend-options)) · track a model catalogue that updates itself with live pricing · hack on it: [`TESTING.md`](TESTING.md) + `task validate`.
 
@@ -52,40 +52,37 @@ Tabs: **ACTIVITY** (CPU, memory, disk I/O, and network sparklines; top processes
 
 ### Desktop widget
 
-`Widget/` ships a native WidgetKit extension (macOS 14+) embedded at build time by `scripts/make-widget.sh`. Add it from the desktop's **Edit Widgets** gallery in small/medium/large. The widget has a 3-page carousel (‹ ›): **usage** (token total, per-provider stacked bars, compressed Σ/⌀/peak stats, provider legend with brand marks), **plan limits** (usage bars per provider with reset countdowns), and **plans & resets** (soonest-expiring callout plus expiry-sorted rows, urgency-colored <24h/<48h). The chart carries a segmented **h · d · w · m · y** picker — 24 hourly bars, 7 daily, 17 weekly, 30 daily, 12 monthly — and the GitHub-style heatmap always matches the selected window (12×2 / 7×1 / 17×7 / 15×2 / 6×2 cells). Configure everything in ⚙ SETTINGS → Desktop widget (enable, period, accent, show cost/limits/chart) with a live preview; the app publishes a versioned snapshot to the extension via `GET /widget`. Widget taps are `tokenhorizon://` deep links (window/page), so the app owns the state and the widget, preview and app always agree.
+`Widget/` ships a native WidgetKit extension (macOS 14+) embedded at build time by `scripts/app/make-widget.sh`. Add it from the desktop's **Edit Widgets** gallery in small/medium/large. The widget has a 3-page carousel (‹ ›): **usage** (token total, per-provider stacked bars, compressed Σ/⌀/peak stats, provider legend with brand marks), **plan limits** (usage bars per provider with reset countdowns), and **plans & resets** (soonest-expiring callout plus expiry-sorted rows, urgency-colored <24h/<48h). The chart carries a segmented **h · d · w · m · y** picker — 24 hourly bars, 7 daily, 17 weekly, 30 daily, 12 monthly — and the GitHub-style heatmap always matches the selected window (12×2 / 7×1 / 17×7 / 15×2 / 6×2 cells). Configure everything in ⚙ SETTINGS → Desktop widget (enable, period, accent, show cost/limits/chart) with a live preview; the app publishes a versioned snapshot to the extension via `GET /widget`. Widget taps are `tokenhorizon://` deep links (window/page), so the app owns the state and the widget, preview and app always agree.
 
 ## Performance Stats
 
 The ACTIVITY tab samples system performance every 2 seconds on a utility queue. CPU and memory use native Mach/VM counters. Disk throughput uses cumulative `iostat` counters, and network throughput sums non-loopback interface byte counters from `getifaddrs`. I/O collection is cached for 4 seconds so the external disk query does not run on every UI tick.
 
-The MLX tab is an independent observer for `ollama runner --mlx-engine` and `mlx-lm` process trees. It samples only matching processes and their children, so it does not enable the heavier general process table. MLX histories are bounded to the same fine-sample ceiling as system history. tok/s comes from Ollama's completed response metadata (`eval_count` / `eval_duration`) or the benchmark cache; the displayed rate uses a small token-weighted recent window so short completions do not create misleading spikes. It is never inferred from CPU, memory, or network traffic.
+The MLX tab is an independent observer for `ollama runner --mlx-engine` and `mlx-lm` process trees. It samples only matching processes and their children, so it does not enable the heavier general process table. MLX histories are bounded to the same fine-sample ceiling as system history. tok/s comes from request-meter measurements (exact provider-reported durations) or the runner's own `/metrics` endpoint. It is never inferred from CPU, memory, or network traffic.
 
-Click an Ollama model row in MODELS or an MLX runner row in the MLX tab to inspect its local configuration. Ollama details combine the complete `/api/tags` and `/api/show` payloads, including size, digest, format, family, parameter count, context, quantization, capabilities, templates, and model info. Direct MLX model paths are inspected for their model files and JSON configuration, with total size, format, and inferred quantization shown when available.
+Click an MLX runner row in the MLX tab to inspect its local configuration. Direct MLX model paths are inspected for their model files and JSON configuration, with total size, format, and inferred quantization shown when available.
 
-Token Horizon also starts a lightweight local Ollama telemetry proxy at `http://127.0.0.1:11435` when that port is available. If it is occupied, the app tries the next 19 loopback ports and shows the selected port in the MLX tab. Point an Ollama-compatible client at that endpoint to capture exact completion metrics without changing Ollama or the MLX runner. The proxy forwards streaming responses unchanged and keeps a bounded recent window for up to 256 model names. Set `TOKEN_HORIZON_OLLAMA_PROXY_PORT` to change the starting port and `TOKEN_HORIZON_OLLAMA_UPSTREAM` when Ollama is not on `127.0.0.1:11434`.
+Token Horizon measures local runtime traffic with per-vendor request meters: consented loopback listeners (Ollama 11435, vLLM 9311, SGLang 9312, llama.cpp 9313, MLX 9314 by default) that forward bytes unchanged and record exact per-request tokens plus live tok/s. Meters start automatically when a runtime is detected (or via `TH_METERS`); running meters are listed at `GET /meters`. A meter cannot observe traffic sent directly to the runtime port; the calling client must use the meter's loopback URL as its base URL. The listener is loopback-only and does not expose the runtime API to other machines.
 
-The proxy cannot observe traffic sent directly to `11434`; the calling client must use `http://127.0.0.1:11435` as its Ollama-compatible base URL. Token Horizon's own Ollama model discovery and benchmark requests are routed through it automatically. The listener is loopback-only and does not expose the Ollama API to other machines.
+### Request meters (drop-in base URLs for any provider client)
 
-### LLM gateway (drop-in proxy for Codex / Claude Code / others)
-
-Token Horizon supervises a standalone Go sidecar (`gateway/`, zero-dep single binary, `token-horizon-gateway`) listening at `http://127.0.0.1:11436` (next free port if occupied; see `llm_gateway_port` in `/health` and the MLX tab). It also runs headless without the app — handy on Linux boxes or servers. Point any provider client at it as its base URL — no other config change needed:
+The daemon serves one loopback listener per vendor (deterministic ports, consent-gated, auto-started on runtime sighting, visible via `GET /meters`). Point a client at its vendor's meter as the base URL — no other config change needed:
 
 ```bash
-export OPENAI_BASE_URL="http://127.0.0.1:11436"       # Codex, OpenAI SDKs (/v1/chat/completions, /v1/responses)
-export ANTHROPIC_BASE_URL="http://127.0.0.1:11436"    # Claude Code (/v1/messages)
-export OLLAMA_HOST="http://127.0.0.1:11436"           # Ollama clients (/api/*)
+export OPENAI_BASE_URL="http://127.0.0.1:9242"        # Codex, OpenAI SDKs (/v1/chat/completions, /v1/responses)
+export ANTHROPIC_BASE_URL="http://127.0.0.1:9241"     # Claude Code (/v1/messages)
+export OLLAMA_HOST="http://127.0.0.1:11435"           # Ollama clients (/api/*)
 ```
 
-The gateway infers the provider per request (path → auth headers → body shape; `/th-openai/` and `/th-anthropic/` prefixes force it), forwards to the provider over HTTPS, and streams the response back unchanged. Every relayed response carries an `x-token-horizon-trace-id` header for joining client logs to traces.
+Meters stream responses back byte-identical and never follow redirects with client credentials attached. Every relayed response carries an `x-token-horizon-event-id` header for joining client logs to usage rows and traces.
 
-What it stores beyond harness conversation logs: harness logs record what the harness chose to persist after the fact. The gateway measures the live wire — time-to-first-token, total duration, provider-reported token usage (never estimated), cache-hit splits, tool-call names/ids with finish reasons, retry suspects (same normalized request repeated within 10 minutes), best-effort cost via the model catalog, and an error taxonomy (auth / rate-limited / overloaded / context-length / …). Cloud traces do not feed usage totals (the file parsers already count that traffic, so totals would double-count); Ollama traces additionally feed local tok/s telemetry so MODELS stays correct whichever loopback port a client uses.
+What the daemon measures beyond harness conversation logs: harness logs record what the harness chose to persist after the fact. The meter measures the live wire — time-to-first-token, total duration, provider-reported token usage (never estimated), cache-hit splits, retry suspects (exact byte-identical request repeated within 10 minutes), cost via the model catalog, and an error taxonomy (auth / rate-limited / overloaded / context-length / …). Traces never feed usage totals — metered request events are the single counting path.
 
 - Traces: `GET /traces?provider=openai&model=gpt-5&limit=25` (bodies omitted), `GET /traces/<id>` (full bodies), `POST /traces/clear`
-- Stats: `GET /proxy/stats?provider=anthropic&hours=24` (TTFT, tok/s, cache-hit, tool-call, retry, error rates per model)
-- Config: `GET /proxy/config` (ports, upstream hosts, storage bounds — never secrets)
-- Metrics: `token_horizon_gateway_requests_total`, `token_horizon_gateway_completed_total{status}`, `token_horizon_gateway_ttft_seconds`, `token_horizon_gateway_duration_seconds`, `token_horizon_gateway_output_tokens_total` on the gateway's own `/metrics` (the sidecar owns its instruments; `:8765/metrics` keeps Ollama/MLX/engine series)
+- Stats: `GET /proxy/stats?provider=anthropic&hours=24` (TTFT, tok/s, retry, error rates per model)
+- Row lookup: `GET /analytics/events?id=<uuid>` (the row behind a response's `x-token-horizon-event-id`)
 
-Privacy and bounds: full request/response bodies stay in `~/.config/token-horizon/traces/` on this machine only (256KB per side per trace, 30 day-files, 256MB total, oldest pruned first). Auth headers pass through upstream and are never stored; traces are never published to the leaderboard, sheets, or cloud. Upstreams default to `https://api.openai.com` / `https://api.anthropic.com` plus the Ollama upstream; override with `TOKEN_HORIZON_OPENAI_UPSTREAM` / `TOKEN_HORIZON_ANTHROPIC_UPSTREAM` / `TOKEN_HORIZON_OLLAMA_UPSTREAM` (handy for mocks), and set `TOKEN_HORIZON_LLM_PROXY_PORT` to move the listener. Redirects are never followed with client credentials attached. The `:8765` endpoints above are reverse-proxied from the sidecar by the app (`GatewayBridge`, degrading to 503 when the sidecar is down); cost estimates are intentionally absent from traces — pricing lives with the model catalog, not the proxy. See `gateway/README.md` for the sidecar contract, standalone use, and its Go test suite.
+Privacy and bounds: trace bodies are capped UTF-8 prefixes (256KB per side) in `usage.db` on this machine only, FIFO-bounded to the newest 2,000 rows with optional age pruning (`TH_RETENTION_DAYS`). Auth headers pass through upstream and are never stored; secret query params are redacted from stored paths; traces are never published to the leaderboard, sheets, or cloud. Disable capture with `traceCapture: false` in `settings.json` or `TH_TRACES=0`.
 
 History is intentionally an in-memory rolling window:
 
@@ -96,9 +93,9 @@ History is intentionally an in-memory rolling window:
 
 ### Metrics
 
-`GET http://127.0.0.1:8765/metrics` serves Prometheus text from the OpenTelemetry meter. Ollama request/completion counters, token counters, generation duration, tok/s, gateway request/completion/TTFT/duration/token counters (per provider/endpoint, model labels capped with the shared 32-value set), and current MLX resource gauges are included. Model labels are normalized and capped at 32 distinct values; additional models use `model="other"`.
+`GET http://127.0.0.1:8765/metrics` serves Prometheus text from the OpenTelemetry meter. Inference request/completion counters, token counters, generation duration, tok/s (per vendor backend, model labels capped with the shared 32-value set), and current MLX resource gauges are included. Model labels are normalized and capped at 32 distinct values; additional models use `model="other"`.
 
-`GET http://127.0.0.1:8765/health` includes `ollama_proxy_port` and `llm_gateway_port`, allowing clients to discover the selected relay ports when the defaults are occupied.
+`GET http://127.0.0.1:8765/health` reports build identity, platform, usage-store status, and the active capture methodology.
 
 OTLP/HTTP metrics export is disabled by default. Set `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` to an explicit metrics endpoint, or set `OTEL_EXPORTER_OTLP_ENDPOINT` to a base endpoint (Token Horizon appends `/v1/metrics`). The export interval is 60 seconds. Prometheus remains local and does not require an external collector.
 
@@ -108,19 +105,19 @@ Regression coverage is in `Tests/TokenHorizonPerfTests/SystemHistoryTests.swift`
 
 ```bash
 cd ~/projects/token-horizon
-./scripts/make-app.sh          # swift build -c release + TokenHorizon.app bundle + relaunch
+./scripts/app/make-app.sh          # swift build -c release + TokenHorizon.app bundle + relaunch
 ```
 
 `make-app.sh` launches the bundled executable directly so
-`TOKEN_HORIZON_OLLAMA_UPSTREAM` and `TOKEN_HORIZON_OLLAMA_PROXY_PORT` are
+`TOKEN_HORIZON_*` overrides (meter ports, runtime upstreams) are
 inherited. The app writes its launch log to
 `~/Library/Logs/TokenHorizon.log`.
 
-The local script uses an ad-hoc signature for development; published releases are Developer ID signed and Apple-notarized (`scripts/package-notarized.sh`, wired into the release workflow); see `docs/notarized-release.md`. This build intentionally is not App Sandbox-compatible because it reads local AI tool data and observes system processes.
+The local script uses an ad-hoc signature for development; published releases are Developer ID signed and Apple-notarized (`scripts/app/package-notarized.sh`, wired into the release workflow); see `docs/notarized-release.md`. This build intentionally is not App Sandbox-compatible because it reads local AI tool data and observes system processes.
 
-- Icon: `scripts/make-icon.swift` → `Resources/AppIcon.icns` (black hole, CoreGraphics)
+- Icon: `scripts/app/make-icon.swift` → `Resources/AppIcon.icns` (black hole, CoreGraphics)
 - Settings: `~/.config/token-horizon/settings.json` (0600) — alibaba cookie lives here
-- Shell hook: `shell/token-horizon.zsh` (sourced from `~/.zshrc`) — posts cwd/duration/exit per command; `th` CLI (`th /stats`, `th /limits`, …)
+- Shell hook: `clients/shell/token-horizon.zsh` (sourced from `~/.zshrc`) — posts cwd/duration/exit per command; `th` CLI (`th /stats`, `th /limits`, …)
 
 ## HTTP API (127.0.0.1:8765)
 
@@ -137,11 +134,11 @@ The local script uses an ad-hoc signature for development; published releases ar
 | `GET\|POST /leaderboard/sheets/pull` | pull team rankings from Google Sheet |
 | `POST /leaderboard/sheets/config` | configure leaderboard handle, team, Google Sheet URL, and auto-sync |
 | `GET /events` | recent shell events |
-| `GET /traces?provider=&model=&limit=` | recent gateway traces (bodies omitted) + store counts |
-| `GET /traces/<id>` | one full gateway trace with request/response bodies |
-| `POST /traces/clear` | drop in-memory traces + delete trace day files |
-| `GET /proxy/stats?provider=&model=&hours=` | gateway efficiency stats (TTFT, tok/s, cache-hit, tool-call, retry, errors) |
-| `GET /proxy/config` | gateway port, upstream hosts, trace storage bounds |
+| `GET /traces?provider=&model=&limit=` | recent meter traces (bodies omitted) + store counts |
+| `GET /traces/<id>` | one full trace with request/response bodies |
+| `POST /traces/clear` | drop all trace rows |
+| `GET /proxy/stats?provider=&model=&hours=` | meter efficiency stats (TTFT, tok/s, retry, errors) |
+| `GET /analytics/events?id=<uuid>` | the usage row behind a response's `x-token-horizon-event-id` |
 | `GET /health` | liveness + version |
 | `GET /widget` | versioned desktop-widget snapshot (hourly/days/weeks/months stacks, heatmap, limits, prefs) |
 | `POST /widget/window?value=hours\|days\|weeks\|months\|years` | set the widget chart window (same path as the widget's deep links) |
@@ -149,7 +146,7 @@ The local script uses an ad-hoc signature for development; published releases ar
 
 ## MCP server
 
-`mcp/token-horizon-mcp.mjs` (zero-dep Node, stdio JSON-RPC). Registered in `~/.config/opencode/opencode.jsonc`. Tools: `token_horizon_usage` (incl. per-model), `token_horizon_system`, `token_horizon_sessions`, `token_horizon_history`, `token_horizon_limits`, `token_horizon_proxy_guide` (Ollama startup sequence plus universal gateway drop-in configs for `client="codex"` / `client="claude"` / `client="opencode"`), `token_horizon_leaderboard` (get rankings, publish/pull Google Sheet, or get GitHub Pages web URL), and `token_horizon_share` (generate text/markdown/json/svg share cards). Call `token_horizon_proxy_guide` with `client="startup"` for the safe Ollama-upstream plus Token Horizon-proxy startup sequence, live proxy status, verification commands, and warnings against binding `ollama serve` to the proxy port. Falls back to direct sqlite for usage/sessions if the app isn't running.
+`clients/mcp/token-horizon-mcp.mjs` (zero-dep Node, stdio JSON-RPC). Registered in `~/.config/opencode/opencode.jsonc`. Tools: `token_horizon_usage` (incl. per-model), `token_horizon_system`, `token_horizon_sessions`, `token_horizon_history`, `token_horizon_limits`, `token_horizon_proxy_guide` (runtime-meter startup plus meter drop-in configs for `client="codex"` / `client="claude"` / `client="opencode"`), `token_horizon_leaderboard` (get rankings, publish/pull Google Sheet, or get GitHub Pages web URL), and `token_horizon_share` (generate text/markdown/json/svg share cards). Call `token_horizon_proxy_guide` with `client="startup"` for the runtime-meter startup sequence, live meter status, verification commands, and warnings against binding a runtime daemon to a meter port. Falls back to direct sqlite for usage/sessions if the app isn't running.
 
 ## Leaderboard & Backend Options
 
@@ -165,7 +162,7 @@ The edge-hosted **Token Horizon** dashboard (`docs/leaderboard.html`) ships eigh
 | **Object Storage** | Cloudflare R2 (`leaderboard.json`) | Google Drive Sheet |
 | **Web Hosting** | Edge-hosted via Worker `[assets]` (`../docs`) | GitHub Pages (`castlemilk.github.io`) |
 | **Dynamic README Badges** | `GET /api/share?handle=...&format=svg` (live SVG badge) | Offline generated SVG |
-| **Setup Effort** | 1 command (`./scripts/deploy-cloudflare.sh`) | Paste Apps Script into Sheet Extensions |
+| **Setup Effort** | 1 command (`./scripts/deploy/deploy-cloudflare.sh`) | Paste Apps Script into Sheet Extensions |
 
 ---
 
@@ -175,7 +172,7 @@ Deploy a private or team leaderboard edge API and web dashboard in seconds:
 
 1. **Deploy with 1 Command**:
    ```bash
-   ./scripts/deploy-cloudflare.sh
+   ./scripts/deploy/deploy-cloudflare.sh
    ```
    This creates the Cloudflare R2 bucket `token-horizon-leaderboard`, bundles the static web dashboard from `docs/`, and deploys the Worker to Cloudflare's global edge network.
 
@@ -202,12 +199,12 @@ Deploy a private or team leaderboard edge API and web dashboard in seconds:
    Users sign in with Google to claim profiles, manage sharing, and publish to a claimed handle. The worker verifies the GSI ID token (RS256 against Google's JWKS) — unsigned tokens are rejected once a client ID is configured.
    1. Google Cloud Console → **APIs & Services → Credentials → Create credentials → OAuth client ID → Web application**.
    2. **Authorized JavaScript origins**: `https://token-horizon.dev` (add `http://localhost:8765` for local testing).
-   3. Put the client ID (a public value) in `cloudflare/wrangler.toml`:
+   3. Put the client ID (a public value) in `cloud/cloudflare/wrangler.toml`:
       ```toml
       [vars]
       GOOGLE_CLIENT_ID = "1234567890-abc.apps.googleusercontent.com"
       ```
-   4. `./scripts/deploy-cloudflare.sh` — the dashboard fetches `/api/config` and renders the official Google button.
+   4. `./scripts/deploy/deploy-cloudflare.sh` — the dashboard fetches `/api/config` and renders the official Google button.
    For daemon publishes from the Mac app, set a shared machine secret instead:
    `npx wrangler secret put LEADERBOARD_SECRET` and paste the same value into the app's leaderboard cloud token field.
 
@@ -215,10 +212,10 @@ Deploy a private or team leaderboard edge API and web dashboard in seconds:
 
 `token-horizon.dev` is the canonical host (Worker custom domain + `www` → apex redirect). To onboard a new domain to Cloudflare:
 ```bash
-./scripts/onboard-domain.sh          # dashboard steps, or run with CLOUDFLARE_API_TOKEN to create the zone
+./scripts/deploy/onboard-domain.sh          # dashboard steps, or run with CLOUDFLARE_API_TOKEN to create the zone
 # set the printed nameservers at the registrar (Vercel → Domains → Nameservers)
-./scripts/onboard-domain.sh --check  # poll until the zone is Active
-./scripts/deploy-cloudflare.sh       # deploy routes + assets
+./scripts/deploy/onboard-domain.sh --check  # poll until the zone is Active
+./scripts/deploy/deploy-cloudflare.sh       # deploy routes + assets
 ```
 
 ---
@@ -228,7 +225,7 @@ You can alternatively use a Google Sheet as a shared backend across your team or
 
 1. **Option A: Google Apps Script Web App (Read + Write)**:
    - Create a Google Sheet.
-   - Open **Extensions > Apps Script** and paste the code from [`scripts/google-sheets-leaderboard.js`](file:///Users/benebsworth/projects/token-horizon/scripts/google-sheets-leaderboard.js).
+   - Open **Extensions > Apps Script** and paste the code from `scripts/leaderboard/google-sheets-leaderboard.js` (retired — recover from git history; the Cloudflare worker in `cloud/cloudflare/` is the recommended backend).
    - Click **Deploy > New deployment**, select **Web app**, set *Execute as* to **Me**, and *Who has access* to **Anyone**.
    - Copy the Web App URL (`https://script.google.com/macros/s/<ID>/exec`).
    - Configure in Token Horizon:

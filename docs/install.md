@@ -35,7 +35,7 @@ GitHub releases, then onward to package managers:
 - **Linux**: `.deb` (`sudo apt install ./token-horizon_*.deb`), `.rpm`
   (`sudo dnf install ./token-horizon-*.rpm`), or AppImage (`chmod +x`, run)
   from the same release page. Build locally only if you must:
-  `./build_scripts/tauri/build-linux.sh` (needs the `libwebkit2gtk-4.1-dev`
+  `./scripts/tauri/build-linux.sh` (needs the `libwebkit2gtk-4.1-dev`
   family or the rootless sysroot — see `docs/dev-environment-linux.md`).
 
 macOS also keeps its native notch app (`.dmg`/`.zip` from the `release`
@@ -49,7 +49,7 @@ The daemon runs standalone — same binary the app embeds:
 ```bash
 # systemd user service (writes its own unit — the single writer;
 # rerun after updating the binary):
-./scripts/install-linux-service.sh
+./scripts/dev/install-linux-service.sh
 # or manually:
 token-horizon-headless --install-service   # --service-status / --uninstall-service
 ```
@@ -60,7 +60,7 @@ macOS uses a LaunchAgent through the same `--install-service` flags
 ## Troubleshooting
 
 - **App shows offline**: something else holds `:8765`, or the sidecar is
-  missing (dev only — run `scripts/build-sidecar.sh`). The footer tooltip
+  missing (dev only — run `scripts/app/build-sidecar.sh`). The footer tooltip
   prints the exact failure.
 - **Two daemons fight over `:8765`**: the second one takes `:8766`; the UI
   follows automatically and heals stale saved ports on its own.

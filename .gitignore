@@ -30,7 +30,7 @@ cloudflare/.wrangler/
 .env*
 !.env.example
 
-# Go gateway sidecar binary (built by scripts/make-app.sh, never commit)
+# Go gateway sidecar binary (built by scripts/app/make-app.sh, never commit)
 gateway/token-horizon-gateway
 
 # SvelteKit/Tauri build output

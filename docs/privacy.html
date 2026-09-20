@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Privacy Policy · Token Horizon</title>
+<meta name="description" content="How Token Horizon handles your data: local first, no account required, optional self-hosted sync." />
+<link rel="icon" href="./assets/favicon.svg" type="image/svg+xml" />
+<link rel="stylesheet" href="./landing.css" />
+</head>
+<body>
+<nav class="nav" id="site-nav">
+  <button class="nav-toggle" id="nav-toggle" type="button" aria-label="Toggle navigation" aria-expanded="false" aria-controls="nav-links">☰</button>
+  <div class="nav-links" id="nav-links">
+    <a href="./leaderboard.html">Leaderboard</a>
+    <a href="./docs/">Docs</a>
+    <a class="nav-cta" href="./#install">Install</a>
+  </div>
+</nav>
+
+<main class="policy">
+  <span class="kicker">Legal</span>
+  <h1>Privacy Policy</h1>
+  <p class="updated">Last updated: 2026-09-20</p>
+
+  <h2>The short version</h2>
+  <p>Token Horizon is local first. The app reads provider session files and quota endpoints directly from your machine, serves its dashboard over loopback (127.0.0.1), and stores everything in a local database. No account is required, and nothing leaves your machine unless you explicitly connect it to a cloud server.</p>
+
+  <h2>What stays on your machine</h2>
+  <ul>
+    <li>Token usage events, costs, and per-model breakdowns, measured by loopback request meters or imported from local tool session files.</li>
+    <li>Provider quota snapshots, fetched with credentials that never leave your machine.</li>
+    <li>System telemetry (CPU, memory, disk, network), retained in bounded in-memory windows only.</li>
+  </ul>
+
+  <h2>If you connect a cloud server</h2>
+  <p>Cloud sync is optional, off until you sign in, and works with a server you control or one you choose to trust. When enabled, the daemon pushes usage events and quota snapshots associated with your handle. The server records the connecting IP address to show a country flag on the public leaderboard. You can disconnect at any time, which stops all further sync.</p>
+
+  <h2>What we never collect</h2>
+  <ul>
+    <li>Prompt or response content. Meters measure token counts and timings, not text.</li>
+    <li>Analytics or crash telemetry to third parties. There is no tracking SDK in the app.</li>
+    <li>Provider credentials. They are read from your local credential stores and never transmitted to us.</li>
+  </ul>
+
+  <h2>Contact</h2>
+  <p>Questions about this policy: open an issue on <a href="https://github.com/castlemilk/token-horizon/issues">GitHub</a>.</p>
+
+  <nav class="legal-nav" aria-label="More legal documents">
+    <a href="./terms.html">Terms</a><span aria-hidden="true">·</span>
+    <a href="./privacy.html">Privacy</a><span aria-hidden="true">·</span>
+    <a href="./eula.html">EULA</a>
+  </nav>
+</main>
+
+<footer class="footer">
+  <div class="footer-grid">
+    <div class="footer-brand">
+      <a class="brand" href="./"><img src="./assets/icon.png" alt="" /><span>Token Horizon</span></a>
+      <p class="footer-copy">Native observability for AI-powered machines.</p>
+    </div>
+    <div class="footer-col">
+      <span class="flabel">Product</span>
+      <a href="./#features">Coverage</a>
+      <a href="./leaderboard.html">Leaderboard</a>
+      <a href="./models/">Models</a>
+      <a href="./#install">Install</a>
+    </div>
+    <div class="footer-col">
+      <span class="flabel">Resources</span>
+      <a href="./docs/">Docs</a>
+      <a href="./blog/">Blog</a>
+    </div>
+    <div class="footer-col">
+      <span class="flabel">Legal</span>
+      <a href="./terms.html">Terms</a>
+      <a href="./privacy.html">Privacy</a>
+      <a href="./eula.html">EULA</a>
+    </div>
+  </div>
+  <div class="footer-legal">
+    <span>© 2026 Token Horizon.</span>
+    <span class="footer-note">Local-first · Private by default</span>
+  </div>
+</footer>
+<script src="./app.js"></script>
+</body>
+</html>

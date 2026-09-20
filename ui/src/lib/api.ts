@@ -284,6 +284,11 @@ export interface MeterInfo {
 	source: string;
 	seen?: number;
 	measured?: number;
+	/** Classified failures by class (auth/rateLimited/…; counted, never stored). */
+	errors?: Record<string, number>;
+	/** Repeat requests inside the retry window (possible double-counts). */
+	retry_suspects?: number;
+	recent_retry_ids?: string[];
 }
 
 /** One meterable vendor and its desired+actual state (GET /meters catalog). */
@@ -322,6 +327,11 @@ export interface ConsentState {
 /** Cloud sync state (GET /sync/status). */
 export interface SyncStatus {
 	enabled: boolean;
+	/** Signed-in identity applied on the daemon (sync allowed). */
+	signed_in?: boolean;
+	/** Configured cloud target (empty/absent = no cloud). */
+	base_url?: string | null;
+	handle?: string;
 	cursors: Record<string, string>;
 	last_sync: number | null;
 	last_report?: { pushed: Record<string, number>; skipped: string[]; error?: string | null };

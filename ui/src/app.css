@@ -356,6 +356,19 @@ html.lenis body {
 	font-size: 12px;
 }
 
+/* Cloud connect/disconnect toggle — a button wearing the .status chrome. */
+button.status.dock-cloud {
+	background: none;
+	border: 0;
+	padding: 0;
+	font: inherit;
+	color: inherit;
+	cursor: pointer;
+}
+button.status.dock-cloud:hover .dock-text {
+	color: var(--text-1);
+}
+
 .dock-text {
 	white-space: nowrap;
 }
@@ -428,6 +441,9 @@ html.lenis body {
 }
 .dot.up {
 	background: var(--ok);
+}
+.dot.warn {
+	background: var(--warn);
 }
 .dot.down {
 	background: var(--bad);

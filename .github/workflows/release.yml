@@ -21,14 +21,6 @@ jobs:
           if [ -n "$XCODE" ]; then sudo xcode-select -s "$XCODE/Contents/Developer"; fi
           swift --version
 
-      # The app must ALWAYS ship with its gateway proxy: pin the toolchain
-      # (version follows gateway/go.mod) and let make-app.sh fail hard if
-      # the sidecar build or bundle verification breaks.
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version-file: gateway/go.mod
-
       - name: Resolve signing credentials
         id: creds
         run: |
@@ -79,7 +71,7 @@ jobs:
           if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
             export MARKETING_VERSION="${GITHUB_REF_NAME#v}"
           fi
-          ./scripts/package-notarized.sh
+          ./scripts/app/package-notarized.sh
 
       - name: Clean up keychain
         if: always() && steps.creds.outputs.signed == '1'

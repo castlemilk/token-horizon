@@ -29,6 +29,7 @@ import (
 type Storer interface {
 	InsertMetered(events []usage.Event) (int, error)
 	RecordLimits(snaps []usage.LimitSnapshot) error
+	RecordTrace(t usage.Trace) error
 }
 
 // Exchange is one fully-observed HTTP exchange captured by the relay.
@@ -43,6 +44,22 @@ type Exchange struct {
 	StartedAt       time.Time
 	FirstByteAt     time.Time // zero = no body byte observed
 	CompletedAt     time.Time
+	// EventID is assigned at ingress and returned to the client as
+	// x-token-horizon-event-id, so client logs join to usage rows without
+	// a second lookup. buildEvent reuses it (the store keeps preset IDs).
+	EventID string
+	// ResponseTruncated is set when the response exceeds responseCapBytes.
+	// The client still receives the full stream; only the buffered copy
+	// stops, and the exchange is relayed-but-unmeasured (a truncated tail
+	// usually holds the usage block, so partial totals would lie).
+	ResponseTruncated bool
+	// ResponseBytes counts every relayed body byte, including past the
+	// buffer cap (the buffer stops; this counter doesn't).
+	ResponseBytes int
+	// ErrorClass is classified once in handle for completed exchanges so
+	// counting and trace capture share one verdict ("" = not classified,
+	// e.g. client disconnected or upstream unreachable).
+	ErrorClass string
 }
 
 func (x *Exchange) DurationMs() int64 {
@@ -87,15 +104,108 @@ type Meter struct {
 	measured atomic.Int64
 	logged   sync.Map // unmeasured paths logged once
 
+	// Shared observation state (base-owned: no per-format logic).
+	// retry counts repeat requests inside the window; errCounts tallies
+	// classified failures; suspectIDs rings recent retry-suspect event IDs.
+	// Meters are always used by pointer (atomics already require it).
+	retryInit     sync.Once
+	retry         *retryWindow
+	retrySuspects atomic.Int64
+	suspectIDs    []string
+	suspectMu     sync.Mutex
+	errMu         sync.Mutex
+	errCounts     map[string]int64
+	// Trace-toggle cache: settings live on disk, so snapshot the flag
+	// with a short TTL instead of reading the file per request.
+	traceMu      sync.Mutex
+	traceCheckAt time.Time
+	traceOn      bool
+
 	ln     net.Listener
 	server *http.Server
 	client *http.Client
 }
 
+// window returns the meter's retry window, lazily initialized (meters are
+// built as struct literals in registry and tests; finalize is the only
+// user and it always runs post-Start).
+func (m *Meter) window() *retryWindow {
+	m.retryInit.Do(func() { m.retry = newRetryWindow() })
+	return m.retry
+}
+
+// tracesEnabled snapshots the trace-capture toggle with a 30s TTL:
+// settings live on disk and finalize runs per request.
+func (m *Meter) tracesEnabled() bool {
+	m.traceMu.Lock()
+	defer m.traceMu.Unlock()
+	if time.Since(m.traceCheckAt) < 30*time.Second {
+		return m.traceOn
+	}
+	m.traceOn = platform.LoadSettings().TraceCaptureEnabled()
+	m.traceCheckAt = time.Now()
+	return m.traceOn
+}
+
+// responseCapBytes bounds the buffered response copy, symmetric with the
+// 32MB request cap. The client always receives the full stream; over the
+// cap only the copy stops and the exchange goes unmeasured (usage blocks
+// trail responses, so partial totals would lie).
+const responseCapBytes = 32 << 20
+
+// eventIDHeader joins client logs to usage rows: the response carries the
+// event's own UUID, fetchable via GET /analytics/events?id=.
+const eventIDHeader = "x-token-horizon-event-id"
+
 // Seen / Measured: lifetime 2xx exchanges vs stored events. seen-measured>0
 // means traffic arrives but isn't parsed — surfaced via GET /meters.
 func (m *Meter) Seen() int64     { return m.seen.Load() }
 func (m *Meter) Measured() int64 { return m.measured.Load() }
+
+// RetrySuspects counts metered requests repeating inside the retry window.
+// RecentRetryIDs rings the last suspect event IDs (fetch via
+// GET /analytics/events?id=). ErrorCounts tallies classified failures by
+// class (network/auth/rateLimited/...); redirects are control flow, not
+// failures, and are never counted.
+func (m *Meter) RetrySuspects() int64 { return m.retrySuspects.Load() }
+
+func (m *Meter) RecentRetryIDs() []string {
+	m.suspectMu.Lock()
+	defer m.suspectMu.Unlock()
+	return append([]string(nil), m.suspectIDs...)
+}
+
+func (m *Meter) ErrorCounts() map[string]int64 {
+	m.errMu.Lock()
+	defer m.errMu.Unlock()
+	out := make(map[string]int64, len(m.errCounts))
+	for k, v := range m.errCounts {
+		out[k] = v
+	}
+	return out
+}
+
+func (m *Meter) countError(class string) {
+	if class == errNone {
+		return
+	}
+	m.errMu.Lock()
+	if m.errCounts == nil {
+		m.errCounts = map[string]int64{}
+	}
+	m.errCounts[class]++
+	m.errMu.Unlock()
+}
+
+func (m *Meter) rememberSuspect(eventID string) {
+	m.retrySuspects.Add(1)
+	m.suspectMu.Lock()
+	m.suspectIDs = append(m.suspectIDs, eventID)
+	if len(m.suspectIDs) > suspectRingCap {
+		m.suspectIDs = append([]string(nil), m.suspectIDs[len(m.suspectIDs)-suspectRingCap:]...)
+	}
+	m.suspectMu.Unlock()
+}
 
 // Start binds the loopback listener and serves. Nothing listens without
 // .metering consent (checked by the caller / registry).
@@ -108,7 +218,15 @@ func (m *Meter) Start() error {
 		m.ListenPort = ln.Addr().(*net.TCPAddr).Port
 	}
 	m.ln = ln
-	m.client = &http.Client{Timeout: 600 * time.Second}
+	// Never follow redirects: the meter relays whatever the upstream
+	// answers (3xx included) so client credentials never travel to a
+	// redirect target and SDKs see the provider's real control flow.
+	m.client = &http.Client{
+		Timeout: 600 * time.Second,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
 	m.server = &http.Server{Handler: http.HandlerFunc(m.handle)}
 	go m.server.Serve(ln)
 	return nil
@@ -138,6 +256,7 @@ func (m *Meter) handle(w http.ResponseWriter, r *http.Request) {
 		RequestHeaders:  map[string]string{},
 		ResponseHeaders: map[string]string{},
 		StartedAt:       time.Now(),
+		EventID:         platform.NewUUID(),
 	}
 	for name, values := range r.Header {
 		x.RequestHeaders[strings.ToLower(name)] = strings.Join(values, " ")
@@ -171,6 +290,7 @@ func (m *Meter) handle(w http.ResponseWriter, r *http.Request) {
 
 	resp, err := m.client.Do(upstream)
 	if err != nil {
+		m.countError(classifyError(0, nil, err.Error()))
 		http.Error(w, "upstream unreachable: "+err.Error(), http.StatusBadGateway)
 		return
 	}
@@ -186,9 +306,12 @@ func (m *Meter) handle(w http.ResponseWriter, r *http.Request) {
 		}
 		w.Header()[name] = values
 	}
+	w.Header().Set(eventIDHeader, x.EventID)
 	w.WriteHeader(resp.StatusCode)
 
-	// Stream the body byte-identical while teeing into the exchange buffer.
+	// Stream the body byte-identical while teeing a bounded copy into the
+	// exchange buffer. Past the cap the client stream continues untouched;
+	// only accumulation stops (see ResponseTruncated).
 	flusher, _ := w.(http.Flusher)
 	buf := make([]byte, 32*1024)
 	for {
@@ -198,7 +321,14 @@ func (m *Meter) handle(w http.ResponseWriter, r *http.Request) {
 				x.FirstByteAt = time.Now()
 			}
 			chunk := buf[:n]
-			x.ResponseBody.Write(chunk)
+			x.ResponseBytes += len(chunk)
+			if !x.ResponseTruncated {
+				if x.ResponseBody.Len()+len(chunk) > responseCapBytes {
+					x.ResponseTruncated = true
+				} else {
+					x.ResponseBody.Write(chunk)
+				}
+			}
 			if _, werr := w.Write(chunk); werr != nil {
 				// Client gone: stop reading upstream into a dead socket.
 				return
@@ -213,32 +343,69 @@ func (m *Meter) handle(w http.ResponseWriter, r *http.Request) {
 	}
 	x.CompletedAt = time.Now()
 
-	// Measure only successful exchanges; parse + store off the hot path.
-	if x.Status >= 200 && x.Status < 300 {
-		go m.finalize(x)
+	// Classify once for completed exchanges: counting (failures only) and
+	// trace capture (every row carries a class) share the verdict.
+	// Failures are counted, never stored: counting semantics stay exactly
+	// "metered 2xx rows". Redirects are provider control flow under the
+	// no-follow policy, not failures.
+	x.ErrorClass = classifyError(x.Status, x.ResponseBody.Bytes(), "")
+	if x.Status >= 400 {
+		m.countError(x.ErrorClass)
 	}
+
+	// Parse + persist off the hot path; finalize gates usage-event
+	// derivation on 2xx itself but traces every completed exchange.
+	go m.finalize(x)
 }
 
 // finalize derives the event and wire limit snapshots from a completed
-// exchange and persists them.
+// exchange and persists them. It also records the trace row (evidence,
+// never counts) and notes the retry window — all base-owned, no
+// per-format logic.
 func (m *Meter) finalize(x *Exchange) {
 	m.seen.Add(1)
-	if event := m.buildEvent(x); event != nil {
-		if m.Store != nil {
-			_, _ = m.Store.InsertMetered([]usage.Event{*event})
+	fp := requestFingerprint(x.Method, x.Path, x.RequestBody)
+	suspect := false
+	// POST-only window: polled GETs (models/tags) must not pollute it or
+	// flag everything after 10 minutes of uptime.
+	if x.Method == http.MethodPost {
+		if m.window().note(fp, x.CompletedAt.Unix()) {
+			suspect = true
+			m.rememberSuspect(x.EventID)
 		}
-		if m.Nudge != nil {
-			m.Nudge() // fresh usage nudges cloud sync (debounced)
-		}
-		m.measured.Add(1)
-	} else if x.Method == http.MethodPost {
-		// Traffic arrived but yielded nothing — path allowlist or
-		// wire-format miss. Log once per path so new client versions /
-		// prefixed bases (cf. /zen/v1) surface loudly.
-		if _, loaded := m.logged.LoadOrStore(x.Path, true); !loaded {
+	}
+	var event *usage.Event
+	counted := x.Status >= 200 && x.Status < 300
+	switch {
+	case !counted:
+		// Failures are counted (above), never stored: usage rows stay
+		// exactly "metered 2xx".
+	case x.ResponseTruncated:
+		// Relayed whole, buffered partial: usage blocks trail responses,
+		// so measuring the fragment would store a lie. Loud once per path.
+		if _, loaded := m.logged.LoadOrStore("truncated:"+x.Path, true); !loaded {
 			fmt.Fprintf(os.Stderr,
-				"token-horizon: %s meter relayed POST %s but measured nothing (path or wire-format miss)\n",
-				m.Vendor, x.Path)
+				"token-horizon: %s meter relayed %s %s over %dMiB response cap (unmeasured)\n",
+				m.Vendor, x.Method, x.Path, responseCapBytes>>20)
+		}
+	default:
+		if event = m.buildEvent(x); event != nil {
+			if m.Store != nil {
+				_, _ = m.Store.InsertMetered([]usage.Event{*event})
+			}
+			if m.Nudge != nil {
+				m.Nudge() // fresh usage nudges cloud sync (debounced)
+			}
+			m.measured.Add(1)
+		} else if x.Method == http.MethodPost {
+			// Traffic arrived but yielded nothing — path allowlist or
+			// wire-format miss. Log once per path so new client versions /
+			// prefixed bases (cf. /zen/v1) surface loudly.
+			if _, loaded := m.logged.LoadOrStore(x.Path, true); !loaded {
+				fmt.Fprintf(os.Stderr,
+					"token-horizon: %s meter relayed %s %s but measured nothing (path or wire-format miss)\n",
+					m.Vendor, x.Method, x.Path)
+			}
 		}
 	}
 	// Wire rate limits ride every response — capture them regardless of
@@ -247,6 +414,14 @@ func (m *Meter) finalize(x *Exchange) {
 		snaps := m.Format.LimitSnapshots(x, m.Vendor, platform.MachineID(), usage.AccountKeyForHeaders(m.Vendor, x.RequestHeaders))
 		if len(snaps) > 0 {
 			_ = m.Store.RecordLimits(snaps)
+		}
+	}
+	// Trace capture (evidence, never counts): every completed exchange,
+	// any status or method. Gated on the trace toggle; the ID matches the
+	// usage row for metered exchanges, so the two join for free.
+	if m.Store != nil && m.tracesEnabled() {
+		if tr := m.buildTrace(x, event, fp, suspect); tr != nil {
+			_ = m.Store.RecordTrace(*tr)
 		}
 	}
 }
@@ -267,6 +442,7 @@ func (m *Meter) buildEvent(x *Exchange) *usage.Event {
 	occupancy := m.Format.ContextOccupancy(tokens)
 
 	event := &usage.Event{
+		ID:                  x.EventID,
 		Timestamp:           x.CompletedAt.Unix(),
 		MachineID:           platform.MachineID(),
 		Source:              m.Source,

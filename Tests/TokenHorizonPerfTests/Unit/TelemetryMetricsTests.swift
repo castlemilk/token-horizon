@@ -1,12 +1,13 @@
 import XCTest
 @testable import TokenHorizon
+@testable import TokenHorizonCore
 
 final class TelemetryMetricsTests: XCTestCase {
 
     func testPrometheusMetricsExposition() {
         let telemetry = TokenHorizonTelemetry.shared
 
-        let sample = OllamaTelemetrySample(
+        let sample = InferenceTelemetrySample(
             model: "qwen2.5-coder:7b",
             completedAt: Date(),
             evalCount: 80,
@@ -15,8 +16,8 @@ final class TelemetryMetricsTests: XCTestCase {
             promptEvalDurationNs: 100_000_000
         )
 
-        telemetry.recordOllama(sample)
-        telemetry.recordOllamaRequest(model: "qwen2.5-coder:7b")
+        telemetry.recordInference(sample, vendor: "ollama")
+        telemetry.recordInferenceRequest(model: "qwen2.5-coder:7b", vendor: "ollama")
 
         let text = telemetry.prometheusText()
         XCTAssertFalse(text.isEmpty)
@@ -55,8 +56,8 @@ final class TelemetryMetricsTests: XCTestCase {
 
     func testRequestCounterRecording() {
         let telemetry = TokenHorizonTelemetry.shared
-        telemetry.recordOllamaRequest(model: "qwen2.5-coder:7b")
+        telemetry.recordInferenceRequest(model: "qwen2.5-coder:7b", vendor: "ollama")
         let text = telemetry.prometheusText()
-        XCTAssertTrue(text.contains("token_horizon_ollama_requests_total"))
+        XCTAssertTrue(text.contains("token_horizon_inference_requests_total"))
     }
 }

@@ -28,11 +28,31 @@ export interface MachineInfo {
 /** A sync is fresh when it succeeded within this window. */
 const SYNC_FRESH_MS = 15 * 60 * 1000;
 
+/** Is the cloud server answering? A signed-out daemon never syncs, so
+ *  reachability must be probed directly, not inferred from sync state. */
+async function pingCloud(baseURL: string): Promise<boolean> {
+	try {
+		const ctrl = new AbortController();
+		const t = setTimeout(() => ctrl.abort(), 2500);
+		const res = await fetch(`${baseURL.replace(/\/$/, '')}/healthz`, { signal: ctrl.signal });
+		clearTimeout(t);
+		return res.ok;
+	} catch {
+		return false;
+	}
+}
+
 class DataScope {
 	machineID = $state('');
 	machineAlias = $state('');
 	machines = $state<MachineInfo[]>([]);
 	cloud = $state<CloudState>('unknown');
+	/** Cloud target configured (daemon has a base URL), regardless of sign-in. */
+	cloudConnected = $state(false);
+	/** Cloud server answers /healthz right now. Sign-in UI only shows then. */
+	cloudReachable = $state(false);
+	/** Signed-in identity applied on the daemon (sync is allowed to flow). */
+	cloudSignedIn = $state(false);
 	lastSync = $state<number | null>(null);
 	syncError = $state<string | null>(null);
 
@@ -53,16 +73,12 @@ class DataScope {
 
 	/** Short human label for the cloud/sync state. */
 	get cloudLabel(): string {
-		switch (this.cloud) {
-			case 'synced':
-				return 'cloud synced';
-			case 'degraded':
-				return 'cloud unreachable — off-machine data may be stale';
-			case 'off':
-				return 'single-machine mode';
-			default:
-				return '…';
-		}
+		if (!this.cloudConnected) return 'no cloud configured';
+		if (!this.cloudReachable) return 'cloud unreachable';
+		if (!this.cloudSignedIn) return 'cloud connected — sign in to sync';
+		if (this.cloud === 'synced') return 'cloud synced';
+		if (this.cloud === 'degraded') return 'cloud stale — last sync a while ago';
+		return '…';
 	}
 
 	/** Display name for this machine (alias preferred, id fallback). */
@@ -86,6 +102,11 @@ class DataScope {
 			const s = await api.syncStatus();
 			this.lastSync = s.last_sync;
 			this.syncError = s.last_report?.error ?? null;
+			this.cloudConnected = s.base_url != null && s.base_url !== '';
+			this.cloudSignedIn = s.signed_in === true;
+			this.cloudReachable = this.cloudConnected
+				? await pingCloud(s.base_url as string)
+				: false;
 			if (!s.enabled) {
 				this.cloud = 'off';
 			} else {
@@ -112,6 +133,11 @@ class DataScope {
 		} catch {
 			/* store unavailable */
 		}
+	}
+
+	/** Re-poll on demand (e.g. right after connect/disconnect). */
+	async poke(): Promise<void> {
+		await this.refresh();
 	}
 
 	/** Start polling (idempotent). Returns a stop function. */

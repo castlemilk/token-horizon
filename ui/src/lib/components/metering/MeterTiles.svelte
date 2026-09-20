@@ -25,7 +25,7 @@
 	Request routing{meters ? ` · ${meters.mode} mode · ${meters.point.length} live` : ''}
 </div>
 {#if catalog.length === 0}
-	<div class="empty">No meterable vendors discovered — the daemon catalog appears here</div>
+	<div class="empty">No meterable vendors yet. The daemon catalog shows up here.</div>
 {:else}
 	<div class="meter-tiles">
 		{#each catalog as m}
@@ -51,7 +51,7 @@
 					</span>
 				</div>
 				<div class="mono mroute" class:faint={!m.running}>127.0.0.1:{m.listen_port}</div>
-				<div class="mono dim mroute">→ {m.running ? (m.target ?? '—') : 'off'}</div>
+				<div class="mono dim mroute">→ {m.running ? (m.target ?? 'unknown') : 'off'}</div>
 				<div class="mtile-foot">
 					<span class="faint">{m.running ? 'metering' : 'off'}{live && ((live.seen ?? 0) > 0 || (live.measured ?? 0) > 0) ? ` · ${live.seen ?? 0} seen · ${live.measured ?? 0} recorded` : ''}</span>
 					<Switch
@@ -64,9 +64,9 @@
 		{/each}
 	</div>
 	<div class="hint" style="margin: 6px 0 0 2px; font-size: 11px; color: var(--text-3)">
-		Point a tool at its listen URL and its traffic gets measured on the way
-		through — nothing else changes. Switches stick; local runtimes pick up
-		metering on their own unless you turn them off here.
+		Point a tool at its listen URL and its traffic gets counted on the way
+		through. Nothing else about the tool changes. Switches stick. Local
+		runtimes meter themselves unless you turn them off here.
 	</div>
 {/if}
 

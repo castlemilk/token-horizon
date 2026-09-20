@@ -24,7 +24,7 @@
 <div class="section-label">Runtimes</div>
 {#if running.length === 0}
 	<div class="empty">
-		No local runtimes detected — local endpoints are probed automatically, remote ones via POST /runtimes/endpoints
+		No local runtimes detected. Local endpoints are probed automatically; add remote ones with POST /runtimes/endpoints.
 	</div>
 {:else}
 	<div class="stack">

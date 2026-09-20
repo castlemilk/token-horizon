@@ -272,7 +272,7 @@ struct MLXRunnerDetailView: View {
                 MLXModelInspector.metadata(for: modelName, command: process.command)
             }.value
         } else {
-            result = await OllamaClient.fetchModelMetadata(for: modelName)
+            result = nil
         }
         guard !Task.isCancelled else { return }
         metadata = result

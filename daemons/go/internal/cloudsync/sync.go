@@ -35,12 +35,14 @@ const (
 
 type Syncer struct {
 	BaseURL   string // empty = disabled (TH_SYNC_URL)
+	Token     string // service bearer for /ingest auth (TH_SYNC_TOKEN)
 	Handle    string // envelope identity: TH_SYNC_HANDLE > persisted
 	Team      string // TH_SYNC_TEAM    > cloud-identity.json > defaults
 	UserID    string // TH_SYNC_USER_ID  > cloud-identity.json
 	BatchSize int
 
 	mu           sync.Mutex
+	inFlight     bool
 	backoffUntil time.Time
 	nudgePending bool
 	lastSync     time.Time
@@ -58,6 +60,7 @@ type SyncReport struct {
 func NewSyncer() *Syncer {
 	s := &Syncer{
 		BaseURL:   os.Getenv("TH_SYNC_URL"),
+		Token:     os.Getenv("TH_SYNC_TOKEN"),
 		Handle:    os.Getenv("TH_SYNC_HANDLE"),
 		Team:      os.Getenv("TH_SYNC_TEAM"),
 		UserID:    os.Getenv("TH_SYNC_USER_ID"),
@@ -106,7 +109,11 @@ func (s *Syncer) ClearIdentity() {
 func (s *Syncer) Enabled() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.BaseURL != ""
+	// Sign-in gated: a cloud target alone is not enough — sync flows only
+	// once a signed-in identity (user_id) is applied via the UI handoff
+	// (or TH_SYNC_USER_ID for headless). The UI reads /sync/status and
+	// shows the connect bar while connected-but-not-signed-in.
+	return s.BaseURL != "" && s.UserID != ""
 }
 
 func (s *Syncer) envelope() map[string]any {
@@ -135,6 +142,12 @@ func (s *Syncer) post(path string, payload any) error {
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	s.mu.Lock()
+	token := s.Token
+	s.mu.Unlock()
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
 	res, err := s.httpc.Do(req)
 	if err != nil {
 		return err
@@ -163,7 +176,19 @@ func (s *Syncer) Sync(store *store.Store) SyncReport {
 		s.mu.Unlock()
 		return SyncReport{Error: "backing off"}
 	}
+	if s.inFlight {
+		// /sync/now during a backstop/nudge drain: overlapping drains read
+		// the same cursor and double-push (DuckDB write-tx conflict).
+		s.mu.Unlock()
+		return SyncReport{Skipped: []string{"sync already in progress"}}
+	}
+	s.inFlight = true
 	s.mu.Unlock()
+	defer func() {
+		s.mu.Lock()
+		s.inFlight = false
+		s.mu.Unlock()
+	}()
 
 	report := SyncReport{Pushed: map[string]int{}}
 	err := func() error {
@@ -341,10 +366,12 @@ func (s *Syncer) Status(store *store.Store) map[string]any {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	out := map[string]any{
-		"enabled": s.BaseURL != "",
-		"cursors": cursors,
-		"handle":  s.Handle,
-		"user_id": s.UserID,
+		"enabled":   s.BaseURL != "" && s.UserID != "",
+		"signed_in": s.UserID != "",
+		"base_url":  s.BaseURL,
+		"cursors":   cursors,
+		"handle":    s.Handle,
+		"user_id":   s.UserID,
 	}
 	if !s.lastSync.IsZero() {
 		out["last_sync"] = s.lastSync.Unix()

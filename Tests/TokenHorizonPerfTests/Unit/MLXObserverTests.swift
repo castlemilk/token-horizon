@@ -1,5 +1,6 @@
 import XCTest
 @testable import TokenHorizon
+@testable import TokenHorizonCore
 import OpenTelemetryApi
 import OpenTelemetrySdk
 import PrometheusExporter
@@ -118,11 +119,11 @@ final class MLXObserverTests: XCTestCase {
 
     func testTelemetryExportsPrometheusMetrics() {
         TokenHorizonTelemetry.shared.recordMLX(MLXSnapshot(sampledAt: Date()))
-        TokenHorizonTelemetry.shared.recordOllamaRequest(model: "qwen-test")
+        TokenHorizonTelemetry.shared.recordInferenceRequest(model: "qwen-test", vendor: "ollama")
         let text = TokenHorizonTelemetry.shared.prometheusText()
 
         XCTAssertTrue(text.contains("token_horizon_mlx_active_runners"))
-        XCTAssertTrue(text.contains("token_horizon_ollama_requests_total"))
+        XCTAssertTrue(text.contains("token_horizon_inference_requests_total"))
         XCTAssertTrue(text.contains("model=\"qwen-test\""))
     }
 
@@ -141,56 +142,16 @@ final class MLXObserverTests: XCTestCase {
         _ = provider.shutdown()
     }
 
-    func testOllamaProxyParsesFinalStreamingMetadata() {
-        let response = """
-        {"response":"hello","done":false}
-        {"response":"","done":true,"eval_count":120,"eval_duration":4000000000,"prompt_eval_count":30,"prompt_eval_duration":500000000}
-        """
-
-        let sample = OllamaTelemetryProxy.parseTelemetry(
-            model: "qwen3.8:27b-mlx",
-            responseBody: Data(response.utf8),
-            completedAt: Date(timeIntervalSince1970: 123)
-        )
-
-        XCTAssertEqual(sample?.model, "qwen3.8:27b-mlx")
-        XCTAssertEqual(sample?.evalCount, 120)
-        XCTAssertEqual(sample?.tokPerSec ?? 0, 30, accuracy: 0.0001)
-        XCTAssertEqual(sample?.promptTokPerSec ?? 0, 60, accuracy: 0.0001)
-        XCTAssertEqual(sample?.completedAt, Date(timeIntervalSince1970: 123))
-    }
-
-    func testOllamaProxyParsesChunkedHTTPResponse() {
-        let json = "{\"done\":true,\"eval_count\":50,\"eval_duration\":2000000000}\n"
-        let chunk = String(format: "%x", json.utf8.count)
-        let response = "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n\(chunk)\r\n\(json)\r\n0\r\n\r\n"
-
-        let sample = OllamaTelemetryProxy.parseTelemetry(
-            model: "qwen3.8:27b-mlx",
-            responseBody: Data(response.utf8)
-        )
-
-        XCTAssertEqual(sample?.evalCount, 50)
-        XCTAssertEqual(sample?.tokPerSec ?? 0, 25, accuracy: 0.0001)
-    }
-
-    func testOllamaProxyIgnoresIncompleteResponseMetadata() {
-        let response = "{\"done\":true,\"eval_count\":50}\n"
-
-        XCTAssertNil(OllamaTelemetryProxy.parseTelemetry(model: "qwen", responseBody: Data(response.utf8)))
-    }
-
-    func testSnapshotUsesWeightedRecentTelemetryRate() {
+    func testSnapshotUsesLatestMeteredTelemetryRate() {
         let model = "qwen-test-\(UUID().uuidString)"
-        let store = OllamaTelemetryStore.shared
-        store.record(OllamaTelemetrySample(model: model, completedAt: Date(timeIntervalSince1970: 1), evalCount: 70, evalDurationNs: 1_000_000_000, promptEvalCount: nil, promptEvalDurationNs: nil))
-        store.record(OllamaTelemetrySample(model: model, completedAt: Date(timeIntervalSince1970: 2), evalCount: 1, evalDurationNs: 100_000_000, promptEvalCount: nil, promptEvalDurationNs: nil))
+        let store = InferenceTelemetryStore.shared
+        store.record(InferenceTelemetrySample(model: model, completedAt: Date(timeIntervalSince1970: 2), evalCount: 1, evalDurationNs: 100_000_000, promptEvalCount: nil, promptEvalDurationNs: nil))
 
         let snapshot = MLXObserver.snapshot(from: [
             sample(pid: 100, ppid: 1, command: "ollama runner --mlx-engine --model \(model)", cpu: 1)
         ])
 
-        XCTAssertEqual(snapshot.processes.first?.tokPerSec ?? 0, 71 / 1.1, accuracy: 0.0001)
+        XCTAssertEqual(snapshot.processes.first?.tokPerSec ?? 0, 10.0, accuracy: 0.0001)
     }
 
     func testMLXModelInspectorReadsConfigurationAndTotalSize() throws {
@@ -217,40 +178,6 @@ final class MLXObserverTests: XCTestCase {
         XCTAssertEqual(overview["format"], .string("safetensors"))
         XCTAssertEqual(overview["quantization"], .string("bits=4"))
         XCTAssertNotNil(metadata.sections["config / config.json"])
-    }
-
-    func testOllamaMetadataKeepsInstalledAndShowTrees() {
-        let installed = OllamaModel(
-            name: "qwen3:8b-q4_K_M",
-            size: 4_294_967_296,
-            modifiedAt: "2026-08-30T00:00:00Z",
-            capabilities: ["completion"],
-            details: ["quantization_level": "Q4_K_M"],
-            tokPerSec: nil,
-            promptTokPerSec: nil,
-            rawMetadata: .object([
-                "name": .string("qwen3:8b-q4_K_M"),
-                "size": .number("4294967296")
-            ])
-        )
-        let metadata = OllamaClient.makeModelMetadata(
-            name: installed.name,
-            installed: installed,
-            card: .object([
-                "details": .object(["quantization_level": .string("Q4_K_M")]),
-                "model_info": .object(["general.architecture": .string("llama")])
-            ]),
-            running: .object([
-                "name": .string("qwen3:8b-q4_K_M"),
-                "size_vram": .number("2147483648")
-            ])
-        )
-
-        XCTAssertNil(metadata.error)
-        XCTAssertNotNil(metadata.sections["installed /api/tags"])
-        XCTAssertNotNil(metadata.sections["configuration /api/show"])
-        XCTAssertNotNil(metadata.sections["loaded /api/ps"])
-        XCTAssertEqual(metadata.model, installed.name)
     }
 
     func testLocalModelRowRetainsExactOllamaTagAfterCanonicalization() {

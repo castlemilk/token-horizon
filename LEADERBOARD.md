@@ -7,7 +7,7 @@ the dashboard, the worker, or the published entry schema.
 - **Objective**: the nine ChatGPT dashboard wireframes (`Dashboard`,
   `Leaderboard`, `Player Profile`, `Leagues`, `Provider Breakdown`,
   `Share modal`, `Sharing & Access Control`).
-- **Current**: `docs/leaderboard.html` (static SPA) + `cloudflare/src/index.js`
+- **Current**: `docs/leaderboard.html` (static SPA) + `cloud/cloudflare/src/index.js`
   (edge API) + the macOS `UsageEngine`/`LeaderboardStore` publish pipeline.
 - **Canonical URL**: <https://token-horizon.dev> (`www` 301s to apex; the
   legacy `tokens.benebsworth.com` serves `/api/*` and 301s browser traffic).
@@ -76,7 +76,7 @@ the app's own merge pipeline** — no provider calls from the browser:
 
 | Element | State | Notes |
 |---|---|---|
-| Catalog artifact | ✅ | `scripts/refresh-models.sh` runs `TokenHorizon --export-model-catalog --refresh` (models.dev + OpenRouter + live provider feeds + curated benchmarks) → `docs/data/models.json`; scheduled weekly by `.github/workflows/models-refresh.yml`, committed only when changed |
+| Catalog artifact | ✅ | `scripts/models/refresh-models.sh` runs `TokenHorizon --export-model-catalog --refresh` (models.dev + OpenRouter + live provider feeds + curated benchmarks) → `docs/data/models.json`; scheduled weekly by `.github/workflows/models-refresh.yml`, committed only when changed |
 | Serving | ✅ | `GET /api/models/catalog` proxies the ASSETS file with CORS + `s-maxage=3600`; `/models` is the canonical **flat** route (slim brand head, no dashboard chrome — landing-page nav links `./models/`, `/models/` 301s to `/models`, `/leaderboard?view=models` 302s there unless `tab=providers`, and the GitHub Pages mirror gets `docs/models/index.html` → `?view=models&flat=1`) |
 | Provider deep links | ✅ | Provider rows in the Providers-tab comparison table, its mix legend, and the per-model drawer's usage table link to `?provider=<key>`, which filters the explorer (URL-driven, applied after the catalog loads) |
 | Search | ✅ | Vendored `docs/vendor/fuse.js` (lazy index, weights name/id/provider/description), relevance order preserved (column sort only applies without a query), canonical listings outrank reseller clones at equal text score |
@@ -254,7 +254,7 @@ of cache-hit rate, output ratio, and free/local share.
 
 - `docs/vendor/tanstack-charts.js` is a minified IIFE bundle of
   `@tanstack/charts@0.18.0` (vanilla `mountChart` host), built by
-  `npm run vendor` (`scripts/vendor-entry.js` → `scripts/build-vendor.mjs`).
+  `npm run vendor` (`scripts/web/vendor-entry.js` → `scripts/web/build-vendor.mjs`).
 - **Stacked `barY`** + `group-x` focus + structured tooltip (title, color
   rows, total), with **compact axis units** (`1B`/`1M`/`12k` via `fmtTokens`)
   so labels never push the plot off-card. Columns are notch-dense: `barY`
@@ -276,12 +276,12 @@ of cache-hit rate, output ratio, and free/local share.
   refresh skip `render()` entirely when nothing changed. Search/sort swap only
   `#lb-table-wrap` (debounced 120ms), so charts never remount while typing.
   The range pill drives `historyDays=7|14|30|90` on `/api/leaderboard`.
-- `task bench-leaderboard` (`scripts/bench-leaderboard.mjs`) is a hermetic
+- `task bench-leaderboard` (`scripts/leaderboard/bench-leaderboard.mjs`) is a hermetic
   budget gate: cold-load-to-chart, view-switch median/p95, zero extra chart
   mounts after warm-up, search→table refresh, idle-tick skip, and API cache
   hit. `task test` / CI stay green independently of it.
 - **Provider brand marks** are official white logos on brand-colored tiles,
-  fetched by `scripts/fetch-brand-logos.py` into `docs/assets/brands/`
+  fetched by `scripts/models/fetch-brand-logos.py` into `docs/assets/brands/`
   (Simple Icons CC0 for Anthropic/Google/OpenAI/DeepSeek/Meta/Mistral/xAI/
   MiniMax/OpenCode/Qwen/Ollama, plus BrandBrain's fetched Moonshot raster),
   used in chart legends, the provider mix/comparison, model inventories,
@@ -291,7 +291,7 @@ of cache-hit rate, output ratio, and free/local share.
   brand (claude→anthropic, gpt/codex→openai, …). Lozenges use `.chip.logo-chip`
   (roomier padding, 8px gaps, gradient tile, inset highlight).
 - **League tier badges** are generated art processed into transparent 384px
-  PNGs under `docs/assets/leagues/` (`scripts/process-league-badges.py` keys out
+  PNGs under `docs/assets/leagues/` (`scripts/leaderboard/process-league-badges.py` keys out
   the white background via a border flood fill, drops watermarks with a
   density crop, and centers each badge). `leagueIcon()` renders the image with
   a league-colored glow and falls back to the inline SVG shield if an asset is
@@ -317,7 +317,7 @@ of cache-hit rate, output ratio, and free/local share.
 ### 2.7.1 Model Explorer runtime
 
 - `docs/data/models.json` is the only catalog source in the browser. Rebuild
-  it with `task models-refresh` (`scripts/refresh-models.sh` → release binary →
+  it with `task models-refresh` (`scripts/models/refresh-models.sh` → release binary →
   `--export-model-catalog --refresh`); the weekly workflow commits it when
   entries/pricing change. Never hand-edit the file, and never fetch provider
   APIs from the dashboard — the app's parsers and canonicalization are the
@@ -329,9 +329,9 @@ of cache-hit rate, output ratio, and free/local share.
   height); the 30s idle tick re-enters `renderModels()` but bails without
   rebuilding the mounted shell, so typing/scrolling is never interrupted.
 - `docs/vendor/fuse.js` is a minified IIFE bundle of `fuse.js` built by
-  `npm run vendor` (`scripts/fuse-entry.js` → `scripts/build-vendor.mjs`).
+  `npm run vendor` (`scripts/web/fuse-entry.js` → `scripts/web/build-vendor.mjs`).
   Missing bundle = substring fallback, not a broken page.
-- Perf smoke lives in `scripts/test-leaderboard-ui.mjs` §13 (windowing bounds,
+- Perf smoke lives in `scripts/leaderboard/test-leaderboard-ui.mjs` §13 (windowing bounds,
   Fuse ranking, scope filtering, drawer + deep link); the real-catalog checks
   were run manually against the 2.9k export (~23 DOM rows, search ≈200ms
   including the 90ms debounce).
@@ -341,9 +341,9 @@ of cache-hit rate, output ratio, and free/local share.
 - Cloudflare zone `token-horizon.dev` (NS `fred`/`vera.ns.cloudflare.com`,
   registrar NS managed at Vercel), Worker `token-horizon-leaderboard`, R2
   bucket `token-horizon-leaderboard`, static assets from `docs/`.
-- `scripts/onboard-domain.sh` creates the zone (needs `Zone:Edit`) and prints
-  registrar steps; `scripts/deploy-cloudflare.sh` deploys routes + assets.
-- `scripts/make-app.sh` builds/signs/relaunches the app and health-gates on
+- `scripts/deploy/onboard-domain.sh` creates the zone (needs `Zone:Edit`) and prints
+  registrar steps; `scripts/deploy/deploy-cloudflare.sh` deploys routes + assets.
+- `scripts/app/make-app.sh` builds/signs/relaunches the app and health-gates on
   the build stamp.
 
 ---
@@ -387,15 +387,15 @@ task lint && swift test                # Swift gates (engine v3, analytics, cata
 make leaderboard-test                  # worker tests + hermetic Playwright UI
 task bench-leaderboard                 # dashboard render/chart/API budgets (fails on breach)
 task models-refresh                    # regenerate docs/data/models.json from the app pipeline
-./scripts/make-app.sh                  # install + relaunch, health-gated
-./scripts/deploy-cloudflare.sh         # worker + docs assets
+./scripts/app/make-app.sh                  # install + relaunch, health-gated
+./scripts/deploy/deploy-cloudflare.sh         # worker + docs assets
 task smoke                             # local API + MCP contract
 ```
 
 ### UI audit passes (`/audit` → `/critique`)
 
 Reusable commands live in `.opencode/commands/`. Rules established by audit
-rounds and enforced by `scripts/test-leaderboard-ui.mjs` §11:
+rounds and enforced by `scripts/leaderboard/test-leaderboard-ui.mjs` §11:
 
 - **Honesty first**: API failures surface error banners (never silent empty
   states); the offline demo fallback carries a "demo data" banner + retry.

@@ -9,11 +9,11 @@ Audit the Token Horizon web dashboard (`docs/leaderboard.html`, APIs in `cloudfl
 
 ## Method (mandatory)
 
-1. Serve nothing; open `docs/leaderboard.html` via `file://` in headless Chromium (Playwright is at `/Users/benebsworth/projects/tautau/web/node_modules/playwright/index.mjs`). Intercept `https://token-horizon.dev/api/**` with fixtures (see `scripts/test-leaderboard-ui.mjs` for the pattern) — never touch production.
+1. Serve nothing; open `docs/leaderboard.html` via `file://` in headless Chromium (Playwright is at `/Users/benebsworth/projects/tautau/web/node_modules/playwright/index.mjs`). Intercept `https://token-horizon.dev/api/**` with fixtures (see `scripts/leaderboard/test-leaderboard-ui.mjs` for the pattern) — never touch production.
 2. Walk every routed view (`dashboard`, `leaderboard`, `players` + all profile tabs, `teams`, `prompts`, `models`, `billing`, `leagues`, `settings`, all modals, `?share=` report, `?signin=1`) at **1440px and 390px** widths. Screenshot anything you claim is broken (`/tmp/audit-*.png`).
 3. Exercise states: loading (throttle API), empty, error (404 fixtures), signed-out, expired session, `prefers-reduced-motion`.
 4. Keyboard-walk interactive elements; check focus visibility, tab order, ESC handling, ARIA labels/roles.
-5. Collect console errors and `window.__thPerf` counters; run `node scripts/bench-leaderboard.mjs` and note any budget breach.
+5. Collect console errors and `window.__thPerf` counters; run `node scripts/leaderboard/bench-leaderboard.mjs` and note any budget breach.
 
 ## Checklist
 
@@ -23,7 +23,7 @@ Audit the Token Horizon web dashboard (`docs/leaderboard.html`, APIs in `cloudfl
 - **Responsive**: no horizontal page scroll at 390px; tables scroll internally; modals fit with reachable close buttons; sidebar collapses cleanly.
 - **A11y**: contrast ≥ 4.5:1 for body text; visible focus; icon-only buttons have labels/titles; ASCII art is `aria-hidden`; motion stops under reduced-motion and on modal close.
 - **Copy**: no lorem/placeholder text, no stale references, correct units/plurals, no `alert()`/`prompt()` left in user flows.
-- **Perf**: cold load, view-switch p95, and idle-tick numbers vs `scripts/bench-leaderboard.mjs` budgets; flag any new network fan-out or unbounded growth (timers, listeners, maps).
+- **Perf**: cold load, view-switch p95, and idle-tick numbers vs `scripts/leaderboard/bench-leaderboard.mjs` budgets; flag any new network fan-out or unbounded growth (timers, listeners, maps).
 
 ## Output
 

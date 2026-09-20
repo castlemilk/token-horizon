@@ -3,140 +3,184 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Token Horizon — Your AI usage. On the horizon.</title>
-<meta name="description" content="Native macOS notch dashboard tracking AI token usage, costs, plan limits, and Mac performance. Private by design." />
+<title>Token Horizon · Your AI usage. On the horizon.</title>
+<meta name="description" content="Token Horizon tracks what you use and what you spend across every AI coding tool you run. Tokens, costs, and plan limits in one place. Private until you choose to share." />
 <link rel="icon" href="./assets/favicon.svg" type="image/svg+xml" />
 <meta property="og:title" content="Token Horizon" />
-<meta property="og:description" content="Tokens, costs, plan limits, local models, and Mac performance — glanceable from the notch." />
+<meta property="og:description" content="Track what you use and what you spend across every AI coding tool you run. Private until you choose to share." />
 <meta property="og:image" content="./assets/og.png" />
-<link rel="stylesheet" href="./styles.css" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="anonymous" />
+<link href="https://fonts.googleapis.com/css2?family=Coral+Pixels&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="./landing.css" />
 </head>
 <body>
+<a class="skip" href="#main">Skip to content</a>
+
 <nav class="nav" id="site-nav">
-  <a class="brand" href="./"><img src="./assets/icon.png" alt="" /><span>Token Horizon</span></a>
   <button class="nav-toggle" id="nav-toggle" type="button" aria-label="Toggle navigation" aria-expanded="false" aria-controls="nav-links">☰</button>
   <div class="nav-links" id="nav-links">
-    <a class="nav-primary" href="./leaderboard.html">Leaderboard</a>
-    <a class="nav-primary" href="./models/">Models</a>
-    <a class="nav-primary" href="./docs/">Docs</a>
-    <a class="nav-primary" href="./blog/">Blog</a>
-    <a href="#features">Features</a>
-    <a href="#film">Film</a>
-    <a href="#privacy">Privacy</a>
-    <a href="#install">Install</a>
-    <a class="nav-cta" href="https://github.com/castlemilk/token-horizon">GitHub</a>
+    <a href="./leaderboard.html">Leaderboard</a>
+    <a href="./docs/">Docs</a>
+    <a class="nav-cta" href="#install">Install</a>
   </div>
 </nav>
 
 <header class="hero" id="top">
-  <div class="hero-copy">
-    <span class="pill"><i></i>Native macOS intelligence</span>
-    <h1>Your AI usage.<br /><em>On the horizon.</em></h1>
-    <p>Tokens, costs, plan limits, local models, and Mac performance — glanceable from the notch, without breaking your flow.</p>
-    <div class="install-line">
-      <code id="install-cmd">curl -fsSL https://raw.githubusercontent.com/castlemilk/token-horizon/main/install.sh | bash</code>
-      <button id="copy-btn" type="button" aria-label="Copy install command">⧉</button>
+  <div class="hero-inner" data-reveal>
+    <span class="slabel">Local-first AI metering</span>
+    <h1>Your AI usage.<br />On the horizon.</h1>
+    <p>Token Horizon tracks what you use and what you spend across every AI coding tool you run, from Claude and Codex to the models on your own GPU.</p>
+    <div class="hero-ctas">
+      <a class="cta cta-solid" href="#install">Install now</a>
+      <a class="cta cta-ghost" href="./leaderboard.html">View leaderboard</a>
     </div>
-    <div class="hero-actions">
-      <a class="primary" href="#install">Install in seconds ↓</a>
-      <a class="secondary" href="./leaderboard.html">Live Leaderboard 🏆</a>
-      <a class="secondary" href="#film">Watch film ↘</a>
-    </div>
-    <div class="meta"><span> Apple silicon</span><span>•</span><span>Native Swift</span><span>•</span><span>Private by design</span></div>
-  </div>
-  <div class="hero-demo" aria-label="Animated preview of Token Horizon expanding from the MacBook notch">
-    <div class="mac-screen">
-      <div class="notch-shell">
-        <div class="notch-collapsed"><div class="mini-ring cyan"><span>34</span></div><span class="camera"></span><div class="mini-ring violet"><span>61</span></div></div>
-        <div class="notch-panel">
-          <div class="panel-head"><div><span class="eyebrow">TOKENS TODAY</span><strong>1.84M</strong></div><span class="live-dot">LIVE</span></div>
-          <div class="chart" aria-hidden="true"><i style="height:34%"></i><i style="height:48%"></i><i style="height:28%"></i><i style="height:58%"></i><i style="height:74%"></i><i style="height:61%"></i><i style="height:88%"></i><i style="height:69%"></i><i style="height:93%"></i><i style="height:76%"></i><i style="height:96%"></i><i style="height:83%"></i></div>
-          <div class="panel-foot"><span>Codex <b>47%</b></span><span>Claude <b>31%</b></span><span>Kimi <b>22%</b></span></div>
-        </div>
-      </div>
-    </div>
-    <div class="mac-base"></div>
-    <p class="desktop-label"><span class="status-pulse"></span>Watching every token, quietly.</p>
+    <ul class="platforms-supported" aria-label="Supported platforms">
+      <li><img src="./assets/icons/macos.webp" alt="" width="20" height="20" loading="lazy" />macOS</li>
+      <li><img src="./assets/icons/windows.webp" alt="" width="20" height="20" loading="lazy" />Windows</li>
+      <li><img src="./assets/icons/linux.webp" alt="" width="20" height="20" loading="lazy" />Linux</li>
+    </ul>
   </div>
 </header>
 
-<div class="provider-strip"><div class="provider-inner"><span>ONE VIEW FOR</span><b>Codex</b><b>Claude</b><b>Kimi</b><b>Gemini</b><b>GLM</b><b>MiniMax</b><b>OpenCode</b><b>DeepSeek</b></div></div>
+<main id="main">
 
-<section class="section" id="features">
-  <div class="section-heading"><span class="kicker">THE WHOLE PICTURE</span><h2>One quiet utility.<br />Nothing gets past it.</h2></div>
-  <div class="feature-grid">
-    <article class="feature-card"><span class="num">01</span><h3>Token intelligence</h3><p>Today and all-time usage, cost, per-model provider share, streaks, and a full-year heatmap.</p></article>
-    <article class="feature-card"><span class="num">02</span><h3>Plan limits</h3><p>Exactly how much room is left in every rolling provider window — and when each one resets. Per-model quotas like Fable included.</p></article>
-    <article class="feature-card"><span class="num">03</span><h3>Mac performance</h3><p>Live CPU, memory, disk, network, and top-process telemetry without opening Activity Monitor.</p></article>
-    <article class="feature-card"><span class="num">04</span><h3>Local AI telemetry</h3><p>MLX and Ollama runners with measured tokens-per-second, resource load, and bounded history.</p></article>
+<div class="carousel" aria-label="Supported providers and runtimes" data-reveal>
+  <p class="carousel-label">Providers &amp; Runtimes</p>
+  <div class="carousel-track">
+    <span class="vcell"><img src="./assets/icons/anthropic.webp" alt="Anthropic" loading="lazy" />Anthropic</span>
+    <span class="vcell"><img src="./assets/icons/openai.webp" alt="OpenAI" loading="lazy" />OpenAI</span>
+    <span class="vcell"><img src="./assets/icons/gemini.webp" alt="Gemini" loading="lazy" />Gemini</span>
+    <span class="vcell"><img src="./assets/icons/moonshot.webp" alt="Kimi" loading="lazy" />Kimi</span>
+    <span class="vcell"><img src="./assets/icons/minimax.webp" alt="MiniMax" loading="lazy" />MiniMax</span>
+    <span class="vcell"><img src="./assets/icons/opencode.webp" alt="OpenCode" loading="lazy" />OpenCode</span>
+    <span class="vcell"><img src="./assets/icons/qwen.webp" alt="Qwen" loading="lazy" />Qwen</span>
+    <span class="vcell"><img src="./assets/icons/deepseek.webp" alt="DeepSeek" loading="lazy" />DeepSeek</span>
+    <span class="vcell"><img src="./assets/icons/glm.webp" alt="GLM" loading="lazy" />GLM</span>
+    <span class="vcell"><img src="./assets/icons/alibaba.webp" alt="Alibaba" loading="lazy" />Alibaba</span>
+    <span class="vcell"><img src="./assets/icons/ollama.webp" alt="Ollama" loading="lazy" />Ollama</span>
+    <span class="vcell"><img src="./assets/icons/vllm.webp" alt="vLLM" loading="lazy" />vLLM</span>
+    <span class="vcell"><img src="./assets/icons/sglang.webp" alt="SGLang" loading="lazy" />SGLang</span>
+    <span class="vcell"><img src="./assets/icons/llamacpp.webp" alt="llama.cpp" loading="lazy" />llama.cpp</span>
+    <span class="vcell"><img src="./assets/icons/mlx.webp" alt="MLX" loading="lazy" />MLX</span>
+    <span class="vcell" aria-hidden="true"><img src="./assets/icons/anthropic.webp" alt="" loading="lazy" />Anthropic</span>
+    <span class="vcell" aria-hidden="true"><img src="./assets/icons/openai.webp" alt="" loading="lazy" />OpenAI</span>
+    <span class="vcell" aria-hidden="true"><img src="./assets/icons/gemini.webp" alt="" loading="lazy" />Gemini</span>
+    <span class="vcell" aria-hidden="true"><img src="./assets/icons/moonshot.webp" alt="" loading="lazy" />Kimi</span>
+    <span class="vcell" aria-hidden="true"><img src="./assets/icons/minimax.webp" alt="" loading="lazy" />MiniMax</span>
+    <span class="vcell" aria-hidden="true"><img src="./assets/icons/opencode.webp" alt="" loading="lazy" />OpenCode</span>
+    <span class="vcell" aria-hidden="true"><img src="./assets/icons/qwen.webp" alt="" loading="lazy" />Qwen</span>
+    <span class="vcell" aria-hidden="true"><img src="./assets/icons/deepseek.webp" alt="" loading="lazy" />DeepSeek</span>
+    <span class="vcell" aria-hidden="true"><img src="./assets/icons/glm.webp" alt="" loading="lazy" />GLM</span>
+    <span class="vcell" aria-hidden="true"><img src="./assets/icons/alibaba.webp" alt="" loading="lazy" />Alibaba</span>
+    <span class="vcell" aria-hidden="true"><img src="./assets/icons/ollama.webp" alt="" loading="lazy" />Ollama</span>
+    <span class="vcell" aria-hidden="true"><img src="./assets/icons/vllm.webp" alt="" loading="lazy" />vLLM</span>
+    <span class="vcell" aria-hidden="true"><img src="./assets/icons/sglang.webp" alt="" loading="lazy" />SGLang</span>
+    <span class="vcell" aria-hidden="true"><img src="./assets/icons/llamacpp.webp" alt="" loading="lazy" />llama.cpp</span>
+    <span class="vcell" aria-hidden="true"><img src="./assets/icons/mlx.webp" alt="" loading="lazy" />MLX</span>
+  </div>
+</div>
+
+<div class="carousel static" aria-label="Supported tools" data-reveal>
+  <p class="carousel-label">Tools</p>
+  <div class="carousel-track">
+    <span class="vcell"><img src="./assets/icons/claude.webp" alt="Claude" loading="lazy" />Claude</span>
+    <span class="vcell"><img src="./assets/icons/openai.webp" alt="Codex" loading="lazy" />Codex</span>
+    <span class="vcell"><img src="./assets/icons/opencode.webp" alt="opencode" loading="lazy" />opencode</span>
+    <span class="vcell"><img src="./assets/icons/pi.webp" alt="pi" loading="lazy" />pi</span>
+  </div>
+</div>
+
+<section class="section">
+  <div class="section-inner" id="features" data-reveal>
+    <span class="slabel">01 — The pieces</span>
+    <h2>What you get.</h2>
+    <p class="lede">One daemon, one database, every number in the same place — from the first token of the day to the quota reset next week.</p>
+    <div class="platforms">
+      <div class="platform" data-reveal>
+        <h3><span class="pnum">01</span>Tracking</h3>
+        <p>Every request counted as it happens. Tokens and cost per model, per tool, per session, on cloud vendors and your own GPU. History survives restarts.</p>
+      </div>
+      <div class="platform" data-reveal>
+        <h3><span class="pnum">02</span>Limits</h3>
+        <p>Every plan quota and rate window on one screen, with reset times. You see the ceiling before you hit it.</p>
+      </div>
+      <div class="platform" data-reveal>
+        <h3><span class="pnum">03</span>Leaderboards &amp; Teams</h3>
+        <p>Opt-in rankings across today, 7 days, all time, and streaks. Group your team to compare totals on the same board.</p>
+      </div>
+      <div class="platform" data-reveal>
+        <h3><span class="pnum">04</span>Accounts</h3>
+        <p>Sign in once and publish from any machine you run. Vendors with more than one login stay tracked separately.</p>
+      </div>
+      <div class="platform" data-reveal>
+        <h3><span class="pnum">05</span>Privacy</h3>
+        <p>Everything runs on your machine and meters need your permission first. Prompts are never logged and nothing is shared until you say so.</p>
+      </div>
+    </div>
   </div>
 </section>
 
-<section class="section start" id="start">
-  <div class="section-heading"><span class="kicker">GET GOING</span><h2>Up and running<br />in 90 seconds.</h2><p>macOS on Apple silicon. No account, no setup wizard — install, glance, verify.</p></div>
-  <div class="install-grid">
-    <article class="install-card">
-      <h3>① Install</h3>
-      <pre><code>curl -fsSL https://raw.githubusercontent.com/castlemilk/token-horizon/main/install.sh | bash</code></pre>
-      <p>One line, no prompts, no sudo. Latest release lands in <code>/Applications</code>, crash auto-recovery switches on, and the <code>th</code> shell command is wired up.</p>
-    </article>
-    <article class="install-card">
-      <h3>② Glance</h3>
-      <p>Your notch (or menu bar) now wears live CPU/MEM rings. <b>Hover</b> to open the panel: <b>TOKENS</b> for usage, costs and plan limits · <b>ACTIVITY</b> for Mac performance · <b>MLX</b> for local models · plus Leaderboard, Shells and Settings. The ⤢ button pops it all out into a full dashboard window.</p>
-      <p class="fine">The model catalogue refreshes itself — new releases and live pricing appear on their own.</p>
-    </article>
-    <article class="install-card">
-      <h3>③ Verify</h3>
-      <pre><code>curl -s localhost:8765/health
-th /stats
-th /limits</code></pre>
-      <p>Health reports the running build; <code>th</code> brings usage and remaining quota to your terminal. Then connect your coding agent — see <a href="https://github.com/castlemilk/token-horizon#mcp-server">MCP server</a>.</p>
-    </article>
-  </div>
-</section>
-
-<section class="section film" id="film">
-  <div class="section-heading"><span class="kicker">THE FILM</span><h2>Sixty seconds,<br />every token.</h2><p>A code-rendered tour of the dashboard — no screen recordings were harmed.</p></div>
-  <video controls preload="metadata" poster="./assets/og.png" src="https://github.com/castlemilk/token-horizon/releases/latest/download/TokenHorizon-film.mp4">
-    Sorry — your browser can't play embedded video.
-    <a href="https://github.com/castlemilk/token-horizon/releases/latest/download/TokenHorizon-film.mp4">Download the film</a>.
-  </video>
-</section>
-
-<section class="section privacy" id="privacy">
-  <div class="section-heading"><span class="kicker">LOCAL BY DEFAULT</span><h2>Your usage data<br />stays yours.</h2></div>
-  <p class="lede">The app reads local session files and provider quota endpoints directly from your Mac. No Token Horizon account, no analytics service, no cloud database.</p>
-  <div class="privacy-points"><span><b>127.0.0.1</b>Loopback APIs only</span><span><b>24H</b>Bounded system history</span><span><b>0</b>Cloud database</span></div>
-</section>
-
-<section class="section install" id="install">
-  <div class="section-heading"><span class="kicker">GET FLYING</span><h2>Three ways in.</h2></div>
-  <div class="install-grid">
-    <article class="install-card">
-      <h3>① One-liner <em>recommended</em></h3>
-      <pre><code>curl -fsSL https://raw.githubusercontent.com/castlemilk/token-horizon/main/install.sh | bash</code></pre>
-      <p>Downloads the latest release, installs to <code>/Applications</code>, enables crash auto-recovery, wires up the <code>th</code> shell command. No sudo, no prompts.</p>
-    </article>
-    <article class="install-card">
-      <h3>② Homebrew</h3>
-      <pre><code>brew tap castlemilk/tap
+<section class="section light" id="install">
+  <div class="section-inner" data-reveal>
+    <span class="slabel">02 — Install</span>
+    <h2>Up in a minute.</h2>
+    <div class="copyline">
+      <code id="install-cmd">curl -fsSL https://raw.githubusercontent.com/castlemilk/token-horizon/main/install.sh | bash</code>
+      <button id="copy-btn" type="button" aria-label="Copy install command">Copy</button>
+    </div>
+    <div class="install-grid">
+      <article class="install-card">
+        <h3>One-liner</h3>
+        <pre><code>curl -fsSL https://raw.githubusercontent.com/castlemilk/token-horizon/main/install.sh | bash</code></pre>
+        <p>Latest release, no sudo, no prompts.</p>
+      </article>
+      <article class="install-card">
+        <h3>Homebrew</h3>
+        <pre><code>brew tap castlemilk/tap
 brew install --cask token-horizon</code></pre>
-      <p>Tracks releases through a versioned Cask. See <a href="https://github.com/castlemilk/token-horizon/blob/main/packaging/homebrew/token-horizon.rb">packaging/homebrew</a> for the formula.</p>
-    </article>
-    <article class="install-card">
-      <h3>③ Manual / from source</h3>
-      <p>Grab the <a href="https://github.com/castlemilk/token-horizon/releases/latest">DMG from GitHub Releases</a>, drag to Applications — or build it yourself:</p>
-      <pre><code>git clone https://github.com/castlemilk/token-horizon
-cd token-horizon &amp;&amp; ./scripts/make-app.sh</code></pre>
-      <p class="fine">Official releases are Developer ID signed and Apple-notarized; local source builds carry an ad-hoc signature.</p>
-    </article>
+        <p>Tracks releases through a versioned cask.</p>
+      </article>
+      <article class="install-card">
+        <h3>Linux</h3>
+        <pre><code>curl -fsSL https://raw.githubusercontent.com/castlemilk/token-horizon/main/install.sh | bash</code></pre>
+        <p>Installs the daemon and registers it with your user session.</p>
+      </article>
+    </div>
   </div>
 </section>
+
+</main>
 
 <footer class="footer">
-  <a class="brand" href="./"><img src="./assets/icon.png" alt="" /><span>Token Horizon</span></a>
-  <p>Native observability for the AI-powered Mac.</p>
-  <div class="footer-links"><a href="./docs/">Docs</a><a href="./blog/">Blog</a><a href="https://github.com/castlemilk/token-horizon">GitHub</a><a href="https://github.com/castlemilk/token-horizon/releases">Releases</a><a href="https://github.com/castlemilk/token-horizon/issues">Issues</a></div>
+  <div class="footer-grid">
+    <div class="footer-brand">
+      <a class="brand" href="./"><img src="./assets/icon.png" alt="" /><span>Token Horizon</span></a>
+      <p class="footer-copy">Native observability for AI-powered machines.</p>
+    </div>
+    <div class="footer-col">
+      <span class="flabel">Product</span>
+      <a href="#features">Coverage</a>
+      <a href="./leaderboard.html">Leaderboard</a>
+      <a href="./models/">Models</a>
+      <a href="#install">Install</a>
+    </div>
+    <div class="footer-col">
+      <span class="flabel">Resources</span>
+      <a href="./docs/">Docs</a>
+      <a href="./blog/">Blog</a>
+    </div>
+    <div class="footer-col">
+      <span class="flabel">Legal</span>
+      <a href="./terms.html">Terms</a>
+      <a href="./privacy.html">Privacy</a>
+      <a href="./eula.html">EULA</a>
+    </div>
+  </div>
+  <div class="footer-legal">
+    <span>© 2026 Token Horizon.</span>
+    <span class="footer-note">Local-first · Private by default</span>
+  </div>
 </footer>
 <script src="./app.js"></script>
 </body>

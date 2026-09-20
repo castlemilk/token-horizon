@@ -16,6 +16,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 func testEnv(t *testing.T) *store.Store {
@@ -391,5 +392,438 @@ func TestExplicitLabelOutranksSniff(t *testing.T) {
 	e := waitEvent(t, st)
 	if *e.Product != "my-harness" || *e.ProductSource != "explicitLabel" {
 		t.Fatalf("explicit label must win: %v/%v", e.Product, e.ProductSource)
+	}
+}
+
+// startMeterHandle is startMeter plus the live meter (new observation
+// accessors need it; existing tests keep the old helper untouched).
+func startMeterHandle(t *testing.T, st *store.Store, vendor string, format Format, upstream http.Handler) (*Meter, string) {
+	t.Helper()
+	up := httptest.NewServer(upstream)
+	t.Cleanup(up.Close)
+	m := &Meter{
+		Vendor: vendor, TargetBase: up.URL, Source: "external",
+		Store: st, Format: format,
+	}
+	if err := m.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(m.Stop)
+	return m, "http://127.0.0.1:" + itoaPort(m.ListenPort)
+}
+
+func waitCount(t *testing.T, st *store.Store, n int64) {
+	t.Helper()
+	for range 100 {
+		c, err := st.Count()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if c >= n {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("store count never reached %d", n)
+}
+
+func TestRelayByteIdenticalSplitWrites(t *testing.T) {
+	st := testEnv(t)
+	payload := "data: " + strings.Repeat(`{"x":1},`, 200) + "\n"
+	base := startMeter(t, st, "deepseek", openAIFormat{}, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(200)
+		// 1-byte writes: the tee must reassemble exactly what it relays.
+		for i := 0; i < len(payload); i++ {
+			w.Write([]byte(payload[i : i+1]))
+			w.(http.Flusher).Flush()
+		}
+	}))
+	resp, err := http.Post(base+"/v1/chat/completions", "application/json", strings.NewReader(`{"model":"m"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if string(got) != payload {
+		t.Fatalf("split-write relay must be byte-identical: got %d want %d bytes", len(got), len(payload))
+	}
+}
+
+func TestRedirectNeverFollowed(t *testing.T) {
+	st := testEnv(t)
+	var followed int
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		followed++
+		w.Write([]byte(`{}`))
+	}))
+	defer target.Close()
+	m, base := startMeterHandle(t, st, "openai", openAIFormat{}, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Location", target.URL+"/v1/chat/completions")
+		w.WriteHeader(http.StatusTemporaryRedirect)
+	}))
+	client := &http.Client{CheckRedirect: func(req *http.Request, via []*http.Request) error {
+		return http.ErrUseLastResponse
+	}}
+	resp, err := client.Post(base+"/v1/chat/completions", "application/json", strings.NewReader(`{"model":"m"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusTemporaryRedirect {
+		t.Fatalf("redirect must relay untouched, got %d", resp.StatusCode)
+	}
+	if followed != 0 {
+		t.Fatal("meter must never follow redirects (credentials would travel)")
+	}
+	if resp.Header.Get("Location") != target.URL+"/v1/chat/completions" {
+		t.Fatalf("Location must relay: %q", resp.Header.Get("Location"))
+	}
+	time.Sleep(200 * time.Millisecond)
+	if c, _ := st.Count(); c != 0 {
+		t.Fatalf("redirects are control flow, never measured (rows=%d)", c)
+	}
+	if len(m.ErrorCounts()) != 0 {
+		t.Fatalf("3xx must not count as failures: %v", m.ErrorCounts())
+	}
+}
+
+func TestEventIDHeaderJoinsToRow(t *testing.T) {
+	st := testEnv(t)
+	base := startMeter(t, st, "deepseek", openAIFormat{}, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"usage":{"prompt_tokens":10,"completion_tokens":5}}`))
+	}))
+	resp, err := http.Post(base+"/v1/chat/completions", "application/json", strings.NewReader(`{"model":"m"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	hdr := resp.Header.Get("x-token-horizon-event-id")
+	if len(hdr) != 36 {
+		t.Fatalf("event-id header must be a UUID, got %q", hdr)
+	}
+	e := waitEvent(t, st)
+	if e.ID != hdr {
+		t.Fatalf("stored row must reuse the header ID: row %q header %q", e.ID, hdr)
+	}
+	rows, _, err := st.EventsPage(store.Filter{ID: hdr}, 0, 10)
+	if err != nil || len(rows) != 1 || rows[0].ID != hdr {
+		t.Fatalf("?id= must fetch the row: rows=%d err=%v", len(rows), err)
+	}
+}
+
+func TestRetrySuspectOnExactRepeat(t *testing.T) {
+	st := testEnv(t)
+	m, base := startMeterHandle(t, st, "deepseek", openAIFormat{}, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"usage":{"prompt_tokens":10,"completion_tokens":5}}`))
+	}))
+	body := `{"model":"retry-probe-model"}`
+	for range 2 {
+		resp, err := http.Post(base+"/v1/chat/completions", "application/json", strings.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+	}
+	waitCount(t, st, 2) // both responses count; the repeat is only flagged
+	if m.RetrySuspects() != 1 {
+		t.Fatalf("second identical request must flag one suspect, got %d", m.RetrySuspects())
+	}
+	ids := m.RecentRetryIDs()
+	if len(ids) != 1 {
+		t.Fatalf("one suspect ID remembered, got %v", ids)
+	}
+	rows, _, err := st.EventsPage(store.Filter{ID: ids[0]}, 0, 10)
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("suspect ID must join back to its row: rows=%d err=%v", len(rows), err)
+	}
+	// A different body is a different request, not a retry.
+	resp, _ := http.Post(base+"/v1/chat/completions", "application/json", strings.NewReader(`{"model":"other"}`))
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	waitCount(t, st, 3)
+	if m.RetrySuspects() != 1 {
+		t.Fatalf("distinct body must not flag: suspects=%d", m.RetrySuspects())
+	}
+}
+
+func TestClassifyErrorTable(t *testing.T) {
+	cases := []struct {
+		status int
+		body   string
+		netErr string
+		want   string
+	}{
+		{200, `{"usage":{"prompt_tokens":1}}`, "", "none"},
+		{429, `{"error":{"code":"rate_limit_exceeded"}}`, "", "rateLimited"},
+		{401, `{"error":{"type":"authentication_error"}}`, "", "auth"},
+		{529, `{}`, "", "overloaded"},
+		{500, `{"error":"overloaded_error"}`, "", "overloaded"},
+		{500, `{}`, "", "serverError"},
+		{400, `{"error":{"code":"context_length_exceeded"}}`, "", "contextLength"},
+		{404, `{}`, "", "badRequest"},
+		{0, ``, "connection refused", "network"},
+		{0, ``, "context canceled", "cancelled"},
+		{418, `{}`, "", "unknown"},
+	}
+	for _, c := range cases {
+		if got := classifyError(c.status, []byte(c.body), c.netErr); got != c.want {
+			t.Fatalf("classify(%d,%q,%q)=%q want %q", c.status, c.body, c.netErr, got, c.want)
+		}
+	}
+}
+
+func TestNon2xxRelayedCountedNeverStored(t *testing.T) {
+	st := testEnv(t)
+	m, base := startMeterHandle(t, st, "openai", openAIFormat{}, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(429)
+		w.Write([]byte(`{"error":{"code":"rate_limit_exceeded","message":"slow down"}}`))
+	}))
+	resp, err := http.Post(base+"/v1/chat/completions", "application/json", strings.NewReader(`{"model":"m"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != 429 || !strings.Contains(string(got), "rate_limit_exceeded") {
+		t.Fatalf("failures must relay untouched: %d %q", resp.StatusCode, got)
+	}
+	time.Sleep(200 * time.Millisecond)
+	if c, _ := st.Count(); c != 0 {
+		t.Fatalf("failures must never create usage rows (rows=%d)", c)
+	}
+	if m.ErrorCounts()["rateLimited"] != 1 {
+		t.Fatalf("429 must count as rateLimited: %v", m.ErrorCounts())
+	}
+}
+
+func TestNetworkErrorCounted(t *testing.T) {
+	st := testEnv(t)
+	m := &Meter{Vendor: "openai", TargetBase: "http://127.0.0.1:1", Source: "external",
+		Store: st, Format: openAIFormat{}}
+	if err := m.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer m.Stop()
+	resp, err := http.Post("http://127.0.0.1:"+itoaPort(m.ListenPort)+"/v1/chat/completions",
+		"application/json", strings.NewReader(`{"model":"m"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Fatalf("dead upstream must 502, got %d", resp.StatusCode)
+	}
+	if m.ErrorCounts()["network"] != 1 {
+		t.Fatalf("refused upstream must count as network: %v", m.ErrorCounts())
+	}
+}
+
+func TestResponseCapRelaysWholeDropsCopy(t *testing.T) {
+	st := testEnv(t)
+	m, base := startMeterHandle(t, st, "deepseek", openAIFormat{}, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(200)
+		// 33MiB of inert padding: over the 32MiB symmetric cap.
+		for range 33 {
+			w.Write([]byte(strings.Repeat("x", 1<<20)))
+			w.(http.Flusher).Flush()
+		}
+	}))
+	resp, err := http.Post(base+"/v1/chat/completions", "application/json", strings.NewReader(`{"model":"m"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if len(got) != 33<<20 {
+		t.Fatalf("over-cap responses must still relay whole: got %d bytes", len(got))
+	}
+	// finalize runs async: wait until it ran (seen==1), then assert nothing
+	// was stored — a truncated tail usually holds the usage block, so a
+	// partial total would be a lie.
+	for range 100 {
+		if m.Seen() == 1 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if m.Seen() != 1 {
+		t.Fatal("finalize never ran")
+	}
+	// Give the (skipped) store path a beat, then assert absence.
+	time.Sleep(200 * time.Millisecond)
+	if c, _ := st.Count(); c != 0 {
+		t.Fatalf("truncated responses must go unmeasured (rows=%d)", c)
+	}
+}
+
+func TestTraceCapturedEndToEnd(t *testing.T) {
+	st := testEnv(t)
+	base := startMeter(t, st, "deepseek", openAIFormat{}, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"usage":{"prompt_tokens":10,"completion_tokens":5}}`))
+	}))
+	resp, err := http.Post(base+"/v1/chat/completions", "application/json", strings.NewReader(`{"model":"m"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	io.Copy(io.Discard, resp.Body)
+	hdr := resp.Header.Get("x-token-horizon-event-id")
+	resp.Body.Close()
+	e := waitEvent(t, st)
+	if e.ID != hdr {
+		t.Fatalf("event must reuse the header ID: %q vs %q", e.ID, hdr)
+	}
+	// Trace row joins the event for free on the shared UUID.
+	var tr usage.Trace
+	for range 100 {
+		trs, err := st.TracePage("", "", 10)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(trs) == 1 {
+			full, err := st.TraceByID(trs[0].ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			tr = *full
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if tr.ID != hdr {
+		t.Fatalf("trace ID must equal event ID: %q vs %q", tr.ID, hdr)
+	}
+	if tr.Vendor != "deepseek" || tr.Model != "m" || tr.StatusCode != 200 {
+		t.Fatalf("trace identity wrong: %+v", tr)
+	}
+	if tr.InputTokens != 10 || tr.OutputTokens != 5 {
+		t.Fatalf("trace counts must match the event: %d/%d", tr.InputTokens, tr.OutputTokens)
+	}
+	if tr.ErrorClass != "none" || tr.RequestHash == "" {
+		t.Fatalf("trace classification/hash missing: %+v", tr)
+	}
+	if !strings.Contains(tr.RequestBody, `"model":"m"`) || !strings.Contains(tr.ResponseBody, "prompt_tokens") {
+		t.Fatalf("trace must carry capped bodies: %+v", tr)
+	}
+	if tr.RequestBytes != len(`{"model":"m"}`) {
+		t.Fatalf("request bytes = %d", tr.RequestBytes)
+	}
+}
+
+func TestTraceRedactsSecretsRelayUntouched(t *testing.T) {
+	st := testEnv(t)
+	var upstreamQuery string
+	base := startMeter(t, st, "gemini", geminiFormat{}, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamQuery = r.URL.RequestURI()
+		w.Write([]byte(`{"candidates":[{}],"usageMetadata":{"promptTokenCount":3,"candidatesTokenCount":4,"totalTokenCount":7}}`))
+	}))
+	// API keys in query strings must not land in the stored path...
+	resp, err := http.Post(base+"/models/gemini-3-pro:generateContent?key=SECRET123", "application/json", strings.NewReader(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	// ...but the relay itself is untouched.
+	if !strings.Contains(upstreamQuery, "key=SECRET123") {
+		t.Fatalf("relay must forward verbatim: %q", upstreamQuery)
+	}
+	var trs []usage.TraceSummary
+	for range 100 {
+		page, err := st.TracePage("", "", 10)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(page) == 1 {
+			trs = page
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if len(trs) != 1 {
+		t.Fatal("trace row missing")
+	}
+	if strings.Contains(trs[0].Path, "SECRET123") || !strings.Contains(trs[0].Path, "REDACTED") {
+		t.Fatalf("stored path must redact secrets: %q", trs[0].Path)
+	}
+}
+
+func TestTraceStoredForFailures(t *testing.T) {
+	st := testEnv(t)
+	base := startMeter(t, st, "openai", openAIFormat{}, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(429)
+		w.Write([]byte(`{"error":{"code":"rate_limit_exceeded"}}`))
+	}))
+	resp, err := http.Post(base+"/v1/chat/completions", "application/json", strings.NewReader(`{"model":"m"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	var trs []usage.TraceSummary
+	for range 100 {
+		page, _ := st.TracePage("", "", 10)
+		if len(page) == 1 {
+			trs = page
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if len(trs) != 1 || trs[0].StatusCode != 429 || trs[0].ErrorClass != "rateLimited" {
+		t.Fatalf("failures trace with class: %+v", trs)
+	}
+}
+
+func TestTraceDisabledByToggle(t *testing.T) {
+	st := testEnv(t)
+	t.Setenv("TH_TRACES", "0")
+	base := startMeter(t, st, "deepseek", openAIFormat{}, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"usage":{"prompt_tokens":10,"completion_tokens":5}}`))
+	}))
+	resp, err := http.Post(base+"/v1/chat/completions", "application/json", strings.NewReader(`{"model":"m"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	waitEvent(t, st) // usage still counts with traces off
+	time.Sleep(200 * time.Millisecond)
+	n, err := st.TraceCount()
+	if err != nil || n != 0 {
+		t.Fatalf("TH_TRACES=0 must capture nothing: n=%d err=%v", n, err)
+	}
+}
+
+func TestCapUTF8(t *testing.T) {
+	if s, trunc := capUTF8([]byte("hello"), 10); s != "hello" || trunc {
+		t.Fatalf("short body verbatim: %q %v", s, trunc)
+	}
+	multi := "ab€€€" // € is 3 bytes: cut at 4 lands mid-rune
+	s, trunc := capUTF8([]byte(multi), 4)
+	if !trunc || !utf8.ValidString(s) || len(s) > 4 {
+		t.Fatalf("cut must stay valid UTF-8 within cap: %q", s)
+	}
+	if s != "ab" {
+		t.Fatalf("mid-rune tail must back off: %q", s)
+	}
+}
+
+func TestRedactPath(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"/v1/chat/completions", "/v1/chat/completions"},
+		{"/models/m:generateContent?key=SECRET", "/models/m:generateContent?key=REDACTED"},
+		{"/x?access_token=abc&model=m", "/x?access_token=REDACTED&model=m"},
+		{"/x?api-key=k&foo=bar", "/x?api-key=REDACTED&foo=bar"},
+		{"/x?monkey=business", "/x?monkey=business"},
+		{"/x?alt=json", "/x?alt=json"},
+	}
+	for _, c := range cases {
+		if got := redactPath(c.in); got != c.want {
+			t.Fatalf("redactPath(%q)=%q want %q", c.in, got, c.want)
+		}
 	}
 }

@@ -63,7 +63,7 @@ When a new model is discovered (e.g. `gpt-5-sol`, `glm-5.3-flash`, `gemini-3.7-f
 * **Pipeline Execution**: Filtering and sorting run asynchronously in `Task.detached(priority: .userInitiated)` via `ModelsPipeline.compute`, preserving 60fps UI responsiveness across 7,300+ entries.
 
 1. **In-App Manual Sync**: Click **`[ 🔄 SYNC ]`** in the MODELS tab toolbar to immediately query live provider APIs and remote catalog without restarting.
-2. **Catalog Update Script** (`scripts/update-catalog.py`):
+2. **Catalog Update Script** (`scripts/models/update-catalog.py`):
    ```bash
-   python3 scripts/update-catalog.py --fetch-remote
+   python3 scripts/models/update-catalog.py --fetch-remote
    ```

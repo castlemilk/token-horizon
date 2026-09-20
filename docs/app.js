@@ -21,6 +21,29 @@ if (copyBtn) {
   });
 }
 
+// Scroll reveals: tagged sections rise in once as they enter view.
+// Reduced-motion users get everything static via the CSS guard.
+(function () {
+  var els = Array.prototype.slice.call(document.querySelectorAll('[data-reveal]'));
+  if (!els.length) return;
+  if (!('IntersectionObserver' in window)) {
+    els.forEach(function (el) { el.classList.add('in'); });
+    return;
+  }
+  var io = new IntersectionObserver(
+    function (entries) {
+      entries.forEach(function (e) {
+        if (e.isIntersecting) {
+          e.target.classList.add('in');
+          io.unobserve(e.target);
+        }
+      });
+    },
+    { threshold: 0.12, rootMargin: '0px 0px -8% 0px' }
+  );
+  els.forEach(function (el) { io.observe(el); });
+})();
+
 // Mobile nav: the link list collapses behind the toggle on narrow screens.
 const nav = document.getElementById('site-nav');
 const navToggle = document.getElementById('nav-toggle');

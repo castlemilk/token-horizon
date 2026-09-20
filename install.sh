@@ -98,11 +98,11 @@ if [ -z "${TH_INSTALL_URL:-}" ]; then
     REF="${TAG:-main}"
     mkdir -p "$TH_HOME/mcp" "$TH_HOME/shell"
     log "fetching shell + MCP helpers (${REF})…"
-    curl -fsSL --max-time 30 -o "$TH_HOME/shell/token-horizon.zsh" \
-        "https://raw.githubusercontent.com/${REPO}/${REF}/shell/token-horizon.zsh" \
+    curl -fsSL --max-time 30 -o "$TH_HOME/clients/shell/token-horizon.zsh" \
+        "https://raw.githubusercontent.com/${REPO}/${REF}/clients/shell/token-horizon.zsh" \
         || log "warning: could not fetch shell helpers"
-    curl -fsSL --max-time 30 -o "$TH_HOME/mcp/token-horizon-mcp.mjs" \
-        "https://raw.githubusercontent.com/${REPO}/${REF}/mcp/token-horizon-mcp.mjs" \
+    curl -fsSL --max-time 30 -o "$TH_HOME/clients/mcp/token-horizon-mcp.mjs" \
+        "https://raw.githubusercontent.com/${REPO}/${REF}/clients/mcp/token-horizon-mcp.mjs" \
         || log "warning: could not fetch MCP server"
 else
     log "skipping helper fetch for override URL (clone the repo for shell/MCP extras)"
@@ -117,7 +117,7 @@ if [ -z "${TH_NO_SHELL:-}" ]; then
         {
             echo ""
             echo "$MARKER (th CLI + per-command token hooks)"
-            echo "[ -f \"\$HOME/.config/token-horizon/shell/token-horizon.zsh\" ] && source \"\$HOME/.config/token-horizon/shell/token-horizon.zsh\""
+            echo "[ -f \"\$HOME/.config/token-horizon/clients/shell/token-horizon.zsh\" ] && source \"\$HOME/.config/token-horizon/clients/shell/token-horizon.zsh\""
         } >> "$ZSHRC"
         log "added shell integration to $ZSHRC (restart your shell, then try: th)"
     fi
@@ -159,10 +159,10 @@ Done. Useful next steps:
   th                       shell status (after restarting your shell)
   curl -s localhost:8765/limits | python3 -m json.tool
 EOF
-if [ -f "$TH_HOME/mcp/token-horizon-mcp.mjs" ]; then
+if [ -f "$TH_HOME/clients/mcp/token-horizon-mcp.mjs" ]; then
     if command -v node >/dev/null 2>&1; then
         printf '%s\n' "  MCP for agents — add to your MCP config:"
-        printf '%s\n' '    {"token-horizon": {"command": "node", "args": ["'"$TH_HOME"'/mcp/token-horizon-mcp.mjs"]}}'
+        printf '%s\n' '    {"token-horizon": {"command": "node", "args": ["'"$TH_HOME"'/clients/mcp/token-horizon-mcp.mjs"]}}'
     else
         printf '%s\n' "  MCP server downloaded to $TH_HOME/mcp (install node to use it with agents)"
     fi

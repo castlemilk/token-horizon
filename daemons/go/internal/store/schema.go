@@ -93,5 +93,33 @@ CREATE TABLE IF NOT EXISTS machine (
     alias TEXT NOT NULL,
     updated_at INTEGER NOT NULL
 );
+-- Trace capture (sidecar contract, daemon-owned): one row per completed
+-- exchange, metered or not. ADDITIVE table — old databases gain it via
+-- IF NOT EXISTS; v1 tables above are never altered. Bodies are capped
+-- UTF-8 prefixes; the *_bytes columns carry full on-wire sizes.
+CREATE TABLE IF NOT EXISTS trace (
+    id TEXT PRIMARY KEY,
+    ts INTEGER NOT NULL,
+    vendor TEXT NOT NULL DEFAULT '',
+    model TEXT NOT NULL DEFAULT '',
+    method TEXT NOT NULL DEFAULT '',
+    path TEXT NOT NULL DEFAULT '',
+    status INTEGER NOT NULL DEFAULT 0,
+    ttft_ms INTEGER NOT NULL DEFAULT 0,
+    duration_ms INTEGER NOT NULL DEFAULT 0,
+    input_tokens INTEGER NOT NULL DEFAULT 0,
+    output_tokens INTEGER NOT NULL DEFAULT 0,
+    error_class TEXT NOT NULL DEFAULT 'none',
+    retry_suspect INTEGER NOT NULL DEFAULT 0,
+    request_hash TEXT NOT NULL DEFAULT '',
+    request_body TEXT NOT NULL DEFAULT '',
+    response_body TEXT NOT NULL DEFAULT '',
+    request_truncated INTEGER NOT NULL DEFAULT 0,
+    response_truncated INTEGER NOT NULL DEFAULT 0,
+    request_bytes INTEGER NOT NULL DEFAULT 0,
+    response_bytes INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_trace_ts ON trace(ts);
+CREATE INDEX IF NOT EXISTS idx_trace_vendor_ts ON trace(vendor, ts);
 PRAGMA user_version = 1;
 `

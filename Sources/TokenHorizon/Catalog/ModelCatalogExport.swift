@@ -5,7 +5,7 @@ import Foundation
 /// Serializes the same family-deduped catalog the MODELS tab renders (plus
 /// top picks and provider rollups) into the static artifact published at
 /// `docs/data/models.json` and served by token-horizon.dev/models.
-/// `scripts/refresh-models.sh` regenerates it; `--export-model-catalog` runs
+/// `scripts/models/refresh-models.sh` regenerates it; `--export-model-catalog` runs
 /// the identical code path headlessly so the web list can never drift from
 /// the app list.
 enum ModelCatalogExport {

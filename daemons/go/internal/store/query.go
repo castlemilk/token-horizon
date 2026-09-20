@@ -58,6 +58,7 @@ type Filter struct {
 	MachineID   string
 	Product     string
 	SessionID   string
+	ID          string
 }
 
 func (f Filter) where() (string, []any) {
@@ -94,6 +95,10 @@ func (f Filter) where() (string, []any) {
 	if f.SessionID != "" {
 		clauses = append(clauses, "usage_event.session_id = ?")
 		args = append(args, f.SessionID)
+	}
+	if f.ID != "" {
+		clauses = append(clauses, "usage_event.id = ?")
+		args = append(args, f.ID)
 	}
 	if len(clauses) == 0 {
 		return "", args

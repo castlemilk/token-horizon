@@ -64,11 +64,11 @@ final class MLXObserverTests: XCTestCase {
 
     func testTelemetryExportsPrometheusMetrics() {
         TokenHorizonTelemetry.shared.recordMLX(MLXSnapshot(sampledAt: Date()))
-        TokenHorizonTelemetry.shared.recordOllamaRequest(model: "qwen-test")
+        TokenHorizonTelemetry.shared.recordInferenceRequest(model: "qwen-test", vendor: "ollama")
         let text = TokenHorizonTelemetry.shared.prometheusText()
 
         XCTAssertTrue(text.contains("token_horizon_mlx_active_runners"))
-        XCTAssertTrue(text.contains("token_horizon_ollama_requests_total"))
+        XCTAssertTrue(text.contains("token_horizon_inference_requests_total"))
         XCTAssertTrue(text.contains("model=\"qwen-test\""))
     }
 
@@ -85,45 +85,6 @@ final class MLXObserverTests: XCTestCase {
 
         XCTAssertTrue(PrometheusExporterExtensions.writeMetricsCollection(exporter: exporter).contains("test_gauge"))
         _ = provider.shutdown()
-    }
-
-    func testOllamaProxyParsesFinalStreamingMetadata() {
-        let response = """
-        {"response":"hello","done":false}
-        {"response":"","done":true,"eval_count":120,"eval_duration":4000000000,"prompt_eval_count":30,"prompt_eval_duration":500000000}
-        """
-
-        let sample = OllamaTelemetryProxy.parseTelemetry(
-            model: "qwen3.8:27b-mlx",
-            responseBody: Data(response.utf8),
-            completedAt: Date(timeIntervalSince1970: 123)
-        )
-
-        XCTAssertEqual(sample?.model, "qwen3.8:27b-mlx")
-        XCTAssertEqual(sample?.evalCount, 120)
-        XCTAssertEqual(sample?.tokPerSec ?? 0, 30, accuracy: 0.0001)
-        XCTAssertEqual(sample?.promptTokPerSec ?? 0, 60, accuracy: 0.0001)
-        XCTAssertEqual(sample?.completedAt, Date(timeIntervalSince1970: 123))
-    }
-
-    func testOllamaProxyParsesChunkedHTTPResponse() {
-        let json = "{\"done\":true,\"eval_count\":50,\"eval_duration\":2000000000}\n"
-        let chunk = String(format: "%x", json.utf8.count)
-        let response = "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n\(chunk)\r\n\(json)\r\n0\r\n\r\n"
-
-        let sample = OllamaTelemetryProxy.parseTelemetry(
-            model: "qwen3.8:27b-mlx",
-            responseBody: Data(response.utf8)
-        )
-
-        XCTAssertEqual(sample?.evalCount, 50)
-        XCTAssertEqual(sample?.tokPerSec ?? 0, 25, accuracy: 0.0001)
-    }
-
-    func testOllamaProxyIgnoresIncompleteResponseMetadata() {
-        let response = "{\"done\":true,\"eval_count\":50}\n"
-
-        XCTAssertNil(OllamaTelemetryProxy.parseTelemetry(model: "qwen", responseBody: Data(response.utf8)))
     }
 
     private func sample(pid: Int32, ppid: Int32, command: String, cpu: Double) -> ProcSample {

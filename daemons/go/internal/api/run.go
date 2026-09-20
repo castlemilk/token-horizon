@@ -24,6 +24,11 @@ type MeterStatus struct {
 	Source     string `json:"source"`
 	Seen       int64  `json:"seen"`
 	Measured   int64  `json:"measured"`
+	// Classified failures by class (auth/rateLimited/...; never stored).
+	Errors map[string]int64 `json:"errors,omitempty"`
+	// Repeat requests inside the retry window (possible double-counts).
+	RetrySuspects  int64    `json:"retry_suspects"`
+	RecentRetryIDs []string `json:"recent_retry_ids,omitempty"`
 }
 
 // VendorStatus is one catalog entry (GET /meters "catalog" — the UI renders
@@ -97,15 +102,15 @@ func (d *Daemon) Run(port int, meters MeterRegistry) {
 
 	// Cloud sync backstop: retry pending deltas every 5 min so offline
 	// stretches upload on reconnect (activity nudges cover the live path).
-	if d.Syncer.Enabled() {
-		go func() {
-			time.Sleep(30 * time.Second)
-			for {
-				d.Syncer.Sync(d.Store)
-				time.Sleep(300 * time.Second)
-			}
-		}()
-	}
+	// Always running: Sync() self-gates on sign-in, so the backstop starts
+	// pushing as soon as the user completes the identity handoff.
+	go func() {
+		time.Sleep(30 * time.Second)
+		for {
+			d.Syncer.Sync(d.Store)
+			time.Sleep(300 * time.Second)
+		}
+	}()
 
 	ln, actual, err := listen(port)
 	if err != nil {

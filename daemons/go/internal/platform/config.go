@@ -47,6 +47,10 @@ type Settings struct {
 	// Per-vendor meter desired state: true = always on, false = off,
 	// absent = default.
 	MeterToggles map[string]bool `json:"meterToggles"`
+	// TraceCapture enables full-body trace capture (sidecar /traces
+	// contract, daemon-owned). Nil = default on; explicit false disables.
+	// Bodies are capped, local-only, auth never persisted.
+	TraceCapture *bool `json:"traceCapture,omitempty"`
 }
 
 // FilePollingEnabled: filePolling setting; the files methodology forces it
@@ -59,6 +63,19 @@ func (s Settings) FilePollingEnabled() bool {
 		return true
 	}
 	return s.FilePolling
+}
+
+// TraceCaptureEnabled: settings.json traceCapture (absent = on, matching
+// the sidecar it replaces) unless TH_TRACES=0/1 overrides. Capture only
+// exists for traffic through consented meters — no meter, no traces.
+func (s Settings) TraceCaptureEnabled() bool {
+	if env := os.Getenv("TH_TRACES"); env != "" {
+		return env != "0"
+	}
+	if s.TraceCapture != nil {
+		return *s.TraceCapture
+	}
+	return true
 }
 
 // Methodology resolves the effective capture methodology:
@@ -120,6 +137,9 @@ func SaveSettings(s Settings) error {
 	}
 	merged["captureMethodology"] = s.CaptureMethodology
 	merged["filePolling"] = s.FilePolling
+	if s.TraceCapture != nil {
+		merged["traceCapture"] = *s.TraceCapture
+	}
 	data, err := json.MarshalIndent(merged, "", "  ")
 	if err != nil {
 		return err

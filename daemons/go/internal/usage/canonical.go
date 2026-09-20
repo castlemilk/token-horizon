@@ -66,7 +66,13 @@ func currentOverrides() canonicalOverrides {
 	}
 	data, err := os.ReadFile(path)
 	if err == nil {
-		_ = json.Unmarshal(data, &overrideCache)
+		// Unmarshal into a FRESH value and publish by swap — never mutate a
+		// map readers may already hold (VendorCASE clones happen outside the
+		// lock; in-place unmarshal raced them).
+		var fresh canonicalOverrides
+		if json.Unmarshal(data, &fresh) == nil {
+			overrideCache = fresh
+		}
 	}
 	overrideLoaded = time.Now()
 	overrideMtime = info.ModTime()
@@ -93,7 +99,13 @@ func VendorCASE(column string) string {
 	b.WriteString("CASE LOWER(TRIM(")
 	b.WriteString(column)
 	b.WriteString("))")
-	table := vendorTable
+	// CLONE the built-in table before overlaying overrides — `table :=
+	// vendorTable` aliases the package map, and writing into it raced
+	// concurrent readers with a fatal concurrent-map-write.
+	table := make(map[string]string, len(vendorTable)+8)
+	for k, v := range vendorTable {
+		table[k] = v
+	}
 	for k, v := range currentOverrides().Vendors {
 		table[k] = v
 	}

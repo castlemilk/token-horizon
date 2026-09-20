@@ -1,4 +1,5 @@
 import Foundation
+import TokenHorizonCore
 
 enum ModelsPipeline {
     struct TopPickModel: Identifiable, Equatable {
@@ -208,7 +209,21 @@ enum ModelsPipeline {
             }
         }
 
-        let base = Array(rowMap.values)
+        var base = Array(rowMap.values)
+
+        // Measured rates for local rows come from the generic inference
+        // telemetry store (populated by request meters) — never from probing.
+        for i in base.indices where base[i].isLocal {
+            var u = base[i].usage
+            if u.tokPerSec == nil || u.promptTokPerSec == nil {
+                let key = u.localModelName ?? u.model
+                if let sample = InferenceTelemetryStore.shared.latest(for: key) {
+                    if u.tokPerSec == nil { u.tokPerSec = sample.tokPerSec }
+                    if u.promptTokPerSec == nil { u.promptTokPerSec = sample.promptTokPerSec }
+                }
+            }
+            base[i] = ModelRow(usage: u, catalog: base[i].catalog, hostCount: base[i].hostCount)
+        }
 
         // Single combined scope+search pass (was two filter passes with an
         // intermediate array). Scope predicate first (cheap bool checks),

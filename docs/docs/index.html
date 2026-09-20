@@ -56,7 +56,7 @@
     <p>Homebrew:</p>
     <pre><code>brew tap castlemilk/tap
 brew install --cask token-horizon</code></pre>
-    <p>Releases are Developer ID signed and Apple-notarized (Gatekeeper reports <code>source=Notarized Developer ID</code>). Local builds via <code>./scripts/make-app.sh</code> are ad-hoc signed.</p>
+    <p>Releases are Developer ID signed and Apple-notarized (Gatekeeper reports <code>source=Notarized Developer ID</code>). Local builds via <code>./scripts/app/make-app.sh</code> are ad-hoc signed.</p>
 
     <h2 id="panel">The panel</h2>
     <p>Hover the notch (or click the menu-bar rings) to open the panel. Tabs:</p>
@@ -71,7 +71,7 @@ brew install --cask token-horizon</code></pre>
     </table>
 
     <h2 id="widget">Desktop widget</h2>
-    <p>The app ships a native WidgetKit extension (macOS 14+), embedded at build time by <code>scripts/make-widget.sh</code>. Add it from the desktop's <strong>Edit Widgets</strong> gallery in small, medium or large. It has a 3-page carousel — usage, plan limits, plans &amp; resets — and a segmented time-window picker <strong>h · d · w · m · y</strong> (24 hourly bars, 7 daily, 17 weekly, 30 daily, 12 monthly). The GitHub-style activity heatmap always matches the selected window, and the plans page spotlights what expires soonest with urgency colors (&lt;24h red, &lt;48h orange). Configure it in <code>Settings → Desktop widget</code> (enable, period, accent, show cost/limits/chart) with a live preview; every control writes the same app-owned preference the widget reads, so preview, widget and app never disagree. The extension consumes the versioned snapshot at <code>GET /widget</code> and falls back to its last cached copy when the app is down.</p>
+    <p>The app ships a native WidgetKit extension (macOS 14+), embedded at build time by <code>scripts/app/make-widget.sh</code>. Add it from the desktop's <strong>Edit Widgets</strong> gallery in small, medium or large. It has a 3-page carousel — usage, plan limits, plans &amp; resets — and a segmented time-window picker <strong>h · d · w · m · y</strong> (24 hourly bars, 7 daily, 17 weekly, 30 daily, 12 monthly). The GitHub-style activity heatmap always matches the selected window, and the plans page spotlights what expires soonest with urgency colors (&lt;24h red, &lt;48h orange). Configure it in <code>Settings → Desktop widget</code> (enable, period, accent, show cost/limits/chart) with a live preview; every control writes the same app-owned preference the widget reads, so preview, widget and app never disagree. The extension consumes the versioned snapshot at <code>GET /widget</code> and falls back to its last cached copy when the app is down.</p>
 
     <h2 id="usage">Usage tracking</h2>
     <p>Parsers read the tools' own session data on your machine:</p>
@@ -135,9 +135,9 @@ brew install --cask token-horizon</code></pre>
     <p>Hosted edge API on <code>https://token-horizon.dev</code>: <code>/api/leaderboard</code>, <code>/api/user/:handle</code>, <code>/api/providers</code>, <code>/api/teams</code>, <code>/api/season</code>, <code>/api/models/catalog</code>, <code>/api/models/usage</code>, <code>/api/config</code>, <code>/api/health</code>, <code>/api/share</code> (SVG badges).</p>
 
     <h2 id="mcp">MCP server</h2>
-    <p>Two MCP servers ship in <code>mcp/</code>:</p>
+    <p>Two MCP servers ship in <code>clients/mcp/</code>:</p>
     <ul>
-      <li><code>mcp/token-horizon-mcp.mjs</code> — zero-dependency stdio server for the local daemon and hosted APIs. Installed to <code>~/.config/token-horizon/mcp/</code> by <code>install.sh</code>.</li>
+      <li><code>clients/mcp/token-horizon-mcp.mjs</code> — zero-dependency stdio server for the local daemon and hosted APIs. Installed to <code>~/.config/token-horizon/mcp/</code> by <code>install.sh</code>.</li>
       <li><code>mcp/src/index.js</code> — SDK-based server for the hosted leaderboard.</li>
     </ul>
     <p>Catalog tools (both servers): <code>search_models</code> (<code>token_horizon_catalog</code> in the standalone server) and <code>get_plans</code> (<code>token_horizon_plans</code>). They search the unified catalog with pricing evidence, benchmark scores, context windows and plan linkage, and return plan tiers with included models. Local daemon first, hosted catalog fallback; set <code>TH_CATALOG_URL</code> to pin a source.</p>
@@ -170,7 +170,7 @@ th reset-cache     # clear and rebuild the durable cache</code></pre>
     <h2 id="troubleshooting">Troubleshooting</h2>
     <table>
       <tr><th>Symptom</th><th>Fix</th></tr>
-      <tr><td>Model list looks stale / commit mismatch</td><td><code>curl -s localhost:8765/health</code> and compare <code>build.commit</code> with <code>git rev-parse --short HEAD</code>. Rebuild with <code>./scripts/make-app.sh</code>.</td></tr>
+      <tr><td>Model list looks stale / commit mismatch</td><td><code>curl -s localhost:8765/health</code> and compare <code>build.commit</code> with <code>git rev-parse --short HEAD</code>. Rebuild with <code>./scripts/app/make-app.sh</code>.</td></tr>
       <tr><td>API missing on :8765</td><td>Check the LaunchAgent: <code>/Applications/TokenHorizon.app/Contents/MacOS/TokenHorizon --agent-status</code>. The app never runs API-less — a bind failure exits loudly.</td></tr>
       <tr><td><code>llm_gateway_port</code> null</td><td>Rebuild via <code>make-app.sh</code>; the gateway sidecar is bundled and health-gated at launch.</td></tr>
       <tr><td>Provider limits silently missing</td><td>Credentials expired — re-auth with the provider (opencode keys rotate, Claude reads stored tokens, Alibaba needs a fresh cookie).</td></tr>
@@ -180,13 +180,30 @@ th reset-cache     # clear and rebuild the durable cache</code></pre>
 </div>
 
 <footer class="footer">
-  <a class="brand" href="../"><img src="../assets/icon.png" alt="" /><span>Token Horizon</span></a>
-  <p>Native observability for the AI-powered Mac.</p>
-  <div class="footer-links">
-    <a href="../docs/">Docs</a>
-    <a href="../blog/">Blog</a>
-    <a href="https://github.com/castlemilk/token-horizon">GitHub</a>
-    <a href="https://github.com/castlemilk/token-horizon/releases">Releases</a>
+  <div class="footer-grid">
+    <div class="footer-brand">
+      <a class="brand" href="../"><img src="../assets/icon.png" alt="" /><span>Token Horizon</span></a>
+      <p class="footer-copy">Native observability for the AI-powered Mac.</p>
+      <p class="footer-legal">© 2026 Token Horizon.</p>
+      <div class="footer-policies">
+        <a href="../terms.html">Terms</a><span>·</span>
+        <a href="../privacy.html">Privacy Policy</a><span>·</span>
+        <a href="../eula.html">EULA</a>
+      </div>
+    </div>
+    <div class="footer-col">
+      <span class="footer-head">Product</span>
+      <a href="../leaderboard.html">Leaderboard</a>
+      <a href="../models/">Models</a>
+      <a href="../docs/">Docs</a>
+      <a href="../blog/">Blog</a>
+    </div>
+    <div class="footer-col">
+      <span class="footer-head">Company</span>
+      <a href="https://github.com/castlemilk/token-horizon">GitHub</a>
+      <a href="https://github.com/castlemilk/token-horizon/releases">Releases</a>
+      <a href="https://github.com/castlemilk/token-horizon/issues">Issues</a>
+    </div>
   </div>
 </footer>
 <script src="../app.js"></script>
