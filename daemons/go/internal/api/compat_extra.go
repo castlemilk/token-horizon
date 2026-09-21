@@ -37,7 +37,7 @@ func (a *apiServer) compatRoutes2(mux *http.ServeMux) {
 	mux.HandleFunc("GET /top-picks", a.compatTopPicks)
 	mux.HandleFunc("GET /models/top-picks", a.compatTopPicks)
 	mux.HandleFunc("GET /local", a.compatLocal)
-	mux.HandleFunc("GET /leaderboard", a.compatLeaderboard)
+	mux.HandleFunc("GET /leaderboard", a.compatLeaderboardPeers)
 	mux.HandleFunc("GET /achievements", a.compatAchievements)
 }
 
@@ -296,52 +296,6 @@ func (a *apiServer) compatLocal(w http.ResponseWriter, r *http.Request) {
 }
 
 // ---- leaderboard / achievements ----------------------------------------
-
-// GET /leaderboard?period= — local-only ranking: the Go daemon has no peer
-// store (LeaderboardStore wasn't ported); emits this machine's row ranked 1.
-func (a *apiServer) compatLeaderboard(w http.ResponseWriter, r *http.Request) {
-	period := r.URL.Query().Get("period")
-	now := time.Now().Unix()
-	var from int64
-	switch period {
-	case "today":
-		from = todayStart()
-	case "week", "7d":
-		from = now - 7*86400
-	case "streak":
-		from = now - 370*86400
-	}
-	rows, _ := a.store.Summary(store.Filter{From: from})
-	r7d, _ := a.store.Summary(store.Filter{From: now - 7*86400})
-	rToday, _ := a.store.Summary(store.Filter{From: todayStart()})
-	rAll, _ := a.store.Summary(store.Filter{})
-
-	score := sumRows(rows).tokens()
-	entry := map[string]any{
-		"id": "local", "handle": compatHandle(), "team": "",
-		"tokensToday": sumRows(rToday).tokens(), "tokens7d": sumRows(r7d).tokens(),
-		"tokensAll": sumRows(rAll).tokens(),
-		"costToday": sumRows(rToday).cost, "cost7d": sumRows(r7d).cost,
-		"costAll":    sumRows(rAll).cost,
-		"streakDays": a.compatStreak(), "topModel": topModel(rows),
-		"hardware": platform.MachineAlias(), "isLocal": true,
-		"updatedAt": now, "mmr": 0, "league": "", "division": 0,
-		"efficiency": 0, "requestsToday": sumRows(rToday).requests,
-		"requestsAll": sumRows(rAll).requests,
-	}
-	ranked := map[string]any{
-		"rank": 1, "badge": "🥇", "percentile": 100, "entry": entry,
-		"score": score, "scoreFormatted": fmtTokens(score),
-		"costFormatted":   fmt.Sprintf("$%.2f", sumRows(rows).cost),
-		"relativePercent": 100, "league": "", "division": 0, "mmr": 0,
-		"efficiency": 0, "avgPerRequest": 0, "trend": []any{},
-	}
-	titles := map[string]string{"today": "Today", "week": "Last 7 Days", "7d": "Last 7 Days", "all": "All Time", "streak": "Streak"}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"period": period, "periodTitle": titles[period], "total": 1,
-		"team": "", "userRank": ranked, "leaderboard": []any{ranked},
-	})
-}
 
 func compatHandle() string {
 	if id := platform.LoadCloudIdentity(); id != nil && id.Handle != "" {
