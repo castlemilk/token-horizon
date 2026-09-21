@@ -32,7 +32,7 @@ Token Horizon auto-discovers newly released models and pricing through four inte
 3. **Session Usage Auto-Ingestion**:
    - Any model actively used in OpenCode sqlite databases (`message.data`), Claude Code credentials, or Codex logs is automatically parsed, registered, and attributed.
 
-4. **Curated Ground-Truth Benchmarks (`Resources/benchmarks.json`)**:
+4. **Curated Ground-Truth Benchmarks (`clients/macos/Resources/benchmarks.json`)**:
    - Verified SWE-bench Verified %, LiveCodeBench %, AIME 2024, and GPQA Diamond scores mapped by regex/normalized key.
 
 ---

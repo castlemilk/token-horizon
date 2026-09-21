@@ -51,7 +51,7 @@ tasks:
   test-catalog:
     desc: Fast catalog/discovery slice — lookup, synthesis, ingestion, canonical identity
     cmds:
-      - swift test --filter "Catalog|CanonicalIdentity|ModelDiscovery"
+      - cd clients/macos && swift test --filter "Catalog|CanonicalIdentity|ModelDiscovery"
 
   test-perf:
     desc: Budget-gated perf regression guard (Models tab pipeline + scope counts)
@@ -70,7 +70,7 @@ tasks:
   test-integration:
     desc: Loopback integration tests (Ollama proxy relay round-trips, no creds needed)
     cmds:
-      - swift test --filter "OllamaProxyIntegrationTests"
+      - cd clients/macos && swift test --filter "OllamaProxyIntegrationTests"
 
   test-race:
     desc: Thread-sanitized suite — run before merging concurrency-adjacent changes
@@ -179,4 +179,4 @@ tasks:
   clean:
     desc: Wipe SwiftPM build artifacts (use after toolchain switches or weird failures)
     cmds:
-      - swift package clean
+      - cd clients/macos && swift package clean

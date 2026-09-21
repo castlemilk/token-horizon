@@ -5,7 +5,7 @@
 # Add to CI / pre-commit to catch regressions.
 
 set -euo pipefail
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/../clients/macos"
 
 # Budgets (milliseconds). Keep in sync with comments in ModelsPipelinePerfTests.swift.
 FULL_PIPELINE_BUDGET_MS=400

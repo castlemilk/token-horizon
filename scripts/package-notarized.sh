@@ -119,7 +119,7 @@ fi
 
 # 5. Checksums + debug symbols.
 (cd "$OUTPUT_DIR" && shasum -a 256 "${APP_NAME}-${VERSION}.zip" "${APP_NAME}-${VERSION}.dmg" > "${APP_NAME}-${VERSION}.sha256")
-for cand in .build/*/release/"${APP_NAME}".dSYM; do
+for cand in clients/macos/.build/*/release/"${APP_NAME}".dSYM; do
     [ -d "$cand" ] && cp -R "$cand" "$OUTPUT_DIR/"
 done
 

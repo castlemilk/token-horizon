@@ -16,13 +16,13 @@ cd "$ROOT"
 
 OUT="${OUT:-docs/data/models.json}"
 REFRESH="${REFRESH:-1}"
-BIN="${TH_BIN:-.build/release/TokenHorizon}"
+BIN="${TH_BIN:-clients/macos/.build/release/TokenHorizon}"
 
 if [[ "${TH_NO_BUILD:-0}" != "1" ]]; then
   # Incremental; ensures the binary actually contains --export-model-catalog
   # (a stale .build/release/TokenHorizon launched the GUI and crashed headless).
   echo "==> building release binary ($BIN)"
-  swift build -c release --product TokenHorizon
+  (cd clients/macos && swift build -c release --product TokenHorizon)
 fi
 
 if [[ ! -x "$BIN" ]]; then

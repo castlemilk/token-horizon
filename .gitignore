@@ -18,7 +18,8 @@ video/dist/
 
 # JS subprojects (deps via npm ci, build output regenerated — never commit)
 node_modules/
-ui/out/
+clients/app/out/
+clients/app/dist/
 
 # Wrangler local state/cache (Cloudflare deploy artifacts)
 cloudflare/.wrangler/

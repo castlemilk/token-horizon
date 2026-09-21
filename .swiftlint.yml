@@ -12,6 +12,8 @@
 excluded:
   - .build
   - .swiftpm
+  - clients/macos/.build
+  - clients/macos/.swiftpm
   - TokenHorizon.app
   - dist
 

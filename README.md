@@ -102,7 +102,7 @@ History is intentionally an in-memory rolling window:
 
 OTLP/HTTP metrics export is disabled by default. Set `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` to an explicit metrics endpoint, or set `OTEL_EXPORTER_OTLP_ENDPOINT` to a base endpoint (Token Horizon appends `/v1/metrics`). The export interval is 60 seconds. Prometheus remains local and does not require an external collector.
 
-Regression coverage is in `Tests/TokenHorizonPerfTests/SystemHistoryTests.swift` and `ProcessMetricsTests.swift`. Run `swift test --filter SystemHistoryTests` for the history/I/O checks or `swift test` for the complete suite.
+Regression coverage is in `clients/macos/Tests/TokenHorizonPerfTests/SystemHistoryTests.swift` and `ProcessMetricsTests.swift`. Run `swift test --filter SystemHistoryTests` for the history/I/O checks or `swift test` for the complete suite.
 
 ## Build & run
 
@@ -118,7 +118,7 @@ inherited. The app writes its launch log to
 
 The local script uses an ad-hoc signature for development; published releases are Developer ID signed and Apple-notarized (`scripts/package-notarized.sh`, wired into the release workflow); see `docs/notarized-release.md`. This build intentionally is not App Sandbox-compatible because it reads local AI tool data and observes system processes.
 
-- Icon: `scripts/make-icon.swift` → `Resources/AppIcon.icns` (black hole, CoreGraphics)
+- Icon: `scripts/make-icon.swift` → `clients/macos/Resources/AppIcon.icns` (black hole, CoreGraphics)
 - Settings: `~/.config/token-horizon/settings.json` (0600) — alibaba cookie lives here
 - Shell hook: `shell/token-horizon.zsh` (sourced from `~/.zshrc`) — posts cwd/duration/exit per command; `th` CLI (`th /stats`, `th /limits`, …)
 
@@ -155,7 +155,7 @@ The local script uses an ad-hoc signature for development; published releases ar
 
 Token Horizon includes a built-in team and cross-account leaderboard system with two collaborative backend options: **Cloudflare Edge + R2** (ultra-fast, <25ms) and **Google Spreadsheets** (zero-infrastructure, ~1-3s).
 
-The edge-hosted **Token Horizon** dashboard (`docs/leaderboard.html`) ships eight real-data views — Dashboard deep-dive, Leaderboard (league ladder + MMR + Top Movers/Most Improved), Player Profile (usage/costs, prompts, projects, comparisons, achievements), Teams, Models (provider breakdown), Billing, Leagues & Season Progression, and Sharing & Access Control — plus the Share Usage Report modal and public `/s/<id>` report links. Prompt history is visible only inside the individual profile (opt-in per owner, `leaderboardSharePrompts`); there is no public cross-user prompts surface. Usage-over-time charts are stacked bars by model with a structured tooltip (vendored [TanStack Charts](https://tanstack.com/charts), rebuilt via `npm run vendor`); provider brand marks match the app's model list, and every player gets an avatar — Google photo, uploaded image, or a deterministic generated style (vendored [DiceBear](https://dicebear.com)). League/MMR/season/efficiency/achievement math lives in `Sources/TokenHorizon/Leaderboard/LeaderboardAnalytics.swift` and is mirrored by the worker; rank history comes from bounded daily snapshots appended on each publish (movers and league progression stay empty until ≥2 days of publishes exist). Screen-by-screen objective-vs-current alignment and the full data flow live in [`LEADERBOARD.md`](LEADERBOARD.md).
+The edge-hosted **Token Horizon** dashboard (`docs/leaderboard.html`) ships eight real-data views — Dashboard deep-dive, Leaderboard (league ladder + MMR + Top Movers/Most Improved), Player Profile (usage/costs, prompts, projects, comparisons, achievements), Teams, Models (provider breakdown), Billing, Leagues & Season Progression, and Sharing & Access Control — plus the Share Usage Report modal and public `/s/<id>` report links. Prompt history is visible only inside the individual profile (opt-in per owner, `leaderboardSharePrompts`); there is no public cross-user prompts surface. Usage-over-time charts are stacked bars by model with a structured tooltip (vendored [TanStack Charts](https://tanstack.com/charts), rebuilt via `npm run vendor`); provider brand marks match the app's model list, and every player gets an avatar — Google photo, uploaded image, or a deterministic generated style (vendored [DiceBear](https://dicebear.com)). League/MMR/season/efficiency/achievement math lives in `clients/macos/Sources/TokenHorizon/Leaderboard/LeaderboardAnalytics.swift` and is mirrored by the worker; rank history comes from bounded daily snapshots appended on each publish (movers and league progression stay empty until ≥2 days of publishes exist). Screen-by-screen objective-vs-current alignment and the full data flow live in [`LEADERBOARD.md`](LEADERBOARD.md).
 
 ### Backend Comparison
 
