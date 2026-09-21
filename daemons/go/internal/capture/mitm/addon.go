@@ -18,7 +18,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/castlemilk/token-horizon/daemons/go/internal/meter"
+	"github.com/castlemilk/token-horizon/daemons/go/internal/capture/meter"
 )
 
 // Source: the full addon Python source with the UA table interpolated.

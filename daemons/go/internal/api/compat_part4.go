@@ -16,7 +16,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/castlemilk/token-horizon/daemons/go/internal/files"
+	"github.com/castlemilk/token-horizon/daemons/go/internal/capture/files"
 	"github.com/castlemilk/token-horizon/daemons/go/internal/store"
 )
 

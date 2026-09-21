@@ -11,13 +11,14 @@ import (
 	"log"
 	"time"
 
-	"github.com/castlemilk/token-horizon/daemons/go/internal/files"
-	"github.com/castlemilk/token-horizon/daemons/go/internal/limits"
-	"github.com/castlemilk/token-horizon/daemons/go/internal/meter"
-	"github.com/castlemilk/token-horizon/daemons/go/internal/mitm"
-	rtpkg "github.com/castlemilk/token-horizon/daemons/go/internal/runtime"
-	"github.com/castlemilk/token-horizon/daemons/go/internal/service"
-	"github.com/castlemilk/token-horizon/daemons/go/internal/system"
+	"github.com/castlemilk/token-horizon/daemons/go/internal/capture/files"
+	"github.com/castlemilk/token-horizon/daemons/go/internal/capture/meter"
+	"github.com/castlemilk/token-horizon/daemons/go/internal/capture/mitm"
+	rtpkg "github.com/castlemilk/token-horizon/daemons/go/internal/capture/runtime"
+	"github.com/castlemilk/token-horizon/daemons/go/internal/platform/service"
+	"github.com/castlemilk/token-horizon/daemons/go/internal/platform/system"
+	"github.com/castlemilk/token-horizon/daemons/go/internal/providers/limits"
+	"github.com/castlemilk/token-horizon/daemons/go/internal/providers/limits/vendors"
 )
 
 func main() {
@@ -37,7 +38,7 @@ func main() {
 
 	// Quota engines: refresh every 60s (matches LimitsEngine maxAge), rows
 	// recorded into the store's limit timeline on every refresh.
-	plan := limits.NewPlan(limits.DefaultAdapters())
+	plan := vendors.NewPlan(vendors.DefaultAdapters())
 	engine := limits.NewEngine(daemon.Store)
 	daemon.LimitsRows = func() any { return engine.Cached() }
 	daemon.LimitsRefresh = func() { engine.RefreshNow(plan.FetchAll) }

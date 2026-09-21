@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/castlemilk/token-horizon/daemons/go/internal/catalog"
+	"github.com/castlemilk/token-horizon/daemons/go/internal/providers/catalog"
 )
 
 // uaTable: UA-substring → product, matched in order (specific needles first).

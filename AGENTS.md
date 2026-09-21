@@ -35,7 +35,13 @@ clients/crossplatform/           # React+Vite port of the macOS dashboard tabs o
                                  # browser-first, Electron-wrappable
 daemons/go/                      # the Go daemon (github.com/castlemilk/token-horizon/daemons/go):
                                  # metered-relay usage capture + usage.db + limits + cloudsync
-                                 # outbox — the :8765-compatible headless core, Linux/macOS/Windows
+                                 # outbox — the :8765-compatible headless core, Linux/macOS/Windows.
+                                 # internal/platform/ (config/paths, keychain, system per-OS stats,
+                                 # service autostart) — internal/capture/ (meter relays + wire
+                                 # formats, mitm, files backfill/consolidators, runtime monitor+ledger)
+                                 # — internal/providers/ (auth chains, limits + per-vendor adapter
+                                 # files, catalog + benchmarks) — plus store/ usage/ cloudsync/
+                                 # telemetry/ api/
 ```
 mcp/token-horizon-mcp.mjs   zero-dep stdio MCP server (talks to :8765, sqlite fallback for usage/sessions)
 shell/token-horizon.zsh     zsh preexec/precmd hooks + `th` CLI (stats, limits, history, cache, reset-cache)

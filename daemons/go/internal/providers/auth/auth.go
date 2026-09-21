@@ -7,6 +7,7 @@ package auth
 import (
 	"encoding/base64"
 	"encoding/json"
+	"github.com/castlemilk/token-horizon/daemons/go/internal/platform/keychain"
 	"os"
 	"path/filepath"
 	"strings"
@@ -245,7 +246,7 @@ func KeychainBase64JSON(service, account string, keyPaths ...string) Source {
 }
 
 func (s keychainSource) Resolve() string {
-	secret := keychainRead(s.service, s.account)
+	secret := keychain.Read(s.service, s.account)
 	if secret == "" {
 		return ""
 	}

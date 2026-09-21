@@ -12,8 +12,8 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/castlemilk/token-horizon/daemons/go/internal/platform/system"
 	"github.com/castlemilk/token-horizon/daemons/go/internal/store"
-	"github.com/castlemilk/token-horizon/daemons/go/internal/system"
 )
 
 // dayEpoch mirrors the Swift convention: integer days since epoch (ts/86400).

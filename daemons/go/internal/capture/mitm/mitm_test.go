@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/castlemilk/token-horizon/daemons/go/internal/meter"
+	"github.com/castlemilk/token-horizon/daemons/go/internal/capture/meter"
 )
 
 func TestAddonUATableAgreesWithMeter(t *testing.T) {

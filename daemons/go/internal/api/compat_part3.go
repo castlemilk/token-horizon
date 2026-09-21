@@ -20,10 +20,10 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/castlemilk/token-horizon/daemons/go/internal/catalog"
 	"github.com/castlemilk/token-horizon/daemons/go/internal/platform"
+	"github.com/castlemilk/token-horizon/daemons/go/internal/platform/system"
+	"github.com/castlemilk/token-horizon/daemons/go/internal/providers/catalog"
 	"github.com/castlemilk/token-horizon/daemons/go/internal/store"
-	"github.com/castlemilk/token-horizon/daemons/go/internal/system"
 )
 
 func (a *apiServer) compatRoutes3(mux *http.ServeMux) {

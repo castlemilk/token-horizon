@@ -19,11 +19,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/castlemilk/token-horizon/daemons/go/internal/catalog"
+	rtpkg "github.com/castlemilk/token-horizon/daemons/go/internal/capture/runtime"
 	"github.com/castlemilk/token-horizon/daemons/go/internal/platform"
-	rtpkg "github.com/castlemilk/token-horizon/daemons/go/internal/runtime"
+	"github.com/castlemilk/token-horizon/daemons/go/internal/platform/system"
+	"github.com/castlemilk/token-horizon/daemons/go/internal/providers/catalog"
 	"github.com/castlemilk/token-horizon/daemons/go/internal/store"
-	"github.com/castlemilk/token-horizon/daemons/go/internal/system"
 )
 
 func (a *apiServer) compatRoutes2(mux *http.ServeMux) {

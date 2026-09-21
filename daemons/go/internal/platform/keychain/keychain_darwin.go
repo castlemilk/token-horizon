@@ -1,6 +1,6 @@
 //go:build darwin
 
-package auth
+package keychain
 
 // macOS Keychain read via the security(1) CLI (no cgo). Linux/Windows stub
 // in keychain_stub.go returns "".
@@ -10,7 +10,7 @@ import (
 	"strings"
 )
 
-func keychainRead(service, account string) string {
+func Read(service, account string) string {
 	args := []string{"find-generic-password", "-s", service, "-w"}
 	if account != "" {
 		args = append(args, "-a", account)

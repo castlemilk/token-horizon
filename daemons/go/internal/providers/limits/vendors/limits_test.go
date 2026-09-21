@@ -1,4 +1,4 @@
-package limits
+package vendors
 
 // Port-fidelity tests for the quota layer: payload parsers (kimi fallback
 // synthesis, codex wham windows, zhipu labels, minimax inversion), the Plan
@@ -13,7 +13,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/castlemilk/token-horizon/daemons/go/internal/auth"
+	"github.com/castlemilk/token-horizon/daemons/go/internal/providers/auth"
+	"github.com/castlemilk/token-horizon/daemons/go/internal/providers/limits"
 )
 
 func TestKimiRowsFromUsagesPayload(t *testing.T) {
@@ -114,8 +115,8 @@ func TestCodexWindows(t *testing.T) {
 
 func TestPlanLastGoodRetention(t *testing.T) {
 	t.Setenv("TH_CONFIG_DIR", t.TempDir())
-	fake := &fakeAdapter{provider: "fake", rows: []Limit{Clamped("fake", "5h", 10, nil, "", "")}, creds: true}
-	plan := NewPlan([]Adapter{fake})
+	fake := &fakeAdapter{provider: "fake", rows: []limits.Limit{limits.Clamped("fake", "5h", 10, nil, "", "")}, creds: true}
+	plan := NewPlan([]limits.Adapter{fake})
 	plan.LastGoodGrace = time.Minute
 
 	rows := plan.FetchAll()
@@ -145,13 +146,13 @@ func TestPlanLastGoodRetention(t *testing.T) {
 
 type fakeAdapter struct {
 	provider string
-	rows     []Limit
+	rows     []limits.Limit
 	creds    bool
 }
 
-func (f *fakeAdapter) Provider() string     { return f.provider }
-func (f *fakeAdapter) Fetch() []Limit       { return f.rows }
-func (f *fakeAdapter) HasCredentials() bool { return f.creds }
+func (f *fakeAdapter) Provider() string      { return f.provider }
+func (f *fakeAdapter) Fetch() []limits.Limit { return f.rows }
+func (f *fakeAdapter) HasCredentials() bool  { return f.creds }
 
 func TestClaudeFetchWindows(t *testing.T) {
 	t.Setenv("TH_CONFIG_DIR", t.TempDir())
@@ -172,12 +173,12 @@ func TestClaudeFetchWindows(t *testing.T) {
 	// hits the fixed API URL — that URL is the contract under test).
 	req, _ := http.NewRequest(http.MethodGet, up.URL, nil)
 	req.Header.Set("anthropic-beta", "oauth-2025-04-20")
-	obj := PerformJSON(req, "claude")
+	obj := limits.PerformJSON(req, "claude")
 	if obj == nil {
 		t.Fatal("stub fetch failed")
 	}
 	// fetchWindows hits the real API — test the payload mapping instead:
-	pct, _ := Number(obj["five_hour"].(map[string]any)["utilization"])
+	pct, _ := limits.Number(obj["five_hour"].(map[string]any)["utilization"])
 	if pct != 12.5 {
 		t.Fatalf("five_hour: %v", pct)
 	}
@@ -219,26 +220,26 @@ func TestAuthChainPrecedence(t *testing.T) {
 }
 
 func TestQuotaParsers(t *testing.T) {
-	if v, ok := FlexibleNumber("1.5M"); !ok || v != 1_500_000 {
+	if v, ok := limits.FlexibleNumber("1.5M"); !ok || v != 1_500_000 {
 		t.Fatalf("flexible: %v", v)
 	}
-	if v, ok := FlexibleNumber("200k"); !ok || v != 200_000 {
+	if v, ok := limits.FlexibleNumber("200k"); !ok || v != 200_000 {
 		t.Fatalf("flexible k: %v", v)
 	}
-	if _, ok := FlexibleNumber("n/a"); ok {
+	if _, ok := limits.FlexibleNumber("n/a"); ok {
 		t.Fatal("garbage must not parse")
 	}
-	if v, ok := Number("42.5"); !ok || v != 42.5 {
+	if v, ok := limits.Number("42.5"); !ok || v != 42.5 {
 		t.Fatal("string number")
 	}
 	// ms epochs (>1e12) divide to seconds.
-	if t1 := Epoch(1_789_700_000_000.0); t1 == nil || t1.Unix() != 1_789_700_000 {
+	if t1 := limits.Epoch(1_789_700_000_000.0); t1 == nil || t1.Unix() != 1_789_700_000 {
 		t.Fatalf("ms epoch: %v", t1)
 	}
-	if t2 := Epoch(1_789_700_000.0); t2 == nil || t2.Unix() != 1_789_700_000 {
+	if t2 := limits.Epoch(1_789_700_000.0); t2 == nil || t2.Unix() != 1_789_700_000 {
 		t.Fatalf("s epoch: %v", t2)
 	}
-	if ParseISO("2026-09-19T18:00:00.123Z") == nil || ParseISO("2026-09-19T18:00:00Z") == nil {
+	if limits.ParseISO("2026-09-19T18:00:00.123Z") == nil || limits.ParseISO("2026-09-19T18:00:00Z") == nil {
 		t.Fatal("ISO with/without fractional seconds")
 	}
 }
@@ -255,8 +256,8 @@ func TestDeepSeekBalance(t *testing.T) {
 	defer up.Close()
 	t.Setenv("DEEPSEEK_API_KEY", "ds-key")
 	// Fetch hits the real URL — exercise via the stub manually to validate
-	// the payload mapping path (GetJSON + parse).
-	obj := GetJSON(up.URL, "ds-key", "deepseek")
+	// the payload mapping path (limits.GetJSON + parse).
+	obj := limits.GetJSON(up.URL, "ds-key", "deepseek")
 	if obj == nil || obj["is_available"] != true {
 		t.Fatal("balance payload")
 	}

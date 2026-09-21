@@ -1,7 +1,7 @@
 //go:build !darwin
 
-package auth
+package keychain
 
 // Keychain is macOS-only; other platforms resolve credentials from the
 // on-disk files the tools themselves write.
-func keychainRead(service, account string) string { return "" }
+func Read(service, account string) string { return "" }

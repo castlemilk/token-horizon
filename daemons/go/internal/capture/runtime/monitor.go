@@ -21,7 +21,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/castlemilk/token-horizon/daemons/go/internal/system"
+	"github.com/castlemilk/token-horizon/daemons/go/internal/platform/system"
 )
 
 // Spec describes one self-managed runtime (subclass fields flattened).

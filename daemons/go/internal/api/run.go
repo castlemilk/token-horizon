@@ -7,11 +7,11 @@ package api
 
 import (
 	"fmt"
+	rtpkg "github.com/castlemilk/token-horizon/daemons/go/internal/capture/runtime"
 	"github.com/castlemilk/token-horizon/daemons/go/internal/cloudsync"
 	"github.com/castlemilk/token-horizon/daemons/go/internal/platform"
-	rtpkg "github.com/castlemilk/token-horizon/daemons/go/internal/runtime"
+	"github.com/castlemilk/token-horizon/daemons/go/internal/platform/system"
 	"github.com/castlemilk/token-horizon/daemons/go/internal/store"
-	"github.com/castlemilk/token-horizon/daemons/go/internal/system"
 	"github.com/castlemilk/token-horizon/daemons/go/internal/telemetry"
 	"net/http"
 	"os"
