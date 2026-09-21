@@ -34,16 +34,11 @@ func (a *apiServer) compatRoutes3(mux *http.ServeMux) {
 	mux.HandleFunc("GET /cache/reset", a.compatCacheReset)
 	mux.HandleFunc("POST /ingest/ollama", a.compatOllamaIngest)
 
-	// Reads with no Go-side store yet — honest empty payloads.
-	mux.HandleFunc("GET /projects", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, 200, []any{})
-	})
-	mux.HandleFunc("GET /claude/accounts", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, 200, []any{})
-	})
-	mux.HandleFunc("GET /widget", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, 200, map[string]any{"version": 5, "generatedAt": time.Now().Unix()})
-	})
+	// Subsystem ports (compat_part4.go): project rollups, claude accounts,
+	// and the full WidgetSnapshot the WidgetKit extension consumes.
+	mux.HandleFunc("GET /projects", a.compatProjects)
+	mux.HandleFunc("GET /claude/accounts", a.compatClaudeAccounts)
+	mux.HandleFunc("GET /widget", a.compatWidget)
 
 	// Process control.
 	mux.HandleFunc("GET /process", a.compatProcessDetail)

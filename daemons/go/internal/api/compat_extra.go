@@ -9,6 +9,7 @@ package api
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -182,12 +183,29 @@ func (a *apiServer) compatCacheReset(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// GET /docker — no container observer in the Go daemon yet; honest empty.
+// GET /docker — container samples via the ported docker observer plus the
+// primary container-host process (dockerd / colima / VM) for the expander.
 func (a *apiServer) compatDocker(w http.ResponseWriter, r *http.Request) {
+	containers := system.DockerContainers()
+	var totalMem, totalCPU float64
+	for _, c := range containers {
+		totalMem += c.MemMB
+		totalCPU += c.CPU
+	}
+	var vmPid int32
+	var vmMem float64
+	if pid, ok := system.PrimaryDockerPid(system.AllProcesses()); ok {
+		vmPid = pid
+		for _, p := range system.AllProcesses() {
+			if p.PID == pid {
+				vmMem = p.MemMB
+			}
+		}
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"containers": []any{}, "count": 0,
-		"totalContainerMemMB": 0, "totalContainerCpu": 0,
-		"vmHostPid": 0, "vmHostMemMB": 0,
+		"containers": containers, "count": len(containers),
+		"totalContainerMemMB": totalMem, "totalContainerCpu": totalCPU,
+		"vmHostPid": vmPid, "vmHostMemMB": vmMem,
 	})
 }
 
@@ -230,6 +248,14 @@ func (a *apiServer) compatModels(w http.ResponseWriter, r *http.Request) {
 			"isFree":              free,
 			"cachePrice":          e.CacheReadPerM,
 		})
+		if b := catalog.BenchmarksFor(e.ID); b != nil {
+			if b.SWE != nil {
+				rows[len(rows)-1]["sweScore"] = *b.SWE
+			}
+			if b.LCB != nil {
+				rows[len(rows)-1]["lcbScore"] = *b.LCB
+			}
+		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"count": len(rows), "scope": scope, "models": rows})
 }
@@ -239,10 +265,14 @@ func (a *apiServer) compatModelsCatalog(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusOK, map[string]any{"count": len(catalog.All()), "models": catalog.All()})
 }
 
-// GET /top-picks — needs benchmark scores (SWE-bench/LCB) the Go catalog
-// doesn't carry; empty rather than fabricated.
+// GET /top-picks — curated value ranking over catalog + benchmarks.json
+// (computeTopPicks port; see internal/catalog/benchmarks.go).
 func (a *apiServer) compatTopPicks(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"topPicks": []any{}, "count": 0})
+	picks := catalog.TopPicks()
+	if picks == nil {
+		picks = []catalog.TopPick{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"topPicks": picks, "count": len(picks)})
 }
 
 // ---- local runtimes ----------------------------------------------------
@@ -355,17 +385,99 @@ func fmtTokens(n int64) string {
 	}
 }
 
-// GET /achievements — achievements are leaderboard-engine output; empty set.
+// GET /achievements — the LeaderboardAnalytics.achievements ruleset ported:
+// threshold badges over the metered store (requests, model diversity,
+// token milestones, streaks, efficiency, cache-hit rate). percentile is 100
+// for a local-only leaderboard (no peers loaded = rank 1 of 1).
 func (a *apiServer) compatAchievements(w http.ResponseWriter, r *http.Request) {
 	all, _ := a.store.Summary(store.Filter{})
+	var rollup struct {
+		input, output, cacheRead, requests int64
+	}
+	models := map[string]bool{}
+	for _, p := range all {
+		rollup.input += p.Tokens.Input
+		rollup.output += p.Tokens.Output
+		rollup.cacheRead += p.Tokens.CacheRead
+		rollup.requests += p.Requests
+		for _, m := range p.Models {
+			models[m.Model] = true
+		}
+	}
+	total := rollup.input + rollup.output + rollup.cacheRead
+	eff := efficiencyScore(rollup.input, rollup.output, rollup.cacheRead, total, 0)
+	cacheHit := 0.0
+	if rollup.cacheRead+rollup.input > 0 {
+		cacheHit = float64(rollup.cacheRead) / float64(rollup.cacheRead+rollup.input) * 100
+	}
+	tokensAll := total
+	// Reasoning + cacheWrite contribute to tokensAll in the metered ledger.
+	for _, p := range all {
+		tokensAll += p.Tokens.Reasoning + p.Tokens.CacheWrite
+	}
+	streak := a.compatStreak()
+	seasonTokens := tokensAll // local season = all-time until a season store lands
+
+	type ach struct {
+		id, title, detail, icon string
+		unlocked                bool
+	}
+	rules := []ach{
+		{"century", "Century Club", "100+ requests logged", "💬", rollup.requests >= 100},
+		{"prompt_master", "Prompt Master", "1,000+ requests logged", "🏆", rollup.requests >= 1000},
+		{"model_explorer", "Model Explorer", "Used 5+ different models", "🧭", len(models) >= 5},
+		{"ten_million", "10M Tokens", "Crossed 10M all-time tokens", "📚", tokensAll >= 10_000_000},
+		{"hundred_million", "100M Tokens", "Crossed 100M all-time tokens", "🌌", tokensAll >= 100_000_000},
+		{"efficiency_expert", "Efficiency Expert", "Efficiency score of 90+", "⚡", eff >= 90},
+		{"cost_conscious", "Cost Conscious", "60%+ prompt-cache hit rate", "🪙", cacheHit >= 60},
+		{"consistent_creator", "Consistent Creator", "7-day usage streak", "🔥", streak >= 7},
+		{"streak_master", "Streak Master", "30-day usage streak", "☄️", streak >= 30},
+		{"season_grinder", "Season Grinder", "1M+ tokens this season", "🚀", seasonTokens >= 1_000_000},
+		{"top_decile", "Top 10%", "Ranked in the global top 10%", "👑", false}, // needs peer data
+	}
+	unlocked := []map[string]any{}
+	for _, rule := range rules {
+		if rule.unlocked {
+			unlocked = append(unlocked, map[string]any{
+				"id": rule.id, "title": rule.title, "detail": rule.detail, "icon": rule.icon,
+			})
+		}
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"season": map[string]any{
 			"id": "local", "number": 1, "name": "", "displayName": "Local",
 			"daysRemaining": 0, "progress": 0,
 		},
-		"seasonTokens": sumRows(all).tokens(),
-		"achievements": []any{},
+		"seasonTokens": seasonTokens,
+		"achievements": unlocked,
 	})
+}
+
+// efficiencyScore ports LeaderboardAnalytics.efficiency:
+// 0.45·cacheHit + 0.35·outputRatio + 0.20·freeShare, scaled to 0-100.
+func efficiencyScore(input, output, cacheRead, total, freeTokens int64) float64 {
+	if total <= 0 {
+		return 0
+	}
+	cacheHit := float64(cacheRead) / float64(max64(1, cacheRead+input))
+	outputRatio := float64(output) / float64(max64(1, input+output))
+	freeShare := float64(freeTokens) / float64(max64(1, total))
+	score := 0.45*cacheHit + 0.35*outputRatio + 0.20*freeShare
+	v := math.Round(score*1000) / 10
+	if v > 100 {
+		return 100
+	}
+	if v < 0 {
+		return 0
+	}
+	return v
+}
+
+func max64(a, b int64) int64 {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 // ---- processes shape upgrade -------------------------------------------
