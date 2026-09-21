@@ -33,6 +33,9 @@ clients/app/                     # cross-platform client (Electron + React shell
 clients/crossplatform/           # React+Vite port of the macOS dashboard tabs over :8765
                                  # (Activity/Local/Tokens/Models/Shells/Leaderboard/Settings);
                                  # browser-first, Electron-wrappable
+daemons/go/                      # the Go daemon (github.com/castlemilk/token-horizon/daemons/go):
+                                 # metered-relay usage capture + usage.db + limits + cloudsync
+                                 # outbox — the :8765-compatible headless core, Linux/macOS/Windows
 ```
 mcp/token-horizon-mcp.mjs   zero-dep stdio MCP server (talks to :8765, sqlite fallback for usage/sessions)
 shell/token-horizon.zsh     zsh preexec/precmd hooks + `th` CLI (stats, limits, history, cache, reset-cache)

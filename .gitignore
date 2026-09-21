@@ -39,3 +39,6 @@ gateway/token-horizon-gateway
 
 # Rust engine build products
 engine/target/
+
+# Go daemon binary (built from daemons/go, never commit)
+daemons/go/token-horizon-daemon
