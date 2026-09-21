@@ -9,7 +9,10 @@ import (
 	"fmt"
 	"github.com/castlemilk/token-horizon/daemons/go/internal/cloudsync"
 	"github.com/castlemilk/token-horizon/daemons/go/internal/platform"
+	rtpkg "github.com/castlemilk/token-horizon/daemons/go/internal/runtime"
 	"github.com/castlemilk/token-horizon/daemons/go/internal/store"
+	"github.com/castlemilk/token-horizon/daemons/go/internal/system"
+	"github.com/castlemilk/token-horizon/daemons/go/internal/telemetry"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -112,6 +115,16 @@ func (d *Daemon) Run(port int, meters MeterRegistry) {
 		}
 	}()
 
+	// OTLP push exporter — off unless OTEL_EXPORTER_OTLP_* is set (same env
+	// contract as the Swift TelemetryMetrics). Cumulative counters need no
+	// queue: an offline collector just sees the next tick's totals.
+	if exp := telemetry.New(func() []telemetry.Metric {
+		return collectMetrics(d.Store, meters, d.RuntimesFn)
+	}); exp != nil {
+		exp.Start()
+		defer exp.Stop()
+	}
+
 	ln, actual, err := listen(port)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "token-horizon-daemon: no free loopback port in %d-%d\n", port, port+19)
@@ -122,4 +135,51 @@ func (d *Daemon) Run(port int, meters MeterRegistry) {
 		fmt.Fprintf(os.Stderr, "token-horizon-daemon: serve: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+// collectMetrics builds the OTLP set each push: usage event count,
+// per-meter seen/measured/errors, runtime tok/s gauges, system snapshot.
+func collectMetrics(st *store.Store, meters MeterRegistry, runtimesFn func() any) []telemetry.Metric {
+	var out []telemetry.Metric
+	if n, err := st.Count(); err == nil {
+		out = append(out, telemetry.Metric{Name: "token_horizon_usage_events_total", Value: float64(n), IsSum: true, Unit: "1"})
+	}
+	if meters != nil {
+		for _, m := range meters.Status() {
+			attrs := map[string]string{"vendor": m.Vendor}
+			out = append(out,
+				telemetry.Metric{Name: "token_horizon_meter_seen_total", Value: float64(m.Seen), IsSum: true, Unit: "1", Attrs: attrs},
+				telemetry.Metric{Name: "token_horizon_meter_measured_total", Value: float64(m.Measured), IsSum: true, Unit: "1", Attrs: attrs},
+				telemetry.Metric{Name: "token_horizon_meter_retry_suspects_total", Value: float64(m.RetrySuspects), IsSum: true, Unit: "1", Attrs: attrs})
+			for class, n := range m.Errors {
+				out = append(out, telemetry.Metric{
+					Name: "token_horizon_meter_errors_total", Value: float64(n), IsSum: true, Unit: "1",
+					Attrs: map[string]string{"vendor": m.Vendor, "class": class}})
+			}
+		}
+	}
+	if runtimesFn != nil {
+		if snaps, ok := runtimesFn().([]rtpkg.Snapshot); ok {
+			for _, s := range snaps {
+				attrs := map[string]string{"vendor": s.Vendor}
+				running := 0.0
+				if s.Running {
+					running = 1
+				}
+				out = append(out,
+					telemetry.Metric{Name: "token_horizon_runtime_active", Value: running, Unit: "1", Attrs: attrs},
+					telemetry.Metric{Name: "token_horizon_runtime_tokens_total", Value: float64(s.Usage.TokensAll), IsSum: true, Unit: "1", Attrs: attrs})
+				if s.TokPerSec != nil {
+					out = append(out, telemetry.Metric{Name: "token_horizon_runtime_tok_per_sec", Value: *s.TokPerSec, Unit: "1", Attrs: attrs})
+				}
+			}
+		}
+	}
+	snap := system.TakeSnapshot()
+	out = append(out,
+		telemetry.Metric{Name: "token_horizon_system_cpu_percent", Value: snap.CPUPercent, Unit: "1"},
+		telemetry.Metric{Name: "token_horizon_system_ram_used_bytes", Value: snap.RAMUsedGB * 1073741824, Unit: "By"},
+		telemetry.Metric{Name: "token_horizon_system_disk_bytes_per_sec", Value: snap.DiskMBps * 1048576, Unit: "By/s"},
+		telemetry.Metric{Name: "token_horizon_system_net_bytes_per_sec", Value: snap.NetMBps * 1048576, Unit: "By/s"})
+	return out
 }
