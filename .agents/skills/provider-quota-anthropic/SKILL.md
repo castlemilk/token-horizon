@@ -31,7 +31,8 @@ For each discovered profile directory:
      - For default `~/.claude`: service `"Claude Code-credentials"` (fallback: `"Claude Code-credentials-\(hash)"`)
      - For other profiles: service `"Claude Code-credentials-\(hash)"` (fallback: `"Claude Code-credentials"`)
    - Decodes JSON payload to extract `claudeAiOauth.accessToken` (or `oauth.accessToken`, `claudeOAuth.accessToken`).
-3. **Usage Tracking**:
+3. **Access Token Auto-Refresh** (`findAccessToken` → `OAuthRefresh`): access tokens live ~8h (`expires_in: 28800`); Claude Code normally only refreshes them on launch. When the stored `expiresAt` is inside a 5-minute window and a `refreshToken` exists, the engine POSTs JSON `{grant_type: "refresh_token", refresh_token, client_id: "9d1c250a-e61b-44d9-88ed-5944d1962f5e"}` to `https://platform.claude.com/v1/oauth/token` (fallback `https://console.anthropic.com/v1/oauth/token`) and writes the rotated credentials back into the same store — `security add-generic-password -U` for Keychain items (account = the item's `acct` attribute), atomic JSON write for `.credentials.json` (0600 preserved). The store is re-read before writing: a changed refresh token means the CLI rotated first, and its newer access token is adopted. Rejected refreshes (invalid_grant) throttle per config dir for 10 minutes.
+4. **Usage Tracking**:
    - Automatically scans `projects/` and `transcripts/` across all discovered profile directories.
    - Computes per-account token consumption and cost alongside overall combined totals.
 

@@ -15,7 +15,10 @@ This skill explains how Token Horizon retrieves live rate limits and token usage
 Token Horizon polls OpenAI's live backend quota and rolling rate-limit endpoint out-of-band:
 
 * **Endpoint**: `GET https://chatgpt.com/backend-api/wham/usage`
-* **Authentication Source**: `~/.local/share/opencode/auth.json` (key `"openai"`)
+* **Authentication Sources** (freshest expiry wins, `PlanLimitsEngine.openaiAuth`):
+  1. `$CODEX_HOME/auth.json` / `~/.codex/auth.json` — Codex CLI's own store (`tokens.access_token` / `refresh_token` / `account_id`; expiry from the JWT `exp` claim). Usually freshest since the CLI refreshes on every run.
+  2. opencode `auth.json` (`~/.local/share/opencode/auth.json`, key `"openai"`; `access` / `refresh` / `expires` ms epoch / `accountId`).
+* **Token Auto-Refresh** (`OAuthRefresh` + `ensureFreshOpenAIAuth`): when the access token is inside a 5-minute expiry window, the engine POSTs JSON `{grant_type: "refresh_token", refresh_token, client_id: "app_EMoamEEZ73f0CkXaXp7hrann"}` to `https://auth.openai.com/oauth/token` and writes the rotated tokens back into the same file (atomic write, 0600 preserved). The file is re-read before writing — if its refresh token changed, the CLI already rotated and its newer auth is adopted instead. Rejected refreshes throttle for 10 minutes. This keeps quota polling alive indefinitely without the user ever launching `codex`.
 * **Header Construction**:
   ```http
   Authorization: Bearer <access_token>

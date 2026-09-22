@@ -15,6 +15,15 @@ final class ClaudeDiscovery {
     private var backoffUntil: [String: Date] = [:]
     static let defaultThrottleBackoff: TimeInterval = 300 // 5 min
 
+    /// Per-config-dir OAuth refresh throttle: a dead refresh token
+    /// (invalid_grant) must not retry on every 30s poll.
+    private var lastRefreshAttempt: [String: Date] = [:]
+    static let refreshAttemptInterval: TimeInterval = 600
+
+    /// Test hook: when set, token-refresh POSTs go to these URLs instead of
+    /// the production Anthropic endpoints.
+    var tokenEndpointOverride: [URL]?
+
     /// Outcome of one live usage-API call: payload on 2xx, plus the raw
     /// status and any Retry-After so callers can back off per account.
     struct LiveUsageResult {
@@ -84,11 +93,31 @@ final class ClaudeDiscovery {
         return (nil, nil)
     }
 
-    func findAccessToken(for dir: String) -> String? {
+    /// Where a profile's OAuth blob lives — needed to write rotated tokens
+    /// back into the same store the CLI reads.
+    enum CredentialSource {
+        case credentialsFile(path: String, oauthKey: String)
+        case keychain(service: String, account: String, oauthKey: String)
+    }
+
+    struct ClaudeCredentials {
+        var accessToken: String
+        var refreshToken: String
+        var expiresAtMs: Double
+        var source: CredentialSource
+        var oauth: [String: Any]
+    }
+
+    /// Full OAuth material for a profile dir: `.credentials.json` first,
+    /// then the macOS Keychain services Claude Code uses. Returns the whole
+    /// `claudeAiOauth`-style blob (not just the token) so refresh write-back
+    /// can preserve sibling fields like `refreshTokenExpiresAt`/`scopes`.
+    func readCredentials(for dir: String) -> ClaudeCredentials? {
         let credFile = "\(dir)/.credentials.json"
         if let data = FileManager.default.contents(atPath: credFile),
-           let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-            if let token = extractToken(from: obj) { return token }
+           let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let (key, oauth) = Self.extractOAuth(from: obj) {
+            return Self.makeCredentials(oauth: oauth, source: .credentialsFile(path: credFile, oauthKey: key))
         }
 
         let hash = Self.sha256Prefix8(dir)
@@ -103,27 +132,158 @@ final class ClaudeDiscovery {
         for svc in services {
             if let text = runSecurityFindGenericPassword(service: svc),
                let data = text.data(using: .utf8),
-               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-                if let token = extractToken(from: obj) { return token }
+               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let (key, oauth) = Self.extractOAuth(from: obj) {
+                let account = Self.parseKeychainAccount(runSecurityItemAttributes(service: svc)) ?? NSUserName()
+                return Self.makeCredentials(oauth: oauth, source: .keychain(service: svc, account: account, oauthKey: key))
             }
         }
         return nil
     }
 
-    private func extractToken(from obj: [String: Any]) -> String? {
-        if let ai = obj["claudeAiOauth"] as? [String: Any],
-           let token = ai["accessToken"] as? String, !token.isEmpty {
-            return token
-        }
-        if let oauth = obj["oauth"] as? [String: Any],
-           let token = oauth["accessToken"] as? String, !token.isEmpty {
-            return token
-        }
-        if let co = obj["claudeOAuth"] as? [String: Any],
-           let token = co["accessToken"] as? String, !token.isEmpty {
-            return token
+    private static func makeCredentials(oauth: [String: Any], source: CredentialSource) -> ClaudeCredentials? {
+        guard let token = oauth["accessToken"] as? String, !token.isEmpty else { return nil }
+        return ClaudeCredentials(
+            accessToken: token,
+            refreshToken: oauth["refreshToken"] as? String ?? "",
+            expiresAtMs: (oauth["expiresAt"] as? NSNumber)?.doubleValue ?? 0,
+            source: source,
+            oauth: oauth)
+    }
+
+    /// First `claudeAiOauth`/`oauth`/`claudeOAuth` blob holding a non-empty
+    /// accessToken, with the top-level key it was found under.
+    static func extractOAuth(from obj: [String: Any]) -> (key: String, oauth: [String: Any])? {
+        for key in ["claudeAiOauth", "oauth", "claudeOAuth"] {
+            if let oauth = obj[key] as? [String: Any],
+               let token = oauth["accessToken"] as? String, !token.isEmpty {
+                return (key, oauth)
+            }
         }
         return nil
+    }
+
+    func findAccessToken(for dir: String) -> String? {
+        guard let creds = readCredentials(for: dir) else { return nil }
+        let expiry = creds.expiresAtMs > 0 ? Date(timeIntervalSince1970: creds.expiresAtMs / 1000) : nil
+        guard OAuthRefresh.needsRefresh(expiresAt: expiry), !creds.refreshToken.isEmpty else {
+            return creds.accessToken
+        }
+
+        lock.lock()
+        let throttled = Date().timeIntervalSince(lastRefreshAttempt[dir] ?? .distantPast) < Self.refreshAttemptInterval
+        if !throttled { lastRefreshAttempt[dir] = Date() }
+        lock.unlock()
+        if throttled { return creds.accessToken }
+
+        guard let tokens = OAuthRefresh.refresh(
+            urls: tokenEndpointOverride ?? OAuthRefresh.claudeTokenURLs,
+            refreshToken: creds.refreshToken,
+            clientID: OAuthRefresh.claudeClientID) else {
+            return creds.accessToken
+        }
+        return writeBackRefreshed(tokens, to: creds)
+    }
+
+    /// Persist rotated tokens into the same store the CLI reads. The store
+    /// is re-read first: if its refreshToken no longer matches the one we
+    /// sent, the CLI already rotated — writing ours would resurrect a dead
+    /// refresh token, so we adopt the store's current access token instead.
+    /// Returns the access token the caller should use.
+    func writeBackRefreshed(_ tokens: OAuthRefresh.RefreshedTokens, to creds: ClaudeCredentials) -> String {
+        var oauth = creds.oauth
+        oauth["accessToken"] = tokens.accessToken
+        oauth["refreshToken"] = tokens.refreshToken
+        oauth["expiresAt"] = tokens.expiresAt.timeIntervalSince1970 * 1000
+
+        switch creds.source {
+        case .credentialsFile(let path, let oauthKey):
+            guard let data = FileManager.default.contents(atPath: path),
+                  var root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let current = root[oauthKey] as? [String: Any] else { return tokens.accessToken }
+            guard (current["refreshToken"] as? String ?? "") == creds.refreshToken else {
+                return (current["accessToken"] as? String) ?? tokens.accessToken
+            }
+            root[oauthKey] = oauth
+            OAuthRefresh.writeJSONAtomically(root, to: path)
+            return tokens.accessToken
+        case .keychain(let service, let account, let oauthKey):
+            guard let text = runSecurityFindGenericPassword(service: service),
+                  let data = text.data(using: .utf8),
+                  var root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let current = root[oauthKey] as? [String: Any] else { return tokens.accessToken }
+            guard (current["refreshToken"] as? String ?? "") == creds.refreshToken else {
+                return (current["accessToken"] as? String) ?? tokens.accessToken
+            }
+            root[oauthKey] = oauth
+            guard let payload = try? JSONSerialization.data(withJSONObject: root),
+                  let secret = String(data: payload, encoding: .utf8) else { return tokens.accessToken }
+            _ = runSecurityAddGenericPassword(service: service, account: account, secret: secret)
+            // Keep a sibling `.credentials.json` consistent when it holds the
+            // same (now-dead) refresh token — Linux-mode installs read it.
+            syncStaleCredentialsFile(refreshToken: creds.refreshToken, oauth: oauth)
+            return tokens.accessToken
+        }
+    }
+
+    /// If a `.credentials.json` exists anywhere under the discovered profile
+    /// dirs carrying the same pre-rotation refresh token, patch it too so a
+    /// CLI that reads the file doesn't replay a dead grant.
+    private func syncStaleCredentialsFile(refreshToken: String, oauth: [String: Any]) {
+        for dir in Self.discoverDirectories() {
+            let path = "\(dir)/.credentials.json"
+            guard let data = FileManager.default.contents(atPath: path),
+                  var root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let (key, _) = Self.extractOAuth(from: root),
+                  let current = root[key] as? [String: Any],
+                  (current["refreshToken"] as? String ?? "") == refreshToken else { continue }
+            root[key] = oauth
+            OAuthRefresh.writeJSONAtomically(root, to: path)
+        }
+    }
+
+    /// `"acct"<blob>="benebsworth"` from `security find-generic-password`
+    /// attribute output; nil when unparseable (caller falls back to NSUserName).
+    static func parseKeychainAccount(_ attributes: String?) -> String? {
+        guard let attributes,
+              let range = attributes.range(of: "\"acct\"<blob>=\"") else { return nil }
+        let rest = attributes[range.upperBound...]
+        guard let close = rest.firstIndex(of: "\"") else { return nil }
+        let value = String(rest[..<close])
+        return value.isEmpty ? nil : value
+    }
+
+    private func runSecurityItemAttributes(service: String) -> String? {
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/usr/bin/security")
+        task.arguments = ["find-generic-password", "-s", service]
+        let stdoutPipe = Pipe()
+        task.standardOutput = stdoutPipe
+        task.standardError = Pipe()
+        do {
+            try task.run()
+            task.waitUntilExit()
+        } catch {
+            return nil
+        }
+        guard task.terminationStatus == 0 else { return nil }
+        let data = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
+        return String(data: data, encoding: .utf8)
+    }
+
+    private func runSecurityAddGenericPassword(service: String, account: String, secret: String) -> Bool {
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/usr/bin/security")
+        task.arguments = ["add-generic-password", "-U", "-s", service, "-a", account, "-w", secret]
+        task.standardOutput = Pipe()
+        task.standardError = Pipe()
+        do {
+            try task.run()
+            task.waitUntilExit()
+        } catch {
+            return false
+        }
+        return task.terminationStatus == 0
     }
 
     private func runSecurityFindGenericPassword(service: String) -> String? {

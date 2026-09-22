@@ -750,26 +750,161 @@ final class PlanLimitsEngine {
 
     // GET https://chatgpt.com/backend-api/wham/usage
     // Live OpenAI ChatGPT Pro/Plus/Codex rolling-window rate limits & usage quotas.
-    private static func openai() -> [ProviderLimit] {
-        guard let entry = authEntry(provider: "openai"),
-              let access = entry["access"] as? String, !access.isEmpty else { return [] }
 
-        var accountId = entry["accountId"] as? String ?? ""
-        if accountId.isEmpty {
-            let parts = access.split(separator: ".")
-            if parts.count >= 2 {
-                var payloadStr = String(parts[1])
-                let rem = payloadStr.count % 4
-                if rem > 0 { payloadStr += String(repeating: "=", count: 4 - rem) }
-                if let payloadData = Data(base64Encoded: payloadStr.replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/")),
-                   let claims = try? JSONSerialization.jsonObject(with: payloadData) as? [String: Any],
-                   let auth = claims["https://api.openai.com/auth"] as? [String: Any] {
-                    accountId = auth["chatgpt_account_id"] as? String ?? ""
-                }
-            }
+    /// OpenAI OAuth material sourced from `~/.codex/auth.json` (Codex CLI's
+    /// own store — it refreshes on every run, so usually the freshest) and
+    /// opencode's `auth.json` `openai` entry. Either may carry an expired
+    /// access token; `ensureFreshOpenAIAuth` renews it via the public
+    /// Codex OAuth client and writes rotated tokens back for the CLI.
+    struct OpenAIAuth {
+        enum Source: Equatable {
+            case codexFile(path: String)
+            case opencodeFile(path: String)
         }
+        var accessToken: String
+        var refreshToken: String
+        var expiresAt: Date?
+        var accountId: String
+        var source: Source
+    }
 
-        guard let url = URL(string: "https://chatgpt.com/backend-api/wham/usage") else { return [] }
+    private static var openAIRefreshLock = NSLock()
+    private static var openAILastRefresh: [String: Date] = [:]
+    static let openAIRefreshInterval: TimeInterval = 600
+
+    /// Codex CLI auth files: `$CODEX_HOME/auth.json` override, then the
+    /// `~/.codex` default.
+    static func codexAuthPaths() -> [String] {
+        var out: [String] = []
+        if let home = ProcessInfo.processInfo.environment["CODEX_HOME"]?
+            .trimmingCharacters(in: .whitespacesAndNewlines), !home.isEmpty {
+            out.append("\(HomeDiscovery.expand(home))/auth.json")
+        }
+        out.append(HomeDiscovery.expand("~/.codex/auth.json"))
+        return out
+    }
+
+    /// All usable OpenAI OAuth entries, freshest expiry first. Codex CLI's
+    /// file is preferred on ties since it self-refreshes on every run.
+    static func openaiAuth(codexPaths: [String]? = nil, opencodePaths: [String]? = nil) -> OpenAIAuth? {
+        var candidates: [OpenAIAuth] = []
+        for path in codexPaths ?? codexAuthPaths() {
+            guard let data = FileManager.default.contents(atPath: path),
+                  let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let tokens = root["tokens"] as? [String: Any],
+                  let access = tokens["access_token"] as? String, !access.isEmpty else { continue }
+            candidates.append(OpenAIAuth(
+                accessToken: access,
+                refreshToken: tokens["refresh_token"] as? String ?? "",
+                expiresAt: OAuthRefresh.jwtExpiry(access),
+                accountId: tokens["account_id"] as? String ?? "",
+                source: .codexFile(path: path)))
+        }
+        for path in opencodePaths ?? HomeDiscovery.opencodeAuthCandidates().map(HomeDiscovery.expand) {
+            guard let data = FileManager.default.contents(atPath: path),
+                  let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let entry = root["openai"] as? [String: Any],
+                  let access = entry["access"] as? String, !access.isEmpty else { continue }
+            let expMs = (entry["expires"] as? NSNumber)?.doubleValue ?? 0
+            candidates.append(OpenAIAuth(
+                accessToken: access,
+                refreshToken: entry["refresh"] as? String ?? "",
+                expiresAt: expMs > 0 ? Date(timeIntervalSince1970: expMs / 1000) : OAuthRefresh.jwtExpiry(access),
+                accountId: entry["accountId"] as? String ?? "",
+                source: .opencodeFile(path: path)))
+        }
+        return candidates.max { ($0.expiresAt ?? .distantPast) < ($1.expiresAt ?? .distantPast) }
+    }
+
+    /// Renew a near-expiry access token via `auth.openai.com/oauth/token`
+    /// and persist the rotated credentials for the CLI. No-op when the
+    /// token is fresh, unrefreshable, or a refresh was attempted recently.
+    static func ensureFreshOpenAIAuth(_ auth: OpenAIAuth, endpointOverride: URL? = nil) -> OpenAIAuth {
+        guard OAuthRefresh.needsRefresh(expiresAt: auth.expiresAt), !auth.refreshToken.isEmpty else { return auth }
+        let key: String
+        switch auth.source {
+        case .codexFile(let p), .opencodeFile(let p): key = p
+        }
+        openAIRefreshLock.lock()
+        let throttled = Date().timeIntervalSince(openAILastRefresh[key] ?? .distantPast) < openAIRefreshInterval
+        if !throttled { openAILastRefresh[key] = Date() }
+        openAIRefreshLock.unlock()
+        if throttled { return auth }
+        guard let t = OAuthRefresh.refresh(urls: [endpointOverride ?? OAuthRefresh.codexTokenURL],
+                                           refreshToken: auth.refreshToken,
+                                           clientID: OAuthRefresh.codexClientID) else { return auth }
+        return writeBackOpenAI(t, to: auth)
+    }
+
+    /// Write rotated tokens back into the file the CLI reads, re-reading
+    /// first: if the stored refresh token changed, the CLI already rotated
+    /// and the file's newer auth is adopted instead of writing our stale
+    /// grant over it.
+    static func writeBackOpenAI(_ t: OAuthRefresh.RefreshedTokens, to auth: OpenAIAuth) -> OpenAIAuth {
+        var updated = auth
+        updated.accessToken = t.accessToken
+        updated.refreshToken = t.refreshToken
+        updated.expiresAt = t.expiresAt
+        switch auth.source {
+        case .codexFile(let path):
+            guard let data = FileManager.default.contents(atPath: path),
+                  var root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  var tokens = root["tokens"] as? [String: Any] else { return updated }
+            guard (tokens["refresh_token"] as? String ?? "") == auth.refreshToken else {
+                return (tokens["access_token"] as? String).map { stored in
+                    var adopted = auth
+                    adopted.accessToken = stored
+                    adopted.refreshToken = tokens["refresh_token"] as? String ?? auth.refreshToken
+                    return adopted
+                } ?? updated
+            }
+            tokens["access_token"] = t.accessToken
+            tokens["refresh_token"] = t.refreshToken
+            if let idt = t.idToken { tokens["id_token"] = idt }
+            root["tokens"] = tokens
+            root["last_refresh"] = Self.isoFull.string(from: Date())
+            OAuthRefresh.writeJSONAtomically(root, to: path)
+            return updated
+        case .opencodeFile(let path):
+            guard let data = FileManager.default.contents(atPath: path),
+                  var root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  var entry = root["openai"] as? [String: Any] else { return updated }
+            guard (entry["refresh"] as? String ?? "") == auth.refreshToken else {
+                return (entry["access"] as? String).map { stored in
+                    var adopted = auth
+                    adopted.accessToken = stored
+                    adopted.refreshToken = entry["refresh"] as? String ?? auth.refreshToken
+                    return adopted
+                } ?? updated
+            }
+            entry["access"] = t.accessToken
+            entry["refresh"] = t.refreshToken
+            entry["expires"] = t.expiresAt.timeIntervalSince1970 * 1000
+            root["openai"] = entry
+            OAuthRefresh.writeJSONAtomically(root, to: path)
+            return updated
+        }
+    }
+
+    /// `https://api.openai.com/auth.chatgpt_account_id` claim, used when
+    /// neither store carries an explicit account id.
+    static func chatgptAccountID(fromJWT token: String) -> String {
+        guard let claims = OAuthRefresh.jwtPayload(token),
+              let auth = claims["https://api.openai.com/auth"] as? [String: Any] else { return "" }
+        return auth["chatgpt_account_id"] as? String ?? ""
+    }
+
+    private static func openai() -> [ProviderLimit] {
+        guard let stored = openaiAuth() else { return [] }
+        let auth = ensureFreshOpenAIAuth(stored)
+        let accountId = auth.accountId.isEmpty ? chatgptAccountID(fromJWT: auth.accessToken) : auth.accountId
+        return fetchWhamUsage(access: auth.accessToken, accountId: accountId)
+    }
+
+    /// GET the wham/usage payload; `baseURL` is injectable for loopback tests.
+    static func fetchWhamUsage(access: String, accountId: String,
+                               baseURL: String = "https://chatgpt.com/backend-api/wham/usage") -> [ProviderLimit] {
+        guard let url = URL(string: baseURL) else { return [] }
         var req = URLRequest(url: url, timeoutInterval: 8)
         req.httpMethod = "GET"
         req.setValue("Bearer \(access)", forHTTPHeaderField: "Authorization")
