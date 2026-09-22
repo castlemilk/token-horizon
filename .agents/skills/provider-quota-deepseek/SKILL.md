@@ -42,3 +42,13 @@ This skill covers DeepSeek balance monitoring and 90% prompt cache savings calcu
   ]
 }
 ```
+
+---
+
+## 4. `is_available` Semantics
+
+`is_available: false` means the balance cannot serve requests (zero or
+negative `total_balance`). The row is still emitted — as an exhausted
+`balance` limit at `usedPercent: 100` with detail
+`"$<total> <CCY> · unavailable"` — rather than hiding the account.
+Only a missing/empty `balance_infos` produces no row.

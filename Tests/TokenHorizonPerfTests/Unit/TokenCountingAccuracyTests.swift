@@ -1,4 +1,5 @@
 import XCTest
+import SQLite3
 @testable import TokenHorizon
 // swiftlint:disable force_try
 // Test files are exempt from force-try enforcement (a try! that fails fails
@@ -197,5 +198,131 @@ final class TokenCountingAccuracyTests: XCTestCase {
         let r2 = e.scanCodex(dirs: [root])
         XCTAssertEqual(r2.all, 3600)
         XCTAssertEqual(r2.today, 1600)
+    }
+
+    // MARK: - Devin transcript docs
+
+    private func iso(_ epoch: Int) -> String {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return f.string(from: Date(timeIntervalSince1970: TimeInterval(epoch)))
+    }
+
+    private func devinDoc(steps: [String]) -> String {
+        """
+        {"schema_version":1,"session_id":"sess-1",
+         "agent":{"name":"devin","version":"3000.0.0","model_name":"SWE-2 High"},
+         "steps":[\(steps.joined(separator: ","))],
+         "final_metrics":{}}
+        """
+    }
+
+    private func devinStep(_ id: Int, prompt: Int, completion: Int, cached: Int,
+                           source: String = "agent", model: String? = "SWE-2 High") -> String {
+        let modelField = model.map { ",\"model_name\":\"\($0)\"" } ?? ""
+        return """
+        {"step_id":\(id),"timestamp":"\(iso(nowHour))","source":"\(source)"\(modelField),"metrics":{"prompt_tokens":\(prompt),"completion_tokens":\(completion),"cached_tokens":\(cached)}}
+        """
+    }
+
+    /// Agent steps count; system/user/metric-less steps don't. `prompt_tokens`
+    /// includes the cached slice, so input = prompt - cached, cacheRead =
+    /// cached, total = prompt + completion.
+    func testDevin_parsesStepsWithCacheSplit() {
+        write("sess-1.json", devinDoc(steps: [
+            "{\"step_id\":1,\"timestamp\":\"\(iso(nowHour))\",\"source\":\"system\"}",
+            devinStep(2, prompt: 1000, completion: 100, cached: 400),
+            "{\"step_id\":3,\"timestamp\":\"\(iso(nowHour))\",\"source\":\"user\"}",
+            devinStep(4, prompt: 2000, completion: 200, cached: 1500),
+        ]))
+        let e = engine()
+        var state: [String: UsageEngine.AdditiveFileState] = [:]
+        let r = e.scanDevin(dirs: [root], state: &state)
+        // step2: 600 in + 100 out + 400 cr = 1100; step4: 500 + 200 + 1500 = 2200
+        XCTAssertEqual(r.allTokens, 3300)
+        XCTAssertEqual(r.todayTokens, 3300)
+        XCTAssertEqual(r.cacheRead, 1900)
+        XCTAssertEqual(r.inputAll, 1100)
+        XCTAssertEqual(r.outputAll, 300)
+        XCTAssertEqual(r.requestsAll, 2)
+        XCTAssertEqual(r.perModel["SWE-2 High"]?.all, 3300)
+        XCTAssertEqual(r.perModel["SWE-2 High"]?.requestsAll, 2)
+        XCTAssertTrue(r.trackedAny)
+    }
+
+    /// Whole-doc files re-parse only on growth; the second scan sees the same
+    /// steps but watermarks keep totals stable, and an appended step counts
+    /// only its own delta.
+    func testDevin_rescanAppendsOnlyNewSteps() {
+        write("sess-1.json", devinDoc(steps: [devinStep(2, prompt: 1000, completion: 100, cached: 400)]))
+        let e = engine()
+        var state: [String: UsageEngine.AdditiveFileState] = [:]
+        XCTAssertEqual(e.scanDevin(dirs: [root], state: &state).allTokens, 1100)
+        // No change → identical totals (memo path).
+        XCTAssertEqual(e.scanDevin(dirs: [root], state: &state).allTokens, 1100)
+        // Append a step → file grows → only the new step's tokens land.
+        write("sess-1.json", devinDoc(steps: [
+            devinStep(2, prompt: 1000, completion: 100, cached: 400),
+            devinStep(5, prompt: 500, completion: 50, cached: 100),
+        ]))
+        XCTAssertEqual(e.scanDevin(dirs: [root], state: &state).allTokens, 1650)
+    }
+
+    /// A step re-emitted with larger cumulative metrics counts only growth.
+    func testDevin_stepMetricGrowthCountsDelta() {
+        write("sess-1.json", devinDoc(steps: [devinStep(2, prompt: 1000, completion: 100, cached: 400)]))
+        let e = engine()
+        var state: [String: UsageEngine.AdditiveFileState] = [:]
+        XCTAssertEqual(e.scanDevin(dirs: [root], state: &state).allTokens, 1100)
+        write("sess-1.json", devinDoc(steps: [devinStep(2, prompt: 1200, completion: 150, cached: 400)]))
+        XCTAssertEqual(e.scanDevin(dirs: [root], state: &state).allTokens, 1350)
+    }
+
+    /// A shrunk file (rotated/recreated transcript) resets state and reports
+    /// exactly the current content.
+    func testDevin_truncationResets() {
+        write("sess-1.json", devinDoc(steps: [
+            devinStep(2, prompt: 10000, completion: 100, cached: 400),
+            devinStep(3, prompt: 20000, completion: 200, cached: 500),
+        ]))
+        let e = engine()
+        var state: [String: UsageEngine.AdditiveFileState] = [:]
+        XCTAssertEqual(e.scanDevin(dirs: [root], state: &state).allTokens, 30300)
+        // Same path rewritten smaller → state resets → current content only.
+        write("sess-1.json", devinDoc(steps: [devinStep(1, prompt: 30, completion: 10, cached: 0)]))
+        XCTAssertEqual(e.scanDevin(dirs: [root], state: &state).allTokens, 40)
+    }
+
+    /// A torn mid-write JSON doc fails parsing but keeps the last-good state
+    /// (transient writes must not zero live totals); the completed rewrite
+    /// then counts exactly the new content.
+    func testDevin_partialJsonKeepsLastGood() {
+        let path = root + "/sess-1.json"
+        write("sess-1.json", devinDoc(steps: [devinStep(2, prompt: 1000, completion: 100, cached: 400)]))
+        let e = engine()
+        var state: [String: UsageEngine.AdditiveFileState] = [:]
+        XCTAssertEqual(e.scanDevin(dirs: [root], state: &state).allTokens, 1100)
+        // Simulate a torn write: truncate mid-doc so JSONSerialization fails.
+        let data = FileManager.default.contents(atPath: path)!
+        try! data.prefix(data.count - 40).write(to: URL(fileURLWithPath: path))
+        XCTAssertEqual(e.scanDevin(dirs: [root], state: &state).allTokens, 1100)
+        // Rewrite valid → counts fresh.
+        write("sess-1.json", devinDoc(steps: [devinStep(2, prompt: 1000, completion: 100, cached: 400)]))
+        XCTAssertEqual(e.scanDevin(dirs: [root], state: &state).allTokens, 1100)
+    }
+
+    /// sessions.db id → working_directory drives per-project rollups.
+    func testDevin_projectMapFromSessionsDB() {
+        let dbPath = root + "/sessions.db"
+        var db: OpaquePointer?
+        XCTAssertEqual(sqlite3_open_v2(dbPath, &db, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, nil), SQLITE_OK)
+        sqlite3_exec(db, "CREATE TABLE sessions (id TEXT PRIMARY KEY, working_directory TEXT)", nil, nil, nil)
+        sqlite3_exec(db, "INSERT INTO sessions VALUES ('sess-1','/Users/dev/alpha')", nil, nil, nil)
+        sqlite3_exec(db, "INSERT INTO sessions VALUES ('sess-2','/Users/dev/beta')", nil, nil, nil)
+        sqlite3_close(db)
+        let e = engine()
+        let map = e.devinProjectDirs(base: dbPath)
+        XCTAssertEqual(map["sess-1"], "/Users/dev/alpha")
+        XCTAssertEqual(map["sess-2"], "/Users/dev/beta")
     }
 }

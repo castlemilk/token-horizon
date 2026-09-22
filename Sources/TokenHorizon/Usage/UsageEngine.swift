@@ -249,6 +249,8 @@ final class UsageEngine {
         listingCache.removeAll()
         hourDayCache.removeAll()
         opencodeCache = nil
+        devinSessionsCache = nil
+        devinMtimes.removeAll()
         scanVersions.removeAll()
         scanMemos.removeAll()
         // Force the cleared state to disk next tick: otherwise a restart
@@ -808,6 +810,35 @@ final class UsageEngine {
         }
         ph.mark("generic")
 
+        let devin = scanDevin(dirs: Self.devinDirs, state: &genericFiles)
+        if devin.allTokens > 0 || devin.trackedAny {
+            tools.append(ToolUsage(tool: "devin",
+                                   tokensToday: devin.todayTokens, tokensAllTime: devin.allTokens,
+                                   costToday: devin.todayCost, costAllTime: devin.allCost,
+                                   cacheReadAll: devin.cacheRead, cacheWriteAll: devin.cacheWrite,
+                                   inputTokensToday: devin.inputToday,
+                                   outputTokensToday: devin.outputToday,
+                                   inputTokensAllTime: devin.inputAll,
+                                   outputTokensAllTime: devin.outputAll,
+                                   requestsToday: devin.requestsToday,
+                                   requestsAllTime: devin.requestsAll))
+            snap.tokensToday += devin.todayTokens
+            snap.costToday += devin.todayCost
+            snap.tokensAllTime += devin.allTokens
+            snap.costAllTime += devin.allCost
+            for (model, v) in devin.perModel {
+                snap.models.append(ModelUsage(provider: "devin", model: model,
+                                              tokensAll: v.all, tokensToday: v.today, cost: v.cost,
+                                              messages: v.requestsAll, free: v.cost < 0.0001,
+                                              inputTokensAll: v.inputAll, outputTokensAll: v.outputAll,
+                                              inputTokensToday: v.inputToday, outputTokensToday: v.outputToday,
+                                              requestsAll: v.requestsAll, requestsToday: v.requestsToday))
+            }
+            mergeProjects(into: &snap.projects, from: devin.projects)
+            mergeModelDays(into: &mergedModelDays, from: devin.modelDays)
+        }
+        ph.mark("devin")
+
         let localllm = OllamaTelemetryStore.shared.summary()
         if localllm.allTokens > 0 {
             var ollamaRequestsAll = 0
@@ -1272,16 +1303,6 @@ final class UsageEngine {
     /// Incremental additive scan over session dirs. Internal for hermetic
     /// accuracy tests (temp dirs + local state, no HOME involved).
     func scanAdditive(dirs: [String], state: inout [String: AdditiveFileState], prefix: String) -> SourceResult {
-        var out = SourceResult()
-        var cacheRead = 0
-        var cacheWrite = 0
-        var inputAll = 0
-        var outputAll = 0
-        var inputToday = 0
-        var outputToday = 0
-        var requestsAll = 0
-        var requestsToday = 0
-        var perModel: [String: ModelAccum] = [:]
         let today = todayBucket()
         let modelDayCutoff = today - Self.modelHistoryDays * 86_400
         var seen = Set<String>()
@@ -1350,51 +1371,10 @@ final class UsageEngine {
                             cost = 0.0
                         }
 
-                        st.allTokens += deltaTokens
-                        st.allCost += cost
-                        st.cacheRead += deltaCr
-                        st.cacheWrite += deltaCw
-                        st.inputAll += deltaIn
-                        st.outputAll += deltaOut
-                        if deltaTokens > 0 { st.requestsAll += 1 }
-                        var bucket = st.buckets[p.hour] ?? HourBucket()
-                        bucket.tokens += deltaTokens
-                        bucket.cost += cost
-                        bucket.input += deltaIn
-                        bucket.output += deltaOut
-                        if deltaTokens > 0 { bucket.requests += 1 }
-                        st.buckets[p.hour] = bucket
                         let modelName = p.model.isEmpty ? (prefix == "agy" ? Self.configuredAgyModel() : "\(prefix)-default") : p.model
-                        let isToday = p.hour >= today
-                        var acc = st.models[modelName] ?? ModelAccum()
-                        acc.all += deltaTokens
-                        acc.today += isToday ? deltaTokens : 0
-                        acc.cost += cost
-                        acc.inputAll += deltaIn
-                        acc.outputAll += deltaOut
-                        if deltaTokens > 0 { acc.requestsAll += 1 }
-                        if isToday {
-                            acc.inputToday += deltaIn
-                            acc.outputToday += deltaOut
-                            if deltaTokens > 0 { acc.requestsToday += 1 }
-                        }
-                        st.models[modelName] = acc
-                        if deltaTokens > 0 {
-                            let dayStart = dayStartLocked(forHour: p.hour)
-                            var days = st.modelDays[modelName] ?? [:]
-                            days[dayStart, default: 0] += deltaTokens
-                            pruneModelDays(&days, cutoff: modelDayCutoff)
-                            st.modelDays[modelName] = days
-                        }
-                        if let cwd = p.cwd, !cwd.isEmpty {
-                            var pa = st.projects[cwd] ?? ProjectAccum()
-                            pa.tokens += deltaTokens
-                            pa.cost += cost
-                            pa.input += deltaIn
-                            pa.output += deltaOut
-                            if deltaTokens > 0 { pa.sessions += 1 }
-                            st.projects[cwd] = pa
-                        }
+                        accumulateAdditive(&st, dIn: deltaIn, dOut: deltaOut, dCw: deltaCw, dCr: deltaCr,
+                                           cost: cost, hour: p.hour, model: modelName, cwd: p.cwd,
+                                           today: today, modelDayCutoff: modelDayCutoff)
                     }
                 }
                 st.offset += UInt64(consumable.count)
@@ -1416,16 +1396,81 @@ final class UsageEngine {
             cached.trackedAny = !seen.isEmpty
             return cached
         }
+        var out = summarizeAdditive(prefix: prefix, state: state, today: today)
+        out.trackedAny = !seen.isEmpty
+        scanMemos[prefix] = ScanMemo(version: scanVersions[prefix] ?? 0, today: today, result: out)
+        return out
+    }
+
+    /// Shared per-record accumulation for additive sources (JSONL lines and
+    /// Devin transcript steps alike). `deltaTokens == 0` with an explicit cost
+    /// is allowed (cost-only records); request counts only advance on tokens.
+    private func accumulateAdditive(_ st: inout AdditiveFileState, dIn: Int, dOut: Int, dCw: Int, dCr: Int,
+                                    cost: Double, hour: Int, model: String, cwd: String?,
+                                    today: Int, modelDayCutoff: Int) {
+        let deltaTokens = dIn + dOut + dCw + dCr
+        st.allTokens += deltaTokens
+        st.allCost += cost
+        st.cacheRead += dCr
+        st.cacheWrite += dCw
+        st.inputAll += dIn
+        st.outputAll += dOut
+        if deltaTokens > 0 { st.requestsAll += 1 }
+        var bucket = st.buckets[hour] ?? HourBucket()
+        bucket.tokens += deltaTokens
+        bucket.cost += cost
+        bucket.input += dIn
+        bucket.output += dOut
+        if deltaTokens > 0 { bucket.requests += 1 }
+        st.buckets[hour] = bucket
+        let isToday = hour >= today
+        var acc = st.models[model] ?? ModelAccum()
+        acc.all += deltaTokens
+        acc.today += isToday ? deltaTokens : 0
+        acc.cost += cost
+        acc.inputAll += dIn
+        acc.outputAll += dOut
+        if deltaTokens > 0 { acc.requestsAll += 1 }
+        if isToday {
+            acc.inputToday += dIn
+            acc.outputToday += dOut
+            if deltaTokens > 0 { acc.requestsToday += 1 }
+        }
+        st.models[model] = acc
+        if deltaTokens > 0 {
+            let dayStart = dayStartLocked(forHour: hour)
+            var days = st.modelDays[model] ?? [:]
+            days[dayStart, default: 0] += deltaTokens
+            pruneModelDays(&days, cutoff: modelDayCutoff)
+            st.modelDays[model] = days
+        }
+        if let cwd, !cwd.isEmpty {
+            var pa = st.projects[cwd] ?? ProjectAccum()
+            pa.tokens += deltaTokens
+            pa.cost += cost
+            pa.input += dIn
+            pa.output += dOut
+            if deltaTokens > 0 { pa.sessions += 1 }
+            st.projects[cwd] = pa
+        }
+    }
+
+    /// Aggregate a `[key: AdditiveFileState]` slice into a SourceResult.
+    /// Shared by scanAdditive (JSONL) and scanDevin (JSON transcript docs).
+    private func summarizeAdditive(prefix: String, state: [String: AdditiveFileState], today: Int) -> SourceResult {
+        var out = SourceResult()
+        let keyPrefix = prefix + "::"
+        let modelDayCutoff = today - Self.modelHistoryDays * 86_400
         for (key, st) in state where key.hasPrefix(keyPrefix) {
             out.allTokens += st.allTokens
             out.allCost += st.allCost
-            cacheRead += st.cacheRead
-            cacheWrite += st.cacheWrite
-            inputAll += st.inputAll
-            outputAll += st.outputAll
-            requestsAll += st.requestsAll
+            out.cacheRead += st.cacheRead
+            out.cacheWrite += st.cacheWrite
+            out.inputAll += st.inputAll
+            out.outputAll += st.outputAll
+            out.requestsAll += st.requestsAll
             for (model, v) in st.models {
-                var acc = perModel[model] ?? ModelAccum()
+                var acc = out.perModel[model] ?? ModelAccum()
                 acc.all += v.all
                 acc.today += v.today
                 acc.cost += v.cost
@@ -1435,14 +1480,14 @@ final class UsageEngine {
                 acc.outputToday += v.outputToday
                 acc.requestsAll += v.requestsAll
                 acc.requestsToday += v.requestsToday
-                perModel[model] = acc
+                out.perModel[model] = acc
             }
             for (h, b) in st.buckets where h >= today {
                 out.todayTokens += b.tokens
                 out.todayCost += b.cost
-                inputToday += b.input
-                outputToday += b.output
-                requestsToday += b.requests
+                out.inputToday += b.input
+                out.outputToday += b.output
+                out.requestsToday += b.requests
             }
             for (dir, p) in st.projects {
                 var acc = out.projects[dir] ?? ProjectAccum()
@@ -1461,18 +1506,134 @@ final class UsageEngine {
                 out.modelDays[model] = acc
             }
         }
-        out.cacheRead = cacheRead
-        out.cacheWrite = cacheWrite
-        out.inputAll = inputAll
-        out.outputAll = outputAll
-        out.inputToday = inputToday
-        out.outputToday = outputToday
-        out.requestsAll = requestsAll
-        out.requestsToday = requestsToday
-        out.perModel = perModel
+        return out
+    }
+
+    /// Devin CLI session dirs: `~/.local/share/devin/cli/transcripts` holds
+    /// one `<session>.json` doc per session, rewritten as steps append.
+    static var devinDirs: [String] {
+        [HomeDiscovery.expand("~/.local/share/devin/cli/transcripts")]
+    }
+
+    /// Devin transcript scanner. Unlike the JSONL sources each file is a
+    /// whole JSON document (`{agent, steps[], final_metrics}`), so there is
+    /// no byte-offset tail: the doc is re-parsed whenever its (size, mtime)
+    /// fingerprint changes — same-size rewrites (a step's metrics can update
+    /// in place) are still caught via mtime. `st.offset` stores the last
+    /// parsed size purely for shrink detection (rotate/recreate → reset).
+    /// Per-step `step_id` watermarks dedup re-parses and absorb cumulative
+    /// metric rewrites. `metrics.prompt_tokens` already includes
+    /// `cached_tokens` (OpenAI semantics), so input = prompt - cached and
+    /// cacheRead = cached.
+    private var devinMtimes: [String: (size: UInt64, mtime: TimeInterval)] = [:]
+    func scanDevin(dirs: [String], state: inout [String: AdditiveFileState], prefix: String = "devin") -> SourceResult {
+        let today = todayBucket()
+        let modelDayCutoff = today - Self.modelHistoryDays * 86_400
+        var seen = Set<String>()
+        let keyPrefix = prefix + "::"
+        let projectDirs = devinProjectDirs()
+
+        for dir in dirs {
+            let root = NSString(string: dir).expandingTildeInPath
+            for item in cachedFiles(in: root, suffix: ".json") {
+                let full = "\(root)/\(item)"
+                let key = keyPrefix + full
+                seen.insert(key)
+                guard let attrs = try? FileManager.default.attributesOfItem(atPath: full),
+                      let size = (attrs[.size] as? UInt64) ?? (attrs[.size] as? NSNumber)?.uint64Value,
+                      let mtime = (attrs[.modificationDate] as? Date)?.timeIntervalSince1970 else { continue }
+                if let prev = devinMtimes[key], prev == (size, mtime) { continue }
+                // Record before parsing: a torn mid-write doc must not be
+                // re-read every tick — the next real write bumps mtime.
+                devinMtimes[key] = (size, mtime)
+                var st = state[key] ?? AdditiveFileState()
+                if size < st.offset { st = AdditiveFileState() }
+                guard let data = FileManager.default.contents(atPath: full),
+                      let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                      let steps = obj["steps"] as? [[String: Any]] else { continue }
+                let sessionId = (item as NSString).deletingPathExtension
+                let cwd = projectDirs[sessionId]
+                let agentModel = ((obj["agent"] as? [String: Any])?["model_name"] as? String) ?? ""
+                for step in steps {
+                    guard let metrics = step["metrics"] as? [String: Any] else { continue }
+                    let prompt = (metrics["prompt_tokens"] as? NSNumber)?.intValue ?? 0
+                    let completion = (metrics["completion_tokens"] as? NSNumber)?.intValue ?? 0
+                    let cached = (metrics["cached_tokens"] as? NSNumber)?.intValue ?? 0
+                    guard prompt + completion > 0 else { continue }
+                    let input = max(0, prompt - cached)
+                    let stepId = ((step["step_id"] as? NSNumber)?.stringValue)
+                        ?? (step["timestamp"] as? String) ?? UUID().uuidString
+                    let r = Self.watermarkDelta(prev: st.watermarks[stepId],
+                                                input: input, output: completion,
+                                                cacheWrite: 0, cacheRead: cached)
+                    st.watermarks[stepId] = r.next
+                    let deltaTokens = r.dIn + r.dOut + r.dCr
+                    guard deltaTokens > 0 else { continue }
+                    let hour = hourFromTimestamp(step["timestamp"] as? String)
+                    let stepModel = (step["model_name"] as? String) ?? ""
+                    let model = !stepModel.isEmpty ? stepModel : (agentModel.isEmpty ? "devin" : agentModel)
+                    let cost = Self.estimateTokenCost(model: model, inputTokens: r.dIn,
+                                                      outputTokens: r.dOut, cacheReadTokens: r.dCr,
+                                                      cacheWriteTokens: 0)
+                    accumulateAdditive(&st, dIn: r.dIn, dOut: r.dOut, dCw: 0, dCr: r.dCr,
+                                       cost: cost, hour: hour, model: model, cwd: cwd,
+                                       today: today, modelDayCutoff: modelDayCutoff)
+                }
+                st.offset = size
+                state[key] = st
+                parserStateDirty = true
+                scanVersions[prefix, default: 0] += 1
+            }
+        }
+        for key in state.keys where !seen.contains(key) && key.hasPrefix(keyPrefix) {
+            state.removeValue(forKey: key)
+            devinMtimes.removeValue(forKey: key)
+            parserStateDirty = true
+            scanVersions[prefix, default: 0] += 1
+        }
+        if let m = scanMemos[prefix], m.version == (scanVersions[prefix] ?? 0), m.today == today {
+            var cached = m.result
+            cached.trackedAny = !seen.isEmpty
+            return cached
+        }
+        var out = summarizeAdditive(prefix: prefix, state: state, today: today)
         out.trackedAny = !seen.isEmpty
         scanMemos[prefix] = ScanMemo(version: scanVersions[prefix] ?? 0, today: today, result: out)
         return out
+    }
+
+    /// session_id → working_directory from the Devin CLI's sessions.db,
+    /// fingerprint-gated on db/-wal/-shm so idle ticks never open sqlite.
+    private var devinSessionsCache: (fp: String, map: [String: String])?
+    /// `base` is injectable for hermetic tests; nil → the real sessions.db.
+    func devinProjectDirs(base: String? = nil) -> [String: String] {
+        let base = base ?? NSString("~/.local/share/devin/cli/sessions.db").expandingTildeInPath
+        var parts: [String] = []
+        for suffix in ["", "-wal", "-shm"] {
+            let p = base + suffix
+            if let a = try? FileManager.default.attributesOfItem(atPath: p),
+               let m = (a[.modificationDate] as? Date)?.timeIntervalSince1970,
+               let s = a[.size] as? UInt64 {
+                parts.append("\(m):\(s)")
+            }
+        }
+        let fp = base + ">" + parts.joined(separator: "|")
+        if let c = devinSessionsCache, c.fp == fp { return c.map }
+        var map: [String: String] = [:]
+        var handle: OpaquePointer?
+        if sqlite3_open_v2(base, &handle, SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX, nil) == SQLITE_OK {
+            sqlite3_busy_timeout(handle, 150)
+            if let stmt = prepare(handle!, "SELECT id, working_directory FROM sessions") {
+                while sqlite3_step(stmt) == SQLITE_ROW {
+                    let id = text(stmt, 0), dir = text(stmt, 1)
+                    if !id.isEmpty, !dir.isEmpty { map[id] = dir }
+                }
+                sqlite3_finalize(stmt)
+            }
+        }
+        sqlite3_close(handle)
+        devinSessionsCache = (fp, map)
+        return map
     }
 
     private func scanKimi(dirs: [String]) {

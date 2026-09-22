@@ -89,6 +89,14 @@ final class CoverageImprovementTests: XCTestCase {
         XCTAssertEqual(out.count, 1)
         XCTAssertEqual(out[0].provider, "deepseek")
         XCTAssertEqual(out[0].detail, "$12.34 USD")
+        // Unavailable (depleted) balances still surface as an exhausted row.
+        let depleted = PlanLimitsEngine.parseDeepSeekPayload([
+            "is_available": false,
+            "balance_infos": [["total_balance": "-0.02", "currency": "USD"]]
+        ])
+        XCTAssertEqual(depleted.count, 1)
+        XCTAssertEqual(depleted[0].usedPercent, 100)
+        XCTAssertEqual(depleted[0].detail, "$-0.02 USD · unavailable")
         XCTAssertTrue(PlanLimitsEngine.parseDeepSeekPayload(["is_available": false]).isEmpty)
         XCTAssertTrue(PlanLimitsEngine.parseDeepSeekPayload([:]).isEmpty)
     }

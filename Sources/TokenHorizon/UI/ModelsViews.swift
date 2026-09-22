@@ -32,6 +32,7 @@ struct ModelRow: Identifiable {
         case "mistral": return "Mistral"
         case "xai": return "xAI"
         case "cohere": return "Cohere"
+        case "devin", "swe", "windsurf", "cognition": return "Devin"
         case "amazon", "nova": return "Amazon"
         case "perplexity": return "Perplexity"
         default: return usage.provider

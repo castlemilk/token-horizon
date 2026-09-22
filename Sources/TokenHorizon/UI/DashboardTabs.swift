@@ -3143,6 +3143,7 @@ struct DashboardTabs: View {
         case "google", "gemini": return "Google"
         case "alibaba", "qwen", "bailian": return "Alibaba"
         case "deepseek": return "DeepSeek"
+        case "devin", "swe", "windsurf", "cognition": return "Devin"
         default: return p
         }
     }
@@ -3198,6 +3199,7 @@ struct DashboardTabs: View {
         case "gemini", "google": return Color(red: 0.26, green: 0.52, blue: 0.96)
         case "agy", "antigravity": return Color(red: 0.65, green: 0.45, blue: 0.95)
         case "deepseek", "alibaba", "alibaba-token-plan": return .teal
+        case "devin", "swe", "windsurf": return Color(red: 0.30, green: 0.30, blue: 0.95)
         case "ollama", "mlx", "localllm": return Color(red: 0.18, green: 0.82, blue: 0.72)
         default: return .gray
         }

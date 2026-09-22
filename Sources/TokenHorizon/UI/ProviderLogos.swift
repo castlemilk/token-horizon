@@ -67,6 +67,9 @@ struct ProviderLogoView: View {
         if p.contains("upstage") || m.contains("solar") {
             return Color(red: 0.42, green: 0.32, blue: 0.95)
         }
+        if p.contains("devin") || p.contains("cognition") || p.contains("windsurf") || m.contains("swe") {
+            return Color(red: 0.30, green: 0.30, blue: 0.95)
+        }
         if p.contains("opencode") || p.contains("muse") || m.contains("muse") || m.contains("x-preview") {
             return Color(red: 0.06, green: 0.65, blue: 0.42)
         }

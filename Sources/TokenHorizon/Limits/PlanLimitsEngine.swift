@@ -466,13 +466,13 @@ final class PlanLimitsEngine {
             out.append(ProviderLimit(provider: "minimax", label: "interval",
                                      usedPercent: Double(100 - remaining),
                                      resetsAt: epoch(first["end_time"]),
-                                     detail: ""))
+                                     detail: "\(remaining)% left"))
         }
         if let remaining = first["current_weekly_remaining_percent"] as? Int {
             out.append(ProviderLimit(provider: "minimax", label: "weekly",
                                      usedPercent: Double(100 - remaining),
                                      resetsAt: epoch(first["weekly_end_time"]),
-                                     detail: ""))
+                                     detail: "\(remaining)% left"))
         }
         return out
     }
@@ -734,17 +734,20 @@ final class PlanLimitsEngine {
     }
 
     static func parseDeepSeekPayload(_ obj: [String: Any]) -> [ProviderLimit] {
-        guard let isAvail = obj["is_available"] as? Bool, isAvail,
-              let infos = obj["balance_infos"] as? [[String: Any]],
+        guard let infos = obj["balance_infos"] as? [[String: Any]],
               let first = infos.first else { return [] }
+        let isAvail = obj["is_available"] as? Bool ?? true
         let total = (first["total_balance"] as? String) ?? (first["total_balance"] as? NSNumber)?.stringValue ?? ""
         let curr = (first["currency"] as? String) ?? "USD"
+        // is_available=false means the balance can't serve requests (zero or
+        // negative) — still surface it as an exhausted row rather than hiding
+        // the account entirely.
         return [
             ProviderLimit(provider: "deepseek",
                           label: "balance",
-                          usedPercent: 0,
+                          usedPercent: isAvail ? 0 : 100,
                           resetsAt: nil,
-                          detail: "$\(total) \(curr)")
+                          detail: "$\(total) \(curr)\(isAvail ? "" : " · unavailable")")
         ]
     }
 

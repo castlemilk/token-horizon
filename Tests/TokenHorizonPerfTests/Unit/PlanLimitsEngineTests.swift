@@ -161,9 +161,11 @@ final class PlanLimitsEngineTests: XCTestCase {
         let interval = limits.first(where: { $0.label == "interval" })
         XCTAssertEqual(interval?.usedPercent, 20.0)
         XCTAssertEqual(interval?.provider, "minimax")
+        XCTAssertEqual(interval?.detail, "80% left")
 
         let weekly = limits.first(where: { $0.label == "weekly" })
         XCTAssertEqual(weekly?.usedPercent, 40.0)
+        XCTAssertEqual(weekly?.detail, "60% left")
     }
 
     func testParseOpencodeGoPayload_multiWindow() {
