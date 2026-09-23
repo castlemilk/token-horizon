@@ -200,6 +200,117 @@ final class TokenCountingAccuracyTests: XCTestCase {
         XCTAssertEqual(r2.today, 1600)
     }
 
+    // MARK: - Codex token_usage_record stream
+
+    private func codexCount(_ ts: String, _ i: Int, _ o: Int) -> String {
+        #"{"timestamp":"\#(ts)","payload":{"info":{"total_token_usage":{"input_tokens":\#(i),"output_tokens":\#(o),"cached_input_tokens":0,"reasoning_output_tokens":0},"last_token_usage":{"input_tokens":\#(i),"output_tokens":\#(o),"cached_input_tokens":0,"reasoning_output_tokens":0}}}}"#
+    }
+
+    private func codexRecord(_ ts: String, _ i: Int, _ o: Int) -> String {
+        #"{"timestamp":"\#(ts)","type":"token_usage_record","payload":{"thread_id":"t1","turn_id":"u1","usage":{"input_tokens":\#(i),"output_tokens":\#(o),"cached_input_tokens":0,"reasoning_output_tokens":0}}}"#
+    }
+
+    private func append(_ rel: String, _ text: String) {
+        let fh = FileHandle(forWritingAtPath: root + "/" + rel)
+        fh?.seekToEndOfFile()
+        fh?.write(Data(text.utf8))
+        try? fh?.close()
+    }
+
+    /// Current sessions emit a paired `token_usage_record` + `token_count`
+    /// per response — the same usage in two streams. Each response must
+    /// count exactly once regardless of which stream covers it.
+    func testCodex_recordAndCountStreamsNeverDoubleCount() {
+        let now = ISO8601DateFormatter().string(from: Date())
+        write("sess.jsonl", """
+        \(codexRecord(now, 100, 50))
+        \(codexCount(now, 100, 50))
+        \(codexRecord(now, 30, 10))
+        \(codexCount(now, 130, 60))
+
+        """)
+        let e = engine()
+        let r = e.scanCodex(dirs: [root])
+        // rec1(150) counted; count1 nets 0; rec2 suppressed; count2 nets 40.
+        XCTAssertEqual(r.all, 190)
+        XCTAssertEqual(r.today, 190)
+    }
+
+    /// A record-only file (no token_count events yet) still counts — this is
+    /// the freshness path when the cumulative stream lags or is dropped.
+    func testCodex_recordsOnlyFile() {
+        let now = ISO8601DateFormatter().string(from: Date())
+        write("sess.jsonl", """
+        \(codexRecord(now, 100, 50))
+        \(codexRecord(now, 30, 10))
+
+        """)
+        let e = engine()
+        XCTAssertEqual(e.scanCodex(dirs: [root]).all, 190)
+    }
+
+    /// A record that arrives after its paired count is suppressed — the
+    /// cumulative total already included that response.
+    func testCodex_recordAfterCountSuppressed() {
+        let now = ISO8601DateFormatter().string(from: Date())
+        write("sess.jsonl", """
+        \(codexCount(now, 150, 50))
+        \(codexRecord(now, 150, 50))
+
+        """)
+        let e = engine()
+        XCTAssertEqual(e.scanCodex(dirs: [root]).all, 200)
+    }
+
+    /// Appended records/counts after a scan count once — including a record
+    /// whose paired count lands in the NEXT poll (chunk-boundary pairing).
+    func testCodex_recordCountAcrossScans() {
+        let now = ISO8601DateFormatter().string(from: Date())
+        write("sess.jsonl", "\(codexRecord(now, 100, 50))\n")
+        let e = engine()
+        XCTAssertEqual(e.scanCodex(dirs: [root]).all, 150)
+        append("sess.jsonl", "\(codexCount(now, 100, 50))\n\(codexRecord(now, 30, 10))\n")
+        let r = e.scanCodex(dirs: [root])
+        // count1 nets 0 (record advanced the watermark); rec2 suppressed.
+        XCTAssertEqual(r.all, 150)
+        append("sess.jsonl", "\(codexCount(now, 130, 60))\n")
+        XCTAssertEqual(e.scanCodex(dirs: [root]).all, 190)
+    }
+
+    // MARK: - Kimi wire.jsonl sessions
+
+    /// Modern kimi-code files: only per-request "turn" records count;
+    /// cumulative "session" records and token_counting telemetry are skipped.
+    func testKimi_modernWireScanAndAppend() {
+        let t = (nowHour + 60) * 1000
+        write("wire.jsonl", """
+        {"type":"usage.record","model":"kimi-code/k3-256k","usage":{"inputOther":100,"output":50,"inputCacheRead":10,"inputCacheCreation":5},"usageScope":"turn","time":\(t)}
+        {"type":"usage.record","model":"kimi-code/k3-256k","usage":{"inputOther":165,"output":0},"usageScope":"session","time":\(t)}
+        {"type":"token_counting.measured","tokens":999,"time":\(t)}
+
+        """)
+        let e = engine()
+        let r = e.scanKimi(dirs: [root])
+        XCTAssertEqual(r.all, 165)
+        XCTAssertEqual(r.today, 165)
+        // Appended record counts once on the next poll.
+        append("wire.jsonl", #"{"type":"usage.record","model":"kimi-code/k3-256k","usage":{"inputOther":30,"output":10},"usageScope":"turn","time":\#(t)}"# + "\n")
+        let r2 = e.scanKimi(dirs: [root])
+        XCTAssertEqual(r2.all, 205)
+        XCTAssertEqual(r2.today, 205)
+    }
+
+    /// A partial trailing line (no newline) is deferred to the next poll,
+    /// same as every other incremental reader.
+    func testKimi_unterminatedTailDeferred() {
+        let t = (nowHour + 60) * 1000
+        write("wire.jsonl", #"{"type":"usage.record","model":"kimi-code/k3-256k","usage":{"inputOther":7,"output":8},"usageScope":"turn","time":\#(t)}"#)
+        let e = engine()
+        XCTAssertEqual(e.scanKimi(dirs: [root]).all, 0)
+        append("wire.jsonl", "\n")
+        XCTAssertEqual(e.scanKimi(dirs: [root]).all, 15)
+    }
+
     // MARK: - Devin transcript docs
 
     private func iso(_ epoch: Int) -> String {

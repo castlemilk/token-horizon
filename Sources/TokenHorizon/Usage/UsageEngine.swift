@@ -145,6 +145,11 @@ final class UsageEngine {
         var offset: UInt64 = 0
         var watermark = CodexWatermark()
         var last = CodexWatermark()
+        /// True once a cumulative `token_count` event has been consumed. Newer
+        /// sessions also emit per-response `token_usage_record` events with the
+        /// same usage — suppressed once the cumulative stream is confirmed so
+        /// a response is never counted through both streams.
+        var sawTokenCount = false
         var allTokens: Int = 0
         var buckets: [Int: HourBucket] = [:]
         var rate: CodexRate?
@@ -992,6 +997,7 @@ final class UsageEngine {
                 offset: st.offset,
                 watermark: wm,
                 last: last,
+                sawTokenCount: st.sawTokenCount,
                 allTokens: st.allTokens,
                 buckets: buckets,
                 rate: rate,
@@ -1123,6 +1129,7 @@ final class UsageEngine {
                 offset: stored.offset,
                 watermark: wm,
                 last: last,
+                sawTokenCount: stored.sawTokenCount ?? false,
                 allTokens: stored.allTokens,
                 buckets: buckets,
                 rate: rate,
@@ -1139,7 +1146,11 @@ final class UsageEngine {
         }
 
         self.claudeFiles = fromStoredAdditive(payload.claudeFiles)
-        self.kimiFiles = fromStoredAdditive(payload.kimiFiles)
+        // Kimi wire.jsonl migrated to flat `usage.record` events which the
+        // old nested-schema parser never matched — pre-v5 persisted offsets
+        // sit past uncounted history, so v4 payloads drop kimi file state and
+        // the next scan reparses from 0 (one-time catch-up; v5+ loads keep it).
+        self.kimiFiles = payload.version >= 5 ? fromStoredAdditive(payload.kimiFiles) : [:]
         self.genericFiles = fromStoredAdditive(payload.genericFiles)
         self.codexFiles = loadedCodex
     }
@@ -1636,7 +1647,10 @@ final class UsageEngine {
         return map
     }
 
-    private func scanKimi(dirs: [String]) {
+    /// Incremental kimi scan. Internal for hermetic accuracy tests; call
+    /// resetState() first for isolation from durable engine state.
+    @discardableResult
+    func scanKimi(dirs: [String]) -> (today: Int, all: Int) {
         var seen = Set<String>()
         for dir in dirs {
             let root = NSString(string: dir).expandingTildeInPath
@@ -1667,7 +1681,8 @@ final class UsageEngine {
                         bucket.output += p.outputTokens
                         bucket.requests += 1
                         st.buckets[p.hour] = bucket
-                        var acc = st.models["kimi (model n/a)"] ?? ModelAccum()
+                        let model = p.model ?? "kimi (model n/a)"
+                        var acc = st.models[model] ?? ModelAccum()
                         acc.all += p.tokens
                         acc.inputAll += p.inputTokens
                         acc.outputAll += p.outputTokens
@@ -1678,11 +1693,11 @@ final class UsageEngine {
                             acc.outputToday += p.outputTokens
                             acc.requestsToday += 1
                         }
-                        st.models["kimi (model n/a)"] = acc
-                        var days = st.modelDays["kimi (model n/a)"] ?? [:]
+                        st.models[model] = acc
+                        var days = st.modelDays[model] ?? [:]
                         days[dayStartLocked(forHour: p.hour), default: 0] += p.tokens
                         pruneModelDays(&days, cutoff: kimiToday - Self.modelHistoryDays * 86_400)
-                        st.modelDays["kimi (model n/a)"] = days
+                        st.modelDays[model] = days
                     }
                 }
                 st.offset += UInt64(consumable.count)
@@ -1694,6 +1709,12 @@ final class UsageEngine {
         let kimiBefore = kimiFiles.count
         kimiFiles = kimiFiles.filter { seen.contains($0.key) }
         if kimiFiles.count != kimiBefore { parserStateDirty = true }
+        var todayTokens = 0, allTokens = 0
+        for (_, st) in kimiFiles {
+            allTokens += st.allTokens
+            for (h, b) in st.buckets where h >= todayBucket() { todayTokens += b.tokens }
+        }
+        return (todayTokens, allTokens)
     }
 
     /// Incremental codex scan. Internal for hermetic accuracy tests; call
@@ -1725,41 +1746,53 @@ final class UsageEngine {
                         if let rate = parsed.rate {
                             st.rate = rate
                         }
+                        var delta = CodexWatermark()
                         if let totals = parsed.totals {
-                            let delta = codexAcceptDetailed(totals, last: parsed.last ?? totals, state: &st)
-                            let deltaTokens = delta.displayTokens
-                            if deltaTokens > 0 {
-                                st.allTokens += deltaTokens
-                                st.modelTokens += deltaTokens
-                                st.inputAll += delta.input
-                                st.outputAll += delta.output
-                                st.cachedAll += delta.cached
-                                st.reasoningAll += delta.reasoning
-                                st.requestsAll += 1
-                                var bucket = st.buckets[parsed.hour] ?? HourBucket()
-                                bucket.tokens += deltaTokens
-                                bucket.input += delta.input
-                                bucket.output += delta.output
-                                bucket.requests += 1
-                                st.buckets[parsed.hour] = bucket
-                                let model = st.model.isEmpty ? "codex" : st.model
-                                var acc = st.models[model] ?? ModelAccum()
-                                acc.all += deltaTokens
-                                acc.inputAll += delta.input
-                                acc.outputAll += delta.output
-                                acc.requestsAll += 1
-                                if parsed.hour >= today {
-                                    acc.today += deltaTokens
-                                    acc.inputToday += delta.input
-                                    acc.outputToday += delta.output
-                                    acc.requestsToday += 1
-                                }
-                                st.models[model] = acc
-                                var days = st.modelDays[model] ?? [:]
-                                days[dayStartLocked(forHour: parsed.hour), default: 0] += deltaTokens
-                                pruneModelDays(&days, cutoff: today - Self.modelHistoryDays * 86_400)
-                                st.modelDays[model] = days
+                            st.sawTokenCount = true
+                            delta = codexAcceptDetailed(totals, last: parsed.last ?? totals, state: &st)
+                        } else if let rec = parsed.record, !st.sawTokenCount, rec.total > 0 {
+                            // Per-response record (no cumulative stream yet):
+                            // count it and advance the watermark so the paired
+                            // token_count — which already includes this
+                            // response — nets a zero delta when it arrives.
+                            st.watermark.input += rec.input
+                            st.watermark.output += rec.output
+                            st.watermark.cached += rec.cached
+                            st.watermark.reasoning += rec.reasoning
+                            delta = rec
+                        }
+                        let deltaTokens = delta.displayTokens
+                        if deltaTokens > 0 {
+                            st.allTokens += deltaTokens
+                            st.modelTokens += deltaTokens
+                            st.inputAll += delta.input
+                            st.outputAll += delta.output
+                            st.cachedAll += delta.cached
+                            st.reasoningAll += delta.reasoning
+                            st.requestsAll += 1
+                            var bucket = st.buckets[parsed.hour] ?? HourBucket()
+                            bucket.tokens += deltaTokens
+                            bucket.input += delta.input
+                            bucket.output += delta.output
+                            bucket.requests += 1
+                            st.buckets[parsed.hour] = bucket
+                            let model = st.model.isEmpty ? "codex" : st.model
+                            var acc = st.models[model] ?? ModelAccum()
+                            acc.all += deltaTokens
+                            acc.inputAll += delta.input
+                            acc.outputAll += delta.output
+                            acc.requestsAll += 1
+                            if parsed.hour >= today {
+                                acc.today += deltaTokens
+                                acc.inputToday += delta.input
+                                acc.outputToday += delta.output
+                                acc.requestsToday += 1
                             }
+                            st.models[model] = acc
+                            var days = st.modelDays[model] ?? [:]
+                            days[dayStartLocked(forHour: parsed.hour), default: 0] += deltaTokens
+                            pruneModelDays(&days, cutoff: today - Self.modelHistoryDays * 86_400)
+                            st.modelDays[model] = days
                         }
                     }
                 }
@@ -1812,6 +1845,9 @@ final class UsageEngine {
     struct CodexParsed {
         var totals: CodexWatermark?
         var last: CodexWatermark?
+        /// Per-response usage from `token_usage_record` events (additive,
+        /// redundant with `token_count` when both streams exist).
+        var record: CodexWatermark?
         var hour: Int
         var rate: CodexRate?
         var model: String?
@@ -1850,6 +1886,8 @@ final class UsageEngine {
 
         let totals = watermark(info?["total_token_usage"] as? [String: Any])
         let last = watermark(info?["last_token_usage"] as? [String: Any]) ?? totals
+        let record = (obj["type"] as? String) == "token_usage_record"
+            ? watermark(payload?["usage"] as? [String: Any]) : nil
 
         var rate: CodexRate?
         if let rl = payload?["rate_limits"] as? [String: Any],
@@ -1861,10 +1899,10 @@ final class UsageEngine {
                 resetsAt: (primary["resets_at"] as? NSNumber)?.intValue ?? 0)
         }
 
-        if totals == nil && rate == nil && model == nil {
+        if totals == nil && record == nil && rate == nil && model == nil {
             return nil
         }
-        return CodexParsed(totals: totals, last: last, hour: hour, rate: rate, model: model)
+        return CodexParsed(totals: totals, last: last, record: record, hour: hour, rate: rate, model: model)
     }
 
     struct KimiParsedLine {
@@ -1874,14 +1912,31 @@ final class UsageEngine {
         var cacheReadTokens: Int
         var cacheWriteTokens: Int
         var hour: Int
+        var model: String?
     }
 
     /// Parses one kimi wire.jsonl line. Internal for hermetic unit tests.
+    /// Accepts the modern flat `usage.record` event and the legacy nested
+    /// `message.payload.token_usage` shape.
     func parseKimiLine(_ line: Data) -> KimiParsedLine? {
-        guard let obj = try? JSONSerialization.jsonObject(with: line) as? [String: Any],
-              let message = obj["message"] as? [String: Any],
-              let payload = message["payload"] as? [String: Any],
-              let usage = payload["token_usage"] as? [String: Any] else { return nil }
+        guard let obj = try? JSONSerialization.jsonObject(with: line) as? [String: Any] else { return nil }
+
+        var usage: [String: Any]
+        var model: String?
+        if (obj["type"] as? String) == "usage.record" {
+            // "session"-scope records are cumulative summaries of the whole
+            // session; only per-request "turn" records are additive.
+            guard (obj["usageScope"] as? String) == "turn",
+                  let u = obj["usage"] as? [String: Any] else { return nil }
+            usage = u
+            model = (obj["model"] as? String).flatMap { m in
+                m.split(separator: "/").last.map { String($0) }
+            }
+        } else if let message = obj["message"] as? [String: Any],
+                  let payload = message["payload"] as? [String: Any],
+                  let u = payload["token_usage"] as? [String: Any] {
+            usage = u
+        } else { return nil }
 
         func field(_ names: [String]) -> Int {
             for n in names {
@@ -1899,13 +1954,18 @@ final class UsageEngine {
         guard tokens > 0 else { return nil }
 
         var hour = currentHour()
-        if let ts = obj["timestamp"] as? Double {
+        if let t = obj["time"] as? NSNumber {
+            var secs = t.doubleValue
+            if secs > 1e12 { secs /= 1000 }
+            hour = Int(secs / 3600) * 3600
+        } else if let ts = obj["timestamp"] as? Double {
             hour = Int(ts / 3600) * 3600
         } else if let ts = obj["timestamp"] as? String {
             hour = hourFromTimestamp(ts)
         }
         return KimiParsedLine(tokens: tokens, inputTokens: input, outputTokens: output,
-                              cacheReadTokens: cacheRead, cacheWriteTokens: cacheWrite, hour: hour)
+                              cacheReadTokens: cacheRead, cacheWriteTokens: cacheWrite,
+                              hour: hour, model: model)
     }
 
     struct AdditiveParsedLine {

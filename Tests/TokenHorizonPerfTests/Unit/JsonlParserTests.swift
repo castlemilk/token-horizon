@@ -133,6 +133,42 @@ final class JsonlParserTests: XCTestCase {
         XCTAssertNil(eng().parseKimiLine(data("garbage")))
     }
 
+    func testKimi_modernUsageRecord() {
+        // Current kimi-code wire.jsonl shape: flat event, camelCase usage,
+        // millisecond `time`, namespaced model.
+        let line = #"{"type":"usage.record","agentId":"main","model":"kimi-code/k3-256k","usage":{"inputOther":53424,"output":818,"inputCacheRead":512,"inputCacheCreation":64},"usageScope":"turn","time":1789443200125}"#
+        let p = eng().parseKimiLine(data(line))
+        XCTAssertNotNil(p)
+        XCTAssertEqual(p?.tokens, 54818)
+        XCTAssertEqual(p?.inputTokens, 53424)
+        XCTAssertEqual(p?.outputTokens, 818)
+        XCTAssertEqual(p?.cacheReadTokens, 512)
+        XCTAssertEqual(p?.cacheWriteTokens, 64)
+        XCTAssertEqual(p?.model, "k3-256k")
+        XCTAssertEqual(p?.hour, hour(of: 1789443200125.0 / 1000))
+    }
+
+    func testKimi_modernRecordSnakeCaseAndSecondsTime() {
+        let line = #"{"type":"usage.record","model":"kimi-code/k2","usage":{"input_other":3,"output":7},"usageScope":"turn","time":1725000000}"#
+        let p = eng().parseKimiLine(data(line))
+        XCTAssertEqual(p?.tokens, 10)
+        XCTAssertEqual(p?.model, "k2")
+        XCTAssertEqual(p?.hour, hour(of: 1725000000))
+    }
+
+    func testKimi_sessionScopeAndNonUsageEventsSkipped() {
+        // "session"-scope records are cumulative summaries — counting them
+        // alongside "turn" records would double-count the whole session.
+        let session = #"{"type":"usage.record","model":"kimi-code/k3-256k","usage":{"inputOther":191390,"output":1844},"usageScope":"session","time":1789443200125}"#
+        XCTAssertNil(eng().parseKimiLine(data(session)))
+        let noScope = #"{"type":"usage.record","usage":{"inputOther":5,"output":5},"time":1789443200125}"#
+        XCTAssertNil(eng().parseKimiLine(data(noScope)))
+        let measured = #"{"type":"token_counting.measured","agentId":"main","tokens":54242,"time":1789443200127}"#
+        XCTAssertNil(eng().parseKimiLine(data(measured)))
+        let request = #"{"type":"llm.request","agentId":"main","time":1789443200100}"#
+        XCTAssertNil(eng().parseKimiLine(data(request)))
+    }
+
     // MARK: - parseCodexLine
 
     func testCodex_fullLine() {
@@ -178,6 +214,23 @@ final class JsonlParserTests: XCTestCase {
         for (i, tc) in cases.enumerated() {
             XCTAssertEqual(eng().parseCodexLine(data(tc.line))?.model, tc.want, "case \(i)")
         }
+    }
+
+    func testCodex_tokenUsageRecord() {
+        // Newer sessions emit per-response records alongside token_count.
+        let line = """
+        {"timestamp":"2024-08-30T12:34:56Z","type":"token_usage_record",\
+        "payload":{"thread_id":"t1","turn_id":"u1",\
+        "usage":{"input_tokens":62816,"output_tokens":1900,\
+        "cached_input_tokens":4000,"cache_write_input_tokens":0,\
+        "reasoning_output_tokens":220}}}
+        """
+        let p = eng().parseCodexLine(data(line))
+        XCTAssertNil(p?.totals)
+        XCTAssertEqual(p?.record?.input, 62816)
+        XCTAssertEqual(p?.record?.output, 1900)
+        XCTAssertEqual(p?.record?.cached, 4000)
+        XCTAssertEqual(p?.record?.reasoning, 220)
     }
 
     func testCodex_emptyReturnsNil() {

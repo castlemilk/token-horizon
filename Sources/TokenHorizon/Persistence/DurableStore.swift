@@ -113,6 +113,9 @@ final class DurableStore {
         var offset: UInt64
         var watermark: StoredCodexWatermark
         var last: StoredCodexWatermark
+        /// Optional for backward-compatible decoding of pre-record-stream
+        /// state files (missing key → nil → false).
+        var sawTokenCount: Bool?
         var allTokens: Int
         var buckets: [String: StoredBucket]
         var rate: StoredCodexRate?
@@ -131,9 +134,13 @@ final class DurableStore {
         /// v2 added per-bucket token-class splits, per-model input/output/
         /// request accumulators, and per-project rollups. v3 added per-model
         /// daily buckets. v4 widened that window to 17 weeks for heatmap
-        /// drilldowns. Older payloads fail decoding (missing keys) and trigger
+        /// drilldowns. v5 adds codex `sawTokenCount` (record/count stream
+        /// dedup); kimi file state from v4 payloads is dropped on load so
+        /// wire.jsonl reparses under the `usage.record` parser — pre-v5
+        /// offsets sit past history the old nested-schema parser never
+        /// counted. Older payloads fail decoding (missing keys) and trigger
         /// a one-time full reparse — the only way to recover complete history.
-        var version: Int = 4
+        var version: Int = 5
         var claudeFiles: [String: StoredAdditiveFile]
         var kimiFiles: [String: StoredAdditiveFile]
         var genericFiles: [String: StoredAdditiveFile]
