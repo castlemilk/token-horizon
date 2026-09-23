@@ -70,6 +70,12 @@ pipeline's own `release v…`/`release metadata…` commits) never release.
 Rapid pushes serialize via the workflow's `concurrency` group — each
 queued token-bearing push still gets its own release.
 
+Caveats: the token matches **anywhere in the commit message** (subject or
+body) — don't write a literal `[release]`/bump token in a message that
+shouldn't ship. And cancelling a run mid-flight can leave the tag + pin
+commit pushed but no release published (delete the tag and reset/revert
+the pin commit to undo).
+
 The manual path is `scripts/release.sh` (or `task release`):
 
 ```bash
