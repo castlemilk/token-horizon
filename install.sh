@@ -201,6 +201,15 @@ GW_PORT=""
 HEALTH_JSON=""
 if [ -z "${TH_NO_LAUNCH:-}" ]; then
     step "Launch + verify"
+    # Upgrade path: the running copy still serves the OLD build — `open -a`
+    # would just activate it, not launch the new bundle. Quit it first;
+    # clean exit doesn't trip the KeepAlive(SuccessfulExit=false) agent,
+    # so the port frees and the new build takes over.
+    if pgrep -f "${APP_NAME}/Contents/MacOS/" >/dev/null 2>&1; then
+        info "stopping running copy…"
+        pkill -TERM -f "${APP_NAME}/Contents/MacOS/" 2>/dev/null || true
+        sleep 1
+    fi
     open -a "${INSTALL_DIR}/${APP_NAME}" 2>/dev/null || "$INSTALLED_BIN" >/dev/null 2>&1 &
     spin_start "waiting for :8765…"
     for _ in $(seq 1 30); do
@@ -213,6 +222,12 @@ if [ -z "${TH_NO_LAUNCH:-}" ]; then
         || fail ":8765 never came up — check $HOME/Library/Logs/TokenHorizon.log"
     SERVING_COMMIT=$(echo "$HEALTH_JSON" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('build',{}).get('commit','?'))" 2>/dev/null || true)
     ok "api up on :8765 (${SERVING_COMMIT:-?})"
+    # Upgrade sanity: if an old instance survived, :8765 still reports the
+    # previous build's stamp — flag it instead of silently "succeeding".
+    if [ -n "$INSTALLED_VER" ] && [ -n "$SERVING_COMMIT" ] \
+        && [ "$SERVING_COMMIT" != "$INSTALLED_VER" ]; then
+        warn "still serving old build ${SERVING_COMMIT} (installed ${INSTALLED_VER}) — quit & relaunch the app"
+    fi
     # The app always ships with its proxy: fail loudly if the sidecar never
     # attached (check ~/Library/Logs/token-horizon-gateway.log).
     GW_PORT=$(echo "$HEALTH_JSON" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('llm_gateway_port') or '')" 2>/dev/null || true)
