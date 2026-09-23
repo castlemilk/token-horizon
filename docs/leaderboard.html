@@ -67,6 +67,9 @@ button{font-family:inherit}
 .pill:hover{color:var(--text);border-color:var(--line2)}
 .pill.primary{background:linear-gradient(135deg,#3B7DFF,#5B5BF5);color:#fff;border:none;font-weight:600}
 .pill.ghost{background:transparent}
+.topnav-models{color:#9CC0FF;font-weight:600;background:linear-gradient(90deg,rgba(79,140,255,.14),rgba(139,92,246,.10));border-color:rgba(79,140,255,.32)}
+.topnav-models:hover{color:#fff;border-color:rgba(79,140,255,.55);background:linear-gradient(90deg,rgba(79,140,255,.22),rgba(139,92,246,.16))}
+.topnav-models.active{background:linear-gradient(90deg,rgba(79,140,255,.26),rgba(139,92,246,.18));border-color:rgba(79,140,255,.6);color:#fff}
 .user-chip{display:flex;align-items:center;gap:9px;background:var(--panel);border:1px solid var(--line);border-radius:999px;padding:5px 12px 5px 5px;cursor:pointer}
 .user-chip .avatar{width:28px;height:28px;font-size:11px}
 .user-chip small{display:block;color:var(--faint);font-size:10.5px}
@@ -546,6 +549,10 @@ body.th-flat .mx-flat-score{display:none}
         <input id="global-search" type="text" placeholder="Search users, teams, models…" autocomplete="off" />
       </div>
       <div class="topbar-spacer"></div>
+      <div class="pill topnav-models" id="models-nav" title="Model catalog — live pricing, benchmarks, plans" role="link" tabindex="0">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M12 3l9 5-9 5-9-5 9-5z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M3 13l9 5 9-5" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>
+        <span>Models</span>
+      </div>
       <div class="pill" id="range-pill" title="Analytics time range">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none"><rect x="3" y="5" width="18" height="16" rx="2" stroke="currentColor" stroke-width="1.6"/><path d="M3 10h18M8 3v4M16 3v4" stroke="currentColor" stroke-width="1.6"/></svg>
         <span id="range-label">Last 30 days</span>
@@ -1551,6 +1558,8 @@ const NAV = [
   { id: "settings", label: "Settings", icon: '<circle cx="12" cy="12" r="3" stroke="currentColor" stroke-width="1.6" fill="none"/><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M18.4 5.6l-2.1 2.1M7.7 16.3l-2.1 2.1" stroke="currentColor" stroke-width="1.5"/>' }
 ];
 function renderNav() {
+  const modelsNav = $("#models-nav");
+  if (modelsNav) modelsNav.classList.toggle("active", state.view === "models");
   $("#nav").innerHTML = NAV.map(n => `<div class="nav-item ${state.view === n.id ? "active" : ""}" data-view="${n.id}" tabindex="0" role="link" aria-current="${state.view === n.id ? "page" : "false"}"><svg viewBox="0 0 24 24" fill="none">${n.icon}</svg><span>${n.label}</span></div>`).join("");
   $$("#nav .nav-item").forEach(el => {
     el.onclick = () => navigate(el.dataset.view);
@@ -1689,6 +1698,9 @@ function wireChrome() {
     else render();
   });
   $("#filters-btn").onclick = () => { const r = $("#filters-row"); r.style.display = r.style.display === "none" ? "flex" : "none"; };
+  const modelsNav = $("#models-nav");
+  modelsNav.onclick = () => navigate("models");
+  keyActivate(modelsNav, () => navigate("models"));
   $("#league-filter").onchange = (e) => { state.leagueFilter = e.target.value; render(); };
   $("#team-filter").onchange = (e) => { state.teamFilter = e.target.value; render(); };
   $("#filters-clear").onclick = () => { state.leagueFilter = "all"; state.teamFilter = "all"; render(); };

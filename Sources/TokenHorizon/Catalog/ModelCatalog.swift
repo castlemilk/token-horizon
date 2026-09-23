@@ -314,6 +314,31 @@ final class ModelCatalog {
                 discountDetail: "97.5% prompt cache read discount ($10.00 → $0.25 / 1M)"
             )
         }
+        // Opus 5.5 must be checked before the generic opus-5 branch — its ids
+        // (claude-opus-5-5, claude-opus-5.5) also contain the "opus-5" substring
+        // and would otherwise fold into the Opus 5 entry and never surface.
+        if clean.contains("opus-5-5") || clean.contains("opus-5.5") || clean.contains("opus5-5") || clean.contains("opus-55") {
+            return Entry(
+                id: "claude-opus-5-5",
+                name: "Claude Opus 5.5",
+                provider: "anthropic",
+                providerName: "Anthropic",
+                inputPerM: 4.00,
+                outputPerM: 20.00,
+                cacheReadPerM: 0.20,
+                contextK: 1000,
+                benchmarks: nil,
+                docUrl: "https://docs.anthropic.com/en/docs/about-claude/models",
+                description: "Anthropic flagship for demanding reasoning, coding, and long-horizon agentic work — succeeds Opus 5 (95% prompt cache savings)",
+                reasoning: true,
+                toolCall: true,
+                vision: true,
+                openWeights: false,
+                discountPercent: 95,
+                discountLabel: "-95% CACHED",
+                discountDetail: "95% prompt cache read discount ($4.00 → $0.20 / 1M)"
+            )
+        }
         if clean.contains("claude-opus") || clean.contains("opus-5") || clean.contains("opus-4") {
             let isLegacy = clean.contains("opus-3") || clean.contains("opus-4-1")
             return Entry(

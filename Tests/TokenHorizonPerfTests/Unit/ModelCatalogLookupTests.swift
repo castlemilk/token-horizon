@@ -27,6 +27,30 @@ final class ModelCatalogLookupTests: XCTestCase {
         XCTAssertNotNil(luna)
         XCTAssertEqual(luna?.name, "GPT-5 Luna")
 
+        // Claude Opus 5.5 — a curated entry exists so spellings that miss the
+        // live feed cache still resolve to their own canonical model (never
+        // fold into Opus 5). Synthetic id guarantees no byId feed match.
+        let opus55 = catalog.lookup(id: "test/claude-opus-5-5-rc")
+        XCTAssertNotNil(opus55)
+        XCTAssertEqual(opus55?.id, "claude-opus-5-5")
+        XCTAssertEqual(opus55?.name, "Claude Opus 5.5")
+        XCTAssertEqual(opus55?.provider, "anthropic")
+        XCTAssertEqual(opus55?.inputPerM, 4.00)
+        XCTAssertEqual(opus55?.outputPerM, 20.00)
+        XCTAssertEqual(opus55?.cacheReadPerM, 0.20)
+        XCTAssertEqual(opus55?.contextK, 1000)
+        // Real feed spellings resolve to an Opus 5.5 entry — canonical or
+        // live-cached (byId wins, keeping live pricing) — but never Opus 5.
+        for variant in ["claude-opus-5-5", "anthropic/claude-opus-5.5", "claude-opus-5-5-thinking",
+                        "us.anthropic.claude-opus-5-5", "claude-opus-5-5@default"] {
+            let e = catalog.lookup(id: variant)
+            XCTAssertNotNil(e, variant)
+            XCTAssertNotEqual(e?.id, "claude-opus-5", variant)
+            XCTAssertTrue((e?.id ?? "").contains("5-5") || (e?.name ?? "").contains("5.5"), variant)
+        }
+        // …while genuine Opus 5 still lands on its own entry.
+        XCTAssertEqual(catalog.lookup(id: "claude-opus-5")?.id, "claude-opus-5")
+
         // Gemini 3.7 Flash
         let g37 = catalog.lookup(id: "gemini-3.7-flash")
         XCTAssertNotNil(g37)
