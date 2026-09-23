@@ -61,6 +61,18 @@ spin_stop() {
     [ -t 1 ] && printf '\r\033[K' || true
 }
 
+# Cleanup must exist BEFORE any spinner/fail can fire — otherwise an early
+# error orphans the spinner subshell, which keeps animating forever and
+# masks the real error message.
+STAGE=""
+cleanup() {
+    spin_stop
+    [ -n "$STAGE" ] && rm -rf "$STAGE"
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
 # --- banner -------------------------------------------------------------------
 printf '%s' "$CYAN"
 cat <<'BANNER'
@@ -95,10 +107,21 @@ else
         ok "pinned ${TAG}"
     else
         spin_start "contacting github…"
-        TAG=$(curl -fsSL --max-time 20 "https://api.github.com/repos/${REPO}/releases/latest" \
-            | python3 -c "import json,sys; print(json.load(sys.stdin).get('tag_name',''))" 2>/dev/null || true)
+        # Primary: the releases/latest 302 → /releases/tag/vX.Y.Z redirect.
+        # No API call → no rate limit, works on restricted networks.
+        # Fallback: the API (covers odd proxies that strip Location).
+        # `|| true` must live INSIDE the substitution: with set -euo pipefail,
+        # a failed pipeline aborts the whole script at the assignment before
+        # the fallback/fail below can run.
+        TAG=$(curl -fsSI --connect-timeout 10 --max-time 20 -o /dev/null \
+                -w '%{redirect_url}' "https://github.com/${REPO}/releases/latest" 2>/dev/null \
+              | sed -n 's|.*/tag/\(v[^/ ]*\).*|\1|p' || true)
+        if [ -z "$TAG" ]; then
+            TAG=$(curl -fsSL --connect-timeout 10 --max-time 20 "https://api.github.com/repos/${REPO}/releases/latest" \
+                | python3 -c "import json,sys; print(json.load(sys.stdin).get('tag_name',''))" 2>/dev/null || true)
+        fi
         spin_stop
-        [ -n "$TAG" ] || fail "could not resolve latest release (network or API limit?). Retry with VERSION=x.y.z."
+        [ -n "$TAG" ] || fail "could not resolve latest release (network or GitHub unreachable?). Retry with VERSION=x.y.z."
         ok "latest release ${BOLD}${TAG}${RESET}"
     fi
     ZIP_URL="https://github.com/${REPO}/releases/download/${TAG}/TokenHorizon-${TAG#v}.zip"
@@ -108,9 +131,8 @@ info "$ZIP_URL"
 # --- 3: download + unpack --------------------------------------------------------
 step "Download"
 STAGE="$(mktemp -d "${TMPDIR:-/tmp}/token-horizon-install.XXXXXX")"
-trap 'spin_stop; rm -rf "$STAGE"' EXIT
 spin_start "downloading ${TAG:-app}…"
-curl -fsSL --max-time 120 --retry 2 -o "$STAGE/app.zip" "$ZIP_URL" \
+curl -fsSL --connect-timeout 10 --max-time 120 --retry 2 -o "$STAGE/app.zip" "$ZIP_URL" \
     || { spin_stop; fail "download failed: $ZIP_URL"; }
 spin_stop
 ZIP_MB=$(du -m "$STAGE/app.zip" | awk '{print $1}')
