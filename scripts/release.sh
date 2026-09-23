@@ -10,10 +10,11 @@
 #   ./scripts/release.sh 0.4.2      # explicit version
 #   ./scripts/release.sh patch --dry-run   # print the plan, change nothing
 #
-# Also invoked by release.yml for non-tag triggers: a push to main
-# auto-releases (patch bump; "[bump minor]"/"[bump major]" in the commit
-# message upgrades it, "[skip release]"/"[no release]" opts out), and
-# workflow_dispatch does the same with an optional explicit version.
+# Also invoked by release.yml for non-tag triggers: a push to main whose
+# head commit carries a "[release]" token auto-releases (patch;
+# "[release minor]"/"[release major]" upgrade it, "[release X.Y.Z]" pins
+# an explicit version), and workflow_dispatch does the same with an
+# optional explicit version input.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 

@@ -22,21 +22,19 @@ concurrency:
 jobs:
   build-and-release:
     runs-on: macos-15
-    # Auto-release on every push to main, EXCEPT the pipeline's own commits
-    # (release.sh's "release vX.Y.Z" pin commit, the post-build "release
-    # metadata" cask commit — which also carries [skip ci]) or an explicit
-    # opt-out token in the commit message. GITHUB_TOKEN pushes wouldn't
-    # retrigger anyway; these guards cover user-credential pushes of the
-    # same shapes (local release.sh runs).
+    # Opt-in: a push to main releases only when the head commit message
+    # carries a release token — `[release]` (patch), `[release minor]`,
+    # `[release major]`. Everything else (docs, WIP, ordinary fixes) lands
+    # without a release. The pipeline's own `release v…`/`release metadata…`
+    # commits contain no token and never retrigger; GITHUB_TOKEN pushes
+    # wouldn't retrigger anyway.
     if: >-
       github.event_name == 'workflow_dispatch'
       || startsWith(github.ref, 'refs/tags/')
       || (github.ref_name == 'main'
           && github.event_name == 'push'
-          && !startsWith(github.event.head_commit.message, 'release v')
-          && !startsWith(github.event.head_commit.message, 'release metadata')
-          && !contains(github.event.head_commit.message, '[skip release]')
-          && !contains(github.event.head_commit.message, '[no release]'))
+          && (contains(github.event.head_commit.message, '[release]')
+              || contains(github.event.head_commit.message, '[release ')))
     steps:
       - uses: actions/checkout@v4
         with:
@@ -114,23 +112,29 @@ jobs:
             V="${{ inputs.version }}"
             V="${V#v}"
           else
-            # Main push (auto-bump) or blank dispatch: next patch after the
-            # latest tag. A [bump minor] / [bump major] token in the pushed
-            # commit message upgrades the bump.
-            BUMP=patch
-            case "${HEAD_MSG:-}" in
-              *"[bump major]"*) BUMP=major ;;
-              *"[bump minor]"*) BUMP=minor ;;
-            esac
-            LATEST="$(git tag --list 'v[0-9]*' --sort=-v:refname | head -1)"
-            LATEST="${LATEST#v}"; LATEST="${LATEST:-0.0.0}"
-            IFS='.' read -r MA MI PA <<< "$LATEST"
-            case "$BUMP" in
-              major) V="$(( ${MA:-0} + 1 )).0.0" ;;
-              minor) V="${MA:-0}.$(( ${MI:-0} + 1 )).0" ;;
-              *)     V="${MA:-0}.${MI:-0}.$(( ${PA:-0} + 1 ))" ;;
-            esac
-            echo "auto-bump: $BUMP (latest v${LATEST})"
+            # Main push (opt-in via [release] token) or blank dispatch:
+            # next patch after the latest tag. [release minor] /
+            # [release major] upgrade the bump; [release X.Y.Z] pins an
+            # explicit version.
+            EXPLICIT="$(printf '%s' "${HEAD_MSG:-}" | sed -n 's/.*\[release \([0-9][0-9.]*[0-9]\)\].*/\1/p')"
+            if [ -n "$EXPLICIT" ]; then
+              V="$EXPLICIT"; echo "explicit version from commit token: $V"
+            else
+              BUMP=patch
+              case "${HEAD_MSG:-}" in
+                *"[release major]"*) BUMP=major ;;
+                *"[release minor]"*) BUMP=minor ;;
+              esac
+              LATEST="$(git tag --list 'v[0-9]*' --sort=-v:refname | head -1)"
+              LATEST="${LATEST#v}"; LATEST="${LATEST:-0.0.0}"
+              IFS='.' read -r MA MI PA <<< "$LATEST"
+              case "$BUMP" in
+                major) V="$(( ${MA:-0} + 1 )).0.0" ;;
+                minor) V="${MA:-0}.$(( ${MI:-0} + 1 )).0" ;;
+                *)     V="${MA:-0}.${MI:-0}.$(( ${PA:-0} + 1 ))" ;;
+              esac
+              echo "auto-bump: $BUMP (latest v${LATEST})"
+            fi
           fi
           # Strict X.Y.Z — a malformed tag or input must fail before packaging.
           echo "$V" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' || {
