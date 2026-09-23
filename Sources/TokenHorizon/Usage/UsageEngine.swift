@@ -56,6 +56,86 @@ final class UsageEngine {
     /// HomeDiscovery's 30s `$HOME` listing cache.
     static let listingTTL: TimeInterval = 30
 
+    // MARK: - Change-driven scanning
+
+    /// (expanded root → source) pairs attributing fs-events to scanners.
+    /// Rebuilt every collect from the live dir lists; roots are the scan
+    /// dirs' PARENTS so sibling files (devin sessions.db) and later-created
+    /// session subdirs are covered too. Internal for tests.
+    var watchSpec: [(root: String, source: String)] = []
+    /// Sources with fs changes since the last collect. "*" = all (first
+    /// collect, resetState, or a dropped/overflowed event stream). Sources
+    /// not pending skip their per-file stat loop entirely — idle ticks do
+    /// zero filesystem work. Internal for tests.
+    var dirtySources: Set<String> = ["*"]
+    /// Last full re-scan. FSEvents reports drops explicitly (→ forceAll),
+    /// but a periodic sweep bounds residual staleness to `sweepInterval`
+    /// regardless — the backstop that keeps the event path honest.
+    var lastSweepAt = Date.distantPast
+    static let sweepInterval: TimeInterval = 60
+    private var activityItem: DispatchWorkItem?
+    /// Fires ~0.75s after the latest fs-event batch (trailing debounce).
+    /// AppDelegate hooks it to refreshHeavy() — writes reach the UI/API in
+    /// ~1s instead of waiting out the 5s tick.
+    var onActivity: (() -> Void)?
+
+    private lazy var watcher = DirectoryWatcher { [weak self] events, forceAll in
+        self?.noteFSEvents(events, forceAll: forceAll)
+    }
+
+    /// Capture + clear the pending-dirty set; a due sweep re-arms "*".
+    /// Callers hold `lock`.
+    private func consumePendingScans(now: Date = Date()) -> Set<String> {
+        if now.timeIntervalSince(lastSweepAt) >= Self.sweepInterval {
+            lastSweepAt = now
+            dirtySources = ["*"]
+        }
+        defer { dirtySources = [] }
+        return dirtySources
+    }
+
+    /// Locking wrapper for tests; production callers (collectLocked) hold
+    /// the lock already.
+    func drainPendingScans(now: Date = Date()) -> Set<String> {
+        lock.lock()
+        defer { lock.unlock() }
+        return consumePendingScans(now: now)
+    }
+
+    /// FSEvents callback (watcher queue). Marks each event's owning source
+    /// dirty so the next collect re-scans it; structural events
+    /// (create/remove/rename) also invalidate the listing cache so new
+    /// files are discovered without waiting out `listingTTL`.
+    func noteFSEvents(_ events: [(path: String, structural: Bool)], forceAll: Bool) {
+        lock.lock()
+        if forceAll {
+            dirtySources = ["*"]
+            listingCache.removeAll()
+        } else {
+            for (path, structural) in events {
+                for (root, source) in watchSpec
+                where path == root || path.hasPrefix(root + "/") {
+                    dirtySources.insert(source)
+                    guard structural else { continue }
+                    // Spec roots are scan-dir PARENTS, while listing keys are
+                    // rooted at the scan dir (key = root + "\0" + …). A key
+                    // under this root starts with "<root>/" (scan dir deeper)
+                    // or "<root>\0" (scan dir == root, e.g. the sqlite dirs).
+                    let stale = listingCache.keys.filter {
+                        $0.hasPrefix(root + "/") || $0.hasPrefix(root + "\0")
+                    }
+                    for k in stale { listingCache.removeValue(forKey: k) }
+                }
+            }
+        }
+        lock.unlock()
+        // Trailing debounce: bursts of writes collapse into one refresh.
+        activityItem?.cancel()
+        let item = DispatchWorkItem { [weak self] in self?.onActivity?() }
+        activityItem = item
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 0.75, execute: item)
+    }
+
     struct AdditiveWatermark {
         var input: Int = 0
         var output: Int = 0
@@ -268,6 +348,10 @@ final class UsageEngine {
         devinMtimes.removeAll()
         scanVersions.removeAll()
         scanMemos.removeAll()
+        // Re-arm a full scan: every source must re-read regardless of what
+        // the fs-event stream saw before the reset.
+        dirtySources = ["*"]
+        lastSweepAt = .distantPast
         // Force the cleared state to disk next tick: otherwise a restart
         // would reload the stale pre-reset payload and skip data.
         parserStateDirty = true
@@ -591,6 +675,51 @@ final class UsageEngine {
         var ph = PhaseTimer()
         ph.mark("start")
 
+        // Change-driven scan gating. Every source's dirs are computed up
+        // front; the fs-watch spec uses their PARENTS so sibling files
+        // (devin sessions.db, opencode.db sidecars) and later-created
+        // session subdirs are covered too. Sources with no fs events and
+        // no due sweep skip their per-file stat loops entirely — idle
+        // collects are pure in-memory summarization.
+        let claudeDirs = ClaudeDiscovery.discoverDirectories()
+        var claudeScanDirs: [String] = []
+        for dir in claudeDirs {
+            claudeScanDirs.append("\(dir)/projects")
+            claudeScanDirs.append("\(dir)/transcripts")
+        }
+        let codexDirs = Self.codexScanDirs
+        let kimiScanDirs = Self.kimiDirs
+        let generics = Self.genericSources
+        let devinScanDirs = Self.devinDirs
+
+        var spec: [(root: String, source: String)] = []
+        func watch(_ dirs: [String], _ source: String) {
+            for d in dirs {
+                let parent = (NSString(string: d).expandingTildeInPath as NSString).deletingLastPathComponent
+                spec.append((parent, source))
+            }
+        }
+        watch(claudeScanDirs, "claude")
+        watch(codexDirs, "codex")
+        watch(kimiScanDirs, "kimi")
+        for s in generics { watch(s.dirs, s.tool) }
+        watch(devinScanDirs, "devin")
+        // sqlite sources watch their db dirs directly (fingerprint-gated
+        // reads stay every-collect; the event only drives the ~1s refresh).
+        spec.append((HomeDiscovery.expand("~/.local/share/opencode"), "opencode"))
+        spec.append((HomeDiscovery.expand("~/Library/Application Support/opencode"), "opencode"))
+
+        let oldRoots = Set(watchSpec.map(\.root))
+        var pending = consumePendingScans()
+        // A root that appeared since the last collect was never watched —
+        // scan its sources now rather than waiting for the sweep.
+        for (root, source) in spec where !oldRoots.contains(root) {
+            pending.insert(source)
+        }
+        watchSpec = spec
+        watcher.sync(roots: spec.map(\.root))
+        func due(_ s: String) -> Bool { pending.contains("*") || pending.contains(s) }
+
         let opencode = cachedOpencodeLocked()
         if let oc = opencode.sums {
             tools.append(ToolUsage(tool: "opencode",
@@ -613,14 +742,9 @@ final class UsageEngine {
         }
         ph.mark("opencode")
 
-        let claudeDirs = ClaudeDiscovery.discoverDirectories()
-        var claudeScanDirs: [String] = []
-        for dir in claudeDirs {
-            claudeScanDirs.append("\(dir)/projects")
-            claudeScanDirs.append("\(dir)/transcripts")
-        }
         let claude = scanAdditive(dirs: claudeScanDirs,
-                                  state: &claudeFiles, prefix: "claude")
+                                  state: &claudeFiles, prefix: "claude",
+                                  scan: due("claude"))
         if claude.allTokens > 0 || claude.trackedAny {
             tools.append(ToolUsage(tool: "claude",
                                    tokensToday: claude.todayTokens, tokensAllTime: claude.allTokens,
@@ -677,7 +801,7 @@ final class UsageEngine {
         snap.claudeAccounts = claudeAccounts
         ph.mark("accts")
 
-        let codexToday = scanCodex(dirs: Self.codexScanDirs)
+        let codexToday = scanCodex(dirs: codexDirs, scan: due("codex"))
         if let rate = latestCodexRate() {
             let left = max(0, Int(100 - rate.usedPercent))
             snap.limits.append(ProviderLimit(
@@ -735,7 +859,7 @@ final class UsageEngine {
         ph.mark("codex")
 
         var kimi = SourceResult()
-        scanKimi(dirs: Self.kimiDirs)
+        scanKimi(dirs: kimiScanDirs, scan: due("kimi"))
         let kimiToday = todayBucket()
         for (_, st) in kimiFiles {
             kimi.allTokens += st.allTokens
@@ -794,8 +918,9 @@ final class UsageEngine {
         mergeModelDays(into: &mergedModelDays, from: kimi.modelDays)
         ph.mark("kimi")
 
-        for source in Self.genericSources {
-            let r = scanAdditive(dirs: source.dirs, state: &genericFiles, prefix: source.tool)
+        for source in generics {
+            let r = scanAdditive(dirs: source.dirs, state: &genericFiles,
+                                 prefix: source.tool, scan: due(source.tool))
             if r.allTokens > 0 {
                 tools.append(ToolUsage(tool: source.tool,
                                        tokensToday: r.todayTokens, tokensAllTime: r.allTokens,
@@ -825,7 +950,7 @@ final class UsageEngine {
         }
         ph.mark("generic")
 
-        let devin = scanDevin(dirs: Self.devinDirs, state: &genericFiles)
+        let devin = scanDevin(dirs: devinScanDirs, state: &genericFiles, scan: due("devin"))
         if devin.allTokens > 0 || devin.trackedAny {
             tools.append(ToolUsage(tool: "devin",
                                    tokensToday: devin.todayTokens, tokensAllTime: devin.allTokens,
@@ -1324,12 +1449,15 @@ final class UsageEngine {
 
     /// Incremental additive scan over session dirs. Internal for hermetic
     /// accuracy tests (temp dirs + local state, no HOME involved).
-    func scanAdditive(dirs: [String], state: inout [String: AdditiveFileState], prefix: String) -> SourceResult {
+    /// `scan == false` (fs-event gating: no changes pending) skips the
+    /// enumerate/stat/read loop AND the purge — summarize-only.
+    func scanAdditive(dirs: [String], state: inout [String: AdditiveFileState], prefix: String, scan: Bool = true) -> SourceResult {
         let today = todayBucket()
         let modelDayCutoff = today - Self.modelHistoryDays * 86_400
         var seen = Set<String>()
         let keyPrefix = prefix + "::"
 
+        if scan {
         for dir in dirs {
             let root = NSString(string: dir).expandingTildeInPath
             for item in cachedFiles(in: root, excluding: Self.excludedDirNames(for: prefix)) {
@@ -1419,15 +1547,19 @@ final class UsageEngine {
             parserStateDirty = true
             scanVersions[prefix, default: 0] += 1
         }
+        }
+        // Not scanned: `seen` is empty — report tracked files from state so
+        // the caller's trackedAny check still holds.
+        let tracked = scan ? !seen.isEmpty : state.keys.contains { $0.hasPrefix(keyPrefix) }
         // Memoized tail: pure function of this prefix's state slice + today.
         // Idle ticks (no deltas, no purges) reuse the previous SourceResult.
         if let m = scanMemos[prefix], m.version == (scanVersions[prefix] ?? 0), m.today == today {
             var cached = m.result
-            cached.trackedAny = !seen.isEmpty
+            cached.trackedAny = tracked
             return cached
         }
         var out = summarizeAdditive(prefix: prefix, state: state, today: today)
-        out.trackedAny = !seen.isEmpty
+        out.trackedAny = tracked
         scanMemos[prefix] = ScanMemo(version: scanVersions[prefix] ?? 0, today: today, result: out)
         return out
     }
@@ -1556,13 +1688,15 @@ final class UsageEngine {
     /// `cached_tokens` (OpenAI semantics), so input = prompt - cached and
     /// cacheRead = cached.
     private var devinMtimes: [String: (size: UInt64, mtime: TimeInterval)] = [:]
-    func scanDevin(dirs: [String], state: inout [String: AdditiveFileState], prefix: String = "devin") -> SourceResult {
+    /// `scan == false` skips file work and the purge (fs-event gating).
+    func scanDevin(dirs: [String], state: inout [String: AdditiveFileState], prefix: String = "devin", scan: Bool = true) -> SourceResult {
         let today = todayBucket()
         let modelDayCutoff = today - Self.modelHistoryDays * 86_400
         var seen = Set<String>()
         let keyPrefix = prefix + "::"
         let projectDirs = devinProjectDirs()
 
+        if scan {
         for dir in dirs {
             let root = NSString(string: dir).expandingTildeInPath
             for item in cachedFiles(in: root, suffix: ".json") {
@@ -1632,13 +1766,15 @@ final class UsageEngine {
             parserStateDirty = true
             scanVersions[prefix, default: 0] += 1
         }
+        }
+        let tracked = scan ? !seen.isEmpty : state.keys.contains { $0.hasPrefix(keyPrefix) }
         if let m = scanMemos[prefix], m.version == (scanVersions[prefix] ?? 0), m.today == today {
             var cached = m.result
-            cached.trackedAny = !seen.isEmpty
+            cached.trackedAny = tracked
             return cached
         }
         var out = summarizeAdditive(prefix: prefix, state: state, today: today)
-        out.trackedAny = !seen.isEmpty
+        out.trackedAny = tracked
         scanMemos[prefix] = ScanMemo(version: scanVersions[prefix] ?? 0, today: today, result: out)
         return out
     }
@@ -1702,9 +1838,11 @@ final class UsageEngine {
 
     /// Incremental kimi scan. Internal for hermetic accuracy tests; call
     /// resetState() first for isolation from durable engine state.
+    /// `scan == false` skips file work and the purge (fs-event gating).
     @discardableResult
-    func scanKimi(dirs: [String]) -> (today: Int, all: Int) {
+    func scanKimi(dirs: [String], scan: Bool = true) -> (today: Int, all: Int) {
         var seen = Set<String>()
+        if scan {
         for dir in dirs {
             let root = NSString(string: dir).expandingTildeInPath
             for item in cachedFiles(in: root, suffix: "wire.jsonl") {
@@ -1766,10 +1904,13 @@ final class UsageEngine {
                 parserStateDirty = true
             }
         }
+        }
         // Drop state for removed variant dirs/files (mirrors scanAdditive).
-        let kimiBefore = kimiFiles.count
-        kimiFiles = kimiFiles.filter { seen.contains($0.key) }
-        if kimiFiles.count != kimiBefore { parserStateDirty = true }
+        if scan {
+            let kimiBefore = kimiFiles.count
+            kimiFiles = kimiFiles.filter { seen.contains($0.key) }
+            if kimiFiles.count != kimiBefore { parserStateDirty = true }
+        }
         var todayTokens = 0, allTokens = 0
         for (_, st) in kimiFiles {
             allTokens += st.allTokens
@@ -1780,11 +1921,13 @@ final class UsageEngine {
 
     /// Incremental codex scan. Internal for hermetic accuracy tests; call
     /// resetState() first for isolation from durable engine state.
-    func scanCodex(dirs: [String]) -> (today: Int, all: Int) {
+    /// `scan == false` skips file work and the purge (fs-event gating).
+    func scanCodex(dirs: [String], scan: Bool = true) -> (today: Int, all: Int) {
         var state = codexFiles
         let today = todayBucket()
         var seen = Set<String>()
 
+        if scan {
         for dir in dirs {
             let root = NSString(string: dir).expandingTildeInPath
             for item in cachedFiles(in: root) {
@@ -1884,6 +2027,7 @@ final class UsageEngine {
         let codexBefore = state.count
         codexFiles = state.filter { seen.contains($0.key) }
         if codexFiles.count != codexBefore { parserStateDirty = true }
+        }
         var todayTokens = 0, allTokens = 0
         for (_, st) in codexFiles {
             allTokens += st.allTokens

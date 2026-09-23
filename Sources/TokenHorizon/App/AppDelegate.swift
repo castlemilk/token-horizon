@@ -89,6 +89,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                                  self?.refreshTrends()
                              })
         server.start()
+        // fs-event-driven freshness: writes under provider roots mark the
+        // owning source dirty and fire this ~0.75s later (debounced), so
+        // usage lands in the UI/API in ~1s instead of waiting out the 5s
+        // tick. Idle ticks then do zero file work; a 60s sweep backstops.
+        engine.onActivity = { [weak self] in self?.refreshHeavy() }
         _ = TokenHorizonTelemetry.shared
         OllamaTelemetryProxy.shared.start()
         GatewaySupervisor.shared.start()

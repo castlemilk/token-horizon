@@ -525,4 +525,163 @@ final class TokenCountingAccuracyTests: XCTestCase {
         XCTAssertEqual(map["sess-1"], "/Users/dev/alpha")
         XCTAssertEqual(map["sess-2"], "/Users/dev/beta")
     }
+
+    // MARK: - Change-driven scanning (fs-event gating)
+
+    /// The core invariant: `scan: false` never reads files and never
+    /// purges — it only re-summarizes existing state. Appends written
+    /// between gated collects land on the next real scan.
+    func testScanGate_additiveNotScannedKeepsTotals() {
+        let nowTs = Double(nowHour)
+        write("s.jsonl", """
+        {"message":{"id":"m1","usage":{"input_tokens":10,"output_tokens":20}},"timestamp":\(nowTs)}
+
+        """)
+        let e = engine()
+        var state: [String: UsageEngine.AdditiveFileState] = [:]
+        XCTAssertEqual(e.scanAdditive(dirs: [root], state: &state, prefix: "test").allTokens, 30)
+        append("s.jsonl", #"{"message":{"id":"m2","usage":{"input_tokens":5,"output_tokens":5}},"timestamp":\#(nowTs)}"# + "\n")
+        let gated = e.scanAdditive(dirs: [root], state: &state, prefix: "test", scan: false)
+        XCTAssertEqual(gated.allTokens, 30)
+        XCTAssertTrue(gated.trackedAny)
+        XCTAssertEqual(e.scanAdditive(dirs: [root], state: &state, prefix: "test").allTokens, 40)
+    }
+
+    /// Purge is scan-side: a deleted file's state must survive a gated
+    /// collect — otherwise idle ticks would zero every total.
+    func testScanGate_notScannedDoesNotPurge() {
+        let nowTs = Double(nowHour)
+        write("s.jsonl", """
+        {"message":{"id":"m1","usage":{"input_tokens":10,"output_tokens":20}},"timestamp":\(nowTs)}
+
+        """)
+        let e = engine()
+        e.watchSpec = [(root: root, source: "test")]
+        var state: [String: UsageEngine.AdditiveFileState] = [:]
+        XCTAssertEqual(e.scanAdditive(dirs: [root], state: &state, prefix: "test").allTokens, 30)
+        try! FileManager.default.removeItem(atPath: root + "/s.jsonl")
+        let gated = e.scanAdditive(dirs: [root], state: &state, prefix: "test", scan: false)
+        XCTAssertEqual(gated.allTokens, 30)
+        XCTAssertTrue(gated.trackedAny)
+        // Real deletion path: remove event → listing invalidated → next
+        // scan's purge drops the state.
+        e.noteFSEvents([(path: root + "/s.jsonl", structural: true)], forceAll: false)
+        XCTAssertEqual(e.scanAdditive(dirs: [root], state: &state, prefix: "test").allTokens, 0)
+    }
+
+    func testScanGate_kimiNotScannedKeepsTotals() {
+        let t = (nowHour + 60) * 1000
+        write("wire.jsonl", #"{"type":"usage.record","usage":{"inputOther":10,"output":5},"usageScope":"turn","time":\#(t)}"# + "\n")
+        let e = engine()
+        XCTAssertEqual(e.scanKimi(dirs: [root]).all, 15)
+        append("wire.jsonl", #"{"type":"usage.record","usage":{"inputOther":20,"output":5},"usageScope":"turn","time":\#(t)}"# + "\n")
+        XCTAssertEqual(e.scanKimi(dirs: [root], scan: false).all, 15)
+        XCTAssertEqual(e.scanKimi(dirs: [root]).all, 40)
+    }
+
+    func testScanGate_codexNotScannedKeepsTotals() {
+        let now = ISO8601DateFormatter().string(from: Date())
+        write("sess.jsonl", codexCount(now, 100, 50) + "\n")
+        let e = engine()
+        XCTAssertEqual(e.scanCodex(dirs: [root]).all, 150)
+        append("sess.jsonl", codexCount(now, 200, 80) + "\n")
+        XCTAssertEqual(e.scanCodex(dirs: [root], scan: false).all, 150)
+        XCTAssertEqual(e.scanCodex(dirs: [root]).all, 280)
+    }
+
+    func testScanGate_devinNotScannedKeepsTotals() {
+        write("sess-1.json", devinDoc(steps: [devinStep(2, prompt: 1000, completion: 100, cached: 400)]))
+        let e = engine()
+        var state: [String: UsageEngine.AdditiveFileState] = [:]
+        XCTAssertEqual(e.scanDevin(dirs: [root], state: &state).allTokens, 1100)
+        write("sess-1.json", devinDoc(steps: [
+            devinStep(2, prompt: 1000, completion: 100, cached: 400),
+            devinStep(3, prompt: 500, completion: 50, cached: 0),
+        ]))
+        XCTAssertEqual(e.scanDevin(dirs: [root], state: &state, scan: false).allTokens, 1100)
+        XCTAssertEqual(e.scanDevin(dirs: [root], state: &state).allTokens, 1650)
+    }
+
+    /// Event paths map to the owning source via watch roots — with a path
+    /// boundary so a sibling dir sharing the name prefix does not match.
+    func testNoteFSEvents_marksOwningSourceDirty() {
+        let e = engine()
+        _ = e.drainPendingScans()   // clear the boot "*" from resetState
+        e.watchSpec = [(root: root, source: "kimi"), (root: root + "2", source: "codex")]
+        e.noteFSEvents([(path: root + "/a/wire.jsonl", structural: false)], forceAll: false)
+        XCTAssertEqual(e.dirtySources, ["kimi"])
+        e.noteFSEvents([(path: root + "2/sessions/x.jsonl", structural: false)], forceAll: false)
+        XCTAssertEqual(e.dirtySources, ["kimi", "codex"])
+        _ = e.drainPendingScans()
+        e.noteFSEvents([(path: root + "-evil/sessions/x.jsonl", structural: false)], forceAll: false)
+        XCTAssertTrue(e.dirtySources.isEmpty)
+        e.noteFSEvents([], forceAll: true)
+        XCTAssertEqual(e.dirtySources, ["*"])
+    }
+
+    /// Pending scans are consumed once; an expired sweep re-arms "*".
+    func testDrainPendingScans_consumeAndSweep() {
+        let e = engine()
+        XCTAssertEqual(e.drainPendingScans(), ["*"])   // resetState arms all
+        XCTAssertTrue(e.drainPendingScans().isEmpty)
+        e.watchSpec = [(root: root, source: "kimi")]
+        e.noteFSEvents([(path: root + "/wire.jsonl", structural: false)], forceAll: false)
+        XCTAssertEqual(e.drainPendingScans(), ["kimi"])
+        XCTAssertTrue(e.drainPendingScans().isEmpty)
+        e.lastSweepAt = Date().addingTimeInterval(-UsageEngine.sweepInterval - 1)
+        XCTAssertEqual(e.drainPendingScans(), ["*"])
+    }
+
+    /// Structural events (create/remove/rename) invalidate the listing
+    /// cache so a brand-new file is found on the next scan instead of
+    /// waiting out listingTTL. Pure appends must NOT invalidate.
+    func testNoteFSEvents_structuralEventDiscoversNewFile() {
+        let nowTs = Double(nowHour)
+        write("a.jsonl", """
+        {"message":{"id":"m1","usage":{"input_tokens":10,"output_tokens":20}},"timestamp":\(nowTs)}
+
+        """)
+        let e = engine()
+        _ = e.drainPendingScans()   // clear the boot "*" from resetState
+        // Production shape: the watch spec roots are the scan dirs' PARENTS
+        // (collectLocked builds them that way), so the event path sits two
+        // levels under its spec root while the listing cache is keyed at
+        // the scan dir. This once regressed — invalidation anchored on the
+        // spec root missed the deeper key and new files waited out the TTL.
+        let parent = (root as NSString).deletingLastPathComponent
+        e.watchSpec = [(root: parent, source: "test")]
+        var state: [String: UsageEngine.AdditiveFileState] = [:]
+        XCTAssertEqual(e.scanAdditive(dirs: [root], state: &state, prefix: "test").allTokens, 30)
+        // New file within listingTTL: a full scan still serves the cached
+        // listing — nothing new is found.
+        write("b.jsonl", """
+        {"message":{"id":"m2","usage":{"input_tokens":100,"output_tokens":0}},"timestamp":\(nowTs)}
+
+        """)
+        XCTAssertEqual(e.scanAdditive(dirs: [root], state: &state, prefix: "test").allTokens, 30)
+        // Non-structural event: dirty only, listing cache intact → still 30.
+        e.noteFSEvents([(path: root + "/a.jsonl", structural: false)], forceAll: false)
+        XCTAssertEqual(e.dirtySources, ["test"])
+        XCTAssertEqual(e.scanAdditive(dirs: [root], state: &state, prefix: "test").allTokens, 30)
+        // Structural event on the new file → listing invalidated → found.
+        e.noteFSEvents([(path: root + "/b.jsonl", structural: true)], forceAll: false)
+        XCTAssertEqual(e.scanAdditive(dirs: [root], state: &state, prefix: "test").allTokens, 130)
+    }
+
+    /// The debounced activity hook fires once per burst (trailing edge).
+    func testNoteFSEvents_debouncedActivityFires() {
+        let e = engine()
+        _ = e.drainPendingScans()
+        e.watchSpec = [(root: root, source: "kimi")]
+        var fired = 0
+        let exp = expectation(description: "onActivity")
+        e.onActivity = { fired += 1; exp.fulfill() }
+        e.noteFSEvents([(path: root + "/a.jsonl", structural: false)], forceAll: false)
+        e.noteFSEvents([(path: root + "/b.jsonl", structural: false)], forceAll: false)
+        waitForExpectations(timeout: 3)
+        // Outwait the debounce window: a second fire would mean the burst
+        // wasn't collapsed.
+        Thread.sleep(forTimeInterval: 1.0)
+        XCTAssertEqual(fired, 1)
+    }
 }
