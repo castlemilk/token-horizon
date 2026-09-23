@@ -3,6 +3,11 @@ on:
   push:
     tags: ["v*"]
   workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release (X.Y.Z). Blank = next patch after the latest v* tag."
+        required: false
+        type: string
 
 permissions:
   contents: write
@@ -12,6 +17,8 @@ jobs:
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # tag history needed for semver resolution on dispatch
 
       - name: Select Xcode
         run: |
@@ -74,12 +81,31 @@ jobs:
             echo "NOTARY_APP_PASSWORD=${{ secrets.APPLE_APP_PASSWORD }}" >> "$GITHUB_ENV"
           fi
 
-      - name: Build + sign + notarize + package
+      - name: Resolve release version
+        id: ver
         run: |
           if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
-            export MARKETING_VERSION="${GITHUB_REF_NAME#v}"
+            V="${GITHUB_REF_NAME#v}"
+          elif [ -n "${{ inputs.version }}" ]; then
+            V="${{ inputs.version }}"
+            V="${V#v}"
+          else
+            # Manual dispatch without a version: next patch after latest tag.
+            LATEST="$(git tag --list 'v[0-9]*' --sort=-v:refname | head -1)"
+            LATEST="${LATEST#v}"; LATEST="${LATEST:-0.0.0}"
+            IFS='.' read -r MA MI PA <<< "$LATEST"
+            V="${MA:-0}.${MI:-0}.$(( ${PA:-0} + 1 ))"
           fi
-          ./scripts/package-notarized.sh
+          # Strict X.Y.Z — a malformed tag or input must fail before packaging.
+          echo "$V" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' || {
+            echo "::error::'$V' is not a semantic version (want X.Y.Z)"; exit 1; }
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          echo "resolved version: $V"
+
+      - name: Build + sign + notarize + package
+        env:
+          MARKETING_VERSION: ${{ steps.ver.outputs.version }}
+        run: ./scripts/package-notarized.sh
 
       - name: Clean up keychain
         if: always() && steps.creds.outputs.signed == '1'
@@ -95,6 +121,9 @@ jobs:
       - name: Publish GitHub release
         uses: softprops/action-gh-release@v2
         with:
+          # Explicit tag: identical to the trigger tag on tag pushes; on
+          # manual dispatch it creates vX.Y.Z at the checked-out commit.
+          tag_name: v${{ steps.ver.outputs.version }}
           files: |
             dist/TokenHorizon-*.zip
             dist/TokenHorizon-*.dmg
@@ -106,3 +135,63 @@ jobs:
           # README film embeds all resolve through /releases/latest, which
           # skips prereleases. Preview status lives in the notes instead.
           prerelease: false
+
+      # --- Homebrew cask: update sha256 + sync the tap -------------------------
+      # The cask sha256 can only exist post-build, so the repo file is updated
+      # here (committed back to main) and castlemilk/homebrew-tap is synced
+      # when TAP_GITHUB_TOKEN (PAT with repo access to the tap) is configured.
+      - name: Check tap credentials
+        id: tap
+        env:
+          TAP_TOKEN: ${{ secrets.TAP_GITHUB_TOKEN }}
+        run: |
+          if [ -n "$TAP_TOKEN" ]; then echo "enabled=1" >> "$GITHUB_OUTPUT"; else
+            echo "enabled=0" >> "$GITHUB_OUTPUT"
+            echo "::warning::TAP_GITHUB_TOKEN not set — cask sha256 will be committed to this repo but the tap won't be synced (run ./scripts/sync-homebrew-tap.sh locally)"
+          fi
+
+      - name: Update cask sha256 and sync tap
+        run: |
+          set -euo pipefail
+          V="${{ steps.ver.outputs.version }}"
+          SHA_FILE="dist/TokenHorizon-${V}.sha256"
+          [ -f "$SHA_FILE" ] || { echo "::error::no checksum file $SHA_FILE"; exit 1; }
+          ZIP_SHA="$(awk '/\.zip$/{print $1; exit}' "$SHA_FILE")"
+          [ -n "$ZIP_SHA" ] || { echo "::error::no zip sha in $SHA_FILE"; exit 1; }
+
+          CASK="packaging/homebrew/token-horizon.rb"
+          sed -i '' -E "s/^  version \"[0-9]+\.[0-9]+\.[0-9]+\"/  version \"${V}\"/" "$CASK"
+          sed -i '' -E "s/^  sha256 \"[0-9a-f]+\"/  sha256 \"${ZIP_SHA}\"/" "$CASK"
+          grep -q "version \"${V}\"" "$CASK" && grep -q "sha256 \"${ZIP_SHA}\"" "$CASK"
+
+          # Converge the version pins too — release.sh already sets them for
+          # tag-triggered runs (no-op then), but a manual dispatch skips it.
+          sed -i '' -E "s/^VERSION=\"\\\$\{MARKETING_VERSION:-[0-9]+\.[0-9]+\.[0-9]+\}\"/VERSION=\"\\\${MARKETING_VERSION:-${V}}\"/" scripts/make-app.sh
+          sed -i '' -E "s/fallback: \"[0-9]+\.[0-9]+\.[0-9]+\"/fallback: \"${V}\"/" Sources/TokenHorizon/App/BuildInfo.swift
+
+          # Keep the in-repo metadata accurate (post-tag commit).
+          if ! git diff --quiet -- "$CASK" scripts/make-app.sh Sources/TokenHorizon/App/BuildInfo.swift; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add "$CASK" scripts/make-app.sh Sources/TokenHorizon/App/BuildInfo.swift
+            git commit -m "release metadata: v${V} (cask sha256 + version pins) [skip ci]"
+            git push origin HEAD:main || echo "::warning::release-metadata push to main failed — run scripts/sync-homebrew-tap.sh manually"
+          fi
+
+          # Sync the tap over HTTPS when a PAT is available.
+          if [ "${{ steps.tap.outputs.enabled }}" = "1" ]; then
+            TAP_DIR="$(mktemp -d)/tap"
+            git clone "https://x-access-token:${{ secrets.TAP_GITHUB_TOKEN }}@github.com/castlemilk/homebrew-tap.git" "$TAP_DIR"
+            mkdir -p "$TAP_DIR/Casks"
+            cp "$CASK" "$TAP_DIR/Casks/token-horizon.rb"
+            if git -C "$TAP_DIR" diff --quiet -- Casks/token-horizon.rb 2>/dev/null; then
+              echo "tap already current"
+            else
+              git -C "$TAP_DIR" add Casks/token-horizon.rb
+              git -C "$TAP_DIR" -c user.name="github-actions[bot]" \
+                -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+                commit -m "token-horizon ${V}"
+              git -C "$TAP_DIR" push
+              echo "published token-horizon ${V} to castlemilk/homebrew-tap"
+            fi
+          fi

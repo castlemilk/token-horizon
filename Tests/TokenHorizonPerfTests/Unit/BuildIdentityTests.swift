@@ -12,6 +12,20 @@ final class BuildIdentityTests: XCTestCase {
             "0.2.0 · a1b2c3d · 2026-09-09T12:00:00Z")
     }
 
+    func testDescribe_includesBuildNumber() {
+        // Marketing version + CFBundleVersion: "0.3.6 (9) · sha · time".
+        XCTAssertEqual(
+            BuildInfo.describe(version: "0.3.6", build: "9", commit: "a1b2c3d", builtAt: "t"),
+            "0.3.6 (9) · a1b2c3d · t")
+        // Missing/zero build number degrades to the bare version.
+        XCTAssertEqual(
+            BuildInfo.describe(version: "0.3.6", build: "0", commit: "c", builtAt: "t"),
+            "0.3.6 · c · t")
+        XCTAssertEqual(
+            BuildInfo.describe(version: "0.3.6", build: "", commit: "c", builtAt: "t"),
+            "0.3.6 · c · t")
+    }
+
     func testDevFallbacks_inTestBundle() {
         // The xctest bundle carries no THGitSHA/THBuiltAt keys: unstamped runs
         // must report dev/unknown rather than crashing or blank.

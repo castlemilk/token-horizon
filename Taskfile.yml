@@ -97,6 +97,11 @@ tasks:
     cmds:
       - ./scripts/refresh-models.sh
 
+  release:
+    desc: Semver release — bump version pins, tag vX.Y.Z, push (triggers release.yml)
+    cmds:
+      - ./scripts/release.sh {{.CLI_ARGS | default "patch"}}
+
   brew-sync:
     desc: Publish packaging/homebrew/token-horizon.rb to castlemilk/homebrew-tap
     cmds:

@@ -24,13 +24,15 @@ enum BuildInfo {
     }
 
     static var version: String { value("CFBundleShortVersionString", fallback: "0.3.5") }
+    static var build: String { value("CFBundleVersion", fallback: "0") }
     static var commit: String { value("THGitSHA", fallback: "dev") }
     static var builtAt: String { value("THBuiltAt", fallback: "unknown") }
 
-    static var display: String { describe(version: version, commit: commit, builtAt: builtAt) }
+    static var display: String { describe(version: version, build: build, commit: commit, builtAt: builtAt) }
 
-    static func describe(version: String, commit: String, builtAt: String) -> String {
-        "\(version) · \(commit) · \(builtAt)"
+    static func describe(version: String, build: String = "", commit: String, builtAt: String) -> String {
+        let vb = build.isEmpty || build == "0" ? version : "\(version) (\(build))"
+        return "\(vb) · \(commit) · \(builtAt)"
     }
 }
 

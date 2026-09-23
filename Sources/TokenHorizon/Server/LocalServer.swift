@@ -882,6 +882,7 @@ final class LocalServer {
                 "llm_gateway_port": gatewayPort,
                 "build": [
                     "version": BuildInfo.version,
+                    "number": BuildInfo.build,
                     "commit": BuildInfo.commit,
                     "built_at": BuildInfo.builtAt,
                 ],

@@ -60,10 +60,27 @@ Test the stapled app on a clean macOS user account before release. Confirm that 
 
 ## Publish pipeline (GitHub Actions)
 
-`.github/workflows/release.yml` runs `scripts/package-notarized.sh` for every
-`v*` tag: it builds the app (gateway sidecar + build stamps), signs it with the
-imported Developer ID certificate, notarizes + staples the app, packages the ZIP
-and DMG, then notarizes + staples the DMG and runs a Gatekeeper assessment.
+The one-command path is `scripts/release.sh` (or `task release`):
+
+```bash
+./scripts/release.sh            # next patch after latest tag (v0.3.5 → v0.3.6)
+./scripts/release.sh minor      # v0.3.5 → v0.4.0
+./scripts/release.sh 1.0.0      # explicit version
+./scripts/release.sh --dry-run  # print the plan, change nothing
+```
+
+It computes the next semver from the latest `v*` tag, updates the three
+version pins (`make-app.sh` `VERSION`, `BuildInfo.swift` fallback, cask
+`version`), commits `release vX.Y.Z`, tags `vX.Y.Z`, and pushes main + tag.
+
+`.github/workflows/release.yml` then runs `scripts/package-notarized.sh` for
+the tag (or a `workflow_dispatch` with an optional `version` input — blank
+means next patch): builds the app (gateway sidecar + build stamps), signs with
+the imported Developer ID certificate, notarizes + staples the app, packages
+ZIP + DMG, notarizes + staples the DMG, and runs a Gatekeeper assessment. After
+the GitHub release publishes, the workflow writes the zip `sha256` into
+`packaging/homebrew/token-horizon.rb`, commits it back to main, and syncs the
+cask to `castlemilk/homebrew-tap` when `TAP_GITHUB_TOKEN` is set.
 Without the secrets below the workflow still publishes, but warns and produces
 an ad-hoc, un-notarized build.
 
@@ -77,6 +94,7 @@ Repository secrets (Settings → Secrets and variables → Actions):
 | `APPLE_API_KEY_BASE64` | App Store Connect API key `.p8`, base64 (preferred notary auth) |
 | `APPLE_API_KEY_ID` | API key ID (secret or repo variable) |
 | `APPLE_API_ISSUER_ID` | API issuer UUID from App Store Connect → Users and Access → Integrations (secret or repo variable) |
+| `TAP_GITHUB_TOKEN` | PAT with `contents: write` on `castlemilk/homebrew-tap` — enables the post-release cask sha256 bump + tap sync (absent: repo cask still updated; run `task brew-sync` manually) |
 
 Apple ID notary fallback (when no API key secret is set): `APPLE_ID`,
 `APPLE_TEAM_ID` (repo variable is fine), `APPLE_APP_PASSWORD` (app-specific
