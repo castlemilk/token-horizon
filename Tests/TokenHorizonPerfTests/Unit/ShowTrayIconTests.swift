@@ -1,3 +1,4 @@
+import AppKit
 import XCTest
 @testable import TokenHorizon
 
@@ -36,10 +37,13 @@ final class ShowTrayIconTests: XCTestCase {
         defer { store.surfaceMode = originalMode }
 
         let app = AppDelegate()
+        let hasNotch = NSScreen.screens.contains { $0.safeAreaInsets.top > 0 }
         store.surfaceMode = .tray
         XCTAssertEqual(app.resolveSurface(), .tray)
         store.surfaceMode = .notch
-        XCTAssertEqual(app.resolveSurface(), .notch)
+        // Explicit notch pin falls back to tray on notch-less rigs
+        // (clamshell/external-only displays) — can't render a floating pill.
+        XCTAssertEqual(app.resolveSurface(), hasNotch ? .notch : .tray)
         // Auto depends on attached hardware; assert only that it resolves.
         store.surfaceMode = .auto
         _ = app.resolveSurface()

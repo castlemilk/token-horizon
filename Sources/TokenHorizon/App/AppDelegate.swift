@@ -119,6 +119,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         PlanLimitsEngine.shared.refreshIfDue()
         ModelCatalog.shared.ensureLoaded()
         ModelDiscoveryEngine.shared.start()
+        SelfUpdater.shared.start()
         rebuildSurfaces()
         NotificationCenter.default.addObserver(forName: .refreshTrends, object: nil, queue: .main) { [weak self] _ in
             self?.refreshTrends()
@@ -148,8 +149,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                     self.model.recordCoarse()
                     if self.usingTray {
                         let memPct = sys.ramUsedGB / max(sys.ramTotalGB, 1) * 100
-                        self.statusItem?.button?.title = String(format: "◉ %2.0f%% %2.0f%%",
-                                                                 sys.cpuPercent, memPct)
+                        // Rings only — no text title. The old "◉ %2.0f%% %2.0f%%"
+                        // title duplicated the rings, padded single digits with
+                        // spaces, and made the item wide enough to get clipped
+                        // off crowded menu bars (reads as a "broken gauge").
+                        self.statusItem?.button?.title = ""
+                        self.statusItem?.button?.toolTip = String(format: "CPU %.0f%%  ·  MEM %.0f%%", sys.cpuPercent, memPct)
                         self.statusItem?.button?.image = StatusIcon.image(cpuPercent: sys.cpuPercent, memPercent: memPct)
                     }
                 }
@@ -218,10 +223,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
     func resolveSurface() -> ActiveSurface {
         if ProcessInfo.processInfo.environment["TOKEN_HORIZON_FORCE_TRAY"] == "1" { return .tray }
+        // An explicit notch choice still can't render on a notch-less rig
+        // (lid-closed clamshell, external-only displays) — the floating pill
+        // looks broken there, so fall back to the tray.
+        if !hasNotch { return .tray }
         switch SettingsStore.shared.surfaceMode {
         case .tray: return .tray
         case .notch: return .notch
-        case .auto: return hasNotch ? .notch : .tray
+        case .auto: return .notch
         }
     }
 
@@ -266,8 +275,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private func setupStatusItem() {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         if let button = item.button {
-            button.font = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .medium)
-            button.title = "◉ …"
+            button.title = ""
+            button.toolTip = "Token Horizon"
             button.image = StatusIcon.image(cpuPercent: 0, memPercent: 0)
         }
         let pop = NSPopover()

@@ -43,6 +43,7 @@ struct DashboardTabs: View {
     @State private var leaderboardAutoSyncDraft: Bool = SettingsStore.shared.leaderboardAutoSync
     @State private var leaderboardSheetsNotice: String? = nil
     @State private var leaderboardShowConfig: Bool = false
+    @ObservedObject private var updater = SelfUpdater.shared
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -80,14 +81,24 @@ struct DashboardTabs: View {
         HStack(spacing: 4) {
             ForEach(DashboardTab.allCases) { t in
                 Button { withAnimation(.easeOut(duration: 0.15)) { tab = t } } label: {
-                    Text(t.rawValue)
-                        .font(.system(size: 9, weight: .heavy, design: .monospaced))
-                        .foregroundStyle(tab == t ? Color.black : Color.white.opacity(0.5))
-                        .padding(.horizontal, 12).padding(.vertical, 4)
-                        .background(Capsule().fill(tab == t ? Color.white : Color.white.opacity(0.14)))
-                        .contentShape(Capsule())
+                    // Icon always; label only on the active pill — the bar
+                    // stays single-line at popover width (~530pt).
+                    HStack(spacing: 5) {
+                        Image(systemName: t.icon)
+                            .font(.system(size: 9, weight: .bold))
+                        if tab == t {
+                            Text(t.rawValue)
+                                .font(.system(size: 9, weight: .heavy, design: .monospaced))
+                                .lineLimit(1).fixedSize()
+                        }
+                    }
+                    .foregroundStyle(tab == t ? Color.black : Color.white.opacity(0.5))
+                    .padding(.horizontal, tab == t ? 12 : 9).padding(.vertical, 4)
+                    .background(Capsule().fill(tab == t ? Color.white : Color.white.opacity(0.14)))
+                    .contentShape(Capsule())
                 }
                 .buttonStyle(.plain)
+                .help(t.rawValue)
             }
             Spacer()
             Button { NotificationCenter.default.post(name: NSNotification.Name("openDashboard"), object: nil) } label: {
@@ -2378,6 +2389,7 @@ struct DashboardTabs: View {
                     leaderboardSyncSettings.padding(.top, 10)
                 }
             }
+            settingsCard("Updates", icon: "arrow.triangle.2.circlepath") { updateSettings }
             settingsCard("App build", icon: "info.circle") {
                 MonospacedText(text: "v\(BuildInfo.display) — this exact build serves :8765; if these differ from `git rev-parse --short HEAD`, relaunch via ./scripts/make-app.sh", color: .secondary, size: 11)
                     .fixedSize(horizontal: false, vertical: true)
@@ -2416,6 +2428,83 @@ struct DashboardTabs: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(RoundedRectangle(cornerRadius: 12).fill(Color.white.opacity(0.045)))
         .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Color.white.opacity(0.1)))
+    }
+
+    private var updateSettings: some View {
+        let busy = updater.phase == .checking || updater.phase == .downloading
+            || updater.phase == .installing || updater.phase == .relaunching
+        return VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 8) {
+                Circle()
+                    .fill(updateStatusColor)
+                    .frame(width: 7, height: 7)
+                MonospacedText(
+                    text: updateStatusText,
+                    color: updater.phase == .failed ? .red : .secondary,
+                    size: 11
+                )
+                .lineLimit(1)
+                if busy {
+                    ProgressView()
+                        .scaleEffect(0.55)
+                        .frame(width: 14, height: 14)
+                }
+            }
+            HStack(spacing: 10) {
+                Toggle("Auto-update", isOn: Binding(
+                    get: { SettingsStore.shared.autoUpdateEnabled },
+                    set: { SettingsStore.shared.autoUpdateEnabled = $0 }
+                ))
+                .toggleStyle(.checkbox)
+                .font(.system(size: 12))
+                .help("Download, verify, and install new releases automatically")
+                Spacer()
+                Button { updater.check(manual: true) } label: {
+                    Text("Check now")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(.white.opacity(0.8))
+                        .padding(.horizontal, 10).padding(.vertical, 5)
+                        .background(Capsule().fill(Color.white.opacity(0.12)))
+                }
+                .buttonStyle(.plain)
+                .disabled(busy)
+                if updater.phase == .available {
+                    Button { updater.install() } label: {
+                        Text("Update to \(updater.latestTag)")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(.black)
+                            .padding(.horizontal, 12).padding(.vertical, 5)
+                            .background(Capsule().fill(Color.white))
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            if let checked = updater.lastChecked {
+                MonospacedText(
+                    text: "last checked \(checked.formatted(date: .omitted, time: .shortened)) · releases on github",
+                    color: .white.opacity(0.3), size: 9)
+            }
+        }
+    }
+
+    private var updateStatusColor: Color {
+        switch updater.phase {
+        case .upToDate: return .green
+        case .available: return .orange
+        case .failed: return .red
+        case .downloading, .installing, .relaunching: return .blue
+        default: return .gray
+        }
+    }
+
+    private var updateStatusText: String {
+        switch updater.phase {
+        case .idle: return "v\(BuildInfo.version) installed"
+        case .checking: return "checking for updates…"
+        case .upToDate: return "v\(BuildInfo.version) — up to date"
+        case .available: return "\(updater.latestTag) available — you're on v\(BuildInfo.version)"
+        case .downloading, .installing, .relaunching, .failed: return updater.statusDetail
+        }
     }
 
     private var cookieSettings: some View {

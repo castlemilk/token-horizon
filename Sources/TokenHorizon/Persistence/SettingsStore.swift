@@ -51,6 +51,7 @@ final class SettingsStore {
     private var _leaderboardSharePrompts: Bool = false
     private var _surfaceMode: String = SurfaceMode.auto.rawValue
     private var _showTrayIcon: Bool = false
+    private var _autoUpdateEnabled: Bool = true
     private var _widgetPreferences = WidgetPreferences()
 
     var widgetPreferences: WidgetPreferences {
@@ -90,6 +91,18 @@ final class SettingsStore {
             saveLocked()
             lock.unlock()
             NotificationCenter.default.post(name: .tokenHorizonSurfaceDidChange, object: nil)
+        }
+    }
+
+    /// Self-updater: when on, a newer GitHub release is downloaded, verified,
+    /// installed, and relaunched automatically. Off = check + notify only.
+    var autoUpdateEnabled: Bool {
+        get { lock.lock(); defer { lock.unlock() }; return _autoUpdateEnabled }
+        set {
+            lock.lock()
+            _autoUpdateEnabled = newValue
+            saveLocked()
+            lock.unlock()
         }
     }
 
@@ -300,6 +313,7 @@ final class SettingsStore {
             "leaderboardSharePrompts": _leaderboardSharePrompts,
             "surfaceMode": _surfaceMode,
             "showTrayIcon": _showTrayIcon,
+            "autoUpdateEnabled": _autoUpdateEnabled,
             "widgetPreferences": (try? JSONEncoder().encode(_widgetPreferences)).flatMap {
                 try? JSONSerialization.jsonObject(with: $0)
             } ?? [:]
@@ -330,6 +344,7 @@ final class SettingsStore {
         var sharePrompts = false
         var surfaceMode = SurfaceMode.auto.rawValue
         var showTrayIcon = false
+        var autoUpdate = true
 
         if let data = FileManager.default.contents(atPath: path),
            let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
@@ -386,6 +401,9 @@ final class SettingsStore {
             if let sti = obj["showTrayIcon"] as? Bool {
                 showTrayIcon = sti
             }
+            if let au = obj["autoUpdateEnabled"] as? Bool {
+                autoUpdate = au
+            }
         }
         if c.isEmpty {
             let fb = NSString(string: "~/.config/token-horizon/alibaba-cookie.txt").expandingTildeInPath
@@ -416,6 +434,7 @@ final class SettingsStore {
         _leaderboardSharePrompts = sharePrompts
         _surfaceMode = surfaceMode
         _showTrayIcon = showTrayIcon
+        _autoUpdateEnabled = autoUpdate
 
         DispatchQueue.global(qos: .utility).async { [self] in
             if launch { applyLaunchAtLogin(true) }

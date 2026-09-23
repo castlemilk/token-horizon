@@ -6,7 +6,7 @@ Guide for coding agents working in this repo. Read alongside README.md (user set
 
 ```
 Sources/TokenHorizon/              # one executableTarget, grouped by feature/domain (not layer)
-  App/                main.swift (AppKit entry, .accessory policy), AppDelegate.swift (surfaces, refresh loops, HTTP wiring, dashboard window), BuildInfo.swift, LaunchAgentCtl.swift
+  App/                main.swift (AppKit entry, .accessory policy), AppDelegate.swift (surfaces, refresh loops, HTTP wiring, dashboard window), BuildInfo.swift, LaunchAgentCtl.swift, SelfUpdater.swift (GitHub /releases/latest check + sha256-verified zip staging + in-place .app swap + detached relaunch; only operates on a real .app bundle, never a .build dev binary)
   Usage/              Models.swift (UsageSnapshot, ToolUsage, ModelUsage, ProviderLimit, HistoryPoint, TrendWindow, ShellEvent), UsageEngine.swift (all token/cost collection, hourly buckets, history/trends aggregation; opencode sqlite is stat-gated, devin whole-doc transcripts re-parse on (size,mtime) change with per-step-id watermarks, dir listings are TTL-cached per `listingTTL`, agy media dirs pruned per `excludedDirNames`, scan tails version-memoized per `scanVersions`, engine-state saves dirty-gated + throttled per `engineSaveInterval`)
   Limits/             PlanLimitsEngine.swift (glm/minimax/opencode-go/alibaba/gemini/claude/agy fetchers), KimiLimitsEngine.swift (OAuth refresh + usage API), ClaudeDiscovery.swift (multi-account profiles, keychain, usage API, disk cache staleness), LimitNotifier.swift
   System/             SystemStats.swift (mach CPU, vm64 RAM, load avg, system I/O, top processes, narrow MLX sampling), DockerObserver.swift (container metrics, CPU%, RSS, VM host PID correlation)
