@@ -12,7 +12,7 @@
 #   brew install --cask token-horizon
 cask "token-horizon" do
   version "0.3.7"
-  sha256 "972edcbf7b9f2b034e786afbfa19564239fd2a63680e6232351914a7309142e8"
+  sha256 "da0eeb3962e2f416bb75df8d55e6bd2603fb0c2ecc757fe8b5d71e75a7711083"
 
   url "https://github.com/castlemilk/token-horizon/releases/download/v#{version}/TokenHorizon-#{version}.zip"
   name "Token Horizon"
