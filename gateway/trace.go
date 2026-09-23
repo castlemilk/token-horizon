@@ -31,8 +31,32 @@ const (
 	ProviderOpenAI    Provider = "openai"
 	ProviderAnthropic Provider = "anthropic"
 	ProviderOllama    Provider = "ollama"
+	ProviderKimi      Provider = "kimi"
+	ProviderGLM       Provider = "glm"
+	ProviderMiniMax   Provider = "minimax"
+	ProviderDeepSeek  Provider = "deepseek"
+	ProviderQwen      Provider = "qwen"
+	ProviderGrok      Provider = "grok"
+	ProviderGemini    Provider = "gemini"
+	ProviderOpenCode  Provider = "opencode"
 	ProviderUnknown   Provider = "unknown"
 )
+
+// AllProviders is the fixed provider vocabulary for filters and info docs.
+var AllProviders = []Provider{
+	ProviderOpenAI, ProviderAnthropic, ProviderOllama, ProviderKimi,
+	ProviderGLM, ProviderMiniMax, ProviderDeepSeek, ProviderQwen,
+	ProviderGrok, ProviderGemini, ProviderOpenCode,
+}
+
+func knownProvider(p Provider) bool {
+	for _, known := range AllProviders {
+		if p == known {
+			return true
+		}
+	}
+	return p == ProviderUnknown
+}
 
 type Endpoint string
 
@@ -42,6 +66,7 @@ const (
 	EndpointMessages        Endpoint = "messages"
 	EndpointEmbeddings      Endpoint = "embeddings"
 	EndpointModels          Endpoint = "models"
+	EndpointGeminiGenerate  Endpoint = "gemini_generate"
 	EndpointOllamaGenerate  Endpoint = "ollama_generate"
 	EndpointOllamaChat      Endpoint = "ollama_chat"
 	EndpointOther           Endpoint = "other"
@@ -138,6 +163,15 @@ type Trace struct {
 	SessionKey        *string    `json:"sessionKey,omitempty"`
 	RequestHash       string     `json:"requestHash"`
 	RetrySuspect      bool       `json:"retrySuspect"`
+	// Source identifies the capture pipeline ("proxy" for gateway-observed
+	// traffic); reserved for future file/OTLP-sourced spans.
+	Source string `json:"source,omitempty"`
+	// Client is the calling harness classified from User-Agent/headers
+	// (claude-code, codex, kimi-cli, opencode, …); empty when unrecognized.
+	Client string `json:"client,omitempty"`
+	// ProviderRequestID relays the upstream request-id header so traces can
+	// be joined against provider-side logs.
+	ProviderRequestID *string `json:"providerRequestId,omitempty"`
 	// EstCostUSD is reserved for catalog-owning consumers. The gateway has
 	// no pricing data by design (decoupling: no catalog dependency), so it
 	// always records null here rather than guessing.
@@ -206,23 +240,71 @@ type ModelStats struct {
 	EstCostUSD        float64  `json:"estCostUSD"`
 }
 
+// ProviderStats is the per-provider traffic cut.
+type ProviderStats struct {
+	Provider     string   `json:"provider"`
+	Requests     int      `json:"requests"`
+	ErrorCount   int      `json:"errorCount"`
+	InputTokens  int      `json:"inputTokens"`
+	OutputTokens int      `json:"outputTokens"`
+	AvgTTFTMs    *float64 `json:"avgTtftMs"`
+	EstCostUSD   float64  `json:"estCostUSD"`
+}
+
+// ClientStats is the per-harness traffic cut (claude-code, codex, …).
+type ClientStats struct {
+	Client     string `json:"client"`
+	Requests   int    `json:"requests"`
+	ErrorCount int    `json:"errorCount"`
+}
+
+// ErrorStat counts one error class in the window.
+type ErrorStat struct {
+	Class string `json:"class"`
+	Count int    `json:"count"`
+}
+
+// SessionStats groups traces sharing a session key into one conversation
+// span — the cross-provider "distributed trace" view.
+type SessionStats struct {
+	SessionKey    string   `json:"sessionKey"`
+	Requests      int      `json:"requests"`
+	ErrorCount    int      `json:"errorCount"`
+	Providers     []string `json:"providers"`
+	Models        []string `json:"models"`
+	Clients       []string `json:"clients"`
+	InputTokens   int      `json:"inputTokens"`
+	OutputTokens  int      `json:"outputTokens"`
+	ToolCallCount int      `json:"toolCallCount"`
+	FirstAt       UnixTime `json:"firstAt"`
+	LastAt        UnixTime `json:"lastAt"`
+	SpanMs        float64  `json:"spanMs"`
+}
+
 // Stats aggregates a trace slice into window + per-model efficiency signals.
 type Stats struct {
-	WindowHours       int          `json:"windowHours"`
-	Since             UnixTime     `json:"since"`
-	Requests          int          `json:"requests"`
-	ErrorCount        int          `json:"errorCount"`
-	InputTokens       int          `json:"inputTokens"`
-	OutputTokens      int          `json:"outputTokens"`
-	CachedTokens      int          `json:"cachedTokens"`
-	RetrySuspectCount int          `json:"retrySuspectCount"`
-	ToolCallCount     int          `json:"toolCallCount"`
-	EstCostUSD        float64      `json:"estCostUSD"`
-	ErrorRate         float64      `json:"errorRate"`
-	ToolCallRate      float64      `json:"toolCallRate"`
-	CacheHitRate      *float64     `json:"cacheHitRate"`
-	AvgTTFTMs         *float64     `json:"avgTtftMs"`
-	ByModel           []ModelStats `json:"byModel"`
+	WindowHours       int             `json:"windowHours"`
+	Since             UnixTime        `json:"since"`
+	Requests          int             `json:"requests"`
+	ErrorCount        int             `json:"errorCount"`
+	InputTokens       int             `json:"inputTokens"`
+	OutputTokens      int             `json:"outputTokens"`
+	CachedTokens      int             `json:"cachedTokens"`
+	RetrySuspectCount int             `json:"retrySuspectCount"`
+	ToolCallCount     int             `json:"toolCallCount"`
+	EstCostUSD        float64         `json:"estCostUSD"`
+	ErrorRate         float64         `json:"errorRate"`
+	ToolCallRate      float64         `json:"toolCallRate"`
+	CacheHitRate      *float64        `json:"cacheHitRate"`
+	AvgTTFTMs         *float64        `json:"avgTtftMs"`
+	P50DurationMs     *float64        `json:"p50DurationMs"`
+	P95DurationMs     *float64        `json:"p95DurationMs"`
+	P50TTFTMs         *float64        `json:"p50TtftMs"`
+	P95TTFTMs         *float64        `json:"p95TtftMs"`
+	ByModel           []ModelStats    `json:"byModel"`
+	ByProvider        []ProviderStats `json:"byProvider"`
+	ByClient          []ClientStats   `json:"byClient"`
+	ByError           []ErrorStat     `json:"byError"`
 }
 
 func intPtr(v int) *int           { return &v }

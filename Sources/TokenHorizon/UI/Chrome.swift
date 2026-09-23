@@ -33,7 +33,7 @@ struct NotchContentView: View {
 }
 
 enum DashboardTab: String, CaseIterable, Identifiable {
-    case activity = "ACTIVITY", mlx = "MLX", tokens = "TOKENS", models = "MODELS", shells = "SHELLS", leaderboard = "LEADERBOARD", settings = "⚙ SETTINGS"
+    case activity = "ACTIVITY", mlx = "MLX", tokens = "TOKENS", traces = "TRACES", models = "MODELS", shells = "SHELLS", leaderboard = "LEADERBOARD", settings = "⚙ SETTINGS"
     var id: String { rawValue }
 }
 

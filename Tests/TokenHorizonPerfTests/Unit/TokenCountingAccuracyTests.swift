@@ -384,6 +384,27 @@ final class TokenCountingAccuracyTests: XCTestCase {
         XCTAssertEqual(st?.suspectLines, 1)
     }
 
+    /// Zero-consumption usage blocks are not drift: Claude Code writes
+    /// `<synthetic>` assistant lines whose usage dict is all zeros/nulls —
+    /// flagging them would bury real drift in noise. Same for zero-usage
+    /// records on the other wire formats.
+    func testParserHealth_zeroUsageNotSuspect() {
+        let nowTs = Double(nowHour)
+        write("s.jsonl", """
+        {"message":{"model":"<synthetic>","usage":{"input_tokens":0,"output_tokens":0,"cache_read_input_tokens":0,"cache_creation":{"ephemeral_1h_input_tokens":0},"server_tool_use":{"web_search_requests":0},"service_tier":null}},"timestamp":\(nowTs)}
+        {"usage":{"input_tokens":0,"output_tokens":0},"timestamp":\(nowTs)}
+        {"message":{"usage":{"renamedInput":5,"renamedOut":3}},"timestamp":\(nowTs)}
+
+        """)
+        let e = engine()
+        var state: [String: UsageEngine.AdditiveFileState] = [:]
+        _ = e.scanAdditive(dirs: [root], state: &state, prefix: "claude")
+        let st = state.values.first
+        XCTAssertEqual(st?.linesRead, 3)
+        XCTAssertEqual(st?.parsedLines, 0)
+        XCTAssertEqual(st?.suspectLines, 1) // only the renamed-fields line
+    }
+
     /// Healthy files report zero suspects — the signal only fires on drift.
     func testParserHealth_cleanSourcesReportZeroSuspect() {
         let t = (nowHour + 60) * 1000

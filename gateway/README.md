@@ -46,15 +46,46 @@ build instead.
 | `TOKEN_HORIZON_OPENAI_UPSTREAM` | `https://api.openai.com` | OpenAI base (http(s) override = mocks) |
 | `TOKEN_HORIZON_ANTHROPIC_UPSTREAM` | `https://api.anthropic.com` | Anthropic base |
 | `TOKEN_HORIZON_OLLAMA_UPSTREAM` | `127.0.0.1:11434` | Ollama (bare host:port accepted) |
+| `TOKEN_HORIZON_KIMI_UPSTREAM` | `https://api.kimi.com/coding` | Moonshot Kimi (OpenAI + Anthropic shapes) |
+| `TOKEN_HORIZON_GLM_UPSTREAM` | `https://api.z.ai` | Zhipu GLM (`/api/anthropic/v1/messages`, OpenAI shape) |
+| `TOKEN_HORIZON_MINIMAX_UPSTREAM` | `https://api.minimax.io` | MiniMax (Anthropic shape) |
+| `TOKEN_HORIZON_DEEPSEEK_UPSTREAM` | `https://api.deepseek.com` | DeepSeek (OpenAI shape) |
+| `TOKEN_HORIZON_QWEN_UPSTREAM` | `https://dashscope.aliyuncs.com` | Alibaba Qwen / DashScope (OpenAI shape) |
+| `TOKEN_HORIZON_GROK_UPSTREAM` | `https://api.x.ai` | xAI Grok (OpenAI + Responses shapes) |
+| `TOKEN_HORIZON_GEMINI_UPSTREAM` | `https://generativelanguage.googleapis.com` | Google Gemini (native + OpenAI shapes) |
+| `TOKEN_HORIZON_OPENCODE_UPSTREAM` | `https://opencode.ai/zen` | OpenCode Zen (OpenAI + Anthropic shapes) |
 | `TOKEN_HORIZON_TRACE_DIR` | `~/.config/token-horizon/traces` | JSONL day-file directory |
 | `TOKEN_HORIZON_INGEST_URL` | `http://127.0.0.1:8765/ingest/ollama` | Best-effort Ollama sample POST to the app (empty disables) |
 | `TOKEN_HORIZON_GATEWAY_BIN` | — | App-side only: sidecar binary override |
 
+## Providers
+
+| Provider | Force prefix | Endpoint families parsed |
+|---|---|---|
+| openai | `/th-openai/` | chat completions, responses, embeddings, completions |
+| anthropic | `/th-anthropic/` | `/v1/messages` |
+| ollama | (path inference) | `/api/generate`, `/api/chat`, `/api/tags`, Ollama `/v1/*` |
+| kimi | `/th-kimi/` | chat completions, messages, responses |
+| glm | `/th-glm/` | messages (`/api/anthropic/v1/messages`), chat completions |
+| minimax | `/th-minimax/` | messages, chat completions |
+| deepseek | `/th-deepseek/` | chat completions |
+| qwen | `/th-qwen/` | chat completions (`/compatible-mode/v1/…`) |
+| grok | `/th-grok/` | chat completions, responses |
+| gemini | `/th-gemini/` | `:generateContent`/`:streamGenerateContent`, chat completions |
+| opencode | `/th-opencode/` | messages, chat completions |
+
+Unprefixed `/v1/*` requests resolve by path first, then by unambiguous
+model name in the body (`kimi-*`, `glm-*`, `minimax-*`, `deepseek-*`,
+`qwen-*`, `grok-*`, `gemini-*` → their provider; `claude-*` → anthropic;
+`gpt-*`/`o1`… → openai). Any path may carry a `/th-<provider>/` prefix;
+the remainder is still classified by wire shape, so e.g.
+`/th-glm/api/anthropic/v1/messages` parses Anthropic-protocol usage.
+
 ## Behavior contract
 
-- **Routing** (per request): path → auth headers → body shape
-  (`infer.go`). `/th-openai/` + `/th-anthropic/` prefixes force the
-  provider. Unknown paths get 400 (no trace recorded).
+- **Routing** (per request): `/th-<provider>/` prefix → path → auth
+  headers → model name → body shape (`infer.go`). Unknown paths get 400
+  (no trace recorded).
 - **Relay**: response bytes stream unchanged; an
   `x-token-horizon-trace-id` header joins client logs to traces.
   Rate-limit/request-id headers relay for SDK backoff; auth/cookies never
@@ -67,8 +98,18 @@ build instead.
 - **Usage totals**: cloud traces do NOT feed usage engines (file parsers
   already count that traffic). Ollama traces additionally POST a sample to
   the ingest URL so local totals stay correct on either loopback port.
-- **Read API** (same port, loopback): `GET /traces?provider=&model=&limit=`
-  (bodies omitted), `GET /traces/<id>`, `GET /proxy/stats?provider=&model=&hours=`,
+- **Attribution**: each trace carries `client` (harness classified from
+  User-Agent/originator headers — claude-code, codex, kimi-cli,
+  opencode, gemini-cli, aider, cursor, …), `sessionKey` (`session_id` /
+  `x-session-id` / `x-conversation-id` headers, else body-derived keys),
+  `providerRequestId` (upstream `x-request-id`/`request-id`/`x-trace-id`),
+  and `source` (`proxy`).
+- **Read API** (same port, loopback): `GET /traces?provider=&model=&client=&session=&errors=&limit=`
+  (bodies omitted), `GET /traces/<id>` (full bodies),
+  `GET /traces/sessions?hours=&limit=` (session spans: first/last ts,
+  span, providers, models, clients, tokens, tool calls, errors),
+  `GET /proxy/stats?provider=&model=&hours=` (totals, byProvider/
+  byModel/byClient/byError cuts, duration + TTFT p50/p95),
   `GET /proxy/config`, `POST /traces/clear`, `GET /metrics` (Prometheus),
   `GET /__token_horizon` (identity for supervisor discovery).
 

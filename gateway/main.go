@@ -42,8 +42,8 @@ func main() {
 	}
 	api.port = port
 	api.baseURL = fmt.Sprintf("http://127.0.0.1:%d", port)
-	log.Printf("gateway: listening on 127.0.0.1:%d (openai=%s anthropic=%s ollama=%s traces=%s)",
-		port, cfg.OpenAIBase, cfg.AnthropicBase, cfg.OllamaBase, cfg.TraceDir)
+	log.Printf("gateway: listening on 127.0.0.1:%d (%d providers, openai=%s anthropic=%s ollama=%s traces=%s)",
+		port, len(AllProviders), cfg.OpenAIBase, cfg.AnthropicBase, cfg.OllamaBase, cfg.TraceDir)
 
 	srv := &http.Server{
 		Handler:           mux,

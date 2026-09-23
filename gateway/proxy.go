@@ -109,11 +109,11 @@ func (h *ProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if provider == ProviderUnknown {
 		writeJSON(w, http.StatusBadRequest, map[string]string{
 			"error": "unknown provider for path " + rawPath,
-			"hint":  "use /v1/chat/completions, /v1/responses, /v1/messages, /api/*, or prefix with /th-openai/ or /th-anthropic/",
+			"hint":  "use /v1/chat/completions, /v1/responses, /v1/messages, /v1beta/*, /api/*, or prefix with /th-<provider>/ (openai, anthropic, kimi, glm, minimax, deepseek, qwen, grok, gemini, opencode)",
 		})
 		return
 	}
-	info := ParseRequestInfo(provider, reqBody)
+	info := ParseRequestInfo(provider, rawPath, headers, reqBody)
 	model := info.Model
 	if model == "" {
 		// GET /v1/models and friends carry no body; label by credential
@@ -133,6 +133,7 @@ func (h *ProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	ctx := &requestContext{
 		provider: provider, endpoint: endpoint, path: rawPath,
 		model: model, stream: info.Stream, sessionKey: info.SessionKey,
+		client:      detectClient(headers),
 		requestBody: reqBody, start: start, capture: cw, traceID: traceIDGenerator(),
 	}
 	r = r.WithContext(contextWithTrace(r.Context(), ctx))
@@ -169,6 +170,12 @@ func (h *ProxyHandler) modifyResponse(res *http.Response) error {
 	}
 	ctx.statusCode = res.StatusCode
 	for name := range res.Header {
+		lower := strings.ToLower(name)
+		if lower == "request-id" || lower == "x-request-id" || lower == "x-requestid" {
+			if v := res.Header.Get(name); v != "" {
+				ctx.providerRequestID = v
+			}
+		}
 		if !relayResponseHeader(name) {
 			res.Header.Del(name)
 		}
@@ -236,6 +243,7 @@ func (h *ProxyHandler) finalize(ctx *requestContext) {
 		StatusCode: ctx.statusCode, Usage: usage,
 		ToolCalls: toolCalls, FinishReasons: reasons,
 		ErrorClass: errorClass, ErrorMessage: errorMessage,
+		Source: "proxy", Client: ctx.client,
 		RequestTruncated:  reqTrunc || len(ctx.requestBody) > BodyCapBytes,
 		ResponseTruncated: respTrunc || respBytes > BodyCapBytes,
 		RequestBytes:      len(ctx.requestBody), ResponseBytes: respBytes,
@@ -249,6 +257,9 @@ func (h *ProxyHandler) finalize(ctx *requestContext) {
 	}
 	if ctx.sessionKey != "" {
 		trace.SessionKey = stringPtr(ctx.sessionKey)
+	}
+	if ctx.providerRequestID != "" {
+		trace.ProviderRequestID = stringPtr(ctx.providerRequestID)
 	}
 	stored := h.store.Record(trace)
 	out := 0
@@ -354,18 +365,20 @@ func min(a, b int) int {
 }
 
 type requestContext struct {
-	provider     Provider
-	endpoint     Endpoint
-	path         string
-	model        string
-	stream       bool
-	sessionKey   string
-	requestBody  []byte
-	start        time.Time
-	capture      *captureWriter
-	traceID      string
-	statusCode   int
-	networkError string
+	provider          Provider
+	endpoint          Endpoint
+	path              string
+	model             string
+	stream            bool
+	sessionKey        string
+	client            string
+	providerRequestID string
+	requestBody       []byte
+	start             time.Time
+	capture           *captureWriter
+	traceID           string
+	statusCode        int
+	networkError      string
 }
 
 type ctxKey struct{}

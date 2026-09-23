@@ -73,53 +73,77 @@ type RequestInfo struct {
 	SessionKey string
 }
 
-func ParseRequestInfo(provider Provider, body []byte) RequestInfo {
+func ParseRequestInfo(provider Provider, path string, headers map[string]string, body []byte) RequestInfo {
 	var info RequestInfo
-	if len(body) == 0 {
-		return info
-	}
-	var obj map[string]any
-	if json.Unmarshal(body, &obj) != nil {
-		return info
-	}
-	info.Model, _ = obj["model"].(string)
-	info.Stream, _ = obj["stream"].(bool)
-	switch provider {
-	case ProviderOpenAI:
-		if v, _ := obj["previous_response_id"].(string); v != "" {
-			info.SessionKey = v
-		} else if conv, ok := obj["conversation"].(map[string]any); ok {
-			info.SessionKey, _ = conv["id"].(string)
-		} else if conv, _ := obj["conversation"].(string); conv != "" {
-			info.SessionKey = conv
-		} else if meta, ok := obj["metadata"].(map[string]any); ok {
-			info.SessionKey, _ = meta["session_id"].(string)
+	// Gemini carries the model in the URL path, not the body:
+	// /v1beta/models/<model>:streamGenerateContent.
+	if i := strings.Index(path, "/models/"); i >= 0 {
+		rest := path[i+len("/models/"):]
+		if j := strings.IndexAny(rest, ":?/"); j >= 0 {
+			rest = rest[:j]
 		}
-	case ProviderAnthropic:
-		if meta, ok := obj["metadata"].(map[string]any); ok {
-			info.SessionKey, _ = meta["user_id"].(string)
+		info.Model = rest
+	}
+	if strings.Contains(path, ":streamGenerateContent") || strings.Contains(path, "alt=sse") {
+		info.Stream = true
+	}
+	if len(body) > 0 {
+		var obj map[string]any
+		if json.Unmarshal(body, &obj) == nil {
+			if m, _ := obj["model"].(string); m != "" {
+				info.Model = m
+			}
+			if s, ok := obj["stream"].(bool); ok {
+				info.Stream = s
+			}
+			switch provider {
+			case ProviderOpenAI:
+				if v, _ := obj["previous_response_id"].(string); v != "" {
+					info.SessionKey = v
+				} else if conv, ok := obj["conversation"].(map[string]any); ok {
+					info.SessionKey, _ = conv["id"].(string)
+				} else if conv, _ := obj["conversation"].(string); conv != "" {
+					info.SessionKey = conv
+				} else if meta, ok := obj["metadata"].(map[string]any); ok {
+					info.SessionKey, _ = meta["session_id"].(string)
+				}
+			case ProviderAnthropic:
+				if meta, ok := obj["metadata"].(map[string]any); ok {
+					info.SessionKey, _ = meta["user_id"].(string)
+				}
+			}
 		}
+	}
+	// Harness session headers (codex session_id, x-session-*) beat
+	// body-derived keys: they group a whole CLI session.
+	if h := sessionFromHeaders(headers); h != "" {
+		info.SessionKey = h
 	}
 	return info
 }
 
 // ExtractUsage pulls provider-reported token usage from captured response
 // bytes. Absent usage yields TokenAbsent with nil counts — never estimated.
+// Routing keys on the wire shape (endpoint), not the provider label: GLM,
+// MiniMax, Kimi and OpenCode each expose OpenAI- and/or Anthropic-compatible
+// surfaces, and the endpoint tells us which one answered.
 func ExtractUsage(provider Provider, endpoint Endpoint, responseBody []byte) Usage {
+	if provider == ProviderOllama {
+		return ollamaUsage(responseBody)
+	}
 	objects := JSONObjects(responseBody)
 	if len(objects) == 0 {
 		return Usage{Source: TokenAbsent}
 	}
-	switch provider {
-	case ProviderAnthropic:
+	switch endpoint {
+	case EndpointMessages:
 		return anthropicUsage(objects)
-	case ProviderOpenAI:
-		if endpoint == EndpointResponses {
-			return responsesUsage(objects)
-		}
+	case EndpointResponses:
+		return responsesUsage(objects)
+	case EndpointGeminiGenerate:
+		return geminiUsage(objects)
+	case EndpointChatCompletions, EndpointEmbeddings, EndpointModels:
 		return chatUsage(objects)
-	case ProviderOllama:
-		return ollamaUsage(responseBody)
 	default:
 		if u := chatUsage(objects); u.Source != TokenAbsent {
 			return u
@@ -127,7 +151,10 @@ func ExtractUsage(provider Provider, endpoint Endpoint, responseBody []byte) Usa
 		if u := responsesUsage(objects); u.Source != TokenAbsent {
 			return u
 		}
-		return anthropicUsage(objects)
+		if u := anthropicUsage(objects); u.Source != TokenAbsent {
+			return u
+		}
+		return geminiUsage(objects)
 	}
 }
 
@@ -302,80 +329,123 @@ func ollamaUsage(responseBody []byte) Usage {
 	return Usage{Source: TokenAbsent}
 }
 
+// geminiUsage reads usageMetadata from Gemini native generateContent
+// responses (GenerateContentResponse). In SSE streams the totals ride the
+// final chunk, so the last non-empty block wins.
+func geminiUsage(objects []map[string]any) Usage {
+	for i := len(objects) - 1; i >= 0; i-- {
+		usage := strMap(objects[i]["usageMetadata"])
+		if usage == nil {
+			continue
+		}
+		prompt, hasPrompt := num(usage["promptTokenCount"])
+		candidates, hasCandidates := num(usage["candidatesTokenCount"])
+		if !hasPrompt && !hasCandidates {
+			continue
+		}
+		u := Usage{Source: TokenReported}
+		if hasPrompt {
+			u.InputTokens = intPtr(prompt)
+		}
+		if hasCandidates {
+			u.OutputTokens = intPtr(candidates)
+		}
+		if total, ok := num(usage["totalTokenCount"]); ok {
+			u.TotalTokens = intPtr(total)
+		}
+		if cached, ok := num(usage["cachedContentTokenCount"]); ok {
+			u.CachedTokens = intPtr(cached)
+		}
+		if reasoning, ok := num(usage["thoughtsTokenCount"]); ok {
+			u.ReasoningTokens = intPtr(reasoning)
+		}
+		return u
+	}
+	return Usage{Source: TokenAbsent}
+}
+
 // ExtractToolCalls returns model-requested tool invocations plus terminal
 // finish/stop reasons. Streamed duplicates (same call id across deltas)
 // collapse to one entry.
 func ExtractToolCalls(provider Provider, endpoint Endpoint, responseBody []byte) ([]ToolCall, []string) {
+	// Resolve the wire shape once: endpoints classify the protocol family,
+	// and providers serving several surfaces (GLM, MiniMax, OpenCode) parse
+	// by shape rather than label. EndpointOther falls back to the provider's
+	// canonical shape.
+	shape := endpoint
+	if shape == EndpointOther {
+		switch provider {
+		case ProviderAnthropic:
+			shape = EndpointMessages
+		case ProviderGemini:
+			shape = EndpointGeminiGenerate
+		default:
+			shape = EndpointChatCompletions
+		}
+	}
 	var calls []ToolCall
 	reasons := map[string]struct{}{}
 	for _, obj := range JSONObjects(responseBody) {
-		switch provider {
-		case ProviderOpenAI:
-			if endpoint == EndpointResponses {
-				var outputs []any
-				if out, ok := obj["output"].([]any); ok {
-					outputs = out
-				} else if resp, ok := obj["response"].(map[string]any); ok {
-					outputs, _ = resp["output"].([]any)
+		switch shape {
+		case EndpointGeminiGenerate:
+			cands, _ := obj["candidates"].([]any)
+			for _, c := range cands {
+				cm, _ := c.(map[string]any)
+				if reason, _ := cm["finishReason"].(string); reason != "" {
+					reasons[reason] = struct{}{}
 				}
-				for _, item := range outputs {
-					m, _ := item.(map[string]any)
-					if m["type"] == "function_call" {
-						name, _ := m["name"].(string)
-						if name == "" {
-							name = "unknown"
-						}
-						callID, _ := m["call_id"].(string)
-						if callID == "" {
-							callID, _ = m["id"].(string)
-						}
-						var idPtr *string
-						if callID != "" {
-							idPtr = stringPtr(callID)
-						}
-						calls = append(calls, ToolCall{Name: name, CallID: idPtr})
-					}
-				}
-				if status, _ := obj["status"].(string); status == "completed" {
-					reasons[status] = struct{}{}
-				}
-				if errObj, ok := obj["error"].(map[string]any); ok {
-					if code, _ := errObj["code"].(string); code != "" {
-						reasons[code] = struct{}{}
-					}
-				}
-			} else {
-				choices, _ := obj["choices"].([]any)
-				for _, choice := range choices {
-					m, _ := choice.(map[string]any)
-					if reason, _ := m["finish_reason"].(string); reason != "" {
-						reasons[reason] = struct{}{}
-					}
-					msg := strMap(m["message"])
-					if msg == nil {
-						msg = strMap(m["delta"])
-					}
-					if msg == nil {
+				parts, _ := strMap(cm["content"])["parts"].([]any)
+				for _, p := range parts {
+					fc := strMap(p.(map[string]any)["functionCall"])
+					if fc == nil {
 						continue
 					}
-					tcs, _ := msg["tool_calls"].([]any)
-					for _, tc := range tcs {
-						tm, _ := tc.(map[string]any)
-						fn := strMap(tm["function"])
-						name, _ := fn["name"].(string)
-						if name == "" {
-							name = "unknown"
-						}
-						id, _ := tm["id"].(string)
-						var idPtr *string
-						if id != "" {
-							idPtr = stringPtr(id)
-						}
-						calls = append(calls, ToolCall{Name: name, CallID: idPtr})
+					name, _ := fc["name"].(string)
+					if name == "" {
+						name = "unknown"
 					}
+					id, _ := fc["id"].(string)
+					var idPtr *string
+					if id != "" {
+						idPtr = stringPtr(id)
+					}
+					calls = append(calls, ToolCall{Name: name, CallID: idPtr})
 				}
 			}
-		case ProviderAnthropic:
+		case EndpointResponses:
+			var outputs []any
+			if out, ok := obj["output"].([]any); ok {
+				outputs = out
+			} else if resp, ok := obj["response"].(map[string]any); ok {
+				outputs, _ = resp["output"].([]any)
+			}
+			for _, item := range outputs {
+				m, _ := item.(map[string]any)
+				if m["type"] == "function_call" {
+					name, _ := m["name"].(string)
+					if name == "" {
+						name = "unknown"
+					}
+					callID, _ := m["call_id"].(string)
+					if callID == "" {
+						callID, _ = m["id"].(string)
+					}
+					var idPtr *string
+					if callID != "" {
+						idPtr = stringPtr(callID)
+					}
+					calls = append(calls, ToolCall{Name: name, CallID: idPtr})
+				}
+			}
+			if status, _ := obj["status"].(string); status == "completed" {
+				reasons[status] = struct{}{}
+			}
+			if errObj, ok := obj["error"].(map[string]any); ok {
+				if code, _ := errObj["code"].(string); code != "" {
+					reasons[code] = struct{}{}
+				}
+			}
+		case EndpointMessages:
 			if stop, _ := obj["stop_reason"].(string); stop != "" {
 				reasons[stop] = struct{}{}
 			}
@@ -416,6 +486,38 @@ func ExtractToolCalls(provider Provider, endpoint Endpoint, responseBody []byte)
 					idPtr = stringPtr(id)
 				}
 				calls = append(calls, ToolCall{Name: name, CallID: idPtr})
+			}
+		case EndpointOllamaChat, EndpointOllamaGenerate:
+			// Ollama NDJSON carries no per-request tool taxonomy worth tracing.
+		default:
+			choices, _ := obj["choices"].([]any)
+			for _, choice := range choices {
+				m, _ := choice.(map[string]any)
+				if reason, _ := m["finish_reason"].(string); reason != "" {
+					reasons[reason] = struct{}{}
+				}
+				msg := strMap(m["message"])
+				if msg == nil {
+					msg = strMap(m["delta"])
+				}
+				if msg == nil {
+					continue
+				}
+				tcs, _ := msg["tool_calls"].([]any)
+				for _, tc := range tcs {
+					tm, _ := tc.(map[string]any)
+					fn := strMap(tm["function"])
+					name, _ := fn["name"].(string)
+					if name == "" {
+						name = "unknown"
+					}
+					id, _ := tm["id"].(string)
+					var idPtr *string
+					if id != "" {
+						idPtr = stringPtr(id)
+					}
+					calls = append(calls, ToolCall{Name: name, CallID: idPtr})
+				}
 			}
 		}
 	}
@@ -575,10 +677,22 @@ func RequestFingerprint(provider Provider, endpoint Endpoint, model string, body
 	return hex.EncodeToString(sum[:])[:16]
 }
 
+// percentile returns the p-th percentile of vals (sorted copy), nil when empty.
+func percentile(vals []float64, p float64) *float64 {
+	if len(vals) == 0 {
+		return nil
+	}
+	sorted := append([]float64(nil), vals...)
+	sort.Float64s(sorted)
+	idx := int((p / 100) * float64(len(sorted)-1))
+	return floatPtr(sorted[idx])
+}
+
 // Rollup aggregates traces into window + per-model efficiency stats.
 func Rollup(traces []Trace, windowHours int, since time.Time) Stats {
 	empty := func() Stats {
-		return Stats{WindowHours: windowHours, Since: UnixTime(since), ByModel: []ModelStats{}}
+		return Stats{WindowHours: windowHours, Since: UnixTime(since), ByModel: []ModelStats{},
+			ByProvider: []ProviderStats{}, ByClient: []ClientStats{}, ByError: []ErrorStat{}}
 	}
 	if len(traces) == 0 {
 		return empty()
@@ -586,6 +700,11 @@ func Rollup(traces []Trace, windowHours int, since time.Time) Stats {
 	var errorCount, inputTotal, outputTotal, cachedTotal, retryCount, toolCallTraces int
 	var costTotal float64
 	var ttfts []float64
+	var durations []float64
+	byProviderAcc := map[string]*ProviderStats{}
+	providerTTFT := map[string][]float64{}
+	byClientAcc := map[string]*ClientStats{}
+	byErrorAcc := map[string]int{}
 	type group struct {
 		provider string
 		model    string
@@ -617,6 +736,41 @@ func Rollup(traces []Trace, windowHours int, since time.Time) Stats {
 		}
 		if t.TTFTMs != nil {
 			ttfts = append(ttfts, *t.TTFTMs)
+		}
+		durations = append(durations, t.DurationMs)
+		p := string(t.Provider)
+		ps := byProviderAcc[p]
+		if ps == nil {
+			ps = &ProviderStats{Provider: p}
+			byProviderAcc[p] = ps
+		}
+		ps.Requests++
+		if t.ErrorClass != ErrNone {
+			ps.ErrorCount++
+			byErrorAcc[string(t.ErrorClass)]++
+		}
+		if t.Usage.InputTokens != nil {
+			ps.InputTokens += *t.Usage.InputTokens
+		}
+		if t.Usage.OutputTokens != nil {
+			ps.OutputTokens += *t.Usage.OutputTokens
+		}
+		if t.TTFTMs != nil {
+			providerTTFT[p] = append(providerTTFT[p], *t.TTFTMs)
+		}
+		if t.EstCostUSD != nil {
+			ps.EstCostUSD += *t.EstCostUSD
+		}
+		if t.Client != "" {
+			cs := byClientAcc[t.Client]
+			if cs == nil {
+				cs = &ClientStats{Client: t.Client}
+				byClientAcc[t.Client] = cs
+			}
+			cs.Requests++
+			if t.ErrorClass != ErrNone {
+				cs.ErrorCount++
+			}
 		}
 		key := string(t.Provider) + "\x00" + t.Model
 		g, ok := byKey[key]
@@ -720,6 +874,22 @@ func Rollup(traces []Trace, windowHours int, since time.Time) Stats {
 		})
 	}
 	sort.SliceStable(byModel, func(a, b int) bool { return byModel[a].Requests > byModel[b].Requests })
+	byProvider := make([]ProviderStats, 0, len(byProviderAcc))
+	for p, ps := range byProviderAcc {
+		ps.AvgTTFTMs = avg(providerTTFT[p])
+		byProvider = append(byProvider, *ps)
+	}
+	sort.SliceStable(byProvider, func(i, j int) bool { return byProvider[i].Requests > byProvider[j].Requests })
+	byClient := make([]ClientStats, 0, len(byClientAcc))
+	for _, cs := range byClientAcc {
+		byClient = append(byClient, *cs)
+	}
+	sort.SliceStable(byClient, func(i, j int) bool { return byClient[i].Requests > byClient[j].Requests })
+	byError := make([]ErrorStat, 0, len(byErrorAcc))
+	for class, count := range byErrorAcc {
+		byError = append(byError, ErrorStat{Class: class, Count: count})
+	}
+	sort.SliceStable(byError, func(i, j int) bool { return byError[i].Count > byError[j].Count })
 	n := float64(len(traces))
 	return Stats{
 		WindowHours: windowHours, Since: UnixTime(since),
@@ -729,6 +899,8 @@ func Rollup(traces []Trace, windowHours int, since time.Time) Stats {
 		EstCostUSD: costTotal,
 		ErrorRate:  float64(errorCount) / n, ToolCallRate: float64(toolCallTraces) / n,
 		CacheHitRate: hitRate(cachedTotal, inputTotal), AvgTTFTMs: avg(ttfts),
-		ByModel: byModel,
+		P50DurationMs: percentile(durations, 50), P95DurationMs: percentile(durations, 95),
+		P50TTFTMs: percentile(ttfts, 50), P95TTFTMs: percentile(ttfts, 95),
+		ByModel: byModel, ByProvider: byProvider, ByClient: byClient, ByError: byError,
 	}
 }

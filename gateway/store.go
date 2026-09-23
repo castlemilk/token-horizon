@@ -103,8 +103,36 @@ func (s *Store) Record(t Trace) Trace {
 	return t
 }
 
-// Recent returns the newest traces first, optionally filtered.
-func (s *Store) Recent(limit int, provider Provider, model string) []Trace {
+// TraceFilter narrows Recent results; the zero value matches everything.
+type TraceFilter struct {
+	Provider   Provider
+	Model      string
+	Session    string
+	Client     string
+	ErrorsOnly bool
+}
+
+func (f TraceFilter) match(t Trace) bool {
+	if f.Provider != "" && t.Provider != f.Provider {
+		return false
+	}
+	if f.Model != "" && !equalFold(t.Model, f.Model) {
+		return false
+	}
+	if f.Session != "" && (t.SessionKey == nil || *t.SessionKey != f.Session) {
+		return false
+	}
+	if f.Client != "" && t.Client != f.Client {
+		return false
+	}
+	if f.ErrorsOnly && t.ErrorClass == ErrNone {
+		return false
+	}
+	return true
+}
+
+// Recent returns the newest traces first, filtered.
+func (s *Store) Recent(limit int, f TraceFilter) []Trace {
 	s.mu.Lock()
 	s.ensureLoaded()
 	all := append([]Trace(nil), s.traces...)
@@ -118,10 +146,7 @@ func (s *Store) Recent(limit int, provider Provider, model string) []Trace {
 	var filtered []Trace
 	for i := len(all) - 1; i >= 0; i-- {
 		t := all[i]
-		if provider != "" && t.Provider != provider {
-			continue
-		}
-		if model != "" && !equalFold(t.Model, model) {
+		if !f.match(t) {
 			continue
 		}
 		filtered = append(filtered, t.Summary())
@@ -133,6 +158,103 @@ func (s *Store) Recent(limit int, provider Provider, model string) []Trace {
 		filtered = []Trace{}
 	}
 	return filtered
+}
+
+// Sessions groups windowed traces by session key into conversation spans,
+// newest activity first. Traces without a session key are skipped.
+func (s *Store) Sessions(hours, limit int) []SessionStats {
+	if hours < 1 {
+		hours = 1
+	}
+	if hours > 168 {
+		hours = 168
+	}
+	if limit < 1 {
+		limit = 1
+	}
+	if limit > 200 {
+		limit = 200
+	}
+	since := time.Now().Add(-time.Duration(hours) * time.Hour)
+	s.mu.Lock()
+	s.ensureLoaded()
+	all := append([]Trace(nil), s.traces...)
+	s.mu.Unlock()
+	type acc struct {
+		stats     SessionStats
+		providers map[string]struct{}
+		models    map[string]struct{}
+		clients   map[string]struct{}
+	}
+	byKey := map[string]*acc{}
+	for _, t := range all {
+		if t.SessionKey == nil || *t.SessionKey == "" || t.StartedAt.Time().Before(since) {
+			continue
+		}
+		a := byKey[*t.SessionKey]
+		if a == nil {
+			a = &acc{
+				stats:     SessionStats{SessionKey: *t.SessionKey, FirstAt: t.StartedAt, LastAt: t.StartedAt},
+				providers: map[string]struct{}{}, models: map[string]struct{}{}, clients: map[string]struct{}{},
+			}
+			byKey[*t.SessionKey] = a
+		}
+		a.stats.Requests++
+		if t.ErrorClass != ErrNone {
+			a.stats.ErrorCount++
+		}
+		if t.Usage.InputTokens != nil {
+			a.stats.InputTokens += *t.Usage.InputTokens
+		}
+		if t.Usage.OutputTokens != nil {
+			a.stats.OutputTokens += *t.Usage.OutputTokens
+		}
+		a.stats.ToolCallCount += len(t.ToolCalls)
+		a.providers[string(t.Provider)] = struct{}{}
+		if t.Model != "" {
+			a.models[t.Model] = struct{}{}
+		}
+		if t.Client != "" {
+			a.clients[t.Client] = struct{}{}
+		}
+		if t.StartedAt.Time().Before(a.stats.FirstAt.Time()) {
+			a.stats.FirstAt = t.StartedAt
+		}
+		if t.StartedAt.Time().After(a.stats.LastAt.Time()) {
+			a.stats.LastAt = t.StartedAt
+		}
+	}
+	out := make([]SessionStats, 0, len(byKey))
+	for _, a := range byKey {
+		a.stats.SpanMs = a.stats.LastAt.Time().Sub(a.stats.FirstAt.Time()).Seconds() * 1000
+		for p := range a.providers {
+			a.stats.Providers = append(a.stats.Providers, p)
+		}
+		for m := range a.models {
+			a.stats.Models = append(a.stats.Models, m)
+		}
+		for c := range a.clients {
+			a.stats.Clients = append(a.stats.Clients, c)
+		}
+		sort.Strings(a.stats.Providers)
+		sort.Strings(a.stats.Models)
+		sort.Strings(a.stats.Clients)
+		if a.stats.Providers == nil {
+			a.stats.Providers = []string{}
+		}
+		if a.stats.Models == nil {
+			a.stats.Models = []string{}
+		}
+		if a.stats.Clients == nil {
+			a.stats.Clients = []string{}
+		}
+		out = append(out, a.stats)
+	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].LastAt.Time().After(out[j].LastAt.Time()) })
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out
 }
 
 func equalFold(a, b string) bool { return strings.EqualFold(a, b) }

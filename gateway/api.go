@@ -23,6 +23,7 @@ type API struct {
 
 func (a *API) routes(mux *http.ServeMux) {
 	mux.HandleFunc("/traces", a.handleTraces)
+	mux.HandleFunc("/traces/sessions", a.handleSessions)
 	mux.HandleFunc("/traces/", a.handleTraceDetail)
 	mux.HandleFunc("/proxy/stats", a.handleStats)
 	mux.HandleFunc("/proxy/config", a.handleConfig)
@@ -35,6 +36,16 @@ func (a *API) routes(mux *http.ServeMux) {
 
 func queryParam(q url.Values, key string) string { return q.Get(key) }
 
+// providerParam validates a ?provider= filter against the known vocabulary;
+// unknown values degrade to "no filter" rather than an empty result set.
+func providerParam(q url.Values) Provider {
+	p := Provider(strings.ToLower(queryParam(q, "provider")))
+	if !knownProvider(p) {
+		return ""
+	}
+	return p
+}
+
 func (a *API) handleTraces(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
@@ -45,14 +56,14 @@ func (a *API) handleTraces(w http.ResponseWriter, r *http.Request) {
 	if v, err := strconv.Atoi(queryParam(q, "limit")); err == nil {
 		limit = v
 	}
-	provider := Provider(strings.ToLower(queryParam(q, "provider")))
-	switch provider {
-	case ProviderOpenAI, ProviderAnthropic, ProviderOllama, ProviderUnknown:
-	default:
-		provider = ""
+	filter := TraceFilter{
+		Provider:   providerParam(q),
+		Model:      queryParam(q, "model"),
+		Session:    queryParam(q, "session"),
+		Client:     strings.ToLower(queryParam(q, "client")),
+		ErrorsOnly: queryParam(q, "errors") == "1" || queryParam(q, "errors") == "true",
 	}
-	model := queryParam(q, "model")
-	traces := a.store.Recent(limit, provider, model)
+	traces := a.store.Recent(limit, filter)
 	if traces == nil {
 		traces = []Trace{}
 	}
@@ -61,6 +72,27 @@ func (a *API) handleTraces(w http.ResponseWriter, r *http.Request) {
 		"count": len(traces), "memory": mem, "dayFiles": days, "bytes": bytes,
 		"traces": traces,
 	})
+}
+
+func (a *API) handleSessions(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	q := r.URL.Query()
+	hours := 24
+	if v, err := strconv.Atoi(queryParam(q, "hours")); err == nil {
+		hours = v
+	}
+	limit := 50
+	if v, err := strconv.Atoi(queryParam(q, "limit")); err == nil {
+		limit = v
+	}
+	sessions := a.store.Sessions(hours, limit)
+	if sessions == nil {
+		sessions = []SessionStats{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"count": len(sessions), "hours": hours, "sessions": sessions})
 }
 
 func (a *API) handleTraceDetail(w http.ResponseWriter, r *http.Request) {
@@ -87,12 +119,7 @@ func (a *API) handleStats(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	q := r.URL.Query()
-	provider := Provider(strings.ToLower(queryParam(q, "provider")))
-	switch provider {
-	case ProviderOpenAI, ProviderAnthropic, ProviderOllama, ProviderUnknown:
-	default:
-		provider = ""
-	}
+	provider := providerParam(q)
 	model := queryParam(q, "model")
 	hours := 24
 	if v, err := strconv.Atoi(queryParam(q, "hours")); err == nil {
@@ -107,12 +134,20 @@ func (a *API) handleConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	mem, days, bytes := a.store.Counts()
+	upstreams := map[string]string{}
+	for _, p := range AllProviders {
+		if base := a.cfg.baseFor(p); base != "" {
+			upstreams[string(p)] = hostOf(base)
+		}
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"gateway_port":         a.port,
 		"gateway_url":          a.baseURL,
 		"openai_upstream":      hostOf(a.cfg.OpenAIBase),
 		"anthropic_upstream":   hostOf(a.cfg.AnthropicBase),
 		"ollama_upstream":      hostOf(a.cfg.OllamaBase),
+		"upstreams":            upstreams,
+		"providers":            AllProviders,
 		"request_cap_bytes":    MaxRequestBytes,
 		"body_cap_bytes":       BodyCapBytes,
 		"trace_retention_days": MaxDayFiles,
@@ -134,7 +169,7 @@ func (a *API) handleClear(w http.ResponseWriter, r *http.Request) {
 func (a *API) handleInfo(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"name":      "token-horizon-llm-gateway",
-		"providers": []string{"openai", "anthropic", "ollama"},
+		"providers": AllProviders,
 		"config": map[string]any{
 			"gateway_port": a.port,
 			"gateway_url":  a.baseURL,

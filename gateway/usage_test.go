@@ -75,18 +75,30 @@ func TestStripPrefix(t *testing.T) {
 }
 
 func TestRequestInfo(t *testing.T) {
-	info := ParseRequestInfo(ProviderOpenAI,
+	info := ParseRequestInfo(ProviderOpenAI, "/v1/responses", nil,
 		[]byte(`{"model":"gpt-5","stream":true,"previous_response_id":"resp_9"}`))
 	if info.Model != "gpt-5" || !info.Stream || info.SessionKey != "resp_9" {
 		t.Fatalf("%+v", info)
 	}
-	info = ParseRequestInfo(ProviderAnthropic,
+	info = ParseRequestInfo(ProviderAnthropic, "/v1/messages", nil,
 		[]byte(`{"model":"claude-x","metadata":{"user_id":"sess-1"}}`))
 	if info.SessionKey != "sess-1" || info.Stream {
 		t.Fatalf("%+v", info)
 	}
-	info = ParseRequestInfo(ProviderOpenAI, nil)
+	info = ParseRequestInfo(ProviderOpenAI, "/v1/models", nil, nil)
 	if info.Model != "" || info.Stream || info.SessionKey != "" {
+		t.Fatalf("%+v", info)
+	}
+	// Header session ids beat body-derived keys; Gemini models come from the URL.
+	info = ParseRequestInfo(ProviderOpenAI, "/v1/responses",
+		map[string]string{"session_id": "cli-sess-42"},
+		[]byte(`{"model":"gpt-5","previous_response_id":"resp_9"}`))
+	if info.SessionKey != "cli-sess-42" {
+		t.Fatalf("%+v", info)
+	}
+	info = ParseRequestInfo(ProviderGemini,
+		"/v1beta/models/gemini-2.5-pro:streamGenerateContent?alt=sse", nil, nil)
+	if info.Model != "gemini-2.5-pro" || !info.Stream {
 		t.Fatalf("%+v", info)
 	}
 }

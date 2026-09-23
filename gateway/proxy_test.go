@@ -23,6 +23,14 @@ func testSetup(t *testing.T, upstream http.Handler) (*API, *ProxyHandler, *Store
 		cfg.OpenAIBase = srv.URL
 		cfg.AnthropicBase = srv.URL
 		cfg.OllamaBase = srv.URL
+		cfg.KimiBase = srv.URL
+		cfg.GLMBase = srv.URL
+		cfg.MiniMaxBase = srv.URL
+		cfg.DeepSeekBase = srv.URL
+		cfg.QwenBase = srv.URL
+		cfg.GrokBase = srv.URL
+		cfg.GeminiBase = srv.URL
+		cfg.OpenCodeBase = srv.URL
 	}
 	store := NewStore(cfg.TraceDir)
 	metrics := NewMetrics()
@@ -96,7 +104,7 @@ func TestRoundTripOpenAIChat(t *testing.T) {
 
 	deadline := time.Now().Add(5 * time.Second)
 	for {
-		if len(store.Recent(5, "", "")) > 0 {
+		if len(store.Recent(5, TraceFilter{})) > 0 {
 			break
 		}
 		if time.Now().After(deadline) {
@@ -131,7 +139,7 @@ func TestUnknownPathRejected(t *testing.T) {
 	if res.StatusCode != http.StatusBadRequest {
 		t.Fatalf("status=%d", res.StatusCode)
 	}
-	if len(store.Recent(5, "", "")) != 0 {
+	if len(store.Recent(5, TraceFilter{})) != 0 {
 		t.Fatal("rejected request must not record a trace")
 	}
 }
@@ -155,7 +163,7 @@ func TestReadAPIAndMetrics(t *testing.T) {
 		return res.StatusCode, body
 	}
 	deadline := time.Now().Add(5 * time.Second)
-	for len(store.Recent(5, "", "")) == 0 && time.Now().Before(deadline) {
+	for len(store.Recent(5, TraceFilter{})) == 0 && time.Now().Before(deadline) {
 		time.Sleep(20 * time.Millisecond)
 	}
 
@@ -172,7 +180,7 @@ func TestReadAPIAndMetrics(t *testing.T) {
 			t.Fatal("list must omit bodies")
 		}
 	}
-	id := store.Recent(1, "", "")[0].ID
+	id := store.Recent(1, TraceFilter{})[0].ID
 	if code, body := get("/traces/" + id); code != 200 {
 		t.Fatalf("detail=%d", code)
 	} else {
@@ -243,7 +251,7 @@ func TestStoreBoundsAndRetry(t *testing.T) {
 	if _, _, bytes := store.Counts(); bytes <= 0 {
 		t.Fatal("expected JSONL bytes on disk")
 	}
-	if got := store.Recent(1000, "", ""); len(got) != 100 {
+	if got := store.Recent(1000, TraceFilter{}); len(got) != 100 {
 		t.Fatalf("recent clamp=%d", len(got))
 	}
 	if stats := store.Stats("", "", 24); stats.Requests != MemoryCap {
@@ -252,7 +260,7 @@ func TestStoreBoundsAndRetry(t *testing.T) {
 	if _, files := store.Clear(); files < 1 {
 		t.Fatal("expected day files cleared")
 	}
-	if len(store.Recent(5, "", "")) != 0 {
+	if len(store.Recent(5, TraceFilter{})) != 0 {
 		t.Fatal("clear must drop memory")
 	}
 }

@@ -72,6 +72,25 @@ const TOOLS = [
     },
   },
   {
+    name: "token_horizon_traces",
+    description:
+      "LLM observability: query request traces captured by the Token Horizon gateway across all providers (openai, anthropic, ollama, kimi, glm, minimax, deepseek, qwen, grok, gemini, opencode). Actions: 'list' (recent traces; filter by provider/model/client/session/errors), 'get' (full trace incl. bounded request/response bodies, by trace_id), 'stats' (windowed aggregates: byProvider/byModel/byClient/byError cuts, TTFT/duration p50/p95, cache-hit, tool-call, retry-suspect rates), 'sessions' (conversation spans grouped by client session key — cross-provider request chains).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        action: { type: "string", enum: ["list", "get", "stats", "sessions"], default: "list" },
+        trace_id: { type: "string", description: "Trace id for action=get (x-token-horizon-trace-id response header joins client logs to traces)" },
+        provider: { type: "string", description: "openai | anthropic | ollama | kimi | glm | minimax | deepseek | qwen | grok | gemini | opencode" },
+        model: { type: "string" },
+        client: { type: "string", description: "Harness filter: codex, claude-code, kimi-cli, opencode, gemini-cli, aider, …" },
+        session: { type: "string", description: "Session key filter (see action=sessions)" },
+        errors: { type: "boolean", default: false, description: "Only error traces (action=list)" },
+        hours: { type: "number", default: 24, description: "Stats/sessions window (1-168)" },
+        limit: { type: "number", default: 25 },
+      },
+    },
+  },
+  {
     name: "token_horizon_system",
     description: "Live macOS system stats from Token Horizon: CPU %, RAM used/total GB, load average, and active proxy status.",
     inputSchema: { type: "object", properties: {} },
@@ -470,14 +489,24 @@ async function callTool(name, args) {
               "openai": ["/v1/chat/completions", "/v1/responses", "/v1/embeddings", "/v1/completions"],
               "anthropic": ["/v1/messages"],
               "ollama": ["/api/generate", "/api/chat", "/api/tags"],
-              "explicit_prefix": "Prefix any path with /th-openai/ or /th-anthropic/ to skip inference (e.g. /th-anthropic/v1/messages).",
+              "gemini": ["/v1beta/models/*:generateContent", "/v1beta/models/*:streamGenerateContent"],
+              "explicit_prefix": "Prefix any path with /th-<provider>/ to force the upstream: /th-openai, /th-anthropic, /th-kimi, /th-glm, /th-minimax, /th-deepseek, /th-qwen, /th-grok, /th-gemini, /th-opencode. The remainder is classified by wire shape (e.g. /th-glm/api/anthropic/v1/messages parses as Anthropic protocol). Unprefixed /v1/* requests also reroute on unambiguous model names (kimi-*, glm-*, deepseek-*, qwen-*, grok-*, gemini-*).",
             },
             upstreams: {
               openai: process.env.TOKEN_HORIZON_OPENAI_UPSTREAM || "https://api.openai.com",
               anthropic: process.env.TOKEN_HORIZON_ANTHROPIC_UPSTREAM || "https://api.anthropic.com",
               ollama: `http://${configuredUpstream}`,
-              note: "Override with TOKEN_HORIZON_OPENAI_UPSTREAM / TOKEN_HORIZON_ANTHROPIC_UPSTREAM / TOKEN_HORIZON_OLLAMA_UPSTREAM before launching Token Horizon (useful for mocks and LiteLLM-style gateways).",
+              kimi: process.env.TOKEN_HORIZON_KIMI_UPSTREAM || "https://api.kimi.com/coding",
+              glm: process.env.TOKEN_HORIZON_GLM_UPSTREAM || "https://api.z.ai",
+              minimax: process.env.TOKEN_HORIZON_MINIMAX_UPSTREAM || "https://api.minimax.io",
+              deepseek: process.env.TOKEN_HORIZON_DEEPSEEK_UPSTREAM || "https://api.deepseek.com",
+              qwen: process.env.TOKEN_HORIZON_QWEN_UPSTREAM || "https://dashscope.aliyuncs.com",
+              grok: process.env.TOKEN_HORIZON_GROK_UPSTREAM || "https://api.x.ai",
+              gemini: process.env.TOKEN_HORIZON_GEMINI_UPSTREAM || "https://generativelanguage.googleapis.com",
+              opencode: process.env.TOKEN_HORIZON_OPENCODE_UPSTREAM || "https://opencode.ai/zen",
+              note: "Override with TOKEN_HORIZON_<PROVIDER>_UPSTREAM before launching Token Horizon (useful for mocks and LiteLLM-style gateways).",
             },
+            attribution: "Traces carry client (harness classified from User-Agent/originator: claude-code, codex, kimi-cli, opencode, gemini-cli, …), sessionKey (session_id / x-session-id headers, or body-derived conversation keys), providerRequestId (upstream request-id), and source=proxy.",
             trace_correlation: "Every relayed response carries an x-token-horizon-trace-id header; join client-side logs to GET /traces/<id> on :8765.",
             storage_bounds: "Bodies capped at 256KB per side per trace, 30 day-files, 256MB total under ~/.config/token-horizon/traces/. Cloud traces do not feed usage totals (file parsers already count that traffic); Ollama traces also feed local tok/s telemetry.",
           },
@@ -623,12 +652,37 @@ async function callTool(name, args) {
           ui_tracking: "Tracked tokens/second appear live in Token Horizon's MODELS and MLX/Ollama tabs.",
           prometheus_exporter: "http://127.0.0.1:8765/metrics",
           stats_api: "http://127.0.0.1:8765/stats",
-          traces_api: "http://127.0.0.1:8765/traces (list, bodies omitted) and http://127.0.0.1:8765/traces/<id> (full trace)",
-          proxy_stats_api: "http://127.0.0.1:8765/proxy/stats?provider=openai&hours=24 (TTFT, tok/s, cache-hit, tool-call, retry, error rates)",
+          traces_api: "http://127.0.0.1:8765/traces?provider=&model=&client=&session=&errors=1&limit= (list, bodies omitted) and http://127.0.0.1:8765/traces/<id> (full trace)",
+          sessions_api: "http://127.0.0.1:8765/traces/sessions?hours=24&limit=50 (conversation spans grouped by session key)",
+          proxy_stats_api: "http://127.0.0.1:8765/proxy/stats?provider=openai&hours=24 (TTFT/duration p50/p95, tok/s, cache-hit, tool-call, retry, error-class, per-provider/model/client cuts)",
+          mcp_tool: "token_horizon_traces (list/get/stats/sessions)",
           gateway_metrics: "token_horizon_gateway_requests_total, token_horizon_gateway_completed_total{status}, token_horizon_gateway_ttft_seconds, token_horizon_gateway_duration_seconds, token_horizon_gateway_output_tokens_total",
         };
 
         return guide;
+      }
+      case "token_horizon_traces": {
+        const action = args.action || "list";
+        if (action === "get") {
+          if (!args.trace_id) throw new Error("trace_id required for action=get");
+          return await api(`/traces/${encodeURIComponent(args.trace_id)}`);
+        }
+        if (action === "stats") {
+          const qs = new URLSearchParams({ hours: String(args.hours ?? 24) });
+          if (args.provider) qs.set("provider", args.provider);
+          if (args.model) qs.set("model", args.model);
+          return await api(`/proxy/stats?${qs}`);
+        }
+        if (action === "sessions") {
+          const qs = new URLSearchParams({ hours: String(args.hours ?? 24), limit: String(args.limit ?? 50) });
+          return await api(`/traces/sessions?${qs}`);
+        }
+        const qs = new URLSearchParams({ limit: String(args.limit ?? 25) });
+        for (const k of ["provider", "model", "client", "session"]) {
+          if (args[k]) qs.set(k, args[k]);
+        }
+        if (args.errors) qs.set("errors", "1");
+        return await api(`/traces?${qs}`);
       }
       case "token_horizon_system": {
         const d = await api("/stats");

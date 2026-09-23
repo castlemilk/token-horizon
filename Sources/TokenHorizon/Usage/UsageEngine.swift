@@ -1951,7 +1951,7 @@ final class UsageEngine {
                         // zero watermark = renamed fields (silent drift).
                         if let rec = parsed.record, rec.total == 0,
                            let usageDict = (obj["payload"] as? [String: Any])?["usage"] as? [String: Any],
-                           !usageDict.isEmpty {
+                           dictHasPositiveNumber(usageDict) {
                             st.suspectLines += 1
                             if st.suspectLines == 1 {
                                 NSLog("[UsageEngine] codex: usage-shaped line failed to parse in %@", full)
@@ -2082,12 +2082,30 @@ final class UsageEngine {
         return parseCodexObject(obj)
     }
 
+    /// True when a dict carries a positive numeric leaf (one nested level
+    /// deep, e.g. `info.total_token_usage`). Usage blocks that report only
+    /// zeros/nulls (Claude Code `<synthetic>` lines, zero-consumption
+    /// records) are not drift — drift means real values under keys we
+    /// don't recognize.
+    func dictHasPositiveNumber(_ dict: [String: Any], depth: Int = 0) -> Bool {
+        for (_, v) in dict {
+            if let n = v as? NSNumber {
+                // `is Bool` on NSNumber is permissive (1 casts to true) —
+                // use the exact CF type check so 0/1 counts aren't swallowed.
+                if CFGetTypeID(n) == CFBooleanGetTypeID() { continue }
+                if n.doubleValue > 0 { return true }
+            }
+            if depth < 1, let d = v as? [String: Any], dictHasPositiveNumber(d, depth: depth + 1) { return true }
+        }
+        return false
+    }
+
     /// True when a parsed session object carried a usage-shaped payload but
     /// yielded no record — schema drift surfaces here, not as silence.
     func codexSuspect(_ obj: [String: Any]) -> Bool {
         let payload = obj["payload"] as? [String: Any]
-        if payload?["info"] is [String: Any] { return true }
-        if payload?["usage"] is [String: Any] { return true }
+        if let info = payload?["info"] as? [String: Any], dictHasPositiveNumber(info) { return true }
+        if let u = payload?["usage"] as? [String: Any], dictHasPositiveNumber(u) { return true }
         if let t = obj["type"] as? String, t.contains("usage") { return true }
         return false
     }
@@ -2167,12 +2185,14 @@ final class UsageEngine {
             // Session-scope records are cumulative summaries — intentionally
             // skipped, not a failure.
             if t == "usage.record", (obj["usageScope"] as? String) == "session" { return false }
+            // An all-zero usage dict reports nothing consumable — not drift.
+            if let u = obj["usage"] as? [String: Any] { return dictHasPositiveNumber(u) }
             return true
         }
-        if obj["usage"] is [String: Any] { return true }
+        if let u = obj["usage"] as? [String: Any], dictHasPositiveNumber(u) { return true }
         if let m = obj["message"] as? [String: Any],
            let p = m["payload"] as? [String: Any],
-           p["token_usage"] is [String: Any] { return true }
+           let u = p["token_usage"] as? [String: Any], dictHasPositiveNumber(u) { return true }
         return false
     }
 
@@ -2247,11 +2267,11 @@ final class UsageEngine {
     /// yielded no record — schema drift surfaces here, not as silence.
     func additiveSuspect(_ obj: [String: Any]) -> Bool {
         for key in ["usage", "token_usage", "usageMetadata", "usage_metadata", "tokenUsage"] {
-            if obj[key] is [String: Any] { return true }
+            if let u = obj[key] as? [String: Any], dictHasPositiveNumber(u) { return true }
         }
         if let m = obj["message"] as? [String: Any] {
             for key in ["usage", "token_usage", "usageMetadata", "usage_metadata", "tokenUsage"] {
-                if m[key] is [String: Any] { return true }
+                if let u = m[key] as? [String: Any], dictHasPositiveNumber(u) { return true }
             }
         }
         return false
