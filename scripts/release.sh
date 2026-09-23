@@ -9,6 +9,11 @@
 #   ./scripts/release.sh major      # v0.3.5 -> v1.0.0
 #   ./scripts/release.sh 0.4.2      # explicit version
 #   ./scripts/release.sh patch --dry-run   # print the plan, change nothing
+#
+# Also invoked by release.yml for non-tag triggers: a push to main
+# auto-releases (patch bump; "[bump minor]"/"[bump major]" in the commit
+# message upgrades it, "[skip release]"/"[no release]" opts out), and
+# workflow_dispatch does the same with an optional explicit version.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -76,6 +81,9 @@ grep -q "version \"${NEXT}\"" packaging/homebrew/token-horizon.rb || die "cask p
 
 # --- commit, tag, push ---------------------------------------------------------
 git add scripts/make-app.sh Sources/TokenHorizon/App/BuildInfo.swift packaging/homebrew/token-horizon.rb
+# No [skip ci] here — the tag points at this commit and skip tokens can
+# suppress tag-push triggers too. The release workflow's job guard skips
+# this push via the 'release v' prefix instead.
 git commit -m "release ${TAG}" >/dev/null
 git tag -a "$TAG" -m "Token Horizon ${NEXT}"
 git push origin HEAD:main

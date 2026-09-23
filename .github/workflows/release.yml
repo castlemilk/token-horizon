@@ -1,6 +1,7 @@
 name: release
 on:
   push:
+    branches: ["main"]
     tags: ["v*"]
   workflow_dispatch:
     inputs:
@@ -12,9 +13,30 @@ on:
 permissions:
   contents: write
 
+# Releases serialize: two rapid main pushes must never race on the same
+# computed version (queued, not cancelled).
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 jobs:
   build-and-release:
     runs-on: macos-15
+    # Auto-release on every push to main, EXCEPT the pipeline's own commits
+    # (release.sh's "release vX.Y.Z" pin commit, the post-build "release
+    # metadata" cask commit — which also carries [skip ci]) or an explicit
+    # opt-out token in the commit message. GITHUB_TOKEN pushes wouldn't
+    # retrigger anyway; these guards cover user-credential pushes of the
+    # same shapes (local release.sh runs).
+    if: >-
+      github.event_name == 'workflow_dispatch'
+      || startsWith(github.ref, 'refs/tags/')
+      || (github.ref_name == 'main'
+          && github.event_name == 'push'
+          && !startsWith(github.event.head_commit.message, 'release v')
+          && !startsWith(github.event.head_commit.message, 'release metadata')
+          && !contains(github.event.head_commit.message, '[skip release]')
+          && !contains(github.event.head_commit.message, '[no release]'))
     steps:
       - uses: actions/checkout@v4
         with:
@@ -83,24 +105,56 @@ jobs:
 
       - name: Resolve release version
         id: ver
+        env:
+          HEAD_MSG: ${{ github.event.head_commit.message }}
         run: |
           if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
             V="${GITHUB_REF_NAME#v}"
-          elif [ -n "${{ inputs.version }}" ]; then
+          elif [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ] && [ -n "${{ inputs.version }}" ]; then
             V="${{ inputs.version }}"
             V="${V#v}"
           else
-            # Manual dispatch without a version: next patch after latest tag.
+            # Main push (auto-bump) or blank dispatch: next patch after the
+            # latest tag. A [bump minor] / [bump major] token in the pushed
+            # commit message upgrades the bump.
+            BUMP=patch
+            case "${HEAD_MSG:-}" in
+              *"[bump major]"*) BUMP=major ;;
+              *"[bump minor]"*) BUMP=minor ;;
+            esac
             LATEST="$(git tag --list 'v[0-9]*' --sort=-v:refname | head -1)"
             LATEST="${LATEST#v}"; LATEST="${LATEST:-0.0.0}"
             IFS='.' read -r MA MI PA <<< "$LATEST"
-            V="${MA:-0}.${MI:-0}.$(( ${PA:-0} + 1 ))"
+            case "$BUMP" in
+              major) V="$(( ${MA:-0} + 1 )).0.0" ;;
+              minor) V="${MA:-0}.$(( ${MI:-0} + 1 )).0" ;;
+              *)     V="${MA:-0}.${MI:-0}.$(( ${PA:-0} + 1 ))" ;;
+            esac
+            echo "auto-bump: $BUMP (latest v${LATEST})"
           fi
           # Strict X.Y.Z — a malformed tag or input must fail before packaging.
           echo "$V" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' || {
             echo "::error::'$V' is not a semantic version (want X.Y.Z)"; exit 1; }
           echo "version=$V" >> "$GITHUB_OUTPUT"
           echo "resolved version: $V"
+
+      # Non-tag triggers (main auto-bump, manual dispatch): the tag doesn't
+      # exist yet — release.sh syncs the version pins, commits "release
+      # vX.Y.Z", tags, and pushes main + tag. Its own GITHUB_TOKEN pushes do
+      # not retrigger this workflow (and the job guard would skip them).
+      - name: Commit version pins + tag
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # A queued main-push run sits on a commit main has since passed
+          # (the earlier run's release commits) — rebase onto the tip so
+          # the pin commit fast-forwards.
+          if [ "${GITHUB_EVENT_NAME}" = "push" ]; then
+            git fetch origin main
+            git rebase origin/main
+          fi
+          ./scripts/release.sh "${{ steps.ver.outputs.version }}"
 
       - name: Build + sign + notarize + package
         env:

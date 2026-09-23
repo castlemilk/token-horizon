@@ -60,7 +60,16 @@ Test the stapled app on a clean macOS user account before release. Confirm that 
 
 ## Publish pipeline (GitHub Actions)
 
-The one-command path is `scripts/release.sh` (or `task release`):
+**Every push to `main` auto-releases** — the workflow bumps the patch
+version after the latest tag, pins it, tags `vX.Y.Z`, builds, signs,
+notarizes, publishes the GitHub release, and syncs the Homebrew cask.
+Commit-message tokens steer it: `[bump minor]` / `[bump major]` upgrade the
+bump, `[skip release]` / `[no release]` opts a push out entirely. The
+pipeline's own commits (`release v…`, `release metadata …`) never
+retrigger. Rapid pushes serialize via the workflow's `concurrency` group —
+each queued push still gets its own release.
+
+The manual path is `scripts/release.sh` (or `task release`):
 
 ```bash
 ./scripts/release.sh            # next patch after latest tag (v0.3.5 → v0.3.6)
