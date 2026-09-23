@@ -24,6 +24,7 @@
 }
 *{box-sizing:border-box}
 html,body{margin:0;padding:0;background:var(--bg);color:var(--text);font-family:var(--sans);-webkit-font-smoothing:antialiased}
+body{background:radial-gradient(1000px 520px at 58% -10%,rgba(79,140,255,.085),transparent 62%),radial-gradient(760px 460px at 98% 18%,rgba(139,92,246,.055),transparent 60%),radial-gradient(700px 420px at 2% 108%,rgba(56,189,248,.04),transparent 60%),var(--bg);background-attachment:fixed}
 a{color:inherit;text-decoration:none}
 button{font-family:inherit}
 ::-webkit-scrollbar{width:10px;height:10px}
@@ -76,24 +77,28 @@ button{font-family:inherit}
 .breadcrumb .crumb-link{color:var(--faint);cursor:pointer;transition:color .12s}
 .breadcrumb .crumb-link:hover{color:#9CC0FF;text-decoration:underline}
 .page-head{display:flex;justify-content:space-between;align-items:flex-start;gap:24px;margin-bottom:20px}
-.page-head h1{margin:0;font-size:30px;letter-spacing:-.4px;font-weight:800}
+.page-head h1{margin:0;font-size:30px;letter-spacing:-.4px;font-weight:800;background:linear-gradient(96deg,#FFFFFF 20%,#B9CFF5 78%);-webkit-background-clip:text;background-clip:text;color:transparent}
 .page-head p{margin:6px 0 0;color:var(--muted);font-size:13.5px;max-width:640px}
-.quote{font-family:var(--mono);font-size:10.5px;color:var(--faint);text-align:right;letter-spacing:1.2px;line-height:1.7;text-transform:uppercase}
-.quote .u{display:inline-block;width:70px;height:1px;background:var(--line2);vertical-align:middle;margin-top:8px}
+.quote{font-family:var(--mono);font-size:10.5px;color:#8DA3C8;text-align:right;letter-spacing:1.2px;line-height:1.7;text-transform:uppercase;border-right:2px solid rgba(79,140,255,.5);padding-right:14px}
+.quote .u{display:inline-block;width:70px;height:2px;background:linear-gradient(90deg,rgba(79,140,255,.75),transparent);vertical-align:middle;margin-top:8px;border-radius:1px}
 
 .grid{display:grid;gap:16px}
 .kpis{grid-template-columns:repeat(4,1fr)}
-.card{background:linear-gradient(180deg,var(--panel),#0D121C);border:1px solid var(--line);border-radius:var(--radius);padding:16px}
+.card{background:linear-gradient(180deg,#121A2B 0%,#0C111D 100%);border:1px solid var(--line);border-radius:var(--radius);padding:16px;box-shadow:inset 0 1px 0 rgba(255,255,255,.05),0 14px 34px -16px rgba(0,0,0,.6)}
 .card h3{margin:0 0 12px;font-size:13px;letter-spacing:.4px;display:flex;align-items:center;gap:8px}
 .card h3 .info{color:var(--faint);cursor:help;font-size:11px}
 .card-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:12px}
 .card-head h3{margin:0}
 .sub{color:var(--faint);font-size:11.5px}
-.kpi{display:flex;gap:14px;align-items:flex-start}
-.kpi-icon{width:38px;height:38px;border-radius:10px;display:grid;place-items:center;background:rgba(79,140,255,.1);border:1px solid rgba(79,140,255,.2);flex:none}
+.kpi{display:flex;gap:14px;align-items:flex-start;position:relative;overflow:hidden}
+.kpi::before{content:"";position:absolute;top:0;left:18px;right:18px;height:1px;background:linear-gradient(90deg,transparent,color-mix(in srgb,var(--accent,#4F8CFF) 60%,transparent),transparent)}
+.kpi-icon{width:40px;height:40px;border-radius:11px;display:grid;place-items:center;background:color-mix(in srgb,var(--accent,#4F8CFF) 13%,transparent);border:1px solid color-mix(in srgb,var(--accent,#4F8CFF) 30%,transparent);box-shadow:0 0 18px color-mix(in srgb,var(--accent,#4F8CFF) 16%,transparent),inset 0 1px 0 rgba(255,255,255,.08);flex:none}
 .kpi-label{font-size:10.5px;letter-spacing:1px;color:var(--faint);text-transform:uppercase}
-.kpi-value{font-size:22px;font-weight:800;margin-top:3px;letter-spacing:-.3px}
+.kpi-value{font-size:24px;font-weight:800;margin-top:3px;letter-spacing:-.3px}
 .kpi-delta{font-size:11.5px;margin-top:4px;color:var(--muted)}
+.kpi-delta .up,.kpi-delta .down{display:inline-flex;align-items:center;padding:2px 8px;border-radius:999px;font-weight:700;font-size:10.5px;margin-right:2px}
+.kpi-delta .up{background:rgba(34,197,94,.13);color:#6EE7A8}
+.kpi-delta .down{background:rgba(239,68,68,.13);color:#F89B9B}
 .up{color:var(--green)} .down{color:var(--red)}
 .mini{font-size:11px;color:var(--faint)}
 
@@ -115,14 +120,23 @@ table{width:100%;border-collapse:collapse;font-size:12.5px}
 thead th{text-align:left;color:var(--faint);font-weight:600;font-size:10.5px;letter-spacing:.7px;text-transform:uppercase;padding:9px 10px;border-bottom:1px solid var(--line);cursor:pointer;white-space:nowrap;user-select:none}
 thead th:hover{color:var(--muted)}
 tbody td{padding:11px 10px;border-bottom:1px solid rgba(30,38,53,.55);vertical-align:middle}
-tbody tr:hover{background:rgba(255,255,255,.018)}
+tbody tr:hover{background:rgba(255,255,255,.03)}
 tbody tr.clickable{cursor:pointer}
 tbody tr.selected{background:rgba(79,140,255,.08)}
+/* Leaderboard row treatments — medal edge for top 3, accent rail for "you". */
+#lb-table tbody tr td{transition:background .12s}
+#lb-table tbody tr:hover td{background:rgba(79,140,255,.05)}
+#lb-table tbody tr.r1 td:nth-child(1){box-shadow:inset 3px 0 0 #E0B44C,1px 0 0 var(--line)}
+#lb-table tbody tr.r2 td:nth-child(1){box-shadow:inset 3px 0 0 #AEB6C4,1px 0 0 var(--line)}
+#lb-table tbody tr.r3 td:nth-child(1){box-shadow:inset 3px 0 0 #B0774B,1px 0 0 var(--line)}
+#lb-table tbody tr.you td{background:rgba(79,140,255,.075)}
+#lb-table tbody tr.you:hover td{background:rgba(79,140,255,.115)}
+#lb-table .num.score{font-weight:700;font-size:13px;color:#EAF1FF}
 /* Sticky rank + user columns so sideways scrolling never loses row identity. */
 #lb-table thead th:nth-child(-n+2),#lb-table tbody td:nth-child(-n+2){position:sticky;background:var(--panel)}
 #lb-table thead th:nth-child(1),#lb-table tbody td:nth-child(1){left:0;z-index:3;min-width:54px;box-shadow:1px 0 0 var(--line)}
 #lb-table thead th:nth-child(2),#lb-table tbody td:nth-child(2){left:54px;z-index:2;box-shadow:1px 0 0 var(--line)}
-#lb-table tbody tr.selected td:nth-child(-n+2){background:#17202F}
+#lb-table tbody tr.selected td:nth-child(-n+2),#lb-table tbody tr.you td:nth-child(-n+2){background:#152033}
 .user-cell{display:flex;align-items:center;gap:10px}
 .user-cell .name{font-weight:600}
 .user-cell .sub{font-size:11px}
@@ -137,12 +151,13 @@ tbody tr.selected{background:rgba(79,140,255,.08)}
 .rank-badge.bronze{background:rgba(176,119,75,.2);color:#E0B08A}
 
 .ladder{display:grid;grid-template-columns:repeat(auto-fit,minmax(118px,1fr));gap:10px}
-.tier{position:relative;text-align:center;padding:14px 8px;border-radius:12px;border:1px solid var(--line);background:var(--panel);cursor:pointer;transition:.15s}
+.tier{position:relative;text-align:center;padding:14px 8px;border-radius:12px;border:1px solid var(--line);border-top:2px solid color-mix(in srgb,var(--tc,var(--line)) 65%,transparent);background:var(--panel);cursor:pointer;transition:.15s}
 .tier:hover{transform:translateY(-2px);border-color:var(--line2)}
 .tier.active{border-color:rgba(79,140,255,.6);box-shadow:0 0 0 1px rgba(79,140,255,.3) inset}
 .tier .name{font-weight:800;font-size:12.5px;margin-top:8px;letter-spacing:.6px}
 .tier .range{font-size:10.5px;color:var(--faint);margin-top:3px}
-.tier .you{margin-top:6px;font-size:10px;color:#9CC0FF}
+.tier .you{display:inline-block;margin-top:7px;font-size:9px;font-weight:800;letter-spacing:1.3px;text-transform:uppercase;color:#fff;background:color-mix(in srgb,var(--tc,#4F8CFF) 42%,transparent);border:1px solid color-mix(in srgb,var(--tc,#4F8CFF) 72%,transparent);padding:3px 9px;border-radius:999px}
+.tier.you{border-color:color-mix(in srgb,var(--tc) 62%,transparent);border-top-color:var(--tc);background:linear-gradient(180deg,color-mix(in srgb,var(--tc) 13%,#121A2B),var(--panel));box-shadow:0 12px 36px -12px color-mix(in srgb,var(--tc) 60%,transparent),inset 0 1px 0 rgba(255,255,255,.08);transform:translateY(-3px)}
 .tier.faded{opacity:.45}
 
 .donut-wrap{display:flex;gap:18px;align-items:center}
@@ -170,9 +185,10 @@ tbody tr.selected{background:rgba(79,140,255,.08)}
 
 .mover{display:flex;align-items:center;gap:10px;padding:8px 4px;border-bottom:1px solid rgba(30,38,53,.5)}
 .mover:last-child{border-bottom:none}
-.mover .rank{color:var(--faint);font-size:11px;width:14px}
+.mover .rank{display:inline-grid;place-items:center;width:18px;height:18px;border-radius:6px;background:var(--panel3);color:var(--faint);font-size:10px;font-weight:700;flex:none}
 .mover .name{font-weight:600;font-size:12.5px}
 .mover .val{margin-left:auto;text-align:right;font-family:var(--mono);font-size:11.5px}
+.mover .val .up{display:inline-flex;align-items:center;padding:2px 8px;border-radius:999px;background:rgba(34,197,94,.13);color:#6EE7A8;font-weight:700;font-size:11px}
 
 .tabs{display:flex;gap:4px;border-bottom:1px solid var(--line);margin-bottom:16px;overflow-x:auto}
 .tab{padding:10px 15px;font-size:12.5px;color:var(--muted);cursor:pointer;border-bottom:2px solid transparent;white-space:nowrap}
@@ -274,7 +290,8 @@ tbody tr.selected{background:rgba(79,140,255,.08)}
 .notice.warn{background:rgba(245,158,11,.09);border-color:rgba(245,158,11,.35);color:#F7C46C}
 .skeleton{background:linear-gradient(90deg,#131A27,#1A2233,#131A27);background-size:200% 100%;animation:sk 1.2s infinite;border-radius:8px}
 @keyframes sk{0%{background-position:200% 0}100%{background-position:-200% 0}}
-.empty{padding:28px;text-align:center;color:var(--faint);font-size:13px}
+.empty{padding:24px;text-align:center;color:var(--faint);font-size:12.5px;border:1px dashed var(--line2);border-radius:11px;margin:6px;background:rgba(255,255,255,.014)}
+.empty::before{content:"◌ ";color:var(--line2);font-size:14px}
 .two-col{display:grid;grid-template-columns:1fr 340px;gap:16px}
 .two-col>*,.split>*,.three-col>*,.kpis>*{min-width:0}
 .how-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}
@@ -470,6 +487,7 @@ body.th-flat .mx-flat-score{display:none}
 .season-select{min-width:0;flex:1 1 auto}
 .season-select select{min-width:0;width:100%}
 .topbar-spacer{display:none}
+.quote{display:none}
 .donut-wrap{flex-direction:column;align-items:stretch}
 .legend{width:100%}}
 @media(max-width:480px){
@@ -484,6 +502,16 @@ body.th-flat .mx-flat-score{display:none}
 .scope-grid{grid-template-columns:repeat(2,1fr)}}
 :focus-visible{outline:2px solid rgba(79,140,255,.75);outline-offset:2px;border-radius:6px}
 :focus:not(:focus-visible){outline:none}
+
+/* League progression hero card — carries the accent into the right rail. */
+.cta{background:linear-gradient(165deg,#182339 0%,#0E1524 62%,#0C1220 100%);border:1px solid rgba(79,140,255,.32);box-shadow:0 0 46px -14px rgba(79,140,255,.5),inset 0 1px 0 rgba(255,255,255,.07)}
+.cta .progress{height:8px;box-shadow:inset 0 1px 3px rgba(0,0,0,.55)}
+.cta .progress i{background:linear-gradient(90deg,#38BDF8,#4F8CFF 55%,#8B5CF6);box-shadow:0 0 14px rgba(79,140,255,.65);border-radius:4px}
+
+@media(prefers-reduced-motion:reduce){
+*,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important}
+.tier:hover,.tier.you{transform:none}
+}
 </style>
 </head>
 <body>
@@ -1707,8 +1735,8 @@ function pageHead(crumb, title, sub, quote) {
   </div>`;
 }
 
-function kpiCard(label, value, delta, icon, sub) {
-  return `<div class="card kpi"><div class="kpi-icon">${icon}</div><div style="min-width:0">
+function kpiCard(label, value, delta, icon, sub, accent = "#4F8CFF") {
+  return `<div class="card kpi" style="--accent:${accent}"><div class="kpi-icon">${icon}</div><div style="min-width:0">
     <div class="kpi-label">${esc(label)}</div><div class="kpi-value">${esc(value)}</div>
     <div class="kpi-delta">${delta || (sub ? `<span class="faint">${esc(sub)}</span>` : "")}</div>
   </div></div>`;
@@ -1749,10 +1777,10 @@ function viewLeaderboard() {
   const season = d.season;
 
   const kpis = `<div class="grid kpis" style="margin-bottom:16px">
-    ${kpiCard("Total Tokens", k.totalTokensFormatted || fmtTokens(k.totalTokens), deltaHtml(k.totalTokensDelta), ICONS.tokens)}
-    ${kpiCard("Total Cost", k.totalCostFormatted || fmtCost(k.totalCost), deltaHtml(k.totalCostDelta), ICONS.cost)}
-    ${kpiCard("Active Users", fmtNum(k.activeDevs), deltaHtml(k.activeDevsDelta), ICONS.users)}
-    ${kpiCard("Avg Tokens / Request", fmtNum(k.avgTokensPerRequest), k.totalRequests ? `<span class="faint">${fmtTokens(k.totalRequests)} requests tracked</span>` : "", ICONS.bolt)}
+    ${kpiCard("Total Tokens", k.totalTokensFormatted || fmtTokens(k.totalTokens), deltaHtml(k.totalTokensDelta), ICONS.tokens, "", "#4F8CFF")}
+    ${kpiCard("Total Cost", k.totalCostFormatted || fmtCost(k.totalCost), deltaHtml(k.totalCostDelta), ICONS.cost, "", "#22C55E")}
+    ${kpiCard("Active Users", fmtNum(k.activeDevs), deltaHtml(k.activeDevsDelta), ICONS.users, "", "#8B5CF6")}
+    ${kpiCard("Avg Tokens / Request", fmtNum(k.avgTokensPerRequest), k.totalRequests ? `<span class="faint">${fmtTokens(k.totalRequests)} requests tracked</span>` : "", ICONS.bolt, "", "#F59E0B")}
   </div>`;
 
   const ladder = `<div class="card" style="margin-bottom:16px">
@@ -1761,12 +1789,12 @@ function viewLeaderboard() {
     <div class="ladder">${LEAGUES.map(l => {
       const count = (d.leaderboard || []).filter(r => r.league === l.id).length;
       const isYou = local && local.league === l.id;
-      return `<div class="tier ${state.leagueFilter === l.id ? "active" : ""} ${isYou ? "" : ""}" data-league="${l.id}">
+      return `<div class="tier ${state.leagueFilter === l.id ? "active" : ""} ${isYou ? "you" : ""}" data-league="${l.id}" style="--tc:${l.color}">
         ${leagueIcon(l.id, 44)}<div class="name" style="color:${l.color}">${l.title.toUpperCase()}</div>
         <div class="range">${fmtTokens(l.min)}${l.max ? " – " + fmtTokens(l.max) : "+"}</div>
         ${isYou ? `<div class="you">You are here</div>` : `<div class="range">${count} player${count === 1 ? "" : "s"}</div>`}
       </div>`;
-    }).join("")}<div class="tier" style="cursor:default;background:linear-gradient(180deg,#141C2B,#0E1420)">
+    }).join("")}<div class="tier" style="cursor:default;--tc:#E0B44C;background:linear-gradient(180deg,#141C2B,#0E1420)">
         <span style="font-size:26px">👑</span><div class="name" style="color:#C7D2E5">HIGHER LEAGUES</div>
         <div class="range">Unlock greater possibilities</div></div></div></div>`;
 
@@ -1796,7 +1824,7 @@ function viewLeaderboard() {
     <div class="donut-wrap">${donut(mixTop, 168, fmtTokens(mixTotal), "tokens")}
     <div class="legend">${mixTop.map((s, i) => `<div class="legend-row">${providerLogo(s.provider || s.label, 15)}${esc(s.label)}<span class="val">${fmtTokens(s.value)}</span><span class="pct">${fmtPct(s.value / Math.max(1, mixTotal) * 100, 0)}</span></div>`).join("")}</div></div></div>`;
 
-  const leagueCta = local ? `<div class="card">
+  const leagueCta = local ? `<div class="card cta">
     <div style="display:flex;gap:12px;align-items:center"><span style="font-size:26px">🏆</span>
     <div><div style="font-weight:700">Ready for a higher league?</div><div class="sub">Keep using tokens to climb the ranks. Top performers unlock exclusive benefits.</div></div></div>
     <div class="progress" style="margin-top:14px"><i style="width:${local.mmrToNext != null ? Math.max(4, 100 - Math.min(100, (local.mmrToNext / 400) * 100)) : 100}%"></i></div>
@@ -1861,11 +1889,11 @@ function rowHtml(r, local) {
   const isYou = e.isLocal || (local && e.handle === local.entry.handle);
   const rankClass = r.rank === 1 ? "gold" : r.rank === 2 ? "silver" : r.rank === 3 ? "bronze" : "";
   const medal = r.rank <= 3 ? ["🥇", "🥈", "🥉"][r.rank - 1] : "";
-  return `<tr class="clickable ${isYou ? "selected" : ""}" data-handle="${esc(e.handle)}">
+  return `<tr class="clickable ${isYou ? "you" : ""} ${r.rank <= 3 ? `r${r.rank}` : ""}" data-handle="${esc(e.handle)}">
     <td><span class="rank-badge ${rankClass}">${medal || r.rank}</span></td>
     <td><div class="user-cell">${entryAvatar(e, 30)}<div><div class="name">${esc(e.handle)} ${isYou ? '<span class="chip you">YOU</span>' : ""}</div><div class="sub">${esc(e.team || e.hardware || "")}</div></div></div></td>
     <td><span class="chip league" style="color:${leagueColor(r.league)};border-color:${leagueColor(r.league)}55;background:${leagueColor(r.league)}14">${leagueIcon(r.league, 17)}${esc(leagueMeta(r.league).title)} ${roman(r.division || 3)}</span></td>
-    <td><div class="num">${esc(r.scoreFormatted)}</div><div class="bar" style="margin-top:4px"><i style="width:${r.relativePercent}%"></i></div></td>
+    <td><div class="num score">${esc(r.scoreFormatted)}</div><div class="bar" style="margin-top:4px"><i style="width:${r.relativePercent}%"></i></div></td>
     <td class="num">${esc(r.inputFormatted || "—")}</td>
     <td class="num">${esc(r.outputFormatted || "—")}</td>
     <td class="num">${esc(r.costFormatted)}</td>
