@@ -18,7 +18,7 @@ if git status --short 2>/dev/null | grep -q .; then GIT_SHA="${GIT_SHA}-dirty"; 
 BUILT_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 # Release pipeline overrides: version from the tag, Developer ID identity for
 # hardened-runtime signing (notarization requires it). Unset = dev defaults.
-VERSION="${MARKETING_VERSION:-0.3.7}"
+VERSION="${MARKETING_VERSION:-0.3.8}"
 BUILD_NUMBER="${CURRENT_PROJECT_VERSION:-8}"
 SIGN_IDENTITY="${SIGN_IDENTITY:-}"
 
