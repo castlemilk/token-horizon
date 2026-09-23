@@ -70,4 +70,46 @@ final class PayloadRoundTripTests: XCTestCase {
                 allTokens: 0, buckets: [:], rate: nil, model: "", modelTokens: 0)))
         XCTAssertNil(back2.rate)
     }
+
+    /// `sawTokenCount` is optional on disk: pre-v5 state files lack the key
+    /// and must decode to nil (→ false), while v5+ values round-trip.
+    func testCodexSawTokenCountBackwardCompat() throws {
+        let (enc, dec) = coder()
+        // A real v4 file carries every field except sawTokenCount.
+        let legacyJSON = """
+        {"offset":0,"watermark":{"input":0,"output":0,"cached":0,"reasoning":0},\
+        "last":{"input":0,"output":0,"cached":0,"reasoning":0},"allTokens":0,\
+        "buckets":{},"model":"","modelTokens":0,"inputAll":0,"outputAll":0,\
+        "cachedAll":0,"reasoningAll":0,"requestsAll":0,"models":{},"modelDays":{}}
+        """.data(using: .utf8)!
+        let legacy = try dec.decode(DurableStore.StoredCodexFile.self, from: legacyJSON)
+        XCTAssertNil(legacy.sawTokenCount)
+        let modern = DurableStore.StoredCodexFile(
+            offset: 0,
+            watermark: DurableStore.StoredCodexWatermark(input: 0, output: 0, cached: 0, reasoning: 0),
+            last: DurableStore.StoredCodexWatermark(input: 0, output: 0, cached: 0, reasoning: 0),
+            sawTokenCount: true,
+            allTokens: 0, buckets: [:], rate: nil, model: "", modelTokens: 0)
+        let back = try dec.decode(DurableStore.StoredCodexFile.self, from: enc.encode(modern))
+        XCTAssertEqual(back.sawTokenCount, true)
+    }
+
+    /// Snapshot decode stays backward-compatible when `parserHealth` is absent.
+    func testSnapshotParserHealthDecodeDefault() throws {
+        let snapJSON = #"{"tokensToday":5,"updatedAt":1700000000}"#.data(using: .utf8)!
+        let dec = JSONDecoder()
+        dec.dateDecodingStrategy = .secondsSince1970
+        let snap = try dec.decode(UsageSnapshot.self, from: snapJSON)
+        XCTAssertTrue(snap.parserHealth.isEmpty)
+        var h = ParserHealth(source: "kimi")
+        h.files = 2
+        h.suspect = 3
+        var snap2 = UsageSnapshot()
+        snap2.parserHealth = [h]
+        let enc = JSONEncoder()
+        enc.dateEncodingStrategy = .secondsSince1970
+        let back = try dec.decode(UsageSnapshot.self, from: enc.encode(snap2))
+        XCTAssertEqual(back.parserHealth.first?.source, "kimi")
+        XCTAssertEqual(back.parserHealth.first?.suspect, 3)
+    }
 }

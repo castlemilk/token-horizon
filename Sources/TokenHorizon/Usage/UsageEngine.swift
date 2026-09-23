@@ -101,6 +101,12 @@ final class UsageEngine {
     struct AdditiveFileState {
         var offset: UInt64 = 0
         var allTokens: Int = 0
+        /// Parse-health counters (since launch — not persisted): consumed
+        /// JSONL lines, lines that yielded a usage record, and usage-shaped
+        /// lines that failed to parse (schema-drift signal).
+        var linesRead: Int = 0
+        var parsedLines: Int = 0
+        var suspectLines: Int = 0
         var allCost: Double = 0
         var cacheRead: Int = 0
         var cacheWrite: Int = 0
@@ -151,6 +157,10 @@ final class UsageEngine {
         /// a response is never counted through both streams.
         var sawTokenCount = false
         var allTokens: Int = 0
+        /// Parse-health counters (since launch — not persisted).
+        var linesRead: Int = 0
+        var parsedLines: Int = 0
+        var suspectLines: Int = 0
         var buckets: [Int: HourBucket] = [:]
         var rate: CodexRate?
         var model: String = "codex"
@@ -882,6 +892,7 @@ final class UsageEngine {
         }.filter { $0.tokens > 0 }
         snap.perTool = tools.filter { $0.tokensAllTime > 0 || $0.tokensToday > 0 }
         snap.sources = snap.perTool.map { $0.tool }
+        snap.parserHealth = parserHealthLocked()
         snap.inputTokensAllTime = snap.perTool.reduce(0) { $0 + $1.inputTokensAllTime }
         snap.outputTokensAllTime = snap.perTool.reduce(0) { $0 + $1.outputTokensAllTime }
         snap.inputTokensToday = snap.perTool.reduce(0) { $0 + $1.inputTokensToday }
@@ -1335,7 +1346,10 @@ final class UsageEngine {
                 guard let lastNewline = chunk.lastIndex(of: UInt8(ascii: "\n")) else { continue }
                 let consumable = chunk[chunk.startIndex...lastNewline]
                 for line in consumable.split(separator: UInt8(ascii: "\n")) where !line.isEmpty {
-                    if let p = parseAdditiveLine(Data(line)) {
+                    st.linesRead += 1
+                    guard let obj = try? JSONSerialization.jsonObject(with: Data(line)) as? [String: Any] else { continue }
+                    if let p = parseAdditiveObject(obj) {
+                        st.parsedLines += 1
                         let deltaIn: Int
                         let deltaOut: Int
                         let deltaCw: Int
@@ -1386,6 +1400,11 @@ final class UsageEngine {
                         accumulateAdditive(&st, dIn: deltaIn, dOut: deltaOut, dCw: deltaCw, dCr: deltaCr,
                                            cost: cost, hour: p.hour, model: modelName, cwd: p.cwd,
                                            today: today, modelDayCutoff: modelDayCutoff)
+                    } else if additiveSuspect(obj) {
+                        st.suspectLines += 1
+                        if st.suspectLines == 1 {
+                            NSLog("[UsageEngine] %@: usage-shaped line failed to parse in %@", prefix, full)
+                        }
                     }
                 }
                 st.offset += UInt64(consumable.count)
@@ -1559,9 +1578,20 @@ final class UsageEngine {
                 devinMtimes[key] = (size, mtime)
                 var st = state[key] ?? AdditiveFileState()
                 if size < st.offset { st = AdditiveFileState() }
-                guard let data = FileManager.default.contents(atPath: full),
-                      let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                      let steps = obj["steps"] as? [[String: Any]] else { continue }
+                guard let data = FileManager.default.contents(atPath: full) else { continue }
+                st.linesRead += 1
+                guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                      let steps = obj["steps"] as? [[String: Any]] else {
+                    // Valid JSON missing `steps` = drifted transcript shape;
+                    // torn mid-write docs fail JSON entirely and don't count.
+                    if (try? JSONSerialization.jsonObject(with: data)) is [String: Any] {
+                        st.suspectLines += 1
+                        state[key] = st
+                        parserStateDirty = true
+                    }
+                    continue
+                }
+                st.parsedLines += 1
                 let sessionId = (item as NSString).deletingPathExtension
                 let cwd = projectDirs[sessionId]
                 let agentModel = ((obj["agent"] as? [String: Any])?["model_name"] as? String) ?? ""
@@ -1647,6 +1677,29 @@ final class UsageEngine {
         return map
     }
 
+    /// Per-source parser health (since launch) aggregated from file state —
+    /// the schema-drift early-warning surface exposed via the snapshot.
+    /// Internal for hermetic unit tests.
+    func parserHealthLocked() -> [ParserHealth] {
+        var bySource: [String: ParserHealth] = [:]
+        func acc(_ source: String, files: Int, lines: Int, parsed: Int, suspect: Int) {
+            var h = bySource[source] ?? ParserHealth(source: source)
+            h.files += files
+            h.linesRead += lines
+            h.parsed += parsed
+            h.suspect += suspect
+            bySource[source] = h
+        }
+        for (_, st) in claudeFiles { acc("claude", files: 1, lines: st.linesRead, parsed: st.parsedLines, suspect: st.suspectLines) }
+        for (_, st) in kimiFiles { acc("kimi", files: 1, lines: st.linesRead, parsed: st.parsedLines, suspect: st.suspectLines) }
+        for (_, st) in codexFiles { acc("codex", files: 1, lines: st.linesRead, parsed: st.parsedLines, suspect: st.suspectLines) }
+        for (key, st) in genericFiles {
+            let source = key.range(of: "::").map { String(key[key.startIndex..<$0.lowerBound]) } ?? "other"
+            acc(source, files: 1, lines: st.linesRead, parsed: st.parsedLines, suspect: st.suspectLines)
+        }
+        return bySource.values.filter { $0.files > 0 }.sorted { $0.source < $1.source }
+    }
+
     /// Incremental kimi scan. Internal for hermetic accuracy tests; call
     /// resetState() first for isolation from durable engine state.
     @discardableResult
@@ -1668,7 +1721,10 @@ final class UsageEngine {
                 let consumable = chunk[chunk.startIndex...lastNewline]
                 let kimiToday = todayBucket()
                 for line in consumable.split(separator: UInt8(ascii: "\n")) where !line.isEmpty {
-                    if let p = parseKimiLine(Data(line)) {
+                    st.linesRead += 1
+                    guard let obj = try? JSONSerialization.jsonObject(with: Data(line)) as? [String: Any] else { continue }
+                    if let p = parseKimiObject(obj) {
+                        st.parsedLines += 1
                         st.allTokens += p.tokens
                         st.cacheRead += p.cacheReadTokens
                         st.cacheWrite += p.cacheWriteTokens
@@ -1698,6 +1754,11 @@ final class UsageEngine {
                         days[dayStartLocked(forHour: p.hour), default: 0] += p.tokens
                         pruneModelDays(&days, cutoff: kimiToday - Self.modelHistoryDays * 86_400)
                         st.modelDays[model] = days
+                    } else if kimiSuspect(obj) {
+                        st.suspectLines += 1
+                        if st.suspectLines == 1 {
+                            NSLog("[UsageEngine] kimi: usage-shaped line failed to parse in %@", full)
+                        }
                     }
                 }
                 st.offset += UInt64(consumable.count)
@@ -1739,7 +1800,20 @@ final class UsageEngine {
                 guard let lastNewline = chunk.lastIndex(of: UInt8(ascii: "\n")) else { continue }
                 let consumable = chunk[chunk.startIndex...lastNewline]
                 for line in consumable.split(separator: UInt8(ascii: "\n")) where !line.isEmpty {
-                    if let parsed = parseCodexLine(Data(line)) {
+                    st.linesRead += 1
+                    guard let obj = try? JSONSerialization.jsonObject(with: Data(line)) as? [String: Any] else { continue }
+                    if let parsed = parseCodexObject(obj) {
+                        st.parsedLines += 1
+                        // A record with a non-empty usage dict that yielded a
+                        // zero watermark = renamed fields (silent drift).
+                        if let rec = parsed.record, rec.total == 0,
+                           let usageDict = (obj["payload"] as? [String: Any])?["usage"] as? [String: Any],
+                           !usageDict.isEmpty {
+                            st.suspectLines += 1
+                            if st.suspectLines == 1 {
+                                NSLog("[UsageEngine] codex: usage-shaped line failed to parse in %@", full)
+                            }
+                        }
                         if let model = parsed.model, !model.isEmpty {
                             st.model = model
                         }
@@ -1793,6 +1867,11 @@ final class UsageEngine {
                             days[dayStartLocked(forHour: parsed.hour), default: 0] += deltaTokens
                             pruneModelDays(&days, cutoff: today - Self.modelHistoryDays * 86_400)
                             st.modelDays[model] = days
+                        }
+                    } else if codexSuspect(obj) {
+                        st.suspectLines += 1
+                        if st.suspectLines == 1 {
+                            NSLog("[UsageEngine] codex: usage-shaped line failed to parse in %@", full)
                         }
                     }
                 }
@@ -1856,6 +1935,20 @@ final class UsageEngine {
     /// Parses one codex session line. Internal for hermetic unit tests.
     func parseCodexLine(_ line: Data) -> CodexParsed? {
         guard let obj = try? JSONSerialization.jsonObject(with: line) as? [String: Any] else { return nil }
+        return parseCodexObject(obj)
+    }
+
+    /// True when a parsed session object carried a usage-shaped payload but
+    /// yielded no record — schema drift surfaces here, not as silence.
+    func codexSuspect(_ obj: [String: Any]) -> Bool {
+        let payload = obj["payload"] as? [String: Any]
+        if payload?["info"] is [String: Any] { return true }
+        if payload?["usage"] is [String: Any] { return true }
+        if let t = obj["type"] as? String, t.contains("usage") { return true }
+        return false
+    }
+
+    func parseCodexObject(_ obj: [String: Any]) -> CodexParsed? {
         let payload = obj["payload"] as? [String: Any]
         let info = payload?["info"] as? [String: Any]
         let hour = hourFromTimestamp(obj["timestamp"] as? String)
@@ -1920,7 +2013,26 @@ final class UsageEngine {
     /// `message.payload.token_usage` shape.
     func parseKimiLine(_ line: Data) -> KimiParsedLine? {
         guard let obj = try? JSONSerialization.jsonObject(with: line) as? [String: Any] else { return nil }
+        return parseKimiObject(obj)
+    }
 
+    /// True when a parsed wire.jsonl object carried a usage-shaped payload
+    /// but yielded no record — schema drift surfaces here, not as silence.
+    func kimiSuspect(_ obj: [String: Any]) -> Bool {
+        if let t = obj["type"] as? String, t.contains("usage") {
+            // Session-scope records are cumulative summaries — intentionally
+            // skipped, not a failure.
+            if t == "usage.record", (obj["usageScope"] as? String) == "session" { return false }
+            return true
+        }
+        if obj["usage"] is [String: Any] { return true }
+        if let m = obj["message"] as? [String: Any],
+           let p = m["payload"] as? [String: Any],
+           p["token_usage"] is [String: Any] { return true }
+        return false
+    }
+
+    func parseKimiObject(_ obj: [String: Any]) -> KimiParsedLine? {
         var usage: [String: Any]
         var model: String?
         if (obj["type"] as? String) == "usage.record" {
@@ -1984,6 +2096,24 @@ final class UsageEngine {
     /// shapes, cost blocks, char-count fallback). Internal for hermetic tests.
     func parseAdditiveLine(_ line: Data) -> AdditiveParsedLine? {
         guard let obj = try? JSONSerialization.jsonObject(with: line) as? [String: Any] else { return nil }
+        return parseAdditiveObject(obj)
+    }
+
+    /// True when a parsed JSONL object carried a usage-shaped payload but
+    /// yielded no record — schema drift surfaces here, not as silence.
+    func additiveSuspect(_ obj: [String: Any]) -> Bool {
+        for key in ["usage", "token_usage", "usageMetadata", "usage_metadata", "tokenUsage"] {
+            if obj[key] is [String: Any] { return true }
+        }
+        if let m = obj["message"] as? [String: Any] {
+            for key in ["usage", "token_usage", "usageMetadata", "usage_metadata", "tokenUsage"] {
+                if m[key] is [String: Any] { return true }
+            }
+        }
+        return false
+    }
+
+    func parseAdditiveObject(_ obj: [String: Any]) -> AdditiveParsedLine? {
         var messageId: String?
         var cacheRead = 0
         var inputTokens = 0

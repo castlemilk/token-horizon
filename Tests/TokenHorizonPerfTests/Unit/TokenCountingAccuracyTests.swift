@@ -311,6 +311,95 @@ final class TokenCountingAccuracyTests: XCTestCase {
         XCTAssertEqual(e.scanKimi(dirs: [root]).all, 15)
     }
 
+    // MARK: - Parser health (schema-drift detection)
+
+    /// The regression that motivated this: usage-bearing lines that fail to
+    /// parse must surface as `suspect`, not silence. A healthy parse, a
+    /// drifted turn record (renamed fields), and an unknown `usage.*` event
+    /// type exercise all branches; session records stay quietly excluded.
+    func testParserHealth_kimiDriftFlagged() {
+        let t = (nowHour + 60) * 1000
+        write("wire.jsonl", """
+        {"type":"usage.record","model":"kimi-code/k3-256k","usage":{"inputOther":100,"output":50},"usageScope":"turn","time":\(t)}
+        {"type":"usage.record","usage":{"promptTokens":9,"completionTokens":9},"usageScope":"turn","time":\(t)}
+        {"type":"usage.future_event","usage":{"inputOther":5,"output":5},"time":\(t)}
+        {"type":"usage.record","usage":{"inputOther":500,"output":500},"usageScope":"session","time":\(t)}
+        {"type":"context.append_loop_event","event":{"usage":{"inputOther":1}},"time":\(t)}
+
+        """)
+        let e = engine()
+        let r = e.scanKimi(dirs: [root])
+        XCTAssertEqual(r.all, 150)
+        let health = e.parserHealthLocked().first { $0.source == "kimi" }
+        XCTAssertEqual(health?.files, 1)
+        XCTAssertEqual(health?.linesRead, 5)
+        XCTAssertEqual(health?.parsed, 1)
+        // Drifted turn record + unknown usage.* type. The session summary and
+        // the nested-usage loop event are intentionally not suspect.
+        XCTAssertEqual(health?.suspect, 2)
+    }
+
+    /// Codex suspects: an unknown usage event type, a record whose usage
+    /// dict yields a zero watermark (renamed fields), and an info block
+    /// without the expected usage keys. Known-good lines don't flag.
+    func testParserHealth_codexDriftFlagged() {
+        let now = ISO8601DateFormatter().string(from: Date())
+        write("sess.jsonl", """
+        \(codexRecord(now, 100, 50))
+        {"timestamp":"\(now)","type":"token_usage_future","payload":{"usage":{"input_tokens":9,"output_tokens":1}}}
+        {"timestamp":"\(now)","type":"token_usage_record","payload":{"usage":{"promptTokens":9}}}
+        {"timestamp":"\(now)","payload":{"info":{"totals_renamed":{"x":1}}}}
+        {"timestamp":"\(now)","type":"turn_context","payload":{"model":"gpt-5"}}
+
+        """)
+        let e = engine()
+        let r = e.scanCodex(dirs: [root])
+        XCTAssertEqual(r.all, 150)
+        let health = e.parserHealthLocked().first { $0.source == "codex" }
+        XCTAssertEqual(health?.files, 1)
+        XCTAssertEqual(health?.linesRead, 5)
+        // rec1 + zero-watermark record (parsed but drifted) + model-only line
+        XCTAssertEqual(health?.parsed, 3)
+        XCTAssertEqual(health?.suspect, 3)
+    }
+
+    /// Generic additive sources: a usage dict whose fields are all
+    /// unrecognized is suspect; a normal usage line and a non-usage line
+    /// are not.
+    func testParserHealth_additiveDriftFlagged() {
+        let nowTs = Double(nowHour)
+        write("s.jsonl", """
+        {"message":{"id":"m1","usage":{"input_tokens":10,"output_tokens":20}},"timestamp":\(nowTs)}
+        {"message":{"usage":{"promptTokens":9,"completionTokens":9}},"timestamp":\(nowTs)}
+        {"type":"heartbeat"}
+
+        """)
+        let e = engine()
+        var state: [String: UsageEngine.AdditiveFileState] = [:]
+        let r = e.scanAdditive(dirs: [root], state: &state, prefix: "test")
+        XCTAssertEqual(r.allTokens, 30)
+        let st = state.values.first
+        XCTAssertEqual(st?.linesRead, 3)
+        XCTAssertEqual(st?.parsedLines, 1)
+        XCTAssertEqual(st?.suspectLines, 1)
+    }
+
+    /// Healthy files report zero suspects — the signal only fires on drift.
+    func testParserHealth_cleanSourcesReportZeroSuspect() {
+        let t = (nowHour + 60) * 1000
+        write("wire.jsonl", """
+        {"type":"usage.record","model":"kimi-code/k3-256k","usage":{"inputOther":10,"output":5},"usageScope":"turn","time":\(t)}
+        {"type":"token_counting.measured","tokens":99,"time":\(t)}
+        {"type":"llm.request","agentId":"main","time":\(t)}
+
+        """)
+        let e = engine()
+        _ = e.scanKimi(dirs: [root])
+        let health = e.parserHealthLocked().first { $0.source == "kimi" }
+        XCTAssertEqual(health?.parsed, 1)
+        XCTAssertEqual(health?.suspect, 0)
+    }
+
     // MARK: - Devin transcript docs
 
     private func iso(_ epoch: Int) -> String {

@@ -28,6 +28,7 @@ struct UsageSnapshot: Codable {
     var requestsAllTime: Int = 0
     var projects: [ProjectUsage] = []
     var modelDaily: [ModelDailyUsage] = []
+    var parserHealth: [ParserHealth] = []
 
     static let empty = UsageSnapshot()
 
@@ -37,7 +38,7 @@ struct UsageSnapshot: Codable {
         case tokensToday, tokensAllTime, costToday, costAllTime, perTool, models
         case limits, claudeAccounts, recentSessions, sources, updatedAt, projects
         case inputTokensToday, outputTokensToday, inputTokensAllTime, outputTokensAllTime
-        case requestsToday, requestsAllTime, modelDaily
+        case requestsToday, requestsAllTime, modelDaily, parserHealth
     }
 
     init(from decoder: Decoder) throws {
@@ -61,6 +62,7 @@ struct UsageSnapshot: Codable {
         requestsAllTime = c.thDecode(.requestsAllTime, or: 0)
         projects = c.thDecode(.projects, or: [])
         modelDaily = c.thDecode(.modelDaily, or: [])
+        parserHealth = c.thDecode(.parserHealth, or: [])
     }
 
     var tokensTodayText: String { Self.tokens(tokensToday) }
@@ -416,6 +418,30 @@ struct ProjectUsage: Codable, Identifiable {
         sessions = c.thDecode(.sessions, or: 0)
         inputTokens = c.thDecode(.inputTokens, or: 0)
         outputTokens = c.thDecode(.outputTokens, or: 0)
+    }
+}
+
+/// Per-source parser health (since launch): consumed lines, parsed usage
+/// records, and `suspect` — usage-shaped lines that failed to parse.
+/// A nonzero suspect count is the schema-drift early-warning signal.
+struct ParserHealth: Codable {
+    var source: String
+    var files: Int = 0
+    var linesRead: Int = 0
+    var parsed: Int = 0
+    var suspect: Int = 0
+
+    enum CodingKeys: String, CodingKey { case source, files, linesRead, parsed, suspect }
+
+    init(source: String) { self.source = source }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        source = c.thDecode(.source, or: "unknown")
+        files = c.thDecode(.files, or: 0)
+        linesRead = c.thDecode(.linesRead, or: 0)
+        parsed = c.thDecode(.parsed, or: 0)
+        suspect = c.thDecode(.suspect, or: 0)
     }
 }
 
