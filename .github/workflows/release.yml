@@ -205,7 +205,9 @@ jobs:
         run: |
           if [ -n "$TAP_TOKEN" ]; then echo "enabled=1" >> "$GITHUB_OUTPUT"; else
             echo "enabled=0" >> "$GITHUB_OUTPUT"
-            echo "::warning::TAP_GITHUB_TOKEN not set — cask sha256 will be committed to this repo but the tap won't be synced (run ./scripts/sync-homebrew-tap.sh locally)"
+            # Tokenless by design: the cask is still committed to this repo;
+            # `task brew-sync` publishes it to the tap with local credentials.
+            echo "::notice::no TAP_GITHUB_TOKEN — cask committed here; run task brew-sync to publish the tap"
           fi
 
       - name: Update cask sha256 and sync tap
