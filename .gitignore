@@ -35,3 +35,6 @@ gateway/token-horizon-gateway
 
 # Serena MCP local state
 .serena/
+
+# Rust engine build products
+engine/target/

@@ -65,6 +65,7 @@ brew install --cask token-horizon</code></pre>
       <tr><td><strong>TOKENS</strong></td><td>Today's tokens/cost, per-model and per-tool breakdown, cache rates, plan-limit bars with reset countdowns, streaks and league standing.</td></tr>
       <tr><td><strong>ACTIVITY</strong></td><td>CPU, memory, disk and network history, top processes by CPU/memory/disk/network, Docker containers, and MLX runner telemetry (measured tok/s).</td></tr>
       <tr><td><strong>MLX</strong></td><td>Local model runners (MLX/Ollama) with per-process telemetry, bounded history, and measured throughput.</td></tr>
+      <tr><td><strong>ENGINE</strong></td><td>Local inference backends (Splash and TH Engine) — hardware fit, model catalog, serve/stop, live throughput, benchmark results.</td></tr>
       <tr><td><strong>Leaderboard</strong></td><td>Your published standing, leagues/MMR, sync and share controls.</td></tr>
       <tr><td><strong>Shells</strong></td><td>Recent shell execution events captured by the zsh hooks.</td></tr>
       <tr><td><strong>Settings</strong></td><td>Surface mode (auto/notch/tray), sharing rules, history persistence, start-at-login, and the serving build stamp.</td></tr>
@@ -130,6 +131,8 @@ brew install --cask token-horizon</code></pre>
       <tr><td><code>GET /metrics</code></td><td>Prometheus text (OTel meter).</td></tr>
       <tr><td><code>GET /widget</code> · <code>POST /widget/window?value=</code></td><td>Desktop-widget snapshot (v5 stacks + heatmap + limits) · set the chart window.</td></tr>
       <tr><td><code>GET /proxy/config</code> · <code>GET /traces</code></td><td>Gateway sidecar config · captured traces.</td></tr>
+      <tr><td><code>GET /engine</code> · <code>POST /engine/serve</code> · <code>POST /engine/stop</code></td><td>Local-engine state · serve a model <code>{backend?, model, tokenizer?, max_memory_gb?, max_context_k?}</code> · stop a backend.</td></tr>
+      <tr><td><code>GET /engine/bench</code></td><td>Latest side-by-side engine benchmark (<code>scripts/bench-engines.sh</code>).</td></tr>
       <tr><td><code>POST /cache/reset</code> · <code>GET /cache</code></td><td>Reset / inspect the durable cache.</td></tr>
     </table>
     <p>Hosted edge API on <code>https://token-horizon.dev</code>: <code>/api/leaderboard</code>, <code>/api/user/:handle</code>, <code>/api/providers</code>, <code>/api/teams</code>, <code>/api/season</code>, <code>/api/models/catalog</code>, <code>/api/models/usage</code>, <code>/api/config</code>, <code>/api/health</code>, <code>/api/share</code> (SVG badges).</p>
@@ -158,6 +161,14 @@ brew install --cask token-horizon</code></pre>
       <li>Ollama traffic can be routed through the telemetry proxy for measured tok/s.</li>
     </ul>
     <p>Traces are stored locally (bounded: 256KB per side, 30 day-files, 256MB) and served at <code>GET /traces</code>. Gateway traffic never feeds usage totals — the file parsers already count it.</p>
+
+    <h2 id="engines">Local engines</h2>
+    <p>Two supervised inference backends run as sidecars — attach-or-spawn, never in-process. A server you started yourself is adopted read-only and never killed; the app only stops processes it spawned.</p>
+    <ul>
+      <li><strong>Splash</strong> (<code>127.0.0.1:8000</code>, brew <code>incoai/tap/splash</code>) — the native Metal engine. The app probes your chip/RAM/macOS, scores each Splash package for fit, and suggests memory/context ceilings automatically.</li>
+      <li><strong>TH Engine</strong> (<code>127.0.0.1:8001</code>, bundled Rust/candle sidecar) — Token Horizon's own engine. Serves GGUF (<code>qwen3/qwen2/llama</code>, Metal) and dense safetensors (<code>qwen2/qwen3</code>, CPU/F32) models from a local path or Hugging Face repo id, with a <code>--tokenizer</code> override for GGUF repos. OpenAI- and Anthropic-compatible endpoints plus hooks Splash doesn't expose: <code>GET/POST /engine/config</code> (live sampling/prefill/context tuning), <code>/engine/requests</code> (per-request latency ring), <code>/engine/kv/clear</code>, <code>/engine/events</code> (lifecycle SSE), <code>/engine/metrics</code>.</li>
+    </ul>
+    <p>Route clients through the gateway prefixes <code>/th-splash/</code> and <code>/th-engine/</code> so local inference is traced like any other provider. Compare the two with <code>scripts/bench-engines.sh</code> — results land at <code>GET /engine/bench</code> and in the ENGINE tab.</p>
 
     <h2 id="shell">Shell helper</h2>
     <p>The zsh integration installs a <code>th</code> command and preexec/precmd hooks:</p>

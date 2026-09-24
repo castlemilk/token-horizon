@@ -271,11 +271,17 @@ func (h *ProxyHandler) finalize(ctx *requestContext) {
 		ttftSecs = *ttft / 1000
 	}
 	h.metrics.Complete(ctx.provider, ctx.endpoint, ctx.model, ctx.statusCode, ttftSecs, durationMs/1000, out)
-	if (ctx.provider == ProviderOllama || ctx.provider == ProviderSplash) &&
+	if isLocalEngine(ctx.provider) &&
 		h.cfg.IngestURL != "" && usage.Source != TokenAbsent && out > 0 {
 		h.ingestOllama(ctx.model, usage, durationMs, ctx.start)
 	}
 	_ = stored
+}
+
+// isLocalEngine marks providers whose usage should feed the Mac app's
+// local-model totals (Ollama + both supervised inference engines).
+func isLocalEngine(p Provider) bool {
+	return p == ProviderOllama || p == ProviderSplash || p == ProviderTHEngine
 }
 
 // ingestOllama forwards a local-model sample to the Mac app so its usage

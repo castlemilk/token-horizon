@@ -57,12 +57,32 @@ else
     echo "WARN: TOKEN_HORIZON_NO_GATEWAY=1 — building WITHOUT the gateway proxy (gateway routes will 503)"
 fi
 
+# th-engine sidecar (Rust/candle local inference, supervised on :8001).
+# Optional: TOKEN_HORIZON_NO_TH_ENGINE=1 skips it (dev machines without
+# Rust); when built it MUST have LC_UUID like the gateway.
+if [ -z "${TOKEN_HORIZON_NO_TH_ENGINE:-}" ]; then
+    CARGO="${CARGO:-$HOME/.cargo/bin/cargo}"
+    if [ -x "$CARGO" ]; then
+        (cd engine && "$CARGO" build --release) || { echo "FATAL: th-engine build failed"; exit 1; }
+        [ -x engine/target/release/th-engine ] || { echo "FATAL: th-engine build produced no binary"; exit 1; }
+        if command -v otool >/dev/null 2>&1 && ! otool -l engine/target/release/th-engine | grep -q LC_UUID; then
+            echo "FATAL: th-engine lacks LC_UUID"
+            exit 1
+        fi
+    else
+        echo "WARN: cargo not found — building WITHOUT th-engine (ENGINE tab's TH Engine backend unavailable)"
+    fi
+fi
+
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/TokenHorizon"; cp Resources/benchmarks.json "$APP/Contents/Resources/" 2>/dev/null
 cp Resources/plans.json "$APP/Contents/Resources/" 2>/dev/null
 if [ -f gateway/token-horizon-gateway ]; then
     cp gateway/token-horizon-gateway "$APP/Contents/Resources/"
+fi
+if [ -f engine/target/release/th-engine ]; then
+    cp engine/target/release/th-engine "$APP/Contents/Resources/"
 fi
 # Bundle verification: the sidecar must be inside unless explicitly opted out.
 if [ -z "${TOKEN_HORIZON_NO_GATEWAY:-}" ]; then
@@ -105,6 +125,9 @@ if [ -n "$SIGN_IDENTITY" ]; then
     # with hardened runtime + secure timestamp (required for notarization).
     if [ -f "$APP/Contents/Resources/token-horizon-gateway" ]; then
         codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$APP/Contents/Resources/token-horizon-gateway"
+    fi
+    if [ -f "$APP/Contents/Resources/th-engine" ]; then
+        codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$APP/Contents/Resources/th-engine"
     fi
     codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$APP/Contents/MacOS/TokenHorizon"
     codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$APP"

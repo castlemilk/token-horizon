@@ -231,29 +231,53 @@ final class LocalServer {
     }
 
     /// Local inference engine endpoints (/engine/*). Read endpoints report
-    /// supervisor state + hardware fit; POSTs drive lifecycle. The engine
-    /// itself stays authoritative — we never fabricate a "running" answer.
+    /// supervisor state + hardware fit; POSTs drive lifecycle. The engines
+    /// themselves stay authoritative — we never fabricate a "running" answer.
+    ///
+    /// POST /engine/serve {backend?, model, tokenizer?, max_memory_gb?,
+    ///                     max_context_k?}  — backend defaults to "splash"
+    /// POST /engine/stop  {backend?}        — defaults to "splash"
+    /// GET  /engine/bench                    — latest side-by-side bench JSON
     static func engineResponse(method: String, route: String, body: Data,
                                json: (Any, Int) -> Data) -> Data? {
         guard route.hasPrefix("/engine") else { return nil }
-        let sup = EngineSupervisor.shared
+        let mgr = EngineManager.shared
         switch (method, route) {
         case ("GET", "/engine"):
-            return json(sup.snapshotPayload(), 200)
+            return json(mgr.snapshotPayload(), 200)
+
+        case ("GET", "/engine/bench"):
+            let url = FileManager.default.homeDirectoryForCurrentUser
+                .appendingPathComponent(".config/token-horizon/engine-bench.json")
+            guard let data = try? Data(contentsOf: url),
+                  let obj = try? JSONSerialization.jsonObject(with: data) else {
+                return json(["error": "no benchmark results yet — run scripts/bench-engines.sh"], 404)
+            }
+            return json(obj, 200)
 
         case ("POST", "/engine/serve"), ("GET", "/engine/serve"):
             guard let obj = try? JSONSerialization.jsonObject(with: body) as? [String: Any] else {
-                return json(["error": "expected JSON body {model, max_memory_gb?, max_context_k?}"], 400)
+                return json(["error": "expected JSON body {backend?, model, tokenizer?, max_memory_gb?, max_context_k?}"], 400)
             }
             guard let model = obj["model"] as? String, !model.isEmpty else {
                 return json(["error": "model is required"], 400)
             }
+            let backend = obj["backend"] as? String ?? "splash"
+            guard let sup = mgr.supervisor(for: backend) else {
+                return json(["error": "unknown backend '\(backend)' — splash|thengine"], 400)
+            }
             let mem = (obj["max_memory_gb"] as? NSNumber)?.intValue
             let ctx = (obj["max_context_k"] as? NSNumber)?.intValue
-            sup.serve(model: model, maxMemoryGB: mem, maxContextK: ctx)
+            let tok = obj["tokenizer"] as? String
+            sup.serve(model: model, tokenizer: tok, maxMemoryGB: mem, maxContextK: ctx)
             return json(["ok": true], 202)
 
         case ("POST", "/engine/stop"), ("GET", "/engine/stop"):
+            let obj = (try? JSONSerialization.jsonObject(with: body)) as? [String: Any]
+            let backend = obj?["backend"] as? String ?? "splash"
+            guard let sup = mgr.supervisor(for: backend) else {
+                return json(["error": "unknown backend '\(backend)' — splash|thengine"], 400)
+            }
             sup.stop()
             return json(["ok": true], 200)
 

@@ -25,6 +25,7 @@ var providerPrefixes = []struct {
 	{"/th-gemini", ProviderGemini},
 	{"/th-opencode", ProviderOpenCode},
 	{"/th-splash", ProviderSplash},
+	{"/th-engine", ProviderTHEngine},
 }
 
 // prefixedProvider matches a path (query allowed) against the /th-<name>

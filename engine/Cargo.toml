@@ -1,0 +1,31 @@
+[package]
+name = "th-engine"
+version = "0.1.0"
+edition = "2021"
+description = "Token Horizon local inference engine — MLX-class Metal inference with deep observability hooks"
+
+[dependencies]
+# `metal` must be set on each candle crate — features don't propagate and
+# each gates its own custom-op metal_fwd impls (missing = runtime
+# "no metal implementation for …" errors on otherwise-supported ops).
+candle-core = { version = "0.11.0", features = ["metal"] }
+candle-nn = { version = "0.11.0", features = ["metal"] }
+candle-transformers = { version = "0.11.0", features = ["metal"] }
+tokenizers = { version = "0.22", default-features = false, features = ["onig"] }
+hf-hub = { version = "0.4", features = ["tokio"] }
+axum = { version = "0.8", features = ["http2"] }
+tokio = { version = "1", features = ["full"] }
+tokio-stream = { version = "0.1", features = ["sync"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+clap = { version = "4", features = ["derive"] }
+minijinja = { version = "2", features = ["builtins"] }
+anyhow = "1"
+libc = "0.2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
