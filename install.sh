@@ -65,7 +65,16 @@ spin_start() {
     SPIN_PID=$!
 }
 spin_stop() {
-    [ -n "$SPIN_PID" ] && { kill "$SPIN_PID" 2>/dev/null; wait "$SPIN_PID" 2>/dev/null; SPIN_PID=""; }
+    # Never `wait` here: a subshell stuck in sleep/write can block wait
+    # indefinitely on some setups (seen in the wild — install froze at
+    # `wait $SPIN_PID` after kill). TERM, brief grace, then SIGKILL —
+    # all non-blocking. A stray last frame is cosmetic; a hang is not.
+    if [ -n "$SPIN_PID" ]; then
+        kill "$SPIN_PID" 2>/dev/null || true
+        kill -0 "$SPIN_PID" 2>/dev/null && sleep 0.05
+        kill -9 "$SPIN_PID" 2>/dev/null || true
+        SPIN_PID=""
+    fi
     [ -t 1 ] && printf '\r\033[K' || true
 }
 
