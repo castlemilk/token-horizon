@@ -158,6 +158,14 @@ async fn main() -> Result<()> {
                 .split(',')
                 .map(|t| t.trim().parse())
                 .collect::<Result<_, _>>()?;
+            #[cfg(all(feature = "metal", target_os = "macos"))]
+            if std::env::var("TH_MPP_PROBE").is_ok() {
+                let dev = candle_core::Device::new_metal(0)?;
+                if let candle_core::Device::Metal(d) = &dev {
+                    quant_kernel::mpp_probe(d);
+                }
+                return Ok(());
+            }
             let mut loaded =
                 model::resolve_and_load(&model, None, None).await?;
             let logits = loaded.backend.forward(&ids, 0, &loaded.device)?;

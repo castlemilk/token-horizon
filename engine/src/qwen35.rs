@@ -270,6 +270,7 @@ pub(crate) enum Lin {
     Quant(QLin),
 }
 
+#[derive(Clone)]
 pub(crate) struct QLin {
     pub(crate) wq: Tensor,  // [out, in/8] u32 packed nibbles
     pub(crate) sb: Tensor,  // [out, 2*ng] bf16 — scales|biases
@@ -322,6 +323,26 @@ impl QLin {
             if rows == 1 {
                 // fused dequant-matvec — reads packed weights only
                 let xv = x.reshape((in_d,))?.contiguous()?;
+                if self.tiled && std::env::var("TH_QMM_SCALAR").is_err() {
+                    let xv8 = xv.reshape((1, in_d))?;
+                    let y8 = self.wq.apply_op3_no_bwd(
+                        &self.sb,
+                        &xv8,
+                        &crate::quant_kernel::AffineQmpp {
+                            inp: self.inp,
+                            out: self.out,
+                            padded: self.out.div_ceil(256) * 256,
+                            m: 1,
+                            up_tile: 0,
+                            sgs: 2,
+                            tile: 64,
+                        },
+                    )?;
+                    let y = y8.narrow(0, 0, 1)?.contiguous()?;
+                    let mut out = dims;
+                    *out.last_mut().unwrap() = self.out;
+                    return Ok(y.reshape(out)?);
+                }
                 let y = if std::env::var("TH_QMV_SG").is_ok()
                     && self.gs == 64
                     && self.inp % 64 == 0
@@ -355,6 +376,27 @@ impl QLin {
             }
             if rows <= 8 {
                 let xv = x.reshape((rows, in_d))?.contiguous()?;
+                // cooperative-tensor (MPP) path on tiled weights — the
+                // fastest measured variant (n64 split4), env-gated A/B
+                if self.tiled && std::env::var("TH_QMM_SCALAR").is_err() {
+                    let y8 = self.wq.apply_op3_no_bwd(
+                        &self.sb,
+                        &xv,
+                        &crate::quant_kernel::AffineQmpp {
+                            inp: self.inp,
+                            out: self.out,
+                            padded: self.out.div_ceil(256) * 256,
+                            m: rows,
+                            up_tile: 0,
+                            sgs: 2,
+                            tile: 64,
+                        },
+                    )?;
+                    let y = y8.narrow(0, 0, rows)?.contiguous()?;
+                    let mut out = dims;
+                    *out.last_mut().unwrap() = self.out;
+                    return Ok(y.reshape(out)?);
+                }
                 // Splash-style fragment-direct MMA path — default; the
                 // scalar qmm remains for A/B + non-64 group layouts.
                 let y = if self.gs == 64
@@ -476,6 +518,36 @@ impl QLin {
             && std::env::var("TH_QMM_SCALAR").is_err()
         {
             let in_d = *dims.last().unwrap();
+            let half = self.out / 2;
+            if self.tiled && half % 256 == 0 {
+                let xv = x.reshape((rows, in_d)).ok()?.contiguous().ok()?;
+                let padded = self.out.div_ceil(256) * 256;
+                return Some(
+                    self.wq
+                        .apply_op3_no_bwd(
+                            &self.sb,
+                            &xv,
+                            &crate::quant_kernel::AffineQmpp {
+                                inp: self.inp,
+                                out: half,
+                                padded,
+                                m: rows,
+                                up_tile: half / 256,
+                                sgs: 2,
+                                tile: 64,
+                            },
+                        )
+                        .map_err(Into::into)
+                        .and_then(|y8| {
+                            let mut out = dims.clone();
+                            *out.last_mut().unwrap() = half;
+                            Ok(y8
+                                .narrow(0, 0, rows)?
+                                .contiguous()?
+                                .reshape(out)?)
+                        }),
+                );
+            }
             return Some((|| {
                 let xv = x.reshape((rows, in_d))?.contiguous()?;
                 let y = self.wq.apply_op3_no_bwd(
@@ -498,11 +570,20 @@ impl QLin {
     }
 }
 
+/// Tile a packed weight for the MPP path when `TH_QMM_MPP` is set —
+/// the cooperative-tensor kernels need the [tile][group][col] layout.
+pub(crate) fn maybe_tiled(l: Lin) -> Result<Lin> {
+    if std::env::var("TH_QMM_MPP").is_ok() {
+        l.tiled()
+    } else {
+        Ok(l)
+    }
+}
+
 impl Lin {
     /// Repack a packed weight into the tiled fragment layout — no-op
-    /// for dense weights and non-Metal devices. See `QLin::tiled` for
-    /// why nothing calls this today.
-    #[allow(dead_code)]
+    /// for dense weights and non-Metal devices. Enabled via
+    /// `maybe_tiled` (`TH_QMM_MPP`).
     pub(crate) fn tiled(self) -> Result<Lin> {
         match self {
             Lin::Quant(q) => Ok(Lin::Quant(q.tiled()?)),
@@ -775,10 +856,28 @@ impl Qwen35 {
     /// gate|up projection (out=34816, in=5120 — the largest matmul).
     #[cfg(all(feature = "metal", target_os = "macos"))]
     pub(crate) fn bench_lin(&self, device: &Device) -> Result<()> {
-        for (tag, l) in [
+        let gdn = self.layers.iter().find_map(|l| match &l.kind {
+            Kind::Gdn(g) => Some(g),
+            _ => None,
+        });
+        let attn = self.layers.iter().find_map(|l| match &l.kind {
+            Kind::Attn(a) => Some(a),
+            _ => None,
+        });
+        let mut suite: Vec<(&str, &Lin)> = vec![
             ("gate_up", &self.layers[0].mlp.gate_up),
             ("down", &self.layers[0].mlp.down),
-        ] {
+            ("lm_head", &self.lm_head),
+        ];
+        if let Some(g) = gdn {
+            suite.push(("in_all", &g.in_all));
+            suite.push(("out", &g.out));
+        }
+        if let Some(a) = attn {
+            suite.push(("in_qkv", &a.in_qkv));
+            suite.push(("o", &a.o));
+        }
+        for (tag, l) in suite {
             let Lin::Quant(q) = l else { continue };
             // deterministic x so both kernels see identical inputs
             let xv: Vec<f32> = (0..8 * q.inp)
@@ -791,6 +890,62 @@ impl Qwen35 {
             let yb = self.warm_sg(q, &x)?.to_dtype(DType::F32)?;
             let d = ya.sub(&yb)?.abs()?.max(0)?.max(0)?.to_scalar::<f32>()?;
             eprintln!("qmm[{tag}] max|Δ| scalar-vs-sg = {d:.5}");
+            // cooperative-tensor (MPP) path on a tiled copy
+            let qt = q.clone().tiled()?;
+            let t = std::time::Instant::now();
+            let yc = qt
+                .wq
+                .apply_op3_no_bwd(
+                    &qt.sb,
+                    &x,
+                    &crate::quant_kernel::AffineQmpp {
+                        inp: qt.inp,
+                        out: qt.out,
+                        padded: qt.out.div_ceil(256) * 256,
+                        m: 8,
+                        up_tile: 0,
+                        sgs: 8,
+                        tile: 256,
+                    },
+                )?
+                .narrow(0, 0, 8)?
+                .to_dtype(DType::F32)?;
+            let d = ya.sub(&yc)?.abs()?.max(0)?.max(0)?.to_scalar::<f32>()?;
+            eprintln!("qmm[{tag}] max|Δ| scalar-vs-mpp = {d:.5}");
+            for (sgs, tile) in [(8usize, 256usize), (4, 256), (1, 32), (2, 64)] {
+                for _ in 0..2 {
+                    let _ = qt.wq.apply_op3_no_bwd(
+                        &qt.sb, &x,
+                        &crate::quant_kernel::AffineQmpp {
+                            inp: qt.inp, out: qt.out,
+                            padded: qt.out.div_ceil(256) * 256,
+                            m: 8, up_tile: 0, sgs,
+                            tile,
+                        },
+                    )?;
+                }
+                let t0 = std::time::Instant::now();
+                for _ in 0..10 {
+                    let _ = qt.wq.apply_op3_no_bwd(
+                        &qt.sb, &x,
+                        &crate::quant_kernel::AffineQmpp {
+                            inp: qt.inp, out: qt.out,
+                            padded: qt.out.div_ceil(256) * 256,
+                            m: 8, up_tile: 0, sgs,
+                            tile,
+                        },
+                    )?;
+                }
+                let _ = yc.to_vec2::<f32>()?; // sync
+                let ms = t0.elapsed().as_secs_f64() * 1e3 / 10.0;
+                let bytes = q.inp * q.out / 2 + q.inp * q.out / 64 * 4;
+                eprintln!(
+                    "qmm[{tag}:mpp sg{sgs} t{tile}] {ms:.2}ms  {:.0} GB/s  ({}x{})",
+                    bytes as f64 / ms / 1e6,
+                    q.out, q.inp
+                );
+                let _ = t;
+            }
             // gate/up epilogue vs eager silu(gate)*up
             if q.out % 2 == 0 {
                 let half = q.out / 2;
@@ -898,7 +1053,7 @@ impl Qwen35 {
         let lm_head = if cfg.tie_word_embeddings {
             Lin::Dense(embed.clone())
         } else {
-            w.get_lin(&format!("{p}.lm_head"))?
+            maybe_tiled(w.get_lin(&format!("{p}.lm_head"))?)?
         };
         let norm = w.get(&format!("{p}.model.norm"))?;
         let rp = cfg.rope_parameters.clone().unwrap_or(RopeParams {
@@ -929,11 +1084,13 @@ impl Qwen35 {
             let input_norm = w.get(&format!("{lp}.input_layernorm"))?;
             let post_norm = w.get(&format!("{lp}.post_attention_layernorm"))?;
             let mlp = Mlp {
-                gate_up: fuse_lins(&[
+                gate_up: maybe_tiled(fuse_lins(&[
                     w.get_lin(&format!("{lp}.mlp.gate_proj"))?,
                     w.get_lin(&format!("{lp}.mlp.up_proj"))?,
-                ])?,
-                down: w.get_lin(&format!("{lp}.mlp.down_proj"))?,
+                ])?)?,
+                down: maybe_tiled(
+                    w.get_lin(&format!("{lp}.mlp.down_proj"))?,
+                )?,
                 inter: cfg.intermediate_size,
             };
             if cfg.is_linear(i) {
@@ -956,7 +1113,7 @@ impl Qwen35 {
                     input_norm,
                     kind: Kind::Gdn(GdnLayer {
                         // one fused projection → [qkv | z | a|b]
-                        in_all: fuse_lins(&[
+                        in_all: maybe_tiled(fuse_lins(&[
                             w.get_lin(&format!(
                                 "{lp}.linear_attn.in_proj_qkv"
                             ))?,
@@ -969,7 +1126,7 @@ impl Qwen35 {
                             w.get_lin(&format!(
                                 "{lp}.linear_attn.in_proj_b"
                             ))?,
-                        ])?,
+                        ])?)?,
                         conv: conv3.squeeze(2)?,
                         a_log,
                         dt_bias,
@@ -981,7 +1138,9 @@ impl Qwen35 {
                             DType::BF16,
                             device,
                         )?,
-                        out: w.get_lin(&format!("{lp}.linear_attn.out_proj"))?,
+                        out: maybe_tiled(w.get_lin(&format!(
+                            "{lp}.linear_attn.out_proj"
+                        ))?)?,
                         key_dim: cfg.linear_num_key_heads
                             * cfg.linear_key_head_dim,
                         value_dim: cfg.linear_num_value_heads
@@ -1020,12 +1179,14 @@ impl Qwen35 {
                     input_norm,
                     kind: Kind::Attn(AttnLayer {
                         // one fused projection → [q|gate | k | v]
-                        in_qkv: fuse_lins(&[
+                        in_qkv: maybe_tiled(fuse_lins(&[
                             w.get_lin(&format!("{lp}.self_attn.q_proj"))?,
                             w.get_lin(&format!("{lp}.self_attn.k_proj"))?,
                             w.get_lin(&format!("{lp}.self_attn.v_proj"))?,
-                        ])?,
-                        o: w.get_lin(&format!("{lp}.self_attn.o_proj"))?,
+                        ])?)?,
+                        o: maybe_tiled(
+                            w.get_lin(&format!("{lp}.self_attn.o_proj"))?,
+                        )?,
                         q_norm: w.get(&format!("{lp}.self_attn.q_norm"))?,
                         k_norm: w.get(&format!("{lp}.self_attn.k_norm"))?,
                         cos: cos.clone(),

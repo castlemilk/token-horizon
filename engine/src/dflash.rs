@@ -167,7 +167,7 @@ fn section_tensor(sec: &[u8], shape: (usize, usize), device: &Device) -> Result<
 fn q4(f: &mut PackedFile, out: usize, inp: usize, device: &Device) -> Result<Lin> {
     let bytes = out * inp / 16 * 9;
     let sec = f.section(bytes)?;
-    Ok(Lin::Quant(repack_q4(sec, out, inp, device)?))
+    crate::qwen35::maybe_tiled(Lin::Quant(repack_q4(sec, out, inp, device)?))
 }
 
 fn norm(f: &mut PackedFile, n: usize, device: &Device) -> Result<Tensor> {
