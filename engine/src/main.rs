@@ -277,6 +277,14 @@ async fn main() -> Result<()> {
                     }
                 );
             }
+            #[cfg(all(feature = "metal", target_os = "macos"))]
+            if std::env::var("TH_BENCH_LIN").is_ok() {
+                if let model::ModelBackend::Qwen35(q) =
+                    &loaded.backend
+                {
+                    q.bench_lin(&loaded.device)?;
+                }
+            }
             if let Ok(m) = std::env::var("TH_BENCH_MULTI") {
                 let m: usize = m.parse().unwrap_or(5);
                 let dev = loaded.device.clone();

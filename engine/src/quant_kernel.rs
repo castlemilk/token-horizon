@@ -35,12 +35,14 @@ mod metal_impl {
         pub inp: usize,
         pub out: usize,
         pub gs: usize,
+        pub tiled: bool,
     }
 
     pub struct AffineDequant {
         pub inp: usize,
         pub out: usize,
         pub gs: usize,
+        pub tiled: bool,
     }
 
     #[repr(C)]
@@ -48,6 +50,7 @@ mod metal_impl {
         in_dim: i32,
         out_dim: i32,
         ng: i32,
+        tiled: i32,
     }
 
     #[repr(C)]
@@ -56,6 +59,7 @@ mod metal_impl {
         out_dim: i32,
         ng: i32,
         m: i32,
+        tiled: i32,
     }
 
     /// Packed dims for `y[M,out] = x[M,in] @ W[out,in]` with W kept in
@@ -65,6 +69,7 @@ mod metal_impl {
         pub out: usize,
         pub gs: usize,
         pub m: usize,
+        pub tiled: bool,
     }
 
     // words per row = IN/8; GS % 8 == 0 so a word never spans groups.
@@ -73,13 +78,34 @@ mod metal_impl {
 #include <metal_simdgroup_matrix>
 using namespace metal;
 
-struct QParams { int in_dim; int out_dim; int ng; };
-struct QmmParams { int in_dim; int out_dim; int ng; int m; };
+struct QParams { int in_dim; int out_dim; int ng; int tiled; };
+struct QmmParams { int in_dim; int out_dim; int ng; int m; int tiled; };
 constant constexpr int GS = {GS};
 
 // 8 output rows per threadgroup — one simdgroup (32 lanes) per row.
 // Each lane reads uint4 (16B = 32 nibbles) so rows walk memory in wide
 // strides; x is shared across the 8 rows via L1/L2.
+// Weight word address: row-major `[row][g][i]` or Splash's tiled
+// `[tile=row/256][g][col=row%256][i]` (each tile packs 256 rows' group
+// chunks contiguously so a simdgroup's fragment loads are dense).
+inline uint q4woff(uint row, uint g, uint i, uint words, uint ng,
+                   uint tiled) {
+    return tiled ? (row >> 8) * ng * 2048u + g * 2048u + (row & 255u) * 8u + i
+                 : row * words + g * 8u + i;
+}
+
+// Scale/bias index — row-major sb[row][2ng] vs tiled
+// [(tile*ng+g)*256 + col] with the bias plane at +tiles*ng*256.
+inline ulong q4sb(uint row, uint g, uint ng, uint bias, uint out_dim,
+                  uint tiled) {
+    if (tiled) {
+        const ulong tiles = ulong(out_dim + 255) >> 8;
+        const ulong prm = (ulong(row >> 8) * ng + g) * 256 + (row & 255);
+        return prm + ulong(bias) * tiles * ng * 256;
+    }
+    return ulong(row) * 2 * ng + ulong(bias) * ng + g;
+}
+
 kernel void affine_qmv(
     device const uint*   wq [[buffer(0)]],
     device const bfloat* sb [[buffer(1)]],
@@ -94,18 +120,23 @@ kernel void affine_qmv(
     if (row >= p.out_dim) return;
     const int words = p.in_dim / 8;      // u32 per row
     const int words4 = words / 4;        // uint4 per row
-    device const uint4* wrow =
-        (device const uint4*)(wq + row * words);
-    device const bfloat* srow = sb + row * 2 * p.ng;
+    const uint wbase = p.tiled
+        ? (uint(row) >> 8) * p.ng * 2048u + (uint(row) & 255u) * 8u
+        : uint(row) * words;
 
     float acc = 0.0f;
     for (int w4 = lane; w4 < words4; w4 += 32) {
-        const uint4 pack = wrow[w4];
+        // uint4 w4 covers words w4*4..w4*4+3 = half of group w4/2
+        const uint woff = p.tiled
+            ? (uint(w4) >> 1) * 2048u + (uint(w4) & 1u) * 4u
+            : uint(w4) * 4u;
+        const uint4 pack =
+            *reinterpret_cast<device const uint4*>(wq + wbase + woff);
         const int base = w4 * 32;
         // GS % 32 == 0 so a uint4 never spans a group boundary.
         const int g = base / GS;
-        const float sc = float(srow[g]);
-        const float bi = float(srow[p.ng + g]);
+        const float sc = float(sb[q4sb(row, g, p.ng, 0, p.out_dim, p.tiled)]);
+        const float bi = float(sb[q4sb(row, g, p.ng, 1, p.out_dim, p.tiled)]);
         const uint pw[4] = {pack.x, pack.y, pack.z, pack.w};
         for (int wd = 0; wd < 4; ++wd) {
             const uint pk = pw[wd];
@@ -140,7 +171,7 @@ kernel void affine_qmv(
 
 constant constexpr int SG_TILE = 64;   // output rows per threadgroup
 
-struct SGParams { int out_dim; int in_dim; int m; int splits; int aux; };
+struct SGParams { int out_dim; int in_dim; int m; int splits; int aux; int tiled; };
 
 inline uint2 sg_klogical(uint k) {
     const uint c = k >> 4, r = k & 15;
@@ -201,6 +232,118 @@ sg_mma_acc(thread float2 &c, vec<T, 2> a, vec<T, 2> b) {
     c = reinterpret_cast<thread float2 &>(D.thread_elements());
 }
 
+// grid (ceil(out/64), splits, 1), 256 threads — 8 simdgroups, each owns
+// 8 output rows (one fragment); more warps per tile for latency hiding.
+kernel void affine_q4_sg8(
+    device const uint*    wq    [[buffer(0)]],
+    device const bfloat*  sb    [[buffer(1)]],
+    device const bfloat*  table [[buffer(2)]],
+    device const float*   sums  [[buffer(3)]],
+    device bfloat*        y     [[buffer(4)]],
+    device float*         part  [[buffer(5)]],
+    device atomic_uint*   ctrs  [[buffer(6)]],
+    constant SGParams&    p     [[buffer(7)]],
+    uint3 tgpos [[threadgroup_position_in_grid]],
+    uint  tid   [[thread_index_in_threadgroup]],
+    uint  sg    [[simdgroup_index_in_threadgroup]],
+    uint  lane  [[thread_index_in_simdgroup]],
+    threadgroup uint*     arrival [[threadgroup(0)]])
+{
+    const uint ng = p.in_dim / 64;
+    const uint words = p.in_dim / 8;
+    const uint qid = lane >> 2;
+    const uint fm = (qid & 4) | ((lane >> 1) & 3);
+    const uint fn = ((qid & 2) << 1) | ((lane & 1) << 1);
+    const uint c = fn / 2;
+    const uint base = tgpos.x * SG_TILE + sg * 8;
+
+    const uint first = tgpos.y * (ng / p.splits);
+    const uint end = (tgpos.y + 1 == (uint)p.splits)
+        ? ng : first + ng / p.splits;
+
+    const uint row0 = base + fm;
+
+    float2 acc = float2(0);
+    float2 dot[2] = {float2(0), float2(0)};
+
+    const bool live0 = row0 < (uint)p.out_dim;
+    auto load = [&](uint g, thread uint2 &w)
+        __attribute__((always_inline)) {
+        w = live0 ? *reinterpret_cast<device const uint2 *>(
+            wq + q4woff(row0, g, c * 2, words, ng, p.tiled)) : uint2(0);
+    };
+    uint2 wds;
+    load(first, wds);
+    for (uint g = first; g < end; ++g) {
+        const float2 sum = float2(sums[g * 8 + fn], sums[g * 8 + fn + 1]);
+        device const vec<bfloat, 8>* xt =
+            reinterpret_cast<device const vec<bfloat, 8> *>(
+                table + ulong(g) * 512);
+        vec<bfloat, 8> bq[2];
+        bq[0] = xt[fm * 4 + c];
+        bq[1] = xt[(8 + fm) * 4 + c];
+#pragma unroll
+        for (uint j = 0; j < 8; ++j) {
+            const bfloat2 b =
+                reinterpret_cast<thread bfloat2 *>(&bq[j >> 2])[j & 3];
+            const uint word = j < 4 ? wds.x : wds.y;
+            const uint pair =
+                ((word >> (4 * (j & 3))) & 0x000F000Fu) | 0x43004300u;
+            if (j < 2) dot[j & 1] = float2(0);
+            sg_mma_acc<bfloat>(dot[j & 1], as_type<bfloat2>(pair), b);
+        }
+        const float2 d0 = fma(-128.0f, sum, dot[0] + dot[1]);
+        if (live0) {
+            acc = fma(d0,
+                float(sb[q4sb(row0, g, ng, 0, p.out_dim, p.tiled)]), acc);
+            acc = fma(sum,
+                float(sb[q4sb(row0, g, ng, 1, p.out_dim, p.tiled)]), acc);
+        }
+        if (g + 1 < end) load(g + 1, wds);
+    }
+
+    if (p.splits > 1) {
+        const uint n = base + fm;
+        if (n < (uint)p.out_dim) {
+            device float* slot =
+                part + ulong(tgpos.y) * 8 * p.out_dim + n;
+            slot[fn * p.out_dim] = acc.x;
+            slot[(fn + 1) * p.out_dim] = acc.y;
+        }
+        threadgroup_barrier(mem_flags::mem_device);
+        if (tid == 0) {
+            atomic_thread_fence(mem_flags::mem_device,
+                                memory_order_seq_cst,
+                                thread_scope::thread_scope_device);
+            *arrival = atomic_fetch_add_explicit(
+                ctrs + tgpos.x, 1u, memory_order_relaxed);
+            atomic_thread_fence(mem_flags::mem_device,
+                                memory_order_seq_cst,
+                                thread_scope::thread_scope_device);
+        }
+        threadgroup_barrier(
+            mem_flags::mem_threadgroup | mem_flags::mem_device);
+        if (*arrival != (uint)p.splits - 1) return;
+        float2 total = float2(0);
+        for (uint s = 0; s < (uint)p.splits; ++s) {
+            const uint n = base + fm;
+            if (n >= (uint)p.out_dim) continue;
+            device const float* slot =
+                part + ulong(s) * 8 * p.out_dim + n;
+            total += s == tgpos.y
+                ? acc
+                : float2(slot[fn * p.out_dim], slot[(fn + 1) * p.out_dim]);
+        }
+        acc = total;
+    }
+    const uint n = base + fm;
+    if (n < (uint)p.out_dim) {
+        if ((int)fn < p.m) y[fn * p.out_dim + n] = bfloat(acc.x);
+        if ((int)fn + 1 < p.m)
+            y[(fn + 1) * p.out_dim + n] = bfloat(acc.y);
+    }
+}
+
 // grid (ceil(out/64), splits, 1), 128 threads — each simdgroup owns 16
 // output rows (two 8-wide fragments nf=0/1).
 kernel void affine_q4_sg(
@@ -243,9 +386,9 @@ kernel void affine_q4_sg(
     auto load = [&](uint g, thread uint2 (&w)[2])
         __attribute__((always_inline)) {
         w[0] = live0 ? *reinterpret_cast<device const uint2 *>(
-            wq + ulong(row0) * words + g * 8 + c * 2) : uint2(0);
+            wq + q4woff(row0, g, c * 2, words, ng, p.tiled)) : uint2(0);
         w[1] = live1 ? *reinterpret_cast<device const uint2 *>(
-            wq + ulong(row1) * words + g * 8 + c * 2) : uint2(0);
+            wq + q4woff(row1, g, c * 2, words, ng, p.tiled)) : uint2(0);
     };
     uint2 wds[2];
     load(first, wds);
@@ -275,12 +418,20 @@ kernel void affine_q4_sg(
         const float2 d1 =
             fma(-128.0f, sum, dot[1][0] + dot[1][1]);
         if (live0) {
-            acc[0] = fma(d0, float(sb[row0 * 2 * ng + g]), acc[0]);
-            acc[0] = fma(sum, float(sb[row0 * 2 * ng + ng + g]), acc[0]);
+            acc[0] = fma(d0,
+                float(sb[q4sb(row0, g, ng, 0, p.out_dim, p.tiled)]),
+                acc[0]);
+            acc[0] = fma(sum,
+                float(sb[q4sb(row0, g, ng, 1, p.out_dim, p.tiled)]),
+                acc[0]);
         }
         if (live1) {
-            acc[1] = fma(d1, float(sb[row1 * 2 * ng + g]), acc[1]);
-            acc[1] = fma(sum, float(sb[row1 * 2 * ng + ng + g]), acc[1]);
+            acc[1] = fma(d1,
+                float(sb[q4sb(row1, g, ng, 0, p.out_dim, p.tiled)]),
+                acc[1]);
+            acc[1] = fma(sum,
+                float(sb[q4sb(row1, g, ng, 1, p.out_dim, p.tiled)]),
+                acc[1]);
         }
         if (g + 1 < end) load(g + 1, wds);
     }
@@ -378,9 +529,9 @@ kernel void affine_q4_sg_gate_up(
     auto load = [&](uint g, thread uint2 (&w)[2])
         __attribute__((always_inline)) {
         w[0] = live0 ? *reinterpret_cast<device const uint2 *>(
-            wq + ulong(grow) * words + g * 8 + c * 2) : uint2(0);
+            wq + q4woff(grow, g, c * 2, words, ng, p.tiled)) : uint2(0);
         w[1] = live1 ? *reinterpret_cast<device const uint2 *>(
-            wq + ulong(urow) * words + g * 8 + c * 2) : uint2(0);
+            wq + q4woff(urow, g, c * 2, words, ng, p.tiled)) : uint2(0);
     };
     uint2 wds[2];
     load(first, wds);
@@ -409,13 +560,27 @@ kernel void affine_q4_sg_gate_up(
             fma(-128.0f, sum, dot[0][0] + dot[0][1]);
         const float2 d1 =
             fma(-128.0f, sum, dot[1][0] + dot[1][1]);
+        // the fused [gate|up] buffer's bias plane is sized by the FULL
+        // row count (out_dim + aux) — both streams share it
         if (live0) {
-            acc[0] = fma(d0, float(sb[grow * 2 * ng + g]), acc[0]);
-            acc[0] = fma(sum, float(sb[grow * 2 * ng + ng + g]), acc[0]);
+            acc[0] = fma(d0,
+                float(sb[q4sb(grow, g, ng, 0,
+                             p.out_dim + p.aux, p.tiled)]),
+                acc[0]);
+            acc[0] = fma(sum,
+                float(sb[q4sb(grow, g, ng, 1,
+                             p.out_dim + p.aux, p.tiled)]),
+                acc[0]);
         }
         if (live1) {
-            acc[1] = fma(d1, float(sb[urow * 2 * ng + g]), acc[1]);
-            acc[1] = fma(sum, float(sb[urow * 2 * ng + ng + g]), acc[1]);
+            acc[1] = fma(d1,
+                float(sb[q4sb(urow, g, ng, 0,
+                             p.out_dim + p.aux, p.tiled)]),
+                acc[1]);
+            acc[1] = fma(sum,
+                float(sb[q4sb(urow, g, ng, 1,
+                             p.out_dim + p.aux, p.tiled)]),
+                acc[1]);
         }
         if (g + 1 < end) load(g + 1, wds);
     }
@@ -488,8 +653,6 @@ kernel void affine_qmm(
 {
     const int row = tgpos.x;
     const int words = p.in_dim / 8;
-    device const uint* wrow = wq + row * words;
-    device const bfloat* srow = sb + row * 2 * p.ng;
 
     // NB: the m-loops use constant bounds + a guard so `acc` stays in
     // registers — a runtime `p.m` bound spills it to local memory.
@@ -499,11 +662,12 @@ kernel void affine_qmm(
     for (int m = 0; m < 8; ++m) acc[m] = 0.0f;
 
     for (int wd = tid; wd < words; wd += 256) {
-        const uint pack = wrow[wd];
+        const uint pack = wq[q4woff(row, uint(wd) >> 3, uint(wd) & 7u,
+                                    words, p.ng, p.tiled)];
         const int base = wd * 8;
         const int g = base / GS;
-        const float sc = float(srow[g]);
-        const float bi = float(srow[p.ng + g]);
+        const float sc = float(sb[q4sb(row, g, p.ng, 0, p.out_dim, p.tiled)]);
+        const float bi = float(sb[q4sb(row, g, p.ng, 1, p.out_dim, p.tiled)]);
         float ws[8];
         #pragma clang loop unroll(full)
         for (int nib = 0; nib < 8; ++nib)
@@ -558,11 +722,12 @@ kernel void affine_qmv_v1(
 
     float acc = 0.0f;
     for (int wd = tid; wd < words; wd += 256) {
-        const uint pack = wrow[wd];
+        const uint pack = wq[q4woff(row, uint(wd) >> 3, uint(wd) & 7u,
+                                    words, p.ng, p.tiled)];
         const int base = wd * 8;
         const int g = base / GS;
-        const float sc = float(srow[g]);
-        const float bi = float(srow[p.ng + g]);
+        const float sc = float(sb[q4sb(row, g, p.ng, 0, p.out_dim, p.tiled)]);
+        const float bi = float(sb[q4sb(row, g, p.ng, 1, p.out_dim, p.tiled)]);
         for (int nib = 0; nib < 8; ++nib) {
             const float w =
                 float((pack >> (nib * 4)) & 0xF) * sc + bi;
@@ -585,8 +750,23 @@ kernel void affine_qmv_v1(
 #include <metal_stdlib>
 using namespace metal;
 
-struct QParams { int in_dim; int out_dim; int ng; };
+struct QParams { int in_dim; int out_dim; int ng; int tiled; };
 constant constexpr int GS = {GS};
+
+inline uint q4woff_d(uint row, uint g, uint i, uint words, uint ng,
+                     uint tiled) {
+    return tiled ? (row >> 8) * ng * 2048u + g * 2048u + (row & 255u) * 8u + i
+                 : row * words + g * 8u + i;
+}
+inline ulong q4sb_d(uint row, uint g, uint ng, uint bias, uint out_dim,
+                    uint tiled) {
+    if (tiled) {
+        const ulong tiles = ulong(out_dim + 255) >> 8;
+        const ulong prm = (ulong(row >> 8) * ng + g) * 256 + (row & 255);
+        return prm + ulong(bias) * tiles * ng * 256;
+    }
+    return ulong(row) * 2 * ng + ulong(bias) * ng + g;
+}
 
 kernel void affine_dequant(
     device const uint*   wq [[buffer(0)]],
@@ -598,11 +778,12 @@ kernel void affine_dequant(
     if (idx >= (uint)(p.in_dim * p.out_dim)) return;
     const int row = idx / p.in_dim;
     const int col = idx % p.in_dim;
-    const uint pack = wq[row * (p.in_dim / 8) + col / 8];
+    const uint pack = wq[q4woff_d(row, uint(col) >> 6, (uint(col) >> 3) & 7u,
+                                  p.in_dim / 8, p.ng, p.tiled)];
     const float q = float((pack >> ((col % 8) * 4)) & 0xF);
     const int g = col / GS;
-    y[idx] = bfloat(q * float(sb[row * 2 * p.ng + g])
-                    + float(sb[row * 2 * p.ng + p.ng + g]));
+    y[idx] = bfloat(q * float(sb[q4sb_d(row, g, p.ng, 0, p.out_dim, p.tiled)])
+                    + float(sb[q4sb_d(row, g, p.ng, 1, p.out_dim, p.tiled)]));
 }
 "#;
 
@@ -707,6 +888,7 @@ kernel void affine_dequant(
                 in_dim: self.inp as i32,
                 out_dim: self.out as i32,
                 ng: (self.inp / self.gs) as i32,
+                tiled: self.tiled as i32,
             };
             enc.set_input_buffer(0, Some(s_wq.buffer()), l_wq.start_offset() * 4);
             enc.set_input_buffer(1, Some(s_sb.buffer()), l_sb.start_offset() * 2);
@@ -741,6 +923,7 @@ kernel void affine_dequant(
         pub out: usize,
         pub m: usize,
         pub aux: usize,
+        pub tiled: bool,
     }
 
     #[repr(C)]
@@ -750,11 +933,13 @@ kernel void affine_dequant(
         m: i32,
         splits: i32,
         aux: i32,
+        tiled: i32,
     }
 
     static SG_PREP_PIPE: OnceLock<ComputePipeline> = OnceLock::new();
     static SG_DEC_PIPE: OnceLock<ComputePipeline> = OnceLock::new();
     static SG_GU_PIPE: OnceLock<ComputePipeline> = OnceLock::new();
+    static SG8_PIPE: OnceLock<ComputePipeline> = OnceLock::new();
 
     /// Splash's split heuristic (Linear.cpp): grow splits while the grid
     /// stays under ~16 tiles per core and each partition keeps >=12
@@ -813,10 +998,12 @@ kernel void affine_dequant(
 
             let device = s_wq.device();
             compile(&SG_PREP_PIPE, QMV_SRC, 64, "affine_q4_prepare", device)?;
-            let (cell, fname) = if self.aux > 0 {
-                (&SG_GU_PIPE, "affine_q4_sg_gate_up")
+            let (cell, fname, tgthr) = if self.aux > 0 {
+                (&SG_GU_PIPE, "affine_q4_sg_gate_up", 128usize)
+            } else if std::env::var("TH_QMM_SG8").is_ok() {
+                (&SG8_PIPE, "affine_q4_sg8", 256)
             } else {
-                (&SG_DEC_PIPE, "affine_q4_sg")
+                (&SG_DEC_PIPE, "affine_q4_sg", 128)
             };
             compile(cell, QMV_SRC, 64, fname, device)?;
 
@@ -826,6 +1013,7 @@ kernel void affine_dequant(
                 m: self.m as i32,
                 splits: splits as i32,
                 aux: self.aux as i32,
+                tiled: self.tiled as i32,
             };
 
             // scratch: activation table, group sums, split partials,
@@ -918,7 +1106,7 @@ kernel void affine_dequant(
                         height: splits,
                         depth: 1,
                     },
-                    MTLSize { width: 128, height: 1, depth: 1 },
+                    MTLSize { width: tgthr, height: 1, depth: 1 },
                 );
             }
             let storage =
@@ -980,6 +1168,7 @@ kernel void affine_dequant(
                 out_dim: self.out as i32,
                 ng: (self.inp / self.gs) as i32,
                 m: self.m as i32,
+                tiled: self.tiled as i32,
             };
             enc.set_input_buffer(0, Some(s_wq.buffer()), l_wq.start_offset() * 4);
             enc.set_input_buffer(1, Some(s_sb.buffer()), l_sb.start_offset() * 2);
@@ -1040,6 +1229,7 @@ kernel void affine_dequant(
                 in_dim: self.inp as i32,
                 out_dim: self.out as i32,
                 ng: (self.inp / self.gs) as i32,
+                tiled: self.tiled as i32,
             };
             enc.set_input_buffer(0, Some(s_wq.buffer()), l_wq.start_offset() * 4);
             enc.set_input_buffer(1, Some(s_sb.buffer()), l_sb.start_offset() * 2);

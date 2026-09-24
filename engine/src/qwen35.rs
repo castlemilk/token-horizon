@@ -245,6 +245,7 @@ impl Weights {
                     out,
                     inp,
                     gs: self.gs,
+                    tiled: false,
                 }));
             }
             let wv: Vec<u32> = w.flatten_all()?.to_vec1()?;
@@ -275,11 +276,13 @@ pub(crate) struct QLin {
     pub(crate) out: usize,
     pub(crate) inp: usize,
     pub(crate) gs: usize,
+    /// Splash-style `[tile][group][col]` storage — see `Self::tiled`.
+    pub(crate) tiled: bool,
 }
 
 impl QLin {
     pub(crate) fn new(wq: Tensor, sb: Tensor, out: usize, inp: usize, gs: usize) -> Self {
-        Self { wq, sb, out, inp, gs }
+        Self { wq, sb, out, inp, gs, tiled: false }
     }
 }
 
@@ -331,6 +334,7 @@ impl QLin {
                             out: self.out,
                             m: 1,
                             aux: 0,
+                            tiled: self.tiled,
                         },
                     )?
                 } else {
@@ -341,6 +345,7 @@ impl QLin {
                             inp: self.inp,
                             out: self.out,
                             gs: self.gs,
+                            tiled: self.tiled,
                         },
                     )?
                 };
@@ -364,6 +369,7 @@ impl QLin {
                             out: self.out,
                             m: rows,
                             aux: 0,
+                            tiled: self.tiled,
                         },
                     )?
                 } else {
@@ -376,6 +382,7 @@ impl QLin {
                             out: self.out,
                             gs: self.gs,
                             m: rows,
+                            tiled: self.tiled,
                         },
                     )?
                 };
@@ -390,11 +397,66 @@ impl QLin {
                     inp: self.inp,
                     out: self.out,
                     gs: self.gs,
+                    tiled: self.tiled,
                 },
             )?;
             return linear(x, &w);
         }
         linear(x, &self.cpu_dequant()?)
+    }
+
+    /// Repack to Splash's `[tile=row/256][group][col=row%256]` layout:
+    /// a simdgroup's 16-row fragment loads then hit one contiguous 512B
+    /// span instead of eight 32B rows strided by `in/2`. Rows pad to a
+    /// 256 multiple (zero nibbles + zero scale/bias → discarded output).
+    ///
+    /// Currently unused: measured +~7% on the sg kernel but ~-50% on
+    /// qmv's row-streaming M=1 path — a net loss. Kept (with the
+    /// kernels' `tiled` addressing flags) for the eventual
+    /// `q4_mpp_tiles` port, which needs this layout.
+    #[allow(dead_code)]
+    pub(crate) fn tiled(mut self) -> Result<Self> {
+        if self.tiled
+            || self.gs != 64
+            || self.inp % 64 != 0
+            || !self.wq.device().is_metal()
+        {
+            return Ok(self);
+        }
+        let ng = self.inp / 64;
+        let tiles = self.out.div_ceil(256);
+        let padded = tiles * 256;
+        let wv: Vec<u32> = self.wq.flatten_all()?.to_vec1()?;
+        let sv: Vec<half::bf16> = self
+            .sb
+            .flatten_all()?
+            .to_dtype(DType::BF16)?
+            .to_vec1()?;
+        let mut w2 = vec![0u32; padded * ng * 8];
+        let mut s2 = vec![half::bf16::ZERO; 2 * padded * ng];
+        let bias_base = padded * ng;
+        for t in 0..tiles {
+            for g in 0..ng {
+                let dbase = (t * ng + g) * 256;
+                let wbase = t * ng * 2048 + g * 2048;
+                for col in 0..256 {
+                    let row = t * 256 + col;
+                    if row >= self.out {
+                        break;
+                    }
+                    w2[wbase + col * 8..wbase + col * 8 + 8]
+                        .copy_from_slice(&wv[row * ng * 8 + g * 8..][..8]);
+                    s2[dbase + col] = sv[row * 2 * ng + g];
+                    s2[bias_base + dbase + col] = sv[row * 2 * ng + ng + g];
+                }
+            }
+        }
+        self.wq =
+            Tensor::from_vec(w2, (padded * ng * 8,), &self.wq.device())?;
+        self.sb =
+            Tensor::from_vec(s2, (2 * padded * ng,), &self.sb.device())?;
+        self.tiled = true;
+        Ok(self)
     }
 
     /// Fused gate/up activation for a [gate | up] packed projection —
@@ -403,7 +465,8 @@ impl QLin {
     pub(crate) fn gate_up_act(&self, x: &Tensor) -> Option<Result<Tensor>> {
         let dims = x.dims().to_vec();
         let rows: usize = dims[..dims.len() - 1].iter().product();
-        if !(1..=8).contains(&rows) || self.out % 2 != 0 {
+        // m==1 wastes 7/8 of the MMA work — the qmv path wins there
+        if !(2..=8).contains(&rows) || self.out % 2 != 0 {
             return None;
         }
         #[cfg(all(feature = "metal", target_os = "macos"))]
@@ -423,6 +486,7 @@ impl QLin {
                         out: self.out / 2,
                         m: rows,
                         aux: self.out / 2,
+                        tiled: self.tiled,
                     },
                 )?;
                 let mut out = dims;
@@ -431,6 +495,19 @@ impl QLin {
             })());
         }
         None
+    }
+}
+
+impl Lin {
+    /// Repack a packed weight into the tiled fragment layout — no-op
+    /// for dense weights and non-Metal devices. See `QLin::tiled` for
+    /// why nothing calls this today.
+    #[allow(dead_code)]
+    pub(crate) fn tiled(self) -> Result<Lin> {
+        match self {
+            Lin::Quant(q) => Ok(Lin::Quant(q.tiled()?)),
+            d => Ok(d),
+        }
     }
 }
 
@@ -473,6 +550,7 @@ fn fuse_lins(lins: &[Lin]) -> Result<Lin> {
                 out,
                 inp,
                 gs,
+                tiled: false,
             }))
         }
         [Lin::Dense(..), ..] => {
@@ -692,6 +770,123 @@ pub struct Qwen35 {
 }
 
 impl Qwen35 {
+
+    /// Microbench: time the two packed-decode kernels on a mid-layer
+    /// gate|up projection (out=34816, in=5120 — the largest matmul).
+    #[cfg(all(feature = "metal", target_os = "macos"))]
+    pub(crate) fn bench_lin(&self, device: &Device) -> Result<()> {
+        for (tag, l) in [
+            ("gate_up", &self.layers[0].mlp.gate_up),
+            ("down", &self.layers[0].mlp.down),
+        ] {
+            let Lin::Quant(q) = l else { continue };
+            // deterministic x so both kernels see identical inputs
+            let xv: Vec<f32> = (0..8 * q.inp)
+                .map(|i| ((i * 2654435761) % 1000) as f32 / 100.0 - 5.0)
+                .collect();
+            let x = Tensor::from_vec(xv, (8, q.inp), device)?
+                .to_dtype(DType::BF16)?;
+            // correctness: scalar vs sg
+            let ya = self.warm_mm(q, &x)?.to_dtype(DType::F32)?;
+            let yb = self.warm_sg(q, &x)?.to_dtype(DType::F32)?;
+            let d = ya.sub(&yb)?.abs()?.max(0)?.max(0)?.to_scalar::<f32>()?;
+            eprintln!("qmm[{tag}] max|Δ| scalar-vs-sg = {d:.5}");
+            // gate/up epilogue vs eager silu(gate)*up
+            if q.out % 2 == 0 {
+                let half = q.out / 2;
+                let gu = yb.reshape((8, q.out))?;
+                let gate = gu.narrow(1, 0, half)?.contiguous()?;
+                let up = gu.narrow(1, half, half)?.contiguous()?;
+                let eager =
+                    candle_nn::ops::silu(&gate)?.mul(&up)?.to_dtype(DType::F32)?;
+                let fused = q
+                    .wq
+                    .apply_op3_no_bwd(
+                        &q.sb,
+                        &x,
+                        &crate::quant_kernel::AffineQsg {
+                            inp: q.inp,
+                            out: half,
+                            m: 8,
+                            aux: half,
+                            tiled: q.tiled,
+                        },
+                    )?
+                    .to_dtype(DType::F32)?;
+                let d = eager
+                    .sub(&fused)?
+                    .abs()?
+                    .max(0)?
+                    .max(0)?
+                    .to_scalar::<f32>()?;
+                eprintln!("qmm[{tag}] max|Δ| gate-up-vs-eager = {d:.5}");
+            }
+        for (name, sg) in [("scalar", false), ("sg", true)] {
+            for _ in 0..2 {
+                // warm
+                let _ = if sg {
+                    self.warm_sg(q, &x)?
+                } else {
+                    self.warm_mm(q, &x)?
+                };
+            }
+            let t = std::time::Instant::now();
+            let iters = 10;
+            for _ in 0..iters {
+                let y = if sg {
+                    self.warm_sg(q, &x)?
+                } else {
+                    self.warm_mm(q, &x)?
+                };
+                let _ = y;
+            }
+            device.synchronize()?;
+            let ms = t.elapsed().as_secs_f64() * 1e3 / iters as f64;
+            let gb = (q.out * q.inp) as f64 * 0.5 / 1e9
+                + (q.out * q.inp / 64 * 4) as f64 / 1e9;
+            eprintln!(
+                "qmm[{tag}:{name}] {ms:.2}ms  {:.0} GB/s  ({}x{})",
+                gb / (ms / 1e3),
+                q.out,
+                q.inp
+            );
+        }
+        }
+        Ok(())
+    }
+
+    #[cfg(all(feature = "metal", target_os = "macos"))]
+    fn warm_sg(&self, q: &QLin, x: &Tensor) -> Result<Tensor> {
+        q.wq.apply_op3_no_bwd(
+            &q.sb,
+            x,
+            &crate::quant_kernel::AffineQsg {
+                inp: q.inp,
+                out: q.out,
+                m: 8,
+                aux: 0,
+                tiled: q.tiled,
+            },
+        )
+        .map_err(Into::into)
+    }
+
+    #[cfg(all(feature = "metal", target_os = "macos"))]
+    fn warm_mm(&self, q: &QLin, x: &Tensor) -> Result<Tensor> {
+        q.wq.apply_op3_no_bwd(
+            &q.sb,
+            x,
+            &crate::quant_kernel::AffineQmm {
+                inp: q.inp,
+                out: q.out,
+                gs: q.gs,
+                m: 8,
+                tiled: q.tiled,
+            },
+        )
+        .map_err(Into::into)
+    }
+
     pub fn load(
         files: &[std::path::PathBuf],
         cfg: &Qwen35Config,
