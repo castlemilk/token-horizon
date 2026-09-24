@@ -1,0 +1,17 @@
+@import 'tailwindcss';
+@import '@fontsource-variable/geist';
+@import '@fontsource-variable/jetbrains-mono';
+
+html {
+  font-family: 'Geist Variable', system-ui, sans-serif;
+}
+
+code,
+pre,
+.font-mono {
+  font-family: 'JetBrains Mono Variable', ui-monospace, monospace;
+}
+
+body {
+  background: #0e1011;
+}

@@ -13,7 +13,7 @@
 # machine, not against other machines. Hard budgets live in the XCTest perf
 # suites (ModelsPipelinePerfTests, ScopeCountsCachingTests).
 set -euo pipefail
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/../clients/macos"
 
 SAMPLE=0
 if [ "${1:-}" = "--sample" ]; then SAMPLE=1; fi

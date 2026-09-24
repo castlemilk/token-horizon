@@ -29,7 +29,7 @@ jobs:
         run: swiftlint lint
 
       - name: Test (unit + perf budgets + integration)
-        run: swift test
+        run: cd clients/macos && swift test
 
   gateway:
     runs-on: macos-15
@@ -98,11 +98,11 @@ jobs:
       # percentages differ between CI and dev machines. A hard gate would
       # just be a flake factory. Budgets (not coverage %) are the gate.
       - name: Test with coverage
-        run: swift test --enable-code-coverage
+        run: cd clients/macos && swift test --enable-code-coverage
 
       - name: Coverage summary (Sources/ only)
         run: |
-          BIN=".build/arm64-apple-macosx/debug/token-horizonPackageTests.xctest/Contents/MacOS/token-horizonPackageTests"
-          PROF=$(find .build -name default.profdata | head -1)
+          BIN="clients/macos/.build/arm64-apple-macosx/debug/token-horizonPackageTests.xctest/Contents/MacOS/token-horizonPackageTests"
+          PROF=$(find clients/macos/.build -name default.profdata | head -1)
           xcrun llvm-cov report "$BIN" -instr-profile "$PROF" 2>/dev/null \
             | grep -E "Filename|Sources/TokenHorizon|TOTAL" || true

@@ -10,9 +10,10 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+MACOS=clients/macos
 APP=TokenHorizon.app
 INSTALLED=/Applications/TokenHorizon.app
-BIN=.build/arm64-apple-macosx/release/TokenHorizon
+BIN=$MACOS/.build/arm64-apple-macosx/release/TokenHorizon
 GIT_SHA=$(git rev-parse --short HEAD 2>/dev/null || echo "dirty")
 if git status --short 2>/dev/null | grep -q .; then GIT_SHA="${GIT_SHA}-dirty"; fi
 BUILT_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
@@ -31,12 +32,12 @@ if [ "$(id -u)" -eq 0 ] && [ -z "${SKIP_INSTALL:-}" ]; then
     echo "  sudo does not bypass TCC — grant your terminal 'App Management'"
     echo "  (System Settings → Privacy & Security → App Management) instead."
     echo "  First repair the root-owned build artifacts this run created:"
-    echo "    sudo chown -R ${CONSOLE_USER}:staff .build TokenHorizon.app"
+    echo "    sudo chown -R ${CONSOLE_USER}:staff clients/macos/.build TokenHorizon.app"
     echo "  Then re-run WITHOUT sudo:  ./scripts/make-app.sh"
     exit 1
 fi
 
-swift build -c release
+(cd "$MACOS" && swift build -c release)
 
 # Gateway sidecar (portable Go binary, supervised by the app at runtime).
 # The app ALWAYS ships with its proxy: a missing sidecar fails the build.
@@ -76,8 +77,8 @@ fi
 
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-cp "$BIN" "$APP/Contents/MacOS/TokenHorizon"; cp Resources/benchmarks.json "$APP/Contents/Resources/" 2>/dev/null
-cp Resources/plans.json "$APP/Contents/Resources/" 2>/dev/null
+cp "$BIN" "$APP/Contents/MacOS/TokenHorizon"; cp "$MACOS/Resources/benchmarks.json" "$APP/Contents/Resources/" 2>/dev/null
+cp "$MACOS/Resources/plans.json" "$APP/Contents/Resources/" 2>/dev/null
 if [ -f gateway/token-horizon-gateway ]; then
     cp gateway/token-horizon-gateway "$APP/Contents/Resources/"
 fi
@@ -89,8 +90,8 @@ if [ -z "${TOKEN_HORIZON_NO_GATEWAY:-}" ]; then
     [ -x "$APP/Contents/Resources/token-horizon-gateway" ] || { echo "FATAL: gateway sidecar missing from app bundle"; exit 1; }
 fi
 
-if [ -f Resources/AppIcon.icns ]; then
-    cp Resources/AppIcon.icns "$APP/Contents/Resources/"
+if [ -f "$MACOS/Resources/AppIcon.icns" ]; then
+    cp "$MACOS/Resources/AppIcon.icns" "$APP/Contents/Resources/"
 fi
 
 cat > "$APP/Contents/Info.plist" <<PLIST

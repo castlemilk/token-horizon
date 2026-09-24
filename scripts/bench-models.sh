@@ -5,7 +5,7 @@
 # Used as a standalone tool for ad-hoc perf measurement.
 
 set -euo pipefail
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/../clients/macos"
 
 echo "=== bench-models.sh ==="
 echo "Running ModelsPipelinePerfTests (full perf suite)..."

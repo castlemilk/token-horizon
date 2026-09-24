@@ -7,6 +7,7 @@
 
 SWIFT := swift
 SWIFTLINT := swiftlint
+MACOS := clients/macos
 
 .PHONY: lint test test-race build app bench perf-test profile profile-sample help
 
@@ -20,15 +21,15 @@ lint:
 
 # Full XCTest suite (unit + budget-gated perf + integration).
 test:
-	$(SWIFT) test
+	cd $(MACOS) && $(SWIFT) test
 
 # Thread-sanitized run — the `go test -race ./...` analogue. Slower; run
 # before merging concurrency-adjacent changes (engine locks, timers, proxy).
 test-race:
-	$(SWIFT) test --sanitize=thread
+	cd $(MACOS) && $(SWIFT) test --sanitize=thread
 
 build:
-	$(SWIFT) build
+	cd $(MACOS) && $(SWIFT) build
 
 # Canonical release-style build + install + relaunch (health-gated).
 app:
@@ -51,9 +52,9 @@ profile-sample:
 # Coverage report for Sources/ (report-only: the suite exercises live
 # machine state, so absolute % differs per machine — budgets gate, not this).
 coverage:
-	swift test --enable-code-coverage
-	BIN=".build/arm64-apple-macosx/debug/token-horizonPackageTests.xctest/Contents/MacOS/token-horizonPackageTests"; \
-	PROF=$$(find .build -name default.profdata | head -1); \
+	cd $(MACOS) && swift test --enable-code-coverage
+	BIN="$(MACOS)/.build/arm64-apple-macosx/debug/token-horizonPackageTests.xctest/Contents/MacOS/token-horizonPackageTests"; \
+	PROF=$$(find $(MACOS)/.build -name default.profdata | head -1); \
 	xcrun llvm-cov report "$$BIN" -instr-profile "$$PROF" | grep -E "Filename|Sources/TokenHorizon"
 
 leaderboard-test:

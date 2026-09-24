@@ -21,14 +21,14 @@ Use ONLY when the user wants to populate, refresh, or deeply enrich the MODELS t
 | **models.dev** (`https://models.dev/api.json`) | Cached 24h to `~/.config/token-horizon/models-cache.json` | `input/output/cache per 1M`, `contextK`, `tool_call`, `reasoning`, `vision`, `open_weights`, `docUrl`, `providerName` |
 | **Ollama local** (`http://localhost:11434/api/tags` + `POST /api/show`) | Live scan via `OllamaClient.fetchInstalled()` + `modelCard(for:)` | `size`, `capabilities` (vision/tools/thinking), `parameter_size`, `quantization`, `context_length`, `modified_at`; synthetic `ModelUsage` rows with `0 tokens` so filter `LOCAL` finds them |
 | **opencode usage** (`UsageEngine` + `ModelUsage`) | `~/.local/share/opencode/opencode.db` messages + JSONL scanners (claude/codex/kimi) | Live `tokensAll/tokensToday`, `cost`, `cacheReadAll`, `estCost`, `isLocal` flag; drives `TOK` and `$$` sort keys |
-| **Benchmarks** (`~/.config/token-horizon/benchmarks.json` + bundled `Resources/benchmarks.json`) | Curated JSON `entries[].{match,name,swe,lcb,aime,gpqa,source}` — editable by user | `swe` (SWE-bench Verified), `lcb` (LiveCodeBench), plus `DeepSWE` when present; rendered as colored badges |
+| **Benchmarks** (`~/.config/token-horizon/benchmarks.json` + bundled `clients/macos/Resources/benchmarks.json`) | Curated JSON `entries[].{match,name,swe,lcb,aime,gpqa,source}` — editable by user | `swe` (SWE-bench Verified), `lcb` (LiveCodeBench), plus `DeepSWE` when present; rendered as colored badges |
 
 ## Discovery flow
 
 1. **Fetch** `ModelCatalog.ensureLoaded()` — merges `models.dev` + `benchmarks.json` into `ModelCatalog.byId` (`provider/model` lowercased keys). Falls back to `models-cache.json` on network failure, then to pure `benchmarks.json` entries.
 2. **Scan Ollama** — `AppDelegate.refreshOllama()` polls `/api/tags` (every 60s + on `refreshModelExtras`). Each installed model becomes a synthetic `ModelUsage` (`provider=ollama`, `free=true`) so the table shows it even with `0 tokens`.
 3. **Merge for display** — `DashboardTabs.filteredModelRows` builds `[ModelRow]` from `usage.models + syntheticModels`, dedupes by `provider/model`, enriches each via `ModelCatalog.lookup(id:)`, and sorts by the active column. `providerDisplay` falls back to `ollama` model name parsing.
-4. **User can edit** `Resources/benchmarks.json` (or `~/.config/token-horizon/benchmarks.json` override) to add `match` keys, then trigger a reload via `ModelCatalog.fetchAndMerge()` (exposed as `refreshModelExtras` notification).
+4. **User can edit** `clients/macos/Resources/benchmarks.json` (or `~/.config/token-horizon/benchmarks.json` override) to add `match` keys, then trigger a reload via `ModelCatalog.fetchAndMerge()` (exposed as `refreshModelExtras` notification).
 
 ## Table behavior
 
@@ -55,7 +55,7 @@ Or dispatch from code: `ModelCatalog.shared.ensureLoaded()` is called on `refres
 
 ## Files
 
-- `Sources/TokenHorizon/ModelCatalog.swift` — fetch/merge/cache + `lookup(id:)` + `docUrl(for:...)`
-- `Sources/TokenHorizon/OllamaClient.swift` — `/api/tags`, `/api/show`, speed benchmarking, bench cache at `~/.config/token-horizon/ollama-benchmarks.json`
-- `Resources/benchmarks.json` / `~/.config/token-horizon/benchmarks.json` — curated benchmark entries
-- `Sources/TokenHorizon/Views.swift` — `ModelRow`, `ModelRowView` (hover + tap), `ModelDetailView`, `filteredModelRows`, header/sort logic
+- `clients/macos/Sources/TokenHorizon/ModelCatalog.swift` — fetch/merge/cache + `lookup(id:)` + `docUrl(for:...)`
+- `clients/macos/Sources/TokenHorizon/OllamaClient.swift` — `/api/tags`, `/api/show`, speed benchmarking, bench cache at `~/.config/token-horizon/ollama-benchmarks.json`
+- `clients/macos/Resources/benchmarks.json` / `~/.config/token-horizon/benchmarks.json` — curated benchmark entries
+- `clients/macos/Sources/TokenHorizon/Views.swift` — `ModelRow`, `ModelRowView` (hover + tap), `ModelDetailView`, `filteredModelRows`, header/sort logic

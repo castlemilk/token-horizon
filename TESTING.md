@@ -27,20 +27,20 @@ profile`; the Taskfile delegates to it so there is one implementation per comman
   `swiftlint lint` output for your files). Legacy god files are capped at
   warning level until split; error thresholds sit just above current maxima
   to forbid new growth.
-- **Unit** (`Tests/TokenHorizonPerfTests/Unit/`): pure-logic suites. Rules:
+- **Unit** (`clients/macos/Tests/TokenHorizonPerfTests/Unit/`): pure-logic suites. Rules:
   no network, no `$HOME`, no shared-singleton mutation — use pure functions,
   fixtures, or UUID-scoped temp state. New parsers/fetchers must factor the
   logic into a pure static (see `parseModelsDev` / `parseOpenRouterModels` /
   `scrapeDeepSeekPricing`) with fixture-driven tests.
-- **Fixtures** (`Tests/.../Fixtures/`, wired via `Package.swift` resources,
+- **Fixtures** (`clients/macos/Tests/.../Fixtures/`, wired via `Package.swift` resources,
   loaded with `Bundle.module.url(forResource:subdirectory: "Fixtures")`):
   `catalog-7300.json` (perf), `models-dev-sample.json` + `openrouter-sample.json`
   (ingestion shapes). Keep fixtures small and shaped like the real APIs.
-- **Integration** (`Tests/.../Integration/`): loopback-only round-trips
+- **Integration** (`clients/macos/Tests/.../Integration/`): loopback-only round-trips
   (Ollama proxy). Live provider calls are forbidden — instead test the
   parse/merge functions with fixtures, and validate live behavior with
   `task smoke` against your own running app.
-- **Perf** (`Tests/.../Perf/`): budget-gated suites; a `REGRESSION` failure
+- **Perf** (`clients/macos/Tests/.../Perf/`): budget-gated suites; a `REGRESSION` failure
   means the pipeline got slower (see AGENTS.md performance budgets). Run
   `./scripts/bench-models.sh` for numbers without asserts.
 - **Smoke** (`task smoke`, implemented task-natively in `Taskfile.yml`): the AGENTS.md checklist

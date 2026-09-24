@@ -122,7 +122,7 @@ let img = ctx.makeImage()!
 let rep = NSBitmapImageRep(cgImage: img)
 rep.size = NSSize(width: size, height: size)
 let png = rep.representation(using: .png, properties: [:])!
-try! png.write(to: URL(fileURLWithPath: "Resources/icon_1024.png"))
+try! png.write(to: URL(fileURLWithPath: "clients/macos/Resources/icon_1024.png"))
 
 func writeSize(_ px: Int, _ name: String) {
     let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: px, pixelsHigh: px,
@@ -135,7 +135,7 @@ func writeSize(_ px: Int, _ name: String) {
     gctx.cgContext.interpolationQuality = .high
     gctx.cgContext.draw(img, in: CGRect(x: 0, y: 0, width: px, height: px))
     NSGraphicsContext.restoreGraphicsState()
-    try! rep.representation(using: .png, properties: [:])!.write(to: URL(fileURLWithPath: "Resources/\(name)"))
+    try! rep.representation(using: .png, properties: [:])!.write(to: URL(fileURLWithPath: "clients/macos/Resources/\(name)"))
 }
 
 writeSize(16, "icon_16x16.png")

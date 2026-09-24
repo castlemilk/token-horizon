@@ -35,7 +35,7 @@ fi
 
 # 3. Launch Electron React UI
 echo "[*] Launching Token Horizon Cross-Platform UI..."
-cd "$DIR/ui"
+cd "$DIR/clients/app"
 if [ "${1:-}" = "--dev" ]; then
     npm run dev
 else

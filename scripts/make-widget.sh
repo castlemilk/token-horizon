@@ -1,6 +1,6 @@
 #!/bin/bash
 set -euo pipefail
-ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+ROOT="$(cd "$(dirname "$0")/../clients/macos" && pwd)"
 APP="$(cd "$(dirname "${1:?Pass the containing app bundle}")" && pwd)/$(basename "$1")"
 EXT="$APP/Contents/PlugIns/TokenHorizonWidget.appex"
 mkdir -p "$EXT/Contents/MacOS"
