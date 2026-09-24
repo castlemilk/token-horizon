@@ -33,7 +33,7 @@ struct NotchContentView: View {
 }
 
 enum DashboardTab: String, CaseIterable, Identifiable {
-    case activity = "ACTIVITY", mlx = "MLX", tokens = "TOKENS", traces = "TRACES", models = "MODELS", shells = "SHELLS", leaderboard = "LEADERBOARD", settings = "SETTINGS"
+    case activity = "ACTIVITY", mlx = "MLX", engine = "ENGINE", tokens = "TOKENS", traces = "TRACES", models = "MODELS", shells = "SHELLS", leaderboard = "LEADERBOARD", settings = "SETTINGS"
     var id: String { rawValue }
 
     /// SF Symbol shown on every pill; the text label only renders on the
@@ -42,6 +42,7 @@ enum DashboardTab: String, CaseIterable, Identifiable {
         switch self {
         case .activity: return "waveform.path.ecg"
         case .mlx: return "memorychip"
+        case .engine: return "bolt.fill"
         case .tokens: return "number"
         case .traces: return "point.3.connected.trianglepath.dotted"
         case .models: return "cube"

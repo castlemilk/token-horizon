@@ -120,6 +120,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         ModelCatalog.shared.ensureLoaded()
         ModelDiscoveryEngine.shared.start()
         SelfUpdater.shared.start()
+        EngineSupervisor.shared.startPolling()
         rebuildSurfaces()
         NotificationCenter.default.addObserver(forName: .refreshTrends, object: nil, queue: .main) { [weak self] _ in
             self?.refreshTrends()
@@ -522,6 +523,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         ModelDiscoveryEngine.shared.stop()
         OllamaTelemetryProxy.shared.stop()
         GatewaySupervisor.shared.stop()
+        EngineSupervisor.shared.shutdown()
         // Exact parser-state persistence for fast next boot (throttled to
         // 60s during the run; a few hundred ms here is invisible on quit).
         DurableStore.shared.flushEngineState()

@@ -73,11 +73,13 @@ build instead.
 | grok | `/th-grok/` | chat completions, responses |
 | gemini | `/th-gemini/` | `:generateContent`/`:streamGenerateContent`, chat completions |
 | opencode | `/th-opencode/` | messages, chat completions |
+| splash | `/th-splash/` | chat completions, responses, messages (local engine on :8000) |
 
 Unprefixed `/v1/*` requests resolve by path first, then by unambiguous
 model name in the body (`kimi-*`, `glm-*`, `minimax-*`, `deepseek-*`,
 `qwen-*`, `grok-*`, `gemini-*` → their provider; `claude-*` → anthropic;
-`gpt-*`/`o1`… → openai). Any path may carry a `/th-<provider>/` prefix;
+`gpt-*`/`o1`… → openai; `*-splash`/`incoai/*` → splash local engine).
+Any path may carry a `/th-<provider>/` prefix;
 the remainder is still classified by wire shape, so e.g.
 `/th-glm/api/anthropic/v1/messages` parses Anthropic-protocol usage.
 

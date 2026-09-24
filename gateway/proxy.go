@@ -271,7 +271,8 @@ func (h *ProxyHandler) finalize(ctx *requestContext) {
 		ttftSecs = *ttft / 1000
 	}
 	h.metrics.Complete(ctx.provider, ctx.endpoint, ctx.model, ctx.statusCode, ttftSecs, durationMs/1000, out)
-	if ctx.provider == ProviderOllama && h.cfg.IngestURL != "" && usage.Source != TokenAbsent && out > 0 {
+	if (ctx.provider == ProviderOllama || ctx.provider == ProviderSplash) &&
+		h.cfg.IngestURL != "" && usage.Source != TokenAbsent && out > 0 {
 		h.ingestOllama(ctx.model, usage, durationMs, ctx.start)
 	}
 	_ = stored

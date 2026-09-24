@@ -39,6 +39,7 @@ const (
 	ProviderGrok      Provider = "grok"
 	ProviderGemini    Provider = "gemini"
 	ProviderOpenCode  Provider = "opencode"
+	ProviderSplash    Provider = "splash"
 	ProviderUnknown   Provider = "unknown"
 )
 
@@ -46,7 +47,7 @@ const (
 var AllProviders = []Provider{
 	ProviderOpenAI, ProviderAnthropic, ProviderOllama, ProviderKimi,
 	ProviderGLM, ProviderMiniMax, ProviderDeepSeek, ProviderQwen,
-	ProviderGrok, ProviderGemini, ProviderOpenCode,
+	ProviderGrok, ProviderGemini, ProviderOpenCode, ProviderSplash,
 }
 
 func knownProvider(p Provider) bool {

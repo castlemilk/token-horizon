@@ -53,6 +53,7 @@ struct DashboardTabs: View {
                 switch tab {
                 case .activity: activityTab
                 case .mlx: mlxTab
+                case .engine: EngineTabView()
                 case .tokens: tokensTab
                 case .traces: TracesTabView()
                 case .models: modelsTab

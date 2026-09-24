@@ -24,6 +24,7 @@ var providerPrefixes = []struct {
 	{"/th-grok", ProviderGrok},
 	{"/th-gemini", ProviderGemini},
 	{"/th-opencode", ProviderOpenCode},
+	{"/th-splash", ProviderSplash},
 }
 
 // prefixedProvider matches a path (query allowed) against the /th-<name>
@@ -74,6 +75,13 @@ func wireEndpoint(clean string) Endpoint {
 // pointed at the bare gateway URL still attribute correctly.
 func providerFromModel(model string) Provider {
 	lower := strings.ToLower(model)
+	// Locally-served packages carry repo-style ids ("incoai/Qwen3.8-27B-Splash");
+	// a bare "qwen*" prefix match would otherwise route a local engine request
+	// to dashscope. "-splash" suffix or the incoai org means the engine —
+	// generic slash ids (openrouter-style "openai/gpt-4o") keep provider routing.
+	if strings.HasSuffix(lower, "-splash") || strings.HasPrefix(lower, "incoai/") {
+		return ProviderSplash
+	}
 	switch {
 	case strings.HasPrefix(lower, "claude"):
 		return ProviderAnthropic

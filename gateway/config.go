@@ -28,6 +28,7 @@ type Config struct {
 	GrokBase      string
 	GeminiBase    string
 	OpenCodeBase  string
+	SplashBase    string
 	// Trace directory override (tests). Default ~/.config/token-horizon/traces.
 	TraceDir string
 	// Best-effort POST target for Ollama telemetry samples so the Mac app's
@@ -71,6 +72,7 @@ func ConfigFromEnv() Config {
 		GrokBase:      envOr("TOKEN_HORIZON_GROK_UPSTREAM", "https://api.x.ai"),
 		GeminiBase:    envOr("TOKEN_HORIZON_GEMINI_UPSTREAM", "https://generativelanguage.googleapis.com"),
 		OpenCodeBase:  envOr("TOKEN_HORIZON_OPENCODE_UPSTREAM", "https://opencode.ai/zen"),
+		SplashBase:    envOr("TOKEN_HORIZON_SPLASH_UPSTREAM", "http://127.0.0.1:8000"),
 		TraceDir:      traceDir,
 		IngestURL:     envOr("TOKEN_HORIZON_INGEST_URL", "http://127.0.0.1:8765/ingest/ollama"),
 	}
@@ -108,6 +110,8 @@ func (c Config) baseFor(provider Provider) string {
 		return c.GeminiBase
 	case ProviderOpenCode:
 		return c.OpenCodeBase
+	case ProviderSplash:
+		return c.SplashBase
 	}
 	return ""
 }

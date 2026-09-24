@@ -143,6 +143,9 @@ final class LocalServer {
                                                    body: body, json: json) {
             return widgetWindow
         }
+        if let engine = engineResponse(method: method, route: route, body: body, json: json) {
+            return engine
+        }
         switch (method, route) {
         case ("GET", "/widget"):
             let payload = WidgetBridge.shared.data()
@@ -225,6 +228,38 @@ final class LocalServer {
         prefs.window = value
         SettingsStore.shared.widgetPreferences = prefs
         return json(["ok": true, "window": value], 200)
+    }
+
+    /// Local inference engine endpoints (/engine/*). Read endpoints report
+    /// supervisor state + hardware fit; POSTs drive lifecycle. The engine
+    /// itself stays authoritative — we never fabricate a "running" answer.
+    static func engineResponse(method: String, route: String, body: Data,
+                               json: (Any, Int) -> Data) -> Data? {
+        guard route.hasPrefix("/engine") else { return nil }
+        let sup = EngineSupervisor.shared
+        switch (method, route) {
+        case ("GET", "/engine"):
+            return json(sup.snapshotPayload(), 200)
+
+        case ("POST", "/engine/serve"), ("GET", "/engine/serve"):
+            guard let obj = try? JSONSerialization.jsonObject(with: body) as? [String: Any] else {
+                return json(["error": "expected JSON body {model, max_memory_gb?, max_context_k?}"], 400)
+            }
+            guard let model = obj["model"] as? String, !model.isEmpty else {
+                return json(["error": "model is required"], 400)
+            }
+            let mem = (obj["max_memory_gb"] as? NSNumber)?.intValue
+            let ctx = (obj["max_context_k"] as? NSNumber)?.intValue
+            sup.serve(model: model, maxMemoryGB: mem, maxContextK: ctx)
+            return json(["ok": true], 202)
+
+        case ("POST", "/engine/stop"), ("GET", "/engine/stop"):
+            sup.stop()
+            return json(["ok": true], 200)
+
+        default:
+            return json(["error": "unknown engine route"], 404)
+        }
     }
 
     /// Web catalog export for the dashboard explorer / refresh script.
