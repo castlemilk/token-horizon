@@ -459,6 +459,33 @@ pub(crate) fn rms_norm(x: &Tensor, w: &Tensor, eps: f64) -> Result<Tensor> {
     candle_nn::ops::rms_norm(x, w, eps as f32).map_err(Into::into)
 }
 
+/// Fused `x + r` residual + `rms_norm(x+r)·w` on Metal — one dispatch
+/// producing both streams. Falls back to eager ops elsewhere.
+fn add_rms_norm(
+    x: &Tensor,
+    r: &Tensor,
+    w: &Tensor,
+    eps: f64,
+) -> Result<(Tensor, Tensor)> {
+    #[cfg(all(feature = "metal", target_os = "macos"))]
+    if x.device().is_metal() && x.is_contiguous() && r.is_contiguous() {
+        let seq = x.dim(1)?;
+        let c = x.dim(2)?;
+        let out = x.apply_op3_no_bwd(
+            r,
+            w,
+            &crate::gdn_kernel::AddRmsNorm { t: seq, c, eps: eps as f32 },
+        )?;
+        // out is [2, T, C] — plane 0 = residual, plane 1 = normed
+        let res = out.narrow(0, 0, 1)?;
+        let nrm = out.narrow(0, 1, 1)?;
+        return Ok((res, nrm));
+    }
+    let res = x.add(r)?;
+    let nrm = rms_norm(&res, w, eps)?;
+    Ok((res, nrm))
+}
+
 /// Eager depthwise causal conv + SiLU — `conv_in` is
 /// [(k-1+seq), conv_dim] (state window prepended); returns
 /// [seq, conv_dim]. CPU/non-Metal fallback for `GdnConv`.
@@ -1467,9 +1494,13 @@ impl Qwen35 {
         }
         let phase_t = std::env::var("TH_PHASE_TIME").is_ok()
             .then(std::time::Instant::now);
+        let mut h_next: Option<Tensor> = None;
         for i in 0..self.layers.len() {
             let layer = &self.layers[i];
-            let h = rms_norm(&x, &layer.input_norm, self.cfg.rms_norm_eps)?;
+            let h = match h_next.take() {
+                Some(v) => v,
+                None => rms_norm(&x, &layer.input_norm, self.cfg.rms_norm_eps)?,
+            };
             let r = match &layer.kind {
                 Kind::Gdn(l) => {
                     let mut st = self.gdn[i].take().unwrap();
@@ -1493,8 +1524,9 @@ impl Qwen35 {
                     r?
                 }
             };
-            x = x.add(&r)?;
-            let h2 = rms_norm(&x, &layer.post_norm, self.cfg.rms_norm_eps)?;
+            // fused: x += r; h2 = rms_norm(x)·post_norm — one dispatch
+            let (xn, h2) =
+                add_rms_norm(&x, &r, &layer.post_norm, self.cfg.rms_norm_eps)?;
             // one fused projection → split [gate | up]
             let gu = lin_apply(&h2, &layer.mlp.gate_up)?;
             let gate = gu
@@ -1507,7 +1539,19 @@ impl Qwen35 {
                 &candle_nn::ops::silu(&gate)?.mul(&up)?,
                 &layer.mlp.down,
             )?;
-            x = x.add(&mlp)?;
+            if i + 1 < self.layers.len() {
+                // fused: x += mlp; h_next = rms_norm(x)·next input_norm
+                let (xn2, hn) = add_rms_norm(
+                    &xn,
+                    &mlp,
+                    &self.layers[i + 1].input_norm,
+                    self.cfg.rms_norm_eps,
+                )?;
+                x = xn2;
+                h_next = Some(hn);
+            } else {
+                x = xn.add(&mlp)?;
+            }
             if self.draft.is_some()
                 && crate::dflash::CAPTURE_LAYERS.contains(&i)
             {

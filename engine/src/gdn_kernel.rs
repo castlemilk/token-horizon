@@ -17,7 +17,7 @@
 //! tracking inserts a buffer barrier before the next consumer.
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
-pub use metal_impl::{GdnConv, GdnStep};
+pub use metal_impl::{AddRmsNorm, GdnConv, GdnStep};
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
 mod metal_impl {
@@ -398,6 +398,159 @@ kernel void gdn_conv(
             let storage =
                 MetalStorage::new(y_buf, device.clone(), y_elems, DType::BF16);
             Ok((storage, Shape::from((self.t, self.c))))
+        }
+    }
+
+    /// Fused residual add + RMSNorm: `out[0] = x + r` (the new residual
+    /// stream) and `out[1] = rms_norm(out[0]) * w`. Replaces two
+    /// dispatches per layer boundary.
+    pub struct AddRmsNorm {
+        pub t: usize,
+        pub c: usize,
+        pub eps: f32,
+    }
+
+    #[repr(C)]
+    struct ArnParams {
+        t: i32,
+        c: i32,
+        eps: f32,
+    }
+
+    const ARN_SRC: &str = r#"
+#include <metal_stdlib>
+using namespace metal;
+
+struct ArnParams { int T; int C; float eps; };
+
+// one threadgroup of 256 = 8 simdgroups, one sg per row
+kernel void add_rmsnorm(
+    device const bfloat* x   [[buffer(0)]],
+    device const bfloat* r   [[buffer(1)]],
+    device const bfloat* w   [[buffer(2)]],
+    device bfloat*       out [[buffer(3)]],   // [2, T, C]
+    constant ArnParams&  p   [[buffer(4)]],
+    uint3 tg [[threadgroup_position_in_grid]],
+    uint  lane [[thread_index_in_simdgroup]],
+    uint  sg [[simdgroup_index_in_threadgroup]])
+{
+    const int t = tg.x * 8 + sg;
+    if (t >= p.T) return;
+    device const bfloat* xr = x + t * p.C;
+    device const bfloat* rr = r + t * p.C;
+    device bfloat* res = out + t * p.C;
+    device bfloat* nrm = out + (p.T + t) * p.C;
+    float ss = 0.0f;
+    for (int c = lane; c < p.C; c += 32) {
+        const float v = float(xr[c]) + float(rr[c]);
+        res[c] = bfloat(v);
+        ss += v * v;
+    }
+    ss = simd_sum(ss);
+    const float inv = rsqrt(ss / float(p.C) + p.eps);
+    for (int c = lane; c < p.C; c += 32) {
+        nrm[c] = bfloat(float(res[c]) * inv * float(w[c]));
+    }
+}
+"#;
+
+    static ARN_PIPE: OnceLock<ComputePipeline> = OnceLock::new();
+
+    impl CustomOp3 for AddRmsNorm {
+        fn name(&self) -> &'static str {
+            "add-rmsnorm"
+        }
+
+        fn cpu_fwd(
+            &self,
+            _: &CpuStorage,
+            _: &Layout,
+            _: &CpuStorage,
+            _: &Layout,
+            _: &CpuStorage,
+            _: &Layout,
+        ) -> Result<(CpuStorage, Shape)> {
+            candle_core::bail!("add-rmsnorm: Metal only")
+        }
+
+        fn metal_fwd(
+            &self,
+            s_x: &MetalStorage,
+            l_x: &Layout,
+            s_r: &MetalStorage,
+            l_r: &Layout,
+            s_w: &MetalStorage,
+            l_w: &Layout,
+        ) -> Result<(MetalStorage, Shape)> {
+            if !l_x.is_contiguous() || !l_r.is_contiguous() || !l_w.is_contiguous() {
+                candle_core::bail!("add-rmsnorm requires contiguous inputs");
+            }
+            if s_x.dtype() != DType::BF16
+                || s_r.dtype() != DType::BF16
+                || s_w.dtype() != DType::BF16
+            {
+                candle_core::bail!("add-rmsnorm dtypes must be bf16");
+            }
+            let device = s_x.device();
+            if ARN_PIPE.get().is_none() {
+                let raw = device.metal_device();
+                let lib = raw
+                    .new_library_with_source(ARN_SRC, None)
+                    .map_err(candle_core::Error::wrap)?;
+                let f = lib
+                    .get_function("add_rmsnorm", None)
+                    .map_err(candle_core::Error::wrap)?;
+                let p = raw
+                    .new_compute_pipeline_state_with_function(&f)
+                    .map_err(candle_core::Error::wrap)?;
+                let _ = ARN_PIPE.set(p);
+            }
+            let pipeline = ARN_PIPE.get().unwrap();
+
+            let y_elems = 2 * self.t * self.c;
+            let y_buf = device
+                .new_buffer_builder()
+                .with_size_for(y_elems, DType::BF16)
+                .with_label("arn.y")
+                .build()
+                .map_err(candle_core::Error::wrap)?;
+
+            let encoder =
+                device.command_encoder().map_err(candle_core::Error::wrap)?;
+            encoder.set_label("add_rmsnorm");
+            let enc_ref = &encoder;
+            let enc: &candle_metal_kernels::metal::ComputeCommandEncoder =
+                enc_ref.encoder().as_ref();
+            enc.set_compute_pipeline_state(pipeline);
+            enc.set_input_buffer(
+                0,
+                Some(s_x.buffer()),
+                l_x.start_offset() * DType::BF16.size_in_bytes(),
+            );
+            enc.set_input_buffer(
+                1,
+                Some(s_r.buffer()),
+                l_r.start_offset() * DType::BF16.size_in_bytes(),
+            );
+            enc.set_input_buffer(
+                2,
+                Some(s_w.buffer()),
+                l_w.start_offset() * DType::BF16.size_in_bytes(),
+            );
+            enc.set_output_buffer(3, Some(&y_buf), 0);
+            let params = ArnParams {
+                t: self.t as i32,
+                c: self.c as i32,
+                eps: self.eps,
+            };
+            enc.set_bytes(4, &params);
+            enc.dispatch_thread_groups(
+                MTLSize { width: self.t.div_ceil(8), height: 1, depth: 1 },
+                MTLSize { width: 256, height: 1, depth: 1 },
+            );
+            let storage =
+                MetalStorage::new(y_buf, device.clone(), y_elems, DType::BF16);
+            Ok((storage, Shape::from((2, self.t, self.c))))
         }
     }
 }

@@ -299,7 +299,8 @@ async fn main() -> Result<()> {
                     let t = std::time::Instant::now();
                     let lg =
                         loaded.backend.forward_multi(&seq, pos, &dev)?;
-                    let _ = lg.flatten_all()?.to_vec1::<f32>()?;
+                    let _ =
+                        lg.flatten_all()?.to_vec1::<half::bf16>()?;
                     eprintln!(
                         "fwd{m}  {:.1}ms",
                         t.elapsed().as_secs_f64() * 1e3
