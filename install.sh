@@ -121,7 +121,7 @@ else
                 | python3 -c "import json,sys; print(json.load(sys.stdin).get('tag_name',''))" 2>/dev/null || true)
         fi
         spin_stop
-        [ -n "$TAG" ] || fail "could not resolve latest release (network or GitHub unreachable?). Retry with VERSION=x.y.z."
+        [ -n "$TAG" ] || fail "could not reach github.com — check VPN/proxy/DNS, then retry. Offline install: download the release zip on another machine, then TH_INSTALL_URL=file:///path/to/TokenHorizon-x.y.z.zip"
         ok "latest release ${BOLD}${TAG}${RESET}"
     fi
     ZIP_URL="https://github.com/${REPO}/releases/download/${TAG}/TokenHorizon-${TAG#v}.zip"
