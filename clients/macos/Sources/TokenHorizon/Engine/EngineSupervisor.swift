@@ -46,8 +46,41 @@ struct EngineBackend {
             var args = ["serve", "--model", model, "--port", "\(port)"]
             if let t = tokenizer { args += ["--tokenizer", t] }
             if let c = maxContextK { args += ["--max-context", "\(c * 1024)"] }
+            // DFlash draft auto-attach: the only packaged draft is
+            // trained against Qwen3.8-27B-class targets — a mismatched
+            // draft just burns verify cycles, so gate on the model id.
+            if let draft = Self.dflashDraftDir(),
+               model.lowercased().contains("qwen3.8"),
+               model.contains("27") {
+                args += ["--draft", draft]
+            }
             return args
         }
+    }
+
+    /// First usable Splash-packaged DFlash draft under the Splash models
+    /// dir (`<org>/<pkg>/draft/model.bin` + `layer-0.bin`).
+    static func dflashDraftDir() -> String? {
+        let root = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(
+                "Library/Application Support/Splash/models")
+        guard let orgs = try? FileManager.default
+            .contentsOfDirectory(atPath: root.path) else { return nil }
+        for org in orgs {
+            let orgDir = root.appendingPathComponent(org)
+            guard let pkgs = try? FileManager.default
+                .contentsOfDirectory(atPath: orgDir.path) else { continue }
+            for pkg in pkgs {
+                let draft = orgDir.appendingPathComponent("\(pkg)/draft")
+                let ok = FileManager.default.fileExists(
+                    atPath: draft.appendingPathComponent("model.bin").path)
+                    && FileManager.default.fileExists(
+                        atPath: draft
+                            .appendingPathComponent("layer-0.bin").path)
+                if ok { return draft.path }
+            }
+        }
+        return nil
     }
 }
 

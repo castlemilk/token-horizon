@@ -102,6 +102,7 @@ async fn status(State(app): State<Arc<App>>) -> Json<Value> {
         "features": {
             "spec_decode": s.config.read().unwrap().spec_tokens > 0,
             "kv_quant": s.config.read().unwrap().kv_quant,
+            "dflash": s.config.read().unwrap().draft_dir.is_some(),
         },
         "memory": {"rss_bytes": rss_bytes()},
         "rss_bytes": rss_bytes(),

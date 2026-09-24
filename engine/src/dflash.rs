@@ -672,3 +672,51 @@ fn rope_table(
         Tensor::from_vec(sin, (rows, HEAD_DIM / 2), device)?,
     ))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// repack_q4 must be a pure layout permutation: Splash stores
+    /// [tile=out/256][group][row%256] blocks, ours is [row][group].
+    /// Fill the packed section with byte-index counters and check the
+    /// mapping directly against the dequantised values.
+    #[test]
+    fn repack_q4_is_a_pure_permutation() {
+        let (out, inp) = (512usize, 128usize); // 2 tiles x 2 groups
+        let wbytes = out * inp / 2;
+        let pbytes = out * inp / 32;
+        let mut sec = vec![0u8; wbytes + 2 * pbytes];
+        for (i, b) in sec.iter_mut().enumerate() {
+            *b = (i % 251) as u8;
+        }
+        let q = repack_q4(&sec, out, inp, &Device::Cpu).unwrap();
+        let wq: Vec<u32> = q.wq.flatten_all().unwrap().to_vec1().unwrap();
+        let sb: Vec<bf16> = q.sb.flatten_all().unwrap().to_vec1().unwrap();
+        let ng = inp / 64;
+        // spot-check a spread of (row, group) cells
+        for &(r, g) in &[(0, 0), (0, 1), (255, 0), (256, 1), (511, 1)] {
+            let (tile, rr) = (r / 256, r % 256);
+            // weights: 32 packed bytes at [tile][g][rr]
+            let src = tile * ng * 256 * 32 + (g * 256 + rr) * 32;
+            let dst = (r * ng + g) * 8; // u32 words: 32 bytes
+            let w0 = u32::from_le_bytes(
+                sec[src..src + 4].try_into().unwrap(),
+            );
+            assert_eq!(wq[dst], w0, "weight word mismatch at r{r} g{g}");
+            // scale at [tile][g][rr] in the params section
+            let sp = wbytes + ((tile * ng + g) * 256 + rr) * 2;
+            let sval = bf16::from_le_bytes([sec[sp], sec[sp + 1]]);
+            assert_eq!(sb[r * 2 * ng + g], sval, "scale at r{r} g{g}");
+            // bias
+            let bp = wbytes + pbytes + ((tile * ng + g) * 256 + rr) * 2;
+            let bval = bf16::from_le_bytes([sec[bp], sec[bp + 1]]);
+            assert_eq!(
+                sb[r * 2 * ng + ng + g],
+                bval,
+                "bias at r{r} g{g}"
+            );
+        }
+    }
+
+}
