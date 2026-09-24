@@ -21,6 +21,14 @@
 #   NO_COLOR=1          plain output (also auto-detected on non-TTY)
 set -euo pipefail
 
+# TH_DEBUG=1 → xtrace every command with an elapsed-seconds prefix.
+# Used to pinpoint stalls: the last trace line before output stops is
+# the culprit.
+if [ -n "${TH_DEBUG:-}" ]; then
+    PS4='+ ${SECONDS}s  '
+    set -x
+fi
+
 REPO="castlemilk/token-horizon"
 INSTALL_DIR="${INSTALL_DIR:-/Applications}"
 APP_NAME="TokenHorizon.app"
@@ -117,8 +125,10 @@ else
                 -w '%{url_effective}' "https://github.com/${REPO}/releases/latest" 2>/dev/null \
               | sed -n 's|.*/tag/\(v[^/ ]*\).*|\1|p' || true)
         if [ -z "$TAG" ]; then
+            # API fallback; sed not python3 (a fresh rig may lack CLT python3,
+            # and the stub can stall behind a GUI install prompt).
             TAG=$(curl -fsSL --connect-timeout 10 --max-time 20 "https://api.github.com/repos/${REPO}/releases/latest" \
-                | python3 -c "import json,sys; print(json.load(sys.stdin).get('tag_name',''))" 2>/dev/null || true)
+                | sed -n 's/.*"tag_name": *"\(v[^"]*\)".*/\1/p' | head -1 || true)
         fi
         spin_stop
         [ -n "$TAG" ] || fail "could not reach github.com — check VPN/proxy/DNS, then retry. Offline install: download the release zip on another machine, then TH_INSTALL_URL=file:///path/to/TokenHorizon-x.y.z.zip"
