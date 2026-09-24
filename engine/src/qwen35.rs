@@ -330,6 +330,7 @@ impl QLin {
                             inp: self.inp,
                             out: self.out,
                             m: 1,
+                            aux: 0,
                         },
                     )?
                 } else {
@@ -362,6 +363,7 @@ impl QLin {
                             inp: self.inp,
                             out: self.out,
                             m: rows,
+                            aux: 0,
                         },
                     )?
                 } else {
@@ -393,6 +395,42 @@ impl QLin {
             return linear(x, &w);
         }
         linear(x, &self.cpu_dequant()?)
+    }
+
+    /// Fused gate/up activation for a [gate | up] packed projection —
+    /// the kernel emits silu(gate)·up directly. `None` when the fast
+    /// path doesn't apply (caller falls back to narrow+silu·mul).
+    pub(crate) fn gate_up_act(&self, x: &Tensor) -> Option<Result<Tensor>> {
+        let dims = x.dims().to_vec();
+        let rows: usize = dims[..dims.len() - 1].iter().product();
+        if !(1..=8).contains(&rows) || self.out % 2 != 0 {
+            return None;
+        }
+        #[cfg(all(feature = "metal", target_os = "macos"))]
+        if x.device().is_metal()
+            && self.gs == 64
+            && self.inp % 64 == 0
+            && std::env::var("TH_QMM_SCALAR").is_err()
+        {
+            let in_d = *dims.last().unwrap();
+            return Some((|| {
+                let xv = x.reshape((rows, in_d))?.contiguous()?;
+                let y = self.wq.apply_op3_no_bwd(
+                    &self.sb,
+                    &xv,
+                    &crate::quant_kernel::AffineQsg {
+                        inp: self.inp,
+                        out: self.out / 2,
+                        m: rows,
+                        aux: self.out / 2,
+                    },
+                )?;
+                let mut out = dims;
+                *out.last_mut().unwrap() = self.out / 2;
+                y.reshape(out).map_err(Into::into)
+            })());
+        }
+        None
     }
 }
 
@@ -1527,18 +1565,38 @@ impl Qwen35 {
             // fused: x += r; h2 = rms_norm(x)·post_norm — one dispatch
             let (xn, h2) =
                 add_rms_norm(&x, &r, &layer.post_norm, self.cfg.rms_norm_eps)?;
-            // one fused projection → split [gate | up]
-            let gu = lin_apply(&h2, &layer.mlp.gate_up)?;
-            let gate = gu
-                .narrow(D::Minus1, 0, layer.mlp.inter)?
-                .contiguous()?;
-            let up = gu
-                .narrow(D::Minus1, layer.mlp.inter, layer.mlp.inter)?
-                .contiguous()?;
-            let mlp = lin_apply(
-                &candle_nn::ops::silu(&gate)?.mul(&up)?,
-                &layer.mlp.down,
-            )?;
+            // fused gate|up projection with in-kernel silu·mul epilogue
+            // (eager narrow + silu·mul fallback off-Metal / prefill)
+            let act = match &layer.mlp.gate_up {
+                Lin::Quant(q) => match q.gate_up_act(&h2) {
+                    Some(r) => r?,
+                    None => {
+                        let gu = lin_apply(&h2, &layer.mlp.gate_up)?;
+                        let gate = gu
+                            .narrow(D::Minus1, 0, layer.mlp.inter)?
+                            .contiguous()?;
+                        let up = gu
+                            .narrow(
+                                D::Minus1,
+                                layer.mlp.inter,
+                                layer.mlp.inter,
+                            )?
+                            .contiguous()?;
+                        candle_nn::ops::silu(&gate)?.mul(&up)?
+                    }
+                },
+                _ => {
+                    let gu = lin_apply(&h2, &layer.mlp.gate_up)?;
+                    let gate = gu
+                        .narrow(D::Minus1, 0, layer.mlp.inter)?
+                        .contiguous()?;
+                    let up = gu
+                        .narrow(D::Minus1, layer.mlp.inter, layer.mlp.inter)?
+                        .contiguous()?;
+                    candle_nn::ops::silu(&gate)?.mul(&up)?
+                }
+            };
+            let mlp = lin_apply(&act, &layer.mlp.down)?;
             if i + 1 < self.layers.len() {
                 // fused: x += mlp; h_next = rms_norm(x)·next input_norm
                 let (xn2, hn) = add_rms_norm(
