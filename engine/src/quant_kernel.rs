@@ -15,7 +15,7 @@
 //! scales, [ng,2ng) biases.
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
-pub use metal_impl::{AffineDequant, AffineQmm, AffineQmv};
+pub use metal_impl::{AffineDequant, AffineQmm, AffineQmv, AffineQsg};
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
 mod metal_impl {
@@ -70,6 +70,7 @@ mod metal_impl {
     // words per row = IN/8; GS % 8 == 0 so a word never spans groups.
     const QMV_SRC: &str = r#"
 #include <metal_stdlib>
+#include <metal_simdgroup_matrix>
 using namespace metal;
 
 struct QParams { int in_dim; int out_dim; int ng; };
@@ -118,6 +119,221 @@ kernel void affine_qmv(
     }
     acc = simd_sum(acc);
     if (lane == 0) y[row] = bfloat(acc);
+}
+
+// ------------------------------------------------------------------
+// Fragment-direct Q4 decode — ported from Splash's
+// linear_q4_sgmatrix.metal (docs/splash, incoai/splash@134807b), adapted
+// to our row-major packed layout.
+//
+// Lane->fragment mapping (from their driver probe): lane l holds
+// M[fm][fn] and M[fm][fn+1] with
+//   fm = (qid & 4) | ((lane >> 1) & 3),
+//   fn = ((qid & 2) << 1) | ((lane & 1) << 1)
+// Activations are pre-scattered by `affine_q4_prepare` into a per-group
+// 512-bfloat table so each lane's B elements are one vec<bfloat,8> read,
+// plus a per-group per-row sum used by the +128 offset trick:
+//   (nibble | 0x4300) is bf16 (128 + q) exactly, so the MMA accumulates
+//   (128+q)*x and the epilogue subtracts 128*sum(x) — scale/bias then
+//   apply once per row per group, not per element.
+// ------------------------------------------------------------------
+
+constant constexpr int SG_TILE = 64;   // output rows per threadgroup
+
+struct SGParams { int out_dim; int in_dim; int m; int splits; };
+
+inline uint2 sg_klogical(uint k) {
+    const uint c = k >> 4, r = k & 15;
+    return uint2((r >> 3) * 4 + (r & 3), 2 * c + ((r >> 2) & 1));
+}
+
+inline uint sg_xt_offset(uint j, uint kp, uint m) {
+    return (((j >> 2) * 8 + kp) * 4 + (m >> 1)) * 8
+         + (j & 3) * 2 + (m & 1);
+}
+
+// Scatter x[m, in] into the fragment table + compute per-group row sums.
+// Grid: (in/64 * 2, 1) threadgroups of 128 — sg covers (group, row).
+kernel void affine_q4_prepare(
+    device const bfloat* x     [[buffer(0)]],
+    device bfloat*       table [[buffer(1)]],
+    device float*        sums  [[buffer(2)]],
+    device atomic_uint*  ctrs  [[buffer(3)]],
+    constant SGParams&   p     [[buffer(4)]],
+    uint2 tg [[threadgroup_position_in_grid]],
+    uint  sg [[simdgroup_index_in_threadgroup]],
+    uint  lane [[thread_index_in_simdgroup]],
+    uint  tid [[thread_index_in_threadgroup]])
+{
+    // zero the split-K arrival counters once
+    const uint nctr = (p.out_dim + SG_TILE - 1) / SG_TILE;
+    if (tg.x == 0) {
+        for (uint i = tid; i < nctr; i += 128) {
+            atomic_store_explicit(ctrs + i, 0u, memory_order_relaxed);
+        }
+    }
+    const uint group = (tg.x * 4 + sg) / 8, row = (tg.x * 4 + sg) % 8;
+    const uint ng = p.in_dim / 64;
+    if (group >= ng) return;
+    const uint offset = row * p.in_dim + group * 64 + 2 * lane;
+    const bool live = (int)row < p.m;
+    const bfloat a = live ? x[offset] : bfloat(0.0f);
+    const bfloat b = live ? x[offset + 1] : bfloat(0.0f);
+    const uint2 lo = sg_klogical(2 * lane);
+    table[group * 512 + sg_xt_offset(lo.x, lo.y, row)] = a;
+    table[group * 512 + sg_xt_offset(lo.x + 1, lo.y, row)] = b;
+    const float sum = simd_sum(float(a) + float(b));
+    if (lane == 0) sums[group * 8 + row] = sum;
+}
+
+// One 8x8x8 MMA on register operands; the persistent accumulator stays a
+// plain float2 so the compiler never spills the fragment.
+template <typename T>
+__attribute__((always_inline)) inline void
+sg_mma_acc(thread float2 &c, vec<T, 2> a, vec<T, 2> b) {
+    simdgroup_matrix<T, 8, 8> A, B;
+    simdgroup_matrix<float, 8, 8> C, D;
+    reinterpret_cast<thread vec<T, 2> &>(A.thread_elements()) = a;
+    reinterpret_cast<thread vec<T, 2> &>(B.thread_elements()) = b;
+    reinterpret_cast<thread float2 &>(C.thread_elements()) = c;
+    simdgroup_multiply_accumulate(D, A, B, C);
+    c = reinterpret_cast<thread float2 &>(D.thread_elements());
+}
+
+// grid (ceil(out/64), splits, 1), 128 threads — each simdgroup owns 16
+// output rows (two 8-wide fragments nf=0/1).
+kernel void affine_q4_sg(
+    device const uint*    wq    [[buffer(0)]],   // [out][in/8] u32
+    device const bfloat*  sb    [[buffer(1)]],   // [out][2*ng]
+    device const bfloat*  table [[buffer(2)]],   // prepared x
+    device const float*   sums  [[buffer(3)]],   // [ng][8]
+    device bfloat*        y     [[buffer(4)]],   // [m][out]
+    device float*         part  [[buffer(5)]],   // [splits][2][8][out]
+    device atomic_uint*   ctrs  [[buffer(6)]],   // [ceil(out/64)]
+    constant SGParams&    p     [[buffer(7)]],
+    uint3 tgpos [[threadgroup_position_in_grid]],
+    uint  tid   [[thread_index_in_threadgroup]],
+    uint  sg    [[simdgroup_index_in_threadgroup]],
+    uint  lane  [[thread_index_in_simdgroup]],
+    threadgroup uint*     arrival [[threadgroup(0)]])
+{
+    const uint ng = p.in_dim / 64;
+    const uint words = p.in_dim / 8;
+    const uint qid = lane >> 2;
+    const uint fm = (qid & 4) | ((lane >> 1) & 3);
+    const uint fn = ((qid & 2) << 1) | ((lane & 1) << 1);
+    const uint c = fn / 2;
+    const uint base = tgpos.x * SG_TILE + sg * 16;
+
+    const uint first = tgpos.y * (ng / p.splits);
+    const uint end = (tgpos.y + 1 == (uint)p.splits)
+        ? ng : first + ng / p.splits;
+
+    const uint row0 = base + fm;
+    const uint row1 = base + fm + 8;
+
+    float2 acc[2] = {float2(0), float2(0)};
+    float2 dot[2][2] = {{float2(0), float2(0)}, {float2(0), float2(0)}};
+
+    // Row-major packed weights: row grow's group-g 32-byte chunk starts
+    // at u32 word grow*words + g*8; the lane's uint2 sits at +c*2.
+    const bool live0 = row0 < (uint)p.out_dim;
+    const bool live1 = row1 < (uint)p.out_dim;
+    auto load = [&](uint g, thread uint2 (&w)[2])
+        __attribute__((always_inline)) {
+        w[0] = live0 ? *reinterpret_cast<device const uint2 *>(
+            wq + ulong(row0) * words + g * 8 + c * 2) : uint2(0);
+        w[1] = live1 ? *reinterpret_cast<device const uint2 *>(
+            wq + ulong(row1) * words + g * 8 + c * 2) : uint2(0);
+    };
+    uint2 wds[2];
+    load(first, wds);
+    for (uint g = first; g < end; ++g) {
+        const float2 sum = float2(sums[g * 8 + fn], sums[g * 8 + fn + 1]);
+        device const vec<bfloat, 8>* xt =
+            reinterpret_cast<device const vec<bfloat, 8> *>(
+                table + ulong(g) * 512);
+        vec<bfloat, 8> bq[2];
+        bq[0] = xt[fm * 4 + c];
+        bq[1] = xt[(8 + fm) * 4 + c];
+#pragma unroll
+        for (uint j = 0; j < 8; ++j) {
+            const bfloat2 b =
+                reinterpret_cast<thread bfloat2 *>(&bq[j >> 2])[j & 3];
+#pragma unroll
+            for (uint nf = 0; nf < 2; ++nf) {
+                const uint word = j < 4 ? wds[nf].x : wds[nf].y;
+                const uint pair =
+                    ((word >> (4 * (j & 3))) & 0x000F000Fu) | 0x43004300u;
+                if (j < 2) dot[nf][j & 1] = float2(0);
+                sg_mma_acc<bfloat>(dot[nf][j & 1], as_type<bfloat2>(pair), b);
+            }
+        }
+        const float2 d0 =
+            fma(-128.0f, sum, dot[0][0] + dot[0][1]);
+        const float2 d1 =
+            fma(-128.0f, sum, dot[1][0] + dot[1][1]);
+        if (live0) {
+            acc[0] = fma(d0, float(sb[row0 * 2 * ng + g]), acc[0]);
+            acc[0] = fma(sum, float(sb[row0 * 2 * ng + ng + g]), acc[0]);
+        }
+        if (live1) {
+            acc[1] = fma(d1, float(sb[row1 * 2 * ng + g]), acc[1]);
+            acc[1] = fma(sum, float(sb[row1 * 2 * ng + ng + g]), acc[1]);
+        }
+        if (g + 1 < end) load(g + 1, wds);
+    }
+
+    if (p.splits > 1) {
+        // publish this split's partials, last split reduces in order
+#pragma unroll
+        for (uint nf = 0; nf < 2; ++nf) {
+            const uint n = base + nf * 8 + fm;
+            if (n >= (uint)p.out_dim) continue;
+            device float* slot =
+                part + ulong(tgpos.y * 2 + nf) * 8 * p.out_dim + n;
+            slot[fn * p.out_dim] = acc[nf].x;
+            slot[(fn + 1) * p.out_dim] = acc[nf].y;
+        }
+        threadgroup_barrier(mem_flags::mem_device);
+        if (tid == 0) {
+            atomic_thread_fence(mem_flags::mem_device,
+                                memory_order_seq_cst,
+                                thread_scope::thread_scope_device);
+            *arrival = atomic_fetch_add_explicit(
+                ctrs + tgpos.x, 1u, memory_order_relaxed);
+            atomic_thread_fence(mem_flags::mem_device,
+                                memory_order_seq_cst,
+                                thread_scope::thread_scope_device);
+        }
+        threadgroup_barrier(
+            mem_flags::mem_threadgroup | mem_flags::mem_device);
+        if (*arrival != (uint)p.splits - 1) return;
+        float2 total[2] = {float2(0), float2(0)};
+        for (uint s = 0; s < (uint)p.splits; ++s) {
+#pragma unroll
+            for (uint nf = 0; nf < 2; ++nf) {
+                const uint n = base + nf * 8 + fm;
+                if (n >= (uint)p.out_dim) continue;
+                device const float* slot =
+                    part + ulong(s * 2 + nf) * 8 * p.out_dim + n;
+                total[nf] += s == tgpos.y
+                    ? acc[nf]
+                    : float2(slot[fn * p.out_dim], slot[(fn + 1) * p.out_dim]);
+            }
+        }
+        acc[0] = total[0];
+        acc[1] = total[1];
+    }
+#pragma unroll
+    for (uint nf = 0; nf < 2; ++nf) {
+        const uint n = base + nf * 8 + fm;
+        const float2 value = acc[nf];
+        if ((int)fn < p.m && n < (uint)p.out_dim)
+            y[fn * p.out_dim + n] = bfloat(value.x);
+        if ((int)fn + 1 < p.m && n < (uint)p.out_dim)
+            y[(fn + 1) * p.out_dim + n] = bfloat(value.y);
+    }
 }
 
 // Batched variant for verify/short-batch forwards: one threadgroup per
@@ -376,6 +592,189 @@ kernel void affine_dequant(
                 DType::BF16,
             );
             Ok((storage, Shape::from((self.out,))))
+        }
+    }
+
+    /// Splash-style fragment-direct decode for M<=8 (their
+    /// `decode_linear_q4_sg` + `decode_linear_q4_prepare` pair).
+    pub struct AffineQsg {
+        pub inp: usize,
+        pub out: usize,
+        pub m: usize,
+    }
+
+    #[repr(C)]
+    struct SGParams {
+        out_dim: i32,
+        in_dim: i32,
+        m: i32,
+        splits: i32,
+    }
+
+    static SG_PREP_PIPE: OnceLock<ComputePipeline> = OnceLock::new();
+    static SG_DEC_PIPE: OnceLock<ComputePipeline> = OnceLock::new();
+
+    /// Splash's split heuristic (Linear.cpp): grow splits while the grid
+    /// stays under ~16 tiles per core and each partition keeps >=12
+    /// quant groups.
+    fn sg_splits(out: usize, ng: usize) -> usize {
+        let grid = out.div_ceil(64);
+        let cores: usize = std::env::var("TH_GPU_CORES")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(40);
+        let mut splits = 1usize;
+        while splits < 8
+            && grid * splits < 16 * cores
+            && ng % (2 * splits) == 0
+            && ng / (2 * splits) >= 12
+        {
+            splits *= 2;
+        }
+        splits
+    }
+
+    impl CustomOp3 for AffineQsg {
+        fn name(&self) -> &'static str {
+            "affine-qsg"
+        }
+        fn cpu_fwd(
+            &self,
+            _: &CpuStorage, _: &Layout,
+            _: &CpuStorage, _: &Layout,
+            _: &CpuStorage, _: &Layout,
+        ) -> Result<(CpuStorage, Shape)> {
+            candle_core::bail!("affine-qsg: Metal only")
+        }
+
+        fn metal_fwd(
+            &self,
+            s_wq: &MetalStorage,
+            l_wq: &Layout,
+            s_sb: &MetalStorage,
+            l_sb: &Layout,
+            s_x: &MetalStorage,
+            l_x: &Layout,
+        ) -> Result<(MetalStorage, Shape)> {
+            check3(s_wq, l_wq, DType::U32, "wq")?;
+            check3(s_sb, l_sb, DType::BF16, "sb")?;
+            check3(s_x, l_x, DType::BF16, "x")?;
+            if self.m == 0 || self.m > 8 {
+                candle_core::bail!("affine-qsg: m {} out of range 1..=8", self.m);
+            }
+            if self.inp % 64 != 0 {
+                candle_core::bail!("affine-qsg: in {} not %64", self.inp);
+            }
+            let ng = self.inp / 64;
+            let splits = sg_splits(self.out, ng);
+
+            let device = s_wq.device();
+            compile(&SG_PREP_PIPE, QMV_SRC, 64, "affine_q4_prepare", device)?;
+            compile(&SG_DEC_PIPE, QMV_SRC, 64, "affine_q4_sg", device)?;
+
+            let params = SGParams {
+                out_dim: self.out as i32,
+                in_dim: self.inp as i32,
+                m: self.m as i32,
+                splits: splits as i32,
+            };
+
+            // scratch: activation table, group sums, split partials,
+            // arrival counters
+            let table_buf = device
+                .new_buffer_builder()
+                .with_size_for(8 * self.inp, DType::BF16)
+                .with_label("qsg.table")
+                .build()
+                .map_err(candle_core::Error::wrap)?;
+            let sums_buf = device
+                .new_buffer_builder()
+                .with_size_for(ng * 8, DType::F32)
+                .with_label("qsg.sums")
+                .build()
+                .map_err(candle_core::Error::wrap)?;
+            let part_buf = device
+                .new_buffer_builder()
+                .with_size_for(
+                    if splits > 1 { splits * 16 * self.out } else { 4 },
+                    DType::F32,
+                )
+                .with_label("qsg.part")
+                .build()
+                .map_err(candle_core::Error::wrap)?;
+            let ctr_buf = device
+                .new_buffer_builder()
+                .with_size_for(self.out.div_ceil(64).max(1), DType::U32)
+                .with_label("qsg.ctrs")
+                .build()
+                .map_err(candle_core::Error::wrap)?;
+            let elems = self.out * self.m;
+            let y_buf = device
+                .new_buffer_builder()
+                .with_size_for(elems, DType::BF16)
+                .with_label("qsg.y")
+                .build()
+                .map_err(candle_core::Error::wrap)?;
+
+            let encoder =
+                device.command_encoder().map_err(candle_core::Error::wrap)?;
+            encoder.set_label("affine_qsg");
+
+            let enc_ref = &encoder;
+            // pass 1: scatter x into the fragment table + group sums
+            {
+                let enc: &candle_metal_kernels::metal::ComputeCommandEncoder =
+                    enc_ref.encoder().as_ref();
+                enc.set_compute_pipeline_state(SG_PREP_PIPE.get().unwrap());
+                enc.set_input_buffer(
+                    0,
+                    Some(s_x.buffer()),
+                    l_x.start_offset() * 2,
+                );
+                enc.set_output_buffer(1, Some(&table_buf), 0);
+                enc.set_output_buffer(2, Some(&sums_buf), 0);
+                enc.set_output_buffer(3, Some(&ctr_buf), 0);
+                enc.set_bytes(4, &params);
+                enc.dispatch_thread_groups(
+                    MTLSize { width: ng * 2, height: 1, depth: 1 },
+                    MTLSize { width: 128, height: 1, depth: 1 },
+                );
+            }
+
+            // pass 2: fragment-direct dequant + MMA + split-K reduce
+            {
+                let enc: &candle_metal_kernels::metal::ComputeCommandEncoder =
+                    enc_ref.encoder().as_ref();
+                enc.set_compute_pipeline_state(SG_DEC_PIPE.get().unwrap());
+                enc.set_input_buffer(
+                    0,
+                    Some(s_wq.buffer()),
+                    l_wq.start_offset() * 4,
+                );
+                enc.set_input_buffer(
+                    1,
+                    Some(s_sb.buffer()),
+                    l_sb.start_offset() * 2,
+                );
+                enc.set_input_buffer(2, Some(&table_buf), 0);
+                enc.set_input_buffer(3, Some(&sums_buf), 0);
+                enc.set_output_buffer(4, Some(&y_buf), 0);
+                enc.set_input_buffer(5, Some(&part_buf), 0);
+                enc.set_input_buffer(6, Some(&ctr_buf), 0);
+                enc.set_bytes(7, &params);
+                enc.set_threadgroup_memory_length(0, 4);
+                enc.dispatch_thread_groups(
+                    MTLSize {
+                        width: self.out.div_ceil(64),
+                        height: splits,
+                        depth: 1,
+                    },
+                    MTLSize { width: 128, height: 1, depth: 1 },
+                );
+            }
+            let storage =
+                MetalStorage::new(y_buf, device.clone(), elems, DType::BF16);
+            Ok((storage, Shape::from((self.m, self.out))))
         }
     }
 

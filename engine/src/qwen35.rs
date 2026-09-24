@@ -319,33 +319,64 @@ impl QLin {
             if rows == 1 {
                 // fused dequant-matvec — reads packed weights only
                 let xv = x.reshape((in_d,))?.contiguous()?;
-                let y = self.wq.apply_op3_no_bwd(
-                    &self.sb,
-                    &xv,
-                    &crate::quant_kernel::AffineQmv {
-                        inp: self.inp,
-                        out: self.out,
-                        gs: self.gs,
-                    },
-                )?;
+                let y = if std::env::var("TH_QMV_SG").is_ok()
+                    && self.gs == 64
+                    && self.inp % 64 == 0
+                {
+                    self.wq.apply_op3_no_bwd(
+                        &self.sb,
+                        &xv,
+                        &crate::quant_kernel::AffineQsg {
+                            inp: self.inp,
+                            out: self.out,
+                            m: 1,
+                        },
+                    )?
+                } else {
+                    self.wq.apply_op3_no_bwd(
+                        &self.sb,
+                        &xv,
+                        &crate::quant_kernel::AffineQmv {
+                            inp: self.inp,
+                            out: self.out,
+                            gs: self.gs,
+                        },
+                    )?
+                };
                 let mut out = dims;
                 *out.last_mut().unwrap() = self.out;
                 return Ok(y.reshape(out)?);
             }
             if rows <= 8 {
-                // spec-decode verify / short batch — packed weight read
-                // once for all M rows
                 let xv = x.reshape((rows, in_d))?.contiguous()?;
-                let y = self.wq.apply_op3_no_bwd(
-                    &self.sb,
-                    &xv,
-                    &crate::quant_kernel::AffineQmm {
-                        inp: self.inp,
-                        out: self.out,
-                        gs: self.gs,
-                        m: rows,
-                    },
-                )?;
+                // Splash-style fragment-direct MMA path — default; the
+                // scalar qmm remains for A/B + non-64 group layouts.
+                let y = if self.gs == 64
+                    && self.inp % 64 == 0
+                    && std::env::var("TH_QMM_SCALAR").is_err()
+                {
+                    self.wq.apply_op3_no_bwd(
+                        &self.sb,
+                        &xv,
+                        &crate::quant_kernel::AffineQsg {
+                            inp: self.inp,
+                            out: self.out,
+                            m: rows,
+                        },
+                    )?
+                } else {
+                    // scalar fallback — packed weight read once per call
+                    self.wq.apply_op3_no_bwd(
+                        &self.sb,
+                        &xv,
+                        &crate::quant_kernel::AffineQmm {
+                            inp: self.inp,
+                            out: self.out,
+                            gs: self.gs,
+                            m: rows,
+                        },
+                    )?
+                };
                 let mut out = dims;
                 *out.last_mut().unwrap() = self.out;
                 return Ok(y.reshape(out)?);
@@ -1434,6 +1465,8 @@ impl Qwen35 {
                 *v = GdnVerifyCache::default();
             }
         }
+        let phase_t = std::env::var("TH_PHASE_TIME").is_ok()
+            .then(std::time::Instant::now);
         for i in 0..self.layers.len() {
             let layer = &self.layers[i];
             let h = rms_norm(&x, &layer.input_norm, self.cfg.rms_norm_eps)?;
@@ -1490,6 +1523,14 @@ impl Qwen35 {
             }
         }
         let x = rms_norm(&x, &self.norm, self.cfg.rms_norm_eps)?;
+        if let Some(t0) = phase_t {
+            self.device.synchronize()?;
+            eprintln!(
+                "[phase] seq={seq} layers={:.1}ms",
+                t0.elapsed().as_secs_f64() * 1e3
+            );
+        }
+        let t1 = phase_t.map(|_| std::time::Instant::now());
         self.kv_tokens = pos + seq;
         if last_only {
             let last = x.narrow(1, seq - 1, 1)?; // [1, 1, hidden]
@@ -1497,10 +1538,12 @@ impl Qwen35 {
                 lin_apply(&last, &self.lm_head)?.reshape((self.cfg.vocab_size,))?;
             return Ok(logits.to_dtype(DType::F32)?);
         }
-        // [1, seq, vocab]
-        lin_apply(&x, &self.lm_head)?
-            .squeeze(0)?
-            .to_dtype(DType::F32)
-            .map_err(Into::into)
+        // [1, seq, vocab] — keep bf16 (halves the accept readback)
+        let out = lin_apply(&x, &self.lm_head)?.squeeze(0)?;
+        if let Some(t) = t1 {
+            self.device.synchronize()?;
+            eprintln!("[phase] lm_head={:.1}ms", t.elapsed().as_secs_f64() * 1e3);
+        }
+        Ok(out)
     }
 }
