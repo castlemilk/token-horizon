@@ -17,13 +17,14 @@
 //! tracking inserts a buffer barrier before the next consumer.
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
-pub use metal_impl::GdnStep;
+pub use metal_impl::{GdnConv, GdnStep};
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
 mod metal_impl {
     use candle_core::backend::BackendStorage;
     use candle_core::{
-        CpuStorage, CustomOp3, DType, Layout, MetalStorage, Result, Shape,
+        CpuStorage, CustomOp2, CustomOp3, DType, Layout, MetalStorage,
+        Result, Shape,
     };
     use candle_metal_kernels::metal::ComputePipeline;
     use candle_metal_kernels::utils::EncoderProvider;
@@ -256,6 +257,147 @@ kernel void gated_delta_step(
             let storage =
                 MetalStorage::new(y_buf, device.clone(), y_elems, DType::BF16);
             Ok((storage, Shape::from((self.t, self.hv, self.dv))))
+        }
+    }
+
+    /// Depthwise causal conv + SiLU over the [window | inputs] buffer:
+    /// `x` is [(k-1+T), C] bf16, `w` is [C, k] taps; output is
+    /// [T, C] bf16. Replaces ~10 eager dispatches per layer.
+    pub struct GdnConv {
+        pub t: usize,
+        pub c: usize,
+        pub k: usize,
+    }
+
+    #[repr(C)]
+    struct ConvParams {
+        t: i32,
+        c: i32,
+        k: i32,
+    }
+
+    const CONV_SRC: &str = r#"
+#include <metal_stdlib>
+using namespace metal;
+
+struct ConvParams {
+    int T;
+    int C;
+    int K;
+};
+
+// grid (C, T) — one thread per (channel, output row)
+kernel void gdn_conv(
+    device const bfloat* x   [[buffer(0)]],
+    device const bfloat* w   [[buffer(1)]],
+    device bfloat*       out [[buffer(2)]],
+    constant ConvParams& p   [[buffer(3)]],
+    uint2 tgp [[thread_position_in_grid]])
+{
+    const int c = tgp.x;
+    const int t = tgp.y;
+    float acc = 0.0f;
+    for (int j = 0; j < p.K; ++j) {
+        acc += float(w[c * p.K + j]) * float(x[(t + j) * p.C + c]);
+    }
+    out[t * p.C + c] = bfloat(acc / (1.0f + exp(-acc))); // silu
+}
+"#;
+
+    static CONV_PIPE: OnceLock<ComputePipeline> = OnceLock::new();
+
+    impl CustomOp2 for GdnConv {
+        fn name(&self) -> &'static str {
+            "gdn-conv"
+        }
+
+        fn cpu_fwd(
+            &self,
+            _: &CpuStorage,
+            _: &Layout,
+            _: &CpuStorage,
+            _: &Layout,
+        ) -> Result<(CpuStorage, Shape)> {
+            candle_core::bail!("gdn-conv: Metal only")
+        }
+
+        fn metal_fwd(
+            &self,
+            s_x: &MetalStorage,
+            l_x: &Layout,
+            s_w: &MetalStorage,
+            l_w: &Layout,
+        ) -> Result<(MetalStorage, Shape)> {
+            if !l_x.is_contiguous() || !l_w.is_contiguous() {
+                candle_core::bail!(
+                    "gdn-conv requires contiguous inputs: x {:?} w {:?}",
+                    l_x.shape(),
+                    l_w.shape()
+                );
+            }
+            if s_x.dtype() != DType::BF16 || s_w.dtype() != DType::BF16 {
+                candle_core::bail!("gdn-conv dtypes: x/w must be bf16");
+            }
+            let device = s_x.device();
+            if CONV_PIPE.get().is_none() {
+                let raw = device.metal_device();
+                let lib = raw
+                    .new_library_with_source(CONV_SRC, None)
+                    .map_err(candle_core::Error::wrap)?;
+                let f = lib
+                    .get_function("gdn_conv", None)
+                    .map_err(candle_core::Error::wrap)?;
+                let p = raw
+                    .new_compute_pipeline_state_with_function(&f)
+                    .map_err(candle_core::Error::wrap)?;
+                let _ = CONV_PIPE.set(p);
+            }
+            let pipeline = CONV_PIPE.get().unwrap();
+
+            let y_elems = self.t * self.c;
+            let y_buf = device
+                .new_buffer_builder()
+                .with_size_for(y_elems, DType::BF16)
+                .with_label("gdn.conv_y")
+                .build()
+                .map_err(candle_core::Error::wrap)?;
+
+            let encoder =
+                device.command_encoder().map_err(candle_core::Error::wrap)?;
+            encoder.set_label("gdn_conv");
+            let enc_ref = &encoder;
+            let enc: &candle_metal_kernels::metal::ComputeCommandEncoder =
+                enc_ref.encoder().as_ref();
+            enc.set_compute_pipeline_state(pipeline);
+            enc.set_input_buffer(
+                0,
+                Some(s_x.buffer()),
+                l_x.start_offset() * DType::BF16.size_in_bytes(),
+            );
+            enc.set_input_buffer(
+                1,
+                Some(s_w.buffer()),
+                l_w.start_offset() * DType::BF16.size_in_bytes(),
+            );
+            enc.set_output_buffer(2, Some(&y_buf), 0);
+            let params = ConvParams {
+                t: self.t as i32,
+                c: self.c as i32,
+                k: self.k as i32,
+            };
+            enc.set_bytes(3, &params);
+            // ≤1024 threads per group: 256 lanes × up to 4 rows
+            enc.dispatch_threads(
+                MTLSize { width: self.c, height: self.t, depth: 1 },
+                MTLSize {
+                    width: self.c.min(256),
+                    height: self.t.min(4).max(1),
+                    depth: 1,
+                },
+            );
+            let storage =
+                MetalStorage::new(y_buf, device.clone(), y_elems, DType::BF16);
+            Ok((storage, Shape::from((self.t, self.c))))
         }
     }
 }

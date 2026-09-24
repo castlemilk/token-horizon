@@ -25,6 +25,8 @@ pub enum ModelBackend {
 }
 
 /// Opaque per-backend state snapshot for spec-decode rollback.
+/// Clone is cheap — the tensors inside are refcounted device buffers.
+#[derive(Clone)]
 pub enum BackendSnapshot {
     Qwen35(Box<crate::qwen35::Snapshot>),
 }
@@ -74,6 +76,64 @@ impl ModelBackend {
         matches!(self, Self::Qwen35(_))
     }
 
+    // MARK: - DFlash neural draft (qwen3_5 only)
+
+    /// Load a Splash DFlash `draft/` directory and attach it — turns on
+    /// capture-layer hidden-state collection in every forward pass.
+    pub fn attach_draft(&mut self, draft_dir: &Path) -> Result<()> {
+        match self {
+            Self::Qwen35(m) => {
+                let d = crate::dflash::Draft::load(draft_dir, m.device())?;
+                m.set_draft(d);
+                Ok(())
+            }
+            _ => bail!("dflash draft requires the qwen3_5 backend"),
+        }
+    }
+
+    pub fn has_draft(&self) -> bool {
+        matches!(self, Self::Qwen35(m) if m.has_draft())
+    }
+
+    /// Warm the draft K/V ring with the captures accumulated during
+    /// prefill. Call once after the prompt forward.
+    pub fn draft_prefill(&mut self) -> Result<()> {
+        if let Self::Qwen35(m) = self {
+            m.draft_prefill()?;
+        }
+        Ok(())
+    }
+
+    /// Captures accumulated since the last drain → [rows, 25600].
+    pub fn take_captures(&mut self) -> Result<Option<Tensor>> {
+        match self {
+            Self::Qwen35(m) => m.take_captures(),
+            _ => Ok(None),
+        }
+    }
+
+    /// Commit `rows` of `captured` into the draft ring at `start_pos`.
+    pub fn draft_commit(&mut self, captured: &Tensor, start_pos: usize, rows: usize) -> Result<()> {
+        if let Self::Qwen35(m) = self {
+            m.draft_commit(captured, start_pos, rows)?;
+        }
+        Ok(())
+    }
+
+    /// Chain a 7-token draft proposal for `anchor` at position `pos`.
+    pub fn draft_propose(
+        &mut self,
+        anchor: u32,
+        pos: usize,
+        temp: Option<f64>,
+        uniform: impl FnMut() -> f64,
+    ) -> Result<crate::dflash::Proposal> {
+        match self {
+            Self::Qwen35(m) => m.draft_propose(anchor, pos, temp, uniform),
+            _ => bail!("draft_propose not supported by this backend"),
+        }
+    }
+
     /// Runtime KV-quantisation toggle (qwen3_5 only; clears the cache —
     /// callers must invoke between requests).
     pub fn set_kv_quant(&mut self, on: bool) -> Result<()> {
@@ -90,10 +150,27 @@ impl ModelBackend {
         }
     }
 
-    pub fn restore(&mut self, snap: BackendSnapshot) {
+    pub fn restore(&mut self, snap: BackendSnapshot) -> Result<()> {
         match (self, snap) {
-            (Self::Qwen35(m), BackendSnapshot::Qwen35(s)) => m.restore(*s),
-            _ => {}
+            (Self::Qwen35(m), BackendSnapshot::Qwen35(s)) => {
+                m.restore(*s)
+            }
+            _ => Ok(()),
+        }
+    }
+
+    /// Selective rollback — keep `kept` committed rows of the verify
+    /// pass rather than restoring + re-forwarding them (DFlash loop).
+    pub fn rollback_verify(
+        &mut self,
+        snap: BackendSnapshot,
+        kept: usize,
+    ) -> Result<()> {
+        match (self, snap) {
+            (Self::Qwen35(m), BackendSnapshot::Qwen35(s)) => {
+                m.rollback_verify(*s, kept)
+            }
+            _ => bail!("rollback_verify not supported by this backend"),
         }
     }
 

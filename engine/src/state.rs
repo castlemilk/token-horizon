@@ -41,6 +41,10 @@ pub struct EngineConfig {
     pub seed: u64,
     /// Hard ceiling on total KV positions (prompt + completion).
     pub max_context: Option<usize>,
+    /// Splash-format DFlash draft directory — enables neural block
+    /// speculative decoding (qwen3_5 only). Load-time only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub draft_dir: Option<std::path::PathBuf>,
 }
 
 fn default_repeat_penalty() -> f32 {
@@ -73,6 +77,7 @@ impl Default for EngineConfig {
             kv_quant: false,
             seed: 0,
             max_context: None,
+            draft_dir: None,
         }
     }
 }

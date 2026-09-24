@@ -9,6 +9,7 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 
 mod api;
+mod dflash;
 mod engine;
 mod gdn_kernel;
 mod model;
@@ -76,6 +77,10 @@ enum Cmd {
         /// (~6x less KV memory; eager ops — mainly a long-context win).
         #[arg(long, default_value_t = false)]
         kv_quant: bool,
+        /// Splash-format DFlash draft directory (layer-*.bin + model.bin)
+        /// — enables neural block speculative decoding on qwen3_5.
+        #[arg(long)]
+        draft: Option<String>,
     },
     /// Load a model, forward the given token ids, print top-8 logits.
     /// Parity/debugging aid — not used by the app.
@@ -118,6 +123,7 @@ async fn main() -> Result<()> {
             max_context,
             spec_tokens,
             kv_quant,
+            draft,
         } => {
             let mut cfg = state::EngineConfig::default();
             cfg.max_tokens = max_tokens;
@@ -126,6 +132,7 @@ async fn main() -> Result<()> {
             cfg.max_context = max_context;
             cfg.spec_tokens = spec_tokens.min(7);
             cfg.kv_quant = kv_quant;
+            cfg.draft_dir = draft.map(std::path::PathBuf::from);
             if let Some(t) = temperature {
                 cfg.temperature = Some(t);
             }
@@ -155,6 +162,121 @@ async fn main() -> Result<()> {
                 model::resolve_and_load(&model, None, None).await?;
             let logits = loaded.backend.forward(&ids, 0, &loaded.device)?;
             let v: Vec<f32> = logits.to_vec1()?;
+            if std::env::var("TH_TEST_ROLLBACK").is_ok() {
+                // rollback equivalence: continuous 4-row forward must
+                // match verify-8 → rollback_verify(4) bit-for-bit.
+                let pos = ids.len();
+                let dev = loaded.device.clone();
+                let seq8: Vec<u32> = (0..8).map(|i| 1000 + i * 37).collect();
+                let probe = 555u32;
+
+                // restore points at `pos` for the two compare paths
+                let snap_a = loaded.backend.snapshot()?;
+                let snap_c = loaded.backend.snapshot()?;
+
+                // reference: continuous 4-row forward
+                let _ = loaded.backend.forward_multi(&seq8[..4], pos, &dev)?;
+                let l_ref = loaded.backend.forward(&[probe], pos + 4, &dev)?;
+                let v_ref: Vec<f32> = l_ref.to_vec1()?;
+
+                // verify-8 → rollback_verify(kept) at several keep counts
+                let mut v_test = Vec::new();
+                let mut worst = 0.0f32;
+                let mut kept_max = 0usize;
+                for &kept in &[1usize, 4, 7, 8] {
+                    loaded.backend.restore(snap_a.clone())?;
+                    let snap_b = loaded.backend.snapshot()?;
+                    let _ = loaded.backend.forward_multi(&seq8, pos, &dev)?;
+                    // kept=8 is a no-op rollback — compare against the
+                    // verify pass's own post-state, which should be
+                    // bitwise identical (same kernel, same inputs)
+                    if kept == 8 {
+                        let l8 =
+                            loaded.backend.forward(&[probe], pos + 8, &dev)?;
+                        let v_ref8: Vec<f32> = l8.to_vec1()?;
+                        loaded.backend.restore(snap_a.clone())?;
+                        let snap_b = loaded.backend.snapshot()?;
+                        let _ =
+                            loaded.backend.forward_multi(&seq8, pos, &dev)?;
+                        loaded.backend.rollback_verify(snap_b, 8)?;
+                        let l_t =
+                            loaded.backend.forward(&[probe], pos + 8, &dev)?;
+                        let vt: Vec<f32> = l_t.to_vec1()?;
+                        let vr = &v_ref8;
+                        let d = vt
+                            .iter()
+                            .zip(vr.iter())
+                            .map(|(a, b)| (a - b).abs())
+                            .fold(0.0f32, f32::max);
+                        eprintln!("  kept=8 (self) max|Δ|={d:.4}");
+                        if d > worst {
+                            worst = d;
+                            kept_max = 8;
+                            v_test = vt;
+                        }
+                        continue;
+                    }
+                    loaded.backend.rollback_verify(snap_b, kept)?;
+                    let l_t =
+                        loaded.backend.forward(&[probe], pos + kept, &dev)?;
+                    let vt: Vec<f32> = l_t.to_vec1()?;
+                    // reference for this kept: continuous kept-row forward
+                    loaded.backend.restore(snap_c.clone())?;
+                    let _ = loaded
+                        .backend
+                        .forward_multi(&seq8[..kept], pos, &dev)?;
+                    let l_r =
+                        loaded.backend.forward(&[probe], pos + kept, &dev)?;
+                    let vr: Vec<f32> = l_r.to_vec1()?;
+                    let d = vt
+                        .iter()
+                        .zip(vr.iter())
+                        .map(|(a, b)| (a - b).abs())
+                        .fold(0.0f32, f32::max);
+                    eprintln!("  kept={kept} max|Δ|={d:.4}");
+                    if d > worst {
+                        worst = d;
+                        kept_max = kept;
+                        v_test = vt;
+                    }
+                }
+                // control: restore + re-forward the committed rows —
+                // isolates rollback_verify's state reuse from inherent
+                // batch-shape (M=8 vs M=4) kernel noise.
+                loaded.backend.restore(snap_c)?;
+                let snap_d = loaded.backend.snapshot()?;
+                let _ = loaded.backend.forward_multi(&seq8, pos, &dev)?;
+                loaded.backend.restore(snap_d)?;
+                let _ = loaded.backend.forward_multi(&seq8[..4], pos, &dev)?;
+                let l_ctl = loaded.backend.forward(&[probe], pos + 4, &dev)?;
+                let v_ctl: Vec<f32> = l_ctl.to_vec1()?;
+
+                let max_diff = |a: &[f32], b: &[f32]| {
+                    a.iter()
+                        .zip(b.iter())
+                        .map(|(x, y)| (x - y).abs())
+                        .fold(0.0f32, f32::max)
+                };
+                let argmax = |v: &[f32]| {
+                    v.iter()
+                        .enumerate()
+                        .max_by(|a, b| a.1.total_cmp(b.1))
+                        .map(|(i, _)| i)
+                        .unwrap_or(0)
+                };
+                let d_ct = max_diff(&v_ref, &v_ctl);
+                eprintln!(
+                    "rollback test: worst rollback|Δ|={worst:.4} (kept={kept_max}) refwd|Δ|={d_ct:.4} argmax ref={} rb={} ctl={} {}",
+                    argmax(&v_ref),
+                    argmax(&v_test),
+                    argmax(&v_ctl),
+                    if argmax(&v_ref) == argmax(&v_test) && worst < 0.5 {
+                        "PASS"
+                    } else {
+                        "FAIL"
+                    }
+                );
+            }
             if let Ok(m) = std::env::var("TH_BENCH_MULTI") {
                 let m: usize = m.parse().unwrap_or(5);
                 let dev = loaded.device.clone();

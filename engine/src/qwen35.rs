@@ -264,17 +264,23 @@ impl Weights {
 
 /// A linear projection — either a dense bf16 weight or a packed
 /// MLX-affine 4-bit weight evaluated by the fused kernels.
-enum Lin {
+pub(crate) enum Lin {
     Dense(Tensor), // [out, in] bf16
     Quant(QLin),
 }
 
-struct QLin {
-    wq: Tensor,  // [out, in/8] u32 packed nibbles
-    sb: Tensor,  // [out, 2*ng] bf16 — scales|biases
-    out: usize,
-    inp: usize,
-    gs: usize,
+pub(crate) struct QLin {
+    pub(crate) wq: Tensor,  // [out, in/8] u32 packed nibbles
+    pub(crate) sb: Tensor,  // [out, 2*ng] bf16 — scales|biases
+    pub(crate) out: usize,
+    pub(crate) inp: usize,
+    pub(crate) gs: usize,
+}
+
+impl QLin {
+    pub(crate) fn new(wq: Tensor, sb: Tensor, out: usize, inp: usize, gs: usize) -> Self {
+        Self { wq, sb, out, inp, gs }
+    }
 }
 
 impl QLin {
@@ -360,30 +366,57 @@ impl QLin {
 }
 
 /// x [.., in] @ w.t() for either weight representation.
-fn lin_apply(x: &Tensor, l: &Lin) -> Result<Tensor> {
+pub(crate) fn lin_apply(x: &Tensor, l: &Lin) -> Result<Tensor> {
     match l {
         Lin::Dense(w) => linear(x, w),
         Lin::Quant(q) => q.linear(x),
     }
 }
 
-/// Fused `in_proj_a`/`in_proj_b` — one gemm produces the [a|b] rows the
-/// GDN kernel consumes directly.
-fn fuse_ab(w: &Weights, lp: &str) -> Result<Lin> {
-    let a = w.get_lin(&format!("{lp}.linear_attn.in_proj_a"))?;
-    let b = w.get_lin(&format!("{lp}.linear_attn.in_proj_b"))?;
-    match (a, b) {
-        (Lin::Quant(a), Lin::Quant(b)) => Ok(Lin::Quant(QLin {
-            wq: Tensor::cat(&[&a.wq, &b.wq], 0)?.contiguous()?,
-            sb: Tensor::cat(&[&a.sb, &b.sb], 0)?.contiguous()?,
-            out: a.out + b.out,
-            inp: a.inp,
-            gs: a.gs,
-        })),
-        (Lin::Dense(a), Lin::Dense(b)) => {
-            Ok(Lin::Dense(Tensor::cat(&[&a, &b], 0)?))
+/// Row-concatenate projection weights so one matmul produces all their
+/// outputs — the caller narrows the fused result back into the parts.
+/// All inputs must share `inp`/`gs` and quantisation kind. Bitwise
+/// identical to separate projections (each output row is independent).
+fn fuse_lins(lins: &[Lin]) -> Result<Lin> {
+    match lins {
+        [Lin::Quant(..), ..] => {
+            let mut wqs = Vec::with_capacity(lins.len());
+            let mut sbs = Vec::with_capacity(lins.len());
+            let mut out = 0usize;
+            let (mut inp, mut gs) = (0usize, 0usize);
+            for l in lins {
+                let Lin::Quant(q) = l else {
+                    bail!("fuse_lins: mixed quantisation")
+                };
+                if inp == 0 {
+                    inp = q.inp;
+                    gs = q.gs;
+                } else if q.inp != inp || q.gs != gs {
+                    bail!("fuse_lins: in/gs mismatch")
+                }
+                wqs.push(&q.wq);
+                sbs.push(&q.sb);
+                out += q.out;
+            }
+            Ok(Lin::Quant(QLin {
+                wq: Tensor::cat(&wqs, 0)?.contiguous()?,
+                sb: Tensor::cat(&sbs, 0)?.contiguous()?,
+                out,
+                inp,
+                gs,
+            }))
         }
-        _ => bail!("{lp}: in_proj_a/b have mixed quantisation"),
+        [Lin::Dense(..), ..] => {
+            let ws: Vec<&Tensor> = lins
+                .iter()
+                .map(|l| match l {
+                    Lin::Dense(t) => Ok(t),
+                    _ => bail!("fuse_lins: mixed quantisation"),
+                })
+                .collect::<Result<_>>()?;
+            Ok(Lin::Dense(Tensor::cat(&ws, 0)?))
+        }
+        _ => bail!("fuse_lins: empty"),
     }
 }
 
@@ -391,8 +424,34 @@ fn fuse_ab(w: &Weights, lp: &str) -> Result<Lin> {
 
 /// x / sqrt(mean(x²) + eps) * w — fused Metal kernel, f32 accumulation
 /// inside the shader (weights already carry the +1 offset from conversion).
-fn rms_norm(x: &Tensor, w: &Tensor, eps: f64) -> Result<Tensor> {
+pub(crate) fn rms_norm(x: &Tensor, w: &Tensor, eps: f64) -> Result<Tensor> {
     candle_nn::ops::rms_norm(x, w, eps as f32).map_err(Into::into)
+}
+
+/// Eager depthwise causal conv + SiLU — `conv_in` is
+/// [(k-1+seq), conv_dim] (state window prepended); returns
+/// [seq, conv_dim]. CPU/non-Metal fallback for `GdnConv`.
+fn conv_silu(
+    conv_in: &Tensor,
+    w: &Tensor,
+    seq: usize,
+    conv_dim: usize,
+    conv_k: usize,
+) -> Result<Tensor> {
+    if seq == 1 {
+        return Ok(candle_nn::ops::silu(
+            &conv_in.broadcast_mul(&w.t()?)?.sum(0)?,
+        )?
+        .unsqueeze(0)?);
+    }
+    let mut acc =
+        Tensor::zeros((seq, conv_dim), DType::BF16, conv_in.device())?;
+    for j in 0..conv_k {
+        let seg = conv_in.narrow(0, j, seq)?;
+        let tap = w.i((.., j))?.unsqueeze(0)?;
+        acc = acc.broadcast_add(&seg.broadcast_mul(&tap)?)?;
+    }
+    candle_nn::ops::silu(&acc).map_err(Into::into)
 }
 
 /// log(1 + e^x), stable form: relu(x) + log(1 + e^{-|x|}).
@@ -427,9 +486,7 @@ fn linear(x: &Tensor, w: &Tensor) -> Result<Tensor> {
 // MARK: - layers
 
 struct GdnLayer {
-    in_qkv: Lin,     // [10240, 5120]
-    in_z: Lin,       // [6144, 5120]
-    in_ab: Lin,      // [96, 5120] — fused in_proj_a|in_proj_b
+    in_all: Lin,     // [16480, 5120] — fused [qkv | z | a|b]
     conv: Tensor,    // [10240, 4] depthwise taps
     a_log: Tensor,   // [48] f32
     dt_bias: Tensor, // [48] f32
@@ -448,9 +505,7 @@ struct GdnLayer {
 }
 
 struct AttnLayer {
-    q: Lin,         // [12288, 5120] — per-head [q|gate] interleaved
-    k: Lin,         // [1024, 5120]
-    v: Lin,
+    in_qkv: Lin,    // [14336, 5120] — fused [q|gate | k | v]
     o: Lin,         // [5120, 6144]
     q_norm: Tensor, // [256]
     k_norm: Tensor,
@@ -463,9 +518,9 @@ struct AttnLayer {
 }
 
 struct Mlp {
-    gate: Lin,
-    up: Lin,
+    gate_up: Lin,   // [2*17408, 5120] — fused [gate | up]
     down: Lin,
+    inter: usize,
 }
 
 enum Kind {
@@ -487,11 +542,26 @@ struct GdnState {
     recurrent: Tensor, // [Hv, Dv, Dk] f32
 }
 
+/// Per-GDN-layer intermediates stashed during a spec-decode verify pass
+/// so a partial accept can roll forward only the committed rows instead
+/// of re-running the whole model (`rollback_verify`).
+#[derive(Default)]
+struct GdnVerifyCache {
+    /// Raw in_proj_qkv output [seq, conv_dim] — the depthwise-conv input;
+    /// needed to rebuild the (k-1)-row conv window.
+    qkv: Option<Tensor>,
+    /// Normed scan inputs packed [seq, 2*Hk+Hv, Dk] — rescan source.
+    pack: Option<Tensor>,
+    /// [seq, 2*Hv] f32 — gate/beta projections.
+    ab: Option<Tensor>,
+}
+
 /// Pre-verify state for speculative decode rollback. Conv views and KV
 /// tensors are never mutated in place (cat/narrow allocate new buffers),
 /// so clones are cheap; the fused kernel does update `recurrent` in
 /// place, so the live tensor is swapped for a fresh copy and the
 /// snapshot keeps the original.
+#[derive(Clone)]
 pub struct Snapshot {
     gdn: Vec<Option<(Tensor, Tensor)>>,
     kv: Vec<Option<(Tensor, Tensor)>>,
@@ -512,6 +582,15 @@ pub struct Qwen35 {
     /// instead of `kv` when `tq` is set.
     kvq: Vec<crate::turboquant::QuantKv>,
     tq: Option<crate::turboquant::TurboQuant>,
+    /// DFlash draft — when set, `forward`/`forward_multi` capture
+    /// hidden states at the DFlash capture layers for the draft ring.
+    draft: Option<crate::dflash::Draft>,
+    /// Captured post-layer hiddens for the capture layers, in
+    /// (call, layer) order — each entry [seq, 5120].
+    captures: Vec<Tensor>,
+    /// Per-layer verify intermediates (GDN layers only) from the most
+    /// recent multi-row forward — consumed by `rollback_verify`.
+    vcache: Vec<GdnVerifyCache>,
     pub kv_tokens: usize,
     debug: bool,
 }
@@ -559,9 +638,12 @@ impl Qwen35 {
             let input_norm = w.get(&format!("{lp}.input_layernorm"))?;
             let post_norm = w.get(&format!("{lp}.post_attention_layernorm"))?;
             let mlp = Mlp {
-                gate: w.get_lin(&format!("{lp}.mlp.gate_proj"))?,
-                up: w.get_lin(&format!("{lp}.mlp.up_proj"))?,
+                gate_up: fuse_lins(&[
+                    w.get_lin(&format!("{lp}.mlp.gate_proj"))?,
+                    w.get_lin(&format!("{lp}.mlp.up_proj"))?,
+                ])?,
                 down: w.get_lin(&format!("{lp}.mlp.down_proj"))?,
+                inter: cfg.intermediate_size,
             };
             if cfg.is_linear(i) {
                 let conv3 = w.get(&format!("{lp}.linear_attn.conv1d"))?;
@@ -582,13 +664,21 @@ impl Qwen35 {
                 layers.push(Layer {
                     input_norm,
                     kind: Kind::Gdn(GdnLayer {
-                        in_qkv: w
-                            .get_lin(&format!("{lp}.linear_attn.in_proj_qkv"))?,
-                        in_z: w
-                            .get_lin(&format!("{lp}.linear_attn.in_proj_z"))?,
-                        // fused [a|b] projection — one gemm feeds both the
-                        // kernel's ab buffer and the eager path's narrows
-                        in_ab: fuse_ab(&w, &lp)?,
+                        // one fused projection → [qkv | z | a|b]
+                        in_all: fuse_lins(&[
+                            w.get_lin(&format!(
+                                "{lp}.linear_attn.in_proj_qkv"
+                            ))?,
+                            w.get_lin(&format!(
+                                "{lp}.linear_attn.in_proj_z"
+                            ))?,
+                            w.get_lin(&format!(
+                                "{lp}.linear_attn.in_proj_a"
+                            ))?,
+                            w.get_lin(&format!(
+                                "{lp}.linear_attn.in_proj_b"
+                            ))?,
+                        ])?,
                         conv: conv3.squeeze(2)?,
                         a_log,
                         dt_bias,
@@ -638,9 +728,12 @@ impl Qwen35 {
                 layers.push(Layer {
                     input_norm,
                     kind: Kind::Attn(AttnLayer {
-                        q: w.get_lin(&format!("{lp}.self_attn.q_proj"))?,
-                        k: w.get_lin(&format!("{lp}.self_attn.k_proj"))?,
-                        v: w.get_lin(&format!("{lp}.self_attn.v_proj"))?,
+                        // one fused projection → [q|gate | k | v]
+                        in_qkv: fuse_lins(&[
+                            w.get_lin(&format!("{lp}.self_attn.q_proj"))?,
+                            w.get_lin(&format!("{lp}.self_attn.k_proj"))?,
+                            w.get_lin(&format!("{lp}.self_attn.v_proj"))?,
+                        ])?,
                         o: w.get_lin(&format!("{lp}.self_attn.o_proj"))?,
                         q_norm: w.get(&format!("{lp}.self_attn.q_norm"))?,
                         k_norm: w.get(&format!("{lp}.self_attn.k_norm"))?,
@@ -680,6 +773,11 @@ impl Qwen35 {
             kv,
             kvq: vec![crate::turboquant::QuantKv::default(); cfg.num_hidden_layers],
             tq: None,
+            draft: None,
+            captures: Vec::new(),
+            vcache: (0..cfg.num_hidden_layers)
+                .map(|_| GdnVerifyCache::default())
+                .collect(),
             kv_tokens: 0,
             debug: std::env::var("TH_DEBUG_LAYERS").is_ok(),
         })
@@ -732,17 +830,82 @@ impl Qwen35 {
         })
     }
 
-    /// Restore a snapshot taken by `snapshot()`.
-    pub fn restore(&mut self, snap: Snapshot) {
+    /// Restore a snapshot taken by `snapshot()`. The snapshot's
+    /// recurrent buffers are copied rather than adopted so a snapshot
+    /// stays immutable and may be restored (or cloned) more than once.
+    pub fn restore(&mut self, snap: Snapshot) -> Result<()> {
         for (st, s) in self.gdn.iter_mut().zip(snap.gdn) {
             if let (Some(st), Some((conv, rec))) = (st, s) {
                 st.conv = conv;
-                st.recurrent = rec;
+                st.recurrent = rec.affine(1.0, 0.0)?;
             }
         }
         self.kv = snap.kv;
         self.kvq = snap.kvq;
         self.kv_tokens = snap.kv_tokens;
+        Ok(())
+    }
+
+    /// Roll back a verify pass keeping only the first `kept` input rows
+    /// committed: restores the pre-verify snapshot, then re-applies the
+    /// committed rows from the cached scan inputs and truncates the
+    /// attention KV — avoiding a full model re-forward per round.
+    pub fn rollback_verify(&mut self, snap: Snapshot, kept: usize) -> Result<()> {
+        let new_len = snap.kv_tokens + kept;
+        for (i, sg) in snap.gdn.into_iter().enumerate() {
+            let Some((conv, rec)) = sg else { continue };
+            let Some(st) = self.gdn[i].as_mut() else { continue };
+            let vc = self.vcache[i].qkv.take().zip(
+                self.vcache[i]
+                    .pack
+                    .take()
+                    .zip(self.vcache[i].ab.take()),
+            );
+            let Kind::Gdn(l) = &self.layers[i].kind else { continue };
+            match vc {
+                Some((qkv, (pack, ab))) => {
+                    // conv window = last (k-1) rows of
+                    // [pre-verify window | kept raw qkv rows]
+                    let kept_qkv = qkv.narrow(0, 0, kept)?;
+                    st.conv = Tensor::cat(&[&conv, &kept_qkv], 0)?
+                        .narrow(0, kept, l.conv_k - 1)?
+                        .contiguous()?;
+                    // rescan the kept rows from the pre-verify state —
+                    // the fused kernel updates `recurrent` in place, so
+                    // copy the snapshot buffer first (snapshots must
+                    // stay immutable for reuse)
+                    st.recurrent = rec.affine(1.0, 0.0)?;
+                    let pack = pack.narrow(0, 0, kept)?;
+                    let q = pack.narrow(1, 0, l.num_k_heads)?;
+                    let k = pack
+                        .narrow(1, l.num_k_heads, l.num_k_heads)?;
+                    let v = pack
+                        .narrow(1, 2 * l.num_k_heads, l.num_v_heads)?;
+                    let ab = ab.narrow(0, 0, kept)?.unsqueeze(0)?;
+                    let _ = Self::gdn_scan(
+                        l, st, &mut None, &q, &k, &v, &ab, kept,
+                        &self.device,
+                    )?;
+                }
+                _ => {
+                    // no cached intermediates — plain restore
+                    st.conv = conv;
+                    st.recurrent = rec.affine(1.0, 0.0)?;
+                }
+            }
+        }
+        for (i, skv) in snap.kv.into_iter().enumerate() {
+            if skv.is_none() {
+                continue;
+            }
+            if let Some((kc, vc)) = self.kv[i].as_mut() {
+                *kc = kc.narrow(1, 0, new_len)?;
+                *vc = vc.narrow(1, 0, new_len)?;
+            }
+            self.kvq[i].truncate(new_len)?;
+        }
+        self.kv_tokens = new_len;
+        Ok(())
     }
 
     pub fn clear_kv_cache(&mut self) {
@@ -769,7 +932,89 @@ impl Qwen35 {
         for q in self.kvq.iter_mut() {
             *q = crate::turboquant::QuantKv::default();
         }
+        if let Some(d) = self.draft.as_mut() {
+            d.clear();
+        }
+        self.captures.clear();
+        for v in self.vcache.iter_mut() {
+            *v = GdnVerifyCache::default();
+        }
         self.kv_tokens = 0;
+    }
+
+    // MARK: - DFlash draft integration
+
+    pub fn set_draft(&mut self, draft: crate::dflash::Draft) {
+        self.draft = Some(draft);
+    }
+
+    pub fn has_draft(&self) -> bool {
+        self.draft.is_some()
+    }
+
+    pub fn device(&self) -> &Device {
+        &self.device
+    }
+
+    /// Drain accumulated captures → [rows, 25600] bf16. Each forward
+    /// call pushes the five capture layers' [seq, 5120] hiddens in
+    /// order — concat per call along the feature dim, then stack calls
+    /// along rows. Rows map to the positions of the forwards since the
+    /// last drain (prefill: rows are positions 0..P-1 of the prompt).
+    pub fn take_captures(&mut self) -> Result<Option<Tensor>> {
+        if self.captures.is_empty() {
+            return Ok(None);
+        }
+        let mut calls = Vec::new();
+        for group in self.captures.chunks_exact(5) {
+            calls.push(Tensor::cat(group, 1)?); // [seq, 25600]
+        }
+        self.captures.clear();
+        let t = if calls.len() == 1 {
+            calls.pop().unwrap()
+        } else {
+            Tensor::cat(&calls, 0)?
+        };
+        Ok(Some(t))
+    }
+
+    /// Warm the draft ring with the prefill captures accumulated since
+    /// the last `take_captures`. Only the last `WINDOW-1` positions can
+    /// ever be attended, so earlier prompt rows are skipped.
+    pub fn draft_prefill(&mut self) -> Result<()> {
+        let caps = self.take_captures()?;
+        if let (Some(d), Some(c)) = (self.draft.as_mut(), caps) {
+            let p = c.dim(0)?;
+            let keep = p.min(crate::dflash::WINDOW - 1);
+            let start = p - keep;
+            d.commit(&c.narrow(0, start, keep)?.contiguous()?, start, keep)?;
+        }
+        Ok(())
+    }
+
+    /// Draft-commit `rows` entries from `captured` ([rows, 25600])
+    /// starting at absolute position `start_pos`.
+    pub fn draft_commit(&mut self, captured: &Tensor, start_pos: usize, rows: usize) -> Result<()> {
+        if let Some(d) = self.draft.as_mut() {
+            d.commit(captured, start_pos, rows)?;
+        }
+        Ok(())
+    }
+
+    /// Run the 8-row draft block for `anchor` at position `pos` and
+    /// chain the proposal block. `temp`/`uniform` control greedy vs
+    /// sampled chaining.
+    pub fn draft_propose(
+        &mut self,
+        anchor: u32,
+        pos: usize,
+        temp: Option<f64>,
+        uniform: impl FnMut() -> f64,
+    ) -> Result<crate::dflash::Proposal> {
+        let draft = self.draft.as_mut().context("draft not loaded")?;
+        let embed = &self.embed;
+        let lm_head = &self.lm_head;
+        draft.propose(embed, lm_head, anchor, pos, temp, uniform)
     }
 
     /// Interleaved-pair RoPE on the first `rot` dims of `x`
@@ -804,32 +1049,52 @@ impl Qwen35 {
     }
 
     /// Gated delta rule for `x` [1, seq, hidden]. Sequential scan — the
-    /// same recurrence serves prefill and decode.
-    fn gdn_forward(l: &GdnLayer, st: &mut GdnState, x: &Tensor, eps: f64) -> Result<Tensor> {
+    /// same recurrence serves prefill and decode. `vc`, when set, stashes
+    /// the raw scan inputs for `rollback_verify`.
+    fn gdn_forward(
+        l: &GdnLayer,
+        st: &mut GdnState,
+        vc: &mut Option<GdnVerifyCache>,
+        x: &Tensor,
+        eps: f64,
+    ) -> Result<Tensor> {
         let seq = x.dim(1)?;
         let conv_dim = 2 * l.key_dim + l.value_dim;
-        let qkv = lin_apply(x, &l.in_qkv)?.squeeze(0)?; // [seq, 10240]
-        let z = lin_apply(x, &l.in_z)?;                 // [1, seq, 6144]
-        let ab = lin_apply(x, &l.in_ab)?;               // [1, seq, 96] — [a|b]
+        // one fused projection → split [qkv | z | a|b]
+        let fused = lin_apply(x, &l.in_all)?; // [1, seq, conv+val+96]
+        let qkv = fused
+            .narrow(D::Minus1, 0, conv_dim)?
+            .contiguous()?
+            .reshape((seq, conv_dim))?;
+        let z = fused
+            .narrow(D::Minus1, conv_dim, l.value_dim)?
+            .contiguous()?;
+        let ab = fused
+            .narrow(D::Minus1, conv_dim + l.value_dim, 2 * l.num_v_heads)?
+            .contiguous()?;
+        if let Some(c) = vc.as_mut() {
+            c.qkv = Some(qkv.clone());
+        }
 
         // causal depthwise conv over [prev_state | inputs]
         let conv_in = Tensor::cat(&[&st.conv, &qkv], 0)?; // [k-1+seq, conv_dim]
-        let conv_out = if seq == 1 {
-            // single-step: out = Σ_j w[:,j]·conv_in[j] — one mul+sum
-            candle_nn::ops::silu(
-                &conv_in.broadcast_mul(&l.conv.t()?)?.sum(0)?,
-            )?
-            .unsqueeze(0)? // [1, conv_dim]
+        #[cfg(all(feature = "metal", target_os = "macos"))]
+        let conv_out = if x.device().is_metal() {
+            conv_in
+                .apply_op2_no_bwd(
+                    &l.conv,
+                    &crate::gdn_kernel::GdnConv {
+                        t: seq,
+                        c: conv_dim,
+                        k: l.conv_k,
+                    },
+                )?
+                .contiguous()?
         } else {
-            let mut acc =
-                Tensor::zeros((seq, conv_dim), DType::BF16, x.device())?;
-            for j in 0..l.conv_k {
-                let seg = conv_in.narrow(0, j, seq)?;
-                let tap = l.conv.i((.., j))?.unsqueeze(0)?;
-                acc = acc.broadcast_add(&seg.broadcast_mul(&tap)?)?;
-            }
-            candle_nn::ops::silu(&acc)? // [seq, conv_dim]
+            conv_silu(&conv_in, &l.conv, seq, conv_dim, l.conv_k)?
         };
+        #[cfg(not(all(feature = "metal", target_os = "macos")))]
+        let conv_out = conv_silu(&conv_in, &l.conv, seq, conv_dim, l.conv_k)?;
         st.conv =
             conv_in.narrow(0, conv_in.dim(0)? - (l.conv_k - 1), l.conv_k - 1)?;
 
@@ -855,7 +1120,7 @@ impl Qwen35 {
         // available, per-token eager ops otherwise. Returns
         // [seq, num_v_heads, head_v] (bf16 fused / f32 eager).
         let out =
-            Self::gdn_scan(l, st, &q, &k, &v, &ab, seq, x.device())?;
+            Self::gdn_scan(l, st, vc, &q, &k, &v, &ab, seq, x.device())?;
 
         // gated RMSNorm: fused rms_norm(out)·w × silu(z)
         let n = candle_nn::ops::rms_norm(
@@ -875,9 +1140,11 @@ impl Qwen35 {
     /// `q`,`k` are normed `[seq, num_k_heads, head_k]`, `v` is
     /// `[seq, num_v_heads, head_v]`, `ab` is `[1, seq, 2*num_v_heads]`.
     /// Returns `[seq, num_v_heads, head_v]`; `st.recurrent` is updated.
+    /// `vc`, when set, stashes the packed scan inputs.
     fn gdn_scan(
         l: &GdnLayer,
         st: &mut GdnState,
+        vc: &mut Option<GdnVerifyCache>,
         q: &Tensor,
         k: &Tensor,
         v: &Tensor,
@@ -893,6 +1160,10 @@ impl Qwen35 {
             // (hk = hv / (Hv/Hk)) — no expansion needed here.
             let pack = Tensor::cat(&[q, k, v], 1)?.contiguous()?;
             let ab_f = ab2.to_dtype(DType::F32)?.contiguous()?;
+            if let Some(c) = vc.as_mut() {
+                c.pack = Some(pack.clone());
+                c.ab = Some(ab_f.clone());
+            }
             return Ok(pack.apply_op3_no_bwd(
                 &ab_f,
                 &st.recurrent,
@@ -974,11 +1245,24 @@ impl Qwen35 {
         device: &Device,
     ) -> Result<Tensor> {
         let seq = x.dim(1)?;
-        let qg = lin_apply(x, &l.q)?.reshape((seq, l.n_heads, 2 * l.head_dim))?;
+        // one fused projection → split [q|gate | k | v]
+        let qd = l.n_heads * 2 * l.head_dim;
+        let kd = l.n_kv * l.head_dim;
+        let qkv = lin_apply(x, &l.in_qkv)?; // [1,seq,qd+2kd]
+        let qg = qkv
+            .narrow(D::Minus1, 0, qd)?
+            .contiguous()?
+            .reshape((seq, l.n_heads, 2 * l.head_dim))?;
         let q = qg.narrow(D::Minus1, 0, l.head_dim)?; // [seq, 24, 256]
         let gate = qg.narrow(D::Minus1, l.head_dim, l.head_dim)?;
-        let k = lin_apply(x, &l.k)?.reshape((seq, l.n_kv, l.head_dim))?;
-        let v = lin_apply(x, &l.v)?.reshape((seq, l.n_kv, l.head_dim))?;
+        let k = qkv
+            .narrow(D::Minus1, qd, kd)?
+            .contiguous()?
+            .reshape((seq, l.n_kv, l.head_dim))?;
+        let v = qkv
+            .narrow(D::Minus1, qd + kd, kd)?
+            .contiguous()?
+            .reshape((seq, l.n_kv, l.head_dim))?;
 
         let q = rms_norm(&q.contiguous()?, &l.q_norm, eps)?;
         let k = rms_norm(&k.contiguous()?, &l.k_norm, eps)?;
@@ -1142,13 +1426,25 @@ impl Qwen35 {
         let seq = tokens.len();
         let ids = Tensor::new(tokens, &self.device)?;
         let mut x = self.embed.i(&ids)?.unsqueeze(0)?; // [1, seq, hidden]
+        // stash GDN scan inputs during multi-row verify passes so a
+        // partial accept can re-apply committed rows without a re-forward
+        let cache_verify = !last_only && seq <= 16;
+        if cache_verify {
+            for v in self.vcache.iter_mut() {
+                *v = GdnVerifyCache::default();
+            }
+        }
         for i in 0..self.layers.len() {
             let layer = &self.layers[i];
             let h = rms_norm(&x, &layer.input_norm, self.cfg.rms_norm_eps)?;
             let r = match &layer.kind {
                 Kind::Gdn(l) => {
                     let mut st = self.gdn[i].take().unwrap();
-                    let r = Self::gdn_forward(l, &mut st, &h, self.cfg.rms_norm_eps);
+                    let mut vc = cache_verify.then(GdnVerifyCache::default);
+                    let r = Self::gdn_forward(
+                        l, &mut st, &mut vc, &h, self.cfg.rms_norm_eps,
+                    );
+                    self.vcache[i] = vc.unwrap_or_default();
                     self.gdn[i] = Some(st);
                     r?
                 }
@@ -1166,12 +1462,24 @@ impl Qwen35 {
             };
             x = x.add(&r)?;
             let h2 = rms_norm(&x, &layer.post_norm, self.cfg.rms_norm_eps)?;
+            // one fused projection → split [gate | up]
+            let gu = lin_apply(&h2, &layer.mlp.gate_up)?;
+            let gate = gu
+                .narrow(D::Minus1, 0, layer.mlp.inter)?
+                .contiguous()?;
+            let up = gu
+                .narrow(D::Minus1, layer.mlp.inter, layer.mlp.inter)?
+                .contiguous()?;
             let mlp = lin_apply(
-                &candle_nn::ops::silu(&lin_apply(&h2, &layer.mlp.gate)?)?
-                    .mul(&lin_apply(&h2, &layer.mlp.up)?)?,
+                &candle_nn::ops::silu(&gate)?.mul(&up)?,
                 &layer.mlp.down,
             )?;
             x = x.add(&mlp)?;
+            if self.draft.is_some()
+                && crate::dflash::CAPTURE_LAYERS.contains(&i)
+            {
+                self.captures.push(x.squeeze(0)?.contiguous()?);
+            }
             if self.debug {
                 let xf = x.to_dtype(DType::F32)?;
                 let mean = xf.abs()?.mean_all()?.to_scalar::<f32>()?;

@@ -10,7 +10,7 @@
 use crate::model::{self, ModelBackend};
 use crate::state::{EngineConfig, EngineState, RequestRecord};
 use crate::template::{self, ChatMessage};
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use candle_core::{DType, IndexOp, Tensor};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -75,6 +75,13 @@ impl Engine {
         cfg: EngineConfig,
     ) -> Result<Self> {
         let mut loaded = model::resolve_and_load(model, file, tokenizer_src).await?;
+        if let Some(dir) = &cfg.draft_dir {
+            loaded
+                .backend
+                .attach_draft(dir)
+                .context("failed to load DFlash draft")?;
+            tracing::info!(draft = %dir.display(), "dflash draft attached");
+        }
         if cfg.kv_quant {
             if let model::ModelBackend::Qwen35(m) = &mut loaded.backend {
                 m.enable_kv_quant()?;
@@ -277,7 +284,7 @@ fn generate_blocking(
     // adaptive gate: a verify round costs ~1.9x a single-token pass, so
     // it only pays when it commits >= ~2 tokens. EMA of accepted draft
     // tokens per round; drafting pauses while it sits below 1.0.
-    let mut accept_ema = 1.5f64;
+    let mut accept_ema = 4.0f64;
     let mut hist = prompt_tokens.clone();
     let mut pending: Option<Tensor> = last_logits;
     let mut first = true;
@@ -295,6 +302,147 @@ fn generate_blocking(
         max_ctx: sp.max_context,
     };
 
+    // --- DFlash block-speculative decode --------------------------------
+    //
+    // Anchor protocol (Splash Runtime.mm): `pos` counts COMMITTED KV
+    // positions; `anchor` is the already-sampled token for position
+    // `pos` that has not been forwarded yet. Each round runs the draft
+    // block for [anchor, mask x7], verifies [anchor, p1..p7] in one
+    // target pass, commits the retained rows' captured hidden states to
+    // the draft ring, and leaves the last emitted token pending as the
+    // next anchor.
+    if inner.backend.has_draft() {
+        inner.backend.draft_prefill()?; // warm the ring from prefill
+        if let Some(pl) = pending.take() {
+            let mut anchor = sampler.sample(
+                &pl,
+                ec.completion,
+                &prompt_tokens,
+                sp.repeat_penalty,
+                sp.repeat_last_n,
+            )?;
+            if let Emit::Done(r) = emit_token(&mut ec, anchor, pos) {
+                finish = r;
+            } else {
+                pos += 1;
+                if first {
+                    first = false;
+                    ttft_ms = started.elapsed().as_secs_f64() * 1000.0;
+                    if tx.send(GenEvent::FirstToken { ttft_ms }).is_err() {
+                        finish = "cancelled";
+                    }
+                }
+                'dflash: while finish == "stop" {
+                    if cancel.load(Ordering::Relaxed) {
+                        finish = "cancelled";
+                        break;
+                    }
+                    let t0 = Instant::now();
+                    // Adaptive verify length: extra rows cost ~8ms each,
+                    // so cap the chain near the observed accept rate.
+                    // EMA of accepted proposals/round + 1 headroom.
+                    let verify_len = ((accept_ema + 0.5) as usize + 1)
+                        .clamp(2, crate::dflash::PROPOSALS);
+                    let prop = inner.backend.draft_propose(
+                        anchor,
+                        pos,
+                        sampler.temperature,
+                        || sampler.next_f64(),
+                    )?;
+                    let t_prop = t0.elapsed();
+                    let mut seq = Vec::with_capacity(1 + verify_len);
+                    seq.push(anchor);
+                    seq.extend_from_slice(&prop.tokens[..verify_len]);
+                    let snap = inner.backend.snapshot()?;
+                    let logits_m =
+                        inner.backend.forward_multi(&seq, pos, &device)?;
+                    let caps = inner.backend.take_captures()?;
+                    // one [n+1, vocab] readback for the whole accept pass —
+                    // also syncs the verify GPU work
+                    let mut rows: Vec<Vec<f32>> =
+                        logits_m.to_dtype(DType::F32)?.to_vec2()?;
+                    let t_verify = t0.elapsed();
+                    let mut emitted: Vec<u32> = Vec::with_capacity(8);
+                    let mut accepted = 0usize;
+                    let mut rows_it = rows.drain(..);
+                    for i in 0..verify_len {
+                        let t = spec_accept_step(
+                            &mut sampler,
+                            rows_it.next().unwrap(),
+                            &prop,
+                            i,
+                            ec.completion,
+                            &prompt_tokens,
+                            sp.repeat_penalty,
+                            sp.repeat_last_n,
+                        )?;
+                        emitted.push(t);
+                        if t == prop.tokens[i] {
+                            accepted += 1;
+                        } else {
+                            break;
+                        }
+                    }
+                    if accepted == verify_len {
+                        let d = sampler.dist_vec(
+                            rows_it.next().unwrap(),
+                            ec.completion,
+                            &prompt_tokens,
+                            sp.repeat_penalty,
+                            sp.repeat_last_n,
+                        );
+                        emitted.push(sampler.pick(&d));
+                    }
+                    let retained = emitted.len();
+                    for (i, &t) in emitted.iter().enumerate() {
+                        if let Emit::Done(r) =
+                            emit_token(&mut ec, t, pos + 1 + i)
+                        {
+                            finish = r;
+                            break 'dflash;
+                        }
+                    }
+                    if let Some(c) = caps.as_ref() {
+                        inner.backend.draft_commit(
+                            &c.narrow(0, 0, retained)?,
+                            pos,
+                            retained,
+                        )?;
+                    }
+                    if retained < seq.len() {
+                        // rollback the speculative tail, re-applying only
+                        // the committed rows from cached scan inputs —
+                        // no full model re-forward
+                        inner.backend.rollback_verify(snap, retained)?;
+                    }
+                    pos += retained;
+                    spec_rounds += 1;
+                    spec_accepted += accepted as u64;
+                    accept_ema += 0.25 * (accepted as f64 - accept_ema);
+                    if accepted == verify_len {
+                        // chain could have run deeper — widen next round
+                        accept_ema += 0.6;
+                    }
+                    accept_ema = accept_ema.clamp(0.0, 7.0);
+                    anchor = emitted[retained - 1];
+                    let step_ms = t0.elapsed().as_secs_f64() * 1000.0;
+                    decode_ms_total += step_ms;
+                    state.counters.observe_decode(step_ms);
+                    if std::env::var("TH_DEBUG_TIMING").is_ok() {
+                        eprintln!(
+                            "[dflash] anchor={anchor} prop={:?} emitted={emitted:?} acc={accepted} step={step_ms:.1}ms propose={:.0} verify={:.0} rest={:.0}",
+                            prop.tokens,
+                            t_prop.as_secs_f64() * 1e3,
+                            (t_verify - t_prop).as_secs_f64() * 1e3,
+                            (t0.elapsed() - t_verify).as_secs_f64() * 1e3
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    if !inner.backend.has_draft() {
     'outer: loop {
         if cancel.load(Ordering::Relaxed) {
             finish = "cancelled";
@@ -380,7 +528,7 @@ fn generate_blocking(
                 // rollback verify-state, re-forward the committed run in
                 // one batched pass — its last logits row is the pending
                 let tr = Instant::now();
-                inner.backend.restore(snap);
+                inner.backend.restore(snap)?;
                 let lg = inner
                     .backend
                     .forward_multi(&committed, base_pos, &device)?;
@@ -422,6 +570,7 @@ fn generate_blocking(
                 step_ms - ts.elapsed().as_secs_f64() * 1000.0 - fwd_ms
             );
         }
+    }
     }
 
     let total_ms = started.elapsed().as_secs_f64() * 1000.0;
@@ -505,19 +654,36 @@ impl Sampler {
             / (1u64 << 53) as f64
     }
 
-    fn sample(
+    /// Full candidate distribution after repeat penalty, temperature,
+    /// top-k and top-p — returns `(id, prob)` normalised over the kept
+    /// candidates. Greedy requests (no temperature) return the argmax
+    /// with prob 1.
+    fn dist(
         &mut self,
         logits: &Tensor,
         completion: &[u32],
         prompt: &[u32],
         repeat_penalty: f32,
         repeat_last_n: usize,
-    ) -> Result<u32> {
-        let mut l = if logits.dtype() == DType::F32 {
+    ) -> Result<Vec<(u32, f32)>> {
+        let l = if logits.dtype() == DType::F32 {
             logits.to_vec1::<f32>()?
         } else {
             logits.to_dtype(DType::F32)?.to_vec1::<f32>()?
         };
+        Ok(self.dist_vec(l, completion, prompt, repeat_penalty, repeat_last_n))
+    }
+
+    /// `dist` over an already-materialised logits vec — lets a verify
+    /// pass read all rows in one GPU→CPU transfer.
+    fn dist_vec(
+        &mut self,
+        mut l: Vec<f32>,
+        completion: &[u32],
+        prompt: &[u32],
+        repeat_penalty: f32,
+        repeat_last_n: usize,
+    ) -> Vec<(u32, f32)> {
         if (repeat_penalty - 1.0).abs() > f32::EPSILON {
             for &tid in
                 prompt.iter().chain(completion.iter()).rev().take(repeat_last_n)
@@ -534,25 +700,25 @@ impl Sampler {
         }
         let n = l.len();
         let Some(temp) = self.temperature else {
-            // argmax on CPU — we already have the vec
-            return Ok(l
+            let i = l
                 .iter()
                 .enumerate()
                 .max_by(|a, b| a.1.total_cmp(b.1))
                 .map(|(i, _)| i as u32)
-                .unwrap_or(0));
+                .unwrap_or(0);
+            return vec![(i, 1.0)];
         };
         let inv_t = 1.0 / temp as f32;
         // top-k candidate set via partial select (O(n))
         let k = self.top_k.unwrap_or(n).min(n);
         let mut idx: Vec<u32> = (0..n as u32).collect();
-        let cand = if k < n {
+        let cand: &[u32] = if k < n {
             idx.select_nth_unstable_by(k - 1, |&a, &b| {
                 l[b as usize].total_cmp(&l[a as usize])
             });
-            &mut idx[..k]
+            &idx[..k]
         } else {
-            &mut idx[..]
+            &idx[..]
         };
         // softmax weights over candidates: w = exp((l - max)/T)
         let max = cand
@@ -584,20 +750,115 @@ impl Sampler {
                 }
             }
         }
-        // linear-scan multinomial over candidate weights
         let sum: f64 = w.iter().map(|&v| v as f64).sum();
         if sum <= 0.0 {
-            return Ok(cand[0]);
+            return vec![(cand[0], 1.0)];
         }
-        let mut r = self.next_f64() * sum;
-        for (j, &wi) in w.iter().enumerate() {
-            r -= wi as f64;
+        cand
+            .iter()
+            .zip(w.drain(..))
+            .filter(|(_, p)| *p > 0.0)
+            .map(|(&i, p)| (i, (p as f64 / sum) as f32))
+            .collect()
+    }
+
+    fn sample(
+        &mut self,
+        logits: &Tensor,
+        completion: &[u32],
+        prompt: &[u32],
+        repeat_penalty: f32,
+        repeat_last_n: usize,
+    ) -> Result<u32> {
+        let d = self.dist(logits, completion, prompt, repeat_penalty, repeat_last_n)?;
+        Ok(self.pick(&d))
+    }
+
+    /// Multinomial over a `dist` result.
+    fn pick(&mut self, d: &[(u32, f32)]) -> u32 {
+        if d.len() == 1 {
+            return d[0].0;
+        }
+        let mut r = self.next_f64();
+        for &(id, p) in d {
+            r -= p as f64;
             if r <= 0.0 {
-                return Ok(cand[j]);
+                return id;
             }
         }
-        Ok(cand[cand.len() - 1])
+        d[d.len() - 1].0
     }
+}
+
+/// One speculative-acceptance step for draft position `i`: the emitted
+/// token under the target's own distribution. Returns `Some(token)`;
+/// callers compare it to `prop.tokens[i]` to decide whether the chain
+/// continues. Under greedy sampling this is simply the argmax. Under
+/// temperature sampling this implements the standard rejection scheme
+/// (Leviathan et al. 2023, sparse variant matching Splash's kernel):
+/// accept the draft token with probability `min(1, p/q)` where `p` is
+/// the target's filtered distribution and `q` the draft's top-16
+/// candidate distribution; on rejection emit a token sampled from the
+/// residual `max(0, p - q)` (or `p` itself if the residual is empty).
+fn spec_accept_step(
+    sampler: &mut Sampler,
+    l: Vec<f32>,
+    prop: &crate::dflash::Proposal,
+    i: usize,
+    completion: &[u32],
+    prompt: &[u32],
+    repeat_penalty: f32,
+    repeat_last_n: usize,
+) -> Result<u32> {
+    let d = sampler.dist_vec(l, completion, prompt, repeat_penalty, repeat_last_n);
+    if d.len() == 1 {
+        return Ok(d[0].0); // greedy argmax
+    }
+    let want = prop.tokens[i];
+    let p_d = d
+        .iter()
+        .find(|(id, _)| *id == want)
+        .map(|(_, p)| *p)
+        .unwrap_or(0.0);
+    let q_d = prop.cand_ids[i]
+        .iter()
+        .position(|id| *id == want)
+        .map(|j| prop.cand_probs[i][j])
+        .unwrap_or(0.0);
+    if p_d > 0.0
+        && q_d > 0.0
+        && sampler.next_f64() < ((p_d / q_d).min(1.0) as f64)
+    {
+        return Ok(want);
+    }
+    // residual over the target's support (draft-only tokens have p=0)
+    let mut resid: Vec<(u32, f32)> = d
+        .iter()
+        .map(|&(id, p)| {
+            let q = prop.cand_ids[i]
+                .iter()
+                .position(|c| *c == id)
+                .map(|j| prop.cand_probs[i][j])
+                .unwrap_or(0.0);
+            (id, (p - q).max(0.0))
+        })
+        .collect();
+    let sum: f32 = resid.iter().map(|(_, r)| *r).sum();
+    if sum <= 0.0 {
+        resid = d; // residual empty — fall back to the target dist
+    } else {
+        for r in resid.iter_mut() {
+            r.1 /= sum;
+        }
+    }
+    let mut u = sampler.next_f64();
+    for &(id, p) in &resid {
+        u -= p as f64;
+        if u <= 0.0 {
+            return Ok(id);
+        }
+    }
+    Ok(resid[resid.len() - 1].0)
 }
 
 fn stop_hit(text: &str, stops: &[String]) -> bool {

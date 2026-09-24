@@ -57,6 +57,24 @@ impl QuantKv {
     pub fn len(&self) -> usize {
         self.k_codes.as_ref().map(|t| t.dims()[1]).unwrap_or(0)
     }
+
+    /// Drop cached entries past `len` (spec-decode partial rollback).
+    /// Narrows are views — the underlying buffers are shared with the
+    /// pre-truncation cache, which is exactly what snapshot() relies on.
+    pub fn truncate(&mut self, len: usize) -> Result<()> {
+        for f in [
+            &mut self.k_codes,
+            &mut self.k_signs,
+            &mut self.k_meta,
+            &mut self.v_codes,
+            &mut self.v_norms,
+        ] {
+            if let Some(t) = f {
+                *t = t.narrow(1, 0, len.min(t.dims()[1]))?;
+            }
+        }
+        Ok(())
+    }
 }
 
 // --- CPU reference math (rotation, codebooks, packing) -----------------
