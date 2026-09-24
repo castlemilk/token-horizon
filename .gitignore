@@ -42,3 +42,6 @@ engine/target/
 
 # Go daemon binary (built from daemons/go, never commit)
 daemons/go/token-horizon-daemon
+
+# UI build output (generated, never commit)
+ui/out/
