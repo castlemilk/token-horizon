@@ -56,7 +56,12 @@ try:
     req = urllib.request.Request(url, data=body,
                                  headers={"content-type": "application/json"})
     with urllib.request.urlopen(req, timeout=300) as r:
-        for raw in r:
+        # readline() surfaces each SSE line as it lands; `for raw in r`
+        # blocks until the 8KB buffer fills, inflating client-side TTFT
+        while True:
+            raw = r.readline()
+            if not raw:
+                break
             line = raw.decode("utf-8", "replace").strip()
             if not line.startswith("data:"):
                 continue

@@ -205,6 +205,168 @@ impl Weights {
             .to_device(&self.device)
             .map_err(Into::into)
     }
+
+    /// Projection weight: keeps MLX 4-bit packing on Metal (fused
+    /// dequant-matvec reads ~4× less memory per token), dequantizes
+    /// eagerly elsewhere.
+    fn get_lin(&self, key: &str) -> Result<Lin> {
+        let wname = format!("{key}.weight");
+        if self.tensors.contains_key(&format!("{key}.scales")) {
+            let w = self.tensors.get(&wname).with_context(|| wname.clone())?;
+            let s = self
+                .tensors
+                .get(&format!("{key}.scales"))
+                .with_context(|| format!("{key}.scales"))?;
+            let b = self
+                .tensors
+                .get(&format!("{key}.biases"))
+                .with_context(|| format!("{key}.biases"))?;
+            let dims = w.dims();
+            let (out, in_pack) = (dims[0], *dims.last().unwrap());
+            let inp = in_pack * (32 / self.bits);
+            let ng = inp / self.gs;
+            if self.device.is_metal() {
+                let wq = w.to_device(&self.device)?; // U32 [out, in/8]
+                let sb = Tensor::cat(
+                    &[
+                        &s.reshape((out, ng))?
+                            .to_dtype(DType::BF16)?
+                            .to_device(&self.device)?,
+                        &b.reshape((out, ng))?
+                            .to_dtype(DType::BF16)?
+                            .to_device(&self.device)?,
+                    ],
+                    1,
+                )?
+                .contiguous()?; // [out, 2*ng]
+                return Ok(Lin::Quant(QLin {
+                    wq,
+                    sb,
+                    out,
+                    inp,
+                    gs: self.gs,
+                }));
+            }
+            let wv: Vec<u32> = w.flatten_all()?.to_vec1()?;
+            let sv: Vec<half::bf16> =
+                s.flatten_all()?.to_dtype(DType::BF16)?.to_vec1()?;
+            let bv: Vec<half::bf16> =
+                b.flatten_all()?.to_dtype(DType::BF16)?.to_vec1()?;
+            let data = dequant_affine(&wv, &sv, &bv, out, inp, self.bits, self.gs);
+            return Ok(Lin::Dense(
+                Tensor::from_vec(data, (out, inp), &self.device)
+                    .with_context(|| format!("dequant {key}"))?,
+            ));
+        }
+        Ok(Lin::Dense(self.get(key)?))
+    }
+}
+
+/// A linear projection — either a dense bf16 weight or a packed
+/// MLX-affine 4-bit weight evaluated by the fused kernels.
+enum Lin {
+    Dense(Tensor), // [out, in] bf16
+    Quant(QLin),
+}
+
+struct QLin {
+    wq: Tensor,  // [out, in/8] u32 packed nibbles
+    sb: Tensor,  // [out, 2*ng] bf16 — scales|biases
+    out: usize,
+    inp: usize,
+    gs: usize,
+}
+
+impl QLin {
+    /// CPU fallback for the packed form (dequantize, then matmul).
+    fn cpu_dequant(&self) -> Result<Tensor> {
+        let wv: Vec<u32> = self.wq.flatten_all()?.to_vec1()?;
+        let ng = self.inp / self.gs;
+        let sbv: Vec<half::bf16> = self
+            .sb
+            .flatten_all()?
+            .to_dtype(DType::BF16)?
+            .to_vec1()?;
+        let (sv, bv) = sbv.split_at(self.out * ng);
+        // sb is [out, 2*ng] row-major: scales row then biases row
+        let mut sv2 = vec![half::bf16::ZERO; self.out * ng];
+        let mut bv2 = vec![half::bf16::ZERO; self.out * ng];
+        for o in 0..self.out {
+            sv2[o * ng..(o + 1) * ng]
+                .copy_from_slice(&sv[o * 2 * ng..o * 2 * ng + ng]);
+            bv2[o * ng..(o + 1) * ng]
+                .copy_from_slice(&sv[o * 2 * ng + ng..(o + 1) * 2 * ng]);
+        }
+        let _ = bv;
+        let data =
+            dequant_affine(&wv, &sv2, &bv2, self.out, self.inp, 4, self.gs);
+        Tensor::from_vec(data, (self.out, self.inp), &self.wq.device())
+            .map_err(Into::into)
+    }
+
+    fn linear(&self, x: &Tensor) -> Result<Tensor> {
+        let dims = x.dims().to_vec();
+        let in_d = *dims.last().unwrap();
+        let rows: usize = dims[..dims.len() - 1].iter().product();
+        #[cfg(all(feature = "metal", target_os = "macos"))]
+        if x.device().is_metal() {
+            if rows == 1 && in_d % 32 == 0 {
+                // fused dequant-matvec — reads packed weights only
+                let xv = x.reshape((in_d,))?.contiguous()?;
+                let y = self.wq.apply_op3_no_bwd(
+                    &self.sb,
+                    &xv,
+                    &crate::quant_kernel::AffineQmv {
+                        inp: self.inp,
+                        out: self.out,
+                        gs: self.gs,
+                    },
+                )?;
+                let mut out = dims;
+                *out.last_mut().unwrap() = self.out;
+                return Ok(y.reshape(out)?);
+            }
+            // prefill: dequantize into scratch, then a normal bf16 gemm
+            let w = self.wq.apply_op2_no_bwd(
+                &self.sb,
+                &crate::quant_kernel::AffineDequant {
+                    inp: self.inp,
+                    out: self.out,
+                    gs: self.gs,
+                },
+            )?;
+            return linear(x, &w);
+        }
+        linear(x, &self.cpu_dequant()?)
+    }
+}
+
+/// x [.., in] @ w.t() for either weight representation.
+fn lin_apply(x: &Tensor, l: &Lin) -> Result<Tensor> {
+    match l {
+        Lin::Dense(w) => linear(x, w),
+        Lin::Quant(q) => q.linear(x),
+    }
+}
+
+/// Fused `in_proj_a`/`in_proj_b` — one gemm produces the [a|b] rows the
+/// GDN kernel consumes directly.
+fn fuse_ab(w: &Weights, lp: &str) -> Result<Lin> {
+    let a = w.get_lin(&format!("{lp}.linear_attn.in_proj_a"))?;
+    let b = w.get_lin(&format!("{lp}.linear_attn.in_proj_b"))?;
+    match (a, b) {
+        (Lin::Quant(a), Lin::Quant(b)) => Ok(Lin::Quant(QLin {
+            wq: Tensor::cat(&[&a.wq, &b.wq], 0)?.contiguous()?,
+            sb: Tensor::cat(&[&a.sb, &b.sb], 0)?.contiguous()?,
+            out: a.out + b.out,
+            inp: a.inp,
+            gs: a.gs,
+        })),
+        (Lin::Dense(a), Lin::Dense(b)) => {
+            Ok(Lin::Dense(Tensor::cat(&[&a, &b], 0)?))
+        }
+        _ => bail!("{lp}: in_proj_a/b have mixed quantisation"),
+    }
 }
 
 // MARK: - math helpers
@@ -247,16 +409,17 @@ fn linear(x: &Tensor, w: &Tensor) -> Result<Tensor> {
 // MARK: - layers
 
 struct GdnLayer {
-    in_qkv: Tensor,  // [10240, 5120]
-    in_z: Tensor,    // [6144, 5120]
-    in_b: Tensor,    // [48, 5120]
-    in_a: Tensor,    // [48, 5120]
+    in_qkv: Lin,     // [10240, 5120]
+    in_z: Lin,       // [6144, 5120]
+    in_ab: Lin,      // [96, 5120] — fused in_proj_a|in_proj_b
     conv: Tensor,    // [10240, 4] depthwise taps
     a_log: Tensor,   // [48] f32
     dt_bias: Tensor, // [48] f32
+    a_log64: [f32; 64],   // kernel param tables (zero-padded)
+    dt_bias64: [f32; 64],
     norm_w: Tensor,  // [128]
     ones_dk: Tensor, // [head_k] ones — unit weight for fused rms_norm
-    out: Tensor,     // [5120, 6144]
+    out: Lin,        // [5120, 6144]
     key_dim: usize,
     value_dim: usize,
     num_k_heads: usize,
@@ -267,10 +430,10 @@ struct GdnLayer {
 }
 
 struct AttnLayer {
-    q: Tensor,      // [12288, 5120] — per-head [q|gate] interleaved
-    k: Tensor,      // [1024, 5120]
-    v: Tensor,
-    o: Tensor,      // [5120, 6144]
+    q: Lin,         // [12288, 5120] — per-head [q|gate] interleaved
+    k: Lin,         // [1024, 5120]
+    v: Lin,
+    o: Lin,         // [5120, 6144]
     q_norm: Tensor, // [256]
     k_norm: Tensor,
     cos: Tensor,    // [max_pos, rot/2] f32
@@ -282,9 +445,9 @@ struct AttnLayer {
 }
 
 struct Mlp {
-    gate: Tensor,
-    up: Tensor,
-    down: Tensor,
+    gate: Lin,
+    up: Lin,
+    down: Lin,
 }
 
 enum Kind {
@@ -310,7 +473,7 @@ pub struct Qwen35 {
     embed: Tensor,
     layers: Vec<Layer>,
     norm: Tensor,
-    lm_head: Tensor,
+    lm_head: Lin,
     cfg: Qwen35Config,
     device: Device,
     gdn: Vec<Option<GdnState>>,
@@ -329,9 +492,9 @@ impl Qwen35 {
         let p = "language_model";
         let embed = w.get(&format!("{p}.model.embed_tokens"))?;
         let lm_head = if cfg.tie_word_embeddings {
-            embed.clone()
+            Lin::Dense(embed.clone())
         } else {
-            w.get(&format!("{p}.lm_head"))?
+            w.get_lin(&format!("{p}.lm_head"))?
         };
         let norm = w.get(&format!("{p}.model.norm"))?;
         let rp = cfg.rope_parameters.clone().unwrap_or(RopeParams {
@@ -362,34 +525,48 @@ impl Qwen35 {
             let input_norm = w.get(&format!("{lp}.input_layernorm"))?;
             let post_norm = w.get(&format!("{lp}.post_attention_layernorm"))?;
             let mlp = Mlp {
-                gate: w.get(&format!("{lp}.mlp.gate_proj"))?,
-                up: w.get(&format!("{lp}.mlp.up_proj"))?,
-                down: w.get(&format!("{lp}.mlp.down_proj"))?,
+                gate: w.get_lin(&format!("{lp}.mlp.gate_proj"))?,
+                up: w.get_lin(&format!("{lp}.mlp.up_proj"))?,
+                down: w.get_lin(&format!("{lp}.mlp.down_proj"))?,
             };
             if cfg.is_linear(i) {
                 let conv3 = w.get(&format!("{lp}.linear_attn.conv1d"))?;
+                let a_log = w
+                    .get(&format!("{lp}.linear_attn.A_log"))?
+                    .to_dtype(DType::F32)?;
+                let dt_bias = w
+                    .get(&format!("{lp}.linear_attn.dt_bias"))?
+                    .to_dtype(DType::F32)?;
+                let mut a_log64 = [0.0f32; 64];
+                let mut dt_bias64 = [0.0f32; 64];
+                for (i, v) in a_log.to_vec1::<f32>()?.iter().enumerate() {
+                    a_log64[i] = *v;
+                }
+                for (i, v) in dt_bias.to_vec1::<f32>()?.iter().enumerate() {
+                    dt_bias64[i] = *v;
+                }
                 layers.push(Layer {
                     input_norm,
                     kind: Kind::Gdn(GdnLayer {
                         in_qkv: w
-                            .get(&format!("{lp}.linear_attn.in_proj_qkv"))?,
-                        in_z: w.get(&format!("{lp}.linear_attn.in_proj_z"))?,
-                        in_b: w.get(&format!("{lp}.linear_attn.in_proj_b"))?,
-                        in_a: w.get(&format!("{lp}.linear_attn.in_proj_a"))?,
+                            .get_lin(&format!("{lp}.linear_attn.in_proj_qkv"))?,
+                        in_z: w
+                            .get_lin(&format!("{lp}.linear_attn.in_proj_z"))?,
+                        // fused [a|b] projection — one gemm feeds both the
+                        // kernel's ab buffer and the eager path's narrows
+                        in_ab: fuse_ab(&w, &lp)?,
                         conv: conv3.squeeze(2)?,
-                        a_log: w
-                            .get(&format!("{lp}.linear_attn.A_log"))?
-                            .to_dtype(DType::F32)?,
-                        dt_bias: w
-                            .get(&format!("{lp}.linear_attn.dt_bias"))?
-                            .to_dtype(DType::F32)?,
+                        a_log,
+                        dt_bias,
+                        a_log64,
+                        dt_bias64,
                         norm_w: w.get(&format!("{lp}.linear_attn.norm"))?,
                         ones_dk: Tensor::ones(
                             cfg.linear_key_head_dim,
                             DType::BF16,
                             device,
                         )?,
-                        out: w.get(&format!("{lp}.linear_attn.out_proj"))?,
+                        out: w.get_lin(&format!("{lp}.linear_attn.out_proj"))?,
                         key_dim: cfg.linear_num_key_heads
                             * cfg.linear_key_head_dim,
                         value_dim: cfg.linear_num_value_heads
@@ -427,10 +604,10 @@ impl Qwen35 {
                 layers.push(Layer {
                     input_norm,
                     kind: Kind::Attn(AttnLayer {
-                        q: w.get(&format!("{lp}.self_attn.q_proj"))?,
-                        k: w.get(&format!("{lp}.self_attn.k_proj"))?,
-                        v: w.get(&format!("{lp}.self_attn.v_proj"))?,
-                        o: w.get(&format!("{lp}.self_attn.o_proj"))?,
+                        q: w.get_lin(&format!("{lp}.self_attn.q_proj"))?,
+                        k: w.get_lin(&format!("{lp}.self_attn.k_proj"))?,
+                        v: w.get_lin(&format!("{lp}.self_attn.v_proj"))?,
+                        o: w.get_lin(&format!("{lp}.self_attn.o_proj"))?,
                         q_norm: w.get(&format!("{lp}.self_attn.q_norm"))?,
                         k_norm: w.get(&format!("{lp}.self_attn.k_norm"))?,
                         cos: cos.clone(),
@@ -532,10 +709,9 @@ impl Qwen35 {
     fn gdn_forward(l: &GdnLayer, st: &mut GdnState, x: &Tensor, eps: f64) -> Result<Tensor> {
         let seq = x.dim(1)?;
         let conv_dim = 2 * l.key_dim + l.value_dim;
-        let qkv = linear(x, &l.in_qkv)?.squeeze(0)?; // [seq, 10240]
-        let z = linear(x, &l.in_z)?;                 // [1, seq, 6144]
-        let b = linear(x, &l.in_b)?;                 // [1, seq, 48]
-        let a = linear(x, &l.in_a)?;                 // [1, seq, 48]
+        let qkv = lin_apply(x, &l.in_qkv)?.squeeze(0)?; // [seq, 10240]
+        let z = lin_apply(x, &l.in_z)?;                 // [1, seq, 6144]
+        let ab = lin_apply(x, &l.in_ab)?;               // [1, seq, 96] — [a|b]
 
         // causal depthwise conv over [prev_state | inputs]
         let conv_in = Tensor::cat(&[&st.conv, &qkv], 0)?; // [k-1+seq, conv_dim]
@@ -576,6 +752,64 @@ impl Qwen35 {
         let k = candle_nn::ops::rms_norm(&k, &l.ones_dk, 1e-6)?
             .affine(inv, 0.0)?;
 
+        // recurrent scan — fused single-dispatch Metal kernel when
+        // available, per-token eager ops otherwise. Returns
+        // [seq, num_v_heads, head_v] (bf16 fused / f32 eager).
+        let out =
+            Self::gdn_scan(l, st, &q, &k, &v, &ab, seq, x.device())?;
+
+        // gated RMSNorm: fused rms_norm(out)·w × silu(z)
+        let n = candle_nn::ops::rms_norm(
+            &out.to_dtype(DType::BF16)?,
+            &l.norm_w,
+            eps as f32,
+        )?;
+        let zr = z.reshape((seq, l.num_v_heads, l.head_v))?;
+        let gated = n.broadcast_mul(&candle_nn::ops::silu(&zr)?)?;
+        lin_apply(&gated.reshape((1, seq, l.value_dim))?, &l.out)
+    }
+
+    /// The gated-delta recurrent scan. On Metal a single fused kernel
+    /// handles the whole sequence (decay/beta computed in-shader); the
+    /// eager fallback keeps CPU correctness.
+    ///
+    /// `q`,`k` are normed `[seq, num_k_heads, head_k]`, `v` is
+    /// `[seq, num_v_heads, head_v]`, `ab` is `[1, seq, 2*num_v_heads]`.
+    /// Returns `[seq, num_v_heads, head_v]`; `st.recurrent` is updated.
+    fn gdn_scan(
+        l: &GdnLayer,
+        st: &mut GdnState,
+        q: &Tensor,
+        k: &Tensor,
+        v: &Tensor,
+        ab: &Tensor,
+        seq: usize,
+        dev: &Device,
+    ) -> Result<Tensor> {
+        let ab2 = ab.squeeze(0)?; // [seq, 96]
+
+        #[cfg(all(feature = "metal", target_os = "macos"))]
+        if dev.is_metal() {
+            // kernel does the k-head → v-head sharing internally
+            // (hk = hv / (Hv/Hk)) — no expansion needed here.
+            let pack = Tensor::cat(&[q, k, v], 1)?.contiguous()?;
+            let ab_f = ab2.to_dtype(DType::F32)?.contiguous()?;
+            return Ok(pack.apply_op3_no_bwd(
+                &ab_f,
+                &st.recurrent,
+                &crate::gdn_kernel::GdnStep {
+                    t: seq,
+                    hk: l.num_k_heads,
+                    hv: l.num_v_heads,
+                    dk: l.head_k,
+                    dv: l.head_v,
+                    a_log: l.a_log64,
+                    dt_bias: l.dt_bias64,
+                },
+            )?);
+        }
+        let _ = dev;
+
         // share each k/q head across num_v/num_k v-heads
         let rep = l.num_v_heads / l.num_k_heads;
         let expand = |t: &Tensor| -> Result<Tensor> {
@@ -587,20 +821,19 @@ impl Qwen35 {
                 .broadcast_as((s, l.num_k_heads, rep, d))?
                 .reshape((s, l.num_v_heads, d))?)
         };
-        let q = expand(&q)?;
-        let k = expand(&k)?;
+        let q = expand(&q.to_dtype(DType::F32)?)?;
+        let k = expand(&k.to_dtype(DType::F32)?)?;
+        let v = v.to_dtype(DType::F32)?;
 
         // decay g = exp(-exp(A_log)·softplus(a + dt_bias)), f32
-        let a_f = a.squeeze(0)?.to_dtype(DType::F32)?; // [seq, 48]
+        let a_f = ab2.narrow(D::Minus1, 0, l.num_v_heads)?.to_dtype(DType::F32)?;
+        let b_f = ab2
+            .narrow(D::Minus1, l.num_v_heads, l.num_v_heads)?
+            .to_dtype(DType::F32)?;
         let g = softplus(&a_f.broadcast_add(&l.dt_bias)?)?
             .broadcast_mul(&l.a_log.exp()?.neg()?)?
             .exp()?; // [seq, 48]
-        let beta =
-            candle_nn::ops::sigmoid(&b.squeeze(0)?.to_dtype(DType::F32)?)?;
-
-        let q = q.to_dtype(DType::F32)?;
-        let k = k.to_dtype(DType::F32)?;
-        let v = v.to_dtype(DType::F32)?;
+        let beta = candle_nn::ops::sigmoid(&b_f)?;
 
         let mut outs = Vec::with_capacity(seq);
         for t in 0..seq {
@@ -625,17 +858,7 @@ impl Qwen35 {
                     .sum(D::Minus1)?,
             ); // [48,128]
         }
-        let out = Tensor::stack(&outs, 0)?; // [seq, 48, 128]
-
-        // gated RMSNorm: fused rms_norm(out)·w × silu(z)
-        let n = candle_nn::ops::rms_norm(
-            &out.to_dtype(DType::BF16)?,
-            &l.norm_w,
-            eps as f32,
-        )?;
-        let zr = z.reshape((seq, l.num_v_heads, l.head_v))?;
-        let gated = n.broadcast_mul(&candle_nn::ops::silu(&zr)?)?;
-        linear(&gated.reshape((1, seq, l.value_dim))?, &l.out)
+        Ok(Tensor::stack(&outs, 0)?) // [seq, 48, 128]
     }
 
     /// Full attention with per-head output gate, GQA, partial rope.
@@ -648,11 +871,11 @@ impl Qwen35 {
         device: &Device,
     ) -> Result<Tensor> {
         let seq = x.dim(1)?;
-        let qg = linear(x, &l.q)?.reshape((seq, l.n_heads, 2 * l.head_dim))?;
+        let qg = lin_apply(x, &l.q)?.reshape((seq, l.n_heads, 2 * l.head_dim))?;
         let q = qg.narrow(D::Minus1, 0, l.head_dim)?; // [seq, 24, 256]
         let gate = qg.narrow(D::Minus1, l.head_dim, l.head_dim)?;
-        let k = linear(x, &l.k)?.reshape((seq, l.n_kv, l.head_dim))?;
-        let v = linear(x, &l.v)?.reshape((seq, l.n_kv, l.head_dim))?;
+        let k = lin_apply(x, &l.k)?.reshape((seq, l.n_kv, l.head_dim))?;
+        let v = lin_apply(x, &l.v)?.reshape((seq, l.n_kv, l.head_dim))?;
 
         let q = rms_norm(&q.contiguous()?, &l.q_norm, eps)?;
         let k = rms_norm(&k.contiguous()?, &l.k_norm, eps)?;
@@ -726,7 +949,7 @@ impl Qwen35 {
         let out = out.broadcast_mul(&candle_nn::ops::sigmoid(
             &gate.reshape((seq, l.n_heads * l.head_dim))?,
         )?)?;
-        linear(&out.unsqueeze(0)?, &l.o)
+        lin_apply(&out.unsqueeze(0)?, &l.o)
     }
 
     /// tokens at absolute position `pos` → logits (vocab,) for the last.
@@ -756,9 +979,9 @@ impl Qwen35 {
             };
             x = x.add(&r)?;
             let h2 = rms_norm(&x, &layer.post_norm, self.cfg.rms_norm_eps)?;
-            let mlp = linear(
-                &candle_nn::ops::silu(&linear(&h2, &layer.mlp.gate)?)?
-                    .mul(&linear(&h2, &layer.mlp.up)?)?,
+            let mlp = lin_apply(
+                &candle_nn::ops::silu(&lin_apply(&h2, &layer.mlp.gate)?)?
+                    .mul(&lin_apply(&h2, &layer.mlp.up)?)?,
                 &layer.mlp.down,
             )?;
             x = x.add(&mlp)?;
@@ -773,7 +996,7 @@ impl Qwen35 {
         }
         let x = rms_norm(&x, &self.norm, self.cfg.rms_norm_eps)?;
         let last = x.narrow(1, seq - 1, 1)?; // [1, 1, hidden]
-        let logits = linear(&last, &self.lm_head)?.reshape((self.cfg.vocab_size,))?;
+        let logits = lin_apply(&last, &self.lm_head)?.reshape((self.cfg.vocab_size,))?;
         self.kv_tokens = pos + seq;
         Ok(logits.to_dtype(DType::F32)?)
     }

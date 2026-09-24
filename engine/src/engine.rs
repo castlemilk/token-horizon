@@ -11,8 +11,7 @@ use crate::model::{self, ModelBackend};
 use crate::state::{EngineConfig, EngineState, RequestRecord};
 use crate::template::{self, ChatMessage};
 use anyhow::{bail, Result};
-use candle_core::Tensor;
-use candle_transformers::generation::{LogitsProcessor, Sampling};
+use candle_core::{DType, Tensor};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
@@ -105,8 +104,8 @@ impl Engine {
         let id = uuidish();
         state.counters.requests_total.fetch_add(1, Ordering::Relaxed);
         state.counters.requests_active.fetch_add(1, Ordering::Relaxed);
-        let state2 = state.clone();
-        let id2 = id.clone();
+        // fire-and-forget: awaiting the JoinHandle would buffer every
+        // delta until generation completes and break SSE streaming
         tokio::task::spawn_blocking(move || {
             let started = Instant::now();
             let rec = generate_blocking(&inner, &state, &id, messages, req, &tx, started);
@@ -124,11 +123,7 @@ impl Engine {
                     let _ = tx.send(GenEvent::Error(e.to_string()));
                 }
             }
-        })
-        .await
-        .ok();
-        let _ = id2;
-        let _ = state2;
+        });
     }
 
     /// Clear the KV cache + reset tracked positions.
@@ -230,10 +225,7 @@ fn generate_blocking(
     let eos_ids = inner.eos_ids.clone();
     let cancel = Arc::new(AtomicBool::new(false));
 
-    let mut logits_proc = LogitsProcessor::from_sampling(
-        sp.seed.max(1),
-        sampling_for(&sp),
-    );
+    let mut sampler = Sampler::new(&sp, sp.seed.max(1));
 
     let mut pos = 0usize;
     let mut next_token: Option<u32> = None;
@@ -253,8 +245,7 @@ fn generate_blocking(
         pos += chunk.len();
     }
     if let Some(logits) = last_logits {
-        next_token = Some(sample(
-            &mut logits_proc,
+        next_token = Some(sampler.sample(
             &logits,
             &completion,
             &prompt_tokens,
@@ -310,18 +301,28 @@ fn generate_blocking(
 
         let t = Instant::now();
         let logits = inner.backend.forward(&[tok], pos, &device)?;
-        let ms = t.elapsed().as_secs_f64() * 1000.0;
-        decode_ms_total += ms;
-        state.counters.observe_decode(ms);
-        pos += 1;
-        next_token = Some(sample(
-            &mut logits_proc,
+        let fwd_ms = t.elapsed().as_secs_f64() * 1000.0;
+        let ts = Instant::now();
+        next_token = Some(sampler.sample(
             &logits,
             &completion,
             &prompt_tokens,
             sp.repeat_penalty,
             sp.repeat_last_n,
         )?);
+        // sample() blocks on logits readback — this is where the GPU
+        // actually finishes. Report the honest per-token cost.
+        let ms = t.elapsed().as_secs_f64() * 1000.0;
+        decode_ms_total += ms;
+        state.counters.observe_decode(ms);
+        pos += 1;
+        if std::env::var("TH_DEBUG_TIMING").is_ok() {
+            eprintln!(
+                "[tok] fwd={:.1}ms sample={:.1}ms",
+                fwd_ms,
+                ts.elapsed().as_secs_f64() * 1000.0
+            );
+        }
     }
 
     let total_ms = started.elapsed().as_secs_f64() * 1000.0;
@@ -369,54 +370,133 @@ fn generate_blocking(
     })
 }
 
-fn sampling_for(sp: &ResolvedSampling) -> Sampling {
-    let t = match sp.temperature {
-        Some(t) if t > 0.0 => t,
-        _ => return Sampling::ArgMax,
-    };
-    match (sp.top_k, sp.top_p) {
-        (Some(k), Some(p)) => Sampling::TopKThenTopP { k, p, temperature: t },
-        (Some(k), None) => Sampling::TopK { k, temperature: t },
-        (None, Some(p)) => Sampling::TopP { p, temperature: t },
-        (None, None) => Sampling::All { temperature: t },
-    }
+/// Sampler that keeps the expensive parts small: one GPU→CPU logits
+/// readback per token, then top-k/top-p on CPU over a bounded candidate
+/// set. candle's `LogitsProcessor::sample_f` materialises + sorts the
+/// full 248k vocab and builds a full-vocab `WeightedIndex` per token —
+/// measured ~110ms/token, 15× the forward pass.
+struct Sampler {
+    temperature: Option<f64>,
+    top_k: Option<usize>,
+    top_p: Option<f64>,
+    rng: u64,
 }
 
-fn sample(
-    proc: &mut LogitsProcessor,
-    logits: &Tensor,
-    completion: &[u32],
-    prompt: &[u32],
-    repeat_penalty: f32,
-    repeat_last_n: usize,
-) -> Result<u32> {
-    let logits = logits.to_dtype(candle_core::DType::F32)?;
-    if (repeat_penalty - 1.0).abs() < f32::EPSILON {
-        return Ok(proc.sample(&logits)?);
+impl Sampler {
+    fn new(sp: &ResolvedSampling, seed: u64) -> Self {
+        Self {
+            temperature: sp.temperature.filter(|t| *t > 0.0),
+            top_k: sp.top_k,
+            top_p: sp.top_p,
+            rng: seed | 1,
+        }
     }
-    // penalty over the trailing window of prompt+completion
-    let window: Vec<u32> = prompt
-        .iter()
-        .chain(completion.iter())
-        .copied()
-        .collect::<Vec<u32>>()
-        .into_iter()
-        .rev()
-        .take(repeat_last_n)
-        .collect();
-    proc.sample_f(&logits, |l| {
-        for &tid in &window {
-            let tid = tid as usize;
-            if tid < l.len() {
-                l[tid] = if l[tid] < 0.0 {
-                    l[tid] * repeat_penalty
-                } else {
-                    l[tid] / repeat_penalty
-                };
+
+    #[inline]
+    fn next_f64(&mut self) -> f64 {
+        // xorshift64* — plenty for token sampling
+        let mut x = self.rng;
+        x ^= x >> 12;
+        x ^= x << 25;
+        x ^= x >> 27;
+        self.rng = x;
+        (x.wrapping_mul(0x2545_F491_4F6C_DD1D) >> 11) as f64
+            / (1u64 << 53) as f64
+    }
+
+    fn sample(
+        &mut self,
+        logits: &Tensor,
+        completion: &[u32],
+        prompt: &[u32],
+        repeat_penalty: f32,
+        repeat_last_n: usize,
+    ) -> Result<u32> {
+        let mut l = if logits.dtype() == DType::F32 {
+            logits.to_vec1::<f32>()?
+        } else {
+            logits.to_dtype(DType::F32)?.to_vec1::<f32>()?
+        };
+        if (repeat_penalty - 1.0).abs() > f32::EPSILON {
+            for &tid in
+                prompt.iter().chain(completion.iter()).rev().take(repeat_last_n)
+            {
+                let i = tid as usize;
+                if i < l.len() {
+                    l[i] = if l[i] < 0.0 {
+                        l[i] * repeat_penalty
+                    } else {
+                        l[i] / repeat_penalty
+                    };
+                }
             }
         }
-    })
-    .map_err(Into::into)
+        let n = l.len();
+        let Some(temp) = self.temperature else {
+            // argmax on CPU — we already have the vec
+            return Ok(l
+                .iter()
+                .enumerate()
+                .max_by(|a, b| a.1.total_cmp(b.1))
+                .map(|(i, _)| i as u32)
+                .unwrap_or(0));
+        };
+        let inv_t = 1.0 / temp as f32;
+        // top-k candidate set via partial select (O(n))
+        let k = self.top_k.unwrap_or(n).min(n);
+        let mut idx: Vec<u32> = (0..n as u32).collect();
+        let cand = if k < n {
+            idx.select_nth_unstable_by(k - 1, |&a, &b| {
+                l[b as usize].total_cmp(&l[a as usize])
+            });
+            &mut idx[..k]
+        } else {
+            &mut idx[..]
+        };
+        // softmax weights over candidates: w = exp((l - max)/T)
+        let max = cand
+            .iter()
+            .map(|&i| l[i as usize])
+            .fold(f32::NEG_INFINITY, f32::max);
+        let mut w: Vec<f32> = cand
+            .iter()
+            .map(|&i| ((l[i as usize] - max) * inv_t).exp())
+            .collect();
+        // top-p uses *global* probabilities — normalise by the full-vocab
+        // partition Z, matching candle's TopKThenTopP semantics.
+        if let Some(p) = self.top_p {
+            if p > 0.0 && p < 1.0 {
+                let z: f32 = l
+                    .iter()
+                    .map(|&v| ((v - max) * inv_t).exp())
+                    .sum();
+                let mut order: Vec<usize> = (0..cand.len()).collect();
+                order.sort_by(|&a, &b| w[b].total_cmp(&w[a]));
+                // candle keeps the element that crosses the threshold
+                let mut cum = 0.0f64;
+                for &o in &order {
+                    if cum >= p {
+                        w[o] = 0.0;
+                    } else {
+                        cum += (w[o] / z) as f64;
+                    }
+                }
+            }
+        }
+        // linear-scan multinomial over candidate weights
+        let sum: f64 = w.iter().map(|&v| v as f64).sum();
+        if sum <= 0.0 {
+            return Ok(cand[0]);
+        }
+        let mut r = self.next_f64() * sum;
+        for (j, &wi) in w.iter().enumerate() {
+            r -= wi as f64;
+            if r <= 0.0 {
+                return Ok(cand[j]);
+            }
+        }
+        Ok(cand[cand.len() - 1])
+    }
 }
 
 fn stop_hit(text: &str, stops: &[String]) -> bool {

@@ -4,13 +4,23 @@ version = "0.1.0"
 edition = "2021"
 description = "Token Horizon local inference engine — MLX-class Metal inference with deep observability hooks"
 
-[dependencies]
+[features]
 # `metal` must be set on each candle crate — features don't propagate and
 # each gates its own custom-op metal_fwd impls (missing = runtime
 # "no metal implementation for …" errors on otherwise-supported ops).
-candle-core = { version = "0.11.0", features = ["metal"] }
-candle-nn = { version = "0.11.0", features = ["metal"] }
-candle-transformers = { version = "0.11.0", features = ["metal"] }
+default = ["metal"]
+metal = [
+    "candle-core/metal",
+    "candle-nn/metal",
+    "candle-transformers/metal",
+    "dep:candle-metal-kernels",
+    "dep:objc2-metal",
+]
+
+[dependencies]
+candle-core = { version = "0.11.0" }
+candle-nn = { version = "0.11.0" }
+candle-transformers = { version = "0.11.0" }
 tokenizers = { version = "0.22", default-features = false, features = ["onig"] }
 hf-hub = { version = "0.4", features = ["tokio"] }
 axum = { version = "0.8", features = ["http2"] }
@@ -27,6 +37,10 @@ safetensors = "0.6"
 rayon = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+candle-metal-kernels = { version = "0.11.0", optional = true }
+objc2-metal = { version = "0.3.2", optional = true }
 
 [profile.release]
 opt-level = 3

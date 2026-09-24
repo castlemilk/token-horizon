@@ -10,7 +10,9 @@ use clap::{Parser, Subcommand};
 
 mod api;
 mod engine;
+mod gdn_kernel;
 mod model;
+mod quant_kernel;
 mod qwen35;
 mod server;
 mod state;
