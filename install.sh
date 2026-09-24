@@ -107,14 +107,14 @@ else
         ok "pinned ${TAG}"
     else
         spin_start "contacting github…"
-        # Primary: the releases/latest 302 → /releases/tag/vX.Y.Z redirect.
-        # No API call → no rate limit, works on restricted networks.
-        # Fallback: the API (covers odd proxies that strip Location).
+        # Primary: GET releases/latest, follow the 302 to /releases/tag/vX.Y.Z,
+        # read url_effective. GET (not HEAD/-I) — some proxies stall HEAD.
+        # No API call → no rate limit. Fallback: the API.
         # `|| true` must live INSIDE the substitution: with set -euo pipefail,
         # a failed pipeline aborts the whole script at the assignment before
         # the fallback/fail below can run.
-        TAG=$(curl -fsSI --connect-timeout 10 --max-time 20 -o /dev/null \
-                -w '%{redirect_url}' "https://github.com/${REPO}/releases/latest" 2>/dev/null \
+        TAG=$(curl -fsSL --connect-timeout 10 --max-time 20 -o /dev/null \
+                -w '%{url_effective}' "https://github.com/${REPO}/releases/latest" 2>/dev/null \
               | sed -n 's|.*/tag/\(v[^/ ]*\).*|\1|p' || true)
         if [ -z "$TAG" ]; then
             TAG=$(curl -fsSL --connect-timeout 10 --max-time 20 "https://api.github.com/repos/${REPO}/releases/latest" \
