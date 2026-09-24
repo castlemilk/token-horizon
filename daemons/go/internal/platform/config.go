@@ -286,6 +286,30 @@ func HomeDir() string {
 	return h
 }
 
+// SetWidgetWindow merge-writes widgetPreferences.window in settings.json —
+// the same file + shape the Swift SettingsStore owns (the app re-reads on
+// change). Sibling keys (page/accent/…) are preserved.
+func SetWidgetWindow(window string) error {
+	if err := os.MkdirAll(configDir(), 0o755); err != nil {
+		return err
+	}
+	merged := map[string]any{}
+	if data, err := os.ReadFile(SettingsPath()); err == nil {
+		_ = json.Unmarshal(data, &merged)
+	}
+	prefs, _ := merged["widgetPreferences"].(map[string]any)
+	if prefs == nil {
+		prefs = map[string]any{}
+	}
+	prefs["window"] = window
+	merged["widgetPreferences"] = prefs
+	data, err := json.MarshalIndent(merged, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(SettingsPath(), data, 0o600)
+}
+
 func EnvOr(name, fallback string) string {
 	if v := os.Getenv(name); v != "" {
 		return v

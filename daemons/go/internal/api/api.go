@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"github.com/castlemilk/token-horizon/daemons/go/internal/cloudsync"
+	"github.com/castlemilk/token-horizon/daemons/go/internal/engine"
 	"github.com/castlemilk/token-horizon/daemons/go/internal/platform"
 	"github.com/castlemilk/token-horizon/daemons/go/internal/store"
 	"github.com/castlemilk/token-horizon/daemons/go/internal/usage"
@@ -35,6 +36,7 @@ type apiServer struct {
 	serviceInstallFn func() any
 	serviceRemoveFn  func() any
 	mitmStatusFn     func() any
+	engineFn         func() *engine.Manager
 	start            time.Time
 }
 

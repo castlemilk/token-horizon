@@ -40,7 +40,9 @@ daemons/go/                      # the Go daemon (github.com/castlemilk/token-ho
                                  # service autostart) — internal/capture/ (meter relays + wire
                                  # formats, mitm, files backfill/consolidators, runtime monitor+ledger)
                                  # — internal/providers/ (auth chains, limits + per-vendor adapter
-                                 # files, catalog + benchmarks) — plus store/ usage/ cloudsync/
+                                 # files, catalog + benchmarks) — internal/engine/ (splash :8000 +
+                                 # th-engine :8001 attach-or-spawn supervisors + hardware fit +
+                                 # catalogs, behind /engine/*) — plus store/ usage/ cloudsync/
                                  # telemetry/ api/
 ```
 mcp/token-horizon-mcp.mjs   zero-dep stdio MCP server (talks to :8765, sqlite fallback for usage/sessions)

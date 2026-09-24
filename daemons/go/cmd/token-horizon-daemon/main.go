@@ -15,6 +15,7 @@ import (
 	"github.com/castlemilk/token-horizon/daemons/go/internal/capture/meter"
 	"github.com/castlemilk/token-horizon/daemons/go/internal/capture/mitm"
 	rtpkg "github.com/castlemilk/token-horizon/daemons/go/internal/capture/runtime"
+	enginepkg "github.com/castlemilk/token-horizon/daemons/go/internal/engine"
 	"github.com/castlemilk/token-horizon/daemons/go/internal/platform/service"
 	"github.com/castlemilk/token-horizon/daemons/go/internal/platform/system"
 	"github.com/castlemilk/token-horizon/daemons/go/internal/providers/limits"
@@ -107,6 +108,14 @@ func main() {
 	monitor.Start(15 * time.Second)
 	defer monitor.Stop()
 	daemon.RuntimesFn = func() any { return monitor.Current() }
+
+	// Local inference supervision: splash (:8000) + th-engine (:8001)
+	// sidecars behind /engine/*, attach-or-spawn — same discipline as the
+	// macOS app's EngineManager (foreign servers are adopted, never killed).
+	engineMgr := enginepkg.NewManager()
+	engineMgr.StartPolling()
+	defer engineMgr.Shutdown()
+	daemon.Engine = engineMgr
 
 	daemon.Run(*port, meters)
 }

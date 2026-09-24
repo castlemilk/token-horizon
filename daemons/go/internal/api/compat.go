@@ -60,6 +60,7 @@ func (a *apiServer) compatRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /activity/heatmap", a.compatHeatmap)
 	a.compatRoutes2(mux)
 	a.compatRoutes3(mux)
+	a.compatEngineRoutes(mux)
 }
 
 // compatStats emits StatsResponse: { usage: UsageSnapshot, system } — the

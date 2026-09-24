@@ -9,6 +9,7 @@ import (
 	"fmt"
 	rtpkg "github.com/castlemilk/token-horizon/daemons/go/internal/capture/runtime"
 	"github.com/castlemilk/token-horizon/daemons/go/internal/cloudsync"
+	"github.com/castlemilk/token-horizon/daemons/go/internal/engine"
 	"github.com/castlemilk/token-horizon/daemons/go/internal/platform"
 	"github.com/castlemilk/token-horizon/daemons/go/internal/platform/system"
 	"github.com/castlemilk/token-horizon/daemons/go/internal/store"
@@ -72,6 +73,10 @@ type Daemon struct {
 	ServiceRemoveFn  func() any
 	// MitmStatusFn folds the scoped-MITM checklist into GET /meters.
 	MitmStatusFn func() any
+	// Engine is the local-inference supervisor behind GET/POST /engine/*
+	// (splash :8000 + th-engine :8001, attach-or-spawn). Nil disables the
+	// routes with 503.
+	Engine *engine.Manager
 }
 
 func New() (*Daemon, error) {
@@ -101,7 +106,8 @@ func (d *Daemon) Run(port int, meters MeterRegistry) {
 		consolidateFn: d.ConsolidateFn, backfillFn: d.BackfillFn,
 		systemFn: d.SystemFn, processesFn: d.ProcessesFn, runtimesFn: d.RuntimesFn,
 		serviceStatusFn: d.ServiceStatusFn, serviceInstallFn: d.ServiceInstallFn,
-		serviceRemoveFn: d.ServiceRemoveFn, mitmStatusFn: d.MitmStatusFn, start: time.Now()}
+		serviceRemoveFn: d.ServiceRemoveFn, mitmStatusFn: d.MitmStatusFn,
+		engineFn: func() *engine.Manager { return d.Engine }, start: time.Now()}
 
 	// Cloud sync backstop: retry pending deltas every 5 min so offline
 	// stretches upload on reconnect (activity nudges cover the live path).
