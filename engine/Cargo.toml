@@ -22,6 +22,9 @@ clap = { version = "4", features = ["derive"] }
 minijinja = { version = "2", features = ["builtins"] }
 anyhow = "1"
 libc = "0.2"
+half = "2"
+safetensors = "0.6"
+rayon = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 

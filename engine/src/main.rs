@@ -11,6 +11,7 @@ use clap::{Parser, Subcommand};
 mod api;
 mod engine;
 mod model;
+mod qwen35;
 mod server;
 mod state;
 mod template;
@@ -66,6 +67,18 @@ enum Cmd {
         #[arg(long)]
         max_context: Option<usize>,
     },
+    /// Load a model, forward the given token ids, print top-8 logits.
+    /// Parity/debugging aid — not used by the app.
+    Probe {
+        #[arg(long)]
+        model: String,
+        /// Comma-separated token ids to forward.
+        #[arg(long)]
+        tokens: String,
+        /// Dump full logits (f32, little-endian) to this path.
+        #[arg(long)]
+        dump: Option<String>,
+    },
 }
 
 #[tokio::main]
@@ -118,6 +131,30 @@ async fn main() -> Result<()> {
             let engine =
                 engine::Engine::load(&model, file.as_deref(), tokenizer.as_deref(), cfg).await?;
             server::serve(engine, port).await
+        }
+        Cmd::Probe { model, tokens, dump } => {
+            let ids: Vec<u32> = tokens
+                .split(',')
+                .map(|t| t.trim().parse())
+                .collect::<Result<_, _>>()?;
+            let mut loaded =
+                model::resolve_and_load(&model, None, None).await?;
+            let logits = loaded.backend.forward(&ids, 0, &loaded.device)?;
+            let v: Vec<f32> = logits.to_vec1()?;
+            if let Some(path) = dump {
+                let bytes: Vec<u8> =
+                    v.iter().flat_map(|f| f.to_le_bytes()).collect();
+                std::fs::write(&path, &bytes)?;
+                eprintln!("wrote {} logits to {path}", v.len());
+            }
+            let mut idx: Vec<usize> = (0..v.len()).collect();
+            idx.sort_by(|&a, &b| {
+                v[b].partial_cmp(&v[a]).unwrap_or(std::cmp::Ordering::Equal)
+            });
+            for &i in idx.iter().take(8) {
+                println!("{i}\t{:.4}", v[i]);
+            }
+            Ok(())
         }
     }
 }

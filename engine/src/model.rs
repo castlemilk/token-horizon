@@ -21,6 +21,7 @@ pub enum ModelBackend {
     GgufLlama(ct::quantized_llama::ModelWeights),
     Qwen2(ct::qwen2::ModelForCausalLM),
     Qwen3(ct::qwen3::ModelForCausalLM),
+    Qwen35(crate::qwen35::Qwen35),
 }
 
 impl ModelBackend {
@@ -42,6 +43,8 @@ impl ModelBackend {
                 let l = m.forward(&input, pos)?;
                 l.i((0, l.dim(1)? - 1))?
             }
+            // ours: logits already (vocab,)
+            Self::Qwen35(m) => m.forward(tokens, pos)?,
         };
         Ok(out.to_dtype(DType::F32)?)
     }
@@ -53,6 +56,7 @@ impl ModelBackend {
             Self::GgufLlama(m) => m.clear_kv_cache(),
             Self::Qwen2(m) => m.clear_kv_cache(),
             Self::Qwen3(m) => m.clear_kv_cache(),
+            Self::Qwen35(m) => m.clear_kv_cache(),
         }
     }
 }
@@ -311,15 +315,56 @@ fn load_dense(
     tok_cfg_p: Option<&Path>,
     weights: &[PathBuf],
 ) -> Result<LoadedModel> {
+    let cfg_json: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(cfg_p)?).context("config.json")?;
+    let model_type = cfg_json["model_type"]
+        .as_str()
+        .or_else(|| {
+            cfg_json["text_config"]["model_type"].as_str()
+        })
+        .unwrap_or("")
+        .to_string();
+
+    // qwen3_5 is our own port (hybrid GDN + full attention); it runs on
+    // Metal in BF16 — MLX-quantized safetensors are dequantized at load.
+    if model_type.starts_with("qwen3_5") {
+        let device = Device::new_metal(0).unwrap_or(Device::Cpu);
+        let cfg = crate::qwen35::Qwen35Config::from_json(&cfg_json)?;
+        tracing::info!(%model_type, ?device, files = weights.len(), "loading qwen3_5");
+        let backend = ModelBackend::Qwen35(crate::qwen35::Qwen35::load(weights, &cfg, &device)?);
+        let tokenizer = tokenizers::Tokenizer::from_file(tok_p)
+            .map_err(|e| anyhow!("tokenizer load: {e}"))?;
+        let mut eos_ids = eos_ids_from_config(&cfg_json);
+        if eos_ids.is_empty() {
+            eos_ids = eos_ids_from_config(&cfg_json["text_config"]);
+        }
+        let chat_template = tok_cfg_p
+            .and_then(|p| template::chat_template_file(p))
+            .or_else(|| {
+                tok_p.parent().and_then(|d| {
+                    std::fs::read_to_string(d.join("chat_template.jinja")).ok()
+                })
+            });
+        return Ok(LoadedModel {
+            backend,
+            tokenizer,
+            eos_ids,
+            chat_template,
+            meta: serde_json::json!({
+                "format": "mlx-safetensors", "model_type": model_type,
+                "context_length": cfg.max_position_embeddings,
+                "files": weights.iter().map(|p| p.display().to_string()).collect::<Vec<_>>(),
+            }),
+            device,
+        });
+    }
+
     // Dense safetensors on Metal hits unimplemented ops (rms-norm) in
     // candle 0.11, and CPU lacks bf16 matmul — so dense runs F32 on CPU
     // (a correctness/dev path). GGUF quantized models use their own
     // Metal kernels and run on GPU — that's the performance path.
     let device = Device::Cpu;
     let dtype = DType::F32;
-    let cfg_json: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(cfg_p)?).context("config.json")?;
-    let model_type = cfg_json["model_type"].as_str().unwrap_or("").to_string();
     tracing::info!(%model_type, ?device, files = weights.len(), "loading safetensors");
 
     let vb = unsafe {

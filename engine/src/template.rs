@@ -338,3 +338,21 @@ mod tests {
         assert_eq!(out.trim(), "c");
     }
 }
+
+#[cfg(test)]
+mod real_tpl {
+    use super::*;
+    #[test]
+    fn render_real_qwen35() {
+        let t = std::fs::read_to_string(
+            "/Users/benebsworth/projects/localllm/Qwen3.8-27B-Uncensored-MLX/chat_template.jinja",
+        )
+        .unwrap();
+        let msgs = vec![ChatMessage {
+            role: "user".into(),
+            content: "What is the capital of France? Answer in one word.".into(),
+        }];
+        let out = render(Some(&t), &msgs, None).unwrap();
+        eprintln!("RENDERED>>>{out}<<<");
+    }
+}
