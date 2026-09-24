@@ -432,6 +432,30 @@ impl QLin {
                 *out.last_mut().unwrap() = self.out;
                 return Ok(y.reshape(out)?);
             }
+            // prefill: cooperative-tensor kernel on tiled weights
+            if self.tiled && std::env::var("TH_QMM_SCALAR").is_err() {
+                let xv = x.reshape((rows, in_d))?.contiguous()?;
+                let yp = self.wq.apply_op3_no_bwd(
+                    &self.sb,
+                    &xv,
+                    &crate::quant_kernel::AffineQmppPrefill {
+                        inp: self.inp,
+                        out: self.out,
+                        padded: self.out.div_ceil(256) * 256,
+                        m: rows,
+                        up_tile: 0,
+                    },
+                )?;
+                let out_pad = self.out.div_ceil(256) * 256;
+                let y = yp
+                    .narrow(0, 0, rows)?
+                    .narrow(1, 0, self.out)?
+                    .contiguous()?;
+                let mut out = dims;
+                *out.last_mut().unwrap() = self.out;
+                let _ = out_pad;
+                return Ok(y.reshape(out)?);
+            }
             // prefill: dequantize into scratch, then a normal bf16 gemm
             let w = self.wq.apply_op2_no_bwd(
                 &self.sb,
@@ -477,22 +501,48 @@ impl QLin {
         let mut w2 = vec![0u32; padded * ng * 8];
         let mut s2 = vec![half::bf16::ZERO; 2 * padded * ng];
         let bias_base = padded * ng;
-        for t in 0..tiles {
-            for g in 0..ng {
-                let dbase = (t * ng + g) * 256;
-                let wbase = t * ng * 2048 + g * 2048;
-                for col in 0..256 {
-                    let row = t * 256 + col;
-                    if row >= self.out {
-                        break;
+        // per-tile destination chunks are disjoint — parallel repack
+        let nthr = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(8)
+            .min(tiles);
+        let wv = &wv;
+        let sv = &sv;
+        let out = self.out;
+        let w_chunk = tiles.div_ceil(nthr) * ng * 2048;
+        let s_chunk = tiles.div_ceil(nthr) * ng * 256;
+        let (sc2, bi2) = s2.split_at_mut(bias_base);
+        std::thread::scope(|scope| {
+            let chunk_t = tiles.div_ceil(nthr);
+            for (i, ((wi, sci), bii)) in w2
+                .chunks_mut(w_chunk)
+                .zip(sc2.chunks_mut(s_chunk))
+                .zip(bi2.chunks_mut(s_chunk))
+                .enumerate()
+            {
+                let t_start = i * chunk_t;
+                let t_end = (t_start + chunk_t).min(tiles);
+                scope.spawn(move || {
+                    for t in t_start..t_end {
+                        for g in 0..ng {
+                            let dbase = (t - t_start) * ng * 2048 + g * 2048;
+                            let sbase = (t - t_start) * ng * 256 + g * 256;
+                            let grow = t * 256;
+                            let rows = (out - grow).min(256);
+                            for col in 0..rows {
+                                let row = grow + col;
+                                wi[dbase + col * 8..dbase + col * 8 + 8]
+                                    .copy_from_slice(
+                                        &wv[row * ng * 8 + g * 8..][..8],
+                                    );
+                                sci[sbase + col] = sv[row * 2 * ng + g];
+                                bii[sbase + col] = sv[row * 2 * ng + ng + g];
+                            }
+                        }
                     }
-                    w2[wbase + col * 8..wbase + col * 8 + 8]
-                        .copy_from_slice(&wv[row * ng * 8 + g * 8..][..8]);
-                    s2[dbase + col] = sv[row * 2 * ng + g];
-                    s2[bias_base + dbase + col] = sv[row * 2 * ng + ng + g];
-                }
+                });
             }
-        }
+        });
         self.wq =
             Tensor::from_vec(w2, (padded * ng * 8,), &self.wq.device())?;
         self.sb =
@@ -507,6 +557,45 @@ impl QLin {
     pub(crate) fn gate_up_act(&self, x: &Tensor) -> Option<Result<Tensor>> {
         let dims = x.dims().to_vec();
         let rows: usize = dims[..dims.len() - 1].iter().product();
+        let in_d0 = *dims.last().unwrap();
+        // prefill path: two-pass gate→scratch + up·silu(gate)
+        if rows > 8
+            && self.tiled
+            && self.out % 2 == 0
+            && (self.out / 2) % 256 == 0
+            && std::env::var("TH_QMM_SCALAR").is_err()
+        {
+            #[cfg(all(feature = "metal", target_os = "macos"))]
+            if x.device().is_metal() {
+                let xv = x.reshape((rows, in_d0)).ok()?.contiguous().ok()?;
+                let half = self.out / 2;
+                let padded = self.out.div_ceil(256) * 256;
+                return Some(
+                    self.wq
+                        .apply_op3_no_bwd(
+                            &self.sb,
+                            &xv,
+                            &crate::quant_kernel::AffineQmppPrefill {
+                                inp: self.inp,
+                                out: half,
+                                padded,
+                                m: rows,
+                                up_tile: half / 256,
+                            },
+                        )
+                        .map_err(Into::into)
+                        .and_then(|yp| {
+                            let mut out = dims.clone();
+                            *out.last_mut().unwrap() = half;
+                            Ok(yp
+                                .narrow(0, 0, rows)?
+                                .narrow(1, 0, half)?
+                                .contiguous()?
+                                .reshape(out)?)
+                        }),
+                );
+            }
+        }
         // m==1 wastes 7/8 of the MMA work — the qmv path wins there
         if !(2..=8).contains(&rows) || self.out % 2 != 0 {
             return None;
@@ -570,10 +659,11 @@ impl QLin {
     }
 }
 
-/// Tile a packed weight for the MPP path when `TH_QMM_MPP` is set —
-/// the cooperative-tensor kernels need the [tile][group][col] layout.
+/// Tile a packed weight for the MPP path — the cooperative-tensor
+/// kernels need the [tile][group][col] layout. Default on for Metal;
+/// `TH_QMM_MPP=0` keeps the row-major layout + scalar/sg kernels.
 pub(crate) fn maybe_tiled(l: Lin) -> Result<Lin> {
-    if std::env::var("TH_QMM_MPP").is_ok() {
+    if std::env::var("TH_QMM_MPP").map_or(true, |v| v != "0") {
         l.tiled()
     } else {
         Ok(l)
@@ -892,6 +982,89 @@ impl Qwen35 {
             eprintln!("qmm[{tag}] max|Δ| scalar-vs-sg = {d:.5}");
             // cooperative-tensor (MPP) path on a tiled copy
             let qt = q.clone().tiled()?;
+            // prefill (m=64): mpp vs dequant+gemm correctness+time
+            {
+                let m = 64usize;
+                let xp = x.narrow(0, 0, 8)?; // reuse first rows' pattern
+                let xv2: Vec<f32> = (0..m * q.inp)
+                    .map(|i| ((i * 2654435761) % 1000) as f32 / 100.0 - 5.0)
+                    .collect();
+                let _ = xp;
+                let xp = Tensor::from_vec(xv2, (m, q.inp), device)?
+                    .to_dtype(DType::BF16)?;
+                // reference: dequant + matmul (CPU-free)
+                let wd = qt
+                    .wq
+                    .apply_op2_no_bwd(
+                        &qt.sb,
+                        &crate::quant_kernel::AffineDequant {
+                            inp: qt.inp,
+                            out: qt.out,
+                            gs: qt.gs,
+                            tiled: qt.tiled,
+                        },
+                    )?;
+                let ya = linear(&xp, &wd)?.to_dtype(DType::F32)?;
+                let yb = qt
+                    .wq
+                    .apply_op3_no_bwd(
+                        &qt.sb,
+                        &xp,
+                        &crate::quant_kernel::AffineQmppPrefill {
+                            inp: qt.inp,
+                            out: qt.out,
+                            padded: qt.out.div_ceil(256) * 256,
+                            m,
+                            up_tile: 0,
+                        },
+                    )?
+                    .narrow(0, 0, m)?
+                    .narrow(1, 0, qt.out)?
+                    .contiguous()?
+                    .to_dtype(DType::F32)?;
+                let d = ya
+                    .sub(&yb)?
+                    .abs()?
+                    .max(0)?
+                    .max(0)?
+                    .to_scalar::<f32>()?;
+                eprintln!("qmm[{tag}:prefill m64] max|Δ| = {d:.5}");
+                for _ in 0..2 {
+                    let _ = qt.wq.apply_op3_no_bwd(
+                        &qt.sb,
+                        &xp,
+                        &crate::quant_kernel::AffineQmppPrefill {
+                            inp: qt.inp,
+                            out: qt.out,
+                            padded: qt.out.div_ceil(256) * 256,
+                            m,
+                            up_tile: 0,
+                        },
+                    )?;
+                }
+                let t0 = std::time::Instant::now();
+                for _ in 0..10 {
+                    let _ = qt.wq.apply_op3_no_bwd(
+                        &qt.sb,
+                        &xp,
+                        &crate::quant_kernel::AffineQmppPrefill {
+                            inp: qt.inp,
+                            out: qt.out,
+                            padded: qt.out.div_ceil(256) * 256,
+                            m,
+                            up_tile: 0,
+                        },
+                    )?;
+                }
+                let _ = yb.max(0)?.max(0)?.to_scalar::<f32>()?; // sync
+                let ms = t0.elapsed().as_secs_f64() * 1e3 / 10.0;
+                let bytes = q.inp * q.out / 2 + q.inp * q.out / 64 * 4;
+                eprintln!(
+                    "qmm[{tag}:prefill m64] {ms:.2}ms  {:.0} GB/s  {:.0} tok-rows/s",
+                    bytes as f64 / ms / 1e6,
+                    m as f64 / ms * 1e3
+                );
+            }
             let t = std::time::Instant::now();
             let yc = qt
                 .wq

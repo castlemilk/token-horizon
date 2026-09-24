@@ -15,7 +15,7 @@
 //! scales, [ng,2ng) biases.
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
-pub use metal_impl::{AffineDequant, AffineQmm, AffineQmpp, AffineQmv, AffineQsg, mpp_probe};
+pub use metal_impl::{AffineDequant, AffineQmm, AffineQmpp, AffineQmppPrefill, AffineQmv, AffineQsg, mpp_probe};
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
 mod metal_impl {
@@ -1022,16 +1022,177 @@ inline void th_mpp_tile(device bfloat *input, device uchar *weights_0,
   threadgroup_barrier(mem_flags::mem_threadgroup);
 }
 
-// Pad x [m][in] to a fixed [8][in] activation block the tiles read.
+// Pad x [m][in] to the [m_pad][in] activation block the tiles read.
 kernel void affine_q4_mpp_pad(device const bfloat* x [[buffer(0)]],
                               device bfloat* x8      [[buffer(1)]],
-                              constant int2&  dims   [[buffer(2)]],
+                              constant int3&  dims   [[buffer(2)]],
                               uint i [[thread_position_in_grid]]) {
-    const int total = 8 * dims.y;
+    const int total = dims.z * dims.y;
     if ((int)i >= total) return;
     const int row = i / dims.y;
     x8[i] = row < dims.x ? x[i] : bfloat(0);
 }
+
+// ------------------------------------------------------------------
+// Prefill family — ported from prefill/linear_q4.metal: a sums pass
+// computes per-(row,quant-group) input sums once per 32-row block, then
+// each (row_tile, output_tile) threadgroup runs a cooperative 32 x 256
+// matmul over uint4b weights with staged sums and a fused epilogue.
+// ------------------------------------------------------------------
+
+constant constexpr ushort PrefillSumBatch = 256;
+
+kernel void affine_q4_mpp_pf_sums(device const bfloat *input [[buffer(0)]],
+                                  device float *sums [[buffer(1)]],
+                                  constant int& in_dim [[buffer(2)]],
+                                  uint tile [[threadgroup_position_in_grid]],
+                                  uint simd_lane [[thread_index_in_simdgroup]],
+                                  uint simd_group
+                                  [[simdgroup_index_in_threadgroup]]) {
+  constexpr uint TileM = 32;
+  uint quant_groups = uint(in_dim) / 64;
+  input += ulong(tile) * TileM * in_dim;
+  sums += ulong(tile) * TileM * quant_groups;
+  for (uint quant_group = 0; quant_group < quant_groups; ++quant_group) {
+    for (uint row = simd_group; row < TileM; row += 8) {
+      uint origin = row * in_dim + quant_group * 64 + simd_lane;
+      float sum = simd_sum(float(input[origin]) + float(input[origin + 32]));
+      if (simd_lane == 0) {
+        sums[quant_group * TileM + row] = sum;
+      }
+    }
+  }
+}
+
+// q4_mpp_prefill_tile<32, 256, 8, AddResidual=false, MultiplySiluGate>
+// verbatim — staged sums variant.
+template <bool MultiplySiluGate>
+inline void th_mpp_prefill_tile(device bfloat *input, device uchar *weights,
+                                device bfloat *scales, device bfloat *biases,
+                                device bfloat *output, device bfloat *auxiliary,
+                                uint output_size, uint input_size,
+                                device const float *precomputed_sums,
+                                uint output_origin, uint simd_lane,
+                                uint simd_group,
+                                threadgroup float *input_sums) {
+  constexpr ushort TileM = 32, TileN = 256, Simdgroups = 8;
+  auto a = tensor(input, dextents<int, 2>{int(input_size), TileM},
+                  array<int, 2>{1, int(input_size)});
+  auto c = tensor(output, dextents<int, 2>{int(output_size), TileM},
+                  array<int, 2>{1, int(output_size)});
+  constexpr auto descriptor =
+      matmul2d_descriptor(TileM, TileN, 64, false, true, false);
+  matmul2d<descriptor, execution_simdgroups<Simdgroups>> operation;
+  auto a0 = a.slice<64, TileM>(0, 0);
+  uint quant_groups = input_size / 64;
+  constexpr ushort WeightTileN = 256;
+  uint tile = output_origin / WeightTileN;
+  uint tile_column = output_origin % WeightTileN;
+  device uchar *tile_weights =
+      weights +
+      (ulong(tile) * quant_groups * WeightTileN + tile_column) * 64 / 2;
+  tensor<device uint4b_format, dextents<int, 2>, tensor_inline> first_b(
+      tile_weights, dextents<int, 2>{64, TileN}, array<int, 2>{1, 64});
+  auto b0 = first_b.slice<64, TileN>(0, 0);
+  auto accumulated = operation.template get_destination_cooperative_tensor<
+      decltype(a0), decltype(b0), float>();
+#pragma unroll
+  for (ushort i = 0; i < accumulated.get_capacity(); ++i) {
+    accumulated[i] = 0.0f;
+  }
+
+  auto load_sums = [&](uint start) {
+    uint count = min(uint(PrefillSumBatch), quant_groups - start);
+    uint thread_index = simd_group * 32 + simd_lane;
+    for (uint index = thread_index; index < count * TileM;
+         index += Simdgroups * 32) {
+      uint quant_group = start + index / TileM;
+      uint row = index % TileM;
+      input_sums[index] = precomputed_sums[quant_group * TileM + row];
+    }
+  };
+  load_sums(0);
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+
+  for (uint quant_group = 0; quant_group < quant_groups; ++quant_group) {
+    uint input_origin = quant_group * 64;
+    auto a_slice = a.slice<64, TileM>(input_origin, 0);
+    device uchar *group_weights =
+        tile_weights + ulong(quant_group) * WeightTileN * 64 / 2;
+    tensor<device uint4b_format, dextents<int, 2>, tensor_inline> b(
+        group_weights, dextents<int, 2>{64, TileN}, array<int, 2>{1, 64});
+    auto b_slice = b.slice<64, TileN>(0, 0);
+    auto partial = operation.template get_destination_cooperative_tensor<
+        decltype(a_slice), decltype(b_slice), float>();
+    operation.run(a_slice, b_slice, partial);
+
+#pragma unroll
+    for (ushort i = 0; i < accumulated.get_capacity(); ++i) {
+      auto index = accumulated.get_multidimensional_index(i);
+      uint row = index[1];
+      ulong parameter =
+          (ulong(tile) * quant_groups + quant_group) * WeightTileN +
+          tile_column + index[0];
+      float sum =
+          input_sums[(quant_group % PrefillSumBatch) * TileM + row];
+      accumulated[i] += partial[i] * float(scales[parameter]) +
+                        sum * float(biases[parameter]);
+    }
+    if (quant_group % PrefillSumBatch == PrefillSumBatch - 1 &&
+        quant_group + 1 < quant_groups) {
+      threadgroup_barrier(mem_flags::mem_threadgroup);
+      load_sums(quant_group + 1);
+      threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+  }
+
+  auto converted = operation.template get_destination_cooperative_tensor<
+      decltype(a0), decltype(b0), bfloat>();
+#pragma unroll
+  for (ushort i = 0; i < accumulated.get_capacity(); ++i) {
+    float value = float(bfloat(accumulated[i]));
+    if constexpr (MultiplySiluGate) {
+      auto index = accumulated.get_multidimensional_index(i);
+      float gate =
+          float(auxiliary[index[1] * output_size + output_origin + index[0]]);
+      value = gate / (1.0f + fast::exp2(-1.44269504089f * gate)) * value;
+    }
+    converted[i] = bfloat(value);
+  }
+  converted.store(c.slice<TileN, TileM>(output_origin, 0));
+}
+
+#define TH_PREFILL_ENTRY(Name, SiluGate)                                      \
+kernel void Name(                                                             \
+    device const bfloat* input  [[buffer(0)]],                                \
+    device const uchar*  weights [[buffer(1)]],                               \
+    device const bfloat* sb      [[buffer(2)]],                               \
+    device bfloat*       aux     [[buffer(3)]],                               \
+    device bfloat*       output  [[buffer(4)]],                               \
+    device const float*  sums    [[buffer(5)]],                               \
+    constant MppParams&  p       [[buffer(6)]],                               \
+    uint2 group     [[threadgroup_position_in_grid]],                         \
+    uint simd_lane  [[thread_index_in_simdgroup]],                            \
+    uint simd_group [[simdgroup_index_in_threadgroup]]) {                     \
+  constexpr ushort TileM = 32;                                                \
+  threadgroup float input_sums[TileM * PrefillSumBatch];                      \
+  device const float* rs = sums +                                             \
+      ulong(group.x) * TileM * (uint(p.in_dim) / 64);                         \
+  device bfloat* inp = const_cast<device bfloat*>(input) +                    \
+      ulong(group.x) * TileM * p.in_dim;                                      \
+  device bfloat* outp = output + ulong(group.x) * TileM * p.out_dim;          \
+  device uchar* w = const_cast<device uchar*>(weights) + p.up_woff;           \
+  device bfloat* sc = const_cast<device bfloat*>(sb) + p.up_soff;             \
+  device bfloat* bi = const_cast<device bfloat*>(sb) + p.bias_base            \
+                      + p.up_soff;                                            \
+  device bfloat* auxp = aux + ulong(group.x) * TileM * p.out_dim;             \
+  th_mpp_prefill_tile<SiluGate>(inp, w, sc, bi, outp, auxp,                   \
+      p.out_dim, p.in_dim, rs, group.y * 256, simd_lane, simd_group,          \
+      input_sums);                                                          \
+}
+
+TH_PREFILL_ENTRY(affine_q4_mpp_prefill,    false)
+TH_PREFILL_ENTRY(affine_q4_mpp_prefill_up, true)
 
 // Split-K form (ported q4_mpp_tile_split): each partition of Simdgroups
 // simdgroups streams an equal quant-group range of one 8 x TileN tile and
@@ -1681,7 +1842,7 @@ kernel void mpp_probe(device float* y [[buffer(0)]],
                 enc.set_compute_pipeline_state(MPP_PAD_PIPE.get().unwrap());
                 enc.set_input_buffer(0, Some(s_x.buffer()), l_x.start_offset() * 2);
                 enc.set_output_buffer(1, Some(&x8_buf), 0);
-                let dims: [i32; 2] = [self.m as i32, self.inp as i32];
+                let dims: [i32; 3] = [self.m as i32, self.inp as i32, 8];
                 enc.set_bytes(2, &dims);
                 enc.dispatch_thread_groups(
                     MTLSize { width: (8 * self.inp).div_ceil(256), height: 1, depth: 1 },
@@ -1709,6 +1870,199 @@ kernel void mpp_probe(device float* y [[buffer(0)]],
                 DType::BF16,
             );
             Ok((out, (8, self.out).into()))
+        }
+    }
+
+    /// MPP prefill (rows > 8): pad input to 32-row blocks, one sums pass,
+    /// then cooperative 32x256 tiles. `up_tile > 0` runs the fused
+    /// gate/up form: gate affine pass into scratch, then up+silu·gate.
+    pub struct AffineQmppPrefill {
+        pub inp: usize,
+        pub out: usize,    // logical output cols (per stream for gate_up)
+        pub padded: usize, // weight storage rows (tiles*256)
+        pub m: usize,
+        pub up_tile: usize,
+    }
+
+    static MPP_PF_SUMS_PIPE: OnceLock<ComputePipeline> = OnceLock::new();
+    static MPP_PF_PIPE: OnceLock<ComputePipeline> = OnceLock::new();
+    static MPP_PF_UP_PIPE: OnceLock<ComputePipeline> = OnceLock::new();
+
+    impl CustomOp3 for AffineQmppPrefill {
+        fn name(&self) -> &'static str {
+            "affine-qmpp-prefill"
+        }
+        fn cpu_fwd(
+            &self,
+            _: &CpuStorage, _: &Layout,
+            _: &CpuStorage, _: &Layout,
+            _: &CpuStorage, _: &Layout,
+        ) -> Result<(CpuStorage, Shape)> {
+            candle_core::bail!("affine-qmpp-prefill: Metal only")
+        }
+
+        fn metal_fwd(
+            &self,
+            s_wq: &MetalStorage,
+            l_wq: &Layout,
+            s_sb: &MetalStorage,
+            l_sb: &Layout,
+            s_x: &MetalStorage,
+            l_x: &Layout,
+        ) -> Result<(MetalStorage, Shape)> {
+            check3(s_wq, l_wq, DType::U32, "wq")?;
+            check3(s_sb, l_sb, DType::BF16, "sb")?;
+            check3(s_x, l_x, DType::BF16, "x")?;
+            let ng = self.inp / 64;
+            let gate_up = self.up_tile > 0;
+            let row_tiles = self.m.div_ceil(32);
+            let m_pad = row_tiles * 32;
+            let out_pad = self.out.div_ceil(256) * 256;
+            let out_tiles = out_pad / 256;
+            let device = s_wq.device();
+            compile_mpp(&MPP_PAD_PIPE, "affine_q4_mpp_pad", device)?;
+            compile_mpp(&MPP_PF_SUMS_PIPE, "affine_q4_mpp_pf_sums", device)?;
+            compile_mpp(&MPP_PF_PIPE, "affine_q4_mpp_prefill", device)?;
+            if gate_up {
+                compile_mpp(&MPP_PF_UP_PIPE, "affine_q4_mpp_prefill_up", device)?;
+            }
+
+            let params = MppParams {
+                out_dim: out_pad as i32,
+                in_dim: self.inp as i32,
+                m: self.m as i32,
+                groups: 0,
+                bias_base: (self.padded * ng) as i32,
+                up_woff: (self.up_tile * ng * 8192) as i32,
+                up_soff: (self.up_tile * ng * 256) as i32,
+            };
+
+            let x_pad = device
+                .new_buffer_builder()
+                .with_size_for(m_pad * self.inp, DType::BF16)
+                .with_label("qmpp_pf.x")
+                .build()
+                .map_err(candle_core::Error::wrap)?;
+            let sums = device
+                .new_buffer_builder()
+                .with_size_for(row_tiles * 32 * ng, DType::F32)
+                .with_label("qmpp_pf.sums")
+                .build()
+                .map_err(candle_core::Error::wrap)?;
+            let y_pad = device
+                .new_buffer_builder()
+                .with_size_for(m_pad * out_pad, DType::BF16)
+                .with_label("qmpp_pf.y")
+                .build()
+                .map_err(candle_core::Error::wrap)?;
+            let gate_pad = if gate_up {
+                Some(
+                    device
+                        .new_buffer_builder()
+                        .with_size_for(m_pad * out_pad, DType::BF16)
+                        .with_label("qmpp_pf.gate")
+                        .build()
+                        .map_err(candle_core::Error::wrap)?,
+                )
+            } else {
+                None
+            };
+
+            let encoder =
+                device.command_encoder().map_err(candle_core::Error::wrap)?;
+            encoder.set_label("affine_qmpp_prefill");
+            let enc_ref = &encoder;
+            {
+                let enc: &candle_metal_kernels::metal::ComputeCommandEncoder =
+                    enc_ref.encoder().as_ref();
+                enc.set_compute_pipeline_state(MPP_PAD_PIPE.get().unwrap());
+                enc.set_input_buffer(0, Some(s_x.buffer()), l_x.start_offset() * 2);
+                enc.set_output_buffer(1, Some(&x_pad), 0);
+                let dims: [i32; 3] =
+                    [self.m as i32, self.inp as i32, m_pad as i32];
+                enc.set_bytes(2, &dims);
+                enc.dispatch_thread_groups(
+                    MTLSize {
+                        width: (m_pad * self.inp).div_ceil(256),
+                        height: 1,
+                        depth: 1,
+                    },
+                    MTLSize { width: 256, height: 1, depth: 1 },
+                );
+            }
+            {
+                let enc: &candle_metal_kernels::metal::ComputeCommandEncoder =
+                    enc_ref.encoder().as_ref();
+                enc.set_compute_pipeline_state(MPP_PF_SUMS_PIPE.get().unwrap());
+                enc.set_input_buffer(0, Some(&x_pad), 0);
+                enc.set_output_buffer(1, Some(&sums), 0);
+                let in_dim = self.inp as i32;
+                enc.set_bytes(2, &in_dim);
+                enc.dispatch_thread_groups(
+                    MTLSize { width: row_tiles, height: 1, depth: 1 },
+                    MTLSize { width: 256, height: 1, depth: 1 },
+                );
+            }
+            // tile pass(es): gate_up runs gate→scratch then up+silu·gate
+            let (first_w, second) = if gate_up {
+                (
+                    // gate stream: tiles [0, up_tile)
+                    Some((0usize, 0usize)),
+                    Some((self.up_tile * ng * 8192, self.up_tile * ng * 256)),
+                )
+            } else {
+                (Some((0, 0)), None)
+            };
+            for (idx, offs) in [first_w, second].into_iter().enumerate() {
+                let Some((w_off, s_off)) = offs else { continue };
+                let silu = idx == 1;
+                let enc: &candle_metal_kernels::metal::ComputeCommandEncoder =
+                    enc_ref.encoder().as_ref();
+                enc.set_compute_pipeline_state(
+                    if silu {
+                        MPP_PF_UP_PIPE.get().unwrap()
+                    } else {
+                        MPP_PF_PIPE.get().unwrap()
+                    },
+                );
+                enc.set_input_buffer(0, Some(&x_pad), 0);
+                enc.set_input_buffer(1, Some(s_wq.buffer()), l_wq.start_offset() * 4);
+                enc.set_input_buffer(2, Some(s_sb.buffer()), l_sb.start_offset() * 2);
+                enc.set_input_buffer(
+                    3,
+                    Some(if silu {
+                        gate_pad.as_ref().unwrap()
+                    } else {
+                        &y_pad
+                    }),
+                    0,
+                );
+                enc.set_output_buffer(
+                    4,
+                    Some(if silu {
+                        &y_pad
+                    } else if gate_up {
+                        gate_pad.as_ref().unwrap()
+                    } else {
+                        &y_pad
+                    }),
+                    0,
+                );
+                enc.set_input_buffer(5, Some(&sums), 0);
+                let p2 = MppParams { up_woff: w_off as i32, up_soff: s_off as i32, ..params };
+                enc.set_bytes(6, &p2);
+                enc.dispatch_thread_groups(
+                    MTLSize { width: row_tiles, height: out_tiles, depth: 1 },
+                    MTLSize { width: 256, height: 1, depth: 1 },
+                );
+            }
+            let out = MetalStorage::new(
+                y_pad,
+                device.clone(),
+                m_pad * out_pad,
+                DType::BF16,
+            );
+            Ok((out, (m_pad, out_pad).into()))
         }
     }
 
