@@ -2,41 +2,32 @@ import AppKit
 
 /// Menu-bar status icon: CPU + MEM activity rings, mirroring the notch
 /// collapsed rings (red CPU, cyan memory). One concentric gauge — outer ring
-/// is CPU, inner is MEM — in a 22x22 canvas so the item sits at standard
-/// menu-bar size (the old 46pt side-by-side layout overflowed busy bars).
+/// is CPU, inner is MEM.
+///
+/// HIG: menu-bar extras are small glyphs centered in the square status-item
+/// slot, not edge-to-edge art. 18x18pt is the conventional glyph size in the
+/// ~24pt bar (a 22pt image left ~1pt margins and read as clipped/bleeding).
+/// The image is drawn via `NSImage(size:flipped:drawingHandler:)` so AppKit
+/// re-renders it at the destination display's backing scale — a baked 2x
+/// bitmap downsampled to 1x (clamshell external panels) blurred the strokes.
 /// Track rings use a mid-gray that reads on both light and dark menu bars;
-/// the colored arcs carry the meaning. Rendered with CoreGraphics into a 2x
-/// bitmap — no hosting view, so status-button click behavior is untouched.
-/// Redrawn on the 2s system tick; a 44x44 bitmap encode is microseconds.
+/// the colored arcs carry the meaning. Redrawn on the 2s system tick.
 enum StatusIcon {
+    static let glyphSize: CGFloat = 18
+
     static func image(cpuPercent: Double, memPercent: Double) -> NSImage {
-        let w: CGFloat = 22, h: CGFloat = 22, scale: CGFloat = 2
-        let size = NSSize(width: w, height: h)
-        guard let rep = NSBitmapImageRep(
-            bitmapDataPlanes: nil,
-            pixelsWide: Int(w * scale), pixelsHigh: Int(h * scale),
-            bitsPerSample: 8, samplesPerPixel: 4,
-            hasAlpha: true, isPlanar: false,
-            colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)
-        else {
-            return NSImage(size: size)
+        let size = NSSize(width: glyphSize, height: glyphSize)
+        return NSImage(size: size, flipped: false) { rect in
+            guard let ctx = NSGraphicsContext.current?.cgContext else { return false }
+            ctx.setLineWidth(1.8)
+            ctx.setLineCap(.round)
+            let center = CGPoint(x: rect.midX, y: rect.midY)
+            ring(ctx, center: center, radius: 7.1,
+                 fraction: cpuPercent / 100, color: NSColor.systemRed)
+            ring(ctx, center: center, radius: 3.6,
+                 fraction: memPercent / 100, color: NSColor.systemCyan)
+            return true
         }
-        rep.size = size
-        let img = NSImage(size: size)
-        img.addRepresentation(rep)
-        NSGraphicsContext.saveGraphicsState()
-        NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
-        defer { NSGraphicsContext.restoreGraphicsState() }
-        guard let ctx = NSGraphicsContext.current?.cgContext else { return img }
-        ctx.scaleBy(x: scale, y: scale)
-        ctx.setLineWidth(2.0)
-        ctx.setLineCap(.round)
-        let center = CGPoint(x: w / 2, y: h / 2)
-        ring(ctx, center: center, radius: 8.6,
-             fraction: cpuPercent / 100, color: NSColor.systemRed)
-        ring(ctx, center: center, radius: 4.6,
-             fraction: memPercent / 100, color: NSColor.systemCyan)
-        return img
     }
 
     private static func ring(_ ctx: CGContext, center: CGPoint, radius: CGFloat, fraction: Double, color: NSColor) {
