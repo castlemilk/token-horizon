@@ -29,6 +29,14 @@ pub struct EngineConfig {
     /// Prompt tokens per forward pass during prefill.
     #[serde(default = "default_prefill_step")]
     pub prefill_step: usize,
+    /// N-gram speculative-decode draft length (0 = off, max 7).
+    #[serde(default = "default_spec_tokens")]
+    pub spec_tokens: usize,
+    /// TurboQuant-style compressed KV cache on the full-attention
+    /// layers (rotated + codebook-quantised, ~2-bit). Load-time only —
+    /// changing it via /engine/config takes effect on the next load.
+    #[serde(default)]
+    pub kv_quant: bool,
     /// 0 = nondeterministic.
     pub seed: u64,
     /// Hard ceiling on total KV positions (prompt + completion).
@@ -47,6 +55,9 @@ fn default_max_tokens() -> usize {
 fn default_prefill_step() -> usize {
     512
 }
+fn default_spec_tokens() -> usize {
+    4
+}
 
 impl Default for EngineConfig {
     fn default() -> Self {
@@ -58,6 +69,8 @@ impl Default for EngineConfig {
             repeat_last_n: 64,
             max_tokens: 512,
             prefill_step: 512,
+            spec_tokens: 4,
+            kv_quant: false,
             seed: 0,
             max_context: None,
         }
@@ -74,6 +87,8 @@ pub struct ConfigPatch {
     pub repeat_last_n: Option<usize>,
     pub max_tokens: Option<usize>,
     pub prefill_step: Option<usize>,
+    pub spec_tokens: Option<usize>,
+    pub kv_quant: Option<bool>,
     pub seed: Option<u64>,
     pub max_context: Option<Option<usize>>,
 }
@@ -100,6 +115,12 @@ impl EngineConfig {
         }
         if let Some(v) = p.prefill_step {
             self.prefill_step = v.max(32);
+        }
+        if let Some(v) = p.spec_tokens {
+            self.spec_tokens = v.min(7);
+        }
+        if let Some(v) = p.kv_quant {
+            self.kv_quant = v;
         }
         if let Some(v) = p.seed {
             self.seed = v;

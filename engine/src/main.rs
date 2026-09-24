@@ -15,6 +15,7 @@ mod model;
 mod quant_kernel;
 mod qwen35;
 mod server;
+mod turboquant;
 mod state;
 mod template;
 
@@ -68,6 +69,13 @@ enum Cmd {
         /// (prompt + max_tokens) would exceed this many KV positions.
         #[arg(long)]
         max_context: Option<usize>,
+        /// N-gram speculative-decode draft length (0 disables).
+        #[arg(long, default_value_t = 4)]
+        spec_tokens: usize,
+        /// TurboQuant-compressed KV cache on full-attention layers
+        /// (~6x less KV memory; eager ops — mainly a long-context win).
+        #[arg(long, default_value_t = false)]
+        kv_quant: bool,
     },
     /// Load a model, forward the given token ids, print top-8 logits.
     /// Parity/debugging aid — not used by the app.
@@ -108,12 +116,16 @@ async fn main() -> Result<()> {
             prefill_step,
             seed,
             max_context,
+            spec_tokens,
+            kv_quant,
         } => {
             let mut cfg = state::EngineConfig::default();
             cfg.max_tokens = max_tokens;
             cfg.prefill_step = prefill_step;
             cfg.seed = seed;
             cfg.max_context = max_context;
+            cfg.spec_tokens = spec_tokens.min(7);
+            cfg.kv_quant = kv_quant;
             if let Some(t) = temperature {
                 cfg.temperature = Some(t);
             }
@@ -143,6 +155,36 @@ async fn main() -> Result<()> {
                 model::resolve_and_load(&model, None, None).await?;
             let logits = loaded.backend.forward(&ids, 0, &loaded.device)?;
             let v: Vec<f32> = logits.to_vec1()?;
+            if let Ok(m) = std::env::var("TH_BENCH_MULTI") {
+                let m: usize = m.parse().unwrap_or(5);
+                let dev = loaded.device.clone();
+                // warm
+                let mut pos = ids.len();
+                for _ in 0..3 {
+                    let lg = loaded.backend.forward(&[1u32], pos, &dev)?;
+                    pos += 1;
+                    let _ = lg.to_vec1::<f32>()?;
+                }
+                for _ in 0..3 {
+                    let t = std::time::Instant::now();
+                    let lg = loaded.backend.forward(&[1u32], pos, &dev)?;
+                    let _ = lg.to_vec1::<f32>()?;
+                    eprintln!("fwd1  {:.1}ms", t.elapsed().as_secs_f64() * 1e3);
+                    pos += 1;
+                }
+                for _ in 0..3 {
+                    let seq = vec![1u32; m];
+                    let t = std::time::Instant::now();
+                    let lg =
+                        loaded.backend.forward_multi(&seq, pos, &dev)?;
+                    let _ = lg.flatten_all()?.to_vec1::<f32>()?;
+                    eprintln!(
+                        "fwd{m}  {:.1}ms",
+                        t.elapsed().as_secs_f64() * 1e3
+                    );
+                    pos += m;
+                }
+            }
             if let Some(path) = dump {
                 let bytes: Vec<u8> =
                     v.iter().flat_map(|f| f.to_le_bytes()).collect();

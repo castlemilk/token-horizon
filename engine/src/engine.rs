@@ -11,7 +11,7 @@ use crate::model::{self, ModelBackend};
 use crate::state::{EngineConfig, EngineState, RequestRecord};
 use crate::template::{self, ChatMessage};
 use anyhow::{bail, Result};
-use candle_core::{DType, Tensor};
+use candle_core::{DType, IndexOp, Tensor};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
@@ -62,6 +62,9 @@ pub struct DoneStats {
     pub decode_tps: f64,
     pub prefill_tps: f64,
     pub finish: String,
+    /// Speculative-decode verify rounds and accepted draft tokens.
+    pub spec_rounds: u64,
+    pub spec_accepted: u64,
 }
 
 impl Engine {
@@ -71,7 +74,12 @@ impl Engine {
         tokenizer_src: Option<&str>,
         cfg: EngineConfig,
     ) -> Result<Self> {
-        let loaded = model::resolve_and_load(model, file, tokenizer_src).await?;
+        let mut loaded = model::resolve_and_load(model, file, tokenizer_src).await?;
+        if cfg.kv_quant {
+            if let model::ModelBackend::Qwen35(m) = &mut loaded.backend {
+                m.enable_kv_quant()?;
+            }
+        }
         let model_id = model.to_string();
         let meta = loaded.meta.clone();
         let inner = ModelInner {
@@ -158,6 +166,8 @@ struct ResolvedSampling {
     repeat_last_n: usize,
     max_tokens: usize,
     prefill_step: usize,
+    spec_tokens: usize,
+    kv_quant: bool,
     seed: u64,
     max_context: Option<usize>,
     stop: Vec<String>,
@@ -172,6 +182,8 @@ fn resolve_sampling(req: &RequestSampling, cfg: &EngineConfig) -> ResolvedSampli
         repeat_last_n: cfg.repeat_last_n,
         max_tokens: req.max_tokens.unwrap_or(cfg.max_tokens),
         prefill_step: cfg.prefill_step,
+        spec_tokens: cfg.spec_tokens,
+        kv_quant: cfg.kv_quant,
         seed: req.seed.unwrap_or(cfg.seed),
         max_context: cfg.max_context,
         stop: req.stop.clone().unwrap_or_default(),
@@ -220,21 +232,26 @@ fn generate_blocking(
         serde_json::json!({"id": id, "prompt_tokens": n_prompt}),
     );
 
+    // kv_quant is live-tunable between requests — the clear right after
+    // guarantees a toggle never mixes raw and compressed cache state.
+    inner.backend.set_kv_quant(sp.kv_quant)?;
     inner.backend.clear_kv_cache();
     let device = inner.device.clone();
     let eos_ids = inner.eos_ids.clone();
+    let tokenizer = inner.tokenizer.clone();
     let cancel = Arc::new(AtomicBool::new(false));
 
     let mut sampler = Sampler::new(&sp, sp.seed.max(1));
 
     let mut pos = 0usize;
-    let mut next_token: Option<u32> = None;
     let mut completion: Vec<u32> = Vec::new();
     let mut text_out = String::new();
     let mut ttft_ms = 0.0f64;
     let mut finish = "stop";
     let mut decode_ms_total = 0.0f64;
     let mut prefill_ms_total = 0.0f64;
+    let mut spec_rounds = 0u64;
+    let mut spec_accepted = 0u64;
 
     // --- prefill: chunked forward over the prompt, sample once at the end
     let mut last_logits: Option<Tensor> = None;
@@ -244,83 +261,165 @@ fn generate_blocking(
         prefill_ms_total += t.elapsed().as_secs_f64() * 1000.0;
         pos += chunk.len();
     }
-    if let Some(logits) = last_logits {
-        next_token = Some(sampler.sample(
-            &logits,
-            &completion,
-            &prompt_tokens,
-            sp.repeat_penalty,
-            sp.repeat_last_n,
-        )?);
-    }
 
-    // first sampled token = TTFT boundary
-    if next_token.is_some() {
-        ttft_ms = started.elapsed().as_secs_f64() * 1000.0;
-        if tx.send(GenEvent::FirstToken { ttft_ms }).is_err() {
-            cancel.store(true, Ordering::Relaxed);
-        }
-    }
+    // --- decode loop
+    //
+    // Invariant: `pending` = logits predicting the token at index `pos`.
+    // N-gram speculative decode: after committing a token we search the
+    // prompt+completion history for the most recent occurrence of the
+    // trailing n-gram and propose its continuation. The target verifies
+    // all draft tokens in one batched forward (packed-weights qmm); each
+    // emitted token is still sampled from the target's own distribution,
+    // so output semantics are unchanged. On a mid-run mismatch we
+    // restore the pre-verify snapshot and re-forward the committed run.
+    let spec_k = sp.spec_tokens.min(7);
+    let spec = spec_k > 0 && inner.backend.spec_capable();
+    // adaptive gate: a verify round costs ~1.9x a single-token pass, so
+    // it only pays when it commits >= ~2 tokens. EMA of accepted draft
+    // tokens per round; drafting pauses while it sits below 1.0.
+    let mut accept_ema = 1.5f64;
+    let mut hist = prompt_tokens.clone();
+    let mut pending: Option<Tensor> = last_logits;
+    let mut first = true;
+    let mut ec = EmitCtx {
+        completion: &mut completion,
+        hist: &mut hist,
+        text_out: &mut text_out,
+        tx,
+        tokenizer: &tokenizer,
+        eos_ids: &eos_ids,
+        stops: &sp.stop,
+        cancel: &cancel,
+        state,
+        max_tokens: sp.max_tokens,
+        max_ctx: sp.max_context,
+    };
 
-    // --- decode: one token per forward
-    loop {
-        let Some(tok) = next_token else { break };
+    'outer: loop {
         if cancel.load(Ordering::Relaxed) {
             finish = "cancelled";
             break;
         }
-        completion.push(tok);
-        state.kv_tokens.store((pos + 1) as u64, Ordering::Relaxed);
+        let Some(pl) = pending.take() else {
+            break;
+        };
+        let base_pos = pos;
+        let t0 = Instant::now();
+        let tok = sampler.sample(
+            &pl,
+            ec.completion,
+            &prompt_tokens,
+            sp.repeat_penalty,
+            sp.repeat_last_n,
+        )?;
+        let mut step_ms = t0.elapsed().as_secs_f64() * 1000.0;
 
-        if eos_ids.contains(&tok) {
+        if let Emit::Done(r) = emit_token(&mut ec, tok, base_pos) {
+            finish = r;
             break;
         }
-        let piece = inner
-            .tokenizer
-            .decode(&[tok], true)
-            .unwrap_or_default();
-        text_out.push_str(&piece);
-        if tx.send(GenEvent::Delta(piece)).is_err() {
-            finish = "cancelled";
-            break;
-        }
-        if stop_hit(&text_out, &sp.stop) {
-            truncate_at_stop(&mut text_out, &sp.stop);
-            break;
-        }
-        if completion.len() >= sp.max_tokens {
-            finish = "length";
-            break;
-        }
-        if let Some(max_ctx) = sp.max_context {
-            if pos >= max_ctx {
-                finish = "length";
+        pos = base_pos + 1;
+        if first {
+            first = false;
+            ttft_ms = started.elapsed().as_secs_f64() * 1000.0;
+            if tx.send(GenEvent::FirstToken { ttft_ms }).is_err() {
+                finish = "cancelled";
                 break;
             }
         }
 
+        let draft = if spec && accept_ema >= 1.0 {
+            ngram_draft(ec.hist, spec_k)
+        } else {
+            Vec::new()
+        };
+        if !draft.is_empty() {
+            let snap = inner.backend.snapshot()?;
+            let mut seq = Vec::with_capacity(draft.len() + 1);
+            seq.push(tok);
+            seq.extend_from_slice(&draft);
+            let t = Instant::now();
+            let logits_m =
+                inner.backend.forward_multi(&seq, base_pos, &device)?;
+            let mut committed: Vec<u32> = vec![tok];
+            let mut mismatch = false;
+            for j in 1..=draft.len() {
+                let cj = sampler.sample(
+                    &logits_m.i(j - 1)?,
+                    ec.completion,
+                    &prompt_tokens,
+                    sp.repeat_penalty,
+                    sp.repeat_last_n,
+                )?;
+                let commit = if cj == draft[j - 1] {
+                    spec_accepted += 1;
+                    draft[j - 1]
+                } else {
+                    mismatch = true;
+                    cj
+                };
+                committed.push(commit);
+                if let Emit::Done(r) =
+                    emit_token(&mut ec, commit, base_pos + committed.len() - 1)
+                {
+                    finish = r;
+                    break 'outer;
+                }
+                if mismatch {
+                    break;
+                }
+            }
+            spec_rounds += 1;
+            let accepted = (committed.len() - 1) as f64 - mismatch as u8 as f64;
+            accept_ema += 0.3 * (accepted - accept_ema);
+            let verify_ms = t.elapsed().as_secs_f64() * 1000.0;
+            step_ms += verify_ms;
+            pos = base_pos + committed.len();
+            let mut refwd_ms = 0.0;
+            if mismatch {
+                // rollback verify-state, re-forward the committed run in
+                // one batched pass — its last logits row is the pending
+                let tr = Instant::now();
+                inner.backend.restore(snap);
+                let lg = inner
+                    .backend
+                    .forward_multi(&committed, base_pos, &device)?;
+                refwd_ms = tr.elapsed().as_secs_f64() * 1000.0;
+                step_ms += refwd_ms;
+                pending = Some(lg.i(committed.len() - 1)?);
+            } else {
+                pending = Some(logits_m.i(committed.len() - 1)?);
+            }
+            decode_ms_total += step_ms;
+            state.counters.observe_decode(step_ms);
+            if std::env::var("TH_DEBUG_TIMING").is_ok() {
+                eprintln!(
+                    "[spec] draft={} committed={} verify={:.1}ms refwd={:.1}ms",
+                    draft.len(),
+                    committed.len(),
+                    verify_ms,
+                    refwd_ms
+                );
+            }
+            continue;
+        }
+
+        // plain single-token step; drift the gate back up so drafting
+        // is retried if the text turns repetitive later
+        accept_ema += 0.02 * (1.5 - accept_ema);
         let t = Instant::now();
-        let logits = inner.backend.forward(&[tok], pos, &device)?;
+        let logits = inner.backend.forward(&[tok], base_pos, &device)?;
         let fwd_ms = t.elapsed().as_secs_f64() * 1000.0;
         let ts = Instant::now();
-        next_token = Some(sampler.sample(
-            &logits,
-            &completion,
-            &prompt_tokens,
-            sp.repeat_penalty,
-            sp.repeat_last_n,
-        )?);
-        // sample() blocks on logits readback — this is where the GPU
-        // actually finishes. Report the honest per-token cost.
-        let ms = t.elapsed().as_secs_f64() * 1000.0;
-        decode_ms_total += ms;
-        state.counters.observe_decode(ms);
-        pos += 1;
+        pending = Some(logits);
+        step_ms += t.elapsed().as_secs_f64() * 1000.0;
+        decode_ms_total += step_ms;
+        state.counters.observe_decode(step_ms);
         if std::env::var("TH_DEBUG_TIMING").is_ok() {
             eprintln!(
                 "[tok] fwd={:.1}ms sample={:.1}ms",
                 fwd_ms,
-                ts.elapsed().as_secs_f64() * 1000.0
+                step_ms - ts.elapsed().as_secs_f64() * 1000.0 - fwd_ms
             );
         }
     }
@@ -355,6 +454,8 @@ fn generate_blocking(
         decode_tps,
         prefill_tps,
         finish: finish.to_string(),
+        spec_rounds,
+        spec_accepted,
     };
     let _ = tx.send(GenEvent::Done(Box::new(stats)));
 
@@ -509,4 +610,78 @@ fn truncate_at_stop(text: &mut String, stops: &[String]) {
             text.truncate(i);
         }
     }
+}
+
+// MARK: - emit + n-gram draft
+
+enum Emit {
+    More,
+    Done(&'static str),
+}
+
+/// Everything `emit_token` needs — bundled so the decode loop stays
+/// readable.
+struct EmitCtx<'a> {
+    completion: &'a mut Vec<u32>,
+    hist: &'a mut Vec<u32>,
+    text_out: &'a mut String,
+    tx: &'a mpsc::UnboundedSender<GenEvent>,
+    tokenizer: &'a tokenizers::Tokenizer,
+    eos_ids: &'a [u32],
+    stops: &'a [String],
+    cancel: &'a AtomicBool,
+    state: &'a EngineState,
+    max_tokens: usize,
+    max_ctx: Option<usize>,
+}
+
+/// Commit one token: record it, publish the delta, apply stop rules.
+/// `pos` is the token's absolute KV index.
+fn emit_token(c: &mut EmitCtx, tok: u32, pos: usize) -> Emit {
+    c.completion.push(tok);
+    c.hist.push(tok);
+    c.state.kv_tokens.store((pos + 1) as u64, Ordering::Relaxed);
+    if c.cancel.load(Ordering::Relaxed) {
+        return Emit::Done("cancelled");
+    }
+    if c.eos_ids.contains(&tok) {
+        return Emit::Done("stop");
+    }
+    let piece = c.tokenizer.decode(&[tok], true).unwrap_or_default();
+    c.text_out.push_str(&piece);
+    if c.tx.send(GenEvent::Delta(piece)).is_err() {
+        return Emit::Done("cancelled");
+    }
+    if stop_hit(c.text_out, c.stops) {
+        truncate_at_stop(c.text_out, c.stops);
+        return Emit::Done("stop");
+    }
+    if c.completion.len() >= c.max_tokens {
+        return Emit::Done("length");
+    }
+    if let Some(m) = c.max_ctx {
+        if pos + 1 >= m {
+            return Emit::Done("length");
+        }
+    }
+    Emit::More
+}
+
+/// Prompt-lookup / n-gram draft: find the most recent earlier occurrence
+/// of the trailing n-gram in the token history and propose its
+/// continuation (up to `k` tokens). Empty when no match.
+fn ngram_draft(hist: &[u32], k: usize) -> Vec<u32> {
+    const N: usize = 3;
+    if hist.len() < N + 1 {
+        return Vec::new();
+    }
+    let n = N.min(hist.len() - 1);
+    let pat = &hist[hist.len() - n..];
+    for i in (0..hist.len() - n).rev() {
+        if &hist[i..i + n] == pat {
+            let start = i + n;
+            return hist[start..(start + k).min(hist.len())].to_vec();
+        }
+    }
+    Vec::new()
 }

@@ -24,6 +24,11 @@ pub enum ModelBackend {
     Qwen35(crate::qwen35::Qwen35),
 }
 
+/// Opaque per-backend state snapshot for spec-decode rollback.
+pub enum BackendSnapshot {
+    Qwen35(Box<crate::qwen35::Snapshot>),
+}
+
 impl ModelBackend {
     /// Returns logits for the last input position, shape (vocab,).
     pub fn forward(&mut self, tokens: &[u32], pos: usize, device: &Device) -> Result<Tensor> {
@@ -47,6 +52,49 @@ impl ModelBackend {
             Self::Qwen35(m) => m.forward(tokens, pos)?,
         };
         Ok(out.to_dtype(DType::F32)?)
+    }
+
+    /// Logits for every input position — `[seq, vocab]`. Speculative
+    /// verify only; qwen3_5-only for now.
+    pub fn forward_multi(
+        &mut self,
+        tokens: &[u32],
+        pos: usize,
+        _device: &Device,
+    ) -> Result<Tensor> {
+        match self {
+            Self::Qwen35(m) => m.forward_multi(tokens, pos),
+            _ => bail!("forward_multi not supported by this backend"),
+        }
+    }
+
+    /// Speculative decode requires snapshot/rollback of all mutable
+    /// state (KV cache, GDN recurrence, conv window).
+    pub fn spec_capable(&self) -> bool {
+        matches!(self, Self::Qwen35(_))
+    }
+
+    /// Runtime KV-quantisation toggle (qwen3_5 only; clears the cache —
+    /// callers must invoke between requests).
+    pub fn set_kv_quant(&mut self, on: bool) -> Result<()> {
+        if let Self::Qwen35(m) = self {
+            m.set_kv_quant(on)?;
+        }
+        Ok(())
+    }
+
+    pub fn snapshot(&mut self) -> Result<BackendSnapshot> {
+        match self {
+            Self::Qwen35(m) => Ok(BackendSnapshot::Qwen35(Box::new(m.snapshot()?))),
+            _ => bail!("snapshot not supported by this backend"),
+        }
+    }
+
+    pub fn restore(&mut self, snap: BackendSnapshot) {
+        match (self, snap) {
+            (Self::Qwen35(m), BackendSnapshot::Qwen35(s)) => m.restore(*s),
+            _ => {}
+        }
     }
 
     pub fn clear_kv_cache(&mut self) {

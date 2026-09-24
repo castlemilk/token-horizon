@@ -99,6 +99,10 @@ async fn status(State(app): State<Arc<App>>) -> Json<Value> {
             "decode_tps": f64::from_bits(s.counters.last_decode_tps_bits.load(Ordering::Relaxed)),
         },
         "kv": {"tokens": s.kv_tokens.load(Ordering::Relaxed)},
+        "features": {
+            "spec_decode": s.config.read().unwrap().spec_tokens > 0,
+            "kv_quant": s.config.read().unwrap().kv_quant,
+        },
         "memory": {"rss_bytes": rss_bytes()},
         "rss_bytes": rss_bytes(),
     }))
@@ -221,6 +225,7 @@ async fn run_chat(
         let d = done.map(|s| *s).unwrap_or(DoneStats {
             prompt_tokens: 0, completion_tokens: 0, ttft_ms: 0.0,
             total_ms: 0.0, decode_tps: 0.0, prefill_tps: 0.0, finish: "stop".into(),
+            spec_rounds: 0, spec_accepted: 0,
         });
         return Json(json!({
             "id": id, "object": "chat.completion", "created": unix_now(),
@@ -231,7 +236,9 @@ async fn run_chat(
                       "completion_tokens": d.completion_tokens,
                       "total_tokens": d.prompt_tokens + d.completion_tokens},
             "th_stats": {"ttft_ms": d.ttft_ms, "decode_tps": d.decode_tps,
-                         "prefill_tps": d.prefill_tps, "total_ms": d.total_ms},
+                         "prefill_tps": d.prefill_tps, "total_ms": d.total_ms,
+                         "spec_rounds": d.spec_rounds,
+                         "spec_accepted": d.spec_accepted},
         }))
         .into_response();
     }
@@ -303,6 +310,7 @@ async fn messages(State(app): State<Arc<App>>, Json(req): Json<MessagesRequest>)
     let d = done.map(|s| *s).unwrap_or(DoneStats {
         prompt_tokens: 0, completion_tokens: 0, ttft_ms: 0.0,
         total_ms: 0.0, decode_tps: 0.0, prefill_tps: 0.0, finish: "stop".into(),
+        spec_rounds: 0, spec_accepted: 0,
     });
     Json(json!({
         "id": format!("msg_{:x}", unix_now_ns()),

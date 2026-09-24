@@ -309,8 +309,8 @@ impl QLin {
         let in_d = *dims.last().unwrap();
         let rows: usize = dims[..dims.len() - 1].iter().product();
         #[cfg(all(feature = "metal", target_os = "macos"))]
-        if x.device().is_metal() {
-            if rows == 1 && in_d % 32 == 0 {
+        if x.device().is_metal() && in_d % 32 == 0 {
+            if rows == 1 {
                 // fused dequant-matvec — reads packed weights only
                 let xv = x.reshape((in_d,))?.contiguous()?;
                 let y = self.wq.apply_op3_no_bwd(
@@ -320,6 +320,24 @@ impl QLin {
                         inp: self.inp,
                         out: self.out,
                         gs: self.gs,
+                    },
+                )?;
+                let mut out = dims;
+                *out.last_mut().unwrap() = self.out;
+                return Ok(y.reshape(out)?);
+            }
+            if rows <= 8 {
+                // spec-decode verify / short batch — packed weight read
+                // once for all M rows
+                let xv = x.reshape((rows, in_d))?.contiguous()?;
+                let y = self.wq.apply_op3_no_bwd(
+                    &self.sb,
+                    &xv,
+                    &crate::quant_kernel::AffineQmm {
+                        inp: self.inp,
+                        out: self.out,
+                        gs: self.gs,
+                        m: rows,
                     },
                 )?;
                 let mut out = dims;
@@ -469,6 +487,18 @@ struct GdnState {
     recurrent: Tensor, // [Hv, Dv, Dk] f32
 }
 
+/// Pre-verify state for speculative decode rollback. Conv views and KV
+/// tensors are never mutated in place (cat/narrow allocate new buffers),
+/// so clones are cheap; the fused kernel does update `recurrent` in
+/// place, so the live tensor is swapped for a fresh copy and the
+/// snapshot keeps the original.
+pub struct Snapshot {
+    gdn: Vec<Option<(Tensor, Tensor)>>,
+    kv: Vec<Option<(Tensor, Tensor)>>,
+    kvq: Vec<crate::turboquant::QuantKv>,
+    kv_tokens: usize,
+}
+
 pub struct Qwen35 {
     embed: Tensor,
     layers: Vec<Layer>,
@@ -478,6 +508,10 @@ pub struct Qwen35 {
     device: Device,
     gdn: Vec<Option<GdnState>>,
     kv: Vec<Option<(Tensor, Tensor)>>, // [n_kv, seq, head_dim] bf16
+    /// TurboQuant-compressed KV (full-attention layers only) — used
+    /// instead of `kv` when `tq` is set.
+    kvq: Vec<crate::turboquant::QuantKv>,
+    tq: Option<crate::turboquant::TurboQuant>,
     pub kv_tokens: usize,
     debug: bool,
 }
@@ -644,9 +678,71 @@ impl Qwen35 {
             device: device.clone(),
             gdn,
             kv,
+            kvq: vec![crate::turboquant::QuantKv::default(); cfg.num_hidden_layers],
+            tq: None,
             kv_tokens: 0,
             debug: std::env::var("TH_DEBUG_LAYERS").is_ok(),
         })
+    }
+
+    /// Enable TurboQuant-compressed KV caches on the full-attention
+    /// layers. Called post-load when EngineConfig.kv_quant is set.
+    pub fn enable_kv_quant(&mut self) -> Result<()> {
+        if self.tq.is_none() {
+            self.tq = Some(crate::turboquant::TurboQuant::new(
+                self.cfg.head_dim,
+                &self.device,
+            )?);
+        }
+        Ok(())
+    }
+
+    /// Runtime toggle — only safe between requests (the generation loop
+    /// clears caches at request start anyway).
+    pub fn set_kv_quant(&mut self, on: bool) -> Result<()> {
+        if on {
+            self.enable_kv_quant()?;
+        } else {
+            self.tq = None;
+        }
+        self.clear_kv_cache();
+        Ok(())
+    }
+
+
+    /// Snapshot all mutable state for speculative-verify rollback.
+    pub fn snapshot(&mut self) -> Result<Snapshot> {
+        let mut gdn = Vec::with_capacity(self.gdn.len());
+        for st in self.gdn.iter_mut() {
+            match st {
+                Some(s) => {
+                    // real device copy — the kernel writes in place
+                    let copy = s.recurrent.affine(1.0, 0.0)?;
+                    let orig = std::mem::replace(&mut s.recurrent, copy);
+                    gdn.push(Some((s.conv.clone(), orig)));
+                }
+                None => gdn.push(None),
+            }
+        }
+        Ok(Snapshot {
+            gdn,
+            kv: self.kv.clone(),
+            kvq: self.kvq.clone(),
+            kv_tokens: self.kv_tokens,
+        })
+    }
+
+    /// Restore a snapshot taken by `snapshot()`.
+    pub fn restore(&mut self, snap: Snapshot) {
+        for (st, s) in self.gdn.iter_mut().zip(snap.gdn) {
+            if let (Some(st), Some((conv, rec))) = (st, s) {
+                st.conv = conv;
+                st.recurrent = rec;
+            }
+        }
+        self.kv = snap.kv;
+        self.kvq = snap.kvq;
+        self.kv_tokens = snap.kv_tokens;
     }
 
     pub fn clear_kv_cache(&mut self) {
@@ -669,6 +765,9 @@ impl Qwen35 {
                 )
                 .unwrap(),
             );
+        }
+        for q in self.kvq.iter_mut() {
+            *q = crate::turboquant::QuantKv::default();
         }
         self.kv_tokens = 0;
     }
@@ -862,9 +961,13 @@ impl Qwen35 {
     }
 
     /// Full attention with per-head output gate, GQA, partial rope.
+    /// When `tq` is set the KV cache is TurboQuant-compressed (`kvq`)
+    /// instead of raw bf16 (`kvc`).
     fn attn_forward(
         l: &AttnLayer,
         kvc: &mut (Tensor, Tensor),
+        kvq: &mut crate::turboquant::QuantKv,
+        tq: Option<&crate::turboquant::TurboQuant>,
         x: &Tensor,
         pos: usize,
         eps: f64,
@@ -886,6 +989,10 @@ impl Qwen35 {
         let v = v.transpose(0, 1)?; // [4, seq, 256]
         let q = Self::rope(&q, &l.cos, &l.sin, pos, l.rot_dim)?;
         let k = Self::rope(&k, &l.cos, &l.sin, pos, l.rot_dim)?;
+
+        if let Some(tq) = tq {
+            return Self::attn_quant(tq, l, kvq, &q, &k, &v, &gate, seq, pos, device);
+        }
 
         let (kc, vc) = kvc;
         let k_all = Tensor::cat(&[kc.clone(), k.squeeze(0)?], 1)?;
@@ -952,8 +1059,86 @@ impl Qwen35 {
         lin_apply(&out.unsqueeze(0)?, &l.o)
     }
 
+    /// TurboQuant attention path: k/v are encoded into the compressed
+    /// cache and attention runs in rotated space (rotate the query once,
+    /// rotate the output back once — the cache is never de-rotated).
+    /// `q`,`k` are post-rope [1, heads, seq, d]; `v` is [n_kv, seq, d].
+    fn attn_quant(
+        tq: &crate::turboquant::TurboQuant,
+        l: &AttnLayer,
+        kvq: &mut crate::turboquant::QuantKv,
+        q: &Tensor,
+        k: &Tensor,
+        v: &Tensor,
+        gate: &Tensor,
+        seq: usize,
+        pos: usize,
+        device: &Device,
+    ) -> Result<Tensor> {
+        let delta = tq.encode(&k.squeeze(0)?, v)?;
+        tq.append(kvq, delta)?;
+        let kv_seq = kvq.len();
+
+        let q2 = q.squeeze(0)?.transpose(0, 1)?; // [seq, 24, d]
+        let (qr, sq) = tq.rotate_q(&q2)?; // f32
+
+        let rep = l.n_heads / l.n_kv;
+        let scale = (l.head_dim as f64).powf(-0.5);
+        let mut scores_g = Vec::with_capacity(l.n_kv);
+        for g in 0..l.n_kv {
+            let qr_g = qr.narrow(1, g * rep, rep)?; // [seq, rep, d]
+            let sq_g = sq.narrow(1, g * rep, rep)?;
+            scores_g.push(tq.scores(&qr_g, &sq_g, kvq, g)?); // [seq,rep,T]
+        }
+        let scores = Tensor::cat(&scores_g, 1)?.affine(scale, 0.0)?;
+
+        let probs = if seq == 1 {
+            candle_nn::ops::softmax(&scores, D::Minus1)?
+        } else {
+            let mut mask = vec![f32::NEG_INFINITY; seq * kv_seq];
+            for i in 0..seq {
+                for m in mask.iter_mut().skip(i * kv_seq).take(pos + i + 1) {
+                    *m = 0.0;
+                }
+            }
+            let mask_t = Tensor::from_vec(mask, (seq, 1, kv_seq), device)?;
+            candle_nn::ops::softmax(
+                &scores.broadcast_add(&mask_t)?,
+                D::Minus1,
+            )?
+        };
+
+        let mut outs = Vec::with_capacity(l.n_kv);
+        for g in 0..l.n_kv {
+            let w_g = probs.narrow(1, g * rep, rep)?; // [seq, rep, T]
+            outs.push(tq.values(&w_g, kvq, g)?); // [seq, rep, d] f32
+        }
+        let out = Tensor::cat(&outs, 1)?.to_dtype(DType::BF16)?;
+        let out = out
+            .reshape((seq, l.n_heads * l.head_dim))?
+            .broadcast_mul(&candle_nn::ops::sigmoid(
+                &gate.reshape((seq, l.n_heads * l.head_dim))?,
+            )?)?;
+        lin_apply(&out.unsqueeze(0)?, &l.o)
+    }
+
     /// tokens at absolute position `pos` → logits (vocab,) for the last.
     pub fn forward(&mut self, tokens: &[u32], pos: usize) -> Result<Tensor> {
+        self.forward_inner(tokens, pos, true)
+    }
+
+    /// Same, but logits for every position — `[seq, vocab]`. Used by the
+    /// speculative-verify pass.
+    pub fn forward_multi(&mut self, tokens: &[u32], pos: usize) -> Result<Tensor> {
+        self.forward_inner(tokens, pos, false)
+    }
+
+    fn forward_inner(
+        &mut self,
+        tokens: &[u32],
+        pos: usize,
+        last_only: bool,
+    ) -> Result<Tensor> {
         let seq = tokens.len();
         let ids = Tensor::new(tokens, &self.device)?;
         let mut x = self.embed.i(&ids)?.unsqueeze(0)?; // [1, seq, hidden]
@@ -969,11 +1154,13 @@ impl Qwen35 {
                 }
                 Kind::Attn(l) => {
                     let mut kvc = self.kv[i].take().unwrap();
+                    let mut kvq = std::mem::take(&mut self.kvq[i]);
                     let r = Self::attn_forward(
-                        l, &mut kvc, &h, pos,
+                        l, &mut kvc, &mut kvq, self.tq.as_ref(), &h, pos,
                         self.cfg.rms_norm_eps, &self.device,
                     );
                     self.kv[i] = Some(kvc);
+                    self.kvq[i] = kvq;
                     r?
                 }
             };
@@ -995,9 +1182,17 @@ impl Qwen35 {
             }
         }
         let x = rms_norm(&x, &self.norm, self.cfg.rms_norm_eps)?;
-        let last = x.narrow(1, seq - 1, 1)?; // [1, 1, hidden]
-        let logits = lin_apply(&last, &self.lm_head)?.reshape((self.cfg.vocab_size,))?;
         self.kv_tokens = pos + seq;
-        Ok(logits.to_dtype(DType::F32)?)
+        if last_only {
+            let last = x.narrow(1, seq - 1, 1)?; // [1, 1, hidden]
+            let logits =
+                lin_apply(&last, &self.lm_head)?.reshape((self.cfg.vocab_size,))?;
+            return Ok(logits.to_dtype(DType::F32)?);
+        }
+        // [1, seq, vocab]
+        lin_apply(&x, &self.lm_head)?
+            .squeeze(0)?
+            .to_dtype(DType::F32)
+            .map_err(Into::into)
     }
 }

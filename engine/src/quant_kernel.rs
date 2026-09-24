@@ -15,7 +15,7 @@
 //! scales, [ng,2ng) biases.
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
-pub use metal_impl::{AffineDequant, AffineQmv};
+pub use metal_impl::{AffineDequant, AffineQmm, AffineQmv};
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
 mod metal_impl {
@@ -50,12 +50,30 @@ mod metal_impl {
         ng: i32,
     }
 
+    #[repr(C)]
+    struct QmmParams {
+        in_dim: i32,
+        out_dim: i32,
+        ng: i32,
+        m: i32,
+    }
+
+    /// Packed dims for `y[M,out] = x[M,in] @ W[out,in]` with W kept in
+    /// packed affine form. M ≤ 8 (spec-decode verify, short batches).
+    pub struct AffineQmm {
+        pub inp: usize,
+        pub out: usize,
+        pub gs: usize,
+        pub m: usize,
+    }
+
     // words per row = IN/8; GS % 8 == 0 so a word never spans groups.
     const QMV_SRC: &str = r#"
 #include <metal_stdlib>
 using namespace metal;
 
 struct QParams { int in_dim; int out_dim; int ng; };
+struct QmmParams { int in_dim; int out_dim; int ng; int m; };
 constant constexpr int GS = {GS};
 
 // 8 output rows per threadgroup — one simdgroup (32 lanes) per row.
@@ -100,6 +118,73 @@ kernel void affine_qmv(
     }
     acc = simd_sum(acc);
     if (lane == 0) y[row] = bfloat(acc);
+}
+
+// Batched variant for verify/short-batch forwards: one threadgroup per
+// output row, M token rows per pass — the packed weight is read once no
+// matter how many tokens we verify. M ≤ 8 accumulators in registers.
+kernel void affine_qmm(
+    device const uint*   wq [[buffer(0)]],
+    device const bfloat* sb [[buffer(1)]],
+    device const bfloat* x  [[buffer(2)]],   // [M, in_dim]
+    device bfloat*       y  [[buffer(3)]],   // [M, out_dim]
+    constant QmmParams&  p  [[buffer(4)]],
+    uint3 tgpos [[threadgroup_position_in_grid]],
+    uint  tid   [[thread_index_in_threadgroup]],
+    uint  lane  [[thread_index_in_simdgroup]],
+    uint  sg    [[simdgroup_index_in_threadgroup]])
+{
+    const int row = tgpos.x;
+    const int words = p.in_dim / 8;
+    device const uint* wrow = wq + row * words;
+    device const bfloat* srow = sb + row * 2 * p.ng;
+
+    // NB: the m-loops use constant bounds + a guard so `acc` stays in
+    // registers — a runtime `p.m` bound spills it to local memory.
+    // x is read as uint4 (8 bf16) once per token-row per weight word:
+    // scalar loads here made the multi-row pass ~6x slower than qmv.
+    float acc[8];
+    for (int m = 0; m < 8; ++m) acc[m] = 0.0f;
+
+    for (int wd = tid; wd < words; wd += 256) {
+        const uint pack = wrow[wd];
+        const int base = wd * 8;
+        const int g = base / GS;
+        const float sc = float(srow[g]);
+        const float bi = float(srow[p.ng + g]);
+        float ws[8];
+        #pragma clang loop unroll(full)
+        for (int nib = 0; nib < 8; ++nib)
+            ws[nib] = float((pack >> (nib * 4)) & 0xF) * sc + bi;
+        const int w4 = wd; // uint4 index into each x row
+        #pragma clang loop unroll(full)
+        for (int m = 0; m < 8; ++m) {
+            if (m >= p.m) break;
+            const uint4 xw =
+                ((device const uint4*)(x + m * p.in_dim))[w4];
+            const float2 x0 = float2(as_type<bfloat2>(xw.x));
+            const float2 x1 = float2(as_type<bfloat2>(xw.y));
+            const float2 x2 = float2(as_type<bfloat2>(xw.z));
+            const float2 x3 = float2(as_type<bfloat2>(xw.w));
+            acc[m] += ws[0] * x0.x + ws[1] * x0.y + ws[2] * x1.x +
+                      ws[3] * x1.y + ws[4] * x2.x + ws[5] * x2.y +
+                      ws[6] * x3.x + ws[7] * x3.y;
+        }
+    }
+    threadgroup float red[64]; // [8 sg][8 m]
+    #pragma clang loop unroll(full)
+    for (int m = 0; m < 8; ++m) {
+        acc[m] = simd_sum(acc[m]);
+        if (lane == 0) red[sg * 8 + m] = acc[m];
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (tid == 0) {
+        for (int m = 0; m < p.m; ++m) {
+            float t = 0.0f;
+            for (int j = 0; j < 8; ++j) t += red[j * 8 + m];
+            y[m * p.out_dim + row] = bfloat(t);
+        }
+    }
 }
 
 // one threadgroup (256 threads) per output row — the v1 layout.
@@ -171,6 +256,7 @@ kernel void affine_dequant(
 
     static QMV_PIPE: OnceLock<ComputePipeline> = OnceLock::new();
     static QMV_V1_PIPE: OnceLock<ComputePipeline> = OnceLock::new();
+    static QMM_PIPE: OnceLock<ComputePipeline> = OnceLock::new();
     static DEQ_PIPE: OnceLock<ComputePipeline> = OnceLock::new();
 
     fn compile(
@@ -290,6 +376,75 @@ kernel void affine_dequant(
                 DType::BF16,
             );
             Ok((storage, Shape::from((self.out,))))
+        }
+    }
+
+    impl CustomOp3 for AffineQmm {
+        fn name(&self) -> &'static str {
+            "affine-qmm"
+        }
+        fn cpu_fwd(
+            &self,
+            _: &CpuStorage, _: &Layout,
+            _: &CpuStorage, _: &Layout,
+            _: &CpuStorage, _: &Layout,
+        ) -> Result<(CpuStorage, Shape)> {
+            candle_core::bail!("affine-qmm: Metal only")
+        }
+
+        fn metal_fwd(
+            &self,
+            s_wq: &MetalStorage,
+            l_wq: &Layout,
+            s_sb: &MetalStorage,
+            l_sb: &Layout,
+            s_x: &MetalStorage,
+            l_x: &Layout,
+        ) -> Result<(MetalStorage, Shape)> {
+            check3(s_wq, l_wq, DType::U32, "wq")?;
+            check3(s_sb, l_sb, DType::BF16, "sb")?;
+            check3(s_x, l_x, DType::BF16, "x")?;
+            if self.m == 0 || self.m > 8 {
+                candle_core::bail!("affine-qmm: m {} out of range 1..=8", self.m);
+            }
+
+            let device = s_wq.device();
+            compile(&QMM_PIPE, QMV_SRC, self.gs, "affine_qmm", device)?;
+            let pipeline = QMM_PIPE.get().unwrap();
+
+            let elems = self.out * self.m;
+            let y_buf = device
+                .new_buffer_builder()
+                .with_size_for(elems, DType::BF16)
+                .with_label("qmm.y")
+                .build()
+                .map_err(candle_core::Error::wrap)?;
+
+            let encoder =
+                device.command_encoder().map_err(candle_core::Error::wrap)?;
+            encoder.set_label("affine_qmm");
+            let enc_ref = &encoder;
+            let enc: &candle_metal_kernels::metal::ComputeCommandEncoder =
+                enc_ref.encoder().as_ref();
+            enc.set_compute_pipeline_state(pipeline);
+            let params = QmmParams {
+                in_dim: self.inp as i32,
+                out_dim: self.out as i32,
+                ng: (self.inp / self.gs) as i32,
+                m: self.m as i32,
+            };
+            enc.set_input_buffer(0, Some(s_wq.buffer()), l_wq.start_offset() * 4);
+            enc.set_input_buffer(1, Some(s_sb.buffer()), l_sb.start_offset() * 2);
+            enc.set_input_buffer(2, Some(s_x.buffer()), l_x.start_offset() * 2);
+            enc.set_output_buffer(3, Some(&y_buf), 0);
+            enc.set_bytes(4, &params);
+            enc.dispatch_thread_groups(
+                MTLSize { width: self.out, height: 1, depth: 1 },
+                MTLSize { width: 256, height: 1, depth: 1 },
+            );
+            let storage =
+                MetalStorage::new(y_buf, device.clone(), elems, DType::BF16);
+            Ok((storage, Shape::from((self.m, self.out))))
         }
     }
 
