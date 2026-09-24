@@ -37,7 +37,7 @@ final class ShowTrayIconTests: XCTestCase {
         defer { store.surfaceMode = originalMode }
 
         let app = AppDelegate()
-        let hasNotch = NSScreen.screens.contains { $0.safeAreaInsets.top > 0 }
+        let hasNotch = NSScreen.screens.contains { $0.safeAreaInsets.top > 0 && $0.isActiveDisplay }
         store.surfaceMode = .tray
         XCTAssertEqual(app.resolveSurface(), .tray)
         store.surfaceMode = .notch

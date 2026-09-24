@@ -1,5 +1,17 @@
 import AppKit
+import CoreGraphics
 import SwiftUI
+
+extension NSScreen {
+    /// A screen that exists AND is actually driving pixels. A lid-closed
+    /// (clamshell) internal panel can linger in NSScreen.screens while
+    /// inactive — anchoring the notch UI there renders into a dead display.
+    var isActiveDisplay: Bool {
+        guard let key = deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber
+        else { return true }
+        return CGDisplayIsActive(CGDirectDisplayID(key.uint32Value)) != 0
+    }
+}
 
 final class NotchPanel: NSPanel {
     private let notchScreen: NSScreen?
@@ -44,7 +56,7 @@ final class NotchPanel: NSPanel {
 
     init(model: UIModel) {
         self.model = model
-        notchScreen = NSScreen.screens.first { $0.safeAreaInsets.top > 0 } ?? NSScreen.main
+        notchScreen = NSScreen.screens.first { $0.safeAreaInsets.top > 0 && $0.isActiveDisplay } ?? NSScreen.main
         let geo = Geometry.forScreen(notchScreen)
 
         super.init(contentRect: NSRect(origin: .zero, size: geo.collapsed),

@@ -1,12 +1,16 @@
 import AppKit
 
 /// Menu-bar status icon: CPU + MEM activity rings, mirroring the notch
-/// collapsed rings (red CPU, cyan memory). Rendered with CoreGraphics into a
-/// 2x bitmap — no hosting view, so status-button click behavior is untouched.
-/// Redrawn on the 2s system tick; a 92x44 bitmap encode is microseconds.
+/// collapsed rings (red CPU, cyan memory). One concentric gauge — outer ring
+/// is CPU, inner is MEM — in a 22x22 canvas so the item sits at standard
+/// menu-bar size (the old 46pt side-by-side layout overflowed busy bars).
+/// Track rings use a mid-gray that reads on both light and dark menu bars;
+/// the colored arcs carry the meaning. Rendered with CoreGraphics into a 2x
+/// bitmap — no hosting view, so status-button click behavior is untouched.
+/// Redrawn on the 2s system tick; a 44x44 bitmap encode is microseconds.
 enum StatusIcon {
     static func image(cpuPercent: Double, memPercent: Double) -> NSImage {
-        let w: CGFloat = 46, h: CGFloat = 22, scale: CGFloat = 2
+        let w: CGFloat = 22, h: CGFloat = 22, scale: CGFloat = 2
         let size = NSSize(width: w, height: h)
         guard let rep = NSBitmapImageRep(
             bitmapDataPlanes: nil,
@@ -25,17 +29,18 @@ enum StatusIcon {
         defer { NSGraphicsContext.restoreGraphicsState() }
         guard let ctx = NSGraphicsContext.current?.cgContext else { return img }
         ctx.scaleBy(x: scale, y: scale)
-        ctx.setLineWidth(2.5)
+        ctx.setLineWidth(2.0)
         ctx.setLineCap(.round)
-        ring(ctx, center: CGPoint(x: 11, y: 11), radius: 7.5,
+        let center = CGPoint(x: w / 2, y: h / 2)
+        ring(ctx, center: center, radius: 8.6,
              fraction: cpuPercent / 100, color: NSColor.systemRed)
-        ring(ctx, center: CGPoint(x: 33, y: 11), radius: 7.5,
+        ring(ctx, center: center, radius: 4.6,
              fraction: memPercent / 100, color: NSColor.systemCyan)
         return img
     }
 
     private static func ring(_ ctx: CGContext, center: CGPoint, radius: CGFloat, fraction: Double, color: NSColor) {
-        NSColor.white.withAlphaComponent(0.18).setStroke()
+        NSColor.gray.withAlphaComponent(0.4).setStroke()
         ctx.addArc(center: center, radius: radius, startAngle: 0, endAngle: .pi * 2, clockwise: false)
         ctx.strokePath()
         let clamped = max(0, min(1, fraction))

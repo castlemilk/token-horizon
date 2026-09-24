@@ -235,7 +235,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     }
 
     private var hasNotch: Bool {
-        NSScreen.screens.contains { $0.safeAreaInsets.top > 0 }
+        // Active-display check matters on clamshell rigs: the lid-closed
+        // internal panel can linger in NSScreen.screens while inactive.
+        NSScreen.screens.contains { $0.safeAreaInsets.top > 0 && $0.isActiveDisplay }
     }
 
     func rebuildSurfaces() {
