@@ -356,6 +356,7 @@ fn generate_blocking(
                     let snap = inner.backend.snapshot()?;
                     let logits_m =
                         inner.backend.forward_multi(&seq, pos, &device)?;
+                    let t_fwd_enqueue = t0.elapsed();
                     let caps = inner.backend.take_captures()?;
                     // one [n+1, vocab] readback for the whole accept pass —
                     // bf16 halves the transfer vs an f32 convert+copy —
@@ -363,6 +364,13 @@ fn generate_blocking(
                     let mut rows: Vec<Vec<half::bf16>> =
                         logits_m.to_vec2()?;
                     let t_verify = t0.elapsed();
+                    if std::env::var("TH_DEBUG_TIMING").is_ok() {
+                        eprintln!(
+                            "  [verify] enqueue={:.1}ms gpu+readback={:.1}ms",
+                            t_fwd_enqueue.as_secs_f64() * 1e3,
+                            (t_verify - t_fwd_enqueue).as_secs_f64() * 1e3,
+                        );
+                    }
                     let mut emitted: Vec<u32> = Vec::with_capacity(8);
                     let mut accepted = 0usize;
                     let mut rows_it = rows.drain(..);
