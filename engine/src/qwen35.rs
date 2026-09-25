@@ -2487,3 +2487,31 @@ impl Qwen35 {
         Ok(out)
     }
 }
+
+#[cfg(test)]
+mod qlin_shape_tests {
+    use super::*;
+
+    /// QLin::linear must reject an input whose last dim is not the
+    /// weight's `inp`: the Metal kernels size their reads from `inp`, so
+    /// a mismatch was a silent over-read (the fused draft attention fed
+    /// o_proj [1,8,32,128] = 256 rows x 128 against inp 4096).
+    #[test]
+    fn qlin_linear_rejects_in_dim_mismatch() {
+        let dev = Device::Cpu;
+        let (out, inp) = (64usize, 4096usize);
+        let q = QLin::new(
+            Tensor::zeros((out, inp / 8), DType::U32, &dev).unwrap(),
+            Tensor::zeros((out, 2 * inp / 64), DType::BF16, &dev).unwrap(),
+            out,
+            inp,
+            64,
+        );
+        let bad = Tensor::zeros((1, 8, 32, 128), DType::BF16, &dev).unwrap();
+        let err = q.linear(&bad).unwrap_err().to_string();
+        assert!(err.contains("x last dim 128 != weight inp 4096"), "{err}");
+        // (a matching-shape CPU call is not exercised here: the CPU
+        // fallback `cpu_dequant` indexes the scale half with the full
+        // row stride and panics for out >= 2 — separate, pre-existing.)
+    }
+}
