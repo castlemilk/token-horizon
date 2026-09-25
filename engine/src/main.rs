@@ -347,29 +347,47 @@ async fn main() -> Result<()> {
             }
             if let Ok(spec) = std::env::var("TH_BENCH_PREFILL") {
                 // prefill forward (the TTFT path): fresh state per run,
-                // last-row f32 logits read back (sync); run 0 = warm-up
+                // last-row f32 logits read back (sync). Legacy and tile
+                // routing alternate run by run in this one process (order
+                // flipped each pair) so clock/thermal drift hits both
+                // equally; one warm-up run each first.
                 let dev = loaded.device.clone();
+                let mut fwd = |seq: &[u32], legacy: bool| -> Result<f64> {
+                    #[cfg(all(feature = "metal", target_os = "macos"))]
+                    quant_kernel::pf_force_legacy(legacy);
+                    // forward() runs decode slot 0
+                    loaded.backend.clear_kv_cache(0);
+                    let t = std::time::Instant::now();
+                    let lg = loaded.backend.forward(seq, 0, &dev)?;
+                    let _ = lg.to_vec1::<f32>()?;
+                    Ok(t.elapsed().as_secs_f64() * 1e3)
+                };
+                let stat = |v: &mut Vec<f64>| {
+                    v.sort_by(|a, b| a.total_cmp(b));
+                    (v[0], v[v.len() / 2])
+                };
                 for m in spec.split(',').filter_map(|t| t.trim().parse::<usize>().ok()) {
                     let seq: Vec<u32> = (0..m).map(|i| ids[i % ids.len()]).collect();
-                    let mut runs = Vec::new();
-                    for _ in 0..5 {
-                        // forward() runs decode slot 0
-                        loaded.backend.clear_kv_cache(0);
-                        let t = std::time::Instant::now();
-                        let lg = loaded.backend.forward(&seq, 0, &dev)?;
-                        let _ = lg.to_vec1::<f32>()?;
-                        runs.push(t.elapsed().as_secs_f64() * 1e3);
+                    fwd(&seq, true)?;
+                    fwd(&seq, false)?;
+                    let (mut leg, mut til) = (Vec::new(), Vec::new());
+                    for r in 0..6 {
+                        for legacy in [r % 2 == 0, r % 2 != 0] {
+                            let ms = fwd(&seq, legacy)?;
+                            if legacy { leg.push(ms) } else { til.push(ms) }
+                        }
                     }
-                    let mut v = runs[1..].to_vec();
-                    v.sort_by(|a, b| a.total_cmp(b));
+                    let ((lmin, lmed), (tmin, tmed)) = (stat(&mut leg), stat(&mut til));
                     eprintln!(
-                        "prefill m={m:4} min={:.1}ms med={:.1}ms tok/s={:.0} runs={:?}",
-                        v[0],
-                        (v[1] + v[2]) / 2.0,
-                        m as f64 / v[0] * 1e3,
-                        runs.iter().map(|x| (x * 10.0).round() / 10.0).collect::<Vec<_>>()
+                        "prefill m={m:4} legacy min={lmin:.1}ms med={lmed:.1}ms | tiles min={tmin:.1}ms med={tmed:.1}ms | tiles/legacy med={:.3} ({:+.1}ms) tok/s {:.0}->{:.0}",
+                        tmed / lmed,
+                        tmed - lmed,
+                        m as f64 / lmed * 1e3,
+                        m as f64 / tmed * 1e3
                     );
                 }
+                #[cfg(all(feature = "metal", target_os = "macos"))]
+                quant_kernel::pf_force_legacy(false);
             }
             if let Some(path) = dump {
                 let bytes: Vec<u8> =

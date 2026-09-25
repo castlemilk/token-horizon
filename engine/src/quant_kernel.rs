@@ -17,7 +17,7 @@
 #[cfg(all(feature = "metal", target_os = "macos"))]
 pub use metal_impl::{AffineDequant, AffineQmm, AffineQmpp, AffineQmppPrefill, AffineQmv, AffineQsg, mpp_probe};
 #[cfg(all(feature = "metal", target_os = "macos"))]
-pub use metal_impl::{pf_compile, pf_route, pf_shapes, AffineQpf, PfCfg};
+pub use metal_impl::{pf_compile, pf_force_legacy, pf_route, pf_shapes, AffineQpf, PfCfg};
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
 mod metal_impl {
@@ -2817,6 +2817,16 @@ kernel void pf_reduce(device const float* part [[buffer(0)]],
     /// everywhere; `TH_PF=r16n128s4[+k4][+gu]` forces one config wherever
     /// it applies (A/B); `TH_QMM_SCALAR` disables the MPP path entirely;
     /// `TH_GPU_CORES` (default 40) scales the policy's occupancy targets.
+    /// Bench hook: force the legacy prefill path at runtime so
+    /// TH_BENCH_PREFILL can interleave legacy and tile forwards in one
+    /// process (cross-process forward timings drifted up to 30%). Off by
+    /// default; a relaxed load is its only per-call cost.
+    static PF_LEGACY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+    pub fn pf_force_legacy(on: bool) {
+        PF_LEGACY.store(on, std::sync::atomic::Ordering::Relaxed);
+    }
+
     pub fn pf_route(m: usize, out: usize, inp: usize, gate_up: bool) -> Option<PfCfg> {
         static ENV: OnceLock<(bool, Option<PfCfg>, usize)> = OnceLock::new();
         let (off, forced, cores) = *ENV.get_or_init(|| {
@@ -2829,7 +2839,7 @@ kernel void pf_reduce(device const float* part [[buffer(0)]],
                 .unwrap_or(40usize);
             (off, v.as_deref().and_then(pf_parse), cores)
         });
-        if off || m <= 8 || inp % 64 != 0 {
+        if off || m <= 8 || inp % 64 != 0 || PF_LEGACY.load(std::sync::atomic::Ordering::Relaxed) {
             return None;
         }
         let ng = inp / 64;
