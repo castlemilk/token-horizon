@@ -142,7 +142,7 @@ impl Engine {
             std::thread::Builder::new()
                 .name("th-batch".into())
                 .spawn(move || {
-                    // Q1: the scheduler thread is dedicated — raise once
+                    // Q1: dedicated scheduler thread — optional QoS raise
                     let _qos = decode_qos::enter();
                     batch_loop(i2, s2, rx, nslots)
                 })?;
@@ -203,7 +203,7 @@ impl Engine {
         // delta until generation completes and break SSE streaming
         tokio::task::spawn_blocking(move || {
             let started = Instant::now();
-            // Q1: decode at user-interactive QoS; restored on return
+            // Q1: optional decode-thread QoS (TH_DECODE_QOS, default off)
             let _qos = decode_qos::enter();
             let rec = generate_blocking(&inner, &state, &id, messages, req, &tx, started);
             state
@@ -285,9 +285,15 @@ fn verify_adaptive() -> bool {
 /// `waitUntilCompleted`, and must wake and encode the next pass before
 /// the GPU has work again. At the default QoS the scheduler may park it
 /// on a slower core or behind other runnable threads at each wake-up.
-/// `TH_DECODE_QOS` (read once): `interactive` (default) =
-/// QOS_CLASS_USER_INTERACTIVE, `initiated` = QOS_CLASS_USER_INITIATED,
-/// `off` = leave the thread's QoS unchanged.
+/// `TH_DECODE_QOS` (read once): `off` (default) = leave the thread's QoS
+/// unchanged, `interactive` = QOS_CLASS_USER_INTERACTIVE, `initiated` =
+/// QOS_CLASS_USER_INITIATED.
+///
+/// Default off: measured on the M5 Max (th/c-loop report) interactive
+/// QoS changed ms/round by -0.3 (load 3-6) and -0.5 (18 default-QoS
+/// spinners on 18 cores), both inside the arm-to-arm spread. The decode
+/// thread blocks in waitUntilCompleted every round, so the timeshare
+/// scheduler already treats it as interactive.
 mod decode_qos {
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     pub enum Mode {
@@ -298,9 +304,9 @@ mod decode_qos {
 
     pub fn parse(v: Option<&str>) -> Mode {
         match v.map(|s| s.trim().to_ascii_lowercase()).as_deref() {
-            Some("off" | "0" | "none" | "default") => Mode::Off,
+            Some("interactive" | "user-interactive" | "1" | "on") => Mode::Interactive,
             Some("initiated" | "user-initiated" | "ui") => Mode::Initiated,
-            _ => Mode::Interactive,
+            _ => Mode::Off,
         }
     }
 
@@ -333,9 +339,14 @@ mod decode_qos {
 
     /// Raise the calling thread to the configured decode QoS.
     pub fn enter() -> Guard {
+        enter_with(mode())
+    }
+
+    /// `enter` for an explicit mode (tests).
+    pub fn enter_with(m: Mode) -> Guard {
         #[cfg(target_os = "macos")]
         {
-            let want = match mode() {
+            let want = match m {
                 Mode::Off => return Guard { prev: None },
                 Mode::Initiated => libc::qos_class_t::QOS_CLASS_USER_INITIATED,
                 Mode::Interactive => libc::qos_class_t::QOS_CLASS_USER_INTERACTIVE,
@@ -351,7 +362,10 @@ mod decode_qos {
             Guard { prev }
         }
         #[cfg(not(target_os = "macos"))]
-        Guard {}
+        {
+            let _ = m;
+            Guard {}
+        }
     }
 
     impl Drop for Guard {
@@ -2209,14 +2223,15 @@ mod decode_qos_tests {
     #[test]
     fn parse_modes() {
         for (v, want) in [
-            (None, Mode::Interactive),
-            (Some(""), Mode::Interactive),
-            (Some("interactive"), Mode::Interactive),
-            (Some("initiated"), Mode::Initiated),
-            (Some("UI"), Mode::Initiated),
+            (None, Mode::Off),
+            (Some(""), Mode::Off),
             (Some("off"), Mode::Off),
             (Some("0"), Mode::Off),
             (Some(" default "), Mode::Off),
+            (Some("interactive"), Mode::Interactive),
+            (Some("On"), Mode::Interactive),
+            (Some("initiated"), Mode::Initiated),
+            (Some("UI"), Mode::Initiated),
         ] {
             assert_eq!(parse(v), want, "TH_DECODE_QOS={v:?}");
         }
@@ -2226,9 +2241,6 @@ mod decode_qos_tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn enter_raises_and_restores() {
-        if super::decode_qos::mode() != Mode::Interactive {
-            return; // TH_DECODE_QOS set in the test env
-        }
         std::thread::spawn(|| {
             let q = || {
                 let mut c = libc::qos_class_t::QOS_CLASS_UNSPECIFIED;
@@ -2238,8 +2250,13 @@ mod decode_qos_tests {
             };
             let before = q();
             {
-                let _g = super::decode_qos::enter();
+                let _g = super::decode_qos::enter_with(Mode::Interactive);
                 assert_eq!(q(), libc::qos_class_t::QOS_CLASS_USER_INTERACTIVE as u32);
+            }
+            {
+                // Off leaves the thread alone
+                let _g = super::decode_qos::enter_with(Mode::Off);
+                assert_eq!(q(), before);
             }
             let after = q();
             let norm = |c: u32| if c == 0 { libc::qos_class_t::QOS_CLASS_DEFAULT as u32 } else { c };
