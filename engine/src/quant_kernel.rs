@@ -2921,6 +2921,9 @@ kernel void pf_reduce(device const float* part [[buffer(0)]],
     ///   17..127 legacy stays (measured 3-9% ahead of every tile);
     /// - wide single-stream at 16 < m <= 128 and gate/up at m = 128:
     ///   Splash's staged-sums 32x256 8-simdgroup tile (1.02-1.23x);
+    /// - very wide (> 16 column tiles per core: lm_head, reached only by
+    ///   the TH_BATCH > 1 verify/propose rows): unsplit 16-row tiles at
+    ///   m <= 16, legacy above;
     /// - m > 128: legacy. Per kernel the tiles still won most shapes at
     ///   m=512, but the whole m=512 forward measured 4.3% slower with them
     ///   (in-process interleaved A/B: 931.9 -> 971.6ms), so the long-prompt
@@ -2939,6 +2942,15 @@ kernel void pf_reduce(device const float* part [[buffer(0)]],
             } else {
                 None
             };
+        }
+        // very wide outputs (> 16 n128 column tiles per core: the 248k-
+        // column lm_head, which only sees > 8 rows in a TH_BATCH > 1
+        // round — verify 8*nb, draft propose 7*nb): the column tiles alone
+        // fill the GPU, so split-K only adds partial-sum traffic (m=14/16:
+        // 1.26x unsplit vs 1.12x +k2 over legacy), and past 16 rows no tile
+        // beats legacy (r32n256s8 0.93-0.98x at m=21..128)
+        if tiles_n > 16 * cores {
+            return (m <= 16).then(|| PfCfg::new(16, 128, 4));
         }
         let narrow = tiles_n <= 2 * cores;
         let split = |want: usize| {
@@ -2995,12 +3007,16 @@ kernel void pf_reduce(device const float* part [[buffer(0)]],
                 (32, 1280, 5120, false, Some("r16n128s4+k4")),
                 (128, 1280, 5120, false, Some("r16n128s4+k2")),
                 (14, 256, 5120, false, Some("r16n128s4+k4")),
-                // wide single-stream: in_all, in_qkv, lm_head, draft gate/up
+                // wide single-stream: in_all, in_qkv, draft gate/up; very
+                // wide: lm_head (unsplit at <= 16 rows, legacy above)
                 (16, 16480, 5120, false, Some("r16n128s4+k2")),
                 (17, 16480, 5120, false, Some("r32n256s8")),
                 (58, 14336, 5120, false, Some("r32n256s8")),
-                (14, 248320, 5120, false, Some("r16n128s4+k2")),
-                (32, 248320, 5120, false, Some("r32n256s8")),
+                (14, 248320, 5120, false, Some("r16n128s4")),
+                (16, 248320, 5120, false, Some("r16n128s4")),
+                (17, 248320, 5120, false, None),
+                (21, 248320, 5120, false, None),
+                (32, 248320, 5120, false, None),
                 (16, 17408, 5120, false, Some("r16n128s4+k2")),
                 // gate/up (per-stream out): fused 16-row tile, legacy
                 // 17..127, staged 32x256 at 128
