@@ -323,8 +323,11 @@ impl QLin {
             if rows == 1 {
                 // fused dequant-matvec — reads packed weights only
                 let xv = x.reshape((in_d,))?.contiguous()?;
-                if self.tiled && std::env::var("TH_QMM_SCALAR").is_err() {
+                if self.tiled && !crate::quant_kernel::qmm_scalar() {
                     let xv8 = xv.reshape((1, in_d))?;
+                    // K2: per-shape decode tile (n64s4 unless listed)
+                    let (tile, sgs) =
+                        crate::quant_kernel::plain_tile(self.out, self.inp).tile_sgs();
                     let y8 = self.wq.apply_op3_no_bwd(
                         &self.sb,
                         &xv8,
@@ -334,8 +337,8 @@ impl QLin {
                             padded: self.out.div_ceil(256) * 256,
                             m: 1,
                             up_tile: 0,
-                            sgs: 2,
-                            tile: 64,
+                            sgs,
+                            tile,
                         },
                     )?;
                     let y = y8.narrow(0, 0, 1)?.contiguous()?;
@@ -343,7 +346,7 @@ impl QLin {
                     *out.last_mut().unwrap() = self.out;
                     return Ok(y.reshape(out)?);
                 }
-                let y = if std::env::var("TH_QMV_SG").is_ok()
+                let y = if crate::quant_kernel::qmv_sg()
                     && self.gs == 64
                     && self.inp % 64 == 0
                 {
@@ -376,9 +379,12 @@ impl QLin {
             }
             if rows <= 8 {
                 let xv = x.reshape((rows, in_d))?.contiguous()?;
-                // cooperative-tensor (MPP) path on tiled weights — the
-                // fastest measured variant (n64 split4), env-gated A/B
-                if self.tiled && std::env::var("TH_QMM_SCALAR").is_err() {
+                // cooperative-tensor (MPP) path on tiled weights — K2's
+                // per-shape tile table (`plain_tile`: n64s4 by default,
+                // N256 sg8 on GDN in_all, paired N256 sg4 on lm_head)
+                if self.tiled && !crate::quant_kernel::qmm_scalar() {
+                    let (tile, sgs) =
+                        crate::quant_kernel::plain_tile(self.out, self.inp).tile_sgs();
                     let y8 = self.wq.apply_op3_no_bwd(
                         &self.sb,
                         &xv,
@@ -388,8 +394,8 @@ impl QLin {
                             padded: self.out.div_ceil(256) * 256,
                             m: rows,
                             up_tile: 0,
-                            sgs: 2,
-                            tile: 64,
+                            sgs,
+                            tile,
                         },
                     )?;
                     let y = y8.narrow(0, 0, rows)?.contiguous()?;
@@ -401,7 +407,7 @@ impl QLin {
                 // scalar qmm remains for A/B + non-64 group layouts.
                 let y = if self.gs == 64
                     && self.inp % 64 == 0
-                    && std::env::var("TH_QMM_SCALAR").is_err()
+                    && !crate::quant_kernel::qmm_scalar()
                 {
                     self.wq.apply_op3_no_bwd(
                         &self.sb,
@@ -433,7 +439,7 @@ impl QLin {
                 return Ok(y.reshape(out)?);
             }
             // prefill: cooperative-tensor kernel on tiled weights
-            if self.tiled && std::env::var("TH_QMM_SCALAR").is_err() {
+            if self.tiled && !crate::quant_kernel::qmm_scalar() {
                 let xv = x.reshape((rows, in_d))?.contiguous()?;
                 let yp = self.wq.apply_op3_no_bwd(
                     &self.sb,
@@ -563,7 +569,7 @@ impl QLin {
             && self.tiled
             && self.out % 2 == 0
             && (self.out / 2) % 256 == 0
-            && std::env::var("TH_QMM_SCALAR").is_err()
+            && !crate::quant_kernel::qmm_scalar()
         {
             #[cfg(all(feature = "metal", target_os = "macos"))]
             if x.device().is_metal() {
@@ -604,7 +610,7 @@ impl QLin {
         if x.device().is_metal()
             && self.gs == 64
             && self.inp % 64 == 0
-            && std::env::var("TH_QMM_SCALAR").is_err()
+            && !crate::quant_kernel::qmm_scalar()
         {
             let in_d = *dims.last().unwrap();
             let half = self.out / 2;
@@ -665,6 +671,8 @@ impl QLin {
 /// kernels need the [tile][group][col] layout. Default on for Metal;
 /// `TH_QMM_MPP=0` keeps the row-major layout + scalar/sg kernels.
 pub(crate) fn maybe_tiled(l: Lin) -> Result<Lin> {
+    // resolve the IORegistry core count at load, not on the first request
+    let _ = crate::quant_kernel::gpu_cores();
     if std::env::var("TH_QMM_MPP").map_or(true, |v| v != "0") {
         l.tiled()
     } else {
@@ -745,8 +753,10 @@ pub(crate) fn bench_q4_decode(model: &Qwen35, device: &Device) -> Result<()> {
         ("lm_head", quant(&model.lm_head).into_iter().collect()),
     ];
     eprintln!(
-        "q4 bench: m={rows} passes={passes} policy={:?}",
-        crate::quant_kernel::q4_policy_mode()
+        "q4 bench: m={rows} passes={passes} policy={:?} gpu_cores={} pad_skip={}",
+        crate::quant_kernel::q4_policy_mode(),
+        crate::quant_kernel::gpu_cores(),
+        crate::quant_kernel::pad_skip_enabled()
     );
     let max_abs = |a: &Tensor, b: &Tensor| -> Result<f32> {
         Ok(a.sub(b)?.abs()?.flatten_all()?.max(0)?.to_scalar::<f32>()?)
@@ -841,11 +851,18 @@ pub(crate) fn bench_q4_decode(model: &Qwen35, device: &Device) -> Result<()> {
             );
             Ok(())
         };
-        report("path", &y_path, time(&path)?)?;
+        let (p_tile, p_sgs) = if gate_up {
+            crate::quant_kernel::gate_up_tile()
+        } else {
+            crate::quant_kernel::plain_tile(q0.out, q0.inp).tile_sgs()
+        };
+        report(format!("path t{p_tile}s{p_sgs}").as_str(), &y_path, time(&path)?)?;
+        // (256, 4) on a plain projection is the Paired256 tile: one wave of
+        // 4 x cores groups (= the full grid below 4 x cores tiles)
         let cfgs: &[(&str, usize, usize)] = if gate_up {
             &[("n32s4_gu", 64, 2), ("n256_gu_sg8", 256, 8), ("n256_gu_sg4", 256, 4)]
         } else {
-            &[("n64s4", 64, 2), ("n32s4", 32, 1), ("n256_sg8", 256, 8), ("n256_sg4", 256, 4)]
+            &[("n64s4", 64, 2), ("n32s4", 32, 1), ("n256_sg8", 256, 8), ("p256_sg4", 256, 4)]
         };
         for &(label, tile, sgs) in cfgs {
             let op = |q: &QLin| AffineQmpp {

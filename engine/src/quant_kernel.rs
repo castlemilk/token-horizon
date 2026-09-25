@@ -21,13 +21,17 @@ pub use metal_impl::{AffineDequant, AffineQmm, AffineQmpp, AffineQmppPrefill, Af
 
 /// Which decode tile family `QLin` asks `AffineQmpp` for. Read once per
 /// process (never per call): `TH_Q4_POLICY=legacy` restores the pre-WP-2
-/// split-K tiles (n32s4 gate/up, n64s4 everywhere else) for A/B runs.
+/// split-K tiles (n32s4 gate/up, n64s4 everywhere else) for A/B runs;
+/// `TH_Q4_POLICY=seq` (alias `TH_Q4_SEQ=1`) runs a sequential-K tile on
+/// every shape — no split-K reassociation anywhere (the Gate A arm).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Q4PolicyMode {
-    /// WP-2 defaults (K1 N256 gate/up).
+    /// WP-2 defaults: K1 N256 gate/up + the K2 per-shape table.
     Tuned,
     /// Pre-WP-2 tiles.
     Legacy,
+    /// Sequential K everywhere (N256 sg8; Paired256 on very wide shapes).
+    Seq,
 }
 
 pub fn q4_policy_mode() -> Q4PolicyMode {
@@ -35,11 +39,111 @@ pub fn q4_policy_mode() -> Q4PolicyMode {
     *MODE.get_or_init(|| {
         let mode = match std::env::var("TH_Q4_POLICY").as_deref() {
             Ok("legacy") => Q4PolicyMode::Legacy,
+            Ok("seq") => Q4PolicyMode::Seq,
+            _ if std::env::var("TH_Q4_SEQ").as_deref() == Ok("1") => Q4PolicyMode::Seq,
             _ => Q4PolicyMode::Tuned,
         };
         tracing::info!(?mode, "q4 decode tile policy");
         mode
     })
+}
+
+/// GPU core count, resolved once per process: the `TH_GPU_CORES`
+/// override, else the IORegistry `gpu-core-count` of the IOAccelerator
+/// (as Splash's MetalBackend.mm reads it), else 40 (this M5 Max — the
+/// previous hardcoded default). Replaces the per-call env reads in the
+/// Q4 group policies; `QLin` load warms it so the lookup never lands on
+/// a request.
+pub fn gpu_cores() -> usize {
+    static CORES: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *CORES.get_or_init(|| {
+        let env = std::env::var("TH_GPU_CORES")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .filter(|&n| n > 0);
+        let (cores, source) = match env {
+            Some(n) => (n, "TH_GPU_CORES"),
+            None => match ioreg_gpu_cores() {
+                Some(n) => (n, "ioreg gpu-core-count"),
+                None => (40, "default"),
+            },
+        };
+        tracing::info!(cores, source, "gpu cores");
+        cores
+    })
+}
+
+/// `gpu-core-count` from the first IOAccelerator service (Apple silicon
+/// has one GPU). `None` when the property is missing.
+#[cfg(target_os = "macos")]
+fn ioreg_gpu_cores() -> Option<usize> {
+    use std::ffi::{c_char, c_void};
+    type CFTypeRef = *const c_void;
+    #[link(name = "IOKit", kind = "framework")]
+    extern "C" {
+        fn IOServiceMatching(name: *const c_char) -> *mut c_void;
+        // consumes one reference to `matching`
+        fn IOServiceGetMatchingService(main_port: u32, matching: *mut c_void) -> u32;
+        fn IORegistryEntryCreateCFProperty(
+            entry: u32,
+            key: CFTypeRef,
+            allocator: CFTypeRef,
+            options: u32,
+        ) -> CFTypeRef;
+        fn IOObjectRelease(object: u32) -> i32;
+    }
+    #[link(name = "CoreFoundation", kind = "framework")]
+    extern "C" {
+        fn CFStringCreateWithCString(
+            alloc: CFTypeRef,
+            c_str: *const c_char,
+            encoding: u32,
+        ) -> CFTypeRef;
+        fn CFGetTypeID(cf: CFTypeRef) -> usize;
+        fn CFNumberGetTypeID() -> usize;
+        fn CFNumberGetValue(number: CFTypeRef, the_type: isize, value: *mut c_void) -> u8;
+        fn CFRelease(cf: CFTypeRef);
+    }
+    const CF_STRING_ENCODING_UTF8: u32 = 0x0800_0100;
+    const CF_NUMBER_SINT64: isize = 4;
+    // SAFETY: plain IOKit/CF calls; every created/copied object is
+    // released on every path (the matching dictionary is consumed).
+    unsafe {
+        let matching = IOServiceMatching(c"IOAccelerator".as_ptr());
+        if matching.is_null() {
+            return None;
+        }
+        let entry = IOServiceGetMatchingService(0, matching); // kIOMainPortDefault
+        if entry == 0 {
+            return None;
+        }
+        let key = CFStringCreateWithCString(
+            std::ptr::null(),
+            c"gpu-core-count".as_ptr(),
+            CF_STRING_ENCODING_UTF8,
+        );
+        let value = if key.is_null() {
+            std::ptr::null()
+        } else {
+            let v = IORegistryEntryCreateCFProperty(entry, key, std::ptr::null(), 0);
+            CFRelease(key);
+            v
+        };
+        IOObjectRelease(entry);
+        if value.is_null() {
+            return None;
+        }
+        let mut n: i64 = 0;
+        let ok = CFGetTypeID(value) == CFNumberGetTypeID()
+            && CFNumberGetValue(value, CF_NUMBER_SINT64, &mut n as *mut i64 as *mut c_void) != 0;
+        CFRelease(value);
+        (ok && n > 0 && n <= 4096).then_some(n as usize)
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn ioreg_gpu_cores() -> Option<usize> {
+    None
 }
 
 /// `(tile, simdgroups)` for the fused [gate | up] projection at m = 2..=8
@@ -53,7 +157,77 @@ pub fn q4_policy_mode() -> Q4PolicyMode {
 pub fn gate_up_tile() -> (usize, usize) {
     match q4_policy_mode() {
         Q4PolicyMode::Legacy => (64, 2),
-        Q4PolicyMode::Tuned => (256, 8),
+        Q4PolicyMode::Tuned | Q4PolicyMode::Seq => (256, 8),
+    }
+}
+
+/// One decode (m <= 8) tile family for a plain projection — what
+/// `plain_tile` hands `AffineQmpp` as `(tile, simdgroups)`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DecodeTile {
+    /// `affine_q4_mpp_n64s4`: 4-way split-K, 64 columns per 256-thread
+    /// group, one group per 64 columns (fills the 40 cores on N=5120).
+    N64Split4,
+    /// `affine_q4_mpp`: persistent N256 x 8 simdgroups, pipelined,
+    /// sequential K, `mpp_groups` round-robin policy.
+    N256Sg8,
+    /// `affine_q4_mpp_paired_sg4`: Splash `n256_paired_sg4` — N256 x 4
+    /// simdgroups (128 threads) at one resident wave of
+    /// `PAIRED256_WAVE_GROUPS_PER_CORE` x cores persistent groups.
+    Paired256,
+}
+
+impl DecodeTile {
+    /// The `(tile, sgs)` pair `AffineQmpp` dispatches on.
+    pub fn tile_sgs(self) -> (usize, usize) {
+        match self {
+            DecodeTile::N64Split4 => (64, 2),
+            DecodeTile::N256Sg8 => (256, 8),
+            DecodeTile::Paired256 => (256, 4),
+        }
+    }
+}
+
+/// Splash `kPaired256TilesPerCore`: a plain projection this wide (in
+/// 256-column tiles per core) takes the paired N256 tile.
+pub const PAIRED256_TILES_PER_CORE: usize = 8;
+/// Splash `kPaired256WaveGroupsPerCore`: persistent groups per core for
+/// the paired N256 tile (4 x 128 threads = the 512-thread knee).
+pub const PAIRED256_WAVE_GROUPS_PER_CORE: usize = 4;
+
+/// K2: measured per-shape decode tiles `(out, in) -> tile` for plain
+/// projections (M5 Max 40-core, Qwen3.8-27B 4-bit, m = 8, isolated
+/// kernel GPU time — q4-kernels §5, re-checked with `TH_BENCH_Q4`):
+///   GDN in_all 16480x5120: N256 sg8 117.7 us vs n64s4 131.3 (65 tiles).
+/// Deliberately absent (the generic n64s4 rule wins or ties): attn
+/// in_qkv 14336x5120 (n64s4 95.2 vs N256 101.6) and the N=5120
+/// out/o/down projections (n64s4 43.3/121.9 us; a sequential tile only
+/// gets 20-40 groups there — 79-111 us / 218 us).
+const DECODE_TILE_TABLE: &[((usize, usize), DecodeTile)] =
+    &[((16480, 5120), DecodeTile::N256Sg8)];
+
+/// K2: the decode tile for a plain `[out, in]` projection at m <= 8.
+/// Very wide shapes (lm_head, 970 tiles) take Splash's paired N256 tile
+/// at 4 x cores groups; listed shapes their measured tile; the rest the
+/// n64s4 split-K tile. Pure function of the shape and the once-read
+/// policy/core count — no per-call env reads.
+pub fn plain_tile(out: usize, inp: usize) -> DecodeTile {
+    plain_tile_for(q4_policy_mode(), out, inp, gpu_cores())
+}
+
+/// Pure form of [`plain_tile`] (explicit policy and core count).
+pub fn plain_tile_for(mode: Q4PolicyMode, out: usize, inp: usize, cores: usize) -> DecodeTile {
+    let tiles = out.div_ceil(256);
+    let wide = tiles >= PAIRED256_TILES_PER_CORE * cores;
+    match mode {
+        Q4PolicyMode::Legacy => DecodeTile::N64Split4,
+        Q4PolicyMode::Seq if wide => DecodeTile::Paired256,
+        Q4PolicyMode::Seq => DecodeTile::N256Sg8,
+        Q4PolicyMode::Tuned if wide => DecodeTile::Paired256,
+        Q4PolicyMode::Tuned => DECODE_TILE_TABLE
+            .iter()
+            .find(|(shape, _)| *shape == (out, inp))
+            .map_or(DecodeTile::N64Split4, |&(_, tile)| tile),
     }
 }
 
@@ -66,6 +240,21 @@ pub fn pad_skip_enabled() -> bool {
         q4_policy_mode() != Q4PolicyMode::Legacy
             && std::env::var("TH_Q4_PAD").as_deref() != Ok("1")
     })
+}
+
+/// `TH_QMM_SCALAR` set: `QLin` skips the MPP/sg kernels for the scalar
+/// qmv/qmm reference path. Read once per process — `QLin` used to look
+/// the variable up on every projection call (~250 per verify round).
+pub fn qmm_scalar() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("TH_QMM_SCALAR").is_ok())
+}
+
+/// `TH_QMV_SG` set: m = 1 on row-major (untiled) weights takes the sg
+/// kernel instead of qmv. Read once per process.
+pub fn qmv_sg() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("TH_QMV_SG").is_ok())
 }
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
@@ -942,7 +1131,10 @@ inline void q4_store_input_sums(device const bfloat *input, uint input_size,
 
 // q4_mpp_tile<256, GateUp, Residual=false, StorageN=256, Pipelined, Sg>
 // with a padded-row output guard (our out_dim need not be 256-aligned).
-template <bool GateUp, ushort Simdgroups>
+// Guarded=false is the verbatim Splash epilogue (every row of every tile
+// is stored) — only valid when out_dim % 256 == 0 and the output holds 8
+// rows; the per-element arithmetic is identical, so it is bit-identical.
+template <bool GateUp, ushort Simdgroups, bool Guarded = true>
 inline void th_mpp_tile(device bfloat *input, device uchar *weights_0,
                         device bfloat *scales_0, device bfloat *biases_0,
                         device bfloat *output_0,
@@ -1058,7 +1250,9 @@ inline void th_mpp_tile(device bfloat *input, device uchar *weights_0,
   q4_visit(accumulated_0, traversal, [&](ushort i) {
     auto index = accumulated_0.get_multidimensional_index(i);
     // padded rows/columns are computed but never stored
-    if (output_origin + index[0] >= output_size || index[1] >= m) return;
+    if constexpr (Guarded) {
+      if (output_origin + index[0] >= output_size || index[1] >= m) return;
+    }
     uint output_index = index[1] * output_size + output_origin + index[0];
     float value;
     if constexpr (GateUp) {
@@ -1459,6 +1653,34 @@ TH_MPP_ENTRY(affine_q4_mpp,      false, 8)
 TH_MPP_ENTRY(affine_q4_mpp_sg4,  false, 4)
 TH_MPP_ENTRY(affine_q4_mpp_gate_up,     true, 8)
 TH_MPP_ENTRY(affine_q4_mpp_gate_up_sg4, true, 4)
+
+// Splash decode_linear_q4_n256_paired_sg4 (decode/linear_q4.metal:87):
+// q4_mpp_tile<256, false, false, 256, Pipelined=true, 4> with the
+// unguarded epilogue, persistent groups striding 8 x 256 tiles. 128
+// threads — four resident groups per core reach the occupancy knee on
+// very wide one-lane projections (lm_head) with half the input re-reads
+// of N128. Host side requires out_dim % 256 == 0 (see AffineQmpp).
+kernel void affine_q4_mpp_paired_sg4(
+    device const bfloat* input  [[buffer(0)]],
+    device const uchar*  weights [[buffer(1)]],
+    device const bfloat* sb      [[buffer(2)]],
+    device bfloat*       output  [[buffer(3)]],
+    constant MppParams&  p       [[buffer(4)]],
+    uint group      [[threadgroup_position_in_grid]],
+    uint simd_lane  [[thread_index_in_simdgroup]],
+    uint simd_group [[simdgroup_index_in_threadgroup]]) {
+  threadgroup float input_sums[64];
+  const uint tiles = uint(p.out_dim) / 256u;
+  device bfloat* inp = const_cast<device bfloat*>(input);
+  device uchar* w = const_cast<device uchar*>(weights);
+  device bfloat* scales = const_cast<device bfloat*>(sb);
+  device bfloat* biases = const_cast<device bfloat*>(sb) + p.bias_base;
+  for (uint tile = group; tile < tiles; tile += uint(p.groups)) {
+    th_mpp_tile<false, 4, false>(inp, w, scales, biases, output, w, scales,
+        biases, p.out_dim, p.in_dim, p.m, input_sums, tile * 256, simd_lane,
+        simd_group);
+  }
+}
 "#;
 
     static QMV_PIPE: OnceLock<ComputePipeline> = OnceLock::new();
@@ -1594,7 +1816,8 @@ kernel void mpp_probe(device float* y [[buffer(0)]],
             let device = s_wq.device();
             // v1 (one row per threadgroup) measured faster than the
             // 8-rows-per-group variant on M5 Max; keep both for A/B.
-            let v2 = std::env::var("TH_QMV_V2").is_ok();
+            static V2: OnceLock<bool> = OnceLock::new();
+            let v2 = *V2.get_or_init(|| std::env::var("TH_QMV_V2").is_ok());
             let (cell, fname, groups) = if v2 {
                 (&QMV_PIPE, "affine_qmv", self.out.div_ceil(8))
             } else {
@@ -1679,10 +1902,7 @@ kernel void mpp_probe(device float* y [[buffer(0)]],
     /// quant groups.
     fn sg_splits(out: usize, ng: usize, tile: usize) -> usize {
         let grid = out.div_ceil(tile);
-        let cores: usize = std::env::var("TH_GPU_CORES")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(40);
+        let cores = super::gpu_cores();
         let mut splits = 1usize;
         while splits < 8
             && grid * splits < 16 * cores
@@ -1731,6 +1951,7 @@ kernel void mpp_probe(device float* y [[buffer(0)]],
     static MPP_N32S4_PIPE: OnceLock<ComputePipeline> = OnceLock::new();
     static MPP_N64S4_PIPE: OnceLock<ComputePipeline> = OnceLock::new();
     static MPP_N32S4_GU_PIPE: OnceLock<ComputePipeline> = OnceLock::new();
+    static MPP_PAIRED_SG4_PIPE: OnceLock<ComputePipeline> = OnceLock::new();
 
     fn compile_mpp(
         cell: &OnceLock<ComputePipeline>,
@@ -1758,7 +1979,7 @@ kernel void mpp_probe(device float* y [[buffer(0)]],
 
     /// Splash's `decodeGroups` round-robin policy for the N256 family
     /// ({wave 3, full-grid 3, many-wave 8} groups per core).
-    fn mpp_groups(tiles: usize, cores: usize) -> usize {
+    pub(super) fn mpp_groups(tiles: usize, cores: usize) -> usize {
         let (wave, full, many) = (3 * cores, 3 * cores, 8 * cores);
         if tiles <= full || tiles >= many {
             return tiles;
@@ -1775,16 +1996,20 @@ kernel void mpp_probe(device float* y [[buffer(0)]],
         groups
     }
 
-    /// Worst-core tile count when `groups` threadgroups take tiles
-    /// `g, g+groups, ...` round-robin (Splash `maxCoreTiles`).
-    fn max_core_tiles(tiles: usize, groups: usize, cores: usize) -> usize {
+    /// Worst-core tile count when `groups` threadgroups are placed
+    /// round-robin on `cores` (group g on core g % cores) and group g
+    /// streams tiles `g, g+groups, ...` (Splash `maxCoreTiles`).
+    /// K2 fix: a core hosts groups `core, core+cores, ...` — the port had
+    /// `g += groups`, which counted one group per core, never matched the
+    /// balanced load and so sent every 3x..8x-cores grid to the full grid.
+    pub(super) fn max_core_tiles(tiles: usize, groups: usize, cores: usize) -> usize {
         (0..cores)
             .map(|core| {
                 let mut load = 0;
                 let mut g = core;
                 while g < groups && g < tiles {
                     load += (tiles - g).div_ceil(groups);
-                    g += groups;
+                    g += cores;
                 }
                 load
             })
@@ -1841,6 +2066,10 @@ kernel void mpp_probe(device float* y [[buffer(0)]],
                 } else {
                     (&MPP_GU_PIPE, "affine_q4_mpp_gate_up", 256)
                 }
+            } else if self.sgs == 4 && self.out % 256 == 0 {
+                // K2: Splash n256_paired_sg4 verbatim (unguarded epilogue:
+                // no padded columns, and the output holds all 8 rows)
+                (&MPP_PAIRED_SG4_PIPE, "affine_q4_mpp_paired_sg4", 128)
             } else if self.sgs == 4 {
                 (&MPP_SG4_PIPE, "affine_q4_mpp_sg4", 128)
             } else {
@@ -1848,14 +2077,15 @@ kernel void mpp_probe(device float* y [[buffer(0)]],
             };
             compile_mpp(cell, fname, device)?;
 
-            let cores: usize = std::env::var("TH_GPU_CORES")
-                .ok()
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(40);
-            // split tiles fill the grid one-tile-per-tg; N256 uses the
+            let cores = super::gpu_cores();
+            // split tiles fill the grid one-tile-per-tg; the plain 4-sg
+            // N256 tile is Splash's Paired256 (one resident wave of
+            // 4 x cores persistent groups); the other N256 tiles use the
             // round-robin persistent-group policy
             let groups = if split {
                 self.out.div_ceil(self.tile)
+            } else if !gate_up && self.sgs == 4 {
+                tiles.min(super::PAIRED256_WAVE_GROUPS_PER_CORE * cores)
             } else {
                 mpp_groups(tiles.div_ceil(if gate_up { 2 } else { 1 }), cores)
             }
@@ -2175,7 +2405,10 @@ kernel void mpp_probe(device float* y [[buffer(0)]],
             compile(&SG_PREP_PIPE, QMV_SRC, 64, "affine_q4_prepare", device)?;
             let (cell, fname, tgthr) = if self.aux > 0 {
                 (&SG_GU_PIPE, "affine_q4_sg_gate_up", 128usize)
-            } else if std::env::var("TH_QMM_SG8").is_ok() {
+            } else if {
+                static SG8: OnceLock<bool> = OnceLock::new();
+                *SG8.get_or_init(|| std::env::var("TH_QMM_SG8").is_ok())
+            } {
                 (&SG8_PIPE, "affine_q4_sg8", 256)
             } else {
                 (&SG_DEC_PIPE, "affine_q4_sg", 128)
@@ -2423,5 +2656,68 @@ kernel void mpp_probe(device float* y [[buffer(0)]],
                 MetalStorage::new(y_buf, device.clone(), elems, DType::BF16);
             Ok((storage, Shape::from((self.out, self.inp))))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{plain_tile_for, DecodeTile, Q4PolicyMode};
+
+    // Qwen3.8-27B decode shapes (out, in) on the 40-core M5 Max.
+    const LM_HEAD: (usize, usize) = (248320, 5120);
+    const IN_ALL: (usize, usize) = (16480, 5120);
+    const IN_QKV: (usize, usize) = (14336, 5120);
+    const OUT_O: (usize, usize) = (5120, 6144);
+    const DOWN: (usize, usize) = (5120, 17408);
+
+    #[test]
+    fn plain_tile_table() {
+        use DecodeTile::*;
+        use Q4PolicyMode::*;
+        let cases = [
+            (Tuned, LM_HEAD, 40, Paired256),
+            (Tuned, IN_ALL, 40, N256Sg8),
+            (Tuned, IN_QKV, 40, N64Split4),
+            (Tuned, OUT_O, 40, N64Split4),
+            (Tuned, DOWN, 40, N64Split4),
+            // 970 tiles < 8 x 128 cores: not "very wide" on a bigger GPU
+            (Tuned, LM_HEAD, 128, N64Split4),
+            (Legacy, LM_HEAD, 40, N64Split4),
+            (Legacy, IN_ALL, 40, N64Split4),
+            (Seq, LM_HEAD, 40, Paired256),
+            (Seq, IN_ALL, 40, N256Sg8),
+            (Seq, DOWN, 40, N256Sg8),
+        ];
+        for (mode, (out, inp), cores, want) in cases {
+            assert_eq!(
+                plain_tile_for(mode, out, inp, cores),
+                want,
+                "{mode:?} {out}x{inp} cores={cores}"
+            );
+        }
+        assert_eq!(DecodeTile::N64Split4.tile_sgs(), (64, 2));
+        assert_eq!(DecodeTile::N256Sg8.tile_sgs(), (256, 8));
+        assert_eq!(DecodeTile::Paired256.tile_sgs(), (256, 4));
+    }
+
+    #[cfg(all(feature = "metal", target_os = "macos"))]
+    #[test]
+    fn mpp_group_policy() {
+        use super::metal_impl::{max_core_tiles, mpp_groups};
+        // (tiles, cores, groups) — full grid up to 3 x cores and from
+        // 8 x cores; in between the smallest balanced two-tile count
+        // (Splash decodeGroups). 136 = the fused m=1 gate/up N256 grid.
+        for (tiles, cores, want) in
+            [(68, 40, 68), (65, 40, 65), (20, 40, 20), (970, 40, 970), (136, 40, 96), (300, 40, 120)]
+        {
+            assert_eq!(mpp_groups(tiles, cores), want, "tiles={tiles} cores={cores}");
+        }
+        // a core hosts groups core, core+cores, ...: 136 tiles over 96
+        // groups load 4 tiles on cores 0..15 (= ceil(136/40), balanced)
+        assert_eq!(max_core_tiles(136, 96, 40), 4);
+        assert_eq!(max_core_tiles(136, 95, 40), 5);
+        // one tile per group: the worst core hosts ceil(groups/cores)
+        assert_eq!(max_core_tiles(136, 136, 40), 4);
+        assert_eq!(max_core_tiles(80, 80, 40), 2);
     }
 }
