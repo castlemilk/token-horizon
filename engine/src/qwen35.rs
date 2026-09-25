@@ -1501,14 +1501,47 @@ impl Qwen35 {
                     // stay immutable for reuse)
                     st.recurrent = rec.affine(1.0, 0.0)?;
                     let pack = pack.narrow(0, 0, kept)?;
-                    let q = pack.narrow(1, 0, l.num_k_heads)?;
-                    let k = pack
-                        .narrow(1, l.num_k_heads, l.num_k_heads)?;
-                    let v = pack
-                        .narrow(1, 2 * l.num_k_heads, l.num_v_heads)?;
-                    let ab = ab.narrow(0, 0, kept)?.unsqueeze(0)?;
+                    if std::env::var("TH_DEBUG_ROLLBACK").is_ok() {
+                        {
+                            let (st, _) = pack.storage_and_layout();
+                            if let candle_core::Storage::Metal(st) = &*st
+                            {
+                                eprintln!(
+                                    "  [rb-dbg] layer {i} pack_buf={:p}",
+                                    st.buffer().as_ref()
+                                );
+                            }
+                        }
+                        // dump raw values: stashed pack v-region row0,
+                        // stashed qkv row0, snapshot conv row0
+                        let pv = pack
+                            .to_dtype(DType::F32)?
+                            .flatten_all()?
+                            .to_vec1::<f32>()?;
+                        let qv = qkv
+                            .narrow(0, 0, 1)?
+                            .to_dtype(DType::F32)?
+                            .flatten_all()?
+                            .to_vec1::<f32>()?;
+                        let cv = conv
+                            .narrow(0, 0, 1)?
+                            .to_dtype(DType::F32)?
+                            .flatten_all()?
+                            .to_vec1::<f32>()?;
+                        eprintln!(
+                            "  [rb-dbg] layer {i} kept={kept} pack[v0]={:.3} {:.3} {:.3} qkv0={:.3} {:.3} {:.3} conv0={:.3} {:.3} {:.3}",
+                            pv[2 * l.key_dim],
+                            pv[2 * l.key_dim + 1],
+                            pv[2 * l.key_dim + 2],
+                            qv[0], qv[1], qv[2],
+                            cv[0], cv[1], cv[2],
+                        );
+                    }
+                    // ab stashed as the strided [1, seq, 96] projection
+                    // view — squeeze to [seq, 96] then take kept rows
+                    let ab = ab.squeeze(0)?.narrow(0, 0, kept)?;
                     let _ = Self::gdn_scan(
-                        l, st, &mut None, &q, &k, &v, &ab, kept,
+                        l, st, &mut None, &pack, &ab, kept,
                         &self.device,
                     )?;
                 }
@@ -1685,40 +1718,96 @@ impl Qwen35 {
     ) -> Result<Tensor> {
         let seq = x.dim(1)?;
         let conv_dim = 2 * l.key_dim + l.value_dim;
-        // one fused projection → split [qkv | z | a|b]
+        // one fused projection → split [qkv | z | a|b] — strided views
+        // feed the kernels directly (no contiguous copies)
         let fused = lin_apply(x, &l.in_all)?; // [1, seq, conv+val+96]
         let qkv = fused
             .narrow(D::Minus1, 0, conv_dim)?
-            .contiguous()?
-            .reshape((seq, conv_dim))?;
-        let z = fused
-            .narrow(D::Minus1, conv_dim, l.value_dim)?
-            .contiguous()?;
-        let ab = fused
-            .narrow(D::Minus1, conv_dim + l.value_dim, 2 * l.num_v_heads)?
-            .contiguous()?;
+            .squeeze(0)?; // [seq, conv] strided
+        let z = fused.narrow(D::Minus1, conv_dim, l.value_dim)?;
+        let ab = fused.narrow(
+            D::Minus1,
+            conv_dim + l.value_dim,
+            2 * l.num_v_heads,
+        )?;
         if let Some(c) = vc.as_mut() {
             c.qkv = Some(qkv.clone());
         }
 
-        // causal depthwise conv over [prev_state | inputs]
-        let conv_in = Tensor::cat(&[&st.conv, &qkv], 0)?; // [k-1+seq, conv_dim]
         #[cfg(all(feature = "metal", target_os = "macos"))]
-        let conv_out = if x.device().is_metal() {
-            conv_in
-                .apply_op2_no_bwd(
+        if x.device().is_metal()
+            && std::env::var("TH_GDN_EAGER").is_err()
+        {
+            let conv_out = st
+                .conv
+                .apply_op3_no_bwd(
+                    &qkv,
                     &l.conv,
                     &crate::gdn_kernel::GdnConv {
                         t: seq,
                         c: conv_dim,
                         k: l.conv_k,
                     },
+                )?;
+            // new window = last (k-1) rows of [state | inputs]
+            st.conv = if seq >= l.conv_k - 1 {
+                qkv.narrow(0, seq + 1 - l.conv_k, l.conv_k - 1)?
+            } else {
+                Tensor::cat(
+                    &[
+                        &st.conv
+                            .narrow(0, seq, l.conv_k - 1 - seq)?,
+                        &qkv,
+                    ],
+                    0,
                 )?
                 .contiguous()?
-        } else {
-            conv_silu(&conv_in, &l.conv, seq, conv_dim, l.conv_k)?
-        };
-        #[cfg(not(all(feature = "metal", target_os = "macos")))]
+            };
+            // rmsnorm·scale on the q/k channels of conv_out (+ v
+            // copy-through) — the scan reads the result directly since
+            // its flat layout IS the qkv pack the kernel wants
+            let pack = conv_out.apply_op1_no_bwd(&crate::gdn_kernel::GdnQkNorm {
+                t: seq,
+                hk: l.num_k_heads,
+                hv: l.num_v_heads,
+                dk: l.head_k,
+                dv: l.head_v,
+            })?;
+            if let Some(c) = vc.as_mut() {
+                c.pack = Some(pack.clone());
+            }
+            let out = Self::gdn_scan(
+                l,
+                st,
+                vc,
+                &pack,
+                &ab,
+                seq,
+                x.device(),
+            )?;
+            // gated RMSNorm fused: rmsnorm(out)·w ⊙ silu(z)
+            let gated = out.apply_op3_no_bwd(
+                &z,
+                &l.norm_w,
+                &crate::gdn_kernel::GdnGateNorm {
+                    t: seq,
+                    hv: l.num_v_heads,
+                    dv: l.head_v,
+                    z_stride: z.stride()[z.dims().len() - 2],
+                    eps: eps as f32,
+                },
+            )?;
+            return lin_apply(
+                &gated.reshape((1, seq, l.value_dim))?,
+                &l.out,
+            );
+        }
+
+        // ---- eager fallback (CPU / non-Metal) ----
+        let qkv = qkv.contiguous()?;
+        let z = z.contiguous()?;
+        let ab = ab.contiguous()?;
+        let conv_in = Tensor::cat(&[&st.conv, &qkv], 0)?; // [k-1+seq, conv_dim]
         let conv_out = conv_silu(&conv_in, &l.conv, seq, conv_dim, l.conv_k)?;
         st.conv =
             conv_in.narrow(0, conv_in.dim(0)? - (l.conv_k - 1), l.conv_k - 1)?;
@@ -1744,8 +1833,12 @@ impl Qwen35 {
         // recurrent scan — fused single-dispatch Metal kernel when
         // available, per-token eager ops otherwise. Returns
         // [seq, num_v_heads, head_v] (bf16 fused / f32 eager).
+        let pack = Tensor::cat(&[q, k, v], 1)?;
+        if let Some(c) = vc.as_mut() {
+            c.pack = Some(pack.clone());
+        }
         let out =
-            Self::gdn_scan(l, st, vc, &q, &k, &v, &ab, seq, x.device())?;
+            Self::gdn_scan(l, st, vc, &pack, &ab, seq, x.device())?;
 
         // gated RMSNorm: fused rms_norm(out)·w × silu(z)
         let n = candle_nn::ops::rms_norm(
@@ -1766,31 +1859,33 @@ impl Qwen35 {
     /// `[seq, num_v_heads, head_v]`, `ab` is `[1, seq, 2*num_v_heads]`.
     /// Returns `[seq, num_v_heads, head_v]`; `st.recurrent` is updated.
     /// `vc`, when set, stashes the packed scan inputs.
+    /// `pack` is the conv output — its flat `[q|k|v]` channel order is
+    /// already the scan's packed layout, so the kernel reads it directly
+    /// (a `[T, 2Hk+Hv, Dw]` view or the flat `[T, conv]` form — identical
+    /// element order). `ab` is the strided bf16 `[a|b]` projection view;
+    /// the kernel converts in-register. `vc`, when set, stashes the
+    /// packed scan inputs for `rollback_verify`.
     fn gdn_scan(
         l: &GdnLayer,
         st: &mut GdnState,
         vc: &mut Option<GdnVerifyCache>,
-        q: &Tensor,
-        k: &Tensor,
-        v: &Tensor,
+        pack: &Tensor,
         ab: &Tensor,
         seq: usize,
         dev: &Device,
     ) -> Result<Tensor> {
-        let ab2 = ab.squeeze(0)?; // [seq, 96]
-
         #[cfg(all(feature = "metal", target_os = "macos"))]
         if dev.is_metal() {
-            // kernel does the k-head → v-head sharing internally
-            // (hk = hv / (Hv/Hk)) — no expansion needed here.
-            let pack = Tensor::cat(&[q, k, v], 1)?.contiguous()?;
-            let ab_f = ab2.to_dtype(DType::F32)?.contiguous()?;
+            let ab_v = if std::env::var("TH_GDN_AB_CONTIG").is_ok() {
+                ab.contiguous()?
+            } else {
+                ab.clone()
+            };
             if let Some(c) = vc.as_mut() {
-                c.pack = Some(pack.clone());
-                c.ab = Some(ab_f.clone());
+                c.ab = Some(ab_v.clone());
             }
             return Ok(pack.apply_op3_no_bwd(
-                &ab_f,
+                &ab_v,
                 &st.recurrent,
                 &crate::gdn_kernel::GdnStep {
                     t: seq,
@@ -1804,6 +1899,15 @@ impl Qwen35 {
             )?);
         }
         let _ = dev;
+
+        let q = pack.narrow(1, 0, l.num_k_heads)?; // [seq, hk, dk]
+        let k = pack.narrow(1, l.num_k_heads, l.num_k_heads)?;
+        let v = pack.narrow(1, 2 * l.num_k_heads, l.num_v_heads)?;
+        let ab2 = if ab.dims().len() == 3 {
+            ab.squeeze(0)?
+        } else {
+            ab.clone()
+        };
 
         // share each k/q head across num_v/num_k v-heads
         let rep = l.num_v_heads / l.num_k_heads;
