@@ -669,7 +669,8 @@ impl QLin {
                             .and_then(|y| {
                                 let mut out = dims.clone();
                                 *out.last_mut().unwrap() = half;
-                                Ok(y.reshape(out)?)
+                                // a >8-row activation is never a presum block
+                                Ok((y.reshape(out)?, false))
                             }),
                     );
                 }
