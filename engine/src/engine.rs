@@ -358,11 +358,20 @@ fn generate_blocking(
                         inner.backend.forward_multi(&seq, pos, &device)?;
                     let t_fwd_enqueue = t0.elapsed();
                     let caps = inner.backend.take_captures()?;
-                    // one [n+1, vocab] readback for the whole accept pass —
-                    // bf16 halves the transfer vs an f32 convert+copy —
-                    // also syncs the verify GPU work
-                    let mut rows: Vec<Vec<half::bf16>> =
-                        logits_m.to_vec2()?;
+                    // greedy needs only the argmax per row — a [n+1] u32
+                    // readback instead of [n+1, vocab] bf16 (~4.5MB).
+                    // Also syncs the verify GPU work either way.
+                    let greedy = sampler.temperature.is_none()
+                        && ((sp.repeat_penalty - 1.0).abs() < f32::EPSILON
+                            || sp.repeat_last_n == 0);
+                    let mut rows: Vec<Vec<half::bf16>> = Vec::new();
+                    let mut argmax_rows: Vec<u32> = Vec::new();
+                    if greedy {
+                        argmax_rows =
+                            logits_m.argmax(candle_core::D::Minus1)?.to_vec1::<u32>()?;
+                    } else {
+                        rows = logits_m.to_vec2()?;
+                    }
                     let t_verify = t0.elapsed();
                     if std::env::var("TH_DEBUG_TIMING").is_ok() {
                         eprintln!(
@@ -373,46 +382,61 @@ fn generate_blocking(
                     }
                     let mut emitted: Vec<u32> = Vec::with_capacity(8);
                     let mut accepted = 0usize;
-                    let mut rows_it = rows.drain(..);
-                    for i in 0..verify_len {
-                        let row: Vec<f32> = rows_it
-                            .next()
-                            .unwrap()
-                            .iter()
-                            .map(|v| v.to_f32())
-                            .collect();
-                        let t = spec_accept_step(
-                            &mut sampler,
-                            row,
-                            &prop,
-                            i,
-                            ec.completion,
-                            &prompt_tokens,
-                            sp.repeat_penalty,
-                            sp.repeat_last_n,
-                        )?;
-                        emitted.push(t);
-                        if t == prop.tokens[i] {
-                            accepted += 1;
-                        } else {
-                            break;
+                    if greedy {
+                        for i in 0..verify_len {
+                            let t = argmax_rows[i];
+                            emitted.push(t);
+                            if t == prop.tokens[i] {
+                                accepted += 1;
+                            } else {
+                                break;
+                            }
                         }
-                    }
-                    if accepted == verify_len {
-                        let row: Vec<f32> = rows_it
-                            .next()
-                            .unwrap()
-                            .iter()
-                            .map(|v| v.to_f32())
-                            .collect();
-                        let d = sampler.dist_vec(
-                            row,
-                            ec.completion,
-                            &prompt_tokens,
-                            sp.repeat_penalty,
-                            sp.repeat_last_n,
-                        );
-                        emitted.push(sampler.pick(&d));
+                        if accepted == verify_len {
+                            emitted.push(argmax_rows[verify_len]);
+                        }
+                    } else {
+                        let mut rows_it = rows.drain(..);
+                        for i in 0..verify_len {
+                            let row: Vec<f32> = rows_it
+                                .next()
+                                .unwrap()
+                                .iter()
+                                .map(|v| v.to_f32())
+                                .collect();
+                            let t = spec_accept_step(
+                                &mut sampler,
+                                row,
+                                &prop,
+                                i,
+                                ec.completion,
+                                &prompt_tokens,
+                                sp.repeat_penalty,
+                                sp.repeat_last_n,
+                            )?;
+                            emitted.push(t);
+                            if t == prop.tokens[i] {
+                                accepted += 1;
+                            } else {
+                                break;
+                            }
+                        }
+                        if accepted == verify_len {
+                            let row: Vec<f32> = rows_it
+                                .next()
+                                .unwrap()
+                                .iter()
+                                .map(|v| v.to_f32())
+                                .collect();
+                            let d = sampler.dist_vec(
+                                row,
+                                ec.completion,
+                                &prompt_tokens,
+                                sp.repeat_penalty,
+                                sp.repeat_last_n,
+                            );
+                            emitted.push(sampler.pick(&d));
+                        }
                     }
                     let retained = emitted.len();
                     for (i, &t) in emitted.iter().enumerate() {
