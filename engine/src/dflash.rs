@@ -320,7 +320,7 @@ impl Draft {
             let v = qkv
                 .narrow(1, ATTN + KV_HEADS * HEAD_DIM, KV_HEADS * HEAD_DIM)?
                 .reshape((rows, KV_HEADS, HEAD_DIM))?;
-            let k = head_norm_rope(&k, &l.k_norm, &cos, &sin)?;
+            let k = dnorm_rope(&k, &l.k_norm, &cos, &sin)?;
             // in-place ring write: src [heads, rows, dim], indexes give
             // the slot for each row (positions are contiguous → slots
             // are contiguous mod WINDOW).
@@ -366,7 +366,7 @@ impl Draft {
         for (li, l) in self.layers.iter().enumerate() {
             let n = rms_norm(&x, &l.input_norm, 1e-6)?; // [1,8,5120]
             let dyn_ = lin_apply(&n, &l.attn_dyn)?; // [1,8,1280]
-            let conv = draft_conv(&n, &dyn_, &l.conv_base, 0, None)?;
+            let conv = dconv(&n, &dyn_, &l.conv_base, 0, None)?;
             let qkv = lin_apply(&conv, &l.qkv)?; // [1,8,6144]
             let q = qkv
                 .narrow(2, 0, ATTN)?
@@ -377,18 +377,18 @@ impl Draft {
             let v = qkv
                 .narrow(2, ATTN + KV_HEADS * HEAD_DIM, KV_HEADS * HEAD_DIM)?
                 .reshape((ROWS, KV_HEADS, HEAD_DIM))?;
-            let q = head_norm_rope(&q, &l.q_norm, &cos, &sin)?;
-            let k = head_norm_rope(&k, &l.k_norm, &cos, &sin)?;
+            let q = dnorm_rope(&q, &l.q_norm, &cos, &sin)?;
+            let k = dnorm_rope(&k, &l.k_norm, &cos, &sin)?;
             let attn = self.attention(li, &q, &k, &v)?;
             let proj = lin_apply(&attn, &l.o_proj)?; // [1,8,5120]
-            let x2 = draft_conv(&proj, &dyn_, &l.conv_base, 1, Some(&x))?;
+            let x2 = dconv(&proj, &dyn_, &l.conv_base, 1, Some(&x))?;
             let n2 = rms_norm(&x2, &l.post_norm, 1e-6)?;
             let dyn2 = lin_apply(&n2, &l.mlp_dyn)?;
-            let conv2 = draft_conv(&n2, &dyn2, &l.mlp_conv_base, 0, None)?;
+            let conv2 = dconv(&n2, &dyn2, &l.mlp_conv_base, 0, None)?;
             let inter = candle_nn::ops::silu(&lin_apply(&conv2, &l.gate)?)?
                 .mul(&lin_apply(&conv2, &l.up)?)?;
             let proj2 = lin_apply(&inter, &l.down)?;
-            x = draft_conv(&proj2, &dyn2, &l.mlp_conv_base, 1, Some(&x2))?;
+            x = dconv(&proj2, &dyn2, &l.mlp_conv_base, 1, Some(&x2))?;
         }
         let fh = rms_norm(&x, &self.final_norm, 1e-6)?; // [1,8,5120]
         let logits = lin_apply(&fh, lm_head)?.squeeze(0)?; // [8, vocab]
@@ -425,6 +425,19 @@ impl Draft {
                 self.ring_v[layer].index_select(&idx, 1)?,
             )
         };
+        #[cfg(all(feature = "metal", target_os = "macos"))]
+        if dev.is_metal() && std::env::var("TH_DRAFT_EAGER").is_err() {
+            return Ok(crate::draft_kernel::draft_attn(
+                q,
+                &self.ring_k[layer],
+                &self.ring_v[layer],
+                k,
+                v,
+                l,
+                start % WINDOW,
+            )?
+            .unsqueeze(0)?);
+        }
         let kr = gqa_expand(&kr)?;
         let vr = gqa_expand(&vr)?;
         let kc = gqa_expand(&k.permute((1, 0, 2))?)?; // [8,8,128]→[32,8,128]
@@ -510,30 +523,43 @@ impl Draft {
         let mut cand_ids = [[0u32; TOPK]; PROPOSALS];
         let mut cand_probs = [[0f32; TOPK]; PROPOSALS];
         let mut pred_idx = 0usize;
+        // Batched codebook gathers — the walk needs pred rows for
+        // {anchor} ∪ cand_ids[0..6] and succ rows for cand_ids[0..6];
+        // two index_select+readback calls instead of 14 pipelined syncs.
+        let mut pred_ids: Vec<u32> = Vec::with_capacity(1 + 6 * TOPK);
+        pred_ids.push(anchor);
+        for p in 0..PROPOSALS - 1 {
+            pred_ids.extend_from_slice(&cand[p]);
+        }
+        let mut succ_ids: Vec<u32> = Vec::with_capacity(PROPOSALS * TOPK);
+        for p in 0..PROPOSALS {
+            succ_ids.extend_from_slice(&cand[p]);
+        }
+        let pred_all: Vec<Vec<f32>> = self
+            .pred_cb
+            .i(&Tensor::from_slice(&pred_ids, (pred_ids.len(),), &self.device)?)?
+            .to_dtype(DType::F32)?
+            .to_vec2()?;
+        let succ_all: Vec<Vec<f32>> = self
+            .succ_cb
+            .i(&Tensor::from_slice(&succ_ids, (succ_ids.len(),), &self.device)?)?
+            .to_dtype(DType::F32)?
+            .to_vec2()?;
         for p in 0..PROPOSALS {
             for i in 0..TOPK {
                 cand_ids[p][i] = cand[p][i];
             }
             // predecessors: anchor for p=0 else position p-1's top-16
-            let preds: &[u32] = if p == 0 {
-                std::slice::from_ref(&anchor)
+            let npreds = if p == 0 { 1 } else { TOPK };
+            let pred_rows: &[Vec<f32>] = if p == 0 {
+                &pred_all[..1]
             } else {
-                &cand_ids[p - 1]
+                &pred_all[1 + (p - 1) * TOPK..1 + p * TOPK]
             };
-            let npreds = preds.len();
-            // edge[j][i] = (pred_cb[preds[j]] ⊙ h) · succ_cb[cand_i] —
-            // gather the needed codebook rows once, dot on CPU.
+            let succ_rows: &[Vec<f32>] =
+                &succ_all[p * TOPK..(p + 1) * TOPK];
+            // edge[j][i] = (pred_cb[preds[j]] ⊙ h) · succ_cb[cand_i]
             let h = &sel_h[p];
-            let pred_rows: Vec<Vec<f32>> = self
-                .pred_cb
-                .i(&Tensor::from_slice(preds, (npreds,), &self.device)?)?
-                .to_dtype(DType::F32)?
-                .to_vec2()?;
-            let succ_rows: Vec<Vec<f32>> = self
-                .succ_cb
-                .i(&Tensor::from_slice(&cand_ids[p], (TOPK,), &self.device)?)?
-                .to_dtype(DType::F32)?
-                .to_vec2()?;
             let mut edges = vec![vec![0f32; TOPK]; npreds];
             for (j, ctx) in pred_rows.iter().enumerate() {
                 for (i, succ) in succ_rows.iter().enumerate() {
@@ -723,4 +749,42 @@ mod tests {
         }
     }
 
+}
+
+
+/// draft_conv on the fused kernel when possible; eager chain under
+/// TH_DRAFT_EAGER / non-Metal.
+fn dconv(
+    x: &Tensor,
+    dyn_: &Tensor,
+    base: &Tensor,
+    stage: usize,
+    residual: Option<&Tensor>,
+) -> Result<Tensor> {
+    #[cfg(all(feature = "metal", target_os = "macos"))]
+    if x.device().is_metal()
+        && dyn_.is_contiguous()
+        && x.stride().last() == Some(&1)
+        && std::env::var("TH_DRAFT_EAGER").is_err()
+    {
+        return Ok(crate::draft_kernel::draft_conv_fused(x, dyn_, base, residual, stage)?);
+    }
+    draft_conv(x, dyn_, base, stage, residual)
+}
+
+/// head_norm_rope on the fused kernel when possible.
+fn dnorm_rope(
+    x: &Tensor,
+    w: &Tensor,
+    cos: &Tensor,
+    sin: &Tensor,
+) -> Result<Tensor> {
+    #[cfg(all(feature = "metal", target_os = "macos"))]
+    if x.device().is_metal()
+        && x.stride().last() == Some(&1)
+        && std::env::var("TH_DRAFT_EAGER").is_err()
+    {
+        return Ok(crate::draft_kernel::draft_norm_rope(x, w, cos, sin)?);
+    }
+    head_norm_rope(x, w, cos, sin)
 }

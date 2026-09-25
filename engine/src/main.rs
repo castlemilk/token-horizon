@@ -11,6 +11,7 @@ use clap::{Parser, Subcommand};
 mod api;
 mod attn_kernel;
 mod dflash;
+mod draft_kernel;
 mod engine;
 mod gdn_kernel;
 mod model;
