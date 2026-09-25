@@ -611,6 +611,8 @@ impl QLin {
             if self.tiled && half % 256 == 0 {
                 let xv = x.reshape((rows, in_d)).ok()?.contiguous().ok()?;
                 let padded = self.out.div_ceil(256) * 256;
+                // K1: N256 two-stream tile (sequential K) by default
+                let (tile, sgs) = crate::quant_kernel::gate_up_tile();
                 return Some(
                     self.wq
                         .apply_op3_no_bwd(
@@ -622,8 +624,8 @@ impl QLin {
                                 padded,
                                 m: rows,
                                 up_tile: half / 256,
-                                sgs: 2,
-                                tile: 64,
+                                sgs,
+                                tile,
                             },
                         )
                         .map_err(Into::into)
@@ -688,6 +690,157 @@ pub(crate) fn lin_apply(x: &Tensor, l: &Lin) -> Result<Tensor> {
         Lin::Dense(w) => linear(x, w),
         Lin::Quant(q) => q.linear(x),
     }
+}
+
+/// `TH_BENCH_Q4=1 th-engine probe …` — decode-projection bench on the
+/// real weights (WP-2's companion to `bench_lin`). Per projection class
+/// it times a pass over every layer's tensor — distinct weights, so the
+/// pass streams from DRAM like the real forward (one repeated 17.7 MB
+/// tensor would sit in the ~32 MB SLC) — through the production entry
+/// points (`gate_up_act` / `linear`: whatever the tile policy picks),
+/// then sweeps explicit `AffineQmpp` tiles. max|Δ| is vs the scalar
+/// `AffineQmm` reference on the class's first tensor; Δpath is vs the
+/// production path's output. Host-timed (sync → enqueue a pass → sync),
+/// so µs/call includes ~2-5 µs of encode. Env: `TH_BENCH_Q4_M` (rows,
+/// default 8), `TH_BENCH_Q4_PASSES` (default 7).
+#[cfg(all(feature = "metal", target_os = "macos"))]
+pub(crate) fn bench_q4_decode(model: &Qwen35, device: &Device) -> Result<()> {
+    use crate::quant_kernel::{AffineQmm, AffineQmpp};
+    let env_n = |k: &str, d: usize| {
+        std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(d)
+    };
+    let rows = env_n("TH_BENCH_Q4_M", 8).clamp(1, 8);
+    let passes = env_n("TH_BENCH_Q4_PASSES", 7).max(1);
+    let quant = |l: &Lin| match l {
+        Lin::Quant(q) if q.tiled => Some(q.clone()),
+        _ => None,
+    };
+    let gdn = |f: fn(&GdnLayer) -> &Lin| {
+        model
+            .layers
+            .iter()
+            .filter_map(|l| match &l.kind {
+                Kind::Gdn(g) => quant(f(g)),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+    let attn = |f: fn(&AttnLayer) -> &Lin| {
+        model
+            .layers
+            .iter()
+            .filter_map(|l| match &l.kind {
+                Kind::Attn(a) => quant(f(a)),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+    let classes: Vec<(&str, Vec<QLin>)> = vec![
+        ("gate_up", model.layers.iter().filter_map(|l| quant(&l.mlp.gate_up)).collect()),
+        ("down", model.layers.iter().filter_map(|l| quant(&l.mlp.down)).collect()),
+        ("in_all", gdn(|g| &g.in_all)),
+        ("out", gdn(|g| &g.out)),
+        ("in_qkv", attn(|a| &a.in_qkv)),
+        ("o", attn(|a| &a.o)),
+        ("lm_head", quant(&model.lm_head).into_iter().collect()),
+    ];
+    eprintln!(
+        "q4 bench: m={rows} passes={passes} policy={:?}",
+        crate::quant_kernel::q4_policy_mode()
+    );
+    let max_abs = |a: &Tensor, b: &Tensor| -> Result<f32> {
+        Ok(a.sub(b)?.abs()?.flatten_all()?.max(0)?.to_scalar::<f32>()?)
+    };
+    for (tag, qs) in &classes {
+        let Some(q0) = qs.first() else { continue };
+        let gate_up = *tag == "gate_up";
+        let half = q0.out / 2;
+        let xv: Vec<f32> = (0..rows * q0.inp)
+            .map(|i| ((i * 2654435761) % 1000) as f32 / 500.0 - 1.0)
+            .collect();
+        let x = Tensor::from_vec(xv, (rows, q0.inp), device)?.to_dtype(DType::BF16)?;
+        let y_ref = q0.wq.apply_op3_no_bwd(
+            &q0.sb,
+            &x,
+            &AffineQmm { inp: q0.inp, out: q0.out, gs: q0.gs, m: rows, tiled: q0.tiled },
+        )?;
+        // the kernels round gate/up to bf16 before silu(gate)·up
+        let reference = if gate_up {
+            let g = y_ref.narrow(1, 0, half)?.to_dtype(DType::F32)?;
+            let u = y_ref.narrow(1, half, half)?.to_dtype(DType::F32)?;
+            candle_nn::ops::silu(&g)?.mul(&u)?
+        } else {
+            y_ref.to_dtype(DType::F32)?
+        };
+        let ref_mag = reference.abs()?.flatten_all()?.max(0)?.to_scalar::<f32>()?;
+        let bytes = q0.out * q0.inp / 2 + q0.out * (q0.inp / 64) * 4;
+        let n_calls = qs.len().max(8); // lm_head: 8 calls of one 715 MB tensor
+        let time = |f: &dyn Fn(&QLin) -> Result<Tensor>| -> Result<(f64, f64)> {
+            for _ in 0..2 {
+                for i in 0..n_calls {
+                    let _ = f(&qs[i % qs.len()])?;
+                }
+            }
+            device.synchronize()?;
+            let mut us = Vec::with_capacity(passes);
+            for _ in 0..passes {
+                let t = std::time::Instant::now();
+                for i in 0..n_calls {
+                    let _ = f(&qs[i % qs.len()])?;
+                }
+                device.synchronize()?;
+                us.push(t.elapsed().as_secs_f64() * 1e6 / n_calls as f64);
+            }
+            us.sort_by(|a, b| a.total_cmp(b));
+            Ok((us[0], us[us.len() / 2]))
+        };
+        let path = |q: &QLin| -> Result<Tensor> {
+            if gate_up {
+                match q.gate_up_act(&x) {
+                    Some(r) => r,
+                    None => bail!("gate_up_act declined m={rows}"),
+                }
+            } else {
+                q.linear(&x)
+            }
+        };
+        let y_path = path(q0)?.to_dtype(DType::F32)?;
+        let report = |label: &str, y: &Tensor, (mn, med): (f64, f64)| -> Result<()> {
+            eprintln!(
+                "q4[{tag} m={rows}] {label:<13} {med:8.1}us/call (min {mn:8.1}) {:5.0} GB/s  max|Δ|ref={:.5} Δpath={:.5}  |ref|max={ref_mag:.2}  [{}x{}, {} tensors x{passes}]",
+                bytes as f64 / (med * 1e-6) / 1e9,
+                max_abs(y, &reference)?,
+                max_abs(y, &y_path)?,
+                if gate_up { half } else { q0.out },
+                q0.inp,
+                qs.len(),
+            );
+            Ok(())
+        };
+        report("path", &y_path, time(&path)?)?;
+        let cfgs: &[(&str, usize, usize)] = if gate_up {
+            &[("n32s4_gu", 64, 2), ("n256_gu_sg8", 256, 8), ("n256_gu_sg4", 256, 4)]
+        } else {
+            &[("n64s4", 64, 2), ("n32s4", 32, 1), ("n256_sg8", 256, 8), ("n256_sg4", 256, 4)]
+        };
+        for &(label, tile, sgs) in cfgs {
+            let op = |q: &QLin| AffineQmpp {
+                inp: q.inp,
+                out: if gate_up { q.out / 2 } else { q.out },
+                padded: q.out.div_ceil(256) * 256,
+                m: rows,
+                up_tile: if gate_up { q.out / 2 / 256 } else { 0 },
+                sgs,
+                tile,
+            };
+            let run = |q: &QLin| -> Result<Tensor> {
+                Ok(q.wq.apply_op3_no_bwd(&q.sb, &x, &op(q))?.narrow(0, 0, rows)?)
+            };
+            let y = run(q0)?.to_dtype(DType::F32)?;
+            report(label, &y, time(&run)?)?;
+        }
+    }
+    Ok(())
 }
 
 /// Row-concatenate projection weights so one matmul produces all their

@@ -17,6 +17,46 @@
 #[cfg(all(feature = "metal", target_os = "macos"))]
 pub use metal_impl::{AffineDequant, AffineQmm, AffineQmpp, AffineQmppPrefill, AffineQmv, AffineQsg, mpp_probe};
 
+// MARK: - decode (m <= 8) tile policy
+
+/// Which decode tile family `QLin` asks `AffineQmpp` for. Read once per
+/// process (never per call): `TH_Q4_POLICY=legacy` restores the pre-WP-2
+/// split-K tiles (n32s4 gate/up, n64s4 everywhere else) for A/B runs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Q4PolicyMode {
+    /// WP-2 defaults (K1 N256 gate/up).
+    Tuned,
+    /// Pre-WP-2 tiles.
+    Legacy,
+}
+
+pub fn q4_policy_mode() -> Q4PolicyMode {
+    static MODE: std::sync::OnceLock<Q4PolicyMode> = std::sync::OnceLock::new();
+    *MODE.get_or_init(|| {
+        let mode = match std::env::var("TH_Q4_POLICY").as_deref() {
+            Ok("legacy") => Q4PolicyMode::Legacy,
+            _ => Q4PolicyMode::Tuned,
+        };
+        tracing::info!(?mode, "q4 decode tile policy");
+        mode
+    })
+}
+
+/// `(tile, simdgroups)` for the fused [gate | up] projection at m = 2..=8
+/// (`AffineQmpp` with `up_tile > 0`).
+///
+/// K1: the N256 two-stream tile (`affine_q4_mpp_gate_up`, one 8 x 256
+/// gate+up tile pair per persistent group — 68 groups on the 27B MLP) is
+/// sequential in K and bitwise equal to Splash's `n256_gate_up`; the
+/// split-K `n32s4_gate_up` it replaces measured 10-15% slower on this
+/// shape (274 vs 236 us, 44.5% of all verify bytes).
+pub fn gate_up_tile() -> (usize, usize) {
+    match q4_policy_mode() {
+        Q4PolicyMode::Legacy => (64, 2),
+        Q4PolicyMode::Tuned => (256, 8),
+    }
+}
+
 #[cfg(all(feature = "metal", target_os = "macos"))]
 mod metal_impl {
     use candle_core::backend::BackendStorage;
