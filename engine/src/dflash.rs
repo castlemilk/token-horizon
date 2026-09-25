@@ -391,8 +391,11 @@ impl Draft {
             x = dconv(&proj2, &dyn2, &l.mlp_conv_base, 1, Some(&x2))?;
         }
         let fh = rms_norm(&x, &self.final_norm, 1e-6)?; // [1,8,5120]
-        let logits = lin_apply(&fh, lm_head)?.squeeze(0)?; // [8, vocab]
-        let sel = lin_apply(&fh, &self.selector)?.squeeze(0)?; // [8, 256]
+        // only rows 1..7 feed the proposal — row 0 is the anchor and
+        // its logits/selector outputs are never read.
+        let fh7 = fh.narrow(1, 1, PROPOSALS)?.contiguous()?;
+        let logits = lin_apply(&fh7, lm_head)?.squeeze(0)?; // [7, vocab]
+        let sel = lin_apply(&fh7, &self.selector)?.squeeze(0)?; // [7, 256]
         self.select(&logits, &sel, anchor, temp, &mut uniform)
     }
 
@@ -475,7 +478,7 @@ impl Draft {
         const CHUNKS: usize = 485;
         const CHUNK_W: usize = 512;
         let cand_rows = logits
-            .narrow(0, 1, PROPOSALS)?
+            .narrow(0, 0, PROPOSALS)?
             .contiguous()?
             .to_dtype(DType::F32)?; // [7, 248320]
         let chunked = cand_rows.reshape((PROPOSALS, CHUNKS, CHUNK_W))?;
@@ -515,7 +518,7 @@ impl Draft {
             );
         }
         let sel_h: Vec<Vec<f32>> = sel
-            .narrow(0, 1, PROPOSALS)?
+            .narrow(0, 0, PROPOSALS)?
             .to_dtype(DType::F32)?
             .to_vec2()?; // [7, 256] — row p for position p
 
