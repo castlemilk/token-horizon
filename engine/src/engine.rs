@@ -19,6 +19,10 @@ use tokio::sync::mpsc;
 
 pub struct Engine {
     inner: Arc<tokio::sync::Mutex<ModelInner>>,
+    /// Batch-decode queue — set when the backend has >1 decode slots
+    /// (TH_BATCH). Jobs are admitted onto free slots and stepped in
+    /// lockstep: one weight sweep per verify round serves all slots.
+    job_tx: Option<std::sync::mpsc::SyncSender<BatchJob>>,
     pub state: Arc<EngineState>,
 }
 
@@ -89,6 +93,7 @@ impl Engine {
         }
         let model_id = model.to_string();
         let meta = loaded.meta.clone();
+        let nslots = loaded.backend.nslots();
         let inner = ModelInner {
             backend: loaded.backend,
             tokenizer: loaded.tokenizer,
@@ -96,9 +101,24 @@ impl Engine {
             chat_template: loaded.chat_template,
             device: loaded.device,
         };
+        let inner = Arc::new(tokio::sync::Mutex::new(inner));
+        let state = Arc::new(EngineState::new(model_id, meta, cfg));
+        let job_tx = if nslots > 1 {
+            let (tx, rx) =
+                std::sync::mpsc::sync_channel::<BatchJob>(nslots * 8);
+            let (i2, s2) = (inner.clone(), state.clone());
+            std::thread::Builder::new()
+                .name("th-batch".into())
+                .spawn(move || batch_loop(i2, s2, rx, nslots))?;
+            tracing::info!(slots = nslots, "batched decode enabled");
+            Some(tx)
+        } else {
+            None
+        };
         Ok(Self {
-            inner: Arc::new(tokio::sync::Mutex::new(inner)),
-            state: Arc::new(EngineState::new(model_id, meta, cfg)),
+            inner,
+            job_tx,
+            state,
         })
     }
 
@@ -119,6 +139,23 @@ impl Engine {
         let id = uuidish();
         state.counters.requests_total.fetch_add(1, Ordering::Relaxed);
         state.counters.requests_active.fetch_add(1, Ordering::Relaxed);
+        if let Some(q) = &self.job_tx {
+            let job = BatchJob {
+                id: id.clone(),
+                messages,
+                req,
+                tx: tx.clone(),
+                started: Instant::now(),
+            };
+            match q.try_send(job) {
+                Ok(()) => return,
+                Err(_) => {
+                    let _ = tx.send(GenEvent::Error("batch queue full".into()));
+                    state.counters.requests_active.fetch_sub(1, Ordering::Relaxed);
+                    return;
+                }
+            }
+        }
         // fire-and-forget: awaiting the JoinHandle would buffer every
         // delta until generation completes and break SSE streaming
         tokio::task::spawn_blocking(move || {
@@ -144,7 +181,7 @@ impl Engine {
     /// Clear the KV cache + reset tracked positions.
     pub async fn kv_clear(&self) {
         let mut inner = self.inner.lock().await;
-        inner.backend.clear_kv_cache();
+        inner.backend.clear_kv_cache(0);
         self.state.kv_tokens.store(0, Ordering::Relaxed);
         self.state.emit("kv.cleared", serde_json::json!({}));
     }
@@ -242,7 +279,7 @@ fn generate_blocking(
     // kv_quant is live-tunable between requests — the clear right after
     // guarantees a toggle never mixes raw and compressed cache state.
     inner.backend.set_kv_quant(sp.kv_quant)?;
-    inner.backend.clear_kv_cache();
+    inner.backend.clear_kv_cache(0);
     let device = inner.device.clone();
     let eos_ids = inner.eos_ids.clone();
     let tokenizer = inner.tokenizer.clone();
@@ -312,7 +349,7 @@ fn generate_blocking(
     // the draft ring, and leaves the last emitted token pending as the
     // next anchor.
     if inner.backend.has_draft() {
-        inner.backend.draft_prefill()?; // warm the ring from prefill
+        inner.backend.draft_prefill(0)?; // warm the ring from prefill
         if let Some(pl) = pending.take() {
             let mut anchor = sampler.sample(
                 &pl,
@@ -344,6 +381,7 @@ fn generate_blocking(
                     let verify_len = ((accept_ema + 0.5) as usize + 1)
                         .clamp(2, crate::dflash::PROPOSALS);
                     let prop = inner.backend.draft_propose(
+                        0,
                         anchor,
                         pos,
                         sampler.temperature,
@@ -353,11 +391,11 @@ fn generate_blocking(
                     let mut seq = Vec::with_capacity(1 + verify_len);
                     seq.push(anchor);
                     seq.extend_from_slice(&prop.tokens[..verify_len]);
-                    let snap = inner.backend.snapshot()?;
+                    let snap = inner.backend.snapshot(0)?;
                     let logits_m =
                         inner.backend.forward_multi(&seq, pos, &device)?;
                     let t_fwd_enqueue = t0.elapsed();
-                    let caps = inner.backend.take_captures()?;
+                    let caps = inner.backend.take_captures(0)?;
                     // greedy needs only the argmax per row — a [n+1] u32
                     // readback instead of [n+1, vocab] bf16 (~4.5MB).
                     // Also syncs the verify GPU work either way.
@@ -449,6 +487,7 @@ fn generate_blocking(
                     }
                     if let Some(c) = caps.as_ref() {
                         inner.backend.draft_commit(
+                            0,
                             &c.narrow(0, 0, retained)?,
                             pos,
                             retained,
@@ -458,7 +497,7 @@ fn generate_blocking(
                         // rollback the speculative tail, re-applying only
                         // the committed rows from cached scan inputs —
                         // no full model re-forward
-                        inner.backend.rollback_verify(snap, retained)?;
+                        inner.backend.rollback_verify(0, snap, retained)?;
                     }
                     pos += retained;
                     spec_rounds += 1;
@@ -527,7 +566,7 @@ fn generate_blocking(
             Vec::new()
         };
         if !draft.is_empty() {
-            let snap = inner.backend.snapshot()?;
+            let snap = inner.backend.snapshot(0)?;
             let mut seq = Vec::with_capacity(draft.len() + 1);
             seq.push(tok);
             seq.extend_from_slice(&draft);
@@ -573,7 +612,7 @@ fn generate_blocking(
                 // rollback verify-state, re-forward the committed run in
                 // one batched pass — its last logits row is the pending
                 let tr = Instant::now();
-                inner.backend.restore(snap)?;
+                inner.backend.restore(0, snap)?;
                 let lg = inner
                     .backend
                     .forward_multi(&committed, base_pos, &device)?;
@@ -990,4 +1029,457 @@ fn ngram_draft(hist: &[u32], k: usize) -> Vec<u32> {
         }
     }
     Vec::new()
+}
+
+
+// MARK: - batched decode (TH_BATCH > 1)
+//
+// Jobs queue on a sync channel; the scheduler thread owns the model
+// and steps all live slots in lockstep: per-slot draft propose (one
+// batched forward), ONE verify forward over the concatenated row
+// space (the weight sweep is shared — that's the throughput win),
+// then per-slot accept / emit / commit / rollback.
+
+struct BatchJob {
+    id: String,
+    messages: Vec<ChatMessage>,
+    req: RequestSampling,
+    tx: mpsc::UnboundedSender<GenEvent>,
+    started: Instant,
+}
+
+/// Live decode state for one slot.
+struct Run {
+    #[allow(dead_code)]
+    slot: usize,
+    id: String,
+    tx: mpsc::UnboundedSender<GenEvent>,
+    started: Instant,
+    sampler: Sampler,
+    prompt_tokens: Vec<u32>,
+    completion: Vec<u32>,
+    hist: Vec<u32>,
+    text_out: String,
+    pos: usize,
+    anchor: u32,
+    accept_ema: f64,
+    spec_rounds: u64,
+    spec_accepted: u64,
+    ttft_ms: f64,
+    decode_ms_total: f64,
+    prefill_ms_total: f64,
+    finish: Option<&'static str>,
+    sp: ResolvedSampling,
+    cancel: Arc<AtomicBool>,
+    n_prompt: usize,
+}
+
+fn batch_loop(
+    inner: Arc<tokio::sync::Mutex<ModelInner>>,
+    state: Arc<EngineState>,
+    rx: std::sync::mpsc::Receiver<BatchJob>,
+    nslots: usize,
+) {
+    let mut pending: Vec<BatchJob> = Vec::new();
+    let mut runs: Vec<Option<Run>> = (0..nslots).map(|_| None).collect();
+    loop {
+        while let Ok(j) = rx.try_recv() {
+            pending.push(j);
+        }
+        let idle = runs.iter().all(|r| r.is_none());
+        if idle && pending.is_empty() {
+            match rx.recv() {
+                Ok(j) => {
+                    pending.push(j);
+                    continue;
+                }
+                Err(_) => return, // channel closed — shutdown
+            }
+        }
+        {
+            // hold the model lock only while stepping — status calls
+            // and config reads land between rounds
+            let mut inner = inner.blocking_lock();
+            for s in 0..nslots {
+                if runs[s].is_none() && !pending.is_empty() {
+                    let job = pending.remove(0);
+                    match admit(&mut inner, &state, s, job) {
+                        Ok(r) => runs[s] = r,
+                        Err(e) => {
+                            tracing::warn!(error = %e, "batch admit failed");
+                        }
+                    }
+                }
+            }
+            if let Err(e) = batch_round(&mut inner, &state, &mut runs) {
+                tracing::warn!(error = %e, "batch round failed");
+                for r in runs.iter_mut().flatten() {
+                    if r.finish.is_none() {
+                        let _ = r.tx.send(GenEvent::Error(e.to_string()));
+                        r.finish = Some("error");
+                    }
+                }
+            }
+            for s in 0..nslots {
+                if matches!(&runs[s], Some(r) if r.finish.is_some()) {
+                    let r = runs[s].take().unwrap();
+                    finish_run(&state, r);
+                }
+            }
+        }
+        std::thread::yield_now();
+    }
+}
+
+/// Prefill a job onto slot `s` and emit its first token.
+fn admit(
+    inner: &mut ModelInner,
+    state: &Arc<EngineState>,
+    slot: usize,
+    job: BatchJob,
+) -> Result<Option<Run>> {
+    let cfg = state.config.read().unwrap().clone();
+    let sp = resolve_sampling(&job.req, &cfg);
+    let bos = inner.tokenizer.token_to_id("<s>").map(|_| "<s>");
+    let prompt = template::render(inner.chat_template.as_deref(), &job.messages, bos)?;
+    let prompt_tokens: Vec<u32> = inner
+        .tokenizer
+        .encode(prompt.as_str(), false)
+        .map_err(|e| anyhow::anyhow!("tokenize: {e}"))?
+        .get_ids()
+        .to_vec();
+    let n_prompt = prompt_tokens.len();
+    if let Some(max_ctx) = sp.max_context {
+        if n_prompt + sp.max_tokens > max_ctx {
+            let _ = job.tx.send(GenEvent::Error(
+                format!("prompt ({n_prompt}) + max_tokens ({}) exceeds max_context", sp.max_tokens),
+            ));
+            return Ok(None);
+        }
+    }
+    state.emit(
+        "request.start",
+        serde_json::json!({"id": job.id, "prompt_tokens": n_prompt, "slot": slot}),
+    );
+    inner.backend.set_kv_quant_slot(sp.kv_quant, slot)?;
+    let device = inner.device.clone();
+    let mut pos = 0usize;
+    let mut last_logits: Option<Tensor> = None;
+    let mut prefill_ms_total = 0.0f64;
+    for chunk in prompt_tokens.chunks(sp.prefill_step.max(32)) {
+        let t = Instant::now();
+        last_logits = Some(inner.backend.forward_slot(slot, chunk, pos, &device)?);
+        prefill_ms_total += t.elapsed().as_secs_f64() * 1000.0;
+        pos += chunk.len();
+    }
+    inner.backend.draft_prefill(slot)?;
+    let mut sampler = Sampler::new(&sp, sp.seed.max(1));
+    let anchor = sampler.sample(
+        &last_logits.context("empty prefill")?,
+        &[],
+        &prompt_tokens,
+        sp.repeat_penalty,
+        sp.repeat_last_n,
+    )?;
+    let mut run = Run {
+        slot,
+        id: job.id,
+        tx: job.tx,
+        started: job.started,
+        sampler,
+        prompt_tokens: prompt_tokens.clone(),
+        completion: Vec::new(),
+        hist: prompt_tokens,
+        text_out: String::new(),
+        pos,
+        anchor,
+        accept_ema: 4.0,
+        spec_rounds: 0,
+        spec_accepted: 0,
+        ttft_ms: 0.0,
+        decode_ms_total: 0.0,
+        prefill_ms_total,
+        finish: None,
+        sp,
+        cancel: Arc::new(AtomicBool::new(false)),
+        n_prompt,
+    };
+    let eos_ids = inner.eos_ids.clone();
+    let mut ec = EmitCtx {
+        completion: &mut run.completion,
+        hist: &mut run.hist,
+        text_out: &mut run.text_out,
+        tx: &run.tx,
+        tokenizer: &inner.tokenizer,
+        eos_ids: &eos_ids,
+        stops: &run.sp.stop,
+        cancel: &run.cancel,
+        state,
+        max_tokens: run.sp.max_tokens,
+        max_ctx: run.sp.max_context,
+    };
+    match emit_token(&mut ec, anchor, run.pos) {
+        Emit::Done(rsn) => run.finish = Some(rsn),
+        Emit::More => {
+            run.pos += 1;
+            run.ttft_ms = run.started.elapsed().as_secs_f64() * 1000.0;
+            if run.tx.send(GenEvent::FirstToken { ttft_ms: run.ttft_ms }).is_err() {
+                run.finish = Some("cancelled");
+            }
+        }
+    }
+    Ok(Some(run))
+}
+
+/// One lockstep round over all live slots.
+fn batch_round(
+    inner: &mut ModelInner,
+    state: &Arc<EngineState>,
+    runs: &mut Vec<Option<Run>>,
+) -> Result<()> {
+    // active slot list (runs may be sparse mid-finish)
+    let active: Vec<usize> = runs
+        .iter()
+        .enumerate()
+        .filter(|(_, r)| matches!(r, Some(r) if r.finish.is_none()))
+        .map(|(s, _)| s)
+        .collect();
+    if active.is_empty() {
+        return Ok(());
+    }
+    let t0 = Instant::now();
+    // cancel check
+    for &b in &active {
+        if let Some(r) = &mut runs[b] {
+            if r.cancel.load(Ordering::Relaxed) {
+                r.finish = Some("cancelled");
+            }
+        }
+    }
+    let active: Vec<usize> = active
+        .into_iter()
+        .filter(|&b| matches!(&runs[b], Some(r) if r.finish.is_none()))
+        .collect();
+    if active.is_empty() {
+        return Ok(());
+    }
+    let anchors: Vec<u32> = active.iter().map(|&b| runs[b].as_ref().unwrap().anchor).collect();
+    let poss: Vec<usize> = active.iter().map(|&b| runs[b].as_ref().unwrap().pos).collect();
+    let temps: Vec<Option<f64>> = active
+        .iter()
+        .map(|&b| runs[b].as_ref().unwrap().sampler.temperature)
+        .collect();
+    let props = {
+        // propose needs the sampler's uniform — run it per slot through
+        // a small shim; draft_propose_batch takes a slot-indexed fn.
+        let mut u = |b: usize| -> f64 {
+            let r = runs[active[b]].as_mut().unwrap();
+            r.sampler.next_f64()
+        };
+        inner.backend.draft_propose_batch(&active, &anchors, &poss, &temps, &mut u)?
+    };
+    // verify rows: anchor + all 7 proposals (rows are ~free in batch)
+    let seqs: Vec<Vec<u32>> = active
+        .iter()
+        .zip(props.iter())
+        .map(|(&b, p)| {
+            let mut sq = Vec::with_capacity(8);
+            sq.push(runs[b].as_ref().unwrap().anchor);
+            sq.extend_from_slice(&p.tokens);
+            sq
+        })
+        .collect();
+    let snaps: Vec<model::BackendSnapshot> = active
+        .iter()
+        .map(|&b| inner.backend.snapshot(b))
+        .collect::<Result<_>>()?;
+    let seq_refs: Vec<&[u32]> = seqs.iter().map(|v| v.as_slice()).collect();
+    let logits = inner.backend.forward_batch(&active, &seq_refs, &poss)?;
+    let t_verify = t0.elapsed();
+    // caps per slot
+    let caps: Vec<Option<Tensor>> = active
+        .iter()
+        .map(|&b| inner.backend.take_captures(b))
+        .collect::<Result<_>>()?;
+    // greedy-only fast path: one argmax readback for all slots
+    let all_greedy = active.iter().all(|&b| {
+        let r = runs[b].as_ref().unwrap();
+        r.sampler.temperature.is_none()
+            && ((r.sp.repeat_penalty - 1.0).abs() < f32::EPSILON
+                || r.sp.repeat_last_n == 0)
+    });
+    let argmax_all: Vec<u32> = if all_greedy {
+        logits.argmax(candle_core::D::Minus1)?.to_vec1::<u32>()?
+    } else {
+        Vec::new()
+    };
+    // per-slot accept / emit / commit / rollback
+    for (i, &b) in active.iter().enumerate() {
+        let prop = &props[i];
+        let mut emitted: Vec<u32> = Vec::with_capacity(8);
+        let mut accepted = 0usize;
+        let seq_len = seqs[i].len(); // = 8
+        let off = i * seq_len;
+        if all_greedy {
+            for k in 0..crate::dflash::PROPOSALS {
+                let t = argmax_all[off + k];
+                emitted.push(t);
+                if t == prop.tokens[k] {
+                    accepted += 1;
+                } else {
+                    break;
+                }
+            }
+            if accepted == crate::dflash::PROPOSALS {
+                emitted.push(argmax_all[off + crate::dflash::PROPOSALS]);
+            }
+        } else {
+            let rows: Vec<Vec<half::bf16>> = logits
+                .narrow(0, off, seq_len)?
+                .to_vec2()?;
+            let r = runs[b].as_mut().unwrap();
+            let mut rows_it = rows.into_iter();
+            for k in 0..crate::dflash::PROPOSALS {
+                let row: Vec<f32> = rows_it
+                    .next()
+                    .unwrap()
+                    .iter()
+                    .map(|v| v.to_f32())
+                    .collect();
+                let t = spec_accept_step(
+                    &mut r.sampler,
+                    row,
+                    prop,
+                    k,
+                    &r.completion,
+                    &r.prompt_tokens,
+                    r.sp.repeat_penalty,
+                    r.sp.repeat_last_n,
+                )?;
+                emitted.push(t);
+                if t == prop.tokens[k] {
+                    accepted += 1;
+                } else {
+                    break;
+                }
+            }
+            if accepted == crate::dflash::PROPOSALS {
+                let row: Vec<f32> = rows_it
+                    .next()
+                    .unwrap()
+                    .iter()
+                    .map(|v| v.to_f32())
+                    .collect();
+                let d = r.sampler.dist_vec(
+                    row,
+                    &r.completion,
+                    &r.prompt_tokens,
+                    r.sp.repeat_penalty,
+                    r.sp.repeat_last_n,
+                );
+                emitted.push(r.sampler.pick(&d));
+            }
+        }
+        // emit retained tokens
+        let r = runs[b].as_mut().unwrap();
+        let eos_ids = inner.eos_ids.clone();
+        for (k, &t) in emitted.iter().enumerate() {
+            let mut ec = EmitCtx {
+                completion: &mut r.completion,
+                hist: &mut r.hist,
+                text_out: &mut r.text_out,
+                tx: &r.tx,
+                tokenizer: &inner.tokenizer,
+                eos_ids: &eos_ids,
+                stops: &r.sp.stop,
+                cancel: &r.cancel,
+                state,
+                max_tokens: r.sp.max_tokens,
+                max_ctx: r.sp.max_context,
+            };
+            if let Emit::Done(rsn) = emit_token(&mut ec, t, r.pos + 1 + k) {
+                r.finish = Some(rsn);
+                break;
+            }
+        }
+        let retained = emitted.len();
+        if let Some(c) = caps[i].as_ref() {
+            inner.backend.draft_commit(
+                b,
+                &c.narrow(0, 0, retained)?,
+                poss[i],
+                retained,
+            )?;
+        }
+        if retained < seq_len {
+            inner.backend.rollback_verify(b, snaps[i].clone(), retained)?;
+        }
+        r.pos += retained;
+        r.spec_rounds += 1;
+        r.spec_accepted += accepted as u64;
+        r.accept_ema += 0.25 * (accepted as f64 - r.accept_ema);
+        if accepted == crate::dflash::PROPOSALS {
+            r.accept_ema += 0.6;
+        }
+        if let Some(rl) = emitted.last() {
+            r.anchor = *rl;
+        }
+    }
+    let step_ms = t_verify.as_secs_f64() * 1000.0;
+    for &b in &active {
+        if let Some(r) = runs[b].as_mut() {
+            r.decode_ms_total += step_ms;
+        }
+    }
+    state.counters.observe_decode(step_ms);
+    Ok(())
+}
+
+fn finish_run(state: &Arc<EngineState>, r: Run) {
+    let total_ms = r.started.elapsed().as_secs_f64() * 1000.0;
+    let n_completion = r.completion.len();
+    let decode_tps = if n_completion > 1 && r.decode_ms_total > 0.0 {
+        (n_completion - 1) as f64 / (r.decode_ms_total / 1000.0)
+    } else {
+        0.0
+    };
+    let prefill_tps = if r.n_prompt > 0 && r.prefill_ms_total > 0.0 {
+        r.n_prompt as f64 / (r.prefill_ms_total / 1000.0)
+    } else {
+        0.0
+    };
+    state
+        .counters
+        .prompt_tokens_total
+        .fetch_add(r.n_prompt as u64, Ordering::Relaxed);
+    state
+        .counters
+        .completion_tokens_total
+        .fetch_add(n_completion as u64, Ordering::Relaxed);
+    let finish = r.finish.unwrap_or("stop").to_string();
+    let stats = DoneStats {
+        prompt_tokens: r.n_prompt,
+        completion_tokens: n_completion,
+        ttft_ms: r.ttft_ms,
+        total_ms,
+        decode_tps,
+        prefill_tps,
+        finish: finish.clone(),
+        spec_rounds: r.spec_rounds,
+        spec_accepted: r.spec_accepted,
+    };
+    let _ = r.tx.send(GenEvent::Done(Box::new(stats)));
+    let rec = RequestRecord {
+        id: r.id,
+        started_ms: state.started.elapsed().as_millis() as u64,
+        prompt_tokens: r.n_prompt,
+        completion_tokens: n_completion,
+        ttft_ms: r.ttft_ms,
+        total_ms,
+        decode_tps,
+        finish,
+    };
+    state.counters.requests_active.fetch_sub(1, Ordering::Relaxed);
+    state.emit("request.done", serde_json::to_value(&rec).unwrap_or_default());
+    state.record(rec);
 }

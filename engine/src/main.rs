@@ -181,8 +181,8 @@ async fn main() -> Result<()> {
                 let probe = 555u32;
 
                 // restore points at `pos` for the two compare paths
-                let snap_a = loaded.backend.snapshot()?;
-                let snap_c = loaded.backend.snapshot()?;
+                let snap_a = loaded.backend.snapshot(0)?;
+                let snap_c = loaded.backend.snapshot(0)?;
 
                 // reference: continuous 4-row forward
                 let _ = loaded.backend.forward_multi(&seq8[..4], pos, &dev)?;
@@ -194,8 +194,8 @@ async fn main() -> Result<()> {
                 let mut worst = 0.0f32;
                 let mut kept_max = 0usize;
                 for &kept in &[1usize, 4, 7, 8] {
-                    loaded.backend.restore(snap_a.clone())?;
-                    let snap_b = loaded.backend.snapshot()?;
+                    loaded.backend.restore(0, snap_a.clone())?;
+                    let snap_b = loaded.backend.snapshot(0)?;
                     let _ = loaded.backend.forward_multi(&seq8, pos, &dev)?;
                     // kept=8 is a no-op rollback — compare against the
                     // verify pass's own post-state, which should be
@@ -204,11 +204,11 @@ async fn main() -> Result<()> {
                         let l8 =
                             loaded.backend.forward(&[probe], pos + 8, &dev)?;
                         let v_ref8: Vec<f32> = l8.to_vec1()?;
-                        loaded.backend.restore(snap_a.clone())?;
-                        let snap_b = loaded.backend.snapshot()?;
+                        loaded.backend.restore(0, snap_a.clone())?;
+                        let snap_b = loaded.backend.snapshot(0)?;
                         let _ =
                             loaded.backend.forward_multi(&seq8, pos, &dev)?;
-                        loaded.backend.rollback_verify(snap_b, 8)?;
+                        loaded.backend.rollback_verify(0, snap_b, 8)?;
                         let l_t =
                             loaded.backend.forward(&[probe], pos + 8, &dev)?;
                         let vt: Vec<f32> = l_t.to_vec1()?;
@@ -226,12 +226,12 @@ async fn main() -> Result<()> {
                         }
                         continue;
                     }
-                    loaded.backend.rollback_verify(snap_b, kept)?;
+                    loaded.backend.rollback_verify(0, snap_b, kept)?;
                     let l_t =
                         loaded.backend.forward(&[probe], pos + kept, &dev)?;
                     let vt: Vec<f32> = l_t.to_vec1()?;
                     // reference for this kept: continuous kept-row forward
-                    loaded.backend.restore(snap_c.clone())?;
+                    loaded.backend.restore(0, snap_c.clone())?;
                     let _ = loaded
                         .backend
                         .forward_multi(&seq8[..kept], pos, &dev)?;
@@ -253,10 +253,10 @@ async fn main() -> Result<()> {
                 // control: restore + re-forward the committed rows —
                 // isolates rollback_verify's state reuse from inherent
                 // batch-shape (M=8 vs M=4) kernel noise.
-                loaded.backend.restore(snap_c)?;
-                let snap_d = loaded.backend.snapshot()?;
+                loaded.backend.restore(0, snap_c)?;
+                let snap_d = loaded.backend.snapshot(0)?;
                 let _ = loaded.backend.forward_multi(&seq8, pos, &dev)?;
-                loaded.backend.restore(snap_d)?;
+                loaded.backend.restore(0, snap_d)?;
                 let _ = loaded.backend.forward_multi(&seq8[..4], pos, &dev)?;
                 let l_ctl = loaded.backend.forward(&[probe], pos + 4, &dev)?;
                 let v_ctl: Vec<f32> = l_ctl.to_vec1()?;

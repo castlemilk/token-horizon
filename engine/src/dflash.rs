@@ -197,7 +197,8 @@ struct DraftLayer {
     down: Lin,             // [5120, 17408]
 }
 
-pub struct Draft {
+/// Shared draft weights — one instance regardless of batch width.
+pub struct DraftWeights {
     layers: Vec<DraftLayer>,
     fc: Lin,            // [5120, 25600] context projection
     hidden_norm: Tensor,
@@ -205,15 +206,44 @@ pub struct Draft {
     selector: Lin,      // [256, 5120]
     pred_cb: Tensor,    // [vocab, 256]
     succ_cb: Tensor,    // [vocab, 256]
-    /// Persistent context: per-layer ring of K/V for committed token
-    /// positions. `ring_k[l]` = [8 heads][2048 slots][128]; slot =
-    /// position % 2048. GPU-resident — commits scatter in place and
-    /// attention gathers via index_select (no CPU round-trip).
-    ring_k: Vec<Tensor>,
-    ring_v: Vec<Tensor>,
-    /// Number of committed positions (0..ring_len are valid).
-    ring_len: usize,
     device: Device,
+}
+
+/// Per-slot draft state — the committed-position K/V ring.
+/// `ring_k[l]` = [8 heads][2048 slots][128]; slot = position % 2048.
+/// GPU-resident — commits scatter in place and attention gathers via
+/// index_select (no CPU round-trip).
+pub struct Draft {
+    pub(crate) ring_k: Vec<Tensor>,
+    pub(crate) ring_v: Vec<Tensor>,
+    /// Number of committed positions (0..ring_len are valid).
+    pub(crate) ring_len: usize,
+    #[allow(dead_code)]
+    device: Device,
+}
+
+impl Draft {
+    /// Fresh ring for one slot — `w` weights live in the shared
+    /// `DraftWeights`.
+    pub fn new(device: &Device) -> Result<Self> {
+        let ring_shape = (KV_HEADS, WINDOW, HEAD_DIM);
+        let ring_k = (0..DRAFT_LAYERS)
+            .map(|_| Tensor::zeros(ring_shape, DType::BF16, device))
+            .collect::<std::result::Result<Vec<_>, candle_core::Error>>()?;
+        let ring_v = (0..DRAFT_LAYERS)
+            .map(|_| Tensor::zeros(ring_shape, DType::BF16, device))
+            .collect::<std::result::Result<Vec<_>, candle_core::Error>>()?;
+        Ok(Self {
+            ring_k,
+            ring_v,
+            ring_len: 0,
+            device: device.clone(),
+        })
+    }
+
+    pub fn clear(&mut self) {
+        self.ring_len = 0;
+    }
 }
 
 /// Proposals for one draft round: the chained 7-token block plus the
@@ -226,7 +256,7 @@ pub struct Proposal {
     pub cand_probs: [[f32; TOPK]; PROPOSALS],
 }
 
-impl Draft {
+impl DraftWeights {
     /// Load a Splash `draft/` directory (layer-0..4.bin + model.bin).
     pub fn load(dir: &std::path::Path, device: &Device) -> Result<Self> {
         let mut layers = Vec::with_capacity(DRAFT_LAYERS);
@@ -270,13 +300,6 @@ impl Draft {
             section_tensor(f.section(cb_bytes)?, (248320, RANK), device)?;
         f.finish()?;
 
-        let ring_shape = (KV_HEADS, WINDOW, HEAD_DIM);
-        let ring_k = (0..DRAFT_LAYERS)
-            .map(|_| Tensor::zeros(ring_shape, DType::BF16, device))
-            .collect::<std::result::Result<Vec<_>, candle_core::Error>>()?;
-        let ring_v = (0..DRAFT_LAYERS)
-            .map(|_| Tensor::zeros(ring_shape, DType::BF16, device))
-            .collect::<std::result::Result<Vec<_>, candle_core::Error>>()?;
         Ok(Self {
             layers,
             fc,
@@ -285,15 +308,8 @@ impl Draft {
             selector,
             pred_cb,
             succ_cb,
-            ring_k,
-            ring_v,
-            ring_len: 0,
             device: device.clone(),
         })
-    }
-
-    pub fn clear(&mut self) {
-        self.ring_len = 0;
     }
 
     /// Commit `rows` context entries into the ring. `captured` is
@@ -301,7 +317,8 @@ impl Draft {
     /// order 5,19,33,47,61); `start_pos` is the first row's absolute
     /// token position.
     pub fn commit(
-        &mut self,
+        &self,
+        ctx: &mut Draft,
         captured: &Tensor,
         start_pos: usize,
         rows: usize,
@@ -333,10 +350,10 @@ impl Draft {
                 .reshape((1, rows, 1))?
                 .broadcast_as((KV_HEADS, rows, HEAD_DIM))?
                 .contiguous()?;
-            self.ring_k[li].scatter_set(&idx, &kp, 1)?;
-            self.ring_v[li].scatter_set(&idx, &vp, 1)?;
+            ctx.ring_k[li].scatter_set(&idx, &kp, 1)?;
+            ctx.ring_v[li].scatter_set(&idx, &vp, 1)?;
         }
-        self.ring_len = self.ring_len.max(start_pos + rows);
+        ctx.ring_len = ctx.ring_len.max(start_pos + rows);
         Ok(())
     }
 
@@ -348,7 +365,8 @@ impl Draft {
     /// `temp` selects greedy (None) vs sampled chaining; `uniform` draws
     /// uniforms in (0,1).
     pub fn propose(
-        &mut self,
+        &self,
+        ctx: &mut Draft,
         embed: &Tensor,
         lm_head: &Lin,
         anchor: u32,
@@ -379,7 +397,7 @@ impl Draft {
                 .reshape((ROWS, KV_HEADS, HEAD_DIM))?;
             let q = dnorm_rope(&q, &l.q_norm, &cos, &sin)?;
             let k = dnorm_rope(&k, &l.k_norm, &cos, &sin)?;
-            let attn = self.attention(li, &q, &k, &v)?;
+            let attn = self.attention(ctx, li, &q, &k, &v)?;
             let proj = lin_apply(&attn, &l.o_proj)?; // [1,8,5120]
             let x2 = dconv(&proj, &dyn_, &l.conv_base, 1, Some(&x))?;
             let n2 = rms_norm(&x2, &l.post_norm, 1e-6)?;
@@ -404,15 +422,16 @@ impl Draft {
     /// attends bidirectionally (DFlash block decoding is not causal).
     fn attention(
         &self,
+        ctx: &Draft,
         layer: usize,
         q: &Tensor, // [8, 32, 128]
         k: &Tensor, // [8, 8, 128]
         v: &Tensor, // [8, 8, 128]
     ) -> Result<Tensor> {
-        let l = self.ring_len.min(WINDOW);
+        let l = ctx.ring_len.min(WINDOW);
         // Gather the live window on-device: positions len-l..len →
         // slots mod 2048.
-        let start = self.ring_len - l;
+        let start = ctx.ring_len - l;
         let dev = &self.device;
         let (kr, vr) = if l == 0 {
             (
@@ -421,19 +440,19 @@ impl Draft {
             )
         } else {
             let ids: Vec<u32> =
-                (start..self.ring_len).map(|p| (p % WINDOW) as u32).collect();
+                (start..ctx.ring_len).map(|p| (p % WINDOW) as u32).collect();
             let idx = Tensor::new(ids.as_slice(), dev)?;
             (
-                self.ring_k[layer].index_select(&idx, 1)?,
-                self.ring_v[layer].index_select(&idx, 1)?,
+                ctx.ring_k[layer].index_select(&idx, 1)?,
+                ctx.ring_v[layer].index_select(&idx, 1)?,
             )
         };
         #[cfg(all(feature = "metal", target_os = "macos"))]
         if dev.is_metal() && std::env::var("TH_DRAFT_EAGER").is_err() {
             return Ok(crate::draft_kernel::draft_attn(
                 q,
-                &self.ring_k[layer],
-                &self.ring_v[layer],
+                &ctx.ring_k[layer],
+                &ctx.ring_v[layer],
                 k,
                 v,
                 l,
@@ -613,6 +632,104 @@ impl Draft {
             cand_ids,
             cand_probs,
         })
+    }
+
+    /// Batched proposal: one draft forward over every slot's
+    /// `[anchor, mask×7]` block. Rows are slot-aligned blocks of 8 —
+    /// `[B·8, 5120]` activations; per-slot state is confined to the
+    /// attention rings and the rope tables (positions differ).
+    pub fn propose_batch(
+        &self,
+        ctxs: &mut [&mut Draft],
+        embed: &Tensor,
+        lm_head: &Lin,
+        anchors: &[u32],
+        poss: &[usize],
+        temps: &[Option<f64>],
+        uniform: &mut dyn FnMut(usize) -> f64,
+    ) -> Result<Vec<Proposal>> {
+        let nb = ctxs.len();
+        // ids: per slot — [anchor_b, mask×7]
+        let ids: Vec<u32> = anchors
+            .iter()
+            .flat_map(|a| {
+                std::iter::once(*a)
+                    .chain(std::iter::repeat(MASK_TOKEN).take(PROPOSALS))
+            })
+            .collect();
+        let mut x = embed
+            .i(&Tensor::new(ids.as_slice(), &self.device)?)?
+            .unsqueeze(0)?; // [1, B*8, 5120]
+        // per-slot rope tables concatenated — row r uses poss[r/8] + r%8
+        let mut cos_v = Vec::with_capacity(nb * ROWS * HEAD_DIM / 2);
+        let mut sin_v = Vec::with_capacity(nb * ROWS * HEAD_DIM / 2);
+        for b in 0..nb {
+            for r in 0..ROWS {
+                let p = (poss[b] + r) as f64;
+                for i in 0..HEAD_DIM / 2 {
+                    let f = THETA.powf(-(2.0 * i as f64) / HEAD_DIM as f64);
+                    cos_v.push((p * f).cos() as f32);
+                    sin_v.push((p * f).sin() as f32);
+                }
+            }
+        }
+        let cos = Tensor::from_vec(cos_v, (nb * ROWS, HEAD_DIM / 2), &self.device)?;
+        let sin = Tensor::from_vec(sin_v, (nb * ROWS, HEAD_DIM / 2), &self.device)?;
+        for (li, l) in self.layers.iter().enumerate() {
+            let n = rms_norm(&x, &l.input_norm, 1e-6)?; // [1,B*8,5120]
+            let dyn_ = lin_apply(&n, &l.attn_dyn)?; // [1,B*8,1280]
+            let conv = dconv(&n, &dyn_, &l.conv_base, 0, None)?;
+            let qkv = lin_apply(&conv, &l.qkv)?; // [1,B*8,6144]
+            let q = qkv
+                .narrow(2, 0, ATTN)?
+                .reshape((nb * ROWS, HEADS, HEAD_DIM))?;
+            let k = qkv
+                .narrow(2, ATTN, KV_HEADS * HEAD_DIM)?
+                .reshape((nb * ROWS, KV_HEADS, HEAD_DIM))?;
+            let v = qkv
+                .narrow(2, ATTN + KV_HEADS * HEAD_DIM, KV_HEADS * HEAD_DIM)?
+                .reshape((nb * ROWS, KV_HEADS, HEAD_DIM))?;
+            let q = dnorm_rope(&q, &l.q_norm, &cos, &sin)?;
+            let k = dnorm_rope(&k, &l.k_norm, &cos, &sin)?;
+            // per-slot attention (own ring); concat the row-blocks back
+            let mut attns = Vec::with_capacity(nb);
+            for (b, ctx) in ctxs.iter().enumerate() {
+                let qs = q.narrow(0, b * ROWS, ROWS)?;
+                let ks = k.narrow(0, b * ROWS, ROWS)?;
+                let vs = v.narrow(0, b * ROWS, ROWS)?;
+                attns.push(self.attention(ctx, li, &qs, &ks, &vs)?);
+            }
+            let attn = Tensor::cat(&attns, 1)?; // [1, B*8, 5120]
+            let proj = lin_apply(&attn, &l.o_proj)?;
+            let x2 = dconv(&proj, &dyn_, &l.conv_base, 1, Some(&x))?;
+            let n2 = rms_norm(&x2, &l.post_norm, 1e-6)?;
+            let dyn2 = lin_apply(&n2, &l.mlp_dyn)?;
+            let conv2 = dconv(&n2, &dyn2, &l.mlp_conv_base, 0, None)?;
+            let inter = candle_nn::ops::silu(&lin_apply(&conv2, &l.gate)?)?
+                .mul(&lin_apply(&conv2, &l.up)?)?;
+            let proj2 = lin_apply(&inter, &l.down)?;
+            x = dconv(&proj2, &dyn2, &l.mlp_conv_base, 1, Some(&x2))?;
+        }
+        let fh = rms_norm(&x, &self.final_norm, 1e-6)?; // [1,B*8,5120]
+        // per-slot proposal rows: b*8+1 .. b*8+8 (anchor rows unused)
+        let mut logits = Vec::with_capacity(nb);
+        let mut sels = Vec::with_capacity(nb);
+        for b in 0..nb {
+            logits.push(fh.narrow(1, b * ROWS + 1, PROPOSALS)?);
+            sels.push(fh.narrow(1, b * ROWS + 1, PROPOSALS)?);
+        }
+        let logits = Tensor::cat(&logits, 1)?;  // [1, B*7, 5120]
+        let sels = Tensor::cat(&sels, 1)?;
+        let logits = lin_apply(&logits, lm_head)?.squeeze(0)?; // [B*7, vocab]
+        let sel = lin_apply(&sels, &self.selector)?.squeeze(0)?; // [B*7, 256]
+        let mut out = Vec::with_capacity(nb);
+        for b in 0..nb {
+            let lg = logits.narrow(0, b * PROPOSALS, PROPOSALS)?;
+            let se = sel.narrow(0, b * PROPOSALS, PROPOSALS)?;
+            let temp = temps[b];
+            out.push(self.select(&lg, &se, anchors[b], temp, &mut || uniform(b))?);
+        }
+        Ok(out)
     }
 }
 

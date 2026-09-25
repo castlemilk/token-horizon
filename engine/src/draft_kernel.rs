@@ -7,6 +7,7 @@ pub use metal_impl::{draft_attn, draft_conv_fused, draft_norm_rope};
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
 mod metal_impl {
+    #[allow(unused_imports)]
     use candle_core::backend::BackendStorage;
     use candle_core::{DType, Layout, Result, Storage, Tensor};
     use candle_metal_kernels::metal::ComputePipeline;
@@ -35,14 +36,15 @@ kernel void draft_conv_fused(
     uint i [[thread_position_in_grid]])
 {
     const int c = int(i) % 5120;
-    const int r = int(i) / 5120;
+    const int r = int(i) / 5120; // flat row across slots — blocks of 8
     const int g = c / 16;
     const int off = p.stage * 640;
     const float t0 = float(dyn[r * 1280 + off + g])
                    + float(base[p.stage * 2 * 5120 + c]);
     const float t1 = float(dyn[r * 1280 + off + 320 + g])
                    + float(base[(p.stage * 2 + 1) * 5120 + c]);
-    const float prev = r > 0 ? float(x[i - 5120]) : 0.0f;
+    // blocks of 8 rows per draft slot — never read across the boundary
+    const float prev = (r & 7) > 0 ? float(x[i - 5120]) : 0.0f;
     float v = float(x[i]) * t0 + prev * t1;
     if (p.has_res) v += float(res[i]);
     out[i] = bfloat(v);
@@ -196,7 +198,8 @@ kernel void draft_attn(
             _ => candle_core::bail!("draft_conv_fused: Metal only"),
         };
         let (p_conv, _, _) = pipes(&device)?;
-        let out = Tensor::zeros((1, 8, 5120), DType::BF16, x.device())?;
+        let rows = x.dim(1)?;
+        let out = Tensor::zeros((1, rows, 5120), DType::BF16, x.device())?;
         let b2 = DType::BF16.size_in_bytes();
         let (xb, xo, _) = msl_buf(x, b2)?;
         let (db, dbo, _) = msl_buf(dyn_, b2)?;
@@ -233,7 +236,7 @@ kernel void draft_attn(
             },
         );
         enc.dispatch_threads(
-            MTLSize { width: 8 * 5120, height: 1, depth: 1 },
+            MTLSize { width: rows * 5120, height: 1, depth: 1 },
             MTLSize { width: 256, height: 1, depth: 1 },
         );
         drop(encoder);

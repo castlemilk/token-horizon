@@ -32,6 +32,20 @@ pub enum BackendSnapshot {
 }
 
 impl ModelBackend {
+    /// Slot-aware forward for the Qwen35 batch path.
+    pub fn forward_slot(
+        &mut self,
+        slot: usize,
+        tokens: &[u32],
+        pos: usize,
+        device: &Device,
+    ) -> Result<Tensor> {
+        if let Self::Qwen35(m) = self {
+            return Ok(m.forward(slot, tokens, pos)?.to_dtype(DType::F32)?);
+        }
+        self.forward(tokens, pos, device)
+    }
+
     /// Returns logits for the last input position, shape (vocab,).
     pub fn forward(&mut self, tokens: &[u32], pos: usize, device: &Device) -> Result<Tensor> {
         let input = Tensor::new(tokens, device)?.unsqueeze(0)?;
@@ -51,7 +65,7 @@ impl ModelBackend {
                 l.i((0, l.dim(1)? - 1))?
             }
             // ours: logits already (vocab,)
-            Self::Qwen35(m) => m.forward(tokens, pos)?,
+            Self::Qwen35(m) => m.forward(0, tokens, pos)?,
         };
         Ok(out.to_dtype(DType::F32)?)
     }
@@ -65,7 +79,7 @@ impl ModelBackend {
         _device: &Device,
     ) -> Result<Tensor> {
         match self {
-            Self::Qwen35(m) => m.forward_multi(tokens, pos),
+            Self::Qwen35(m) => m.forward_multi(0, tokens, pos),
             _ => bail!("forward_multi not supported by this backend"),
         }
     }
@@ -80,12 +94,13 @@ impl ModelBackend {
 
     /// Load a Splash DFlash `draft/` directory and attach it — turns on
     /// capture-layer hidden-state collection in every forward pass.
+    /// Load a Splash DFlash `draft/` directory and attach one instance
+    /// per decode slot (each slot owns its own K/V ring).
     pub fn attach_draft(&mut self, draft_dir: &Path) -> Result<()> {
         match self {
             Self::Qwen35(m) => {
-                let d = crate::dflash::Draft::load(draft_dir, m.device())?;
-                m.set_draft(d);
-                Ok(())
+                let w = crate::dflash::DraftWeights::load(draft_dir, m.device())?;
+                m.set_draft(w)
             }
             _ => bail!("dflash draft requires the qwen3_5 backend"),
         }
@@ -97,39 +112,57 @@ impl ModelBackend {
 
     /// Warm the draft K/V ring with the captures accumulated during
     /// prefill. Call once after the prompt forward.
-    pub fn draft_prefill(&mut self) -> Result<()> {
+    pub fn draft_prefill(&mut self, slot: usize) -> Result<()> {
         if let Self::Qwen35(m) = self {
-            m.draft_prefill()?;
+            m.draft_prefill(slot)?;
         }
         Ok(())
     }
 
     /// Captures accumulated since the last drain → [rows, 25600].
-    pub fn take_captures(&mut self) -> Result<Option<Tensor>> {
+    pub fn take_captures(&mut self, slot: usize) -> Result<Option<Tensor>> {
         match self {
-            Self::Qwen35(m) => m.take_captures(),
+            Self::Qwen35(m) => m.take_captures(slot),
             _ => Ok(None),
         }
     }
 
     /// Commit `rows` of `captured` into the draft ring at `start_pos`.
-    pub fn draft_commit(&mut self, captured: &Tensor, start_pos: usize, rows: usize) -> Result<()> {
+    pub fn draft_commit(&mut self, slot: usize, captured: &Tensor, start_pos: usize, rows: usize) -> Result<()> {
         if let Self::Qwen35(m) = self {
-            m.draft_commit(captured, start_pos, rows)?;
+            m.draft_commit(slot, captured, start_pos, rows)?;
         }
         Ok(())
+    }
+
+    /// Batched draft proposals — one draft forward for all slots.
+    pub fn draft_propose_batch(
+        &mut self,
+        slots: &[usize],
+        anchors: &[u32],
+        poss: &[usize],
+        temps: &[Option<f64>],
+        uniform: &mut dyn FnMut(usize) -> f64,
+    ) -> Result<Vec<crate::dflash::Proposal>> {
+        match self {
+            Self::Qwen35(m) => {
+                m.draft_propose_batch(slots, anchors, poss, temps, uniform)
+            }
+            _ => bail!("draft_propose_batch not supported by this backend"),
+        }
     }
 
     /// Chain a 7-token draft proposal for `anchor` at position `pos`.
     pub fn draft_propose(
         &mut self,
+        slot: usize,
         anchor: u32,
         pos: usize,
         temp: Option<f64>,
         uniform: impl FnMut() -> f64,
     ) -> Result<crate::dflash::Proposal> {
         match self {
-            Self::Qwen35(m) => m.draft_propose(anchor, pos, temp, uniform),
+            Self::Qwen35(m) => m.draft_propose(slot, anchor, pos, temp, uniform),
             _ => bail!("draft_propose not supported by this backend"),
         }
     }
@@ -143,17 +176,25 @@ impl ModelBackend {
         Ok(())
     }
 
-    pub fn snapshot(&mut self) -> Result<BackendSnapshot> {
+    /// Per-slot admission-time toggle — clears only `slot`.
+    pub fn set_kv_quant_slot(&mut self, on: bool, slot: usize) -> Result<()> {
+        if let Self::Qwen35(m) = self {
+            m.set_kv_quant_slot(on, slot)?;
+        }
+        Ok(())
+    }
+
+    pub fn snapshot(&mut self, slot: usize) -> Result<BackendSnapshot> {
         match self {
-            Self::Qwen35(m) => Ok(BackendSnapshot::Qwen35(Box::new(m.snapshot()?))),
+            Self::Qwen35(m) => Ok(BackendSnapshot::Qwen35(Box::new(m.snapshot(slot)?))),
             _ => bail!("snapshot not supported by this backend"),
         }
     }
 
-    pub fn restore(&mut self, snap: BackendSnapshot) -> Result<()> {
+    pub fn restore(&mut self, slot: usize, snap: BackendSnapshot) -> Result<()> {
         match (self, snap) {
             (Self::Qwen35(m), BackendSnapshot::Qwen35(s)) => {
-                m.restore(*s)
+                m.restore(slot, *s)
             }
             _ => Ok(()),
         }
@@ -163,25 +204,48 @@ impl ModelBackend {
     /// pass rather than restoring + re-forwarding them (DFlash loop).
     pub fn rollback_verify(
         &mut self,
+        slot: usize,
         snap: BackendSnapshot,
         kept: usize,
     ) -> Result<()> {
         match (self, snap) {
             (Self::Qwen35(m), BackendSnapshot::Qwen35(s)) => {
-                m.rollback_verify(*s, kept)
+                m.rollback_verify(slot, *s, kept)
             }
             _ => bail!("rollback_verify not supported by this backend"),
         }
     }
 
-    pub fn clear_kv_cache(&mut self) {
+    pub fn clear_kv_cache(&mut self, slot: usize) {
         match self {
             Self::GgufQwen2(m) => m.clear_kv_cache(),
             Self::GgufQwen3(m) => m.clear_kv_cache(),
             Self::GgufLlama(m) => m.clear_kv_cache(),
             Self::Qwen2(m) => m.clear_kv_cache(),
             Self::Qwen3(m) => m.clear_kv_cache(),
-            Self::Qwen35(m) => m.clear_kv_cache(),
+            Self::Qwen35(m) => m.clear_kv_cache(slot),
+        }
+    }
+
+    /// Decode-slot count (TH_BATCH) — 1 for non-batched backends.
+    pub fn nslots(&self) -> usize {
+        match self {
+            Self::Qwen35(m) => m.nslots(),
+            _ => 1,
+        }
+    }
+
+    /// Batched verify forward — `seqs`/`poss` per slot. Returns
+    /// `[Σseq, vocab]`. qwen3_5 only.
+    pub fn forward_batch(
+        &mut self,
+        slots: &[usize],
+        seqs: &[&[u32]],
+        poss: &[usize],
+    ) -> Result<Tensor> {
+        match self {
+            Self::Qwen35(m) => m.forward_batch(slots, seqs, poss),
+            _ => bail!("forward_batch not supported by this backend"),
         }
     }
 }

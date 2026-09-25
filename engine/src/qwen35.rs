@@ -882,9 +882,9 @@ struct Layer {
 
 // MARK: - state
 
-struct GdnState {
-    conv: Tensor,      // [k-1, conv_dim] bf16 rolling inputs
-    recurrent: Tensor, // [Hv, Dv, Dk] f32
+pub(crate) struct GdnState {
+    pub(crate) conv: Tensor,      // [k-1, conv_dim] bf16 rolling inputs
+    pub(crate) recurrent: Tensor, // [Hv, Dv, Dk] f32
 }
 
 /// Per-GDN-layer intermediates stashed during a spec-decode verify pass
@@ -899,6 +899,81 @@ struct GdnVerifyCache {
     pack: Option<Tensor>,
     /// [seq, 2*Hv] f32 — gate/beta projections.
     ab: Option<Tensor>,
+}
+
+/// Per-request decode state — one batch slot. Batched verify runs
+/// matmuls over the flat row space once and dispatches the stateful
+/// kernels per slot on narrowed views.
+pub struct Slot {
+    pub(crate) gdn: Vec<Option<GdnState>>,
+    pub(crate) kv: Vec<Option<(Tensor, Tensor)>>,
+    pub(crate) kvq: Vec<crate::turboquant::QuantKv>,
+    pub(crate) kv_tokens: usize,
+    vcache: Vec<GdnVerifyCache>,
+    captures: Vec<Tensor>,
+    pub draft: Option<crate::dflash::Draft>,
+}
+
+impl Slot {
+    /// Fresh zeroed state for one slot — the layer list determines
+    /// which per-layer tensors each slot owns.
+    fn new(
+        cfg: &Qwen35Config,
+        layers: &[Layer],
+        device: &Device,
+    ) -> Result<Slot> {
+        let mut gdn = Vec::with_capacity(layers.len());
+        let mut kv = Vec::with_capacity(layers.len());
+        let mut kvq = Vec::with_capacity(layers.len());
+        for l in layers {
+            if matches!(l.kind, Kind::Gdn(_)) {
+                let conv_dim = 2 * cfg.linear_num_key_heads
+                    * cfg.linear_key_head_dim
+                    + cfg.linear_num_value_heads * cfg.linear_value_head_dim;
+                gdn.push(Some(GdnState {
+                    conv: Tensor::zeros(
+                        (cfg.linear_conv_kernel_dim - 1, conv_dim),
+                        DType::BF16,
+                        device,
+                    )?,
+                    recurrent: Tensor::zeros(
+                        (
+                            cfg.linear_num_value_heads,
+                            cfg.linear_value_head_dim,
+                            cfg.linear_key_head_dim,
+                        ),
+                        DType::F32,
+                        device,
+                    )?,
+                }));
+                kv.push(None);
+            } else {
+                gdn.push(None);
+                kv.push(Some((
+                    Tensor::zeros(
+                        (cfg.num_key_value_heads, 0, cfg.head_dim),
+                        DType::BF16,
+                        device,
+                    )?,
+                    Tensor::zeros(
+                        (cfg.num_key_value_heads, 0, cfg.head_dim),
+                        DType::BF16,
+                        device,
+                    )?,
+                )));
+            }
+            kvq.push(crate::turboquant::QuantKv::default());
+        }
+        Ok(Slot {
+            gdn,
+            kv,
+            kvq,
+            kv_tokens: 0,
+            vcache: (0..layers.len()).map(|_| GdnVerifyCache::default()).collect(),
+            captures: Vec::new(),
+            draft: None,
+        })
+    }
 }
 
 /// Pre-verify state for speculative decode rollback. Conv views and KV
@@ -921,22 +996,12 @@ pub struct Qwen35 {
     lm_head: Lin,
     cfg: Qwen35Config,
     device: Device,
-    gdn: Vec<Option<GdnState>>,
-    kv: Vec<Option<(Tensor, Tensor)>>, // [n_kv, seq, head_dim] bf16
-    /// TurboQuant-compressed KV (full-attention layers only) — used
-    /// instead of `kv` when `tq` is set.
-    kvq: Vec<crate::turboquant::QuantKv>,
     tq: Option<crate::turboquant::TurboQuant>,
-    /// DFlash draft — when set, `forward`/`forward_multi` capture
-    /// hidden states at the DFlash capture layers for the draft ring.
-    draft: Option<crate::dflash::Draft>,
-    /// Captured post-layer hiddens for the capture layers, in
-    /// (call, layer) order — each entry [seq, 5120].
-    captures: Vec<Tensor>,
-    /// Per-layer verify intermediates (GDN layers only) from the most
-    /// recent multi-row forward — consumed by `rollback_verify`.
-    vcache: Vec<GdnVerifyCache>,
-    pub kv_tokens: usize,
+    /// Per-request state — always ≥1 slots; slot count is the decode
+    /// batch width.
+    pub slots: Vec<Slot>,
+    /// Shared DFlash draft weights — set once, slots own rings.
+    draft_w: Option<crate::dflash::DraftWeights>,
     debug: bool,
 }
 
@@ -1250,8 +1315,6 @@ impl Qwen35 {
         let (cos, sin) = (freqs.cos()?, freqs.sin()?);
 
         let mut layers = Vec::with_capacity(cfg.num_hidden_layers);
-        let mut gdn = Vec::with_capacity(cfg.num_hidden_layers);
-        let mut kv = Vec::with_capacity(cfg.num_hidden_layers);
         for i in 0..cfg.num_hidden_layers {
             let lp = format!("{p}.model.layers.{i}");
             let input_norm = w.get(&format!("{lp}.input_layernorm"))?;
@@ -1327,26 +1390,6 @@ impl Qwen35 {
                     post_norm,
                     mlp,
                 });
-                let conv_dim = 2 * cfg.linear_num_key_heads
-                    * cfg.linear_key_head_dim
-                    + cfg.linear_num_value_heads * cfg.linear_value_head_dim;
-                gdn.push(Some(GdnState {
-                    conv: Tensor::zeros(
-                        (cfg.linear_conv_kernel_dim - 1, conv_dim),
-                        DType::BF16,
-                        device,
-                    )?,
-                    recurrent: Tensor::zeros(
-                        (
-                            cfg.linear_num_value_heads,
-                            cfg.linear_value_head_dim,
-                            cfg.linear_key_head_dim,
-                        ),
-                        DType::F32,
-                        device,
-                    )?,
-                }));
-                kv.push(None);
             } else {
                 layers.push(Layer {
                     input_norm,
@@ -1372,21 +1415,17 @@ impl Qwen35 {
                     post_norm,
                     mlp,
                 });
-                gdn.push(None);
-                kv.push(Some((
-                    Tensor::zeros(
-                        (cfg.num_key_value_heads, 0, cfg.head_dim),
-                        DType::BF16,
-                        device,
-                    )?,
-                    Tensor::zeros(
-                        (cfg.num_key_value_heads, 0, cfg.head_dim),
-                        DType::BF16,
-                        device,
-                    )?,
-                )));
+
             }
         }
+        let nslots = std::env::var("TH_BATCH")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(1usize)
+            .clamp(1, 8);
+        let slots = (0..nslots)
+            .map(|_| Slot::new(cfg, &layers, device))
+            .collect::<Result<Vec<_>>>()?;
         Ok(Self {
             embed,
             layers,
@@ -1394,18 +1433,16 @@ impl Qwen35 {
             lm_head,
             cfg: cfg.clone(),
             device: device.clone(),
-            gdn,
-            kv,
-            kvq: vec![crate::turboquant::QuantKv::default(); cfg.num_hidden_layers],
+            slots,
+            draft_w: None,
             tq: None,
-            draft: None,
-            captures: Vec::new(),
-            vcache: (0..cfg.num_hidden_layers)
-                .map(|_| GdnVerifyCache::default())
-                .collect(),
-            kv_tokens: 0,
             debug: std::env::var("TH_DEBUG_LAYERS").is_ok(),
         })
+    }
+
+    /// Number of decode slots (TH_BATCH, default 1).
+    pub fn nslots(&self) -> usize {
+        self.slots.len()
     }
 
     /// Enable TurboQuant-compressed KV caches on the full-attention
@@ -1428,15 +1465,30 @@ impl Qwen35 {
         } else {
             self.tq = None;
         }
-        self.clear_kv_cache();
+        for b in 0..self.slots.len() {
+            self.clear_kv_cache(b);
+        }
+        Ok(())
+    }
+
+    /// Per-slot admission-time variant: sets the shared `tq` mode but
+    /// only clears `slot` — other slots may be mid-decode.
+    pub fn set_kv_quant_slot(&mut self, on: bool, slot: usize) -> Result<()> {
+        if on {
+            self.enable_kv_quant()?;
+        } else {
+            self.tq = None;
+        }
+        self.clear_kv_cache(slot);
         Ok(())
     }
 
 
     /// Snapshot all mutable state for speculative-verify rollback.
-    pub fn snapshot(&mut self) -> Result<Snapshot> {
-        let mut gdn = Vec::with_capacity(self.gdn.len());
-        for st in self.gdn.iter_mut() {
+    pub fn snapshot(&mut self, slot: usize) -> Result<Snapshot> {
+        let sl = &mut self.slots[slot];
+        let mut gdn = Vec::with_capacity(sl.gdn.len());
+        for st in sl.gdn.iter_mut() {
             match st {
                 Some(s) => {
                     // real device copy — the kernel writes in place
@@ -1449,25 +1501,26 @@ impl Qwen35 {
         }
         Ok(Snapshot {
             gdn,
-            kv: self.kv.clone(),
-            kvq: self.kvq.clone(),
-            kv_tokens: self.kv_tokens,
+            kv: sl.kv.clone(),
+            kvq: sl.kvq.clone(),
+            kv_tokens: sl.kv_tokens,
         })
     }
 
     /// Restore a snapshot taken by `snapshot()`. The snapshot's
     /// recurrent buffers are copied rather than adopted so a snapshot
     /// stays immutable and may be restored (or cloned) more than once.
-    pub fn restore(&mut self, snap: Snapshot) -> Result<()> {
-        for (st, s) in self.gdn.iter_mut().zip(snap.gdn) {
+    pub fn restore(&mut self, slot: usize, snap: Snapshot) -> Result<()> {
+        let sl = &mut self.slots[slot];
+        for (st, s) in sl.gdn.iter_mut().zip(snap.gdn) {
             if let (Some(st), Some((conv, rec))) = (st, s) {
                 st.conv = conv;
                 st.recurrent = rec.affine(1.0, 0.0)?;
             }
         }
-        self.kv = snap.kv;
-        self.kvq = snap.kvq;
-        self.kv_tokens = snap.kv_tokens;
+        sl.kv = snap.kv;
+        sl.kvq = snap.kvq;
+        sl.kv_tokens = snap.kv_tokens;
         Ok(())
     }
 
@@ -1475,16 +1528,17 @@ impl Qwen35 {
     /// committed: restores the pre-verify snapshot, then re-applies the
     /// committed rows from the cached scan inputs and truncates the
     /// attention KV — avoiding a full model re-forward per round.
-    pub fn rollback_verify(&mut self, snap: Snapshot, kept: usize) -> Result<()> {
+    pub fn rollback_verify(&mut self, slot: usize, snap: Snapshot, kept: usize) -> Result<()> {
+        let sl = &mut self.slots[slot];
         let new_len = snap.kv_tokens + kept;
         for (i, sg) in snap.gdn.into_iter().enumerate() {
             let Some((conv, rec)) = sg else { continue };
-            let Some(st) = self.gdn[i].as_mut() else { continue };
-            let vc = self.vcache[i].qkv.take().zip(
-                self.vcache[i]
+            let Some(st) = sl.gdn[i].as_mut() else { continue };
+            let vc = sl.vcache[i].qkv.take().zip(
+                sl.vcache[i]
                     .pack
                     .take()
-                    .zip(self.vcache[i].ab.take()),
+                    .zip(sl.vcache[i].ab.take()),
             );
             let Kind::Gdn(l) = &self.layers[i].kind else { continue };
             match vc {
@@ -1559,18 +1613,19 @@ impl Qwen35 {
             // cap-buffer caches keep the stale tail — reads are bounded
             // by kv_tokens so truncation is just the length update;
             // the quantised cache is length-tracked separately
-            self.kvq[i].truncate(new_len)?;
+            sl.kvq[i].truncate(new_len)?;
         }
-        self.kv_tokens = new_len;
+        sl.kv_tokens = new_len;
         Ok(())
     }
 
-    pub fn clear_kv_cache(&mut self) {
-        for g in self.gdn.iter_mut().flatten() {
+    pub fn clear_kv_cache(&mut self, slot: usize) {
+        let sl = &mut self.slots[slot];
+        for g in sl.gdn.iter_mut().flatten() {
             g.recurrent = Tensor::zeros_like(&g.recurrent).unwrap();
             g.conv = Tensor::zeros_like(&g.conv).unwrap();
         }
-        for kv in self.kv.iter_mut().flatten() {
+        for kv in sl.kv.iter_mut().flatten() {
             *kv = (
                 Tensor::zeros(
                     (self.cfg.num_key_value_heads, 0, self.cfg.head_dim),
@@ -1586,27 +1641,32 @@ impl Qwen35 {
                 .unwrap(),
             );
         }
-        for q in self.kvq.iter_mut() {
+        for q in sl.kvq.iter_mut() {
             *q = crate::turboquant::QuantKv::default();
         }
-        if let Some(d) = self.draft.as_mut() {
+        if let Some(d) = sl.draft.as_mut() {
             d.clear();
         }
-        self.captures.clear();
-        for v in self.vcache.iter_mut() {
+        sl.captures.clear();
+        for v in sl.vcache.iter_mut() {
             *v = GdnVerifyCache::default();
         }
-        self.kv_tokens = 0;
+        sl.kv_tokens = 0;
     }
 
     // MARK: - DFlash draft integration
 
-    pub fn set_draft(&mut self, draft: crate::dflash::Draft) {
-        self.draft = Some(draft);
+    /// Attach shared draft weights; every slot gets a fresh ring.
+    pub fn set_draft(&mut self, w: crate::dflash::DraftWeights) -> Result<()> {
+        for s in self.slots.iter_mut() {
+            s.draft = Some(crate::dflash::Draft::new(&self.device)?);
+        }
+        self.draft_w = Some(w);
+        Ok(())
     }
 
     pub fn has_draft(&self) -> bool {
-        self.draft.is_some()
+        self.draft_w.is_some()
     }
 
     pub fn device(&self) -> &Device {
@@ -1618,15 +1678,16 @@ impl Qwen35 {
     /// order — concat per call along the feature dim, then stack calls
     /// along rows. Rows map to the positions of the forwards since the
     /// last drain (prefill: rows are positions 0..P-1 of the prompt).
-    pub fn take_captures(&mut self) -> Result<Option<Tensor>> {
-        if self.captures.is_empty() {
+    pub fn take_captures(&mut self, slot: usize) -> Result<Option<Tensor>> {
+        let sl = &mut self.slots[slot];
+        if sl.captures.is_empty() {
             return Ok(None);
         }
         let mut calls = Vec::new();
-        for group in self.captures.chunks_exact(5) {
+        for group in sl.captures.chunks_exact(5) {
             calls.push(Tensor::cat(group, 1)?); // [seq, 25600]
         }
-        self.captures.clear();
+        sl.captures.clear();
         let t = if calls.len() == 1 {
             calls.pop().unwrap()
         } else {
@@ -1638,22 +1699,23 @@ impl Qwen35 {
     /// Warm the draft ring with the prefill captures accumulated since
     /// the last `take_captures`. Only the last `WINDOW-1` positions can
     /// ever be attended, so earlier prompt rows are skipped.
-    pub fn draft_prefill(&mut self) -> Result<()> {
-        let caps = self.take_captures()?;
-        if let (Some(d), Some(c)) = (self.draft.as_mut(), caps) {
+    pub fn draft_prefill(&mut self, slot: usize) -> Result<()> {
+        let caps = self.take_captures(slot)?;
+        let (w, sl) = (self.draft_w.as_ref(), &mut self.slots[slot]);
+        if let (Some(w), Some(d), Some(c)) = (w, sl.draft.as_mut(), caps) {
             let p = c.dim(0)?;
             let keep = p.min(crate::dflash::WINDOW - 1);
             let start = p - keep;
-            d.commit(&c.narrow(0, start, keep)?.contiguous()?, start, keep)?;
+            w.commit(d, &c.narrow(0, start, keep)?.contiguous()?, start, keep)?;
         }
         Ok(())
     }
 
     /// Draft-commit `rows` entries from `captured` ([rows, 25600])
     /// starting at absolute position `start_pos`.
-    pub fn draft_commit(&mut self, captured: &Tensor, start_pos: usize, rows: usize) -> Result<()> {
-        if let Some(d) = self.draft.as_mut() {
-            d.commit(captured, start_pos, rows)?;
+    pub fn draft_commit(&mut self, slot: usize, captured: &Tensor, start_pos: usize, rows: usize) -> Result<()> {
+        if let (Some(w), Some(d)) = (self.draft_w.as_ref(), self.slots[slot].draft.as_mut()) {
+            w.commit(d, captured, start_pos, rows)?;
         }
         Ok(())
     }
@@ -1663,15 +1725,51 @@ impl Qwen35 {
     /// sampled chaining.
     pub fn draft_propose(
         &mut self,
+        slot: usize,
         anchor: u32,
         pos: usize,
         temp: Option<f64>,
         uniform: impl FnMut() -> f64,
     ) -> Result<crate::dflash::Proposal> {
-        let draft = self.draft.as_mut().context("draft not loaded")?;
-        let embed = &self.embed;
-        let lm_head = &self.lm_head;
-        draft.propose(embed, lm_head, anchor, pos, temp, uniform)
+        let w = self.draft_w.as_ref().context("draft not loaded")?;
+        let d = self.slots[slot].draft.as_mut().context("draft ctx")?;
+        w.propose(d, &self.embed, &self.lm_head, anchor, pos, temp, uniform)
+    }
+
+    /// Batched draft proposals: one draft forward over all slots'
+    /// `[anchor, mask×7]` blocks. Returns per-slot proposals.
+    pub fn draft_propose_batch(
+        &mut self,
+        slots: &[usize],
+        anchors: &[u32],
+        poss: &[usize],
+        temps: &[Option<f64>],
+        uniform: &mut dyn FnMut(usize) -> f64,
+    ) -> Result<Vec<crate::dflash::Proposal>> {
+        let w = self.draft_w.as_ref().context("draft not loaded")?;
+        // move each slot's ring ctx out — disjoint-index mutable borrows
+        let mut ctxs: Vec<crate::dflash::Draft> = slots
+            .iter()
+            .map(|&b| {
+                self.slots[b]
+                    .draft
+                    .take()
+                    .context("draft ctx")
+            })
+            .collect::<Result<_>>()?;
+        let mut refs: Vec<&mut crate::dflash::Draft> =
+            ctxs.iter_mut().collect();
+        let r = w.propose_batch(
+            refs.as_mut_slice(), &self.embed, &self.lm_head,
+            anchors, poss, temps, uniform,
+        );
+        for (i, &b) in slots.iter().enumerate() {
+            self.slots[b].draft = Some(std::mem::replace(
+                &mut ctxs[i],
+                crate::dflash::Draft::new(&self.device)?,
+            ));
+        }
+        r
     }
 
     /// Interleaved-pair RoPE on the first `rot` dims of `x`
@@ -1712,14 +1810,14 @@ impl Qwen35 {
         l: &GdnLayer,
         st: &mut GdnState,
         vc: &mut Option<GdnVerifyCache>,
-        x: &Tensor,
+        fused: &Tensor,
+        seq: usize,
         eps: f64,
     ) -> Result<Tensor> {
-        let seq = x.dim(1)?;
         let conv_dim = 2 * l.key_dim + l.value_dim;
-        // one fused projection → split [qkv | z | a|b] — strided views
-        // feed the kernels directly (no contiguous copies)
-        let fused = lin_apply(x, &l.in_all)?; // [1, seq, conv+val+96]
+        // `fused` = in_all projection [1, seq, conv+val+96] — may be a
+        // slot row-slice of a batched projection; strided views feed
+        // the kernels directly (no contiguous copies)
         let qkv = fused
             .narrow(D::Minus1, 0, conv_dim)?
             .squeeze(0)?; // [seq, conv] strided
@@ -1734,7 +1832,7 @@ impl Qwen35 {
         }
 
         #[cfg(all(feature = "metal", target_os = "macos"))]
-        if x.device().is_metal()
+        if fused.device().is_metal()
             && std::env::var("TH_GDN_EAGER").is_err()
         {
             if seq <= 8 && std::env::var("TH_GDN_STEP").is_err() {
@@ -1742,12 +1840,12 @@ impl Qwen35 {
                 let gated = Tensor::zeros(
                     (seq, l.value_dim),
                     DType::BF16,
-                    x.device(),
+                    fused.device(),
                 )?;
                 let pack = Tensor::zeros(
                     (seq, conv_dim),
                     DType::BF16,
-                    x.device(),
+                    fused.device(),
                 )?;
                 crate::gdn_kernel::gdn_fused_step(
                     &qkv, &st.conv, &l.conv, &st.recurrent, &ab, &z,
@@ -1823,7 +1921,7 @@ impl Qwen35 {
                 &pack,
                 &ab,
                 seq,
-                x.device(),
+                fused.device(),
             )?;
             // gated RMSNorm fused: rmsnorm(out)·w ⊙ silu(z)
             let gated = out.apply_op3_no_bwd(
@@ -1878,7 +1976,7 @@ impl Qwen35 {
             c.pack = Some(pack.clone());
         }
         let out =
-            Self::gdn_scan(l, st, vc, &pack, &ab, seq, x.device())?;
+            Self::gdn_scan(l, st, vc, &pack, &ab, seq, fused.device())?;
 
         // gated RMSNorm: fused rms_norm(out)·w × silu(z)
         let n = candle_nn::ops::rms_norm(
@@ -2008,16 +2106,16 @@ impl Qwen35 {
         kvc: &mut (Tensor, Tensor),
         kvq: &mut crate::turboquant::QuantKv,
         tq: Option<&crate::turboquant::TurboQuant>,
-        x: &Tensor,
+        qkv: &Tensor,
         pos: usize,
+        seq: usize,
         eps: f64,
         device: &Device,
     ) -> Result<Tensor> {
-        let seq = x.dim(1)?;
-        // one fused projection → split [q|gate | k | v]
+        // `qkv` = in_qkv projection [1,seq,qd+2kd] — may be a slot
+        // row-slice of a batched projection
         let qd = l.n_heads * 2 * l.head_dim;
         let kd = l.n_kv * l.head_dim;
-        let qkv = lin_apply(x, &l.in_qkv)?; // [1,seq,qd+2kd]
 
         #[cfg(all(feature = "metal", target_os = "macos"))]
         if device.is_metal()
@@ -2331,18 +2429,19 @@ impl Qwen35 {
     }
 
     /// tokens at absolute position `pos` → logits (vocab,) for the last.
-    pub fn forward(&mut self, tokens: &[u32], pos: usize) -> Result<Tensor> {
-        self.forward_inner(tokens, pos, true)
+    pub fn forward(&mut self, slot: usize, tokens: &[u32], pos: usize) -> Result<Tensor> {
+        self.forward_inner(slot, tokens, pos, true)
     }
 
     /// Same, but logits for every position — `[seq, vocab]`. Used by the
     /// speculative-verify pass.
-    pub fn forward_multi(&mut self, tokens: &[u32], pos: usize) -> Result<Tensor> {
-        self.forward_inner(tokens, pos, false)
+    pub fn forward_multi(&mut self, slot: usize, tokens: &[u32], pos: usize) -> Result<Tensor> {
+        self.forward_inner(slot, tokens, pos, false)
     }
 
     fn forward_inner(
         &mut self,
+        slot: usize,
         tokens: &[u32],
         pos: usize,
         last_only: bool,
@@ -2354,7 +2453,7 @@ impl Qwen35 {
         // partial accept can re-apply committed rows without a re-forward
         let cache_verify = !last_only && seq <= 16;
         if cache_verify {
-            for v in self.vcache.iter_mut() {
+            for v in self.slots[slot].vcache.iter_mut() {
                 *v = GdnVerifyCache::default();
             }
         }
@@ -2369,24 +2468,27 @@ impl Qwen35 {
             };
             let r = match &layer.kind {
                 Kind::Gdn(l) => {
-                    let mut st = self.gdn[i].take().unwrap();
+                    let fused = lin_apply(&h, &l.in_all)?;
+                    let mut st = self.slots[slot].gdn[i].take().unwrap();
                     let mut vc = cache_verify.then(GdnVerifyCache::default);
                     let r = Self::gdn_forward(
-                        l, &mut st, &mut vc, &h, self.cfg.rms_norm_eps,
+                        l, &mut st, &mut vc, &fused, seq,
+                        self.cfg.rms_norm_eps,
                     );
-                    self.vcache[i] = vc.unwrap_or_default();
-                    self.gdn[i] = Some(st);
+                    self.slots[slot].vcache[i] = vc.unwrap_or_default();
+                    self.slots[slot].gdn[i] = Some(st);
                     r?
                 }
                 Kind::Attn(l) => {
-                    let mut kvc = self.kv[i].take().unwrap();
-                    let mut kvq = std::mem::take(&mut self.kvq[i]);
+                    let qkv = lin_apply(&h, &l.in_qkv)?;
+                    let mut kvc = self.slots[slot].kv[i].take().unwrap();
+                    let mut kvq = std::mem::take(&mut self.slots[slot].kvq[i]);
                     let r = Self::attn_forward(
-                        l, &mut kvc, &mut kvq, self.tq.as_ref(), &h, pos,
-                        self.cfg.rms_norm_eps, &self.device,
+                        l, &mut kvc, &mut kvq, self.tq.as_ref(), &qkv, pos,
+                        seq, self.cfg.rms_norm_eps, &self.device,
                     );
-                    self.kv[i] = Some(kvc);
-                    self.kvq[i] = kvq;
+                    self.slots[slot].kv[i] = Some(kvc);
+                    self.slots[slot].kvq[i] = kvq;
                     r?
                 }
             };
@@ -2438,10 +2540,12 @@ impl Qwen35 {
             } else {
                 x = xn.add(&mlp)?;
             }
-            if self.draft.is_some()
+            if self.slots[slot].draft.is_some()
                 && crate::dflash::CAPTURE_LAYERS.contains(&i)
             {
-                self.captures.push(x.squeeze(0)?.contiguous()?);
+                self.slots[slot]
+                    .captures
+                    .push(x.squeeze(0)?.contiguous()?);
             }
             if self.debug {
                 let xf = x.to_dtype(DType::F32)?;
@@ -2461,7 +2565,7 @@ impl Qwen35 {
             );
         }
         let t1 = phase_t.map(|_| std::time::Instant::now());
-        self.kv_tokens = pos + seq;
+        self.slots[slot].kv_tokens = pos + seq;
         if last_only {
             let last = x.narrow(1, seq - 1, 1)?; // [1, 1, hidden]
             let logits =
@@ -2475,5 +2579,150 @@ impl Qwen35 {
             eprintln!("[phase] lm_head={:.1}ms", t.elapsed().as_secs_f64() * 1e3);
         }
         Ok(out)
+    }
+
+    /// Batched verify forward: `seqs[b]` token rows for slot `b` at
+    /// position `poss[b]`. The matmuls run once over the flat
+    /// `[1, Σseq, hidden]` activation — one weight sweep serves all
+    /// slots; the stateful ops (GDN step, attention) dispatch per slot
+    /// on narrowed views so caches, recurrent state and verify caches
+    /// stay strictly per-request. Returns `[Σseq, vocab]` bf16.
+    pub fn forward_batch(
+        &mut self,
+        slots: &[usize],
+        seqs: &[&[u32]],
+        poss: &[usize],
+    ) -> Result<Tensor> {
+        let nb = seqs.len();
+        let mut offs = Vec::with_capacity(nb + 1);
+        offs.push(0usize);
+        for sq in seqs {
+            offs.push(offs.last().unwrap() + sq.len());
+        }
+        let flat: Vec<u32> =
+            seqs.iter().flat_map(|s| s.iter().copied()).collect();
+        let ids = Tensor::new(flat.as_slice(), &self.device)?;
+        let mut x = self.embed.i(&ids)?.unsqueeze(0)?; // [1, total, hidden]
+        for &sb in slots {
+            for v in self.slots[sb].vcache.iter_mut() {
+                *v = GdnVerifyCache::default();
+            }
+        }
+        let eps = self.cfg.rms_norm_eps;
+        let mut h_next: Option<Tensor> = None;
+        for i in 0..self.layers.len() {
+            let layer = &self.layers[i];
+            let h = match h_next.take() {
+                Some(v) => v,
+                None => rms_norm(&x, &layer.input_norm, eps)?,
+            };
+            let r = match &layer.kind {
+                Kind::Gdn(l) => {
+                    let fused = lin_apply(&h, &l.in_all)?;
+                    let mut parts = Vec::with_capacity(nb);
+                    for b in 0..nb {
+                        let sb = slots[b];
+                        let seq_b = seqs[b].len();
+                        let fv = fused.narrow(1, offs[b], seq_b)?;
+                        let mut st =
+                            self.slots[sb].gdn[i].take().unwrap();
+                        let mut vc = Some(GdnVerifyCache::default());
+                        let o = Self::gdn_forward(
+                            l, &mut st, &mut vc, &fv, seq_b, eps,
+                        )?;
+                        self.slots[sb].vcache[i] = vc.unwrap_or_default();
+                        self.slots[sb].gdn[i] = Some(st);
+                        parts.push(o);
+                    }
+                    Tensor::cat(&parts, 1)?
+                }
+                Kind::Attn(l) => {
+                    let qkv = lin_apply(&h, &l.in_qkv)?;
+                    let mut parts = Vec::with_capacity(nb);
+                    for b in 0..nb {
+                        let sb = slots[b];
+                        let seq_b = seqs[b].len();
+                        let qv = qkv.narrow(1, offs[b], seq_b)?;
+                        let mut kvc =
+                            self.slots[sb].kv[i].take().unwrap();
+                        let mut kvq =
+                            std::mem::take(&mut self.slots[sb].kvq[i]);
+                        let o = Self::attn_forward(
+                            l, &mut kvc, &mut kvq, self.tq.as_ref(),
+                            &qv, poss[b], seq_b, eps, &self.device,
+                        )?;
+                        self.slots[sb].kv[i] = Some(kvc);
+                        self.slots[sb].kvq[i] = kvq;
+                        parts.push(o);
+                    }
+                    Tensor::cat(&parts, 1)?
+                }
+            };
+            let (xn, h2) =
+                add_rms_norm(&x, &r, &layer.post_norm, eps)?;
+            let act = match &layer.mlp.gate_up {
+                Lin::Quant(q) => match q.gate_up_act(&h2) {
+                    Some(r) => r?,
+                    None => {
+                        let gu = lin_apply(&h2, &layer.mlp.gate_up)?;
+                        let gate = gu
+                            .narrow(D::Minus1, 0, layer.mlp.inter)?
+                            .contiguous()?;
+                        let up = gu
+                            .narrow(
+                                D::Minus1,
+                                layer.mlp.inter,
+                                layer.mlp.inter,
+                            )?
+                            .contiguous()?;
+                        candle_nn::ops::silu(&gate)?.mul(&up)?
+                    }
+                },
+                _ => {
+                    let gu = lin_apply(&h2, &layer.mlp.gate_up)?;
+                    let gate = gu
+                        .narrow(D::Minus1, 0, layer.mlp.inter)?
+                        .contiguous()?;
+                    let up = gu
+                        .narrow(
+                            D::Minus1,
+                            layer.mlp.inter,
+                            layer.mlp.inter,
+                        )?
+                        .contiguous()?;
+                    candle_nn::ops::silu(&gate)?.mul(&up)?
+                }
+            };
+            let mlp = lin_apply(&act, &layer.mlp.down)?;
+            if i + 1 < self.layers.len() {
+                let (xn2, hn) = add_rms_norm(
+                    &xn,
+                    &mlp,
+                    &self.layers[i + 1].input_norm,
+                    eps,
+                )?;
+                x = xn2;
+                h_next = Some(hn);
+            } else {
+                x = xn.add(&mlp)?;
+            }
+            if crate::dflash::CAPTURE_LAYERS.contains(&i) {
+                let x2 = x.squeeze(0)?.contiguous()?;
+                for b in 0..nb {
+                    let sb = slots[b];
+                    if self.slots[sb].draft.is_some() {
+                        let rows = seqs[b].len();
+                        self.slots[sb].captures.push(
+                            x2.narrow(0, offs[b], rows)?.contiguous()?,
+                        );
+                    }
+                }
+            }
+        }
+        for b in 0..nb {
+            self.slots[slots[b]].kv_tokens = poss[b] + seqs[b].len();
+        }
+        let x = rms_norm(&x, &self.norm, eps)?;
+        Ok(lin_apply(&x, &self.lm_head)?.squeeze(0)?) // [total, vocab]
     }
 }
