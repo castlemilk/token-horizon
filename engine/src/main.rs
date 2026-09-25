@@ -301,6 +301,12 @@ async fn main() -> Result<()> {
                     qwen35::bench_q4_decode(q, &loaded.device)?;
                 }
             }
+            #[cfg(all(feature = "metal", target_os = "macos"))]
+            if std::env::var("TH_BENCH_DRAFT_MLP").is_ok() {
+                if let model::ModelBackend::Qwen35(q) = &loaded.backend {
+                    qwen35::bench_draft_mlp(q, &loaded.device)?;
+                }
+            }
             if let Ok(ms) = std::env::var("TH_BENCH_MULTI") {
                 // one m, or a comma list (K45: "8,5,1" in one process)
                 let ms: Vec<usize> = ms

@@ -1100,6 +1100,199 @@ pub(crate) fn bench_q4_decode(model: &Qwen35, device: &Device) -> Result<()> {
     Ok(())
 }
 
+/// `TH_BENCH_DRAFT_MLP=1 th-engine probe …` — the DFlash draft MLP
+/// (`dflash.rs` `DraftLayer::mlp`) at the propose shape (8 rows) and the
+/// batched-propose shapes (B*8 rows). The target's MLP weights have the
+/// draft's shapes (gate and up 17408x5120, down 5120x17408), so a pass
+/// runs the first `TH_BENCH_DRAFT_MLP_LAYERS` (default 16) layers'
+/// distinct tensors and streams from DRAM like the draft's five layers.
+/// Arms, each ending in `down`:
+/// - `sep`: gate and up as two projections + eager silu·mul (the draft
+///   MLP before K45(d)); gate/up are the fused tiled weight split back
+///   into two tiled weights (exact values, no requantisation);
+/// - `fused`: `gate_up_act_ps` + `down` with the returned presum flag
+///   (K45(d): N256 two-stream tile at <= 8 rows, the two-pass prefill
+///   gate/up tile above 8);
+/// - `narrow`: one projection over the fused weight + narrow +
+///   silu·mul (the eager fallback when `gate_up_act_ps` declines).
+/// Passes are interleaved (start rotated) with a buffer barrier after
+/// every call; µs/call is host-timed. max|Δ| is vs `sep` on layer 0.
+/// Env: `TH_BENCH_DRAFT_MLP_ROWS` (default `8,16,24,32`),
+/// `TH_BENCH_Q4_PASSES` (default 7).
+#[cfg(all(feature = "metal", target_os = "macos"))]
+pub(crate) fn bench_draft_mlp(model: &Qwen35, device: &Device) -> Result<()> {
+    let env_n = |k: &str, d: usize| {
+        std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(d)
+    };
+    let passes = env_n("TH_BENCH_Q4_PASSES", 7).max(1);
+    let nlayers = env_n("TH_BENCH_DRAFT_MLP_LAYERS", 16).max(1);
+    let rows_list: Vec<usize> = std::env::var("TH_BENCH_DRAFT_MLP_ROWS")
+        .unwrap_or_else(|_| "8,16,24,32".into())
+        .split(',')
+        .filter_map(|v| v.trim().parse().ok())
+        .collect();
+    let barrier = || -> Result<()> {
+        if let Device::Metal(md) = device {
+            use candle_metal_kernels::utils::EncoderProvider;
+            let enc = md.command_encoder()?;
+            let enc_ref = &enc;
+            let e: &candle_metal_kernels::metal::ComputeCommandEncoder =
+                enc_ref.encoder().as_ref();
+            e.insert_memory_barrier();
+        }
+        Ok(())
+    };
+    // fused tiled [gate | up] -> two tiled weights: wq tiles are
+    // outermost ([tile][group][2048 u32]); sb is [scales | biases], each
+    // [tile][group][256] — gate = tiles 0..ht, up = tiles ht..2ht
+    let split = |q: &QLin| -> Result<(QLin, QLin)> {
+        let ng = q.inp / 64;
+        let half = q.out / 2;
+        if !q.tiled || q.out % 2 != 0 || half % 256 != 0 {
+            bail!("draft-mlp bench: gate_up {}x{} is not a tiled 256-aligned pair", q.out, q.inp);
+        }
+        let ht = half / 256;
+        let (nw, ns) = (ht * ng * 2048, ht * ng * 256);
+        let bias_base = q.out.div_ceil(256) * 256 * ng;
+        let wq = q.wq.flatten_all()?;
+        let sb = q.sb.flatten_all()?;
+        let mk = |t: usize| -> Result<QLin> {
+            Ok(QLin {
+                // a view — the MPP kernels honour storage start offsets
+                wq: wq.narrow(0, t * nw, nw)?,
+                sb: Tensor::cat(
+                    &[&sb.narrow(0, t * ns, ns)?, &sb.narrow(0, bias_base + t * ns, ns)?],
+                    0,
+                )?,
+                out: half,
+                inp: q.inp,
+                gs: q.gs,
+                tiled: true,
+            })
+        };
+        Ok((mk(0)?, mk(1)?))
+    };
+    let quant = |l: &Lin| match l {
+        Lin::Quant(q) if q.tiled => Some(q.clone()),
+        _ => None,
+    };
+    // (gate_up, gate, up, down) per layer
+    let mut ws: Vec<(QLin, QLin, QLin, QLin)> = Vec::new();
+    for l in model.layers.iter().take(nlayers) {
+        let (Some(gu), Some(dn)) = (quant(&l.mlp.gate_up), quant(&l.mlp.down)) else {
+            continue;
+        };
+        let (g, u) = split(&gu)?;
+        ws.push((gu, g, u, dn));
+    }
+    let Some(w0) = ws.first() else {
+        bail!("draft-mlp bench: no tiled MLP weights")
+    };
+    let (half, inp) = (w0.1.out, w0.0.inp);
+    eprintln!(
+        "draft-mlp bench: layers={} passes={passes} rows={rows_list:?} policy={:?} presum={} [gate/up {half}x{inp}, down {}x{}]",
+        ws.len(),
+        crate::quant_kernel::q4_policy_mode(),
+        crate::quant_kernel::presum_enabled(),
+        w0.3.out,
+        w0.3.inp,
+    );
+    let max_abs = |a: &Tensor, b: &Tensor| -> Result<f32> {
+        Ok(a.to_dtype(DType::F32)?
+            .sub(&b.to_dtype(DType::F32)?)?
+            .abs()?
+            .flatten_all()?
+            .max(0)?
+            .to_scalar::<f32>()?)
+    };
+    let median = |v: &[f64]| -> f64 {
+        let mut v = v.to_vec();
+        v.sort_by(|a, b| a.total_cmp(b));
+        v[v.len() / 2]
+    };
+    for &rows in &rows_list {
+        let xv: Vec<f32> = (0..rows * inp)
+            .map(|i| ((i * 2654435761) % 1000) as f32 / 500.0 - 1.0)
+            .collect();
+        let x = Tensor::from_vec(xv, (1, rows, inp), device)?.to_dtype(DType::BF16)?;
+        type Arm<'a> = (&'static str, Box<dyn Fn(&(QLin, QLin, QLin, QLin)) -> Result<Tensor> + 'a>);
+        let x = &x;
+        let arms: Vec<Arm> = vec![
+            (
+                "sep",
+                Box::new(move |w: &(QLin, QLin, QLin, QLin)| -> Result<Tensor> {
+                    let g = w.1.linear_ps(x, false)?;
+                    let u = w.2.linear_ps(x, false)?;
+                    let inter = candle_nn::ops::silu(&g)?.mul(&u)?;
+                    w.3.linear_ps(&inter, false)
+                }),
+            ),
+            (
+                "fused",
+                Box::new(move |w: &(QLin, QLin, QLin, QLin)| -> Result<Tensor> {
+                    let Some(r) = w.0.gate_up_act_ps(x, false) else {
+                        bail!("gate_up_act_ps declined rows={rows}")
+                    };
+                    let (inter, ps) = r?;
+                    w.3.linear_ps(&inter, ps)
+                }),
+            ),
+            (
+                "narrow",
+                Box::new(move |w: &(QLin, QLin, QLin, QLin)| -> Result<Tensor> {
+                    let gu = w.0.linear_ps(x, false)?;
+                    let last = gu.rank() - 1;
+                    let g = gu.narrow(last, 0, half)?.contiguous()?;
+                    let u = gu.narrow(last, half, half)?.contiguous()?;
+                    let inter = candle_nn::ops::silu(&g)?.mul(&u)?;
+                    w.3.linear_ps(&inter, false)
+                }),
+            ),
+        ];
+        let na = arms.len();
+        for (_, f) in &arms {
+            for w in &ws {
+                let _ = f(w)?;
+                barrier()?;
+            }
+        }
+        device.synchronize()?;
+        let mut us = vec![Vec::with_capacity(passes); na];
+        for pass in 0..passes {
+            for k in 0..na {
+                let a = (pass + k) % na;
+                device.synchronize()?;
+                let t = std::time::Instant::now();
+                for w in &ws {
+                    let _ = (arms[a].1)(w)?;
+                    barrier()?;
+                }
+                device.synchronize()?;
+                us[a].push(t.elapsed().as_secs_f64() * 1e6 / ws.len() as f64);
+            }
+        }
+        let y_ref = (arms[0].1)(w0)?;
+        let ref_mag = y_ref
+            .to_dtype(DType::F32)?
+            .abs()?
+            .flatten_all()?
+            .max(0)?
+            .to_scalar::<f32>()?;
+        for (a, (label, f)) in arms.iter().enumerate() {
+            let y = f(w0)?;
+            let ratios: Vec<f64> = us[a].iter().zip(&us[0]).map(|(p, q)| p / q).collect();
+            let mn = us[a].iter().cloned().fold(f64::MAX, f64::min);
+            eprintln!(
+                "dmlp[rows={rows:2}] {label:<7} {:8.1}us/call (min {mn:8.1})  x{:.3} vs sep  max|Δ|sep={:.5}  |sep|max={ref_mag:.2}",
+                median(&us[a]),
+                median(&ratios),
+                max_abs(&y, &y_ref)?,
+            );
+        }
+    }
+    Ok(())
+}
+
 /// Row-concatenate projection weights so one matmul produces all their
 /// outputs — the caller narrows the fused result back into the parts.
 /// All inputs must share `inp`/`gs` and quantisation kind. Bitwise
