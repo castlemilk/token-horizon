@@ -207,10 +207,10 @@ pub struct Draft {
     succ_cb: Tensor,    // [vocab, 256]
     /// Persistent context: per-layer ring of K/V for committed token
     /// positions. `ring_k[l]` = [8 heads][2048 slots][128]; slot =
-    /// position % 2048. CPU-side — commits are tiny and the live window
-    /// is uploaded once per decode.
-    ring_k: Vec<Vec<bf16>>,
-    ring_v: Vec<Vec<bf16>>,
+    /// position % 2048. GPU-resident — commits scatter in place and
+    /// attention gathers via index_select (no CPU round-trip).
+    ring_k: Vec<Tensor>,
+    ring_v: Vec<Tensor>,
     /// Number of committed positions (0..ring_len are valid).
     ring_len: usize,
     device: Device,
@@ -270,7 +270,13 @@ impl Draft {
             section_tensor(f.section(cb_bytes)?, (248320, RANK), device)?;
         f.finish()?;
 
-        let ring_elem = KV_HEADS * WINDOW * HEAD_DIM;
+        let ring_shape = (KV_HEADS, WINDOW, HEAD_DIM);
+        let ring_k = (0..DRAFT_LAYERS)
+            .map(|_| Tensor::zeros(ring_shape, DType::BF16, device))
+            .collect::<std::result::Result<Vec<_>, candle_core::Error>>()?;
+        let ring_v = (0..DRAFT_LAYERS)
+            .map(|_| Tensor::zeros(ring_shape, DType::BF16, device))
+            .collect::<std::result::Result<Vec<_>, candle_core::Error>>()?;
         Ok(Self {
             layers,
             fc,
@@ -279,8 +285,8 @@ impl Draft {
             selector,
             pred_cb,
             succ_cb,
-            ring_k: vec![vec![bf16::ZERO; ring_elem]; DRAFT_LAYERS],
-            ring_v: vec![vec![bf16::ZERO; ring_elem]; DRAFT_LAYERS],
+            ring_k,
+            ring_v,
             ring_len: 0,
             device: device.clone(),
         })
@@ -315,26 +321,20 @@ impl Draft {
                 .narrow(1, ATTN + KV_HEADS * HEAD_DIM, KV_HEADS * HEAD_DIM)?
                 .reshape((rows, KV_HEADS, HEAD_DIM))?;
             let k = head_norm_rope(&k, &l.k_norm, &cos, &sin)?;
-            let kv: Vec<bf16> = k
-                .permute((1, 0, 2))?
-                .contiguous()?
-                .flatten_all()?
-                .to_vec1()?; // [8][rows][128]
-            let vv: Vec<bf16> = v
-                .permute((1, 0, 2))?
-                .contiguous()?
-                .flatten_all()?
-                .to_vec1()?;
-            for h in 0..KV_HEADS {
-                for r in 0..rows {
-                    let slot = (start_pos + r) % WINDOW;
-                    let dst = (h * WINDOW + slot) * HEAD_DIM;
-                    self.ring_k[li][dst..dst + HEAD_DIM]
-                        .copy_from_slice(&kv[(h * rows + r) * HEAD_DIM..(h * rows + r + 1) * HEAD_DIM]);
-                    self.ring_v[li][dst..dst + HEAD_DIM]
-                        .copy_from_slice(&vv[(h * rows + r) * HEAD_DIM..(h * rows + r + 1) * HEAD_DIM]);
-                }
-            }
+            // in-place ring write: src [heads, rows, dim], indexes give
+            // the slot for each row (positions are contiguous → slots
+            // are contiguous mod WINDOW).
+            let kp = k.permute((1, 0, 2))?.contiguous()?; // [8, rows, 128]
+            let vp = v.permute((1, 0, 2))?.contiguous()?;
+            let slots: Vec<u32> = (0..rows)
+                .map(|r| ((start_pos + r) % WINDOW) as u32)
+                .collect();
+            let idx = Tensor::new(slots.as_slice(), &self.device)?
+                .reshape((1, rows, 1))?
+                .broadcast_as((KV_HEADS, rows, HEAD_DIM))?
+                .contiguous()?;
+            self.ring_k[li].scatter_set(&idx, &kp, 1)?;
+            self.ring_v[li].scatter_set(&idx, &vp, 1)?;
         }
         self.ring_len = self.ring_len.max(start_pos + rows);
         Ok(())
@@ -407,22 +407,26 @@ impl Draft {
         v: &Tensor, // [8, 8, 128]
     ) -> Result<Tensor> {
         let l = self.ring_len.min(WINDOW);
-        // Gather the live window: positions len-l..len → slots mod 2048.
+        // Gather the live window on-device: positions len-l..len →
+        // slots mod 2048.
         let start = self.ring_len - l;
-        let mut kk = Vec::with_capacity(KV_HEADS * l * HEAD_DIM);
-        let mut vv = Vec::with_capacity(KV_HEADS * l * HEAD_DIM);
-        for h in 0..KV_HEADS {
-            for p in start..self.ring_len {
-                let slot = p % WINDOW;
-                let src = (h * WINDOW + slot) * HEAD_DIM;
-                kk.extend_from_slice(&self.ring_k[layer][src..src + HEAD_DIM]);
-                vv.extend_from_slice(&self.ring_v[layer][src..src + HEAD_DIM]);
-            }
-        }
-        // [kv, l, d] → expand GQA groups to [heads, l, d]
         let dev = &self.device;
-        let kr = gqa_expand(&Tensor::from_vec(kk, (KV_HEADS, l, HEAD_DIM), dev)?)?;
-        let vr = gqa_expand(&Tensor::from_vec(vv, (KV_HEADS, l, HEAD_DIM), dev)?)?;
+        let (kr, vr) = if l == 0 {
+            (
+                Tensor::zeros((KV_HEADS, 0, HEAD_DIM), DType::BF16, dev)?,
+                Tensor::zeros((KV_HEADS, 0, HEAD_DIM), DType::BF16, dev)?,
+            )
+        } else {
+            let ids: Vec<u32> =
+                (start..self.ring_len).map(|p| (p % WINDOW) as u32).collect();
+            let idx = Tensor::new(ids.as_slice(), dev)?;
+            (
+                self.ring_k[layer].index_select(&idx, 1)?,
+                self.ring_v[layer].index_select(&idx, 1)?,
+            )
+        };
+        let kr = gqa_expand(&kr)?;
+        let vr = gqa_expand(&vr)?;
         let kc = gqa_expand(&k.permute((1, 0, 2))?)?; // [8,8,128]→[32,8,128]
         let vc = gqa_expand(&v.permute((1, 0, 2))?)?;
         let kall = Tensor::cat(&[&kr, &kc], 1)?.contiguous()?; // [32, l+8, 128]
