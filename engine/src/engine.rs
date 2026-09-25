@@ -1847,4 +1847,99 @@ mod utf8_stream {
         assert_eq!(o.finish, "stop");
         assert_clean(&o, &full);
     }
+
+    /// The batched path (TH_BATCH > 1) keeps one `TextOut` per slot and
+    /// builds a fresh `EmitCtx` per token, up to 8 tokens per slot per
+    /// lockstep round (`admit` / `batch_round`). Interleaved that way,
+    /// with rounds that end mid-character, every slot must stream exactly
+    /// the deltas it streams alone.
+    #[test]
+    fn utf8_stream_interleaved_slots() {
+        struct Slot {
+            ids: Vec<u32>,
+            stops: Vec<String>,
+            n_prompt: usize,
+            next: usize,
+            completion: Vec<u32>,
+            hist: Vec<u32>,
+            text_out: TextOut,
+            tx: mpsc::UnboundedSender<GenEvent>,
+            rx: mpsc::UnboundedReceiver<GenEvent>,
+            finish: &'static str,
+        }
+        let tok = byte_tokenizer(&[]);
+        let state = EngineState::new(String::new(), serde_json::Value::Null, EngineConfig::default());
+        let cancel = AtomicBool::new(false);
+        let mut a = bytes(TEXT);
+        a.push(EOS);
+        let jobs = [(a, vec![], 21), (bytes("🍂秋风起，落叶黄。🍁"), vec!["落叶".to_string()], 9)];
+        let mut slots: Vec<Slot> = jobs
+            .iter()
+            .map(|(ids, stops, n_prompt)| {
+                let (tx, rx) = mpsc::unbounded_channel();
+                Slot {
+                    ids: ids.clone(),
+                    stops: stops.clone(),
+                    n_prompt: *n_prompt,
+                    next: 0,
+                    completion: Vec::new(),
+                    hist: Vec::new(),
+                    text_out: TextOut::default(),
+                    tx,
+                    rx,
+                    finish: "open",
+                }
+            })
+            .collect();
+        for round in 0usize.. {
+            let mut live = false;
+            for (s, sl) in slots.iter_mut().enumerate() {
+                if sl.finish != "open" || sl.next == sl.ids.len() {
+                    continue;
+                }
+                live = true;
+                let end = (sl.next + 1 + (round * 3 + s * 5) % 8).min(sl.ids.len());
+                while sl.next < end {
+                    // absolute KV index, as admit() / batch_round() pass it
+                    let (t, pos) = (sl.ids[sl.next], sl.n_prompt + sl.completion.len());
+                    sl.next += 1;
+                    let mut ec = EmitCtx {
+                        completion: &mut sl.completion,
+                        hist: &mut sl.hist,
+                        text_out: &mut sl.text_out,
+                        tx: &sl.tx,
+                        tokenizer: &tok,
+                        eos_ids: &[EOS],
+                        stops: &sl.stops,
+                        cancel: &cancel,
+                        state: &state,
+                        max_tokens: usize::MAX,
+                        max_ctx: None,
+                    };
+                    if let Emit::Done(r) = emit_token(&mut ec, t, pos) {
+                        sl.finish = r;
+                        break;
+                    }
+                }
+            }
+            if !live {
+                break;
+            }
+        }
+        for (sl, want) in slots.iter_mut().zip([TEXT, "🍂秋风起，"]) {
+            let mut deltas = Vec::new();
+            while let Ok(ev) = sl.rx.try_recv() {
+                if let GenEvent::Delta(d) = ev {
+                    deltas.push(d);
+                }
+            }
+            let o = Out { deltas, finish: sl.finish, text: std::mem::take(&mut sl.text_out.text) };
+            assert_eq!(o.finish, "stop");
+            assert_eq!(o.text, want);
+            assert_clean(&o, want);
+            let stops: Vec<&str> = sl.stops.iter().map(|s| s.as_str()).collect();
+            let solo = stream(&tok, &sl.ids, &[EOS], &stops, usize::MAX);
+            assert_eq!(o.deltas, solo.deltas, "interleaving changed the stream");
+        }
+    }
 }
