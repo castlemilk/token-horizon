@@ -314,6 +314,41 @@ impl QLin {
             .map_err(Into::into)
     }
 
+    /// K7: the m = 1 `AffineQmvT` matvec on tiled weights. `xv` is the
+    /// one activation row as a contiguous `[in]` tensor. `up_row == 0`:
+    /// plain projection → `[out]`; `up_row > 0`: fused [gate | up] weight
+    /// with the up stream at row `up_row` → silu(gate)·up `[up_row]`.
+    /// `None` when the kernel doesn't apply (untiled / non-64 groups /
+    /// scalar reference / `TH_M1_PATH=mpp` / misaligned input) — the
+    /// caller keeps its previous path.
+    fn qmvt_m1(&self, xv: &Tensor, up_row: usize) -> Result<Option<Tensor>> {
+        #[cfg(all(feature = "metal", target_os = "macos"))]
+        if xv.device().is_metal()
+            && self.tiled
+            && self.gs == 64
+            && self.inp % 64 == 0
+            && !crate::quant_kernel::qmm_scalar()
+            && crate::quant_kernel::m1_path().qmvt(up_row > 0)
+            && xv.layout().start_offset() % 8 == 0
+        {
+            let gate_up = up_row > 0;
+            let out = if gate_up { up_row } else { self.out };
+            return Ok(Some(self.wq.apply_op3_no_bwd(
+                &self.sb,
+                xv,
+                &crate::quant_kernel::AffineQmvT {
+                    inp: self.inp,
+                    out,
+                    tiles: self.out.div_ceil(256),
+                    up_row,
+                    cfg: crate::quant_kernel::qmvt_cfg(out, self.inp, gate_up),
+                },
+            )?));
+        }
+        let _ = (xv, up_row);
+        Ok(None)
+    }
+
     #[allow(dead_code)]
     fn linear(&self, x: &Tensor) -> Result<Tensor> {
         self.linear_ps(x, false)
@@ -343,6 +378,13 @@ impl QLin {
                 // fused dequant-matvec — reads packed weights only
                 let xv = x.reshape((in_d,))?.contiguous()?;
                 if self.tiled && !crate::quant_kernel::qmm_scalar() {
+                    // K7: tiled-layout matvec — no pad dispatch, no 8-row
+                    // MMA block around the one live row
+                    if let Some(y) = self.qmvt_m1(&xv, 0)? {
+                        let mut out = dims;
+                        *out.last_mut().unwrap() = self.out;
+                        return Ok(y.reshape(out)?);
+                    }
                     let xv8 = xv.reshape((1, in_d))?;
                     // K2: per-shape decode tile (n64s4 unless listed)
                     let (tile, sgs) =
@@ -702,6 +744,29 @@ impl QLin {
                 );
             }
         }
+        // K7: m = 1 — tiled matvec with the fused silu·mul epilogue
+        // (the MMA tiles would waste 7/8 of their work on padded rows).
+        // A K45 presum block is also a plain [1, in] row, so `presum` is
+        // ignored here, and the activation is returned as a plain tensor
+        // (flag false): at m = 1 `down` takes the qmvt matvec as well,
+        // which needs no input sums.
+        if rows == 1 && self.out % 2 == 0 {
+            let half = self.out / 2;
+            let y = x
+                .reshape((in_d0,))
+                .and_then(|v| v.contiguous())
+                .map_err(anyhow::Error::from)
+                .and_then(|xv| self.qmvt_m1(&xv, half));
+            return match y {
+                Ok(Some(y)) => {
+                    let mut out = dims.clone();
+                    *out.last_mut().unwrap() = half;
+                    Some(y.reshape(out).map(|y| (y, false)).map_err(Into::into))
+                }
+                Ok(None) => None,
+                Err(e) => Some(Err(e)),
+            };
+        }
         // m==1 wastes 7/8 of the MMA work — the qmv path wins there
         if !(2..=8).contains(&rows) || self.out % 2 != 0 {
             return None;
@@ -981,6 +1046,13 @@ pub(crate) fn bench_q4_decode(model: &Qwen35, device: &Device) -> Result<()> {
             if gate_up {
                 match q.gate_up_act_ps(x, ps) {
                     Some(r) => Ok(r?.0),
+                    // the forward's eager fallback (pre-K7 m = 1 route)
+                    None if rows == 1 => {
+                        let gu = q.linear_ps(x, ps)?;
+                        let gate = gu.narrow(D::Minus1, 0, half)?.contiguous()?;
+                        let up = gu.narrow(D::Minus1, half, half)?.contiguous()?;
+                        Ok(candle_nn::ops::silu(&gate)?.mul(&up)?)
+                    }
                     None => bail!("gate_up_act declined m={rows}"),
                 }
             } else {
@@ -1032,13 +1104,109 @@ pub(crate) fn bench_q4_decode(model: &Qwen35, device: &Device) -> Result<()> {
         };
         // candidates: the production path, the production path on the
         // misaligned input (= with the pad copy), the presum path, then
-        // explicit tiles (plain / +ps) with optional group overrides.
+        // explicit tiles (plain / +ps) with optional group overrides. At
+        // m = 1 (K7) the production path is the tiled qmvt matvec (it reads
+        // the one live row and ignores the presum flag); the misaligned arm
+        // is dropped there (qmvt declines a 2-byte offset, so it would time
+        // the fallback, not the path) and the pre-K7 route (MPP decode tile,
+        // plain and on the presum block; gate/up + eager narrow + silu·mul),
+        // every qmvt config and the qmv / sg kernels on the tiled layout
+        // are added as arms.
         type Cand<'a> = (String, Box<dyn Fn(&QLin, usize) -> Result<Tensor> + 'a>);
-        let mut cands: Vec<Cand> = vec![
-            (format!("path t{p_tile}s{p_sgs}"), Box::new(|q: &QLin, _| path(q, &x, false))),
-            ("path+pad".to_string(), Box::new(|q: &QLin, _| path(q, &x_mis, false))),
-            ("path+ps".to_string(), Box::new(|q: &QLin, _| path(q, &x_ps, true))),
-        ];
+        let path_label = if rows == 1 && crate::quant_kernel::m1_path().qmvt(gate_up) {
+            let c = crate::quant_kernel::qmvt_cfg(
+                if gate_up { half } else { q0.out },
+                q0.inp,
+                gate_up,
+            );
+            format!("path qmvt r{}s{}", c.rpl, c.sgs)
+        } else {
+            format!("path t{p_tile}s{p_sgs}")
+        };
+        let mut cands: Vec<Cand> =
+            vec![(path_label, Box::new(|q: &QLin, _| path(q, &x, false)))];
+        if rows > 1 {
+            cands.push(("path+pad".to_string(), Box::new(|q: &QLin, _| path(q, &x_mis, false))));
+        }
+        cands.push(("path+ps".to_string(), Box::new(|q: &QLin, _| path(q, &x_ps, true))));
+        if rows == 1 {
+            let (x, x_ps) = (&x, &x_ps);
+            for ps in [false, true] {
+                cands.push((
+                    format!("pre-K7 mpp{}", if ps { "+ps" } else { "" }),
+                    Box::new(move |q: &QLin, _| -> Result<Tensor> {
+                        let (tile, sgs) =
+                            crate::quant_kernel::plain_tile(q.out, q.inp).tile_sgs();
+                        let op = AffineQmpp {
+                            inp: q.inp,
+                            out: q.out,
+                            padded: q.out.div_ceil(256) * 256,
+                            m: 1,
+                            up_tile: 0,
+                            sgs,
+                            tile,
+                            presum: ps,
+                            emit_sums: false,
+                            groups: 0,
+                            flags: 0,
+                        };
+                        let xin = if ps { x_ps } else { x };
+                        let y = q.wq.apply_op3_no_bwd(&q.sb, xin, &op)?.narrow(0, 0, 1)?.contiguous()?;
+                        if !gate_up {
+                            return Ok(y);
+                        }
+                        let h = q.out / 2;
+                        let gate = y.narrow(D::Minus1, 0, h)?.contiguous()?;
+                        let up = y.narrow(D::Minus1, h, h)?.contiguous()?;
+                        Ok(candle_nn::ops::silu(&gate)?.mul(&up)?)
+                    }),
+                ));
+            }
+            for cfg in crate::quant_kernel::QMVT_KERNELS {
+                cands.push((
+                    format!("qmvt r{}s{}", cfg.rpl, cfg.sgs),
+                    Box::new(move |q: &QLin, _| -> Result<Tensor> {
+                        let h = if gate_up { q.out / 2 } else { 0 };
+                        let op = crate::quant_kernel::AffineQmvT {
+                            inp: q.inp,
+                            out: if gate_up { h } else { q.out },
+                            tiles: q.out.div_ceil(256),
+                            up_row: h,
+                            cfg,
+                        };
+                        Ok(q.wq.apply_op3_no_bwd(&q.sb, x, &op)?.reshape((1, ()))?)
+                    }),
+                ));
+            }
+            if !gate_up {
+                cands.push((
+                    "qmv tiled".to_string(),
+                    Box::new(move |q: &QLin, _| -> Result<Tensor> {
+                        let op = crate::quant_kernel::AffineQmv {
+                            inp: q.inp,
+                            out: q.out,
+                            gs: q.gs,
+                            tiled: q.tiled,
+                        };
+                        Ok(q.wq.apply_op3_no_bwd(&q.sb, x, &op)?.reshape((1, ()))?)
+                    }),
+                ));
+            }
+            cands.push((
+                "sg tiled".to_string(),
+                Box::new(move |q: &QLin, _| -> Result<Tensor> {
+                    let h = q.out / 2;
+                    let op = crate::quant_kernel::AffineQsg {
+                        inp: q.inp,
+                        out: if gate_up { h } else { q.out },
+                        m: 1,
+                        aux: if gate_up { h } else { 0 },
+                        tiled: q.tiled,
+                    };
+                    Ok(q.wq.apply_op3_no_bwd(&q.sb, x, &op)?.reshape((1, ()))?)
+                }),
+            ));
+        }
 
         let tiles = q0.out.div_ceil(256);
         // (label, tile, sgs, groups override, presum, emit, flags)
@@ -2015,6 +2183,63 @@ impl Qwen35 {
                 );
                 let _ = t;
             }
+            // K7: m = 1 tiled matvec (the decode route) vs the scalar
+            // m = 1 reference; gate_up also as the fused silu·mul form
+            // vs eager f32 silu(gate)·up on the bf16 scalar halves
+            {
+                use crate::quant_kernel::{qmvt_cfg, AffineQmm, AffineQmvT};
+                let x1 = x.narrow(0, 0, 1)?.contiguous()?;
+                let x1v = x1.reshape((qt.inp,))?;
+                let y1 = qt
+                    .wq
+                    .apply_op3_no_bwd(
+                        &qt.sb,
+                        &x1,
+                        &AffineQmm { inp: qt.inp, out: qt.out, gs: qt.gs, m: 1, tiled: qt.tiled },
+                    )?
+                    .flatten_all()?;
+                let mut forms = vec![(false, qt.out, 0usize)];
+                if tag == "gate_up" {
+                    forms.push((true, qt.out / 2, qt.out / 2));
+                }
+                for (gu, out, up_row) in forms {
+                    let cfg = qmvt_cfg(out, qt.inp, gu);
+                    let op = AffineQmvT {
+                        inp: qt.inp,
+                        out,
+                        tiles: qt.out.div_ceil(256),
+                        up_row,
+                        cfg,
+                    };
+                    let yq = qt.wq.apply_op3_no_bwd(&qt.sb, &x1v, &op)?.to_dtype(DType::F32)?;
+                    let want = if gu {
+                        let g = y1.narrow(0, 0, out)?.to_dtype(DType::F32)?;
+                        let u = y1.narrow(0, out, out)?.to_dtype(DType::F32)?;
+                        candle_nn::ops::silu(&g)?.mul(&u)?
+                    } else {
+                        y1.to_dtype(DType::F32)?
+                    };
+                    let d = yq.sub(&want)?.abs()?.max(0)?.to_scalar::<f32>()?;
+                    for _ in 0..2 {
+                        let _ = qt.wq.apply_op3_no_bwd(&qt.sb, &x1v, &op)?;
+                    }
+                    device.synchronize()?;
+                    let t0 = std::time::Instant::now();
+                    for _ in 0..10 {
+                        let _ = qt.wq.apply_op3_no_bwd(&qt.sb, &x1v, &op)?;
+                    }
+                    device.synchronize()?;
+                    let ms = t0.elapsed().as_secs_f64() * 1e3 / 10.0;
+                    let bytes = q.inp * q.out / 2 + q.inp * q.out / 64 * 4;
+                    eprintln!(
+                        "qmm[{tag}:qmvt{} m1 r{}s{}] {ms:.2}ms  {:.0} GB/s  max|Δ| vs scalar m1 = {d:.5}",
+                        if gu { " gate_up" } else { "" },
+                        cfg.rpl,
+                        cfg.sgs,
+                        bytes as f64 / ms / 1e6,
+                    );
+                }
+            }
             // gate/up epilogue vs eager silu(gate)*up
             if q.out % 2 == 0 {
                 let half = q.out / 2;
@@ -2387,6 +2612,18 @@ impl Qwen35 {
                         "prefill tile libraries compiled"
                     ),
                     Err(e) => tracing::warn!(error = %e, "prefill tile library compile failed"),
+                }
+                // K7: the m = 1 matvec pipelines (plain decode, draft
+                // commits of one row) — one library compile at load
+                let t = std::time::Instant::now();
+                match crate::quant_kernel::qmvt_warm(d) {
+                    Ok(0) => {}
+                    Ok(n) => tracing::info!(
+                        pipelines = n,
+                        ms = format!("{:.0}", t.elapsed().as_secs_f64() * 1e3),
+                        "m=1 qmvt pipelines compiled"
+                    ),
+                    Err(e) => tracing::warn!(error = %e, "m=1 qmvt pipeline compile failed"),
                 }
             }
         }
@@ -3060,7 +3297,10 @@ impl Qwen35 {
                         cols: l.value_dim,
                     })?
                 } else {
-                    Tensor::zeros((seq, l.value_dim), DType::BF16, fused.device())?
+                    // MEM-2: gdn_fused_step writes every y[t, hv*dv + d] (the
+                    // gated-norm stage covers all seq rows) — no zero-fill blit.
+                    // (G1a: the pack stash below is already uninitialised.)
+                    crate::outbuf::kernel_out((seq, l.value_dim), DType::BF16, fused.device())?
                 };
                 // the normed pack is only needed by a step re-scan
                 let pack = if vc.is_some() && gdn_commit_step() {
@@ -3370,7 +3610,14 @@ impl Qwen35 {
         {
             let (kc, vc) = kvc;
             Self::ensure_kv(kc, vc, pos + seq, device)?;
-            let q_buf = Tensor::zeros(
+            // MEM-2: uninitialised outputs — attn_prepare writes every
+            // q_buf[row, head, 0..d] (256 threads per (head, row): tid <
+            // rp writes the rotated pair, tid >= 2rp the pass-through), and
+            // attn_decode every out[row, h*d + c] (one simdgroup per q head,
+            // 8 channels per lane). Both kernels assume d = 256 (Qwen3.8's
+            // head_dim; the MEM-8 review noted it is not guarded) — the
+            // zero fill never covered a wrong head_dim either.
+            let q_buf = crate::outbuf::kernel_out(
                 (seq, l.n_heads, l.head_dim),
                 DType::BF16,
                 device,
@@ -3380,7 +3627,7 @@ impl Qwen35 {
                 kc, vc, pos, seq, l.n_heads, l.n_kv, l.head_dim,
                 l.rot_dim / 2, eps as f32,
             )?;
-            let out = Tensor::zeros(
+            let out = crate::outbuf::kernel_out(
                 (seq, l.n_heads * l.head_dim),
                 DType::BF16,
                 device,
@@ -4646,5 +4893,174 @@ mod qlin_shape_tests {
         // (a matching-shape CPU call is not exercised here: the CPU
         // fallback `cpu_dequant` indexes the scale half with the full
         // row stride and panics for out >= 2 — separate, pre-existing.)
+    }
+}
+
+/// K7: the m = 1 tiled matvec (`AffineQmvT`) against the scalar
+/// `AffineQmm` reference on random packed weights — every instantiated
+/// config, ragged row counts (partial threadgroups), K-slices that come
+/// out empty (ng < simdgroups), the fused gate/up epilogue with an up
+/// stream that is and is not tile-aligned, and the `QLin` routing.
+#[cfg(all(test, feature = "metal", target_os = "macos"))]
+mod qmvt_tests {
+    use super::QLin;
+    use crate::quant_kernel::{AffineQmm, AffineQmvT, QmvtCfg};
+    use candle_core::{DType, Device, Tensor};
+
+    fn lcg(seed: &mut u64) -> u64 {
+        *seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        *seed >> 33
+    }
+
+    /// random `[out, in]` MLX-affine weight (row-major), tiled like the
+    /// model's projections
+    fn rand_qlin(dev: &Device, out: usize, inp: usize, seed: u64) -> QLin {
+        let mut s = seed;
+        let ng = inp / 64;
+        let words: Vec<u32> = (0..out * inp / 8)
+            .map(|_| (lcg(&mut s) as u32) ^ ((lcg(&mut s) as u32) << 16))
+            .collect();
+        let mut sbv = vec![half::bf16::ZERO; out * 2 * ng];
+        for o in 0..out {
+            for g in 0..ng {
+                let sc = 0.002 + (lcg(&mut s) % 1000) as f32 * 2e-5;
+                let bi = ((lcg(&mut s) % 2001) as f32 - 1000.0) * 1e-4;
+                sbv[o * 2 * ng + g] = half::bf16::from_f32(sc);
+                sbv[o * 2 * ng + ng + g] = half::bf16::from_f32(bi);
+            }
+        }
+        let wq = Tensor::from_vec(words, (out, inp / 8), dev).unwrap();
+        let sb = Tensor::from_vec(sbv, (out, 2 * ng), dev).unwrap();
+        QLin::new(wq, sb, out, inp, 64).tiled().unwrap()
+    }
+
+    fn rand_x(dev: &Device, inp: usize, seed: u64) -> Tensor {
+        let mut s = seed;
+        let v: Vec<f32> = (0..inp)
+            .map(|_| ((lcg(&mut s) % 4001) as f32 - 2000.0) / 1000.0)
+            .collect();
+        Tensor::from_vec(v, (inp,), dev).unwrap().to_dtype(DType::BF16).unwrap()
+    }
+
+    fn scalar_ref(q: &QLin, x: &Tensor) -> Vec<f32> {
+        let op = AffineQmm { inp: q.inp, out: q.out, gs: 64, m: 1, tiled: q.tiled };
+        q.wq.apply_op3_no_bwd(&q.sb, &x.reshape((1, q.inp)).unwrap(), &op)
+            .unwrap()
+            .flatten_all()
+            .unwrap()
+            .to_dtype(DType::F32)
+            .unwrap()
+            .to_vec1()
+            .unwrap()
+    }
+
+    fn to_f32(t: &Tensor) -> Vec<f32> {
+        t.flatten_all().unwrap().to_dtype(DType::F32).unwrap().to_vec1().unwrap()
+    }
+
+    /// bf16 outputs from two f32 accumulation orders: at most one bf16
+    /// rounding step apart (2^-7 relative, floored for near-zero rows)
+    fn assert_close(tag: &str, got: &[f32], want: &[f32]) {
+        assert_eq!(got.len(), want.len(), "{tag}: len");
+        let mag = want.iter().fold(0f32, |m, v| m.max(v.abs()));
+        assert!(mag > 0.0, "{tag}: degenerate reference");
+        let mut worst = 0f32;
+        for (i, (a, b)) in got.iter().zip(want).enumerate() {
+            let tol = 2f32.powi(-7) * b.abs().max(0.02 * mag);
+            let d = (a - b).abs();
+            assert!(d <= tol, "{tag}: row {i}: got {a} want {b} (|Δ| {d} > {tol})");
+            worst = worst.max(d / mag);
+        }
+        eprintln!("{tag}: max|Δ|/max|ref| = {worst:.2e}");
+    }
+
+    const PLAIN: [QmvtCfg; 6] = crate::quant_kernel::QMVT_KERNELS;
+    const GATE_UP: [QmvtCfg; 6] = crate::quant_kernel::QMVT_KERNELS;
+
+    #[test]
+    fn qmvt_plain_matches_scalar() {
+        let Ok(dev) = Device::new_metal(0) else { return };
+        // (out, ng): ragged rows, ng < 8 (empty K-slices), uneven slices
+        for (case, &(out, ng)) in [(520usize, 7usize), (256, 80), (1000, 17), (72, 96)].iter().enumerate() {
+            let inp = ng * 64;
+            let q = rand_qlin(&dev, out, inp, 11 + case as u64);
+            let x = rand_x(&dev, inp, 97 + case as u64);
+            let want = scalar_ref(&q, &x);
+            for cfg in PLAIN {
+                let op = AffineQmvT { inp, out, tiles: out.div_ceil(256), up_row: 0, cfg };
+                let y = q.wq.apply_op3_no_bwd(&q.sb, &x, &op).unwrap();
+                assert_eq!(y.dims(), &[out]);
+                let got = to_f32(&y);
+                assert_close(&format!("plain {out}x{inp} {cfg:?}"), &got, &want);
+                // deterministic: fixed reduction order
+                let again = to_f32(&q.wq.apply_op3_no_bwd(&q.sb, &x, &op).unwrap());
+                assert_eq!(got, again, "plain {out}x{inp} {cfg:?}: not deterministic");
+            }
+            // QLin routing at rows == 1 == the configured kernel
+            let cfg = crate::quant_kernel::qmvt_cfg(out, inp, false);
+            let op = AffineQmvT { inp, out, tiles: out.div_ceil(256), up_row: 0, cfg };
+            let direct = to_f32(&q.wq.apply_op3_no_bwd(&q.sb, &x, &op).unwrap());
+            let routed = q.linear(&x.reshape((1, 1, inp)).unwrap()).unwrap();
+            assert_eq!(routed.dims(), &[1, 1, out]);
+            assert_eq!(to_f32(&routed), direct, "QLin::linear m=1 routing");
+        }
+    }
+
+    #[test]
+    fn qmvt_gate_up_matches_scalar() {
+        let Ok(dev) = Device::new_metal(0) else { return };
+        // half % 256 == 0 (tile-aligned up stream) and not; ragged rows
+        for (case, &(half, ng)) in [(256usize, 7usize), (264, 80), (512, 17), (1000, 6)].iter().enumerate() {
+            let inp = ng * 64;
+            let out = 2 * half;
+            let q = rand_qlin(&dev, out, inp, 211 + case as u64);
+            let x = rand_x(&dev, inp, 307 + case as u64);
+            let y = scalar_ref(&q, &x);
+            // the MPP gate/up epilogue form on bf16-rounded gate/up
+            let want: Vec<f32> = (0..half)
+                .map(|i| {
+                    let (g, u) = (y[i], y[half + i]);
+                    half::bf16::from_f32(g / (1.0 + (-g).exp()) * u).to_f32()
+                })
+                .collect();
+            for cfg in GATE_UP {
+                let op = AffineQmvT { inp, out: half, tiles: out.div_ceil(256), up_row: half, cfg };
+                let yq = q.wq.apply_op3_no_bwd(&q.sb, &x, &op).unwrap();
+                assert_eq!(yq.dims(), &[half]);
+                let got = to_f32(&yq);
+                assert_close(&format!("gate_up {half}x{inp} {cfg:?}"), &got, &want);
+                let again = to_f32(&q.wq.apply_op3_no_bwd(&q.sb, &x, &op).unwrap());
+                assert_eq!(got, again, "gate_up {half}x{inp} {cfg:?}: not deterministic");
+            }
+            // gate_up_act at m = 1 now takes the fused kernel
+            let cfg = crate::quant_kernel::qmvt_cfg(half, inp, true);
+            let op = AffineQmvT { inp, out: half, tiles: out.div_ceil(256), up_row: half, cfg };
+            let direct = to_f32(&q.wq.apply_op3_no_bwd(&q.sb, &x, &op).unwrap());
+            let fused = q
+                .gate_up_act(&x.reshape((1, 1, inp)).unwrap())
+                .expect("gate_up_act declined m=1")
+                .unwrap();
+            assert_eq!(fused.dims(), &[1, 1, half]);
+            assert_eq!(to_f32(&fused), direct, "gate_up_act m=1 routing");
+        }
+    }
+
+    #[test]
+    fn qmvt_rejects_misaligned_input() {
+        let Ok(dev) = Device::new_metal(0) else { return };
+        // K % 1024 == 0: the fallback's split-K MPP tile needs it
+        let (out, inp) = (256usize, 1024usize);
+        let q = rand_qlin(&dev, out, inp, 5);
+        let x = rand_x(&dev, inp + 1, 6).narrow(0, 1, inp).unwrap();
+        let op = AffineQmvT { inp, out, tiles: 1, up_row: 0, cfg: QmvtCfg::R4S8 };
+        assert!(q.wq.apply_op3_no_bwd(&q.sb, &x, &op).is_err());
+        // QLin falls back to the MPP route (its pad kernel reads x as
+        // scalars) instead of failing. The reference needs a fresh
+        // offset-0 tensor: `copy()` keeps the layout offset and the
+        // scalar qmm reads x as uint4 vectors.
+        let xa = Tensor::from_vec(x.to_vec1::<half::bf16>().unwrap(), (inp,), &dev).unwrap();
+        let want = scalar_ref(&q, &xa);
+        let y = q.linear(&x.reshape((1, 1, inp)).unwrap()).unwrap();
+        assert_close("misaligned fallback", &to_f32(&y), &want);
     }
 }

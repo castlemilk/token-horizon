@@ -16,8 +16,8 @@
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
 pub use metal_impl::{
-    AffineDequant, AffineQmm, AffineQmpp, AffineQmppPrefill, AffineQmv, AffineQsg, AllocBf16,
-    Q4AttachSums, QMPP_BIND_ONLY, mpp_probe,
+    AffineDequant, AffineQmm, AffineQmpp, AffineQmppPrefill, AffineQmv, AffineQmvT, AffineQsg,
+    AllocBf16, Q4AttachSums, QMPP_BIND_ONLY, mpp_probe, qmvt_warm,
 };
 
 // MARK: - decode (m <= 8) tile policy
@@ -321,6 +321,131 @@ pub fn qmv_sg() -> bool {
     *ON.get_or_init(|| std::env::var("TH_QMV_SG").is_ok())
 }
 
+// MARK: - m = 1 decode (K7)
+
+/// Which kernel family an m = 1 projection on tiled weights runs. Read
+/// once per process: `TH_M1_PATH=mpp` restores the pre-K7 route (the MPP
+/// decode tile over a padded 8-row block, and gate/up as that tile plus
+/// eager narrow + silu·mul) for A/B runs; `plain` / `gu` enable only the
+/// plain-projection / fused gate-up half.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum M1Path {
+    /// `AffineQmvT`: tiled-layout matvec, fused silu·mul on gate/up.
+    Qmvt,
+    /// pre-K7: `AffineQmpp` at m = 1.
+    Mpp,
+    /// A/B arm: `AffineQmvT` on plain projections only (gate/up keeps
+    /// the pre-K7 eager narrow + silu·mul over a plain matvec).
+    Plain,
+    /// A/B arm: the fused gate/up `AffineQmvT` only.
+    GateUp,
+}
+
+impl M1Path {
+    /// Whether plain (`up_row == 0`) / gate-up m = 1 calls take `AffineQmvT`.
+    pub fn qmvt(self, gate_up: bool) -> bool {
+        match self {
+            M1Path::Qmvt => true,
+            M1Path::Mpp => false,
+            M1Path::Plain => !gate_up,
+            M1Path::GateUp => gate_up,
+        }
+    }
+}
+
+pub fn m1_path() -> M1Path {
+    static PATH: std::sync::OnceLock<M1Path> = std::sync::OnceLock::new();
+    *PATH.get_or_init(|| {
+        let path = match std::env::var("TH_M1_PATH").as_deref() {
+            Ok("mpp") => M1Path::Mpp,
+            Ok("plain") => M1Path::Plain,
+            Ok("gu") => M1Path::GateUp,
+            _ => M1Path::Qmvt,
+        };
+        tracing::info!(?path, "m=1 decode path");
+        path
+    })
+}
+
+/// One `affine_qmvt_*` instantiation: a threadgroup covers `8 * rpl`
+/// consecutive rows (each lane re-uses its activations over `rpl` row
+/// groups) and splits K across `sgs` simdgroups.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct QmvtCfg {
+    pub rpl: usize,
+    pub sgs: usize,
+}
+
+impl QmvtCfg {
+    pub const R1S8: QmvtCfg = QmvtCfg { rpl: 1, sgs: 8 };
+    pub const R2S4: QmvtCfg = QmvtCfg { rpl: 2, sgs: 4 };
+    pub const R2S8: QmvtCfg = QmvtCfg { rpl: 2, sgs: 8 };
+    pub const R4S4: QmvtCfg = QmvtCfg { rpl: 4, sgs: 4 };
+    pub const R4S8: QmvtCfg = QmvtCfg { rpl: 4, sgs: 8 };
+    pub const R8S8: QmvtCfg = QmvtCfg { rpl: 8, sgs: 8 };
+
+    /// `"r4s8"` → `R4S8` (the `TH_QMVT*` override syntax); `None` unless
+    /// the config is instantiated (`QMVT_KERNELS`).
+    pub fn parse(v: &str) -> Option<QmvtCfg> {
+        let v = v.trim().strip_prefix('r')?;
+        let (rpl, sgs) = v.split_once('s')?;
+        let c = QmvtCfg { rpl: rpl.parse().ok()?, sgs: sgs.parse().ok()? };
+        QMVT_KERNELS.contains(&c).then_some(c)
+    }
+}
+
+/// The `AffineQmvT` configs compiled into `QMVT_SRC` (plain and gate/up
+/// alike) — keep in sync with its `TH_QMVT_ENTRY` list.
+pub const QMVT_KERNELS: [QmvtCfg; 6] = [
+    QmvtCfg::R1S8,
+    QmvtCfg::R2S4,
+    QmvtCfg::R2S8,
+    QmvtCfg::R4S4,
+    QmvtCfg::R4S8,
+    QmvtCfg::R8S8,
+];
+
+/// The `AffineQmvT` config for an m = 1 `[out, in]` projection (`out` =
+/// rows per stream for the fused gate/up). Pure function of the shape;
+/// `TH_QMVT` / `TH_QMVT_GU` (`rXsY`, read once) override every plain /
+/// gate-up shape for tuning runs.
+pub fn qmvt_cfg(out: usize, inp: usize, gate_up: bool) -> QmvtCfg {
+    static PLAIN: std::sync::OnceLock<Option<QmvtCfg>> = std::sync::OnceLock::new();
+    static GU: std::sync::OnceLock<Option<QmvtCfg>> = std::sync::OnceLock::new();
+    let over = if gate_up {
+        *GU.get_or_init(|| std::env::var("TH_QMVT_GU").ok().and_then(|v| QmvtCfg::parse(&v)))
+    } else {
+        *PLAIN.get_or_init(|| std::env::var("TH_QMVT").ok().and_then(|v| QmvtCfg::parse(&v)))
+    };
+    over.unwrap_or_else(|| qmvt_cfg_for(out, inp, gate_up))
+}
+
+/// Weight rows (both streams for the fused gate/up) from which an m = 1
+/// projection takes the 8-row `R1S8` threadgroups instead of `R2S4`.
+pub const QMVT_WIDE_ROWS: usize = 8192;
+
+/// Pure form of [`qmvt_cfg`] (no override). Measured on the M5 Max
+/// (Qwen3.8-27B 4-bit, `TH_BENCH_Q4_M=1`, 2 x 15 interleaved passes over
+/// every layer's tensor, us/call):
+///   gate_up 2x17408x5120  r1s8 185.8  r2s8 186.2  r4s8 194.4  (pre-K7 216.2)
+///   in_all  16480x5120    r1s8  94.4  r2s8  97.6  r4s8  97.9  (106.3)
+///   in_qkv  14336x5120    r1s8  89.5  r2s8  91.8  r4s8  95.5  (105.3)
+///   lm_head 248320x5120   r1s8  1252  r2s8  1260  r4s8  1264  (1344)
+///   down    5120x17408    r2s4  93.7  r4s8  94.7  r1s8 101.8  (113.8)
+///   out     5120x6144     r2s4  39.2  r4s8  39.6  r1s8  43.0  (48.2)
+///   o       5120x6144     r2s4  46.1  r4s8  47.5  r1s8  50.4  (56.2)
+/// Wide shapes want the finest grid (one 8-row group per threadgroup, K
+/// over 8 simdgroups); the 20-tile N = 5120 shapes want 16-row x 4-sg
+/// groups (320 threadgroups of 128 threads).
+pub fn qmvt_cfg_for(out: usize, _inp: usize, gate_up: bool) -> QmvtCfg {
+    let rows = if gate_up { 2 * out } else { out };
+    if rows >= QMVT_WIDE_ROWS {
+        QmvtCfg::R1S8
+    } else {
+        QmvtCfg::R2S4
+    }
+}
+
 #[cfg(all(feature = "metal", target_os = "macos"))]
 pub use metal_impl::{pf_compile, pf_force_legacy, pf_route, pf_shapes, pf_warm, AffineQpf, PfCfg};
 
@@ -335,6 +460,7 @@ mod metal_impl {
     use candle_metal_kernels::utils::EncoderProvider;
     use objc2_metal::MTLSize;
     use std::sync::OnceLock;
+    use super::QmvtCfg;
 
     /// Packed dims for one affine-quantized `[out, in]` weight.
     /// `gs` is baked into the shader (power of two; 64 for MLX defaults).
@@ -2074,6 +2200,376 @@ kernel void mpp_probe(device float* y [[buffer(0)]],
                 self.out,
                 DType::BF16,
             );
+            Ok((storage, Shape::from((self.out,))))
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // K7: m = 1 decode matvec on the tiled `[tile][group][col][8 words]`
+    // layout. The MPP tiles pad one live row to an 8-row block (a pad
+    // dispatch + 8x the MMA work) and the row-streaming qmv kernels read
+    // the tiled layout as 32 B chunks strided by 8 KB. Here the 32 lanes
+    // of a simdgroup are 8 consecutive rows x 4 K-quarters, so every
+    // weight load is one contiguous 256 B span of a (tile, group) block;
+    // each lane re-uses its 16 activations over RPL row groups, and the
+    // simdgroups of a threadgroup split K and reduce through threadgroup
+    // memory (fixed order: bitwise deterministic).
+    //
+    // Nibble e of a word is kept in place (`w & 0xF << 4e` = v * 16^e,
+    // exact in f32) and its activation is pre-scaled by 16^-e (exact), so
+    // every product is the correctly-rounded x*v with one AND + one
+    // convert + one FMA per weight — no shifts.
+    //
+    // GateUp: the weight holds [gate | up] row blocks (`up_row` = the up
+    // stream's first row); the epilogue is the MPP gate/up form
+    // (bf16-rounded gate and up, then silu(gate)*up in f32).
+    // ------------------------------------------------------------------
+    const QMVT_SRC: &str = r#"
+#include <metal_stdlib>
+using namespace metal;
+
+struct QmvtParams {
+    uint in_dim;   // K
+    uint out_dim;  // logical output rows (per stream for gate_up)
+    uint ng;       // K / 64
+    uint tiles;    // 256-row tiles of the whole buffer (bias plane offset)
+    uint up_row;   // gate_up: first row of the up stream; 0 = plain
+    uint slice;    // quant groups per simdgroup K-slice
+};
+
+template <uint RPL, uint NSG, bool GateUp>
+inline __attribute__((always_inline)) void qmvt(device const uint*   wq,
+                     device const bfloat* sb,
+                     device const bfloat* x,
+                     device bfloat*       y,
+                     constant QmvtParams& p,
+                     threadgroup float*   red,
+                     uint tg, uint lane, uint sg)
+{
+    constexpr uint NS = GateUp ? 2 : 1;
+    constexpr uint ROWS = 8 * RPL;
+    const uint ng = p.ng;
+    const uint r = lane >> 2, c = lane & 3u;
+    const uint bias_plane = p.tiles * ng * 256u;
+    const uint g0 = min(ng, sg * p.slice);
+    const uint g1 = min(ng, g0 + p.slice);
+
+    uint wb[RPL][NS];   // word offset of (row, group 0, this K-quarter)
+    uint sbi[RPL][NS];  // scale index of (row, group 0)
+    bool live[RPL];
+#pragma unroll
+    for (uint i = 0; i < RPL; ++i) {
+        const uint row = tg * ROWS + 8u * i + r;
+        live[i] = row < p.out_dim;
+#pragma unroll
+        for (uint s = 0; s < NS; ++s) {
+            const uint rr = row + s * p.up_row;
+            const uint t = rr >> 8, col = rr & 255u;
+            wb[i][s] = t * ng * 2048u + col * 8u + c * 2u;
+            sbi[i][s] = t * ng * 256u + col;
+        }
+    }
+    float acc[RPL][NS];
+#pragma unroll
+    for (uint i = 0; i < RPL; ++i)
+#pragma unroll
+        for (uint s = 0; s < NS; ++s) acc[i][s] = 0.0f;
+
+    // 16^-e for nibble e (exact powers of two)
+    const float k1 = 0.0625f, k2 = 0.00390625f, k3 = 0.000244140625f,
+                k4 = 0.0000152587890625f, k5 = 9.5367431640625e-7f,
+                k6 = 5.9604644775390625e-8f, k7 = 3.7252902984619140625e-9f;
+
+    for (uint g = g0; g < g1; ++g) {
+        // this lane's 16 activations: x[g*64 + c*16 .. +16]
+        device const uint4* xp =
+            reinterpret_cast<device const uint4*>(x + g * 64u + c * 16u);
+        const uint4 xa = xp[0], xb = xp[1];
+        const float a0 = as_type<float>(xa.x << 16), a1 = as_type<float>(xa.x & 0xFFFF0000u);
+        const float a2 = as_type<float>(xa.y << 16), a3 = as_type<float>(xa.y & 0xFFFF0000u);
+        const float a4 = as_type<float>(xa.z << 16), a5 = as_type<float>(xa.z & 0xFFFF0000u);
+        const float a6 = as_type<float>(xa.w << 16), a7 = as_type<float>(xa.w & 0xFFFF0000u);
+        const float b0 = as_type<float>(xb.x << 16), b1 = as_type<float>(xb.x & 0xFFFF0000u);
+        const float b2 = as_type<float>(xb.y << 16), b3 = as_type<float>(xb.y & 0xFFFF0000u);
+        const float b4 = as_type<float>(xb.z << 16), b5 = as_type<float>(xb.z & 0xFFFF0000u);
+        const float b6 = as_type<float>(xb.w << 16), b7 = as_type<float>(xb.w & 0xFFFF0000u);
+        // this lane's share of the group's input sum (bias term)
+        const float xs = (((a0 + a1) + (a2 + a3)) + ((a4 + a5) + (a6 + a7)))
+                       + (((b0 + b1) + (b2 + b3)) + ((b4 + b5) + (b6 + b7)));
+        const float p1 = a1 * k1, p2 = a2 * k2, p3 = a3 * k3, p4 = a4 * k4,
+                    p5 = a5 * k5, p6 = a6 * k6, p7 = a7 * k7;
+        const float q1 = b1 * k1, q2 = b2 * k2, q3 = b3 * k3, q4 = b4 * k4,
+                    q5 = b5 * k5, q6 = b6 * k6, q7 = b7 * k7;
+#pragma unroll
+        for (uint i = 0; i < RPL; ++i) {
+#pragma unroll
+            for (uint s = 0; s < NS; ++s) {
+                const uint2 w = live[i]
+                    ? *reinterpret_cast<device const uint2*>(wq + wb[i][s] + g * 2048u)
+                    : uint2(0);
+                float d0 = a0 * float(w.x & 0xFu);
+                float d1 = b0 * float(w.y & 0xFu);
+                d0 = fma(p1, float(w.x & 0xF0u), d0);
+                d1 = fma(q1, float(w.y & 0xF0u), d1);
+                d0 = fma(p2, float(w.x & 0xF00u), d0);
+                d1 = fma(q2, float(w.y & 0xF00u), d1);
+                d0 = fma(p3, float(w.x & 0xF000u), d0);
+                d1 = fma(q3, float(w.y & 0xF000u), d1);
+                d0 = fma(p4, float(w.x & 0xF0000u), d0);
+                d1 = fma(q4, float(w.y & 0xF0000u), d1);
+                d0 = fma(p5, float(w.x & 0xF00000u), d0);
+                d1 = fma(q5, float(w.y & 0xF00000u), d1);
+                d0 = fma(p6, float(w.x & 0xF000000u), d0);
+                d1 = fma(q6, float(w.y & 0xF000000u), d1);
+                d0 = fma(p7, float(w.x & 0xF0000000u), d0);
+                d1 = fma(q7, float(w.y & 0xF0000000u), d1);
+                if (live[i]) {
+                    const uint si = sbi[i][s] + g * 256u;
+                    acc[i][s] = fma(d0 + d1, float(sb[si]), acc[i][s]);
+                    acc[i][s] = fma(xs, float(sb[bias_plane + si]), acc[i][s]);
+                }
+            }
+        }
+    }
+    // reduce the 4 K-quarter lanes of each row, then the NSG K-slices
+#pragma unroll
+    for (uint i = 0; i < RPL; ++i)
+#pragma unroll
+        for (uint s = 0; s < NS; ++s) {
+            acc[i][s] += simd_shuffle_xor(acc[i][s], 1);
+            acc[i][s] += simd_shuffle_xor(acc[i][s], 2);
+        }
+    if (c == 0) {
+#pragma unroll
+        for (uint i = 0; i < RPL; ++i)
+#pragma unroll
+            for (uint s = 0; s < NS; ++s)
+                red[(sg * NS + s) * ROWS + 8u * i + r] = acc[i][s];
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (sg != 0) return;
+    for (uint ri = lane; ri < ROWS; ri += 32u) {
+        const uint row = tg * ROWS + ri;
+        if (row >= p.out_dim) continue;
+        float tot[NS];
+#pragma unroll
+        for (uint s = 0; s < NS; ++s) {
+            tot[s] = 0.0f;
+            for (uint k = 0; k < NSG; ++k) tot[s] += red[(k * NS + s) * ROWS + ri];
+        }
+        float value;
+        if (GateUp) {
+            const float gate = float(bfloat(tot[0]));
+            const float up = float(bfloat(tot[NS - 1]));
+            value = gate / (1.0f + fast::exp2(-1.44269504089f * gate)) * up;
+        } else {
+            value = tot[0];
+        }
+        y[row] = bfloat(value);
+    }
+}
+
+#define TH_QMVT_ENTRY(Name, RPL, NSG, GateUp)                          \
+kernel void Name(device const uint*   wq [[buffer(0)]],                \
+                 device const bfloat* sb [[buffer(1)]],                \
+                 device const bfloat* x  [[buffer(2)]],                \
+                 device bfloat*       y  [[buffer(3)]],                \
+                 constant QmvtParams& p  [[buffer(4)]],                \
+                 uint tg   [[threadgroup_position_in_grid]],           \
+                 uint lane [[thread_index_in_simdgroup]],              \
+                 uint sg   [[simdgroup_index_in_threadgroup]]) {       \
+    threadgroup float red[NSG * (GateUp ? 2 : 1) * 8 * RPL];            \
+    qmvt<RPL, NSG, GateUp>(wq, sb, x, y, p, red, tg, lane, sg);        \
+}
+
+// every (rpl, sgs) in `QMVT_KERNELS`, plain and gate/up
+TH_QMVT_ENTRY(affine_qmvt_r1s8,    1, 8, false)
+TH_QMVT_ENTRY(affine_qmvt_r2s4,    2, 4, false)
+TH_QMVT_ENTRY(affine_qmvt_r2s8,    2, 8, false)
+TH_QMVT_ENTRY(affine_qmvt_r4s4,    4, 4, false)
+TH_QMVT_ENTRY(affine_qmvt_r4s8,    4, 8, false)
+TH_QMVT_ENTRY(affine_qmvt_r8s8,    8, 8, false)
+TH_QMVT_ENTRY(affine_qmvt_gu_r1s8, 1, 8, true)
+TH_QMVT_ENTRY(affine_qmvt_gu_r2s4, 2, 4, true)
+TH_QMVT_ENTRY(affine_qmvt_gu_r2s8, 2, 8, true)
+TH_QMVT_ENTRY(affine_qmvt_gu_r4s4, 4, 4, true)
+TH_QMVT_ENTRY(affine_qmvt_gu_r4s8, 4, 8, true)
+TH_QMVT_ENTRY(affine_qmvt_gu_r8s8, 8, 8, true)
+"#;
+
+    /// m = 1 matvec on tiled weights (see `QMVT_SRC`) → `y[out]` bf16.
+    /// `up_row > 0` is the fused [gate | up] form: rows `[0, out)` are
+    /// gate, `[up_row, up_row + out)` up, and y = silu(gate)·up.
+    pub struct AffineQmvT {
+        pub inp: usize,
+        /// logical output rows (per stream for gate_up)
+        pub out: usize,
+        /// 256-row tiles of the whole weight buffer (bias plane offset)
+        pub tiles: usize,
+        pub up_row: usize,
+        pub cfg: QmvtCfg,
+    }
+
+    #[repr(C)]
+    struct QmvtParams {
+        in_dim: u32,
+        out_dim: u32,
+        ng: u32,
+        tiles: u32,
+        up_row: u32,
+        slice: u32,
+    }
+
+    const NQ: usize = super::QMVT_KERNELS.len();
+    // [plain configs.., gate/up configs..] in `QMVT_KERNELS` order
+    static QMVT_PIPES: [OnceLock<ComputePipeline>; 2 * NQ] =
+        [const { OnceLock::new() }; 2 * NQ];
+
+    fn qmvt_name(cfg: QmvtCfg, gu: bool) -> String {
+        format!("affine_qmvt{}_r{}s{}", if gu { "_gu" } else { "" }, cfg.rpl, cfg.sgs)
+    }
+
+    impl AffineQmvT {
+        /// `(pipeline slot, kernel name)` for this config — `None` when
+        /// the combination is not instantiated in `QMVT_SRC`.
+        fn kernel(&self) -> Option<(usize, String)> {
+            let gu = self.up_row > 0;
+            let i = super::QMVT_KERNELS.iter().position(|c| *c == self.cfg)?;
+            Some((i + if gu { NQ } else { 0 }, qmvt_name(self.cfg, gu)))
+        }
+    }
+
+    /// Build every `affine_qmvt*` pipeline from ONE compile of `QMVT_SRC`
+    /// — at model load, instead of one full-library compile per config
+    /// lazily inside the first m = 1 projections (the first plain-decode
+    /// token paid three). No-op under `TH_M1_PATH=mpp`. Returns the number
+    /// of pipelines built.
+    pub fn qmvt_warm(device: &candle_core::MetalDevice) -> Result<usize> {
+        if super::m1_path() == super::M1Path::Mpp {
+            return Ok(0);
+        }
+        if QMVT_PIPES.iter().all(|c| c.get().is_some()) {
+            return Ok(0);
+        }
+        let raw = device.metal_device();
+        let lib = raw
+            .new_library_with_source(QMVT_SRC, None)
+            .map_err(candle_core::Error::wrap)?;
+        let mut n = 0;
+        for gu in [false, true] {
+            for (i, cfg) in super::QMVT_KERNELS.iter().enumerate() {
+                let cell = &QMVT_PIPES[i + if gu { NQ } else { 0 }];
+                if cell.get().is_some() {
+                    continue;
+                }
+                let f = lib
+                    .get_function(&qmvt_name(*cfg, gu), None)
+                    .map_err(candle_core::Error::wrap)?;
+                let p = raw
+                    .new_compute_pipeline_state_with_function(&f)
+                    .map_err(candle_core::Error::wrap)?;
+                if cell.set(p).is_ok() {
+                    n += 1;
+                }
+            }
+        }
+        Ok(n)
+    }
+
+    impl CustomOp3 for AffineQmvT {
+        fn name(&self) -> &'static str {
+            "affine-qmvt"
+        }
+        fn cpu_fwd(
+            &self,
+            _: &CpuStorage, _: &Layout,
+            _: &CpuStorage, _: &Layout,
+            _: &CpuStorage, _: &Layout,
+        ) -> Result<(CpuStorage, Shape)> {
+            candle_core::bail!("affine-qmvt: Metal only")
+        }
+
+        fn metal_fwd(
+            &self,
+            s_wq: &MetalStorage,
+            l_wq: &Layout,
+            s_sb: &MetalStorage,
+            l_sb: &Layout,
+            s_x: &MetalStorage,
+            l_x: &Layout,
+        ) -> Result<(MetalStorage, Shape)> {
+            check3(s_wq, l_wq, DType::U32, "wq")?;
+            check3(s_sb, l_sb, DType::BF16, "sb")?;
+            check3(s_x, l_x, DType::BF16, "x")?;
+            if self.inp % 64 != 0 || l_x.shape().elem_count() != self.inp {
+                candle_core::bail!(
+                    "affine-qmvt: x {:?} vs in {} (want one %64 row)",
+                    l_x.shape(),
+                    self.inp
+                );
+            }
+            // activations are read as uint4 (16 B) vectors
+            if l_x.start_offset() % 8 != 0 {
+                candle_core::bail!("affine-qmvt: x offset {} not 16B aligned", l_x.start_offset());
+            }
+            let rows = self.out + self.up_row;
+            if rows > self.tiles * 256 || (self.up_row > 0 && self.up_row < self.out) {
+                candle_core::bail!(
+                    "affine-qmvt: rows {}+{} exceed {} tiles",
+                    self.out,
+                    self.up_row,
+                    self.tiles
+                );
+            }
+            let Some((slot, fname)) = self.kernel() else {
+                candle_core::bail!("affine-qmvt: no kernel for {:?} gate_up={}", self.cfg, self.up_row > 0);
+            };
+            let device = s_wq.device();
+            let cell = &QMVT_PIPES[slot];
+            if cell.get().is_none() {
+                compile(cell, QMVT_SRC, 64, &fname, device)?;
+            }
+            let pipeline = cell.get().unwrap();
+
+            let ng = self.inp / 64;
+            let params = QmvtParams {
+                in_dim: self.inp as u32,
+                out_dim: self.out as u32,
+                ng: ng as u32,
+                tiles: self.tiles as u32,
+                up_row: self.up_row as u32,
+                slice: ng.div_ceil(self.cfg.sgs) as u32,
+            };
+            let y_buf = device
+                .new_buffer_builder()
+                .with_size_for(self.out, DType::BF16)
+                .with_label("qmvt.y")
+                .build()
+                .map_err(candle_core::Error::wrap)?;
+
+            let encoder =
+                device.command_encoder().map_err(candle_core::Error::wrap)?;
+            encoder.set_label("affine_qmvt");
+            let enc_ref = &encoder;
+            let enc: &candle_metal_kernels::metal::ComputeCommandEncoder =
+                enc_ref.encoder().as_ref();
+            enc.set_compute_pipeline_state(pipeline);
+            enc.set_input_buffer(0, Some(s_wq.buffer()), l_wq.start_offset() * 4);
+            enc.set_input_buffer(1, Some(s_sb.buffer()), l_sb.start_offset() * 2);
+            enc.set_input_buffer(2, Some(s_x.buffer()), l_x.start_offset() * 2);
+            enc.set_output_buffer(3, Some(&y_buf), 0);
+            enc.set_bytes(4, &params);
+            enc.dispatch_thread_groups(
+                MTLSize {
+                    width: self.out.div_ceil(8 * self.cfg.rpl),
+                    height: 1,
+                    depth: 1,
+                },
+                MTLSize { width: 32 * self.cfg.sgs, height: 1, depth: 1 },
+            );
+            // fresh pooled buffer — never a clone of an input's buffer
+            let storage =
+                MetalStorage::new(y_buf, device.clone(), self.out, DType::BF16);
             Ok((storage, Shape::from((self.out,))))
         }
     }
@@ -4203,6 +4699,33 @@ mod tests {
         assert_eq!(DecodeTile::N64Split4.tile_sgs(), (64, 2));
         assert_eq!(DecodeTile::N256Sg8.tile_sgs(), (256, 8));
         assert_eq!(DecodeTile::Paired256.tile_sgs(), (256, 4));
+    }
+
+    #[test]
+    fn qmvt_policy_table() {
+        use super::{qmvt_cfg_for, QmvtCfg, QMVT_KERNELS};
+        // (out per stream, in, gate_up) -> config, Qwen3.8-27B m = 1 shapes
+        let cases = [
+            (17408, 5120, true, QmvtCfg::R1S8),  // gate_up (2 x 17408 rows)
+            (16480, 5120, false, QmvtCfg::R1S8), // GDN in_all
+            (14336, 5120, false, QmvtCfg::R1S8), // attn in_qkv
+            (248320, 5120, false, QmvtCfg::R1S8), // lm_head
+            (5120, 17408, false, QmvtCfg::R2S4), // down
+            (5120, 6144, false, QmvtCfg::R2S4),  // GDN out / attn o
+            (6144, 5120, false, QmvtCfg::R2S4),  // draft qkv
+            (4096, 5120, true, QmvtCfg::R1S8),   // 8192 fused rows: wide
+            (4095, 5120, true, QmvtCfg::R2S4),
+        ];
+        for (out, inp, gu, want) in cases {
+            let got = qmvt_cfg_for(out, inp, gu);
+            assert_eq!(got, want, "{out}x{inp} gate_up={gu}");
+            assert!(QMVT_KERNELS.contains(&got), "{got:?} not instantiated");
+        }
+        assert_eq!(QmvtCfg::parse("r2s4"), Some(QmvtCfg::R2S4));
+        assert_eq!(QmvtCfg::parse(" r1s8 "), Some(QmvtCfg::R1S8));
+        assert_eq!(QmvtCfg::parse("r3s8"), None); // not instantiated
+        assert_eq!(QmvtCfg::parse("4s8"), None);
+        assert_eq!(QmvtCfg::parse("r4x8"), None);
     }
 
     #[cfg(all(feature = "metal", target_os = "macos"))]

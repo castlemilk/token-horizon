@@ -15,6 +15,7 @@ mod draft_kernel;
 mod engine;
 mod gdn_kernel;
 mod model;
+mod outbuf;
 mod quant_kernel;
 mod qwen35;
 mod server;

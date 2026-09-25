@@ -600,9 +600,7 @@ fn generate_blocking(
                     // greedy needs only the argmax per row — a [n+1] u32
                     // readback instead of [n+1, vocab] bf16 (~4.5MB).
                     // Also syncs the verify GPU work either way.
-                    let greedy = sampler.temperature.is_none()
-                        && ((sp.repeat_penalty - 1.0).abs() < f32::EPSILON
-                            || sp.repeat_last_n == 0);
+                    let greedy = greedy_rows(&sampler, &sp);
                     let mut rows: Vec<Vec<half::bf16>> = Vec::new();
                     let mut argmax_rows: Vec<u32> = Vec::new();
                     if greedy {
@@ -986,13 +984,7 @@ impl Sampler {
         }
         let n = l.len();
         let Some(temp) = self.temperature else {
-            let i = l
-                .iter()
-                .enumerate()
-                .max_by(|a, b| a.1.total_cmp(b.1))
-                .map(|(i, _)| i as u32)
-                .unwrap_or(0);
-            return vec![(i, 1.0)];
+            return vec![(greedy_argmax(&l), 1.0)];
         };
         let inv_t = 1.0 / temp as f32;
         // top-k candidate set via partial select (O(n))
@@ -1145,6 +1137,32 @@ fn spec_accept_step(
         }
     }
     Ok(resid[resid.len() - 1].0)
+}
+
+/// Greedy pick with the same tie rule as candle's Metal (and CPU)
+/// arg-reduce and Splash's argmax kernel: the LOWEST index among equal
+/// maxima (strict `>` scan; NaN never wins, all -inf -> 0). The DFlash
+/// greedy verify reads `Tensor::argmax` rows on the GPU, while the
+/// anchor, the non-draft loop, penalty requests and sampled batches come
+/// through `Sampler::dist_vec` — `Iterator::max_by` returned the LAST
+/// maximum there, so exact bf16 ties (ulp 0.125 in [16, 32)) picked
+/// different tokens per path (N2).
+fn greedy_argmax(l: &[f32]) -> u32 {
+    let mut best = (0u32, f32::NEG_INFINITY);
+    for (i, &v) in l.iter().enumerate() {
+        if v > best.1 {
+            best = (i as u32, v);
+        }
+    }
+    best.0
+}
+
+/// A slot whose verify rows need only the per-row argmax: no temperature
+/// and no repeat penalty in effect (`dist_vec` would otherwise reshape
+/// the logits first).
+fn greedy_rows(sampler: &Sampler, sp: &ResolvedSampling) -> bool {
+    sampler.temperature.is_none()
+        && ((sp.repeat_penalty - 1.0).abs() < f32::EPSILON || sp.repeat_last_n == 0)
 }
 
 /// Byte offset of the earliest stop-string match in `text` that was not
@@ -1626,21 +1644,25 @@ fn batch_round(
         .iter()
         .map(|&b| inner.backend.take_captures(b))
         .collect::<Result<_>>()?;
-    // greedy-only fast path: one argmax readback for all slots
-    let all_greedy = active.iter().all(|&b| {
-        let r = runs[b].as_ref().unwrap();
-        r.sampler.temperature.is_none()
-            && ((r.sp.repeat_penalty - 1.0).abs() < f32::EPSILON
-                || r.sp.repeat_last_n == 0)
-    });
-    let argmax_all: Vec<u32> = if all_greedy {
+    // greedy slots read the GPU argmax rows — one [rows] u32 readback for
+    // the whole batch — whatever the other slots do (N2: a sampled slot
+    // used to push every slot, T=0 ones included, through the CPU
+    // dist_vec path, so a T=0 stream depended on its batch mates)
+    let greedy: Vec<bool> = active
+        .iter()
+        .map(|&b| {
+            let r = runs[b].as_ref().unwrap();
+            greedy_rows(&r.sampler, &r.sp)
+        })
+        .collect();
+    let argmax_all: Vec<u32> = if greedy.iter().any(|&g| g) {
         logits.argmax(candle_core::D::Minus1)?.to_vec1::<u32>()?
     } else {
         Vec::new()
     };
     // greedy: the argmax readback above is the first GPU sync after
     // forward_batch, so this is where the verify pass actually lands
-    // (sampled: the per-slot to_vec2 below syncs instead)
+    // (all-sampled: the per-slot to_vec2 below syncs instead)
     let t_read = t0.elapsed();
     // per-slot accept / emit / commit / rollback
     for (i, &b) in active.iter().enumerate() {
@@ -1649,7 +1671,7 @@ fn batch_round(
         let mut accepted = 0usize;
         let seq_len = seqs[i].len(); // = 8
         let off = i * seq_len;
-        if all_greedy {
+        if greedy[i] {
             for k in 0..crate::dflash::PROPOSALS {
                 let t = argmax_all[off + k];
                 emitted.push(t);
@@ -2264,5 +2286,98 @@ mod decode_qos_tests {
         })
         .join()
         .unwrap();
+    }
+}
+
+/// N2: every greedy pick must share the GPU argmax tie rule (lowest index
+/// among equal maxima). The DFlash greedy verify reads `Tensor::argmax`
+/// rows; the anchor, the non-draft loop, penalty requests and sampled
+/// batches pick through `Sampler::dist_vec` / `spec_accept_step`.
+#[cfg(test)]
+mod n2_tie_tests {
+    use super::*;
+
+    fn greedy_sampler() -> Sampler {
+        Sampler { temperature: None, top_k: None, top_p: None, rng: 1 }
+    }
+
+    /// The anchor / non-draft / sampled-batch greedy pick.
+    fn cpu_greedy(row: Vec<f32>) -> u32 {
+        let d = greedy_sampler().dist_vec(row, &[], &[], 1.0, 64);
+        assert_eq!(d.len(), 1);
+        d[0].0
+    }
+
+    #[test]
+    fn n2_greedy_tie_rule_matches_argmax() -> Result<()> {
+        const V: usize = 248_320;
+        let bf = half::bf16::from_f32;
+        let mut data = vec![bf(-2.5); 3 * V];
+        // row 0: exact duplicate max, far apart
+        data[1_000] = bf(21.0);
+        data[200_000] = bf(21.0);
+        // row 1: two DISTINCT f32 logits that round to one bf16 (step 0.125 in [16,32))
+        data[V + 5] = bf(21.03);
+        data[V + 7] = bf(20.97);
+        // row 2: three-way tie
+        data[2 * V + 42] = bf(30.5);
+        data[2 * V + 4_242] = bf(30.5);
+        data[2 * V + 248_000] = bf(30.5);
+        assert_eq!(data[V + 5], data[V + 7], "21.03 and 20.97 must share a bf16 value");
+        let rows_f32: Vec<Vec<f32>> = (0..3)
+            .map(|r| data[r * V..(r + 1) * V].iter().map(|x| x.to_f32()).collect())
+            .collect();
+        let want = vec![1_000u32, 5, 42];
+        let cpu: Vec<u32> = rows_f32.iter().cloned().map(cpu_greedy).collect();
+        assert_eq!(cpu, want, "Sampler::dist_vec greedy must pick the lowest index on ties");
+        let cpu_candle: Vec<u32> =
+            Tensor::from_vec(data.clone(), (3, V), &candle_core::Device::Cpu)?
+                .argmax(candle_core::D::Minus1)?
+                .to_vec1()?;
+        assert_eq!(cpu_candle, want, "candle CPU argmax: lowest index");
+        // spec_accept_step's greedy branch (sampled-batch fallback) agrees
+        let prop = crate::dflash::Proposal {
+            tokens: [0; crate::dflash::PROPOSALS],
+            cand_ids: Default::default(),
+            cand_probs: Default::default(),
+        };
+        for (r, &w) in want.iter().enumerate() {
+            let mut s = greedy_sampler();
+            let t = spec_accept_step(&mut s, rows_f32[r].clone(), &prop, 0, &[], &[], 1.0, 64)?;
+            assert_eq!(t, w, "spec_accept_step greedy row {r}");
+        }
+        assert_eq!(greedy_argmax(&[f32::NAN, 1.0, 1.0]), 1);
+        assert_eq!(greedy_argmax(&[f32::NEG_INFINITY; 4]), 0);
+        assert_eq!(greedy_argmax(&[]), 0);
+        #[cfg(all(feature = "metal", target_os = "macos"))]
+        if let Ok(metal) = candle_core::Device::new_metal(0) {
+            // the ba8ee49 verify readback, verbatim (bf16 rows)
+            let t = Tensor::from_vec(data.clone(), (3, V), &metal)?;
+            let gpu: Vec<u32> = t.argmax(candle_core::D::Minus1)?.to_vec1::<u32>()?;
+            assert_eq!(gpu, want, "metal bf16 argmax: lowest index on exact ties");
+            // f32 single rows (forward() returns bf16 logits cast to f32)
+            for (r, &w) in want.iter().enumerate() {
+                let g = Tensor::new(rows_f32[r].as_slice(), &metal)?
+                    .argmax(candle_core::D::Minus1)?
+                    .to_scalar::<u32>()?;
+                assert_eq!(g, w, "metal f32 argmax row {r}");
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn n2_greedy_rows_routing() {
+        let mut sp = resolve_sampling(&RequestSampling::default(), &EngineConfig::default());
+        sp.repeat_penalty = 1.0;
+        assert!(greedy_rows(&greedy_sampler(), &sp), "T=0, no penalty -> argmax rows");
+        sp.repeat_penalty = 1.1;
+        sp.repeat_last_n = 64;
+        assert!(!greedy_rows(&greedy_sampler(), &sp), "a repeat penalty reshapes the logits");
+        sp.repeat_last_n = 0;
+        assert!(greedy_rows(&greedy_sampler(), &sp), "penalty window 0 = no penalty");
+        let hot = Sampler { temperature: Some(0.6), top_k: Some(20), top_p: Some(0.95), rng: 1 };
+        sp.repeat_penalty = 1.0;
+        assert!(!greedy_rows(&hot, &sp), "sampled slots never take argmax rows");
     }
 }

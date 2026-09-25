@@ -480,24 +480,13 @@ impl DraftWeights {
         v: &Tensor, // [8, 8, 128]
     ) -> Result<Tensor> {
         let l = ctx.ring_len.min(WINDOW);
-        // Gather the live window on-device: positions len-l..len →
-        // slots mod 2048.
+        // live window: positions len-l..len → slots mod 2048
         let start = ctx.ring_len - l;
         let dev = &self.device;
-        let (kr, vr) = if l == 0 {
-            (
-                Tensor::zeros((KV_HEADS, 0, HEAD_DIM), DType::BF16, dev)?,
-                Tensor::zeros((KV_HEADS, 0, HEAD_DIM), DType::BF16, dev)?,
-            )
-        } else {
-            let ids: Vec<u32> =
-                (start..ctx.ring_len).map(|p| (p % WINDOW) as u32).collect();
-            let idx = Tensor::new(ids.as_slice(), dev)?;
-            (
-                ctx.ring_k[layer].index_select(&idx, 1)?,
-                ctx.ring_v[layer].index_select(&idx, 1)?,
-            )
-        };
+        // MEM-4: the fused kernel reads the ring in place (slots start..
+        // mod 2048) — no host id list, no id upload (a fresh MTLBuffer per
+        // call), no [8, l, 128] K/V gathers; those were built before this
+        // early return and discarded (4 MiB each at l = 2048).
         #[cfg(all(feature = "metal", target_os = "macos"))]
         if dev.is_metal() && !draft_eager() {
             // draft_attn returns [8, 32, 128]; o_proj needs the eager
@@ -515,6 +504,21 @@ impl DraftWeights {
             )?
             .reshape((1, ROWS, ATTN))?);
         }
+        // eager path only: gather the live window on-device
+        let (kr, vr) = if l == 0 {
+            (
+                Tensor::zeros((KV_HEADS, 0, HEAD_DIM), DType::BF16, dev)?,
+                Tensor::zeros((KV_HEADS, 0, HEAD_DIM), DType::BF16, dev)?,
+            )
+        } else {
+            let ids: Vec<u32> =
+                (start..ctx.ring_len).map(|p| (p % WINDOW) as u32).collect();
+            let idx = Tensor::new(ids.as_slice(), dev)?;
+            (
+                ctx.ring_k[layer].index_select(&idx, 1)?,
+                ctx.ring_v[layer].index_select(&idx, 1)?,
+            )
+        };
         let kr = gqa_expand(&kr)?;
         let vr = gqa_expand(&vr)?;
         let kc = gqa_expand(&k.permute((1, 0, 2))?)?; // [8,8,128]→[32,8,128]
