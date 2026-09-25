@@ -706,11 +706,15 @@ pub(crate) fn lin_apply(x: &Tensor, l: &Lin) -> Result<Tensor> {
 /// pass streams from DRAM like the real forward (one repeated 17.7 MB
 /// tensor would sit in the ~32 MB SLC) — through the production entry
 /// points (`gate_up_act` / `linear`: whatever the tile policy picks),
-/// then sweeps explicit `AffineQmpp` tiles. max|Δ| is vs the scalar
-/// `AffineQmm` reference on the class's first tensor; Δpath is vs the
-/// production path's output. Host-timed (sync → enqueue a pass → sync),
-/// so µs/call includes ~2-5 µs of encode. Env: `TH_BENCH_Q4_M` (rows,
-/// default 8), `TH_BENCH_Q4_PASSES` (default 7).
+/// the same path on a 2-byte-misaligned copy of the input (always takes
+/// the pad copy: P0's reference arm), then explicit `AffineQmpp` tiles.
+/// Passes are interleaved — each pass times every candidate once, start
+/// rotated — and `xR vs path` is the median per-pass ratio, so drift in
+/// GPU/memory contention cancels. max|Δ| is vs the scalar `AffineQmm`
+/// reference on the class's first tensor; Δpath is vs the production
+/// path's output. Host-timed (sync → enqueue a pass → sync), so µs/call
+/// includes ~2-5 µs of encode. Env: `TH_BENCH_Q4_M` (rows, default 8),
+/// `TH_BENCH_Q4_PASSES` (default 7).
 #[cfg(all(feature = "metal", target_os = "macos"))]
 pub(crate) fn bench_q4_decode(model: &Qwen35, device: &Device) -> Result<()> {
     use crate::quant_kernel::{AffineQmm, AffineQmpp};
@@ -785,100 +789,115 @@ pub(crate) fn bench_q4_decode(model: &Qwen35, device: &Device) -> Result<()> {
         let ref_mag = reference.abs()?.flatten_all()?.max(0)?.to_scalar::<f32>()?;
         let bytes = q0.out * q0.inp / 2 + q0.out * (q0.inp / 64) * 4;
         let n_calls = qs.len().max(8); // lm_head: 8 calls of one 715 MB tensor
-        let time = |f: &dyn Fn(&QLin) -> Result<Tensor>| -> Result<(f64, f64)> {
-            for _ in 0..2 {
-                for i in 0..n_calls {
-                    let _ = f(&qs[i % qs.len()])?;
-                }
-            }
-            device.synchronize()?;
-            let mut us = Vec::with_capacity(passes);
-            for _ in 0..passes {
-                let t = std::time::Instant::now();
-                for i in 0..n_calls {
-                    let _ = f(&qs[i % qs.len()])?;
-                }
-                device.synchronize()?;
-                us.push(t.elapsed().as_secs_f64() * 1e6 / n_calls as f64);
-            }
-            us.sort_by(|a, b| a.total_cmp(b));
-            Ok((us[0], us[us.len() / 2]))
-        };
-        let path = |q: &QLin| -> Result<Tensor> {
+        let path = |q: &QLin, x: &Tensor| -> Result<Tensor> {
             if gate_up {
-                match q.gate_up_act(&x) {
+                match q.gate_up_act(x) {
                     Some(r) => r,
                     None => bail!("gate_up_act declined m={rows}"),
                 }
             } else {
-                q.linear(&x)
+                q.linear(x)
             }
         };
-        let y_path = path(q0)?.to_dtype(DType::F32)?;
+        let y_path = path(q0, &x)?.to_dtype(DType::F32)?;
+        // the same input at a 2-byte offset can't be bound directly, so it
+        // always goes through the pad copy (P0's reference arm)
+        let flat = Tensor::cat(
+            &[&Tensor::zeros(1, DType::BF16, device)?, &x.flatten_all()?],
+            0,
+        )?;
+        let x_mis = flat.narrow(0, 1, rows * q0.inp)?.reshape((rows, q0.inp))?;
         if rows == 8 {
-            // P0 check: the same input at a 2-byte offset can't be bound
-            // directly, so it goes through the pad copy — must be bitwise
-            // equal to the direct binding
-            let flat = Tensor::cat(
-                &[&Tensor::zeros(1, DType::BF16, device)?, &x.flatten_all()?],
-                0,
-            )?;
-            let x_mis = flat.narrow(0, 1, rows * q0.inp)?.reshape((rows, q0.inp))?;
-            let y_pad = if gate_up {
-                match q0.gate_up_act(&x_mis) {
-                    Some(r) => r?,
-                    None => bail!("gate_up_act declined m={rows}"),
-                }
-            } else {
-                q0.linear(&x_mis)?
-            }
-            .to_dtype(DType::F32)?;
+            // P0 check: pad copy vs direct binding must be bitwise equal
+            let y_pad = path(q0, &x_mis)?.to_dtype(DType::F32)?;
             eprintln!(
                 "q4[{tag} m=8] P0 pad-copy-vs-direct max|Δ|={:.6} (pad_skip={})",
                 max_abs(&y_pad, &y_path)?,
                 crate::quant_kernel::pad_skip_enabled()
             );
         }
-        let report = |label: &str, y: &Tensor, (mn, med): (f64, f64)| -> Result<()> {
-            eprintln!(
-                "q4[{tag} m={rows}] {label:<13} {med:8.1}us/call (min {mn:8.1}) {:5.0} GB/s  max|Δ|ref={:.5} Δpath={:.5}  |ref|max={ref_mag:.2}  [{}x{}, {} tensors x{passes}]",
-                bytes as f64 / (med * 1e-6) / 1e9,
-                max_abs(y, &reference)?,
-                max_abs(y, &y_path)?,
-                if gate_up { half } else { q0.out },
-                q0.inp,
-                qs.len(),
-            );
-            Ok(())
-        };
         let (p_tile, p_sgs) = if gate_up {
             crate::quant_kernel::gate_up_tile()
         } else {
             crate::quant_kernel::plain_tile(q0.out, q0.inp).tile_sgs()
         };
-        report(format!("path t{p_tile}s{p_sgs}").as_str(), &y_path, time(&path)?)?;
-        // (256, 4) on a plain projection is the Paired256 tile: one wave of
-        // 4 x cores groups (= the full grid below 4 x cores tiles)
+        // candidates: the production path, the production path on the
+        // misaligned input (= with the pad copy), then explicit tiles.
+        // (256, 4) on a plain projection is the Paired256 tile: one wave
+        // of 4 x cores groups (= the full grid below 4 x cores tiles).
+        type Cand<'a> = (String, Box<dyn Fn(&QLin) -> Result<Tensor> + 'a>);
+        let mut cands: Vec<Cand> = vec![
+            (format!("path t{p_tile}s{p_sgs}"), Box::new(|q: &QLin| path(q, &x))),
+            ("path+pad".to_string(), Box::new(|q: &QLin| path(q, &x_mis))),
+        ];
         let cfgs: &[(&str, usize, usize)] = if gate_up {
             &[("n32s4_gu", 64, 2), ("n256_gu_sg8", 256, 8), ("n256_gu_sg4", 256, 4)]
         } else {
             &[("n64s4", 64, 2), ("n32s4", 32, 1), ("n256_sg8", 256, 8), ("p256_sg4", 256, 4)]
         };
         for &(label, tile, sgs) in cfgs {
-            let op = |q: &QLin| AffineQmpp {
-                inp: q.inp,
-                out: if gate_up { q.out / 2 } else { q.out },
-                padded: q.out.div_ceil(256) * 256,
-                m: rows,
-                up_tile: if gate_up { q.out / 2 / 256 } else { 0 },
-                sgs,
-                tile,
-            };
-            let run = |q: &QLin| -> Result<Tensor> {
-                Ok(q.wq.apply_op3_no_bwd(&q.sb, &x, &op(q))?.narrow(0, 0, rows)?)
-            };
-            let y = run(q0)?.to_dtype(DType::F32)?;
-            report(label, &y, time(&run)?)?;
+            let x = &x;
+            cands.push((
+                label.to_string(),
+                Box::new(move |q: &QLin| -> Result<Tensor> {
+                    let op = AffineQmpp {
+                        inp: q.inp,
+                        out: if gate_up { q.out / 2 } else { q.out },
+                        padded: q.out.div_ceil(256) * 256,
+                        m: rows,
+                        up_tile: if gate_up { q.out / 2 / 256 } else { 0 },
+                        sgs,
+                        tile,
+                    };
+                    Ok(q.wq.apply_op3_no_bwd(&q.sb, x, &op)?.narrow(0, 0, rows)?)
+                }),
+            ));
+        }
+        // interleaved timing: every pass times each candidate once (start
+        // rotated per pass), so slow drift in GPU/memory contention hits all
+        // candidates alike; the per-pass ratio vs the path cancels it
+        let nc = cands.len();
+        for (_, f) in &cands {
+            for _ in 0..2 {
+                for i in 0..n_calls {
+                    let _ = f(&qs[i % qs.len()])?;
+                }
+            }
+        }
+        device.synchronize()?;
+        let mut us = vec![Vec::with_capacity(passes); nc];
+        for pass in 0..passes {
+            for k in 0..nc {
+                let c = (pass + k) % nc;
+                let f = &cands[c].1;
+                device.synchronize()?;
+                let t = std::time::Instant::now();
+                for i in 0..n_calls {
+                    let _ = f(&qs[i % qs.len()])?;
+                }
+                device.synchronize()?;
+                us[c].push(t.elapsed().as_secs_f64() * 1e6 / n_calls as f64);
+            }
+        }
+        let median = |v: &[f64]| -> f64 {
+            let mut v = v.to_vec();
+            v.sort_by(|a, b| a.total_cmp(b));
+            v[v.len() / 2]
+        };
+        for (c, (label, f)) in cands.iter().enumerate() {
+            let y = f(q0)?.to_dtype(DType::F32)?;
+            let ratios: Vec<f64> = us[c].iter().zip(&us[0]).map(|(a, b)| a / b).collect();
+            let (med, mn) = (median(&us[c]), us[c].iter().cloned().fold(f64::MAX, f64::min));
+            eprintln!(
+                "q4[{tag} m={rows}] {label:<13} {med:8.1}us/call (min {mn:8.1}) {:5.0} GB/s  x{:.3} vs path  max|Δ|ref={:.5} Δpath={:.5}  |ref|max={ref_mag:.2}  [{}x{}, {} tensors x{passes}]",
+                bytes as f64 / (med * 1e-6) / 1e9,
+                median(&ratios),
+                max_abs(&y, &reference)?,
+                max_abs(&y, &y_path)?,
+                if gate_up { half } else { q0.out },
+                q0.inp,
+                qs.len(),
+            );
         }
     }
     Ok(())
