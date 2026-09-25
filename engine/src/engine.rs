@@ -289,7 +289,7 @@ fn generate_blocking(
 
     let mut pos = 0usize;
     let mut completion: Vec<u32> = Vec::new();
-    let mut text_out = String::new();
+    let mut text_out = TextOut::default();
     let mut ttft_ms = 0.0f64;
     let mut finish = "stop";
     let mut decode_ms_total = 0.0f64;
@@ -945,16 +945,36 @@ fn spec_accept_step(
     Ok(resid[resid.len() - 1].0)
 }
 
-fn stop_hit(text: &str, stops: &[String]) -> bool {
-    stops.iter().any(|s| !s.is_empty() && text.contains(s.as_str()))
+/// Byte offset of the earliest stop-string match in `text` that was not
+/// already checked. Bytes before `checked` were scanned on earlier
+/// tokens and held no match, so a new one must end past `checked`.
+fn find_stop(text: &str, checked: usize, stops: &[String]) -> Option<usize> {
+    stops
+        .iter()
+        .filter(|s| !s.is_empty())
+        .filter_map(|s| {
+            let mut from = checked.saturating_sub(s.len() - 1);
+            while !text.is_char_boundary(from) {
+                from -= 1;
+            }
+            text[from..].find(s.as_str()).map(|i| from + i)
+        })
+        .min()
 }
 
-fn truncate_at_stop(text: &mut String, stops: &[String]) {
-    for s in stops {
-        if let Some(i) = text.find(s.as_str()) {
-            text.truncate(i);
-        }
-    }
+/// Length of the longest suffix of `text` that is a proper prefix of a
+/// stop string. That tail is held back so a stop sequence split across
+/// tokens never streams its first half.
+fn stop_holdback(text: &str, stops: &[String]) -> usize {
+    stops
+        .iter()
+        .filter_map(|s| {
+            (1..s.len())
+                .rev()
+                .find(|&k| s.is_char_boundary(k) && text.ends_with(&s[..k]))
+        })
+        .max()
+        .unwrap_or(0)
 }
 
 // MARK: - emit + n-gram draft
@@ -964,12 +984,61 @@ enum Emit {
     Done(&'static str),
 }
 
+/// Completion text plus the incremental-detokenizer cursor into
+/// `EmitCtx::completion`.
+///
+/// A byte-level BPE token can end part-way through a UTF-8 character
+/// (CJK, emoji), so decoding one token at a time streams U+FFFD halves.
+/// Instead each step decodes `completion[prefix..]` and keeps only what
+/// lies beyond `prefix_text` (= decode of `completion[prefix..read]`),
+/// holding it back while it still ends in U+FFFD. This is the TGI /
+/// `tokenizers::DecodeStream` prefix/read-offset scheme. The left
+/// context also stops prefix-sensitive decoders (SentencePiece `Strip`)
+/// from eating a token's leading space. Only offsets are stored, so the
+/// state survives a fresh `EmitCtx` per token.
+#[derive(Default)]
+struct TextOut {
+    /// Decoded completion text, i.e. what stop matching sees. Truncated
+    /// at the stop string when one hits.
+    text: String,
+    /// Bytes of `text` already sent as `GenEvent::Delta`s.
+    sent: usize,
+    prefix: usize,
+    read: usize,
+    prefix_text: String,
+}
+
+impl TextOut {
+    /// Fold `ids[read..]` into `text`. A window that still ends in U+FFFD
+    /// (an incomplete UTF-8 sequence) waits for more ids unless `flush`
+    /// (end of stream) forces it out as decoded.
+    fn advance(&mut self, tok: &tokenizers::Tokenizer, ids: &[u32], flush: bool) {
+        if self.read >= ids.len() {
+            return;
+        }
+        let window = tok.decode(&ids[self.prefix..], true).unwrap_or_default();
+        if !flush && (window.len() <= self.prefix_text.len() || window.ends_with('\u{FFFD}')) {
+            return;
+        }
+        match window.strip_prefix(self.prefix_text.as_str()) {
+            Some(new) => self.text.push_str(new),
+            // decoder not prefix-stable here: the new ids on their own
+            None => self
+                .text
+                .push_str(&tok.decode(&ids[self.read..], true).unwrap_or_default()),
+        }
+        self.prefix = self.read;
+        self.read = ids.len();
+        self.prefix_text = tok.decode(&ids[self.prefix..], true).unwrap_or_default();
+    }
+}
+
 /// Everything `emit_token` needs — bundled so the decode loop stays
 /// readable.
 struct EmitCtx<'a> {
     completion: &'a mut Vec<u32>,
     hist: &'a mut Vec<u32>,
-    text_out: &'a mut String,
+    text_out: &'a mut TextOut,
     tx: &'a mpsc::UnboundedSender<GenEvent>,
     tokenizer: &'a tokenizers::Tokenizer,
     eos_ids: &'a [u32],
@@ -980,8 +1049,12 @@ struct EmitCtx<'a> {
     max_ctx: Option<usize>,
 }
 
-/// Commit one token: record it, publish the delta, apply stop rules.
-/// `pos` is the token's absolute KV index.
+/// Commit one token: record it, stream whatever text it completes, and
+/// apply stop rules. `pos` is the token's absolute KV index.
+///
+/// Deltas carry only whole characters. The final token of a stream (EOS,
+/// length) flushes anything held back, so the concatenated deltas equal
+/// `decode(completion)` cut at the first stop string (which is not sent).
 fn emit_token(c: &mut EmitCtx, tok: u32, pos: usize) -> Emit {
     c.completion.push(tok);
     c.hist.push(tok);
@@ -989,27 +1062,39 @@ fn emit_token(c: &mut EmitCtx, tok: u32, pos: usize) -> Emit {
     if c.cancel.load(Ordering::Relaxed) {
         return Emit::Done("cancelled");
     }
-    if c.eos_ids.contains(&tok) {
-        return Emit::Done("stop");
+    let eos = c.eos_ids.contains(&tok);
+    let mut finish = if eos {
+        Some("stop")
+    } else if c.completion.len() >= c.max_tokens || c.max_ctx.is_some_and(|m| pos + 1 >= m) {
+        Some("length")
+    } else {
+        None
+    };
+    let t = &mut *c.text_out;
+    let checked = t.text.len();
+    // EOS itself is never decoded
+    let n = c.completion.len() - eos as usize;
+    t.advance(c.tokenizer, &c.completion[..n], finish.is_some());
+    let mut end = t.text.len();
+    if let Some(i) = find_stop(&t.text, checked, c.stops) {
+        t.text.truncate(i);
+        end = i;
+        finish = Some("stop");
+    } else if finish.is_none() {
+        end -= stop_holdback(&t.text, c.stops);
     }
-    let piece = c.tokenizer.decode(&[tok], true).unwrap_or_default();
-    c.text_out.push_str(&piece);
-    if c.tx.send(GenEvent::Delta(piece)).is_err() {
+    if end > t.sent {
+        let delta = t.text[t.sent..end].to_string();
+        t.sent = end;
+        // EOS never reported a send failure as a cancel; keep it "stop"
+        if c.tx.send(GenEvent::Delta(delta)).is_err() && !eos {
+            return Emit::Done("cancelled");
+        }
+    } else if !eos && c.tx.is_closed() {
+        // nothing to send this token; still notice a dropped client
         return Emit::Done("cancelled");
     }
-    if stop_hit(c.text_out, c.stops) {
-        truncate_at_stop(c.text_out, c.stops);
-        return Emit::Done("stop");
-    }
-    if c.completion.len() >= c.max_tokens {
-        return Emit::Done("length");
-    }
-    if let Some(m) = c.max_ctx {
-        if pos + 1 >= m {
-            return Emit::Done("length");
-        }
-    }
-    Emit::More
+    finish.map_or(Emit::More, Emit::Done)
 }
 
 /// Prompt-lookup / n-gram draft: find the most recent earlier occurrence
@@ -1059,7 +1144,7 @@ struct Run {
     prompt_tokens: Vec<u32>,
     completion: Vec<u32>,
     hist: Vec<u32>,
-    text_out: String,
+    text_out: TextOut,
     pos: usize,
     anchor: u32,
     accept_ema: f64,
@@ -1190,7 +1275,7 @@ fn admit(
         prompt_tokens: prompt_tokens.clone(),
         completion: Vec::new(),
         hist: prompt_tokens,
-        text_out: String::new(),
+        text_out: TextOut::default(),
         pos,
         anchor,
         accept_ema: 4.0,
@@ -1492,4 +1577,369 @@ fn finish_run(state: &Arc<EngineState>, r: Run) {
     state.counters.requests_active.fetch_sub(1, Ordering::Relaxed);
     state.emit("request.done", serde_json::to_value(&rec).unwrap_or_default());
     state.record(rec);
+}
+
+#[cfg(test)]
+mod utf8_stream {
+    //! UTF-8-safe streaming through `emit_token`:
+    //! `cargo test --release utf8_stream`.
+    use super::*;
+    use crate::state::EngineConfig;
+    use std::str::FromStr;
+    use tokenizers::Tokenizer;
+
+    const EOS: u32 = 1000;
+    const TEXT: &str = "你好，世界！🙂👍🏽 これは日本語です。🎉 한국어 𠮷野家 🧑‍🚀 café ✓";
+
+    /// GPT-2 `bytes_to_unicode`: printable bytes map to themselves, the
+    /// rest to U+0100.. in byte order.
+    fn byte_char(b: u8) -> char {
+        let printable = |x: u8| matches!(x, b'!'..=b'~' | 0xA1..=0xAC | 0xAE..=0xFF);
+        if printable(b) {
+            return b as char;
+        }
+        char::from_u32(256 + (0..b).filter(|&x| !printable(x)).count() as u32).unwrap()
+    }
+
+    /// Hermetic byte-level BPE: ids 0..=255 are single bytes, 256.. the
+    /// given byte strings (free to straddle characters), EOS special.
+    fn byte_tokenizer(extra: &[&[u8]]) -> Tokenizer {
+        let piece = |bs: &[u8]| bs.iter().map(|&b| byte_char(b)).collect::<String>();
+        let mut vocab = serde_json::Map::new();
+        for b in 0..=255u8 {
+            vocab.insert(piece(&[b]), (b as u32).into());
+        }
+        for (i, bs) in extra.iter().enumerate() {
+            vocab.insert(piece(bs), (256 + i as u32).into());
+        }
+        let byte_level = serde_json::json!({"type": "ByteLevel",
+            "add_prefix_space": false, "trim_offsets": true, "use_regex": true});
+        let j = serde_json::json!({
+            "version": "1.0", "truncation": null, "padding": null,
+            "added_tokens": [{"id": EOS, "content": "<|eos|>", "single_word": false,
+                "lstrip": false, "rstrip": false, "normalized": false, "special": true}],
+            "normalizer": null, "pre_tokenizer": byte_level, "post_processor": null,
+            "decoder": byte_level,
+            "model": {"type": "BPE", "dropout": null, "unk_token": null,
+                "continuing_subword_prefix": null, "end_of_word_suffix": null,
+                "fuse_unk": false, "byte_fallback": false, "vocab": vocab, "merges": []},
+        });
+        Tokenizer::from_str(&j.to_string()).unwrap()
+    }
+
+    /// The real Qwen3.x tokenizer, if a snapshot is on disk
+    /// (`TH_TEST_TOKENIZER=<tokenizer.json>` points elsewhere).
+    fn qwen_tokenizer() -> Option<Tokenizer> {
+        let path = std::env::var("TH_TEST_TOKENIZER")
+            .ok()
+            .map(std::path::PathBuf::from)
+            .or_else(|| {
+                let hub = std::path::PathBuf::from(std::env::var("HOME").ok()?).join(
+                    ".cache/huggingface/hub/models--mlx-community--Qwen3.8-27B-4bit/snapshots",
+                );
+                std::fs::read_dir(hub)
+                    .ok()?
+                    .flatten()
+                    .map(|e| e.path().join("tokenizer.json"))
+                    .find(|p| p.exists())
+            })?;
+        Tokenizer::from_file(path).ok()
+    }
+
+    fn bytes(s: &str) -> Vec<u32> {
+        s.bytes().map(u32::from).collect()
+    }
+
+    struct Out {
+        deltas: Vec<String>,
+        finish: &'static str,
+        text: String,
+    }
+
+    /// Feed `ids` through `emit_token` as the decode loops do, with a
+    /// fresh `EmitCtx` per token (as the batched path builds them).
+    fn stream(tok: &Tokenizer, ids: &[u32], eos: &[u32], stops: &[&str], max_tokens: usize) -> Out {
+        let state = EngineState::new(String::new(), serde_json::Value::Null, EngineConfig::default());
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let cancel = AtomicBool::new(false);
+        let stops: Vec<String> = stops.iter().map(|s| s.to_string()).collect();
+        let (mut completion, mut hist, mut text_out) = (Vec::new(), Vec::new(), TextOut::default());
+        let mut finish = "open";
+        for (i, &t) in ids.iter().enumerate() {
+            let mut ec = EmitCtx {
+                completion: &mut completion,
+                hist: &mut hist,
+                text_out: &mut text_out,
+                tx: &tx,
+                tokenizer: tok,
+                eos_ids: eos,
+                stops: &stops,
+                cancel: &cancel,
+                state: &state,
+                max_tokens,
+                max_ctx: None,
+            };
+            if let Emit::Done(r) = emit_token(&mut ec, t, i) {
+                finish = r;
+                break;
+            }
+        }
+        let mut deltas = Vec::new();
+        while let Ok(ev) = rx.try_recv() {
+            if let GenEvent::Delta(d) = ev {
+                deltas.push(d);
+            }
+        }
+        Out { deltas, finish, text: text_out.text }
+    }
+
+    /// Concatenated deltas == `want`, and every delta is non-empty whole
+    /// characters.
+    fn assert_clean(o: &Out, want: &str) {
+        assert_eq!(o.deltas.concat(), want, "deltas {:?}", o.deltas);
+        for d in &o.deltas {
+            assert!(!d.is_empty(), "empty delta in {:?}", o.deltas);
+            assert!(!d.contains('\u{FFFD}'), "U+FFFD in delta {d:?} of {:?}", o.deltas);
+        }
+    }
+
+    fn splits_a_char(tok: &Tokenizer, ids: &[u32]) -> bool {
+        ids.iter().any(|&i| tok.decode(&[i], true).unwrap().contains('\u{FFFD}'))
+    }
+
+    #[test]
+    fn utf8_stream_byte_tokens() {
+        // every byte its own token: CJK chars span 3 ids, emoji 4
+        let tok = byte_tokenizer(&[]);
+        let mut ids = bytes(TEXT);
+        let full = tok.decode(&ids, true).unwrap();
+        assert_eq!(full, TEXT);
+        assert!(splits_a_char(&tok, &ids)); // what the per-token decode streamed
+        ids.push(EOS);
+        let o = stream(&tok, &ids, &[EOS], &[], usize::MAX);
+        assert_eq!(o.finish, "stop");
+        assert_clean(&o, &full);
+    }
+
+    #[test]
+    fn utf8_stream_straddling_tokens() {
+        // tokens that start and end mid-character:
+        // [E4 BD] [A0 E5] [A5 BD F0] [9F 99] [82 21] = "你好🙂!"
+        let s = "你好🙂!";
+        let b = s.as_bytes();
+        let tok = byte_tokenizer(&[&b[0..2], &b[2..4], &b[4..7], &b[7..9], &b[9..11]]);
+        let mut ids: Vec<u32> = (256..261).collect();
+        assert_eq!(tok.decode(&ids, true).unwrap(), s);
+        ids.push(EOS);
+        let o = stream(&tok, &ids, &[EOS], &[], usize::MAX);
+        assert_eq!(o.finish, "stop");
+        assert_clean(&o, s);
+    }
+
+    #[test]
+    fn utf8_stream_qwen_tokenizer() {
+        let Some(tok) = qwen_tokenizer() else {
+            eprintln!("utf8_stream_qwen_tokenizer: no Qwen tokenizer.json on disk, skipped");
+            return;
+        };
+        let mut ids = tok.encode(TEXT, false).unwrap().get_ids().to_vec();
+        let full = tok.decode(&ids, true).unwrap();
+        assert_eq!(full, TEXT);
+        assert!(splits_a_char(&tok, &ids), "sample never splits a character: {ids:?}");
+        ids.push(248046); // <|im_end|>
+        let o = stream(&tok, &ids, &[248046, 248044], &[], usize::MAX);
+        assert_eq!(o.finish, "stop");
+        assert_clean(&o, &full);
+    }
+
+    #[test]
+    fn utf8_stream_cjk_stop_string() {
+        let tok = byte_tokenizer(&[]);
+        let o = stream(&tok, &bytes("你好，世界🙂再见"), &[EOS], &["世界"], usize::MAX);
+        assert_eq!(o.finish, "stop");
+        assert_clean(&o, "你好，");
+        assert_eq!(o.text, "你好，");
+    }
+
+    #[test]
+    fn utf8_stream_stop_prefix_held_back() {
+        // the first "ab" may start "abc": held until "x" rules it out;
+        // the second is the stop and never streams
+        let tok = byte_tokenizer(&[]);
+        let o = stream(&tok, &bytes("xxabxabcyy"), &[EOS], &["abc"], usize::MAX);
+        assert_eq!(o.finish, "stop");
+        assert_clean(&o, "xxabx");
+    }
+
+    #[test]
+    fn utf8_stream_flush_at_end() {
+        let tok = byte_tokenizer(&[]);
+        // EOS right after a held-back stop prefix: flushed, not lost
+        let mut ids = bytes("xa");
+        ids.push(EOS);
+        let o = stream(&tok, &ids, &[EOS], &["ab"], usize::MAX);
+        assert_eq!(o.finish, "stop");
+        assert_clean(&o, "xa");
+        // max_tokens lands on a held-back stop prefix
+        let o = stream(&tok, &bytes("xab"), &[EOS], &["abc"], 3);
+        assert_eq!(o.finish, "length");
+        assert_clean(&o, "xab");
+        // max_tokens cuts a character: the tail flushes exactly as
+        // decode(all_ids) renders it
+        let ids = bytes("a好")[..3].to_vec();
+        let o = stream(&tok, &ids, &[EOS], &[], 3);
+        assert_eq!(o.finish, "length");
+        assert_eq!(o.deltas.concat(), tok.decode(&ids, true).unwrap());
+        assert_eq!(o.deltas.concat(), "a\u{FFFD}");
+    }
+
+    #[test]
+    fn utf8_stream_cancel_while_held_back() {
+        // a dropped client is noticed even when the token sends nothing
+        let tok = byte_tokenizer(&[]);
+        let state = EngineState::new(String::new(), serde_json::Value::Null, EngineConfig::default());
+        let (tx, rx) = mpsc::unbounded_channel();
+        drop(rx);
+        let cancel = AtomicBool::new(false);
+        let (mut completion, mut hist, mut text_out) = (Vec::new(), Vec::new(), TextOut::default());
+        let mut ec = EmitCtx {
+            completion: &mut completion,
+            hist: &mut hist,
+            text_out: &mut text_out,
+            tx: &tx,
+            tokenizer: &tok,
+            eos_ids: &[EOS],
+            stops: &[],
+            cancel: &cancel,
+            state: &state,
+            max_tokens: usize::MAX,
+            max_ctx: None,
+        };
+        assert!(matches!(emit_token(&mut ec, 0xE4, 0), Emit::Done("cancelled")));
+    }
+
+    /// SentencePiece-style decoder (Llama GGUF tokenizers): `Strip` drops
+    /// the first token's leading space, byte-fallback pieces form a
+    /// character. Per-token decode streamed "Helloworld" + 3x U+FFFD.
+    #[test]
+    fn utf8_stream_sentencepiece_decoder() {
+        let j = serde_json::json!({
+            "version": "1.0", "truncation": null, "padding": null,
+            "added_tokens": [{"id": 2, "content": "</s>", "single_word": false,
+                "lstrip": false, "rstrip": false, "normalized": false, "special": true}],
+            "normalizer": null, "pre_tokenizer": null, "post_processor": null,
+            "decoder": {"type": "Sequence", "decoders": [
+                {"type": "Replace", "pattern": {"String": "\u{2581}"}, "content": " "},
+                {"type": "ByteFallback"}, {"type": "Fuse"},
+                {"type": "Strip", "content": " ", "start": 1, "stop": 0}]},
+            "model": {"type": "BPE", "dropout": null, "unk_token": "<unk>",
+                "continuing_subword_prefix": null, "end_of_word_suffix": null,
+                "fuse_unk": true, "byte_fallback": true,
+                "vocab": {"<unk>": 0, "<s>": 1, "</s>": 2, "\u{2581}Hello": 3, "\u{2581}world": 4,
+                          "<0xE4>": 5, "<0xBD>": 6, "<0xA0>": 7, "\u{2581}": 8, "!": 9},
+                "merges": []},
+        });
+        let tok = Tokenizer::from_str(&j.to_string()).unwrap();
+        let ids = [3u32, 4, 8, 5, 6, 7, 9, 2];
+        let full = tok.decode(&ids, true).unwrap();
+        assert_eq!(full, "Hello world 你!");
+        let o = stream(&tok, &ids, &[2], &[], usize::MAX);
+        assert_eq!(o.finish, "stop");
+        assert_clean(&o, &full);
+    }
+
+    /// The batched path (TH_BATCH > 1) keeps one `TextOut` per slot and
+    /// builds a fresh `EmitCtx` per token, up to 8 tokens per slot per
+    /// lockstep round (`admit` / `batch_round`). Interleaved that way,
+    /// with rounds that end mid-character, every slot must stream exactly
+    /// the deltas it streams alone.
+    #[test]
+    fn utf8_stream_interleaved_slots() {
+        struct Slot {
+            ids: Vec<u32>,
+            stops: Vec<String>,
+            n_prompt: usize,
+            next: usize,
+            completion: Vec<u32>,
+            hist: Vec<u32>,
+            text_out: TextOut,
+            tx: mpsc::UnboundedSender<GenEvent>,
+            rx: mpsc::UnboundedReceiver<GenEvent>,
+            finish: &'static str,
+        }
+        let tok = byte_tokenizer(&[]);
+        let state = EngineState::new(String::new(), serde_json::Value::Null, EngineConfig::default());
+        let cancel = AtomicBool::new(false);
+        let mut a = bytes(TEXT);
+        a.push(EOS);
+        let jobs = [(a, vec![], 21), (bytes("🍂秋风起，落叶黄。🍁"), vec!["落叶".to_string()], 9)];
+        let mut slots: Vec<Slot> = jobs
+            .iter()
+            .map(|(ids, stops, n_prompt)| {
+                let (tx, rx) = mpsc::unbounded_channel();
+                Slot {
+                    ids: ids.clone(),
+                    stops: stops.clone(),
+                    n_prompt: *n_prompt,
+                    next: 0,
+                    completion: Vec::new(),
+                    hist: Vec::new(),
+                    text_out: TextOut::default(),
+                    tx,
+                    rx,
+                    finish: "open",
+                }
+            })
+            .collect();
+        for round in 0usize.. {
+            let mut live = false;
+            for (s, sl) in slots.iter_mut().enumerate() {
+                if sl.finish != "open" || sl.next == sl.ids.len() {
+                    continue;
+                }
+                live = true;
+                let end = (sl.next + 1 + (round * 3 + s * 5) % 8).min(sl.ids.len());
+                while sl.next < end {
+                    // absolute KV index, as admit() / batch_round() pass it
+                    let (t, pos) = (sl.ids[sl.next], sl.n_prompt + sl.completion.len());
+                    sl.next += 1;
+                    let mut ec = EmitCtx {
+                        completion: &mut sl.completion,
+                        hist: &mut sl.hist,
+                        text_out: &mut sl.text_out,
+                        tx: &sl.tx,
+                        tokenizer: &tok,
+                        eos_ids: &[EOS],
+                        stops: &sl.stops,
+                        cancel: &cancel,
+                        state: &state,
+                        max_tokens: usize::MAX,
+                        max_ctx: None,
+                    };
+                    if let Emit::Done(r) = emit_token(&mut ec, t, pos) {
+                        sl.finish = r;
+                        break;
+                    }
+                }
+            }
+            if !live {
+                break;
+            }
+        }
+        for (sl, want) in slots.iter_mut().zip([TEXT, "🍂秋风起，"]) {
+            let mut deltas = Vec::new();
+            while let Ok(ev) = sl.rx.try_recv() {
+                if let GenEvent::Delta(d) = ev {
+                    deltas.push(d);
+                }
+            }
+            let o = Out { deltas, finish: sl.finish, text: std::mem::take(&mut sl.text_out.text) };
+            assert_eq!(o.finish, "stop");
+            assert_eq!(o.text, want);
+            assert_clean(&o, want);
+            let stops: Vec<&str> = sl.stops.iter().map(|s| s.as_str()).collect();
+            let solo = stream(&tok, &sl.ids, &[EOS], &stops, usize::MAX);
+            assert_eq!(o.deltas, solo.deltas, "interleaving changed the stream");
+        }
+    }
 }
