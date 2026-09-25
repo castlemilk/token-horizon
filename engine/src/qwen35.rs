@@ -2303,31 +2303,60 @@ impl Qwen35 {
 
     pub fn clear_kv_cache(&mut self, slot: usize) {
         let sl = &mut self.slots[slot];
-        for g in sl.gdn.iter_mut().flatten() {
-            g.recurrent = Tensor::zeros_like(&g.recurrent).unwrap();
-            g.conv = Tensor::zeros_like(&g.conv).unwrap();
-        }
-        for kv in sl.kv.iter_mut().flatten() {
-            *kv = (
-                Tensor::zeros(
-                    (self.cfg.num_key_value_heads, 0, self.cfg.head_dim),
-                    DType::BF16,
-                    &self.device,
-                )
-                .unwrap(),
-                Tensor::zeros(
-                    (self.cfg.num_key_value_heads, 0, self.cfg.head_dim),
-                    DType::BF16,
-                    &self.device,
-                )
-                .unwrap(),
-            );
+        // walk the layer kinds (not `.flatten()`) so per-layer state an
+        // aborted forward failed to hand back is rebuilt, never skipped
+        for (i, layer) in self.layers.iter().enumerate() {
+            match &layer.kind {
+                Kind::Gdn(l) => match sl.gdn[i].as_mut() {
+                    Some(g) => {
+                        g.recurrent = Tensor::zeros_like(&g.recurrent).unwrap();
+                        g.conv = Tensor::zeros_like(&g.conv).unwrap();
+                    }
+                    None => {
+                        sl.gdn[i] = Some(GdnState {
+                            conv: Tensor::zeros(
+                                (l.conv_k - 1, 2 * l.key_dim + l.value_dim),
+                                DType::BF16,
+                                &self.device,
+                            )
+                            .unwrap(),
+                            recurrent: Tensor::zeros(
+                                (l.num_v_heads, l.head_v, l.head_k),
+                                DType::F32,
+                                &self.device,
+                            )
+                            .unwrap(),
+                        });
+                    }
+                },
+                Kind::Attn(_) => {
+                    sl.kv[i] = Some((
+                        Tensor::zeros(
+                            (self.cfg.num_key_value_heads, 0, self.cfg.head_dim),
+                            DType::BF16,
+                            &self.device,
+                        )
+                        .unwrap(),
+                        Tensor::zeros(
+                            (self.cfg.num_key_value_heads, 0, self.cfg.head_dim),
+                            DType::BF16,
+                            &self.device,
+                        )
+                        .unwrap(),
+                    ));
+                }
+            }
         }
         for q in sl.kvq.iter_mut() {
             *q = crate::turboquant::QuantKv::default();
         }
-        if let Some(d) = sl.draft.as_mut() {
-            d.clear();
+        match sl.draft.as_mut() {
+            Some(d) => d.clear(),
+            // a ring lost to an aborted round is rebuilt at admission
+            None if self.draft_w.is_some() => {
+                sl.draft = crate::dflash::Draft::new(&self.device).ok();
+            }
+            None => {}
         }
         sl.captures.clear();
         for v in sl.vcache.iter_mut() {
@@ -2429,27 +2458,31 @@ impl Qwen35 {
         uniform: &mut dyn FnMut(usize) -> f64,
     ) -> Result<Vec<crate::dflash::Proposal>> {
         let w = self.draft_w.as_ref().context("draft not loaded")?;
-        // move each slot's ring ctx out — disjoint-index mutable borrows
-        let mut ctxs: Vec<crate::dflash::Draft> = slots
-            .iter()
-            .map(|&b| {
-                self.slots[b]
-                    .draft
-                    .take()
-                    .context("draft ctx")
-            })
-            .collect::<Result<_>>()?;
+        // move each slot's ring ctx out — disjoint-index mutable borrows.
+        // Every taken ctx goes back before any Err is returned, and the
+        // hand-back is infallible (no placeholder ring allocation).
+        let mut ctxs: Vec<crate::dflash::Draft> =
+            Vec::with_capacity(slots.len());
+        for &b in slots {
+            match self.slots[b].draft.take() {
+                Some(d) => ctxs.push(d),
+                None => {
+                    for (&sb, d) in slots.iter().zip(ctxs) {
+                        self.slots[sb].draft = Some(d);
+                    }
+                    bail!("draft ctx missing for slot {b}");
+                }
+            }
+        }
         let mut refs: Vec<&mut crate::dflash::Draft> =
             ctxs.iter_mut().collect();
         let r = w.propose_batch(
             refs.as_mut_slice(), &self.embed, &self.lm_head,
             anchors, poss, temps, uniform,
         );
-        for (i, &b) in slots.iter().enumerate() {
-            self.slots[b].draft = Some(std::mem::replace(
-                &mut ctxs[i],
-                crate::dflash::Draft::new(&self.device)?,
-            ));
+        drop(refs);
+        for (&b, d) in slots.iter().zip(ctxs) {
+            self.slots[b].draft = Some(d);
         }
         r
     }
@@ -3163,7 +3196,9 @@ impl Qwen35 {
                 Kind::Gdn(l) => {
                     // K45: `h` may be a presum block (add_rms_norm_ps)
                     let fused = lin_apply_ps(&h, &l.in_all, h_ps)?;
-                    let mut st = self.slots[slot].gdn[i].take().unwrap();
+                    let mut st = self.slots[slot].gdn[i]
+                        .take()
+                        .context("forward: slot gdn state missing")?;
                     let mut vc = cache_verify.then(GdnVerifyCache::default);
                     let r = Self::gdn_forward(
                         l, &mut st, &mut vc, &fused, seq,
@@ -3175,7 +3210,9 @@ impl Qwen35 {
                 }
                 Kind::Attn(l) => {
                     let qkv = lin_apply_ps(&h, &l.in_qkv, h_ps)?;
-                    let mut kvc = self.slots[slot].kv[i].take().unwrap();
+                    let mut kvc = self.slots[slot].kv[i]
+                        .take()
+                        .context("forward: slot kv state missing")?;
                     let mut kvq = std::mem::take(&mut self.slots[slot].kvq[i]);
                     let r = Self::attn_forward(
                         l, &mut kvc, &mut kvq, self.slot_tq(slot), &qkv, pos,
@@ -3323,15 +3360,19 @@ impl Qwen35 {
                         let sb = slots[b];
                         let seq_b = seqs[b].len();
                         let fv = fused.narrow(1, offs[b], seq_b)?;
-                        let mut st =
-                            self.slots[sb].gdn[i].take().unwrap();
+                        let mut st = self.slots[sb].gdn[i]
+                            .take()
+                            .context("forward_batch: slot gdn state missing")?;
                         let mut vc = Some(GdnVerifyCache::default());
+                        // hand the state back BEFORE propagating an Err —
+                        // an early `?` left gdn[i] = None and the next
+                        // forward on this slot panicked the th-batch thread
                         let o = Self::gdn_forward(
                             l, &mut st, &mut vc, &fv, seq_b, eps,
-                        )?;
+                        );
                         self.slots[sb].vcache[i] = vc.unwrap_or_default();
                         self.slots[sb].gdn[i] = Some(st);
-                        parts.push(o);
+                        parts.push(o?);
                     }
                     Tensor::cat(&parts, 1)?
                 }
@@ -3342,17 +3383,18 @@ impl Qwen35 {
                         let sb = slots[b];
                         let seq_b = seqs[b].len();
                         let qv = qkv.narrow(1, offs[b], seq_b)?;
-                        let mut kvc =
-                            self.slots[sb].kv[i].take().unwrap();
+                        let mut kvc = self.slots[sb].kv[i]
+                            .take()
+                            .context("forward_batch: slot kv state missing")?;
                         let mut kvq =
                             std::mem::take(&mut self.slots[sb].kvq[i]);
                         let o = Self::attn_forward(
                             l, &mut kvc, &mut kvq, self.slot_tq(sb),
                             &qv, poss[b], seq_b, eps, &self.device,
-                        )?;
+                        );
                         self.slots[sb].kv[i] = Some(kvc);
                         self.slots[sb].kvq[i] = kvq;
-                        parts.push(o);
+                        parts.push(o?);
                     }
                     Tensor::cat(&parts, 1)?
                 }

@@ -172,8 +172,15 @@ impl Engine {
             };
             match q.try_send(job) {
                 Ok(()) => return,
-                Err(_) => {
-                    let _ = tx.send(GenEvent::Error("batch queue full".into()));
+                Err(e) => {
+                    let msg = match e {
+                        std::sync::mpsc::TrySendError::Full(_) => "batch queue full",
+                        std::sync::mpsc::TrySendError::Disconnected(_) => {
+                            tracing::error!("th-batch scheduler is gone — engine restart required");
+                            "batch scheduler not running (engine restart required)"
+                        }
+                    };
+                    let _ = tx.send(GenEvent::Error(msg.into()));
                     state.counters.requests_active.fetch_sub(1, Ordering::Relaxed);
                     return;
                 }
@@ -1231,16 +1238,44 @@ fn batch_loop(
             for s in 0..nslots {
                 if runs[s].is_none() && !pending.is_empty() {
                     let job = pending.remove(0);
-                    match admit(&mut inner, &state, s, job) {
-                        Ok(r) => runs[s] = r,
+                    // admit consumes the job; keep a sender so a failed
+                    // admission reaches the client (dropping it closes the
+                    // stream with no Error — HTTP 200 with empty content)
+                    let tx = job.tx.clone();
+                    // a panic here must not unwind the scheduler thread
+                    // (that drops `rx`: every later request fails while
+                    // the probes stay green) — surface it as an Err; the
+                    // next admit's clear_kv_cache rebuilds lost slot state
+                    let res = std::panic::catch_unwind(
+                        std::panic::AssertUnwindSafe(|| {
+                            admit(&mut inner, &state, s, job)
+                        }),
+                    )
+                    .unwrap_or_else(|p| {
+                        Err(anyhow::anyhow!("admit panicked: {}", panic_msg(&*p)))
+                    });
+                    match res {
+                        Ok(Some(r)) => runs[s] = Some(r),
+                        Ok(None) => {
+                            // rejected pre-run (admit sent the Error)
+                            state.counters.requests_active.fetch_sub(1, Ordering::Relaxed);
+                        }
                         Err(e) => {
                             tracing::warn!(error = %e, "batch admit failed");
+                            let _ = tx.send(GenEvent::Error(e.to_string()));
+                            state.counters.requests_active.fetch_sub(1, Ordering::Relaxed);
                         }
                     }
                     inner.live[s] = runs[s].is_some();
                 }
             }
-            if let Err(e) = batch_round(&mut inner, &state, &mut runs) {
+            let round = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                batch_round(&mut inner, &state, &mut runs)
+            }))
+            .unwrap_or_else(|p| {
+                Err(anyhow::anyhow!("batch round panicked: {}", panic_msg(&*p)))
+            });
+            if let Err(e) = round {
                 tracing::warn!(error = %e, "batch round failed");
                 for r in runs.iter_mut().flatten() {
                     if r.finish.is_none() {
@@ -1259,6 +1294,13 @@ fn batch_loop(
         }
         std::thread::yield_now();
     }
+}
+
+fn panic_msg(p: &(dyn std::any::Any + Send)) -> String {
+    p.downcast_ref::<&str>()
+        .map(|s| s.to_string())
+        .or_else(|| p.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "unknown panic".into())
 }
 
 /// Prefill a job onto slot `s` and emit its first token.
