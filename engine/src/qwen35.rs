@@ -3139,9 +3139,12 @@ impl Qwen35 {
                         })?,
                     )
                 } else {
+                    // MEM-2: gdn_fused_step writes every y[t, hv*dv + d]
+                    // and every pack[t, c] (v channels by every hv, q/k by
+                    // the hv % REP owners) — no zero-fill blits here either
                     (
-                        Tensor::zeros((seq, l.value_dim), DType::BF16, fused.device())?,
-                        Tensor::zeros((seq, conv_dim), DType::BF16, fused.device())?,
+                        crate::outbuf::kernel_out((seq, l.value_dim), DType::BF16, fused.device())?,
+                        crate::outbuf::kernel_out((seq, conv_dim), DType::BF16, fused.device())?,
                     )
                 };
                 crate::gdn_kernel::gdn_fused_step(
@@ -3419,7 +3422,14 @@ impl Qwen35 {
         {
             let (kc, vc) = kvc;
             Self::ensure_kv(kc, vc, pos + seq, device)?;
-            let q_buf = Tensor::zeros(
+            // MEM-2: uninitialised outputs — attn_prepare writes every
+            // q_buf[row, head, 0..d] (256 threads per (head, row): tid <
+            // rp writes the rotated pair, tid >= 2rp the pass-through), and
+            // attn_decode every out[row, h*d + c] (one simdgroup per q head,
+            // 8 channels per lane). Both kernels assume d = 256 (Qwen3.8's
+            // head_dim; the MEM-8 review noted it is not guarded) — the
+            // zero fill never covered a wrong head_dim either.
+            let q_buf = crate::outbuf::kernel_out(
                 (seq, l.n_heads, l.head_dim),
                 DType::BF16,
                 device,
@@ -3429,7 +3439,7 @@ impl Qwen35 {
                 kc, vc, pos, seq, l.n_heads, l.n_kv, l.head_dim,
                 l.rot_dim / 2, eps as f32,
             )?;
-            let out = Tensor::zeros(
+            let out = crate::outbuf::kernel_out(
                 (seq, l.n_heads * l.head_dim),
                 DType::BF16,
                 device,

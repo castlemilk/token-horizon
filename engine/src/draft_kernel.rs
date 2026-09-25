@@ -199,7 +199,9 @@ kernel void draft_attn(
         };
         let (p_conv, _, _) = pipes(&device)?;
         let rows = x.dim(1)?;
-        let out = Tensor::zeros((1, rows, 5120), DType::BF16, x.device())?;
+        // MEM-2: one thread per element (dispatch_threads over exactly
+        // rows * 5120) — every out[i] is written, no zero fill needed
+        let out = crate::outbuf::kernel_out((1, rows, 5120), DType::BF16, x.device())?;
         let b2 = DType::BF16.size_in_bytes();
         let (xb, xo, _) = msl_buf(x, b2)?;
         let (db, dbo, _) = msl_buf(dyn_, b2)?;
@@ -259,7 +261,9 @@ kernel void draft_attn(
             candle_core::bail!("draft_norm_rope: {:?}", x.shape());
         }
         let (_, p_nr, _) = pipes(&device)?;
-        let out = Tensor::zeros((rows, heads, 128), DType::BF16, x.device())?;
+        // MEM-2: a 128-thread group per (row, head); thread i < 64 writes
+        // channels i and i + 64 — the whole [rows, heads, 128] output
+        let out = crate::outbuf::kernel_out((rows, heads, 128), DType::BF16, x.device())?;
         let b2 = DType::BF16.size_in_bytes();
         let (xb, xo, l_x) = msl_buf(x, b2)?;
         let (wb, wo, _) = msl_buf(w, b2)?;
@@ -304,7 +308,9 @@ kernel void draft_attn(
             _ => candle_core::bail!("draft_attn: Metal only"),
         };
         let (_, _, p_at) = pipes(&device)?;
-        let out = Tensor::zeros((8, 32, 128), DType::BF16, q.device())?;
+        // MEM-2: 8 kv-head groups x 8 simdgroups cover all 32 (q head,
+        // row) pairs per group, 4 channels per lane — every element
+        let out = crate::outbuf::kernel_out((8, 32, 128), DType::BF16, q.device())?;
         let b2 = DType::BF16.size_in_bytes();
         let (qb, qo, l_q) = msl_buf(q, b2)?;
         let (kb, ko, _) = msl_buf(ring_k, b2)?;
