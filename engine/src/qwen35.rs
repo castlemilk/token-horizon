@@ -1415,6 +1415,7 @@ impl Qwen35 {
             let padded = q.out.div_ceil(256) * 256;
             let up_tile = if gu { n / 256 } else { 0 };
             let bytes = (q.inp * q.out / 2 + q.inp * q.out / 64 * 4) as f64;
+            let ng = q.inp / 64;
             for &m in &ms_list {
                 let xv: Vec<f32> = (0..m * q.inp)
                     .map(|i| ((i * 2654435761) % 1000) as f32 / 100.0 - 5.0)
@@ -1476,6 +1477,14 @@ impl Qwen35 {
                     let mut cfgs = vec![base];
                     if gu {
                         cfgs.push(PfCfg { fused: true, ..base });
+                    } else {
+                        for k in [2usize, 4, 8] {
+                            // split-K only pays while the output tiles
+                            // alone under-fill the GPU
+                            if ng % k == 0 && (all || m.div_ceil(r) * n.div_ceil(tn) < 640) {
+                                cfgs.push(PfCfg { splits: k, ..base });
+                            }
+                        }
                     }
                     for cfg in cfgs {
                         let op = AffineQpf { inp: q.inp, out: n, padded, m, up_tile, cfg };
