@@ -3800,6 +3800,275 @@ impl Qwen35 {
     }
 }
 
+// MARK: - R0a state-bitwise rollback gate (TH_TEST_ROLLBACK probe)
+
+/// One keep count of [`Qwen35::rollback_state_check`]: bit-level
+/// mismatch counts of the post-round GDN state (recurrent f32 elements,
+/// conv-window bf16 elements, summed over all GDN layers) against three
+/// references built from the same pre-verify state.
+#[cfg(all(feature = "metal", target_os = "macos"))]
+#[derive(Debug, Default, Clone)]
+pub(crate) struct RollbackStateCheck {
+    pub kept: usize,
+    pub layers: usize,
+    pub rec_elems: usize,
+    pub conv_elems: usize,
+    /// vs the fused-step kernel scanning only the kept rows (the stashed
+    /// verify inputs) — the gate: a round must leave exactly the state
+    /// a kept-row forward produces
+    pub rec_diff_f: usize,
+    /// of `rec_diff_f`: +0.0 vs -0.0 only (numerically equal)
+    pub rec_zsign_f: usize,
+    pub rec_max_f: f32,
+    pub conv_diff_f: usize,
+    pub layers_bad_f: usize,
+    /// info: vs the `gated_delta_step` rescan of the same rows
+    pub rec_diff_s: usize,
+    pub rec_max_s: f32,
+    /// info: vs a continuous forward of only the kept rows (later layers
+    /// carry matmul batch-shape noise, so not expected bitwise)
+    pub rec_diff_c: usize,
+    pub rec_max_c: f32,
+    pub conv_diff_c: usize,
+}
+
+#[cfg(all(feature = "metal", target_os = "macos"))]
+impl RollbackStateCheck {
+    pub fn ok(&self) -> bool {
+        self.layers > 0 && self.rec_diff_f == 0 && self.conv_diff_f == 0
+    }
+}
+
+/// Bit-level f32 comparison: (differing elements, max |a-b|).
+#[cfg(all(feature = "metal", target_os = "macos"))]
+fn bits_diff_f32(a: &Tensor, b: &Tensor) -> Result<(usize, f32)> {
+    let va = a.flatten_all()?.to_vec1::<f32>()?;
+    let vb = b.flatten_all()?.to_vec1::<f32>()?;
+    anyhow::ensure!(va.len() == vb.len(), "f32 compare: {} vs {}", va.len(), vb.len());
+    let (mut n, mut mx) = (0usize, 0f32);
+    for (x, y) in va.iter().zip(vb.iter()) {
+        if x.to_bits() != y.to_bits() {
+            n += 1;
+            let d = (x - y).abs();
+            mx = if d.is_nan() { f32::INFINITY } else { mx.max(d) };
+        }
+    }
+    Ok((n, mx))
+}
+
+/// Mismatching f32 elements that are numerically equal (+0.0 vs -0.0).
+#[cfg(all(feature = "metal", target_os = "macos"))]
+fn zero_sign_diff_f32(a: &Tensor, b: &Tensor) -> Result<usize> {
+    let va = a.flatten_all()?.to_vec1::<f32>()?;
+    let vb = b.flatten_all()?.to_vec1::<f32>()?;
+    Ok(va.iter().zip(vb.iter()).filter(|(x, y)| x.to_bits() != y.to_bits() && x == y).count())
+}
+
+/// Bit-level bf16 comparison: differing elements.
+#[cfg(all(feature = "metal", target_os = "macos"))]
+fn bits_diff_bf16(a: &[half::bf16], b: &[half::bf16]) -> Result<usize> {
+    anyhow::ensure!(a.len() == b.len(), "bf16 compare: {} vs {}", a.len(), b.len());
+    Ok(a.iter().zip(b.iter()).filter(|(x, y)| x.to_bits() != y.to_bits()).count())
+}
+
+/// Bit-exact device copy into a fresh buffer. candle 0.11's Metal
+/// `Tensor::copy()` is an alias (`try_clone` shares the `Arc<Buffer>`),
+/// and `affine(1, 0)` maps -0.0 to +0.0 — neither copies kernel state.
+#[cfg(all(feature = "metal", target_os = "macos"))]
+fn deep_copy(t: &Tensor) -> Result<Tensor> {
+    let out = Tensor::zeros(t.shape(), t.dtype(), t.device())?;
+    out.slice_set(&t.contiguous()?, 0, 0)?;
+    Ok(out)
+}
+
+#[cfg(all(feature = "metal", target_os = "macos"))]
+impl Qwen35 {
+    fn gdn_layer_ids(&self) -> Vec<usize> {
+        (0..self.layers.len())
+            .filter(|&i| matches!(self.layers[i].kind, Kind::Gdn(_)))
+            .collect()
+    }
+
+    /// Deep copies of `slot`'s committed GDN state per GDN layer:
+    /// (conv window [k-1, conv_dim] bf16, recurrent [hv, dv, dk] f32).
+    pub(crate) fn gdn_state_copy(&self, slot: usize) -> Result<Vec<(Tensor, Tensor)>> {
+        self.gdn_layer_ids()
+            .iter()
+            .map(|&i| {
+                let st = self.slots[slot].gdn[i].as_ref().context("gdn state missing")?;
+                Ok((deep_copy(&st.conv)?, deep_copy(&st.recurrent)?))
+            })
+            .collect()
+    }
+
+    /// Deep snapshot for probes that restore one state many times.
+    pub(crate) fn snapshot_deep(&mut self, slot: usize) -> Result<Snapshot> {
+        // the copy-based snapshot keeps the originals immutable
+        self.snapshot(slot)
+    }
+
+    /// R0a gate for one keep count: runs one engine round on `slot` at
+    /// `pos` (snapshot → verify `seq` → rollback_verify(kept), skipped
+    /// on a full accept like the DFlash loop) and compares the committed
+    /// GDN state bit for bit against a reference fused scan of only the
+    /// kept rows from a deep copy of the pre-verify state (plus info
+    /// references). Leaves `slot` restored to its pre-verify state.
+    pub(crate) fn rollback_state_check(
+        &mut self,
+        slot: usize,
+        pos: usize,
+        seq: &[u32],
+        kept: usize,
+    ) -> Result<RollbackStateCheck> {
+        anyhow::ensure!(kept >= 1 && kept <= seq.len() && seq.len() <= 8, "kept {kept} / seq {}", seq.len());
+        let dev = self.device.clone();
+        let ids = self.gdn_layer_ids();
+        let pre = self.gdn_state_copy(slot)?;
+        let keep = self.snapshot_deep(slot)?;
+        // the engine's round
+        let snap = self.snapshot(slot)?;
+        let _ = self.forward_multi(slot, seq, pos)?;
+        let stash: Vec<(Tensor, Tensor)> = ids
+            .iter()
+            .map(|&i| {
+                let vc = &self.slots[slot].vcache[i];
+                Ok((
+                    vc.qkv.clone().context("verify stash: qkv")?,
+                    vc.ab.clone().context("verify stash: ab")?,
+                ))
+            })
+            .collect::<Result<_>>()?;
+        if kept < seq.len() {
+            self.rollback_verify(slot, snap, kept)?;
+        } else {
+            drop(snap);
+        }
+        let rb = self.gdn_state_copy(slot)?;
+        // continuous kept-row forward from the same pre-verify state
+        self.restore(slot, keep.clone())?;
+        let _ = self.forward_multi(slot, &seq[..kept], pos)?;
+        let cont = self.gdn_state_copy(slot)?;
+        self.restore(slot, keep)?;
+
+        let mut r = RollbackStateCheck { kept, layers: ids.len(), ..Default::default() };
+        for (j, &i) in ids.iter().enumerate() {
+            let Kind::Gdn(l) = &self.layers[i].kind else { continue };
+            let conv_dim = 2 * l.key_dim + l.value_dim;
+            let (qkv, ab) = &stash[j];
+            let (pre_conv, pre_rec) = &pre[j];
+            let x = qkv.narrow(0, 0, kept)?; // [kept, conv] strided
+            let abk = ab.narrow(ab.rank() - 2, 0, kept)?;
+            // reference F: the fused step kernel over only the kept rows
+            let rec_f = deep_copy(pre_rec)?;
+            let y = Tensor::zeros((kept, l.value_dim), DType::BF16, &dev)?;
+            let pk = Tensor::zeros((kept, conv_dim), DType::BF16, &dev)?;
+            crate::gdn_kernel::gdn_fused_step(
+                &x, pre_conv, &l.conv, &rec_f, &abk, &x /* z: y only */,
+                &l.norm_w, &y, &pk, kept, l.num_k_heads, l.num_v_heads,
+                l.head_k, l.head_v, self.cfg.rms_norm_eps as f32,
+                l.a_log64, l.dt_bias64, false,
+            )?;
+            // info reference S: gated_delta_step over the same normed rows
+            let rec_s = deep_copy(pre_rec)?;
+            let ab2 = if abk.rank() == 3 { abk.squeeze(0)? } else { abk.clone() };
+            let _ = pk.apply_op3_no_bwd(
+                &ab2,
+                &rec_s,
+                &crate::gdn_kernel::GdnStep {
+                    t: kept,
+                    hk: l.num_k_heads,
+                    hv: l.num_v_heads,
+                    dk: l.head_k,
+                    dv: l.head_v,
+                    a_log: l.a_log64,
+                    dt_bias: l.dt_bias64,
+                },
+            )?;
+            // reference conv window: last k-1 rows of [pre window | kept rows]
+            let pc = pre_conv.flatten_all()?.to_vec1::<half::bf16>()?;
+            let xr = x.contiguous()?.flatten_all()?.to_vec1::<half::bf16>()?;
+            let all: Vec<half::bf16> = pc.iter().chain(xr.iter()).copied().collect();
+            let win = &all[kept * conv_dim..];
+            let (rb_conv, rb_rec) = &rb[j];
+            let rbc = rb_conv.flatten_all()?.to_vec1::<half::bf16>()?;
+            let (df, mf) = bits_diff_f32(rb_rec, &rec_f)?;
+            let cf = bits_diff_bf16(&rbc, win)?;
+            let (ds, ms) = bits_diff_f32(rb_rec, &rec_s)?;
+            let (dc, mc) = bits_diff_f32(rb_rec, &cont[j].1)?;
+            let cc = bits_diff_bf16(&rbc, &cont[j].0.flatten_all()?.to_vec1::<half::bf16>()?)?;
+            r.rec_elems += rb_rec.elem_count();
+            r.conv_elems += rbc.len();
+            r.rec_diff_f += df;
+            if df > 0 {
+                r.rec_zsign_f += zero_sign_diff_f32(rb_rec, &rec_f)?;
+            }
+            r.rec_max_f = r.rec_max_f.max(mf);
+            r.conv_diff_f += cf;
+            r.layers_bad_f += (df + cf > 0) as usize;
+            r.rec_diff_s += ds;
+            r.rec_max_s = r.rec_max_s.max(ms);
+            r.rec_diff_c += dc;
+            r.rec_max_c = r.rec_max_c.max(mc);
+            r.conv_diff_c += cc;
+        }
+        Ok(r)
+    }
+
+    /// Slot isolation (needs >= 2 slots): a round on `other` must leave
+    /// `slot`'s committed GDN state bitwise untouched, and the same round
+    /// on two identically-prefilled slots must produce bitwise-equal
+    /// states. Returns (untouched, equal); leaves both slots restored.
+    pub(crate) fn slot_isolation_check(
+        &mut self,
+        slot: usize,
+        other: usize,
+        prompt: &[u32],
+        seq: &[u32],
+        kept: usize,
+    ) -> Result<(bool, bool)> {
+        let same = |a: &[(Tensor, Tensor)], b: &[(Tensor, Tensor)]| -> Result<bool> {
+            for ((ac, ar), (bc, br)) in a.iter().zip(b.iter()) {
+                if bits_diff_f32(ar, br)?.0 != 0 {
+                    return Ok(false);
+                }
+                let (x, y) = (
+                    ac.flatten_all()?.to_vec1::<half::bf16>()?,
+                    bc.flatten_all()?.to_vec1::<half::bf16>()?,
+                );
+                if bits_diff_bf16(&x, &y)? != 0 {
+                    return Ok(false);
+                }
+            }
+            Ok(a.len() == b.len() && !a.is_empty())
+        };
+        let pos = prompt.len();
+        let keep_s = self.snapshot_deep(slot)?;
+        let keep_o = self.snapshot_deep(other)?;
+        // identical histories: fresh prefill of the same prompt on both
+        for s in [slot, other] {
+            self.clear_kv_cache(s);
+            let _ = self.forward(s, prompt, 0)?;
+        }
+        let before = self.gdn_state_copy(slot)?;
+        let round = |m: &mut Self, s: usize| -> Result<()> {
+            let snap = m.snapshot(s)?;
+            let _ = m.forward_multi(s, seq, pos)?;
+            if kept < seq.len() {
+                m.rollback_verify(s, snap, kept)?;
+            }
+            Ok(())
+        };
+        round(self, other)?;
+        let after = self.gdn_state_copy(slot)?;
+        let untouched = same(&before, &after)?;
+        round(self, slot)?;
+        let equal = same(&self.gdn_state_copy(slot)?, &self.gdn_state_copy(other)?)?;
+        self.restore(slot, keep_s)?;
+        self.restore(other, keep_o)?;
+        Ok((untouched, equal))
+    }
+}
+
 /// MEM-6 regression: a batch admission's kv_quant mode must never change
 /// the attention-cache mode of a slot that is already mid-decode.
 /// Tiny 1-layer attention-only qwen3_5 (dense bf16 weights, 2 slots);

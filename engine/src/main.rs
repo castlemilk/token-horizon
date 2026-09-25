@@ -192,6 +192,42 @@ async fn main() -> Result<()> {
                 let seq8: Vec<u32> = (0..8).map(|i| 1000 + i * 37).collect();
                 let probe = 555u32;
 
+                // R0a state-bitwise gate: after a round (verify seq8 →
+                // rollback_verify(kept); kept = 8 is a full accept with no
+                // rollback) the GDN recurrent state [layers, hv, dv, dk] f32
+                // and conv windows must equal, bit for bit, a reference
+                // fused scan of only the kept rows from the pre-verify
+                // state. Exits nonzero on any mismatch (after the logits
+                // checks below print).
+                #[allow(unused_mut)]
+                let mut state_fail = false;
+                #[cfg(all(feature = "metal", target_os = "macos"))]
+                if let model::ModelBackend::Qwen35(q) = &mut loaded.backend {
+                    for kept in 1..=seq8.len() {
+                        let r = q.rollback_state_check(0, pos, &seq8, kept)?;
+                        eprintln!(
+                            "  state kept={}: rec≠ref {}/{} (±0-only {}, max|Δ| {:.3e}) conv≠ref {}/{} layers≠ {}/{} | info: rec≠step-rescan {} (max {:.3e}), rec≠continuous-fwd {} (max {:.3e}) conv≠ {} | {}",
+                            r.kept, r.rec_diff_f, r.rec_elems, r.rec_zsign_f, r.rec_max_f, r.conv_diff_f,
+                            r.conv_elems, r.layers_bad_f, r.layers, r.rec_diff_s,
+                            r.rec_max_s, r.rec_diff_c, r.rec_max_c, r.conv_diff_c,
+                            if r.ok() { "ok" } else { "MISMATCH" }
+                        );
+                        state_fail |= !r.ok();
+                    }
+                    if q.nslots() >= 2 {
+                        let (untouched, equal) =
+                            q.slot_isolation_check(0, 1, &ids, &seq8, 3)?;
+                        eprintln!(
+                            "  slot isolation: slot0 untouched by a slot1 round={untouched}, same round on slot0/slot1 bitwise equal={equal}"
+                        );
+                        state_fail |= !(untouched && equal);
+                    }
+                    eprintln!(
+                        "rollback state-bitwise: {}",
+                        if state_fail { "FAIL" } else { "PASS" }
+                    );
+                }
+
                 // restore points at `pos` for the two compare paths
                 let snap_a = loaded.backend.snapshot(0)?;
                 let snap_c = loaded.backend.snapshot(0)?;
@@ -298,6 +334,10 @@ async fn main() -> Result<()> {
                         "FAIL"
                     }
                 );
+                if state_fail {
+                    eprintln!("rollback test: exiting 1 (state-bitwise mismatch)");
+                    std::process::exit(1);
+                }
             }
             // TH_BENCH_LIN=1 → decode + prefill kernel sweeps; =dec / =pf
             // → just one of them
