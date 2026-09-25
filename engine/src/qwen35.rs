@@ -1472,7 +1472,11 @@ impl Qwen35 {
                     if shapes_only.as_ref().is_some_and(|o| !o.contains(&shape)) {
                         continue;
                     }
-                    let cfgs = vec![PfCfg::new(r, tn, sg)];
+                    let base = PfCfg::new(r, tn, sg);
+                    let mut cfgs = vec![base];
+                    if gu {
+                        cfgs.push(PfCfg { fused: true, ..base });
+                    }
                     for cfg in cfgs {
                         let op = AffineQpf { inp: q.inp, out: n, padded, m, up_tile, cfg };
                         cands.push((
