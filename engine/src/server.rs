@@ -103,6 +103,7 @@ async fn status(State(app): State<Arc<App>>) -> Json<Value> {
             "spec_decode": s.config.read().unwrap().spec_tokens > 0,
             "kv_quant": s.config.read().unwrap().kv_quant,
             "dflash": s.config.read().unwrap().draft_dir.is_some(),
+            "batch_slots": s.model_meta.get("decode_slots").cloned().unwrap_or(json!(1)),
         },
         "memory": {"rss_bytes": rss_bytes()},
         "rss_bytes": rss_bytes(),

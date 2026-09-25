@@ -99,8 +99,23 @@ impl Engine {
             }
         }
         let model_id = model.to_string();
-        let meta = loaded.meta.clone();
-        let nslots = loaded.backend.nslots();
+        let mut meta = loaded.meta.clone();
+        let mut nslots = loaded.backend.nslots();
+        if nslots > 1 && !loaded.backend.has_draft() {
+            // batch_round is DFlash-only (draft_propose_batch): without a
+            // draft every batched request errors after its first token.
+            // Serve single-slot instead — generate_blocking (plain +
+            // n-gram decode) only ever touches slot 0.
+            tracing::warn!(
+                requested = nslots,
+                "TH_BATCH>1 requires --draft; batched decode disabled, serving single-slot"
+            );
+            loaded.backend.truncate_slots(1);
+            nslots = 1;
+        }
+        if let Some(o) = meta.as_object_mut() {
+            o.insert("decode_slots".into(), serde_json::json!(nslots));
+        }
         let inner = ModelInner {
             backend: loaded.backend,
             tokenizer: loaded.tokenizer,

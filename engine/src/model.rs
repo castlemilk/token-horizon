@@ -235,6 +235,13 @@ impl ModelBackend {
         }
     }
 
+    /// Drop decode slots beyond `n` (load-time fallback to single-slot).
+    pub fn truncate_slots(&mut self, n: usize) {
+        if let Self::Qwen35(m) = self {
+            m.truncate_slots(n);
+        }
+    }
+
     /// Batched verify forward — `seqs`/`poss` per slot. Returns
     /// `[Σseq, vocab]`. qwen3_5 only.
     pub fn forward_batch(
