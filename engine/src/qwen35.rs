@@ -1599,6 +1599,23 @@ impl Qwen35 {
         cfg: &Qwen35Config,
         device: &Device,
     ) -> Result<Self> {
+        // prefill tile libraries (rows > 8 routing) compile here, not
+        // lazily inside the first prompt or TH_BATCH > 1 decode round
+        #[cfg(all(feature = "metal", target_os = "macos"))]
+        if let Device::Metal(d) = device {
+            if std::env::var("TH_QMM_MPP").map_or(true, |v| v != "0") {
+                let t = std::time::Instant::now();
+                match crate::quant_kernel::pf_warm(d) {
+                    Ok(0) => {}
+                    Ok(n) => tracing::info!(
+                        pipelines = n,
+                        ms = format!("{:.0}", t.elapsed().as_secs_f64() * 1e3),
+                        "prefill tile libraries compiled"
+                    ),
+                    Err(e) => tracing::warn!(error = %e, "prefill tile library compile failed"),
+                }
+            }
+        }
         let w = Weights::load(files, device)?;
         let p = "language_model";
         let embed = w.get(&format!("{p}.model.embed_tokens"))?;

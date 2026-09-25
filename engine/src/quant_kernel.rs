@@ -17,7 +17,7 @@
 #[cfg(all(feature = "metal", target_os = "macos"))]
 pub use metal_impl::{AffineDequant, AffineQmm, AffineQmpp, AffineQmppPrefill, AffineQmv, AffineQsg, mpp_probe};
 #[cfg(all(feature = "metal", target_os = "macos"))]
-pub use metal_impl::{pf_compile, pf_force_legacy, pf_route, pf_shapes, AffineQpf, PfCfg};
+pub use metal_impl::{pf_compile, pf_force_legacy, pf_route, pf_shapes, pf_warm, AffineQpf, PfCfg};
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
 mod metal_impl {
@@ -2588,6 +2588,38 @@ kernel void pf_reduce(device const float* part [[buffer(0)]],
         Ok(n)
     }
 
+    /// The (rows, tile_n, simdgroups) shapes `pf_policy` can return (unit
+    /// test `pf_policy_only_returns_warmed_shapes` keeps them in sync).
+    const PF_POLICY_SHAPES: [(usize, usize, usize); 2] = [(16, 128, 4), (32, 256, 8)];
+
+    /// Compile, at model load, every tile library `pf_route` can pick
+    /// under the current env (the policy's shapes, or the TH_PF-forced
+    /// one) plus pf_prep/pf_reduce. Lazily, the first call per shape paid
+    /// the compile inside a request: the first prompt's prefill, or — once
+    /// a TH_BATCH > 1 decode round routes 8*nb > 8 verify/propose rows
+    /// through the tiles — a decode round mid-generation (~80 ms per
+    /// pipeline on a cold Metal shader cache, a few ms warm). Returns the
+    /// pipeline count; 0 when tile routing is off.
+    pub fn pf_warm(device: &candle_core::MetalDevice) -> Result<usize> {
+        let (off, forced, _) = pf_env();
+        if off {
+            return Ok(0);
+        }
+        let shapes: Vec<PfCfg> = match forced {
+            Some(c) if c.exists() => vec![c],
+            Some(_) => return Ok(0),
+            None => PF_POLICY_SHAPES
+                .iter()
+                .map(|&(r, n, sg)| PfCfg::new(r, n, sg))
+                .collect(),
+        };
+        let mut n = pf_common(device)?.len();
+        for c in &shapes {
+            n += pf_shape_lib(device, c)?.len();
+        }
+        Ok(n)
+    }
+
     #[repr(C)]
     #[derive(Clone, Copy)]
     struct PfParams {
@@ -2827,9 +2859,11 @@ kernel void pf_reduce(device const float* part [[buffer(0)]],
         PF_LEGACY.store(on, std::sync::atomic::Ordering::Relaxed);
     }
 
-    pub fn pf_route(m: usize, out: usize, inp: usize, gate_up: bool) -> Option<PfCfg> {
+    /// (off, forced, cores) from TH_QMM_SCALAR / TH_PF / TH_GPU_CORES,
+    /// read once.
+    fn pf_env() -> (bool, Option<PfCfg>, usize) {
         static ENV: OnceLock<(bool, Option<PfCfg>, usize)> = OnceLock::new();
-        let (off, forced, cores) = *ENV.get_or_init(|| {
+        *ENV.get_or_init(|| {
             let scalar = std::env::var("TH_QMM_SCALAR").is_ok();
             let v = std::env::var("TH_PF").ok();
             let off = scalar || v.as_deref() == Some("0");
@@ -2838,7 +2872,11 @@ kernel void pf_reduce(device const float* part [[buffer(0)]],
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(40usize);
             (off, v.as_deref().and_then(pf_parse), cores)
-        });
+        })
+    }
+
+    pub fn pf_route(m: usize, out: usize, inp: usize, gate_up: bool) -> Option<PfCfg> {
+        let (off, forced, cores) = pf_env();
         if off || m <= 8 || inp % 64 != 0 || PF_LEGACY.load(std::sync::atomic::Ordering::Relaxed) {
             return None;
         }
@@ -2918,6 +2956,98 @@ kernel void pf_reduce(device const float* part [[buffer(0)]],
             return Some(split(2));
         }
         Some(PfCfg::new(32, 256, 8))
+    }
+
+    #[cfg(test)]
+    mod pf_tests {
+        use super::*;
+
+        /// `pf_route`'s validity filter (minus the env / m <= 8 gates).
+        fn valid(c: PfCfg, inp: usize, gate_up: bool) -> bool {
+            c.exists() && (inp / 64) % c.splits == 0 && !(gate_up && c.splits > 1)
+        }
+
+        #[test]
+        fn pf_parse_round_trips_labels() {
+            for s in ["r16n128s4", "r16n128s4+k4", "r32n256s8", "r16n128s4+gu", "r24n256s8+k2"] {
+                assert_eq!(pf_parse(s).map(|c| c.label()).as_deref(), Some(s));
+            }
+            for s in ["", "0", "r16", "r16n128", "x16n128s4", "r16n128s4+kx"] {
+                assert_eq!(pf_parse(s), None, "{s:?}");
+            }
+        }
+
+        /// The routed config per (m, out, inp, gate_up) on 40 cores — the
+        /// model's prefill shapes and the TH_BATCH > 1 decode shapes
+        /// (verify rows 8*nb, draft lm_head/selector rows 7*nb).
+        #[test]
+        fn pf_policy_table() {
+            let cases: &[(usize, usize, usize, bool, Option<&str>)] = &[
+                // narrow (<= 80 n128 column tiles): down, attn o / GDN out,
+                // draft fc / qkv / attn_dyn / selector
+                (16, 5120, 17408, false, Some("r16n128s4+k4")),
+                (24, 5120, 17408, false, Some("r16n128s4+k2")),
+                (32, 5120, 17408, false, Some("r16n128s4+k2")),
+                (128, 5120, 17408, false, Some("r16n128s4+k2")),
+                (16, 6144, 5120, false, Some("r16n128s4+k4")),
+                (32, 6144, 5120, false, Some("r16n128s4+k2")),
+                (16, 5120, 25600, false, Some("r16n128s4+k4")),
+                (32, 1280, 5120, false, Some("r16n128s4+k4")),
+                (128, 1280, 5120, false, Some("r16n128s4+k2")),
+                (14, 256, 5120, false, Some("r16n128s4+k4")),
+                // wide single-stream: in_all, in_qkv, lm_head, draft gate/up
+                (16, 16480, 5120, false, Some("r16n128s4+k2")),
+                (17, 16480, 5120, false, Some("r32n256s8")),
+                (58, 14336, 5120, false, Some("r32n256s8")),
+                (14, 248320, 5120, false, Some("r16n128s4+k2")),
+                (32, 248320, 5120, false, Some("r32n256s8")),
+                (16, 17408, 5120, false, Some("r16n128s4+k2")),
+                // gate/up (per-stream out): fused 16-row tile, legacy
+                // 17..127, staged 32x256 at 128
+                (16, 17408, 5120, true, Some("r16n128s4+gu")),
+                (17, 17408, 5120, true, None),
+                (32, 17408, 5120, true, None),
+                (127, 17408, 5120, true, None),
+                (128, 17408, 5120, true, Some("r32n256s8")),
+                // m > 128: legacy
+                (129, 5120, 17408, false, None),
+                (512, 16480, 5120, false, None),
+                (512, 17408, 5120, true, None),
+            ];
+            for &(m, out, inp, gu, want) in cases {
+                let got = pf_policy(m, out, inp, gu, 40);
+                assert_eq!(got.map(|c| c.label()).as_deref(), want, "m={m} out={out} inp={inp} gate_up={gu}");
+                if let Some(c) = got {
+                    assert!(valid(c, inp, gu), "invalid {c:?} for m={m} out={out} inp={inp}");
+                }
+            }
+        }
+
+        /// `pf_warm` compiles PF_POLICY_SHAPES only: whatever the policy
+        /// picks must be one of them (and instantiated and valid), or a
+        /// request would still pay a lazy compile.
+        #[test]
+        fn pf_policy_only_returns_warmed_shapes() {
+            let outs = [256, 1280, 5120, 6144, 14336, 16480, 17408, 248320];
+            let inps = [4096, 5120, 6144, 17408, 25600];
+            for cores in [10, 40, 80] {
+                for m in 9..=160 {
+                    for &out in &outs {
+                        for &inp in &inps {
+                            for gu in [false, true] {
+                                if let Some(c) = pf_policy(m, out, inp, gu, cores) {
+                                    assert!(
+                                        PF_POLICY_SHAPES.contains(&(c.rows, c.tile_n, c.sgs)),
+                                        "unwarmed {c:?} (m={m} out={out} inp={inp} gu={gu} cores={cores})"
+                                    );
+                                    assert!(valid(c, inp, gu), "invalid {c:?}");
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     impl CustomOp3 for AffineQsg {
