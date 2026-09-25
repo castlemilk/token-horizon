@@ -805,6 +805,30 @@ pub(crate) fn bench_q4_decode(model: &Qwen35, device: &Device) -> Result<()> {
             }
         };
         let y_path = path(q0)?.to_dtype(DType::F32)?;
+        if rows == 8 {
+            // P0 check: the same input at a 2-byte offset can't be bound
+            // directly, so it goes through the pad copy — must be bitwise
+            // equal to the direct binding
+            let flat = Tensor::cat(
+                &[&Tensor::zeros(1, DType::BF16, device)?, &x.flatten_all()?],
+                0,
+            )?;
+            let x_mis = flat.narrow(0, 1, rows * q0.inp)?.reshape((rows, q0.inp))?;
+            let y_pad = if gate_up {
+                match q0.gate_up_act(&x_mis) {
+                    Some(r) => r?,
+                    None => bail!("gate_up_act declined m={rows}"),
+                }
+            } else {
+                q0.linear(&x_mis)?
+            }
+            .to_dtype(DType::F32)?;
+            eprintln!(
+                "q4[{tag} m=8] P0 pad-copy-vs-direct max|Δ|={:.6} (pad_skip={})",
+                max_abs(&y_pad, &y_path)?,
+                crate::quant_kernel::pad_skip_enabled()
+            );
+        }
         let report = |label: &str, y: &Tensor, (mn, med): (f64, f64)| -> Result<()> {
             eprintln!(
                 "q4[{tag} m={rows}] {label:<13} {med:8.1}us/call (min {mn:8.1}) {:5.0} GB/s  max|Δ|ref={:.5} Δpath={:.5}  |ref|max={ref_mag:.2}  [{}x{}, {} tensors x{passes}]",

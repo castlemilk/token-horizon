@@ -57,6 +57,17 @@ pub fn gate_up_tile() -> (usize, usize) {
     }
 }
 
+/// P0: whether `AffineQmpp` may bind an exact [8, in] input directly
+/// instead of copying it through the pad kernel. Off under the legacy
+/// policy or with `TH_Q4_PAD=1` (read once).
+pub fn pad_skip_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| {
+        q4_policy_mode() != Q4PolicyMode::Legacy
+            && std::env::var("TH_Q4_PAD").as_deref() != Ok("1")
+    })
+}
+
 #[cfg(all(feature = "metal", target_os = "macos"))]
 mod metal_impl {
     use candle_core::backend::BackendStorage;
@@ -1859,12 +1870,28 @@ kernel void mpp_probe(device float* y [[buffer(0)]],
                 up_soff: (self.up_tile * ng * 256) as i32,
             };
 
-            let x8_buf = device
-                .new_buffer_builder()
-                .with_size_for(8 * self.inp, DType::BF16)
-                .with_label("qmpp.x8")
-                .build()
-                .map_err(candle_core::Error::wrap)?;
+            // P0: at m == 8 the pad is a pure copy (x8[i] = x[i]) — bind
+            // x itself when it is the whole [8, in] block at a 16-byte
+            // aligned offset (MPP tensor loads). Bitwise identical; saves
+            // a dispatch + a pooled x8 allocation per projection. Only a
+            // read binding of the caller's buffer — no new storage.
+            let x_off = l_x.start_offset() * 2;
+            let direct = self.m == 8
+                && l_x.shape().elem_count() == 8 * self.inp
+                && x_off % 16 == 0
+                && super::pad_skip_enabled();
+            let x8_buf = if direct {
+                None
+            } else {
+                Some(
+                    device
+                        .new_buffer_builder()
+                        .with_size_for(8 * self.inp, DType::BF16)
+                        .with_label("qmpp.x8")
+                        .build()
+                        .map_err(candle_core::Error::wrap)?,
+                )
+            };
             let y_buf = device
                 .new_buffer_builder()
                 .with_size_for(8 * self.out, DType::BF16)
@@ -1876,12 +1903,12 @@ kernel void mpp_probe(device float* y [[buffer(0)]],
                 device.command_encoder().map_err(candle_core::Error::wrap)?;
             encoder.set_label("affine_qmpp");
             let enc_ref = &encoder;
-            {
+            if let Some(x8) = x8_buf.as_ref() {
                 let enc: &candle_metal_kernels::metal::ComputeCommandEncoder =
                     enc_ref.encoder().as_ref();
                 enc.set_compute_pipeline_state(MPP_PAD_PIPE.get().unwrap());
-                enc.set_input_buffer(0, Some(s_x.buffer()), l_x.start_offset() * 2);
-                enc.set_output_buffer(1, Some(&x8_buf), 0);
+                enc.set_input_buffer(0, Some(s_x.buffer()), x_off);
+                enc.set_output_buffer(1, Some(x8), 0);
                 let dims: [i32; 3] = [self.m as i32, self.inp as i32, 8];
                 enc.set_bytes(2, &dims);
                 enc.dispatch_thread_groups(
@@ -1893,7 +1920,10 @@ kernel void mpp_probe(device float* y [[buffer(0)]],
                 let enc: &candle_metal_kernels::metal::ComputeCommandEncoder =
                     enc_ref.encoder().as_ref();
                 enc.set_compute_pipeline_state(cell.get().unwrap());
-                enc.set_input_buffer(0, Some(&x8_buf), 0);
+                match x8_buf.as_ref() {
+                    Some(x8) => enc.set_input_buffer(0, Some(x8), 0),
+                    None => enc.set_input_buffer(0, Some(s_x.buffer()), x_off),
+                }
                 enc.set_input_buffer(1, Some(s_wq.buffer()), l_wq.start_offset() * 4);
                 enc.set_input_buffer(2, Some(s_sb.buffer()), l_sb.start_offset() * 2);
                 enc.set_output_buffer(3, Some(&y_buf), 0);
