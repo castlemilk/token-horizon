@@ -32,6 +32,13 @@ struct ModelInner {
     eos_ids: Vec<u32>,
     chat_template: Option<String>,
     device: candle_core::Device,
+    /// Batch-mode slot occupancy (TH_BATCH > 1): `live[s]` is true while
+    /// slot `s` carries a running request's GDN/KV/draft state. Written
+    /// by `batch_loop` only while it holds this lock, so an admin op
+    /// holding the lock sees an exact view. Always all-false on the
+    /// single-slot path (the lock spans the whole generation there, so
+    /// admin ops can only land between requests).
+    live: Vec<bool>,
 }
 
 /// Per-request sampling overrides — any field falls back to EngineConfig.
@@ -100,6 +107,7 @@ impl Engine {
             eos_ids: loaded.eos_ids,
             chat_template: loaded.chat_template,
             device: loaded.device,
+            live: vec![false; nslots],
         };
         let inner = Arc::new(tokio::sync::Mutex::new(inner));
         let state = Arc::new(EngineState::new(model_id, meta, cfg));
@@ -179,11 +187,31 @@ impl Engine {
     }
 
     /// Clear the KV cache + reset tracked positions.
-    pub async fn kv_clear(&self) {
+    ///
+    /// Batch mode releases the model lock between verify rounds, so a
+    /// slot can be mid-generation when this runs. Clearing it would make
+    /// that request's next round verify at its old position against a
+    /// zeroed KV prefix / zeroed GDN state — silent garbage. So only
+    /// idle slots are cleared; live ones are reported and left intact
+    /// (admission clears a slot before reuse anyway).
+    pub async fn kv_clear(&self) -> serde_json::Value {
         let mut inner = self.inner.lock().await;
-        inner.backend.clear_kv_cache(0);
-        self.state.kv_tokens.store(0, Ordering::Relaxed);
-        self.state.emit("kv.cleared", serde_json::json!({}));
+        let mut cleared = Vec::new();
+        let mut skipped = Vec::new();
+        for s in 0..inner.backend.nslots() {
+            if inner.live.get(s).copied().unwrap_or(false) {
+                skipped.push(s);
+            } else {
+                inner.backend.clear_kv_cache(s);
+                cleared.push(s);
+            }
+        }
+        if skipped.is_empty() {
+            self.state.kv_tokens.store(0, Ordering::Relaxed);
+        }
+        let out = serde_json::json!({"cleared": cleared, "skipped_live": skipped});
+        self.state.emit("kv.cleared", out.clone());
+        out
     }
 
     pub fn config(&self) -> EngineConfig {
@@ -1109,6 +1137,7 @@ fn batch_loop(
                             tracing::warn!(error = %e, "batch admit failed");
                         }
                     }
+                    inner.live[s] = runs[s].is_some();
                 }
             }
             if let Err(e) = batch_round(&mut inner, &state, &mut runs) {
@@ -1123,6 +1152,7 @@ fn batch_loop(
             for s in 0..nslots {
                 if matches!(&runs[s], Some(r) if r.finish.is_some()) {
                     let r = runs[s].take().unwrap();
+                    inner.live[s] = false;
                     finish_run(&state, r);
                 }
             }
