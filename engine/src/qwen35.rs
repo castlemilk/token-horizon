@@ -318,6 +318,16 @@ impl QLin {
         let dims = x.dims().to_vec();
         let in_d = *dims.last().unwrap();
         let rows: usize = dims[..dims.len() - 1].iter().product();
+        // The Metal kernels size their reads from `self.inp`, not from
+        // x — a mismatched last dim is a silent GPU over-read (the MPP
+        // pad pass reads rows*inp elements). Fail loudly instead.
+        if in_d != self.inp {
+            bail!(
+                "QLin::linear: x last dim {in_d} != weight inp {} (x {:?})",
+                self.inp,
+                dims
+            );
+        }
         #[cfg(all(feature = "metal", target_os = "macos"))]
         if x.device().is_metal() && in_d % 32 == 0 {
             if rows == 1 {

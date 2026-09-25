@@ -430,6 +430,10 @@ impl Draft {
         };
         #[cfg(all(feature = "metal", target_os = "macos"))]
         if dev.is_metal() && std::env::var("TH_DRAFT_EAGER").is_err() {
+            // draft_attn returns [8, 32, 128]; o_proj needs the eager
+            // path's [1, 8, 4096] — a rank-4 [1, 8, 32, 128] reads as
+            // 256 rows x 128 and sends o_proj (inp 4096) down the m=256
+            // prefill kernel, over-reading 2 MiB past this 64 KiB buffer.
             return Ok(crate::draft_kernel::draft_attn(
                 q,
                 &self.ring_k[layer],
@@ -439,7 +443,7 @@ impl Draft {
                 l,
                 start % WINDOW,
             )?
-            .unsqueeze(0)?);
+            .reshape((1, ROWS, ATTN))?);
         }
         let kr = gqa_expand(&kr)?;
         let vr = gqa_expand(&vr)?;
