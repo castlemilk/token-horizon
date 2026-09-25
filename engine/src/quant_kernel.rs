@@ -16,6 +16,8 @@
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
 pub use metal_impl::{AffineDequant, AffineQmm, AffineQmpp, AffineQmppPrefill, AffineQmv, AffineQsg, mpp_probe};
+#[cfg(all(feature = "metal", target_os = "macos"))]
+pub use metal_impl::{pf_compile, pf_route, pf_shapes, AffineQpf, PfCfg};
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
 mod metal_impl {
@@ -2064,6 +2066,576 @@ kernel void mpp_probe(device float* y [[buffer(0)]],
             );
             Ok((out, (m_pad, out_pad).into()))
         }
+    }
+
+    // ------------------------------------------------------------------
+    // Small-M prefill tiles (T2) — self-contained source, so the decode
+    // family above stays untouched:
+    //   pf_prep    — one pass: pad x[m,K] into a [m_pad,K] block (zero tail
+    //                rows; skipped when m fills the last row tile) and emit
+    //                per-(row, quant-group) input sums, one simdgroup per
+    //                (row, group). Replaces the legacy pad + one-threadgroup-
+    //                per-32-rows sums pair.
+    //   pf_tile    — 32 x 128 four-simdgroup tile, a port of Splash's
+    //                Apple10 prefill_linear_q4_n128_sg4 (q4_mpp_prefill_tile
+    //                in prefill/linear_q4.metal): row sums read from device
+    //                memory (0 B threadgroup memory), a cooperative store for
+    //                interior tiles and guarded stores on the ragged edge,
+    //                so no padded rows or columns reach the caller (no
+    //                narrow + copy afterwards). Epilogues: plain and
+    //                up·silu(gate) with a gate operand (gate/up runs gate →
+    //                scratch, then up·silu).
+    // Per-element math and accumulation order match th_mpp_prefill_tile
+    // (same sums formula, same per-group `acc += p·s + sum·b`); unsplit
+    // configs differ from the legacy prefill only where the compiler
+    // contracts the epilogue FMAs differently (TH_BENCH_LIN's Δlegacy).
+    // ------------------------------------------------------------------
+    const PF_SRC: &str = r#"
+#include <MetalPerformancePrimitives/MetalPerformancePrimitives.h>
+#include <metal_stdlib>
+using namespace metal;
+using namespace mpp::tensor_ops;
+
+struct PfParams {
+  int out_dim;      // logical output columns per stream (guard + stride)
+  int in_dim;       // K
+  int m;            // live rows
+  int rows;         // tile rows (sum-block stride)
+  int bias_base;    // bf16 index of the bias plane in sb
+  int w_off;        // byte offset of stream-0 weight tiles
+  int s_off;        // bf16 offset of stream-0 scale/bias planes
+  int up_woff;      // byte offset of stream-1 weight tiles (gate/up)
+  int up_soff;      // bf16 offset of stream-1 scale/bias planes
+};
+
+enum class Q4Traversal : ushort {
+  All, FourOfEight, PrefixAndFourOfEight, HalfPrefix, Guarded
+};
+
+template <class Tensor>
+__attribute__((always_inline)) inline Q4Traversal
+q4_traversal(const thread Tensor &values) {
+  const ushort capacity = values.get_capacity();
+  bool all = true;
+  bool halfPrefix = capacity != 0 && (capacity % 2) == 0;
+  bool striped = capacity != 0 && (capacity % 8) == 0;
+  bool prefixed = capacity != 0 && (capacity % 16) == 0;
+#pragma unroll
+  for (ushort i = 0; i < capacity; ++i) {
+    const bool valid = values.is_valid_element(i);
+    all &= valid;
+    halfPrefix &= valid == (i < capacity / 2);
+    striped &= valid == ((i & 7) < 4);
+    prefixed &= valid == (i < capacity / 2 || ((i & 7) < 4));
+  }
+  return all ? Q4Traversal::All : striped ? Q4Traversal::FourOfEight
+       : prefixed ? Q4Traversal::PrefixAndFourOfEight
+       : halfPrefix ? Q4Traversal::HalfPrefix : Q4Traversal::Guarded;
+}
+
+template <class Tensor, class Body>
+__attribute__((always_inline)) inline void
+q4_visit(const thread Tensor &values, Q4Traversal traversal,
+         const thread Body &body) {
+  if (traversal == Q4Traversal::All) {
+#pragma unroll
+    for (ushort i = 0; i < values.get_capacity(); ++i) body(i);
+  } else if (traversal == Q4Traversal::FourOfEight) {
+#pragma unroll
+    for (ushort i = 0; i < values.get_capacity() / 2; ++i)
+      body(ushort((i / 4) * 8 + i % 4));
+  } else if (traversal == Q4Traversal::PrefixAndFourOfEight) {
+#pragma unroll
+    for (ushort i = 0; i < values.get_capacity() / 2; ++i) body(i);
+#pragma unroll
+    for (ushort i = 0; i < values.get_capacity() / 4; ++i)
+      body(ushort(values.get_capacity() / 2 + (i / 4) * 8 + i % 4));
+  } else if (traversal == Q4Traversal::HalfPrefix) {
+#pragma unroll
+    for (ushort i = 0; i < values.get_capacity() / 2; ++i) body(i);
+  } else {
+#pragma unroll
+    for (ushort i = 0; i < values.get_capacity(); ++i)
+      if (values.is_valid_element(i)) body(i);
+  }
+}
+
+// grid (ng, m_pad/8) x 256 threads: simdgroup sg of threadgroup (g, t)
+// owns row t*8+sg, quant group g. d = {m, K, rows, copy}.
+kernel void pf_prep(device const bfloat *x [[buffer(0)]],
+                    device bfloat *xp [[buffer(1)]],
+                    device float *sums [[buffer(2)]],
+                    constant int4 &d [[buffer(3)]],
+                    uint2 tg [[threadgroup_position_in_grid]],
+                    uint lane [[thread_index_in_simdgroup]],
+                    uint sg [[simdgroup_index_in_threadgroup]]) {
+  const uint m = uint(d.x), K = uint(d.y), R = uint(d.z);
+  const uint g = tg.x, row = tg.y * 8 + sg;
+  const ulong o = ulong(row) * K + g * 64 + lane;
+  const bool live = row < m;
+  const bfloat v0 = live ? x[o] : bfloat(0.0f);
+  const bfloat v1 = live ? x[o + 32] : bfloat(0.0f);
+  if (d.w != 0) {
+    xp[o] = v0;
+    xp[o + 32] = v1;
+  }
+  const float s = simd_sum(float(v0) + float(v1));
+  if (lane == 0) sums[(ulong(row / R) * (K / 64) + g) * R + row % R] = s;
+}
+
+enum : ushort { PfPlain = 0, PfUpSilu = 2 };
+
+inline float pf_silu_mul(float gate, float value) {
+  return gate / (1.0f + fast::exp2(-1.44269504089f * gate)) * value;
+}
+
+// Single-stream Rows x TileN tile over quant groups
+// [first_group, first_group + n_groups). `sums` points at the row tile's
+// [group][row] block; `live` rows and `out_size` columns are stored.
+template <ushort Rows, ushort TileN, ushort Sgs, ushort Mode>
+inline void pf_tile(device bfloat *input, device uchar *w0, device bfloat *s0,
+                    device bfloat *b0, device const float *sums,
+                    device bfloat *aux, device bfloat *out,
+                    uint out_size, uint in_size, uint live, uint first_group,
+                    uint n_groups, uint output_origin) {
+  constexpr ushort StorageN = 256;
+  auto a = tensor(input, dextents<int, 2>{int(in_size), Rows},
+                  array<int, 2>{1, int(in_size)});
+  constexpr auto descriptor =
+      matmul2d_descriptor(Rows, TileN, 64, false, true, false);
+  matmul2d<descriptor, execution_simdgroups<Sgs>> operation;
+  const uint total_groups = in_size / 64;
+  const uint tile = output_origin / StorageN;
+  const uint tile_offset = output_origin % StorageN;
+  device uchar *tw =
+      w0 + (ulong(tile) * total_groups * StorageN + tile_offset) * 32;
+  tensor<device uint4b_format, dextents<int, 2>, tensor_inline> fb(
+      tw, dextents<int, 2>{64, TileN}, array<int, 2>{1, 64});
+  auto a0 = a.slice<64, Rows>(0, 0);
+  auto b0s = fb.slice<64, TileN>(0, 0);
+  auto acc = operation.template get_destination_cooperative_tensor<
+      decltype(a0), decltype(b0s), float>();
+  const bool full = uint(acc.get_capacity()) * (uint(Sgs) * 32u) ==
+                    uint(Rows) * TileN;
+  const auto trav = full ? Q4Traversal::All : q4_traversal(acc);
+  q4_visit(acc, trav, [&](ushort i) { acc[i] = 0.0f; });
+  device const float *gs = sums + ulong(first_group) * Rows;
+  for (uint q = 0; q < n_groups; ++q) {
+    const uint g = first_group + q;
+    auto a_slice = a.slice<64, Rows>(g * 64, 0);
+    tensor<device uint4b_format, dextents<int, 2>, tensor_inline> bq(
+        tw + ulong(g) * StorageN * 32, dextents<int, 2>{64, TileN},
+        array<int, 2>{1, 64});
+    auto bs = bq.slice<64, TileN>(0, 0);
+    auto pr = operation.template get_destination_cooperative_tensor<
+        decltype(a_slice), decltype(bs), float>();
+    operation.run(a_slice, bs, pr);
+    q4_visit(acc, trav, [&](ushort i) __attribute__((always_inline)) {
+      auto index = acc.get_multidimensional_index(i);
+      const uint row = index[1];
+      const ulong prm = (ulong(tile) * total_groups + g) * StorageN +
+                        tile_offset + index[0];
+      const float sum = gs[q * Rows + row];
+      acc[i] += pr[i] * float(s0[prm]) + sum * float(b0[prm]);
+    });
+  }
+  if (live == Rows && output_origin + TileN <= out_size) {
+    auto c = tensor(out, dextents<int, 2>{int(out_size), Rows},
+                    array<int, 2>{1, int(out_size)});
+    auto conv = operation.template get_destination_cooperative_tensor<
+        decltype(a0), decltype(b0s), bfloat>();
+    q4_visit(acc, trav, [&](ushort i) {
+      float value = float(bfloat(acc[i]));
+      if constexpr (Mode == PfUpSilu) {
+        auto index = acc.get_multidimensional_index(i);
+        value = pf_silu_mul(
+            float(aux[index[1] * out_size + output_origin + index[0]]),
+            value);
+      }
+      conv[i] = bfloat(value);
+    });
+    conv.store(c.slice<TileN, Rows>(output_origin, 0));
+    return;
+  }
+  q4_visit(acc, trav, [&](ushort i) {
+    auto index = acc.get_multidimensional_index(i);
+    const uint col = output_origin + index[0];
+    const uint row = index[1];
+    if (row >= live || col >= out_size) return;
+    const ulong oi = ulong(row) * out_size + col;
+    float value = float(bfloat(acc[i]));
+    if constexpr (Mode == PfUpSilu)
+      value = pf_silu_mul(float(aux[oi]), value);
+    out[oi] = bfloat(value);
+  });
+}
+
+// grid (m_pad/Rows, ceil(out/TileN)) x (32*Sgs) threads. Row
+// tiles vary fastest (Splash's prefill order): the threadgroups sharing a
+// weight tile dispatch together, so the weights stream from DRAM once and
+// the other row tiles hit cache.
+#define PF_ENTRY(Name, Rows, TileN, Sgs, Mode)                               \
+kernel void Name(device const bfloat* input  [[buffer(0)]],                 \
+                 device const uchar*  weights [[buffer(1)]],                \
+                 device const bfloat* sb      [[buffer(2)]],                \
+                 device const float*  sums    [[buffer(3)]],                \
+                 device bfloat*       aux     [[buffer(4)]],                \
+                 device bfloat*       out     [[buffer(5)]],                \
+                 constant PfParams&   p       [[buffer(6)]],                \
+                 uint3 tg [[threadgroup_position_in_grid]]) {               \
+  const uint ng = uint(p.in_dim) / 64;                                      \
+  const uint row0 = tg.x * Rows;                                            \
+  const uint live = min(uint(Rows), uint(p.m) - row0);                      \
+  const ulong ob = ulong(row0) * uint(p.out_dim);                           \
+  device uchar* wb = const_cast<device uchar*>(weights);                    \
+  device bfloat* sbb = const_cast<device bfloat*>(sb);                      \
+  pf_tile<Rows, TileN, Sgs, Mode>(                                          \
+      const_cast<device bfloat*>(input) + ulong(row0) * uint(p.in_dim),     \
+      wb + p.w_off, sbb + p.s_off, sbb + p.bias_base + p.s_off,             \
+      sums + ulong(tg.x) * ng * Rows, aux + ob, out + ob,                   \
+      uint(p.out_dim), uint(p.in_dim), live, 0, ng, tg.y * TileN);          \
+}
+
+"#;
+
+    /// Instantiated tile shapes (rows, tile_n, simdgroups); each compiles
+    /// on first use into its own library with every epilogue.
+    const PF_SHAPES: &[(usize, usize, usize)] = &[(32, 128, 4)];
+    /// epilogues (`PF_ENTRY`)
+    const PF_MODES: &[(&str, usize)] = &[("pl", 0), ("us", 2)];
+
+    /// The instantiated (rows, tile_n, simdgroups) shapes (bench sweeps).
+    pub fn pf_shapes() -> &'static [(usize, usize, usize)] {
+        PF_SHAPES
+    }
+
+    fn pf_name(rows: usize, tile_n: usize, sgs: usize, mode: &str) -> String {
+        format!("pf_r{rows}_n{tile_n}_s{sgs}_{mode}")
+    }
+
+    /// Prefill tile configuration (see `pf_route`).
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub struct PfCfg {
+        /// row-tile height
+        pub rows: usize,
+        /// output columns per threadgroup
+        pub tile_n: usize,
+        /// simdgroups per threadgroup
+        pub sgs: usize,
+    }
+
+    impl PfCfg {
+        pub const fn new(rows: usize, tile_n: usize, sgs: usize) -> Self {
+            Self { rows, tile_n, sgs }
+        }
+        pub fn exists(&self) -> bool {
+            PF_SHAPES.contains(&(self.rows, self.tile_n, self.sgs))
+        }
+        /// "r32n128s4"
+        pub fn label(&self) -> String {
+            format!("r{}n{}s{}", self.rows, self.tile_n, self.sgs)
+        }
+    }
+
+    type PfLib = std::collections::HashMap<String, ComputePipeline>;
+
+    fn pf_build(device: &candle_core::MetalDevice, src: &str, names: &[String]) -> Result<PfLib> {
+        let raw = device.metal_device();
+        let opts = objc2_metal::MTLCompileOptions::new();
+        opts.setLanguageVersion(objc2_metal::MTLLanguageVersion::Version4_0);
+        let lib = raw
+            .new_library_with_source(src, Some(&opts))
+            .map_err(candle_core::Error::wrap)?;
+        let mut map = PfLib::new();
+        for name in names {
+            let f = lib
+                .get_function(name, None)
+                .map_err(candle_core::Error::wrap)?;
+            let p = raw
+                .new_compute_pipeline_state_with_function(&f)
+                .map_err(candle_core::Error::wrap)?;
+            map.insert(name.clone(), p);
+        }
+        Ok(map)
+    }
+
+    /// pf_prep (shape-independent), compiled on first use.
+    static PF_COMMON: OnceLock<PfLib> = OnceLock::new();
+    /// One library per `PF_SHAPES` entry (all its epilogues), compiled on
+    /// the first call that needs that shape: a cold process pays only for
+    /// the shapes the policy routes (a whole-family compile measured
+    /// 1.6-3.7s cold, ~5-12ms from the Metal shader cache).
+    static PF_LIBS: [OnceLock<PfLib>; PF_SHAPES.len()] =
+        [const { OnceLock::new() }; PF_SHAPES.len()];
+
+    fn pf_common(device: &candle_core::MetalDevice) -> Result<&'static PfLib> {
+        if let Some(p) = PF_COMMON.get() {
+            return Ok(p);
+        }
+        let lib = pf_build(device, PF_SRC, &["pf_prep".to_string()])?;
+        let _ = PF_COMMON.set(lib);
+        Ok(PF_COMMON.get().unwrap())
+    }
+
+    fn pf_shape_lib(device: &candle_core::MetalDevice, c: &PfCfg) -> Result<&'static PfLib> {
+        let idx = PF_SHAPES
+            .iter()
+            .position(|&t| t == (c.rows, c.tile_n, c.sgs))
+            .ok_or_else(|| candle_core::Error::Msg(format!("affine-qpf: no shape {c:?}")))?;
+        if let Some(p) = PF_LIBS[idx].get() {
+            return Ok(p);
+        }
+        let (r, n, sg) = PF_SHAPES[idx];
+        let mut src = String::from(PF_SRC);
+        let mut names = Vec::new();
+        for &(mode, id) in PF_MODES {
+            let name = pf_name(r, n, sg, mode);
+            src += &format!("PF_ENTRY({name}, {r}, {n}, {sg}, {id})\n");
+            names.push(name);
+        }
+        let lib = pf_build(device, &src, &names)?;
+        let _ = PF_LIBS[idx].set(lib);
+        Ok(PF_LIBS[idx].get().unwrap())
+    }
+
+    /// Build every prefill tile library (probe/warm-up aid); returns the
+    /// pipeline count.
+    pub fn pf_compile(device: &candle_core::MetalDevice) -> Result<usize> {
+        let mut n = pf_common(device)?.len();
+        for &(rows, tile_n, sgs) in PF_SHAPES {
+            n += pf_shape_lib(device, &PfCfg::new(rows, tile_n, sgs))?.len();
+        }
+        Ok(n)
+    }
+
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    struct PfParams {
+        out_dim: i32,
+        in_dim: i32,
+        m: i32,
+        rows: i32,
+        bias_base: i32,
+        w_off: i32,
+        s_off: i32,
+        up_woff: i32,
+        up_soff: i32,
+    }
+
+    /// Small-M prefill projection `y[m, out] = x[m, in] @ W^T` on tiled Q4
+    /// weights (rows > 8). `up_tile > 0` selects gate/up: the up stream
+    /// starts at that 256-row weight tile and the output is
+    /// silu(gate)·up over `out` columns (gate → scratch, then up·silu). Output is exactly `[m, out]` in a
+    /// fresh buffer (never an alias of an input or scratch buffer).
+    pub struct AffineQpf {
+        pub inp: usize,
+        /// logical output columns (per stream for gate/up)
+        pub out: usize,
+        /// weight storage rows of the whole matrix (tiles*256)
+        pub padded: usize,
+        pub m: usize,
+        pub up_tile: usize,
+        pub cfg: PfCfg,
+    }
+
+    impl CustomOp3 for AffineQpf {
+        fn name(&self) -> &'static str {
+            "affine-qpf"
+        }
+        fn cpu_fwd(
+            &self,
+            _: &CpuStorage, _: &Layout,
+            _: &CpuStorage, _: &Layout,
+            _: &CpuStorage, _: &Layout,
+        ) -> Result<(CpuStorage, Shape)> {
+            candle_core::bail!("affine-qpf: Metal only")
+        }
+
+        fn metal_fwd(
+            &self,
+            s_wq: &MetalStorage,
+            l_wq: &Layout,
+            s_sb: &MetalStorage,
+            l_sb: &Layout,
+            s_x: &MetalStorage,
+            l_x: &Layout,
+        ) -> Result<(MetalStorage, Shape)> {
+            check3(s_wq, l_wq, DType::U32, "wq")?;
+            check3(s_sb, l_sb, DType::BF16, "sb")?;
+            check3(s_x, l_x, DType::BF16, "x")?;
+            let c = self.cfg;
+            let gate_up = self.up_tile > 0;
+            let ng = self.inp / 64;
+            if self.m == 0 || self.inp % 64 != 0 || !c.exists() {
+                candle_core::bail!("affine-qpf: unsupported m={} in={} {:?}", self.m, self.inp, c);
+            }
+            if l_x.shape().elem_count() != self.m * self.inp {
+                candle_core::bail!("affine-qpf: x {:?} != [{}, {}]", l_x.shape(), self.m, self.inp);
+            }
+            let device = s_wq.device();
+            let common = pf_common(device)?;
+            let shape_lib = pf_shape_lib(device, &c)?;
+            let pipe = |name: &str| {
+                shape_lib.get(name).or_else(|| common.get(name)).ok_or_else(|| {
+                    candle_core::Error::Msg(format!("affine-qpf: no kernel {name}"))
+                })
+            };
+            let p_prep = pipe("pf_prep")?;
+            let p_tile = pipe(&pf_name(c.rows, c.tile_n, c.sgs, "pl"))?;
+            let p_up = if gate_up {
+                Some(pipe(&pf_name(c.rows, c.tile_n, c.sgs, "us"))?)
+            } else {
+                None
+            };
+
+            let row_tiles = self.m.div_ceil(c.rows);
+            let m_pad = row_tiles * c.rows;
+            let x_off = l_x.start_offset() * 2;
+            // the tiles read whole Rows-row blocks: pad unless the live
+            // rows fill them (and the base is 16-byte aligned)
+            let copy = m_pad != self.m || x_off % 16 != 0;
+            let alloc = |n: usize, dt: DType, label: &'static str| {
+                device
+                    .new_buffer_builder()
+                    .with_size_for(n, dt)
+                    .with_label(label)
+                    .build()
+                    .map_err(candle_core::Error::wrap)
+            };
+            let x_pad = if copy { Some(alloc(m_pad * self.inp, DType::BF16, "qpf.x")?) } else { None };
+            let sums = alloc(m_pad * ng, DType::F32, "qpf.sums")?;
+            let y = alloc(self.m * self.out, DType::BF16, "qpf.y")?;
+            let gate = if p_up.is_some() {
+                Some(alloc(self.m * self.out, DType::BF16, "qpf.gate")?)
+            } else {
+                None
+            };
+            let params = PfParams {
+                out_dim: self.out as i32,
+                in_dim: self.inp as i32,
+                m: self.m as i32,
+                rows: c.rows as i32,
+                bias_base: (self.padded * ng) as i32,
+                w_off: 0,
+                s_off: 0,
+                up_woff: (self.up_tile * ng * 8192) as i32,
+                up_soff: (self.up_tile * ng * 256) as i32,
+            };
+            let tile_grid = MTLSize {
+                width: row_tiles,
+                height: self.out.div_ceil(c.tile_n),
+                depth: 1,
+            };
+            let tile_tg = MTLSize { width: 32 * c.sgs, height: 1, depth: 1 };
+
+            let encoder =
+                device.command_encoder().map_err(candle_core::Error::wrap)?;
+            let enc_ref = &encoder;
+            let enc: &candle_metal_kernels::metal::ComputeCommandEncoder =
+                enc_ref.encoder().as_ref();
+            // 1. pad + sums
+            enc.set_compute_pipeline_state(p_prep);
+            enc.set_input_buffer(0, Some(s_x.buffer()), x_off);
+            match &x_pad {
+                Some(b) => enc.set_output_buffer(1, Some(b), 0),
+                // unused slot (copy = 0): bound read-only, never written
+                None => enc.set_input_buffer(1, Some(s_x.buffer()), x_off),
+            }
+            enc.set_output_buffer(2, Some(&sums), 0);
+            let d: [i32; 4] =
+                [self.m as i32, self.inp as i32, c.rows as i32, copy as i32];
+            enc.set_bytes(3, &d);
+            enc.dispatch_thread_groups(
+                MTLSize { width: ng, height: m_pad / 8, depth: 1 },
+                MTLSize { width: 256, height: 1, depth: 1 },
+            );
+            // 2. tile pass(es) — every buffer a pass reads is bound as an
+            // input and every buffer it writes as an output, so candle's
+            // barrier tracking orders prep → tile → up
+            let (xb, xo) = match &x_pad {
+                Some(b) => (b.as_ref(), 0usize),
+                None => (s_x.buffer(), x_off),
+            };
+            let tile_pass = |pipe: &ComputePipeline,
+                             aux: Option<&candle_metal_kernels::metal::Buffer>,
+                             out: &candle_metal_kernels::metal::Buffer,
+                             prm: &PfParams| {
+                enc.set_compute_pipeline_state(pipe);
+                enc.set_input_buffer(0, Some(xb), xo);
+                enc.set_input_buffer(1, Some(s_wq.buffer()), l_wq.start_offset() * 4);
+                enc.set_input_buffer(2, Some(s_sb.buffer()), l_sb.start_offset() * 2);
+                enc.set_input_buffer(3, Some(&sums), 0);
+                // an unused aux slot is bound read-only to `sums`
+                enc.set_input_buffer(4, Some(aux.unwrap_or(&sums)), 0);
+                enc.set_output_buffer(5, Some(out), 0);
+                enc.set_bytes(6, prm);
+                enc.dispatch_thread_groups(tile_grid, tile_tg);
+            };
+            match (&p_up, &gate) {
+                (Some(p_up), Some(g)) => {
+                    // gate stream → scratch, then up·silu(gate) → y
+                    tile_pass(p_tile, None, g, &params);
+                    let up = PfParams {
+                        w_off: params.up_woff,
+                        s_off: params.up_soff,
+                        ..params
+                    };
+                    tile_pass(p_up, Some(g), &y, &up);
+                }
+                _ => tile_pass(p_tile, None, &y, &params),
+            }
+            let storage =
+                MetalStorage::new(y, device.clone(), self.m * self.out, DType::BF16);
+            Ok((storage, (self.m, self.out).into()))
+        }
+    }
+
+    /// Tile policy for prefill rows (> 8) on tiled Q4 weights; `None` →
+    /// legacy `AffineQmppPrefill`. Env (read once): `TH_PF=0` legacy
+    /// everywhere; `TH_PF=r32n128s4` forces the tile wherever
+    /// it applies (A/B); `TH_QMM_SCALAR` disables the MPP path entirely;
+    /// `TH_GPU_CORES` (default 40) scales the policy's occupancy targets.
+    pub fn pf_route(m: usize, out: usize, inp: usize, gate_up: bool) -> Option<PfCfg> {
+        static ENV: OnceLock<(bool, Option<PfCfg>, usize)> = OnceLock::new();
+        let (off, forced, cores) = *ENV.get_or_init(|| {
+            let scalar = std::env::var("TH_QMM_SCALAR").is_ok();
+            let v = std::env::var("TH_PF").ok();
+            let off = scalar || v.as_deref() == Some("0");
+            let cores = std::env::var("TH_GPU_CORES")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(40usize);
+            (off, v.as_deref().and_then(pf_parse), cores)
+        });
+        if off || m <= 8 || inp % 64 != 0 {
+            return None;
+        }
+        let valid = |c: PfCfg| c.exists();
+        if let Some(c) = forced {
+            return valid(c).then_some(c);
+        }
+        pf_policy(m, out, inp, gate_up, cores).filter(|&c| valid(c))
+    }
+
+    /// Parse "r32n128s4".
+    fn pf_parse(s: &str) -> Option<PfCfg> {
+        let r = s.strip_prefix('r')?;
+        let (rows, rest) = r.split_once('n')?;
+        let (tile_n, sgs) = rest.split_once('s')?;
+        Some(PfCfg::new(rows.parse().ok()?, tile_n.parse().ok()?, sgs.parse().ok()?))
+    }
+
+    /// Default routing, from the interleaved TH_BENCH_LIN=pf sweep (M5 Max,
+    /// 40 cores): the 32x128 four-simdgroup tile beats the legacy 32x256
+    /// eight-simdgroup tile only on the wide single-stream projections
+    /// (in_all 16480, in_qkv 14336: > 2 n128 column tiles per core) at
+    /// 33..64 rows (in_all 0.336 vs 0.428ms at m=58, in_qkv 0.291 vs
+    /// 0.409). With 32-row tiles the narrow N=5120 projections get too few
+    /// threadgroups (0.85x at m <= 80) and gate/up loses everywhere, so
+    /// those stay on the legacy path.
+    fn pf_policy(m: usize, out: usize, _inp: usize, gate_up: bool, cores: usize) -> Option<PfCfg> {
+        let wide = out.div_ceil(128) > 2 * cores;
+        (!gate_up && wide && m > 32 && m <= 64).then_some(PfCfg::new(32, 128, 4))
     }
 
     impl CustomOp3 for AffineQsg {

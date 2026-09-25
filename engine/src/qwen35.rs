@@ -432,6 +432,35 @@ impl QLin {
                 *out.last_mut().unwrap() = self.out;
                 return Ok(y.reshape(out)?);
             }
+            // small-M prefill tiles (T2): exact [rows, out] output, tile
+            // chosen per shape by `pf_route` (None → legacy path below).
+            // Only for shape-consistent inputs: the fused draft_attn hands
+            // o_proj [1, 8, 32, 128] (8 rows of 4096 read as 256 x 128),
+            // which the legacy path has always absorbed by treating the
+            // buffer as 256 x 4096 (rows 0..7 valid, the rest read out of
+            // bounds and discarded) — keep that behaviour byte-for-byte.
+            if self.tiled && in_d == self.inp {
+                if let Some(cfg) =
+                    crate::quant_kernel::pf_route(rows, self.out, self.inp, false)
+                {
+                    let xv = x.reshape((rows, in_d))?.contiguous()?;
+                    let y = self.wq.apply_op3_no_bwd(
+                        &self.sb,
+                        &xv,
+                        &crate::quant_kernel::AffineQpf {
+                            inp: self.inp,
+                            out: self.out,
+                            padded: self.out.div_ceil(256) * 256,
+                            m: rows,
+                            up_tile: 0,
+                            cfg,
+                        },
+                    )?;
+                    let mut out = dims;
+                    *out.last_mut().unwrap() = self.out;
+                    return Ok(y.reshape(out)?);
+                }
+            }
             // prefill: cooperative-tensor kernel on tiled weights
             if self.tiled && std::env::var("TH_QMM_SCALAR").is_err() {
                 let xv = x.reshape((rows, in_d))?.contiguous()?;
@@ -570,6 +599,34 @@ impl QLin {
                 let xv = x.reshape((rows, in_d0)).ok()?.contiguous().ok()?;
                 let half = self.out / 2;
                 let padded = self.out.div_ceil(256) * 256;
+                // small-M prefill tiles (T2): fused or two-pass gate/up
+                // (shape-consistent inputs only, as in `linear`)
+                if let Some(cfg) = (in_d0 == self.inp)
+                    .then(|| crate::quant_kernel::pf_route(rows, half, self.inp, true))
+                    .flatten()
+                {
+                    return Some(
+                        self.wq
+                            .apply_op3_no_bwd(
+                                &self.sb,
+                                &xv,
+                                &crate::quant_kernel::AffineQpf {
+                                    inp: self.inp,
+                                    out: half,
+                                    padded,
+                                    m: rows,
+                                    up_tile: half / 256,
+                                    cfg,
+                                },
+                            )
+                            .map_err(Into::into)
+                            .and_then(|y| {
+                                let mut out = dims.clone();
+                                *out.last_mut().unwrap() = half;
+                                Ok(y.reshape(out)?)
+                            }),
+                    );
+                }
                 return Some(
                     self.wq
                         .apply_op3_no_bwd(
@@ -1244,6 +1301,236 @@ impl Qwen35 {
                 q.inp
             );
         }
+        }
+        Ok(())
+    }
+
+    /// TH_BENCH_LIN prefill sweep (T2): per projection and M, the legacy
+    /// `AffineQmppPrefill`, the routed path (`QLin::linear` /
+    /// `gate_up_act`) and explicit `AffineQpf` configs — ms per call
+    /// (min, and median as `med=`, over interleaved rounds), weight GB/s,
+    /// TFLOPS, max|Δ| vs an fp32 reference (dequantized weights, fp32
+    /// gemm, no intermediate rounding) and vs legacy (0 = bitwise
+    /// identical). Candidates are timed round-robin with a rotated start
+    /// each round, so GPU clock/thermal drift (measured: up to 2x over a
+    /// sequential sweep) lands evenly instead of on whichever config runs
+    /// last. Env: `TH_BENCH_PF_M=16,32` M list (default 16,32,64,128,512);
+    /// `TH_BENCH_PF_ALL=1` every instantiated config; `TH_BENCH_PF_ONLY=
+    /// down,out` shapes; `TH_BENCH_PF_SHAPES=r16n128s4,..` tile shapes;
+    /// `TH_BENCH_PF_ROUNDS` (default 5).
+    #[cfg(all(feature = "metal", target_os = "macos"))]
+    pub(crate) fn bench_prefill(&self, device: &Device) -> Result<()> {
+        use crate::quant_kernel::{AffineQmppPrefill, AffineQpf, PfCfg};
+        let env_list = |k: &str| -> Option<Vec<String>> {
+            std::env::var(k).ok().map(|s| {
+                s.split(',')
+                    .map(|t| t.trim().to_string())
+                    .filter(|t| !t.is_empty())
+                    .collect()
+            })
+        };
+        let ms_list: Vec<usize> = env_list("TH_BENCH_PF_M")
+            .map(|v| v.iter().filter_map(|t| t.parse().ok()).collect())
+            .unwrap_or_else(|| vec![16, 32, 64, 128, 512]);
+        let all = std::env::var("TH_BENCH_PF_ALL").is_ok();
+        let only = env_list("TH_BENCH_PF_ONLY");
+        // restrict tile shapes, e.g. "r16n128s4,r32n256s8"
+        let shapes_only = env_list("TH_BENCH_PF_SHAPES");
+        let rounds: usize = std::env::var("TH_BENCH_PF_ROUNDS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(5)
+            .max(1);
+        let gdn = self.layers.iter().find_map(|l| match &l.kind {
+            Kind::Gdn(g) => Some(g),
+            _ => None,
+        });
+        let attn = self.layers.iter().find_map(|l| match &l.kind {
+            Kind::Attn(a) => Some(a),
+            _ => None,
+        });
+        // draft-commit shapes at prefill (TTFT): draft_prefill runs the
+        // DFlash fc [5120 x 25600] and each draft layer's qkv [6144 x 5120]
+        // over every prompt row. Probe mode loads no draft, so time
+        // synthetic tiled weights of those shapes (values don't matter).
+        let synth: Vec<(&str, Lin)> = [("d_fc", 5120usize, 25600usize), ("d_qkv", 6144, 5120)]
+            .into_iter()
+            .map(|(tag, out, inp)| -> Result<(&str, Lin)> {
+                let ng = inp / 64;
+                let wq: Vec<u32> = (0..out * inp / 8)
+                    .map(|i| (i as u32).wrapping_mul(2654435761))
+                    .collect();
+                let sb: Vec<half::bf16> = (0..out * 2 * ng)
+                    .map(|i| half::bf16::from_f32(if i % (2 * ng) < ng { 0.01 } else { -0.08 }))
+                    .collect();
+                let q = QLin::new(
+                    Tensor::from_vec(wq, (out, inp / 8), device)?,
+                    Tensor::from_vec(sb, (out, 2 * ng), device)?,
+                    out,
+                    inp,
+                    64,
+                );
+                Ok((tag, Lin::Quant(q.tiled()?)))
+            })
+            .collect::<Result<_>>()?;
+        let mut suite: Vec<(&str, &Lin, bool)> = vec![
+            ("gate_up", &self.layers[0].mlp.gate_up, true),
+            ("down", &self.layers[0].mlp.down, false),
+        ];
+        if let Some(g) = gdn {
+            suite.push(("in_all", &g.in_all, false));
+            suite.push(("out", &g.out, false));
+        }
+        if let Some(a) = attn {
+            suite.push(("in_qkv", &a.in_qkv, false));
+            suite.push(("o", &a.o, false));
+        }
+        for (tag, l) in &synth {
+            suite.push((tag, l, false));
+        }
+        let maxd = |a: &Tensor, b: &Tensor| -> Result<f32> {
+            Ok(a.sub(b)?.abs()?.flatten_all()?.max(0)?.to_scalar::<f32>()?)
+        };
+        type Cand<'a> = (String, Box<dyn Fn() -> Result<Tensor> + 'a>);
+        for (tag, l, gu) in suite {
+            if only.as_ref().is_some_and(|o| !o.iter().any(|t| t == tag)) {
+                continue;
+            }
+            let Lin::Quant(q) = l else { continue };
+            if !q.tiled {
+                eprintln!("pf[{tag}] not tiled — skipped");
+                continue;
+            }
+            let wd = q.wq.apply_op2_no_bwd(
+                &q.sb,
+                &crate::quant_kernel::AffineDequant {
+                    inp: q.inp,
+                    out: q.out,
+                    gs: q.gs,
+                    tiled: q.tiled,
+                },
+            )?;
+            let wf = wd.to_dtype(DType::F32)?;
+            let n = if gu { q.out / 2 } else { q.out };
+            let padded = q.out.div_ceil(256) * 256;
+            let up_tile = if gu { n / 256 } else { 0 };
+            let bytes = (q.inp * q.out / 2 + q.inp * q.out / 64 * 4) as f64;
+            for &m in &ms_list {
+                let xv: Vec<f32> = (0..m * q.inp)
+                    .map(|i| ((i * 2654435761) % 1000) as f32 / 100.0 - 5.0)
+                    .collect();
+                let x = Tensor::from_vec(xv, (m, q.inp), device)?.to_dtype(DType::BF16)?;
+                let yref = {
+                    let y = x.to_dtype(DType::F32)?.matmul(&wf.t()?)?;
+                    if gu {
+                        let g = y.narrow(1, 0, n)?;
+                        let u = y.narrow(1, n, n)?;
+                        candle_nn::ops::silu(&g)?.mul(&u)?
+                    } else {
+                        y
+                    }
+                };
+                let flops = 2.0 * (m * q.out * q.inp) as f64;
+                let mut cands: Vec<Cand> = Vec::new();
+                let (xr, qr) = (&x, q);
+                cands.push((
+                    "legacy".into(),
+                    Box::new(move || -> Result<Tensor> {
+                        Ok(qr
+                            .wq
+                            .apply_op3_no_bwd(
+                                &qr.sb,
+                                xr,
+                                &AffineQmppPrefill { inp: qr.inp, out: n, padded, m, up_tile },
+                            )?
+                            .narrow(0, 0, m)?
+                            .narrow(1, 0, n)?
+                            .contiguous()?)
+                    }),
+                ));
+                let label = crate::quant_kernel::pf_route(m, n, q.inp, gu)
+                    .map_or("legacy".to_string(), |c| c.label());
+                cands.push((
+                    format!("routed:{label}"),
+                    Box::new(move || -> Result<Tensor> {
+                        if gu {
+                            match qr.gate_up_act(xr) {
+                                Some(r) => r,
+                                None => anyhow::bail!("gate_up_act: no fast path"),
+                            }
+                        } else {
+                            qr.linear(xr)
+                        }
+                    }),
+                ));
+                for &(r, tn, sg) in crate::quant_kernel::pf_shapes() {
+                    // skip row tiles that pad more than the 32-row tiling
+                    if !all && m.div_ceil(r) * r > m.div_ceil(32) * 32 {
+                        continue;
+                    }
+                    let shape = format!("r{r}n{tn}s{sg}");
+                    if shapes_only.as_ref().is_some_and(|o| !o.contains(&shape)) {
+                        continue;
+                    }
+                    let cfgs = vec![PfCfg::new(r, tn, sg)];
+                    for cfg in cfgs {
+                        let op = AffineQpf { inp: q.inp, out: n, padded, m, up_tile, cfg };
+                        cands.push((
+                            cfg.label(),
+                            Box::new(move || -> Result<Tensor> {
+                                Ok(qr.wq.apply_op3_no_bwd(&qr.sb, xr, &op)?)
+                            }),
+                        ));
+                    }
+                }
+                // correctness: one evaluation each
+                let yleg = (cands[0].1)()?.to_dtype(DType::F32)?;
+                let mut deltas = Vec::with_capacity(cands.len());
+                for (_, f) in &cands {
+                    let y = f()?.to_dtype(DType::F32)?;
+                    deltas.push((maxd(&yref, &y)?, maxd(&yleg, &y)?));
+                }
+                // calibrate ~8ms trials, then interleaved rounds
+                let mut iters = Vec::with_capacity(cands.len());
+                for (_, f) in &cands {
+                    let _ = f()?;
+                    device.synchronize()?;
+                    let t = std::time::Instant::now();
+                    let _ = f()?;
+                    device.synchronize()?;
+                    let one = t.elapsed().as_secs_f64();
+                    iters.push(((0.008 / one.max(1e-6)).ceil() as usize).clamp(2, 100));
+                }
+                let nc = cands.len();
+                let stride = (nc / rounds).max(1);
+                let mut samples: Vec<Vec<f64>> = vec![Vec::with_capacity(rounds); nc];
+                for r in 0..rounds {
+                    for j in 0..nc {
+                        let i = (j + r * stride) % nc;
+                        let f = &cands[i].1;
+                        let _ = f()?;
+                        device.synchronize()?;
+                        let t = std::time::Instant::now();
+                        for _ in 0..iters[i] {
+                            let _ = f()?;
+                        }
+                        device.synchronize()?;
+                        samples[i].push(t.elapsed().as_secs_f64() * 1e3 / iters[i] as f64);
+                    }
+                }
+                for (i, (name, _)) in cands.iter().enumerate() {
+                    let mut v = samples[i].clone();
+                    v.sort_by(|a, b| a.total_cmp(b));
+                    let (ms, med) = (v[0], v[v.len() / 2]);
+                    eprintln!(
+                        "pf[{tag:7} m={m:3}] {name:>16} {ms:8.3}ms {:6.0} GB/s {:5.1} TFLOPS  Δref={:.4} Δlegacy={:.4} med={med:.3}ms",
+                        bytes / ms / 1e6,
+                        flops / ms / 1e9,
+                        deltas[i].0,
+                        deltas[i].1
+                    );
+                }
+            }
         }
         Ok(())
     }

@@ -161,6 +161,18 @@ async fn main() -> Result<()> {
                 .map(|t| t.trim().parse())
                 .collect::<Result<_, _>>()?;
             #[cfg(all(feature = "metal", target_os = "macos"))]
+            if std::env::var("TH_PF_COMPILE").is_ok() {
+                // compile the prefill tile library only (no model, no GPU
+                // work): source errors + cold compile time
+                let dev = candle_core::Device::new_metal(0)?;
+                if let candle_core::Device::Metal(d) = &dev {
+                    let t = std::time::Instant::now();
+                    let n = quant_kernel::pf_compile(d)?;
+                    eprintln!("pf library: {n} pipelines in {:.0}ms", t.elapsed().as_secs_f64() * 1e3);
+                }
+                return Ok(());
+            }
+            #[cfg(all(feature = "metal", target_os = "macos"))]
             if std::env::var("TH_MPP_PROBE").is_ok() {
                 let dev = candle_core::Device::new_metal(0)?;
                 if let candle_core::Device::Metal(d) = &dev {
@@ -287,12 +299,19 @@ async fn main() -> Result<()> {
                     }
                 );
             }
+            // TH_BENCH_LIN=1 → decode + prefill kernel sweeps; =dec / =pf
+            // → just one of them
             #[cfg(all(feature = "metal", target_os = "macos"))]
-            if std::env::var("TH_BENCH_LIN").is_ok() {
+            if let Ok(which) = std::env::var("TH_BENCH_LIN") {
                 if let model::ModelBackend::Qwen35(q) =
                     &loaded.backend
                 {
-                    q.bench_lin(&loaded.device)?;
+                    if which != "pf" {
+                        q.bench_lin(&loaded.device)?;
+                    }
+                    if which != "dec" {
+                        q.bench_prefill(&loaded.device)?;
+                    }
                 }
             }
             if let Ok(m) = std::env::var("TH_BENCH_MULTI") {
@@ -324,6 +343,32 @@ async fn main() -> Result<()> {
                         t.elapsed().as_secs_f64() * 1e3
                     );
                     pos += m;
+                }
+            }
+            if let Ok(spec) = std::env::var("TH_BENCH_PREFILL") {
+                // prefill forward (the TTFT path): fresh state per run,
+                // last-row f32 logits read back (sync); run 0 = warm-up
+                let dev = loaded.device.clone();
+                for m in spec.split(',').filter_map(|t| t.trim().parse::<usize>().ok()) {
+                    let seq: Vec<u32> = (0..m).map(|i| ids[i % ids.len()]).collect();
+                    let mut runs = Vec::new();
+                    for _ in 0..5 {
+                        // forward() runs decode slot 0
+                        loaded.backend.clear_kv_cache(0);
+                        let t = std::time::Instant::now();
+                        let lg = loaded.backend.forward(&seq, 0, &dev)?;
+                        let _ = lg.to_vec1::<f32>()?;
+                        runs.push(t.elapsed().as_secs_f64() * 1e3);
+                    }
+                    let mut v = runs[1..].to_vec();
+                    v.sort_by(|a, b| a.total_cmp(b));
+                    eprintln!(
+                        "prefill m={m:4} min={:.1}ms med={:.1}ms tok/s={:.0} runs={:?}",
+                        v[0],
+                        (v[1] + v[2]) / 2.0,
+                        m as f64 / v[0] * 1e3,
+                        runs.iter().map(|x| (x * 10.0).round() / 10.0).collect::<Vec<_>>()
+                    );
                 }
             }
             if let Some(path) = dump {
