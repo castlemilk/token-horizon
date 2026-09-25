@@ -1445,6 +1445,11 @@ impl Qwen35 {
         self.slots.len()
     }
 
+    /// Keep only the first `n` (>=1) decode slots.
+    pub fn truncate_slots(&mut self, n: usize) {
+        self.slots.truncate(n.max(1));
+    }
+
     /// Enable TurboQuant-compressed KV caches on the full-attention
     /// layers. Called post-load when EngineConfig.kv_quant is set.
     pub fn enable_kv_quant(&mut self) -> Result<()> {
