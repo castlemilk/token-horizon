@@ -231,6 +231,14 @@ pub fn plain_tile_for(mode: Q4PolicyMode, out: usize, inp: usize, cores: usize) 
     }
 }
 
+/// P0: the widest input (K) `AffineQmpp` binds directly at m = 8. The
+/// direct binding measured 0.5-7% faster per call than the pad copy on
+/// every K <= 6144 projection (gate_up, in_all, in_qkv, out, o, lm_head)
+/// but 2.4-3.8% slower on the MLP down projection (K = 17408) —
+/// `TH_BENCH_Q4` interleaved `path+pad` arm, two runs, M5 Max. Longer
+/// inputs keep the copy; the output is bitwise identical either way.
+pub const PAD_SKIP_MAX_IN: usize = 8192;
+
 /// P0: whether `AffineQmpp` may bind an exact [8, in] input directly
 /// instead of copying it through the pad kernel. Off under the legacy
 /// policy or with `TH_Q4_PAD=1` (read once).
@@ -2109,6 +2117,7 @@ kernel void mpp_probe(device float* y [[buffer(0)]],
             let direct = self.m == 8
                 && l_x.shape().elem_count() == 8 * self.inp
                 && x_off % 16 == 0
+                && self.inp <= super::PAD_SKIP_MAX_IN
                 && super::pad_skip_enabled();
             let x8_buf = if direct {
                 None
