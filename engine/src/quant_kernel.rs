@@ -202,12 +202,20 @@ pub const PAIRED256_WAVE_GROUPS_PER_CORE: usize = 4;
 /// projections (M5 Max 40-core, Qwen3.8-27B 4-bit, m = 8, isolated
 /// kernel GPU time — q4-kernels §5, re-checked with `TH_BENCH_Q4`):
 ///   GDN in_all 16480x5120: N256 sg8 117.7 us vs n64s4 131.3 (65 tiles).
-/// Deliberately absent (the generic n64s4 rule wins or ties): attn
-/// in_qkv 14336x5120 (n64s4 95.2 vs N256 101.6) and the N=5120
+/// K45 autotune (`TH_BENCH_Q4_SWEEP=1`: every tile family x persistent
+/// group counts {1,2,3,4,6,8} x cores + full grid, target and DFlash
+/// draft shapes, interleaved passes over all layers' tensors):
+///   draft gate / up 17408x5120 (unfused): N256 sg8 122.3 us vs n64s4
+///   137.0 (68 tiles, -11%).
+/// Every other shape keeps its rule: the listed group counts never beat
+/// the full grid / one-wave policy, and the generic n64s4 rule wins or
+/// ties on attn in_qkv 14336x5120 (n64s4 95.2 vs N256 101.6), the N=5120
 /// out/o/down projections (n64s4 43.3/121.9 us; a sequential tile only
-/// gets 20-40 groups there — 79-111 us / 218 us).
+/// gets 20-40 groups there — 79-111 us / 218 us) and the draft dyn
+/// 1280x5120, qkv 6144x5120, o 5120x4096, fc 5120x25600 and selector
+/// 256x5120 shapes.
 const DECODE_TILE_TABLE: &[((usize, usize), DecodeTile)] =
-    &[((16480, 5120), DecodeTile::N256Sg8)];
+    &[((16480, 5120), DecodeTile::N256Sg8), ((17408, 5120), DecodeTile::N256Sg8)];
 
 /// K2: the decode tile for a plain `[out, in]` projection at m <= 8.
 /// Very wide shapes (lm_head, 970 tiles) take Splash's paired N256 tile
@@ -3173,6 +3181,9 @@ mod tests {
             (Tuned, IN_QKV, 40, N64Split4),
             (Tuned, OUT_O, 40, N64Split4),
             (Tuned, DOWN, 40, N64Split4),
+            // K45 autotune: the DFlash draft's unfused gate / up
+            (Tuned, (17408, 5120), 40, N256Sg8),
+            (Tuned, (6144, 5120), 40, N64Split4),
             // 970 tiles < 8 x 128 cores: not "very wide" on a bigger GPU
             (Tuned, LM_HEAD, 128, N64Split4),
             (Legacy, LM_HEAD, 40, N64Split4),

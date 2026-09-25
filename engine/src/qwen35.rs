@@ -761,8 +761,10 @@ pub(crate) fn lin_apply_ps(x: &Tensor, l: &Lin, presum: bool) -> Result<Tensor> 
 /// Δpath is vs the production path's output (0 = bit-identical).
 /// Host-timed (sync → enqueue a pass → sync), so µs/call includes ~2-5 µs
 /// of encode. Env: `TH_BENCH_Q4_M` (rows, default 8),
-/// `TH_BENCH_Q4_PASSES` (default 7), `TH_BENCH_Q4_ONLY=<class,..>`
-/// (subset), `TH_BENCH_Q4_SERIAL=0` (let calls overlap).
+/// `TH_BENCH_Q4_PASSES` (default 7), `TH_BENCH_Q4_SWEEP=1` (K45 autotune:
+/// persistent-group sweeps per tile family, plus the DFlash draft shapes
+/// timed on reinterpreted target tensors — timing/Δ only, the values are
+/// meaningless), `TH_BENCH_Q4_ONLY=<class,..>` (subset).
 #[cfg(all(feature = "metal", target_os = "macos"))]
 pub(crate) fn bench_q4_decode(model: &Qwen35, device: &Device) -> Result<()> {
     use crate::quant_kernel::{AffineQmm, AffineQmpp, Q4AttachSums};
@@ -771,6 +773,7 @@ pub(crate) fn bench_q4_decode(model: &Qwen35, device: &Device) -> Result<()> {
     };
     let rows = env_n("TH_BENCH_Q4_M", 8).clamp(1, 8);
     let passes = env_n("TH_BENCH_Q4_PASSES", 7).max(1);
+    let sweep = std::env::var("TH_BENCH_Q4_SWEEP").as_deref() == Ok("1");
     // serial (default): a buffer-scope barrier after every call, so calls
     // run back to back like the forward's dependent chain; `=0` lets
     // independent calls overlap on the concurrent encoder (the pre-K45
@@ -817,12 +820,29 @@ pub(crate) fn bench_q4_decode(model: &Qwen35, device: &Device) -> Result<()> {
             })
             .collect::<Vec<_>>()
     };
+    // a tiled weight reinterpreted as a smaller [out, inp] tiled weight
+    // (prefix views of the packed buffers) — draft-shape timing only
+    let view = |q: &QLin, out: usize, inp: usize| -> Option<QLin> {
+        let padded = out.div_ceil(256) * 256;
+        let (nw, ns) = (padded * inp / 8, 2 * padded * (inp / 64));
+        if q.wq.elem_count() < nw || q.sb.elem_count() < ns {
+            return None;
+        }
+        Some(QLin {
+            wq: q.wq.flatten_all().ok()?.narrow(0, 0, nw).ok()?,
+            sb: q.sb.flatten_all().ok()?.narrow(0, 0, ns).ok()?,
+            out,
+            inp,
+            gs: 64,
+            tiled: true,
+        })
+    };
     let gate_ups: Vec<QLin> =
         model.layers.iter().filter_map(|l| quant(&l.mlp.gate_up)).collect();
     let in_alls = gdn(|g| &g.in_all);
     let outs = gdn(|g| &g.out);
     // (tag, tensors, gate_up, rows, synthetic)
-    let classes: Vec<(String, Vec<QLin>, bool, usize, bool)> = vec![
+    let mut classes: Vec<(String, Vec<QLin>, bool, usize, bool)> = vec![
         ("gate_up".into(), gate_ups.clone(), true, rows, false),
         ("down".into(), model.layers.iter().filter_map(|l| quant(&l.mlp.down)).collect(), false, rows, false),
         ("in_all".into(), in_alls.clone(), false, rows, false),
@@ -831,8 +851,23 @@ pub(crate) fn bench_q4_decode(model: &Qwen35, device: &Device) -> Result<()> {
         ("o".into(), attn(|a| &a.o), false, rows, false),
         ("lm_head".into(), quant(&model.lm_head).into_iter().collect(), false, rows, false),
     ];
+    if sweep {
+        // DFlash draft projections (dflash.rs DraftLayer / Draft): propose
+        // runs 8 rows through each layer, 7 through lm_head/selector; the
+        // commit runs `retained` rows through fc (4 ~ a typical round)
+        let mk = |src: &[QLin], out: usize, inp: usize| -> Vec<QLin> {
+            src.iter().filter_map(|q| view(q, out, inp)).collect()
+        };
+        classes.push(("d_dyn".into(), mk(&in_alls, 1280, 5120), false, 8, true));
+        classes.push(("d_qkv".into(), mk(&in_alls, 6144, 5120), false, 8, true));
+        classes.push(("d_o".into(), mk(&outs, 5120, 4096), false, 8, true));
+        classes.push(("d_gate".into(), mk(&gate_ups, 17408, 5120), false, 8, true));
+        classes.push(("d_fc".into(), mk(&gate_ups, 5120, 25600), false, 4, true));
+        classes.push(("d_sel".into(), mk(&in_alls, 256, 5120), false, 7, true));
+        classes.push(("lm_head_m7".into(), quant(&model.lm_head).into_iter().collect(), false, 7, false));
+    }
     eprintln!(
-        "q4 bench: m={rows} passes={passes} serial={serial} policy={:?} gpu_cores={cores} pad_skip={} presum={}",
+        "q4 bench: m={rows} passes={passes} sweep={sweep} serial={serial} policy={:?} gpu_cores={cores} pad_skip={} presum={}",
         crate::quant_kernel::q4_policy_mode(),
         crate::quant_kernel::pad_skip_enabled(),
         crate::quant_kernel::presum_enabled(),
@@ -937,6 +972,7 @@ pub(crate) fn bench_q4_decode(model: &Qwen35, device: &Device) -> Result<()> {
             ("path+ps".to_string(), Box::new(|q: &QLin, _| path(q, &x_ps, true))),
         ];
 
+        let tiles = q0.out.div_ceil(256);
         // (label, tile, sgs, groups override, presum, emit, flags)
         let mut cfgs: Vec<(String, usize, usize, usize, bool, bool, u32)> = Vec::new();
         let mut add = |label: &str, tile: usize, sgs: usize, groups: usize| {
@@ -949,11 +985,31 @@ pub(crate) fn bench_q4_decode(model: &Qwen35, device: &Device) -> Result<()> {
             add("n32s4_gu", 64, 2, 0);
             add("n256_gu_sg8", 256, 8, 0);
             add("n256_gu_sg4", 256, 4, 0);
+            if sweep {
+                let pairs = tiles / 2;
+                for g in [cores, pairs.div_ceil(2), 3 * cores / 2, pairs] {
+                    if g > 0 && g <= pairs {
+                        add(&format!("n256_gu_sg8_g{g}"), 256, 8, g);
+                        add(&format!("n256_gu_sg4_g{g}"), 256, 4, g);
+                    }
+                }
+            }
         } else {
             add("n64s4", 64, 2, 0);
             add("n32s4", 32, 1, 0);
             add("n256_sg8", 256, 8, 0);
             add("p256_sg4", 256, 4, 0);
+            if sweep {
+                for mult in [1usize, 2, 3, 4, 6, 8] {
+                    let g = mult * cores;
+                    if g < tiles {
+                        add(&format!("n256_sg8_g{g}"), 256, 8, g);
+                        add(&format!("p256_sg4_g{g}"), 256, 4, g);
+                    }
+                }
+                add(&format!("n256_sg8_g{tiles}"), 256, 8, tiles);
+                add(&format!("p256_sg4_g{tiles}"), 256, 4, tiles);
+            }
         }
         {
             // K45: the production presum+emit gate_up, and presum blocks
