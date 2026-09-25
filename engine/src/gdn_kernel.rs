@@ -17,14 +17,14 @@
 //! tracking inserts a buffer barrier before the next consumer.
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
-pub use metal_impl::{AddRmsNorm, GdnConv, GdnGateNorm, GdnQkNorm, GdnStep};
+pub use metal_impl::{AddRmsNorm, GdnConv, GdnGateNorm, GdnQkNorm, GdnStep, gdn_fused_step};
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
 mod metal_impl {
     use candle_core::backend::BackendStorage;
     use candle_core::{
         CpuStorage, CustomOp1, CustomOp3, DType, Layout,
-        MetalStorage, Result, Shape,
+        MetalStorage, Result, Shape, Storage, Tensor,
     };
     use candle_metal_kernels::metal::ComputePipeline;
     use candle_metal_kernels::utils::EncoderProvider;
@@ -239,6 +239,166 @@ kernel void gdn_gatenorm(
                       / (1.0f + exp(-zz)));
     }
 }
+struct GdnFusedParams {
+    int t;
+    int xs;      // xnew row stride
+    int ss;      // conv-state row stride
+    int abs_;    // ab row stride
+    int zs;      // z row stride
+    float eps;   // gatenorm eps
+    float a_log[64];
+    float dt_bias[64];
+};
+
+// One-dispatch GDN step: conv+silu, per-head l2norm, delta recurrence
+// and the gated output norm — one threadgroup per value head, 256
+// threads. Sibling threadgroups sharing a k-head recompute its q/k
+// conv+norm (registers are cheaper than a global round-trip); the
+// hv%3==0 owner also writes them into `pack` for the verify stash.
+// Delta state lives in registers across all T rows and writes back
+// once. Exact-op parity with conv -> qknorm -> scan -> gatenorm:
+// bf16 rounding at the conv, pack and out boundaries.
+constant constexpr int TMAX = 8;
+kernel void gdn_fused_step(
+    device const bfloat* xnew  [[buffer(0)]],
+    device const bfloat* cst   [[buffer(1)]],
+    device const bfloat* cw    [[buffer(2)]],
+    device float*        dst   [[buffer(3)]],
+    device const bfloat* ab    [[buffer(4)]],
+    device const bfloat* zz    [[buffer(5)]],
+    device const bfloat* nw    [[buffer(6)]],
+    device bfloat*       y     [[buffer(7)]],
+    device bfloat*       pack  [[buffer(8)]],
+    constant GdnFusedParams& p [[buffer(9)]],
+    uint hv  [[threadgroup_position_in_grid]],
+    uint tid [[thread_index_in_threadgroup]],
+    uint lane [[thread_index_in_simdgroup]],
+    uint sg  [[simdgroup_index_in_threadgroup]])
+{
+    constexpr int C = 2 * HK * DK + HV * DV;
+    constexpr int REP = HV / HK;
+    const uint hk = hv / REP;
+    const int T = p.t;
+
+    threadgroup float qn[TMAX * DK];
+    threadgroup float kn[TMAX * DK];
+    threadgroup float vr[TMAX * DV];
+    threadgroup float ov[TMAX * DV];
+    threadgroup float gdec[TMAX];
+    threadgroup float bta[TMAX];
+
+    // g/beta per row — computed once, shared across sgs
+    {
+        const float eA = exp(p.a_log[hv]);
+        const float dtb = p.dt_bias[hv];
+        for (int t = int(tid); t < T; t += 256) {
+            const float ap = float(ab[t * p.abs_ + hv]) + dtb;
+            gdec[t] = exp(-eA * (ap > 30.0f ? ap : log(1.0f + exp(ap))));
+            bta[t] = 1.0f / (1.0f + exp(-float(ab[t * p.abs_ + HV + hv])));
+        }
+    }
+
+    // ---- conv + silu: this head's 384 channels x T rows ----
+    for (uint w = tid; w < uint(3 * DK) * uint(T); w += 256) {
+        const int i = int(w) % (3 * DK);   // local channel
+        const int t = int(w) / (3 * DK);   // row
+        int g;
+        if (i < DK) g = int(hk) * DK + i;
+        else if (i < 2 * DK) g = HK * DK + int(hk) * DK + (i - DK);
+        else g = 2 * HK * DK + int(hv) * DV + (i - 2 * DK);
+        float acc = 0.0f;
+        for (int j = 0; j < 4; ++j) {
+            const int r = t + j;
+            const float v = r < 3
+                ? float(cst[r * p.ss + g])
+                : float(xnew[(r - 3) * p.xs + g]);
+            acc += float(cw[g * 4 + j]) * v;
+        }
+        const float sv = float(bfloat(acc / (1.0f + exp(-acc))));
+        if (i < DK) qn[t * DK + i] = sv;
+        else if (i < 2 * DK) kn[t * DK + i - DK] = sv;
+        else {
+            vr[t * DV + i - 2 * DK] = sv;
+            pack[t * C + g] = bfloat(sv);   // v rows go raw to the stash
+        }
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    // ---- per-row l2norm on q/k (all siblings recompute; owner writes pack) ----
+    const bool owner = (hv % REP) == 0;
+    for (int t = int(sg); t < T; t += 8) {
+        float qs = 0.0f, ks = 0.0f;
+        for (int i = 0; i < DK / 32; ++i) {
+            const float q = qn[t * DK + lane * 4 + i];
+            const float k = kn[t * DK + lane * 4 + i];
+            qs += q * q;
+            ks += k * k;
+        }
+        qs = simd_sum(qs);
+        ks = simd_sum(ks);
+        const float qi = rsqrt(qs / DK + 1e-6f) / float(DK);
+        const float ki = rsqrt(ks / DK + 1e-6f) * rsqrt(float(DK));
+        for (int i = 0; i < DK / 32; ++i) {
+            const int e = lane * 4 + i;
+            const bfloat qb = bfloat(qn[t * DK + e] * qi);
+            const bfloat kb = bfloat(kn[t * DK + e] * ki);
+            qn[t * DK + e] = float(qb);
+            kn[t * DK + e] = float(kb);
+            if (owner) {
+                pack[t * C + hk * DK + e] = qb;
+                pack[t * C + HK * DK + hk * DK + e] = kb;
+            }
+        }
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    // ---- delta recurrence: one simdgroup per dv row, stride 8 ----
+    for (uint dv = sg; dv < uint(DV); dv += 8) {
+        device float* sr = dst + (hv * DV + int(dv)) * DK;
+        float s0 = sr[4 * lane + 0], s1 = sr[4 * lane + 1];
+        float s2 = sr[4 * lane + 2], s3 = sr[4 * lane + 3];
+        for (int t = 0; t < T; ++t) {
+            const float k0 = kn[t * DK + 4 * lane + 0];
+            const float k1 = kn[t * DK + 4 * lane + 1];
+            const float k2 = kn[t * DK + 4 * lane + 2];
+            const float k3 = kn[t * DK + 4 * lane + 3];
+            const float g = gdec[t];
+            s0 *= g; s1 *= g; s2 *= g; s3 *= g;
+            float kv = s0 * k0 + s1 * k1 + s2 * k2 + s3 * k3;
+            kv = simd_sum(kv);
+            const float delta = (vr[t * DV + int(dv)] - kv) * bta[t];
+            s0 += k0 * delta; s1 += k1 * delta;
+            s2 += k2 * delta; s3 += k3 * delta;
+            float out = s0 * qn[t * DK + 4 * lane + 0]
+                      + s1 * qn[t * DK + 4 * lane + 1]
+                      + s2 * qn[t * DK + 4 * lane + 2]
+                      + s3 * qn[t * DK + 4 * lane + 3];
+            out = simd_sum(out);
+            if (lane == 0) ov[t * DV + int(dv)] = float(bfloat(out));
+        }
+        sr[4 * lane + 0] = s0; sr[4 * lane + 1] = s1;
+        sr[4 * lane + 2] = s2; sr[4 * lane + 3] = s3;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    // ---- gated rmsnorm: y = (rmsnorm(o)·w) ⊙ silu(z) ----
+    for (int t = int(sg); t < T; t += 8) {
+        float ss = 0.0f;
+        for (int i = 0; i < DV / 32; ++i) {
+            const float v = ov[t * DV + lane * 4 + i];
+            ss += v * v;
+        }
+        ss = simd_sum(ss);
+        const float inv = rsqrt(ss / DV + p.eps);
+        for (int i = 0; i < DV / 32; ++i) {
+            const int d = lane * 4 + i;
+            const float zf = float(zz[t * p.zs + hv * DV + d]);
+            y[t * HV * DV + hv * DV + d] = bfloat(
+                ov[t * DV + d] * inv * float(nw[d]) * zf / (1.0f + exp(-zf)));
+        }
+    }
+}
+
 "#;
 
     static PIPELINE: OnceLock<ComputePipeline> = OnceLock::new();
@@ -432,7 +592,185 @@ kernel void gdn_conv(
     }
     out[t * p.C + c] = bfloat(acc / (1.0f + exp(-acc))); // silu
 }
+
 "#;
+
+    #[repr(C)]
+    struct GdnFusedParams {
+        t: i32,
+        xs: i32,
+        ss: i32,
+        abs_: i32,
+        zs: i32,
+        eps: f32,
+        a_log: [f32; 64],
+        dt_bias: [f32; 64],
+    }
+
+    static FUSED_PIPE: OnceLock<ComputePipeline> = OnceLock::new();
+
+    /// One-dispatch GDN step: conv+silu, l2norm, delta recurrence and
+    /// gated norm in a single kernel (48 threadgroups x 256 threads).
+    /// `dstate` is updated in place; `pack` receives the normed q/k +
+    /// raw v rows for the verify stash. Mirrors the conv -> qknorm ->
+    /// scan -> gatenorm chain bit-for-bit in bf16 rounding.
+    #[allow(clippy::too_many_arguments)]
+    pub fn gdn_fused_step(
+        xnew: &Tensor,    // [seq, conv_dim] strided view of the fused proj
+        conv_st: &Tensor, // [k-1, conv_dim] bf16
+        cw: &Tensor,      // [conv_dim, k] bf16
+        dstate: &Tensor,  // [hv, dv, dk] f32 — mutated in place
+        ab: &Tensor,      // [.., seq, 2*hv] strided
+        z: &Tensor,       // [.., seq, hv*dv] strided
+        normw: &Tensor,   // [dv] bf16
+        y: &Tensor,       // [seq, hv*dv] bf16 out
+        pack: &Tensor,    // [seq, conv_dim] bf16 out
+        seq: usize,
+        hk: usize,
+        hv: usize,
+        dk: usize,
+        dv: usize,
+        eps: f32,
+        a_log: [f32; 64],
+        dt_bias: [f32; 64],
+    ) -> Result<()> {
+        let (s_x, l_x) = xnew.storage_and_layout();
+        let s_x = match &*s_x {
+            Storage::Metal(m) => m,
+            _ => candle_core::bail!("gdn_fused_step: Metal only"),
+        };
+        if seq > 8 || dk != dv {
+            candle_core::bail!("gdn_fused_step: seq {} / dk {} / dv {}", seq, dk, dv);
+        }
+        let (s_st, l_st) = conv_st.storage_and_layout();
+        let s_st = match &*s_st {
+            Storage::Metal(m) => m,
+            _ => candle_core::bail!("gdn_fused_step: Metal only"),
+        };
+        let (s_w, l_w) = cw.storage_and_layout();
+        let s_w = match &*s_w {
+            Storage::Metal(m) => m,
+            _ => candle_core::bail!("gdn_fused_step: Metal only"),
+        };
+        let (s_ds, l_ds) = dstate.storage_and_layout();
+        let s_ds = match &*s_ds {
+            Storage::Metal(m) => m,
+            _ => candle_core::bail!("gdn_fused_step: Metal only"),
+        };
+        let (s_ab, l_ab) = ab.storage_and_layout();
+        let s_ab = match &*s_ab {
+            Storage::Metal(m) => m,
+            _ => candle_core::bail!("gdn_fused_step: Metal only"),
+        };
+        let (s_z, l_z) = z.storage_and_layout();
+        let s_z = match &*s_z {
+            Storage::Metal(m) => m,
+            _ => candle_core::bail!("gdn_fused_step: Metal only"),
+        };
+        let (s_nw, l_nw) = normw.storage_and_layout();
+        let s_nw = match &*s_nw {
+            Storage::Metal(m) => m,
+            _ => candle_core::bail!("gdn_fused_step: Metal only"),
+        };
+        let (s_y, l_y) = y.storage_and_layout();
+        let s_y = match &*s_y {
+            Storage::Metal(m) => m,
+            _ => candle_core::bail!("gdn_fused_step: Metal only"),
+        };
+        let (s_pk, l_pk) = pack.storage_and_layout();
+        let s_pk = match &*s_pk {
+            Storage::Metal(m) => m,
+            _ => candle_core::bail!("gdn_fused_step: Metal only"),
+        };
+        if !(l_x.stride().last() == Some(&1)
+            && l_st.stride().last() == Some(&1)
+            && l_ab.stride().last() == Some(&1)
+            && l_z.stride().last() == Some(&1)
+            && l_w.is_contiguous()
+            && l_ds.is_contiguous()
+            && l_nw.is_contiguous()
+            && l_y.is_contiguous()
+            && l_pk.is_contiguous())
+        {
+            candle_core::bail!(
+                "gdn_fused_step layouts: x {:?} st {:?} ab {:?} z {:?} w {:?} ds {:?}",
+                l_x.shape(), l_st.shape(), l_ab.shape(), l_z.shape(),
+                l_w.shape(), l_ds.shape()
+            );
+        }
+        let b2 = DType::BF16.size_in_bytes();
+        if s_x.dtype() != DType::BF16 || s_w.dtype() != DType::BF16
+            || s_st.dtype() != DType::BF16 || s_ab.dtype() != DType::BF16
+            || s_z.dtype() != DType::BF16 || s_nw.dtype() != DType::BF16
+            || s_y.dtype() != DType::BF16 || s_pk.dtype() != DType::BF16
+            || s_ds.dtype() != DType::F32
+        {
+            candle_core::bail!("gdn_fused_step dtypes");
+        }
+
+        let device = s_x.device();
+        if FUSED_PIPE.get().is_none() {
+            let src = SOURCE_TMPL
+                .replace("{HK}", &hk.to_string())
+                .replace("{HV}", &hv.to_string())
+                .replace("{DK}", &dk.to_string())
+                .replace("{DV}", &dv.to_string());
+            let raw = device.metal_device();
+            let lib = raw
+                .new_library_with_source(&src, None)
+                .map_err(candle_core::Error::wrap)?;
+            let f = lib
+                .get_function("gdn_fused_step", None)
+                .map_err(candle_core::Error::wrap)?;
+            let pipe = raw
+                .new_compute_pipeline_state_with_function(&f)
+                .map_err(candle_core::Error::wrap)?;
+            let _ = FUSED_PIPE.set(pipe);
+        }
+        let pipeline = FUSED_PIPE.get().unwrap();
+
+        let row_str = |l: &Layout| -> usize {
+            let d = l.shape().dims();
+            l.stride()[d.len() - 2]
+        };
+        let params = GdnFusedParams {
+            t: seq as i32,
+            xs: row_str(l_x) as i32,
+            ss: row_str(l_st) as i32,
+            abs_: row_str(l_ab) as i32,
+            zs: row_str(l_z) as i32,
+            eps,
+            a_log,
+            dt_bias,
+        };
+
+        let encoder = device.command_encoder().map_err(candle_core::Error::wrap)?;
+        encoder.set_label("gdn_fused_step");
+        let enc_ref = &encoder;
+        let enc: &candle_metal_kernels::metal::ComputeCommandEncoder =
+            enc_ref.encoder().as_ref();
+        enc.set_compute_pipeline_state(pipeline);
+        enc.set_input_buffer(0, Some(s_x.buffer()), l_x.start_offset() * b2);
+        enc.set_input_buffer(1, Some(s_st.buffer()), l_st.start_offset() * b2);
+        enc.set_input_buffer(2, Some(s_w.buffer()), l_w.start_offset() * b2);
+        enc.set_output_buffer(
+            3,
+            Some(s_ds.buffer()),
+            l_ds.start_offset() * DType::F32.size_in_bytes(),
+        );
+        enc.set_input_buffer(4, Some(s_ab.buffer()), l_ab.start_offset() * b2);
+        enc.set_input_buffer(5, Some(s_z.buffer()), l_z.start_offset() * b2);
+        enc.set_input_buffer(6, Some(s_nw.buffer()), l_nw.start_offset() * b2);
+        enc.set_output_buffer(7, Some(s_y.buffer()), l_y.start_offset() * b2);
+        enc.set_output_buffer(8, Some(s_pk.buffer()), l_pk.start_offset() * b2);
+        enc.set_bytes(9, &params);
+        enc.dispatch_thread_groups(
+            MTLSize { width: hv, height: 1, depth: 1 },
+            MTLSize { width: 256, height: 1, depth: 1 },
+        );
+        drop(encoder);
+        Ok(())
+    }
 
     static CONV_PIPE: OnceLock<ComputePipeline> = OnceLock::new();
 

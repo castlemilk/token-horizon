@@ -1737,6 +1737,47 @@ impl Qwen35 {
         if x.device().is_metal()
             && std::env::var("TH_GDN_EAGER").is_err()
         {
+            if seq <= 8 && std::env::var("TH_GDN_STEP").is_err() {
+                // one dispatch: conv+silu, l2norm, delta scan, gated norm
+                let gated = Tensor::zeros(
+                    (seq, l.value_dim),
+                    DType::BF16,
+                    x.device(),
+                )?;
+                let pack = Tensor::zeros(
+                    (seq, conv_dim),
+                    DType::BF16,
+                    x.device(),
+                )?;
+                crate::gdn_kernel::gdn_fused_step(
+                    &qkv, &st.conv, &l.conv, &st.recurrent, &ab, &z,
+                    &l.norm_w, &gated, &pack, seq, l.num_k_heads,
+                    l.num_v_heads, l.head_k, l.head_v, eps as f32,
+                    l.a_log64, l.dt_bias64,
+                )?;
+                // new conv window = last (k-1) rows of [state | inputs]
+                st.conv = if seq >= l.conv_k - 1 {
+                    qkv.narrow(0, seq + 1 - l.conv_k, l.conv_k - 1)?
+                } else {
+                    Tensor::cat(
+                        &[
+                            &st.conv
+                                .narrow(0, seq, l.conv_k - 1 - seq)?,
+                            &qkv,
+                        ],
+                        0,
+                    )?
+                    .contiguous()?
+                };
+                if let Some(c) = vc.as_mut() {
+                    c.pack = Some(pack);
+                    c.ab = Some(ab.clone());
+                }
+                return lin_apply(
+                    &gated.unsqueeze(0)?,
+                    &l.out,
+                );
+            }
             let conv_out = st
                 .conv
                 .apply_op3_no_bwd(
