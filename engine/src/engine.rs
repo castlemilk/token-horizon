@@ -118,6 +118,7 @@ impl Engine {
         }
         // hot-path policy knobs are read here, once, never per round
         let _ = debug_timing();
+        tracing::info!(qos = ?decode_qos::mode(), "decode thread QoS (TH_DECODE_QOS)");
         if loaded.backend.has_draft() {
             tracing::info!(
                 verify = if verify_adaptive() { "adaptive (TH_VERIFY_ADAPTIVE)" } else { "all 7 proposals" },
@@ -140,7 +141,11 @@ impl Engine {
             let (i2, s2) = (inner.clone(), state.clone());
             std::thread::Builder::new()
                 .name("th-batch".into())
-                .spawn(move || batch_loop(i2, s2, rx, nslots))?;
+                .spawn(move || {
+                    // Q1: the scheduler thread is dedicated — raise once
+                    let _qos = decode_qos::enter();
+                    batch_loop(i2, s2, rx, nslots)
+                })?;
             tracing::info!(slots = nslots, "batched decode enabled");
             Some(tx)
         } else {
@@ -198,6 +203,8 @@ impl Engine {
         // delta until generation completes and break SSE streaming
         tokio::task::spawn_blocking(move || {
             let started = Instant::now();
+            // Q1: decode at user-interactive QoS; restored on return
+            let _qos = decode_qos::enter();
             let rec = generate_blocking(&inner, &state, &id, messages, req, &tx, started);
             state
                 .counters
@@ -269,6 +276,97 @@ fn verify_adaptive() -> bool {
     *V.get_or_init(|| {
         std::env::var("TH_VERIFY_ADAPTIVE").is_ok_and(|v| !v.is_empty() && v != "0")
     })
+}
+
+/// Q1 — decode-thread QoS (macOS).
+///
+/// The decode loop is host-bound between GPU syncs: every round the
+/// thread encodes the draft and verify passes, blocks in
+/// `waitUntilCompleted`, and must wake and encode the next pass before
+/// the GPU has work again. At the default QoS the scheduler may park it
+/// on a slower core or behind other runnable threads at each wake-up.
+/// `TH_DECODE_QOS` (read once): `interactive` (default) =
+/// QOS_CLASS_USER_INTERACTIVE, `initiated` = QOS_CLASS_USER_INITIATED,
+/// `off` = leave the thread's QoS unchanged.
+mod decode_qos {
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum Mode {
+        Off,
+        Initiated,
+        Interactive,
+    }
+
+    pub fn parse(v: Option<&str>) -> Mode {
+        match v.map(|s| s.trim().to_ascii_lowercase()).as_deref() {
+            Some("off" | "0" | "none" | "default") => Mode::Off,
+            Some("initiated" | "user-initiated" | "ui") => Mode::Initiated,
+            _ => Mode::Interactive,
+        }
+    }
+
+    pub fn mode() -> Mode {
+        static M: std::sync::OnceLock<Mode> = std::sync::OnceLock::new();
+        *M.get_or_init(|| parse(std::env::var("TH_DECODE_QOS").ok().as_deref()))
+    }
+
+    /// Restores the thread's previous QoS on drop (the single-slot loop
+    /// runs on a reused tokio blocking-pool thread).
+    pub struct Guard {
+        #[cfg(target_os = "macos")]
+        prev: Option<(libc::qos_class_t, libc::c_int)>,
+    }
+
+    #[cfg(target_os = "macos")]
+    fn current() -> Option<(libc::qos_class_t, libc::c_int)> {
+        let mut cls = libc::qos_class_t::QOS_CLASS_UNSPECIFIED;
+        let mut rel: libc::c_int = 0;
+        // SAFETY: querying the calling thread; out-params are valid
+        let rc = unsafe { libc::pthread_get_qos_class_np(libc::pthread_self(), &mut cls, &mut rel) };
+        (rc == 0).then_some((cls, rel))
+    }
+
+    #[cfg(target_os = "macos")]
+    fn set(cls: libc::qos_class_t, rel: libc::c_int) -> bool {
+        // SAFETY: plain syscall on the calling thread
+        unsafe { libc::pthread_set_qos_class_self_np(cls, rel) == 0 }
+    }
+
+    /// Raise the calling thread to the configured decode QoS.
+    pub fn enter() -> Guard {
+        #[cfg(target_os = "macos")]
+        {
+            let want = match mode() {
+                Mode::Off => return Guard { prev: None },
+                Mode::Initiated => libc::qos_class_t::QOS_CLASS_USER_INITIATED,
+                Mode::Interactive => libc::qos_class_t::QOS_CLASS_USER_INTERACTIVE,
+            };
+            let prev = current();
+            if !set(want, 0) {
+                return Guard { prev: None };
+            }
+            static ONCE: std::sync::Once = std::sync::Once::new();
+            ONCE.call_once(|| {
+                tracing::info!(from = ?prev.map(|p| p.0), to = ?current().map(|p| p.0), "decode thread QoS raised");
+            });
+            Guard { prev }
+        }
+        #[cfg(not(target_os = "macos"))]
+        Guard {}
+    }
+
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            #[cfg(target_os = "macos")]
+            if let Some((cls, rel)) = self.prev.take() {
+                // UNSPECIFIED can't be re-applied; DEFAULT is its effective class
+                let cls = match cls {
+                    libc::qos_class_t::QOS_CLASS_UNSPECIFIED => libc::qos_class_t::QOS_CLASS_DEFAULT,
+                    c => c,
+                };
+                let _ = set(cls, rel);
+            }
+        }
+    }
 }
 
 /// Proposals verified this round (rows = 1 + this). L1 default: all
@@ -2101,5 +2199,53 @@ mod dflash_policy {
         for (ema, want) in table {
             assert_eq!(dflash_verify_len(true, ema), want, "adaptive @ ema={ema}");
         }
+    }
+}
+
+#[cfg(test)]
+mod decode_qos_tests {
+    use super::decode_qos::{parse, Mode};
+
+    #[test]
+    fn parse_modes() {
+        for (v, want) in [
+            (None, Mode::Interactive),
+            (Some(""), Mode::Interactive),
+            (Some("interactive"), Mode::Interactive),
+            (Some("initiated"), Mode::Initiated),
+            (Some("UI"), Mode::Initiated),
+            (Some("off"), Mode::Off),
+            (Some("0"), Mode::Off),
+            (Some(" default "), Mode::Off),
+        ] {
+            assert_eq!(parse(v), want, "TH_DECODE_QOS={v:?}");
+        }
+    }
+
+    /// enter() raises the calling thread and the guard restores it.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn enter_raises_and_restores() {
+        if super::decode_qos::mode() != Mode::Interactive {
+            return; // TH_DECODE_QOS set in the test env
+        }
+        std::thread::spawn(|| {
+            let q = || {
+                let mut c = libc::qos_class_t::QOS_CLASS_UNSPECIFIED;
+                let mut r = 0;
+                assert_eq!(unsafe { libc::pthread_get_qos_class_np(libc::pthread_self(), &mut c, &mut r) }, 0);
+                c as u32
+            };
+            let before = q();
+            {
+                let _g = super::decode_qos::enter();
+                assert_eq!(q(), libc::qos_class_t::QOS_CLASS_USER_INTERACTIVE as u32);
+            }
+            let after = q();
+            let norm = |c: u32| if c == 0 { libc::qos_class_t::QOS_CLASS_DEFAULT as u32 } else { c };
+            assert_eq!(norm(after), norm(before), "QoS not restored");
+        })
+        .join()
+        .unwrap();
     }
 }
