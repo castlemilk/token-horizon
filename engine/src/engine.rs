@@ -1294,6 +1294,7 @@ fn batch_round(
         .map(|&b| inner.backend.snapshot(b))
         .collect::<Result<_>>()?;
     let seq_refs: Vec<&[u32]> = seqs.iter().map(|v| v.as_slice()).collect();
+    let t_fwd = t0.elapsed();
     let logits = inner.backend.forward_batch(&active, &seq_refs, &poss)?;
     let t_verify = t0.elapsed();
     // caps per slot
@@ -1426,6 +1427,15 @@ fn batch_round(
         }
     }
     let step_ms = t_verify.as_secs_f64() * 1000.0;
+    if std::env::var("TH_DEBUG_TIMING").is_ok() {
+        eprintln!(
+            "  [batch] nb={} propose={:.1}ms verify={:.1}ms total={:.1}ms",
+            active.len(),
+            t_fwd.as_secs_f64() * 1e3,
+            (t_verify - t_fwd).as_secs_f64() * 1e3,
+            step_ms
+        );
+    }
     for &b in &active {
         if let Some(r) = runs[b].as_mut() {
             r.decode_ms_total += step_ms;

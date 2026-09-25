@@ -488,6 +488,23 @@ impl DraftWeights {
         temp: Option<f64>,
         uniform: &mut dyn FnMut() -> f64,
     ) -> Result<Proposal> {
+        let (unary_all, cand_all, sel_all) =
+            self.cand_tables(logits, sel)?;
+        self.select_walk(
+            &unary_all, &cand_all, &sel_all, anchor, temp, uniform,
+        )
+    }
+
+    /// Candidate tables for `logits`/`sel` `[n, vocab]`/`[n, 256]` —
+    /// the GPU sort + readback runs once over all n rows (batched
+    /// propose passes all slots' rows in one call).
+    /// Returns (unary[n][16], cand[n][16], sel_h[n][256]).
+    fn cand_tables(
+        &self,
+        logits: &Tensor,
+        sel: &Tensor,
+    ) -> Result<(Vec<Vec<f32>>, Vec<Vec<u32>>, Vec<Vec<f32>>)> {
+        let n = logits.dim(0)?;
         // Top-16 per row. Metal's full-width asort is broken at
         // ncols=248320, so sort 485 chunks of 512 instead — the global
         // top-16 is always contained in the union of per-chunk top-16s
@@ -496,25 +513,22 @@ impl DraftWeights {
         // CPU.
         const CHUNKS: usize = 485;
         const CHUNK_W: usize = 512;
-        let cand_rows = logits
-            .narrow(0, 0, PROPOSALS)?
-            .contiguous()?
-            .to_dtype(DType::F32)?; // [7, 248320]
-        let chunked = cand_rows.reshape((PROPOSALS, CHUNKS, CHUNK_W))?;
+        let cand_rows = logits.contiguous()?.to_dtype(DType::F32)?; // [n, 248320]
+        let chunked = cand_rows.reshape((n, CHUNKS, CHUNK_W))?;
         let (vals, ids) = chunked.sort_last_dim(false)?; // desc per chunk
         let cv = vals
             .narrow(2, 0, TOPK)?
             .contiguous()?
             .reshape(((), TOPK))?
-            .to_vec2::<f32>()?; // [7*485, 16]
+            .to_vec2::<f32>()?; // [n*485, 16]
         let ci = ids
             .narrow(2, 0, TOPK)?
             .contiguous()?
             .reshape(((), TOPK))?
             .to_vec2::<u32>()?;
-        let mut unary: Vec<Vec<f32>> = Vec::with_capacity(PROPOSALS);
-        let mut cand: Vec<Vec<u32>> = Vec::with_capacity(PROPOSALS);
-        for r in 0..PROPOSALS {
+        let mut unary: Vec<Vec<f32>> = Vec::with_capacity(n);
+        let mut cand: Vec<Vec<u32>> = Vec::with_capacity(n);
+        for r in 0..n {
             // merge 485 chunk top-16s → global top-16 for row r
             let mut pool: Vec<(f32, u32)> = Vec::with_capacity(CHUNKS * TOPK);
             for c in 0..CHUNKS {
@@ -529,17 +543,23 @@ impl DraftWeights {
             unary.push(top.iter().map(|t| t.0).collect());
             cand.push(top.iter().map(|t| t.1).collect());
         }
-        if std::env::var("TH_DEBUG_DRAFT").is_ok() {
-            eprintln!(
-                "[draft] top4 {:?} ids {:?}",
-                unary.iter().map(|u| &u[..4]).collect::<Vec<_>>(),
-                cand.iter().map(|c| &c[..4]).collect::<Vec<_>>()
-            );
-        }
         let sel_h: Vec<Vec<f32>> = sel
-            .narrow(0, 0, PROPOSALS)?
             .to_dtype(DType::F32)?
-            .to_vec2()?; // [7, 256] — row p for position p
+            .to_vec2()?; // [n, 256]
+        Ok((unary, cand, sel_h))
+    }
+
+    /// Per-slot walk over precomputed tables: `unary`/`cand`/`sel_h`
+    /// are this slot's `n` rows (PROPOSALS each).
+    fn select_walk(
+        &self,
+        unary: &[Vec<f32>],
+        cand: &[Vec<u32>],
+        sel_h: &[Vec<f32>],
+        anchor: u32,
+        temp: Option<f64>,
+        uniform: &mut dyn FnMut() -> f64,
+    ) -> Result<Proposal> {
 
         let mut tokens = [0u32; PROPOSALS];
         let mut cand_ids = [[0u32; TOPK]; PROPOSALS];
@@ -722,12 +742,25 @@ impl DraftWeights {
         let sels = Tensor::cat(&sels, 1)?;
         let logits = lin_apply(&logits, lm_head)?.squeeze(0)?; // [B*7, vocab]
         let sel = lin_apply(&sels, &self.selector)?.squeeze(0)?; // [B*7, 256]
+        let dbg = std::env::var("TH_DEBUG_TIMING").is_ok();
+        let t_ct = std::time::Instant::now();
+        // one GPU sort + readback across all slots' rows
+        let (unary, cand, sel_h) = self.cand_tables(&logits, &sel)?;
+        if dbg {
+            eprintln!("    [pb] cand_tables={:.1}ms", t_ct.elapsed().as_secs_f64()*1e3);
+        }
+        let t_w = std::time::Instant::now();
         let mut out = Vec::with_capacity(nb);
         for b in 0..nb {
-            let lg = logits.narrow(0, b * PROPOSALS, PROPOSALS)?;
-            let se = sel.narrow(0, b * PROPOSALS, PROPOSALS)?;
+            let (r0, r1) = (b * PROPOSALS, (b + 1) * PROPOSALS);
             let temp = temps[b];
-            out.push(self.select(&lg, &se, anchors[b], temp, &mut || uniform(b))?);
+            out.push(self.select_walk(
+                &unary[r0..r1], &cand[r0..r1], &sel_h[r0..r1],
+                anchors[b], temp, &mut || uniform(b),
+            )?);
+        }
+        if dbg {
+            eprintln!("    [pb] walks={:.1}ms", t_w.elapsed().as_secs_f64()*1e3);
         }
         Ok(out)
     }
