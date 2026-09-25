@@ -468,26 +468,15 @@ impl DraftWeights {
         v: &Tensor, // [8, 8, 128]
     ) -> Result<Tensor> {
         let l = ctx.ring_len.min(WINDOW);
-        // Gather the live window on-device: positions len-l..len →
-        // slots mod 2048.
+        // live window: positions len-l..len → slots mod 2048
         let start = ctx.ring_len - l;
         let dev = &self.device;
-        let (kr, vr) = if l == 0 {
-            (
-                Tensor::zeros((KV_HEADS, 0, HEAD_DIM), DType::BF16, dev)?,
-                Tensor::zeros((KV_HEADS, 0, HEAD_DIM), DType::BF16, dev)?,
-            )
-        } else {
-            let ids: Vec<u32> =
-                (start..ctx.ring_len).map(|p| (p % WINDOW) as u32).collect();
-            let idx = Tensor::new(ids.as_slice(), dev)?;
-            (
-                ctx.ring_k[layer].index_select(&idx, 1)?,
-                ctx.ring_v[layer].index_select(&idx, 1)?,
-            )
-        };
+        // MEM-4: the fused kernel reads the ring in place (slots start..
+        // mod 2048) — no host id list, no id upload (a fresh MTLBuffer per
+        // call), no [8, l, 128] K/V gathers; those were built before this
+        // early return and discarded (4 MiB each at l = 2048).
         #[cfg(all(feature = "metal", target_os = "macos"))]
-        if dev.is_metal() && std::env::var("TH_DRAFT_EAGER").is_err() {
+        if dev.is_metal() && !draft_eager() {
             // draft_attn returns [8, 32, 128]; o_proj needs the eager
             // path's [1, 8, 4096] — a rank-4 [1, 8, 32, 128] reads as
             // 256 rows x 128 and sends o_proj (inp 4096) down the m=256
@@ -503,6 +492,21 @@ impl DraftWeights {
             )?
             .reshape((1, ROWS, ATTN))?);
         }
+        // eager path only: gather the live window on-device
+        let (kr, vr) = if l == 0 {
+            (
+                Tensor::zeros((KV_HEADS, 0, HEAD_DIM), DType::BF16, dev)?,
+                Tensor::zeros((KV_HEADS, 0, HEAD_DIM), DType::BF16, dev)?,
+            )
+        } else {
+            let ids: Vec<u32> =
+                (start..ctx.ring_len).map(|p| (p % WINDOW) as u32).collect();
+            let idx = Tensor::new(ids.as_slice(), dev)?;
+            (
+                ctx.ring_k[layer].index_select(&idx, 1)?,
+                ctx.ring_v[layer].index_select(&idx, 1)?,
+            )
+        };
         let kr = gqa_expand(&kr)?;
         let vr = gqa_expand(&vr)?;
         let kc = gqa_expand(&k.permute((1, 0, 2))?)?; // [8,8,128]→[32,8,128]
@@ -969,6 +973,15 @@ mod tests {
 }
 
 
+/// `TH_DRAFT_EAGER` (read once): the draft's eager op chains instead of
+/// the fused conv / norm+rope / attention kernels. Was a per-call env
+/// read — 35 per propose (7 per layer).
+#[allow(dead_code)] // only the Metal paths consult it
+fn draft_eager() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("TH_DRAFT_EAGER").is_ok())
+}
+
 /// draft_conv on the fused kernel when possible; eager chain under
 /// TH_DRAFT_EAGER / non-Metal.
 fn dconv(
@@ -982,7 +995,7 @@ fn dconv(
     if x.device().is_metal()
         && dyn_.is_contiguous()
         && x.stride().last() == Some(&1)
-        && std::env::var("TH_DRAFT_EAGER").is_err()
+        && !draft_eager()
     {
         return Ok(crate::draft_kernel::draft_conv_fused(x, dyn_, base, residual, stage)?);
     }
@@ -999,7 +1012,7 @@ fn dnorm_rope(
     #[cfg(all(feature = "metal", target_os = "macos"))]
     if x.device().is_metal()
         && x.stride().last() == Some(&1)
-        && std::env::var("TH_DRAFT_EAGER").is_err()
+        && !draft_eager()
     {
         return Ok(crate::draft_kernel::draft_norm_rope(x, w, cos, sin)?);
     }
