@@ -327,6 +327,16 @@ impl QLin {
         let dims = x.dims().to_vec();
         let in_d = *dims.last().unwrap();
         let rows: usize = dims[..dims.len() - 1].iter().product();
+        // The Metal kernels size their reads from `self.inp`, not from
+        // x — a mismatched last dim is a silent GPU over-read (the MPP
+        // pad pass reads rows*inp elements). Fail loudly instead.
+        if in_d != self.inp {
+            bail!(
+                "QLin::linear: x last dim {in_d} != weight inp {} (x {:?})",
+                self.inp,
+                dims
+            );
+        }
         #[cfg(all(feature = "metal", target_os = "macos"))]
         if x.device().is_metal() && in_d % 32 == 0 {
             if rows == 1 {
@@ -3567,5 +3577,33 @@ mod mem6_tests {
         }
         assert!(bad.is_empty(), "in-flight slot A corrupted by B's admission: {bad:?}");
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod qlin_shape_tests {
+    use super::*;
+
+    /// QLin::linear must reject an input whose last dim is not the
+    /// weight's `inp`: the Metal kernels size their reads from `inp`, so
+    /// a mismatch was a silent over-read (the fused draft attention fed
+    /// o_proj [1,8,32,128] = 256 rows x 128 against inp 4096).
+    #[test]
+    fn qlin_linear_rejects_in_dim_mismatch() {
+        let dev = Device::Cpu;
+        let (out, inp) = (64usize, 4096usize);
+        let q = QLin::new(
+            Tensor::zeros((out, inp / 8), DType::U32, &dev).unwrap(),
+            Tensor::zeros((out, 2 * inp / 64), DType::BF16, &dev).unwrap(),
+            out,
+            inp,
+            64,
+        );
+        let bad = Tensor::zeros((1, 8, 32, 128), DType::BF16, &dev).unwrap();
+        let err = q.linear(&bad).unwrap_err().to_string();
+        assert!(err.contains("x last dim 128 != weight inp 4096"), "{err}");
+        // (a matching-shape CPU call is not exercised here: the CPU
+        // fallback `cpu_dequant` indexes the scale half with the full
+        // row stride and panics for out >= 2 — separate, pre-existing.)
     }
 }
