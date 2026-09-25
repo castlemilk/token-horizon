@@ -1351,9 +1351,20 @@ impl Qwen35 {
         });
         // draft-commit shapes at prefill (TTFT): draft_prefill runs the
         // DFlash fc [5120 x 25600] and each draft layer's qkv [6144 x 5120]
-        // over every prompt row. Probe mode loads no draft, so time
-        // synthetic tiled weights of those shapes (values don't matter).
-        let synth: Vec<(&str, Lin)> = [("d_fc", 5120usize, 25600usize), ("d_qkv", 6144, 5120)]
+        // over every prompt row. The batched draft propose (TH_BATCH > 1)
+        // runs every draft projection over B*8 rows: besides qkv and down
+        // (= the target's down shape) that is attn_dyn/mlp_dyn [1280 x
+        // 5120], gate and up as two single-stream [17408 x 5120] matrices,
+        // and the selector [256 x 5120] over B*7 rows. Probe mode loads no
+        // draft, so time synthetic tiled weights of those shapes (values
+        // don't matter).
+        let synth: Vec<(&str, Lin)> = [
+            ("d_fc", 5120usize, 25600usize),
+            ("d_qkv", 6144, 5120),
+            ("d_dyn", 1280, 5120),
+            ("d_gate", 17408, 5120),
+            ("d_sel", 256, 5120),
+        ]
             .into_iter()
             .map(|(tag, out, inp)| -> Result<(&str, Lin)> {
                 let ng = inp / 64;
@@ -1385,6 +1396,9 @@ impl Qwen35 {
             suite.push(("in_qkv", &a.in_qkv, false));
             suite.push(("o", &a.o, false));
         }
+        // the batched verify (TH_BATCH > 1) runs lm_head over all B*8 rows,
+        // the batched draft propose over B*7
+        suite.push(("lm_head", &self.lm_head, false));
         for (tag, l) in &synth {
             suite.push((tag, l, false));
         }
