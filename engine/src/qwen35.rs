@@ -1545,6 +1545,10 @@ pub struct Slot {
     pub(crate) kv: Vec<Option<(Tensor, Tensor)>>,
     pub(crate) kvq: Vec<crate::turboquant::QuantKv>,
     pub(crate) kv_tokens: usize,
+    /// This slot's attention cache mode (TurboQuant `kvq` vs raw `kv`).
+    /// Per-slot so one request's mode never changes under another's
+    /// in-flight state; the shared `tq` context is immutable.
+    pub(crate) kv_quant: bool,
     vcache: Vec<GdnVerifyCache>,
     captures: Vec<Tensor>,
     pub draft: Option<crate::dflash::Draft>,
@@ -1605,6 +1609,7 @@ impl Slot {
             kv,
             kvq,
             kv_tokens: 0,
+            kv_quant: false,
             vcache: (0..layers.len()).map(|_| GdnVerifyCache::default()).collect(),
             captures: Vec::new(),
             draft: None,
@@ -2101,6 +2106,17 @@ impl Qwen35 {
     /// Enable TurboQuant-compressed KV caches on the full-attention
     /// layers. Called post-load when EngineConfig.kv_quant is set.
     pub fn enable_kv_quant(&mut self) -> Result<()> {
+        self.ensure_tq()?;
+        for sl in self.slots.iter_mut() {
+            sl.kv_quant = true;
+        }
+        Ok(())
+    }
+
+    /// Build the shared (immutable) TurboQuant context once. It is never
+    /// dropped at runtime: modes are per slot, so dropping it would
+    /// switch live slots' attention cache mid-generation.
+    fn ensure_tq(&mut self) -> Result<()> {
         if self.tq.is_none() {
             self.tq = Some(crate::turboquant::TurboQuant::new(
                 self.cfg.head_dim,
@@ -2110,30 +2126,33 @@ impl Qwen35 {
         Ok(())
     }
 
-    /// Runtime toggle — only safe between requests (the generation loop
-    /// clears caches at request start anyway).
+    /// Runtime toggle for every slot — only safe between requests (the
+    /// single-slot generation loop clears caches at request start).
     pub fn set_kv_quant(&mut self, on: bool) -> Result<()> {
         if on {
-            self.enable_kv_quant()?;
-        } else {
-            self.tq = None;
+            self.ensure_tq()?;
         }
         for b in 0..self.slots.len() {
+            self.slots[b].kv_quant = on;
             self.clear_kv_cache(b);
         }
         Ok(())
     }
 
-    /// Per-slot admission-time variant: sets the shared `tq` mode but
-    /// only clears `slot` — other slots may be mid-decode.
+    /// Per-slot admission-time variant: sets and clears only `slot` —
+    /// other slots may be mid-decode and keep their own mode.
     pub fn set_kv_quant_slot(&mut self, on: bool, slot: usize) -> Result<()> {
         if on {
-            self.enable_kv_quant()?;
-        } else {
-            self.tq = None;
+            self.ensure_tq()?;
         }
+        self.slots[slot].kv_quant = on;
         self.clear_kv_cache(slot);
         Ok(())
+    }
+
+    /// The TurboQuant context iff `slot` runs in compressed-KV mode.
+    fn slot_tq(&self, slot: usize) -> Option<&crate::turboquant::TurboQuant> {
+        self.tq.as_ref().filter(|_| self.slots[slot].kv_quant)
     }
 
 
@@ -3149,7 +3168,7 @@ impl Qwen35 {
                     let mut kvc = self.slots[slot].kv[i].take().unwrap();
                     let mut kvq = std::mem::take(&mut self.slots[slot].kvq[i]);
                     let r = Self::attn_forward(
-                        l, &mut kvc, &mut kvq, self.tq.as_ref(), &qkv, pos,
+                        l, &mut kvc, &mut kvq, self.slot_tq(slot), &qkv, pos,
                         seq, self.cfg.rms_norm_eps, &self.device,
                     );
                     self.slots[slot].kv[i] = Some(kvc);
@@ -3318,7 +3337,7 @@ impl Qwen35 {
                         let mut kvq =
                             std::mem::take(&mut self.slots[sb].kvq[i]);
                         let o = Self::attn_forward(
-                            l, &mut kvc, &mut kvq, self.tq.as_ref(),
+                            l, &mut kvc, &mut kvq, self.slot_tq(sb),
                             &qv, poss[b], seq_b, eps, &self.device,
                         )?;
                         self.slots[sb].kv[i] = Some(kvc);
@@ -3394,5 +3413,159 @@ impl Qwen35 {
         }
         let x = rms_norm(&x, &self.norm, eps)?;
         Ok(lin_apply(&x, &self.lm_head)?.squeeze(0)?) // [total, vocab]
+    }
+}
+
+/// MEM-6 regression: a batch admission's kv_quant mode must never change
+/// the attention-cache mode of a slot that is already mid-decode.
+/// Tiny 1-layer attention-only qwen3_5 (dense bf16 weights, 2 slots);
+/// drives the real `set_kv_quant_slot` / `forward` / `forward_batch`
+/// code on the Metal device, where raw-mode steps with seq<=8 take the
+/// fused attn_prepare/attn_decode path (needs head_dim 256). Skips when
+/// no Metal device exists (candle's CPU backend has no bf16 matmul).
+#[cfg(test)]
+mod mem6_tests {
+    use super::*;
+
+    fn fill(dims: &[usize], seed: u64, scale: f32, dev: &Device) -> Result<Tensor> {
+        let n: usize = dims.iter().product();
+        let mut s = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
+        let v: Vec<f32> = (0..n)
+            .map(|_| {
+                s ^= s >> 12;
+                s ^= s << 25;
+                s ^= s >> 27;
+                let u = (s.wrapping_mul(0x2545_F491_4F6C_DD1D) >> 11) as f32
+                    / (1u64 << 53) as f32;
+                (u * 2.0 - 1.0) * scale
+            })
+            .collect();
+        Ok(Tensor::from_vec(v, dims, dev)?.to_dtype(DType::BF16)?)
+    }
+
+    fn tiny(dev: &Device) -> Result<Qwen35> {
+        let (hidden, nh, nkv, hd, inter, vocab, maxpos) =
+            (64usize, 2usize, 1usize, 256usize, 128usize, 97usize, 4096usize);
+        let cfg = Qwen35Config::from_json(&serde_json::json!({
+            "hidden_size": hidden, "intermediate_size": inter,
+            "num_hidden_layers": 1, "num_attention_heads": nh,
+            "num_key_value_heads": nkv, "vocab_size": vocab, "head_dim": hd,
+            "full_attention_interval": 1, "max_position_embeddings": maxpos,
+            "rope_parameters": {"rope_theta": 10000.0, "partial_rotary_factor": 0.25},
+        }))?;
+        let rot_dim = hd / 4;
+        let half = rot_dim / 2;
+        let inv: Vec<f32> = (0..half)
+            .map(|i| 10000f64.powf(-((2 * i) as f64) / rot_dim as f64) as f32)
+            .collect();
+        let pos: Vec<f32> = (0..maxpos).map(|p| p as f32).collect();
+        let freqs = Tensor::from_vec(pos, (maxpos,), dev)?
+            .unsqueeze(1)?
+            .broadcast_mul(&Tensor::from_vec(inv, (half,), dev)?.unsqueeze(0)?)?;
+        let (cos, sin) = (freqs.cos()?, freqs.sin()?);
+        let ones = |n: usize| Tensor::ones(n, DType::BF16, dev);
+        let qkv_out = nh * 2 * hd + 2 * nkv * hd;
+        let layers = vec![Layer {
+            input_norm: ones(hidden)?,
+            kind: Kind::Attn(AttnLayer {
+                in_qkv: Lin::Dense(fill(&[qkv_out, hidden], 1, 0.25, dev)?),
+                o: Lin::Dense(fill(&[hidden, nh * hd], 2, 0.1, dev)?),
+                q_norm: ones(hd)?,
+                k_norm: ones(hd)?,
+                cos,
+                sin,
+                n_heads: nh,
+                n_kv: nkv,
+                head_dim: hd,
+                rot_dim,
+            }),
+            post_norm: ones(hidden)?,
+            mlp: Mlp {
+                gate_up: Lin::Dense(fill(&[2 * inter, hidden], 3, 0.2, dev)?),
+                down: Lin::Dense(fill(&[hidden, inter], 4, 0.15, dev)?),
+                inter,
+            },
+        }];
+        let slots = (0..2)
+            .map(|_| Slot::new(&cfg, &layers, dev))
+            .collect::<Result<Vec<_>>>()?;
+        Ok(Qwen35 {
+            embed: fill(&[vocab, hidden], 5, 1.0, dev)?,
+            layers,
+            norm: ones(hidden)?,
+            lm_head: Lin::Dense(fill(&[vocab, hidden], 6, 0.3, dev)?),
+            cfg,
+            device: dev.clone(),
+            tq: None,
+            slots,
+            draft_w: None,
+            debug: false,
+        })
+    }
+
+    fn dev() -> Option<Device> {
+        #[cfg(all(feature = "metal", target_os = "macos"))]
+        {
+            Device::new_metal(0).ok()
+        }
+        #[cfg(not(all(feature = "metal", target_os = "macos")))]
+        {
+            None
+        }
+    }
+
+    /// Slot A (0) prefills 12 tokens and runs one 4-row verify step in
+    /// `a_mode`; optionally slot B (1) is then admitted in `b_mode`
+    /// (set_kv_quant_slot + prefill) exactly like engine::admit; then A
+    /// runs its next 4-row step. Returns (A's step logits, A's kvq len,
+    /// A's raw-kv row capacity) after that step.
+    fn run(d: &Device, a_mode: bool, b: Option<bool>) -> Result<(Vec<f32>, usize, usize)> {
+        let mut m = tiny(d)?;
+        let pa: Vec<u32> = (0..12u32).map(|i| (i * 7 + 3) % 97).collect();
+        let pb: Vec<u32> = (0..9u32).map(|i| (i * 5 + 1) % 97).collect();
+        m.set_kv_quant_slot(a_mode, 0)?;
+        m.forward(0, &pa, 0)?;
+        m.forward_batch(&[0], &[&[11, 22, 33, 44]], &[12])?;
+        if let Some(b_mode) = b {
+            m.set_kv_quant_slot(b_mode, 1)?;
+            m.forward(1, &pb, 0)?;
+        }
+        let l = m.forward_batch(&[0], &[&[5, 17, 29, 41]], &[16])?;
+        let v = l.to_dtype(DType::F32)?.flatten_all()?.to_vec1::<f32>()?;
+        let kvq = m.slots[0].kvq[0].len();
+        let cap = m.slots[0].kv[0].as_ref().unwrap().0.dim(1)?;
+        Ok((v, kvq, cap))
+    }
+
+    fn maxd(a: &[f32], b: &[f32]) -> f32 {
+        a.iter().zip(b).map(|(x, y)| (x - y).abs()).fold(0.0, f32::max)
+    }
+
+    #[test]
+    fn mem6_admission_mode_never_changes_inflight_slot() -> Result<()> {
+        let Some(d) = dev() else {
+            eprintln!("[mem6-unit] skipped: needs a Metal device");
+            return Ok(());
+        };
+        let mut bad = Vec::new();
+        for a_mode in [false, true] {
+            let (reference, rq, rc) = run(&d, a_mode, None)?;
+            let refmax = reference.iter().fold(0.0f32, |m, x| m.max(x.abs()));
+            for b_mode in [a_mode, !a_mode] {
+                let (got, q, c) = run(&d, a_mode, Some(b_mode))?;
+                let dd = maxd(&reference, &got);
+                eprintln!(
+                    "[mem6-unit] dev={:?} A.kv_quant={a_mode} B.kv_quant={b_mode}: \
+                     A step-logits max|Δ| vs solo = {dd:.6} (max|ref|={refmax:.4}); \
+                     A kvq_len solo/with-B = {rq}/{q}; A raw-kv cap solo/with-B = {rc}/{c}",
+                    d.location()
+                );
+                if dd > 1e-6 {
+                    bad.push((a_mode, b_mode, dd));
+                }
+            }
+        }
+        assert!(bad.is_empty(), "in-flight slot A corrupted by B's admission: {bad:?}");
+        Ok(())
     }
 }
