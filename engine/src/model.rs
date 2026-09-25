@@ -191,6 +191,16 @@ impl ModelBackend {
         }
     }
 
+    /// Deep snapshot (bit-exact GDN state copies) — restorable any number
+    /// of times, across any number of forwards. `snapshot` is the light
+    /// per-round form: valid across the one following forward.
+    pub fn snapshot_deep(&mut self, slot: usize) -> Result<BackendSnapshot> {
+        match self {
+            Self::Qwen35(m) => Ok(BackendSnapshot::Qwen35(Box::new(m.snapshot_deep(slot)?))),
+            _ => bail!("snapshot not supported by this backend"),
+        }
+    }
+
     pub fn restore(&mut self, slot: usize, snap: BackendSnapshot) -> Result<()> {
         match (self, snap) {
             (Self::Qwen35(m), BackendSnapshot::Qwen35(s)) => {

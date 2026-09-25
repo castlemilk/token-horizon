@@ -206,10 +206,11 @@ async fn main() -> Result<()> {
                     for kept in 1..=seq8.len() {
                         let r = q.rollback_state_check(0, pos, &seq8, kept)?;
                         eprintln!(
-                            "  state kept={}: rec≠ref {}/{} (±0-only {}, max|Δ| {:.3e}) conv≠ref {}/{} layers≠ {}/{} | info: rec≠step-rescan {} (max {:.3e}), rec≠continuous-fwd {} (max {:.3e}) conv≠ {} | {}",
+                            "  state kept={}: rec≠ref {}/{} (±0-only {}, max|Δ| {:.3e}) conv≠ref {}/{} layers≠ {}/{} | info: rec≠step-rescan {} (max {:.3e}), rec≠continuous-fwd {} (max {:.3e}) conv≠ {} | kernel-window≠host {} | {}",
                             r.kept, r.rec_diff_f, r.rec_elems, r.rec_zsign_f, r.rec_max_f, r.conv_diff_f,
                             r.conv_elems, r.layers_bad_f, r.layers, r.rec_diff_s,
                             r.rec_max_s, r.rec_diff_c, r.rec_max_c, r.conv_diff_c,
+                            r.conv_kernel_diff,
                             if r.ok() { "ok" } else { "MISMATCH" }
                         );
                         state_fail |= !r.ok();
@@ -228,9 +229,10 @@ async fn main() -> Result<()> {
                     );
                 }
 
-                // restore points at `pos` for the two compare paths
-                let snap_a = loaded.backend.snapshot(0)?;
-                let snap_c = loaded.backend.snapshot(0)?;
+                // restore points at `pos` for the two compare paths —
+                // restored many times, across several forwards: deep
+                let snap_a = loaded.backend.snapshot_deep(0)?;
+                let snap_c = loaded.backend.snapshot_deep(0)?;
 
                 // reference: continuous 4-row forward
                 let _ = loaded.backend.forward_multi(&seq8[..4], pos, &dev)?;
@@ -474,8 +476,9 @@ async fn main() -> Result<()> {
                     loaded.backend.clear_kv_cache(s);
                     let _ = loaded.backend.forward_slot(s, &ids, 0, &dev)?.to_vec1::<f32>()?;
                 }
+                // restored before every timed run: deep snapshots
                 let snaps = (0..ns)
-                    .map(|s| loaded.backend.snapshot(s))
+                    .map(|s| loaded.backend.snapshot_deep(s))
                     .collect::<Result<Vec<_>>>()?;
                 let maxd = |a: &Tensor, b: &Tensor| -> Result<f32> {
                     Ok(a.sub(b)?.abs()?.flatten_all()?.max(0)?.to_scalar::<f32>()?)

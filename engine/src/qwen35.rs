@@ -1425,6 +1425,49 @@ fn gdn_no_step() -> bool {
     *ON.get_or_init(|| std::env::var("TH_GDN_STEP").is_ok())
 }
 
+/// G1a A/B arm: `TH_GDN_COMMIT=step` rolls fused verifies back with the
+/// pre-G1a numerics — a `gated_delta_step` re-scan of the stashed pack —
+/// instead of the fused-step commit (bit-identical to a kept-row
+/// forward). The fused verify then also writes the pack stash. Read once.
+fn gdn_commit_step() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("TH_GDN_COMMIT").as_deref() == Ok("step"))
+}
+
+/// `TH_DEBUG_ROLLBACK`: per-layer rollback dumps. Read once.
+fn debug_rollback() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("TH_DEBUG_ROLLBACK").is_ok())
+}
+
+/// `TH_GDN_AB_CONTIG`: contiguous gate projections for the step scan.
+/// Read once.
+#[cfg(all(feature = "metal", target_os = "macos"))]
+fn gdn_ab_contig() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("TH_GDN_AB_CONTIG").is_ok())
+}
+
+/// Bit-exact copy of a state tensor into a fresh buffer. On Metal,
+/// candle 0.11's `Tensor::copy()` is an alias (`try_clone` shares the
+/// `Arc<Buffer>`) and `affine(1, 0)` maps -0.0 to +0.0; `slice_set` into
+/// fresh zeros is a true copy on every backend.
+fn state_copy(t: &Tensor) -> Result<Tensor> {
+    let out = Tensor::zeros(t.shape(), t.dtype(), t.device())?;
+    out.slice_set(&t.contiguous()?, 0, 0)?;
+    Ok(out)
+}
+
+/// (parity `cur`, parity `1 - cur`) of a double-buffered state pair.
+fn parity_pair(p: &mut [Tensor; 2], cur: usize) -> (&Tensor, &mut Tensor) {
+    let [a, b] = p;
+    if cur == 0 {
+        (&*a, b)
+    } else {
+        (&*b, a)
+    }
+}
+
 /// x / sqrt(mean(x²) + eps) * w — fused Metal kernel, f32 accumulation
 /// inside the shader (weights already carry the +1 offset from conversion).
 pub(crate) fn rms_norm(x: &Tensor, w: &Tensor, eps: f64) -> Result<Tensor> {
@@ -1586,9 +1629,71 @@ struct Layer {
 
 // MARK: - state
 
+/// One GDN layer's recurrent state, double-buffered per slot (G1a
+/// parity state, Splash's current/next scheme): `conv[p]` is the
+/// [k-1, conv_dim] bf16 rolling-input window and `rec[p]` the
+/// [Hv, Dv, Dk] f32 delta state of parity `p`. The committed state lives
+/// in parity `Slot::gdn_par.cur`; every forward reads it and writes the
+/// other parity out of place, then the slot flips — so the pre-verify
+/// state survives a verify untouched and a partial accept re-scans only
+/// the kept rows from it (`rollback_verify`), with no snapshot copies.
+/// Both buffers are exclusively owned by their slot (never shared with a
+/// snapshot, another slot or a view that a kernel could write through).
 pub(crate) struct GdnState {
-    pub(crate) conv: Tensor,      // [k-1, conv_dim] bf16 rolling inputs
-    pub(crate) recurrent: Tensor, // [Hv, Dv, Dk] f32
+    pub(crate) conv: [Tensor; 2],
+    pub(crate) rec: [Tensor; 2],
+}
+
+impl GdnState {
+    fn zeros(conv_rows: usize, conv_dim: usize, hv: usize, dv: usize, dk: usize, device: &Device) -> Result<Self> {
+        let c = || Tensor::zeros((conv_rows, conv_dim), DType::BF16, device);
+        let r = || Tensor::zeros((hv, dv, dk), DType::F32, device);
+        Ok(GdnState { conv: [c()?, c()?], rec: [r()?, r()?] })
+    }
+}
+
+/// Which parity holds a slot's committed GDN state, and what each parity
+/// holds: `ids[p]` is a content version (0 = invalid / being written),
+/// unique per slot for its lifetime, so a light [`Snapshot`] can tell
+/// whether its state is still resident in either buffer.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct GdnParity {
+    pub(crate) cur: usize,
+    ids: [u64; 2],
+    next: u64,
+}
+
+impl GdnParity {
+    fn new() -> Self {
+        GdnParity { cur: 0, ids: [1, 0], next: 2 }
+    }
+
+    fn fresh(&mut self) -> u64 {
+        let id = self.next;
+        self.next += 1;
+        id
+    }
+
+    /// A forward is about to write parity `1 - cur`: that buffer stops
+    /// holding any snapshot's state. Returns the parity to read.
+    fn begin(&mut self) -> usize {
+        self.ids[1 - self.cur] = 0;
+        self.cur
+    }
+
+    /// The forward completed for every layer: commit the written parity.
+    /// (A forward that errors never flips — the committed parity is
+    /// intact because nothing writes it in place.)
+    fn flip(&mut self) {
+        self.cur ^= 1;
+        self.ids[self.cur] = self.fresh();
+    }
+
+    /// The committed parity was rewritten in place of its old content
+    /// (rollback re-scan, deep restore, clear).
+    fn rewrote_cur(&mut self) {
+        self.ids[self.cur] = self.fresh();
+    }
 }
 
 /// Per-GDN-layer intermediates stashed during a spec-decode verify pass
@@ -1597,12 +1702,17 @@ pub(crate) struct GdnState {
 #[derive(Default)]
 struct GdnVerifyCache {
     /// Raw in_proj_qkv output [seq, conv_dim] — the depthwise-conv input;
-    /// needed to rebuild the (k-1)-row conv window.
+    /// needed to rebuild the (k-1)-row conv window (and the fused-step
+    /// commit's input rows).
     qkv: Option<Tensor>,
-    /// Normed scan inputs packed [seq, 2*Hk+Hv, Dk] — rescan source.
+    /// Normed scan inputs packed [seq, 2*Hk+Hv, Dk] — step-rescan source
+    /// (non-fused verifies, or `TH_GDN_COMMIT=step`).
     pack: Option<Tensor>,
-    /// [seq, 2*Hv] f32 — gate/beta projections.
+    /// [seq, 2*Hv] bf16 — gate/beta projections (strided view).
     ab: Option<Tensor>,
+    /// The verify ran `gdn_fused_step`: commit with the same kernel so
+    /// the kept-row state is bit-identical to a kept-row forward.
+    fused: bool,
 }
 
 /// Per-request decode state — one batch slot. Batched verify runs
@@ -1617,6 +1727,9 @@ pub struct Slot {
     /// Per-slot so one request's mode never changes under another's
     /// in-flight state; the shared `tq` context is immutable.
     pub(crate) kv_quant: bool,
+    /// G1a: parity holding the committed GDN state (all layers flip
+    /// together, once per completed forward).
+    pub(crate) gdn_par: GdnParity,
     vcache: Vec<GdnVerifyCache>,
     captures: Vec<Tensor>,
     pub draft: Option<crate::dflash::Draft>,
@@ -1638,22 +1751,14 @@ impl Slot {
                 let conv_dim = 2 * cfg.linear_num_key_heads
                     * cfg.linear_key_head_dim
                     + cfg.linear_num_value_heads * cfg.linear_value_head_dim;
-                gdn.push(Some(GdnState {
-                    conv: Tensor::zeros(
-                        (cfg.linear_conv_kernel_dim - 1, conv_dim),
-                        DType::BF16,
-                        device,
-                    )?,
-                    recurrent: Tensor::zeros(
-                        (
-                            cfg.linear_num_value_heads,
-                            cfg.linear_value_head_dim,
-                            cfg.linear_key_head_dim,
-                        ),
-                        DType::F32,
-                        device,
-                    )?,
-                }));
+                gdn.push(Some(GdnState::zeros(
+                    cfg.linear_conv_kernel_dim - 1,
+                    conv_dim,
+                    cfg.linear_num_value_heads,
+                    cfg.linear_value_head_dim,
+                    cfg.linear_key_head_dim,
+                    device,
+                )?));
                 kv.push(None);
             } else {
                 gdn.push(None);
@@ -1678,6 +1783,7 @@ impl Slot {
             kvq,
             kv_tokens: 0,
             kv_quant: false,
+            gdn_par: GdnParity::new(),
             vcache: (0..layers.len()).map(|_| GdnVerifyCache::default()).collect(),
             captures: Vec::new(),
             draft: None,
@@ -1685,14 +1791,18 @@ impl Slot {
     }
 }
 
-/// Pre-verify state for speculative decode rollback. Conv views and KV
-/// tensors are never mutated in place (cat/narrow allocate new buffers),
-/// so clones are cheap; the fused kernel does update `recurrent` in
-/// place, so the live tensor is swapped for a fresh copy and the
-/// snapshot keeps the original.
+/// Pre-verify state for speculative decode rollback. KV tensors are
+/// never mutated in place for the rows a snapshot covers, so clones are
+/// cheap. GDN state (G1a): a *light* snapshot (`snapshot`) records only
+/// the committed parity's content id — no copies — and stays restorable
+/// while that parity survives, i.e. across the one following forward
+/// (the verify), which writes the other parity. A *deep* snapshot
+/// (`snapshot_deep`, probes that restore one state many times) holds
+/// bit-exact copies of the committed conv windows and recurrent states.
 #[derive(Clone)]
 pub struct Snapshot {
-    gdn: Vec<Option<(Tensor, Tensor)>>,
+    gdn_id: u64,
+    gdn_deep: Option<Vec<Option<(Tensor, Tensor)>>>,
     kv: Vec<Option<(Tensor, Tensor)>>,
     kvq: Vec<crate::turboquant::QuantKv>,
     kv_tokens: usize,
@@ -2498,38 +2608,70 @@ impl Qwen35 {
     }
 
 
-    /// Snapshot all mutable state for speculative-verify rollback.
+    /// Light snapshot of all mutable state for speculative-verify
+    /// rollback (G1a): no GPU work — the GDN state is the committed
+    /// parity's content id; the verify that follows writes the other
+    /// parity, leaving this state intact for `rollback_verify`/`restore`.
     pub fn snapshot(&mut self, slot: usize) -> Result<Snapshot> {
-        let sl = &mut self.slots[slot];
-        let mut gdn = Vec::with_capacity(sl.gdn.len());
-        for st in sl.gdn.iter_mut() {
-            match st {
-                Some(s) => {
-                    // real device copy — the kernel writes in place
-                    let copy = s.recurrent.affine(1.0, 0.0)?;
-                    let orig = std::mem::replace(&mut s.recurrent, copy);
-                    gdn.push(Some((s.conv.clone(), orig)));
-                }
-                None => gdn.push(None),
-            }
-        }
+        let sl = &self.slots[slot];
         Ok(Snapshot {
-            gdn,
+            gdn_id: sl.gdn_par.ids[sl.gdn_par.cur],
+            gdn_deep: None,
             kv: sl.kv.clone(),
             kvq: sl.kvq.clone(),
             kv_tokens: sl.kv_tokens,
         })
     }
 
-    /// Restore a snapshot taken by `snapshot()`. The snapshot's
-    /// recurrent buffers are copied rather than adopted so a snapshot
-    /// stays immutable and may be restored (or cloned) more than once.
+    /// Deep snapshot: bit-exact copies of the committed GDN state, for
+    /// callers that restore one state many times or across several
+    /// forwards (probes). Restoring copies again, so it stays reusable.
+    pub fn snapshot_deep(&mut self, slot: usize) -> Result<Snapshot> {
+        let mut snap = self.snapshot(slot)?;
+        let sl = &self.slots[slot];
+        let cur = sl.gdn_par.cur;
+        snap.gdn_deep = Some(
+            sl.gdn
+                .iter()
+                .map(|st| match st {
+                    Some(g) => Ok(Some((state_copy(&g.conv[cur])?, state_copy(&g.rec[cur])?))),
+                    None => Ok(None),
+                })
+                .collect::<Result<_>>()?,
+        );
+        Ok(snap)
+    }
+
+    /// Restore a snapshot. Light: the snapshot's GDN state must still be
+    /// resident in one parity (at most one forward since) — the slot
+    /// flips back to it. Deep: its copies are copied (never adopted) into
+    /// the committed parity, so the snapshot stays immutable.
     pub fn restore(&mut self, slot: usize, snap: Snapshot) -> Result<()> {
         let sl = &mut self.slots[slot];
-        for (st, s) in sl.gdn.iter_mut().zip(snap.gdn) {
-            if let (Some(st), Some((conv, rec))) = (st, s) {
-                st.conv = conv;
-                st.recurrent = rec.affine(1.0, 0.0)?;
+        let cur = sl.gdn_par.cur;
+        match &snap.gdn_deep {
+            Some(deep) => {
+                for (st, d) in sl.gdn.iter_mut().zip(deep) {
+                    if let (Some(st), Some((conv, rec))) = (st, d) {
+                        st.conv[cur] = state_copy(conv)?;
+                        st.rec[cur] = state_copy(rec)?;
+                    }
+                }
+                sl.gdn_par.ids[1 - cur] = 0;
+                sl.gdn_par.rewrote_cur();
+            }
+            None => {
+                if sl.gdn_par.ids[cur] != snap.gdn_id {
+                    if snap.gdn_id != 0 && sl.gdn_par.ids[1 - cur] == snap.gdn_id {
+                        sl.gdn_par.cur = 1 - cur;
+                    } else {
+                        bail!(
+                            "restore: slot {slot} no longer holds snapshot state {} (parity ids {:?}, cur {cur})",
+                            snap.gdn_id,
+                            sl.gdn_par.ids
+                        );
+                    }
+                }
             }
         }
         sl.kv = snap.kv;
@@ -2539,86 +2681,97 @@ impl Qwen35 {
     }
 
     /// Roll back a verify pass keeping only the first `kept` input rows
-    /// committed: restores the pre-verify snapshot, then re-applies the
-    /// committed rows from the cached scan inputs and truncates the
-    /// attention KV — avoiding a full model re-forward per round.
+    /// committed: re-scans the committed rows from the pre-verify state —
+    /// the intact other parity (light snapshot) or the deep copies — into
+    /// the committed parity, and truncates the attention KV. Fused
+    /// verifies commit through `gdn_fused_step` in commit mode (the same
+    /// instruction stream as the verify, so the state equals a kept-row
+    /// forward bit for bit); step verifies (and `TH_GDN_COMMIT=step`)
+    /// re-scan the stashed pack with `gated_delta_step`. No state copies,
+    /// no allocations of state buffers.
     pub fn rollback_verify(&mut self, slot: usize, snap: Snapshot, kept: usize) -> Result<()> {
+        let dev = self.device.clone();
         let sl = &mut self.slots[slot];
         let new_len = snap.kv_tokens + kept;
-        for (i, sg) in snap.gdn.into_iter().enumerate() {
-            let Some((conv, rec)) = sg else { continue };
-            let Some(st) = sl.gdn[i].as_mut() else { continue };
-            let vc = sl.vcache[i].qkv.take().zip(
-                sl.vcache[i]
-                    .pack
-                    .take()
-                    .zip(sl.vcache[i].ab.take()),
+        let cur = sl.gdn_par.cur;
+        let light = snap.gdn_deep.is_none();
+        if light && (snap.gdn_id == 0 || sl.gdn_par.ids[1 - cur] != snap.gdn_id) {
+            bail!(
+                "rollback_verify: slot {slot} pre-verify state {} not resident (parity ids {:?}, cur {cur})",
+                snap.gdn_id,
+                sl.gdn_par.ids
             );
-            let Kind::Gdn(l) = &self.layers[i].kind else { continue };
+        }
+        let mut rewrote = false;
+        for (i, layer) in self.layers.iter().enumerate() {
+            let Kind::Gdn(l) = &layer.kind else { continue };
+            let Some(st) = sl.gdn[i].as_mut() else { continue };
+            let vc = std::mem::take(&mut sl.vcache[i]);
+            // pre-verify (source) state
+            let (src_conv, src_rec) = match &snap.gdn_deep {
+                Some(d) => match &d[i] {
+                    Some((c, r)) => (c.clone(), r.clone()),
+                    None => continue,
+                },
+                None => (st.conv[1 - cur].clone(), st.rec[1 - cur].clone()),
+            };
+            let rows = vc.qkv.as_ref().map(|q| q.dim(0)).transpose()?.unwrap_or(0);
+            if light && rows > 0 && kept >= rows {
+                // every verified row kept: the committed parity already
+                // holds exactly that state
+                continue;
+            }
+            rewrote = true;
+            if debug_rollback() {
+                if let Some(q) = vc.qkv.as_ref() {
+                    let qv = q.narrow(0, 0, 1)?.to_dtype(DType::F32)?.flatten_all()?.to_vec1::<f32>()?;
+                    let cv = src_conv.narrow(0, 0, 1)?.to_dtype(DType::F32)?.flatten_all()?.to_vec1::<f32>()?;
+                    eprintln!(
+                        "  [rb-dbg] layer {i} kept={kept}/{rows} fused={} qkv0={:.3} {:.3} {:.3} conv0={:.3} {:.3} {:.3}",
+                        vc.fused, qv[0], qv[1], qv[2], cv[0], cv[1], cv[2],
+                    );
+                }
+            }
             match vc {
-                Some((qkv, (pack, ab))) => {
-                    // conv window = last (k-1) rows of
-                    // [pre-verify window | kept raw qkv rows]
+                #[cfg(all(feature = "metal", target_os = "macos"))]
+                GdnVerifyCache { qkv: Some(qkv), ab: Some(ab), fused: true, .. }
+                    if !gdn_commit_step() && dev.is_metal() =>
+                {
+                    // fused-step commit of the kept rows: state + conv
+                    // window only, from the intact pre-verify parity
+                    let x = qkv.narrow(0, 0, kept)?;
+                    let abk = ab.narrow(ab.rank() - 2, 0, kept)?;
+                    crate::gdn_kernel::gdn_fused_step(
+                        &x, &src_conv, &l.conv, &src_rec, &st.rec[cur],
+                        &st.conv[cur], &abk, None, &l.norm_w, None, None,
+                        kept, l.num_k_heads, l.num_v_heads, l.head_k,
+                        l.head_v, self.cfg.rms_norm_eps as f32, l.a_log64,
+                        l.dt_bias64, false,
+                    )?;
+                }
+                GdnVerifyCache { qkv: Some(qkv), pack: Some(pack), ab: Some(ab), .. } => {
+                    // step re-scan of the kept rows from the stashed pack
                     let kept_qkv = qkv.narrow(0, 0, kept)?;
-                    st.conv = Tensor::cat(&[&conv, &kept_qkv], 0)?
-                        .narrow(0, kept, l.conv_k - 1)?
-                        .contiguous()?;
-                    // rescan the kept rows from the pre-verify state —
-                    // the fused kernel updates `recurrent` in place, so
-                    // copy the snapshot buffer first (snapshots must
-                    // stay immutable for reuse)
-                    st.recurrent = rec.affine(1.0, 0.0)?;
-                    let pack = pack.narrow(0, 0, kept)?;
-                    if std::env::var("TH_DEBUG_ROLLBACK").is_ok() {
-                        {
-                            let (st, _) = pack.storage_and_layout();
-                            if let candle_core::Storage::Metal(st) = &*st
-                            {
-                                eprintln!(
-                                    "  [rb-dbg] layer {i} pack_buf={:p}",
-                                    st.buffer().as_ref()
-                                );
-                            }
-                        }
-                        // dump raw values: stashed pack v-region row0,
-                        // stashed qkv row0, snapshot conv row0
-                        let pv = pack
-                            .to_dtype(DType::F32)?
-                            .flatten_all()?
-                            .to_vec1::<f32>()?;
-                        let qv = qkv
-                            .narrow(0, 0, 1)?
-                            .to_dtype(DType::F32)?
-                            .flatten_all()?
-                            .to_vec1::<f32>()?;
-                        let cv = conv
-                            .narrow(0, 0, 1)?
-                            .to_dtype(DType::F32)?
-                            .flatten_all()?
-                            .to_vec1::<f32>()?;
-                        eprintln!(
-                            "  [rb-dbg] layer {i} kept={kept} pack[v0]={:.3} {:.3} {:.3} qkv0={:.3} {:.3} {:.3} conv0={:.3} {:.3} {:.3}",
-                            pv[2 * l.key_dim],
-                            pv[2 * l.key_dim + 1],
-                            pv[2 * l.key_dim + 2],
-                            qv[0], qv[1], qv[2],
-                            cv[0], cv[1], cv[2],
-                        );
-                    }
+                    Self::gdn_conv_commit(l, &src_conv, &kept_qkv, &mut st.conv[cur], kept, &dev)?;
                     // ab stashed as the strided [1, seq, 96] projection
-                    // view — squeeze to [seq, 96] then take kept rows
-                    let ab = ab.squeeze(0)?.narrow(0, 0, kept)?;
+                    // view (or [seq, 96]) — take kept rows
+                    let ab = if ab.rank() == 3 { ab.squeeze(0)? } else { ab };
+                    let ab = ab.narrow(0, 0, kept)?;
                     let _ = Self::gdn_scan(
-                        l, st, &mut None, &pack, &ab, kept,
-                        &self.device,
+                        l, &src_rec, &mut st.rec[cur], &mut None,
+                        &pack.narrow(0, 0, kept)?, &ab, kept, false, &dev,
                     )?;
                 }
                 _ => {
-                    // no cached intermediates — plain restore
-                    st.conv = conv;
-                    st.recurrent = rec.affine(1.0, 0.0)?;
+                    // no cached intermediates — plain restore of the
+                    // pre-verify state (as before G1a)
+                    st.conv[cur] = state_copy(&src_conv)?;
+                    st.rec[cur] = state_copy(&src_rec)?;
                 }
             }
+        }
+        if rewrote || !light {
+            sl.gdn_par.rewrote_cur();
         }
         for (i, skv) in snap.kv.into_iter().enumerate() {
             if skv.is_none() {
@@ -2639,26 +2792,28 @@ impl Qwen35 {
         // aborted forward failed to hand back is rebuilt, never skipped
         for (i, layer) in self.layers.iter().enumerate() {
             match &layer.kind {
+                // a fresh sequence reads the committed parity: zero it;
+                // the other parity is fully overwritten by the next
+                // forward (Splash: "parity one is fully overwritten by
+                // the first transition")
                 Kind::Gdn(l) => match sl.gdn[i].as_mut() {
                     Some(g) => {
-                        g.recurrent = Tensor::zeros_like(&g.recurrent).unwrap();
-                        g.conv = Tensor::zeros_like(&g.conv).unwrap();
+                        let cur = sl.gdn_par.cur;
+                        g.rec[cur] = Tensor::zeros_like(&g.rec[cur]).unwrap();
+                        g.conv[cur] = Tensor::zeros_like(&g.conv[cur]).unwrap();
                     }
                     None => {
-                        sl.gdn[i] = Some(GdnState {
-                            conv: Tensor::zeros(
-                                (l.conv_k - 1, 2 * l.key_dim + l.value_dim),
-                                DType::BF16,
+                        sl.gdn[i] = Some(
+                            GdnState::zeros(
+                                l.conv_k - 1,
+                                2 * l.key_dim + l.value_dim,
+                                l.num_v_heads,
+                                l.head_v,
+                                l.head_k,
                                 &self.device,
                             )
                             .unwrap(),
-                            recurrent: Tensor::zeros(
-                                (l.num_v_heads, l.head_v, l.head_k),
-                                DType::F32,
-                                &self.device,
-                            )
-                            .unwrap(),
-                        });
+                        );
                     }
                 },
                 Kind::Attn(_) => {
@@ -2694,6 +2849,9 @@ impl Qwen35 {
         for v in sl.vcache.iter_mut() {
             *v = GdnVerifyCache::default();
         }
+        let cur = sl.gdn_par.cur;
+        sl.gdn_par.ids[1 - cur] = 0;
+        sl.gdn_par.rewrote_cur();
         sl.kv_tokens = 0;
     }
 
@@ -2851,16 +3009,21 @@ impl Qwen35 {
     }
 
     /// Gated delta rule for `x` [1, seq, hidden]. Sequential scan — the
-    /// same recurrence serves prefill and decode. `vc`, when set, stashes
+    /// same recurrence serves prefill and decode. G1a parity state: reads
+    /// the committed conv window / recurrent state of parity `cur` and
+    /// writes the post-`seq`-row state to parity `1 - cur` (the caller
+    /// flips the slot once every layer succeeded). `vc`, when set, stashes
     /// the raw scan inputs for `rollback_verify`.
     fn gdn_forward(
         l: &GdnLayer,
         st: &mut GdnState,
+        cur: usize,
         vc: &mut Option<GdnVerifyCache>,
         fused: &Tensor,
         seq: usize,
         eps: f64,
     ) -> Result<Tensor> {
+        let nxt = 1 - cur;
         let conv_dim = 2 * l.key_dim + l.value_dim;
         // `fused` = in_all projection [1, seq, conv+val+96] — may be a
         // slot row-slice of a batched projection; strided views feed
@@ -2881,60 +3044,48 @@ impl Qwen35 {
         #[cfg(all(feature = "metal", target_os = "macos"))]
         if fused.device().is_metal() && !gdn_eager() {
             if seq <= 8 && !gdn_no_step() {
-                // one dispatch: conv+silu, l2norm, delta scan, gated norm.
+                // one dispatch: conv+silu, l2norm, delta scan, gated norm,
+                // plus the new conv window — parity cur in, nxt out.
                 // K45: the kernel writes every element of both outputs, so
                 // they are allocated uninitialized (no zero-fill blits), and
                 // `gated` is the out projection's presum block (8 rows +
                 // input sums, emitted by the gated-norm stage)
+                use crate::quant_kernel::AllocBf16;
                 let ps = crate::quant_kernel::presum_enabled() && l.value_dim % 64 == 0;
-                let (gated, pack) = if ps {
-                    use crate::quant_kernel::{presum_block_bytes, AllocBf16};
-                    (
-                        qkv.apply_op1_no_bwd(&AllocBf16 {
-                            elems: presum_block_bytes(l.value_dim) / 2,
-                            rows: seq,
-                            cols: l.value_dim,
-                        })?,
-                        qkv.apply_op1_no_bwd(&AllocBf16 {
-                            elems: seq * conv_dim,
-                            rows: seq,
-                            cols: conv_dim,
-                        })?,
-                    )
+                let gated = if ps {
+                    use crate::quant_kernel::presum_block_bytes;
+                    qkv.apply_op1_no_bwd(&AllocBf16 {
+                        elems: presum_block_bytes(l.value_dim) / 2,
+                        rows: seq,
+                        cols: l.value_dim,
+                    })?
                 } else {
-                    (
-                        Tensor::zeros((seq, l.value_dim), DType::BF16, fused.device())?,
-                        Tensor::zeros((seq, conv_dim), DType::BF16, fused.device())?,
-                    )
+                    Tensor::zeros((seq, l.value_dim), DType::BF16, fused.device())?
+                };
+                // the normed pack is only needed by a step re-scan
+                let pack = if vc.is_some() && gdn_commit_step() {
+                    Some(qkv.apply_op1_no_bwd(&AllocBf16 {
+                        elems: seq * conv_dim,
+                        rows: seq,
+                        cols: conv_dim,
+                    })?)
+                } else {
+                    None
                 };
                 crate::gdn_kernel::gdn_fused_step(
-                    &qkv, &st.conv, &l.conv, &st.recurrent, &ab, &z,
-                    &l.norm_w, &gated, &pack, seq, l.num_k_heads,
-                    l.num_v_heads, l.head_k, l.head_v, eps as f32,
-                    l.a_log64, l.dt_bias64, ps,
+                    &qkv, &st.conv[cur], &l.conv, &st.rec[cur], &st.rec[nxt],
+                    &st.conv[nxt], &ab, Some(&z), &l.norm_w, Some(&gated),
+                    pack.as_ref(), seq, l.num_k_heads, l.num_v_heads, l.head_k,
+                    l.head_v, eps as f32, l.a_log64, l.dt_bias64, ps,
                 )?;
-                // new conv window = last (k-1) rows of [state | inputs]
-                st.conv = if seq >= l.conv_k - 1 {
-                    qkv.narrow(0, seq + 1 - l.conv_k, l.conv_k - 1)?
-                } else {
-                    Tensor::cat(
-                        &[
-                            &st.conv
-                                .narrow(0, seq, l.conv_k - 1 - seq)?,
-                            &qkv,
-                        ],
-                        0,
-                    )?
-                    .contiguous()?
-                };
                 if let Some(c) = vc.as_mut() {
-                    c.pack = Some(pack);
+                    c.pack = pack;
                     c.ab = Some(ab.clone());
+                    c.fused = true;
                 }
                 return lin_apply_ps(&gated.unsqueeze(0)?, &l.out, ps);
             }
-            let conv_out = st
-                .conv
+            let conv_out = st.conv[cur]
                 .apply_op3_no_bwd(
                     &qkv,
                     &l.conv,
@@ -2944,20 +3095,9 @@ impl Qwen35 {
                         k: l.conv_k,
                     },
                 )?;
-            // new window = last (k-1) rows of [state | inputs]
-            st.conv = if seq >= l.conv_k - 1 {
-                qkv.narrow(0, seq + 1 - l.conv_k, l.conv_k - 1)?
-            } else {
-                Tensor::cat(
-                    &[
-                        &st.conv
-                            .narrow(0, seq, l.conv_k - 1 - seq)?,
-                        &qkv,
-                    ],
-                    0,
-                )?
-                .contiguous()?
-            };
+            // new window = last (k-1) rows of [state | inputs], copied
+            // into the other parity (no view pins the projection output)
+            crate::gdn_kernel::gdn_conv_carry(&st.conv[cur], &qkv, &st.conv[nxt], seq, l.conv_k)?;
             // rmsnorm·scale on the q/k channels of conv_out (+ v
             // copy-through) — the scan reads the result directly since
             // its flat layout IS the qkv pack the kernel wants
@@ -2971,15 +3111,19 @@ impl Qwen35 {
             if let Some(c) = vc.as_mut() {
                 c.pack = Some(pack.clone());
             }
+            let (rin, rout) = parity_pair(&mut st.rec, cur);
             let out = Self::gdn_scan(
                 l,
-                st,
+                rin,
+                rout,
                 vc,
                 &pack,
                 &ab,
                 seq,
+                true,
                 fused.device(),
-            )?;
+            )?
+            .context("gdn scan output")?;
             // gated RMSNorm fused: rmsnorm(out)·w ⊙ silu(z)
             let gated = out.apply_op3_no_bwd(
                 &z,
@@ -3002,9 +3146,9 @@ impl Qwen35 {
         let qkv = qkv.contiguous()?;
         let z = z.contiguous()?;
         let ab = ab.contiguous()?;
-        let conv_in = Tensor::cat(&[&st.conv, &qkv], 0)?; // [k-1+seq, conv_dim]
+        let conv_in = Tensor::cat(&[&st.conv[cur], &qkv], 0)?; // [k-1+seq, conv_dim]
         let conv_out = conv_silu(&conv_in, &l.conv, seq, conv_dim, l.conv_k)?;
-        st.conv =
+        st.conv[nxt] =
             conv_in.narrow(0, conv_in.dim(0)? - (l.conv_k - 1), l.conv_k - 1)?;
 
         let q = conv_out
@@ -3032,8 +3176,9 @@ impl Qwen35 {
         if let Some(c) = vc.as_mut() {
             c.pack = Some(pack.clone());
         }
-        let out =
-            Self::gdn_scan(l, st, vc, &pack, &ab, seq, fused.device())?;
+        let (rin, rout) = parity_pair(&mut st.rec, cur);
+        let out = Self::gdn_scan(l, rin, rout, vc, &pack, &ab, seq, true, fused.device())?
+            .context("gdn scan output")?;
 
         // gated RMSNorm: fused rms_norm(out)·w × silu(z)
         let n = candle_nn::ops::rms_norm(
@@ -3046,32 +3191,57 @@ impl Qwen35 {
         lin_apply(&gated.reshape((1, seq, l.value_dim))?, &l.out)
     }
 
+    /// G1a: write the conv window after `t` input rows — the last k-1
+    /// rows of [src | x] — into `dst` (the committed parity during a
+    /// rollback, never `src`).
+    fn gdn_conv_commit(
+        l: &GdnLayer,
+        src: &Tensor,
+        x: &Tensor,
+        dst: &mut Tensor,
+        t: usize,
+        dev: &Device,
+    ) -> Result<()> {
+        #[cfg(all(feature = "metal", target_os = "macos"))]
+        if dev.is_metal() {
+            crate::gdn_kernel::gdn_conv_carry(src, x, dst, t, l.conv_k)?;
+            return Ok(());
+        }
+        let _ = dev;
+        *dst = Tensor::cat(&[src, &x.contiguous()?], 0)?
+            .narrow(0, t, l.conv_k - 1)?
+            .contiguous()?;
+        Ok(())
+    }
+
     /// The gated-delta recurrent scan. On Metal a single fused kernel
     /// handles the whole sequence (decay/beta computed in-shader); the
-    /// eager fallback keeps CPU correctness.
+    /// eager fallback keeps CPU correctness. G1a: out of place — reads
+    /// `rec_in`, writes the post-scan state into `rec_out` (a distinct
+    /// parity buffer; the eager path replaces it).
     ///
-    /// `q`,`k` are normed `[seq, num_k_heads, head_k]`, `v` is
-    /// `[seq, num_v_heads, head_v]`, `ab` is `[1, seq, 2*num_v_heads]`.
-    /// Returns `[seq, num_v_heads, head_v]`; `st.recurrent` is updated.
-    /// `vc`, when set, stashes the packed scan inputs.
     /// `pack` is the conv output — its flat `[q|k|v]` channel order is
     /// already the scan's packed layout, so the kernel reads it directly
     /// (a `[T, 2Hk+Hv, Dw]` view or the flat `[T, conv]` form — identical
     /// element order). `ab` is the strided bf16 `[a|b]` projection view;
-    /// the kernel converts in-register. `vc`, when set, stashes the
-    /// packed scan inputs for `rollback_verify`.
+    /// the kernel converts in-register. Returns `[seq, num_v_heads,
+    /// head_v]` when `want_y` (the eager path always computes it). `vc`,
+    /// when set, stashes the gate projections for `rollback_verify`.
+    #[allow(clippy::too_many_arguments)]
     fn gdn_scan(
         l: &GdnLayer,
-        st: &mut GdnState,
+        rec_in: &Tensor,
+        rec_out: &mut Tensor,
         vc: &mut Option<GdnVerifyCache>,
         pack: &Tensor,
         ab: &Tensor,
         seq: usize,
+        want_y: bool,
         dev: &Device,
-    ) -> Result<Tensor> {
+    ) -> Result<Option<Tensor>> {
         #[cfg(all(feature = "metal", target_os = "macos"))]
         if dev.is_metal() {
-            let ab_v = if std::env::var("TH_GDN_AB_CONTIG").is_ok() {
+            let ab_v = if gdn_ab_contig() {
                 ab.contiguous()?
             } else {
                 ab.clone()
@@ -3079,9 +3249,16 @@ impl Qwen35 {
             if let Some(c) = vc.as_mut() {
                 c.ab = Some(ab_v.clone());
             }
-            return Ok(pack.apply_op3_no_bwd(
-                &ab_v,
-                &st.recurrent,
+            let y = if want_y {
+                Some(pack.apply_op1_no_bwd(&crate::quant_kernel::AllocBf16 {
+                    elems: seq * l.num_v_heads * l.head_v,
+                    rows: seq,
+                    cols: l.num_v_heads * l.head_v,
+                })?)
+            } else {
+                None
+            };
+            crate::gdn_kernel::gdn_step(
                 &crate::gdn_kernel::GdnStep {
                     t: seq,
                     hk: l.num_k_heads,
@@ -3091,9 +3268,18 @@ impl Qwen35 {
                     a_log: l.a_log64,
                     dt_bias: l.dt_bias64,
                 },
-            )?);
+                pack,
+                &ab_v,
+                rec_in,
+                rec_out,
+                y.as_ref(),
+            )?;
+            return Ok(match y {
+                Some(y) => Some(y.reshape((seq, l.num_v_heads, l.head_v))?),
+                None => None,
+            });
         }
-        let _ = dev;
+        let _ = (dev, want_y);
 
         let q = pack.narrow(1, 0, l.num_k_heads)?; // [seq, hk, dk]
         let k = pack.narrow(1, l.num_k_heads, l.num_k_heads)?;
@@ -3103,6 +3289,9 @@ impl Qwen35 {
         } else {
             ab.clone()
         };
+        if let Some(c) = vc.as_mut() {
+            c.ab = Some(ab2.clone());
+        }
 
         // share each k/q head across num_v/num_k v-heads
         let rep = l.num_v_heads / l.num_k_heads;
@@ -3129,6 +3318,7 @@ impl Qwen35 {
             .exp()?; // [seq, 48]
         let beta = candle_nn::ops::sigmoid(&b_f)?;
 
+        let mut rec = rec_in.clone();
         let mut outs = Vec::with_capacity(seq);
         for t in 0..seq {
             let g_t = g.i(t)?.unsqueeze(1)?.unsqueeze(2)?; // [48,1,1]
@@ -3136,23 +3326,21 @@ impl Qwen35 {
             let v_t = v.i(t)?;                             // [48,128]
             let q_t = q.i(t)?;                             // [48,128]
             let b_t = beta.i(t)?.unsqueeze(1)?;            // [48,1]
-            st.recurrent = st.recurrent.broadcast_mul(&g_t)?;
+            rec = rec.broadcast_mul(&g_t)?;
             // state S[h, dv, dk]: kv_mem/readout contract dk (last axis)
-            let kv_mem = st
-                .recurrent
+            let kv_mem = rec
                 .broadcast_mul(&k_t.unsqueeze(1)?)?
                 .sum(D::Minus1)?; // [48,128]
             let delta = v_t.sub(&kv_mem)?.broadcast_mul(&b_t)?;
-            st.recurrent = st
-                .recurrent
-                .add(&delta.unsqueeze(2)?.broadcast_mul(&k_t.unsqueeze(1)?)?)?;
+            rec = rec.add(&delta.unsqueeze(2)?.broadcast_mul(&k_t.unsqueeze(1)?)?)?;
             outs.push(
-                st.recurrent
+                rec
                     .broadcast_mul(&q_t.unsqueeze(1)?)?
                     .sum(D::Minus1)?,
             ); // [48,128]
         }
-        Ok(Tensor::stack(&outs, 0)?) // [seq, 48, 128]
+        *rec_out = rec;
+        Ok(Some(Tensor::stack(&outs, 0)?)) // [seq, 48, 128]
     }
 
     /// Full attention with per-head output gate, GQA, partial rope.
@@ -3514,6 +3702,9 @@ impl Qwen35 {
                 *v = GdnVerifyCache::default();
             }
         }
+        // G1a: GDN layers read parity `cur`, write the other; the slot
+        // flips only after every layer succeeded
+        let cur = self.slots[slot].gdn_par.begin();
         let phase_t = std::env::var("TH_PHASE_TIME").is_ok()
             .then(std::time::Instant::now);
         // K45: (normed input, is it a presum block)
@@ -3533,7 +3724,7 @@ impl Qwen35 {
                         .context("forward: slot gdn state missing")?;
                     let mut vc = cache_verify.then(GdnVerifyCache::default);
                     let r = Self::gdn_forward(
-                        l, &mut st, &mut vc, &fused, seq,
+                        l, &mut st, cur, &mut vc, &fused, seq,
                         self.cfg.rms_norm_eps,
                     );
                     self.slots[slot].vcache[i] = vc.unwrap_or_default();
@@ -3630,6 +3821,7 @@ impl Qwen35 {
         }
         let t1 = phase_t.map(|_| std::time::Instant::now());
         self.slots[slot].kv_tokens = pos + seq;
+        self.slots[slot].gdn_par.flip();
         if last_only {
             let last = x.narrow(1, seq - 1, 1)?; // [1, 1, hidden]
             let logits =
@@ -3672,6 +3864,11 @@ impl Qwen35 {
                 *v = GdnVerifyCache::default();
             }
         }
+        // G1a: per-slot parity — read `curs[b]`, write the other
+        let curs: Vec<usize> = slots
+            .iter()
+            .map(|&sb| self.slots[sb].gdn_par.begin())
+            .collect();
         let eps = self.cfg.rms_norm_eps;
         // K45: (normed input, is it a presum block) — as in forward_inner.
         // add_rms_norm_ps only emits blocks for Σseq <= 8 rows, so wider
@@ -3700,7 +3897,7 @@ impl Qwen35 {
                         // an early `?` left gdn[i] = None and the next
                         // forward on this slot panicked the th-batch thread
                         let o = Self::gdn_forward(
-                            l, &mut st, &mut vc, &fv, seq_b, eps,
+                            l, &mut st, curs[b], &mut vc, &fv, seq_b, eps,
                         );
                         self.slots[sb].vcache[i] = vc.unwrap_or_default();
                         self.slots[sb].gdn[i] = Some(st);
@@ -3794,6 +3991,7 @@ impl Qwen35 {
         }
         for b in 0..nb {
             self.slots[slots[b]].kv_tokens = poss[b] + seqs[b].len();
+            self.slots[slots[b]].gdn_par.flip();
         }
         let x = rms_norm(&x, &self.norm, eps)?;
         Ok(lin_apply(&x, &self.lm_head)?.squeeze(0)?) // [total, vocab]
@@ -3830,12 +4028,17 @@ pub(crate) struct RollbackStateCheck {
     pub rec_diff_c: usize,
     pub rec_max_c: f32,
     pub conv_diff_c: usize,
+    /// the fused kernel's written conv window vs the host-built reference
+    pub conv_kernel_diff: usize,
 }
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
 impl RollbackStateCheck {
     pub fn ok(&self) -> bool {
-        self.layers > 0 && self.rec_diff_f == 0 && self.conv_diff_f == 0
+        self.layers > 0
+            && self.rec_diff_f == 0
+            && self.conv_diff_f == 0
+            && self.conv_kernel_diff == 0
     }
 }
 
@@ -3871,16 +4074,6 @@ fn bits_diff_bf16(a: &[half::bf16], b: &[half::bf16]) -> Result<usize> {
     Ok(a.iter().zip(b.iter()).filter(|(x, y)| x.to_bits() != y.to_bits()).count())
 }
 
-/// Bit-exact device copy into a fresh buffer. candle 0.11's Metal
-/// `Tensor::copy()` is an alias (`try_clone` shares the `Arc<Buffer>`),
-/// and `affine(1, 0)` maps -0.0 to +0.0 — neither copies kernel state.
-#[cfg(all(feature = "metal", target_os = "macos"))]
-fn deep_copy(t: &Tensor) -> Result<Tensor> {
-    let out = Tensor::zeros(t.shape(), t.dtype(), t.device())?;
-    out.slice_set(&t.contiguous()?, 0, 0)?;
-    Ok(out)
-}
-
 #[cfg(all(feature = "metal", target_os = "macos"))]
 impl Qwen35 {
     fn gdn_layer_ids(&self) -> Vec<usize> {
@@ -3892,19 +4085,14 @@ impl Qwen35 {
     /// Deep copies of `slot`'s committed GDN state per GDN layer:
     /// (conv window [k-1, conv_dim] bf16, recurrent [hv, dv, dk] f32).
     pub(crate) fn gdn_state_copy(&self, slot: usize) -> Result<Vec<(Tensor, Tensor)>> {
+        let cur = self.slots[slot].gdn_par.cur;
         self.gdn_layer_ids()
             .iter()
             .map(|&i| {
                 let st = self.slots[slot].gdn[i].as_ref().context("gdn state missing")?;
-                Ok((deep_copy(&st.conv)?, deep_copy(&st.recurrent)?))
+                Ok((state_copy(&st.conv[cur])?, state_copy(&st.rec[cur])?))
             })
             .collect()
-    }
-
-    /// Deep snapshot for probes that restore one state many times.
-    pub(crate) fn snapshot_deep(&mut self, slot: usize) -> Result<Snapshot> {
-        // the copy-based snapshot keeps the originals immutable
-        self.snapshot(slot)
     }
 
     /// R0a gate for one keep count: runs one engine round on `slot` at
@@ -3958,22 +4146,23 @@ impl Qwen35 {
             let (pre_conv, pre_rec) = &pre[j];
             let x = qkv.narrow(0, 0, kept)?; // [kept, conv] strided
             let abk = ab.narrow(ab.rank() - 2, 0, kept)?;
-            // reference F: the fused step kernel over only the kept rows
-            let rec_f = deep_copy(pre_rec)?;
+            // reference F: the fused step kernel in forward mode (writes y
+            // and pack too — not the commit path) over only the kept rows,
+            // out of place into fresh buffers
+            let rec_f = Tensor::zeros_like(pre_rec)?;
+            let conv_f = Tensor::zeros_like(pre_conv)?;
             let y = Tensor::zeros((kept, l.value_dim), DType::BF16, &dev)?;
             let pk = Tensor::zeros((kept, conv_dim), DType::BF16, &dev)?;
             crate::gdn_kernel::gdn_fused_step(
-                &x, pre_conv, &l.conv, &rec_f, &abk, &x /* z: y only */,
-                &l.norm_w, &y, &pk, kept, l.num_k_heads, l.num_v_heads,
-                l.head_k, l.head_v, self.cfg.rms_norm_eps as f32,
-                l.a_log64, l.dt_bias64, false,
+                &x, pre_conv, &l.conv, pre_rec, &rec_f, &conv_f, &abk,
+                Some(&x) /* z: y only */, &l.norm_w, Some(&y), Some(&pk),
+                kept, l.num_k_heads, l.num_v_heads, l.head_k, l.head_v,
+                self.cfg.rms_norm_eps as f32, l.a_log64, l.dt_bias64, false,
             )?;
             // info reference S: gated_delta_step over the same normed rows
-            let rec_s = deep_copy(pre_rec)?;
+            let rec_s = Tensor::zeros_like(pre_rec)?;
             let ab2 = if abk.rank() == 3 { abk.squeeze(0)? } else { abk.clone() };
-            let _ = pk.apply_op3_no_bwd(
-                &ab2,
-                &rec_s,
+            crate::gdn_kernel::gdn_step(
                 &crate::gdn_kernel::GdnStep {
                     t: kept,
                     hk: l.num_k_heads,
@@ -3983,12 +4172,20 @@ impl Qwen35 {
                     a_log: l.a_log64,
                     dt_bias: l.dt_bias64,
                 },
+                &pk,
+                &ab2,
+                pre_rec,
+                &rec_s,
+                None,
             )?;
             // reference conv window: last k-1 rows of [pre window | kept rows]
             let pc = pre_conv.flatten_all()?.to_vec1::<half::bf16>()?;
             let xr = x.contiguous()?.flatten_all()?.to_vec1::<half::bf16>()?;
             let all: Vec<half::bf16> = pc.iter().chain(xr.iter()).copied().collect();
             let win = &all[kept * conv_dim..];
+            // the kernel's in-shader window carry must match the host one
+            r.conv_kernel_diff +=
+                bits_diff_bf16(&conv_f.flatten_all()?.to_vec1::<half::bf16>()?, win)?;
             let (rb_conv, rb_rec) = &rb[j];
             let rbc = rb_conv.flatten_all()?.to_vec1::<half::bf16>()?;
             let (df, mf) = bits_diff_f32(rb_rec, &rec_f)?;
@@ -4066,6 +4263,207 @@ impl Qwen35 {
         self.restore(slot, keep_s)?;
         self.restore(other, keep_o)?;
         Ok((untouched, equal))
+    }
+}
+
+/// G1a parity state: model-free (tiny random-weight, all-GDN qwen3_5)
+/// checks of the double-buffered GDN state machinery on the Metal device —
+/// the R0a state-bitwise rollback gate over kept = 1..8 across chained
+/// rounds, slot isolation, and light-snapshot restore/staleness rules.
+/// Skips when no Metal device exists.
+#[cfg(all(test, feature = "metal", target_os = "macos"))]
+mod gdn_parity_tests {
+    use super::*;
+
+    fn fill(dims: &[usize], seed: u64, scale: f32, dev: &Device) -> Result<Tensor> {
+        let n: usize = dims.iter().product();
+        let mut s = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
+        let v: Vec<f32> = (0..n)
+            .map(|_| {
+                s ^= s >> 12;
+                s ^= s << 25;
+                s ^= s >> 27;
+                let u = (s.wrapping_mul(0x2545_F491_4F6C_DD1D) >> 11) as f32
+                    / (1u64 << 53) as f32;
+                (u * 2.0 - 1.0) * scale
+            })
+            .collect();
+        Ok(Tensor::from_vec(v, dims, dev)?.to_dtype(DType::BF16)?)
+    }
+
+    /// 2 linear-attention layers, hk=1 / hv=3 (REP 3: exercises the
+    /// q/k owner writes), dk=dv=128 (the fused kernel's head width), 4-tap
+    /// conv, 2 slots.
+    fn tiny_gdn(dev: &Device) -> Result<Qwen35> {
+        let (hidden, inter, vocab, hk, hv, d) = (64usize, 128usize, 97usize, 1usize, 3usize, 128usize);
+        let cfg = Qwen35Config::from_json(&serde_json::json!({
+            "hidden_size": hidden, "intermediate_size": inter,
+            "num_hidden_layers": 2, "num_attention_heads": 2,
+            "num_key_value_heads": 1, "vocab_size": vocab, "head_dim": 256,
+            "full_attention_interval": 4, "max_position_embeddings": 4096,
+            "linear_num_key_heads": hk, "linear_num_value_heads": hv,
+            "linear_key_head_dim": d, "linear_value_head_dim": d,
+            "linear_conv_kernel_dim": 4,
+        }))?;
+        let (key_dim, value_dim) = (hk * d, hv * d);
+        let conv_dim = 2 * key_dim + value_dim;
+        let ones = |n: usize| Tensor::ones(n, DType::BF16, dev);
+        let mut layers = Vec::new();
+        for li in 0..2u64 {
+            let a_log: Vec<f32> = (0..hv).map(|h| -0.5 + 0.3 * h as f32 + 0.1 * li as f32).collect();
+            let dt: Vec<f32> = (0..hv).map(|h| 0.1 * h as f32 - 0.2).collect();
+            let (mut a64, mut d64) = ([0f32; 64], [0f32; 64]);
+            a64[..hv].copy_from_slice(&a_log);
+            d64[..hv].copy_from_slice(&dt);
+            layers.push(Layer {
+                input_norm: ones(hidden)?,
+                kind: Kind::Gdn(GdnLayer {
+                    in_all: Lin::Dense(fill(&[conv_dim + value_dim + 2 * hv, hidden], 10 + li, 0.25, dev)?),
+                    conv: fill(&[conv_dim, 4], 20 + li, 0.5, dev)?,
+                    a_log: Tensor::from_vec(a_log, hv, dev)?,
+                    dt_bias: Tensor::from_vec(dt, hv, dev)?,
+                    a_log64: a64,
+                    dt_bias64: d64,
+                    norm_w: ones(d)?,
+                    ones_dk: ones(d)?,
+                    out: Lin::Dense(fill(&[hidden, value_dim], 30 + li, 0.1, dev)?),
+                    key_dim,
+                    value_dim,
+                    num_k_heads: hk,
+                    num_v_heads: hv,
+                    head_k: d,
+                    head_v: d,
+                    conv_k: 4,
+                }),
+                post_norm: ones(hidden)?,
+                mlp: Mlp {
+                    gate_up: Lin::Dense(fill(&[2 * inter, hidden], 40 + li, 0.2, dev)?),
+                    down: Lin::Dense(fill(&[hidden, inter], 50 + li, 0.15, dev)?),
+                    inter,
+                },
+            });
+        }
+        let slots = (0..2)
+            .map(|_| Slot::new(&cfg, &layers, dev))
+            .collect::<Result<Vec<_>>>()?;
+        Ok(Qwen35 {
+            embed: fill(&[vocab, hidden], 5, 1.0, dev)?,
+            layers,
+            norm: ones(hidden)?,
+            lm_head: Lin::Dense(fill(&[vocab, hidden], 6, 0.3, dev)?),
+            cfg,
+            device: dev.clone(),
+            tq: None,
+            slots,
+            draft_w: None,
+            debug: false,
+        })
+    }
+
+    fn metal() -> Option<Device> {
+        Device::new_metal(0).ok()
+    }
+
+    fn states_equal(a: &[(Tensor, Tensor)], b: &[(Tensor, Tensor)]) -> Result<bool> {
+        for ((ac, ar), (bc, br)) in a.iter().zip(b.iter()) {
+            if bits_diff_f32(ar, br)?.0 != 0 {
+                return Ok(false);
+            }
+            let (x, y) = (
+                ac.flatten_all()?.to_vec1::<half::bf16>()?,
+                bc.flatten_all()?.to_vec1::<half::bf16>()?,
+            );
+            if bits_diff_bf16(&x, &y)? != 0 {
+                return Ok(false);
+            }
+        }
+        Ok(a.len() == b.len())
+    }
+
+    /// Every round of a chained decode (verify 8 rows, keep 1..8 — full
+    /// accepts interleaved with partial ones, so both parities carry the
+    /// committed state over time) leaves exactly the state of a fused scan
+    /// of only the kept rows; the slots stay isolated.
+    #[test]
+    fn gdn_parity_rollback_state_bitwise_over_chained_rounds() -> Result<()> {
+        let Some(d) = metal() else {
+            eprintln!("[gdn-parity] skipped: needs a Metal device");
+            return Ok(());
+        };
+        let mut m = tiny_gdn(&d)?;
+        let prompt: Vec<u32> = (0..11u32).map(|i| (i * 7 + 3) % 97).collect();
+        m.forward(0, &prompt, 0)?;
+        let mut pos = prompt.len();
+        let mut bad = Vec::new();
+        for (round, &kept) in [3usize, 8, 1, 5, 8, 8, 2, 7, 4, 6, 8].iter().enumerate() {
+            let seq: Vec<u32> = (0..8u32).map(|i| (round as u32 * 13 + i * 5 + 1) % 97).collect();
+            for k in 1..=8 {
+                let r = m.rollback_state_check(0, pos, &seq, k)?;
+                if !r.ok() {
+                    bad.push((round, k, r.rec_diff_f, r.conv_diff_f, r.conv_kernel_diff));
+                }
+            }
+            // advance for real: one engine round keeping `kept` rows
+            let snap = m.snapshot(0)?;
+            m.forward_multi(0, &seq, pos)?;
+            if kept < seq.len() {
+                m.rollback_verify(0, snap, kept)?;
+            }
+            pos += kept;
+            assert_eq!(m.slots[0].kv_tokens, pos);
+        }
+        assert!(bad.is_empty(), "state-bitwise mismatches (round, kept, rec, conv, kernel-conv): {bad:?}");
+        let (untouched, equal) = m.slot_isolation_check(0, 1, &prompt, &[9, 8, 7, 6, 5, 4, 3, 2], 3)?;
+        assert!(untouched, "a round on slot 1 changed slot 0's committed state");
+        assert!(equal, "the same round on two identical slots diverged");
+        Ok(())
+    }
+
+    /// Light snapshots flip back across exactly one forward (the verify's
+    /// pre-state is the intact parity) and refuse to restore once a second
+    /// forward overwrote it; deep snapshots restore any number of times.
+    #[test]
+    fn gdn_parity_light_snapshot_restore_rules() -> Result<()> {
+        let Some(d) = metal() else {
+            eprintln!("[gdn-parity] skipped: needs a Metal device");
+            return Ok(());
+        };
+        let mut m = tiny_gdn(&d)?;
+        let prompt: Vec<u32> = (0..9u32).map(|i| (i * 5 + 2) % 97).collect();
+        m.forward(0, &prompt, 0)?;
+        let pos = prompt.len();
+        let pre = m.gdn_state_copy(0)?;
+        let deep = m.snapshot_deep(0)?;
+        // one forward: restorable, state bitwise back
+        let snap = m.snapshot(0)?;
+        m.forward_multi(0, &[1, 2, 3, 4], pos)?;
+        assert!(!states_equal(&pre, &m.gdn_state_copy(0)?)?, "the forward did not advance the state");
+        m.restore(0, snap.clone())?;
+        assert!(states_equal(&pre, &m.gdn_state_copy(0)?)?, "light restore did not return the pre-state");
+        assert_eq!(m.slots[0].kv_tokens, pos);
+        // restoring the same light snapshot again is a no-op
+        m.restore(0, snap.clone())?;
+        assert!(states_equal(&pre, &m.gdn_state_copy(0)?)?);
+        // two forwards: the pre-state parity was overwritten
+        m.forward_multi(0, &[1, 2, 3, 4], pos)?;
+        m.forward_multi(0, &[5, 6], pos + 4)?;
+        assert!(m.restore(0, snap.clone()).is_err(), "stale light snapshot restored");
+        assert!(m.rollback_verify(0, snap, 1).is_err(), "stale light snapshot rolled back");
+        // deep snapshots survive any number of forwards and restores
+        for _ in 0..2 {
+            m.restore(0, deep.clone())?;
+            assert!(states_equal(&pre, &m.gdn_state_copy(0)?)?, "deep restore mismatch");
+            m.forward_multi(0, &[7, 8, 9], pos)?;
+        }
+        // clear: fresh zero state, old snapshots no longer resident
+        let snap2 = m.snapshot(0)?;
+        m.clear_kv_cache(0);
+        assert!(m.restore(0, snap2).is_err(), "snapshot from before a clear restored");
+        for (c, r) in m.gdn_state_copy(0)? {
+            assert!(c.flatten_all()?.to_vec1::<half::bf16>()?.iter().all(|v| v.to_bits() == 0));
+            assert!(r.flatten_all()?.to_vec1::<f32>()?.iter().all(|v| v.to_bits() == 0));
+        }
+        Ok(())
     }
 }
 
