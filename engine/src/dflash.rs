@@ -490,9 +490,20 @@ impl DraftWeights {
     ) -> Result<Proposal> {
         let (unary_all, cand_all, sel_all) =
             self.cand_tables(logits, sel)?;
+        let (pred_ids, succ_ids) = Self::codebook_ids(anchor, &cand_all);
+        let pred_all = self.gather_cb(&self.pred_cb, &pred_ids)?;
+        let succ_all = self.gather_cb(&self.succ_cb, &succ_ids)?;
         self.select_walk(
-            &unary_all, &cand_all, &sel_all, anchor, temp, uniform,
+            &unary_all, &cand_all, &sel_all,
+            &pred_all, &succ_all, temp, uniform,
         )
+    }
+
+    fn gather_cb(&self, cb: &Tensor, ids: &[u32]) -> Result<Vec<Vec<f32>>> {
+        Ok(cb
+            .i(&Tensor::from_slice(ids, (ids.len(),), &self.device)?)?
+            .to_dtype(DType::F32)?
+            .to_vec2()?)
     }
 
     /// Candidate tables for `logits`/`sel` `[n, vocab]`/`[n, 256]` —
@@ -549,25 +560,10 @@ impl DraftWeights {
         Ok((unary, cand, sel_h))
     }
 
-    /// Per-slot walk over precomputed tables: `unary`/`cand`/`sel_h`
-    /// are this slot's `n` rows (PROPOSALS each).
-    fn select_walk(
-        &self,
-        unary: &[Vec<f32>],
-        cand: &[Vec<u32>],
-        sel_h: &[Vec<f32>],
-        anchor: u32,
-        temp: Option<f64>,
-        uniform: &mut dyn FnMut() -> f64,
-    ) -> Result<Proposal> {
-
-        let mut tokens = [0u32; PROPOSALS];
-        let mut cand_ids = [[0u32; TOPK]; PROPOSALS];
-        let mut cand_probs = [[0f32; TOPK]; PROPOSALS];
-        let mut pred_idx = 0usize;
-        // Batched codebook gathers — the walk needs pred rows for
-        // {anchor} ∪ cand_ids[0..6] and succ rows for cand_ids[0..6];
-        // two index_select+readback calls instead of 14 pipelined syncs.
+    /// Codebook rows needed by the walk: pred rows for
+    /// `{anchor} ∪ cand[0..6]` and succ rows for `cand[0..6]`.
+    /// Batched so callers can gather across slots in one shot.
+    fn codebook_ids(anchor: u32, cand: &[Vec<u32>]) -> (Vec<u32>, Vec<u32>) {
         let mut pred_ids: Vec<u32> = Vec::with_capacity(1 + 6 * TOPK);
         pred_ids.push(anchor);
         for p in 0..PROPOSALS - 1 {
@@ -577,16 +573,26 @@ impl DraftWeights {
         for p in 0..PROPOSALS {
             succ_ids.extend_from_slice(&cand[p]);
         }
-        let pred_all: Vec<Vec<f32>> = self
-            .pred_cb
-            .i(&Tensor::from_slice(&pred_ids, (pred_ids.len(),), &self.device)?)?
-            .to_dtype(DType::F32)?
-            .to_vec2()?;
-        let succ_all: Vec<Vec<f32>> = self
-            .succ_cb
-            .i(&Tensor::from_slice(&succ_ids, (succ_ids.len(),), &self.device)?)?
-            .to_dtype(DType::F32)?
-            .to_vec2()?;
+        (pred_ids, succ_ids)
+    }
+
+    /// Per-slot walk over precomputed tables: `unary`/`cand`/`sel_h`
+    /// are this slot's `n` rows (PROPOSALS each); `pred_all`/`succ_all`
+    /// are this slot's codebook rows in `codebook_ids` order.
+    fn select_walk(
+        &self,
+        unary: &[Vec<f32>],
+        cand: &[Vec<u32>],
+        sel_h: &[Vec<f32>],
+        pred_all: &[Vec<f32>],
+        succ_all: &[Vec<f32>],
+        temp: Option<f64>,
+        uniform: &mut dyn FnMut() -> f64,
+    ) -> Result<Proposal> {
+        let mut tokens = [0u32; PROPOSALS];
+        let mut cand_ids = [[0u32; TOPK]; PROPOSALS];
+        let mut cand_probs = [[0f32; TOPK]; PROPOSALS];
+        let mut pred_idx = 0usize;
         for p in 0..PROPOSALS {
             for i in 0..TOPK {
                 cand_ids[p][i] = cand[p][i];
@@ -746,6 +752,20 @@ impl DraftWeights {
         let t_ct = std::time::Instant::now();
         // one GPU sort + readback across all slots' rows
         let (unary, cand, sel_h) = self.cand_tables(&logits, &sel)?;
+        // one codebook gather across all slots: ids are slot-major
+        // (slot b's pred block = b*97 rows; succ = b*112)
+        let mut pred_ids: Vec<u32> = Vec::with_capacity(nb * (1 + 6 * TOPK));
+        let mut succ_ids: Vec<u32> = Vec::with_capacity(nb * PROPOSALS * TOPK);
+        for b in 0..nb {
+            let (pi, si) = Self::codebook_ids(
+                anchors[b],
+                &cand[b * PROPOSALS..(b + 1) * PROPOSALS],
+            );
+            pred_ids.extend_from_slice(&pi);
+            succ_ids.extend_from_slice(&si);
+        }
+        let pred_all = self.gather_cb(&self.pred_cb, &pred_ids)?;
+        let succ_all = self.gather_cb(&self.succ_cb, &succ_ids)?;
         if dbg {
             eprintln!("    [pb] cand_tables={:.1}ms", t_ct.elapsed().as_secs_f64()*1e3);
         }
@@ -753,10 +773,13 @@ impl DraftWeights {
         let mut out = Vec::with_capacity(nb);
         for b in 0..nb {
             let (r0, r1) = (b * PROPOSALS, (b + 1) * PROPOSALS);
+            let (p0, p1) = (b * (1 + 6 * TOPK), (b + 1) * (1 + 6 * TOPK));
+            let (s0, s1) = (b * PROPOSALS * TOPK, (b + 1) * PROPOSALS * TOPK);
             let temp = temps[b];
             out.push(self.select_walk(
                 &unary[r0..r1], &cand[r0..r1], &sel_h[r0..r1],
-                anchors[b], temp, &mut || uniform(b),
+                &pred_all[p0..p1], &succ_all[s0..s1],
+                temp, &mut || uniform(b),
             )?);
         }
         if dbg {
