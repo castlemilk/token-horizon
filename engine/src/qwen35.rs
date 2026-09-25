@@ -1104,7 +1104,7 @@ pub(crate) fn bench_q4_decode(model: &Qwen35, device: &Device) -> Result<()> {
 /// outputs — the caller narrows the fused result back into the parts.
 /// All inputs must share `inp`/`gs` and quantisation kind. Bitwise
 /// identical to separate projections (each output row is independent).
-fn fuse_lins(lins: &[Lin]) -> Result<Lin> {
+pub(crate) fn fuse_lins(lins: &[Lin]) -> Result<Lin> {
     match lins {
         [Lin::Quant(..), ..] => {
             let mut wqs = Vec::with_capacity(lins.len());

@@ -25,7 +25,7 @@ use anyhow::{bail, Context, Result};
 use candle_core::{DType, Device, IndexOp, Tensor};
 use half::bf16;
 
-use crate::qwen35::{lin_apply, rms_norm, Lin, QLin};
+use crate::qwen35::{lin_apply, lin_apply_ps, rms_norm, Lin, QLin};
 
 pub const DRAFT_LAYERS: usize = 5;
 pub const HIDDEN: usize = 5120;
@@ -165,9 +165,14 @@ fn section_tensor(sec: &[u8], shape: (usize, usize), device: &Device) -> Result<
 }
 
 fn q4(f: &mut PackedFile, out: usize, inp: usize, device: &Device) -> Result<Lin> {
+    crate::qwen35::maybe_tiled(q4_rows(f, out, inp, device)?)
+}
+
+/// A Q4 section as a row-major (untiled) `Lin` — for fusing before tiling.
+fn q4_rows(f: &mut PackedFile, out: usize, inp: usize, device: &Device) -> Result<Lin> {
     let bytes = out * inp / 16 * 9;
     let sec = f.section(bytes)?;
-    crate::qwen35::maybe_tiled(Lin::Quant(repack_q4(sec, out, inp, device)?))
+    Ok(Lin::Quant(repack_q4(sec, out, inp, device)?))
 }
 
 fn norm(f: &mut PackedFile, n: usize, device: &Device) -> Result<Tensor> {
@@ -192,9 +197,40 @@ struct DraftLayer {
     post_norm: Tensor,     // [5120]
     mlp_conv_base: Tensor, // [4, 5120]
     mlp_dyn: Lin,          // [1280, 5120]
-    gate: Lin,             // [17408, 5120]
-    up: Lin,               // [17408, 5120]
+    /// K45: [gate | up] fused row-wise ([2 x 17408, 5120]) so the MLP runs
+    /// the target's N256 two-stream tile with the silu·mul epilogue (one
+    /// dispatch instead of two projections + eager silu + mul) and hands
+    /// `down` a presum block.
+    gate_up: Lin,
     down: Lin,             // [5120, 17408]
+}
+
+impl DraftLayer {
+    /// MLP body `down(silu(gate(x)) * up(x))` on the fused gate|up weight
+    /// — shared by `propose` (8 rows) and `propose_batch` (B*8 rows).
+    /// `gate_up_act_ps` picks the tile by row count: the N256 two-stream
+    /// tile with the silu·mul epilogue at <= 8 rows (it also emits
+    /// `down`'s presum block), the two-pass prefill tile (gate pass into
+    /// scratch, then up + silu·gate) above 8 rows. When neither applies
+    /// (non-Metal / untiled weights) the eager fallback narrows the fused
+    /// `[.., 2 * INTER]` projection on its last dim.
+    fn mlp(&self, x: &Tensor) -> Result<Tensor> {
+        let fused = match &self.gate_up {
+            Lin::Quant(q) => q.gate_up_act_ps(x, false),
+            _ => None,
+        };
+        let (inter, inter_ps) = match fused {
+            Some(r) => r?,
+            None => {
+                let gu = lin_apply(x, &self.gate_up)?;
+                let last = gu.rank() - 1;
+                let gate = gu.narrow(last, 0, INTER)?.contiguous()?;
+                let up = gu.narrow(last, INTER, INTER)?.contiguous()?;
+                (candle_nn::ops::silu(&gate)?.mul(&up)?, false)
+            }
+        };
+        lin_apply_ps(&inter, &self.down, inter_ps)
+    }
 }
 
 /// Shared draft weights — one instance regardless of batch width.
@@ -282,8 +318,13 @@ impl DraftWeights {
                     device,
                 )?,
                 mlp_dyn: q4(&mut f, DYN, HIDDEN, device)?,
-                gate: q4(&mut f, INTER, HIDDEN, device)?,
-                up: q4(&mut f, INTER, HIDDEN, device)?,
+                gate_up: {
+                    // section order is gate then up; fuse before tiling
+                    // (the fused tiled layout = gate tiles, then up tiles)
+                    let gate = q4_rows(&mut f, INTER, HIDDEN, device)?;
+                    let up = q4_rows(&mut f, INTER, HIDDEN, device)?;
+                    crate::qwen35::maybe_tiled(crate::qwen35::fuse_lins(&[gate, up])?)?
+                },
                 down: q4(&mut f, HIDDEN, INTER, device)?,
             });
             f.finish()?;
@@ -403,9 +444,7 @@ impl DraftWeights {
             let n2 = rms_norm(&x2, &l.post_norm, 1e-6)?;
             let dyn2 = lin_apply(&n2, &l.mlp_dyn)?;
             let conv2 = dconv(&n2, &dyn2, &l.mlp_conv_base, 0, None)?;
-            let inter = candle_nn::ops::silu(&lin_apply(&conv2, &l.gate)?)?
-                .mul(&lin_apply(&conv2, &l.up)?)?;
-            let proj2 = lin_apply(&inter, &l.down)?;
+            let proj2 = l.mlp(&conv2)?;
             x = dconv(&proj2, &dyn2, &l.mlp_conv_base, 1, Some(&x2))?;
         }
         let fh = rms_norm(&x, &self.final_norm, 1e-6)?; // [1,8,5120]
@@ -731,9 +770,7 @@ impl DraftWeights {
             let n2 = rms_norm(&x2, &l.post_norm, 1e-6)?;
             let dyn2 = lin_apply(&n2, &l.mlp_dyn)?;
             let conv2 = dconv(&n2, &dyn2, &l.mlp_conv_base, 0, None)?;
-            let inter = candle_nn::ops::silu(&lin_apply(&conv2, &l.gate)?)?
-                .mul(&lin_apply(&conv2, &l.up)?)?;
-            let proj2 = lin_apply(&inter, &l.down)?;
+            let proj2 = l.mlp(&conv2)?; // [1,B*8,5120]
             x = dconv(&proj2, &dyn2, &l.mlp_conv_base, 1, Some(&x2))?;
         }
         let fh = rms_norm(&x, &self.final_norm, 1e-6)?; // [1,B*8,5120]
