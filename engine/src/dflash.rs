@@ -41,6 +41,8 @@ pub const PROPOSALS: usize = 7;
 pub const WINDOW: usize = 2048;
 pub const RANK: usize = 256;
 pub const TOPK: usize = 16;
+/// Codebook rows (= padded vocab; the chunked top-16 covers 485 x 512).
+pub const CB_ROWS: usize = 248320;
 pub const TARGET_HIDDEN: usize = 25600;
 pub const MASK_TOKEN: u32 = 248070;
 pub const CAPTURE_LAYERS: [usize; 5] = [5, 19, 33, 47, 61];
@@ -164,6 +166,13 @@ fn section_tensor(sec: &[u8], shape: (usize, usize), device: &Device) -> Result<
     Tensor::from_vec(vals, shape, device).map_err(Into::into)
 }
 
+/// A bf16 section kept on the host (D1 codebooks).
+fn section_host(sec: &[u8]) -> Vec<bf16> {
+    sec.chunks_exact(2)
+        .map(|c| bf16::from_le_bytes(c.try_into().unwrap()))
+        .collect()
+}
+
 fn q4(f: &mut PackedFile, out: usize, inp: usize, device: &Device) -> Result<Lin> {
     crate::qwen35::maybe_tiled(q4_rows(f, out, inp, device)?)
 }
@@ -240,8 +249,13 @@ pub struct DraftWeights {
     hidden_norm: Tensor,
     final_norm: Tensor,
     selector: Lin,      // [256, 5120]
-    pred_cb: Tensor,    // [vocab, 256]
-    succ_cb: Tensor,    // [vocab, 256]
+    /// D1: predecessor / successor codebooks `[CB_ROWS, 256]` bf16,
+    /// row-major, HOST-resident. The walk only ever reads 97 + 112 rows
+    /// per slot per round, chosen by the candidate ids the GPU just
+    /// produced — gathering them on the GPU cost two extra host syncs
+    /// per propose; a host gather costs ~100 KB of reads.
+    pred_cb: Vec<bf16>,
+    succ_cb: Vec<bf16>,
     device: Device,
 }
 
@@ -334,11 +348,9 @@ impl DraftWeights {
         let hidden_norm = norm(&mut f, HIDDEN, device)?;
         let final_norm = norm(&mut f, HIDDEN, device)?;
         let selector = q4(&mut f, RANK, HIDDEN, device)?;
-        let cb_bytes = 248320 * RANK * 2;
-        let pred_cb =
-            section_tensor(f.section(cb_bytes)?, (248320, RANK), device)?;
-        let succ_cb =
-            section_tensor(f.section(cb_bytes)?, (248320, RANK), device)?;
+        let cb_bytes = CB_ROWS * RANK * 2;
+        let pred_cb = section_host(f.section(cb_bytes)?);
+        let succ_cb = section_host(f.section(cb_bytes)?);
         f.finish()?;
 
         Ok(Self {
@@ -487,7 +499,7 @@ impl DraftWeights {
             )
         };
         #[cfg(all(feature = "metal", target_os = "macos"))]
-        if dev.is_metal() && std::env::var("TH_DRAFT_EAGER").is_err() {
+        if dev.is_metal() && !draft_eager() {
             // draft_attn returns [8, 32, 128]; o_proj needs the eager
             // path's [1, 8, 4096] — a rank-4 [1, 8, 32, 128] reads as
             // 256 rows x 128 and sends o_proj (inp 4096) down the m=256
@@ -532,21 +544,14 @@ impl DraftWeights {
         uniform: &mut dyn FnMut() -> f64,
     ) -> Result<Proposal> {
         let (unary_all, cand_all, sel_all) =
-            self.cand_tables(logits, sel)?;
+            Self::cand_tables(logits, sel)?;
         let (pred_ids, succ_ids) = Self::codebook_ids(anchor, &cand_all);
-        let pred_all = self.gather_cb(&self.pred_cb, &pred_ids)?;
-        let succ_all = self.gather_cb(&self.succ_cb, &succ_ids)?;
+        let pred_all = gather_cb(&self.pred_cb, &pred_ids)?;
+        let succ_all = gather_cb(&self.succ_cb, &succ_ids)?;
         self.select_walk(
             &unary_all, &cand_all, &sel_all,
             &pred_all, &succ_all, temp, uniform,
         )
-    }
-
-    fn gather_cb(&self, cb: &Tensor, ids: &[u32]) -> Result<Vec<Vec<f32>>> {
-        Ok(cb
-            .i(&Tensor::from_slice(ids, (ids.len(),), &self.device)?)?
-            .to_dtype(DType::F32)?
-            .to_vec2()?)
     }
 
     /// Candidate tables for `logits`/`sel` `[n, vocab]`/`[n, 256]` —
@@ -554,7 +559,6 @@ impl DraftWeights {
     /// propose passes all slots' rows in one call).
     /// Returns (unary[n][16], cand[n][16], sel_h[n][256]).
     fn cand_tables(
-        &self,
         logits: &Tensor,
         sel: &Tensor,
     ) -> Result<(Vec<Vec<f32>>, Vec<Vec<u32>>, Vec<Vec<f32>>)> {
@@ -565,30 +569,38 @@ impl DraftWeights {
         // (any globally-top-16 element has at most 15 superiors within
         // its own chunk). Chunked sort on GPU, 7760-candidate merge on
         // CPU.
-        const CHUNKS: usize = 485;
+        const CHUNKS: usize = CB_ROWS / CHUNK_W;
         const CHUNK_W: usize = 512;
         let cand_rows = logits.contiguous()?.to_dtype(DType::F32)?; // [n, 248320]
         let chunked = cand_rows.reshape((n, CHUNKS, CHUNK_W))?;
         let (vals, ids) = chunked.sort_last_dim(false)?; // desc per chunk
-        let cv = vals
+        // D1: ONE host sync for everything the walk needs — per-chunk
+        // top-16 values, their in-chunk ids (u32 < 512, exact in f32) and
+        // the selector rows, packed into one f32 buffer and read back
+        // together (was three separate readbacks, each a commit + wait).
+        let nk = n * CHUNKS * TOPK;
+        let top_v = vals.narrow(2, 0, TOPK)?.contiguous()?.flatten_all()?;
+        let top_i = ids
             .narrow(2, 0, TOPK)?
             .contiguous()?
-            .reshape(((), TOPK))?
-            .to_vec2::<f32>()?; // [n*485, 16]
-        let ci = ids
-            .narrow(2, 0, TOPK)?
-            .contiguous()?
-            .reshape(((), TOPK))?
-            .to_vec2::<u32>()?;
+            .flatten_all()?
+            .to_dtype(DType::F32)?;
+        let sel_f = sel.to_dtype(DType::F32)?.flatten_all()?;
+        let packed: Vec<f32> = Tensor::cat(&[&top_v, &top_i, &sel_f], 0)?.to_vec1()?;
+        if packed.len() != 2 * nk + n * RANK {
+            bail!("cand_tables: packed readback {} != {}", packed.len(), 2 * nk + n * RANK);
+        }
+        let (cv, rest) = packed.split_at(nk); // [n*485*16]
+        let (ci, sh) = rest.split_at(nk);
         let mut unary: Vec<Vec<f32>> = Vec::with_capacity(n);
         let mut cand: Vec<Vec<u32>> = Vec::with_capacity(n);
         for r in 0..n {
             // merge 485 chunk top-16s → global top-16 for row r
             let mut pool: Vec<(f32, u32)> = Vec::with_capacity(CHUNKS * TOPK);
             for c in 0..CHUNKS {
-                let row = r * CHUNKS + c;
+                let row = (r * CHUNKS + c) * TOPK;
                 for k in 0..TOPK {
-                    pool.push((cv[row][k], c as u32 * CHUNK_W as u32 + ci[row][k]));
+                    pool.push((cv[row + k], c as u32 * CHUNK_W as u32 + ci[row + k] as u32));
                 }
             }
             pool.select_nth_unstable_by(TOPK - 1, |a, b| b.0.total_cmp(&a.0));
@@ -597,9 +609,7 @@ impl DraftWeights {
             unary.push(top.iter().map(|t| t.0).collect());
             cand.push(top.iter().map(|t| t.1).collect());
         }
-        let sel_h: Vec<Vec<f32>> = sel
-            .to_dtype(DType::F32)?
-            .to_vec2()?; // [n, 256]
+        let sel_h: Vec<Vec<f32>> = sh.chunks_exact(RANK).map(|c| c.to_vec()).collect(); // [n, 256]
         Ok((unary, cand, sel_h))
     }
 
@@ -789,10 +799,10 @@ impl DraftWeights {
         let sels = Tensor::cat(&sels, 1)?;
         let logits = lin_apply(&logits, lm_head)?.squeeze(0)?; // [B*7, vocab]
         let sel = lin_apply(&sels, &self.selector)?.squeeze(0)?; // [B*7, 256]
-        let dbg = std::env::var("TH_DEBUG_TIMING").is_ok();
+        let dbg = debug_timing();
         let t_ct = std::time::Instant::now();
         // one GPU sort + readback across all slots' rows
-        let (unary, cand, sel_h) = self.cand_tables(&logits, &sel)?;
+        let (unary, cand, sel_h) = Self::cand_tables(&logits, &sel)?;
         // one codebook gather across all slots: ids are slot-major
         // (slot b's pred block = b*97 rows; succ = b*112)
         let mut pred_ids: Vec<u32> = Vec::with_capacity(nb * (1 + 6 * TOPK));
@@ -805,8 +815,8 @@ impl DraftWeights {
             pred_ids.extend_from_slice(&pi);
             succ_ids.extend_from_slice(&si);
         }
-        let pred_all = self.gather_cb(&self.pred_cb, &pred_ids)?;
-        let succ_all = self.gather_cb(&self.succ_cb, &succ_ids)?;
+        let pred_all = gather_cb(&self.pred_cb, &pred_ids)?;
+        let succ_all = gather_cb(&self.succ_cb, &succ_ids)?;
         if dbg {
             eprintln!("    [pb] cand_tables={:.1}ms", t_ct.elapsed().as_secs_f64()*1e3);
         }
@@ -828,6 +838,19 @@ impl DraftWeights {
         }
         Ok(out)
     }
+}
+
+/// D1: codebook rows for `ids` from the host-resident table, as f32.
+fn gather_cb(cb: &[bf16], ids: &[u32]) -> Result<Vec<Vec<f32>>> {
+    ids.iter()
+        .map(|&id| {
+            let o = id as usize * RANK;
+            let row = cb
+                .get(o..o + RANK)
+                .with_context(|| format!("codebook id {id} out of range"))?;
+            Ok(row.iter().map(|v| v.to_f32()).collect())
+        })
+        .collect()
 }
 
 // MARK: - ops
@@ -966,8 +989,59 @@ mod tests {
         }
     }
 
+    /// D1: the single packed readback must reproduce the per-row global
+    /// top-16 (values descending, exact ids) and the selector rows.
+    #[test]
+    fn cand_tables_packed_readback_is_exact() {
+        let n = 3usize;
+        // distinct values per row: a stride-7919 permutation of 0..CB_ROWS
+        let logits: Vec<f32> = (0..n)
+            .flat_map(|r| (0..CB_ROWS).map(move |j| ((j * 7919 + r * 13) % CB_ROWS) as f32 * 1e-3))
+            .collect();
+        let sel: Vec<f32> = (0..n * RANK).map(|i| (i as f32 * 0.37).sin()).collect();
+        let lt = Tensor::from_vec(logits.clone(), (n, CB_ROWS), &Device::Cpu).unwrap();
+        let st = Tensor::from_vec(sel.clone(), (n, RANK), &Device::Cpu).unwrap();
+        let (unary, cand, sel_h) = DraftWeights::cand_tables(&lt, &st).unwrap();
+        for r in 0..n {
+            let row = &logits[r * CB_ROWS..(r + 1) * CB_ROWS];
+            let mut idx: Vec<u32> = (0..CB_ROWS as u32).collect();
+            idx.sort_by(|&a, &b| row[b as usize].total_cmp(&row[a as usize]));
+            let want_ids: Vec<u32> = idx[..TOPK].to_vec();
+            let want_v: Vec<f32> = want_ids.iter().map(|&i| row[i as usize]).collect();
+            assert_eq!(cand[r], want_ids, "row {r} ids");
+            assert_eq!(unary[r], want_v, "row {r} values");
+            assert_eq!(sel_h[r], sel[r * RANK..(r + 1) * RANK].to_vec(), "row {r} selector");
+        }
+    }
+
+    /// D1: host codebook gather = row slices of the row-major table.
+    #[test]
+    fn gather_cb_host_rows() {
+        let cb: Vec<bf16> = (0..4 * RANK).map(|i| bf16::from_f32(i as f32)).collect();
+        let g = gather_cb(&cb, &[2, 0, 3]).unwrap();
+        assert_eq!(g.len(), 3);
+        for (k, &id) in [2usize, 0, 3].iter().enumerate() {
+            let want: Vec<f32> = (0..RANK).map(|d| bf16::from_f32((id * RANK + d) as f32).to_f32()).collect();
+            assert_eq!(g[k], want);
+        }
+        assert!(gather_cb(&cb, &[4]).is_err(), "out-of-range id must error");
+    }
+
 }
 
+
+/// `TH_DRAFT_EAGER` — eager draft ops instead of the fused kernels.
+/// Read once: propose checks it ~35 times per round.
+#[cfg_attr(not(all(feature = "metal", target_os = "macos")), allow(dead_code))]
+fn draft_eager() -> bool {
+    static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *V.get_or_init(|| std::env::var("TH_DRAFT_EAGER").is_ok())
+}
+
+fn debug_timing() -> bool {
+    static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *V.get_or_init(|| std::env::var("TH_DEBUG_TIMING").is_ok())
+}
 
 /// draft_conv on the fused kernel when possible; eager chain under
 /// TH_DRAFT_EAGER / non-Metal.
@@ -982,7 +1056,7 @@ fn dconv(
     if x.device().is_metal()
         && dyn_.is_contiguous()
         && x.stride().last() == Some(&1)
-        && std::env::var("TH_DRAFT_EAGER").is_err()
+        && !draft_eager()
     {
         return Ok(crate::draft_kernel::draft_conv_fused(x, dyn_, base, residual, stage)?);
     }
@@ -999,7 +1073,7 @@ fn dnorm_rope(
     #[cfg(all(feature = "metal", target_os = "macos"))]
     if x.device().is_metal()
         && x.stride().last() == Some(&1)
-        && std::env::var("TH_DRAFT_EAGER").is_err()
+        && !draft_eager()
     {
         return Ok(crate::draft_kernel::draft_norm_rope(x, w, cos, sin)?);
     }

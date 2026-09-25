@@ -116,6 +116,15 @@ impl Engine {
         if let Some(o) = meta.as_object_mut() {
             o.insert("decode_slots".into(), serde_json::json!(nslots));
         }
+        // hot-path policy knobs are read here, once, never per round
+        let _ = debug_timing();
+        tracing::info!(qos = ?decode_qos::mode(), "decode thread QoS (TH_DECODE_QOS)");
+        if loaded.backend.has_draft() {
+            tracing::info!(
+                verify = if verify_adaptive() { "adaptive (TH_VERIFY_ADAPTIVE)" } else { "all 7 proposals" },
+                "dflash verify length"
+            );
+        }
         let inner = ModelInner {
             backend: loaded.backend,
             tokenizer: loaded.tokenizer,
@@ -132,7 +141,11 @@ impl Engine {
             let (i2, s2) = (inner.clone(), state.clone());
             std::thread::Builder::new()
                 .name("th-batch".into())
-                .spawn(move || batch_loop(i2, s2, rx, nslots))?;
+                .spawn(move || {
+                    // Q1: dedicated scheduler thread — optional QoS raise
+                    let _qos = decode_qos::enter();
+                    batch_loop(i2, s2, rx, nslots)
+                })?;
             tracing::info!(slots = nslots, "batched decode enabled");
             Some(tx)
         } else {
@@ -190,6 +203,8 @@ impl Engine {
         // delta until generation completes and break SSE streaming
         tokio::task::spawn_blocking(move || {
             let started = Instant::now();
+            // Q1: optional decode-thread QoS (TH_DECODE_QOS, default off)
+            let _qos = decode_qos::enter();
             let rec = generate_blocking(&inner, &state, &id, messages, req, &tx, started);
             state
                 .counters
@@ -238,6 +253,143 @@ impl Engine {
 
     pub fn config(&self) -> EngineConfig {
         self.state.config.read().unwrap().clone()
+    }
+}
+
+/// `TH_DEBUG_TIMING` — per-round `[dflash]`/`[verify]`/`[batch]` timing
+/// lines. Read once (the decode loop checks it every round).
+fn debug_timing() -> bool {
+    static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *V.get_or_init(|| std::env::var("TH_DEBUG_TIMING").is_ok())
+}
+
+/// L1 — single-slot DFlash verify length policy, read once at startup.
+///
+/// Default: verify all `PROPOSALS` (anchor + 7 = 8 rows) every round,
+/// as Splash and the batched path do. Verify at m <= 8 is weight-
+/// bandwidth bound, so rows 3..8 cost well under a millisecond, while a
+/// shorter chain forfeits every accept past the cap plus the bonus row.
+/// `TH_VERIFY_ADAPTIVE=1` restores the legacy rule: accept EMA + 1
+/// headroom, clamped to 2..=7 (EMA of accepted proposals per round).
+fn verify_adaptive() -> bool {
+    static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *V.get_or_init(|| {
+        std::env::var("TH_VERIFY_ADAPTIVE").is_ok_and(|v| !v.is_empty() && v != "0")
+    })
+}
+
+/// Q1 — decode-thread QoS (macOS).
+///
+/// The decode loop is host-bound between GPU syncs: every round the
+/// thread encodes the draft and verify passes, blocks in
+/// `waitUntilCompleted`, and must wake and encode the next pass before
+/// the GPU has work again. At the default QoS the scheduler may park it
+/// on a slower core or behind other runnable threads at each wake-up.
+/// `TH_DECODE_QOS` (read once): `off` (default) = leave the thread's QoS
+/// unchanged, `interactive` = QOS_CLASS_USER_INTERACTIVE, `initiated` =
+/// QOS_CLASS_USER_INITIATED.
+///
+/// Default off: measured on the M5 Max (th/c-loop report) interactive
+/// QoS changed ms/round by -0.3 (load 3-6) and -0.5 (18 default-QoS
+/// spinners on 18 cores), both inside the arm-to-arm spread. The decode
+/// thread blocks in waitUntilCompleted every round, so the timeshare
+/// scheduler already treats it as interactive.
+mod decode_qos {
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum Mode {
+        Off,
+        Initiated,
+        Interactive,
+    }
+
+    pub fn parse(v: Option<&str>) -> Mode {
+        match v.map(|s| s.trim().to_ascii_lowercase()).as_deref() {
+            Some("interactive" | "user-interactive" | "1" | "on") => Mode::Interactive,
+            Some("initiated" | "user-initiated" | "ui") => Mode::Initiated,
+            _ => Mode::Off,
+        }
+    }
+
+    pub fn mode() -> Mode {
+        static M: std::sync::OnceLock<Mode> = std::sync::OnceLock::new();
+        *M.get_or_init(|| parse(std::env::var("TH_DECODE_QOS").ok().as_deref()))
+    }
+
+    /// Restores the thread's previous QoS on drop (the single-slot loop
+    /// runs on a reused tokio blocking-pool thread).
+    pub struct Guard {
+        #[cfg(target_os = "macos")]
+        prev: Option<(libc::qos_class_t, libc::c_int)>,
+    }
+
+    #[cfg(target_os = "macos")]
+    fn current() -> Option<(libc::qos_class_t, libc::c_int)> {
+        let mut cls = libc::qos_class_t::QOS_CLASS_UNSPECIFIED;
+        let mut rel: libc::c_int = 0;
+        // SAFETY: querying the calling thread; out-params are valid
+        let rc = unsafe { libc::pthread_get_qos_class_np(libc::pthread_self(), &mut cls, &mut rel) };
+        (rc == 0).then_some((cls, rel))
+    }
+
+    #[cfg(target_os = "macos")]
+    fn set(cls: libc::qos_class_t, rel: libc::c_int) -> bool {
+        // SAFETY: plain syscall on the calling thread
+        unsafe { libc::pthread_set_qos_class_self_np(cls, rel) == 0 }
+    }
+
+    /// Raise the calling thread to the configured decode QoS.
+    pub fn enter() -> Guard {
+        enter_with(mode())
+    }
+
+    /// `enter` for an explicit mode (tests).
+    pub fn enter_with(m: Mode) -> Guard {
+        #[cfg(target_os = "macos")]
+        {
+            let want = match m {
+                Mode::Off => return Guard { prev: None },
+                Mode::Initiated => libc::qos_class_t::QOS_CLASS_USER_INITIATED,
+                Mode::Interactive => libc::qos_class_t::QOS_CLASS_USER_INTERACTIVE,
+            };
+            let prev = current();
+            if !set(want, 0) {
+                return Guard { prev: None };
+            }
+            static ONCE: std::sync::Once = std::sync::Once::new();
+            ONCE.call_once(|| {
+                tracing::info!(from = ?prev.map(|p| p.0), to = ?current().map(|p| p.0), "decode thread QoS raised");
+            });
+            Guard { prev }
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = m;
+            Guard {}
+        }
+    }
+
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            #[cfg(target_os = "macos")]
+            if let Some((cls, rel)) = self.prev.take() {
+                // UNSPECIFIED can't be re-applied; DEFAULT is its effective class
+                let cls = match cls {
+                    libc::qos_class_t::QOS_CLASS_UNSPECIFIED => libc::qos_class_t::QOS_CLASS_DEFAULT,
+                    c => c,
+                };
+                let _ = set(cls, rel);
+            }
+        }
+    }
+}
+
+/// Proposals verified this round (rows = 1 + this). L1 default: all
+/// `PROPOSALS`; `adaptive` = the legacy accept-EMA cap, 2..=PROPOSALS.
+fn dflash_verify_len(adaptive: bool, accept_ema: f64) -> usize {
+    if adaptive {
+        ((accept_ema + 0.5) as usize + 1).clamp(2, crate::dflash::PROPOSALS)
+    } else {
+        crate::dflash::PROPOSALS
     }
 }
 
@@ -425,11 +577,10 @@ fn generate_blocking(
                         break;
                     }
                     let t0 = Instant::now();
-                    // Adaptive verify length: extra rows cost ~8ms each,
-                    // so cap the chain near the observed accept rate.
-                    // EMA of accepted proposals/round + 1 headroom.
-                    let verify_len = ((accept_ema + 0.5) as usize + 1)
-                        .clamp(2, crate::dflash::PROPOSALS);
+                    // L1: verify every proposal (8 rows) — see
+                    // `verify_adaptive`. The legacy rule caps the chain
+                    // at the accept EMA + 1 headroom (2..=7).
+                    let verify_len = dflash_verify_len(verify_adaptive(), accept_ema);
                     let prop = inner.backend.draft_propose(
                         0,
                         anchor,
@@ -461,7 +612,7 @@ fn generate_blocking(
                         rows = logits_m.to_vec2()?;
                     }
                     let t_verify = t0.elapsed();
-                    if std::env::var("TH_DEBUG_TIMING").is_ok() {
+                    if debug_timing() {
                         eprintln!(
                             "  [verify] enqueue={:.1}ms gpu+readback={:.1}ms",
                             t_fwd_enqueue.as_secs_f64() * 1e3,
@@ -562,13 +713,14 @@ fn generate_blocking(
                     let step_ms = t0.elapsed().as_secs_f64() * 1000.0;
                     decode_ms_total += step_ms;
                     state.counters.observe_decode(step_ms);
-                    if std::env::var("TH_DEBUG_TIMING").is_ok() {
+                    if debug_timing() {
                         eprintln!(
-                            "[dflash] anchor={anchor} prop={:?} emitted={emitted:?} acc={accepted} step={step_ms:.1}ms propose={:.0} verify={:.0} rest={:.0}",
+                            "[dflash] anchor={anchor} prop={:?} emitted={emitted:?} acc={accepted} step={step_ms:.1}ms propose={:.0} verify={:.0} rest={:.0} vlen={verify_len} prop_ms={:.2}",
                             prop.tokens,
                             t_prop.as_secs_f64() * 1e3,
                             (t_verify - t_prop).as_secs_f64() * 1e3,
-                            (t0.elapsed() - t_verify).as_secs_f64() * 1e3
+                            (t0.elapsed() - t_verify).as_secs_f64() * 1e3,
+                            t_prop.as_secs_f64() * 1e3,
                         );
                     }
                 }
@@ -674,7 +826,7 @@ fn generate_blocking(
             }
             decode_ms_total += step_ms;
             state.counters.observe_decode(step_ms);
-            if std::env::var("TH_DEBUG_TIMING").is_ok() {
+            if debug_timing() {
                 eprintln!(
                     "[spec] draft={} committed={} verify={:.1}ms refwd={:.1}ms",
                     draft.len(),
@@ -697,7 +849,7 @@ fn generate_blocking(
         step_ms += t.elapsed().as_secs_f64() * 1000.0;
         decode_ms_total += step_ms;
         state.counters.observe_decode(step_ms);
-        if std::env::var("TH_DEBUG_TIMING").is_ok() {
+        if debug_timing() {
             eprintln!(
                 "[tok] fwd={:.1}ms sample={:.1}ms",
                 fwd_ms,
@@ -1607,7 +1759,7 @@ fn batch_round(
     // at its return (the old `t_verify`) dropped the GPU verify time
     // from decode_ms_total / decode_tps / the latency histogram.
     let step_ms = t0.elapsed().as_secs_f64() * 1000.0;
-    if std::env::var("TH_DEBUG_TIMING").is_ok() {
+    if debug_timing() {
         eprintln!(
             "  [batch] nb={} propose={:.1}ms verify_enqueue={:.1}ms readback={:.1}ms accept={:.1}ms total={:.1}ms old_step={:.1}ms",
             active.len(),
@@ -2039,5 +2191,78 @@ mod utf8_stream {
             let solo = stream(&tok, &sl.ids, &[EOS], &stops, usize::MAX);
             assert_eq!(o.deltas, solo.deltas, "interleaving changed the stream");
         }
+    }
+}
+
+#[cfg(test)]
+mod dflash_policy {
+    use super::dflash_verify_len;
+    use crate::dflash::PROPOSALS;
+
+    /// L1: the default verifies every proposal regardless of the EMA;
+    /// the legacy adaptive rule is round(ema) + 1, clamped to 2..=7.
+    #[test]
+    fn verify_len_default_and_adaptive() {
+        for ema in [0.0, 0.4, 1.0, 2.49, 3.5, 6.9, 7.0] {
+            assert_eq!(dflash_verify_len(false, ema), PROPOSALS, "default @ ema={ema}");
+        }
+        let table = [
+            (0.0, 2), (0.49, 2), (0.5, 2), (1.49, 2), (1.5, 3), (2.5, 4),
+            (3.49, 4), (3.5, 5), (5.5, 7), (6.9, 7), (7.0, 7),
+        ];
+        for (ema, want) in table {
+            assert_eq!(dflash_verify_len(true, ema), want, "adaptive @ ema={ema}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod decode_qos_tests {
+    use super::decode_qos::{parse, Mode};
+
+    #[test]
+    fn parse_modes() {
+        for (v, want) in [
+            (None, Mode::Off),
+            (Some(""), Mode::Off),
+            (Some("off"), Mode::Off),
+            (Some("0"), Mode::Off),
+            (Some(" default "), Mode::Off),
+            (Some("interactive"), Mode::Interactive),
+            (Some("On"), Mode::Interactive),
+            (Some("initiated"), Mode::Initiated),
+            (Some("UI"), Mode::Initiated),
+        ] {
+            assert_eq!(parse(v), want, "TH_DECODE_QOS={v:?}");
+        }
+    }
+
+    /// enter() raises the calling thread and the guard restores it.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn enter_raises_and_restores() {
+        std::thread::spawn(|| {
+            let q = || {
+                let mut c = libc::qos_class_t::QOS_CLASS_UNSPECIFIED;
+                let mut r = 0;
+                assert_eq!(unsafe { libc::pthread_get_qos_class_np(libc::pthread_self(), &mut c, &mut r) }, 0);
+                c as u32
+            };
+            let before = q();
+            {
+                let _g = super::decode_qos::enter_with(Mode::Interactive);
+                assert_eq!(q(), libc::qos_class_t::QOS_CLASS_USER_INTERACTIVE as u32);
+            }
+            {
+                // Off leaves the thread alone
+                let _g = super::decode_qos::enter_with(Mode::Off);
+                assert_eq!(q(), before);
+            }
+            let after = q();
+            let norm = |c: u32| if c == 0 { libc::qos_class_t::QOS_CLASS_DEFAULT as u32 } else { c };
+            assert_eq!(norm(after), norm(before), "QoS not restored");
+        })
+        .join()
+        .unwrap();
     }
 }
