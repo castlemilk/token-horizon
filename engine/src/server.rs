@@ -350,8 +350,8 @@ async fn requests(State(app): State<Arc<App>>) -> Json<Value> {
 }
 
 async fn kv_clear(State(app): State<Arc<App>>) -> Json<Value> {
-    app.engine.kv_clear().await;
-    Json(json!({"ok": true}))
+    let r = app.engine.kv_clear().await;
+    Json(json!({"ok": true, "cleared": r["cleared"], "skipped_live": r["skipped_live"]}))
 }
 
 /// SSE broadcast of lifecycle events — request.start/done, config.updated,
