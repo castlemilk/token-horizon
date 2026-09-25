@@ -301,8 +301,12 @@ async fn main() -> Result<()> {
                     qwen35::bench_q4_decode(q, &loaded.device)?;
                 }
             }
-            if let Ok(m) = std::env::var("TH_BENCH_MULTI") {
-                let m: usize = m.parse().unwrap_or(5);
+            if let Ok(ms) = std::env::var("TH_BENCH_MULTI") {
+                // one m, or a comma list (K45: "8,5,1" in one process)
+                let ms: Vec<usize> = ms
+                    .split(',')
+                    .map(|v| v.trim().parse().unwrap_or(5))
+                    .collect();
                 let dev = loaded.device.clone();
                 // warm
                 let mut pos = ids.len();
@@ -318,18 +322,24 @@ async fn main() -> Result<()> {
                     eprintln!("fwd1  {:.1}ms", t.elapsed().as_secs_f64() * 1e3);
                     pos += 1;
                 }
-                for _ in 0..3 {
-                    let seq = vec![1u32; m];
-                    let t = std::time::Instant::now();
-                    let lg =
-                        loaded.backend.forward_multi(&seq, pos, &dev)?;
-                    let _ =
-                        lg.flatten_all()?.to_vec1::<half::bf16>()?;
-                    eprintln!(
-                        "fwd{m}  {:.1}ms",
-                        t.elapsed().as_secs_f64() * 1e3
-                    );
-                    pos += m;
+                let iters: usize = std::env::var("TH_BENCH_MULTI_ITERS")
+                    .ok()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(3);
+                for &m in &ms {
+                    for _ in 0..iters {
+                        let seq = vec![1u32; m];
+                        let t = std::time::Instant::now();
+                        let lg =
+                            loaded.backend.forward_multi(&seq, pos, &dev)?;
+                        let _ =
+                            lg.flatten_all()?.to_vec1::<half::bf16>()?;
+                        eprintln!(
+                            "fwd{m}  {:.1}ms",
+                            t.elapsed().as_secs_f64() * 1e3
+                        );
+                        pos += m;
+                    }
                 }
             }
             if let Some(path) = dump {

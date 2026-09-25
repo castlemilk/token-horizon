@@ -15,7 +15,10 @@
 //! scales, [ng,2ng) biases.
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
-pub use metal_impl::{AffineDequant, AffineQmm, AffineQmpp, AffineQmppPrefill, AffineQmv, AffineQsg, mpp_probe};
+pub use metal_impl::{
+    AffineDequant, AffineQmm, AffineQmpp, AffineQmppPrefill, AffineQmv, AffineQsg, AllocBf16,
+    Q4AttachSums, QMPP_BIND_ONLY, mpp_probe,
+};
 
 // MARK: - decode (m <= 8) tile policy
 
@@ -248,6 +251,51 @@ pub fn pad_skip_enabled() -> bool {
         q4_policy_mode() != Q4PolicyMode::Legacy
             && std::env::var("TH_Q4_PAD").as_deref() != Ok("1")
     })
+}
+
+/// K45 presum block size in bytes for an `in`-wide Q4 decode operand:
+/// the zero-padded [8, in] bf16 activation followed by the f32
+/// per-(quant group, row) input sums `[in / 64][8]` that the MPP decode
+/// tiles would otherwise recompute in every threadgroup
+/// (`q4_store_input_sums`). Producers that emit it: `AddRmsNorm { sums }`,
+/// the N256 gate_up tile (`AffineQmpp { emit_sums }` → the down
+/// projection) and `Q4AttachSums`.
+pub const fn presum_block_bytes(inp: usize) -> usize {
+    8 * inp * 2 + (inp / 64) * 8 * 4
+}
+
+/// K45: whether decode projections use presum blocks (producer-emitted
+/// input sums, no pad copy). Read once: `TH_Q4_PRESUM=0` or the legacy
+/// policy turns it off (A/B arm).
+pub fn presum_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| {
+        let on = q4_policy_mode() != Q4PolicyMode::Legacy
+            && std::env::var("TH_Q4_PRESUM").as_deref() != Ok("0");
+        tracing::info!(on, "q4 presum blocks");
+        on
+    })
+}
+
+/// K45: tile families whose presum inputs also take the PreSums kernel
+/// (input sums staged from the block, no in-kernel recompute). Every other
+/// family binds the block directly (no pad copy) but keeps recomputing
+/// the sums. Default: the split-K tiles (`split`: N=5120/in_qkv-class
+/// shapes, `split_long`: K > 8192) — the in-situ forward A/B (fwd8/fwd5)
+/// had the N256 (`n256`, `gu`) PreSums tiles slower than their
+/// recomputing twins. `TH_Q4_PS_FAMILIES=a,b|all|none` overrides (read
+/// once; families `n256,gu,split,split_long,paired`).
+pub fn ps_family_on(family: &str) -> bool {
+    static ON: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+    ON.get_or_init(|| {
+        let v = std::env::var("TH_Q4_PS_FAMILIES")
+            .unwrap_or_else(|_| "split,split_long".to_string());
+        let fams: Vec<String> = v.split(',').map(|s| s.trim().to_string()).collect();
+        tracing::info!(?fams, "q4 presum-kernel families");
+        fams
+    })
+    .iter()
+    .any(|f| f == family || f == "all")
 }
 
 /// `TH_QMM_SCALAR` set: `QLin` skips the MPP/sg kernels for the scalar
@@ -1142,15 +1190,31 @@ inline void q4_store_input_sums(device const bfloat *input, uint input_size,
 // Guarded=false is the verbatim Splash epilogue (every row of every tile
 // is stored) — only valid when out_dim % 256 == 0 and the output holds 8
 // rows; the per-element arithmetic is identical, so it is bit-identical.
-template <bool GateUp, ushort Simdgroups, bool Guarded = true>
+//
+// K45 presum block: PreSums=true reads the per-(quant group, row) input
+// sums precomputed by the producer (f32 [qg][8], stored right after the
+// zero-padded 8-row activation; the entry point stages them in
+// threadgroup memory once per dispatch -> `psums[qg * 8 + row]`) instead
+// of recomputing them per tile with `q4_store_input_sums` + a barrier
+// every 4 groups. The producer computes them with the identical lane pattern
+// (simd_sum(x[64g + l] + x[64g + 32 + l])), so results are bit-identical.
+// EmitSums=true (unguarded GateUp only) stages the tile's bf16 outputs in
+// threadgroup memory and writes the down projection's presum sums
+// (`osums`) the same way — the output becomes a presum block itself.
+template <bool GateUp, ushort Simdgroups, bool Guarded = true,
+          bool PreSums = false, bool EmitSums = false>
 inline void th_mpp_tile(device bfloat *input, device uchar *weights_0,
                         device bfloat *scales_0, device bfloat *biases_0,
                         device bfloat *output_0,
                         device uchar *weights_1, device bfloat *scales_1,
                         device bfloat *biases_1,
                         uint output_size, uint input_size, uint m,
-                        threadgroup float *input_sums, uint output_origin,
+                        threadgroup float *input_sums,
+                        const threadgroup float *psums, device float *osums,
+                        threadgroup bfloat *otile, uint output_origin,
                         uint simd_lane, uint simd_group) {
+  static_assert(!EmitSums || (GateUp && !Guarded),
+                "EmitSums needs the unguarded gate_up epilogue");
   constexpr ushort TileN = 256, StorageN = 256;
   auto a = tensor(input, dextents<int, 2>{int(input_size), 8},
                   array<int, 2>{1, int(input_size)});
@@ -1188,9 +1252,11 @@ inline void th_mpp_tile(device bfloat *input, device uchar *weights_0,
       accumulated_1[i] = 0.0f;
   });
 
-  q4_store_input_sums<8, Simdgroups>(input, input_size, 0, input_sums, 0,
-                                     simd_lane, simd_group);
-  threadgroup_barrier(mem_flags::mem_threadgroup);
+  if constexpr (!PreSums) {
+    q4_store_input_sums<8, Simdgroups>(input, input_size, 0, input_sums, 0,
+                                       simd_lane, simd_group);
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+  }
   auto run_group = [&](uint quant_group,
                        thread decltype(accumulated_0) &partial_0,
                        thread decltype(accumulated_1) &partial_1) {
@@ -1219,23 +1285,32 @@ inline void th_mpp_tile(device bfloat *input, device uchar *weights_0,
       uint row = index[1];
       ulong parameter = (ulong(tile) * quant_groups + quant_group) * StorageN +
                         tile_offset + index[0];
-      uint sum_offset = ((quant_group >> 2) & 1) * 32 + (quant_group & 3) * 8;
+      float sum;
+      if constexpr (PreSums) {
+        sum = psums[quant_group * 8 + row];
+      } else {
+        uint sum_offset =
+            ((quant_group >> 2) & 1) * 32 + (quant_group & 3) * 8;
+        sum = input_sums[sum_offset + row];
+      }
       accumulated_0[i] +=
           partial_0[i] * float(scales_0[parameter]) +
-          input_sums[sum_offset + row] * float(biases_0[parameter]);
+          sum * float(biases_0[parameter]);
       if constexpr (GateUp) {
         accumulated_1[i] +=
             partial_1[i] * float(scales_1[parameter]) +
-            input_sums[sum_offset + row] * float(biases_1[parameter]);
+            sum * float(biases_1[parameter]);
       }
     });
-    if ((quant_group & 3) == 3 && quant_group + 1 < quant_groups) {
-      uint next_group = (quant_group + 1) >> 2;
-      q4_store_input_sums<8, Simdgroups>(input, input_size,
-                                         quant_group * 64 + 64, input_sums,
-                                         (next_group & 1) * 32, simd_lane,
-                                         simd_group);
-      threadgroup_barrier(mem_flags::mem_threadgroup);
+    if constexpr (!PreSums) {
+      if ((quant_group & 3) == 3 && quant_group + 1 < quant_groups) {
+        uint next_group = (quant_group + 1) >> 2;
+        q4_store_input_sums<8, Simdgroups>(input, input_size,
+                                           quant_group * 64 + 64, input_sums,
+                                           (next_group & 1) * 32, simd_lane,
+                                           simd_group);
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+      }
     }
   };
   // Pipelined: two quant groups' matmuls in flight.
@@ -1271,8 +1346,25 @@ inline void th_mpp_tile(device bfloat *input, device uchar *weights_0,
       value = float(bfloat(accumulated_0[i]));
     }
     output_0[output_index] = bfloat(value);
+    if constexpr (EmitSums)
+      otile[index[1] * 256 + index[0]] = bfloat(value);
   });
-  threadgroup_barrier(mem_flags::mem_threadgroup);
+  if constexpr (EmitSums) {
+    // the down projection's presum sums for this tile's 4 quant groups,
+    // in q4_store_input_sums' lane pattern (bit-identical to recomputing)
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    for (uint row = simd_group; row < 8; row += Simdgroups) {
+#pragma unroll
+      for (uint g = 0; g < 4; ++g) {
+        uint o = row * 256 + g * 64 + simd_lane;
+        float s = simd_sum(float(otile[o]) + float(otile[o + 32]));
+        if (simd_lane == 0)
+          osums[(output_origin / 64 + g) * 8 + row] = s;
+      }
+    }
+  }
+  if constexpr (!PreSums || EmitSums)
+    threadgroup_barrier(mem_flags::mem_threadgroup);
 }
 
 // Pad x [m][in] to the [m_pad][in] activation block the tiles read.
@@ -1452,14 +1544,16 @@ TH_PREFILL_ENTRY(affine_q4_mpp_prefill_up, true)
 // leaves fp32 partials in threadgroup memory; the caller reduces + applies
 // the epilogue. Fills the GPU on projections whose tile count is below the
 // core count. Requires in % (256*SplitK) == 0.
-template <ushort TileN, bool GateUp, ushort Simdgroups, ushort SplitK>
+template <ushort TileN, bool GateUp, ushort Simdgroups, ushort SplitK,
+          bool PreSums = false>
 inline void th_mpp_tile_split(
     device bfloat *input, device uchar *weights_0,
     device bfloat *scales_0, device bfloat *biases_0,
     threadgroup float *partials,
     device uchar *weights_1, device bfloat *scales_1,
     device bfloat *biases_1, uint input_size,
-    threadgroup float *input_sums, uint output_origin,
+    threadgroup float *input_sums, const threadgroup float *psums,
+    uint output_origin,
     uint simd_lane, uint simd_group, uint partition) {
   constexpr ushort StorageN = 256;
   auto a = tensor(input, dextents<int, 2>{int(input_size), 8},
@@ -1502,9 +1596,11 @@ inline void th_mpp_tile_split(
       accumulated_1[i] = 0.0f;
   });
 
-  q4_store_input_sums<8, Simdgroups>(input, input_size, first_group * 64,
-                                     input_sums, 0, simd_lane, simd_group);
-  threadgroup_barrier(mem_flags::mem_threadgroup);
+  if constexpr (!PreSums) {
+    q4_store_input_sums<8, Simdgroups>(input, input_size, first_group * 64,
+                                       input_sums, 0, simd_lane, simd_group);
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+  }
   auto run_group = [&](uint quant_group,
                        thread decltype(accumulated_0) &partial_0,
                        thread decltype(accumulated_1) &partial_1) {
@@ -1534,22 +1630,31 @@ inline void th_mpp_tile_split(
       ulong parameter =
           (ulong(tile) * total_quant_groups + first_group + quant_group) *
               StorageN + tile_offset + index[0];
-      uint sum_offset = ((quant_group >> 2) & 1) * 32 + (quant_group & 3) * 8;
+      float sum;
+      if constexpr (PreSums) {
+        sum = psums[(first_group + quant_group) * 8 + row];
+      } else {
+        uint sum_offset =
+            ((quant_group >> 2) & 1) * 32 + (quant_group & 3) * 8;
+        sum = input_sums[sum_offset + row];
+      }
       accumulated_0[i] +=
           partial_0[i] * float(scales_0[parameter]) +
-          input_sums[sum_offset + row] * float(biases_0[parameter]);
+          sum * float(biases_0[parameter]);
       if constexpr (GateUp) {
         accumulated_1[i] +=
             partial_1[i] * float(scales_1[parameter]) +
-            input_sums[sum_offset + row] * float(biases_1[parameter]);
+            sum * float(biases_1[parameter]);
       }
     });
-    if ((quant_group & 3) == 3 && quant_group + 1 < quant_groups) {
-      uint next_group = (quant_group + 1) >> 2;
-      q4_store_input_sums<8, Simdgroups>(
-          input, input_size, (first_group + quant_group) * 64 + 64,
-          input_sums, (next_group & 1) * 32, simd_lane, simd_group);
-      threadgroup_barrier(mem_flags::mem_threadgroup);
+    if constexpr (!PreSums) {
+      if ((quant_group & 3) == 3 && quant_group + 1 < quant_groups) {
+        uint next_group = (quant_group + 1) >> 2;
+        q4_store_input_sums<8, Simdgroups>(
+            input, input_size, (first_group + quant_group) * 64 + 64,
+            input_sums, (next_group & 1) * 32, simd_lane, simd_group);
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+      }
     }
   };
   uint quant_group = 0;
@@ -1578,21 +1683,30 @@ inline void th_mpp_tile_split(
   threadgroup_barrier(mem_flags::mem_threadgroup);
 }
 
-#define TH_SPLIT_ENTRY(Name, TileN, Sgs, GateUp)                              \
+#define TH_SPLIT_ENTRY(Name, TileN, Sgs, GateUp, PreSums)                     \
 kernel void Name(                                                             \
     device const bfloat* input  [[buffer(0)]],                                \
     device const uchar*  weights [[buffer(1)]],                               \
     device const bfloat* sb      [[buffer(2)]],                               \
     device bfloat*       output  [[buffer(3)]],                               \
     constant MppParams&  p       [[buffer(4)]],                               \
+    threadgroup float* staged    [[threadgroup(0)]],                          \
     uint group      [[threadgroup_position_in_grid]],                         \
     uint lane       [[thread_index_in_simdgroup]],                            \
     uint simd       [[simdgroup_index_in_threadgroup]]) {                     \
   constexpr uint Parts = 4;                                                   \
-  threadgroup float sums[4 * 64],                                             \
+  threadgroup float sums[PreSums ? 1 : 4 * 64],                               \
       partials[(GateUp ? 2 : 1) * Parts * 8 * TileN];                         \
   const uint partition = simd / Sgs;                                          \
   device bfloat* inp = const_cast<device bfloat*>(input);                     \
+  if (PreSums) {                                                              \
+    device const float* ps =                                                  \
+        (device const float*)(input + 8 * uint(p.in_dim));                   \
+    const uint n = 8u * (uint(p.in_dim) / 64u);                               \
+    for (uint i = simd * 32 + lane; i < n; i += Parts * Sgs * 32)             \
+      staged[i] = ps[i];                                                      \
+    threadgroup_barrier(mem_flags::mem_threadgroup);                          \
+  }                                                                           \
   device const bfloat* biases = sb + p.bias_base;                             \
   device uchar* w1 = const_cast<device uchar*>(weights) + p.up_woff;          \
   device bfloat* s1 = const_cast<device bfloat*>(sb) + p.up_soff;             \
@@ -1600,12 +1714,13 @@ kernel void Name(                                                             \
                       + p.up_soff;                                            \
   const uint tiles = (uint(p.out_dim) + TileN - 1) / TileN;                   \
   for (uint tile = group; tile < tiles; tile += uint(p.groups)) {             \
-    th_mpp_tile_split<TileN, GateUp, Sgs, Parts>(                             \
+    th_mpp_tile_split<TileN, GateUp, Sgs, Parts, PreSums>(                    \
         inp, const_cast<device uchar*>(weights),                              \
         const_cast<device bfloat*>(sb),                                       \
         const_cast<device bfloat*>(biases), partials, w1, s1, b1,             \
-        p.in_dim, sums + partition * 64, tile * TileN, lane,                  \
-        simd % Sgs, partition);                                               \
+        p.in_dim, PreSums ? sums : sums + partition * 64, staged,             \
+        tile * TileN,                                                         \
+        lane, simd % Sgs, partition);                                         \
     for (uint i = simd * 32 + lane; i < 8 * TileN;                            \
          i += Parts * Sgs * 32) {                                             \
       const uint col = tile * TileN + i % TileN;                              \
@@ -1627,40 +1742,64 @@ kernel void Name(                                                             \
   }                                                                           \
 }
 
-TH_SPLIT_ENTRY(affine_q4_mpp_n32s4, 32, 1, false)
-TH_SPLIT_ENTRY(affine_q4_mpp_n64s4, 64, 2, false)
-TH_SPLIT_ENTRY(affine_q4_mpp_n32s4_gate_up, 32, 1, true)
+TH_SPLIT_ENTRY(affine_q4_mpp_n32s4, 32, 1, false, false)
+TH_SPLIT_ENTRY(affine_q4_mpp_n64s4, 64, 2, false, false)
+TH_SPLIT_ENTRY(affine_q4_mpp_n32s4_gate_up, 32, 1, true, false)
+TH_SPLIT_ENTRY(affine_q4_mpp_n32s4_ps, 32, 1, false, true)
+TH_SPLIT_ENTRY(affine_q4_mpp_n64s4_ps, 64, 2, false, true)
 
-#define TH_MPP_ENTRY(Name, GateUp, Sgs)                                       \
+// Input presum block (PreSums): psums follow the 8-row activation block;
+// output presum block (EmitSums): osums follow the 8-row output block.
+#define TH_MPP_ENTRY(Name, GateUp, Sgs, Guarded, PreSums, EmitSums)           \
 kernel void Name(                                                             \
     device const bfloat* input  [[buffer(0)]],                                \
     device const uchar*  weights [[buffer(1)]],                               \
     device const bfloat* sb      [[buffer(2)]],                               \
     device bfloat*       output  [[buffer(3)]],                               \
     constant MppParams&  p       [[buffer(4)]],                               \
+    threadgroup float* staged    [[threadgroup(0)]],                          \
     uint group      [[threadgroup_position_in_grid]],                         \
     uint simd_lane  [[thread_index_in_simdgroup]],                            \
     uint simd_group [[simdgroup_index_in_threadgroup]]) {                     \
-  threadgroup float input_sums[64];                                           \
+  threadgroup float input_sums[PreSums ? 1 : 64];                             \
+  threadgroup bfloat otile[EmitSums ? 8 * 256 : 1];                           \
   const uint tiles = (uint(p.out_dim) + 255u) >> 8;                           \
   device bfloat* inp = const_cast<device bfloat*>(input);                     \
+  if (PreSums) {                                                              \
+    device const float* ps =                                                  \
+        (device const float*)(input + 8 * uint(p.in_dim));                   \
+    const uint n = 8u * (uint(p.in_dim) / 64u);                               \
+    for (uint i = simd_group * 32 + simd_lane; i < n; i += Sgs * 32)          \
+      staged[i] = ps[i];                                                      \
+    threadgroup_barrier(mem_flags::mem_threadgroup);                          \
+  }                                                                           \
+  device float* os = (device float*)(output + 8 * uint(p.out_dim));          \
   device uchar* w1 = const_cast<device uchar*>(weights) + p.up_woff;          \
   device const bfloat* biases = sb + p.bias_base;                             \
   device bfloat* s1 = const_cast<device bfloat*>(sb) + p.up_soff;             \
   device bfloat* b1 = const_cast<device bfloat*>(sb) + p.bias_base            \
                       + p.up_soff;                                            \
   for (uint tile = group; tile < tiles; tile += uint(p.groups)) {             \
-    th_mpp_tile<GateUp, Sgs>(inp, const_cast<device uchar*>(weights),         \
+    th_mpp_tile<GateUp, Sgs, Guarded, PreSums, EmitSums>(inp,                 \
+        const_cast<device uchar*>(weights),                                   \
         const_cast<device bfloat*>(sb), const_cast<device bfloat*>(biases),   \
-        output, w1, s1, b1, p.out_dim, p.in_dim, p.m, input_sums,             \
-        tile * 256, simd_lane, simd_group);                                   \
+        output, w1, s1, b1, p.out_dim, p.in_dim, p.m, input_sums, staged, os, \
+        otile, tile * 256, simd_lane, simd_group);                            \
   }                                                                           \
 }
 
-TH_MPP_ENTRY(affine_q4_mpp,      false, 8)
-TH_MPP_ENTRY(affine_q4_mpp_sg4,  false, 4)
-TH_MPP_ENTRY(affine_q4_mpp_gate_up,     true, 8)
-TH_MPP_ENTRY(affine_q4_mpp_gate_up_sg4, true, 4)
+TH_MPP_ENTRY(affine_q4_mpp, false, 8, true, false, false)
+TH_MPP_ENTRY(affine_q4_mpp_sg4, false, 4, true, false, false)
+TH_MPP_ENTRY(affine_q4_mpp_gate_up, true, 8, true, false, false)
+TH_MPP_ENTRY(affine_q4_mpp_gate_up_sg4, true, 4, true, false, false)
+// K45 presum variants
+TH_MPP_ENTRY(affine_q4_mpp_ps, false, 8, true, true, false)
+TH_MPP_ENTRY(affine_q4_mpp_sg4_ps, false, 4, true, true, false)
+TH_MPP_ENTRY(affine_q4_mpp_gate_up_ps, true, 8, true, true, false)
+TH_MPP_ENTRY(affine_q4_mpp_gate_up_es, true, 8, false, false, true)
+TH_MPP_ENTRY(affine_q4_mpp_gate_up_ps_es, true, 8, false, true, true)
+TH_MPP_ENTRY(affine_q4_mpp_gate_up_sg4_ps, true, 4, true, true, false)
+TH_MPP_ENTRY(affine_q4_mpp_gate_up_sg4_ps_es, true, 4, false, true, true)
 
 // Splash decode_linear_q4_n256_paired_sg4 (decode/linear_q4.metal:87):
 // q4_mpp_tile<256, false, false, 256, Pipelined=true, 4> with the
@@ -1668,25 +1807,65 @@ TH_MPP_ENTRY(affine_q4_mpp_gate_up_sg4, true, 4)
 // threads — four resident groups per core reach the occupancy knee on
 // very wide one-lane projections (lm_head) with half the input re-reads
 // of N128. Host side requires out_dim % 256 == 0 (see AffineQmpp).
-kernel void affine_q4_mpp_paired_sg4(
-    device const bfloat* input  [[buffer(0)]],
-    device const uchar*  weights [[buffer(1)]],
-    device const bfloat* sb      [[buffer(2)]],
-    device bfloat*       output  [[buffer(3)]],
-    constant MppParams&  p       [[buffer(4)]],
-    uint group      [[threadgroup_position_in_grid]],
-    uint simd_lane  [[thread_index_in_simdgroup]],
-    uint simd_group [[simdgroup_index_in_threadgroup]]) {
-  threadgroup float input_sums[64];
-  const uint tiles = uint(p.out_dim) / 256u;
-  device bfloat* inp = const_cast<device bfloat*>(input);
-  device uchar* w = const_cast<device uchar*>(weights);
-  device bfloat* scales = const_cast<device bfloat*>(sb);
-  device bfloat* biases = const_cast<device bfloat*>(sb) + p.bias_base;
-  for (uint tile = group; tile < tiles; tile += uint(p.groups)) {
-    th_mpp_tile<false, 4, false>(inp, w, scales, biases, output, w, scales,
-        biases, p.out_dim, p.in_dim, p.m, input_sums, tile * 256, simd_lane,
-        simd_group);
+#define TH_PAIRED_ENTRY(Name, PreSums)                                        \
+kernel void Name(                                                             \
+    device const bfloat* input  [[buffer(0)]],                                \
+    device const uchar*  weights [[buffer(1)]],                               \
+    device const bfloat* sb      [[buffer(2)]],                               \
+    device bfloat*       output  [[buffer(3)]],                               \
+    constant MppParams&  p       [[buffer(4)]],                               \
+    threadgroup float* staged    [[threadgroup(0)]],                          \
+    uint group      [[threadgroup_position_in_grid]],                         \
+    uint simd_lane  [[thread_index_in_simdgroup]],                            \
+    uint simd_group [[simdgroup_index_in_threadgroup]]) {                     \
+  threadgroup float input_sums[PreSums ? 1 : 64];                             \
+  const uint tiles = uint(p.out_dim) / 256u;                                  \
+  device bfloat* inp = const_cast<device bfloat*>(input);                     \
+  if (PreSums) {                                                              \
+    device const float* ps =                                                  \
+        (device const float*)(input + 8 * uint(p.in_dim));                   \
+    const uint n = 8u * (uint(p.in_dim) / 64u);                               \
+    for (uint i = simd_group * 32 + simd_lane; i < n; i += 4 * 32)            \
+      staged[i] = ps[i];                                                      \
+    threadgroup_barrier(mem_flags::mem_threadgroup);                          \
+  }                                                                           \
+  device uchar* w = const_cast<device uchar*>(weights);                       \
+  device bfloat* scales = const_cast<device bfloat*>(sb);                     \
+  device bfloat* biases = const_cast<device bfloat*>(sb) + p.bias_base;       \
+  for (uint tile = group; tile < tiles; tile += uint(p.groups)) {             \
+    th_mpp_tile<false, 4, false, PreSums, false>(inp, w, scales, biases,      \
+        output, w, scales, biases, p.out_dim, p.in_dim, p.m, input_sums,      \
+        staged,                                                               \
+        nullptr, nullptr, tile * 256, simd_lane, simd_group);                 \
+  }                                                                           \
+}
+
+TH_PAIRED_ENTRY(affine_q4_mpp_paired_sg4, false)
+TH_PAIRED_ENTRY(affine_q4_mpp_paired_sg4_ps, true)
+
+// K45: attach a presum block to an activation that did not come from a
+// sums-emitting producer — x [m][in] -> [8][in] (rows >= m zero) followed
+// by f32 sums[in/64][8] in q4_store_input_sums' lane pattern. Replaces the
+// pad copy (same one dispatch). Threadgroup t covers quant groups
+// 4t..4t+3 for all 8 rows (simdgroup r = row r).
+kernel void affine_q4_attach_sums(device const bfloat* x [[buffer(0)]],
+                                  device bfloat* out     [[buffer(1)]],
+                                  constant int2& dims    [[buffer(2)]],
+                                  uint tg   [[threadgroup_position_in_grid]],
+                                  uint lane [[thread_index_in_simdgroup]],
+                                  uint row  [[simdgroup_index_in_threadgroup]]) {
+  const uint m = uint(dims.x), in_dim = uint(dims.y), ng = in_dim / 64;
+  device bfloat* o = out + row * in_dim;
+  device float* sums = (device float*)(out + 8 * in_dim);
+  device const bfloat* xr = x + row * in_dim;
+  for (uint g = tg * 4; g < min(ng, tg * 4 + 4); ++g) {
+    const uint c = g * 64 + lane;
+    const bfloat a = row < m ? xr[c] : bfloat(0.0f);
+    const bfloat b = row < m ? xr[c + 32] : bfloat(0.0f);
+    o[c] = a;
+    o[c + 32] = b;
+    const float s = simd_sum(float(a) + float(b));
+    if (lane == 0) sums[g * 8 + row] = s;
   }
 }
 "#;
@@ -1732,10 +1911,21 @@ kernel void mpp_probe(device float* y [[buffer(0)]],
                     match raw.new_library_with_source(MPP_SRC, Some(&opts)) {
                         Ok(lib) => {
                             eprintln!("mpp probe: MPP_SRC compiled in {:.1?}", t.elapsed());
-                            for f in ["affine_q4_mpp", "affine_q4_mpp_sg4",
-                                      "affine_q4_mpp_gate_up", "affine_q4_mpp_pad"] {
+                            let mut names: Vec<&str> =
+                                ALL_MPP_KERNELS.iter().map(|k| k.name()).collect();
+                            names.extend([
+                                "affine_q4_mpp_pf_sums",
+                                "affine_q4_mpp_prefill",
+                                "affine_q4_mpp_prefill_up",
+                            ]);
+                            for f in names {
                                 match lib.get_function(f, None) {
-                                    Ok(_) => eprintln!("  fn {f} ok"),
+                                    Ok(func) => match raw
+                                        .new_compute_pipeline_state_with_function(&func)
+                                    {
+                                        Ok(_) => eprintln!("  fn {f} ok (pipeline)"),
+                                        Err(e) => eprintln!("  fn {f} PIPELINE ERR {e}"),
+                                    },
                                     Err(e) => eprintln!("  fn {f} ERR {e}"),
                                 }
                             }
@@ -1938,6 +2128,247 @@ kernel void mpp_probe(device float* y [[buffer(0)]],
         pub sgs: usize,
         /// tile width: 256 = persistent N256 tile, 32/64 = split4 form
         pub tile: usize,
+        /// K45: `x` is a presum block (see [`super::presum_block_bytes`]):
+        /// its buffer holds the zero-padded [8, in] activation at x's
+        /// offset followed by the f32 input sums, so the op binds it
+        /// directly (no pad copy at any m) and the kernel reads the sums
+        /// instead of recomputing them per threadgroup.
+        pub presum: bool,
+        /// K45 (N256 gate_up only): write the output as a presum block —
+        /// all 8 rows stored, then the down projection's input sums.
+        pub emit_sums: bool,
+        /// Persistent-group count override (0 = the tile policy) — used
+        /// by the `TH_BENCH_Q4` autotune sweep.
+        pub groups: usize,
+        /// Bench variant bits (`QMPP_*`): `QMPP_BIND_ONLY` = a presum input
+        /// is bound directly but the sums are recomputed in-kernel.
+        pub flags: u32,
+    }
+
+    /// presum input bound directly, sums still recomputed in-kernel
+    pub const QMPP_BIND_ONLY: u32 = 4;
+
+    /// Every MPP decode entry point, indexing `MPP_PIPES` (one compiled
+    /// pipeline each, built on first use from the once-compiled library).
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub(crate) enum MppKernel {
+        Pad,
+        N256,
+        N256Sg4,
+        GateUp,
+        GateUpSg4,
+        N32s4,
+        N64s4,
+        N32s4GateUp,
+        Paired256,
+        N256Ps,
+        N256Sg4Ps,
+        GateUpPs,
+        GateUpEs,
+        GateUpPsEs,
+        GateUpSg4Ps,
+        GateUpSg4PsEs,
+        N32s4Ps,
+        N64s4Ps,
+        Paired256Ps,
+        AttachSums,
+    }
+
+    const MPP_KERNELS: usize = 20;
+    const ALL_MPP_KERNELS: [MppKernel; MPP_KERNELS] = [
+        MppKernel::Pad,
+        MppKernel::N256,
+        MppKernel::N256Sg4,
+        MppKernel::GateUp,
+        MppKernel::GateUpSg4,
+        MppKernel::N32s4,
+        MppKernel::N64s4,
+        MppKernel::N32s4GateUp,
+        MppKernel::Paired256,
+        MppKernel::N256Ps,
+        MppKernel::N256Sg4Ps,
+        MppKernel::GateUpPs,
+        MppKernel::GateUpEs,
+        MppKernel::GateUpPsEs,
+        MppKernel::GateUpSg4Ps,
+        MppKernel::GateUpSg4PsEs,
+        MppKernel::N32s4Ps,
+        MppKernel::N64s4Ps,
+        MppKernel::Paired256Ps,
+        MppKernel::AttachSums,
+    ];
+
+    impl MppKernel {
+        /// A PreSums entry point: stages the presum block's input sums in
+        /// threadgroup memory instead of recomputing them.
+        fn pre_sums(self) -> bool {
+            use MppKernel as K;
+            matches!(
+                self,
+                K::N256Ps
+                    | K::N256Sg4Ps
+                    | K::GateUpPs
+                    | K::GateUpPsEs
+                    | K::GateUpSg4Ps
+                    | K::GateUpSg4PsEs
+                    | K::N32s4Ps
+                    | K::N64s4Ps
+                    | K::Paired256Ps
+            )
+        }
+
+        fn name(self) -> &'static str {
+            match self {
+                MppKernel::Pad => "affine_q4_mpp_pad",
+                MppKernel::N256 => "affine_q4_mpp",
+                MppKernel::N256Sg4 => "affine_q4_mpp_sg4",
+                MppKernel::GateUp => "affine_q4_mpp_gate_up",
+                MppKernel::GateUpSg4 => "affine_q4_mpp_gate_up_sg4",
+                MppKernel::N32s4 => "affine_q4_mpp_n32s4",
+                MppKernel::N64s4 => "affine_q4_mpp_n64s4",
+                MppKernel::N32s4GateUp => "affine_q4_mpp_n32s4_gate_up",
+                MppKernel::Paired256 => "affine_q4_mpp_paired_sg4",
+                MppKernel::N256Ps => "affine_q4_mpp_ps",
+                MppKernel::N256Sg4Ps => "affine_q4_mpp_sg4_ps",
+                MppKernel::GateUpPs => "affine_q4_mpp_gate_up_ps",
+                MppKernel::GateUpEs => "affine_q4_mpp_gate_up_es",
+                MppKernel::GateUpPsEs => "affine_q4_mpp_gate_up_ps_es",
+                MppKernel::GateUpSg4Ps => "affine_q4_mpp_gate_up_sg4_ps",
+                MppKernel::GateUpSg4PsEs => "affine_q4_mpp_gate_up_sg4_ps_es",
+                MppKernel::N32s4Ps => "affine_q4_mpp_n32s4_ps",
+                MppKernel::N64s4Ps => "affine_q4_mpp_n64s4_ps",
+                MppKernel::Paired256Ps => "affine_q4_mpp_paired_sg4_ps",
+                MppKernel::AttachSums => "affine_q4_attach_sums",
+            }
+        }
+    }
+
+    static MPP_LIB: OnceLock<candle_metal_kernels::metal::Library> = OnceLock::new();
+    static MPP_PIPES: [OnceLock<ComputePipeline>; MPP_KERNELS] =
+        [const { OnceLock::new() }; MPP_KERNELS];
+
+    /// MPP_SRC compiled once per process (Metal 4); every entry point
+    /// comes out of this one library.
+    fn mpp_library(
+        device: &candle_core::MetalDevice,
+    ) -> Result<&'static candle_metal_kernels::metal::Library> {
+        if let Some(lib) = MPP_LIB.get() {
+            return Ok(lib);
+        }
+        let opts = objc2_metal::MTLCompileOptions::new();
+        opts.setLanguageVersion(objc2_metal::MTLLanguageVersion::Version4_0);
+        let lib = device
+            .metal_device()
+            .new_library_with_source(MPP_SRC, Some(&opts))
+            .map_err(candle_core::Error::wrap)?;
+        let _ = MPP_LIB.set(lib);
+        Ok(MPP_LIB.get().unwrap())
+    }
+
+    fn mpp_pipe(
+        k: MppKernel,
+        device: &candle_core::MetalDevice,
+    ) -> Result<&'static ComputePipeline> {
+        let cell = &MPP_PIPES[k as usize];
+        if let Some(p) = cell.get() {
+            return Ok(p);
+        }
+        let f = mpp_library(device)?
+            .get_function(k.name(), None)
+            .map_err(candle_core::Error::wrap)?;
+        let p = device
+            .metal_device()
+            .new_compute_pipeline_state_with_function(&f)
+            .map_err(candle_core::Error::wrap)?;
+        let _ = cell.set(p);
+        Ok(cell.get().unwrap())
+    }
+
+    /// K45: copy `x` [m <= 8, in] into a fresh presum block (8 zero-padded
+    /// rows + input sums) — for activations whose producer does not emit
+    /// one. Returns the [8, in] view of the block (narrow to m rows and
+    /// pass `presum: true`). One dispatch; the sums are bit-identical to
+    /// what the decode tiles would recompute.
+    pub struct Q4AttachSums {
+        pub m: usize,
+        pub inp: usize,
+    }
+
+    impl candle_core::CustomOp1 for Q4AttachSums {
+        fn name(&self) -> &'static str {
+            "q4-attach-sums"
+        }
+        fn cpu_fwd(&self, _: &CpuStorage, _: &Layout) -> Result<(CpuStorage, Shape)> {
+            candle_core::bail!("q4-attach-sums: Metal only")
+        }
+        fn metal_fwd(&self, s_x: &MetalStorage, l_x: &Layout) -> Result<(MetalStorage, Shape)> {
+            check3(s_x, l_x, DType::BF16, "x")?;
+            if self.m == 0 || self.m > 8 || self.inp % 64 != 0 {
+                candle_core::bail!("q4-attach-sums: m {} in {}", self.m, self.inp);
+            }
+            if l_x.shape().elem_count() != self.m * self.inp {
+                candle_core::bail!("q4-attach-sums: x {:?} != [{}, {}]", l_x.shape(), self.m, self.inp);
+            }
+            let device = s_x.device();
+            let pipe = mpp_pipe(MppKernel::AttachSums, device)?;
+            let elems = super::presum_block_bytes(self.inp) / 2;
+            let buf = device
+                .new_buffer_builder()
+                .with_size_for(elems, DType::BF16)
+                .with_label("q4.presum")
+                .build()
+                .map_err(candle_core::Error::wrap)?;
+            let encoder = device.command_encoder().map_err(candle_core::Error::wrap)?;
+            encoder.set_label("q4_attach_sums");
+            let enc_ref = &encoder;
+            let enc: &candle_metal_kernels::metal::ComputeCommandEncoder =
+                enc_ref.encoder().as_ref();
+            enc.set_compute_pipeline_state(pipe);
+            enc.set_input_buffer(0, Some(s_x.buffer()), l_x.start_offset() * 2);
+            enc.set_output_buffer(1, Some(&buf), 0);
+            let dims: [i32; 2] = [self.m as i32, self.inp as i32];
+            enc.set_bytes(2, &dims);
+            enc.dispatch_thread_groups(
+                MTLSize { width: (self.inp / 64).div_ceil(4), height: 1, depth: 1 },
+                MTLSize { width: 256, height: 1, depth: 1 },
+            );
+            let out = MetalStorage::new(buf, device.clone(), 8 * self.inp, DType::BF16);
+            Ok((out, (8, self.inp).into()))
+        }
+    }
+
+    /// An uninitialized pooled bf16 buffer of `elems` elements viewed as
+    /// [rows, cols] (rows * cols <= elems) — no dispatch, no zero-fill
+    /// blit. For outputs a kernel fully overwrites (and K45 presum blocks,
+    /// `elems = presum_block_bytes(cols) / 2`). The input tensor only
+    /// names the device.
+    pub struct AllocBf16 {
+        pub elems: usize,
+        pub rows: usize,
+        pub cols: usize,
+    }
+
+    impl candle_core::CustomOp1 for AllocBf16 {
+        fn name(&self) -> &'static str {
+            "alloc-bf16"
+        }
+        fn cpu_fwd(&self, _: &CpuStorage, _: &Layout) -> Result<(CpuStorage, Shape)> {
+            candle_core::bail!("alloc-bf16: Metal only")
+        }
+        fn metal_fwd(&self, s: &MetalStorage, _: &Layout) -> Result<(MetalStorage, Shape)> {
+            if self.rows * self.cols > self.elems {
+                candle_core::bail!("alloc-bf16: [{}, {}] > {}", self.rows, self.cols, self.elems);
+            }
+            let device = s.device();
+            let buf = device
+                .new_buffer_builder()
+                .with_size_for(self.elems, DType::BF16)
+                .with_label("alloc.bf16")
+                .build()
+                .map_err(candle_core::Error::wrap)?;
+            let out = MetalStorage::new(buf, device.clone(), self.rows * self.cols, DType::BF16);
+            Ok((out, (self.rows, self.cols).into()))
+        }
     }
 
     #[repr(C)]
@@ -1952,14 +2383,6 @@ kernel void mpp_probe(device float* y [[buffer(0)]],
     }
 
     static MPP_PAD_PIPE: OnceLock<ComputePipeline> = OnceLock::new();
-    static MPP_PIPE: OnceLock<ComputePipeline> = OnceLock::new();
-    static MPP_SG4_PIPE: OnceLock<ComputePipeline> = OnceLock::new();
-    static MPP_GU_PIPE: OnceLock<ComputePipeline> = OnceLock::new();
-    static MPP_GU_SG4_PIPE: OnceLock<ComputePipeline> = OnceLock::new();
-    static MPP_N32S4_PIPE: OnceLock<ComputePipeline> = OnceLock::new();
-    static MPP_N64S4_PIPE: OnceLock<ComputePipeline> = OnceLock::new();
-    static MPP_N32S4_GU_PIPE: OnceLock<ComputePipeline> = OnceLock::new();
-    static MPP_PAIRED_SG4_PIPE: OnceLock<ComputePipeline> = OnceLock::new();
 
     fn compile_mpp(
         cell: &OnceLock<ComputePipeline>,
@@ -1970,12 +2393,7 @@ kernel void mpp_probe(device float* y [[buffer(0)]],
             return Ok(());
         }
         let raw = device.metal_device();
-        let opts = objc2_metal::MTLCompileOptions::new();
-        opts.setLanguageVersion(objc2_metal::MTLLanguageVersion::Version4_0);
-        let lib = raw
-            .new_library_with_source(MPP_SRC, Some(&opts))
-            .map_err(candle_core::Error::wrap)?;
-        let f = lib
+        let f = mpp_library(device)?
             .get_function(fname, None)
             .map_err(candle_core::Error::wrap)?;
         let p = raw
@@ -2060,37 +2478,76 @@ kernel void mpp_probe(device float* y [[buffer(0)]],
             let gate_up = self.up_tile > 0;
             let tiles = self.padded / 256;
             let device = s_wq.device();
-            compile_mpp(&MPP_PAD_PIPE, "affine_q4_mpp_pad", device)?;
             let split = self.tile == 32 || self.tile == 64;
-            let (cell, fname, tgthr) = if split && gate_up {
-                (&MPP_N32S4_GU_PIPE, "affine_q4_mpp_n32s4_gate_up", 128usize)
-            } else if split && self.tile == 32 {
-                (&MPP_N32S4_PIPE, "affine_q4_mpp_n32s4", 128)
+            // K45: a presum block is a valid zero-padded [8, in] operand for
+            // every kernel; the families with a PreSums variant also skip
+            // the in-kernel sums (split gate_up — legacy only — has none)
+            // a presum input is always bound directly (no pad copy); the
+            // PreSums kernel (staged sums, no in-kernel recompute) only
+            // where it measured faster in situ (`super::ps_family_on`)
+            let family = if split && self.inp > 8192 {
+                "split_long"
             } else if split {
-                (&MPP_N64S4_PIPE, "affine_q4_mpp_n64s4", 256)
+                "split"
             } else if gate_up {
-                if self.sgs == 4 {
-                    (&MPP_GU_SG4_PIPE, "affine_q4_mpp_gate_up_sg4", 128)
-                } else {
-                    (&MPP_GU_PIPE, "affine_q4_mpp_gate_up", 256)
+                "gu"
+            } else if self.sgs == 4 && self.out % 256 == 0 {
+                "paired"
+            } else {
+                "n256"
+            };
+            let ps = self.presum
+                && self.flags & QMPP_BIND_ONLY == 0
+                && super::ps_family_on(family);
+            use MppKernel as K;
+            let (kern, tgthr) = if split && gate_up {
+                (K::N32s4GateUp, 128usize)
+            } else if split && self.tile == 32 {
+                (if ps { K::N32s4Ps } else { K::N32s4 }, 128)
+            } else if split {
+                (if ps { K::N64s4Ps } else { K::N64s4 }, 256)
+            } else if gate_up {
+                match (self.sgs == 4, ps, self.emit_sums) {
+                    (false, false, false) => (K::GateUp, 256),
+                    (false, true, false) => (K::GateUpPs, 256),
+                    (false, false, true) => (K::GateUpEs, 256),
+                    (false, true, true) => (K::GateUpPsEs, 256),
+                    (true, false, false) => (K::GateUpSg4, 128),
+                    (true, true, false) => (K::GateUpSg4Ps, 128),
+                    (true, true, true) => (K::GateUpSg4PsEs, 128),
+                    (true, false, true) => candle_core::bail!(
+                        "affine-qmpp: emit_sums on gate_up sg4 needs presum"
+                    ),
                 }
             } else if self.sgs == 4 && self.out % 256 == 0 {
                 // K2: Splash n256_paired_sg4 verbatim (unguarded epilogue:
                 // no padded columns, and the output holds all 8 rows)
-                (&MPP_PAIRED_SG4_PIPE, "affine_q4_mpp_paired_sg4", 128)
+                (if ps { K::Paired256Ps } else { K::Paired256 }, 128)
             } else if self.sgs == 4 {
-                (&MPP_SG4_PIPE, "affine_q4_mpp_sg4", 128)
+                (if ps { K::N256Sg4Ps } else { K::N256Sg4 }, 128)
             } else {
-                (&MPP_PIPE, "affine_q4_mpp", 256)
+                (if ps { K::N256Ps } else { K::N256 }, 256)
             };
-            compile_mpp(cell, fname, device)?;
+            if self.emit_sums && !(gate_up && !split && self.out % 256 == 0) {
+                candle_core::bail!(
+                    "affine-qmpp: emit_sums needs the N256 gate_up tile (out {} % 256)",
+                    self.out
+                );
+            }
+            let uses_ps = kern.pre_sums();
+            if uses_ps && 8 * ng * 4 > 24 * 1024 {
+                candle_core::bail!("affine-qmpp: presum staging for in {} exceeds threadgroup memory", self.inp);
+            }
+            let pipe = mpp_pipe(kern, device)?;
 
             let cores = super::gpu_cores();
             // split tiles fill the grid one-tile-per-tg; the plain 4-sg
             // N256 tile is Splash's Paired256 (one resident wave of
             // 4 x cores persistent groups); the other N256 tiles use the
             // round-robin persistent-group policy
-            let groups = if split {
+            let groups = if self.groups > 0 {
+                self.groups
+            } else if split {
                 self.out.div_ceil(self.tile)
             } else if !gate_up && self.sgs == 4 {
                 tiles.min(super::PAIRED256_WAVE_GROUPS_PER_CORE * cores)
@@ -2114,11 +2571,28 @@ kernel void mpp_probe(device float* y [[buffer(0)]],
             // a dispatch + a pooled x8 allocation per projection. Only a
             // read binding of the caller's buffer — no new storage.
             let x_off = l_x.start_offset() * 2;
-            let direct = self.m == 8
-                && l_x.shape().elem_count() == 8 * self.inp
-                && x_off % 16 == 0
-                && self.inp <= super::PAD_SKIP_MAX_IN
-                && super::pad_skip_enabled();
+            if self.presum {
+                // the block must really be there: 8 rows + sums inside the
+                // buffer, MPP-aligned, and x the live [m, in] view of it
+                let need = x_off + super::presum_block_bytes(self.inp);
+                if x_off % 16 != 0
+                    || s_x.buffer().length() < need
+                    || l_x.shape().elem_count() != self.m * self.inp
+                {
+                    candle_core::bail!(
+                        "affine-qmpp: presum block missing (x_off {x_off}, buffer {} < {need}, x {:?}, m {})",
+                        s_x.buffer().length(),
+                        l_x.shape(),
+                        self.m
+                    );
+                }
+            }
+            let direct = self.presum
+                || (self.m == 8
+                    && l_x.shape().elem_count() == 8 * self.inp
+                    && x_off % 16 == 0
+                    && self.inp <= super::PAD_SKIP_MAX_IN
+                    && super::pad_skip_enabled());
             let x8_buf = if direct {
                 None
             } else {
@@ -2131,9 +2605,15 @@ kernel void mpp_probe(device float* y [[buffer(0)]],
                         .map_err(candle_core::Error::wrap)?,
                 )
             };
+            // an emitted presum block: 8 output rows, then out/64 x 8 f32
+            let y_elems = if self.emit_sums {
+                super::presum_block_bytes(self.out) / 2
+            } else {
+                8 * self.out
+            };
             let y_buf = device
                 .new_buffer_builder()
-                .with_size_for(8 * self.out, DType::BF16)
+                .with_size_for(y_elems, DType::BF16)
                 .with_label("qmpp.y")
                 .build()
                 .map_err(candle_core::Error::wrap)?;
@@ -2145,7 +2625,7 @@ kernel void mpp_probe(device float* y [[buffer(0)]],
             if let Some(x8) = x8_buf.as_ref() {
                 let enc: &candle_metal_kernels::metal::ComputeCommandEncoder =
                     enc_ref.encoder().as_ref();
-                enc.set_compute_pipeline_state(MPP_PAD_PIPE.get().unwrap());
+                enc.set_compute_pipeline_state(mpp_pipe(MppKernel::Pad, device)?);
                 enc.set_input_buffer(0, Some(s_x.buffer()), x_off);
                 enc.set_output_buffer(1, Some(x8), 0);
                 let dims: [i32; 3] = [self.m as i32, self.inp as i32, 8];
@@ -2158,7 +2638,7 @@ kernel void mpp_probe(device float* y [[buffer(0)]],
             {
                 let enc: &candle_metal_kernels::metal::ComputeCommandEncoder =
                     enc_ref.encoder().as_ref();
-                enc.set_compute_pipeline_state(cell.get().unwrap());
+                enc.set_compute_pipeline_state(pipe);
                 match x8_buf.as_ref() {
                     Some(x8) => enc.set_input_buffer(0, Some(x8), 0),
                     None => enc.set_input_buffer(0, Some(s_x.buffer()), x_off),
@@ -2167,6 +2647,10 @@ kernel void mpp_probe(device float* y [[buffer(0)]],
                 enc.set_input_buffer(2, Some(s_sb.buffer()), l_sb.start_offset() * 2);
                 enc.set_output_buffer(3, Some(&y_buf), 0);
                 enc.set_bytes(4, &params);
+                // K45: presum sums staged in threadgroup memory once per
+                // dispatch (f32 [in/64][8]); a 16-byte stub otherwise
+                let staged = if uses_ps { (8 * ng * 4).div_ceil(16) * 16 } else { 16 };
+                enc.set_threadgroup_memory_length(0, staged);
                 enc.dispatch_thread_groups(
                     MTLSize { width: groups, height: 1, depth: 1 },
                     MTLSize { width: tgthr, height: 1, depth: 1 },

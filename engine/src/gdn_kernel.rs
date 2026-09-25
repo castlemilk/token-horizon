@@ -248,6 +248,7 @@ struct GdnFusedParams {
     float eps;   // gatenorm eps
     float a_log[64];
     float dt_bias[64];
+    int sums;    // K45: y is a Q4 presum block (8 rows + input sums)
 };
 
 // One-dispatch GDN step: conv+silu, per-head l2norm, delta recurrence
@@ -393,8 +394,35 @@ kernel void gdn_fused_step(
         for (int i = 0; i < DV / 32; ++i) {
             const int d = lane * 4 + i;
             const float zf = float(zz[t * p.zs + hv * DV + d]);
-            y[t * HV * DV + hv * DV + d] = bfloat(
+            const bfloat yv = bfloat(
                 ov[t * DV + d] * inv * float(nw[d]) * zf / (1.0f + exp(-zf)));
+            y[t * HV * DV + hv * DV + d] = yv;
+            if (p.sums) ov[t * DV + d] = float(yv);
+        }
+        if (p.sums) {
+            // K45: this head's two quant groups of the out projection's
+            // input sums, in the Q4 decode tiles' lane pattern
+            // simd_sum(y[64g + l] + y[64g + 32 + l]) (bit-identical)
+            simdgroup_barrier(mem_flags::mem_threadgroup);
+            device float* sums = (device float*)(y + 8 * HV * DV);
+            const float s0 = simd_sum(ov[t * DV + lane] + ov[t * DV + 32 + lane]);
+            const float s1 =
+                simd_sum(ov[t * DV + 64 + lane] + ov[t * DV + 96 + lane]);
+            if (lane == 0) {
+                sums[(2 * hv) * 8 + t] = s0;
+                sums[(2 * hv + 1) * 8 + t] = s1;
+            }
+        }
+    }
+    if (p.sums && int(sg) >= T) {
+        // presum block padding: rows T..7 of this head are zero
+        const int t = int(sg);
+        for (int i = 0; i < DV / 32; ++i)
+            y[t * HV * DV + hv * DV + lane * 4 + i] = bfloat(0.0f);
+        if (lane == 0) {
+            device float* sums = (device float*)(y + 8 * HV * DV);
+            sums[(2 * hv) * 8 + t] = 0.0f;
+            sums[(2 * hv + 1) * 8 + t] = 0.0f;
         }
     }
 }
@@ -605,6 +633,7 @@ kernel void gdn_conv(
         eps: f32,
         a_log: [f32; 64],
         dt_bias: [f32; 64],
+        sums: i32,
     }
 
     static FUSED_PIPE: OnceLock<ComputePipeline> = OnceLock::new();
@@ -633,6 +662,7 @@ kernel void gdn_conv(
         eps: f32,
         a_log: [f32; 64],
         dt_bias: [f32; 64],
+        sums: bool,
     ) -> Result<()> {
         let (s_x, l_x) = xnew.storage_and_layout();
         let s_x = match &*s_x {
@@ -742,7 +772,20 @@ kernel void gdn_conv(
             eps,
             a_log,
             dt_bias,
+            sums: sums as i32,
         };
+        if sums {
+            // K45: y must hold the whole presum block (8 rows + sums) and
+            // the kernel's 8-simdgroup row mapping needs hv*dv % 64 == 0
+            let need = l_y.start_offset() * b2
+                + crate::quant_kernel::presum_block_bytes(hv * dv);
+            if s_y.buffer().length() < need || dv % 64 != 0 || (hv * dv) % 64 != 0 {
+                candle_core::bail!(
+                    "gdn_fused_step: presum y buffer {} < {need}",
+                    s_y.buffer().length()
+                );
+            }
+        }
 
         let encoder = device.command_encoder().map_err(candle_core::Error::wrap)?;
         encoder.set_label("gdn_fused_step");
@@ -897,6 +940,12 @@ kernel void gdn_conv(
         pub t: usize,
         pub c: usize,
         pub eps: f32,
+        /// K45: emit the normed plane as a Q4 presum block — 8 rows (rows
+        /// >= t zero) followed by the f32 per-(group, row) input sums the
+        /// MPP decode tiles would recompute (`quant_kernel::
+        /// presum_block_bytes`). Requires t <= 8 and c % 64 == 0; the
+        /// residual and normed values are bit-identical to `sums: false`.
+        pub sums: bool,
     }
 
     #[repr(C)]
@@ -941,9 +990,54 @@ kernel void add_rmsnorm(
         nrm[c] = bfloat(float(res[c]) * inv * float(w[c]));
     }
 }
+
+// K45 presum form (T <= 8, C % 64 == 0; one threadgroup, simdgroup = row):
+// out = res [T, C] | nrm [8, C] (rows >= T zero) | sums [C/64][8] f32.
+// Same per-element arithmetic as add_rmsnorm; the sums use the Q4 decode
+// tiles' lane pattern simd_sum(x[64g + l] + x[64g + 32 + l]).
+kernel void add_rmsnorm_sums(
+    device const bfloat* x   [[buffer(0)]],
+    device const bfloat* r   [[buffer(1)]],
+    device const bfloat* w   [[buffer(2)]],
+    device bfloat*       out [[buffer(3)]],
+    constant ArnParams&  p   [[buffer(4)]],
+    uint  lane [[thread_index_in_simdgroup]],
+    uint  sg [[simdgroup_index_in_threadgroup]])
+{
+    const int t = sg;
+    const int ng = p.C / 64;
+    device bfloat* nrm = out + (p.T + t) * p.C;
+    device float* sums = (device float*)(out + (p.T + 8) * p.C);
+    if (t >= p.T) {
+        for (int c = lane; c < p.C; c += 32) nrm[c] = bfloat(0.0f);
+        for (int g = lane; g < ng; g += 32) sums[g * 8 + t] = 0.0f;
+        return;
+    }
+    device const bfloat* xr = x + t * p.C;
+    device const bfloat* rr = r + t * p.C;
+    device bfloat* res = out + t * p.C;
+    float ss = 0.0f;
+    for (int c = lane; c < p.C; c += 32) {
+        const float v = float(xr[c]) + float(rr[c]);
+        res[c] = bfloat(v);
+        ss += v * v;
+    }
+    ss = simd_sum(ss);
+    const float inv = rsqrt(ss / float(p.C) + p.eps);
+    for (int g = 0; g < ng; ++g) {
+        const int c0 = g * 64 + lane;
+        const bfloat a = bfloat(float(res[c0]) * inv * float(w[c0]));
+        const bfloat b = bfloat(float(res[c0 + 32]) * inv * float(w[c0 + 32]));
+        nrm[c0] = a;
+        nrm[c0 + 32] = b;
+        const float s = simd_sum(float(a) + float(b));
+        if (lane == 0) sums[g * 8 + t] = s;
+    }
+}
 "#;
 
     static ARN_PIPE: OnceLock<ComputePipeline> = OnceLock::new();
+    static ARN_SUMS_PIPE: OnceLock<ComputePipeline> = OnceLock::new();
 
     impl CustomOp3 for AddRmsNorm {
         fn name(&self) -> &'static str {
@@ -981,25 +1075,47 @@ kernel void add_rmsnorm(
                 candle_core::bail!("add-rmsnorm dtypes must be bf16");
             }
             let device = s_x.device();
-            if ARN_PIPE.get().is_none() {
+            if ARN_PIPE.get().is_none() || ARN_SUMS_PIPE.get().is_none() {
                 let raw = device.metal_device();
                 let lib = raw
                     .new_library_with_source(ARN_SRC, None)
                     .map_err(candle_core::Error::wrap)?;
-                let f = lib
-                    .get_function("add_rmsnorm", None)
-                    .map_err(candle_core::Error::wrap)?;
-                let p = raw
-                    .new_compute_pipeline_state_with_function(&f)
-                    .map_err(candle_core::Error::wrap)?;
-                let _ = ARN_PIPE.set(p);
+                for (cell, name) in
+                    [(&ARN_PIPE, "add_rmsnorm"), (&ARN_SUMS_PIPE, "add_rmsnorm_sums")]
+                {
+                    let f = lib
+                        .get_function(name, None)
+                        .map_err(candle_core::Error::wrap)?;
+                    let p = raw
+                        .new_compute_pipeline_state_with_function(&f)
+                        .map_err(candle_core::Error::wrap)?;
+                    let _ = cell.set(p);
+                }
             }
-            let pipeline = ARN_PIPE.get().unwrap();
+            if self.sums && (self.t == 0 || self.t > 8 || self.c % 64 != 0) {
+                candle_core::bail!(
+                    "add-rmsnorm sums needs t in 1..=8 and c % 64 == 0 (t {}, c {})",
+                    self.t,
+                    self.c
+                );
+            }
+            let pipeline = if self.sums {
+                ARN_SUMS_PIPE.get().unwrap()
+            } else {
+                ARN_PIPE.get().unwrap()
+            };
 
             let y_elems = 2 * self.t * self.c;
+            // presum form: residual [t, c], then the 8-row normed block +
+            // sums (crate::quant_kernel::presum_block_bytes)
+            let alloc_elems = if self.sums {
+                self.t * self.c + crate::quant_kernel::presum_block_bytes(self.c) / 2
+            } else {
+                y_elems
+            };
             let y_buf = device
                 .new_buffer_builder()
-                .with_size_for(y_elems, DType::BF16)
+                .with_size_for(alloc_elems, DType::BF16)
                 .with_label("arn.y")
                 .build()
                 .map_err(candle_core::Error::wrap)?;
@@ -1034,7 +1150,11 @@ kernel void add_rmsnorm(
             };
             enc.set_bytes(4, &params);
             enc.dispatch_thread_groups(
-                MTLSize { width: self.t.div_ceil(8), height: 1, depth: 1 },
+                MTLSize {
+                    width: if self.sums { 1 } else { self.t.div_ceil(8) },
+                    height: 1,
+                    depth: 1,
+                },
                 MTLSize { width: 256, height: 1, depth: 1 },
             );
             let storage =

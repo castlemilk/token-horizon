@@ -314,7 +314,16 @@ impl QLin {
             .map_err(Into::into)
     }
 
+    #[allow(dead_code)]
     fn linear(&self, x: &Tensor) -> Result<Tensor> {
+        self.linear_ps(x, false)
+    }
+
+    /// `linear` with `presum`: `x` is a K45 presum block (its producer
+    /// emitted the zero-padded 8-row operand + input sums), which the
+    /// decode MPP tiles bind directly. Ignored on every other path — a
+    /// presum block is also an ordinary [rows, in] tensor.
+    pub(crate) fn linear_ps(&self, x: &Tensor, presum: bool) -> Result<Tensor> {
         let dims = x.dims().to_vec();
         let in_d = *dims.last().unwrap();
         let rows: usize = dims[..dims.len() - 1].iter().product();
@@ -339,6 +348,10 @@ impl QLin {
                             up_tile: 0,
                             sgs,
                             tile,
+                            presum,
+                            emit_sums: false,
+                            groups: 0,
+                            flags: 0,
                         },
                     )?;
                     let y = y8.narrow(0, 0, 1)?.contiguous()?;
@@ -396,6 +409,10 @@ impl QLin {
                             up_tile: 0,
                             sgs,
                             tile,
+                            presum,
+                            emit_sums: false,
+                            groups: 0,
+                            flags: 0,
                         },
                     )?;
                     let y = y8.narrow(0, 0, rows)?.contiguous()?;
@@ -560,7 +577,20 @@ impl QLin {
     /// Fused gate/up activation for a [gate | up] packed projection —
     /// the kernel emits silu(gate)·up directly. `None` when the fast
     /// path doesn't apply (caller falls back to narrow+silu·mul).
+    #[allow(dead_code)]
     pub(crate) fn gate_up_act(&self, x: &Tensor) -> Option<Result<Tensor>> {
+        self.gate_up_act_ps(x, false).map(|r| r.map(|(t, _)| t))
+    }
+
+    /// `gate_up_act` with K45 presum blocks: `presum` = `x` is one (see
+    /// `linear_ps`); the returned flag = the activation is one too (the
+    /// N256 two-stream tile stored all 8 rows and emitted the down
+    /// projection's input sums), so `down` can take `presum: true`.
+    pub(crate) fn gate_up_act_ps(
+        &self,
+        x: &Tensor,
+        presum: bool,
+    ) -> Option<Result<(Tensor, bool)>> {
         let dims = x.dims().to_vec();
         let rows: usize = dims[..dims.len() - 1].iter().product();
         let in_d0 = *dims.last().unwrap();
@@ -593,11 +623,13 @@ impl QLin {
                         .and_then(|yp| {
                             let mut out = dims.clone();
                             *out.last_mut().unwrap() = half;
-                            Ok(yp
-                                .narrow(0, 0, rows)?
-                                .narrow(1, 0, half)?
-                                .contiguous()?
-                                .reshape(out)?)
+                            Ok((
+                                yp.narrow(0, 0, rows)?
+                                    .narrow(1, 0, half)?
+                                    .contiguous()?
+                                    .reshape(out)?,
+                                false,
+                            ))
                         }),
                 );
             }
@@ -619,6 +651,9 @@ impl QLin {
                 let padded = self.out.div_ceil(256) * 256;
                 // K1: N256 two-stream tile (sequential K) by default
                 let (tile, sgs) = crate::quant_kernel::gate_up_tile();
+                // K45: the N256 tile emits the down projection's presum
+                // block (the split-K legacy tile has no such epilogue)
+                let emit = tile == 256 && sgs == 8 && crate::quant_kernel::presum_enabled();
                 return Some(
                     self.wq
                         .apply_op3_no_bwd(
@@ -632,16 +667,20 @@ impl QLin {
                                 up_tile: half / 256,
                                 sgs,
                                 tile,
+                                presum,
+                                emit_sums: emit,
+                                groups: 0,
+                                flags: 0,
                             },
                         )
                         .map_err(Into::into)
                         .and_then(|y8| {
                             let mut out = dims.clone();
                             *out.last_mut().unwrap() = half;
-                            Ok(y8
-                                .narrow(0, 0, rows)?
-                                .contiguous()?
-                                .reshape(out)?)
+                            Ok((
+                                y8.narrow(0, 0, rows)?.contiguous()?.reshape(out)?,
+                                emit,
+                            ))
                         }),
                 );
             }
@@ -660,7 +699,7 @@ impl QLin {
                 )?;
                 let mut out = dims;
                 *out.last_mut().unwrap() = self.out / 2;
-                y.reshape(out).map_err(Into::into)
+                Ok((y.reshape(out)?, false))
             })());
         }
         None
@@ -694,9 +733,14 @@ impl Lin {
 
 /// x [.., in] @ w.t() for either weight representation.
 pub(crate) fn lin_apply(x: &Tensor, l: &Lin) -> Result<Tensor> {
+    lin_apply_ps(x, l, false)
+}
+
+/// `lin_apply` whose input may be a K45 presum block (`QLin::linear_ps`).
+pub(crate) fn lin_apply_ps(x: &Tensor, l: &Lin, presum: bool) -> Result<Tensor> {
     match l {
         Lin::Dense(w) => linear(x, w),
-        Lin::Quant(q) => q.linear(x),
+        Lin::Quant(q) => q.linear_ps(x, presum),
     }
 }
 
@@ -707,22 +751,48 @@ pub(crate) fn lin_apply(x: &Tensor, l: &Lin) -> Result<Tensor> {
 /// tensor would sit in the ~32 MB SLC) — through the production entry
 /// points (`gate_up_act` / `linear`: whatever the tile policy picks),
 /// the same path on a 2-byte-misaligned copy of the input (always takes
-/// the pad copy: P0's reference arm), then explicit `AffineQmpp` tiles.
-/// Passes are interleaved — each pass times every candidate once, start
-/// rotated — and `xR vs path` is the median per-pass ratio, so drift in
-/// GPU/memory contention cancels. max|Δ| is vs the scalar `AffineQmm`
-/// reference on the class's first tensor; Δpath is vs the production
-/// path's output. Host-timed (sync → enqueue a pass → sync), so µs/call
-/// includes ~2-5 µs of encode. Env: `TH_BENCH_Q4_M` (rows, default 8),
-/// `TH_BENCH_Q4_PASSES` (default 7).
+/// the pad copy: P0's reference arm), the K45 presum path (the input as
+/// a presum block — what `add_rms_norm_ps` / the gate_up tile hand the
+/// next projection), then explicit `AffineQmpp` tiles, each plain and
+/// with a presum input (`+ps`). Passes are interleaved — each pass times
+/// every candidate once, start rotated — and `xR vs path` is the median
+/// per-pass ratio, so drift in GPU/memory contention cancels. max|Δ| is
+/// vs the scalar `AffineQmm` reference on the class's first tensor;
+/// Δpath is vs the production path's output (0 = bit-identical).
+/// Host-timed (sync → enqueue a pass → sync), so µs/call includes ~2-5 µs
+/// of encode. Env: `TH_BENCH_Q4_M` (rows, default 8),
+/// `TH_BENCH_Q4_PASSES` (default 7), `TH_BENCH_Q4_ONLY=<class,..>`
+/// (subset), `TH_BENCH_Q4_SERIAL=0` (let calls overlap).
 #[cfg(all(feature = "metal", target_os = "macos"))]
 pub(crate) fn bench_q4_decode(model: &Qwen35, device: &Device) -> Result<()> {
-    use crate::quant_kernel::{AffineQmm, AffineQmpp};
+    use crate::quant_kernel::{AffineQmm, AffineQmpp, Q4AttachSums};
     let env_n = |k: &str, d: usize| {
         std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(d)
     };
     let rows = env_n("TH_BENCH_Q4_M", 8).clamp(1, 8);
     let passes = env_n("TH_BENCH_Q4_PASSES", 7).max(1);
+    // serial (default): a buffer-scope barrier after every call, so calls
+    // run back to back like the forward's dependent chain; `=0` lets
+    // independent calls overlap on the concurrent encoder (the pre-K45
+    // bench behaviour — it hides each dispatch's ramp and tail)
+    let serial = std::env::var("TH_BENCH_Q4_SERIAL").as_deref() != Ok("0");
+    let barrier = || -> Result<()> {
+        if serial {
+            if let Device::Metal(md) = device {
+                use candle_metal_kernels::utils::EncoderProvider;
+                let enc = md.command_encoder()?;
+                let enc_ref = &enc;
+                let e: &candle_metal_kernels::metal::ComputeCommandEncoder =
+                    enc_ref.encoder().as_ref();
+                e.insert_memory_barrier();
+            }
+        }
+        Ok(())
+    };
+    let only: Option<Vec<String>> = std::env::var("TH_BENCH_Q4_ONLY")
+        .ok()
+        .map(|v| v.split(',').map(|s| s.trim().to_string()).collect());
+    let cores = crate::quant_kernel::gpu_cores();
     let quant = |l: &Lin| match l {
         Lin::Quant(q) if q.tiled => Some(q.clone()),
         _ => None,
@@ -747,32 +817,46 @@ pub(crate) fn bench_q4_decode(model: &Qwen35, device: &Device) -> Result<()> {
             })
             .collect::<Vec<_>>()
     };
-    let classes: Vec<(&str, Vec<QLin>)> = vec![
-        ("gate_up", model.layers.iter().filter_map(|l| quant(&l.mlp.gate_up)).collect()),
-        ("down", model.layers.iter().filter_map(|l| quant(&l.mlp.down)).collect()),
-        ("in_all", gdn(|g| &g.in_all)),
-        ("out", gdn(|g| &g.out)),
-        ("in_qkv", attn(|a| &a.in_qkv)),
-        ("o", attn(|a| &a.o)),
-        ("lm_head", quant(&model.lm_head).into_iter().collect()),
+    let gate_ups: Vec<QLin> =
+        model.layers.iter().filter_map(|l| quant(&l.mlp.gate_up)).collect();
+    let in_alls = gdn(|g| &g.in_all);
+    let outs = gdn(|g| &g.out);
+    // (tag, tensors, gate_up, rows, synthetic)
+    let classes: Vec<(String, Vec<QLin>, bool, usize, bool)> = vec![
+        ("gate_up".into(), gate_ups.clone(), true, rows, false),
+        ("down".into(), model.layers.iter().filter_map(|l| quant(&l.mlp.down)).collect(), false, rows, false),
+        ("in_all".into(), in_alls.clone(), false, rows, false),
+        ("out".into(), outs.clone(), false, rows, false),
+        ("in_qkv".into(), attn(|a| &a.in_qkv), false, rows, false),
+        ("o".into(), attn(|a| &a.o), false, rows, false),
+        ("lm_head".into(), quant(&model.lm_head).into_iter().collect(), false, rows, false),
     ];
     eprintln!(
-        "q4 bench: m={rows} passes={passes} policy={:?} gpu_cores={} pad_skip={}",
+        "q4 bench: m={rows} passes={passes} serial={serial} policy={:?} gpu_cores={cores} pad_skip={} presum={}",
         crate::quant_kernel::q4_policy_mode(),
-        crate::quant_kernel::gpu_cores(),
-        crate::quant_kernel::pad_skip_enabled()
+        crate::quant_kernel::pad_skip_enabled(),
+        crate::quant_kernel::presum_enabled(),
     );
     let max_abs = |a: &Tensor, b: &Tensor| -> Result<f32> {
         Ok(a.sub(b)?.abs()?.flatten_all()?.max(0)?.to_scalar::<f32>()?)
     };
-    for (tag, qs) in &classes {
+    for (tag, qs, gate_up, rows, synthetic) in &classes {
+        let (gate_up, rows) = (*gate_up, *rows);
+        if let Some(o) = &only {
+            if !o.iter().any(|c| c == tag) {
+                continue;
+            }
+        }
         let Some(q0) = qs.first() else { continue };
-        let gate_up = *tag == "gate_up";
         let half = q0.out / 2;
         let xv: Vec<f32> = (0..rows * q0.inp)
             .map(|i| ((i * 2654435761) % 1000) as f32 / 500.0 - 1.0)
             .collect();
         let x = Tensor::from_vec(xv, (rows, q0.inp), device)?.to_dtype(DType::BF16)?;
+        // K45 presum block of the same input (8 zero-padded rows + sums)
+        let x_ps = x
+            .apply_op1_no_bwd(&Q4AttachSums { m: rows, inp: q0.inp })?
+            .narrow(0, 0, rows)?;
         let y_ref = q0.wq.apply_op3_no_bwd(
             &q0.sb,
             &x,
@@ -787,19 +871,20 @@ pub(crate) fn bench_q4_decode(model: &Qwen35, device: &Device) -> Result<()> {
             y_ref.to_dtype(DType::F32)?
         };
         let ref_mag = reference.abs()?.flatten_all()?.max(0)?.to_scalar::<f32>()?;
+        let n_out = if gate_up { half } else { q0.out };
         let bytes = q0.out * q0.inp / 2 + q0.out * (q0.inp / 64) * 4;
         let n_calls = qs.len().max(8); // lm_head: 8 calls of one 715 MB tensor
-        let path = |q: &QLin, x: &Tensor| -> Result<Tensor> {
+        let path = |q: &QLin, x: &Tensor, ps: bool| -> Result<Tensor> {
             if gate_up {
-                match q.gate_up_act(x) {
-                    Some(r) => r,
+                match q.gate_up_act_ps(x, ps) {
+                    Some(r) => Ok(r?.0),
                     None => bail!("gate_up_act declined m={rows}"),
                 }
             } else {
-                q.linear(x)
+                q.linear_ps(x, ps)
             }
         };
-        let y_path = path(q0, &x)?.to_dtype(DType::F32)?;
+        let y_path = path(q0, &x, false)?.to_dtype(DType::F32)?;
         // the same input at a 2-byte offset can't be bound directly, so it
         // always goes through the pad copy (P0's reference arm)
         let flat = Tensor::cat(
@@ -807,14 +892,35 @@ pub(crate) fn bench_q4_decode(model: &Qwen35, device: &Device) -> Result<()> {
             0,
         )?;
         let x_mis = flat.narrow(0, 1, rows * q0.inp)?.reshape((rows, q0.inp))?;
-        if rows == 8 {
+        if rows == 8 && !synthetic {
             // P0 check: pad copy vs direct binding must be bitwise equal
-            let y_pad = path(q0, &x_mis)?.to_dtype(DType::F32)?;
+            let y_pad = path(q0, &x_mis, false)?.to_dtype(DType::F32)?;
             eprintln!(
                 "q4[{tag} m=8] P0 pad-copy-vs-direct max|Δ|={:.6} (pad_skip={})",
                 max_abs(&y_pad, &y_path)?,
                 crate::quant_kernel::pad_skip_enabled()
             );
+        }
+        if gate_up && crate::quant_kernel::presum_enabled() {
+            // K45 emit check: the gate_up tile's emitted sums must equal
+            // the attach-op sums of the same activation (down's operand)
+            if let Some(Ok((act, true))) = q0.gate_up_act_ps(&x_ps, true) {
+                let att = act
+                    .apply_op1_no_bwd(&Q4AttachSums { m: rows, inp: half })?
+                    .narrow(0, 0, rows)?;
+                // identical sums ⇒ identical down outputs: emitted block
+                // vs attach-op block vs in-kernel recompute on a copy
+                let mut dmax = f32::NAN;
+                if let Some(dq) = quant(&model.layers[0].mlp.down) {
+                    let y1 = dq.linear_ps(&act, true)?.to_dtype(DType::F32)?;
+                    let y2 = dq.linear_ps(&att, true)?.to_dtype(DType::F32)?;
+                    let y3 = dq.linear_ps(&act.copy()?, false)?.to_dtype(DType::F32)?;
+                    dmax = max_abs(&y1, &y2)?.max(max_abs(&y1, &y3)?);
+                }
+                eprintln!(
+                    "q4[{tag} m={rows}] K45 down on emitted vs attached vs recomputed sums max|Δ|={dmax:.6}"
+                );
+            }
         }
         let (p_tile, p_sgs) = if gate_up {
             crate::quant_kernel::gate_up_tile()
@@ -822,24 +928,52 @@ pub(crate) fn bench_q4_decode(model: &Qwen35, device: &Device) -> Result<()> {
             crate::quant_kernel::plain_tile(q0.out, q0.inp).tile_sgs()
         };
         // candidates: the production path, the production path on the
-        // misaligned input (= with the pad copy), then explicit tiles.
-        // (256, 4) on a plain projection is the Paired256 tile: one wave
-        // of 4 x cores groups (= the full grid below 4 x cores tiles).
-        type Cand<'a> = (String, Box<dyn Fn(&QLin) -> Result<Tensor> + 'a>);
+        // misaligned input (= with the pad copy), the presum path, then
+        // explicit tiles (plain / +ps) with optional group overrides.
+        type Cand<'a> = (String, Box<dyn Fn(&QLin, usize) -> Result<Tensor> + 'a>);
         let mut cands: Vec<Cand> = vec![
-            (format!("path t{p_tile}s{p_sgs}"), Box::new(|q: &QLin| path(q, &x))),
-            ("path+pad".to_string(), Box::new(|q: &QLin| path(q, &x_mis))),
+            (format!("path t{p_tile}s{p_sgs}"), Box::new(|q: &QLin, _| path(q, &x, false))),
+            ("path+pad".to_string(), Box::new(|q: &QLin, _| path(q, &x_mis, false))),
+            ("path+ps".to_string(), Box::new(|q: &QLin, _| path(q, &x_ps, true))),
         ];
-        let cfgs: &[(&str, usize, usize)] = if gate_up {
-            &[("n32s4_gu", 64, 2), ("n256_gu_sg8", 256, 8), ("n256_gu_sg4", 256, 4)]
-        } else {
-            &[("n64s4", 64, 2), ("n32s4", 32, 1), ("n256_sg8", 256, 8), ("p256_sg4", 256, 4)]
+
+        // (label, tile, sgs, groups override, presum, emit, flags)
+        let mut cfgs: Vec<(String, usize, usize, usize, bool, bool, u32)> = Vec::new();
+        let mut add = |label: &str, tile: usize, sgs: usize, groups: usize| {
+            for ps in [false, true] {
+                let l = format!("{label}{}", if ps { "+ps" } else { "" });
+                cfgs.push((l, tile, sgs, groups, ps, false, 0));
+            }
         };
-        for &(label, tile, sgs) in cfgs {
-            let x = &x;
+        if gate_up {
+            add("n32s4_gu", 64, 2, 0);
+            add("n256_gu_sg8", 256, 8, 0);
+            add("n256_gu_sg4", 256, 4, 0);
+        } else {
+            add("n64s4", 64, 2, 0);
+            add("n32s4", 32, 1, 0);
+            add("n256_sg8", 256, 8, 0);
+            add("p256_sg4", 256, 4, 0);
+        }
+        {
+            // K45: the production presum+emit gate_up, and presum blocks
+            // bound directly with in-kernel sums (bind only — the
+            // production form for the N256 families)
+            use crate::quant_kernel::QMPP_BIND_ONLY;
+            let (pt, ps_) = (p_tile, p_sgs);
+            if gate_up {
+                cfgs.push(("n256_gu_sg8+ps+es".into(), 256, 8, 0, true, true, 0));
+            }
+            cfgs.push((format!("t{pt}s{ps_}+pb"), pt, ps_, 0, true, gate_up, QMPP_BIND_ONLY));
+            if !gate_up && !(pt == 256 && ps_ == 8) {
+                cfgs.push(("n256_sg8+pb".into(), 256, 8, 0, true, false, QMPP_BIND_ONLY));
+            }
+        }
+        for (label, tile, sgs, groups, ps, emit, flags) in cfgs {
+            let (x, x_ps) = (&x, &x_ps);
             cands.push((
-                label.to_string(),
-                Box::new(move |q: &QLin| -> Result<Tensor> {
+                label,
+                Box::new(move |q: &QLin, _| -> Result<Tensor> {
                     let op = AffineQmpp {
                         inp: q.inp,
                         out: if gate_up { q.out / 2 } else { q.out },
@@ -848,8 +982,13 @@ pub(crate) fn bench_q4_decode(model: &Qwen35, device: &Device) -> Result<()> {
                         up_tile: if gate_up { q.out / 2 / 256 } else { 0 },
                         sgs,
                         tile,
+                        presum: ps,
+                        emit_sums: emit,
+                        groups,
+                        flags,
                     };
-                    Ok(q.wq.apply_op3_no_bwd(&q.sb, x, &op)?.narrow(0, 0, rows)?)
+                    let xin = if ps { x_ps } else { x };
+                    Ok(q.wq.apply_op3_no_bwd(&q.sb, xin, &op)?.narrow(0, 0, rows)?)
                 }),
             ));
         }
@@ -860,7 +999,8 @@ pub(crate) fn bench_q4_decode(model: &Qwen35, device: &Device) -> Result<()> {
         for (_, f) in &cands {
             for _ in 0..2 {
                 for i in 0..n_calls {
-                    let _ = f(&qs[i % qs.len()])?;
+                    let _ = f(&qs[i % qs.len()], i % qs.len())?;
+                    barrier()?;
                 }
             }
         }
@@ -873,7 +1013,8 @@ pub(crate) fn bench_q4_decode(model: &Qwen35, device: &Device) -> Result<()> {
                 device.synchronize()?;
                 let t = std::time::Instant::now();
                 for i in 0..n_calls {
-                    let _ = f(&qs[i % qs.len()])?;
+                    let _ = f(&qs[i % qs.len()], i % qs.len())?;
+                    barrier()?;
                 }
                 device.synchronize()?;
                 us[c].push(t.elapsed().as_secs_f64() * 1e6 / n_calls as f64);
@@ -885,16 +1026,16 @@ pub(crate) fn bench_q4_decode(model: &Qwen35, device: &Device) -> Result<()> {
             v[v.len() / 2]
         };
         for (c, (label, f)) in cands.iter().enumerate() {
-            let y = f(q0)?.to_dtype(DType::F32)?;
+            let y = f(q0, 0)?.to_dtype(DType::F32)?;
             let ratios: Vec<f64> = us[c].iter().zip(&us[0]).map(|(a, b)| a / b).collect();
             let (med, mn) = (median(&us[c]), us[c].iter().cloned().fold(f64::MAX, f64::min));
             eprintln!(
-                "q4[{tag} m={rows}] {label:<13} {med:8.1}us/call (min {mn:8.1}) {:5.0} GB/s  x{:.3} vs path  max|Δ|ref={:.5} Δpath={:.5}  |ref|max={ref_mag:.2}  [{}x{}, {} tensors x{passes}]",
+                "q4[{tag} m={rows}] {label:<20} {med:8.1}us/call (min {mn:8.1}) {:5.0} GB/s  x{:.3} vs path  max|Δ|ref={:.5} Δpath={:.5}  |ref|max={ref_mag:.2}  [{}x{}, {} tensors x{passes}]",
                 bytes as f64 / (med * 1e-6) / 1e9,
                 median(&ratios),
                 max_abs(&y, &reference)?,
                 max_abs(&y, &y_path)?,
-                if gate_up { half } else { q0.out },
+                n_out,
                 q0.inp,
                 qs.len(),
             );
@@ -953,6 +1094,20 @@ fn fuse_lins(lins: &[Lin]) -> Result<Lin> {
 
 // MARK: - math helpers
 
+/// `TH_GDN_EAGER` set: GDN layers take the eager ops. Read once (the
+/// forward used to look it up per layer per call).
+fn gdn_eager() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("TH_GDN_EAGER").is_ok())
+}
+
+/// `TH_GDN_STEP` set: seq <= 8 GDN layers skip the one-dispatch fused
+/// step (conv / qknorm / scan / gatenorm kernels instead). Read once.
+fn gdn_no_step() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("TH_GDN_STEP").is_ok())
+}
+
 /// x / sqrt(mean(x²) + eps) * w — fused Metal kernel, f32 accumulation
 /// inside the shader (weights already carry the +1 offset from conversion).
 pub(crate) fn rms_norm(x: &Tensor, w: &Tensor, eps: f64) -> Result<Tensor> {
@@ -961,29 +1116,48 @@ pub(crate) fn rms_norm(x: &Tensor, w: &Tensor, eps: f64) -> Result<Tensor> {
 
 /// Fused `x + r` residual + `rms_norm(x+r)·w` on Metal — one dispatch
 /// producing both streams. Falls back to eager ops elsewhere.
+#[allow(dead_code)]
 fn add_rms_norm(
     x: &Tensor,
     r: &Tensor,
     w: &Tensor,
     eps: f64,
 ) -> Result<(Tensor, Tensor)> {
+    let (res, nrm, _) = add_rms_norm_ps(x, r, w, eps)?;
+    Ok((res, nrm))
+}
+
+/// `add_rms_norm` that, at decode shapes (T <= 8), emits the normed plane
+/// as a K45 presum block (`quant_kernel::presum_block_bytes`) — the third
+/// value says so, and the next projection takes it with `presum: true`
+/// (no pad copy, no in-kernel input sums). Values are bit-identical.
+fn add_rms_norm_ps(
+    x: &Tensor,
+    r: &Tensor,
+    w: &Tensor,
+    eps: f64,
+) -> Result<(Tensor, Tensor, bool)> {
     #[cfg(all(feature = "metal", target_os = "macos"))]
     if x.device().is_metal() && x.is_contiguous() && r.is_contiguous() {
         let seq = x.dim(1)?;
         let c = x.dim(2)?;
+        let sums = crate::quant_kernel::presum_enabled()
+            && (1..=8).contains(&seq)
+            && c % 64 == 0
+            && x.dim(0)? == 1;
         let out = x.apply_op3_no_bwd(
             r,
             w,
-            &crate::gdn_kernel::AddRmsNorm { t: seq, c, eps: eps as f32 },
+            &crate::gdn_kernel::AddRmsNorm { t: seq, c, eps: eps as f32, sums },
         )?;
         // out is [2, T, C] — plane 0 = residual, plane 1 = normed
         let res = out.narrow(0, 0, 1)?;
         let nrm = out.narrow(0, 1, 1)?;
-        return Ok((res, nrm));
+        return Ok((res, nrm, sums));
     }
     let res = x.add(r)?;
     let nrm = rms_norm(&res, w, eps)?;
-    Ok((res, nrm))
+    Ok((res, nrm, false))
 }
 
 /// Eager depthwise causal conv + SiLU — `conv_in` is
@@ -1357,6 +1531,10 @@ impl Qwen35 {
                         up_tile: 0,
                         sgs: 8,
                         tile: 256,
+                        presum: false,
+                        emit_sums: false,
+                        groups: 0,
+                        flags: 0,
                     },
                 )?
                 .narrow(0, 0, 8)?
@@ -1372,6 +1550,10 @@ impl Qwen35 {
                             padded: qt.out.div_ceil(256) * 256,
                             m: 8, up_tile: 0, sgs,
                             tile,
+                            presum: false,
+                            emit_sums: false,
+                            groups: 0,
+                            flags: 0,
                         },
                     )?;
                 }
@@ -1384,6 +1566,10 @@ impl Qwen35 {
                             padded: qt.out.div_ceil(256) * 256,
                             m: 8, up_tile: 0, sgs,
                             tile,
+                            presum: false,
+                            emit_sums: false,
+                            groups: 0,
+                            flags: 0,
                         },
                     )?;
                 }
@@ -2045,26 +2231,39 @@ impl Qwen35 {
         }
 
         #[cfg(all(feature = "metal", target_os = "macos"))]
-        if fused.device().is_metal()
-            && std::env::var("TH_GDN_EAGER").is_err()
-        {
-            if seq <= 8 && std::env::var("TH_GDN_STEP").is_err() {
-                // one dispatch: conv+silu, l2norm, delta scan, gated norm
-                let gated = Tensor::zeros(
-                    (seq, l.value_dim),
-                    DType::BF16,
-                    fused.device(),
-                )?;
-                let pack = Tensor::zeros(
-                    (seq, conv_dim),
-                    DType::BF16,
-                    fused.device(),
-                )?;
+        if fused.device().is_metal() && !gdn_eager() {
+            if seq <= 8 && !gdn_no_step() {
+                // one dispatch: conv+silu, l2norm, delta scan, gated norm.
+                // K45: the kernel writes every element of both outputs, so
+                // they are allocated uninitialized (no zero-fill blits), and
+                // `gated` is the out projection's presum block (8 rows +
+                // input sums, emitted by the gated-norm stage)
+                let ps = crate::quant_kernel::presum_enabled() && l.value_dim % 64 == 0;
+                let (gated, pack) = if ps {
+                    use crate::quant_kernel::{presum_block_bytes, AllocBf16};
+                    (
+                        qkv.apply_op1_no_bwd(&AllocBf16 {
+                            elems: presum_block_bytes(l.value_dim) / 2,
+                            rows: seq,
+                            cols: l.value_dim,
+                        })?,
+                        qkv.apply_op1_no_bwd(&AllocBf16 {
+                            elems: seq * conv_dim,
+                            rows: seq,
+                            cols: conv_dim,
+                        })?,
+                    )
+                } else {
+                    (
+                        Tensor::zeros((seq, l.value_dim), DType::BF16, fused.device())?,
+                        Tensor::zeros((seq, conv_dim), DType::BF16, fused.device())?,
+                    )
+                };
                 crate::gdn_kernel::gdn_fused_step(
                     &qkv, &st.conv, &l.conv, &st.recurrent, &ab, &z,
                     &l.norm_w, &gated, &pack, seq, l.num_k_heads,
                     l.num_v_heads, l.head_k, l.head_v, eps as f32,
-                    l.a_log64, l.dt_bias64,
+                    l.a_log64, l.dt_bias64, ps,
                 )?;
                 // new conv window = last (k-1) rows of [state | inputs]
                 st.conv = if seq >= l.conv_k - 1 {
@@ -2084,10 +2283,7 @@ impl Qwen35 {
                     c.pack = Some(pack);
                     c.ab = Some(ab.clone());
                 }
-                return lin_apply(
-                    &gated.unsqueeze(0)?,
-                    &l.out,
-                );
+                return lin_apply_ps(&gated.unsqueeze(0)?, &l.out, ps);
             }
             let conv_out = st
                 .conv
@@ -2672,16 +2868,18 @@ impl Qwen35 {
         }
         let phase_t = std::env::var("TH_PHASE_TIME").is_ok()
             .then(std::time::Instant::now);
-        let mut h_next: Option<Tensor> = None;
+        // K45: (normed input, is it a presum block)
+        let mut h_next: Option<(Tensor, bool)> = None;
         for i in 0..self.layers.len() {
             let layer = &self.layers[i];
-            let h = match h_next.take() {
+            let (h, h_ps) = match h_next.take() {
                 Some(v) => v,
-                None => rms_norm(&x, &layer.input_norm, self.cfg.rms_norm_eps)?,
+                None => (rms_norm(&x, &layer.input_norm, self.cfg.rms_norm_eps)?, false),
             };
             let r = match &layer.kind {
                 Kind::Gdn(l) => {
-                    let fused = lin_apply(&h, &l.in_all)?;
+                    // K45: `h` may be a presum block (add_rms_norm_ps)
+                    let fused = lin_apply_ps(&h, &l.in_all, h_ps)?;
                     let mut st = self.slots[slot].gdn[i].take().unwrap();
                     let mut vc = cache_verify.then(GdnVerifyCache::default);
                     let r = Self::gdn_forward(
@@ -2693,7 +2891,7 @@ impl Qwen35 {
                     r?
                 }
                 Kind::Attn(l) => {
-                    let qkv = lin_apply(&h, &l.in_qkv)?;
+                    let qkv = lin_apply_ps(&h, &l.in_qkv, h_ps)?;
                     let mut kvc = self.slots[slot].kv[i].take().unwrap();
                     let mut kvq = std::mem::take(&mut self.slots[slot].kvq[i]);
                     let r = Self::attn_forward(
@@ -2706,15 +2904,16 @@ impl Qwen35 {
                 }
             };
             // fused: x += r; h2 = rms_norm(x)·post_norm — one dispatch
-            let (xn, h2) =
-                add_rms_norm(&x, &r, &layer.post_norm, self.cfg.rms_norm_eps)?;
+            let (xn, h2, h2_ps) =
+                add_rms_norm_ps(&x, &r, &layer.post_norm, self.cfg.rms_norm_eps)?;
             // fused gate|up projection with in-kernel silu·mul epilogue
-            // (eager narrow + silu·mul fallback off-Metal / prefill)
-            let act = match &layer.mlp.gate_up {
-                Lin::Quant(q) => match q.gate_up_act(&h2) {
+            // (eager narrow + silu·mul fallback off-Metal / prefill);
+            // act_ps = the N256 tile emitted a presum block for `down`
+            let (act, act_ps) = match &layer.mlp.gate_up {
+                Lin::Quant(q) => match q.gate_up_act_ps(&h2, h2_ps) {
                     Some(r) => r?,
                     None => {
-                        let gu = lin_apply(&h2, &layer.mlp.gate_up)?;
+                        let gu = lin_apply_ps(&h2, &layer.mlp.gate_up, h2_ps)?;
                         let gate = gu
                             .narrow(D::Minus1, 0, layer.mlp.inter)?
                             .contiguous()?;
@@ -2725,7 +2924,7 @@ impl Qwen35 {
                                 layer.mlp.inter,
                             )?
                             .contiguous()?;
-                        candle_nn::ops::silu(&gate)?.mul(&up)?
+                        (candle_nn::ops::silu(&gate)?.mul(&up)?, false)
                     }
                 },
                 _ => {
@@ -2736,20 +2935,20 @@ impl Qwen35 {
                     let up = gu
                         .narrow(D::Minus1, layer.mlp.inter, layer.mlp.inter)?
                         .contiguous()?;
-                    candle_nn::ops::silu(&gate)?.mul(&up)?
+                    (candle_nn::ops::silu(&gate)?.mul(&up)?, false)
                 }
             };
-            let mlp = lin_apply(&act, &layer.mlp.down)?;
+            let mlp = lin_apply_ps(&act, &layer.mlp.down, act_ps)?;
             if i + 1 < self.layers.len() {
                 // fused: x += mlp; h_next = rms_norm(x)·next input_norm
-                let (xn2, hn) = add_rms_norm(
+                let (xn2, hn, hn_ps) = add_rms_norm_ps(
                     &xn,
                     &mlp,
                     &self.layers[i + 1].input_norm,
                     self.cfg.rms_norm_eps,
                 )?;
                 x = xn2;
-                h_next = Some(hn);
+                h_next = Some((hn, hn_ps));
             } else {
                 x = xn.add(&mlp)?;
             }
@@ -2822,16 +3021,20 @@ impl Qwen35 {
             }
         }
         let eps = self.cfg.rms_norm_eps;
-        let mut h_next: Option<Tensor> = None;
+        // K45: (normed input, is it a presum block) — as in forward_inner.
+        // add_rms_norm_ps only emits blocks for Σseq <= 8 rows, so wider
+        // batches take the plain path; per-slot ops (GDN step + out
+        // projection, attention) run at seq_b rows either way.
+        let mut h_next: Option<(Tensor, bool)> = None;
         for i in 0..self.layers.len() {
             let layer = &self.layers[i];
-            let h = match h_next.take() {
+            let (h, h_ps) = match h_next.take() {
                 Some(v) => v,
-                None => rms_norm(&x, &layer.input_norm, eps)?,
+                None => (rms_norm(&x, &layer.input_norm, eps)?, false),
             };
             let r = match &layer.kind {
                 Kind::Gdn(l) => {
-                    let fused = lin_apply(&h, &l.in_all)?;
+                    let fused = lin_apply_ps(&h, &l.in_all, h_ps)?;
                     let mut parts = Vec::with_capacity(nb);
                     for b in 0..nb {
                         let sb = slots[b];
@@ -2850,7 +3053,7 @@ impl Qwen35 {
                     Tensor::cat(&parts, 1)?
                 }
                 Kind::Attn(l) => {
-                    let qkv = lin_apply(&h, &l.in_qkv)?;
+                    let qkv = lin_apply_ps(&h, &l.in_qkv, h_ps)?;
                     let mut parts = Vec::with_capacity(nb);
                     for b in 0..nb {
                         let sb = slots[b];
@@ -2871,13 +3074,13 @@ impl Qwen35 {
                     Tensor::cat(&parts, 1)?
                 }
             };
-            let (xn, h2) =
-                add_rms_norm(&x, &r, &layer.post_norm, eps)?;
-            let act = match &layer.mlp.gate_up {
-                Lin::Quant(q) => match q.gate_up_act(&h2) {
+            let (xn, h2, h2_ps) =
+                add_rms_norm_ps(&x, &r, &layer.post_norm, eps)?;
+            let (act, act_ps) = match &layer.mlp.gate_up {
+                Lin::Quant(q) => match q.gate_up_act_ps(&h2, h2_ps) {
                     Some(r) => r?,
                     None => {
-                        let gu = lin_apply(&h2, &layer.mlp.gate_up)?;
+                        let gu = lin_apply_ps(&h2, &layer.mlp.gate_up, h2_ps)?;
                         let gate = gu
                             .narrow(D::Minus1, 0, layer.mlp.inter)?
                             .contiguous()?;
@@ -2888,7 +3091,7 @@ impl Qwen35 {
                                 layer.mlp.inter,
                             )?
                             .contiguous()?;
-                        candle_nn::ops::silu(&gate)?.mul(&up)?
+                        (candle_nn::ops::silu(&gate)?.mul(&up)?, false)
                     }
                 },
                 _ => {
@@ -2903,19 +3106,19 @@ impl Qwen35 {
                             layer.mlp.inter,
                         )?
                         .contiguous()?;
-                    candle_nn::ops::silu(&gate)?.mul(&up)?
+                    (candle_nn::ops::silu(&gate)?.mul(&up)?, false)
                 }
             };
-            let mlp = lin_apply(&act, &layer.mlp.down)?;
+            let mlp = lin_apply_ps(&act, &layer.mlp.down, act_ps)?;
             if i + 1 < self.layers.len() {
-                let (xn2, hn) = add_rms_norm(
+                let (xn2, hn, hn_ps) = add_rms_norm_ps(
                     &xn,
                     &mlp,
                     &self.layers[i + 1].input_norm,
                     eps,
                 )?;
                 x = xn2;
-                h_next = Some(hn);
+                h_next = Some((hn, hn_ps));
             } else {
                 x = xn.add(&mlp)?;
             }
