@@ -161,6 +161,18 @@ async fn main() -> Result<()> {
                 .map(|t| t.trim().parse())
                 .collect::<Result<_, _>>()?;
             #[cfg(all(feature = "metal", target_os = "macos"))]
+            if std::env::var("TH_PF_COMPILE").is_ok() {
+                // compile the prefill tile library only (no model, no GPU
+                // work): source errors + cold compile time
+                let dev = candle_core::Device::new_metal(0)?;
+                if let candle_core::Device::Metal(d) = &dev {
+                    let t = std::time::Instant::now();
+                    let n = quant_kernel::pf_compile(d)?;
+                    eprintln!("pf library: {n} pipelines in {:.0}ms", t.elapsed().as_secs_f64() * 1e3);
+                }
+                return Ok(());
+            }
+            #[cfg(all(feature = "metal", target_os = "macos"))]
             if std::env::var("TH_MPP_PROBE").is_ok() {
                 let dev = candle_core::Device::new_metal(0)?;
                 if let candle_core::Device::Metal(d) = &dev {
@@ -287,12 +299,19 @@ async fn main() -> Result<()> {
                     }
                 );
             }
+            // TH_BENCH_LIN=1 → decode + prefill kernel sweeps; =dec / =pf
+            // → just one of them
             #[cfg(all(feature = "metal", target_os = "macos"))]
-            if std::env::var("TH_BENCH_LIN").is_ok() {
+            if let Ok(which) = std::env::var("TH_BENCH_LIN") {
                 if let model::ModelBackend::Qwen35(q) =
                     &loaded.backend
                 {
-                    q.bench_lin(&loaded.device)?;
+                    if which != "pf" {
+                        q.bench_lin(&loaded.device)?;
+                    }
+                    if which != "dec" {
+                        q.bench_prefill(&loaded.device)?;
+                    }
                 }
             }
             #[cfg(all(feature = "metal", target_os = "macos"))]
@@ -346,6 +365,146 @@ async fn main() -> Result<()> {
                         );
                         pos += m;
                     }
+                }
+            }
+            if let Ok(spec) = std::env::var("TH_BENCH_PREFILL") {
+                // prefill forward (the TTFT path): fresh state per run,
+                // last-row f32 logits read back (sync). Legacy and tile
+                // routing alternate run by run in this one process (order
+                // flipped each pair) so clock/thermal drift hits both
+                // equally; one warm-up run each first.
+                let dev = loaded.device.clone();
+                let mut fwd = |seq: &[u32], legacy: bool| -> Result<f64> {
+                    #[cfg(all(feature = "metal", target_os = "macos"))]
+                    quant_kernel::pf_force_legacy(legacy);
+                    // forward() runs decode slot 0
+                    loaded.backend.clear_kv_cache(0);
+                    let t = std::time::Instant::now();
+                    let lg = loaded.backend.forward(seq, 0, &dev)?;
+                    let _ = lg.to_vec1::<f32>()?;
+                    Ok(t.elapsed().as_secs_f64() * 1e3)
+                };
+                let stat = |v: &mut Vec<f64>| {
+                    v.sort_by(|a, b| a.total_cmp(b));
+                    (v[0], v[v.len() / 2])
+                };
+                for m in spec.split(',').filter_map(|t| t.trim().parse::<usize>().ok()) {
+                    let seq: Vec<u32> = (0..m).map(|i| ids[i % ids.len()]).collect();
+                    fwd(&seq, true)?;
+                    fwd(&seq, false)?;
+                    let (mut leg, mut til) = (Vec::new(), Vec::new());
+                    for r in 0..6 {
+                        for legacy in [r % 2 == 0, r % 2 != 0] {
+                            let ms = fwd(&seq, legacy)?;
+                            if legacy { leg.push(ms) } else { til.push(ms) }
+                        }
+                    }
+                    let ((lmin, lmed), (tmin, tmed)) = (stat(&mut leg), stat(&mut til));
+                    eprintln!(
+                        "prefill m={m:4} legacy min={lmin:.1}ms med={lmed:.1}ms | tiles min={tmin:.1}ms med={tmed:.1}ms | tiles/legacy med={:.3} ({:+.1}ms) tok/s {:.0}->{:.0}",
+                        tmed / lmed,
+                        tmed - lmed,
+                        m as f64 / lmed * 1e3,
+                        m as f64 / tmed * 1e3
+                    );
+                }
+                #[cfg(all(feature = "metal", target_os = "macos"))]
+                quant_kernel::pf_force_legacy(false);
+            }
+            #[cfg(all(feature = "metal", target_os = "macos"))]
+            if let Ok(spec) = std::env::var("TH_BENCH_BATCH") {
+                // batched verify forward — the target pass of a TH_BATCH > 1
+                // decode round: nb slots, each prefilled with the probe ids,
+                // x 8 rows through forward_batch (rows = 8*nb > 8, so the
+                // flat projections take the prefill routing). Legacy and
+                // tile routing alternate run by run from restored per-slot
+                // state (as TH_BENCH_PREFILL); the argmax readback is the
+                // sync (batch_round's greedy path). Numerics: max|d| of the
+                // bf16 logits + argmax agreement, tiles vs legacy and each
+                // vs the single-slot 8-row verify on slot 0 (forward_multi,
+                // decode kernels) — the batch-shape noise main already has;
+                // plus slot invariance (slot b's rows vs slot 0's, same
+                // input). Needs TH_BATCH >= the largest nb.
+                use candle_core::{DType, Tensor, D};
+                let dev = loaded.device.clone();
+                let ns = loaded.backend.nslots();
+                let pos = ids.len();
+                let seq8: Vec<u32> = (0..8).map(|i| 1000 + i * 37).collect();
+                for s in 0..ns {
+                    loaded.backend.clear_kv_cache(s);
+                    let _ = loaded.backend.forward_slot(s, &ids, 0, &dev)?.to_vec1::<f32>()?;
+                }
+                let snaps = (0..ns)
+                    .map(|s| loaded.backend.snapshot(s))
+                    .collect::<Result<Vec<_>>>()?;
+                let maxd = |a: &Tensor, b: &Tensor| -> Result<f32> {
+                    Ok(a.sub(b)?.abs()?.flatten_all()?.max(0)?.to_scalar::<f32>()?)
+                };
+                let argmax = |t: &Tensor| -> Result<Vec<u32>> {
+                    Ok(t.argmax(D::Minus1)?.to_vec1::<u32>()?)
+                };
+                let reference = loaded
+                    .backend
+                    .forward_multi(&seq8, pos, &dev)?
+                    .to_dtype(DType::F32)?;
+                loaded.backend.restore(0, snaps[0].clone())?;
+                let ref_am = argmax(&reference)?;
+                let stat = |v: &mut Vec<f64>| {
+                    v.sort_by(|a, b| a.total_cmp(b));
+                    (v[0], v[v.len() / 2])
+                };
+                for nb in spec.split(',').filter_map(|t| t.trim().parse::<usize>().ok()) {
+                    if nb < 2 || nb > ns {
+                        eprintln!("batch nb={nb}: skipped (needs 2..=TH_BATCH={ns})");
+                        continue;
+                    }
+                    let slots: Vec<usize> = (0..nb).collect();
+                    let seqs: Vec<&[u32]> = vec![seq8.as_slice(); nb];
+                    let poss = vec![pos; nb];
+                    let mut run = |legacy: bool| -> Result<(f64, Tensor)> {
+                        quant_kernel::pf_force_legacy(legacy);
+                        for &s in &slots {
+                            loaded.backend.restore(s, snaps[s].clone())?;
+                        }
+                        // restore's state copies run on the GPU: keep them
+                        // out of the timed region
+                        dev.synchronize()?;
+                        let t = std::time::Instant::now();
+                        let lg = loaded.backend.forward_batch(&slots, &seqs, &poss)?;
+                        let _ = lg.argmax(D::Minus1)?.to_vec1::<u32>()?;
+                        Ok((t.elapsed().as_secs_f64() * 1e3, lg))
+                    };
+                    let lf = run(true)?.1.to_dtype(DType::F32)?;
+                    let tf = run(false)?.1.to_dtype(DType::F32)?;
+                    let (mut leg, mut til) = (Vec::new(), Vec::new());
+                    for r in 0..6 {
+                        for legacy in [r % 2 == 0, r % 2 != 0] {
+                            let (ms, _) = run(legacy)?;
+                            if legacy { leg.push(ms) } else { til.push(ms) }
+                        }
+                    }
+                    quant_kernel::pf_force_legacy(false);
+                    let ((lmin, lmed), (tmin, tmed)) = (stat(&mut leg), stat(&mut til));
+                    let (am_l, am_t) = (argmax(&lf)?, argmax(&tf)?);
+                    let rows = 8 * nb;
+                    let same_lt = (0..rows).filter(|&i| am_l[i] == am_t[i]).count();
+                    let (mut dl_ref, mut dt_ref, mut inv_l, mut inv_t) = (0f32, 0f32, 0f32, 0f32);
+                    let (mut ref_l, mut ref_t) = (0usize, 0usize);
+                    for b in 0..nb {
+                        let (lb, tb) = (lf.narrow(0, b * 8, 8)?, tf.narrow(0, b * 8, 8)?);
+                        dl_ref = dl_ref.max(maxd(&lb, &reference)?);
+                        dt_ref = dt_ref.max(maxd(&tb, &reference)?);
+                        inv_l = inv_l.max(maxd(&lb, &lf.narrow(0, 0, 8)?)?);
+                        inv_t = inv_t.max(maxd(&tb, &tf.narrow(0, 0, 8)?)?);
+                        ref_l += (0..8).filter(|&i| am_l[b * 8 + i] == ref_am[i]).count();
+                        ref_t += (0..8).filter(|&i| am_t[b * 8 + i] == ref_am[i]).count();
+                    }
+                    eprintln!(
+                        "batch nb={nb} rows={rows} legacy min={lmin:.1}ms med={lmed:.1}ms | tiles min={tmin:.1}ms med={tmed:.1}ms | tiles/legacy med={:.3} ({:+.1}ms) | tiles vs legacy max|d|={:.4} argmax {same_lt}/{rows} | vs 1-slot verify: legacy max|d|={dl_ref:.4} argmax {ref_l}/{rows}, tiles max|d|={dt_ref:.4} argmax {ref_t}/{rows} | slot invariance legacy={inv_l:.4} tiles={inv_t:.4}",
+                        tmed / lmed,
+                        tmed - lmed,
+                        maxd(&lf, &tf)?,
+                    );
                 }
             }
             if let Some(path) = dump {
