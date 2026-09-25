@@ -1314,6 +1314,10 @@ fn batch_round(
     } else {
         Vec::new()
     };
+    // greedy: the argmax readback above is the first GPU sync after
+    // forward_batch, so this is where the verify pass actually lands
+    // (sampled: the per-slot to_vec2 below syncs instead)
+    let t_read = t0.elapsed();
     // per-slot accept / emit / commit / rollback
     for (i, &b) in active.iter().enumerate() {
         let prop = &props[i];
@@ -1426,14 +1430,21 @@ fn batch_round(
             r.anchor = *rl;
         }
     }
-    let step_ms = t_verify.as_secs_f64() * 1000.0;
+    // Full round, as the B=1 loop measures it. forward_batch only
+    // ENCODES the verify pass (no sync inside), so stopping the clock
+    // at its return (the old `t_verify`) dropped the GPU verify time
+    // from decode_ms_total / decode_tps / the latency histogram.
+    let step_ms = t0.elapsed().as_secs_f64() * 1000.0;
     if std::env::var("TH_DEBUG_TIMING").is_ok() {
         eprintln!(
-            "  [batch] nb={} propose={:.1}ms verify={:.1}ms total={:.1}ms",
+            "  [batch] nb={} propose={:.1}ms verify_enqueue={:.1}ms readback={:.1}ms accept={:.1}ms total={:.1}ms old_step={:.1}ms",
             active.len(),
             t_fwd.as_secs_f64() * 1e3,
             (t_verify - t_fwd).as_secs_f64() * 1e3,
-            step_ms
+            (t_read - t_verify).as_secs_f64() * 1e3,
+            step_ms - t_read.as_secs_f64() * 1e3,
+            step_ms,
+            t_verify.as_secs_f64() * 1e3,
         );
     }
     for &b in &active {
