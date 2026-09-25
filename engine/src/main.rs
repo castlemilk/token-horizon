@@ -9,6 +9,7 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 
 mod api;
+mod attn_kernel;
 mod dflash;
 mod engine;
 mod gdn_kernel;

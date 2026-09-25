@@ -1556,10 +1556,9 @@ impl Qwen35 {
             if skv.is_none() {
                 continue;
             }
-            if let Some((kc, vc)) = self.kv[i].as_mut() {
-                *kc = kc.narrow(1, 0, new_len)?;
-                *vc = vc.narrow(1, 0, new_len)?;
-            }
+            // cap-buffer caches keep the stale tail — reads are bounded
+            // by kv_tokens so truncation is just the length update;
+            // the quantised cache is length-tracked separately
             self.kvq[i].truncate(new_len)?;
         }
         self.kv_tokens = new_len;
@@ -1978,6 +1977,134 @@ impl Qwen35 {
         let qd = l.n_heads * 2 * l.head_dim;
         let kd = l.n_kv * l.head_dim;
         let qkv = lin_apply(x, &l.in_qkv)?; // [1,seq,qd+2kd]
+
+        #[cfg(all(feature = "metal", target_os = "macos"))]
+        if device.is_metal()
+            && tq.is_none()
+            && seq <= 8
+            && std::env::var("TH_NO_ATTN_FUSED").is_err()
+        {
+            let (kc, vc) = kvc;
+            Self::ensure_kv(kc, vc, pos + seq, device)?;
+            let q_buf = Tensor::zeros(
+                (seq, l.n_heads, l.head_dim),
+                DType::BF16,
+                device,
+            )?;
+            crate::attn_kernel::attn_prepare(
+                &qkv, &l.q_norm, &l.k_norm, &l.cos, &l.sin, &q_buf,
+                kc, vc, pos, seq, l.n_heads, l.n_kv, l.head_dim,
+                l.rot_dim / 2, eps as f32,
+            )?;
+            let out = Tensor::zeros(
+                (seq, l.n_heads * l.head_dim),
+                DType::BF16,
+                device,
+            )?;
+            crate::attn_kernel::attn_decode(
+                &q_buf, kc, vc, &qkv, &out, pos, seq, l.n_heads, l.n_kv,
+                l.head_dim, l.rot_dim / 2,
+            )?;
+            if std::env::var("TH_DEBUG_ATTN").is_ok() {
+                eprintln!("  [attn-cfg] nh={} nkv={} hd={} rd={} pos={} seq={} cap={}",
+                    l.n_heads, l.n_kv, l.head_dim, l.rot_dim, pos, seq, kc.dim(1).unwrap_or(0));
+                // eager reference for the same inputs — recompute
+                // norm/rope/attn eagerly and diff (cache untouched:
+                // eager path reads the prefix only)
+                let qg = qkv
+                    .narrow(D::Minus1, 0, qd)?
+                    .contiguous()?
+                    .reshape((seq, l.n_heads, 2 * l.head_dim))?;
+                let q0 = qg.narrow(D::Minus1, 0, l.head_dim)?;
+                let gate0 = qg.narrow(D::Minus1, l.head_dim, l.head_dim)?;
+                let k0 = qkv
+                    .narrow(D::Minus1, qd, kd)?
+                    .contiguous()?
+                    .reshape((seq, l.n_kv, l.head_dim))?;
+                let v0 = qkv
+                    .narrow(D::Minus1, qd + kd, kd)?
+                    .contiguous()?
+                    .reshape((seq, l.n_kv, l.head_dim))?;
+                let q0 = rms_norm(&q0.contiguous()?, &l.q_norm, eps)?;
+                let k0 = rms_norm(&k0.contiguous()?, &l.k_norm, eps)?;
+                let q0 = q0.transpose(0, 1)?.unsqueeze(0)?;
+                let k0 = k0.transpose(0, 1)?.unsqueeze(0)?;
+                let _v0 = v0.transpose(0, 1)?;
+                let q0 = Self::rope(&q0, &l.cos, &l.sin, pos, l.rot_dim)?;
+                let k0 = Self::rope(&k0, &l.cos, &l.sin, pos, l.rot_dim)?;
+                // diff q/k vs kernel-written buffers — both to
+                // [seq, heads, d] order before flatten
+                let qd_ = q_buf.to_dtype(DType::F32)?.flatten_all()?.to_vec1::<f32>()?;
+                let qr_ = q0.squeeze(0)?.transpose(0, 1)?.to_dtype(DType::F32)?.flatten_all()?.to_vec1::<f32>()?;
+                let dq = qd_.iter().zip(&qr_).map(|(a,b)| (a-b).abs()).fold(0.0f32, f32::max);
+                if dq > 1.0 {
+                    eprintln!("    [q0]  kern={:?}", &qd_[..8]);
+                    eprintln!("    [q0]  eagr={:?}", &qr_[..8]);
+                }
+                let kr_ = k0.to_dtype(DType::F32)?.flatten_all()?.to_vec1::<f32>()?;
+                let kw = kc.narrow(1, pos, seq)?.to_dtype(DType::F32)?.flatten_all()?.to_vec1::<f32>()?;
+                let kw0 = kc.narrow(1, 0, 1)?.to_dtype(DType::F32)?.flatten_all()?.to_vec1::<f32>()?;
+                eprintln!("    [krow0] {:?}", &kw0[..16]);
+                let dbg = kc.narrow(1, 0, 1)?.to_dtype(DType::F32)?.flatten_all()?.to_vec1::<f32>()?;
+                eprintln!("    [dbg] kc[0]={} kc[200..206]={:?}", dbg[0], &dbg[200..206]);
+                let all = kc.to_dtype(DType::F32)?.flatten_all()?.to_vec1::<f32>()?;
+                let mut hits = Vec::new();
+                for (i, v) in all.iter().enumerate() {
+                    let iv = *v;
+                    if (iv >= 33.0 && iv <= 55.0 && iv.fract() == 0.0) || iv == 66.0 || iv == 77.0 || iv == 88.0 || iv == 99.0 {
+                        hits.push((i, iv));
+                    }
+                }
+                eprintln!("    [markers] {:?}", &hits[..hits.len().min(60)]);
+                let dk = kw.iter().zip(&kr_).map(|(a,b)| (a-b).abs()).fold(0.0f32, f32::max);
+                if dk > 1.0 {
+                    eprintln!("    [k0]  kern={:?}", &kw[..8]);
+                    eprintln!("    [k0]  eagr={:?}", &kr_[..8]);
+                    eprintln!("    [k0]  kern2={:?}", &kw[256..264]);
+                    eprintln!("    [k0]  eagr2={:?}", &kr_[256..264]);
+                }
+                eprintln!("  [attn] seq={seq} pos={pos} qΔ={dq:.4} kΔ={dk:.4}");
+                // eager attention over the cap-buffer prefix
+                let k_all = kc.narrow(1, 0, pos + seq)?.clone();
+                let v_all = vc.narrow(1, 0, pos + seq)?.clone();
+                let rep = l.n_heads / l.n_kv;
+                let kv_seq = pos + seq;
+                let k_r = k_all.unsqueeze(1)?
+                    .broadcast_as((l.n_kv, rep, kv_seq, l.head_dim))?
+                    .reshape((l.n_heads, kv_seq, l.head_dim))?
+                    .unsqueeze(0)?;
+                let v_r = v_all.unsqueeze(1)?
+                    .broadcast_as((l.n_kv, rep, kv_seq, l.head_dim))?
+                    .reshape((l.n_heads, kv_seq, l.head_dim))?
+                    .unsqueeze(0)?;
+                let scale = (l.head_dim as f64).powf(-0.5);
+                let scores = q0.contiguous()?
+                    .matmul(&k_r.transpose(D::Minus2, D::Minus1)?.contiguous()?)?
+                    .affine(scale, 0.0)?;
+                let probs = if seq == 1 {
+                    candle_nn::ops::softmax(&scores, D::Minus1)?
+                } else {
+                    let mut mask = vec![f32::NEG_INFINITY; seq * kv_seq];
+                    for i in 0..seq {
+                        for m in mask.iter_mut().skip(i * kv_seq).take(pos + i + 1) { *m = 0.0; }
+                    }
+                    let mask_t = Tensor::from_vec(mask, (1, 1, seq, kv_seq), device)?.to_dtype(DType::BF16)?;
+                    candle_nn::ops::softmax(&scores.broadcast_add(&mask_t)?, D::Minus1)?
+                };
+                let out_e = probs.matmul(&v_r.contiguous()?)?
+                    .squeeze(0)?.transpose(0, 1)?
+                    .reshape((seq, l.n_heads * l.head_dim))?;
+                let out_e = out_e.broadcast_mul(&candle_nn::ops::sigmoid(
+                    &gate0.reshape((seq, l.n_heads * l.head_dim))?,
+                )?)?;
+                let of = out.to_dtype(DType::F32)?.flatten_all()?.to_vec1::<f32>()?;
+                let oe = out_e.to_dtype(DType::F32)?.flatten_all()?.to_vec1::<f32>()?;
+                let do_ = of.iter().zip(&oe).map(|(a,b)| (a-b).abs()).fold(0.0f32, f32::max);
+                eprintln!("  [attn] seq={seq} pos={pos} outΔ={do_:.4}");
+            }
+            return lin_apply(&out.unsqueeze(0)?, &l.o);
+        }
+
         let qg = qkv
             .narrow(D::Minus1, 0, qd)?
             .contiguous()?
@@ -2008,8 +2135,12 @@ impl Qwen35 {
         }
 
         let (kc, vc) = kvc;
-        let k_all = Tensor::cat(&[kc.clone(), k.squeeze(0)?], 1)?;
-        let v_all = Tensor::cat(&[vc.clone(), v], 1)?;
+        // narrow to the committed prefix — the cache may be a
+        // fixed-capacity buffer whose tail is uninitialised
+        let k_pre = if kc.dim(1)? > pos { kc.narrow(1, 0, pos)? } else { kc.clone() };
+        let v_pre = if vc.dim(1)? > pos { vc.narrow(1, 0, pos)? } else { vc.clone() };
+        let k_all = Tensor::cat(&[k_pre, k.squeeze(0)?], 1)?;
+        let v_all = Tensor::cat(&[v_pre, v], 1)?;
         *kc = k_all.clone();
         *vc = v_all.clone();
         let kv_seq = k_all.dim(1)?;
@@ -2070,6 +2201,29 @@ impl Qwen35 {
             &gate.reshape((seq, l.n_heads * l.head_dim))?,
         )?)?;
         lin_apply(&out.unsqueeze(0)?, &l.o)
+    }
+
+    /// Grow the fixed-capacity KV caches to hold `need` rows. Appended
+    /// in place by `attn_prepare`; rows past `kv_tokens` are ignored, so
+    /// growth just widens dim 1.
+    fn ensure_kv(
+        kc: &mut Tensor,
+        vc: &mut Tensor,
+        need: usize,
+        dev: &Device,
+    ) -> Result<()> {
+        let cap = kc.dim(1)?;
+        if cap >= need {
+            return Ok(());
+        }
+        let ncap = (cap * 2).max(need).max(2048);
+        let (nh, hd) = (kc.dim(0)?, kc.dim(2)?);
+        for t in [&mut *kc, &mut *vc] {
+            let pad =
+                Tensor::zeros((nh, ncap - cap, hd), DType::BF16, dev)?;
+            *t = Tensor::cat(&[&*t, &pad], 1)?;
+        }
+        Ok(())
     }
 
     /// TurboQuant attention path: k/v are encoded into the compressed
