@@ -2842,6 +2842,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "axum",
+ "block2",
  "candle-core",
  "candle-metal-kernels",
  "candle-nn",
@@ -2851,6 +2852,7 @@ dependencies = [
  "hf-hub",
  "libc",
  "minijinja",
+ "objc2",
  "objc2-metal",
  "rayon",
  "safetensors 0.6.2",

@@ -224,6 +224,7 @@ impl DraftLayer {
     /// (non-Metal / untiled weights) the eager fallback narrows the fused
     /// `[.., 2 * INTER]` projection on its last dim.
     fn mlp(&self, x: &Tensor) -> Result<Tensor> {
+        crate::gpuprof::region("mlp.gate_up");
         let fused = match &self.gate_up {
             Lin::Quant(q) => q.gate_up_act_ps(x, false),
             _ => None,
@@ -238,6 +239,7 @@ impl DraftLayer {
                 (candle_nn::ops::silu(&gate)?.mul(&up)?, false)
             }
         };
+        crate::gpuprof::region("mlp.down");
         lin_apply_ps(&inter, &self.down, inter_ps)
     }
 }
@@ -379,10 +381,14 @@ impl DraftWeights {
         if rows == 0 {
             return Ok(());
         }
+        crate::gpuprof::region("fc");
         let proj = lin_apply(&captured.narrow(0, 0, rows)?.contiguous()?, &self.fc)?;
+        crate::gpuprof::region("norm");
         let hidden = rms_norm(&proj, &self.hidden_norm, 1e-6)?; // [rows, 5120]
+        crate::gpuprof::region("rope_table");
         let (cos, sin) = rope_table(&self.device, start_pos, rows)?;
         for (li, l) in self.layers.iter().enumerate() {
+            crate::gpuprof::region("qkv");
             let qkv = lin_apply(&hidden, &l.qkv)?; // [rows, 6144]
             let k = qkv
                 .narrow(1, ATTN, KV_HEADS * HEAD_DIM)?
@@ -390,7 +396,9 @@ impl DraftWeights {
             let v = qkv
                 .narrow(1, ATTN + KV_HEADS * HEAD_DIM, KV_HEADS * HEAD_DIM)?
                 .reshape((rows, KV_HEADS, HEAD_DIM))?;
+            crate::gpuprof::region("knorm_rope");
             let k = dnorm_rope(&k, &l.k_norm, &cos, &sin)?;
+            crate::gpuprof::region("ring_scatter");
             // in-place ring write: src [heads, rows, dim], indexes give
             // the slot for each row (positions are contiguous → slots
             // are contiguous mod WINDOW).
@@ -430,14 +438,20 @@ impl DraftWeights {
         let ids: Vec<u32> = std::iter::once(anchor)
             .chain(std::iter::repeat(MASK_TOKEN).take(PROPOSALS))
             .collect();
+        crate::gpuprof::region("embed");
         let mut x = embed
             .i(&Tensor::new(ids.as_slice(), &self.device)?)?
             .unsqueeze(0)?; // [1, 8, 5120]
+        crate::gpuprof::region("rope_table");
         let (cos, sin) = rope_table(&self.device, pos, ROWS)?;
         for (li, l) in self.layers.iter().enumerate() {
+            crate::gpuprof::region("norm.in");
             let n = rms_norm(&x, &l.input_norm, 1e-6)?; // [1,8,5120]
+            crate::gpuprof::region("dyn");
             let dyn_ = lin_apply(&n, &l.attn_dyn)?; // [1,8,1280]
+            crate::gpuprof::region("dconv");
             let conv = dconv(&n, &dyn_, &l.conv_base, 0, None)?;
+            crate::gpuprof::region("qkv");
             let qkv = lin_apply(&conv, &l.qkv)?; // [1,8,6144]
             let q = qkv
                 .narrow(2, 0, ATTN)?
@@ -448,23 +462,35 @@ impl DraftWeights {
             let v = qkv
                 .narrow(2, ATTN + KV_HEADS * HEAD_DIM, KV_HEADS * HEAD_DIM)?
                 .reshape((ROWS, KV_HEADS, HEAD_DIM))?;
+            crate::gpuprof::region("qknorm_rope");
             let q = dnorm_rope(&q, &l.q_norm, &cos, &sin)?;
             let k = dnorm_rope(&k, &l.k_norm, &cos, &sin)?;
+            crate::gpuprof::region("attn");
             let attn = self.attention(ctx, li, &q, &k, &v)?;
+            crate::gpuprof::region("o");
             let proj = lin_apply(&attn, &l.o_proj)?; // [1,8,5120]
+            crate::gpuprof::region("dconv");
             let x2 = dconv(&proj, &dyn_, &l.conv_base, 1, Some(&x))?;
+            crate::gpuprof::region("norm.post");
             let n2 = rms_norm(&x2, &l.post_norm, 1e-6)?;
+            crate::gpuprof::region("dyn");
             let dyn2 = lin_apply(&n2, &l.mlp_dyn)?;
+            crate::gpuprof::region("dconv");
             let conv2 = dconv(&n2, &dyn2, &l.mlp_conv_base, 0, None)?;
             let proj2 = l.mlp(&conv2)?;
+            crate::gpuprof::region("dconv");
             x = dconv(&proj2, &dyn2, &l.mlp_conv_base, 1, Some(&x2))?;
         }
+        crate::gpuprof::region("norm.final");
         let fh = rms_norm(&x, &self.final_norm, 1e-6)?; // [1,8,5120]
         // only rows 1..7 feed the proposal — row 0 is the anchor and
         // its logits/selector outputs are never read.
         let fh7 = fh.narrow(1, 1, PROPOSALS)?.contiguous()?;
+        crate::gpuprof::region("lm_head");
         let logits = lin_apply(&fh7, lm_head)?.squeeze(0)?; // [7, vocab]
+        crate::gpuprof::region("selector");
         let sel = lin_apply(&fh7, &self.selector)?.squeeze(0)?; // [7, 256]
+        crate::gpuprof::region("select");
         self.select(&logits, &sel, anchor, temp, &mut uniform)
     }
 

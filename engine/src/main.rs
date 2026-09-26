@@ -14,6 +14,7 @@ mod dflash;
 mod draft_kernel;
 mod engine;
 mod gdn_kernel;
+mod gpuprof;
 mod model;
 mod outbuf;
 mod quant_kernel;
@@ -101,6 +102,8 @@ enum Cmd {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // R0c: arm TH_GPU_PROF before candle creates its Metal device
+    gpuprof::init();
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
