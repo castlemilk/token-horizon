@@ -261,7 +261,7 @@ pub fn bench_attn() -> Result<()> {
             let mut res: Vec<(usize, f64)> = Vec::new();
             for &s in &split_list {
                 let splits = if s == 0 {
-                    crate::attn_kernel::split_count(l, cfg.base, cfg.pps, SPLIT_MAX)
+                    split_for(&cfg, l).unwrap_or_else(|| crate::attn_kernel::split_count(l, cfg.base, cfg.pps, cfg.cap))
                 } else {
                     s.min(pages).min(SPLIT_MAX)
                 };
@@ -276,7 +276,9 @@ pub fn bench_attn() -> Result<()> {
                 res.push((splits, best));
             }
             let (best_s, best_ms) = res.iter().cloned().fold((0, f64::MAX), |a, b| if b.1 < a.1 { b } else { a });
-            let pol_s = crate::attn_kernel::split_count(l, cfg.base, cfg.pps, SPLIT_MAX);
+            // the engine's routing (`split_for`: TH_ATTN_SPLITS / _BASE / _PPS / _CAP),
+            // or the uncapped-threshold count where the engine would route single-pass
+            let pol_s = split_for(&cfg, l).unwrap_or_else(|| crate::attn_kernel::split_count(l, cfg.base, cfg.pps, cfg.cap));
             let pol_ms = res.iter().find(|r| r.0 == pol_s).map(|r| r.1).unwrap_or(f64::NAN);
 
             // ---- numerics on layer 0 (split at the policy's count) ----
