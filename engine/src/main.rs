@@ -480,22 +480,34 @@ async fn main() -> Result<()> {
             if let Ok(spec) = std::env::var("TH_BENCH_PLAN") {
                 // T1 prefix cache, the GPU side of TTFT (no HTTP, template,
                 // draft): for each `n:split` (prompt = the probe ids cycled
-                // to n tokens) time, alternating run by run in this process,
-                //   base  — the plain step grid (TH_PREFIX_CACHE=0 / main)
-                //   cache — the cache's plan: the grid + a split at `split`
-                //           (an uncached request with a turn-end checkpoint)
-                //   hit   — restore the `split` checkpoint + the suffix only
-                // each from a cleared slot 0 to the last-row logits readback
-                // (sync). The hit's logits must equal the cache plan's
-                // bit for bit (checked); base vs cache is info (a different
-                // chunk plan). TH_BENCH_PLAN_STEP = prefill step (512),
-                // TH_BENCH_PLAN_REPS = timed runs per kind (6).
+                // to n tokens; `split` = a block-aligned turn end) time,
+                // alternating run by run in this process, from a cleared
+                // slot 0 to the last-row logits readback (sync):
+                //   base  — the plain step grid (main / TH_PREFIX_CACHE=0)
+                //   cache — prefix_cache::plan with a turn end at `split`
+                //           (an uncached request under the default mode)
+                //   hit   — restore the `split` checkpoint + the suffix
+                //   ghit  — TH_PREFIX_CACHE=grid hit: restore the last grid
+                //           checkpoint + main's remaining chunks
+                // Checks hit == cache and ghit == base bit for bit; base vs
+                // cache max|d| + argmax as info. TH_BENCH_PLAN_STEP = prefill
+                // step (512), TH_BENCH_PLAN_REPS = timed runs per kind (6).
                 let dev = loaded.device.clone();
                 let env_num = |k: &str, d: usize| -> usize {
                     std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(d).max(1)
                 };
                 let step = env_num("TH_BENCH_PLAN_STEP", 512);
                 let reps = env_num("TH_BENCH_PLAN_REPS", 6);
+                let pcfg = prefix_cache::PrefixCacheConfig {
+                    enabled: true,
+                    plan_only: false,
+                    grid_only: false,
+                    max_entries: 8,
+                    max_bytes: 1 << 32,
+                    block: 128,
+                    margin: 16,
+                };
+                let gcfg = prefix_cache::PrefixCacheConfig { grid_only: true, ..pcfg };
                 let stat = |v: &mut Vec<f64>| {
                     v.sort_by(|a, b| a.total_cmp(b));
                     (v[0], v[v.len() / 2])
@@ -511,13 +523,15 @@ async fn main() -> Result<()> {
                         continue;
                     }
                     let seq: Vec<u32> = (0..n).map(|i| ids[i % ids.len()]).collect();
-                    let grid: Vec<usize> = (1..).map(|k| k * step).take_while(|&s| s < n).collect();
-                    let mut cache_b = grid.clone();
-                    cache_b.push(split);
-                    cache_b.sort_unstable();
-                    cache_b.dedup();
-                    let base_b: Vec<usize> = grid.iter().copied().chain(std::iter::once(n)).collect();
-                    let cache_b: Vec<usize> = cache_b.into_iter().chain(std::iter::once(n)).collect();
+                    let base_p = prefix_cache::plan(n, step, None, None, &[]);
+                    let cache_p = prefix_cache::plan(n, step, Some(&pcfg), None, &[split]);
+                    let grid_p = prefix_cache::plan(n, step, Some(&gcfg), None, &[split]);
+                    let at = cache_p.splits.iter().copied().filter(|&s| s <= split).max().unwrap_or(0);
+                    let gat = grid_p.checkpoints.last().copied().unwrap_or(0);
+                    let bounds = |p: &prefix_cache::ChunkPlan| -> Vec<usize> {
+                        p.splits.iter().copied().chain(std::iter::once(n)).collect()
+                    };
+                    let (base_b, cache_b) = (bounds(&base_p), bounds(&cache_p));
                     // prefill from `from` through `bounds` (ends > from), last logits
                     let run = |b: &mut model::ModelBackend, from: usize, bounds: &[usize]| -> Result<Vec<f32>> {
                         let mut pos = from;
@@ -528,51 +542,73 @@ async fn main() -> Result<()> {
                         }
                         Ok(last.context("empty plan")?.to_vec1::<f32>()?)
                     };
-                    // the checkpoint: cache-plan prefill up to `split`
+                    // checkpoints: the cache plan at `at`, main's grid at `gat`
+                    let upto = |bs: &[usize], c: usize| bs.iter().copied().filter(|&e| e <= c).collect::<Vec<_>>();
                     loaded.backend.clear_kv_cache(0);
-                    let _ = run(&mut loaded.backend, 0, &cache_b.iter().copied().filter(|&e| e <= split).collect::<Vec<_>>())?;
+                    let _ = run(&mut loaded.backend, 0, &upto(&cache_b, at))?;
                     let ck = loaded.backend.prefix_capture(0)?;
+                    let gck = if gat > 0 {
+                        loaded.backend.clear_kv_cache(0);
+                        let _ = run(&mut loaded.backend, 0, &upto(&base_b, gat))?;
+                        Some(loaded.backend.prefix_capture(0)?)
+                    } else {
+                        None
+                    };
                     let timed = |kind: usize, b: &mut model::ModelBackend| -> Result<(f64, Vec<f32>)> {
                         b.clear_kv_cache(0);
                         let t = std::time::Instant::now();
                         let v = match kind {
                             0 => run(b, 0, &base_b)?,
                             1 => run(b, 0, &cache_b)?,
-                            _ => {
+                            2 => {
                                 b.prefix_restore(0, &ck)?;
-                                run(b, split, &cache_b)?
+                                run(b, at, &cache_b)?
                             }
+                            _ => match &gck {
+                                Some(g) => {
+                                    b.prefix_restore(0, g)?;
+                                    run(b, gat, &base_b)?
+                                }
+                                None => run(b, 0, &base_b)?,
+                            },
                         };
                         Ok((t.elapsed().as_secs_f64() * 1e3, v))
                     };
-                    let (_, l_base) = timed(0, &mut loaded.backend)?;
-                    let (_, l_cache) = timed(1, &mut loaded.backend)?;
-                    let (_, l_hit) = timed(2, &mut loaded.backend)?;
-                    let mut t = [Vec::new(), Vec::new(), Vec::new()];
+                    let mut first = Vec::new();
+                    for k in 0..4 {
+                        first.push(timed(k, &mut loaded.backend)?.1);
+                    }
+                    let mut t = [Vec::new(), Vec::new(), Vec::new(), Vec::new()];
                     for r in 0..reps {
-                        for k in 0..3 {
-                            let kind = (k + r) % 3;
+                        for k in 0..4 {
+                            let kind = (k + r) % 4;
                             t[kind].push(timed(kind, &mut loaded.backend)?.0);
                         }
                     }
-                    let same_bits = l_hit.len() == l_cache.len()
-                        && l_hit.iter().zip(&l_cache).all(|(a, b)| a.to_bits() == b.to_bits());
+                    let bits_eq = |x: &[f32], y: &[f32]| x.len() == y.len() && x.iter().zip(y).all(|(a, b)| a.to_bits() == b.to_bits());
                     let argmax = |v: &[f32]| {
                         v.iter().enumerate().max_by(|a, b| a.1.total_cmp(b.1)).map(|(i, _)| i).unwrap_or(0)
                     };
-                    let dmax = l_base.iter().zip(&l_cache).map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
-                    let [mut tb, mut tc, mut th] = t;
-                    let ((bmin, bmed), (cmin, cmed), (hmin, hmed)) = (stat(&mut tb), stat(&mut tc), stat(&mut th));
+                    let dmax = first[0].iter().zip(&first[1]).map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
+                    let [mut tb, mut tc, mut th, mut tg] = t;
+                    let ((bmin, bmed), (cmin, cmed), (hmin, hmed), (gmin, gmed)) =
+                        (stat(&mut tb), stat(&mut tc), stat(&mut th), stat(&mut tg));
                     eprintln!(
-                        "plan n={n} split={split} step={step} | base {base_b:?} min={bmin:.1} med={bmed:.1}ms | cache {cache_b:?} min={cmin:.1} med={cmed:.1}ms ({:+.1}ms vs base) | hit restore+{} rows min={hmin:.1} med={hmed:.1}ms ({:.1}x vs cache) | hit==cache bits {} | base vs cache max|d|={dmax:.4} argmax {} {}",
+                        "plan n={n} split={split} step={step} | base {} chunks min={bmin:.1} med={bmed:.1}ms | cache {:?} min={cmin:.1} med={cmed:.1}ms ({:+.1}ms, {:+.1}% vs base) | hit restore@{at}+{} rows min={hmin:.1} med={hmed:.1}ms ({:.1}x vs cache) | grid-hit restore@{gat}+{} rows min={gmin:.1} med={gmed:.1}ms ({:.1}x vs base) | hit==cache {} ghit==base {} | base vs cache max|d|={dmax:.4} argmax {} {}",
+                        base_b.len(),
+                        cache_p.splits,
                         cmed - bmed,
-                        n - split,
+                        (cmed / bmed - 1.0) * 100.0,
+                        n - at,
                         cmed / hmed,
-                        if same_bits { "PASS" } else { "FAIL" },
-                        argmax(&l_base),
-                        argmax(&l_cache),
+                        n - gat,
+                        bmed / gmed,
+                        if bits_eq(&first[2], &first[1]) { "PASS" } else { "FAIL" },
+                        if bits_eq(&first[3], &first[0]) { "PASS" } else { "FAIL" },
+                        argmax(&first[0]),
+                        argmax(&first[1]),
                     );
-                    drop(ck);
+                    drop((ck, gck));
                 }
             }
             #[cfg(all(feature = "metal", target_os = "macos"))]

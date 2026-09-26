@@ -143,7 +143,9 @@ impl ChunkPlan {
 /// the last turn end (or that fallback), of the first boundary, and the
 /// last grid split below the end one (below `n - margin` without one) —
 /// no extra chunk, and shared by every prompt with the same first tokens
-/// up to it.
+/// up to it. An extra split off the grid replaces the grid split just
+/// before it when the merged chunk stays within two steps, so the plan
+/// has main's chunk count (the prefill cost of a miss is unchanged).
 pub fn plan(
     n: usize,
     step: usize,
@@ -174,13 +176,37 @@ pub fn plan(
         if first.is_none() && turn_ends.is_empty() {
             extra.extend(end);
         }
+        extra.sort_unstable();
+        extra.dedup();
+        splits.extend(extra.iter().copied());
+        splits.sort_unstable();
+        splits.dedup();
+        // keep main's chunk count: an extra split off the grid adds a chunk
+        // (one more weight sweep — ~3% of a 1.4k-8k prefill), so drop the
+        // grid split just before it when the merged chunk stays <= 2 steps.
+        // Decided from boundaries at or below the extra split only, so the
+        // plan stays prefix-consistent (a checkpoint's history is the same
+        // in every prompt that shares the tokens up to it).
+        let orig = splits.clone();
+        let dropped: Vec<usize> = extra
+            .iter()
+            .filter(|&&e| e % step != 0)
+            .filter_map(|&e| {
+                let i = orig.iter().position(|&s| s == e)?;
+                let before = *orig.get(i.checked_sub(1)?)?;
+                let prev = i.checked_sub(2).map_or(0, |j| orig[j]);
+                (before % step == 0 && !extra.contains(&before) && e - prev <= 2 * step).then_some(before)
+            })
+            .collect();
+        splits.retain(|s| !dropped.contains(s));
         checkpoints.extend(first.and_then(align));
         checkpoints.extend(end);
-        let grid = end.unwrap_or(n.saturating_sub(c.margin)).saturating_sub(1) / step * step;
-        if grid > 0 && grid < n {
+        // the last surviving grid split below the end one (below n - margin
+        // without one): a boundary of every plan that shares the prefix
+        let limit = end.unwrap_or(n.saturating_sub(c.margin));
+        if let Some(&grid) = splits.iter().rev().find(|&&s| s % step == 0 && s < limit) {
             checkpoints.push(grid);
         }
-        splits.extend(extra);
     }
     splits.sort_unstable();
     splits.dedup();
@@ -443,8 +469,9 @@ mod tests {
 
     /// Two questions after the same long document: the end checkpoints
     /// differ (block-aligned turn ends 7424 vs 7552), the grid checkpoint
-    /// below them is shared — the second question restores 7168 instead of
-    /// missing, and an exact repeat of either restores its own end.
+    /// below them is shared — the second question restores 6656 (7168 is
+    /// merged away in both plans) instead of missing, and an exact repeat
+    /// of either restores its own end.
     #[test]
     fn grid_checkpoint_serves_a_different_question() {
         let c = PrefixCacheConfig { block: 128, ..cfg(8, 1 << 30) };
@@ -456,7 +483,7 @@ mod tests {
         for &ck in &pa.checkpoints {
             store.insert(a[..ck].to_vec(), 512, pa.history(ck), 1, ck as u8);
         }
-        assert_eq!(store.lookup(&b, 512, &pb, b.len() - 1).map(|(n, _)| n), Some(7168));
+        assert_eq!(store.lookup(&b, 512, &pb, b.len() - 1).map(|(n, _)| n), Some(6656));
         assert_eq!(store.lookup(&a, 512, &pa, a.len() - 1).map(|(n, _)| n), Some(7424));
         for &ck in &pb.checkpoints {
             store.insert(b[..ck].to_vec(), 512, pb.history(ck), 1, 0);
@@ -509,39 +536,49 @@ mod tests {
         assert_eq!(plan(1432, 512, None, Some(35), &[1427]).splits, vec![512, 1024]);
         assert!(plan(1432, 512, None, Some(35), &[1427]).checkpoints.is_empty());
         // bench ctx1500 shape: 35-token system, user message ends at 1427,
-        // 5-token generation prompt → one extra split + checkpoint at 1408,
-        // grid checkpoint at 1024 (no extra chunk)
+        // 5-token generation prompt → a split + checkpoint at 1408 that
+        // replaces the grid split 1024 (main's 3 chunks: [0,512) [512,1408)
+        // [1408,1432)), grid checkpoint at 512
         let p = plan(1432, 512, Some(&c), Some(35), &[1427]);
-        assert_eq!(p, ChunkPlan { splits: vec![512, 1024, 1408], checkpoints: vec![1024, 1408] });
-        assert_eq!(p.history(1408), vec![512, 1024, 1408]);
-        assert_eq!(p.history(1407), vec![512, 1024]);
+        assert_eq!(p, ChunkPlan { splits: vec![512, 1408], checkpoints: vec![512, 1408] });
+        assert_eq!(p.splits.len(), plan(1432, 512, None, None, &[]).splits.len(), "main's chunk count");
+        assert_eq!(p.history(1408), vec![512, 1408]);
+        assert_eq!(p.history(1407), vec![512]);
         // the same passage + a longer question shares the 1408 checkpoint
-        assert_eq!(plan(1454, 512, Some(&c), Some(35), &[1449]).history(1408), vec![512, 1024, 1408]);
+        assert_eq!(plan(1454, 512, Some(&c), Some(35), &[1449]).history(1408), vec![512, 1408]);
         // bench short prompts: nothing (the step grid = the whole prompt)
         assert_eq!(plan(58, 512, Some(&c), Some(35), &[53]), ChunkPlan::default());
         // multi-turn: turn 2's plan keeps turn 1's end split with the
         // same history before it
         let t1 = plan(1432, 512, Some(&c), Some(35), &[1427]);
         let t2 = plan(2100, 512, Some(&c), Some(35), &[1427, 2090]);
-        assert_eq!(t2.splits, vec![512, 1024, 1408, 1536, 2048]);
+        assert_eq!(t2.splits, vec![512, 1408, 1536, 2048]);
         assert_eq!(t2.checkpoints, vec![1536, 2048]);
         assert_eq!(t2.history(1408), t1.history(1408));
+        let t3 = plan(2700, 512, Some(&c), Some(35), &[1427, 2090, 2690]);
+        assert_eq!(t3.splits, vec![512, 1408, 1536, 2048, 2688]);
+        assert_eq!((t3.history(1408), t3.history(2048)), (t1.history(1408), t2.history(2048)));
         // a long system prompt: its own split + checkpoint
         let p = plan(2605, 512, Some(&c), Some(2100), &[2600]);
         assert_eq!(p.splits, vec![512, 1024, 1536, 2048, 2560]);
         assert_eq!(p.checkpoints, vec![2048, 2560]);
-        // no chat structure: n - margin rounded down (split + checkpoint)
+        // no chat structure: n - margin rounded down (split + checkpoint,
+        // merged with the grid split before it)
         let p = plan(1000, 512, Some(&c), None, &[]);
-        assert_eq!(p, ChunkPlan { splits: vec![512, 896], checkpoints: vec![512, 896] });
+        assert_eq!(p, ChunkPlan { splits: vec![896], checkpoints: vec![896] });
         // structure but no turn end (e.g. no generation prompt): the first
-        // boundary (+ the grid below n - margin)
+        // boundary
         let p = plan(1000, 512, Some(&c), Some(700), &[]);
-        assert_eq!(p, ChunkPlan { splits: vec![512, 640], checkpoints: vec![512, 640] });
+        assert_eq!(p, ChunkPlan { splits: vec![640], checkpoints: vec![640] });
         // 8k document, two questions: different aligned turn ends (7424 vs
         // 7552 → no shared end checkpoint), one shared grid checkpoint
         let (a, b) = (plan(7550, 512, Some(&c), Some(35), &[7545]), plan(7560, 512, Some(&c), Some(35), &[7555]));
-        assert_eq!((a.checkpoints.clone(), b.checkpoints.clone()), (vec![7168, 7424], vec![7168, 7552]));
-        assert_eq!(a.history(7168), b.history(7168));
+        assert_eq!((a.checkpoints.clone(), b.checkpoints.clone()), (vec![6656, 7424], vec![6656, 7552]));
+        assert_eq!(a.history(6656), b.history(6656));
+        assert_eq!(a.splits.len(), plan(7550, 512, None, None, &[]).splits.len(), "main's chunk count");
+        // two extra splits in one grid interval: only the first merges
+        let p = plan(1500, 512, Some(&c), Some(1100), &[1300]);
+        assert_eq!(p.splits, vec![512, 1024, 1280]);
         // short prompts: no grid checkpoint either
         assert!(plan(600, 512, Some(&c), Some(35), &[595]).checkpoints == vec![512]);
         // checkpoints below one block never happen
