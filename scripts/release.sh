@@ -73,15 +73,15 @@ git ls-remote --tags origin "refs/tags/${TAG}" | grep -q . && die "${TAG} alread
 
 # --- update the three version pins --------------------------------------------
 sed -i '' -E "s/^VERSION=\"\\\$\{MARKETING_VERSION:-[0-9]+\.[0-9]+\.[0-9]+\}\"/VERSION=\"\\\${MARKETING_VERSION:-${NEXT}}\"/" scripts/make-app.sh
-sed -i '' -E "s/fallback: \"[0-9]+\.[0-9]+\.[0-9]+\"/fallback: \"${NEXT}\"/" Sources/TokenHorizon/App/BuildInfo.swift
+sed -i '' -E "s/fallback: \"[0-9]+\.[0-9]+\.[0-9]+\"/fallback: \"${NEXT}\"/" clients/macos/Sources/TokenHorizon/App/BuildInfo.swift
 sed -i '' -E "s/^  version \"[0-9]+\.[0-9]+\.[0-9]+\"/  version \"${NEXT}\"/" packaging/homebrew/token-horizon.rb
 
 grep -q "MARKETING_VERSION:-${NEXT}" scripts/make-app.sh || die "make-app.sh pin update failed"
-grep -q "fallback: \"${NEXT}\"" Sources/TokenHorizon/App/BuildInfo.swift || die "BuildInfo.swift pin update failed"
+grep -q "fallback: \"${NEXT}\"" clients/macos/Sources/TokenHorizon/App/BuildInfo.swift || die "BuildInfo.swift pin update failed"
 grep -q "version \"${NEXT}\"" packaging/homebrew/token-horizon.rb || die "cask pin update failed"
 
 # --- commit, tag, push ---------------------------------------------------------
-git add scripts/make-app.sh Sources/TokenHorizon/App/BuildInfo.swift packaging/homebrew/token-horizon.rb
+git add scripts/make-app.sh clients/macos/Sources/TokenHorizon/App/BuildInfo.swift packaging/homebrew/token-horizon.rb
 # No [skip ci] here — the tag points at this commit and skip tokens can
 # suppress tag-push triggers too. The release workflow's job guard skips
 # this push via the 'release v' prefix instead.

@@ -227,13 +227,13 @@ jobs:
           # Converge the version pins too — release.sh already sets them for
           # tag-triggered runs (no-op then), but a manual dispatch skips it.
           sed -i '' -E "s/^VERSION=\"\\\$\{MARKETING_VERSION:-[0-9]+\.[0-9]+\.[0-9]+\}\"/VERSION=\"\\\${MARKETING_VERSION:-${V}}\"/" scripts/make-app.sh
-          sed -i '' -E "s/fallback: \"[0-9]+\.[0-9]+\.[0-9]+\"/fallback: \"${V}\"/" Sources/TokenHorizon/App/BuildInfo.swift
+          sed -i '' -E "s/fallback: \"[0-9]+\.[0-9]+\.[0-9]+\"/fallback: \"${V}\"/" clients/macos/Sources/TokenHorizon/App/BuildInfo.swift
 
           # Keep the in-repo metadata accurate (post-tag commit).
-          if ! git diff --quiet -- "$CASK" scripts/make-app.sh Sources/TokenHorizon/App/BuildInfo.swift; then
+          if ! git diff --quiet -- "$CASK" scripts/make-app.sh clients/macos/Sources/TokenHorizon/App/BuildInfo.swift; then
             git config user.name "github-actions[bot]"
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git add "$CASK" scripts/make-app.sh Sources/TokenHorizon/App/BuildInfo.swift
+            git add "$CASK" scripts/make-app.sh clients/macos/Sources/TokenHorizon/App/BuildInfo.swift
             git commit -m "release metadata: v${V} (cask sha256 + version pins) [skip ci]"
             git push origin HEAD:main || echo "::warning::release-metadata push to main failed — run scripts/sync-homebrew-tap.sh manually"
           fi
