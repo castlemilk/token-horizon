@@ -166,16 +166,18 @@ fn key(v: f32) -> f32 {
 /// Candle's full-vocab partition `Z = Σ_v e^((l_v - m) / T)`, summed in the
 /// kernel's order: lane t accumulates v = t, t + NT, ... sequentially, then
 /// a fixed binary tree (lane t += lane t + w for w = NT/2 .. 1).
+///
+/// The row is walked in NT-wide chunks (lane t takes element t of each
+/// chunk), which adds each lane's terms in exactly the strided order —
+/// the same bits — but reads the row sequentially and vectorises: 4.3x
+/// faster than walking lane by lane (0.19 vs 0.79 ms per 248k row, M5 Max),
+/// which had made this CPU path slower than the pre-S1 sampler.
 pub fn global_z(l: &[f32], m: f32, inv_t: f32) -> f32 {
-    let mut part = vec![0f32; NT];
-    for (t, p) in part.iter_mut().enumerate() {
-        let mut s = 0f32;
-        let mut v = t;
-        while v < l.len() {
-            s += th_expf((key(l[v]) - m) * inv_t);
-            v += NT;
+    let mut part = [0f32; NT];
+    for chunk in l.chunks(NT) {
+        for (p, &x) in part.iter_mut().zip(chunk) {
+            *p += th_expf((key(x) - m) * inv_t);
         }
-        *p = s;
     }
     let mut w = NT / 2;
     while w > 0 {
@@ -1089,6 +1091,50 @@ mod tests {
         assert_eq!(th_expf(-86.0), 0.0);
         assert_eq!(th_expf(f32::NAN), 0.0);
         assert_eq!(th_expf(f32::NEG_INFINITY), 0.0);
+    }
+
+    /// The chunked `global_z` adds each lane's terms in the kernel's
+    /// strided order: same bits as a lane-by-lane walk, including a
+    /// partial last chunk and NaN / -inf / tie-heavy rows.
+    #[test]
+    fn global_z_matches_strided_order() {
+        let strided = |l: &[f32], m: f32, inv_t: f32| {
+            let mut part = vec![0f32; NT];
+            for (t, p) in part.iter_mut().enumerate() {
+                let mut s = 0f32;
+                let mut v = t;
+                while v < l.len() {
+                    s += th_expf((key(l[v]) - m) * inv_t);
+                    v += NT;
+                }
+                *p = s;
+            }
+            let mut w = NT / 2;
+            while w > 0 {
+                for t in 0..w {
+                    part[t] = part[t] + part[t + w];
+                }
+                w /= 2;
+            }
+            part[0]
+        };
+        let mut seed = 0x51A7_E0FFu64;
+        for (trial, &n) in [248_320usize, 5000, 1024, 1000, 3 * 1024 + 1].iter().cycle().take(20).enumerate() {
+            let mut l: Vec<f32> = (0..n).map(|_| (rng(&mut seed) * 16.0 - 12.0) as f32).collect();
+            if trial % 3 == 0 {
+                l[n / 2] = f32::NAN;
+                l[n / 3] = f32::NEG_INFINITY;
+            }
+            if trial % 4 == 1 {
+                for x in l.iter_mut().step_by(7) {
+                    *x = half::bf16::from_f32(*x).to_f32();
+                }
+            }
+            let m = l.iter().map(|&v| key(v)).fold(f32::NEG_INFINITY, f32::max);
+            for inv_t in [1.0f32 / 0.6, 1.0, 1.0 / 0.3] {
+                assert_eq!(global_z(&l, m, inv_t).to_bits(), strided(&l, m, inv_t).to_bits(), "trial {trial} n {n}");
+            }
+        }
     }
 
     fn fake_prop(tokens: [u32; PROP], seed: &mut u64) -> crate::dflash::Proposal {
