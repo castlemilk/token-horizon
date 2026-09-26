@@ -54,8 +54,11 @@ final class PlanCardTests: XCTestCase {
         XCTAssertEqual(PlanLimitCard.extraTitle(ProviderLimit(provider: "c", label: "weekly · Fable",
                                                               usedPercent: 1, resetsAt: nil, detail: "")),
                        "FABLE")
-        XCTAssertEqual(PlanLimitCard.extraTitle(ProviderLimit(provider: "c", label: "5h",
+        XCTAssertEqual(PlanLimitCard.extraTitle(ProviderLimit(provider: "c", label: "monthly",
                                                               usedPercent: 1, resetsAt: nil, detail: "")),
-                       "EXTRA")
+                       "MONTHLY")
+        XCTAssertEqual(PlanLimitCard.extraTitle(ProviderLimit(provider: "c", label: "search",
+                                                              usedPercent: 1, resetsAt: nil, detail: "")),
+                       "SEARCH")
     }
 }

@@ -180,12 +180,17 @@ final class PlanLimitsEngineTests: XCTestCase {
                     "percent": 100.0,
                     "resetsAt": "2026-09-07T00:00:00.000Z",
                     "status": "rate-limited"
+                ],
+                "monthly": [
+                    "percent": 79.0,
+                    "resetsAt": "2026-09-08T12:39:39.000Z",
+                    "status": "active"
                 ]
             ]
         ]
 
         let limits = PlanLimitsEngine.parseOpencodeGoPayload(json)
-        XCTAssertEqual(limits.count, 2)
+        XCTAssertEqual(limits.count, 3)
 
         let rolling = limits.first(where: { $0.label == "rolling" })
         XCTAssertEqual(rolling?.usedPercent, 35.0)
@@ -194,6 +199,11 @@ final class PlanLimitsEngineTests: XCTestCase {
         let weekly = limits.first(where: { $0.label == "weekly" })
         XCTAssertEqual(weekly?.usedPercent, 100.0)
         XCTAssertEqual(weekly?.detail, "rate-limited")
+
+        let monthly = limits.first(where: { $0.label == "monthly" })
+        XCTAssertEqual(monthly?.usedPercent, 79.0)
+        XCTAssertNotNil(monthly?.resetsAt)
+        XCTAssertTrue(monthly?.isWeekly ?? false, "monthly is a cycle-class window")
     }
 
     func testParseAlibabaPayload_ratioOrPercent() {

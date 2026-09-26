@@ -124,10 +124,13 @@ final class ClaudeScopedQuotaTests: XCTestCase {
         XCTAssertEqual(PlanLimitCard.extraTitle(fable), "FABLE")
     }
 
-    func testExtraTitle_plainShowsExtra() {
+    func testExtraTitle_plainShowsLabel() {
         let search = ProviderLimit(provider: "glm", label: "search",
                                    usedPercent: 10, resetsAt: nil, detail: "120 left")
-        XCTAssertEqual(PlanLimitCard.extraTitle(search), "EXTRA")
+        XCTAssertEqual(PlanLimitCard.extraTitle(search), "SEARCH")
+        let monthly = ProviderLimit(provider: "opencode-go", label: "monthly",
+                                    usedPercent: 80, resetsAt: nil, detail: "")
+        XCTAssertEqual(PlanLimitCard.extraTitle(monthly), "MONTHLY")
     }
 
     // MARK: - Popout placement (scroll-aware flip)

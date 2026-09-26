@@ -170,6 +170,16 @@ final class CoverageImprovementTests: XCTestCase {
         XCTAssertEqual(daily.id, "codex:5h")
         let adv = ProviderLimit(provider: "x", label: "advanced tools", usedPercent: 10, resetsAt: nil, detail: "")
         XCTAssertTrue(adv.isWeekly)
+        // Cycle-class numeric windows: 7d+ days and Nmo months.
+        for label in ["7d", "14d", "30d", "1mo", "2mo", "monthly", "gpt-5 30d"] {
+            XCTAssertTrue(ProviderLimit(provider: "x", label: label, usedPercent: 0,
+                                        resetsAt: nil, detail: "").isWeekly, label)
+        }
+        // Burst-class spans stay burst-class.
+        for label in ["5h", "45m", "1d", "interval", "rolling", "balance"] {
+            XCTAssertFalse(ProviderLimit(provider: "x", label: label, usedPercent: 0,
+                                         resetsAt: nil, detail: "").isWeekly, label)
+        }
     }
 
     func testProviderLimitResetTiming() {

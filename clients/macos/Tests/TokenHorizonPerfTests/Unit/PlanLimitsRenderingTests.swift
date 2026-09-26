@@ -64,6 +64,26 @@ final class PlanLimitsRenderingTests: XCTestCase {
                        "opencode-go zen")
     }
 
+    func testBuildRows_opencodeGoMonthlyRidesExtra() {
+        // opencode zen reports rolling + weekly + monthly: rolling is the
+        // burst slot, weekly the cycle slot, monthly the extra slot (rendered
+        // as a stacked second line in the headroom column).
+        let limits = [
+            ProviderLimit(provider: "opencode-go", label: "rolling", usedPercent: 5,
+                          resetsAt: Date().addingTimeInterval(3600), detail: ""),
+            ProviderLimit(provider: "opencode-go", label: "weekly", usedPercent: 24,
+                          resetsAt: Date().addingTimeInterval(86_400), detail: ""),
+            ProviderLimit(provider: "opencode-go", label: "monthly", usedPercent: 100,
+                          resetsAt: Date().addingTimeInterval(86_400 * 10), detail: "rate-limited"),
+        ]
+        let rows = makeHost().buildUnifiedPlanRows(from: limits)
+        XCTAssertEqual(rows.count, 1)
+        XCTAssertEqual(rows[0].burstLimit?.label, "rolling")
+        XCTAssertEqual(rows[0].cycleLimit?.label, "weekly")
+        XCTAssertEqual(rows[0].extraLimit?.label, "monthly")
+        XCTAssertEqual(rows[0].subtitle, "opencode-go zen")
+    }
+
     func testMultiAccountClaude_eachGetsARow() {
         let limits = claudeLimits(tag: "alpha", fiveH: 28, weekly: 51)
             + claudeLimits(tag: "beta", fiveH: 17, weekly: 4)

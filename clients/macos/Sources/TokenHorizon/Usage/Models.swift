@@ -152,7 +152,22 @@ struct ProviderLimit: Codable, Identifiable {
 
     var isWeekly: Bool {
         let l = label.lowercased()
-        return l.contains("week") || l.contains("7d") || l.contains("month") || l.contains("advanced")
+        if l.contains("week") || l.contains("month") || l.contains("advanced") { return true }
+        // Numeric windows at week scale or longer are long-cycle quotas:
+        // "7d"/"14d"/"30d" (codex wham windows) and "1mo"/"2mo". Shorter
+        // spans ("5h", "1d", "45m") stay burst-class. Digit runs are scanned
+        // so prefixed labels ("gpt-5 30d") classify too.
+        let chars = Array(l)
+        var digits = ""
+        for (i, ch) in chars.enumerated() {
+            if ch.isNumber { digits.append(ch); continue }
+            if let n = Int(digits) {
+                if ch == "d" && n >= 7 { return true }
+                if ch == "m" && i + 1 < chars.count && chars[i + 1] == "o" { return true }
+            }
+            digits = ""
+        }
+        return false
     }
 
     var remainingPercent: Double {

@@ -20,9 +20,10 @@ struct PlanLimitCard: View {
     let row: UnifiedPlanRow
 
     /// Card section title for the `extra` slot: scoped quotas show the model
-    /// name ("weekly · Fable" → "FABLE"), everything else is "EXTRA".
+    /// name ("weekly · Fable" → "FABLE"), everything else shows the window
+    /// label itself ("monthly" → "MONTHLY", "search" → "SEARCH").
     static func extraTitle(_ limit: ProviderLimit) -> String {
-        limit.label.contains("·") ? DashboardTabs.scopedModelName(limit.label).uppercased() : "EXTRA"
+        limit.label.contains("·") ? DashboardTabs.scopedModelName(limit.label).uppercased() : limit.label.uppercased()
     }
 
     /// Estimated card height for the current row's content. Mirrors the body

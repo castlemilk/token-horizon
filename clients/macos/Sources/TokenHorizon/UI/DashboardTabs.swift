@@ -1152,7 +1152,7 @@ struct DashboardTabs: View {
                             .foregroundStyle(.white.opacity(0.4))
                             .frame(width: 95, alignment: .leading)
 
-                        Text("WEEKLY HEADROOM")
+                        Text("CYCLE HEADROOM")
                             .font(.system(size: 7.5, weight: .bold, design: .monospaced))
                             .foregroundStyle(.white.opacity(0.4))
                             .frame(width: 130, alignment: .leading)
@@ -1232,26 +1232,17 @@ struct DashboardTabs: View {
                                         .frame(width: 95, alignment: .leading)
                                 }
 
-                                // Column 3: Weekly Headroom (width: 130)
+                                // Column 3: Cycle headroom (width: 130) — weekly
+                                // and monthly stack when a provider reports both
+                                // (e.g. opencode-go); scoped/search extras stay in
+                                // the hover card + subtitle.
                                 if let c = row.cycleLimit {
-                                    let rem = c.remainingPercent
-                                    HStack(spacing: 4) {
-                                        ZStack(alignment: .leading) {
-                                            Capsule().fill(Color.white.opacity(0.12))
-                                            Capsule().fill(rem > 50 ? Color.green : rem > 20 ? Color.orange : Color.red)
-                                                .frame(width: max(2, CGFloat(36 * Swift.min(rem, 100) / 100)))
-                                        }
-                                        .frame(width: 36, height: 4)
-
-                                        Text("\(String(format: "%.0f%%", rem)) left")
-                                            .font(.system(size: 7.5, weight: .semibold, design: .monospaced))
-                                            .foregroundStyle(rem > 50 ? Color.green : rem > 20 ? Color.orange : Color.red)
-                                            .frame(width: 44, alignment: .leading)
-
-                                        Text("(\(Int(c.usedPercent))%)")
-                                            .font(.system(size: 6.5, design: .monospaced))
-                                            .foregroundStyle(.white.opacity(0.35))
-                                            .frame(width: 34, alignment: .trailing)
+                                    let extraCycle = row.extraLimit.flatMap {
+                                        $0.isWeekly && !$0.label.contains("·") ? $0 : nil
+                                    }
+                                    VStack(alignment: .leading, spacing: 3) {
+                                        planCycleLine(c)
+                                        if let x = extraCycle { planCycleLine(x) }
                                     }
                                     .frame(width: 130, alignment: .leading)
                                 } else {
@@ -3393,7 +3384,9 @@ struct DashboardTabs: View {
             } else if provider == "minimax" {
                 sub = "minimax-coding-plan"
             } else if provider == "opencode-go" {
-                sub = extra != nil ? "extra: \(extra!.label)" : "opencode-go zen"
+                // Second cycle windows (monthly) render inline in the row —
+                // only non-window extras ("search") earn a subtitle mention.
+                sub = extra.map { $0.isWeekly ? "opencode-go zen" : "extra: \($0.label)" } ?? "opencode-go zen"
             } else if provider == "glm" {
                 sub = extra != nil ? "search: \(extra!.detail)" : "zai-coding-plan"
             } else if provider == "codex" {
@@ -3426,6 +3419,44 @@ struct DashboardTabs: View {
             let d2 = r2.cycleLimit?.resetsAt ?? r2.burstLimit?.resetsAt ?? .distantFuture
             return d1 < d2
         }
+    }
+
+    /// Short window tag for the plan-cycle headroom lines: WK / MO / 7D / 30D.
+    static func cycleTag(_ label: String) -> String {
+        let l = label.lowercased()
+        if l.contains("week") { return "WK" }
+        if l.contains("month") || l.hasSuffix("mo") { return "MO" }
+        return String(l.uppercased().prefix(4))
+    }
+
+    /// One compact cycle-headroom line in the PLAN LIMITS table: window tag +
+    /// remaining bar + "N% left" + "(used%)". Sized to the 130pt column; two
+    /// stack when a provider reports weekly and monthly windows.
+    private func planCycleLine(_ c: ProviderLimit) -> some View {
+        let rem = c.remainingPercent
+        return HStack(spacing: 4) {
+            Text(DashboardTabs.cycleTag(c.label))
+                .font(.system(size: 6.5, weight: .bold, design: .monospaced))
+                .foregroundStyle(.white.opacity(0.4))
+                .frame(width: 20, alignment: .leading)
+            ZStack(alignment: .leading) {
+                Capsule().fill(Color.white.opacity(0.12))
+                Capsule().fill(rem > 50 ? Color.green : rem > 20 ? Color.orange : Color.red)
+                    .frame(width: max(2, CGFloat(30 * Swift.min(rem, 100) / 100)))
+            }
+            .frame(width: 30, height: 4)
+
+            Text("\(String(format: "%.0f%%", rem)) left")
+                .font(.system(size: 7.5, weight: .semibold, design: .monospaced))
+                .foregroundStyle(rem > 50 ? Color.green : rem > 20 ? Color.orange : Color.red)
+                .frame(width: 40, alignment: .leading)
+
+            Text("(\(Int(c.usedPercent))%)")
+                .font(.system(size: 6.5, design: .monospaced))
+                .foregroundStyle(.white.opacity(0.35))
+                .frame(width: 28, alignment: .trailing)
+        }
+        .frame(width: 130, alignment: .leading)
     }
 }
 
