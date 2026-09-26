@@ -448,7 +448,10 @@ pub fn qmvt_cfg_for(out: usize, _inp: usize, gate_up: bool) -> QmvtCfg {
 }
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
-pub use metal_impl::{pf_compile, pf_force_legacy, pf_route, pf_shapes, pf_warm, AffineQpf, PfCfg};
+pub use metal_impl::{
+    pf_compile, pf_force_legacy, pf_force_legacy_large, pf_route, pf_shapes, pf_vec_layout_ok, pf_warm,
+    AffineQpf, PfCfg,
+};
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
 mod metal_impl {
@@ -4188,6 +4191,186 @@ kernel void Name(device const bfloat* input  [[buffer(0)]],                 \
       uint(p.split_groups), tg.y * TileN, lane, sgi, tsums);                \
 }
 
+// E1 large-M tile ("+v"): pf_tile's math with a vectorized epilogue. The
+// destination cooperative tensor gives every thread its Cap elements in runs
+// of 4 consecutive columns on one row (i = 4j..4j+3 -> cols c_j..c_j+3, row
+// r_j; `pf_vec_layout_ok` verifies this per shape before the host routes
+// here). Per quant group a run needs one 8-byte scale load, one 8-byte bias
+// load and one row sum, instead of a 64-bit parameter index plus two scalar
+// loads per element. The per-element arithmetic is legacy
+// th_mpp_prefill_tile's source form `acc += p*s + sum*b` (same contraction),
+// so plain / up·silu outputs are bitwise equal to AffineQmppPrefill on the
+// same sums (pf_prep's lane pattern == the legacy sums pass). Unsplit only.
+template <ushort Rows, ushort TileN, ushort Sgs, ushort Mode, bool Staged>
+inline void pf_vtile(device bfloat *input, device uchar *w0, device bfloat *s0,
+                     device bfloat *b0, device const float *sums,
+                     device bfloat *aux, device bfloat *out, uint out_size,
+                     uint in_size, uint live, uint output_origin, uint lane,
+                     uint sgi, threadgroup float *tsums) {
+  constexpr ushort StorageN = 256;
+  constexpr uint Batch = 256;
+  constexpr ushort Cap = ushort(uint(Rows) * TileN / (uint(Sgs) * 32u));
+  constexpr ushort Runs = Cap / 4;
+  auto a = tensor(input, dextents<int, 2>{int(in_size), Rows},
+                  array<int, 2>{1, int(in_size)});
+  constexpr auto descriptor =
+      matmul2d_descriptor(Rows, TileN, 64, false, true, false);
+  matmul2d<descriptor, execution_simdgroups<Sgs>> operation;
+  const uint total_groups = in_size / 64;
+  const uint tile = output_origin / StorageN;
+  const uint tile_offset = output_origin % StorageN;
+  device uchar *tw =
+      w0 + (ulong(tile) * total_groups * StorageN + tile_offset) * 32;
+  tensor<device uint4b_format, dextents<int, 2>, tensor_inline> fb(
+      tw, dextents<int, 2>{64, TileN}, array<int, 2>{1, 64});
+  auto a0 = a.slice<64, Rows>(0, 0);
+  auto b0s = fb.slice<64, TileN>(0, 0);
+  auto acc = operation.template get_destination_cooperative_tensor<
+      decltype(a0), decltype(b0s), float>();
+  ushort colr[Runs];
+  ushort rowr[Runs];
+#pragma unroll
+  for (ushort j = 0; j < Runs; ++j) {
+    auto idx = acc.get_multidimensional_index(j * 4);
+    colr[j] = ushort(idx[0]);
+    rowr[j] = ushort(idx[1]);
+  }
+#pragma unroll
+  for (ushort i = 0; i < Cap; ++i) acc[i] = 0.0f;
+  device const bfloat *sp =
+      s0 + ulong(tile) * total_groups * StorageN + tile_offset;
+  device const bfloat *bp =
+      b0 + ulong(tile) * total_groups * StorageN + tile_offset;
+  if constexpr (Staged) {
+    for (uint idx = sgi * 32 + lane; idx < min(Batch, total_groups) * Rows;
+         idx += Sgs * 32)
+      tsums[idx] = sums[idx];
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+  }
+  for (uint g = 0; g < total_groups; ++g) {
+    auto a_slice = a.slice<64, Rows>(g * 64, 0);
+    tensor<device uint4b_format, dextents<int, 2>, tensor_inline> bq(
+        tw + ulong(g) * StorageN * 32, dextents<int, 2>{64, TileN},
+        array<int, 2>{1, 64});
+    auto bs = bq.slice<64, TileN>(0, 0);
+    auto pr = operation.template get_destination_cooperative_tensor<
+        decltype(a_slice), decltype(bs), float>();
+    operation.run(a_slice, bs, pr);
+#pragma unroll
+    for (ushort j = 0; j < Runs; ++j) {
+      const bfloat4 s4 = *(device const bfloat4 *)(sp + colr[j]);
+      const bfloat4 b4 = *(device const bfloat4 *)(bp + colr[j]);
+      float sum;
+      if constexpr (Staged)
+        sum = tsums[(g % Batch) * Rows + rowr[j]];
+      else
+        sum = sums[g * Rows + rowr[j]];
+#pragma unroll
+      for (ushort k = 0; k < 4; ++k)
+        acc[j * 4 + k] += pr[j * 4 + k] * float(s4[k]) + sum * float(b4[k]);
+    }
+    sp += StorageN;
+    bp += StorageN;
+    if constexpr (Staged) {
+      if (g % Batch == Batch - 1 && g + 1 < total_groups) {
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        for (uint idx = sgi * 32 + lane;
+             idx < min(Batch, total_groups - g - 1) * Rows; idx += Sgs * 32)
+          tsums[idx] = sums[(g + 1) * Rows + idx];
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+      }
+    }
+  }
+  auto conv = operation.template get_destination_cooperative_tensor<
+      decltype(a0), decltype(b0s), bfloat>();
+#pragma unroll
+  for (ushort j = 0; j < Runs; ++j) {
+#pragma unroll
+    for (ushort k = 0; k < 4; ++k) {
+      float value = float(bfloat(acc[j * 4 + k]));
+      if constexpr (Mode == PfUpSilu) {
+        const uint col = output_origin + colr[j] + k;
+        const uint row = rowr[j];
+        const bool ok = row < live && col < out_size;
+        value = pf_silu_mul(
+            ok ? float(aux[ulong(row) * out_size + col]) : 0.0f, value);
+      }
+      conv[j * 4 + k] = bfloat(value);
+    }
+  }
+  if (live == Rows && output_origin + TileN <= out_size) {
+    auto c = tensor(out, dextents<int, 2>{int(out_size), Rows},
+                    array<int, 2>{1, int(out_size)});
+    conv.store(c.slice<TileN, Rows>(output_origin, 0));
+    return;
+  }
+#pragma unroll
+  for (ushort j = 0; j < Runs; ++j) {
+#pragma unroll
+    for (ushort k = 0; k < 4; ++k) {
+      const uint col = output_origin + colr[j] + k;
+      const uint row = rowr[j];
+      if (row < live && col < out_size)
+        out[ulong(row) * out_size + col] = conv[j * 4 + k];
+    }
+  }
+}
+
+// Same buffer interface as PF_ENTRY (the host's tile pass binds both alike).
+#define PF_VENTRY(Name, Rows, TileN, Sgs, Mode)                              \
+kernel void Name(device const bfloat* input  [[buffer(0)]],                 \
+                 device const uchar*  weights [[buffer(1)]],                \
+                 device const bfloat* sb      [[buffer(2)]],                \
+                 device const float*  sums    [[buffer(3)]],                \
+                 device bfloat*       aux     [[buffer(4)]],                \
+                 device bfloat*       out     [[buffer(5)]],                \
+                 device float*        part    [[buffer(6)]],                \
+                 constant PfParams&   p       [[buffer(7)]],                \
+                 uint3 tg [[threadgroup_position_in_grid]],                 \
+                 uint lane [[thread_index_in_simdgroup]],                   \
+                 uint sgi [[simdgroup_index_in_threadgroup]]) {             \
+  threadgroup float tsums[(Sgs) == 8 ? (Rows) * 256 : 1];                   \
+  const uint ng = uint(p.in_dim) / 64;                                      \
+  const uint row0 = tg.x * Rows;                                            \
+  const uint live = min(uint(Rows), uint(p.m) - row0);                      \
+  const ulong ob = ulong(row0) * uint(p.out_dim);                           \
+  device uchar* wb = const_cast<device uchar*>(weights);                    \
+  device bfloat* sbb = const_cast<device bfloat*>(sb);                      \
+  pf_vtile<Rows, TileN, Sgs, Mode, (Sgs) == 8>(                             \
+      const_cast<device bfloat*>(input) + ulong(row0) * uint(p.in_dim),     \
+      wb + p.w_off, sbb + p.s_off, sbb + p.bias_base + p.s_off,             \
+      sums + ulong(tg.x) * ng * Rows, aux + ob, out + ob, uint(p.out_dim),  \
+      uint(p.in_dim), live, tg.y * TileN, lane, sgi, tsums);                \
+}
+
+// Layout probe for `pf_vec_layout_ok`: out[1 + (tid*cap + i)*3 + {0,1,2}] =
+// (valid, col, row) of destination element i of thread tid; out[0] = cap.
+#define PF_VPROBE(Name, Rows, TileN, Sgs)                                    \
+kernel void Name(device const bfloat* x [[buffer(0)]],                      \
+                 device const uchar* w [[buffer(1)]],                       \
+                 device int* out [[buffer(2)]],                             \
+                 uint tid [[thread_index_in_threadgroup]]) {                \
+  auto a = tensor(const_cast<device bfloat*>(x), dextents<int, 2>{64, Rows}, \
+                  array<int, 2>{1, 64});                                    \
+  tensor<device uint4b_format, dextents<int, 2>, tensor_inline> b(          \
+      const_cast<device uchar*>(w), dextents<int, 2>{64, TileN},            \
+      array<int, 2>{1, 64});                                                \
+  constexpr auto d = matmul2d_descriptor(Rows, TileN, 64, false, true, false); \
+  matmul2d<d, execution_simdgroups<Sgs>> op;                                \
+  auto a0 = a.slice<64, Rows>(0, 0);                                        \
+  auto b0 = b.slice<64, TileN>(0, 0);                                       \
+  auto acc = op.template get_destination_cooperative_tensor<                \
+      decltype(a0), decltype(b0), float>();                                 \
+  const int cap = acc.get_capacity();                                       \
+  if (tid == 0) out[0] = cap;                                               \
+  for (int i = 0; i < cap; ++i) {                                           \
+    auto idx = acc.get_multidimensional_index(i);                           \
+    out[1 + (tid * cap + i) * 3 + 0] = acc.is_valid_element(i) ? 1 : 0;     \
+    out[1 + (tid * cap + i) * 3 + 1] = idx[0];                              \
+    out[1 + (tid * cap + i) * 3 + 2] = idx[1];                              \
+  }                                                                         \
+}
+
 // Two-stream gate/up: stream 0 = gate, stream 1 = up (tiles from
 // p.up_woff/p.up_soff), output silu(bf16 gate)·bf16 up over out_size
 // columns — the same values as the gate→scratch + up·silu passes.
@@ -4315,6 +4498,8 @@ kernel void pf_reduce(device const float* part [[buffer(0)]],
     ];
     /// single-stream epilogues (`PF_ENTRY`); "gu" is `PF_GU_ENTRY`
     const PF_MODES: &[(&str, usize)] = &[("pl", 0), ("us", 2), ("pt", 3)];
+    /// E1 vectorized-epilogue tiles (`PF_VENTRY`): plain, up·silu(gate)
+    const PF_VMODES: &[(&str, usize)] = &[("vpl", 0), ("vus", 2)];
 
     /// The instantiated (rows, tile_n, simdgroups) shapes (bench sweeps).
     pub fn pf_shapes() -> &'static [(usize, usize, usize)] {
@@ -4338,11 +4523,14 @@ kernel void pf_reduce(device const float* part [[buffer(0)]],
         pub splits: usize,
         /// gate/up: one two-stream pass (else gate→scratch, up·silu)
         pub fused: bool,
+        /// E1: vectorized-epilogue tile (`pf_vtile`, "+v"; unsplit,
+        /// unfused) — bitwise equal to the legacy `AffineQmppPrefill`
+        pub vec: bool,
     }
 
     impl PfCfg {
         pub const fn new(rows: usize, tile_n: usize, sgs: usize) -> Self {
-            Self { rows, tile_n, sgs, splits: 1, fused: false }
+            Self { rows, tile_n, sgs, splits: 1, fused: false, vec: false }
         }
         pub fn exists(&self) -> bool {
             PF_SHAPES.contains(&(self.rows, self.tile_n, self.sgs))
@@ -4355,6 +4543,9 @@ kernel void pf_reduce(device const float* part [[buffer(0)]],
             }
             if self.fused {
                 s += "+gu";
+            }
+            if self.vec {
+                s += "+v";
             }
             s
         }
@@ -4419,6 +4610,14 @@ kernel void pf_reduce(device const float* part [[buffer(0)]],
         let name = pf_name(r, n, sg, "gu");
         src += &format!("PF_GU_ENTRY({name}, {r}, {n}, {sg})\n");
         names.push(name);
+        for &(mode, id) in PF_VMODES {
+            let name = pf_name(r, n, sg, mode);
+            src += &format!("PF_VENTRY({name}, {r}, {n}, {sg}, {id})\n");
+            names.push(name);
+        }
+        let name = pf_name(r, n, sg, "vprobe");
+        src += &format!("PF_VPROBE({name}, {r}, {n}, {sg})\n");
+        names.push(name);
         let lib = pf_build(device, &src, &names)?;
         let _ = PF_LIBS[idx].set(lib);
         Ok(PF_LIBS[idx].get().unwrap())
@@ -4434,9 +4633,110 @@ kernel void pf_reduce(device const float* part [[buffer(0)]],
         Ok(n)
     }
 
+    /// E1: per `PF_SHAPES` entry, whether its destination cooperative
+    /// tensor has the layout `pf_vtile` assumes (`pf_vec_layout_check`).
+    /// MPP's layout is implementation-defined — an OS update may change
+    /// it — so it is probed once per process (`pf_warm`); a shape whose
+    /// probe fails, or never ran, never routes to the vec tile.
+    static PF_VLAYOUT: [OnceLock<bool>; PF_SHAPES.len()] =
+        [const { OnceLock::new() }; PF_SHAPES.len()];
+
+    fn pf_shape_idx(c: &PfCfg) -> Option<usize> {
+        PF_SHAPES.iter().position(|&t| t == (c.rows, c.tile_n, c.sgs))
+    }
+
+    /// The layout the vec epilogue relies on, from `PF_VPROBE`'s dump
+    /// (`dump[0]` = capacity, then (valid, col, row) per thread element):
+    /// capacity * threads == rows * tile_n, elements 4j..4j+3 of every
+    /// thread are 4 consecutive columns (4-aligned) on one row, all valid,
+    /// and every tile element is owned exactly once.
+    pub(crate) fn pf_vec_layout_check(dump: &[i32], threads: usize, rows: usize, tile_n: usize) -> bool {
+        let cap = dump.first().copied().unwrap_or(0).max(0) as usize;
+        if cap == 0 || cap % 4 != 0 || cap * threads != rows * tile_n || dump.len() < 1 + threads * cap * 3 {
+            return false;
+        }
+        let mut seen = vec![false; rows * tile_n];
+        for t in 0..threads {
+            let e = |i: usize| {
+                let b = 1 + (t * cap + i) * 3;
+                (dump[b], dump[b + 1], dump[b + 2])
+            };
+            for j in 0..cap / 4 {
+                let (_, c0, r0) = e(4 * j);
+                if c0 < 0 || c0 % 4 != 0 {
+                    return false;
+                }
+                for k in 0..4 {
+                    let (v, c, r) = e(4 * j + k);
+                    if v != 1 || c != c0 + k as i32 || r != r0 || r < 0 {
+                        return false;
+                    }
+                    let (c, r) = (c as usize, r as usize);
+                    if c >= tile_n || r >= rows || std::mem::replace(&mut seen[r * tile_n + c], true) {
+                        return false;
+                    }
+                }
+            }
+        }
+        seen.iter().all(|&x| x)
+    }
+
+    /// Run `PF_VPROBE` for `c`'s shape and check its layout.
+    fn pf_vec_layout_probe(device: &candle_core::MetalDevice, c: &PfCfg) -> Result<bool> {
+        let lib = pf_shape_lib(device, c)?;
+        let name = pf_name(c.rows, c.tile_n, c.sgs, "vprobe");
+        let pipe = lib
+            .get(&name)
+            .ok_or_else(|| candle_core::Error::Msg(format!("affine-qpf: no kernel {name}")))?;
+        let threads = 32 * c.sgs;
+        let n = 1 + threads * 256 * 3;
+        let alloc = |bytes: usize| {
+            device.new_buffer_builder().with_size(bytes).build().map_err(candle_core::Error::wrap)
+        };
+        let x = alloc(64 * c.rows * 2)?;
+        let w = alloc(64 * c.tile_n / 2)?;
+        let out = alloc(n * 4)?;
+        {
+            let encoder = device.command_encoder().map_err(candle_core::Error::wrap)?;
+            encoder.set_label("pf_vprobe");
+            let enc_ref = &encoder;
+            let enc: &candle_metal_kernels::metal::ComputeCommandEncoder = enc_ref.encoder().as_ref();
+            enc.set_compute_pipeline_state(pipe);
+            enc.set_input_buffer(0, Some(&x), 0);
+            enc.set_input_buffer(1, Some(&w), 0);
+            enc.set_output_buffer(2, Some(&out), 0);
+            enc.dispatch_thread_groups(
+                MTLSize { width: 1, height: 1, depth: 1 },
+                MTLSize { width: threads, height: 1, depth: 1 },
+            );
+        }
+        device.wait_until_completed().map_err(candle_core::Error::wrap)?;
+        // SAFETY: shared-storage buffer of `n` i32, the dispatch completed
+        let dump = unsafe { std::slice::from_raw_parts(out.contents() as *const i32, n) };
+        Ok(pf_vec_layout_check(dump, threads, c.rows, c.tile_n))
+    }
+
+    /// Probe (once) and report whether `c`'s shape may take the vec tile.
+    pub fn pf_vec_layout_ok(device: &candle_core::MetalDevice, c: &PfCfg) -> bool {
+        let Some(idx) = pf_shape_idx(c) else { return false };
+        *PF_VLAYOUT[idx].get_or_init(|| match pf_vec_layout_probe(device, c) {
+            Ok(true) => true,
+            Ok(false) => {
+                tracing::warn!(shape = %c.label(), "prefill vec tile: unexpected cooperative-tensor layout — legacy path");
+                false
+            }
+            Err(e) => {
+                tracing::warn!(shape = %c.label(), error = %e, "prefill vec tile: layout probe failed — legacy path");
+                false
+            }
+        })
+    }
+
     /// The (rows, tile_n, simdgroups) shapes `pf_policy` can return (unit
     /// test `pf_policy_only_returns_warmed_shapes` keeps them in sync).
     const PF_POLICY_SHAPES: [(usize, usize, usize); 2] = [(16, 128, 4), (32, 256, 8)];
+    /// E1: the shapes `pf_policy_large` can return (warmed + probed at load).
+    const PF_LARGE_SHAPES: [(usize, usize, usize); 1] = [(32, 128, 4)];
 
     /// Compile, at model load, every tile library `pf_route` can pick
     /// under the current env (the policy's shapes, or the TH_PF-forced
@@ -4451,7 +4751,7 @@ kernel void pf_reduce(device const float* part [[buffer(0)]],
         if off {
             return Ok(0);
         }
-        let shapes: Vec<PfCfg> = match forced {
+        let mut shapes: Vec<PfCfg> = match forced {
             Some(c) if c.exists() => vec![c],
             Some(_) => return Ok(0),
             None => PF_POLICY_SHAPES
@@ -4459,9 +4759,22 @@ kernel void pf_reduce(device const float* part [[buffer(0)]],
                 .map(|&(r, n, sg)| PfCfg::new(r, n, sg))
                 .collect(),
         };
+        let large = pf_large_env();
+        if forced.is_none() && !large.0 {
+            match large.1 {
+                Some(c) if c.exists() => shapes.push(c),
+                _ => shapes.extend(PF_LARGE_SHAPES.iter().map(|&(r, n, sg)| PfCfg::new(r, n, sg))),
+            }
+        }
         let mut n = pf_common(device)?.len();
         for c in &shapes {
             n += pf_shape_lib(device, c)?.len();
+        }
+        // E1: probe the vec tile's layout assumption for every warmed shape
+        // (a forced "+v" config included) before a request can route there
+        for c in &shapes {
+            let ok = pf_vec_layout_ok(device, c);
+            tracing::debug!(shape = %c.label(), ok, "prefill vec tile layout");
         }
         Ok(n)
     }
@@ -4534,6 +4847,9 @@ kernel void pf_reduce(device const float* part [[buffer(0)]],
             if ng % splits != 0 || (gate_up && splits > 1) {
                 candle_core::bail!("affine-qpf: bad split {splits} for ng={ng} gate_up={gate_up}");
             }
+            if c.vec && (splits > 1 || c.fused) {
+                candle_core::bail!("affine-qpf: the vec tile is unsplit and unfused ({c:?})");
+            }
             if l_x.shape().elem_count() != self.m * self.inp {
                 candle_core::bail!("affine-qpf: x {:?} != [{}, {}]", l_x.shape(), self.m, self.inp);
             }
@@ -4549,13 +4865,15 @@ kernel void pf_reduce(device const float* part [[buffer(0)]],
                 "pt"
             } else if gate_up && c.fused {
                 "gu"
+            } else if c.vec {
+                "vpl"
             } else {
                 "pl"
             };
             let p_prep = pipe("pf_prep")?;
             let p_tile = pipe(&pf_name(c.rows, c.tile_n, c.sgs, mode))?;
             let p_up = if gate_up && !c.fused {
-                Some(pipe(&pf_name(c.rows, c.tile_n, c.sgs, "us"))?)
+                Some(pipe(&pf_name(c.rows, c.tile_n, c.sgs, if c.vec { "vus" } else { "us" }))?)
             } else {
                 None
             };
@@ -4727,12 +5045,68 @@ kernel void pf_reduce(device const float* part [[buffer(0)]],
             return None;
         }
         let ng = inp / 64;
-        let valid = |c: PfCfg| c.exists() && ng % c.splits == 0 && !(gate_up && c.splits > 1);
+        let valid = |c: PfCfg| {
+            c.exists()
+                && ng % c.splits == 0
+                && !(gate_up && c.splits > 1)
+                && (!c.vec || (c.splits == 1 && !c.fused && pf_vec_probed_ok(&c)))
+        };
         if let Some(c) = forced {
             let c = PfCfg { fused: c.fused && gate_up, ..c };
             return valid(c).then_some(c);
         }
+        if m > 128 {
+            // E1: long-prompt chunks — the vec tile (bitwise equal to the
+            // legacy AffineQmppPrefill) unless TH_PF_LARGE=0
+            let (large_off, large_forced) = pf_large_env();
+            if large_off || PF_LARGE_LEGACY.load(std::sync::atomic::Ordering::Relaxed) {
+                return None;
+            }
+            let c = large_forced.or_else(|| pf_policy_large(m, out, inp, gate_up))?;
+            let c = PfCfg { fused: c.fused && gate_up, ..c };
+            return valid(c).then_some(c);
+        }
         pf_policy(m, out, inp, gate_up, cores).filter(|&c| valid(c))
+    }
+
+    /// The layout probe ran for `c`'s shape and passed (`pf_warm`).
+    fn pf_vec_probed_ok(c: &PfCfg) -> bool {
+        pf_shape_idx(c).and_then(|i| PF_VLAYOUT[i].get().copied()).unwrap_or(false)
+    }
+
+    /// E1 bench hook: force the legacy tile for m > 128 at runtime so
+    /// TH_BENCH_PREFILL can interleave legacy and vec forwards in one
+    /// process. Off by default; a relaxed load is its only per-call cost.
+    static PF_LARGE_LEGACY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+    pub fn pf_force_legacy_large(on: bool) {
+        PF_LARGE_LEGACY.store(on, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// (off, forced) from TH_PF_LARGE, read once: `0` keeps m > 128 on the
+    /// legacy AffineQmppPrefill (the pre-E1 path); a config label (e.g.
+    /// `r32n256s8+v`) forces that tile for m > 128 (A/B).
+    fn pf_large_env() -> (bool, Option<PfCfg>) {
+        static ENV: OnceLock<(bool, Option<PfCfg>)> = OnceLock::new();
+        *ENV.get_or_init(|| {
+            let v = std::env::var("TH_PF_LARGE").ok();
+            let off = v.as_deref() == Some("0");
+            let forced = if off { None } else { v.as_deref().and_then(pf_parse) };
+            (off, forced)
+        })
+    }
+
+    /// E1 policy for m > 128 (long-prompt chunks, the draft's prompt-row
+    /// fc/qkv): the 32x128 four-simdgroup vec tile — Splash's Apple10
+    /// prefill shape with the vectorized epilogue. Measured (GPU
+    /// timestamps, M5 Max, M = 256..4096, every model projection) ahead of
+    /// the legacy op (pad + one-threadgroup-per-32-rows sums pass + 32x256
+    /// tile + narrow copy) on every shape; see th-e-prefill-gemm.md.
+    pub(crate) fn pf_policy_large(m: usize, _out: usize, inp: usize, _gate_up: bool) -> Option<PfCfg> {
+        if m <= 128 || inp % 64 != 0 {
+            return None;
+        }
+        Some(PfCfg { vec: true, ..PfCfg::new(32, 128, 4) })
     }
 
     /// Parse "r16n128s4[+k4][+gu]".
@@ -4748,6 +5122,8 @@ kernel void pf_reduce(device const float* part [[buffer(0)]],
                 c.splits = k.parse().ok()?;
             } else if p == "gu" {
                 c.fused = true;
+            } else if p == "v" {
+                c.vec = true;
             }
         }
         Some(c)
@@ -4882,6 +5258,137 @@ kernel void pf_reduce(device const float* part [[buffer(0)]],
                 if let Some(c) = got {
                     assert!(valid(c, inp, gu), "invalid {c:?} for m={m} out={out} inp={inp}");
                 }
+            }
+        }
+
+        /// A dump in the layout the M5's MPP produces for 32x128 / 4 sg
+        /// (probe: thread t, run j -> cols 4*(t%16) + 64*((j>>1)&1) .. +3,
+        /// row (t/16) + 8*(j&1) + 16*(j>>2)) passes; perturbations fail.
+        #[test]
+        fn pf_vec_layout_check_accepts_runs_rejects_others() {
+            let (rows, tile_n, threads) = (32usize, 128usize, 128usize);
+            let cap = rows * tile_n / threads;
+            let mut dump = vec![0i32; 1 + threads * cap * 3];
+            dump[0] = cap as i32;
+            for t in 0..threads {
+                for j in 0..cap / 4 {
+                    for k in 0..4 {
+                        let b = 1 + (t * cap + 4 * j + k) * 3;
+                        dump[b] = 1;
+                        dump[b + 1] = (4 * (t % 16) + 64 * ((j >> 1) & 1) + k) as i32;
+                        dump[b + 2] = ((t / 16) + 8 * (j & 1) + 16 * (j >> 2)) as i32;
+                    }
+                }
+            }
+            assert!(pf_vec_layout_check(&dump, threads, rows, tile_n));
+            // a run whose columns are not consecutive
+            let mut d = dump.clone();
+            d[1 + 1 * 3 + 1] += 1;
+            assert!(!pf_vec_layout_check(&d, threads, rows, tile_n));
+            // an invalid element
+            let mut d = dump.clone();
+            d[1 + 5 * 3] = 0;
+            assert!(!pf_vec_layout_check(&d, threads, rows, tile_n));
+            // two threads owning the same element (row of thread 1 := thread 0's)
+            let mut d = dump.clone();
+            for i in 0..cap {
+                d[1 + (16 * cap + i) * 3 + 2] = d[1 + i * 3 + 2];
+            }
+            assert!(!pf_vec_layout_check(&d, threads, rows, tile_n));
+            // wrong capacity
+            let mut d = dump.clone();
+            d[0] = 16;
+            assert!(!pf_vec_layout_check(&d, threads, rows, tile_n));
+        }
+
+        /// E1 route: m > 128 takes the vec tile (unsplit, unfused) for
+        /// every model shape, plain and gate/up; <= 128 keeps `pf_policy`.
+        #[test]
+        fn pf_policy_large_table() {
+            for &(out, inp, gu) in &[
+                (17408usize, 5120usize, true),
+                (5120, 17408, false),
+                (16480, 5120, false),
+                (14336, 5120, false),
+                (5120, 6144, false),
+                (5120, 25600, false),
+                (6144, 5120, false),
+            ] {
+                for m in [129usize, 256, 512, 896, 1450, 2048, 4096, 8192] {
+                    let c = pf_policy_large(m, out, inp, gu).expect("large route");
+                    assert_eq!(c.label(), "r32n128s4+v", "m={m} out={out} inp={inp}");
+                    assert!(valid(c, inp, gu) && c.splits == 1 && !c.fused);
+                    assert!(PF_LARGE_SHAPES.contains(&(c.rows, c.tile_n, c.sgs)));
+                }
+                assert_eq!(pf_policy_large(128, out, inp, gu), None);
+            }
+        }
+
+        fn lcg(seed: &mut u64) -> u32 {
+            *seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            (*seed >> 32) as u32
+        }
+
+        /// The vec tile (plain and up·silu) is bitwise equal to the legacy
+        /// AffineQmppPrefill — the pre-E1 path for m > 128 — on random
+        /// tiled weights, including ragged rows (m % 32 != 0) and a ragged
+        /// last column tile (out % 128 != 0, out % 256 != 0).
+        #[test]
+        fn pf_vec_matches_legacy_bitwise() {
+            use candle_core::{Device, Tensor};
+            let dev = Device::new_metal(0).unwrap();
+            let Device::Metal(md) = &dev else { unreachable!() };
+            let cfg = PfCfg { vec: true, ..PfCfg::new(32, 128, 4) };
+            if !pf_vec_layout_ok(md, &cfg) {
+                eprintln!("pf_vec_matches_legacy_bitwise: layout probe failed on this GPU — vec route disabled, skipped");
+                return;
+            }
+            let mut seed = 0x5eedu64;
+            // (out per stream, inp, gate_up, m)
+            for &(out, inp, gu, m) in &[
+                (640usize, 512usize, false, 130usize),
+                (720, 256, false, 257),
+                (384, 1024, false, 64),
+                (1280, 512, false, 200),
+                (512, 512, true, 161),
+                (256, 1024, true, 96),
+            ] {
+                let ng = inp / 64;
+                let total = if gu { 2 * out } else { out };
+                let padded = total.div_ceil(256) * 256;
+                let wq: Vec<u32> = (0..padded * ng * 8).map(|_| lcg(&mut seed)).collect();
+                let sb: Vec<half::bf16> = (0..2 * padded * ng)
+                    .map(|i| {
+                        let u = (lcg(&mut seed) % 1000) as f32 / 1000.0;
+                        half::bf16::from_f32(if i < padded * ng { 0.002 + 0.01 * u } else { -0.05 + 0.02 * u })
+                    })
+                    .collect();
+                let x: Vec<half::bf16> = (0..m * inp)
+                    .map(|_| half::bf16::from_f32((lcg(&mut seed) % 2000) as f32 / 500.0 - 2.0))
+                    .collect();
+                let wq = Tensor::from_vec(wq, (padded * ng * 8,), &dev).unwrap();
+                let sb = Tensor::from_vec(sb, (2 * padded * ng,), &dev).unwrap();
+                let x = Tensor::from_vec(x, (m, inp), &dev).unwrap();
+                let up_tile = if gu { out / 256 } else { 0 };
+                let legacy = wq
+                    .apply_op3_no_bwd(&sb, &x, &AffineQmppPrefill { inp, out, padded, m, up_tile })
+                    .unwrap()
+                    .narrow(0, 0, m)
+                    .unwrap()
+                    .narrow(1, 0, out)
+                    .unwrap()
+                    .contiguous()
+                    .unwrap();
+                let vec = wq
+                    .apply_op3_no_bwd(&sb, &x, &AffineQpf { inp, out, padded, m, up_tile, cfg })
+                    .unwrap();
+                let a: Vec<u16> = legacy.flatten_all().unwrap().to_dtype(candle_core::DType::F32).unwrap()
+                    .to_vec1::<f32>().unwrap().iter().map(|v| half::bf16::from_f32(*v).to_bits()).collect();
+                let b: Vec<u16> = vec.flatten_all().unwrap().to_dtype(candle_core::DType::F32).unwrap()
+                    .to_vec1::<f32>().unwrap().iter().map(|v| half::bf16::from_f32(*v).to_bits()).collect();
+                assert_eq!(a.len(), m * out);
+                let diff = a.iter().zip(&b).filter(|(p, q)| p != q).count();
+                assert_eq!(diff, 0, "vec vs legacy: {diff} of {} differ (out={out} inp={inp} gu={gu} m={m})", a.len());
             }
         }
 

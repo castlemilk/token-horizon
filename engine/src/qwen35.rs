@@ -2652,6 +2652,17 @@ impl Qwen35 {
                     }
                     let base = PfCfg::new(r, tn, sg);
                     let mut cfgs = vec![base];
+                    // E1: the vectorized-epilogue tile (bitwise equal to the
+                    // legacy op; only where the layout probe passes)
+                    let dev_m = match device {
+                        Device::Metal(d) => Some(d),
+                        _ => None,
+                    };
+                    if dev_m.is_some_and(|d| {
+                        crate::quant_kernel::pf_vec_layout_ok(d, &PfCfg { vec: true, ..base })
+                    }) {
+                        cfgs.push(PfCfg { vec: true, ..base });
+                    }
                     if gu {
                         cfgs.push(PfCfg { fused: true, ..base });
                     } else {

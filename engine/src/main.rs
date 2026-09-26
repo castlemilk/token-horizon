@@ -481,11 +481,17 @@ async fn main() -> Result<()> {
                 // flipped each pair) so clock/thermal drift hits both
                 // equally; one warm-up run each first.
                 let dev = loaded.device.clone();
-                // E1: with TH_GPU_PROF=1 each run is timed by its GPU busy
-                // time (R0c) instead of host wall time
+                // E1: TH_BENCH_PREFILL_LARGE_ONLY=1 toggles only the m > 128
+                // route (legacy AffineQmppPrefill vs the vec tile); with
+                // TH_GPU_PROF=1 each run is timed by its GPU busy time
+                let large_only = std::env::var("TH_BENCH_PREFILL_LARGE_ONLY").is_ok();
                 let mut fwd = |seq: &[u32], legacy: bool| -> Result<f64> {
                     #[cfg(all(feature = "metal", target_os = "macos"))]
-                    quant_kernel::pf_force_legacy(legacy);
+                    if large_only {
+                        quant_kernel::pf_force_legacy_large(legacy);
+                    } else {
+                        quant_kernel::pf_force_legacy(legacy);
+                    }
                     // forward() runs decode slot 0
                     loaded.backend.clear_kv_cache(0);
                     dev.synchronize()?;
@@ -521,7 +527,10 @@ async fn main() -> Result<()> {
                     );
                 }
                 #[cfg(all(feature = "metal", target_os = "macos"))]
-                quant_kernel::pf_force_legacy(false);
+                {
+                    quant_kernel::pf_force_legacy(false);
+                    quant_kernel::pf_force_legacy_large(false);
+                }
             }
             if let Ok(spec) = std::env::var("TH_BENCH_PLAN") {
                 // T1 prefix cache, the GPU side of TTFT (no HTTP, template,
