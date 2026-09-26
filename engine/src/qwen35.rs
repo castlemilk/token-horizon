@@ -1668,6 +1668,13 @@ fn add_rms_norm(
 /// as a K45 presum block (`quant_kernel::presum_block_bytes`) — the third
 /// value says so, and the next projection takes it with `presum: true`
 /// (no pad copy, no in-kernel input sums). Values are bit-identical.
+/// `TH_ARN_LEGACY=1`: the pre-R0c single-threadgroup add+RMSNorm kernels
+/// (A/B arm; outputs are bit-identical either way). Read once.
+fn arn_legacy() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("TH_ARN_LEGACY").as_deref() == Ok("1"))
+}
+
 fn add_rms_norm_ps(
     x: &Tensor,
     r: &Tensor,
@@ -1685,7 +1692,7 @@ fn add_rms_norm_ps(
         let out = x.apply_op3_no_bwd(
             r,
             w,
-            &crate::gdn_kernel::AddRmsNorm { t: seq, c, eps: eps as f32, sums },
+            &crate::gdn_kernel::AddRmsNorm { t: seq, c, eps: eps as f32, sums, legacy: arn_legacy() },
         )?;
         // out is [2, T, C] — plane 0 = residual, plane 1 = normed
         let res = out.narrow(0, 0, 1)?;

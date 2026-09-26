@@ -1501,6 +1501,12 @@ kernel void gdn_commit_all(
         /// presum_block_bytes`). Requires t <= 8 and c % 64 == 0; the
         /// residual and normed values are bit-identical to `sums: false`.
         pub sums: bool,
+        /// The pre-R0c kernels: ONE threadgroup of 256 threads for all
+        /// rows (one simdgroup per row), latency-bound at ~84 us per 8 x
+        /// 5120 call (R0c). Default (false): one 1024-thread threadgroup
+        /// per row with the identical per-element arithmetic and the same
+        /// lane-order sum of squares — bit-identical outputs.
+        pub legacy: bool,
     }
 
     #[repr(C)]
@@ -1589,10 +1595,122 @@ kernel void add_rmsnorm_sums(
         if (lane == 0) sums[g * 8 + t] = s;
     }
 }
+
+// R0c latency fix: one threadgroup PER ROW (up to 1024 threads) instead of
+// one threadgroup for all rows. The old kernels ran each row on a single
+// simdgroup: 160 dependent load iterations per lane (C = 5120) with one
+// resident threadgroup on one core, ~84 us per call, 127 calls a verify.
+// Here every thread stages v = x + r (and writes the residual) in
+// parallel; simdgroup 0 then runs the old per-lane sum of squares — lane l
+// accumulates columns l, l+32, ... in the same order with the same
+// `ss += v * v` — plus the same simd_sum and rsqrt, so `inv` is
+// bit-identical; the normed values and the presum sums reuse the old
+// per-element expressions (float(bfloat(v)) is what the old kernels read
+// back from `res`). tv = [C] f32 in dynamic threadgroup memory.
+kernel void add_rmsnorm_p(
+    device const bfloat* x   [[buffer(0)]],
+    device const bfloat* r   [[buffer(1)]],
+    device const bfloat* w   [[buffer(2)]],
+    device bfloat*       out [[buffer(3)]],   // [2, T, C]
+    constant ArnParams&  p   [[buffer(4)]],
+    threadgroup float*   tv  [[threadgroup(0)]],
+    uint  t    [[threadgroup_position_in_grid]],
+    uint  tid  [[thread_index_in_threadgroup]],
+    uint  nt   [[threads_per_threadgroup]],
+    uint  lane [[thread_index_in_simdgroup]],
+    uint  sg   [[simdgroup_index_in_threadgroup]])
+{
+    threadgroup float tinv;
+    device const bfloat* xr = x + t * p.C;
+    device const bfloat* rr = r + t * p.C;
+    device bfloat* res = out + t * p.C;
+    device bfloat* nrm = out + (p.T + t) * p.C;
+    for (int c = int(tid); c < p.C; c += int(nt)) {
+        const float v = float(xr[c]) + float(rr[c]);
+        res[c] = bfloat(v);
+        tv[c] = v;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (sg == 0) {
+        float ss = 0.0f;
+        for (int c = int(lane); c < p.C; c += 32) {
+            const float v = tv[c];
+            ss += v * v;
+        }
+        ss = simd_sum(ss);
+        if (lane == 0) tinv = rsqrt(ss / float(p.C) + p.eps);
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    const float inv = tinv;
+    for (int c = int(tid); c < p.C; c += int(nt)) {
+        nrm[c] = bfloat(float(bfloat(tv[c])) * inv * float(w[c]));
+    }
+}
+
+// presum form of add_rmsnorm_p (T <= 8, C % 64 == 0; grid = 8 threadgroups,
+// rows >= T write the zero padding): out = res [T, C] | nrm [8, C] | sums.
+kernel void add_rmsnorm_sums_p(
+    device const bfloat* x   [[buffer(0)]],
+    device const bfloat* r   [[buffer(1)]],
+    device const bfloat* w   [[buffer(2)]],
+    device bfloat*       out [[buffer(3)]],
+    constant ArnParams&  p   [[buffer(4)]],
+    threadgroup float*   tv  [[threadgroup(0)]],
+    uint  t    [[threadgroup_position_in_grid]],
+    uint  tid  [[thread_index_in_threadgroup]],
+    uint  nt   [[threads_per_threadgroup]],
+    uint  lane [[thread_index_in_simdgroup]],
+    uint  sg   [[simdgroup_index_in_threadgroup]])
+{
+    threadgroup float tinv;
+    const int ng = p.C / 64;
+    const int nsg = int(nt) / 32;
+    device bfloat* nrm = out + (p.T + t) * p.C;
+    device float* sums = (device float*)(out + (p.T + 8) * p.C);
+    if (int(t) >= p.T) {
+        for (int c = int(tid); c < p.C; c += int(nt)) nrm[c] = bfloat(0.0f);
+        for (int g = int(tid); g < ng; g += int(nt)) sums[g * 8 + t] = 0.0f;
+        return;
+    }
+    device const bfloat* xr = x + t * p.C;
+    device const bfloat* rr = r + t * p.C;
+    device bfloat* res = out + t * p.C;
+    for (int c = int(tid); c < p.C; c += int(nt)) {
+        const float v = float(xr[c]) + float(rr[c]);
+        res[c] = bfloat(v);
+        tv[c] = v;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (sg == 0) {
+        float ss = 0.0f;
+        for (int c = int(lane); c < p.C; c += 32) {
+            const float v = tv[c];
+            ss += v * v;
+        }
+        ss = simd_sum(ss);
+        if (lane == 0) tinv = rsqrt(ss / float(p.C) + p.eps);
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    const float inv = tinv;
+    for (int g = int(sg); g < ng; g += nsg) {
+        const int c0 = g * 64 + int(lane);
+        const bfloat a = bfloat(float(bfloat(tv[c0])) * inv * float(w[c0]));
+        const bfloat b = bfloat(float(bfloat(tv[c0 + 32])) * inv * float(w[c0 + 32]));
+        nrm[c0] = a;
+        nrm[c0 + 32] = b;
+        const float s = simd_sum(float(a) + float(b));
+        if (lane == 0) sums[g * 8 + t] = s;
+    }
+}
 "#;
 
     static ARN_PIPE: OnceLock<ComputePipeline> = OnceLock::new();
     static ARN_SUMS_PIPE: OnceLock<ComputePipeline> = OnceLock::new();
+    static ARN_P_PIPE: OnceLock<ComputePipeline> = OnceLock::new();
+    static ARN_SUMS_P_PIPE: OnceLock<ComputePipeline> = OnceLock::new();
+    /// Largest row the per-row kernels stage in threadgroup memory
+    /// (C f32 + the broadcast slot, under the 32 KiB limit).
+    const ARN_P_MAX_C: usize = 7936;
 
     impl CustomOp3 for AddRmsNorm {
         fn name(&self) -> &'static str {
@@ -1630,14 +1748,17 @@ kernel void add_rmsnorm_sums(
                 candle_core::bail!("add-rmsnorm dtypes must be bf16");
             }
             let device = s_x.device();
-            if ARN_PIPE.get().is_none() || ARN_SUMS_PIPE.get().is_none() {
+            if ARN_PIPE.get().is_none() || ARN_SUMS_P_PIPE.get().is_none() {
                 let raw = device.metal_device();
                 let lib = raw
                     .new_library_with_source(ARN_SRC, None)
                     .map_err(candle_core::Error::wrap)?;
-                for (cell, name) in
-                    [(&ARN_PIPE, "add_rmsnorm"), (&ARN_SUMS_PIPE, "add_rmsnorm_sums")]
-                {
+                for (cell, name) in [
+                    (&ARN_PIPE, "add_rmsnorm"),
+                    (&ARN_SUMS_PIPE, "add_rmsnorm_sums"),
+                    (&ARN_P_PIPE, "add_rmsnorm_p"),
+                    (&ARN_SUMS_P_PIPE, "add_rmsnorm_sums_p"),
+                ] {
                     let f = lib
                         .get_function(name, None)
                         .map_err(candle_core::Error::wrap)?;
@@ -1654,10 +1775,14 @@ kernel void add_rmsnorm_sums(
                     self.c
                 );
             }
-            let pipeline = if self.sums {
-                ARN_SUMS_PIPE.get().unwrap()
-            } else {
-                ARN_PIPE.get().unwrap()
+            // per-row kernels unless asked for the legacy ones (or the row
+            // does not fit the threadgroup staging buffer)
+            let per_row = !self.legacy && self.c <= ARN_P_MAX_C;
+            let pipeline = match (per_row, self.sums) {
+                (false, false) => ARN_PIPE.get().unwrap(),
+                (false, true) => ARN_SUMS_PIPE.get().unwrap(),
+                (true, false) => ARN_P_PIPE.get().unwrap(),
+                (true, true) => ARN_SUMS_P_PIPE.get().unwrap(),
             };
 
             let y_elems = 2 * self.t * self.c;
@@ -1704,14 +1829,24 @@ kernel void add_rmsnorm_sums(
                 eps: self.eps,
             };
             enc.set_bytes(4, &params);
-            enc.dispatch_thread_groups(
-                MTLSize {
-                    width: if self.sums { 1 } else { self.t.div_ceil(8) },
-                    height: 1,
-                    depth: 1,
-                },
-                MTLSize { width: 256, height: 1, depth: 1 },
-            );
+            if per_row {
+                // one threadgroup per row (8 with the presum padding rows)
+                let nt = (pipeline.max_total_threads_per_threadgroup().min(1024) / 32 * 32).max(32);
+                enc.set_threadgroup_memory_length(0, (self.c * 4).div_ceil(16) * 16);
+                enc.dispatch_thread_groups(
+                    MTLSize { width: if self.sums { 8 } else { self.t }, height: 1, depth: 1 },
+                    MTLSize { width: nt, height: 1, depth: 1 },
+                );
+            } else {
+                enc.dispatch_thread_groups(
+                    MTLSize {
+                        width: if self.sums { 1 } else { self.t.div_ceil(8) },
+                        height: 1,
+                        depth: 1,
+                    },
+                    MTLSize { width: 256, height: 1, depth: 1 },
+                );
+            }
             let storage =
                 MetalStorage::new(y_buf, device.clone(), y_elems, DType::BF16);
             Ok((storage, Shape::from((2, self.t, self.c))))
@@ -1938,4 +2073,74 @@ kernel void add_rmsnorm_sums(
         }
     }
 
+}
+#[cfg(all(test, feature = "metal", target_os = "macos"))]
+mod arn_tests {
+    use super::metal_impl::AddRmsNorm;
+    use candle_core::backend::BackendStorage;
+    use candle_core::{DType, Device, Storage, Tensor};
+
+    fn lcg(seed: &mut u64) -> f32 {
+        *seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        ((*seed >> 33) as f32 / (1u64 << 31) as f32) * 2.0 - 1.0
+    }
+
+    fn rand(dev: &Device, n: usize, scale: f32, seed: u64) -> Tensor {
+        let mut s = seed;
+        let v: Vec<f32> = (0..n).map(|_| lcg(&mut s) * scale).collect();
+        Tensor::from_vec(v, n, dev).unwrap().to_dtype(DType::BF16).unwrap()
+    }
+
+    /// Raw bytes of `t`'s whole buffer from its start offset (the presum
+    /// padding rows and sums live past the [2, T, C] shape): blit-copied
+    /// out of the private output buffer into a shared one.
+    fn raw(t: &Tensor, bytes: usize) -> Vec<u8> {
+        let (st, l) = t.storage_and_layout();
+        match &*st {
+            Storage::Metal(m) => {
+                let off = l.start_offset() * 2;
+                assert!(m.buffer().length() >= off + bytes);
+                let dev = m.device();
+                let shared = dev.new_buffer_builder().with_size(bytes).build().unwrap();
+                {
+                    let mut blit = dev.blit_command_encoder().unwrap();
+                    blit.copy_from_buffer(m.buffer(), off, &shared, 0, bytes);
+                }
+                dev.wait_until_completed().unwrap();
+                // SAFETY: shared-storage buffer of `bytes`, copy completed
+                unsafe { std::slice::from_raw_parts(shared.contents(), bytes).to_vec() }
+            }
+            _ => panic!("metal only"),
+        }
+    }
+
+    /// The per-row kernels reproduce the legacy single-threadgroup kernels
+    /// bit for bit: residual, normed plane, presum padding rows and sums.
+    #[test]
+    fn add_rmsnorm_per_row_matches_legacy_bitwise() {
+        let dev = Device::new_metal(0).unwrap();
+        for &(t, c, sums) in &[
+            (1usize, 5120usize, true), (3, 5120, true), (8, 5120, true), (5, 256, true),
+            (8, 6144, true), (1, 5120, false), (8, 5120, false), (13, 5120, false), (37, 1024, false),
+        ] {
+            let x = rand(&dev, t * c, 4.0, 1 + t as u64 * 31 + c as u64).reshape((1, t, c)).unwrap();
+            let r = rand(&dev, t * c, 2.0, 7 + t as u64 * 17 + c as u64).reshape((1, t, c)).unwrap();
+            let w = rand(&dev, c, 1.5, 99 + c as u64);
+            let run = |legacy: bool| {
+                let y = x
+                    .apply_op3_no_bwd(&r, &w, &AddRmsNorm { t, c, eps: 1e-6, sums, legacy })
+                    .unwrap();
+                dev.synchronize().unwrap();
+                let bytes = if sums {
+                    t * c * 2 + crate::quant_kernel::presum_block_bytes(c)
+                } else {
+                    2 * t * c * 2
+                };
+                raw(&y, bytes)
+            };
+            let (a, b) = (run(true), run(false));
+            let diff = a.iter().zip(&b).filter(|(p, q)| p != q).count();
+            assert_eq!(diff, 0, "t {t} c {c} sums {sums}: {diff} differing bytes");
+        }
+    }
 }
