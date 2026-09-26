@@ -12,7 +12,7 @@ use crate::prefix_cache::{self, PrefixCache, PrefixCacheConfig};
 use crate::state::{EngineConfig, EngineState, RequestRecord};
 use crate::template::{self, ChatMessage};
 use anyhow::{bail, Context, Result};
-use candle_core::{DType, IndexOp, Tensor};
+use candle_core::{DType, Device, IndexOp, Tensor};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
@@ -441,6 +441,38 @@ fn uuidish() -> String {
 
 // MARK: - prefill + T1 prefix cache
 
+/// `TH_DEBUG_PREFILL` — per-phase prefill timing on stderr (`[prefill]`:
+/// restore, each chunk, each capture, the draft warm-up), each phase
+/// closed by a device sync. The syncs serialize host encode and GPU
+/// work, so this is a diagnosis mode, not a production setting. Read once.
+fn debug_prefill() -> bool {
+    static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *V.get_or_init(|| std::env::var("TH_DEBUG_PREFILL").is_ok())
+}
+
+/// `TH_DEBUG_PREFILL` phase clock: syncs the device, returns the ms since
+/// the previous mark and restarts. No-op (0.0) when the knob is off.
+struct PhaseClock {
+    on: bool,
+    t: Instant,
+}
+
+impl PhaseClock {
+    fn new() -> Self {
+        Self { on: debug_prefill(), t: Instant::now() }
+    }
+
+    fn mark(&mut self, device: &Device) -> f64 {
+        if !self.on {
+            return 0.0;
+        }
+        let _ = device.synchronize();
+        let ms = self.t.elapsed().as_secs_f64() * 1000.0;
+        self.t = Instant::now();
+        ms
+    }
+}
+
 /// Chat-template ids (`<|im_start|>`, `<|im_end|>`, `\n`, `assistant`)
 /// when the tokenizer has each as a single token.
 fn chat_marks(tok: &tokenizers::Tokenizer) -> Option<prefix_cache::ChatMarks> {
@@ -490,6 +522,9 @@ fn prefill_slot(
     let n = prompt.len();
     let step = sp.prefill_step.max(32);
     let ps = &state.prefix_stats;
+    let mut clk = PhaseClock::new();
+    let mut trace = String::new();
+    let t_all = Instant::now();
     let use_cache = inner.prefix.enabled() && n > 1;
     let use_cache = use_cache && {
         let ok = !sp.kv_quant && inner.backend.prefix_capable(slot);
@@ -535,6 +570,9 @@ fn prefill_slot(
         } else {
             ps.misses.fetch_add(1, Ordering::Relaxed);
         }
+        if clk.on {
+            trace += &format!(" lookup+restore={:.1}", clk.mark(&device));
+        }
     }
     let cached = pos;
     let mut logits = None;
@@ -547,6 +585,9 @@ fn prefill_slot(
         let t = Instant::now();
         logits = Some(inner.backend.forward_slot(slot, &prompt[pos..end], pos, &device)?);
         prefill_ms += t.elapsed().as_secs_f64() * 1000.0;
+        if clk.on {
+            trace += &format!(" [{pos}..{end})={:.1}", clk.mark(&device));
+        }
         pos = end;
         if restore
             && plan.checkpoints.contains(&pos)
@@ -568,7 +609,17 @@ fn prefill_slot(
                     tracing::warn!(error = %e, slot, pos, "prefix capture failed");
                 }
             }
+            if clk.on {
+                trace += &format!(" capture@{pos}={:.1}", clk.mark(&device));
+            }
         }
+    }
+    if clk.on {
+        eprintln!(
+            "  [prefill] slot={slot} n={n} cached={cached} splits={:?}{trace} total={:.1}ms",
+            plan.splits,
+            t_all.elapsed().as_secs_f64() * 1000.0
+        );
     }
     Ok(Prefilled { logits, cached, prefill_ms })
 }
@@ -721,7 +772,11 @@ fn generate_blocking(
     // the draft ring, and leaves the last emitted token pending as the
     // next anchor.
     if inner.backend.has_draft() {
+        let mut clk = PhaseClock::new();
         inner.backend.draft_prefill(0)?; // warm the ring from prefill
+        if clk.on {
+            eprintln!("  [prefill] draft_warmup={:.1}ms", clk.mark(&device));
+        }
         if let Some(pl) = pending.take() {
             let mut anchor = sampler.sample(
                 &pl,
@@ -1687,7 +1742,11 @@ fn admit(
     let last_logits = pf.logits;
     let prefill_ms_total = pf.prefill_ms;
     let cached_tokens = pf.cached;
+    let mut clk = PhaseClock::new();
     inner.backend.draft_prefill(slot)?;
+    if clk.on {
+        eprintln!("  [prefill] slot={slot} draft_warmup={:.1}ms", clk.mark(&inner.device));
+    }
     let mut sampler = Sampler::new(&sp, sp.seed.max(1));
     let anchor = sampler.sample(
         &last_logits.context("empty prefill")?,
