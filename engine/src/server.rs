@@ -339,7 +339,8 @@ async fn messages(State(app): State<Arc<App>>, Json(req): Json<MessagesRequest>)
         "content": [{"type": "text", "text": text}],
         "model": app.engine.state.model_id,
         "stop_reason": if d.finish == "length" { "max_tokens" } else { "end_turn" },
-        "usage": {"input_tokens": d.prompt_tokens, "output_tokens": d.completion_tokens},
+        "usage": {"input_tokens": d.prompt_tokens, "output_tokens": d.completion_tokens,
+                  "cache_read_input_tokens": d.cached_tokens},
     }))
     .into_response()
 }
