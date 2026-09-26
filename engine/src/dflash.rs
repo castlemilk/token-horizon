@@ -1256,7 +1256,15 @@ mod tests {
         let dyn_w = qlin(DYN, HIDDEN);
         let qkv_w = qlin(QKV, HIDDEN);
         let sel_w = qlin(RANK, HIDDEN);
-        let wide_w = qlin(40 * 4 * 256, HIDDEN); // paired-tile class (lm_head-like)
+        // paired-tile class (lm_head-like): the narrowest shape plain_tile
+        // routes to Paired256 on this GPU
+        let wide_out = crate::quant_kernel::PAIRED256_TILES_PER_CORE * crate::quant_kernel::gpu_cores() * 256;
+        assert_eq!(
+            crate::quant_kernel::plain_tile(wide_out, HIDDEN),
+            crate::quant_kernel::DecodeTile::Paired256,
+            "wide test weight must take the paired tile"
+        );
+        let wide_w = qlin(wide_out, HIDDEN);
         let check_proj = |tag: &str, block: &Tensor, plain: &Tensor, w: &Lin| {
             let rows = plain.elem_count() / HIDDEN;
             let y_plain = lin_apply(plain, w).unwrap();
