@@ -5,7 +5,7 @@
 // engines Token Horizon supervises externally. Token Horizon spawns and
 // supervises this binary; the gateway routes /th-engine/ traffic to it.
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 
 mod api;
@@ -476,6 +476,104 @@ async fn main() -> Result<()> {
                 }
                 #[cfg(all(feature = "metal", target_os = "macos"))]
                 quant_kernel::pf_force_legacy(false);
+            }
+            if let Ok(spec) = std::env::var("TH_BENCH_PLAN") {
+                // T1 prefix cache, the GPU side of TTFT (no HTTP, template,
+                // draft): for each `n:split` (prompt = the probe ids cycled
+                // to n tokens) time, alternating run by run in this process,
+                //   base  — the plain step grid (TH_PREFIX_CACHE=0 / main)
+                //   cache — the cache's plan: the grid + a split at `split`
+                //           (an uncached request with a turn-end checkpoint)
+                //   hit   — restore the `split` checkpoint + the suffix only
+                // each from a cleared slot 0 to the last-row logits readback
+                // (sync). The hit's logits must equal the cache plan's
+                // bit for bit (checked); base vs cache is info (a different
+                // chunk plan). TH_BENCH_PLAN_STEP = prefill step (512),
+                // TH_BENCH_PLAN_REPS = timed runs per kind (6).
+                let dev = loaded.device.clone();
+                let env_num = |k: &str, d: usize| -> usize {
+                    std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(d).max(1)
+                };
+                let step = env_num("TH_BENCH_PLAN_STEP", 512);
+                let reps = env_num("TH_BENCH_PLAN_REPS", 6);
+                let stat = |v: &mut Vec<f64>| {
+                    v.sort_by(|a, b| a.total_cmp(b));
+                    (v[0], v[v.len() / 2])
+                };
+                for pair in spec.split(',') {
+                    let Some((n, split)) = pair.split_once(':').and_then(|(a, b)| {
+                        Some((a.trim().parse::<usize>().ok()?, b.trim().parse::<usize>().ok()?))
+                    }) else {
+                        continue;
+                    };
+                    if split == 0 || split >= n {
+                        eprintln!("plan n={n} split={split}: split must be in (0, n)");
+                        continue;
+                    }
+                    let seq: Vec<u32> = (0..n).map(|i| ids[i % ids.len()]).collect();
+                    let grid: Vec<usize> = (1..).map(|k| k * step).take_while(|&s| s < n).collect();
+                    let mut cache_b = grid.clone();
+                    cache_b.push(split);
+                    cache_b.sort_unstable();
+                    cache_b.dedup();
+                    let base_b: Vec<usize> = grid.iter().copied().chain(std::iter::once(n)).collect();
+                    let cache_b: Vec<usize> = cache_b.into_iter().chain(std::iter::once(n)).collect();
+                    // prefill from `from` through `bounds` (ends > from), last logits
+                    let run = |b: &mut model::ModelBackend, from: usize, bounds: &[usize]| -> Result<Vec<f32>> {
+                        let mut pos = from;
+                        let mut last = None;
+                        for &e in bounds.iter().filter(|&&e| e > from) {
+                            last = Some(b.forward(&seq[pos..e], pos, &dev)?);
+                            pos = e;
+                        }
+                        Ok(last.context("empty plan")?.to_vec1::<f32>()?)
+                    };
+                    // the checkpoint: cache-plan prefill up to `split`
+                    loaded.backend.clear_kv_cache(0);
+                    let _ = run(&mut loaded.backend, 0, &cache_b.iter().copied().filter(|&e| e <= split).collect::<Vec<_>>())?;
+                    let ck = loaded.backend.prefix_capture(0)?;
+                    let timed = |kind: usize, b: &mut model::ModelBackend| -> Result<(f64, Vec<f32>)> {
+                        b.clear_kv_cache(0);
+                        let t = std::time::Instant::now();
+                        let v = match kind {
+                            0 => run(b, 0, &base_b)?,
+                            1 => run(b, 0, &cache_b)?,
+                            _ => {
+                                b.prefix_restore(0, &ck)?;
+                                run(b, split, &cache_b)?
+                            }
+                        };
+                        Ok((t.elapsed().as_secs_f64() * 1e3, v))
+                    };
+                    let (_, l_base) = timed(0, &mut loaded.backend)?;
+                    let (_, l_cache) = timed(1, &mut loaded.backend)?;
+                    let (_, l_hit) = timed(2, &mut loaded.backend)?;
+                    let mut t = [Vec::new(), Vec::new(), Vec::new()];
+                    for r in 0..reps {
+                        for k in 0..3 {
+                            let kind = (k + r) % 3;
+                            t[kind].push(timed(kind, &mut loaded.backend)?.0);
+                        }
+                    }
+                    let same_bits = l_hit.len() == l_cache.len()
+                        && l_hit.iter().zip(&l_cache).all(|(a, b)| a.to_bits() == b.to_bits());
+                    let argmax = |v: &[f32]| {
+                        v.iter().enumerate().max_by(|a, b| a.1.total_cmp(b.1)).map(|(i, _)| i).unwrap_or(0)
+                    };
+                    let dmax = l_base.iter().zip(&l_cache).map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
+                    let [mut tb, mut tc, mut th] = t;
+                    let ((bmin, bmed), (cmin, cmed), (hmin, hmed)) = (stat(&mut tb), stat(&mut tc), stat(&mut th));
+                    eprintln!(
+                        "plan n={n} split={split} step={step} | base {base_b:?} min={bmin:.1} med={bmed:.1}ms | cache {cache_b:?} min={cmin:.1} med={cmed:.1}ms ({:+.1}ms vs base) | hit restore+{} rows min={hmin:.1} med={hmed:.1}ms ({:.1}x vs cache) | hit==cache bits {} | base vs cache max|d|={dmax:.4} argmax {} {}",
+                        cmed - bmed,
+                        n - split,
+                        cmed / hmed,
+                        if same_bits { "PASS" } else { "FAIL" },
+                        argmax(&l_base),
+                        argmax(&l_cache),
+                    );
+                    drop(ck);
+                }
             }
             #[cfg(all(feature = "metal", target_os = "macos"))]
             if let Ok(spec) = std::env::var("TH_BENCH_BATCH") {
