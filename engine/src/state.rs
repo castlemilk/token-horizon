@@ -148,6 +148,8 @@ pub struct RequestRecord {
     /// Decode-only throughput (completion tokens minus the first).
     pub decode_tps: f64,
     pub finish: String, // "stop" | "length" | "cancelled" | "error"
+    /// Prompt tokens restored from the T1 prefix cache (not prefilled).
+    pub cached_tokens: usize,
 }
 
 pub struct Counters {
@@ -193,6 +195,23 @@ impl Counters {
     }
 }
 
+/// T1 prefix-cache counters for /status (the store itself lives with the
+/// model, behind the model lock).
+#[derive(Default)]
+pub struct PrefixStats {
+    pub hits: AtomicU64,
+    pub misses: AtomicU64,
+    /// Requests that could not use the cache (compressed KV mode).
+    pub bypassed: AtomicU64,
+    pub reused_tokens: AtomicU64,
+    pub inserts: AtomicU64,
+    pub evictions: AtomicU64,
+    pub entries: AtomicU64,
+    pub bytes: AtomicU64,
+    /// Capture/restore failures (the request falls back to a full prefill).
+    pub errors: AtomicU64,
+}
+
 /// Shared mutable state — one instance behind the HTTP layer.
 pub struct EngineState {
     pub config: RwLock<EngineConfig>,
@@ -208,6 +227,9 @@ pub struct EngineState {
     /// Broadcast lifecycle events (request start/finish, config change,
     /// kv clear) for the /engine/events SSE stream.
     pub events: tokio::sync::broadcast::Sender<serde_json::Value>,
+    /// T1 prefix cache: load-time config + live counters.
+    pub prefix_cfg: crate::prefix_cache::PrefixCacheConfig,
+    pub prefix_stats: PrefixStats,
 }
 
 impl EngineState {
@@ -222,6 +244,8 @@ impl EngineState {
             model_meta,
             kv_tokens: AtomicU64::new(0),
             events,
+            prefix_cfg: crate::prefix_cache::PrefixCacheConfig::disabled(),
+            prefix_stats: PrefixStats::default(),
         }
     }
 

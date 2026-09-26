@@ -5,7 +5,7 @@
 // engines Token Horizon supervises externally. Token Horizon spawns and
 // supervises this binary; the gateway routes /th-engine/ traffic to it.
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 
 mod api;
@@ -19,6 +19,7 @@ mod gdn_kernel;
 mod gpuprof;
 mod model;
 mod outbuf;
+mod prefix_cache;
 mod quant_kernel;
 mod qwen35;
 mod sample_kernel;
@@ -188,9 +189,11 @@ async fn main() -> Result<()> {
                 return Ok(());
             }
             // N3: split-key vs single-pass attention across context
-            // lengths (no model load)
+            // lengths (no model load). A `seq:kv,...` list selects T1b's
+            // eager prefill attention bench instead (after the model load,
+            // below) — both probes read TH_BENCH_ATTN.
             #[cfg(all(feature = "metal", target_os = "macos"))]
-            if std::env::var("TH_BENCH_ATTN").is_ok() {
+            if std::env::var("TH_BENCH_ATTN").is_ok_and(|v| !v.contains(':')) {
                 attn_bench::bench_attn()?;
                 return Ok(());
             }
@@ -249,6 +252,28 @@ async fn main() -> Result<()> {
                         "rollback state-bitwise: {}",
                         if state_fail { "FAIL" } else { "PASS" }
                     );
+                    // T1 prefix cache: checkpoint two rows before the end
+                    // (a >8-row prefill chunk, then a fused <=8-row suffix
+                    // that must grow out of the shared exact-size K/V),
+                    // restored into slot 0 and, with >= 2 slots, slot 1
+                    let mut prefix_fail = false;
+                    if ids.len() >= 3 {
+                        let at = ids.len() - 2;
+                        for into in 0..q.nslots().min(2) {
+                            let r = q.prefix_restore_check(0, into, &ids, at, &seq8)?;
+                            eprintln!(
+                                "  prefix restore at {} slot0→slot{into}: logits≠ {} state≠ {} verify≠ {} checkpoint≠ {} | {}",
+                                r.pos, r.logits_diff, r.state_diff, r.verify_diff, r.ckpt_diff,
+                                if r.ok() { "ok" } else { "MISMATCH" }
+                            );
+                            prefix_fail |= !r.ok();
+                        }
+                    }
+                    eprintln!(
+                        "prefix restore bitwise: {}",
+                        if prefix_fail { "FAIL" } else { "PASS" }
+                    );
+                    state_fail |= prefix_fail;
                 }
 
                 // restore points at `pos` for the two compare paths —
@@ -474,6 +499,262 @@ async fn main() -> Result<()> {
                 }
                 #[cfg(all(feature = "metal", target_os = "macos"))]
                 quant_kernel::pf_force_legacy(false);
+            }
+            if let Ok(spec) = std::env::var("TH_BENCH_PLAN") {
+                // T1 prefix cache, the GPU side of TTFT (no HTTP, template,
+                // draft): for each `n:split` (prompt = the probe ids cycled
+                // to n tokens; `split` = a block-aligned turn end) time,
+                // alternating run by run in this process, from a cleared
+                // slot 0 to the last-row logits readback (sync):
+                //   base  — the plain step grid (main / TH_PREFIX_CACHE=0)
+                //   cache — prefix_cache::plan with a turn end at `split`
+                //           (an uncached request under the default mode),
+                //           once per TH_BENCH_PLAN_MERGE value (merged-chunk
+                //           row limits, default the TH_PREFIX_CACHE_MERGE
+                //           default)
+                //   hit   — restore the checkpoint at the split + the suffix
+                //           (the first merge value's plan)
+                //   ghit  — TH_PREFIX_CACHE=grid hit: restore the last grid
+                //           checkpoint + main's remaining chunks
+                // Checks hit == cache and ghit == base bit for bit; base vs
+                // cache max|d| + argmax as info. TH_BENCH_PLAN_STEP = prefill
+                // step (512), TH_BENCH_PLAN_REPS = timed runs per kind (6).
+                let dev = loaded.device.clone();
+                let env_num = |k: &str, d: usize| -> usize {
+                    std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(d).max(1)
+                };
+                let step = env_num("TH_BENCH_PLAN_STEP", 512);
+                let reps = env_num("TH_BENCH_PLAN_REPS", 6);
+                let merges: Vec<usize> = std::env::var("TH_BENCH_PLAN_MERGE")
+                    .ok()
+                    .map(|v| v.split(',').filter_map(|x| x.trim().parse().ok()).collect())
+                    .filter(|v: &Vec<usize>| !v.is_empty())
+                    .unwrap_or_else(|| vec![prefix_cache::DEFAULT_MERGE]);
+                let pcfg = prefix_cache::PrefixCacheConfig {
+                    enabled: true,
+                    plan_only: false,
+                    grid_only: false,
+                    max_entries: 8,
+                    max_bytes: 1 << 32,
+                    block: 128,
+                    margin: 16,
+                    merge: merges[0],
+                };
+                let gcfg = prefix_cache::PrefixCacheConfig { grid_only: true, ..pcfg };
+                let stat = |v: &mut Vec<f64>| {
+                    v.sort_by(|a, b| a.total_cmp(b));
+                    (v[0], v[v.len() / 2])
+                };
+                for pair in spec.split(',') {
+                    let Some((n, split)) = pair.split_once(':').and_then(|(a, b)| {
+                        Some((a.trim().parse::<usize>().ok()?, b.trim().parse::<usize>().ok()?))
+                    }) else {
+                        continue;
+                    };
+                    if split == 0 || split >= n {
+                        eprintln!("plan n={n} split={split}: split must be in (0, n)");
+                        continue;
+                    }
+                    let seq: Vec<u32> = (0..n).map(|i| ids[i % ids.len()]).collect();
+                    let bounds = |p: &prefix_cache::ChunkPlan| -> Vec<usize> {
+                        p.splits.iter().copied().chain(std::iter::once(n)).collect()
+                    };
+                    let base_p = prefix_cache::plan(n, step, None, None, &[]);
+                    let cache_ps: Vec<prefix_cache::ChunkPlan> = merges
+                        .iter()
+                        .map(|&m| prefix_cache::plan(n, step, Some(&prefix_cache::PrefixCacheConfig { merge: m, ..pcfg }), None, &[split]))
+                        .collect();
+                    let grid_p = prefix_cache::plan(n, step, Some(&gcfg), None, &[split]);
+                    let at = cache_ps[0].splits.iter().copied().filter(|&s| s <= split).max().unwrap_or(0);
+                    let gat = grid_p.checkpoints.last().copied().unwrap_or(0);
+                    let base_b = bounds(&base_p);
+                    let cache_bs: Vec<Vec<usize>> = cache_ps.iter().map(|p| bounds(p)).collect();
+                    // prefill from `from` through `bounds` (ends > from), last logits
+                    let run = |b: &mut model::ModelBackend, from: usize, bounds: &[usize]| -> Result<Vec<f32>> {
+                        let mut pos = from;
+                        let mut last = None;
+                        for &e in bounds.iter().filter(|&&e| e > from) {
+                            last = Some(b.forward(&seq[pos..e], pos, &dev)?);
+                            pos = e;
+                        }
+                        Ok(last.context("empty plan")?.to_vec1::<f32>()?)
+                    };
+                    // checkpoints: the first cache plan at `at`, main's grid at `gat`
+                    let upto = |bs: &[usize], c: usize| bs.iter().copied().filter(|&e| e <= c).collect::<Vec<_>>();
+                    loaded.backend.clear_kv_cache(0);
+                    let _ = run(&mut loaded.backend, 0, &upto(&cache_bs[0], at))?;
+                    let ck = loaded.backend.prefix_capture(0)?;
+                    let gck = if gat > 0 {
+                        loaded.backend.clear_kv_cache(0);
+                        let _ = run(&mut loaded.backend, 0, &upto(&base_b, gat))?;
+                        Some(loaded.backend.prefix_capture(0)?)
+                    } else {
+                        None
+                    };
+                    // kinds: 0 base, 1..=M cache[m], M+1 hit, M+2 ghit
+                    let nm = merges.len();
+                    let nk = nm + 3;
+                    let timed = |kind: usize, b: &mut model::ModelBackend| -> Result<(f64, Vec<f32>)> {
+                        b.clear_kv_cache(0);
+                        let t = std::time::Instant::now();
+                        let v = if kind == 0 {
+                            run(b, 0, &base_b)?
+                        } else if kind <= nm {
+                            run(b, 0, &cache_bs[kind - 1])?
+                        } else if kind == nm + 1 {
+                            b.prefix_restore(0, &ck)?;
+                            run(b, at, &cache_bs[0])?
+                        } else {
+                            match &gck {
+                                Some(g) => {
+                                    b.prefix_restore(0, g)?;
+                                    run(b, gat, &base_b)?
+                                }
+                                None => run(b, 0, &base_b)?,
+                            }
+                        };
+                        Ok((t.elapsed().as_secs_f64() * 1e3, v))
+                    };
+                    let mut first = Vec::new();
+                    for k in 0..nk {
+                        first.push(timed(k, &mut loaded.backend)?.1);
+                    }
+                    let mut t: Vec<Vec<f64>> = vec![Vec::new(); nk];
+                    for r in 0..reps {
+                        for k in 0..nk {
+                            let kind = (k + r) % nk;
+                            t[kind].push(timed(kind, &mut loaded.backend)?.0);
+                        }
+                    }
+                    let bits_eq = |x: &[f32], y: &[f32]| x.len() == y.len() && x.iter().zip(y).all(|(a, b)| a.to_bits() == b.to_bits());
+                    let argmax = |v: &[f32]| {
+                        v.iter().enumerate().max_by(|a, b| a.1.total_cmp(b.1)).map(|(i, _)| i).unwrap_or(0)
+                    };
+                    let st: Vec<(f64, f64)> = t.iter_mut().map(|v| stat(v)).collect();
+                    let (bmin, bmed) = st[0];
+                    let mut caches = String::new();
+                    for (j, m) in merges.iter().enumerate() {
+                        let (cmin, cmed) = st[j + 1];
+                        let dmax = first[0].iter().zip(&first[j + 1]).map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
+                        caches += &format!(
+                            " | cache merge={m} {:?} min={cmin:.1} med={cmed:.1}ms ({:+.1}ms, {:+.1}% vs base; min {:+.1}ms) max|d|={dmax:.4} argmax {}",
+                            cache_ps[j].splits,
+                            cmed - bmed,
+                            (cmed / bmed - 1.0) * 100.0,
+                            cmin - bmin,
+                            argmax(&first[j + 1]),
+                        );
+                    }
+                    let ((hmin, hmed), (gmin, gmed)) = (st[nm + 1], st[nm + 2]);
+                    eprintln!(
+                        "plan n={n} split={split} step={step} | base {} chunks min={bmin:.1} med={bmed:.1}ms argmax {}{caches} | hit restore@{at}+{} rows min={hmin:.1} med={hmed:.1}ms ({:.1}x vs base) | grid-hit restore@{gat}+{} rows min={gmin:.1} med={gmed:.1}ms ({:.1}x vs base) | hit==cache {} ghit==base {}",
+                        base_b.len(),
+                        argmax(&first[0]),
+                        n - at,
+                        bmed / hmed,
+                        n - gat,
+                        bmed / gmed,
+                        if bits_eq(&first[nm + 1], &first[1]) { "PASS" } else { "FAIL" },
+                        if bits_eq(&first[nm + 2], &first[0]) { "PASS" } else { "FAIL" },
+                    );
+                    drop((ck, gck));
+                }
+            }
+            #[cfg(all(feature = "metal", target_os = "macos"))]
+            if let Ok(spec) = std::env::var("TH_BENCH_ATTN") {
+                // Eager prefill attention (qwen35 `attn_eager`, the seq > 8
+                // path) on random data at Qwen3.8's layout (24 q heads, 4 kv
+                // heads, d 256), for each `seq:kv` (kv = pos + seq), synced,
+                // median of 7, one attention layer per call (16 per forward):
+                //   eager   — the broadcast form (TH_ATTN_GQA=0): K and V
+                //             broadcast to all 24 heads, K^T contiguous
+                //   copies  — only those three [24, kv, 256] materialisations
+                //   grouped — the GQA-grouped form (T1b, default)
+                // + how many output elements differ bitwise (must be 0).
+                use candle_core::{DType, Tensor};
+                let dev = loaded.device.clone();
+                let (nh, nkv, hd) = (24usize, 4usize, 256usize);
+                let rep = nh / nkv;
+                for pair in spec.split(',') {
+                    let Some((seq, kv)) = pair.split_once(':').and_then(|(a, b)| {
+                        Some((a.trim().parse::<usize>().ok()?, b.trim().parse::<usize>().ok()?))
+                    }) else {
+                        continue;
+                    };
+                    if seq == 0 || kv < seq {
+                        continue;
+                    }
+                    let pos = kv - seq;
+                    let q = Tensor::randn(0f32, 1.0, (1, nh, seq, hd), &dev)?.to_dtype(DType::BF16)?;
+                    // the model's cache layouts: K head-major contiguous, V
+                    // time-major (attn_forward's cat of transposed rows)
+                    let k_all = Tensor::randn(0f32, 1.0, (nkv, kv, hd), &dev)?.to_dtype(DType::BF16)?;
+                    let v_all = Tensor::randn(0f32, 1.0, (kv, nkv, hd), &dev)?.to_dtype(DType::BF16)?.transpose(0, 1)?;
+                    let bcast = |t: &Tensor| -> Result<Tensor> {
+                        Ok(t.unsqueeze(1)?.broadcast_as((nkv, rep, kv, hd))?.reshape((nh, kv, hd))?)
+                    };
+                    let attn = |grouped: bool| -> Result<Tensor> {
+                        qwen35::Qwen35::attn_eager(&q, &k_all, &v_all, pos, seq, nh, nkv, hd, grouped, &dev)
+                    };
+                    let eager = || attn(false);
+                    let grouped = || attn(true);
+                    let copies = || -> Result<Tensor> {
+                        let kt = bcast(&k_all)?.transpose(1, 2)?.contiguous()?;
+                        let v_r = bcast(&v_all)?.contiguous()?;
+                        drop(v_r);
+                        Ok(kt)
+                    };
+                    let time = |f: &dyn Fn() -> Result<Tensor>| -> Result<(f64, f64)> {
+                        let _ = f()?;
+                        dev.synchronize()?;
+                        let mut v = Vec::new();
+                        for _ in 0..7 {
+                            let t = std::time::Instant::now();
+                            let _o = f()?;
+                            dev.synchronize()?;
+                            v.push(t.elapsed().as_secs_f64() * 1e3);
+                        }
+                        v.sort_by(|a, b| a.total_cmp(b));
+                        Ok((v[0], v[3]))
+                    };
+                    // sdpa — candle's fused MLX steel attention (causal with
+                    // the kv - seq query offset, GQA, bf16): NOT bitwise equal
+                    // (flash accumulation order), timing + max|d| only — a
+                    // probe for a numerics-changing lever, not a request path
+                    let sdpa = || -> Result<Tensor> {
+                        let o = candle_nn::ops::sdpa(
+                            &q.contiguous()?,
+                            &k_all.unsqueeze(0)?.contiguous()?,
+                            &v_all.unsqueeze(0)?.contiguous()?,
+                            None,
+                            true,
+                            (hd as f32).powf(-0.5),
+                            1.0,
+                        )?; // [1, nh, seq, hd]
+                        Ok(o.squeeze(0)?.transpose(0, 1)?.reshape((seq, nh * hd))?)
+                    };
+                    let ((emin, emed), (cmin, cmed), (gmin, gmed)) = (time(&eager)?, time(&copies)?, time(&grouped)?);
+                    let (smin, smed) = time(&sdpa)?;
+                    let (eb, gb) = (qwen35::tensor_bits(&eager()?)?, qwen35::tensor_bits(&grouped()?)?);
+                    let ndiff = eb.iter().zip(&gb).filter(|(a, b)| a != b).count();
+                    let sd = eager()?
+                        .to_dtype(DType::F32)?
+                        .sub(&sdpa()?.to_dtype(DType::F32)?)?
+                        .abs()?
+                        .flatten_all()?
+                        .max(0)?
+                        .to_scalar::<f32>()?;
+                    eprintln!(
+                        "attn seq={seq:4} kv={kv:5} | eager min={emin:.2} med={emed:.2}ms (x16 = {:.0} ms/forward) | copies min={cmin:.2} med={cmed:.2}ms ({:.0}% of eager) | grouped min={gmin:.2} med={gmed:.2}ms ({:.2}x faster, x16 saves {:.0} ms/forward) | bits differ {ndiff}/{} | sdpa min={smin:.2} med={smed:.2}ms ({:.2}x vs eager, {:.2}x vs grouped) max|eager-sdpa|={sd:.4}",
+                        emed * 16.0,
+                        cmed / emed * 100.0,
+                        emed / gmed,
+                        (emed - gmed) * 16.0,
+                        eb.len(),
+                        emed / smed,
+                        gmed / smed,
+                    );
+                }
             }
             #[cfg(all(feature = "metal", target_os = "macos"))]
             if let Ok(spec) = std::env::var("TH_BENCH_BATCH") {

@@ -107,7 +107,24 @@ async fn status(State(app): State<Arc<App>>) -> Json<Value> {
         },
         "memory": {"rss_bytes": rss_bytes()},
         "rss_bytes": rss_bytes(),
+        "prefix_cache": prefix_cache_json(s),
     }))
+}
+
+/// T1 prefix-cache config + counters (additive /status section).
+fn prefix_cache_json(s: &EngineState) -> Value {
+    let c = &s.prefix_cfg;
+    let p = &s.prefix_stats;
+    let n = |a: &std::sync::atomic::AtomicU64| a.load(Ordering::Relaxed);
+    json!({
+        "enabled": c.enabled, "plan_only": c.plan_only, "grid_only": c.grid_only,
+        "max_entries": c.max_entries,
+        "max_bytes": c.max_bytes, "block": c.block, "margin": c.margin,
+        "entries": n(&p.entries), "bytes": n(&p.bytes),
+        "hits": n(&p.hits), "misses": n(&p.misses), "bypassed": n(&p.bypassed),
+        "reused_tokens": n(&p.reused_tokens), "inserts": n(&p.inserts),
+        "evictions": n(&p.evictions), "errors": n(&p.errors),
+    })
 }
 
 /// Deeper introspection — the full tunable config + model meta + counters.
@@ -227,7 +244,7 @@ async fn run_chat(
         let d = done.map(|s| *s).unwrap_or(DoneStats {
             prompt_tokens: 0, completion_tokens: 0, ttft_ms: 0.0,
             total_ms: 0.0, decode_tps: 0.0, prefill_tps: 0.0, finish: "stop".into(),
-            spec_rounds: 0, spec_accepted: 0,
+            spec_rounds: 0, spec_accepted: 0, cached_tokens: 0,
         });
         return Json(json!({
             "id": id, "object": "chat.completion", "created": unix_now(),
@@ -236,11 +253,13 @@ async fn run_chat(
                          "finish_reason": d.finish}],
             "usage": {"prompt_tokens": d.prompt_tokens,
                       "completion_tokens": d.completion_tokens,
-                      "total_tokens": d.prompt_tokens + d.completion_tokens},
+                      "total_tokens": d.prompt_tokens + d.completion_tokens,
+                      "prompt_tokens_details": {"cached_tokens": d.cached_tokens}},
             "th_stats": {"ttft_ms": d.ttft_ms, "decode_tps": d.decode_tps,
                          "prefill_tps": d.prefill_tps, "total_ms": d.total_ms,
                          "spec_rounds": d.spec_rounds,
-                         "spec_accepted": d.spec_accepted},
+                         "spec_accepted": d.spec_accepted,
+                         "cached_tokens": d.cached_tokens},
         }))
         .into_response();
     }
@@ -261,10 +280,11 @@ async fn run_chat(
                 let mut o = chunk(json!({}), json!(s.finish)).as_object().cloned().unwrap_or_default();
                 o.insert("usage".into(), json!({"prompt_tokens": s.prompt_tokens,
                     "completion_tokens": s.completion_tokens,
-                    "total_tokens": s.prompt_tokens + s.completion_tokens}));
+                    "total_tokens": s.prompt_tokens + s.completion_tokens,
+                    "prompt_tokens_details": {"cached_tokens": s.cached_tokens}}));
                 o.insert("th_stats".into(), json!({"ttft_ms": s.ttft_ms,
                     "decode_tps": s.decode_tps, "prefill_tps": s.prefill_tps,
-                    "total_ms": s.total_ms}));
+                    "total_ms": s.total_ms, "cached_tokens": s.cached_tokens}));
                 Event::default().data(Value::Object(o).to_string())
             }
             GenEvent::Error(e) => Event::default().event("error")
@@ -312,7 +332,7 @@ async fn messages(State(app): State<Arc<App>>, Json(req): Json<MessagesRequest>)
     let d = done.map(|s| *s).unwrap_or(DoneStats {
         prompt_tokens: 0, completion_tokens: 0, ttft_ms: 0.0,
         total_ms: 0.0, decode_tps: 0.0, prefill_tps: 0.0, finish: "stop".into(),
-        spec_rounds: 0, spec_accepted: 0,
+        spec_rounds: 0, spec_accepted: 0, cached_tokens: 0,
     });
     Json(json!({
         "id": format!("msg_{:x}", unix_now_ns()),
@@ -320,7 +340,8 @@ async fn messages(State(app): State<Arc<App>>, Json(req): Json<MessagesRequest>)
         "content": [{"type": "text", "text": text}],
         "model": app.engine.state.model_id,
         "stop_reason": if d.finish == "length" { "max_tokens" } else { "end_turn" },
-        "usage": {"input_tokens": d.prompt_tokens, "output_tokens": d.completion_tokens},
+        "usage": {"input_tokens": d.prompt_tokens, "output_tokens": d.completion_tokens,
+                  "cache_read_input_tokens": d.cached_tokens},
     }))
     .into_response()
 }
@@ -352,7 +373,8 @@ async fn requests(State(app): State<Arc<App>>) -> Json<Value> {
 
 async fn kv_clear(State(app): State<Arc<App>>) -> Json<Value> {
     let r = app.engine.kv_clear().await;
-    Json(json!({"ok": true, "cleared": r["cleared"], "skipped_live": r["skipped_live"]}))
+    Json(json!({"ok": true, "cleared": r["cleared"], "skipped_live": r["skipped_live"],
+                "prefix_cache_dropped": r["prefix_cache_dropped"]}))
 }
 
 /// SSE broadcast of lifecycle events — request.start/done, config.updated,

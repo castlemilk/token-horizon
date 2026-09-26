@@ -8,10 +8,11 @@
 // passes.
 
 use crate::model::{self, ModelBackend};
+use crate::prefix_cache::{self, PrefixCache, PrefixCacheConfig};
 use crate::state::{EngineConfig, EngineState, RequestRecord};
 use crate::template::{self, ChatMessage};
 use anyhow::{bail, Context, Result};
-use candle_core::{DType, IndexOp, Tensor};
+use candle_core::{DType, Device, IndexOp, Tensor};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
@@ -39,6 +40,12 @@ struct ModelInner {
     /// single-slot path (the lock spans the whole generation there, so
     /// admin ops can only land between requests).
     live: Vec<bool>,
+    /// T1 prefix cache — slot-state checkpoints keyed by token prefix
+    /// (shared by every slot; used only under this lock).
+    prefix: PrefixCache<model::BackendPrefix>,
+    /// Chat-template ids for the chunk-plan policy (turn ends); None when
+    /// the tokenizer lacks them (then only the end-margin checkpoint).
+    msg_marks: Option<prefix_cache::ChatMarks>,
 }
 
 /// Per-request sampling overrides — any field falls back to EngineConfig.
@@ -76,6 +83,8 @@ pub struct DoneStats {
     /// Speculative-decode verify rounds and accepted draft tokens.
     pub spec_rounds: u64,
     pub spec_accepted: u64,
+    /// Prompt tokens restored from the T1 prefix cache (not prefilled).
+    pub cached_tokens: usize,
 }
 
 impl Engine {
@@ -125,6 +134,25 @@ impl Engine {
                 "dflash verify length"
             );
         }
+        // T1 prefix cache: qwen3_5 only (the backend with slot-state
+        // capture/restore); knobs read once here
+        let prefix_cfg = if matches!(loaded.backend, ModelBackend::Qwen35(_)) {
+            PrefixCacheConfig::from_env()
+        } else {
+            PrefixCacheConfig::disabled()
+        };
+        let msg_marks = chat_marks(&loaded.tokenizer);
+        tracing::info!(
+            enabled = prefix_cfg.enabled,
+            plan_only = prefix_cfg.plan_only,
+            grid_only = prefix_cfg.grid_only,
+            max_entries = prefix_cfg.max_entries,
+            max_mb = prefix_cfg.max_bytes >> 20,
+            block = prefix_cfg.block,
+            margin = prefix_cfg.margin,
+            chat_boundaries = msg_marks.is_some(),
+            "prefix cache (TH_PREFIX_CACHE*)"
+        );
         let inner = ModelInner {
             backend: loaded.backend,
             tokenizer: loaded.tokenizer,
@@ -132,9 +160,13 @@ impl Engine {
             chat_template: loaded.chat_template,
             device: loaded.device,
             live: vec![false; nslots],
+            prefix: PrefixCache::new(prefix_cfg),
+            msg_marks,
         };
         let inner = Arc::new(tokio::sync::Mutex::new(inner));
-        let state = Arc::new(EngineState::new(model_id, meta, cfg));
+        let mut st = EngineState::new(model_id, meta, cfg);
+        st.prefix_cfg = prefix_cfg;
+        let state = Arc::new(st);
         let job_tx = if nslots > 1 {
             let (tx, rx) =
                 std::sync::mpsc::sync_channel::<BatchJob>(nslots * 8);
@@ -246,7 +278,13 @@ impl Engine {
         if skipped.is_empty() {
             self.state.kv_tokens.store(0, Ordering::Relaxed);
         }
-        let out = serde_json::json!({"cleared": cleared, "skipped_live": skipped});
+        // T1: checkpoints are independent of live slots (restores copy or
+        // share read-only), so they always go
+        let prefix_dropped = inner.prefix.clear();
+        self.state.prefix_stats.entries.store(0, Ordering::Relaxed);
+        self.state.prefix_stats.bytes.store(0, Ordering::Relaxed);
+        let out = serde_json::json!({"cleared": cleared, "skipped_live": skipped,
+                                     "prefix_cache_dropped": prefix_dropped});
         self.state.emit("kv.cleared", out.clone());
         out
     }
@@ -402,6 +440,191 @@ fn uuidish() -> String {
     format!("th-{:016x}", n)
 }
 
+// MARK: - prefill + T1 prefix cache
+
+/// `TH_DEBUG_PREFILL` — per-phase prefill timing on stderr (`[prefill]`:
+/// restore, each chunk, each capture, the draft warm-up), each phase
+/// closed by a device sync. The syncs serialize host encode and GPU
+/// work, so this is a diagnosis mode, not a production setting. Read once.
+fn debug_prefill() -> bool {
+    static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *V.get_or_init(|| std::env::var("TH_DEBUG_PREFILL").is_ok())
+}
+
+/// `TH_DEBUG_PREFILL` phase clock: syncs the device, returns the ms since
+/// the previous mark and restarts. No-op (0.0) when the knob is off.
+struct PhaseClock {
+    on: bool,
+    t: Instant,
+}
+
+impl PhaseClock {
+    fn new() -> Self {
+        Self { on: debug_prefill(), t: Instant::now() }
+    }
+
+    fn mark(&mut self, device: &Device) -> f64 {
+        if !self.on {
+            return 0.0;
+        }
+        let _ = device.synchronize();
+        let ms = self.t.elapsed().as_secs_f64() * 1000.0;
+        self.t = Instant::now();
+        ms
+    }
+}
+
+/// Chat-template ids (`<|im_start|>`, `<|im_end|>`, `\n`, `assistant`)
+/// when the tokenizer has each as a single token.
+fn chat_marks(tok: &tokenizers::Tokenizer) -> Option<prefix_cache::ChatMarks> {
+    let one = |s: &str| -> Option<u32> {
+        let e = tok.encode(s, false).ok()?;
+        match e.get_ids() {
+            [id] => Some(*id),
+            _ => None,
+        }
+    };
+    Some(prefix_cache::ChatMarks {
+        im_start: tok.token_to_id("<|im_start|>")?,
+        im_end: tok.token_to_id("<|im_end|>")?,
+        newline: one("\n")?,
+        assistant: one("assistant")?,
+    })
+}
+
+/// What `prefill_slot` did.
+struct Prefilled {
+    /// Logits of the last prompt position (None for an empty prompt).
+    logits: Option<Tensor>,
+    /// Prompt tokens restored from a checkpoint (not forwarded).
+    cached: usize,
+    /// Host time in the prefill forwards (enqueue — no sync).
+    prefill_ms: f64,
+}
+
+/// Prefill `prompt` into `slot` — already cleared for this request — by
+/// its chunk plan (`prefix_cache::plan`). With the cache off, or bypassed,
+/// the plan is the `prefill_step` grid: exactly the old
+/// `prompt.chunks(step)` loop. With the T1 prefix cache on, the plan also
+/// splits at chat turn ends; the longest checkpoint computed through the
+/// same boundaries is restored first (so the chunks that follow are the
+/// ones the uncached prefill runs: bit-identical), and the plan's
+/// checkpoint positions are captured as the prefill passes them. A
+/// capture/restore failure never fails the request — it logs and falls
+/// back to a full prefill.
+fn prefill_slot(
+    inner: &mut ModelInner,
+    state: &EngineState,
+    slot: usize,
+    prompt: &[u32],
+    sp: &ResolvedSampling,
+) -> Result<Prefilled> {
+    let device = inner.device.clone();
+    let n = prompt.len();
+    let step = sp.prefill_step.max(32);
+    let ps = &state.prefix_stats;
+    let mut clk = PhaseClock::new();
+    let mut trace = String::new();
+    let t_all = Instant::now();
+    let use_cache = inner.prefix.enabled() && n > 1;
+    let use_cache = use_cache && {
+        let ok = !sp.kv_quant && inner.backend.prefix_capable(slot);
+        if !ok {
+            ps.bypassed.fetch_add(1, Ordering::Relaxed);
+        }
+        ok
+    };
+    let cfg = inner.prefix.config();
+    // TH_PREFIX_CACHE=miss: the cache's plan, no restore / capture
+    let restore = use_cache && !cfg.plan_only;
+    let plan = if use_cache {
+        let (first, turn_ends) = match &inner.msg_marks {
+            Some(m) => prefix_cache::chat_boundaries(prompt, m),
+            None => (None, Vec::new()),
+        };
+        prefix_cache::plan(n, step, Some(&cfg), first, &turn_ends)
+    } else {
+        prefix_cache::plan(n, step, None, None, &[])
+    };
+    let mut pos = 0usize;
+    if use_cache {
+        // the suffix must be non-empty: its forward yields the logits
+        let found = if restore { inner.prefix.lookup(prompt, step, &plan, n - 1) } else { None };
+        if let Some((len, entry)) = found {
+            let r = if entry.pos() == len {
+                inner.backend.prefix_restore(slot, entry)
+            } else {
+                Err(anyhow::anyhow!("checkpoint at kv {} keyed by {len} tokens", entry.pos()))
+            };
+            match r {
+                Ok(()) => pos = len,
+                Err(e) => {
+                    ps.errors.fetch_add(1, Ordering::Relaxed);
+                    tracing::warn!(error = %e, slot, "prefix restore failed — full prefill");
+                    inner.backend.clear_kv_cache(slot);
+                }
+            }
+        }
+        if pos > 0 {
+            ps.hits.fetch_add(1, Ordering::Relaxed);
+            ps.reused_tokens.fetch_add(pos as u64, Ordering::Relaxed);
+        } else {
+            ps.misses.fetch_add(1, Ordering::Relaxed);
+        }
+        if clk.on {
+            trace += &format!(" lookup+restore={:.1}", clk.mark(&device));
+        }
+    }
+    let cached = pos;
+    let mut logits = None;
+    let mut prefill_ms = 0.0f64;
+    // a restored position is one of the plan's splits
+    let start = pos;
+    let bounds: Vec<usize> =
+        plan.splits.iter().copied().chain(std::iter::once(n)).filter(|&b| b > start).collect();
+    for end in bounds {
+        let t = Instant::now();
+        logits = Some(inner.backend.forward_slot(slot, &prompt[pos..end], pos, &device)?);
+        prefill_ms += t.elapsed().as_secs_f64() * 1000.0;
+        if clk.on {
+            trace += &format!(" [{pos}..{end})={:.1}", clk.mark(&device));
+        }
+        pos = end;
+        if restore
+            && plan.checkpoints.contains(&pos)
+            && !inner.prefix.contains(&prompt[..pos], step, &plan.history(pos))
+        {
+            match inner.backend.prefix_capture(slot) {
+                Ok(p) => {
+                    let bytes = p.bytes();
+                    let out = inner.prefix.insert(prompt[..pos].to_vec(), step, plan.history(pos), bytes, p);
+                    if out.inserted {
+                        ps.inserts.fetch_add(1, Ordering::Relaxed);
+                    }
+                    ps.evictions.fetch_add(out.evicted as u64, Ordering::Relaxed);
+                    ps.entries.store(inner.prefix.len() as u64, Ordering::Relaxed);
+                    ps.bytes.store(inner.prefix.bytes() as u64, Ordering::Relaxed);
+                }
+                Err(e) => {
+                    ps.errors.fetch_add(1, Ordering::Relaxed);
+                    tracing::warn!(error = %e, slot, pos, "prefix capture failed");
+                }
+            }
+            if clk.on {
+                trace += &format!(" capture@{pos}={:.1}", clk.mark(&device));
+            }
+        }
+    }
+    if clk.on {
+        eprintln!(
+            "  [prefill] slot={slot} n={n} cached={cached} splits={:?}{trace} total={:.1}ms",
+            plan.splits,
+            t_all.elapsed().as_secs_f64() * 1000.0
+        );
+    }
+    Ok(Prefilled { logits, cached, prefill_ms })
+}
+
 // MARK: - the generation loop
 
 struct ResolvedSampling {
@@ -499,14 +722,13 @@ fn generate_blocking(
     let mut spec_rounds = 0u64;
     let mut spec_accepted = 0u64;
 
-    // --- prefill: chunked forward over the prompt, sample once at the end
-    let mut last_logits: Option<Tensor> = None;
-    for chunk in prompt_tokens.chunks(sp.prefill_step.max(32)) {
-        let t = Instant::now();
-        last_logits = Some(inner.backend.forward(chunk, pos, &device)?);
-        prefill_ms_total += t.elapsed().as_secs_f64() * 1000.0;
-        pos += chunk.len();
-    }
+    // --- prefill: chunked forward over the prompt (T1: from the longest
+    // cached prefix), sample once at the end
+    let pf = prefill_slot(&mut inner, state, 0, &prompt_tokens, &sp)?;
+    let last_logits: Option<Tensor> = pf.logits;
+    let cached_tokens = pf.cached;
+    prefill_ms_total += pf.prefill_ms;
+    pos += n_prompt;
 
     // --- decode loop
     //
@@ -551,7 +773,6 @@ fn generate_blocking(
     // the draft ring, and leaves the last emitted token pending as the
     // next anchor.
     if inner.backend.has_draft() {
-        inner.backend.draft_prefill(0)?; // warm the ring from prefill
         if let Some(pl) = pending.take() {
             let mut anchor = sampler.sample(
                 &pl,
@@ -562,6 +783,11 @@ fn generate_blocking(
             )?;
             if let Emit::Done(r) = emit_token(&mut ec, anchor, pos) {
                 finish = r;
+                // the warm-up still runs (main ran it before every first
+                // sample): the next request in this slot reads ring rows
+                // this one wrote (anchor protocol), so its history must
+                // not depend on how this request ended
+                inner.backend.draft_prefill(0)?;
             } else {
                 pos += 1;
                 if first {
@@ -570,6 +796,17 @@ fn generate_blocking(
                     if tx.send(GenEvent::FirstToken { ttft_ms }).is_err() {
                         finish = "cancelled";
                     }
+                }
+                // warm the ring from the prefill captures only now: the
+                // first token needs just the prefill logits, the ring is
+                // first read by round 1's propose (same kernels, same
+                // inputs — only the host order moves). The sync keeps the
+                // warm-up out of round 1's timing.
+                let mut clk = PhaseClock::new();
+                inner.backend.draft_prefill(0)?;
+                device.synchronize()?;
+                if clk.on {
+                    eprintln!("  [prefill] draft_warmup={:.1}ms", clk.mark(&device));
                 }
                 'dflash: while finish == "stop" {
                     if cancel.load(Ordering::Relaxed) {
@@ -880,8 +1117,10 @@ fn generate_blocking(
     } else {
         0.0
     };
-    let prefill_tps = if n_prompt > 0 && prefill_ms_total > 0.0 {
-        n_prompt as f64 / (prefill_ms_total / 1000.0)
+    // T1: rate over the tokens actually forwarded (== n_prompt uncached)
+    let prefilled = n_prompt - cached_tokens;
+    let prefill_tps = if prefilled > 0 && prefill_ms_total > 0.0 {
+        prefilled as f64 / (prefill_ms_total / 1000.0)
     } else {
         0.0
     };
@@ -905,6 +1144,7 @@ fn generate_blocking(
         finish: finish.to_string(),
         spec_rounds,
         spec_accepted,
+        cached_tokens,
     };
     let _ = tx.send(GenEvent::Done(Box::new(stats)));
 
@@ -917,6 +1157,7 @@ fn generate_blocking(
         total_ms,
         decode_tps,
         finish: finish.to_string(),
+        cached_tokens,
     })
 }
 
@@ -1630,6 +1871,8 @@ struct Run {
     sp: ResolvedSampling,
     cancel: Arc<AtomicBool>,
     n_prompt: usize,
+    /// T1: prompt tokens restored from the prefix cache.
+    cached_tokens: usize,
 }
 
 fn batch_loop(
@@ -1757,17 +2000,13 @@ fn admit(
         serde_json::json!({"id": job.id, "prompt_tokens": n_prompt, "slot": slot}),
     );
     inner.backend.set_kv_quant_slot(sp.kv_quant, slot)?;
-    let device = inner.device.clone();
-    let mut pos = 0usize;
-    let mut last_logits: Option<Tensor> = None;
-    let mut prefill_ms_total = 0.0f64;
-    for chunk in prompt_tokens.chunks(sp.prefill_step.max(32)) {
-        let t = Instant::now();
-        last_logits = Some(inner.backend.forward_slot(slot, chunk, pos, &device)?);
-        prefill_ms_total += t.elapsed().as_secs_f64() * 1000.0;
-        pos += chunk.len();
-    }
-    inner.backend.draft_prefill(slot)?;
+    // T1: slot-local restore + canonical-chunk prefill (checkpoints are
+    // shared read-only across slots — see qwen35::PrefixState)
+    let pf = prefill_slot(inner, state, slot, &prompt_tokens, &sp)?;
+    let pos = n_prompt;
+    let last_logits = pf.logits;
+    let prefill_ms_total = pf.prefill_ms;
+    let cached_tokens = pf.cached;
     let mut sampler = Sampler::new(&sp, sp.seed.max(1));
     let anchor = sampler.sample(
         &last_logits.context("empty prefill")?,
@@ -1798,6 +2037,7 @@ fn admit(
         sp,
         cancel: Arc::new(AtomicBool::new(false)),
         n_prompt,
+        cached_tokens,
     };
     let eos_ids = inner.eos_ids.clone();
     let mut ec = EmitCtx {
@@ -1822,6 +2062,16 @@ fn admit(
                 run.finish = Some("cancelled");
             }
         }
+    }
+    // the draft ring warm-up after the first token (as the single-slot
+    // loop); synced so the next lockstep round's timing excludes it. It
+    // runs even when the request already ended (main ran it before every
+    // first sample): the slot's next request reads ring rows written here
+    let mut clk = PhaseClock::new();
+    inner.backend.draft_prefill(slot)?;
+    inner.device.synchronize()?;
+    if clk.on {
+        eprintln!("  [prefill] slot={slot} draft_warmup={:.1}ms", clk.mark(&inner.device));
     }
     Ok(Some(run))
 }
@@ -2073,8 +2323,9 @@ fn finish_run(state: &Arc<EngineState>, r: Run) {
     } else {
         0.0
     };
-    let prefill_tps = if r.n_prompt > 0 && r.prefill_ms_total > 0.0 {
-        r.n_prompt as f64 / (r.prefill_ms_total / 1000.0)
+    let prefilled = r.n_prompt - r.cached_tokens;
+    let prefill_tps = if prefilled > 0 && r.prefill_ms_total > 0.0 {
+        prefilled as f64 / (r.prefill_ms_total / 1000.0)
     } else {
         0.0
     };
@@ -2097,6 +2348,7 @@ fn finish_run(state: &Arc<EngineState>, r: Run) {
         finish: finish.clone(),
         spec_rounds: r.spec_rounds,
         spec_accepted: r.spec_accepted,
+        cached_tokens: r.cached_tokens,
     };
     let _ = r.tx.send(GenEvent::Done(Box::new(stats)));
     let rec = RequestRecord {
@@ -2108,6 +2360,7 @@ fn finish_run(state: &Arc<EngineState>, r: Run) {
         total_ms,
         decode_tps,
         finish,
+        cached_tokens: r.cached_tokens,
     };
     state.counters.requests_active.fetch_sub(1, Ordering::Relaxed);
     state.emit("request.done", serde_json::to_value(&rec).unwrap_or_default());
