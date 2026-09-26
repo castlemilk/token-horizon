@@ -922,6 +922,58 @@ kernel void attn_split_reduce(
             .as_ref()
     }
 
+    /// `TH_ATTN_SPLIT_SCRATCH=0` (read once): allocate the split partials
+    /// per call from candle's pool (the A/B arm) instead of `split_scratch`.
+    fn split_scratch_on() -> bool {
+        static ON: OnceLock<bool> = OnceLock::new();
+        *ON.get_or_init(|| std::env::var("TH_ATTN_SPLIT_SCRATCH").map_or(true, |v| v.trim() != "0"))
+    }
+
+    type Scratch = (candle_core::metal_backend::DeviceId, usize, usize, std::sync::Arc<Buffer>, std::sync::Arc<Buffer>);
+
+    /// The split kernel's f32 partials + (max, sum) workspace, persistent
+    /// per thread and device. Both are written by the partial dispatch and
+    /// read by the reduce inside one `attn_decode_split` call, so one pair
+    /// serves every layer: the next layer's write after this layer's read
+    /// is the same buffer reuse candle's pool already makes within a
+    /// forward (ordered by its hazard tracking). Held here (Arc count > 1),
+    /// the buffers survive candle's pool trim at every host sync, so a
+    /// decode round no longer re-creates 32 of them per verify after each
+    /// sync (fresh allocations + residency-set commits: +1 ms/round of
+    /// host encode at 1.45k and +3-10 ms at 8k, th/d-longctx sZ). Grows to
+    /// the largest request seen.
+    fn split_scratch(
+        device: &candle_core::MetalDevice,
+        acc_elems: usize,
+        ml_elems: usize,
+    ) -> Result<(std::sync::Arc<Buffer>, std::sync::Arc<Buffer>)> {
+        if !split_scratch_on() {
+            return Ok((
+                device.new_buffer(acc_elems, DType::F32, "attn_split.acc")?,
+                device.new_buffer(ml_elems, DType::F32, "attn_split.ml")?,
+            ));
+        }
+        thread_local! {
+            static S: std::cell::RefCell<Option<Scratch>> = const { std::cell::RefCell::new(None) };
+        }
+        S.with(|s| {
+            let mut s = s.borrow_mut();
+            if let Some((id, a, m, pa, pm)) = s.as_ref() {
+                if *id == device.id() && *a >= acc_elems && *m >= ml_elems {
+                    return Ok((pa.clone(), pm.clone()));
+                }
+            }
+            let (a, m) = match s.as_ref() {
+                Some((id, a, m, _, _)) if *id == device.id() => ((*a).max(acc_elems), (*m).max(ml_elems)),
+                _ => (acc_elems, ml_elems),
+            };
+            let pa = device.new_buffer(a, DType::F32, "attn_split.acc")?;
+            let pm = device.new_buffer(m, DType::F32, "attn_split.ml")?;
+            *s = Some((device.id(), a, m, pa.clone(), pm.clone()));
+            Ok((pa, pm))
+        })
+    }
+
     #[repr(C)]
     pub(crate) struct SplitParams {
         pub visible: u32,
@@ -989,8 +1041,7 @@ kernel void attn_split_reduce(
         if k_st[2] != 1 || v_st[2] != 1 {
             candle_core::bail!("attn_decode_split: kv cache inner dim must be contiguous");
         }
-        let pacc = device.new_buffer(nkv * splits * m * d, DType::F32, "attn_split.acc")?;
-        let pml = device.new_buffer(nkv * splits * m * 2, DType::F32, "attn_split.ml")?;
+        let (pacc, pml) = split_scratch(device, nkv * splits * m * d, nkv * splits * m * 2)?;
         let params = SplitParams {
             visible: visible as u32,
             causal_base: pos as u32,
