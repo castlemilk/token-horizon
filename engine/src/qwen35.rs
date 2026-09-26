@@ -1971,18 +1971,19 @@ impl Slot {
 /// attention K/V is exactly `[n_kv, pos, d]` — a slot that restores it
 /// holds it at full capacity, so its next write grows into a fresh buffer
 /// (`ensure_kv` / the eager path's cat) instead of writing in place; the
-/// capture tensors are the prefill's own per-forward outputs (no kernel
-/// writes them after they are pushed). Restoring into several slots at
-/// once is therefore safe: they share only read-only buffers.
+/// capture rows are a compact copy (one group, fresh buffers) that
+/// `take_captures` only reads. Restoring into several slots at once is
+/// therefore safe: they share only read-only buffers.
 pub struct PrefixState {
     pos: usize,
     /// per layer: (conv window, recurrent state) for GDN layers
     gdn: Vec<Option<(Tensor, Tensor)>>,
     /// per layer: (K, V) rows 0..pos for attention layers
     kv: Vec<Option<(Tensor, Tensor)>>,
-    /// capture groups (5 tensors per prefill forward) covering absolute
-    /// positions `caps_base..pos` — enough for the draft ring warm-up of
-    /// any longer prompt (its last WINDOW-1 rows)
+    /// one capture group (5 tensors, one per capture layer) covering
+    /// absolute positions `caps_base..pos`, `caps_base = pos-(WINDOW-1)`
+    /// or 0 — enough for the draft ring warm-up of any longer prompt (its
+    /// last WINDOW-1 rows)
     caps: Vec<Tensor>,
     caps_base: usize,
     bytes: usize,
@@ -3145,8 +3146,9 @@ impl Qwen35 {
 
     /// Checkpoint `slot` at its current KV position (call right after the
     /// prefill chunk that ended there). GPU copies are enqueued in stream
-    /// order — no host sync. The copy costs ~154 MB of GDN state; K/V and
-    /// captures are shared (see [`PrefixState`]).
+    /// order — no host sync. Copies the GDN state (~151 MB on Qwen3.8-27B)
+    /// and the draft capture rows (<= WINDOW-1 rows, 51 KB each); K/V are
+    /// shared when exact-size (see [`PrefixState`]).
     pub fn prefix_capture(&mut self, slot: usize) -> Result<PrefixState> {
         let sl = &self.slots[slot];
         anyhow::ensure!(!sl.kv_quant, "prefix capture: slot {slot} runs compressed KV");
@@ -3187,30 +3189,45 @@ impl Qwen35 {
                 }
             }
         }
-        // capture rows since the last drain cover caps_base..pos; keep the
-        // groups a longer prompt's draft warm-up can reach (last WINDOW-1)
+        // capture rows since the last drain cover capture_base..pos. Keep
+        // exactly what a longer prompt's draft warm-up can reach — its last
+        // WINDOW-1 rows start at or after pos-(WINDOW-1) — as ONE compact
+        // group: a fresh [rows, hidden] tensor per capture layer. (The live
+        // capture tensors are views that pin their forward's whole
+        // [2, T, hidden] residual|normed output, twice their size, so
+        // holding them would break the byte cap.) Row order and values are
+        // unchanged: `take_captures` concatenates the same rows.
         let mut caps = Vec::new();
-        let mut caps_base = sl.capture_base;
-        if sl.draft.is_some() {
-            let need_from = pos.saturating_sub(crate::dflash::WINDOW - 1);
-            let mut row = sl.capture_base;
+        let mut caps_base = 0;
+        if sl.draft.is_some() && !sl.captures.is_empty() {
+            anyhow::ensure!(sl.captures.len() % 5 == 0, "prefix capture: capture groups misaligned");
+            let need_from = pos.saturating_sub(crate::dflash::WINDOW - 1).max(sl.capture_base);
+            let (mut row, mut from) = (sl.capture_base, None);
+            let mut kept: Vec<&[Tensor]> = Vec::new();
             for group in sl.captures.chunks_exact(5) {
                 let rows = group[0].dim(0)?;
-                if row + rows <= need_from {
-                    row += rows;
-                    caps_base = row;
-                    continue;
+                if row + rows > need_from {
+                    from.get_or_insert(row);
+                    kept.push(group);
                 }
-                for t in group {
-                    bytes += tensor_bytes(t);
-                }
-                caps.extend(group.iter().cloned());
                 row += rows;
             }
-            anyhow::ensure!(
-                row == pos && sl.captures.len() % 5 == 0,
-                "prefix capture: capture rows end at {row}, kv at {pos}"
-            );
+            anyhow::ensure!(row == pos, "prefix capture: capture rows end at {row}, kv at {pos}");
+            if let Some(from) = from {
+                let skip = need_from - from;
+                for j in 0..5 {
+                    let mut parts: Vec<Tensor> = kept.iter().map(|g| g[j].clone()).collect();
+                    if skip > 0 {
+                        let r0 = parts[0].dim(0)?;
+                        parts[0] = parts[0].narrow(0, skip, r0 - skip)?;
+                    }
+                    // fresh exact-size buffer (a 1-part cat is a clone)
+                    let t = if parts.len() == 1 { state_copy(&parts[0])? } else { Tensor::cat(&parts, 0)? };
+                    bytes += tensor_bytes(&t);
+                    caps.push(t);
+                }
+                caps_base = need_from;
+            }
         }
         Ok(PrefixState { pos, gdn, kv, caps, caps_base, bytes })
     }
@@ -3305,22 +3322,32 @@ impl Qwen35 {
     /// the last `take_captures`. Only the last `WINDOW-1` positions can
     /// ever be attended, so earlier prompt rows are skipped.
     pub fn draft_prefill(&mut self, slot: usize) -> Result<()> {
-        // T1: after a prefix restore the capture rows start at the
-        // checkpoint's `capture_base`, not 0 — the committed rows (the
-        // prompt's last WINDOW-1 positions) are the same either way
-        let base = std::mem::take(&mut self.slots[slot].capture_base);
-        let caps = self.take_captures(slot)?;
+        let rows = self.draft_warmup_rows(slot)?;
         let (w, sl) = (self.draft_w.as_ref(), &mut self.slots[slot]);
-        if let (Some(w), Some(d), Some(c)) = (w, sl.draft.as_mut(), caps) {
-            let end = base + c.dim(0)?;
-            let keep = end.min(crate::dflash::WINDOW - 1);
-            let start = end - keep;
-            let off = start
-                .checked_sub(base)
-                .context("draft_prefill: restored capture rows miss the warm-up window")?;
-            w.commit(d, &c.narrow(0, off, keep)?.contiguous()?, start, keep)?;
+        if let (Some(w), Some(d), Some((c, start, keep))) = (w, sl.draft.as_mut(), rows) {
+            w.commit(d, &c, start, keep)?;
         }
         Ok(())
+    }
+
+    /// The draft ring warm-up input (drains the captures): the capture
+    /// rows since the last drain narrowed to the last WINDOW-1 positions —
+    /// (rows [keep, 25600], first absolute position, keep). T1: after a
+    /// prefix restore the rows start at the checkpoint's `capture_base`,
+    /// not 0; the selected rows (the prompt's last WINDOW-1 positions) are
+    /// the same either way.
+    fn draft_warmup_rows(&mut self, slot: usize) -> Result<Option<(Tensor, usize, usize)>> {
+        let base = std::mem::take(&mut self.slots[slot].capture_base);
+        let Some(c) = self.take_captures(slot)? else {
+            return Ok(None);
+        };
+        let end = base + c.dim(0)?;
+        let keep = end.min(crate::dflash::WINDOW - 1);
+        let start = end - keep;
+        let off = start
+            .checked_sub(base)
+            .context("draft_prefill: restored capture rows miss the warm-up window")?;
+        Ok(Some((c.narrow(0, off, keep)?.contiguous()?, start, keep)))
     }
 
     /// Draft-commit `rows` entries from `captured` ([rows, 25600])
@@ -5253,6 +5280,110 @@ mod prefix_tests {
         m.prefix_restore(1, &cap2)?;
         assert!(m.slot_state_bits(1)? == s2, "restored state differs from the captured slot");
         assert!(tensor_bits(&m.forward_multi(1, &seq8[4..], n + 4)?)? == after);
+        Ok(())
+    }
+
+    /// Do two tensors live in the same device buffer? (candle 0.11's
+    /// `same_storage` is private.) Metal buffers compare by identity.
+    fn shares_buffer(a: &Tensor, b: &Tensor) -> bool {
+        let (ga, _) = a.storage_and_layout();
+        let (gb, _) = b.storage_and_layout();
+        match (&*ga, &*gb) {
+            (candle_core::Storage::Metal(x), candle_core::Storage::Metal(y)) => x.buffer() == y.buffer(),
+            _ => false,
+        }
+    }
+
+    /// Synthetic capture groups (5 per forward chunk, f32, value = absolute
+    /// row + 10000·layer, so every row is distinct and exact) ending at
+    /// `upto`; `from` = first row.
+    fn cap_groups(chunks: &[(usize, usize)], w: usize, dev: &Device) -> Result<Vec<Tensor>> {
+        let mut out = Vec::new();
+        for &(a, b) in chunks {
+            for j in 0..5 {
+                let v: Vec<f32> = (a..b)
+                    .flat_map(|r| (0..w).map(move |c| (r + 10000 * j) as f32 + c as f32 / 8.0))
+                    .collect();
+                out.push(Tensor::from_vec(v, (b - a, w), dev)?);
+            }
+        }
+        Ok(out)
+    }
+
+    /// Put `slot` at KV position `pos` with synthetic capture groups (the
+    /// K/V rows are zeros — only the capture path is under test).
+    fn fake_prefilled(m: &mut Qwen35, slot: usize, chunks: &[(usize, usize)], w: usize) -> Result<()> {
+        let dev = m.device.clone();
+        let pos = chunks.last().map(|c| c.1).unwrap_or(0);
+        m.clear_kv_cache(slot);
+        let sl = &mut m.slots[slot];
+        sl.draft = Some(crate::dflash::Draft::new(&dev)?);
+        for kv in sl.kv.iter_mut().flatten() {
+            let (nkv, hd) = (kv.0.dim(0)?, kv.0.dim(2)?);
+            *kv = (
+                Tensor::zeros((nkv, pos, hd), DType::BF16, &dev)?,
+                Tensor::zeros((nkv, pos, hd), DType::BF16, &dev)?,
+            );
+        }
+        sl.captures = cap_groups(chunks, w, &dev)?;
+        sl.capture_base = 0;
+        sl.kv_tokens = pos;
+        Ok(())
+    }
+
+    /// A checkpoint keeps exactly the capture rows a longer prompt's draft
+    /// warm-up can reach — the last WINDOW-1 before it — as one compact
+    /// group of fresh buffers, and a restored slot's warm-up input
+    /// (checkpoint rows + the suffix's) equals the uncached slot's, row for
+    /// row, bit for bit. Covers the trimmed case (checkpoint past WINDOW),
+    /// a multi-group short prompt and a single group (which must be copied
+    /// out of the live capture buffer, not shared).
+    #[test]
+    fn prefix_capture_rows_feed_an_identical_draft_warmup() -> Result<()> {
+        let Some(d) = metal() else {
+            eprintln!("[prefix-cache] skipped: needs a Metal device");
+            return Ok(());
+        };
+        let mut m = tiny_hybrid(&d)?;
+        let w = 4usize;
+        let win = crate::dflash::WINDOW - 1;
+        for (ckpt_chunks, suffix) in [
+            // 2600-row checkpoint: rows 553.. kept, 41 rows of the 512 group dropped
+            (vec![(0usize, 512usize), (512, 1024), (1024, 1536), (1536, 2048), (2048, 2560), (2560, 2600)], (2600usize, 2650usize)),
+            (vec![(0, 512), (512, 600)], (600, 640)),
+            (vec![(0, 300)], (300, 305)),
+        ] {
+            let pos = ckpt_chunks.last().unwrap().1;
+            let need_from = pos.saturating_sub(win);
+            fake_prefilled(&mut m, 0, &ckpt_chunks, w)?;
+            let live = m.slots[0].captures.clone();
+            let cap = m.prefix_capture(0)?;
+            assert_eq!(cap.pos(), pos);
+            assert_eq!((cap.caps_base, cap.caps.len()), (need_from, 5), "checkpoint at {pos}: one group from {need_from}");
+            let want = cap_groups(&[(need_from, pos)], w, &d)?;
+            for j in 0..5 {
+                assert_eq!(cap.caps[j].dims(), &[pos - need_from, w]);
+                assert!(tensor_bits(&cap.caps[j])? == tensor_bits(&want[j])?, "checkpoint rows, layer {j}");
+                assert!(live.iter().all(|t| !shares_buffer(t, &cap.caps[j])), "checkpoint rows share a live capture buffer");
+            }
+            let ck0 = cap.state_bits()?;
+            // uncached: slot 0 continues with the suffix chunk
+            m.slots[0].captures.extend(cap_groups(&[suffix], w, &d)?);
+            // cached: slot 1 restores the checkpoint, then the same suffix
+            m.clear_kv_cache(1);
+            m.slots[1].draft = Some(crate::dflash::Draft::new(&d)?);
+            m.prefix_restore(1, &cap)?;
+            assert_eq!((m.slots[1].kv_tokens, m.slots[1].capture_base), (pos, need_from));
+            m.slots[1].captures.extend(cap_groups(&[suffix], w, &d)?);
+            let (r0, s0, k0) = m.draft_warmup_rows(0)?.context("uncached warm-up rows")?;
+            let (r1, s1, k1) = m.draft_warmup_rows(1)?.context("restored warm-up rows")?;
+            let n = suffix.1;
+            assert_eq!((s0, k0), (n - n.min(win), n.min(win)));
+            assert_eq!((s1, k1), (s0, k0), "warm-up window differs after a restore");
+            assert!(tensor_bits(&r1)? == tensor_bits(&r0)?, "warm-up rows differ after a restore (checkpoint at {pos})");
+            assert!(cap.state_bits()? == ck0, "the restored slot's drain touched the checkpoint");
+            assert!(m.slots[1].captures.is_empty() && m.slots[1].capture_base == 0);
+        }
         Ok(())
     }
 }
