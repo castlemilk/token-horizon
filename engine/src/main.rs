@@ -175,6 +175,14 @@ async fn main() -> Result<()> {
                 }
                 return Ok(());
             }
+            // N4: draft attention split-key vs single-pass, correctness
+            // + per-call timing across ring lengths (no model load)
+            #[cfg(all(feature = "metal", target_os = "macos"))]
+            if std::env::var("TH_BENCH_DRAFT_ATTN").is_ok() {
+                let dev = candle_core::Device::new_metal(0)?;
+                draft_kernel::bench_draft_attn(&dev)?;
+                return Ok(());
+            }
             // N3: split-key vs single-pass attention across context
             // lengths (no model load)
             #[cfg(all(feature = "metal", target_os = "macos"))]

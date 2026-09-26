@@ -489,20 +489,36 @@ impl DraftWeights {
         // early return and discarded (4 MiB each at l = 2048).
         #[cfg(all(feature = "metal", target_os = "macos"))]
         if dev.is_metal() && !draft_eager() {
-            // draft_attn returns [8, 32, 128]; o_proj needs the eager
-            // path's [1, 8, 4096] — a rank-4 [1, 8, 32, 128] reads as
-            // 256 rows x 128 and sends o_proj (inp 4096) down the m=256
-            // prefill kernel, over-reading 2 MiB past this 64 KiB buffer.
-            return Ok(crate::draft_kernel::draft_attn(
-                q,
-                &ctx.ring_k[layer],
-                &ctx.ring_v[layer],
-                k,
-                v,
-                l,
-                start % WINDOW,
-            )?
-            .reshape((1, ROWS, ATTN))?);
+            // N4: the split-key kernel — 64 threadgroups (kv head x row)
+            // instead of draft_attn's 8, keys sliced across simdgroups
+            // past 256 per split; one split is draft_attn's arithmetic
+            // (same output). TH_DRAFT_ATTN_SPLIT=0 keeps draft_attn.
+            let o = match crate::draft_kernel::draft_attn_nsplit(l) {
+                Some(nsplit) => crate::draft_kernel::draft_attn_split(
+                    q,
+                    &ctx.ring_k[layer],
+                    &ctx.ring_v[layer],
+                    k,
+                    v,
+                    l,
+                    start % WINDOW,
+                    nsplit,
+                )?,
+                None => crate::draft_kernel::draft_attn(
+                    q,
+                    &ctx.ring_k[layer],
+                    &ctx.ring_v[layer],
+                    k,
+                    v,
+                    l,
+                    start % WINDOW,
+                )?,
+            };
+            // both return [8, 32, 128]; o_proj needs the eager path's
+            // [1, 8, 4096] — a rank-4 [1, 8, 32, 128] reads as 256 rows x
+            // 128 and sends o_proj (inp 4096) down the m=256 prefill
+            // kernel, over-reading 2 MiB past this 64 KiB buffer.
+            return Ok(o.reshape((1, ROWS, ATTN))?);
         }
         // eager path only: gather the live window on-device
         let (kr, vr) = if l == 0 {
