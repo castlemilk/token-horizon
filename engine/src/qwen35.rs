@@ -2680,7 +2680,12 @@ impl Qwen35 {
                     let y = f()?.to_dtype(DType::F32)?;
                     deltas.push((maxd(&yref, &y)?, maxd(&yleg, &y)?));
                 }
-                // calibrate ~8ms trials, then interleaved rounds
+                // calibrate ~8ms trials, then interleaved rounds. With
+                // TH_GPU_PROF=1 a trial is timed by the GPU-exclusive busy
+                // time of its command buffers (R0c), not host wall time —
+                // robust to host load (E1: the wall-clock sweep drifted
+                // +-40% on a loaded machine)
+                let gpu_t = crate::gpuprof::on();
                 let mut iters = Vec::with_capacity(cands.len());
                 for (_, f) in &cands {
                     let _ = f()?;
@@ -2700,12 +2705,18 @@ impl Qwen35 {
                         let f = &cands[i].1;
                         let _ = f()?;
                         device.synchronize()?;
+                        let _ = crate::gpuprof::drain_busy_ms();
                         let t = std::time::Instant::now();
                         for _ in 0..iters[i] {
                             let _ = f()?;
                         }
                         device.synchronize()?;
-                        samples[i].push(t.elapsed().as_secs_f64() * 1e3 / iters[i] as f64);
+                        let ms = if gpu_t {
+                            crate::gpuprof::drain_busy_ms()
+                        } else {
+                            t.elapsed().as_secs_f64() * 1e3
+                        };
+                        samples[i].push(ms / iters[i] as f64);
                     }
                 }
                 for (i, (name, _)) in cands.iter().enumerate() {

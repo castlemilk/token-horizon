@@ -164,6 +164,24 @@ async fn main() -> Result<()> {
             server::serve(engine, port).await
         }
         Cmd::Probe { model, tokens, dump } => {
+            // E1 bench aid: TH_TOKENIZE=<text file> prints the comma-separated
+            // ids of that text as one user message, rendered and encoded
+            // exactly as the server does (chat template + generation
+            // prompt) — real prompts for the TH_BENCH_* probes / --dump.
+            // No model load.
+            if let Ok(path) = std::env::var("TH_TOKENIZE") {
+                let dir = std::path::Path::new(&model);
+                let tok = tokenizers::Tokenizer::from_file(dir.join("tokenizer.json"))
+                    .map_err(|e| anyhow::anyhow!("tokenizer: {e}"))?;
+                let text = std::fs::read_to_string(&path)?;
+                let msgs = [template::ChatMessage { role: "user".into(), content: text }];
+                let bos = tok.token_to_id("<s>").map(|_| "<s>");
+                let prompt = template::render(template::chat_template_from(dir).as_deref(), &msgs, bos)?;
+                let ids = tok.encode(prompt.as_str(), false).map_err(|e| anyhow::anyhow!("tokenize: {e}"))?;
+                let v: Vec<String> = ids.get_ids().iter().map(|i| i.to_string()).collect();
+                println!("{}", v.join(","));
+                return Ok(());
+            }
             let ids: Vec<u32> = tokens
                 .split(',')
                 .map(|t| t.trim().parse())
@@ -463,15 +481,20 @@ async fn main() -> Result<()> {
                 // flipped each pair) so clock/thermal drift hits both
                 // equally; one warm-up run each first.
                 let dev = loaded.device.clone();
+                // E1: with TH_GPU_PROF=1 each run is timed by its GPU busy
+                // time (R0c) instead of host wall time
                 let mut fwd = |seq: &[u32], legacy: bool| -> Result<f64> {
                     #[cfg(all(feature = "metal", target_os = "macos"))]
                     quant_kernel::pf_force_legacy(legacy);
                     // forward() runs decode slot 0
                     loaded.backend.clear_kv_cache(0);
+                    dev.synchronize()?;
+                    let _ = gpuprof::drain_busy_ms();
                     let t = std::time::Instant::now();
                     let lg = loaded.backend.forward(seq, 0, &dev)?;
                     let _ = lg.to_vec1::<f32>()?;
-                    Ok(t.elapsed().as_secs_f64() * 1e3)
+                    let wall = t.elapsed().as_secs_f64() * 1e3;
+                    Ok(if gpuprof::on() { gpuprof::drain_busy_ms() } else { wall })
                 };
                 let stat = |v: &mut Vec<f64>| {
                     v.sort_by(|a, b| a.total_cmp(b));
