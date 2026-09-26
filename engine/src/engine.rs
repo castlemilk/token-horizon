@@ -581,11 +581,12 @@ fn generate_blocking(
                     // `verify_adaptive`. The legacy rule caps the chain
                     // at the accept EMA + 1 headroom (2..=7).
                     let verify_len = dflash_verify_len(verify_adaptive(), accept_ema);
+                    let dsamp = sampler.draft_sampling();
                     let prop = inner.backend.draft_propose(
                         0,
                         anchor,
                         pos,
-                        sampler.temperature,
+                        dsamp,
                         || sampler.next_f64(),
                     )?;
                     let t_prop = t0.elapsed();
@@ -599,16 +600,42 @@ fn generate_blocking(
                     let caps = inner.backend.take_captures(0)?;
                     // greedy needs only the argmax per row — a [n+1] u32
                     // readback instead of [n+1, vocab] bf16 (~4.5MB).
-                    // Also syncs the verify GPU work either way.
+                    // S1: sampled rows are accepted on the GPU — a 16-word
+                    // result block (`sample_kernel`); either readback is
+                    // the round's verify sync.
                     let greedy = greedy_rows(&sampler, &sp);
-                    let mut rows: Vec<Vec<half::bf16>> = Vec::new();
                     let mut argmax_rows: Vec<u32> = Vec::new();
+                    let mut chain: Option<crate::sample_kernel::ChainOut> = None;
                     if greedy {
                         argmax_rows =
                             logits_m.argmax(candle_core::D::Minus1)?.to_vec1::<u32>()?;
-                    } else {
-                        rows = logits_m.to_vec2()?;
+                    } else if let Some(pol) = gpu_policy(&sampler, &sp, &device) {
+                        let (res, st0) = gpu_accept_encode(
+                            &mut sampler, &logits_m, 0, &pol, &prop, verify_len,
+                        )?;
+                        chain = gpu_accept_finish(
+                            &mut sampler,
+                            &res,
+                            st0,
+                            &logits_m,
+                            0,
+                            &prop,
+                            verify_len,
+                            ec.completion,
+                            &prompt_tokens,
+                            sp.repeat_penalty,
+                            sp.repeat_last_n,
+                        )?;
                     }
+                    // CPU reference path (TH_SAMPLE=cpu, penalty or top-k
+                    // the kernel does not serve, pool overflow): read the
+                    // rows back here, accept after the verify timer (in
+                    // `rest`, as before S1)
+                    let rows: Option<Vec<Vec<half::bf16>>> = if !greedy && chain.is_none() {
+                        Some(logits_m.to_vec2()?)
+                    } else {
+                        None
+                    };
                     let t_verify = t0.elapsed();
                     if debug_timing() {
                         eprintln!(
@@ -616,6 +643,33 @@ fn generate_blocking(
                             t_fwd_enqueue.as_secs_f64() * 1e3,
                             (t_verify - t_fwd_enqueue).as_secs_f64() * 1e3,
                         );
+                    }
+                    if let Some(rows) = rows.as_ref() {
+                        if accept_stats() {
+                            eprintln!(
+                                "{}",
+                                accept_stats_line(
+                                    &sampler,
+                                    rows,
+                                    &prop,
+                                    verify_len,
+                                    ec.completion,
+                                    &prompt_tokens,
+                                    sp.repeat_penalty,
+                                    sp.repeat_last_n,
+                                )
+                            );
+                        }
+                        chain = Some(cpu_accept(
+                            &mut sampler,
+                            rows,
+                            &prop,
+                            verify_len,
+                            ec.completion,
+                            &prompt_tokens,
+                            sp.repeat_penalty,
+                            sp.repeat_last_n,
+                        ));
                     }
                     let mut emitted: Vec<u32> = Vec::with_capacity(8);
                     let mut accepted = 0usize;
@@ -632,48 +686,9 @@ fn generate_blocking(
                         if accepted == verify_len {
                             emitted.push(argmax_rows[verify_len]);
                         }
-                    } else {
-                        let mut rows_it = rows.drain(..);
-                        for i in 0..verify_len {
-                            let row: Vec<f32> = rows_it
-                                .next()
-                                .unwrap()
-                                .iter()
-                                .map(|v| v.to_f32())
-                                .collect();
-                            let t = spec_accept_step(
-                                &mut sampler,
-                                row,
-                                &prop,
-                                i,
-                                ec.completion,
-                                &prompt_tokens,
-                                sp.repeat_penalty,
-                                sp.repeat_last_n,
-                            )?;
-                            emitted.push(t);
-                            if t == prop.tokens[i] {
-                                accepted += 1;
-                            } else {
-                                break;
-                            }
-                        }
-                        if accepted == verify_len {
-                            let row: Vec<f32> = rows_it
-                                .next()
-                                .unwrap()
-                                .iter()
-                                .map(|v| v.to_f32())
-                                .collect();
-                            let d = sampler.dist_vec(
-                                row,
-                                ec.completion,
-                                &prompt_tokens,
-                                sp.repeat_penalty,
-                                sp.repeat_last_n,
-                            );
-                            emitted.push(sampler.pick(&d));
-                        }
+                    } else if let Some(c) = chain {
+                        emitted = c.emitted;
+                        accepted = c.accepted;
                     }
                     let retained = emitted.len();
                     for (i, &t) in emitted.iter().enumerate() {
@@ -857,6 +872,7 @@ fn generate_blocking(
     }
     }
 
+    sample_check_summary();
     let total_ms = started.elapsed().as_secs_f64() * 1000.0;
     let n_completion = completion.len();
     let decode_tps = if n_completion > 1 && decode_ms_total > 0.0 {
@@ -904,16 +920,22 @@ fn generate_blocking(
     })
 }
 
-/// Sampler that keeps the expensive parts small: one GPU→CPU logits
-/// readback per token, then top-k/top-p on CPU over a bounded candidate
-/// set. candle's `LogitsProcessor::sample_f` materialises + sorts the
-/// full 248k vocab and builds a full-vocab `WeightedIndex` per token —
-/// measured ~110ms/token, 15× the forward pass.
+/// Per-request sampling policy + RNG. Candidate filtering, draws and the
+/// DFlash acceptance chain live in `sample_kernel` (S1): one arithmetic
+/// shared by the GPU kernels (`ts_topk` / `ts_accept`) and the CPU
+/// reference path (`TH_SAMPLE=cpu`, repeat-penalty and top-k > 32
+/// requests, the prefill anchor and the non-draft decode loop).
+#[derive(Clone)]
 struct Sampler {
     temperature: Option<f64>,
     top_k: Option<usize>,
     top_p: Option<f64>,
     rng: u64,
+    /// The request's policy is one the GPU accept kernel serves (top-k
+    /// 1..=KMAX, no repeat penalty) — decided by the request alone, not by
+    /// the execution path, so `TH_SAMPLE=cpu` / `check` replay the same
+    /// verification rule (B1 default, `spec_verify_rule`).
+    gpu_servable: bool,
 }
 
 impl Sampler {
@@ -923,123 +945,71 @@ impl Sampler {
             top_k: sp.top_k,
             top_p: sp.top_p,
             rng: seed | 1,
+            gpu_servable: gpu_servable_request(sp),
         }
     }
 
+    /// Draft proposal policy for this request: `None` = greedy chaining;
+    /// sampled requests chain at the request temperature and, with
+    /// `draft_filter()`, draw from the draft distribution after the
+    /// request's own top-k / top-p (R0b).
+    fn draft_sampling(&self) -> Option<crate::dflash::DraftSampling> {
+        self.temperature.map(|t| {
+            let f = draft_filter();
+            crate::dflash::DraftSampling {
+                temp: t,
+                top_k: if f { self.top_k.unwrap_or(0) } else { 0 },
+                top_p: if f { self.top_p.unwrap_or(1.0) } else { 1.0 },
+            }
+        })
+    }
+
+    /// xorshift64* step.
     #[inline]
-    fn next_f64(&mut self) -> f64 {
-        // xorshift64* — plenty for token sampling
+    fn step(&mut self) -> u64 {
         let mut x = self.rng;
         x ^= x >> 12;
         x ^= x << 25;
         x ^= x >> 27;
         self.rng = x;
-        (x.wrapping_mul(0x2545_F491_4F6C_DD1D) >> 11) as f64
-            / (1u64 << 53) as f64
+        x.wrapping_mul(0x2545_F491_4F6C_DD1D)
     }
 
-    /// Full candidate distribution after repeat penalty, temperature,
-    /// top-k and top-p — returns `(id, prob)` normalised over the kept
-    /// candidates. Greedy requests (no temperature) return the argmax
-    /// with prob 1.
-    fn dist(
-        &mut self,
-        logits: &Tensor,
-        completion: &[u32],
-        prompt: &[u32],
-        repeat_penalty: f32,
-        repeat_last_n: usize,
-    ) -> Result<Vec<(u32, f32)>> {
-        let l = if logits.dtype() == DType::F32 {
-            logits.to_vec1::<f32>()?
-        } else {
-            logits.to_dtype(DType::F32)?.to_vec1::<f32>()?
-        };
-        Ok(self.dist_vec(l, completion, prompt, repeat_penalty, repeat_last_n))
+    /// 53-bit uniform in [0, 1) — the draft walk's proposal draws.
+    #[inline]
+    fn next_f64(&mut self) -> f64 {
+        (self.step() >> 11) as f64 / (1u64 << 53) as f64
     }
 
-    /// `dist` over an already-materialised logits vec — lets a verify
-    /// pass read all rows in one GPU→CPU transfer.
-    fn dist_vec(
-        &mut self,
-        mut l: Vec<f32>,
-        completion: &[u32],
-        prompt: &[u32],
-        repeat_penalty: f32,
-        repeat_last_n: usize,
-    ) -> Vec<(u32, f32)> {
-        if (repeat_penalty - 1.0).abs() > f32::EPSILON {
-            for &tid in
-                prompt.iter().chain(completion.iter()).rev().take(repeat_last_n)
-            {
-                let i = tid as usize;
-                if i < l.len() {
-                    l[i] = if l[i] < 0.0 {
-                        l[i] * repeat_penalty
-                    } else {
-                        l[i] / repeat_penalty
-                    };
-                }
-            }
-        }
-        let n = l.len();
-        let Some(temp) = self.temperature else {
-            return vec![(greedy_argmax(&l), 1.0)];
-        };
-        let inv_t = 1.0 / temp as f32;
-        // top-k candidate set via partial select (O(n))
-        let k = self.top_k.unwrap_or(n).min(n);
-        let mut idx: Vec<u32> = (0..n as u32).collect();
-        let cand: &[u32] = if k < n {
-            idx.select_nth_unstable_by(k - 1, |&a, &b| {
-                l[b as usize].total_cmp(&l[a as usize])
-            });
-            &idx[..k]
-        } else {
-            &idx[..]
-        };
-        // softmax weights over candidates: w = exp((l - max)/T)
-        let max = cand
-            .iter()
-            .map(|&i| l[i as usize])
-            .fold(f32::NEG_INFINITY, f32::max);
-        let mut w: Vec<f32> = cand
-            .iter()
-            .map(|&i| ((l[i as usize] - max) * inv_t).exp())
-            .collect();
-        // top-p uses *global* probabilities — normalise by the full-vocab
-        // partition Z, matching candle's TopKThenTopP semantics.
-        if let Some(p) = self.top_p {
-            if p > 0.0 && p < 1.0 {
-                let z: f32 = l
-                    .iter()
-                    .map(|&v| ((v - max) * inv_t).exp())
-                    .sum();
-                let mut order: Vec<usize> = (0..cand.len()).collect();
-                order.sort_by(|&a, &b| w[b].total_cmp(&w[a]));
-                // candle keeps the element that crosses the threshold
-                let mut cum = 0.0f64;
-                for &o in &order {
-                    if cum >= p {
-                        w[o] = 0.0;
-                    } else {
-                        cum += (w[o] / z) as f64;
-                    }
-                }
-            }
-        }
-        let sum: f64 = w.iter().map(|&v| v as f64).sum();
-        if sum <= 0.0 {
-            return vec![(cand[0], 1.0)];
-        }
-        cand
-            .iter()
-            .zip(w.drain(..))
-            .filter(|(_, p)| *p > 0.0)
-            .map(|(&i, p)| (i, (p as f64 / sum) as f32))
-            .collect()
+    /// 24-bit uniform in [0, 1) — target draws and acceptance tests (the
+    /// GPU kernel consumes the same values, staged by the host). One
+    /// stream step per draw, like `next_f64`.
+    #[inline]
+    fn next_u24(&mut self) -> f32 {
+        ((self.step() >> 40) as f32) * (1.0 / 16_777_216.0)
     }
 
+    /// Advance the stream by `n` draws (the GPU consumed `n` staged uniforms).
+    fn advance(&mut self, n: usize) {
+        for _ in 0..n {
+            self.step();
+        }
+    }
+
+    /// Target policy of a sampled request (`None` = greedy).
+    fn policy(&self) -> Option<crate::sample_kernel::Policy> {
+        self.temperature.map(|t| crate::sample_kernel::Policy {
+            k: self.top_k.unwrap_or(0),
+            inv_t: 1.0 / t as f32,
+            top_p: self.top_p.map(|p| p as f32).unwrap_or(1.0),
+            renorm: top_p_renorm(),
+            block: spec_verify_rule(spec_verify_forced(), self.gpu_servable),
+        })
+    }
+
+    /// One token from a `[vocab]` logits tensor (prefill anchor, plain
+    /// and n-gram decode): repeat penalty, then greedy argmax or one draw
+    /// from the filtered target distribution.
     fn sample(
         &mut self,
         logits: &Tensor,
@@ -1048,95 +1018,378 @@ impl Sampler {
         repeat_penalty: f32,
         repeat_last_n: usize,
     ) -> Result<u32> {
-        let d = self.dist(logits, completion, prompt, repeat_penalty, repeat_last_n)?;
-        Ok(self.pick(&d))
-    }
-
-    /// Multinomial over a `dist` result.
-    fn pick(&mut self, d: &[(u32, f32)]) -> u32 {
-        if d.len() == 1 {
-            return d[0].0;
-        }
-        let mut r = self.next_f64();
-        for &(id, p) in d {
-            r -= p as f64;
-            if r <= 0.0 {
-                return id;
-            }
-        }
-        d[d.len() - 1].0
+        let l = if logits.dtype() == DType::F32 {
+            logits.to_vec1::<f32>()?
+        } else {
+            logits.to_dtype(DType::F32)?.to_vec1::<f32>()?
+        };
+        let d = row_dist_of(self.policy(), l, completion, prompt, repeat_penalty, repeat_last_n);
+        Ok(if d.deterministic() {
+            d.ids[0]
+        } else {
+            let u = self.next_u24();
+            crate::sample_kernel::sample_dist(&d, u)
+        })
     }
 }
 
-/// One speculative-acceptance step for draft position `i`: the emitted
-/// token under the target's own distribution. Returns `Some(token)`;
-/// callers compare it to `prop.tokens[i]` to decide whether the chain
-/// continues. Under greedy sampling this is simply the argmax. Under
-/// temperature sampling this implements the standard rejection scheme
-/// (Leviathan et al. 2023, sparse variant matching Splash's kernel):
-/// accept the draft token with probability `min(1, p/q)` where `p` is
-/// the target's filtered distribution and `q` the draft's top-16
-/// candidate distribution; on rejection emit a token sampled from the
-/// residual `max(0, p - q)` (or `p` itself if the residual is empty).
-fn spec_accept_step(
-    sampler: &mut Sampler,
-    l: Vec<f32>,
-    prop: &crate::dflash::Proposal,
-    i: usize,
+/// Repeat penalty over the last `repeat_last_n` context tokens, in place.
+fn apply_repeat_penalty(
+    l: &mut [f32],
     completion: &[u32],
     prompt: &[u32],
     repeat_penalty: f32,
     repeat_last_n: usize,
-) -> Result<u32> {
-    let d = sampler.dist_vec(l, completion, prompt, repeat_penalty, repeat_last_n);
-    if d.len() == 1 {
-        return Ok(d[0].0); // greedy argmax
+) {
+    if (repeat_penalty - 1.0).abs() <= f32::EPSILON {
+        return;
     }
-    let want = prop.tokens[i];
-    let p_d = d
-        .iter()
-        .find(|(id, _)| *id == want)
-        .map(|(_, p)| *p)
-        .unwrap_or(0.0);
-    let q_d = prop.cand_ids[i]
-        .iter()
-        .position(|id| *id == want)
-        .map(|j| prop.cand_probs[i][j])
-        .unwrap_or(0.0);
-    if p_d > 0.0
-        && q_d > 0.0
-        && sampler.next_f64() < ((p_d / q_d).min(1.0) as f64)
+    for &tid in prompt.iter().chain(completion.iter()).rev().take(repeat_last_n) {
+        let i = tid as usize;
+        if i < l.len() {
+            l[i] = if l[i] < 0.0 { l[i] * repeat_penalty } else { l[i] / repeat_penalty };
+        }
+    }
+}
+
+/// One row's filtered target distribution: repeat penalty, then the greedy
+/// argmax (N2 tie rule) or `sample_kernel::cpu_row_dist`.
+fn row_dist_of(
+    pol: Option<crate::sample_kernel::Policy>,
+    mut l: Vec<f32>,
+    completion: &[u32],
+    prompt: &[u32],
+    repeat_penalty: f32,
+    repeat_last_n: usize,
+) -> crate::sample_kernel::RowDist {
+    apply_repeat_penalty(&mut l, completion, prompt, repeat_penalty, repeat_last_n);
+    match pol {
+        None => crate::sample_kernel::RowDist::single(greedy_argmax(&l)),
+        Some(p) => crate::sample_kernel::cpu_row_dist(&l, &p),
+    }
+}
+
+/// CPU acceptance of one round over read-back verify rows: the reference
+/// of the GPU path (`TH_SAMPLE=cpu`, its overflow fallback, and requests
+/// the kernel does not serve — repeat penalty, top-k 0 or > 32).
+#[allow(clippy::too_many_arguments)]
+fn cpu_accept(
+    sampler: &mut Sampler,
+    rows: &[Vec<half::bf16>],
+    prop: &crate::dflash::Proposal,
+    vlen: usize,
+    completion: &[u32],
+    prompt: &[u32],
+    repeat_penalty: f32,
+    repeat_last_n: usize,
+) -> crate::sample_kernel::ChainOut {
+    let pol = sampler.policy();
+    let mut rowf = |i: usize| {
+        row_dist_of(
+            pol,
+            rows[i].iter().map(|v| v.to_f32()).collect(),
+            completion,
+            prompt,
+            repeat_penalty,
+            repeat_last_n,
+        )
+    };
+    let mut draw = || sampler.next_u24();
+    match pol {
+        Some(p) if p.block => crate::sample_kernel::accept_block(&mut rowf, prop, vlen, &mut draw),
+        _ => crate::sample_kernel::accept_chain(&mut rowf, prop, vlen, &mut draw),
+    }
+}
+
+/// S1 — `TH_SAMPLE` (read once): `gpu` (default) = sampled acceptance on
+/// the GPU; `cpu` = the CPU reference over read-back logits (the
+/// historical data flow); `check` = both each round, from the same RNG
+/// state, logging any difference (`[samplecheck]`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SampleMode {
+    Gpu,
+    Cpu,
+    Check,
+}
+
+fn sample_mode() -> SampleMode {
+    static V: std::sync::OnceLock<SampleMode> = std::sync::OnceLock::new();
+    *V.get_or_init(|| {
+        let m = match std::env::var("TH_SAMPLE").ok().as_deref().map(str::trim) {
+            Some("cpu") => SampleMode::Cpu,
+            Some("check") => SampleMode::Check,
+            _ => SampleMode::Gpu,
+        };
+        tracing::info!(mode = ?m, "sampled acceptance (TH_SAMPLE)");
+        m
+    })
+}
+
+/// The GPU policy of a sampled slot, or `None` when the CPU path serves it
+/// (greedy, repeat penalty, top-k 0 or > KMAX, TH_SAMPLE=cpu, stats, or a
+/// non-Metal device).
+fn gpu_policy(
+    sampler: &Sampler,
+    sp: &ResolvedSampling,
+    dev: &candle_core::Device,
+) -> Option<crate::sample_kernel::Policy> {
+    if !cfg!(all(feature = "metal", target_os = "macos"))
+        || !dev.is_metal()
+        || sample_mode() == SampleMode::Cpu
+        || accept_stats()
     {
-        return Ok(want);
+        return None;
     }
-    // residual over the target's support (draft-only tokens have p=0)
-    let mut resid: Vec<(u32, f32)> = d
-        .iter()
-        .map(|&(id, p)| {
-            let q = prop.cand_ids[i]
+    if (sp.repeat_penalty - 1.0).abs() > f32::EPSILON && sp.repeat_last_n > 0 {
+        return None;
+    }
+    sampler.policy().filter(|p| p.gpu_ok())
+}
+
+/// Stage the next `NU` uniforms (without advancing the stream) and encode
+/// the GPU acceptance of one slot. Returns the result tensor and the
+/// stream state to resume from.
+fn gpu_accept_encode(
+    sampler: &mut Sampler,
+    logits: &Tensor,
+    row0: usize,
+    pol: &crate::sample_kernel::Policy,
+    prop: &crate::dflash::Proposal,
+    vlen: usize,
+) -> Result<(Tensor, u64)> {
+    let st0 = sampler.rng;
+    let us: [f32; crate::sample_kernel::NU] = std::array::from_fn(|_| sampler.next_u24());
+    sampler.rng = st0;
+    Ok((crate::sample_kernel::gpu_accept(logits, row0, pol, prop, vlen, &us)?, st0))
+}
+
+static CHECK_ROUNDS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static CHECK_MISMATCHES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Read back a GPU acceptance (the round's sync) and advance the stream by
+/// the uniforms it consumed; `None` = candidate-pool overflow, run the CPU
+/// path from the same state. `TH_SAMPLE=check` replays the CPU reference
+/// from `st0` over read-back rows and logs any difference.
+#[allow(clippy::too_many_arguments)]
+fn gpu_accept_finish(
+    sampler: &mut Sampler,
+    res: &Tensor,
+    st0: u64,
+    logits: &Tensor,
+    row0: usize,
+    prop: &crate::dflash::Proposal,
+    vlen: usize,
+    completion: &[u32],
+    prompt: &[u32],
+    repeat_penalty: f32,
+    repeat_last_n: usize,
+) -> Result<Option<crate::sample_kernel::ChainOut>> {
+    let v: Vec<u32> = res.to_vec1()?;
+    sampler.rng = st0;
+    let out = crate::sample_kernel::decode_result(&v);
+    if sample_mode() == SampleMode::Check {
+        let rows: Vec<Vec<half::bf16>> = logits.narrow(0, row0, vlen + 1)?.to_vec2()?;
+        let mut reference = sampler.clone();
+        let cpu = cpu_accept(&mut reference, &rows, prop, vlen, completion, prompt, repeat_penalty, repeat_last_n);
+        let n = CHECK_ROUNDS.fetch_add(1, Ordering::Relaxed) + 1;
+        if out.as_ref() != Some(&cpu) {
+            let m = CHECK_MISMATCHES.fetch_add(1, Ordering::Relaxed) + 1;
+            eprintln!("[samplecheck] MISMATCH round={n} gpu={out:?} cpu={cpu:?} mismatches={m}");
+        }
+    }
+    if let Some(o) = &out {
+        sampler.advance(o.consumed);
+    }
+    Ok(out)
+}
+
+/// `TH_SAMPLE=check` running totals (printed at request end).
+fn sample_check_summary() {
+    if sample_mode() == SampleMode::Check {
+        eprintln!(
+            "[samplecheck] rounds={} mismatches={}",
+            CHECK_ROUNDS.load(Ordering::Relaxed),
+            CHECK_MISMATCHES.load(Ordering::Relaxed)
+        );
+    }
+}
+
+/// `TH_TOP_P` (read once): `renorm` = Splash / HF / vLLM / llama.cpp
+/// top-k→top-p semantics (top-p over the top-k set renormalised); unset
+/// or `global` = candle's TopKThenTopP rule (cumulative mass measured
+/// against the full-vocab partition, which keeps a longer tail).
+fn top_p_renorm() -> bool {
+    static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *V.get_or_init(|| {
+        let v = std::env::var("TH_TOP_P").ok();
+        let on = matches!(v.as_deref().map(str::trim), Some("renorm" | "splash" | "hf"));
+        tracing::info!(semantics = if on { "renorm (top-k set)" } else { "global (candle)" }, "top-p semantics (TH_TOP_P)");
+        on
+    })
+}
+
+/// B1 — `TH_SPEC_VERIFY` (read once): `block` / `token` force block
+/// verification (`sample_kernel::accept_block`) or the token-by-token rule
+/// (Splash's) for every sampled DFlash round; unset = `spec_verify_rule`'s
+/// default. Both rules emit the target's distribution; block verification
+/// accepts at least as many tokens in expectation. T=0 never reaches
+/// either rule.
+fn spec_verify_forced() -> Option<bool> {
+    static V: std::sync::OnceLock<Option<bool>> = std::sync::OnceLock::new();
+    *V.get_or_init(|| {
+        let v = std::env::var("TH_SPEC_VERIFY").ok();
+        let f = match v.as_deref().map(str::trim) {
+            Some("block") => Some(true),
+            Some("token") => Some(false),
+            _ => None,
+        };
+        tracing::info!(
+            rule = match f { Some(true) => "block", Some(false) => "token", None => "auto (block where the GPU kernel serves the request)" },
+            "sampled DFlash verification (TH_SPEC_VERIFY)"
+        );
+        f
+    })
+}
+
+/// The verification rule of one sampled request: the forced rule, else
+/// block verification when the GPU kernel serves the request (R0b: +0.9%
+/// tokens/round on the same drafted blocks, 95% CI [0.4%, 1.4%]; the
+/// extra `ts_accept` work is a few µs of one thread) and the token rule
+/// otherwise — on the CPU path the block rule needs all 8 row
+/// distributions (~0.8 ms each) where the token rule stops at the first
+/// rejection (~4.1 rows on average), which costs more than it gains.
+fn spec_verify_rule(forced: Option<bool>, gpu_servable: bool) -> bool {
+    forced.unwrap_or(gpu_servable)
+}
+
+/// A request whose sampled rounds the GPU accept kernel serves (see
+/// `gpu_policy`: top-k 1..=KMAX and no repeat penalty in effect).
+fn gpu_servable_request(sp: &ResolvedSampling) -> bool {
+    let penalty = (sp.repeat_penalty - 1.0).abs() > f32::EPSILON && sp.repeat_last_n > 0;
+    !penalty && sp.top_k.is_some_and(|k| k >= 1 && k <= crate::sample_kernel::KMAX)
+}
+
+/// `TH_DRAFT_FILTER` (read once): `1` = apply the request's top-k / top-p
+/// to the draft's 16-candidate distribution before each proposal is
+/// drawn (the acceptance ratio uses the filtered q, so the output
+/// distribution is unchanged — speculative sampling is exact for any
+/// proposal distribution).
+fn draft_filter() -> bool {
+    static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *V.get_or_init(|| {
+        let on = std::env::var("TH_DRAFT_FILTER").is_ok_and(|v| !v.is_empty() && v != "0");
+        tracing::info!(on, "draft proposal filter (TH_DRAFT_FILTER)");
+        on
+    })
+}
+
+/// `TH_ACCEPT_STATS=1` (read once): per sampled DFlash round, log the
+/// Rao-Blackwellised acceptance of the round's draft block under both
+/// top-p semantics — R0b's paired, trajectory-free comparison. Debug
+/// only: it forces the CPU path and costs 2 x 7 full-vocab
+/// distributions per round.
+fn accept_stats() -> bool {
+    static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *V.get_or_init(|| std::env::var("TH_ACCEPT_STATS").is_ok_and(|v| !v.is_empty() && v != "0"))
+}
+
+/// R0b `[accstats]` line for one sampled round (see `accept_stats`):
+/// per verified position i, a = min(1, p(d_i)/q(d_i)) for the draft's
+/// actual token and alpha = sum_x min(p(x), q(x)) (the acceptance
+/// probability had d_i been redrawn), under the global (g) and renorm
+/// (r) top-p semantics; af = alpha had the draft drawn from its
+/// target-filtered q'; e = sum_i prod_{j<=i} a_j = E[accepted | block];
+/// eb = E[accepted | block] under block verification (B1), same block.
+#[allow(clippy::too_many_arguments)]
+fn accept_stats_line(
+    sampler: &Sampler,
+    rows: &[Vec<half::bf16>],
+    prop: &crate::dflash::Proposal,
+    vlen: usize,
+    completion: &[u32],
+    prompt: &[u32],
+    repeat_penalty: f32,
+    repeat_last_n: usize,
+) -> String {
+    let Some(pol) = sampler.policy() else {
+        return String::new();
+    };
+    let pg = crate::sample_kernel::Policy { renorm: false, ..pol };
+    let pr = crate::sample_kernel::Policy { renorm: true, ..pol };
+    let (mut ag, mut ar, mut alg, mut alr) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    let (mut kg, mut kr) = (Vec::new(), Vec::new());
+    let (mut afg, mut afr) = (Vec::new(), Vec::new());
+    // B1: per-position target / draft distributions for the block rule
+    let (mut plg, mut plr, mut ql) = (Vec::new(), Vec::new(), Vec::new());
+    for i in 0..vlen.min(rows.len()) {
+        let l: Vec<f32> = rows[i].iter().map(|v| v.to_f32()).collect();
+        let dg = row_dist_of(Some(pg), l.clone(), completion, prompt, repeat_penalty, repeat_last_n).probs();
+        let dr = row_dist_of(Some(pr), l, completion, prompt, repeat_penalty, repeat_last_n).probs();
+        let q = |id: u32| {
+            prop.cand_ids[i]
                 .iter()
                 .position(|c| *c == id)
                 .map(|j| prop.cand_probs[i][j])
-                .unwrap_or(0.0);
-            (id, (p - q).max(0.0))
-        })
-        .collect();
-    let sum: f32 = resid.iter().map(|(_, r)| *r).sum();
-    if sum <= 0.0 {
-        resid = d; // residual empty — fall back to the target dist
-    } else {
-        for r in resid.iter_mut() {
-            r.1 /= sum;
-        }
+                .unwrap_or(0.0)
+        };
+        let p_of = |d: &[(u32, f32)], id: u32| {
+            d.iter().find(|(x, _)| *x == id).map(|(_, p)| *p).unwrap_or(0.0)
+        };
+        let want = prop.tokens[i];
+        let a = |d: &[(u32, f32)]| {
+            let (p, qq) = (p_of(d, want), q(want));
+            if d.len() == 1 {
+                (d[0].0 == want) as u8 as f32
+            } else if p > 0.0 && qq > 0.0 {
+                (p / qq).min(1.0)
+            } else {
+                0.0
+            }
+        };
+        let overlap = |d: &[(u32, f32)]| d.iter().map(|&(id, p)| p.min(q(id))).sum::<f32>();
+        // overlap had the draft drawn from its target-filtered q'
+        let mut qf = prop.cand_probs[i];
+        crate::dflash::filter_q(&mut qf, sampler.top_k.unwrap_or(0), sampler.top_p.unwrap_or(1.0));
+        let qfo = |id: u32| {
+            prop.cand_ids[i].iter().position(|c| *c == id).map(|j| qf[j]).unwrap_or(0.0)
+        };
+        let overlap_f = |d: &[(u32, f32)]| d.iter().map(|&(id, p)| p.min(qfo(id))).sum::<f32>();
+        afg.push(overlap_f(&dg));
+        afr.push(overlap_f(&dr));
+        ag.push(a(&dg));
+        ar.push(a(&dr));
+        alg.push(overlap(&dg));
+        alr.push(overlap(&dr));
+        kg.push(dg.len());
+        kr.push(dr.len());
+        let f64l = |d: &[(u32, f32)]| d.iter().map(|&(id, p)| (id, p as f64)).collect::<Vec<_>>();
+        plg.push(f64l(&dg));
+        plr.push(f64l(&dr));
+        let mut seen = std::collections::HashSet::new();
+        ql.push(
+            (0..crate::dflash::TOPK)
+                .filter(|&j| seen.insert(prop.cand_ids[i][j]))
+                .map(|j| (prop.cand_ids[i][j], prop.cand_probs[i][j] as f64))
+                .collect::<Vec<_>>(),
+        );
     }
-    let mut u = sampler.next_f64();
-    for &(id, p) in &resid {
-        u -= p as f64;
-        if u <= 0.0 {
-            return Ok(id);
+    let xs = &prop.tokens[..plg.len()];
+    let ebg = crate::sample_kernel::expected_accepted_block(&crate::sample_kernel::block_h_f64(&plg, &ql, xs).1);
+    let ebr = crate::sample_kernel::expected_accepted_block(&crate::sample_kernel::block_h_f64(&plr, &ql, xs).1);
+    let e = |a: &[f32]| {
+        let (mut prod, mut s) = (1.0f32, 0.0f32);
+        for &x in a {
+            prod *= x;
+            s += prod;
         }
-    }
-    Ok(resid[resid.len() - 1].0)
+        s
+    };
+    let f = |v: &[f32]| v.iter().map(|x| format!("{x:.3}")).collect::<Vec<_>>().join(",");
+    let u = |v: &[usize]| v.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(",");
+    format!(
+        "[accstats] eg={:.4} er={:.4} ag=[{}] ar=[{}] alg=[{}] alr=[{}] kg=[{}] kr=[{}] afg=[{}] afr=[{}] ebg={:.4} ebr={:.4}",
+        e(&ag), e(&ar), f(&ag), f(&ar), f(&alg), f(&alr), u(&kg), u(&kr), f(&afg), f(&afr), ebg, ebr
+    )
 }
 
 /// Greedy pick with the same tie rule as candle's Metal (and CPU)
@@ -1607,9 +1860,9 @@ fn batch_round(
     }
     let anchors: Vec<u32> = active.iter().map(|&b| runs[b].as_ref().unwrap().anchor).collect();
     let poss: Vec<usize> = active.iter().map(|&b| runs[b].as_ref().unwrap().pos).collect();
-    let temps: Vec<Option<f64>> = active
+    let temps: Vec<Option<crate::dflash::DraftSampling>> = active
         .iter()
-        .map(|&b| runs[b].as_ref().unwrap().sampler.temperature)
+        .map(|&b| runs[b].as_ref().unwrap().sampler.draft_sampling())
         .collect();
     let props = {
         // propose needs the sampler's uniform — run it per slot through
@@ -1655,6 +1908,25 @@ fn batch_round(
             greedy_rows(&r.sampler, &r.sp)
         })
         .collect();
+    // S1: encode every GPU-served sampled slot's acceptance into the same
+    // command buffer before the first readback
+    let mut gpu_pending: Vec<Option<(Tensor, u64)>> = (0..active.len()).map(|_| None).collect();
+    for (i, &b) in active.iter().enumerate() {
+        if greedy[i] {
+            continue;
+        }
+        let r = runs[b].as_mut().unwrap();
+        if let Some(pol) = gpu_policy(&r.sampler, &r.sp, &inner.device) {
+            gpu_pending[i] = Some(gpu_accept_encode(
+                &mut r.sampler,
+                &logits,
+                i * seqs[i].len(),
+                &pol,
+                &props[i],
+                crate::dflash::PROPOSALS,
+            )?);
+        }
+    }
     let argmax_all: Vec<u32> = if greedy.iter().any(|&g| g) {
         logits.argmax(candle_core::D::Minus1)?.to_vec1::<u32>()?
     } else {
@@ -1662,7 +1934,7 @@ fn batch_round(
     };
     // greedy: the argmax readback above is the first GPU sync after
     // forward_batch, so this is where the verify pass actually lands
-    // (all-sampled: the per-slot to_vec2 below syncs instead)
+    // (all-sampled: the first result-block / to_vec2 readback syncs)
     let t_read = t0.elapsed();
     // per-slot accept / emit / commit / rollback
     for (i, &b) in active.iter().enumerate() {
@@ -1685,51 +1957,41 @@ fn batch_round(
                 emitted.push(argmax_all[off + crate::dflash::PROPOSALS]);
             }
         } else {
-            let rows: Vec<Vec<half::bf16>> = logits
-                .narrow(0, off, seq_len)?
-                .to_vec2()?;
             let r = runs[b].as_mut().unwrap();
-            let mut rows_it = rows.into_iter();
-            for k in 0..crate::dflash::PROPOSALS {
-                let row: Vec<f32> = rows_it
-                    .next()
-                    .unwrap()
-                    .iter()
-                    .map(|v| v.to_f32())
-                    .collect();
-                let t = spec_accept_step(
+            let mut chain = None;
+            if let Some((res, st0)) = gpu_pending[i].take() {
+                chain = gpu_accept_finish(
                     &mut r.sampler,
-                    row,
+                    &res,
+                    st0,
+                    &logits,
+                    off,
                     prop,
-                    k,
+                    crate::dflash::PROPOSALS,
                     &r.completion,
                     &r.prompt_tokens,
                     r.sp.repeat_penalty,
                     r.sp.repeat_last_n,
                 )?;
-                emitted.push(t);
-                if t == prop.tokens[k] {
-                    accepted += 1;
-                } else {
-                    break;
+            }
+            let c = match chain {
+                Some(c) => c,
+                None => {
+                    let rows: Vec<Vec<half::bf16>> = logits.narrow(0, off, seq_len)?.to_vec2()?;
+                    cpu_accept(
+                        &mut r.sampler,
+                        &rows,
+                        prop,
+                        crate::dflash::PROPOSALS,
+                        &r.completion,
+                        &r.prompt_tokens,
+                        r.sp.repeat_penalty,
+                        r.sp.repeat_last_n,
+                    )
                 }
-            }
-            if accepted == crate::dflash::PROPOSALS {
-                let row: Vec<f32> = rows_it
-                    .next()
-                    .unwrap()
-                    .iter()
-                    .map(|v| v.to_f32())
-                    .collect();
-                let d = r.sampler.dist_vec(
-                    row,
-                    &r.completion,
-                    &r.prompt_tokens,
-                    r.sp.repeat_penalty,
-                    r.sp.repeat_last_n,
-                );
-                emitted.push(r.sampler.pick(&d));
-            }
+            };
+            emitted = c.emitted;
+            accepted = c.accepted;
         }
         // emit retained tokens
         let r = runs[b].as_mut().unwrap();
@@ -1803,6 +2065,7 @@ fn batch_round(
 }
 
 fn finish_run(state: &Arc<EngineState>, r: Run) {
+    sample_check_summary();
     let total_ms = r.started.elapsed().as_secs_f64() * 1000.0;
     let n_completion = r.completion.len();
     let decode_tps = if n_completion > 1 && r.decode_ms_total > 0.0 {
@@ -2292,20 +2555,20 @@ mod decode_qos_tests {
 /// N2: every greedy pick must share the GPU argmax tie rule (lowest index
 /// among equal maxima). The DFlash greedy verify reads `Tensor::argmax`
 /// rows; the anchor, the non-draft loop, penalty requests and sampled
-/// batches pick through `Sampler::dist_vec` / `spec_accept_step`.
+/// batches pick through `row_dist_of` / `cpu_accept` (S1).
 #[cfg(test)]
 mod n2_tie_tests {
     use super::*;
 
     fn greedy_sampler() -> Sampler {
-        Sampler { temperature: None, top_k: None, top_p: None, rng: 1 }
+        Sampler { temperature: None, top_k: None, top_p: None, rng: 1, gpu_servable: false }
     }
 
     /// The anchor / non-draft / sampled-batch greedy pick.
     fn cpu_greedy(row: Vec<f32>) -> u32 {
-        let d = greedy_sampler().dist_vec(row, &[], &[], 1.0, 64);
-        assert_eq!(d.len(), 1);
-        d[0].0
+        let d = row_dist_of(greedy_sampler().policy(), row, &[], &[], 1.0, 64);
+        assert!(d.deterministic());
+        d.ids[0]
     }
 
     #[test]
@@ -2329,13 +2592,13 @@ mod n2_tie_tests {
             .collect();
         let want = vec![1_000u32, 5, 42];
         let cpu: Vec<u32> = rows_f32.iter().cloned().map(cpu_greedy).collect();
-        assert_eq!(cpu, want, "Sampler::dist_vec greedy must pick the lowest index on ties");
+        assert_eq!(cpu, want, "row_dist_of greedy must pick the lowest index on ties");
         let cpu_candle: Vec<u32> =
             Tensor::from_vec(data.clone(), (3, V), &candle_core::Device::Cpu)?
                 .argmax(candle_core::D::Minus1)?
                 .to_vec1()?;
         assert_eq!(cpu_candle, want, "candle CPU argmax: lowest index");
-        // spec_accept_step's greedy branch (sampled-batch fallback) agrees
+        // cpu_accept's greedy rows (sampled-batch / penalty fallback) agree
         let prop = crate::dflash::Proposal {
             tokens: [0; crate::dflash::PROPOSALS],
             cand_ids: Default::default(),
@@ -2343,8 +2606,10 @@ mod n2_tie_tests {
         };
         for (r, &w) in want.iter().enumerate() {
             let mut s = greedy_sampler();
-            let t = spec_accept_step(&mut s, rows_f32[r].clone(), &prop, 0, &[], &[], 1.0, 64)?;
-            assert_eq!(t, w, "spec_accept_step greedy row {r}");
+            let row: Vec<Vec<half::bf16>> = vec![data[r * V..(r + 1) * V].to_vec(); 2];
+            let c = cpu_accept(&mut s, &row, &prop, 1, &[], &[], 1.0, 64);
+            assert_eq!(c.emitted[0], w, "cpu_accept greedy row {r}");
+            assert_eq!(c.consumed, 0, "greedy rows draw no uniforms");
         }
         assert_eq!(greedy_argmax(&[f32::NAN, 1.0, 1.0]), 1);
         assert_eq!(greedy_argmax(&[f32::NEG_INFINITY; 4]), 0);
@@ -2376,8 +2641,39 @@ mod n2_tie_tests {
         assert!(!greedy_rows(&greedy_sampler(), &sp), "a repeat penalty reshapes the logits");
         sp.repeat_last_n = 0;
         assert!(greedy_rows(&greedy_sampler(), &sp), "penalty window 0 = no penalty");
-        let hot = Sampler { temperature: Some(0.6), top_k: Some(20), top_p: Some(0.95), rng: 1 };
+        let hot = Sampler { temperature: Some(0.6), top_k: Some(20), top_p: Some(0.95), rng: 1, gpu_servable: true };
         sp.repeat_penalty = 1.0;
         assert!(!greedy_rows(&hot, &sp), "sampled slots never take argmax rows");
+    }
+}
+
+/// B1: the default verification rule is chosen by the request (block
+/// where the GPU accept kernel serves it, token elsewhere) and
+/// `TH_SPEC_VERIFY` overrides it either way.
+#[cfg(test)]
+mod b1_rule_tests {
+    use super::*;
+
+    #[test]
+    fn b1_default_rule_by_request() {
+        let mut sp = resolve_sampling(&RequestSampling::default(), &EngineConfig::default());
+        sp.temperature = Some(0.6);
+        sp.repeat_penalty = 1.0;
+        for (k, servable) in [(Some(20), true), (Some(1), true), (Some(32), true), (Some(33), false), (Some(40), false), (Some(0), false), (None, false)] {
+            sp.top_k = k;
+            assert_eq!(gpu_servable_request(&sp), servable, "top_k {k:?}");
+            assert_eq!(Sampler::new(&sp, 7).gpu_servable, servable, "top_k {k:?}");
+        }
+        sp.top_k = Some(20);
+        sp.repeat_penalty = 1.1;
+        sp.repeat_last_n = 64;
+        assert!(!gpu_servable_request(&sp), "a repeat penalty takes the CPU path");
+        sp.repeat_last_n = 0;
+        assert!(gpu_servable_request(&sp), "penalty window 0 = no penalty");
+        for servable in [false, true] {
+            assert_eq!(spec_verify_rule(None, servable), servable, "default follows the kernel");
+            assert!(spec_verify_rule(Some(true), servable), "TH_SPEC_VERIFY=block forces block");
+            assert!(!spec_verify_rule(Some(false), servable), "TH_SPEC_VERIFY=token forces token");
+        }
     }
 }

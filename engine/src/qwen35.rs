@@ -3331,7 +3331,7 @@ impl Qwen35 {
         slot: usize,
         anchor: u32,
         pos: usize,
-        temp: Option<f64>,
+        temp: Option<crate::dflash::DraftSampling>,
         uniform: impl FnMut() -> f64,
     ) -> Result<crate::dflash::Proposal> {
         let w = self.draft_w.as_ref().context("draft not loaded")?;
@@ -3349,7 +3349,7 @@ impl Qwen35 {
         slots: &[usize],
         anchors: &[u32],
         poss: &[usize],
-        temps: &[Option<f64>],
+        temps: &[Option<crate::dflash::DraftSampling>],
         uniform: &mut dyn FnMut(usize) -> f64,
     ) -> Result<Vec<crate::dflash::Proposal>> {
         let w = self.draft_w.as_ref().context("draft not loaded")?;

@@ -21,6 +21,7 @@ mod model;
 mod outbuf;
 mod quant_kernel;
 mod qwen35;
+mod sample_kernel;
 mod server;
 mod turboquant;
 mod state;
