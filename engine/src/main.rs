@@ -663,8 +663,10 @@ async fn main() -> Result<()> {
                     }
                     let pos = kv - seq;
                     let q = Tensor::randn(0f32, 1.0, (1, nh, seq, hd), &dev)?.to_dtype(DType::BF16)?;
+                    // the model's cache layouts: K head-major contiguous, V
+                    // time-major (attn_forward's cat of transposed rows)
                     let k_all = Tensor::randn(0f32, 1.0, (nkv, kv, hd), &dev)?.to_dtype(DType::BF16)?;
-                    let v_all = Tensor::randn(0f32, 1.0, (nkv, kv, hd), &dev)?.to_dtype(DType::BF16)?;
+                    let v_all = Tensor::randn(0f32, 1.0, (kv, nkv, hd), &dev)?.to_dtype(DType::BF16)?.transpose(0, 1)?;
                     let bcast = |t: &Tensor| -> Result<Tensor> {
                         Ok(t.unsqueeze(1)?.broadcast_as((nkv, rep, kv, hd))?.reshape((nh, kv, hd))?)
                     };

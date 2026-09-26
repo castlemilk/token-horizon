@@ -4041,7 +4041,8 @@ impl Qwen35 {
                     *m = 0.0;
                 }
             }
-            Ok(Tensor::from_vec(mask, (1, 1, seq, kv_seq), device)?.to_dtype(DType::BF16)?)
+            // in q's dtype (bf16 on the model path, as before)
+            Ok(Tensor::from_vec(mask, (1, 1, seq, kv_seq), device)?.to_dtype(q.dtype())?)
         };
         if grouped && seq > 1 {
             let qg = q.squeeze(0)?.contiguous()?.reshape((n_kv, rep * seq, head_dim))?;
@@ -4050,7 +4051,9 @@ impl Qwen35 {
             let probs = candle_nn::ops::softmax(&scores.broadcast_add(&mask()?)?, D::Minus1)?
                 .reshape((n_kv, rep * seq, kv_seq))?;
             return Ok(probs
-                .matmul(v_all)? // [n_kv, rep*seq, d]
+                // V arrives time-major from the cache cat ([n_kv, kv, d] with
+                // strides [d, n_kv*d, 1]) — gemm needs it contiguous
+                .matmul(&v_all.contiguous()?)? // [n_kv, rep*seq, d]
                 .reshape((n_heads, seq, head_dim))?
                 .transpose(0, 1)?
                 .reshape((seq, n_heads * head_dim))?);
@@ -5643,16 +5646,72 @@ mod gqa_tests {
                 let kv = pos + seq;
                 seed += 3;
                 let q = fill(&[1, nh, seq, d], seed, 1.0, &dev)?;
+                // head-major contiguous K/V, and the layout attn_forward's
+                // cache cat produces (V time-major: a transposed [kv, n_kv, d])
                 let k = fill(&[nkv, kv, d], seed + 1, 1.0, &dev)?;
                 let v = fill(&[nkv, kv, d], seed + 2, 1.0, &dev)?;
-                let b = Qwen35::attn_eager(&q, &k, &v, pos, seq, nh, nkv, d, false, &dev)?;
-                let g = Qwen35::attn_eager(&q, &k, &v, pos, seq, nh, nkv, d, true, &dev)?;
-                assert_eq!(b.dims(), &[seq, nh * d]);
-                assert_eq!(g.dims(), b.dims());
-                let (bb, gb) = (tensor_bits(&b)?, tensor_bits(&g)?);
-                let diff = bb.iter().zip(&gb).filter(|(x, y)| x != y).count();
-                assert_eq!(diff, 0, "heads {nh}/{nkv} d {d} seq {seq} pos {pos}: {diff} elements differ");
+                let v_tm = v.transpose(0, 1)?.contiguous()?.transpose(0, 1)?;
+                assert!(!v_tm.is_contiguous() || kv == 1 || nkv == 1);
+                for (layout, vv) in [("contiguous", &v), ("time-major V", &v_tm)] {
+                    let b = Qwen35::attn_eager(&q, &k, vv, pos, seq, nh, nkv, d, false, &dev)?;
+                    let g = Qwen35::attn_eager(&q, &k, vv, pos, seq, nh, nkv, d, true, &dev)?;
+                    assert_eq!(b.dims(), &[seq, nh * d]);
+                    assert_eq!(g.dims(), b.dims());
+                    let (bb, gb) = (tensor_bits(&b)?, tensor_bits(&g)?);
+                    let diff = bb.iter().zip(&gb).filter(|(x, y)| x != y).count();
+                    assert_eq!(diff, 0, "heads {nh}/{nkv} d {d} seq {seq} pos {pos} {layout}: {diff} elements differ");
+                }
             }
+        }
+        Ok(())
+    }
+}
+
+/// T1b layout regression (CPU, f32 — runs without a GPU): `attn_forward`
+/// builds K/V with `Tensor::cat(&[cache, new], 1)`; for V the new rows are
+/// a transposed view, so the cat returns a time-major [n_kv, kv, d] view
+/// (strides [d, n_kv*d, 1]) — also from an empty cache at pos 0. The
+/// grouped path must accept that layout (it did not: "Invalid matmul
+/// arguments" on the first real prefill) and agree with the broadcast
+/// form.
+#[cfg(test)]
+mod gqa_layout_tests {
+    use super::*;
+
+    fn fill(dims: &[usize], seed: u64) -> Result<Tensor> {
+        let n: usize = dims.iter().product();
+        let mut s = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
+        let v: Vec<f32> = (0..n)
+            .map(|_| {
+                s ^= s >> 12;
+                s ^= s << 25;
+                s ^= s >> 27;
+                ((s.wrapping_mul(0x2545_F491_4F6C_DD1D) >> 11) as f32 / (1u64 << 53) as f32) * 2.0 - 1.0
+            })
+            .collect();
+        Ok(Tensor::from_vec(v, dims, &Device::Cpu)?)
+    }
+
+    #[test]
+    fn grouped_attention_accepts_the_cache_layouts() -> Result<()> {
+        let dev = Device::Cpu;
+        let (nh, nkv, d) = (8usize, 2usize, 32usize);
+        for &(pos, seq) in &[(0usize, 9usize), (0, 18), (40, 12), (100, 30)] {
+            let kv = pos + seq;
+            let q = fill(&[1, nh, seq, d], 1 + pos as u64)?;
+            // as attn_forward: the cache (empty at pos 0) + the new rows, V new rows transposed
+            let k_cache = if pos == 0 { Tensor::zeros((nkv, 0, d), DType::F32, &dev)? } else { fill(&[nkv, pos, d], 2)? };
+            let v_cache = if pos == 0 { Tensor::zeros((nkv, 0, d), DType::F32, &dev)? } else { fill(&[pos, nkv, d], 3)?.transpose(0, 1)? };
+            let k_new = fill(&[nkv, seq, d], 4)?;
+            let v_new = fill(&[seq, nkv, d], 5)?.transpose(0, 1)?; // [nkv, seq, d] view
+            let k_all = Tensor::cat(&[k_cache, k_new], 1)?;
+            let v_all = Tensor::cat(&[v_cache, v_new], 1)?;
+            assert_eq!(v_all.dims(), &[nkv, kv, d]);
+            let b = Qwen35::attn_eager(&q, &k_all, &v_all, pos, seq, nh, nkv, d, false, &dev)?;
+            let g = Qwen35::attn_eager(&q, &k_all, &v_all, pos, seq, nh, nkv, d, true, &dev)?;
+            assert_eq!(g.dims(), &[seq, nh * d]);
+            let diff = (b - g)?.abs()?.flatten_all()?.max(0)?.to_scalar::<f32>()?;
+            assert!(diff < 1e-5, "pos {pos} seq {seq} (v contiguous: {}): max|broadcast - grouped| = {diff}", v_all.is_contiguous());
         }
         Ok(())
     }
