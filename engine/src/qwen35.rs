@@ -1602,6 +1602,15 @@ fn gdn_commit_step() -> bool {
     *ON.get_or_init(|| std::env::var("TH_GDN_COMMIT").as_deref() == Ok("step"))
 }
 
+/// `TH_NO_ATTN_FUSED`: attention layers take the eager ops instead of
+/// the fused prepare + decode kernels. Read once (it was looked up per
+/// attention layer per forward).
+#[cfg(all(feature = "metal", target_os = "macos"))]
+fn no_attn_fused() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("TH_NO_ATTN_FUSED").is_ok())
+}
+
 /// `TH_DEBUG_ROLLBACK`: per-layer rollback dumps. Read once.
 fn debug_rollback() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
@@ -3602,41 +3611,65 @@ impl Qwen35 {
         let qd = l.n_heads * 2 * l.head_dim;
         let kd = l.n_kv * l.head_dim;
 
+        // TurboQuant slots (`tq`) never take the fused/split kernels —
+        // they run `attn_quant` below on the compressed cache.
         #[cfg(all(feature = "metal", target_os = "macos"))]
-        if device.is_metal()
-            && tq.is_none()
-            && seq <= 8
-            && std::env::var("TH_NO_ATTN_FUSED").is_err()
-        {
+        if device.is_metal() && tq.is_none() && seq <= 8 && !no_attn_fused() {
             let (kc, vc) = kvc;
             Self::ensure_kv(kc, vc, pos + seq, device)?;
+            // N3: past `TH_ATTN_SPLIT_MIN` visible keys the split-key
+            // kernel replaces the single-pass one (same result contract;
+            // q goes to the tile's KV-head-major layout, padded to 8 rows)
+            let split = crate::attn_kernel::split_plan(
+                device, pos, seq, kc.dim(1)?, l.n_heads, l.n_kv, l.head_dim,
+            );
             // MEM-2: uninitialised outputs — attn_prepare writes every
             // q_buf[row, head, 0..d] (256 threads per (head, row): tid <
             // rp writes the rotated pair, tid >= 2rp the pass-through), and
             // attn_decode every out[row, h*d + c] (one simdgroup per q head,
             // 8 channels per lane). Both kernels assume d = 256 (Qwen3.8's
             // head_dim; the MEM-8 review noted it is not guarded) — the
-            // zero fill never covered a wrong head_dim either.
-            let q_buf = crate::outbuf::kernel_out(
-                (seq, l.n_heads, l.head_dim),
-                DType::BF16,
-                device,
-            )?;
+            // zero fill never covered a wrong head_dim either. The split
+            // tile reads all 8 q rows: with `qrows` set, attn_prepare
+            // writes the padding rows of a short block (seq < 8, plain
+            // decode) as zeros, so the tile buffer is fully written too.
+            let q_buf = match split {
+                None => crate::outbuf::kernel_out(
+                    (seq, l.n_heads, l.head_dim),
+                    DType::BF16,
+                    device,
+                )?,
+                Some(_) => crate::outbuf::kernel_out(
+                    (l.n_kv * crate::attn_kernel::SPLIT_QROWS * (l.n_heads / l.n_kv), l.head_dim),
+                    DType::BF16,
+                    device,
+                )?,
+            };
             crate::attn_kernel::attn_prepare(
                 &qkv, &l.q_norm, &l.k_norm, &l.cos, &l.sin, &q_buf,
                 kc, vc, pos, seq, l.n_heads, l.n_kv, l.head_dim,
                 l.rot_dim / 2, eps as f32,
+                if split.is_some() { crate::attn_kernel::SPLIT_QROWS } else { 0 },
             )?;
             let out = crate::outbuf::kernel_out(
                 (seq, l.n_heads * l.head_dim),
                 DType::BF16,
                 device,
             )?;
-            crate::attn_kernel::attn_decode(
-                &q_buf, kc, vc, &qkv, &out, pos, seq, l.n_heads, l.n_kv,
-                l.head_dim, l.rot_dim / 2,
-            )?;
-            if std::env::var("TH_DEBUG_ATTN").is_ok() {
+            match split {
+                // the reduce writes every out[row, h*d + c] too (one
+                // threadgroup per (kv head, fused row), one thread per c)
+                Some(splits) => crate::attn_kernel::attn_decode_split(
+                    &q_buf, kc, vc, &qkv, &out, pos, seq, l.n_heads, l.n_kv,
+                    l.head_dim, splits,
+                )?,
+                None => crate::attn_kernel::attn_decode(
+                    &q_buf, kc, vc, &qkv, &out, pos, seq, l.n_heads, l.n_kv,
+                    l.head_dim, l.rot_dim / 2,
+                )?,
+            }
+            // TH_DEBUG_ATTN (read once): per-layer fused-vs-eager diffs
+            if crate::attn_kernel::metal_impl::debug_attn() {
                 eprintln!("  [attn-cfg] nh={} nkv={} hd={} rd={} pos={} seq={} cap={}",
                     l.n_heads, l.n_kv, l.head_dim, l.rot_dim, pos, seq, kc.dim(1).unwrap_or(0));
                 // eager reference for the same inputs — recompute
@@ -3665,7 +3698,20 @@ impl Qwen35 {
                 let k0 = Self::rope(&k0, &l.cos, &l.sin, pos, l.rot_dim)?;
                 // diff q/k vs kernel-written buffers — both to
                 // [seq, heads, d] order before flatten
-                let qd_ = q_buf.to_dtype(DType::F32)?.flatten_all()?.to_vec1::<f32>()?;
+                // (the split tile's KV-head-major q is permuted back to
+                // [seq, heads, d] for the diff)
+                let q_rows = match split {
+                    None => q_buf.clone(),
+                    Some(_) => {
+                        let grp = l.n_heads / l.n_kv;
+                        q_buf
+                            .reshape((l.n_kv, crate::attn_kernel::SPLIT_QROWS, grp, l.head_dim))?
+                            .narrow(1, 0, seq)?
+                            .permute((1, 0, 2, 3))?
+                            .reshape((seq, l.n_heads, l.head_dim))?
+                    }
+                };
+                let qd_ = q_rows.to_dtype(DType::F32)?.flatten_all()?.to_vec1::<f32>()?;
                 let qr_ = q0.squeeze(0)?.transpose(0, 1)?.to_dtype(DType::F32)?.flatten_all()?.to_vec1::<f32>()?;
                 let dq = qd_.iter().zip(&qr_).map(|(a,b)| (a-b).abs()).fold(0.0f32, f32::max);
                 if dq > 1.0 {
@@ -3847,7 +3893,9 @@ impl Qwen35 {
         if cap >= need {
             return Ok(());
         }
-        let ncap = (cap * 2).max(need).max(2048);
+        // whole 256-row blocks: the N3 split kernel reads full 32-key
+        // pages past `need` (masked), so capacity is page-aligned
+        let ncap = (cap * 2).max(need).max(2048).next_multiple_of(256);
         let (nh, hd) = (kc.dim(0)?, kc.dim(2)?);
         for t in [&mut *kc, &mut *vc] {
             let pad =

@@ -9,6 +9,8 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 
 mod api;
+#[cfg(all(feature = "metal", target_os = "macos"))]
+mod attn_bench;
 mod attn_kernel;
 mod dflash;
 mod draft_kernel;
@@ -171,6 +173,13 @@ async fn main() -> Result<()> {
                     let n = quant_kernel::pf_compile(d)?;
                     eprintln!("pf library: {n} pipelines in {:.0}ms", t.elapsed().as_secs_f64() * 1e3);
                 }
+                return Ok(());
+            }
+            // N3: split-key vs single-pass attention across context
+            // lengths (no model load)
+            #[cfg(all(feature = "metal", target_os = "macos"))]
+            if std::env::var("TH_BENCH_ATTN").is_ok() {
+                attn_bench::bench_attn()?;
                 return Ok(());
             }
             #[cfg(all(feature = "metal", target_os = "macos"))]
