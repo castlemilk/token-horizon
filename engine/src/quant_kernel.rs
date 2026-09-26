@@ -500,8 +500,8 @@ kernel void chunk_top16(
     uint tg  [[threadgroup_position_in_grid]],
     uint col [[thread_position_in_threadgroup]])
 {
-    threadgroup float xs[512];
-    threadgroup uint  ix[512];
+    threadgroup float tv[512];
+    threadgroup uint  ti[512];
     const uint nck = p.n * p.chunks;
     if (tg >= nck) {
         device float* so = out + 2 * nck * 16;
@@ -511,32 +511,46 @@ kernel void chunk_top16(
         return;
     }
     const uint row = tg / p.chunks, chunk = tg % p.chunks;
-    xs[col] = float(x[row * p.row_stride + chunk * 512 + col]);
-    ix[col] = col;
-    threadgroup_barrier(mem_flags::mem_threadgroup);
-    // candle sort.metal argsort<SORT_DESC> with ncols == ncols_pad == 512
-    for (int k = 2; k <= 512; k *= 2) {
-        for (int j = k / 2; j > 0; j /= 2) {
-            const int c = int(col);
-            const int ixj = c ^ j;
-            if (ixj > c) {
-                if ((c & k) == 0) {
-                    if (xs[ix[c]] < xs[ix[ixj]]) {
-                        SWAP(ix[c], ix[ixj]);
-                    }
-                } else {
-                    if (xs[ix[c]] > xs[ix[ixj]]) {
-                        SWAP(ix[c], ix[ixj]);
-                    }
-                }
+    // this thread's element (value, in-chunk id) — the network's position
+    // `col`. candle's argsort<SORT_DESC> (ncols == ncols_pad == 512) does,
+    // per stage (k, j), for each pair (c, c ^ j) with c < c ^ j: in a
+    // descending segment ((c & k) == 0) swap iff x[c] < x[c^j], else swap
+    // iff x[c] > x[c^j]. Both threads of a pair evaluate that same rule on
+    // the same two elements, so each can take its own result: partners
+    // j < 32 sit in the same simdgroup (register shuffles, no barrier),
+    // j >= 32 exchange through threadgroup memory.
+    float v = float(x[row * p.row_stride + chunk * 512 + col]);
+    uint i = col;
+    for (uint k = 2; k <= 512; k *= 2) {
+        for (uint j = k / 2; j > 0; j /= 2) {
+            float pv;
+            uint pi;
+            if (j < 32) {
+                pv = simd_shuffle_xor(v, ushort(j));
+                pi = simd_shuffle_xor(i, ushort(j));
+            } else {
+                tv[col] = v;
+                ti[col] = i;
+                threadgroup_barrier(mem_flags::mem_threadgroup);
+                pv = tv[col ^ j];
+                pi = ti[col ^ j];
+                threadgroup_barrier(mem_flags::mem_threadgroup);
             }
-            threadgroup_barrier(mem_flags::mem_threadgroup);
+            const bool lower = (col & j) == 0;          // this thread is c
+            const float a = lower ? v : pv;              // element at c
+            const float b = lower ? pv : v;              // element at c ^ j
+            const bool desc = (((lower ? col : (col ^ j)) & k) == 0);
+            const bool swap = desc ? (a < b) : (a > b);
+            if (swap) {
+                v = pv;
+                i = pi;
+            }
         }
     }
     if (col < 16) {
         const uint o = tg * 16 + col;
-        out[o] = xs[ix[col]];
-        out[nck * 16 + o] = float(ix[col]);
+        out[o] = v;
+        out[nck * 16 + o] = float(i);
     }
 }
 "#;
