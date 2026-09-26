@@ -1652,6 +1652,28 @@ fn causal_mask(seq: usize, pos: usize, kv_seq: usize, dtype: DType, device: &Dev
     Ok(t)
 }
 
+/// Prefill pool trim threshold (`TH_PREFILL_SYNC`, read once). A long
+/// prompt is prefilled as back-to-back 512-row forwards (engine.rs) with
+/// no host sync in between, and candle 0.11 releases pooled buffers only
+/// at a sync (`drop_unused_buffers`); every chunk's eager-attention
+/// transients ([24, 512, kv] scores/probs, the [24, kv, 256] K/V
+/// broadcasts, growing with kv and rounded up to power-of-two buckets)
+/// then stay allocated — and wired, via the residency set — until the end
+/// of the prompt (th/d-longctx: a 24k-token prefill reached a 119 GB
+/// phys_footprint). A prefill forward (seq > 8) that starts at pos >= this
+/// threshold first syncs, bounding the pool to about one chunk's working
+/// set. Default 2048: prompts up to 2048 + one chunk never sync (bench
+/// contexts and ~1.5k prompts unchanged). `TH_PREFILL_SYNC=off` disables
+/// it; `=N` sets the threshold. Output is unchanged (a sync only waits).
+fn prefill_sync_min() -> usize {
+    static V: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *V.get_or_init(|| match std::env::var("TH_PREFILL_SYNC") {
+        Ok(v) if v.trim() == "off" => usize::MAX,
+        Ok(v) => v.trim().parse().unwrap_or(2048),
+        Err(_) => 2048,
+    })
+}
+
 /// `TH_DEBUG_ROLLBACK`: per-layer rollback dumps. Read once.
 fn debug_rollback() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
@@ -4020,6 +4042,11 @@ impl Qwen35 {
         last_only: bool,
     ) -> Result<Tensor> {
         let seq = tokens.len();
+        // long-prompt prefill: trim candle's pool before the next chunk
+        // (`prefill_sync_min`)
+        if seq > 8 && pos > 0 && pos >= prefill_sync_min() {
+            self.device.synchronize()?;
+        }
         let ids = Tensor::new(tokens, &self.device)?;
         let mut x = self.embed.i(&ids)?.unsqueeze(0)?; // [1, seq, hidden]
         // stash GDN scan inputs during multi-row verify passes so a
