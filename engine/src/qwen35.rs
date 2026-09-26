@@ -1900,6 +1900,10 @@ pub struct Slot {
     pub(crate) gdn_par: GdnParity,
     vcache: Vec<GdnVerifyCache>,
     captures: Vec<Tensor>,
+    /// T1: absolute position of the first row in `captures` — 0 except
+    /// after a prefix restore, which re-seeds the capture rows the draft
+    /// ring warm-up needs from the checkpoint. Read by `draft_prefill`.
+    capture_base: usize,
     pub draft: Option<crate::dflash::Draft>,
 }
 
@@ -1954,9 +1958,47 @@ impl Slot {
             gdn_par: GdnParity::new(),
             vcache: (0..layers.len()).map(|_| GdnVerifyCache::default()).collect(),
             captures: Vec::new(),
+            capture_base: 0,
             draft: None,
         })
     }
+}
+
+/// T1 prefix-cache checkpoint of one slot at KV position `pos`, taken
+/// right after a prefill chunk ending at `pos` (see `prefix_cache.rs`).
+/// Every tensor is private to the checkpoint and never written again:
+/// the GDN state is a bit-exact copy of the committed parity; each
+/// attention K/V is exactly `[n_kv, pos, d]` — a slot that restores it
+/// holds it at full capacity, so its next write grows into a fresh buffer
+/// (`ensure_kv` / the eager path's cat) instead of writing in place; the
+/// capture tensors are the prefill's own per-forward outputs (no kernel
+/// writes them after they are pushed). Restoring into several slots at
+/// once is therefore safe: they share only read-only buffers.
+pub struct PrefixState {
+    pos: usize,
+    /// per layer: (conv window, recurrent state) for GDN layers
+    gdn: Vec<Option<(Tensor, Tensor)>>,
+    /// per layer: (K, V) rows 0..pos for attention layers
+    kv: Vec<Option<(Tensor, Tensor)>>,
+    /// capture groups (5 tensors per prefill forward) covering absolute
+    /// positions `caps_base..pos` — enough for the draft ring warm-up of
+    /// any longer prompt (its last WINDOW-1 rows)
+    caps: Vec<Tensor>,
+    caps_base: usize,
+    bytes: usize,
+}
+
+impl PrefixState {
+    pub fn pos(&self) -> usize {
+        self.pos
+    }
+    pub fn bytes(&self) -> usize {
+        self.bytes
+    }
+}
+
+fn tensor_bytes(t: &Tensor) -> usize {
+    t.elem_count() * t.dtype().size_in_bytes()
 }
 
 /// Pre-verify state for speculative decode rollback. KV tensors are
@@ -3083,6 +3125,7 @@ impl Qwen35 {
             None => {}
         }
         sl.captures.clear();
+        sl.capture_base = 0;
         for v in sl.vcache.iter_mut() {
             *v = GdnVerifyCache::default();
         }
@@ -3090,6 +3133,130 @@ impl Qwen35 {
         sl.gdn_par.ids[1 - cur] = 0;
         sl.gdn_par.rewrote_cur();
         sl.kv_tokens = 0;
+    }
+
+    // MARK: - T1 prefix cache
+
+    /// Can `slot` be checkpointed / restored? (Raw attention cache only —
+    /// the TurboQuant cache is not captured.)
+    pub fn prefix_capable(&self, slot: usize) -> bool {
+        !self.slots[slot].kv_quant
+    }
+
+    /// Checkpoint `slot` at its current KV position (call right after the
+    /// prefill chunk that ended there). GPU copies are enqueued in stream
+    /// order — no host sync. The copy costs ~154 MB of GDN state; K/V and
+    /// captures are shared (see [`PrefixState`]).
+    pub fn prefix_capture(&mut self, slot: usize) -> Result<PrefixState> {
+        let sl = &self.slots[slot];
+        anyhow::ensure!(!sl.kv_quant, "prefix capture: slot {slot} runs compressed KV");
+        let pos = sl.kv_tokens;
+        let cur = sl.gdn_par.cur;
+        let mut bytes = 0usize;
+        let mut gdn = Vec::with_capacity(sl.gdn.len());
+        let mut kv = Vec::with_capacity(sl.kv.len());
+        for (i, layer) in self.layers.iter().enumerate() {
+            match &layer.kind {
+                Kind::Gdn(_) => {
+                    let st = sl.gdn[i].as_ref().context("prefix capture: gdn state missing")?;
+                    let (c, r) = (state_copy(&st.conv[cur])?, state_copy(&st.rec[cur])?);
+                    bytes += tensor_bytes(&c) + tensor_bytes(&r);
+                    gdn.push(Some((c, r)));
+                    kv.push(None);
+                }
+                Kind::Attn(_) => {
+                    let (k, v) = sl.kv[i].as_ref().context("prefix capture: kv state missing")?;
+                    // exactly [n_kv, pos, d]: share an exact-size prefill
+                    // cache (never written in place again), copy the live
+                    // rows out of a capacity buffer into a fresh one
+                    // (`Tensor::copy` is NOT a copy on Metal in candle
+                    // 0.11 — try_clone shares the buffer)
+                    let exact = |t: &Tensor| -> Result<Tensor> {
+                        let rows = t.dim(1)?;
+                        anyhow::ensure!(rows >= pos, "prefix capture: kv has {rows} rows < pos {pos}");
+                        Ok(if rows == pos && t.is_contiguous() {
+                            t.clone()
+                        } else {
+                            state_copy(&t.narrow(1, 0, pos)?)?
+                        })
+                    };
+                    let (k, v) = (exact(k)?, exact(v)?);
+                    bytes += tensor_bytes(&k) + tensor_bytes(&v);
+                    gdn.push(None);
+                    kv.push(Some((k, v)));
+                }
+            }
+        }
+        // capture rows since the last drain cover caps_base..pos; keep the
+        // groups a longer prompt's draft warm-up can reach (last WINDOW-1)
+        let mut caps = Vec::new();
+        let mut caps_base = sl.capture_base;
+        if sl.draft.is_some() {
+            let need_from = pos.saturating_sub(crate::dflash::WINDOW - 1);
+            let mut row = sl.capture_base;
+            for group in sl.captures.chunks_exact(5) {
+                let rows = group[0].dim(0)?;
+                if row + rows <= need_from {
+                    row += rows;
+                    caps_base = row;
+                    continue;
+                }
+                for t in group {
+                    bytes += tensor_bytes(t);
+                }
+                caps.extend(group.iter().cloned());
+                row += rows;
+            }
+            anyhow::ensure!(
+                row == pos && sl.captures.len() % 5 == 0,
+                "prefix capture: capture rows end at {row}, kv at {pos}"
+            );
+        }
+        Ok(PrefixState { pos, gdn, kv, caps, caps_base, bytes })
+    }
+
+    /// Put `slot` into the checkpointed state (the slot should have been
+    /// cleared for the new request; its mode must be raw KV). The GDN
+    /// state is copied into the committed parity (the checkpoint stays
+    /// immutable); K/V and capture rows are shared read-only; the draft
+    /// ring restarts empty and is warmed by `draft_prefill` after the
+    /// suffix prefill — from the restored capture rows plus the suffix's,
+    /// i.e. the same rows, committed the same way, as an uncached prefill.
+    pub fn prefix_restore(&mut self, slot: usize, p: &PrefixState) -> Result<()> {
+        let sl = &mut self.slots[slot];
+        anyhow::ensure!(!sl.kv_quant, "prefix restore: slot {slot} runs compressed KV");
+        anyhow::ensure!(
+            p.gdn.len() == sl.gdn.len() && p.kv.len() == sl.kv.len(),
+            "prefix restore: layer count mismatch"
+        );
+        let cur = sl.gdn_par.cur;
+        for (i, g) in p.gdn.iter().enumerate() {
+            if let Some((conv, rec)) = g {
+                let st = sl.gdn[i].as_mut().context("prefix restore: gdn state missing")?;
+                st.conv[cur] = state_copy(conv)?;
+                st.rec[cur] = state_copy(rec)?;
+            }
+        }
+        sl.gdn_par.ids[1 - cur] = 0;
+        sl.gdn_par.rewrote_cur();
+        for (i, kv) in p.kv.iter().enumerate() {
+            if let Some((k, v)) = kv {
+                sl.kv[i] = Some((k.clone(), v.clone()));
+            }
+        }
+        for q in sl.kvq.iter_mut() {
+            *q = crate::turboquant::QuantKv::default();
+        }
+        for v in sl.vcache.iter_mut() {
+            *v = GdnVerifyCache::default();
+        }
+        if let Some(d) = sl.draft.as_mut() {
+            d.clear();
+        }
+        sl.captures = if sl.draft.is_some() { p.caps.clone() } else { Vec::new() };
+        sl.capture_base = if sl.draft.is_some() { p.caps_base } else { 0 };
+        sl.kv_tokens = p.pos;
+        Ok(())
     }
 
     // MARK: - DFlash draft integration
@@ -3138,13 +3305,20 @@ impl Qwen35 {
     /// the last `take_captures`. Only the last `WINDOW-1` positions can
     /// ever be attended, so earlier prompt rows are skipped.
     pub fn draft_prefill(&mut self, slot: usize) -> Result<()> {
+        // T1: after a prefix restore the capture rows start at the
+        // checkpoint's `capture_base`, not 0 — the committed rows (the
+        // prompt's last WINDOW-1 positions) are the same either way
+        let base = std::mem::take(&mut self.slots[slot].capture_base);
         let caps = self.take_captures(slot)?;
         let (w, sl) = (self.draft_w.as_ref(), &mut self.slots[slot]);
         if let (Some(w), Some(d), Some(c)) = (w, sl.draft.as_mut(), caps) {
-            let p = c.dim(0)?;
-            let keep = p.min(crate::dflash::WINDOW - 1);
-            let start = p - keep;
-            w.commit(d, &c.narrow(0, start, keep)?.contiguous()?, start, keep)?;
+            let end = base + c.dim(0)?;
+            let keep = end.min(crate::dflash::WINDOW - 1);
+            let start = end - keep;
+            let off = start
+                .checked_sub(base)
+                .context("draft_prefill: restored capture rows miss the warm-up window")?;
+            w.commit(d, &c.narrow(0, off, keep)?.contiguous()?, start, keep)?;
         }
         Ok(())
     }
@@ -4710,6 +4884,275 @@ mod gdn_parity_tests {
             assert!(c.flatten_all()?.to_vec1::<half::bf16>()?.iter().all(|v| v.to_bits() == 0));
             assert!(r.flatten_all()?.to_vec1::<f32>()?.iter().all(|v| v.to_bits() == 0));
         }
+        Ok(())
+    }
+}
+
+/// T1 prefix cache: model-free (tiny random-weight hybrid qwen3_5: three
+/// GDN layers + one full-attention layer, 2 slots) checks on the Metal
+/// device — a restored checkpoint + suffix prefill in the canonical chunk
+/// plan is bitwise identical to the uncached prefill (logits, GDN state,
+/// K/V rows, and the next verify's logits), checkpoints are never written
+/// by the slots that restore them, and slots stay isolated. Skips when no
+/// Metal device exists.
+#[cfg(all(test, feature = "metal", target_os = "macos"))]
+mod prefix_tests {
+    use super::*;
+
+    fn fill(dims: &[usize], seed: u64, scale: f32, dev: &Device) -> Result<Tensor> {
+        let n: usize = dims.iter().product();
+        let mut s = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
+        let v: Vec<f32> = (0..n)
+            .map(|_| {
+                s ^= s >> 12;
+                s ^= s << 25;
+                s ^= s >> 27;
+                let u = (s.wrapping_mul(0x2545_F491_4F6C_DD1D) >> 11) as f32
+                    / (1u64 << 53) as f32;
+                (u * 2.0 - 1.0) * scale
+            })
+            .collect();
+        Ok(Tensor::from_vec(v, dims, dev)?.to_dtype(DType::BF16)?)
+    }
+
+    fn tiny_hybrid(dev: &Device) -> Result<Qwen35> {
+        let (hidden, inter, vocab, hk, hv, d) = (64usize, 128usize, 97usize, 1usize, 3usize, 128usize);
+        let (nh, nkv, hd, maxpos) = (2usize, 1usize, 256usize, 4096usize);
+        let cfg = Qwen35Config::from_json(&serde_json::json!({
+            "hidden_size": hidden, "intermediate_size": inter,
+            "num_hidden_layers": 4, "num_attention_heads": nh,
+            "num_key_value_heads": nkv, "vocab_size": vocab, "head_dim": hd,
+            "full_attention_interval": 4, "max_position_embeddings": maxpos,
+            "linear_num_key_heads": hk, "linear_num_value_heads": hv,
+            "linear_key_head_dim": d, "linear_value_head_dim": d,
+            "linear_conv_kernel_dim": 4,
+            "rope_parameters": {"rope_theta": 10000.0, "partial_rotary_factor": 0.25},
+        }))?;
+        let (key_dim, value_dim) = (hk * d, hv * d);
+        let conv_dim = 2 * key_dim + value_dim;
+        let ones = |n: usize| Tensor::ones(n, DType::BF16, dev);
+        let mlp = |li: u64| -> Result<Mlp> {
+            Ok(Mlp {
+                gate_up: Lin::Dense(fill(&[2 * inter, hidden], 40 + li, 0.2, dev)?),
+                down: Lin::Dense(fill(&[hidden, inter], 50 + li, 0.15, dev)?),
+                inter,
+            })
+        };
+        let mut layers = Vec::new();
+        for li in 0..3u64 {
+            let a_log: Vec<f32> = (0..hv).map(|h| -0.5 + 0.3 * h as f32 + 0.1 * li as f32).collect();
+            let dt: Vec<f32> = (0..hv).map(|h| 0.1 * h as f32 - 0.2).collect();
+            let (mut a64, mut d64) = ([0f32; 64], [0f32; 64]);
+            a64[..hv].copy_from_slice(&a_log);
+            d64[..hv].copy_from_slice(&dt);
+            layers.push(Layer {
+                input_norm: ones(hidden)?,
+                kind: Kind::Gdn(GdnLayer {
+                    in_all: Lin::Dense(fill(&[conv_dim + value_dim + 2 * hv, hidden], 10 + li, 0.25, dev)?),
+                    conv: fill(&[conv_dim, 4], 20 + li, 0.5, dev)?,
+                    a_log: Tensor::from_vec(a_log, hv, dev)?,
+                    dt_bias: Tensor::from_vec(dt, hv, dev)?,
+                    a_log64: a64,
+                    dt_bias64: d64,
+                    norm_w: ones(d)?,
+                    ones_dk: ones(d)?,
+                    out: Lin::Dense(fill(&[hidden, value_dim], 30 + li, 0.1, dev)?),
+                    key_dim,
+                    value_dim,
+                    num_k_heads: hk,
+                    num_v_heads: hv,
+                    head_k: d,
+                    head_v: d,
+                    conv_k: 4,
+                }),
+                post_norm: ones(hidden)?,
+                mlp: mlp(li)?,
+            });
+        }
+        let rot_dim = hd / 4;
+        let half = rot_dim / 2;
+        let inv: Vec<f32> = (0..half)
+            .map(|i| 10000f64.powf(-((2 * i) as f64) / rot_dim as f64) as f32)
+            .collect();
+        let posv: Vec<f32> = (0..maxpos).map(|p| p as f32).collect();
+        let freqs = Tensor::from_vec(posv, (maxpos,), dev)?
+            .unsqueeze(1)?
+            .broadcast_mul(&Tensor::from_vec(inv, (half,), dev)?.unsqueeze(0)?)?;
+        let (cos, sin) = (freqs.cos()?, freqs.sin()?);
+        layers.push(Layer {
+            input_norm: ones(hidden)?,
+            kind: Kind::Attn(AttnLayer {
+                in_qkv: Lin::Dense(fill(&[nh * 2 * hd + 2 * nkv * hd, hidden], 1, 0.25, dev)?),
+                o: Lin::Dense(fill(&[hidden, nh * hd], 2, 0.1, dev)?),
+                q_norm: ones(hd)?,
+                k_norm: ones(hd)?,
+                cos,
+                sin,
+                n_heads: nh,
+                n_kv: nkv,
+                head_dim: hd,
+                rot_dim,
+            }),
+            post_norm: ones(hidden)?,
+            mlp: mlp(3)?,
+        });
+        let slots = (0..2)
+            .map(|_| Slot::new(&cfg, &layers, dev))
+            .collect::<Result<Vec<_>>>()?;
+        Ok(Qwen35 {
+            embed: fill(&[vocab, hidden], 5, 1.0, dev)?,
+            layers,
+            norm: ones(hidden)?,
+            lm_head: Lin::Dense(fill(&[vocab, hidden], 6, 0.3, dev)?),
+            cfg,
+            device: dev.clone(),
+            tq: None,
+            slots,
+            draft_w: None,
+            debug: false,
+        })
+    }
+
+    fn metal() -> Option<Device> {
+        Device::new_metal(0).ok()
+    }
+
+    /// Host bits of a tensor (any float dtype) — bitwise comparisons.
+    fn bits(t: &Tensor) -> Result<Vec<u32>> {
+        Ok(match t.dtype() {
+            DType::F32 => t.flatten_all()?.to_vec1::<f32>()?.iter().map(|v| v.to_bits()).collect(),
+            _ => t
+                .to_dtype(DType::BF16)?
+                .flatten_all()?
+                .to_vec1::<half::bf16>()?
+                .iter()
+                .map(|v| v.to_bits() as u32)
+                .collect(),
+        })
+    }
+
+    /// Everything a later forward reads: committed GDN state + live K/V.
+    fn slot_bits(m: &Qwen35, slot: usize) -> Result<Vec<Vec<u32>>> {
+        let sl = &m.slots[slot];
+        let cur = sl.gdn_par.cur;
+        let mut out = Vec::new();
+        for (i, layer) in m.layers.iter().enumerate() {
+            match &layer.kind {
+                Kind::Gdn(_) => {
+                    let g = sl.gdn[i].as_ref().context("gdn")?;
+                    out.push(bits(&g.conv[cur])?);
+                    out.push(bits(&g.rec[cur])?);
+                }
+                Kind::Attn(_) => {
+                    let (k, v) = sl.kv[i].as_ref().context("kv")?;
+                    out.push(bits(&k.narrow(1, 0, sl.kv_tokens)?)?);
+                    out.push(bits(&v.narrow(1, 0, sl.kv_tokens)?)?);
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    fn ckpt_bits(p: &PrefixState) -> Result<Vec<Vec<u32>>> {
+        let mut out = Vec::new();
+        for (c, r) in p.gdn.iter().flatten() {
+            out.push(bits(c)?);
+            out.push(bits(r)?);
+        }
+        for (k, v) in p.kv.iter().flatten() {
+            out.push(bits(k)?);
+            out.push(bits(v)?);
+        }
+        Ok(out)
+    }
+
+    /// Canonical-chunk prefill of `prompt[from..]` (chunks of `step`
+    /// anchored at 0), capturing at `ck`. Returns (last logits, capture).
+    fn prefill(
+        m: &mut Qwen35,
+        slot: usize,
+        prompt: &[u32],
+        from: usize,
+        step: usize,
+        ck: Option<usize>,
+    ) -> Result<(Vec<u32>, Option<PrefixState>)> {
+        let (mut pos, mut last, mut cap) = (from, None, None);
+        while pos < prompt.len() {
+            let end = ((pos / step + 1) * step).min(prompt.len());
+            last = Some(m.forward(slot, &prompt[pos..end], pos)?);
+            pos = end;
+            if Some(pos) == ck {
+                cap = Some(m.prefix_capture(slot)?);
+            }
+        }
+        Ok((bits(&last.context("empty prompt")?)?, cap))
+    }
+
+    #[test]
+    fn prefix_restore_bitwise_matches_uncached_prefill() -> Result<()> {
+        let Some(d) = metal() else {
+            eprintln!("[prefix-cache] skipped: needs a Metal device");
+            return Ok(());
+        };
+        let mut m = tiny_hybrid(&d)?;
+        let step = 16;
+        let prompt: Vec<u32> = (0..53u32).map(|i| (i * 7 + 3) % 97).collect();
+        let seq8: Vec<u32> = (0..8u32).map(|i| (i * 11 + 5) % 97).collect();
+        let n = prompt.len();
+
+        // uncached reference, checkpoint at 32 on the way
+        m.clear_kv_cache(0);
+        let (l_ref, cap) = prefill(&mut m, 0, &prompt, 0, step, Some(32))?;
+        let cap = cap.context("no capture at 32")?;
+        assert_eq!(cap.pos(), 32);
+        let ck0 = ckpt_bits(&cap)?;
+        let s_ref = slot_bits(&m, 0)?;
+        let v_ref = bits(&m.forward_multi(0, &seq8, n)?)?;
+
+        // restored: same logits, same state, same next verify
+        m.clear_kv_cache(0);
+        m.prefix_restore(0, &cap)?;
+        assert_eq!(m.slots[0].kv_tokens, 32);
+        let (l_got, _) = prefill(&mut m, 0, &prompt, 32, step, None)?;
+        assert!(l_got == l_ref, "suffix-prefill logits differ from the uncached prefill");
+        assert!(slot_bits(&m, 0)? == s_ref, "post-prefill state differs from the uncached prefill");
+        let v_got = bits(&m.forward_multi(0, &seq8, n)?)?;
+        assert!(v_got == v_ref, "next verify logits differ after a restore");
+
+        // the same checkpoint in slot 1 with a different suffix: slot 0 is
+        // untouched, and slot 1 matches its own uncached reference
+        let s0 = slot_bits(&m, 0)?;
+        let mut other = prompt[..32].to_vec();
+        other.extend((0..27u32).map(|i| (i * 3 + 1) % 97));
+        m.clear_kv_cache(1);
+        m.prefix_restore(1, &cap)?;
+        let (l1, _) = prefill(&mut m, 1, &other, 32, step, None)?;
+        m.forward_multi(1, &seq8, other.len())?;
+        assert!(slot_bits(&m, 0)? == s0, "a restore + prefill on slot 1 changed slot 0");
+        m.clear_kv_cache(1);
+        let (l1_ref, _) = prefill(&mut m, 1, &other, 0, step, None)?;
+        assert!(l1 == l1_ref, "slot 1's restored prefill differs from its uncached prefill");
+
+        // nobody wrote the checkpoint: two restores, prefills and verifies
+        // later it is bit-for-bit the captured state
+        assert!(ckpt_bits(&cap)? == ck0, "a restoring slot wrote into the checkpoint");
+
+        // capacity-buffer capture (after a <= 8-row fused step the K/V
+        // live in a grown buffer): the live rows are copied out
+        m.clear_kv_cache(0);
+        prefill(&mut m, 0, &prompt, 0, step, None)?;
+        m.forward_multi(0, &seq8[..4], n)?;
+        let cap2 = m.prefix_capture(0)?;
+        assert_eq!(cap2.pos(), n + 4);
+        for (k, _) in cap2.kv.iter().flatten() {
+            assert_eq!(k.dim(1)?, n + 4, "capacity-buffer capture must be exact-size");
+        }
+        let s2 = slot_bits(&m, 0)?;
+        let after = bits(&m.forward_multi(0, &seq8[4..], n + 4)?)?;
+        m.clear_kv_cache(1);
+        m.prefix_restore(1, &cap2)?;
+        assert!(slot_bits(&m, 1)? == s2, "restored state differs from the captured slot");
+        assert!(bits(&m.forward_multi(1, &seq8[4..], n + 4)?)? == after);
         Ok(())
     }
 }

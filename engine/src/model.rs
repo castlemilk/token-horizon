@@ -31,6 +31,24 @@ pub enum BackendSnapshot {
     Qwen35(Box<crate::qwen35::Snapshot>),
 }
 
+/// T1 prefix-cache checkpoint of one slot (see `prefix_cache.rs`).
+pub enum BackendPrefix {
+    Qwen35(Box<crate::qwen35::PrefixState>),
+}
+
+impl BackendPrefix {
+    pub fn bytes(&self) -> usize {
+        match self {
+            Self::Qwen35(p) => p.bytes(),
+        }
+    }
+    pub fn pos(&self) -> usize {
+        match self {
+            Self::Qwen35(p) => p.pos(),
+        }
+    }
+}
+
 impl ModelBackend {
     /// Slot-aware forward for the Qwen35 batch path.
     pub fn forward_slot(
@@ -223,6 +241,28 @@ impl ModelBackend {
                 m.rollback_verify(slot, *s, kept)
             }
             _ => bail!("rollback_verify not supported by this backend"),
+        }
+    }
+
+    /// T1: can `slot` be checkpointed / restored right now? (qwen3_5
+    /// with a raw attention cache.)
+    pub fn prefix_capable(&self, slot: usize) -> bool {
+        matches!(self, Self::Qwen35(m) if m.prefix_capable(slot))
+    }
+
+    /// T1: checkpoint `slot` at its current KV position.
+    pub fn prefix_capture(&mut self, slot: usize) -> Result<BackendPrefix> {
+        match self {
+            Self::Qwen35(m) => Ok(BackendPrefix::Qwen35(Box::new(m.prefix_capture(slot)?))),
+            _ => bail!("prefix cache not supported by this backend"),
+        }
+    }
+
+    /// T1: put `slot` into a checkpointed state.
+    pub fn prefix_restore(&mut self, slot: usize, p: &BackendPrefix) -> Result<()> {
+        match (self, p) {
+            (Self::Qwen35(m), BackendPrefix::Qwen35(s)) => m.prefix_restore(slot, s),
+            _ => bail!("prefix cache not supported by this backend"),
         }
     }
 

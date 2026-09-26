@@ -16,6 +16,7 @@ mod engine;
 mod gdn_kernel;
 mod model;
 mod outbuf;
+mod prefix_cache;
 mod quant_kernel;
 mod qwen35;
 mod server;
