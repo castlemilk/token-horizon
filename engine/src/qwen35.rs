@@ -1611,6 +1611,47 @@ fn no_attn_fused() -> bool {
     *ON.get_or_init(|| std::env::var("TH_NO_ATTN_FUSED").is_ok())
 }
 
+/// The additive causal mask of the eager (seq > 8) attention paths:
+/// `[seq, kv_seq]` with 0 where row i may attend key j (j <= pos + i) and
+/// -inf elsewhere, in `dtype`. Built once per (seq, pos, kv_seq, dtype,
+/// device) and shared by every attention layer of the forward (the
+/// callers reshape the contiguous tensor — a view). candle 0.11 uploads
+/// host data into a fresh wired buffer that stays in the pool until the
+/// next sync (`MetalDevice::new_buffer_with_data`), and the chunked
+/// prefill (engine.rs) never syncs between chunks: one f32 mask per
+/// attention layer per 512-row chunk grew the pool by
+/// 16 x sum_c (512 x 512c x 4 B) — 2 GiB over an 8k prompt, 32 GiB over
+/// a 32k one (th/d-longctx). Same values as the per-layer build, so the
+/// output is unchanged.
+fn causal_mask(seq: usize, pos: usize, kv_seq: usize, dtype: DType, device: &Device) -> Result<Tensor> {
+    type Entry = ((usize, usize, usize, DType), Device, Tensor);
+    thread_local! {
+        static CACHE: std::cell::RefCell<Vec<Entry>> = const { std::cell::RefCell::new(Vec::new()) };
+    }
+    let key = (seq, pos, kv_seq, dtype);
+    let hit = CACHE.with(|c| {
+        c.borrow().iter().find(|(k, d, _)| *k == key && d.same_device(device)).map(|(_, _, t)| t.clone())
+    });
+    if let Some(t) = hit {
+        return Ok(t);
+    }
+    let mut mask = vec![f32::NEG_INFINITY; seq * kv_seq];
+    for i in 0..seq {
+        for m in mask.iter_mut().skip(i * kv_seq).take(pos + i + 1) {
+            *m = 0.0;
+        }
+    }
+    let t = Tensor::from_vec(mask, (seq, kv_seq), device)?.to_dtype(dtype)?;
+    CACHE.with(|c| {
+        let mut c = c.borrow_mut();
+        // one entry per dtype (bf16: fused-capable slots, f32: TurboQuant):
+        // the previous forward's mask is released here
+        c.retain(|(k, _, _)| k.3 != dtype);
+        c.push((key, device.clone(), t.clone()));
+    });
+    Ok(t)
+}
+
 /// `TH_DEBUG_ROLLBACK`: per-layer rollback dumps. Read once.
 fn debug_rollback() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
@@ -3851,14 +3892,11 @@ impl Qwen35 {
         let probs = if seq == 1 {
             candle_nn::ops::softmax(&scores, D::Minus1)?
         } else {
-            let mut mask = vec![f32::NEG_INFINITY; seq * kv_seq];
-            for i in 0..seq {
-                for m in mask.iter_mut().skip(i * kv_seq).take(pos + i + 1) {
-                    *m = 0.0;
-                }
-            }
-            let mask_t = Tensor::from_vec(mask, (1, 1, seq, kv_seq), device)?
-                .to_dtype(DType::BF16)?;
+            // one mask per forward, shared by every attention layer
+            // (`causal_mask`: a per-layer upload grew candle's pool
+            // quadratically over a chunked long prompt)
+            let mask_t = causal_mask(seq, pos, kv_seq, DType::BF16, device)?
+                .reshape((1, 1, seq, kv_seq))?;
             candle_nn::ops::softmax(&scores.broadcast_add(&mask_t)?, D::Minus1)?
         };
         let out = probs.matmul(&v_r.contiguous()?).with_context(|| {
@@ -3941,13 +3979,8 @@ impl Qwen35 {
         let probs = if seq == 1 {
             candle_nn::ops::softmax(&scores, D::Minus1)?
         } else {
-            let mut mask = vec![f32::NEG_INFINITY; seq * kv_seq];
-            for i in 0..seq {
-                for m in mask.iter_mut().skip(i * kv_seq).take(pos + i + 1) {
-                    *m = 0.0;
-                }
-            }
-            let mask_t = Tensor::from_vec(mask, (seq, 1, kv_seq), device)?;
+            let mask_t = causal_mask(seq, pos, kv_seq, DType::F32, device)?
+                .reshape((seq, 1, kv_seq))?;
             candle_nn::ops::softmax(
                 &scores.broadcast_add(&mask_t)?,
                 D::Minus1,
@@ -4912,6 +4945,41 @@ mod mem6_tests {
             }
         }
         assert!(bad.is_empty(), "in-flight slot A corrupted by B's admission: {bad:?}");
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod causal_mask_tests {
+    use super::*;
+
+    /// The shared eager-attention mask: 0 on and below the causal
+    /// diagonal (key j <= pos + row), -inf above; cached per key and
+    /// dtype (a second dtype does not evict the first; a new key for the
+    /// same dtype replaces it and still builds the right values).
+    #[test]
+    fn causal_mask_values_and_cache() -> Result<()> {
+        let dev = Device::Cpu;
+        let want = |seq: usize, pos: usize, kv: usize| -> Vec<f32> {
+            (0..seq * kv)
+                .map(|i| if i % kv <= pos + i / kv { 0.0 } else { f32::NEG_INFINITY })
+                .collect()
+        };
+        let get = |seq, pos, kv, dt| -> Result<Vec<f32>> {
+            Ok(causal_mask(seq, pos, kv, dt, &dev)?
+                .to_dtype(DType::F32)?
+                .flatten_all()?
+                .to_vec1::<f32>()?)
+        };
+        for (seq, pos, kv) in [(3usize, 2usize, 5usize), (9, 0, 9), (4, 7, 11), (3, 2, 5)] {
+            assert_eq!(get(seq, pos, kv, DType::BF16)?, want(seq, pos, kv), "bf16 {seq} {pos} {kv}");
+            assert_eq!(get(seq, pos, kv, DType::F32)?, want(seq, pos, kv), "f32 {seq} {pos} {kv}");
+        }
+        // same key twice: the cached tensor (same storage) comes back
+        let a = causal_mask(5, 3, 8, DType::BF16, &dev)?;
+        let b = causal_mask(5, 3, 8, DType::BF16, &dev)?;
+        let (sa, sb) = (a.storage_and_layout().0, b.storage_and_layout().0);
+        assert!(std::ptr::eq(&*sa, &*sb), "second call must reuse the cached mask");
         Ok(())
     }
 }
