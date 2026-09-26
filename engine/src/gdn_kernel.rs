@@ -26,8 +26,8 @@
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
 pub use metal_impl::{
-    AddRmsNorm, GdnConv, GdnGateNorm, GdnQkNorm, GdnStep, gdn_conv_carry, gdn_fused_step,
-    gdn_step,
+    AddRmsNorm, GdnCommitLayer, GdnConv, GdnGateNorm, GdnQkNorm, GdnStep, gdn_commit_all,
+    gdn_conv_carry, gdn_fused_step, gdn_step,
 };
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
@@ -908,6 +908,376 @@ kernel void gdn_conv_carry(
             MTLSize { width: hv, height: 1, depth: 1 },
             MTLSize { width: 256, height: 1, depth: 1 },
         );
+        drop(encoder);
+        Ok(())
+    }
+
+    // -- one dispatch for every layer's rollback commit -------------------
+
+    /// One GDN layer's rollback commit for [`gdn_commit_all`]: the
+    /// `gdn_fused_step` commit-mode operands of that layer.
+    pub struct GdnCommitLayer<'a> {
+        /// the stashed verify input rows [>= kept, conv_dim] (strided view)
+        pub xnew: &'a Tensor,
+        /// pre-verify conv window [3, conv_dim] bf16 (read)
+        pub conv_in: &'a Tensor,
+        /// depthwise taps [conv_dim, 4] bf16
+        pub cw: &'a Tensor,
+        /// pre-verify recurrent state [hv, dv, dk] f32 (read)
+        pub state_in: &'a Tensor,
+        /// the stashed [a | b] rows [.., >= kept, 2*hv] (strided view)
+        pub ab: &'a Tensor,
+        /// committed-parity state / window (written)
+        pub state_out: &'a Tensor,
+        pub conv_out: &'a Tensor,
+        /// row of `consts` holding this layer's a_log / dt_bias
+        pub layer: usize,
+    }
+
+    /// Mirrors `GdnCommitDesc` in COMMIT_SRC: GPU addresses (byte offsets
+    /// applied) + row strides in elements.
+    #[repr(C)]
+    #[derive(Clone, Copy, Default)]
+    struct CommitDesc {
+        xnew: u64,
+        cst: u64,
+        cw: u64,
+        dsi: u64,
+        ab: u64,
+        dso: u64,
+        cso: u64,
+        xs: i32,
+        ss: i32,
+        abs_: i32,
+        layer: i32,
+    }
+
+    /// set_bytes carries at most 4 KiB — 56 layers of descriptors.
+    const COMMIT_MAX_LAYERS: usize = 4096 / std::mem::size_of::<CommitDesc>();
+
+    const COMMIT_SRC: &str = r#"
+#include <metal_stdlib>
+#include <metal_math>
+using namespace metal;
+
+constant constexpr int HK = {HK};
+constant constexpr int HV = {HV};
+constant constexpr int DK = {DK};
+constant constexpr int DV = {DV};
+constant constexpr int TMAX = 8;
+
+struct GdnCommitDesc {
+    device const bfloat* xnew;
+    device const bfloat* cst;
+    device const bfloat* cw;
+    device const float*  dsi;
+    device const bfloat* ab;
+    device float*        dso;
+    device bfloat*       cso;
+    int xs;
+    int ss;
+    int abs_;
+    int layer;
+};
+
+// G1a follow-up: every GDN layer's rollback commit in ONE dispatch, grid
+// (HV, layers) — Splash's verify_gdn_commit shape. Per (hv, layer) this is
+// gdn_fused_step's commit=1 instruction stream verbatim (gate/beta, conv
+// window carry, conv+silu, l2norm, delta recurrence, state write-back),
+// minus the work commit mode never consumes (q channels, the readout).
+// Operands are reached through GPU addresses in `descs` (candle buffers
+// are resident via the queue's residency set).
+kernel void gdn_commit_all(
+    constant GdnCommitDesc* descs [[buffer(0)]],
+    device const float* consts    [[buffer(1)]],   // [layers][2][64]: a_log | dt_bias
+    constant int& T_              [[buffer(2)]],
+    uint2 tg   [[threadgroup_position_in_grid]],
+    uint tid   [[thread_index_in_threadgroup]],
+    uint lane  [[thread_index_in_simdgroup]],
+    uint sg    [[simdgroup_index_in_threadgroup]])
+{
+    constexpr int C = 2 * HK * DK + HV * DV;
+    constexpr int REP = HV / HK;
+    const uint hv = tg.x;
+    constant GdnCommitDesc& p = descs[tg.y];
+    device const bfloat* xnew = p.xnew;
+    device const bfloat* cst = p.cst;
+    device const bfloat* cw = p.cw;
+    device const bfloat* ab = p.ab;
+    const uint hk = hv / REP;
+    const int T = T_;
+    const bool owner = (hv % REP) == 0;
+
+    threadgroup float kn[TMAX * DK];
+    threadgroup float vr[TMAX * DV];
+    threadgroup float gdec[TMAX];
+    threadgroup float bta[TMAX];
+
+    {
+        const float eA = exp(consts[p.layer * 128 + hv]);
+        const float dtb = consts[p.layer * 128 + 64 + hv];
+        for (int t = int(tid); t < T; t += 256) {
+            const float ap = float(ab[t * p.abs_ + hv]) + dtb;
+            gdec[t] = exp(-eA * (ap > 30.0f ? ap : log(1.0f + exp(ap))));
+            bta[t] = 1.0f / (1.0f + exp(-float(ab[t * p.abs_ + HV + hv])));
+        }
+    }
+
+    // conv window carry: new row r = source row T + r of [cst | xnew]
+    for (uint w = tid; w < uint(3 * DK) * 3u; w += 256) {
+        const int i = int(w) % (3 * DK);
+        const int r = int(w) / (3 * DK);
+        if (i < 2 * DK && !owner) continue;
+        int g;
+        if (i < DK) g = int(hk) * DK + i;
+        else if (i < 2 * DK) g = HK * DK + int(hk) * DK + (i - DK);
+        else g = 2 * HK * DK + int(hv) * DV + (i - 2 * DK);
+        const int s = T + r;
+        p.cso[r * C + g] = s < 3 ? cst[s * p.ss + g] : xnew[(s - 3) * p.xs + g];
+    }
+
+    // conv + silu on this head's k and v channels (q is never read here)
+    for (uint w = tid; w < uint(2 * DK) * uint(T); w += 256) {
+        const int i = DK + int(w) % (2 * DK);
+        const int t = int(w) / (2 * DK);
+        int g;
+        if (i < 2 * DK) g = HK * DK + int(hk) * DK + (i - DK);
+        else g = 2 * HK * DK + int(hv) * DV + (i - 2 * DK);
+        float acc = 0.0f;
+        for (int j = 0; j < 4; ++j) {
+            const int r = t + j;
+            const float v = r < 3
+                ? float(cst[r * p.ss + g])
+                : float(xnew[(r - 3) * p.xs + g]);
+            acc += float(cw[g * 4 + j]) * v;
+        }
+        const float sv = float(bfloat(acc / (1.0f + exp(-acc))));
+        if (i < 2 * DK) kn[t * DK + i - DK] = sv;
+        else vr[t * DV + i - 2 * DK] = sv;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    // per-row l2norm on k
+    for (int t = int(sg); t < T; t += 8) {
+        float ks = 0.0f;
+        for (int i = 0; i < DK / 32; ++i) {
+            const float k = kn[t * DK + lane * 4 + i];
+            ks += k * k;
+        }
+        ks = simd_sum(ks);
+        const float ki = rsqrt(ks / DK + 1e-6f) * rsqrt(float(DK));
+        for (int i = 0; i < DK / 32; ++i) {
+            const int e = lane * 4 + i;
+            const bfloat kb = bfloat(kn[t * DK + e] * ki);
+            kn[t * DK + e] = float(kb);
+        }
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    // delta recurrence: one simdgroup per dv row, stride 8
+    for (uint dv = sg; dv < uint(DV); dv += 8) {
+        device const float* sr = p.dsi + (hv * DV + int(dv)) * DK;
+        device float* sw = p.dso + (hv * DV + int(dv)) * DK;
+        float s0 = sr[4 * lane + 0], s1 = sr[4 * lane + 1];
+        float s2 = sr[4 * lane + 2], s3 = sr[4 * lane + 3];
+        for (int t = 0; t < T; ++t) {
+            const float k0 = kn[t * DK + 4 * lane + 0];
+            const float k1 = kn[t * DK + 4 * lane + 1];
+            const float k2 = kn[t * DK + 4 * lane + 2];
+            const float k3 = kn[t * DK + 4 * lane + 3];
+            const float g = gdec[t];
+            s0 *= g; s1 *= g; s2 *= g; s3 *= g;
+            float kv = s0 * k0 + s1 * k1 + s2 * k2 + s3 * k3;
+            kv = simd_sum(kv);
+            const float delta = (vr[t * DV + int(dv)] - kv) * bta[t];
+            s0 += k0 * delta; s1 += k1 * delta;
+            s2 += k2 * delta; s3 += k3 * delta;
+        }
+        sw[4 * lane + 0] = s0; sw[4 * lane + 1] = s1;
+        sw[4 * lane + 2] = s2; sw[4 * lane + 3] = s3;
+    }
+}
+"#;
+
+    static COMMIT_PIPE: OnceLock<ComputePipeline> = OnceLock::new();
+
+    /// Every listed GDN layer's rollback commit (`gdn_fused_step` commit
+    /// mode over the first `kept` stashed rows, pre-verify parity in,
+    /// committed parity out) in ONE dispatch instead of one per layer.
+    /// `consts` is `[n, 2, 64]` f32 (a_log | dt_bias per layer row).
+    ///
+    /// The kernel reaches the per-layer buffers through GPU addresses, so
+    /// candle's encoder cannot see those reads/writes: a buffer barrier
+    /// goes before the dispatch (inputs written earlier in this encoder)
+    /// and after it (later readers of the written state, and pooled
+    /// buffers the caller drops right after), and the first layer's state
+    /// is bound as a tracked output so later encoders wait on this one's
+    /// fence. The caller keeps every tensor alive across the call.
+    #[allow(clippy::too_many_arguments)]
+    pub fn gdn_commit_all(
+        layers: &[GdnCommitLayer<'_>],
+        consts: &Tensor,
+        kept: usize,
+        hk: usize,
+        hv: usize,
+        dk: usize,
+        dv: usize,
+    ) -> Result<()> {
+        use objc2_metal::MTLBuffer as _;
+        if layers.is_empty() {
+            return Ok(());
+        }
+        if kept == 0 || kept > 8 || dk != dv || hv > 64 || hv % hk != 0 {
+            candle_core::bail!("gdn_commit_all: kept {kept} hk {hk} hv {hv} dk {dk} dv {dv}");
+        }
+        if layers.len() > COMMIT_MAX_LAYERS {
+            candle_core::bail!("gdn_commit_all: {} layers > {COMMIT_MAX_LAYERS}", layers.len());
+        }
+        let conv_dim = 2 * hk * dk + hv * dv;
+        let n_state = hv * dv * dk;
+        let (g_c, l_c) = consts.storage_and_layout();
+        let s_c = metal_of(&g_c, "gdn_commit_all")?;
+        if s_c.dtype() != DType::F32 || !l_c.is_contiguous() || l_c.dims().len() != 3
+            || l_c.dims()[1..] != [2, 64]
+        {
+            candle_core::bail!("gdn_commit_all: consts {:?} must be contiguous f32 [n, 2, 64]", l_c.shape());
+        }
+        let n_consts = l_c.dims()[0];
+        let b2 = DType::BF16.size_in_bytes() as u64;
+        let f4 = DType::F32.size_in_bytes() as u64;
+        let row_str = |l: &Layout| -> usize {
+            let d = l.shape().dims();
+            l.stride()[d.len() - 2]
+        };
+        let addr = |m: &MetalStorage, l: &Layout, esz: u64| -> u64 {
+            m.buffer().as_ref().gpuAddress() + l.start_offset() as u64 * esz
+        };
+        let mut descs = [CommitDesc::default(); COMMIT_MAX_LAYERS];
+        let mut first_out: Option<(candle_metal_kernels::metal::Buffer, usize)> = None;
+        let device = s_c.device().clone();
+        for (n, c) in layers.iter().enumerate() {
+            let (g_x, l_x) = c.xnew.storage_and_layout();
+            let s_x = metal_of(&g_x, "gdn_commit_all")?;
+            let (g_st, l_st) = c.conv_in.storage_and_layout();
+            let s_st = metal_of(&g_st, "gdn_commit_all")?;
+            let (g_w, l_w) = c.cw.storage_and_layout();
+            let s_w = metal_of(&g_w, "gdn_commit_all")?;
+            let (g_si, l_si) = c.state_in.storage_and_layout();
+            let s_si = metal_of(&g_si, "gdn_commit_all")?;
+            let (g_ab, l_ab) = c.ab.storage_and_layout();
+            let s_ab = metal_of(&g_ab, "gdn_commit_all")?;
+            let (g_so, l_so) = c.state_out.storage_and_layout();
+            let s_so = metal_of(&g_so, "gdn_commit_all")?;
+            let (g_co, l_co) = c.conv_out.storage_and_layout();
+            let s_co = metal_of(&g_co, "gdn_commit_all")?;
+            // gdn_fused_step's checks, per layer
+            if !(l_x.stride().last() == Some(&1)
+                && l_st.stride().last() == Some(&1)
+                && l_ab.stride().last() == Some(&1)
+                && l_w.is_contiguous()
+                && l_si.is_contiguous()
+                && l_so.is_contiguous()
+                && l_co.is_contiguous())
+            {
+                candle_core::bail!(
+                    "gdn_commit_all layer {n} layouts: x {:?} st {:?} ab {:?} si {:?} so {:?} co {:?}",
+                    l_x.shape(), l_st.shape(), l_ab.shape(), l_si.shape(), l_so.shape(), l_co.shape()
+                );
+            }
+            let xd = l_x.shape().dims();
+            let abd = l_ab.shape().dims();
+            if l_st.shape().dims() != [3, conv_dim]
+                || l_co.shape().dims() != [3, conv_dim]
+                || xd.len() != 2
+                || xd[1] != conv_dim
+                || xd[0] < kept
+                || abd.len() < 2
+                || abd[abd.len() - 2] < kept
+                || abd[abd.len() - 1] < 2 * hv
+                || l_w.shape().elem_count() != conv_dim * 4
+                || l_si.shape().elem_count() != n_state
+                || l_so.shape().elem_count() != n_state
+                || c.layer >= n_consts
+            {
+                candle_core::bail!(
+                    "gdn_commit_all layer {n}: x {:?} ab {:?} windows {:?}/{:?} kept {kept} layer {} of {n_consts}",
+                    l_x.shape(), l_ab.shape(), l_st.shape(), l_co.shape(), c.layer
+                );
+            }
+            if (s_si.buffer() == s_so.buffer() && l_si.start_offset() == l_so.start_offset())
+                || (s_st.buffer() == s_co.buffer() && l_st.start_offset() == l_co.start_offset())
+            {
+                candle_core::bail!("gdn_commit_all layer {n}: state/conv output aliases its input");
+            }
+            if s_x.dtype() != DType::BF16 || s_w.dtype() != DType::BF16
+                || s_st.dtype() != DType::BF16 || s_ab.dtype() != DType::BF16
+                || s_co.dtype() != DType::BF16
+                || s_si.dtype() != DType::F32 || s_so.dtype() != DType::F32
+            {
+                candle_core::bail!("gdn_commit_all layer {n}: dtypes");
+            }
+            descs[n] = CommitDesc {
+                xnew: addr(s_x, l_x, b2),
+                cst: addr(s_st, l_st, b2),
+                cw: addr(s_w, l_w, b2),
+                dsi: addr(s_si, l_si, f4),
+                ab: addr(s_ab, l_ab, b2),
+                dso: addr(s_so, l_so, f4),
+                cso: addr(s_co, l_co, b2),
+                xs: row_str(l_x) as i32,
+                ss: row_str(l_st) as i32,
+                abs_: row_str(l_ab) as i32,
+                layer: c.layer as i32,
+            };
+            if first_out.is_none() {
+                first_out = Some((s_so.buffer().clone(), l_so.start_offset() * f4 as usize));
+            }
+        }
+        if COMMIT_PIPE.get().is_none() {
+            let src = COMMIT_SRC
+                .replace("{HK}", &hk.to_string())
+                .replace("{HV}", &hv.to_string())
+                .replace("{DK}", &dk.to_string())
+                .replace("{DV}", &dv.to_string());
+            let raw = device.metal_device();
+            let lib = raw
+                .new_library_with_source(&src, None)
+                .map_err(candle_core::Error::wrap)?;
+            let f = lib
+                .get_function("gdn_commit_all", None)
+                .map_err(candle_core::Error::wrap)?;
+            let pipe = raw
+                .new_compute_pipeline_state_with_function(&f)
+                .map_err(candle_core::Error::wrap)?;
+            let _ = COMMIT_PIPE.set(pipe);
+        }
+        let pipeline = COMMIT_PIPE.get().unwrap();
+        let t = kept as i32;
+        let encoder = device.command_encoder().map_err(candle_core::Error::wrap)?;
+        encoder.set_label("gdn_commit_all");
+        let enc_ref = &encoder;
+        let enc: &candle_metal_kernels::metal::ComputeCommandEncoder =
+            enc_ref.encoder().as_ref();
+        // inputs may have been written earlier in this encoder (untracked)
+        enc.insert_memory_barrier();
+        enc.set_compute_pipeline_state(pipeline);
+        enc.set_bytes_directly(
+            0,
+            layers.len() * std::mem::size_of::<CommitDesc>(),
+            descs.as_ptr() as *const std::ffi::c_void,
+        );
+        enc.set_input_buffer(1, Some(s_c.buffer()), l_c.start_offset() * f4 as usize);
+        enc.set_bytes(2, &t);
+        if let Some((b, off)) = first_out.as_ref() {
+            // tracked output: later encoders wait on this encoder's fence
+            enc.set_output_buffer(3, Some(b), *off);
+        }
+        enc.dispatch_thread_groups(
+            MTLSize { width: hv, height: layers.len(), depth: 1 },
+            MTLSize { width: 256, height: 1, depth: 1 },
+        );
+        // later dispatches of this encoder must see the written state
+        enc.insert_memory_barrier();
         drop(encoder);
         Ok(())
     }

@@ -1602,6 +1602,15 @@ fn gdn_commit_step() -> bool {
     *ON.get_or_init(|| std::env::var("TH_GDN_COMMIT").as_deref() == Ok("step"))
 }
 
+/// The fused rollback commits of all GDN layers go out as ONE dispatch
+/// (`gdn_kernel::gdn_commit_all`) instead of one `gdn_fused_step` per
+/// layer. `TH_GDN_COMMIT_ALL=0` restores the per-layer dispatches (A/B).
+/// Read once.
+fn gdn_commit_all_on() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("TH_GDN_COMMIT_ALL").as_deref() != Ok("0"))
+}
+
 /// `TH_DEBUG_ROLLBACK`: per-layer rollback dumps. Read once.
 fn debug_rollback() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
@@ -1990,6 +1999,10 @@ pub struct Qwen35 {
     /// Shared DFlash draft weights — set once, slots own rings.
     draft_w: Option<crate::dflash::DraftWeights>,
     debug: bool,
+    /// `[layers, 2, 64]` f32 GDN gate constants (a_log | dt_bias per
+    /// layer row, zero rows for attention layers) for the one-dispatch
+    /// rollback commit — built on first use.
+    gdn_consts: Option<Tensor>,
 }
 
 impl Qwen35 {
@@ -2779,6 +2792,7 @@ impl Qwen35 {
             draft_w: None,
             tq: None,
             debug: std::env::var("TH_DEBUG_LAYERS").is_ok(),
+            gdn_consts: None,
         })
     }
 
@@ -2928,6 +2942,23 @@ impl Qwen35 {
     /// no allocations of state buffers.
     pub fn rollback_verify(&mut self, slot: usize, snap: Snapshot, kept: usize) -> Result<()> {
         let dev = self.device.clone();
+        // one-dispatch commit: the per-layer gate constants, built once
+        let batch_commit = dev.is_metal() && gdn_commit_all_on() && !gdn_commit_step();
+        if batch_commit && self.gdn_consts.is_none() {
+            let mut c = vec![0f32; self.layers.len() * 128];
+            for (i, layer) in self.layers.iter().enumerate() {
+                if let Kind::Gdn(l) = &layer.kind {
+                    c[i * 128..i * 128 + 64].copy_from_slice(&l.a_log64);
+                    c[i * 128 + 64..i * 128 + 128].copy_from_slice(&l.dt_bias64);
+                }
+            }
+            self.gdn_consts = Some(Tensor::from_vec(c, (self.layers.len(), 2, 64), &dev)?);
+        }
+        let consts = self.gdn_consts.clone();
+        // (layer, kept input rows, pre-verify window, pre-verify state,
+        // kept ab rows, committed state, committed window)
+        #[allow(clippy::type_complexity)]
+        let mut batch: Vec<(usize, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor)> = Vec::new();
         let sl = &mut self.slots[slot];
         let new_len = snap.kv_tokens + kept;
         let cur = sl.gdn_par.cur;
@@ -2974,6 +3005,18 @@ impl Qwen35 {
             match vc {
                 #[cfg(all(feature = "metal", target_os = "macos"))]
                 GdnVerifyCache { qkv: Some(qkv), ab: Some(ab), fused: true, .. }
+                    if batch_commit && consts.is_some() && kept <= 8 =>
+                {
+                    // collected: all layers commit in one dispatch below
+                    let x = qkv.narrow(0, 0, kept)?;
+                    let abk = ab.narrow(ab.rank() - 2, 0, kept)?;
+                    batch.push((
+                        i, x, src_conv, src_rec, abk,
+                        st.rec[cur].clone(), st.conv[cur].clone(),
+                    ));
+                }
+                #[cfg(all(feature = "metal", target_os = "macos"))]
+                GdnVerifyCache { qkv: Some(qkv), ab: Some(ab), fused: true, .. }
                     if !gdn_commit_step() && dev.is_metal() =>
                 {
                     // fused-step commit of the kept rows: state + conv
@@ -3009,6 +3052,36 @@ impl Qwen35 {
                 }
             }
         }
+        #[cfg(all(feature = "metal", target_os = "macos"))]
+        if let (Some(consts), Some((i0, ..))) = (consts.as_ref(), batch.first()) {
+            // every collected layer's fused-step commit in one dispatch:
+            // the same instruction stream as the per-layer commit (state
+            // bit-identical to a kept-row forward — the R0a gate)
+            let Kind::Gdn(l) = &self.layers[*i0].kind else {
+                bail!("rollback_verify: batched commit on a non-GDN layer {i0}")
+            };
+            let list: Vec<crate::gdn_kernel::GdnCommitLayer<'_>> = batch
+                .iter()
+                .map(|(i, x, sc, sr, abk, so, co)| {
+                    let Kind::Gdn(li) = &self.layers[*i].kind else { unreachable!() };
+                    crate::gdn_kernel::GdnCommitLayer {
+                        xnew: x,
+                        conv_in: sc,
+                        cw: &li.conv,
+                        state_in: sr,
+                        ab: abk,
+                        state_out: so,
+                        conv_out: co,
+                        layer: *i,
+                    }
+                })
+                .collect();
+            crate::gdn_kernel::gdn_commit_all(
+                &list, consts, kept, l.num_k_heads, l.num_v_heads, l.head_k, l.head_v,
+            )?;
+        }
+        drop(batch);
+        let sl = &mut self.slots[slot];
         if rewrote || !light {
             sl.gdn_par.rewrote_cur();
         }
@@ -4657,6 +4730,7 @@ mod gdn_parity_tests {
             slots,
             draft_w: None,
             debug: false,
+            gdn_consts: None,
         })
     }
 
@@ -4851,6 +4925,7 @@ mod mem6_tests {
             slots,
             draft_w: None,
             debug: false,
+            gdn_consts: None,
         })
     }
 
