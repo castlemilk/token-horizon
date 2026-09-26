@@ -206,30 +206,42 @@ impl<S> PrefixCache<S> {
 
     /// Longest checkpoint that prefixes `prompt`, is at most `max_len`
     /// long, and was computed through exactly `plan`'s boundaries (under
-    /// the same prefill `step`). Touches it.
+    /// the same prefill `step`). Touches every usable match, not just the
+    /// longest: a shared shorter checkpoint (a system prompt) is in use
+    /// while longer per-conversation ones are, and must not age out first.
     pub fn lookup(&mut self, prompt: &[u32], step: usize, plan: &ChunkPlan, max_len: usize) -> Option<(usize, &S)> {
-        let mut best: Option<usize> = None;
-        for (i, e) in self.entries.iter().enumerate() {
-            let n = e.tokens.len();
-            if e.step != step || n == 0 || n > max_len || n > prompt.len() {
-                continue;
-            }
-            if best.is_some_and(|b| self.entries[b].tokens.len() >= n) {
-                continue;
-            }
-            if prompt[..n] == e.tokens[..] && plan.history(n) == e.history {
-                best = Some(i);
-            }
+        let usable: Vec<usize> = (0..self.entries.len())
+            .filter(|&i| {
+                let e = &self.entries[i];
+                let n = e.tokens.len();
+                e.step == step
+                    && n > 0
+                    && n <= max_len
+                    && n <= prompt.len()
+                    && prompt[..n] == e.tokens[..]
+                    && plan.history(n) == e.history
+            })
+            .collect();
+        let best = *usable.iter().max_by_key(|&&i| self.entries[i].tokens.len())?;
+        // shorter matches first, the one returned last (most recent)
+        let mut order = usable;
+        order.sort_by_key(|&i| self.entries[i].tokens.len());
+        for i in order {
+            self.touch(i);
         }
-        let i = best?;
-        self.touch(i);
-        let e = &self.entries[i];
+        let e = &self.entries[best];
         Some((e.tokens.len(), &e.state))
     }
 
-    /// Is `tokens` (exactly, same step) already a checkpoint? Touches it.
-    pub fn contains(&mut self, tokens: &[u32], step: usize) -> bool {
-        match self.entries.iter().position(|e| e.step == step && e.tokens == tokens) {
+    fn position(&self, tokens: &[u32], step: usize, history: &[usize]) -> Option<usize> {
+        self.entries
+            .iter()
+            .position(|e| e.step == step && e.tokens == tokens && e.history == history)
+    }
+
+    /// Is this exact checkpoint (tokens, step, history) stored? Touches it.
+    pub fn contains(&mut self, tokens: &[u32], step: usize, history: &[usize]) -> bool {
+        match self.position(tokens, step, history) {
             Some(i) => {
                 self.touch(i);
                 true
@@ -238,7 +250,7 @@ impl<S> PrefixCache<S> {
         }
     }
 
-    /// Insert a checkpoint (replacing one with the same tokens + step),
+    /// Insert a checkpoint (replacing the same tokens + step + history),
     /// then evict least recently used entries until both caps hold. An
     /// entry larger than the byte cap on its own is not stored.
     pub fn insert(&mut self, tokens: Vec<u32>, step: usize, history: Vec<usize>, bytes: usize, state: S) -> InsertOutcome {
@@ -246,7 +258,7 @@ impl<S> PrefixCache<S> {
         if !self.enabled() || bytes > self.cfg.max_bytes || tokens.is_empty() {
             return out;
         }
-        if let Some(i) = self.entries.iter().position(|e| e.step == step && e.tokens == tokens) {
+        if let Some(i) = self.position(&tokens, step, &history) {
             let old = self.entries.swap_remove(i);
             self.bytes -= old.bytes;
         }
@@ -339,6 +351,26 @@ mod tests {
     }
 
     #[test]
+    fn lookup_touches_shorter_matches() {
+        let mut c: PrefixCache<u8> = PrefixCache::new(cfg(3, 1000));
+        let p: Vec<u32> = (0..300).collect();
+        let g = grid(300, 32);
+        c.insert(p[..64].to_vec(), 32, g.history(64), 1, 64); // shared "system prompt"
+        c.insert(p[..128].to_vec(), 32, g.history(128), 1, 128);
+        let mut q = p[..64].to_vec();
+        q.extend(1000..1100u32); // another conversation, same system prompt
+        c.insert(q[..96].to_vec(), 32, g.history(96), 1, 96);
+        // a hit on the 128 entry also refreshes the 64 one: the next insert
+        // evicts the other conversation's 96, not the shared 64
+        assert_eq!(c.lookup(&p, 32, &g, 299).map(|(n, _)| n), Some(128));
+        c.insert(p[..192].to_vec(), 32, g.history(192), 1, 192);
+        assert!(c.contains(&p[..64], 32, &g.history(64)));
+        assert!(!c.contains(&q[..96], 32, &g.history(96)));
+        // same tokens under another history is a different checkpoint
+        assert!(!c.contains(&p[..128], 32, &[32, 64, 100, 128]));
+    }
+
+    #[test]
     fn lru_eviction_by_count_and_bytes() {
         let mut c: PrefixCache<u8> = PrefixCache::new(cfg(2, 100));
         let t = |k: u32| vec![k; 4];
@@ -348,7 +380,7 @@ mod tests {
         // touch 1 → 2 becomes LRU
         assert!(c.lookup(&[1, 1, 1, 1, 0], 1, &g, 99).is_some());
         assert_eq!(c.insert(t(3), 1, vec![], 10, 3).evicted, 1);
-        assert!(c.contains(&t(1), 1) && c.contains(&t(3), 1) && !c.contains(&t(2), 1));
+        assert!(c.contains(&t(1), 1, &[]) && c.contains(&t(3), 1, &[]) && !c.contains(&t(2), 1, &[]));
         // byte cap: a 90-byte entry evicts both others
         let mut c: PrefixCache<u8> = PrefixCache::new(cfg(8, 100));
         c.insert(t(1), 1, vec![], 30, 1);

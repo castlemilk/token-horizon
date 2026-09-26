@@ -544,7 +544,9 @@ fn prefill_slot(
         logits = Some(inner.backend.forward_slot(slot, &prompt[pos..end], pos, &device)?);
         prefill_ms += t.elapsed().as_secs_f64() * 1000.0;
         pos = end;
-        if plan.checkpoints.contains(&pos) && !inner.prefix.contains(&prompt[..pos], step) {
+        if plan.checkpoints.contains(&pos)
+            && !inner.prefix.contains(&prompt[..pos], step, &plan.history(pos))
+        {
             match inner.backend.prefix_capture(slot) {
                 Ok(p) => {
                     let bytes = p.bytes();
