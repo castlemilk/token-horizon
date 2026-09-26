@@ -12,6 +12,8 @@
 //!                                    as [nkv, cap, d] — the layout the eager
 //!                                    prefill's cat leaves in the real engine)
 //!   TH_BENCH_ATTN_REF_MAX=8192       largest L checked against the f64 reference
+//!   TH_BENCH_ATTN_QSCALE=1           q scale: scores have std QSCALE (1 = flat attention;
+//!                                    4-8 = peaked, the regime of real long-context heads)
 //!
 //! GPU time = MTLCommandBuffer GPUStart/EndTime over n serial calls on a
 //! private queue (a serial encoder: call i+1 starts after call i, as in
@@ -91,12 +93,13 @@ pub fn bench_attn() -> Result<()> {
     let split_list = env_list("TH_BENCH_ATTN_SPLITS", &[0, 8, 16, 32, 64, 128]);
     let tm = std::env::var("TH_BENCH_ATTN_TM").is_ok();
     let ref_max = env_list("TH_BENCH_ATTN_REF_MAX", &[8192])[0];
+    let qscale: f64 = std::env::var("TH_BENCH_ATTN_QSCALE").ok().and_then(|v| v.trim().parse().ok()).unwrap_or(1.0);
     let cfg = split_cfg();
     let packed = NH * 2 * HD + 2 * NKV * HD;
     let m_rows = SPLIT_QROWS * GRP;
 
     eprintln!(
-        "[attn-bench] nh={NH} nkv={NKV} hd={HD} grp={GRP} layout={} policy={cfg:?}",
+        "[attn-bench] nh={NH} nkv={NKV} hd={HD} grp={GRP} layout={} qscale={qscale} policy={cfg:?}",
         if tm { "time-major" } else { "head-major" }
     );
     eprintln!("[attn-bench] per call GPU ms, cold (rotating per-layer caches); x16 = one verify's 16 attention layers");
@@ -119,7 +122,7 @@ pub fn bench_attn() -> Result<()> {
             };
             let kcs: Vec<Tensor> = (0..nl).map(|_| mk()).collect::<Result<_>>()?;
             let vcs: Vec<Tensor> = (0..nl).map(|_| mk()).collect::<Result<_>>()?;
-            let q = Tensor::randn(0f32, 1.0, (seq, NH, HD), &dev)?.to_dtype(DType::BF16)?;
+            let q = (Tensor::randn(0f32, 1.0, (seq, NH, HD), &dev)? * qscale)?.to_dtype(DType::BF16)?;
             // KV-head-major tile copy [NKV][QROWS][GRP][HD], padding rows zero
             let q_kv = {
                 let qg = q.reshape((seq, NKV, GRP, HD))?.permute((1, 0, 2, 3))?; // [NKV, seq, GRP, HD]
