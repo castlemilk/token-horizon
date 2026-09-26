@@ -997,6 +997,7 @@ impl Sampler {
             inv_t: 1.0 / t as f32,
             top_p: self.top_p.map(|p| p as f32).unwrap_or(1.0),
             renorm: top_p_renorm(),
+            block: block_verify(),
         })
     }
 
@@ -1087,7 +1088,11 @@ fn cpu_accept(
             repeat_last_n,
         )
     };
-    crate::sample_kernel::accept_chain(&mut rowf, prop, vlen, &mut || sampler.next_u24())
+    let mut draw = || sampler.next_u24();
+    match pol {
+        Some(p) if p.block => crate::sample_kernel::accept_block(&mut rowf, prop, vlen, &mut draw),
+        _ => crate::sample_kernel::accept_chain(&mut rowf, prop, vlen, &mut draw),
+    }
 }
 
 /// S1 — `TH_SAMPLE` (read once): `gpu` (default) = sampled acceptance on
@@ -1217,6 +1222,21 @@ fn top_p_renorm() -> bool {
     })
 }
 
+/// B1 — `TH_SPEC_VERIFY` (read once): `block` = block verification of
+/// sampled DFlash rounds (`sample_kernel::accept_block`, GPU and CPU
+/// paths); unset or `token` = the token-by-token rule. Both emit the
+/// target's distribution; block verification accepts at least as many
+/// tokens in expectation.
+fn block_verify() -> bool {
+    static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *V.get_or_init(|| {
+        let v = std::env::var("TH_SPEC_VERIFY").ok();
+        let on = matches!(v.as_deref().map(str::trim), Some("block"));
+        tracing::info!(rule = if on { "block" } else { "token" }, "sampled DFlash verification (TH_SPEC_VERIFY)");
+        on
+    })
+}
+
 /// `TH_DRAFT_FILTER` (read once): `1` = apply the request's top-k / top-p
 /// to the draft's 16-candidate distribution before each proposal is
 /// drawn (the acceptance ratio uses the filtered q, so the output
@@ -1246,7 +1266,8 @@ fn accept_stats() -> bool {
 /// actual token and alpha = sum_x min(p(x), q(x)) (the acceptance
 /// probability had d_i been redrawn), under the global (g) and renorm
 /// (r) top-p semantics; af = alpha had the draft drawn from its
-/// target-filtered q'; e = sum_i prod_{j<=i} a_j = E[accepted | block].
+/// target-filtered q'; e = sum_i prod_{j<=i} a_j = E[accepted | block];
+/// eb = E[accepted | block] under block verification (B1), same block.
 #[allow(clippy::too_many_arguments)]
 fn accept_stats_line(
     sampler: &Sampler,
@@ -1266,6 +1287,8 @@ fn accept_stats_line(
     let (mut ag, mut ar, mut alg, mut alr) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
     let (mut kg, mut kr) = (Vec::new(), Vec::new());
     let (mut afg, mut afr) = (Vec::new(), Vec::new());
+    // B1: per-position target / draft distributions for the block rule
+    let (mut plg, mut plr, mut ql) = (Vec::new(), Vec::new(), Vec::new());
     for i in 0..vlen.min(rows.len()) {
         let l: Vec<f32> = rows[i].iter().map(|v| v.to_f32()).collect();
         let dg = row_dist_of(Some(pg), l.clone(), completion, prompt, repeat_penalty, repeat_last_n).probs();
@@ -1307,7 +1330,20 @@ fn accept_stats_line(
         alr.push(overlap(&dr));
         kg.push(dg.len());
         kr.push(dr.len());
+        let f64l = |d: &[(u32, f32)]| d.iter().map(|&(id, p)| (id, p as f64)).collect::<Vec<_>>();
+        plg.push(f64l(&dg));
+        plr.push(f64l(&dr));
+        let mut seen = std::collections::HashSet::new();
+        ql.push(
+            (0..crate::dflash::TOPK)
+                .filter(|&j| seen.insert(prop.cand_ids[i][j]))
+                .map(|j| (prop.cand_ids[i][j], prop.cand_probs[i][j] as f64))
+                .collect::<Vec<_>>(),
+        );
     }
+    let xs = &prop.tokens[..plg.len()];
+    let ebg = crate::sample_kernel::expected_accepted_block(&crate::sample_kernel::block_h_f64(&plg, &ql, xs).1);
+    let ebr = crate::sample_kernel::expected_accepted_block(&crate::sample_kernel::block_h_f64(&plr, &ql, xs).1);
     let e = |a: &[f32]| {
         let (mut prod, mut s) = (1.0f32, 0.0f32);
         for &x in a {
@@ -1319,8 +1355,8 @@ fn accept_stats_line(
     let f = |v: &[f32]| v.iter().map(|x| format!("{x:.3}")).collect::<Vec<_>>().join(",");
     let u = |v: &[usize]| v.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(",");
     format!(
-        "[accstats] eg={:.4} er={:.4} ag=[{}] ar=[{}] alg=[{}] alr=[{}] kg=[{}] kr=[{}] afg=[{}] afr=[{}]",
-        e(&ag), e(&ar), f(&ag), f(&ar), f(&alg), f(&alr), u(&kg), u(&kr), f(&afg), f(&afr)
+        "[accstats] eg={:.4} er={:.4} ag=[{}] ar=[{}] alg=[{}] alr=[{}] kg=[{}] kr=[{}] afg=[{}] afr=[{}] ebg={:.4} ebr={:.4}",
+        e(&ag), e(&ar), f(&ag), f(&ar), f(&alg), f(&alr), u(&kg), u(&kr), f(&afg), f(&afr), ebg, ebr
     )
 }
 
