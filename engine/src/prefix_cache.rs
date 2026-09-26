@@ -426,6 +426,31 @@ mod tests {
         assert!(d.lookup(&[1, 2], 1, &grid(2, 512), 9).is_none());
     }
 
+    /// Two questions after the same long document: the end checkpoints
+    /// differ (block-aligned turn ends 7424 vs 7552), the grid checkpoint
+    /// below them is shared — the second question restores 7168 instead of
+    /// missing, and an exact repeat of either restores its own end.
+    #[test]
+    fn grid_checkpoint_serves_a_different_question() {
+        let c = PrefixCacheConfig { block: 128, ..cfg(8, 1 << 30) };
+        let mut store: PrefixCache<u8> = PrefixCache::new(c);
+        let doc: Vec<u32> = (0..7540).map(|i| 100 + i % 997).collect();
+        let a: Vec<u32> = doc.iter().copied().chain(1..=10).collect(); // n 7550, turn end 7545
+        let b: Vec<u32> = doc.iter().copied().chain(20..40).collect(); // n 7560, turn end 7555
+        let (pa, pb) = (plan(a.len(), 512, Some(&c), Some(35), &[7545]), plan(b.len(), 512, Some(&c), Some(35), &[7555]));
+        for &ck in &pa.checkpoints {
+            store.insert(a[..ck].to_vec(), 512, pa.history(ck), 1, ck as u8);
+        }
+        assert_eq!(store.lookup(&b, 512, &pb, b.len() - 1).map(|(n, _)| n), Some(7168));
+        assert_eq!(store.lookup(&a, 512, &pa, a.len() - 1).map(|(n, _)| n), Some(7424));
+        for &ck in &pb.checkpoints {
+            store.insert(b[..ck].to_vec(), 512, pb.history(ck), 1, 0);
+        }
+        // b's grid checkpoint is a's (same tokens, step, history): replaced, not duplicated
+        assert_eq!(store.len(), 3);
+        assert_eq!(store.lookup(&b, 512, &pb, b.len() - 1).map(|(n, _)| n), Some(7552));
+    }
+
     const M: ChatMarks = ChatMarks { im_start: 7, im_end: 9, newline: 5, assistant: 3 };
 
     #[test]
