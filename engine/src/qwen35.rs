@@ -1626,6 +1626,18 @@ fn state_copy(t: &Tensor) -> Result<Tensor> {
     Ok(out)
 }
 
+/// `state_copy` into an uninitialised pooled buffer (T1 prefix-cache
+/// capture/restore): `slice_set` of a same-shape source writes every
+/// element, so the zero fill is dead work — and on Metal `Tensor::zeros`
+/// is a blit fill that ends candle's compute encoder and waits on every
+/// live fence (see outbuf.rs), ~100 of them per checkpoint.
+fn state_copy_uninit(t: &Tensor) -> Result<Tensor> {
+    // SAFETY: slice_set below overwrites all elements (same shape, offset 0)
+    let out = unsafe { Tensor::empty(t.shape(), t.dtype(), t.device())? };
+    out.slice_set(&t.contiguous()?, 0, 0)?;
+    Ok(out)
+}
+
 /// (parity `cur`, parity `1 - cur`) of a double-buffered state pair.
 fn parity_pair(p: &mut [Tensor; 2], cur: usize) -> (&Tensor, &mut Tensor) {
     let [a, b] = p;
@@ -3161,7 +3173,7 @@ impl Qwen35 {
             match &layer.kind {
                 Kind::Gdn(_) => {
                     let st = sl.gdn[i].as_ref().context("prefix capture: gdn state missing")?;
-                    let (c, r) = (state_copy(&st.conv[cur])?, state_copy(&st.rec[cur])?);
+                    let (c, r) = (state_copy_uninit(&st.conv[cur])?, state_copy_uninit(&st.rec[cur])?);
                     bytes += tensor_bytes(&c) + tensor_bytes(&r);
                     gdn.push(Some((c, r)));
                     kv.push(None);
@@ -3179,7 +3191,7 @@ impl Qwen35 {
                         Ok(if rows == pos && t.is_contiguous() {
                             t.clone()
                         } else {
-                            state_copy(&t.narrow(1, 0, pos)?)?
+                            state_copy_uninit(&t.narrow(1, 0, pos)?)?
                         })
                     };
                     let (k, v) = (exact(k)?, exact(v)?);
@@ -3222,7 +3234,7 @@ impl Qwen35 {
                         parts[0] = parts[0].narrow(0, skip, r0 - skip)?;
                     }
                     // fresh exact-size buffer (a 1-part cat is a clone)
-                    let t = if parts.len() == 1 { state_copy(&parts[0])? } else { Tensor::cat(&parts, 0)? };
+                    let t = if parts.len() == 1 { state_copy_uninit(&parts[0])? } else { Tensor::cat(&parts, 0)? };
                     bytes += tensor_bytes(&t);
                     caps.push(t);
                 }
@@ -3250,8 +3262,8 @@ impl Qwen35 {
         for (i, g) in p.gdn.iter().enumerate() {
             if let Some((conv, rec)) = g {
                 let st = sl.gdn[i].as_mut().context("prefix restore: gdn state missing")?;
-                st.conv[cur] = state_copy(conv)?;
-                st.rec[cur] = state_copy(rec)?;
+                st.conv[cur] = state_copy_uninit(conv)?;
+                st.rec[cur] = state_copy_uninit(rec)?;
             }
         }
         sl.gdn_par.ids[1 - cur] = 0;
