@@ -22,7 +22,7 @@
 //! division (the p/q test is `u·q·S < w` on unnormalised weights) and the
 //! uniforms are 24-bit floats. The kernels compile with safe math and fp
 //! contraction off, so the GPU and the CPU agree bit for bit:
-//! `TH_SAMPLE_CPU=1` runs the reference, `TH_SAMPLE_CHECK=1` runs both and
+//! `TH_SAMPLE=cpu` runs the reference, `TH_SAMPLE=check` runs both and
 //! reports any mismatch (engine.rs).
 //!
 //! **Semantics** (both paths): candidates are the top-k by (logit desc,
@@ -30,7 +30,9 @@
 //! prefix — `global` (candle / historical th): keep while the mass before
 //! it is `< top_p · Z` over the full vocab; `renorm` (Splash / HF / vLLM):
 //! keep while it is `<= top_p · Σ_topk w`. A draw walks the kept
-//! candidates in rank order (`cum > u·S`). The acceptance test uses the
+//! candidates in rank order (`cum > u·S`). The exception is a row with
+//! neither top-k nor top-p (CPU only), which it walks in id order, see
+//! [`cpu_row_dist`]. The acceptance test uses the
 //! draft's recorded `q` (the distribution the proposal was drawn from), so
 //! the emitted stream is distributed exactly as the target's filtered
 //! distribution.
@@ -115,7 +117,8 @@ pub struct Policy {
 }
 
 impl Policy {
-    /// The GPU path serves top-k 1..=KMAX (no top-k needs a full sort).
+    /// The GPU path serves top-k 1..=KMAX. Without top-k the whole
+    /// vocabulary is a candidate, which `cpu_row_dist` handles on the CPU.
     pub fn gpu_ok(&self) -> bool {
         self.k >= 1 && self.k <= KMAX
     }
@@ -124,9 +127,11 @@ impl Policy {
     }
 }
 
-/// One row's filtered target distribution: the kept candidates in rank
-/// order with unnormalised weights `w` (the max has weight 1) and their
-/// f32 sum `s`.
+/// One row's filtered target distribution: the kept candidates with
+/// unnormalised weights `w` (the max has weight 1) and their f32 sum `s`,
+/// summed in `ids` order. `ids` is in rank order when top-k / top-p filter
+/// the row. It is in id order when nothing does ([`full_vocab_dist`]):
+/// every consumer is a categorical walk, so only the pairs matter.
 #[derive(Clone, Debug, PartialEq)]
 pub struct RowDist {
     pub ids: Vec<u32>,
@@ -143,7 +148,7 @@ impl RowDist {
     pub fn deterministic(&self) -> bool {
         self.ids.len() == 1 || !(self.s > 0.0)
     }
-    /// `(id, prob)` in rank order (debug / stats).
+    /// `(id, prob)` in `ids` order (debug / stats).
     pub fn probs(&self) -> Vec<(u32, f32)> {
         if self.deterministic() {
             return vec![(self.ids[0], 1.0)];
@@ -216,9 +221,110 @@ fn n_keep(w: &[f32], pol: &Policy, z: impl FnOnce() -> f32) -> usize {
 
 /// CPU reference of `ts_topk` + the row part of `ts_accept`: the filtered
 /// target distribution of one logits row (any k; the GPU serves k <= KMAX).
+///
+/// Without top-k (k = 0 or k >= vocab) every token is a candidate, and
+/// sorting all of them by rank costs 5-15 ms per 248k row (M5 Max, under
+/// load). Rank order only decides which prefix top-p keeps, so:
+/// * no top-p: [`full_vocab_dist`], id order, O(n), no sort;
+/// * global top-p: [`top_p_prefix_dist`] sorts only the candidates above a
+///   mass-bounded logit floor. The result has the same bits as the full
+///   sort, which it falls back to when the cut is not inside that prefix.
 pub fn cpu_row_dist(l: &[f32], pol: &Policy) -> RowDist {
     let n = l.len();
     let k = if pol.k == 0 { n } else { pol.k.min(n) };
+    if k == n {
+        if !pol.top_p_on() {
+            return full_vocab_dist(l, pol.inv_t);
+        }
+        if !pol.renorm {
+            if let Some(d) = top_p_prefix_dist(l, pol) {
+                return d;
+            }
+        }
+    }
+    sorted_row_dist(l, pol, k)
+}
+
+/// No top-k and no top-p: the whole vocabulary in id order. The draw
+/// ([`sample_dist`]) and both acceptance rules are categorical walks over
+/// `(id, w)` pairs, so the distribution is the rank-ordered one's (same
+/// `w` per id); a given uniform just lands on a different token. The only
+/// rank statistic needed is the maximum (th_expf's x <= 0 domain).
+fn full_vocab_dist(l: &[f32], inv_t: f32) -> RowDist {
+    // max key; the lowest id among equal maxima (N2 tie rule)
+    let (mut best, mut m) = (0usize, f32::NEG_INFINITY);
+    for (i, &x) in l.iter().enumerate() {
+        let v = key(x);
+        if v > m {
+            m = v;
+            best = i;
+        }
+    }
+    let w: Vec<f32> = l.iter().map(|&x| th_expf((key(x) - m) * inv_t)).collect();
+    let mut s = 0f32;
+    for &x in &w {
+        s += x;
+    }
+    if !(s > 0.0) {
+        // no weight at all (an all -inf / NaN row, or 1/T overflowing):
+        // deterministic, on the rank-ordered form's first candidate
+        return RowDist::single(best as u32);
+    }
+    RowDist { ids: (0..l.len() as u32).collect(), w, s }
+}
+
+/// Global (candle) top-p without top-k: the kept set is the shortest rank
+/// prefix whose mass reaches `top_p·Z`. Candidates with key > θ form a
+/// rank prefix (rank = key desc, id asc), so sorting only them yields the
+/// full sort's leading entries, and the same `w`, `keep` and `s` bits,
+/// whenever the cut is decided inside them. θ caps the mass below it at
+/// n·e^((θ-m)/T) = (1 - top_p)/2 <= (1 - top_p)·Z/2 (Z >= 1, the max's own
+/// weight), so the cut lands inside unless top_p is within f32 rounding
+/// of 1. `None` = undecided (or a degenerate row): take the full sort.
+fn top_p_prefix_dist(l: &[f32], pol: &Policy) -> Option<RowDist> {
+    let n = l.len();
+    let m = l.iter().fold(f32::NEG_INFINITY, |a, &x| if key(x) > a { key(x) } else { a });
+    if !(m > f32::NEG_INFINITY) {
+        return None;
+    }
+    let floor = m + ((0.5 * (1.0 - pol.top_p as f64)) / n as f64).ln() as f32 / pol.inv_t;
+    let mut idx: Vec<u32> = (0..n as u32).filter(|&i| key(l[i as usize]) > floor).collect();
+    if idx.is_empty() {
+        return None;
+    }
+    idx.sort_unstable_by(|a, b| key(l[*b as usize]).total_cmp(&key(l[*a as usize])).then(a.cmp(b)));
+    let w: Vec<f32> = idx.iter().map(|&i| th_expf((key(l[i as usize]) - m) * pol.inv_t)).collect();
+    // n_keep's global rule, over the prefix: the first j >= 1 whose
+    // prefix mass reaches lim; j = idx.len() is decided by the prefix too
+    let lim = pol.top_p * global_z(l, m, pol.inv_t);
+    let mut prefix = 0f32;
+    let mut keep = None;
+    for (j, &x) in w.iter().enumerate() {
+        if j > 0 && prefix >= lim {
+            keep = Some(j);
+            break;
+        }
+        prefix += x;
+    }
+    let keep = match keep {
+        Some(j) => j,
+        None if idx.len() == n || prefix >= lim => idx.len(),
+        None => return None,
+    };
+    let mut s = 0f32;
+    for &x in &w[..keep] {
+        s += x;
+    }
+    idx.truncate(keep);
+    let mut w = w;
+    w.truncate(keep);
+    Some(RowDist { ids: idx, w, s })
+}
+
+/// The rank-ordered distribution over the top-`k` candidates (k <= n):
+/// exact top-k by (key desc, id asc), then top-p over that prefix.
+fn sorted_row_dist(l: &[f32], pol: &Policy, k: usize) -> RowDist {
+    let n = l.len();
     let cmp = |a: &u32, b: &u32| key(l[*b as usize]).total_cmp(&key(l[*a as usize])).then(a.cmp(b));
     let mut idx: Vec<u32> = (0..n as u32).collect();
     if k < n {
@@ -1189,15 +1295,163 @@ mod tests {
         }
     }
 
+    /// LM-like logits rows: a N(0, 2.5) bulk, a few peaked tokens, bf16
+    /// rounding (exact ties), occasionally NaN / -inf / -0.0 entries.
+    fn lm_row(n: usize, seed: &mut u64, spice: bool) -> Vec<f32> {
+        let mut l: Vec<f32> = (0..n)
+            .map(|_| {
+                let (a, b) = (rng(seed).max(1e-300), rng(seed));
+                let g = (-2.0 * a.ln()).sqrt() * (2.0 * std::f64::consts::PI * b).cos();
+                half::bf16::from_f64(g * 2.5).to_f32()
+            })
+            .collect();
+        let top = (rng(seed) * 4.0) as usize + 1;
+        for t in 0..top + 24 {
+            let v = (rng(seed) * n as f64) as usize % n;
+            let x = 16.0 - t as f64 * (0.1 + rng(seed) * 0.7) + if t < top { 3.0 } else { 0.0 };
+            l[v] = half::bf16::from_f64(x).to_f32();
+        }
+        if spice {
+            l[n / 2] = f32::NAN;
+            l[n / 3] = f32::NEG_INFINITY;
+            l[n / 5] = -0.0;
+            l[n / 7] = 0.0;
+        }
+        l
+    }
+
+    /// No top-k, no top-p (top_k 0 or >= vocab, top_p 1): the id-order
+    /// fast path is the rank-ordered distribution (review fix): every id
+    /// kept with the same `w` bits, `s` equal up to f32 summation order,
+    /// and degenerate rows pick the same deterministic token.
+    #[test]
+    fn full_vocab_dist_matches_sorted() {
+        let mut seed = 0xF00D_5EEDu64;
+        let mut worst = [0f64; 2];
+        for trial in 0..24 {
+            let n = [248_320usize, 5000, 1025][trial % 3];
+            let l = lm_row(n, &mut seed, trial % 2 == 0);
+            let inv_t = 1.0f32 / [0.6f32, 1.0, 0.3, 1.5][trial % 4];
+            for (k, top_p) in [(0usize, 1.0f32), (n + 5, 1.0), (0, 0.0), (n, 1.5)] {
+                let pol = Policy { k, inv_t, top_p, renorm: trial % 2 == 1, block: false };
+                let d = cpu_row_dist(&l, &pol);
+                let r = sorted_row_dist(&l, &pol, n);
+                assert_eq!(d.ids, (0..n as u32).collect::<Vec<_>>(), "trial {trial}: id order");
+                let mut by_id = vec![f32::NAN; n];
+                for (&i, &x) in r.ids.iter().zip(&r.w) {
+                    by_id[i as usize] = x;
+                }
+                for i in 0..n {
+                    assert_eq!(d.w[i].to_bits(), by_id[i].to_bits(), "trial {trial} id {i}: w");
+                }
+                // s: S1's sequential f32 sum. Over a full vocabulary, tail
+                // terms below half an ulp of the running sum drop out
+                // (an implicit ~3e-8 min-p) in either order; descending
+                // rank order meets all of them after the peak mass, so it
+                // loses more. Bounded here, worst case logged below.
+                let exact: f64 = d.w.iter().map(|&x| x as f64).sum();
+                let (ed, er) = ((d.s as f64 - exact) / exact, (r.s as f64 - exact) / exact);
+                assert!(ed.abs() < 2e-3, "trial {trial}: id-order s {} vs exact {exact}", d.s);
+                worst = [worst[0].max(ed.abs()), worst[1].max(er.abs())];
+                for (&i, (_, p)) in d.ids.iter().zip(d.probs()) {
+                    let pe = d.w[i as usize] as f64 / exact;
+                    assert!((p as f64 - pe).abs() <= 2e-3 * pe + 1e-12, "trial {trial} id {i}: p {p} vs {pe}");
+                }
+            }
+        }
+        eprintln!("full_vocab_dist_matches_sorted: worst |s - exact| / exact: id order {:.2e}, rank order {:.2e}", worst[0], worst[1]);
+        // degenerate rows: no weight anywhere -> the sorted form's pick
+        let cases: [(Vec<f32>, f32); 4] = [
+            (vec![f32::NEG_INFINITY; 64], 1.0),
+            (vec![f32::NAN; 64], 1.0),
+            ((0..64).map(|i| if i == 9 || i == 41 { 3.0 } else { 1.0 }).collect(), f32::INFINITY),
+            ((0..64).map(|i| (i % 5) as f32).collect(), f32::INFINITY),
+        ];
+        for (l, inv_t) in cases {
+            let pol = Policy { k: 0, inv_t, top_p: 1.0, renorm: false, block: false };
+            let (d, r) = (cpu_row_dist(&l, &pol), sorted_row_dist(&l, &pol, l.len()));
+            assert!(d.deterministic() && r.deterministic());
+            assert_eq!(d.ids[0], r.ids[0]);
+            assert_eq!(d.probs(), r.probs());
+        }
+    }
+
+    /// No top-k with global top-p: the prefix path returns the full sort's
+    /// RowDist bit for bit, or declines (None) and the full sort runs.
+    /// Covers LM-like rows, bf16 ties, NaN / -inf / ±0, flat rows, and a
+    /// row whose f32 prefix saturates below top_p·Z, which forces the
+    /// fallback.
+    #[test]
+    fn top_p_prefix_matches_full_sort() {
+        let mut seed = 0x70B9_0001u64;
+        let (mut hit, mut declined) = (0usize, 0usize);
+        let mut check = |l: &[f32], pol: &Policy, tag: &str| {
+            let full = sorted_row_dist(l, pol, l.len());
+            assert_eq!(cpu_row_dist(l, pol), full, "{tag}: cpu_row_dist");
+            match top_p_prefix_dist(l, pol) {
+                Some(d) => {
+                    assert_eq!(d, full, "{tag}: prefix path");
+                    hit += 1;
+                }
+                None => declined += 1,
+            }
+        };
+        for trial in 0..24 {
+            let n = [248_320usize, 5000, 1025][trial % 3];
+            let mut l = lm_row(n, &mut seed, trial % 2 == 0);
+            if trial % 8 == 7 {
+                // flat row: the prefix is most of the vocabulary
+                for x in l.iter_mut() {
+                    *x = half::bf16::from_f32(*x * 0.05).to_f32();
+                }
+            }
+            for (ti, &top_p) in [0.5f32, 0.8, 0.95, 0.99, 0.9999].iter().enumerate() {
+                let inv_t = 1.0f32 / [0.6f32, 1.0, 0.3, 1.5, 0.7][(trial + ti) % 5];
+                for k in [0usize, n, n + 3] {
+                    let pol = Policy { k, inv_t, top_p, renorm: false, block: false };
+                    check(&l, &pol, &format!("trial {trial} top_p {top_p} k {k}"));
+                }
+            }
+        }
+        // saturating prefix: one peak, half the tail inside the floor, half
+        // below it; the rank-order f32 prefix stays at 1.0 while Z counts
+        // the tail, so the cut is not decided inside the prefix
+        let n = 248_320usize;
+        let mut l: Vec<f32> = (0..n).map(|i| if i % 2 == 0 { -20.0 } else { -40.0 }).collect();
+        l[7] = 0.0;
+        let pol = Policy { k: 0, inv_t: 1.0, top_p: 0.9999, renorm: false, block: false };
+        assert!(top_p_prefix_dist(&l, &pol).is_none(), "saturating prefix must decline");
+        check(&l, &pol, "saturating");
+        // degenerate rows decline too
+        for l in [vec![f32::NEG_INFINITY; 64], vec![f32::NAN; 64]] {
+            let pol = Policy { k: 0, inv_t: 1.0 / 0.6, top_p: 0.9, renorm: false, block: false };
+            assert!(top_p_prefix_dist(&l, &pol).is_none());
+            check(&l, &pol, "degenerate");
+        }
+        eprintln!("top_p_prefix_matches_full_sort: prefix path {hit} rows, declined {declined}");
+        assert!(hit > 300 && declined >= 3, "hit {hit} declined {declined}");
+    }
+
     /// accept_chain's emitted stream is distributed as the target: at one
     /// position with a fixed proposal table, the empirical distribution of
-    /// the first emitted token matches p within sampling error.
+    /// the first emitted token matches p within sampling error. Both a
+    /// rank-ordered row (top-k 20, top-p) and an id-order full-vocab row
+    /// (no top-k / top-p, flat enough that the residual reaches the tail).
     #[test]
     fn accept_chain_is_exact_at_one_position() {
+        let pols = [
+            Policy { k: 20, inv_t: 1.0 / 0.6, top_p: 0.95, renorm: true, block: false },
+            Policy { k: 0, inv_t: 1.0 / 1.5, top_p: 1.0, renorm: false, block: false },
+        ];
+        for pol in pols {
+            accept_chain_one_position(&pol);
+        }
+    }
+
+    fn accept_chain_one_position(pol: &Policy) {
         let mut seed = 42u64;
         let l: Vec<f32> = (0..300).map(|i| if i < 6 { 10.0 - i as f32 * 0.4 } else { -5.0 + (i % 7) as f32 * 0.1 }).collect();
-        let pol = Policy { k: 20, inv_t: 1.0 / 0.6, top_p: 0.95, renorm: true, block: false };
-        let d = cpu_row_dist(&l, &pol);
+        let d = cpu_row_dist(&l, pol);
         let p = d.probs();
         let mut counts = std::collections::HashMap::<u32, usize>::new();
         let trials = 200_000;
@@ -1237,6 +1491,142 @@ mod tests {
         }
         let off: usize = counts.iter().filter(|(id, _)| !p.iter().any(|(x, _)| x == *id)).map(|(_, c)| c).sum();
         assert_eq!(off, 0, "emitted a token outside the target support");
+    }
+
+    /// The pre-S1 sampler's row distribution (`Sampler::dist_vec`, main
+    /// @521c6e0 engine.rs:963-1041, repeat penalty omitted), for the
+    /// micro-bench below. `top_k: Some(0)` panicked there, so the only way
+    /// to get no top-k was `None`.
+    fn pre_s1_dist_vec(l: &[f32], temp: f64, top_k: Option<usize>, top_p: Option<f64>) -> Vec<(u32, f32)> {
+        let n = l.len();
+        let inv_t = 1.0 / temp as f32;
+        let k = top_k.unwrap_or(n).min(n);
+        let mut idx: Vec<u32> = (0..n as u32).collect();
+        let cand: &[u32] = if k < n {
+            idx.select_nth_unstable_by(k - 1, |&a, &b| l[b as usize].total_cmp(&l[a as usize]));
+            &idx[..k]
+        } else {
+            &idx[..]
+        };
+        let max = cand.iter().map(|&i| l[i as usize]).fold(f32::NEG_INFINITY, f32::max);
+        let mut w: Vec<f32> = cand.iter().map(|&i| ((l[i as usize] - max) * inv_t).exp()).collect();
+        if let Some(p) = top_p {
+            if p > 0.0 && p < 1.0 {
+                let z: f32 = l.iter().map(|&v| ((v - max) * inv_t).exp()).sum();
+                let mut order: Vec<usize> = (0..cand.len()).collect();
+                order.sort_by(|&a, &b| w[b].total_cmp(&w[a]));
+                let mut cum = 0.0f64;
+                for &o in &order {
+                    if cum >= p {
+                        w[o] = 0.0;
+                    } else {
+                        cum += (w[o] / z) as f64;
+                    }
+                }
+            }
+        }
+        let sum: f64 = w.iter().map(|&v| v as f64).sum();
+        if sum <= 0.0 {
+            return vec![(cand[0], 1.0)];
+        }
+        cand.iter().zip(w.drain(..)).filter(|(_, p)| *p > 0.0).map(|(&i, p)| (i, (p as f64 / sum) as f32)).collect()
+    }
+
+    /// Micro-bench (review fix): median ms per 248k-row distribution for the
+    /// request classes the CPU path serves: pre-S1 `dist_vec`, S1 before
+    /// the fix (always the full rank sort = `sorted_row_dist`), and now;
+    /// plus a token-rule round (accept_chain over 8 rows) for the no-top-k
+    /// class. `cargo test --release bench_row_dist -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn bench_row_dist() {
+        use std::hint::black_box;
+        use std::time::Instant;
+        let mut seed = 0xBE4C_0001u64;
+        let n = 248_320usize;
+        // lm_row at 3/4 of its logit scale: top-p 0.95 keeps a handful of
+        // candidates and chains see rejections (residual draws)
+        let rows: Vec<Vec<f32>> = (0..8)
+            .map(|_| lm_row(n, &mut seed, false).iter().map(|&x| half::bf16::from_f32(x * 0.75).to_f32()).collect())
+            .collect();
+        let reps = 5;
+        let med = |f: &mut dyn FnMut(&[f32]) -> usize| -> f64 {
+            for r in &rows {
+                black_box(f(r));
+            }
+            let mut ts = Vec::new();
+            for _ in 0..reps {
+                for r in &rows {
+                    let t0 = Instant::now();
+                    black_box(f(r));
+                    ts.push(t0.elapsed().as_secs_f64() * 1e3);
+                }
+            }
+            ts.sort_by(f64::total_cmp);
+            ts[ts.len() / 2]
+        };
+        eprintln!("bench_row_dist: median ms per {n}-token row ({} rows x {reps})", rows.len());
+        eprintln!("{:<30} {:>10} {:>12} {:>8} {:>8}", "class", "pre-S1", "S1 pre-fix", "now", "kept");
+        let classes: [(&str, f64, Option<usize>, Option<f64>); 5] = [
+            ("T 0.7, no top-k, no top-p", 0.7, None, None),
+            ("T 0.6, no top-k, top-p 0.95", 0.6, None, Some(0.95)),
+            ("T 0.7, no top-k, top-p 0.8", 0.7, None, Some(0.8)),
+            ("T 0.6, top-k 40, top-p 0.95", 0.6, Some(40), Some(0.95)),
+            ("T 0.6, top-k 20, top-p 0.95", 0.6, Some(20), Some(0.95)),
+        ];
+        for (name, t, tk, tp) in classes {
+            let pol = Policy { k: tk.unwrap_or(0), inv_t: 1.0 / t as f32, top_p: tp.map(|p| p as f32).unwrap_or(1.0), renorm: false, block: false };
+            let k = if pol.k == 0 { n } else { pol.k.min(n) };
+            let a = med(&mut |l| pre_s1_dist_vec(l, t, tk, tp).len());
+            let b = med(&mut |l| sorted_row_dist(l, &pol, k).ids.len());
+            let c = med(&mut |l| cpu_row_dist(l, &pol).ids.len());
+            let kept = rows.iter().map(|l| cpu_row_dist(l, &pol).ids.len()).sum::<usize>() as f64 / rows.len() as f64;
+            eprintln!("{name:<30} {a:>10.3} {b:>12.3} {c:>8.3} {kept:>8.1}");
+        }
+        // one token-rule round over 8 rows, no top-k / top-p: proposals are
+        // the target's own draws (so chains run deep), the draft table puts
+        // them first with a random q
+        let pol = Policy { k: 0, inv_t: 1.0 / 0.7, top_p: 1.0, renorm: false, block: false };
+        let dists: Vec<RowDist> = rows.iter().map(|l| cpu_row_dist(l, &pol)).collect();
+        let mut rounds = Vec::new();
+        for _ in 0..16 {
+            let tokens: [u32; PROP] = std::array::from_fn(|i| sample_dist(&dists[i], rng(&mut seed) as f32));
+            let prop = fake_prop(tokens, &mut seed);
+            let us: [f32; NU] = std::array::from_fn(|_| ((rng(&mut seed) * 16777216.0) as u32) as f32 * (1.0 / 16777216.0));
+            rounds.push((prop, us));
+        }
+        for (tag, sorted) in [("S1 pre-fix", true), ("now", false)] {
+            let (mut ts, mut rows_used, mut emitted) = (Vec::new(), 0usize, 0usize);
+            for (prop, us) in &rounds {
+                let mut used = 0usize;
+                let mut rowf = |i: usize| {
+                    used += 1;
+                    if sorted {
+                        sorted_row_dist(&rows[i], &pol, n)
+                    } else {
+                        cpu_row_dist(&rows[i], &pol)
+                    }
+                };
+                let mut ui = 0usize;
+                let mut draw = || {
+                    ui += 1;
+                    us[ui - 1]
+                };
+                let t0 = Instant::now();
+                let out = accept_chain(&mut rowf, prop, PROP, &mut draw);
+                ts.push(t0.elapsed().as_secs_f64() * 1e3);
+                rows_used += used;
+                emitted += out.emitted.len();
+            }
+            ts.sort_by(f64::total_cmp);
+            let mean = ts.iter().sum::<f64>() / ts.len() as f64;
+            eprintln!(
+                "token-rule round, T 0.7, no top-k/top-p, {tag:<10}: median {:.2} ms, mean {mean:.2} ms, {:.2} rows/round, {:.2} tokens/round",
+                ts[ts.len() / 2],
+                rows_used as f64 / rounds.len() as f64,
+                emitted as f64 / rounds.len() as f64
+            );
+        }
     }
 
     /// Tiny autoregressive target / draft pair over `v` tokens, block
