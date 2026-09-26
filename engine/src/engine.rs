@@ -144,6 +144,7 @@ impl Engine {
         let msg_marks = chat_marks(&loaded.tokenizer);
         tracing::info!(
             enabled = prefix_cfg.enabled,
+            plan_only = prefix_cfg.plan_only,
             max_entries = prefix_cfg.max_entries,
             max_mb = prefix_cfg.max_bytes >> 20,
             block = prefix_cfg.block,
@@ -498,6 +499,8 @@ fn prefill_slot(
         ok
     };
     let cfg = inner.prefix.config();
+    // TH_PREFIX_CACHE=miss: the cache's plan, no restore / capture
+    let restore = use_cache && !cfg.plan_only;
     let plan = if use_cache {
         let (first, turn_ends) = match &inner.msg_marks {
             Some(m) => prefix_cache::chat_boundaries(prompt, m),
@@ -510,7 +513,8 @@ fn prefill_slot(
     let mut pos = 0usize;
     if use_cache {
         // the suffix must be non-empty: its forward yields the logits
-        if let Some((len, entry)) = inner.prefix.lookup(prompt, step, &plan, n - 1) {
+        let found = if restore { inner.prefix.lookup(prompt, step, &plan, n - 1) } else { None };
+        if let Some((len, entry)) = found {
             let r = if entry.pos() == len {
                 inner.backend.prefix_restore(slot, entry)
             } else {
@@ -544,7 +548,8 @@ fn prefill_slot(
         logits = Some(inner.backend.forward_slot(slot, &prompt[pos..end], pos, &device)?);
         prefill_ms += t.elapsed().as_secs_f64() * 1000.0;
         pos = end;
-        if plan.checkpoints.contains(&pos)
+        if restore
+            && plan.checkpoints.contains(&pos)
             && !inner.prefix.contains(&prompt[..pos], step, &plan.history(pos))
         {
             match inner.backend.prefix_capture(slot) {

@@ -32,6 +32,12 @@
 pub struct PrefixCacheConfig {
     /// `TH_PREFIX_CACHE=0` disables the cache (default on).
     pub enabled: bool,
+    /// `TH_PREFIX_CACHE=miss` (test mode): run the cache's chunk plan but
+    /// never restore or capture — every request is an uncached prefill
+    /// with exactly the numerics of a cache-on server. A/B reference for
+    /// the end-to-end identity check (same request sequence, same
+    /// outputs); not a production setting.
+    pub plan_only: bool,
     /// `TH_PREFIX_CACHE_ENTRIES` — LRU entry cap (default 4).
     pub max_entries: usize,
     /// `TH_PREFIX_CACHE_MB` — LRU byte cap in MiB (default 4096).
@@ -55,8 +61,10 @@ impl PrefixCacheConfig {
                 .and_then(|v| v.trim().parse::<usize>().ok())
                 .unwrap_or(d)
         };
+        let mode = std::env::var("TH_PREFIX_CACHE").ok();
         Self {
-            enabled: std::env::var("TH_PREFIX_CACHE").as_deref() != Ok("0"),
+            enabled: mode.as_deref() != Some("0"),
+            plan_only: mode.as_deref() == Some("miss"),
             max_entries: num("TH_PREFIX_CACHE_ENTRIES", 4),
             max_bytes: num("TH_PREFIX_CACHE_MB", 4096).saturating_mul(1 << 20),
             block: num("TH_PREFIX_CACHE_BLOCK", 128).max(16),
@@ -65,7 +73,7 @@ impl PrefixCacheConfig {
     }
 
     pub fn disabled() -> Self {
-        Self { enabled: false, max_entries: 0, max_bytes: 0, block: 128, margin: 16 }
+        Self { enabled: false, plan_only: false, max_entries: 0, max_bytes: 0, block: 128, margin: 16 }
     }
 }
 
@@ -300,7 +308,7 @@ mod tests {
     use super::*;
 
     fn cfg(entries: usize, bytes: usize) -> PrefixCacheConfig {
-        PrefixCacheConfig { enabled: true, max_entries: entries, max_bytes: bytes, block: 32, margin: 16 }
+        PrefixCacheConfig { enabled: true, plan_only: false, max_entries: entries, max_bytes: bytes, block: 32, margin: 16 }
     }
 
     /// Grid-only plan (no chat structure, no fallback reach) for store tests.
