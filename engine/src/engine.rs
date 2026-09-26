@@ -931,6 +931,11 @@ struct Sampler {
     top_k: Option<usize>,
     top_p: Option<f64>,
     rng: u64,
+    /// The request's policy is one the GPU accept kernel serves (top-k
+    /// 1..=KMAX, no repeat penalty) — decided by the request alone, not by
+    /// the execution path, so `TH_SAMPLE=cpu` / `check` replay the same
+    /// verification rule (B1 default, `spec_verify_rule`).
+    gpu_servable: bool,
 }
 
 impl Sampler {
@@ -940,6 +945,7 @@ impl Sampler {
             top_k: sp.top_k,
             top_p: sp.top_p,
             rng: seed | 1,
+            gpu_servable: gpu_servable_request(sp),
         }
     }
 
@@ -997,7 +1003,7 @@ impl Sampler {
             inv_t: 1.0 / t as f32,
             top_p: self.top_p.map(|p| p as f32).unwrap_or(1.0),
             renorm: top_p_renorm(),
-            block: block_verify(),
+            block: spec_verify_rule(spec_verify_forced(), self.gpu_servable),
         })
     }
 
@@ -1222,19 +1228,45 @@ fn top_p_renorm() -> bool {
     })
 }
 
-/// B1 — `TH_SPEC_VERIFY` (read once): `block` = block verification of
-/// sampled DFlash rounds (`sample_kernel::accept_block`, GPU and CPU
-/// paths); unset or `token` = the token-by-token rule. Both emit the
-/// target's distribution; block verification accepts at least as many
-/// tokens in expectation.
-fn block_verify() -> bool {
-    static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+/// B1 — `TH_SPEC_VERIFY` (read once): `block` / `token` force block
+/// verification (`sample_kernel::accept_block`) or the token-by-token rule
+/// (Splash's) for every sampled DFlash round; unset = `spec_verify_rule`'s
+/// default. Both rules emit the target's distribution; block verification
+/// accepts at least as many tokens in expectation. T=0 never reaches
+/// either rule.
+fn spec_verify_forced() -> Option<bool> {
+    static V: std::sync::OnceLock<Option<bool>> = std::sync::OnceLock::new();
     *V.get_or_init(|| {
         let v = std::env::var("TH_SPEC_VERIFY").ok();
-        let on = matches!(v.as_deref().map(str::trim), Some("block"));
-        tracing::info!(rule = if on { "block" } else { "token" }, "sampled DFlash verification (TH_SPEC_VERIFY)");
-        on
+        let f = match v.as_deref().map(str::trim) {
+            Some("block") => Some(true),
+            Some("token") => Some(false),
+            _ => None,
+        };
+        tracing::info!(
+            rule = match f { Some(true) => "block", Some(false) => "token", None => "auto (block where the GPU kernel serves the request)" },
+            "sampled DFlash verification (TH_SPEC_VERIFY)"
+        );
+        f
     })
+}
+
+/// The verification rule of one sampled request: the forced rule, else
+/// block verification when the GPU kernel serves the request (R0b: +0.9%
+/// tokens/round on the same drafted blocks, 95% CI [0.4%, 1.4%]; the
+/// extra `ts_accept` work is a few µs of one thread) and the token rule
+/// otherwise — on the CPU path the block rule needs all 8 row
+/// distributions (~0.8 ms each) where the token rule stops at the first
+/// rejection (~4.1 rows on average), which costs more than it gains.
+fn spec_verify_rule(forced: Option<bool>, gpu_servable: bool) -> bool {
+    forced.unwrap_or(gpu_servable)
+}
+
+/// A request whose sampled rounds the GPU accept kernel serves (see
+/// `gpu_policy`: top-k 1..=KMAX and no repeat penalty in effect).
+fn gpu_servable_request(sp: &ResolvedSampling) -> bool {
+    let penalty = (sp.repeat_penalty - 1.0).abs() > f32::EPSILON && sp.repeat_last_n > 0;
+    !penalty && sp.top_k.is_some_and(|k| k >= 1 && k <= crate::sample_kernel::KMAX)
 }
 
 /// `TH_DRAFT_FILTER` (read once): `1` = apply the request's top-k / top-p
@@ -2529,7 +2561,7 @@ mod n2_tie_tests {
     use super::*;
 
     fn greedy_sampler() -> Sampler {
-        Sampler { temperature: None, top_k: None, top_p: None, rng: 1 }
+        Sampler { temperature: None, top_k: None, top_p: None, rng: 1, gpu_servable: false }
     }
 
     /// The anchor / non-draft / sampled-batch greedy pick.
@@ -2609,8 +2641,39 @@ mod n2_tie_tests {
         assert!(!greedy_rows(&greedy_sampler(), &sp), "a repeat penalty reshapes the logits");
         sp.repeat_last_n = 0;
         assert!(greedy_rows(&greedy_sampler(), &sp), "penalty window 0 = no penalty");
-        let hot = Sampler { temperature: Some(0.6), top_k: Some(20), top_p: Some(0.95), rng: 1 };
+        let hot = Sampler { temperature: Some(0.6), top_k: Some(20), top_p: Some(0.95), rng: 1, gpu_servable: true };
         sp.repeat_penalty = 1.0;
         assert!(!greedy_rows(&hot, &sp), "sampled slots never take argmax rows");
+    }
+}
+
+/// B1: the default verification rule is chosen by the request (block
+/// where the GPU accept kernel serves it, token elsewhere) and
+/// `TH_SPEC_VERIFY` overrides it either way.
+#[cfg(test)]
+mod b1_rule_tests {
+    use super::*;
+
+    #[test]
+    fn b1_default_rule_by_request() {
+        let mut sp = resolve_sampling(&RequestSampling::default(), &EngineConfig::default());
+        sp.temperature = Some(0.6);
+        sp.repeat_penalty = 1.0;
+        for (k, servable) in [(Some(20), true), (Some(1), true), (Some(32), true), (Some(33), false), (Some(40), false), (Some(0), false), (None, false)] {
+            sp.top_k = k;
+            assert_eq!(gpu_servable_request(&sp), servable, "top_k {k:?}");
+            assert_eq!(Sampler::new(&sp, 7).gpu_servable, servable, "top_k {k:?}");
+        }
+        sp.top_k = Some(20);
+        sp.repeat_penalty = 1.1;
+        sp.repeat_last_n = 64;
+        assert!(!gpu_servable_request(&sp), "a repeat penalty takes the CPU path");
+        sp.repeat_last_n = 0;
+        assert!(gpu_servable_request(&sp), "penalty window 0 = no penalty");
+        for servable in [false, true] {
+            assert_eq!(spec_verify_rule(None, servable), servable, "default follows the kernel");
+            assert!(spec_verify_rule(Some(true), servable), "TH_SPEC_VERIFY=block forces block");
+            assert!(!spec_verify_rule(Some(false), servable), "TH_SPEC_VERIFY=token forces token");
+        }
     }
 }
