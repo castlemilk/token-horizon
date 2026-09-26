@@ -485,8 +485,12 @@ async fn main() -> Result<()> {
                 // slot 0 to the last-row logits readback (sync):
                 //   base  — the plain step grid (main / TH_PREFIX_CACHE=0)
                 //   cache — prefix_cache::plan with a turn end at `split`
-                //           (an uncached request under the default mode)
-                //   hit   — restore the `split` checkpoint + the suffix
+                //           (an uncached request under the default mode),
+                //           once per TH_BENCH_PLAN_MERGE value (merged-chunk
+                //           row limits, default the TH_PREFIX_CACHE_MERGE
+                //           default)
+                //   hit   — restore the checkpoint at the split + the suffix
+                //           (the first merge value's plan)
                 //   ghit  — TH_PREFIX_CACHE=grid hit: restore the last grid
                 //           checkpoint + main's remaining chunks
                 // Checks hit == cache and ghit == base bit for bit; base vs
@@ -498,6 +502,11 @@ async fn main() -> Result<()> {
                 };
                 let step = env_num("TH_BENCH_PLAN_STEP", 512);
                 let reps = env_num("TH_BENCH_PLAN_REPS", 6);
+                let merges: Vec<usize> = std::env::var("TH_BENCH_PLAN_MERGE")
+                    .ok()
+                    .map(|v| v.split(',').filter_map(|x| x.trim().parse().ok()).collect())
+                    .filter(|v: &Vec<usize>| !v.is_empty())
+                    .unwrap_or_else(|| vec![prefix_cache::DEFAULT_MERGE]);
                 let pcfg = prefix_cache::PrefixCacheConfig {
                     enabled: true,
                     plan_only: false,
@@ -506,6 +515,7 @@ async fn main() -> Result<()> {
                     max_bytes: 1 << 32,
                     block: 128,
                     margin: 16,
+                    merge: merges[0],
                 };
                 let gcfg = prefix_cache::PrefixCacheConfig { grid_only: true, ..pcfg };
                 let stat = |v: &mut Vec<f64>| {
@@ -523,15 +533,19 @@ async fn main() -> Result<()> {
                         continue;
                     }
                     let seq: Vec<u32> = (0..n).map(|i| ids[i % ids.len()]).collect();
-                    let base_p = prefix_cache::plan(n, step, None, None, &[]);
-                    let cache_p = prefix_cache::plan(n, step, Some(&pcfg), None, &[split]);
-                    let grid_p = prefix_cache::plan(n, step, Some(&gcfg), None, &[split]);
-                    let at = cache_p.splits.iter().copied().filter(|&s| s <= split).max().unwrap_or(0);
-                    let gat = grid_p.checkpoints.last().copied().unwrap_or(0);
                     let bounds = |p: &prefix_cache::ChunkPlan| -> Vec<usize> {
                         p.splits.iter().copied().chain(std::iter::once(n)).collect()
                     };
-                    let (base_b, cache_b) = (bounds(&base_p), bounds(&cache_p));
+                    let base_p = prefix_cache::plan(n, step, None, None, &[]);
+                    let cache_ps: Vec<prefix_cache::ChunkPlan> = merges
+                        .iter()
+                        .map(|&m| prefix_cache::plan(n, step, Some(&prefix_cache::PrefixCacheConfig { merge: m, ..pcfg }), None, &[split]))
+                        .collect();
+                    let grid_p = prefix_cache::plan(n, step, Some(&gcfg), None, &[split]);
+                    let at = cache_ps[0].splits.iter().copied().filter(|&s| s <= split).max().unwrap_or(0);
+                    let gat = grid_p.checkpoints.last().copied().unwrap_or(0);
+                    let base_b = bounds(&base_p);
+                    let cache_bs: Vec<Vec<usize>> = cache_ps.iter().map(|p| bounds(p)).collect();
                     // prefill from `from` through `bounds` (ends > from), last logits
                     let run = |b: &mut model::ModelBackend, from: usize, bounds: &[usize]| -> Result<Vec<f32>> {
                         let mut pos = from;
@@ -542,10 +556,10 @@ async fn main() -> Result<()> {
                         }
                         Ok(last.context("empty plan")?.to_vec1::<f32>()?)
                     };
-                    // checkpoints: the cache plan at `at`, main's grid at `gat`
+                    // checkpoints: the first cache plan at `at`, main's grid at `gat`
                     let upto = |bs: &[usize], c: usize| bs.iter().copied().filter(|&e| e <= c).collect::<Vec<_>>();
                     loaded.backend.clear_kv_cache(0);
-                    let _ = run(&mut loaded.backend, 0, &upto(&cache_b, at))?;
+                    let _ = run(&mut loaded.backend, 0, &upto(&cache_bs[0], at))?;
                     let ck = loaded.backend.prefix_capture(0)?;
                     let gck = if gat > 0 {
                         loaded.backend.clear_kv_cache(0);
@@ -554,34 +568,38 @@ async fn main() -> Result<()> {
                     } else {
                         None
                     };
+                    // kinds: 0 base, 1..=M cache[m], M+1 hit, M+2 ghit
+                    let nm = merges.len();
+                    let nk = nm + 3;
                     let timed = |kind: usize, b: &mut model::ModelBackend| -> Result<(f64, Vec<f32>)> {
                         b.clear_kv_cache(0);
                         let t = std::time::Instant::now();
-                        let v = match kind {
-                            0 => run(b, 0, &base_b)?,
-                            1 => run(b, 0, &cache_b)?,
-                            2 => {
-                                b.prefix_restore(0, &ck)?;
-                                run(b, at, &cache_b)?
-                            }
-                            _ => match &gck {
+                        let v = if kind == 0 {
+                            run(b, 0, &base_b)?
+                        } else if kind <= nm {
+                            run(b, 0, &cache_bs[kind - 1])?
+                        } else if kind == nm + 1 {
+                            b.prefix_restore(0, &ck)?;
+                            run(b, at, &cache_bs[0])?
+                        } else {
+                            match &gck {
                                 Some(g) => {
                                     b.prefix_restore(0, g)?;
                                     run(b, gat, &base_b)?
                                 }
                                 None => run(b, 0, &base_b)?,
-                            },
+                            }
                         };
                         Ok((t.elapsed().as_secs_f64() * 1e3, v))
                     };
                     let mut first = Vec::new();
-                    for k in 0..4 {
+                    for k in 0..nk {
                         first.push(timed(k, &mut loaded.backend)?.1);
                     }
-                    let mut t = [Vec::new(), Vec::new(), Vec::new(), Vec::new()];
+                    let mut t: Vec<Vec<f64>> = vec![Vec::new(); nk];
                     for r in 0..reps {
-                        for k in 0..4 {
-                            let kind = (k + r) % 4;
+                        for k in 0..nk {
+                            let kind = (k + r) % nk;
                             t[kind].push(timed(kind, &mut loaded.backend)?.0);
                         }
                     }
@@ -589,24 +607,32 @@ async fn main() -> Result<()> {
                     let argmax = |v: &[f32]| {
                         v.iter().enumerate().max_by(|a, b| a.1.total_cmp(b.1)).map(|(i, _)| i).unwrap_or(0)
                     };
-                    let dmax = first[0].iter().zip(&first[1]).map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
-                    let [mut tb, mut tc, mut th, mut tg] = t;
-                    let ((bmin, bmed), (cmin, cmed), (hmin, hmed), (gmin, gmed)) =
-                        (stat(&mut tb), stat(&mut tc), stat(&mut th), stat(&mut tg));
+                    let st: Vec<(f64, f64)> = t.iter_mut().map(|v| stat(v)).collect();
+                    let (bmin, bmed) = st[0];
+                    let mut caches = String::new();
+                    for (j, m) in merges.iter().enumerate() {
+                        let (cmin, cmed) = st[j + 1];
+                        let dmax = first[0].iter().zip(&first[j + 1]).map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
+                        caches += &format!(
+                            " | cache merge={m} {:?} min={cmin:.1} med={cmed:.1}ms ({:+.1}ms, {:+.1}% vs base; min {:+.1}ms) max|d|={dmax:.4} argmax {}",
+                            cache_ps[j].splits,
+                            cmed - bmed,
+                            (cmed / bmed - 1.0) * 100.0,
+                            cmin - bmin,
+                            argmax(&first[j + 1]),
+                        );
+                    }
+                    let ((hmin, hmed), (gmin, gmed)) = (st[nm + 1], st[nm + 2]);
                     eprintln!(
-                        "plan n={n} split={split} step={step} | base {} chunks min={bmin:.1} med={bmed:.1}ms | cache {:?} min={cmin:.1} med={cmed:.1}ms ({:+.1}ms, {:+.1}% vs base) | hit restore@{at}+{} rows min={hmin:.1} med={hmed:.1}ms ({:.1}x vs cache) | grid-hit restore@{gat}+{} rows min={gmin:.1} med={gmed:.1}ms ({:.1}x vs base) | hit==cache {} ghit==base {} | base vs cache max|d|={dmax:.4} argmax {} {}",
+                        "plan n={n} split={split} step={step} | base {} chunks min={bmin:.1} med={bmed:.1}ms argmax {}{caches} | hit restore@{at}+{} rows min={hmin:.1} med={hmed:.1}ms ({:.1}x vs base) | grid-hit restore@{gat}+{} rows min={gmin:.1} med={gmed:.1}ms ({:.1}x vs base) | hit==cache {} ghit==base {}",
                         base_b.len(),
-                        cache_p.splits,
-                        cmed - bmed,
-                        (cmed / bmed - 1.0) * 100.0,
+                        argmax(&first[0]),
                         n - at,
-                        cmed / hmed,
+                        bmed / hmed,
                         n - gat,
                         bmed / gmed,
-                        if bits_eq(&first[2], &first[1]) { "PASS" } else { "FAIL" },
-                        if bits_eq(&first[3], &first[0]) { "PASS" } else { "FAIL" },
-                        argmax(&first[0]),
-                        argmax(&first[1]),
+                        if bits_eq(&first[nm + 1], &first[1]) { "PASS" } else { "FAIL" },
+                        if bits_eq(&first[nm + 2], &first[0]) { "PASS" } else { "FAIL" },
                     );
                     drop((ck, gck));
                 }

@@ -31,6 +31,9 @@
 // holds only the store + plan policy; capture/restore live with the
 // backend (`qwen35::PrefixState`).
 
+/// Default `TH_PREFIX_CACHE_MERGE` (rows).
+pub const DEFAULT_MERGE: usize = 1024;
+
 /// Env knobs, read once at engine load.
 #[derive(Clone, Copy, Debug)]
 pub struct PrefixCacheConfig {
@@ -62,6 +65,10 @@ pub struct PrefixCacheConfig {
     /// checkpoint stays at least this many tokens before the end of the
     /// prompt (default 16).
     pub margin: usize,
+    /// `TH_PREFIX_CACHE_MERGE` — an off-grid split replaces the grid
+    /// split just before it when the merged chunk has at most this many
+    /// rows (0: never merge — one extra chunk per turn-end split).
+    pub merge: usize,
 }
 
 impl PrefixCacheConfig {
@@ -81,11 +88,21 @@ impl PrefixCacheConfig {
             max_bytes: num("TH_PREFIX_CACHE_MB", 4096).saturating_mul(1 << 20),
             block: num("TH_PREFIX_CACHE_BLOCK", 128).max(16),
             margin: num("TH_PREFIX_CACHE_MARGIN", 16),
+            merge: num("TH_PREFIX_CACHE_MERGE", DEFAULT_MERGE),
         }
     }
 
     pub fn disabled() -> Self {
-        Self { enabled: false, plan_only: false, grid_only: false, max_entries: 0, max_bytes: 0, block: 128, margin: 16 }
+        Self {
+            enabled: false,
+            plan_only: false,
+            grid_only: false,
+            max_entries: 0,
+            max_bytes: 0,
+            block: 128,
+            margin: 16,
+            merge: DEFAULT_MERGE,
+        }
     }
 }
 
@@ -144,7 +161,7 @@ impl ChunkPlan {
 /// last grid split below the end one (below `n - margin` without one) —
 /// no extra chunk, and shared by every prompt with the same first tokens
 /// up to it. An extra split off the grid replaces the grid split just
-/// before it when the merged chunk stays within two steps, so the plan
+/// before it when the merged chunk stays within `merge` rows, so the plan
 /// has main's chunk count (the prefill cost of a miss is unchanged).
 pub fn plan(
     n: usize,
@@ -183,7 +200,8 @@ pub fn plan(
         splits.dedup();
         // keep main's chunk count: an extra split off the grid adds a chunk
         // (one more weight sweep — ~3% of a 1.4k-8k prefill), so drop the
-        // grid split just before it when the merged chunk stays <= 2 steps.
+        // grid split just before it when the merged chunk stays within
+        // `merge` rows (large merged chunks can cost more than the sweep).
         // Decided from boundaries at or below the extra split only, so the
         // plan stays prefix-consistent (a checkpoint's history is the same
         // in every prompt that shares the tokens up to it).
@@ -195,7 +213,8 @@ pub fn plan(
                 let i = orig.iter().position(|&s| s == e)?;
                 let before = *orig.get(i.checked_sub(1)?)?;
                 let prev = i.checked_sub(2).map_or(0, |j| orig[j]);
-                (before % step == 0 && !extra.contains(&before) && e - prev <= 2 * step).then_some(before)
+                (before % step == 0 && !extra.contains(&before) && c.merge > 0 && e - prev <= c.merge)
+                    .then_some(before)
             })
             .collect();
         splits.retain(|s| !dropped.contains(s));
@@ -361,7 +380,16 @@ mod tests {
     use super::*;
 
     fn cfg(entries: usize, bytes: usize) -> PrefixCacheConfig {
-        PrefixCacheConfig { enabled: true, plan_only: false, grid_only: false, max_entries: entries, max_bytes: bytes, block: 32, margin: 16 }
+        PrefixCacheConfig {
+            enabled: true,
+            plan_only: false,
+            grid_only: false,
+            max_entries: entries,
+            max_bytes: bytes,
+            block: 32,
+            margin: 16,
+            merge: 1024,
+        }
     }
 
     /// Grid-only plan (no chat structure, no fallback reach) for store tests.
@@ -586,5 +614,31 @@ mod tests {
         assert_eq!(plan(144, 512, Some(&c), None, &[]).checkpoints, vec![128]);
         // a split on the step grid adds no chunk
         assert_eq!(plan(1100, 512, Some(&c), Some(35), &[1030]).splits, vec![512, 1024]);
+    }
+
+    /// TH_PREFIX_CACHE_MERGE bounds the merged chunk: 0 never merges (an
+    /// extra chunk per turn-end split), 768 merges the 8k document's
+    /// [6656, 7424) but not the 1.4k passage's [512, 1408). Checkpoint
+    /// histories stay prefix-consistent under every setting.
+    #[test]
+    fn merge_limit() {
+        let c = |merge| PrefixCacheConfig { block: 128, merge, ..cfg(4, 1 << 30) };
+        let splits = |n, merge, ends: &[usize]| plan(n, 512, Some(&c(merge)), Some(35), ends).splits;
+        assert_eq!(splits(1432, 1024, &[1427]), vec![512, 1408]);
+        assert_eq!(splits(1432, 768, &[1427]), vec![512, 1024, 1408]);
+        assert_eq!(splits(1432, 0, &[1427]), vec![512, 1024, 1408]);
+        let grid8k: Vec<usize> = (1..=13).map(|k| k * 512).collect();
+        let with = |tail: &[usize]| grid8k.iter().copied().chain(tail.iter().copied()).collect::<Vec<_>>();
+        assert_eq!(splits(7550, 768, &[7545]), with(&[7424]).into_iter().filter(|&s| s != 7168).collect::<Vec<_>>());
+        assert_eq!(splits(7550, 0, &[7545]), with(&[7168, 7424]));
+        // 7560's turn end aligns to 7552: [6656, 7552) = 896 rows > 768 keeps 7168
+        assert_eq!(splits(7560, 768, &[7555]), with(&[7168, 7552]));
+        for merge in [0, 768, 1024] {
+            let (a, b) = (plan(7550, 512, Some(&c(merge)), Some(35), &[7545]), plan(7560, 512, Some(&c(merge)), Some(35), &[7555]));
+            // the shared grid checkpoint is a boundary of both plans with one history
+            let shared = *a.checkpoints.iter().filter(|&&k| k % 512 == 0).max().unwrap();
+            assert!(b.splits.contains(&shared), "merge {merge}: {shared} not in the other plan");
+            assert_eq!(a.history(shared), b.history(shared), "merge {merge}");
+        }
     }
 }
