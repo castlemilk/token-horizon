@@ -772,11 +772,6 @@ fn generate_blocking(
     // the draft ring, and leaves the last emitted token pending as the
     // next anchor.
     if inner.backend.has_draft() {
-        let mut clk = PhaseClock::new();
-        inner.backend.draft_prefill(0)?; // warm the ring from prefill
-        if clk.on {
-            eprintln!("  [prefill] draft_warmup={:.1}ms", clk.mark(&device));
-        }
         if let Some(pl) = pending.take() {
             let mut anchor = sampler.sample(
                 &pl,
@@ -795,6 +790,17 @@ fn generate_blocking(
                     if tx.send(GenEvent::FirstToken { ttft_ms }).is_err() {
                         finish = "cancelled";
                     }
+                }
+                // warm the ring from the prefill captures only now: the
+                // first token needs just the prefill logits, the ring is
+                // first read by round 1's propose (same kernels, same
+                // inputs — only the host order moves). The sync keeps the
+                // warm-up out of round 1's timing.
+                let mut clk = PhaseClock::new();
+                inner.backend.draft_prefill(0)?;
+                device.synchronize()?;
+                if clk.on {
+                    eprintln!("  [prefill] draft_warmup={:.1}ms", clk.mark(&device));
                 }
                 'dflash: while finish == "stop" {
                     if cancel.load(Ordering::Relaxed) {
@@ -1742,11 +1748,6 @@ fn admit(
     let last_logits = pf.logits;
     let prefill_ms_total = pf.prefill_ms;
     let cached_tokens = pf.cached;
-    let mut clk = PhaseClock::new();
-    inner.backend.draft_prefill(slot)?;
-    if clk.on {
-        eprintln!("  [prefill] slot={slot} draft_warmup={:.1}ms", clk.mark(&inner.device));
-    }
     let mut sampler = Sampler::new(&sp, sp.seed.max(1));
     let anchor = sampler.sample(
         &last_logits.context("empty prefill")?,
@@ -1801,6 +1802,16 @@ fn admit(
             if run.tx.send(GenEvent::FirstToken { ttft_ms: run.ttft_ms }).is_err() {
                 run.finish = Some("cancelled");
             }
+        }
+    }
+    // the draft ring warm-up after the first token (as the single-slot
+    // loop); synced so the next lockstep round's timing excludes it
+    if run.finish.is_none() {
+        let mut clk = PhaseClock::new();
+        inner.backend.draft_prefill(slot)?;
+        inner.device.synchronize()?;
+        if clk.on {
+            eprintln!("  [prefill] slot={slot} draft_warmup={:.1}ms", clk.mark(&inner.device));
         }
     }
     Ok(Some(run))
