@@ -476,12 +476,11 @@ impl DraftWeights {
             let (conv, conv_ps) = dconv_ps(&n, &dyn_, &l.conv_base, 0, None)?;
             crate::gpuprof::region("qkv");
             let qkv = lin_apply_ps(&conv, &l.qkv, conv_ps)?; // [1,8,6144]
-            let q = qkv
-                .narrow(2, 0, ATTN)?
-                .reshape((ROWS, HEADS, HEAD_DIM))?;
-            let k = qkv
-                .narrow(2, ATTN, KV_HEADS * HEAD_DIM)?
-                .reshape((ROWS, KV_HEADS, HEAD_DIM))?;
+            // q / k: head views of the projection rows (no reshape copies —
+            // draft_norm_rope honours the row stride, as in the commit)
+            let heads = qkv.reshape((ROWS, QKV / HEAD_DIM, HEAD_DIM))?;
+            let q = heads.narrow(1, 0, HEADS)?;
+            let k = heads.narrow(1, HEADS, KV_HEADS)?;
             let v = qkv
                 .narrow(2, ATTN + KV_HEADS * HEAD_DIM, KV_HEADS * HEAD_DIM)?
                 .reshape((ROWS, KV_HEADS, HEAD_DIM))?;
@@ -1445,5 +1444,7 @@ fn dnorm_rope(
     {
         return Ok(crate::draft_kernel::draft_norm_rope(x, w, cos, sin)?);
     }
-    head_norm_rope(x, w, cos, sin)
+    // the eager chain's candle rms_norm needs contiguous rows (callers may
+    // pass strided head views of the qkv projection)
+    head_norm_rope(&x.contiguous()?, w, cos, sin)
 }
