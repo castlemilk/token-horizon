@@ -618,27 +618,41 @@ mod tests {
 
     /// TH_PREFIX_CACHE_MERGE bounds the merged chunk: 0 never merges (an
     /// extra chunk per turn-end split), 768 merges the 8k document's
-    /// [6656, 7424) but not the 1.4k passage's [512, 1408). Checkpoint
-    /// histories stay prefix-consistent under every setting.
+    /// [6656, 7424) but not the 1.4k passage's [512, 1408). Merging makes
+    /// the grid checkpoint depend on the turn end: two questions after the
+    /// same 8k document share it in both orders only when both plans make
+    /// the same merge decision (1024: both drop 7168 → 6656; 0: both keep
+    /// it → 7168); at 768 the 7560-token prompt keeps 7168 while the
+    /// 7550-token one drops it, so 7560 first → 7550 misses.
     #[test]
     fn merge_limit() {
-        let c = |merge| PrefixCacheConfig { block: 128, merge, ..cfg(4, 1 << 30) };
+        let c = |merge| PrefixCacheConfig { block: 128, merge, ..cfg(8, 1 << 30) };
         let splits = |n, merge, ends: &[usize]| plan(n, 512, Some(&c(merge)), Some(35), ends).splits;
         assert_eq!(splits(1432, 1024, &[1427]), vec![512, 1408]);
         assert_eq!(splits(1432, 768, &[1427]), vec![512, 1024, 1408]);
         assert_eq!(splits(1432, 0, &[1427]), vec![512, 1024, 1408]);
         let grid8k: Vec<usize> = (1..=13).map(|k| k * 512).collect();
         let with = |tail: &[usize]| grid8k.iter().copied().chain(tail.iter().copied()).collect::<Vec<_>>();
-        assert_eq!(splits(7550, 768, &[7545]), with(&[7424]).into_iter().filter(|&s| s != 7168).collect::<Vec<_>>());
+        assert_eq!(splits(7550, 768, &[7545]), with(&[7424]));
         assert_eq!(splits(7550, 0, &[7545]), with(&[7168, 7424]));
         // 7560's turn end aligns to 7552: [6656, 7552) = 896 rows > 768 keeps 7168
         assert_eq!(splits(7560, 768, &[7555]), with(&[7168, 7552]));
-        for merge in [0, 768, 1024] {
-            let (a, b) = (plan(7550, 512, Some(&c(merge)), Some(35), &[7545]), plan(7560, 512, Some(&c(merge)), Some(35), &[7555]));
-            // the shared grid checkpoint is a boundary of both plans with one history
-            let shared = *a.checkpoints.iter().filter(|&&k| k % 512 == 0).max().unwrap();
-            assert!(b.splits.contains(&shared), "merge {merge}: {shared} not in the other plan");
-            assert_eq!(a.history(shared), b.history(shared), "merge {merge}");
+        let doc: Vec<u32> = (0..7540).map(|i| 100 + i % 997).collect();
+        let a: Vec<u32> = doc.iter().copied().chain(1..=10).collect(); // n 7550, turn end 7545
+        let b: Vec<u32> = doc.iter().copied().chain(20..40).collect(); // n 7560, turn end 7555
+        // (merge, hit length for b after a, hit length for a after b)
+        for (merge, ab, ba) in [(1024, Some(6656), Some(6656)), (0, Some(7168), Some(7168)), (768, Some(6656), None)] {
+            let cc = c(merge);
+            let (pa, pb) = (plan(a.len(), 512, Some(&cc), Some(35), &[7545]), plan(b.len(), 512, Some(&cc), Some(35), &[7555]));
+            let hit = |first: (&[u32], &ChunkPlan), second: (&[u32], &ChunkPlan)| {
+                let mut st: PrefixCache<u8> = PrefixCache::new(cc);
+                for &ck in &first.1.checkpoints {
+                    st.insert(first.0[..ck].to_vec(), 512, first.1.history(ck), 1, 0);
+                }
+                st.lookup(second.0, 512, second.1, second.0.len() - 1).map(|(n, _)| n)
+            };
+            assert_eq!(hit((&a, &pa), (&b, &pb)), ab, "merge {merge}: a then b");
+            assert_eq!(hit((&b, &pb), (&a, &pa)), ba, "merge {merge}: b then a");
         }
     }
 }

@@ -692,16 +692,42 @@ async fn main() -> Result<()> {
                         v.sort_by(|a, b| a.total_cmp(b));
                         Ok((v[0], v[3]))
                     };
+                    // sdpa — candle's fused MLX steel attention (causal with
+                    // the kv - seq query offset, GQA, bf16): NOT bitwise equal
+                    // (flash accumulation order), timing + max|d| only — a
+                    // probe for a numerics-changing lever, not a request path
+                    let sdpa = || -> Result<Tensor> {
+                        let o = candle_nn::ops::sdpa(
+                            &q.contiguous()?,
+                            &k_all.unsqueeze(0)?.contiguous()?,
+                            &v_all.unsqueeze(0)?.contiguous()?,
+                            None,
+                            true,
+                            (hd as f32).powf(-0.5),
+                            1.0,
+                        )?; // [1, nh, seq, hd]
+                        Ok(o.squeeze(0)?.transpose(0, 1)?.reshape((seq, nh * hd))?)
+                    };
                     let ((emin, emed), (cmin, cmed), (gmin, gmed)) = (time(&eager)?, time(&copies)?, time(&grouped)?);
+                    let (smin, smed) = time(&sdpa)?;
                     let (eb, gb) = (qwen35::tensor_bits(&eager()?)?, qwen35::tensor_bits(&grouped()?)?);
                     let ndiff = eb.iter().zip(&gb).filter(|(a, b)| a != b).count();
+                    let sd = eager()?
+                        .to_dtype(DType::F32)?
+                        .sub(&sdpa()?.to_dtype(DType::F32)?)?
+                        .abs()?
+                        .flatten_all()?
+                        .max(0)?
+                        .to_scalar::<f32>()?;
                     eprintln!(
-                        "attn seq={seq:4} kv={kv:5} | eager min={emin:.2} med={emed:.2}ms (x16 = {:.0} ms/forward) | copies min={cmin:.2} med={cmed:.2}ms ({:.0}% of eager) | grouped min={gmin:.2} med={gmed:.2}ms ({:.2}x faster, x16 saves {:.0} ms/forward) | bits differ {ndiff}/{}",
+                        "attn seq={seq:4} kv={kv:5} | eager min={emin:.2} med={emed:.2}ms (x16 = {:.0} ms/forward) | copies min={cmin:.2} med={cmed:.2}ms ({:.0}% of eager) | grouped min={gmin:.2} med={gmed:.2}ms ({:.2}x faster, x16 saves {:.0} ms/forward) | bits differ {ndiff}/{} | sdpa min={smin:.2} med={smed:.2}ms ({:.2}x vs eager, {:.2}x vs grouped) max|eager-sdpa|={sd:.4}",
                         emed * 16.0,
                         cmed / emed * 100.0,
                         emed / gmed,
                         (emed - gmed) * 16.0,
                         eb.len(),
+                        emed / smed,
+                        gmed / smed,
                     );
                 }
             }
