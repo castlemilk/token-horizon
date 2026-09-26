@@ -472,6 +472,200 @@ kernel void gdn_fused_step(
     }
 }
 
+// Wide form of gdn_fused_step (R0c: 48 threadgroups x 8 simdgroups left
+// each simdgroup walking 16 state rows serially, ~38 us per layer): the
+// same kernel text with WSG simdgroups per value head. Every element,
+// row norm and state row is computed by one thread / one simdgroup with
+// the identical expression and lane pattern — only the work-to-simdgroup
+// strides change — so outputs are bit-identical to gdn_fused_step.
+#ifndef WSG
+#define WSG 32
+#endif
+kernel void gdn_fused_step_w(
+    device const bfloat* xnew  [[buffer(0)]],
+    device const bfloat* cst   [[buffer(1)]],
+    device const bfloat* cw    [[buffer(2)]],
+    device const float*  dsi   [[buffer(3)]],
+    device const bfloat* ab    [[buffer(4)]],
+    device const bfloat* zz    [[buffer(5)]],
+    device const bfloat* nw    [[buffer(6)]],
+    device bfloat*       y     [[buffer(7)]],
+    device bfloat*       pack  [[buffer(8)]],
+    constant GdnFusedParams& p [[buffer(9)]],
+    device float*        dso   [[buffer(10)]],
+    device bfloat*       cso   [[buffer(11)]],
+    uint hv  [[threadgroup_position_in_grid]],
+    uint tid [[thread_index_in_threadgroup]],
+    uint lane [[thread_index_in_simdgroup]],
+    uint sg  [[simdgroup_index_in_threadgroup]])
+{
+    constexpr int C = 2 * HK * DK + HV * DV;
+    constexpr int REP = HV / HK;
+    const uint hk = hv / REP;
+    const int T = p.t;
+    const bool owner = (hv % REP) == 0;
+
+    threadgroup float qn[TMAX * DK];
+    threadgroup float kn[TMAX * DK];
+    threadgroup float vr[TMAX * DV];
+    threadgroup float ov[TMAX * DV];
+    threadgroup float gdec[TMAX];
+    threadgroup float bta[TMAX];
+
+    // g/beta per row — computed once, shared across sgs
+    {
+        const float eA = exp(p.a_log[hv]);
+        const float dtb = p.dt_bias[hv];
+        for (int t = int(tid); t < T; t += WSG * 32) {
+            const float ap = float(ab[t * p.abs_ + hv]) + dtb;
+            gdec[t] = exp(-eA * (ap > 30.0f ? ap : log(1.0f + exp(ap))));
+            bta[t] = 1.0f / (1.0f + exp(-float(ab[t * p.abs_ + HV + hv])));
+        }
+    }
+
+    // ---- conv window carry: new row r = source row T + r of [cst | xnew]
+    // (this head's v channels; its k-head's q/k channels by the owner) ----
+    for (uint w = tid; w < uint(3 * DK) * 3u; w += WSG * 32) {
+        const int i = int(w) % (3 * DK);
+        const int r = int(w) / (3 * DK);
+        if (i < 2 * DK && !owner) continue;
+        int g;
+        if (i < DK) g = int(hk) * DK + i;
+        else if (i < 2 * DK) g = HK * DK + int(hk) * DK + (i - DK);
+        else g = 2 * HK * DK + int(hv) * DV + (i - 2 * DK);
+        const int s = T + r;
+        cso[r * C + g] = s < 3 ? cst[s * p.ss + g] : xnew[(s - 3) * p.xs + g];
+    }
+
+    // ---- conv + silu: this head's 384 channels x T rows ----
+    for (uint w = tid; w < uint(3 * DK) * uint(T); w += WSG * 32) {
+        const int i = int(w) % (3 * DK);   // local channel
+        const int t = int(w) / (3 * DK);   // row
+        int g;
+        if (i < DK) g = int(hk) * DK + i;
+        else if (i < 2 * DK) g = HK * DK + int(hk) * DK + (i - DK);
+        else g = 2 * HK * DK + int(hv) * DV + (i - 2 * DK);
+        float acc = 0.0f;
+        for (int j = 0; j < 4; ++j) {
+            const int r = t + j;
+            const float v = r < 3
+                ? float(cst[r * p.ss + g])
+                : float(xnew[(r - 3) * p.xs + g]);
+            acc += float(cw[g * 4 + j]) * v;
+        }
+        const float sv = float(bfloat(acc / (1.0f + exp(-acc))));
+        if (i < DK) qn[t * DK + i] = sv;
+        else if (i < 2 * DK) kn[t * DK + i - DK] = sv;
+        else {
+            vr[t * DV + i - 2 * DK] = sv;
+            if (p.pack) pack[t * C + g] = bfloat(sv);   // v rows go raw to the stash
+        }
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    // ---- per-row l2norm on q/k (all siblings recompute; owner writes pack) ----
+    for (int t = int(sg); t < T; t += WSG) {
+        float qs = 0.0f, ks = 0.0f;
+        for (int i = 0; i < DK / 32; ++i) {
+            const float q = qn[t * DK + lane * 4 + i];
+            const float k = kn[t * DK + lane * 4 + i];
+            qs += q * q;
+            ks += k * k;
+        }
+        qs = simd_sum(qs);
+        ks = simd_sum(ks);
+        const float qi = rsqrt(qs / DK + 1e-6f) / float(DK);
+        const float ki = rsqrt(ks / DK + 1e-6f) * rsqrt(float(DK));
+        for (int i = 0; i < DK / 32; ++i) {
+            const int e = lane * 4 + i;
+            const bfloat qb = bfloat(qn[t * DK + e] * qi);
+            const bfloat kb = bfloat(kn[t * DK + e] * ki);
+            qn[t * DK + e] = float(qb);
+            kn[t * DK + e] = float(kb);
+            if (owner && p.pack) {
+                pack[t * C + hk * DK + e] = qb;
+                pack[t * C + HK * DK + hk * DK + e] = kb;
+            }
+        }
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    // ---- delta recurrence: one simdgroup per dv row, stride 8 ----
+    for (uint dv = sg; dv < uint(DV); dv += WSG) {
+        device const float* sr = dsi + (hv * DV + int(dv)) * DK;
+        device float* sw = dso + (hv * DV + int(dv)) * DK;
+        float s0 = sr[4 * lane + 0], s1 = sr[4 * lane + 1];
+        float s2 = sr[4 * lane + 2], s3 = sr[4 * lane + 3];
+        for (int t = 0; t < T; ++t) {
+            const float k0 = kn[t * DK + 4 * lane + 0];
+            const float k1 = kn[t * DK + 4 * lane + 1];
+            const float k2 = kn[t * DK + 4 * lane + 2];
+            const float k3 = kn[t * DK + 4 * lane + 3];
+            const float g = gdec[t];
+            s0 *= g; s1 *= g; s2 *= g; s3 *= g;
+            float kv = s0 * k0 + s1 * k1 + s2 * k2 + s3 * k3;
+            kv = simd_sum(kv);
+            const float delta = (vr[t * DV + int(dv)] - kv) * bta[t];
+            s0 += k0 * delta; s1 += k1 * delta;
+            s2 += k2 * delta; s3 += k3 * delta;
+            float out = s0 * qn[t * DK + 4 * lane + 0]
+                      + s1 * qn[t * DK + 4 * lane + 1]
+                      + s2 * qn[t * DK + 4 * lane + 2]
+                      + s3 * qn[t * DK + 4 * lane + 3];
+            out = simd_sum(out);
+            if (lane == 0) ov[t * DV + int(dv)] = float(bfloat(out));
+        }
+        sw[4 * lane + 0] = s0; sw[4 * lane + 1] = s1;
+        sw[4 * lane + 2] = s2; sw[4 * lane + 3] = s3;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (p.commit) return;   // rollback re-scan: no gated norm / y
+
+    // ---- gated rmsnorm: y = (rmsnorm(o)·w) ⊙ silu(z) ----
+    for (int t = int(sg); t < T; t += WSG) {
+        float ss = 0.0f;
+        for (int i = 0; i < DV / 32; ++i) {
+            const float v = ov[t * DV + lane * 4 + i];
+            ss += v * v;
+        }
+        ss = simd_sum(ss);
+        const float inv = rsqrt(ss / DV + p.eps);
+        for (int i = 0; i < DV / 32; ++i) {
+            const int d = lane * 4 + i;
+            const float zf = float(zz[t * p.zs + hv * DV + d]);
+            const bfloat yv = bfloat(
+                ov[t * DV + d] * inv * float(nw[d]) * zf / (1.0f + exp(-zf)));
+            y[t * HV * DV + hv * DV + d] = yv;
+            if (p.sums) ov[t * DV + d] = float(yv);
+        }
+        if (p.sums) {
+            // K45: this head's two quant groups of the out projection's
+            // input sums, in the Q4 decode tiles' lane pattern
+            // simd_sum(y[64g + l] + y[64g + 32 + l]) (bit-identical)
+            simdgroup_barrier(mem_flags::mem_threadgroup);
+            device float* sums = (device float*)(y + 8 * HV * DV);
+            const float s0 = simd_sum(ov[t * DV + lane] + ov[t * DV + 32 + lane]);
+            const float s1 =
+                simd_sum(ov[t * DV + 64 + lane] + ov[t * DV + 96 + lane]);
+            if (lane == 0) {
+                sums[(2 * hv) * 8 + t] = s0;
+                sums[(2 * hv + 1) * 8 + t] = s1;
+            }
+        }
+    }
+    if (p.sums && int(sg) >= T && int(sg) < 8) {
+        // presum block padding: rows T..7 of this head are zero
+        const int t = int(sg);
+        for (int i = 0; i < DV / 32; ++i)
+            y[t * HV * DV + hv * DV + lane * 4 + i] = bfloat(0.0f);
+        if (lane == 0) {
+            device float* sums = (device float*)(y + 8 * HV * DV);
+            sums[(2 * hv) * 8 + t] = 0.0f;
+            sums[(2 * hv + 1) * 8 + t] = 0.0f;
+        }
+    }
+}
+
 "#;
 
     static PIPELINE: OnceLock<ComputePipeline> = OnceLock::new();
@@ -705,7 +899,6 @@ kernel void gdn_conv_carry(
         pack: i32,
     }
 
-    static FUSED_PIPE: OnceLock<ComputePipeline> = OnceLock::new();
 
     /// One-dispatch GDN step: conv+silu, l2norm, delta recurrence and
     /// gated norm in a single kernel (48 threadgroups x 256 threads).
@@ -720,8 +913,105 @@ kernel void gdn_conv_carry(
     /// Commit mode (`z` and `y` both `None`, the rollback re-scan of the
     /// kept rows) writes only `state_out`/`conv_out`, through the same
     /// instruction stream as a forward of those rows.
+    /// Simdgroups per value head for `gdn_fused_step`: 32 (the wide
+    /// kernel, default), 16, or 8 (the original kernel). `TH_GDN_WSG`
+    /// overrides (A/B; read once). Outputs are bit-identical across widths.
+    pub fn gdn_wsg() -> usize {
+        static W: OnceLock<usize> = OnceLock::new();
+        *W.get_or_init(|| match std::env::var("TH_GDN_WSG").as_deref() {
+            Ok("8") => 8,
+            Ok("16") => 16,
+            _ => 32,
+        })
+    }
+
+    /// Simdgroups per (head, layer) threadgroup of `gdn_commit_all`
+    /// (`TH_GDN_CSG` = 8 | 16 | 32, default 8; read once).
+    pub fn gdn_csg() -> usize {
+        static W: OnceLock<usize> = OnceLock::new();
+        *W.get_or_init(|| match std::env::var("TH_GDN_CSG").as_deref() {
+            Ok("16") => 16,
+            Ok("32") => 32,
+            _ => 8,
+        })
+    }
+
+    type PipeKey = (&'static str, usize, usize, usize, usize, usize);
+
+    /// Compiled GDN pipelines keyed by (function, hk, hv, dk, dv, width):
+    /// the head dims are baked into the source, so a process that runs
+    /// two models (the unit tests' tiny model next to another shape) must
+    /// never share one pipeline across shapes.
+    fn gdn_pipe(
+        device: &candle_core::MetalDevice,
+        src: &str,
+        key: PipeKey,
+        width_define: Option<(&str, usize)>,
+    ) -> Result<&'static ComputePipeline> {
+        use std::collections::HashMap;
+        use std::sync::Mutex;
+        static PIPES: OnceLock<Mutex<HashMap<PipeKey, &'static ComputePipeline>>> = OnceLock::new();
+        let map = PIPES.get_or_init(|| Mutex::new(HashMap::new()));
+        if let Some(p) = map.lock().unwrap().get(&key) {
+            return Ok(p);
+        }
+        let (func, hk, hv, dk, dv, _) = key;
+        let mut text = String::new();
+        if let Some((name, n)) = width_define {
+            text.push_str(&format!("#define {name} {n}\n"));
+        }
+        text.push_str(
+            &src.replace("{HK}", &hk.to_string())
+                .replace("{HV}", &hv.to_string())
+                .replace("{DK}", &dk.to_string())
+                .replace("{DV}", &dv.to_string()),
+        );
+        let raw = device.metal_device();
+        let lib = raw
+            .new_library_with_source(&text, None)
+            .map_err(candle_core::Error::wrap)?;
+        let f = lib.get_function(func, None).map_err(candle_core::Error::wrap)?;
+        let pipe = raw
+            .new_compute_pipeline_state_with_function(&f)
+            .map_err(candle_core::Error::wrap)?;
+        let pipe: &'static ComputePipeline = Box::leak(Box::new(pipe));
+        map.lock().unwrap().insert(key, pipe);
+        Ok(pipe)
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn gdn_fused_step(
+        xnew: &Tensor,
+        conv_in: &Tensor,
+        cw: &Tensor,
+        state_in: &Tensor,
+        state_out: &Tensor,
+        conv_out: &Tensor,
+        ab: &Tensor,
+        z: Option<&Tensor>,
+        normw: &Tensor,
+        y: Option<&Tensor>,
+        pack: Option<&Tensor>,
+        seq: usize,
+        hk: usize,
+        hv: usize,
+        dk: usize,
+        dv: usize,
+        eps: f32,
+        a_log: [f32; 64],
+        dt_bias: [f32; 64],
+        sums: bool,
+    ) -> Result<()> {
+        gdn_fused_step_w(
+            xnew, conv_in, cw, state_in, state_out, conv_out, ab, z, normw, y, pack, seq, hk, hv,
+            dk, dv, eps, a_log, dt_bias, sums, gdn_wsg(),
+        )
+    }
+
+    /// [`gdn_fused_step`] at an explicit width `wsg` (8 = the original
+    /// kernel, 16 / 32 = `gdn_fused_step_w`).
+    #[allow(clippy::too_many_arguments)]
+    pub fn gdn_fused_step_w(
         xnew: &Tensor,      // [seq, conv_dim] strided view of the fused proj
         conv_in: &Tensor,   // [k-1, conv_dim] bf16 — parity p (read)
         cw: &Tensor,        // [conv_dim, k] bf16
@@ -742,7 +1032,11 @@ kernel void gdn_conv_carry(
         a_log: [f32; 64],
         dt_bias: [f32; 64],
         sums: bool,
+        wsg: usize,
     ) -> Result<()> {
+        if ![8, 16, 32].contains(&wsg) {
+            candle_core::bail!("gdn_fused_step: width {wsg} not in 8/16/32");
+        }
         let commit = z.is_none();
         if commit != y.is_none() || (commit && (sums || pack.is_some())) {
             candle_core::bail!("gdn_fused_step: commit mode takes no z/y/pack/sums");
@@ -825,25 +1119,18 @@ kernel void gdn_conv_carry(
         }
 
         let device = s_x.device();
-        if FUSED_PIPE.get().is_none() {
-            let src = SOURCE_TMPL
-                .replace("{HK}", &hk.to_string())
-                .replace("{HV}", &hv.to_string())
-                .replace("{DK}", &dk.to_string())
-                .replace("{DV}", &dv.to_string());
-            let raw = device.metal_device();
-            let lib = raw
-                .new_library_with_source(&src, None)
-                .map_err(candle_core::Error::wrap)?;
-            let f = lib
-                .get_function("gdn_fused_step", None)
-                .map_err(candle_core::Error::wrap)?;
-            let pipe = raw
-                .new_compute_pipeline_state_with_function(&f)
-                .map_err(candle_core::Error::wrap)?;
-            let _ = FUSED_PIPE.set(pipe);
+        // the original kernel at width 8, the wide text otherwise; a wide
+        // pipeline the device cannot run at wsg*32 threads falls back
+        let mut wsg = wsg;
+        let mut pipeline = if wsg == 8 {
+            gdn_pipe(device, SOURCE_TMPL, ("gdn_fused_step", hk, hv, dk, dv, 8), None)?
+        } else {
+            gdn_pipe(device, SOURCE_TMPL, ("gdn_fused_step_w", hk, hv, dk, dv, wsg), Some(("WSG", wsg)))?
+        };
+        if pipeline.max_total_threads_per_threadgroup() < wsg * 32 {
+            wsg = 8;
+            pipeline = gdn_pipe(device, SOURCE_TMPL, ("gdn_fused_step", hk, hv, dk, dv, 8), None)?;
         }
-        let pipeline = FUSED_PIPE.get().unwrap();
 
         let row_str = |l: &Layout| -> usize {
             let d = l.shape().dims();
@@ -906,7 +1193,7 @@ kernel void gdn_conv_carry(
         enc.set_output_buffer(11, Some(s_co.buffer()), l_co.start_offset() * b2);
         enc.dispatch_thread_groups(
             MTLSize { width: hv, height: 1, depth: 1 },
-            MTLSize { width: 256, height: 1, depth: 1 },
+            MTLSize { width: wsg * 32, height: 1, depth: 1 },
         );
         drop(encoder);
         Ok(())
@@ -987,6 +1274,9 @@ struct GdnCommitDesc {
 // minus the work commit mode never consumes (q channels, the readout).
 // Operands are reached through GPU addresses in `descs` (candle buffers
 // are resident via the queue's residency set).
+#ifndef CSG
+#define CSG 8
+#endif
 kernel void gdn_commit_all(
     constant GdnCommitDesc* descs [[buffer(0)]],
     device const float* consts    [[buffer(1)]],   // [layers][2][64]: a_log | dt_bias
@@ -1016,7 +1306,7 @@ kernel void gdn_commit_all(
     {
         const float eA = exp(consts[p.layer * 128 + hv]);
         const float dtb = consts[p.layer * 128 + 64 + hv];
-        for (int t = int(tid); t < T; t += 256) {
+        for (int t = int(tid); t < T; t += CSG * 32) {
             const float ap = float(ab[t * p.abs_ + hv]) + dtb;
             gdec[t] = exp(-eA * (ap > 30.0f ? ap : log(1.0f + exp(ap))));
             bta[t] = 1.0f / (1.0f + exp(-float(ab[t * p.abs_ + HV + hv])));
@@ -1024,7 +1314,7 @@ kernel void gdn_commit_all(
     }
 
     // conv window carry: new row r = source row T + r of [cst | xnew]
-    for (uint w = tid; w < uint(3 * DK) * 3u; w += 256) {
+    for (uint w = tid; w < uint(3 * DK) * 3u; w += CSG * 32) {
         const int i = int(w) % (3 * DK);
         const int r = int(w) / (3 * DK);
         if (i < 2 * DK && !owner) continue;
@@ -1037,7 +1327,7 @@ kernel void gdn_commit_all(
     }
 
     // conv + silu on this head's k and v channels (q is never read here)
-    for (uint w = tid; w < uint(2 * DK) * uint(T); w += 256) {
+    for (uint w = tid; w < uint(2 * DK) * uint(T); w += CSG * 32) {
         const int i = DK + int(w) % (2 * DK);
         const int t = int(w) / (2 * DK);
         int g;
@@ -1058,7 +1348,7 @@ kernel void gdn_commit_all(
     threadgroup_barrier(mem_flags::mem_threadgroup);
 
     // per-row l2norm on k
-    for (int t = int(sg); t < T; t += 8) {
+    for (int t = int(sg); t < T; t += CSG) {
         float ks = 0.0f;
         for (int i = 0; i < DK / 32; ++i) {
             const float k = kn[t * DK + lane * 4 + i];
@@ -1075,7 +1365,7 @@ kernel void gdn_commit_all(
     threadgroup_barrier(mem_flags::mem_threadgroup);
 
     // delta recurrence: one simdgroup per dv row, stride 8
-    for (uint dv = sg; dv < uint(DV); dv += 8) {
+    for (uint dv = sg; dv < uint(DV); dv += CSG) {
         device const float* sr = p.dsi + (hv * DV + int(dv)) * DK;
         device float* sw = p.dso + (hv * DV + int(dv)) * DK;
         float s0 = sr[4 * lane + 0], s1 = sr[4 * lane + 1];
@@ -1099,7 +1389,6 @@ kernel void gdn_commit_all(
 }
 "#;
 
-    static COMMIT_PIPE: OnceLock<ComputePipeline> = OnceLock::new();
 
     /// Every listed GDN layer's rollback commit (`gdn_fused_step` commit
     /// mode over the first `kept` stashed rows, pre-verify parity in,
@@ -1123,6 +1412,24 @@ kernel void gdn_commit_all(
         dk: usize,
         dv: usize,
     ) -> Result<()> {
+        gdn_commit_all_w(layers, consts, kept, hk, hv, dk, dv, gdn_csg())
+    }
+
+    /// [`gdn_commit_all`] at an explicit width (simdgroups per threadgroup).
+    #[allow(clippy::too_many_arguments)]
+    pub fn gdn_commit_all_w(
+        layers: &[GdnCommitLayer<'_>],
+        consts: &Tensor,
+        kept: usize,
+        hk: usize,
+        hv: usize,
+        dk: usize,
+        dv: usize,
+        csg: usize,
+    ) -> Result<()> {
+        if ![8, 16, 32].contains(&csg) {
+            candle_core::bail!("gdn_commit_all: width {csg} not in 8/16/32");
+        }
         use objc2_metal::MTLBuffer as _;
         if layers.is_empty() {
             return Ok(());
@@ -1233,25 +1540,14 @@ kernel void gdn_commit_all(
                 first_out = Some((s_so.buffer().clone(), l_so.start_offset() * f4 as usize));
             }
         }
-        if COMMIT_PIPE.get().is_none() {
-            let src = COMMIT_SRC
-                .replace("{HK}", &hk.to_string())
-                .replace("{HV}", &hv.to_string())
-                .replace("{DK}", &dk.to_string())
-                .replace("{DV}", &dv.to_string());
-            let raw = device.metal_device();
-            let lib = raw
-                .new_library_with_source(&src, None)
-                .map_err(candle_core::Error::wrap)?;
-            let f = lib
-                .get_function("gdn_commit_all", None)
-                .map_err(candle_core::Error::wrap)?;
-            let pipe = raw
-                .new_compute_pipeline_state_with_function(&f)
-                .map_err(candle_core::Error::wrap)?;
-            let _ = COMMIT_PIPE.set(pipe);
+        let mut csg = csg;
+        let mut pipeline =
+            gdn_pipe(&device, COMMIT_SRC, ("gdn_commit_all", hk, hv, dk, dv, csg), Some(("CSG", csg)))?;
+        if pipeline.max_total_threads_per_threadgroup() < csg * 32 {
+            csg = 8;
+            pipeline =
+                gdn_pipe(&device, COMMIT_SRC, ("gdn_commit_all", hk, hv, dk, dv, 8), Some(("CSG", 8)))?;
         }
-        let pipeline = COMMIT_PIPE.get().unwrap();
         let t = kept as i32;
         let encoder = device.command_encoder().map_err(candle_core::Error::wrap)?;
         encoder.set_label("gdn_commit_all");
@@ -1274,7 +1570,7 @@ kernel void gdn_commit_all(
         }
         enc.dispatch_thread_groups(
             MTLSize { width: hv, height: layers.len(), depth: 1 },
-            MTLSize { width: 256, height: 1, depth: 1 },
+            MTLSize { width: csg * 32, height: 1, depth: 1 },
         );
         // later dispatches of this encoder must see the written state
         enc.insert_memory_barrier();
@@ -2111,6 +2407,116 @@ mod arn_tests {
                 unsafe { std::slice::from_raw_parts(shared.contents(), bytes).to_vec() }
             }
             _ => panic!("metal only"),
+        }
+    }
+
+    fn randf(dev: &Device, n: usize, scale: f32, seed: u64) -> Tensor {
+        let mut s = seed;
+        let v: Vec<f32> = (0..n).map(|_| lcg(&mut s) * scale).collect();
+        Tensor::from_vec(v, n, dev).unwrap()
+    }
+
+    fn bytes_of(t: &Tensor) -> Vec<u8> {
+        let n = t.elem_count() * t.dtype().size_in_bytes();
+        raw(t, n)
+    }
+
+    /// gdn_fused_step at widths 16 / 32 (gdn_fused_step_w) reproduces the
+    /// original 8-simdgroup kernel bit for bit — state, conv window, y
+    /// (incl. the presum block's padding rows and sums) and pack — and the
+    /// batched commit at every width equals the per-layer commit.
+    #[test]
+    fn gdn_widths_match_original_bitwise() {
+        use super::metal_impl::{gdn_commit_all_w, gdn_fused_step_w, GdnCommitLayer};
+        let dev = Device::new_metal(0).unwrap();
+        let (hk, hv, dk, dv) = (1usize, 3usize, 128usize, 128usize);
+        let conv = 2 * hk * dk + hv * dv; // 640
+        let vd = hv * dv; // 384
+        let mut a_log = [0f32; 64];
+        let mut dt_bias = [0f32; 64];
+        for h in 0..hv {
+            a_log[h] = -0.5 + 0.3 * h as f32;
+            dt_bias[h] = 0.1 * h as f32 - 0.2;
+        }
+        let cw = rand(&dev, conv * 4, 0.5, 3).reshape((conv, 4)).unwrap();
+        let normw = rand(&dev, dv, 1.0, 4);
+        let state_in = randf(&dev, hv * dv * dk, 0.2, 5).reshape((hv, dv, dk)).unwrap();
+        let conv_in = rand(&dev, 3 * conv, 1.0, 6).reshape((3, conv)).unwrap();
+        for t in 1..=8usize {
+            // the stashed-verify shape: x / z / ab are strided views of one
+            // fused projection row [conv | z | a b]
+            let fused = rand(&dev, t * (conv + vd + 2 * hv), 1.5, 100 + t as u64)
+                .reshape((t, conv + vd + 2 * hv))
+                .unwrap();
+            let x = fused.narrow(1, 0, conv).unwrap();
+            let z = fused.narrow(1, conv, vd).unwrap();
+            let ab = fused.narrow(1, conv + vd, 2 * hv).unwrap();
+            for mode in 0..3 {
+                // 0: forward + presum y + pack, 1: forward plain y, 2: commit
+                let run = |wsg: usize| -> Vec<Vec<u8>> {
+                    let so = Tensor::zeros((hv, dv, dk), DType::F32, &dev).unwrap();
+                    let co = Tensor::zeros((3, conv), DType::BF16, &dev).unwrap();
+                    let sums = mode == 0;
+                    let y = (mode < 2).then(|| {
+                        let elems = if sums { crate::quant_kernel::presum_block_bytes(vd) / 2 } else { t * vd };
+                        Tensor::zeros(elems, DType::BF16, &dev).unwrap()
+                    });
+                    let yv = y.as_ref().map(|y| y.narrow(0, 0, t * vd).unwrap().reshape((t, vd)).unwrap());
+                    let pk = (mode == 0).then(|| Tensor::zeros((t, conv), DType::BF16, &dev).unwrap());
+                    gdn_fused_step_w(
+                        &x, &conv_in, &cw, &state_in, &so, &co, &ab,
+                        (mode < 2).then_some(&z), &normw, yv.as_ref(), pk.as_ref(),
+                        t, hk, hv, dk, dv, 1e-6, a_log, dt_bias, sums, wsg,
+                    )
+                    .unwrap();
+                    let mut out = vec![bytes_of(&so), bytes_of(&co)];
+                    if let Some(y) = &y {
+                        out.push(bytes_of(y));
+                    }
+                    if let Some(p) = &pk {
+                        out.push(bytes_of(p));
+                    }
+                    out
+                };
+                let base = run(8);
+                for wsg in [16, 32] {
+                    let o = run(wsg);
+                    for (k, (a, b)) in base.iter().zip(&o).enumerate() {
+                        let d = a.iter().zip(b).filter(|(p, q)| p != q).count();
+                        assert_eq!(d, 0, "t {t} mode {mode} wsg {wsg} output {k}: {d} bytes differ");
+                    }
+                }
+                if mode == 2 {
+                    // batched commit (2 layers, same inputs) vs the per-layer commit
+                    let consts = {
+                        let mut c = vec![0f32; 2 * 128];
+                        for l in 0..2 {
+                            c[l * 128..l * 128 + 64].copy_from_slice(&a_log);
+                            c[l * 128 + 64..l * 128 + 128].copy_from_slice(&dt_bias);
+                        }
+                        Tensor::from_vec(c, (2, 2, 64), &dev).unwrap()
+                    };
+                    for csg in [8, 16, 32] {
+                        let so: Vec<Tensor> = (0..2)
+                            .map(|_| Tensor::zeros((hv, dv, dk), DType::F32, &dev).unwrap())
+                            .collect();
+                        let co: Vec<Tensor> = (0..2)
+                            .map(|_| Tensor::zeros((3, conv), DType::BF16, &dev).unwrap())
+                            .collect();
+                        let list: Vec<GdnCommitLayer<'_>> = (0..2)
+                            .map(|l| GdnCommitLayer {
+                                xnew: &x, conv_in: &conv_in, cw: &cw, state_in: &state_in,
+                                ab: &ab, state_out: &so[l], conv_out: &co[l], layer: l,
+                            })
+                            .collect();
+                        gdn_commit_all_w(&list, &consts, t, hk, hv, dk, dv, csg).unwrap();
+                        for l in 0..2 {
+                            assert_eq!(bytes_of(&so[l]), base[0], "t {t} csg {csg} layer {l}: commit state");
+                            assert_eq!(bytes_of(&co[l]), base[1], "t {t} csg {csg} layer {l}: commit window");
+                        }
+                    }
+                }
+            }
         }
     }
 
