@@ -3893,8 +3893,11 @@ impl Qwen35 {
                 vc.slice_set(&v.contiguous()?, 1, pos)?;
             } else {
                 let ncap = (need * 2).max(2048);
-                let nk = crate::outbuf::kernel_out((nkv, ncap, hd), DType::BF16, device)?;
-                let nv = crate::outbuf::kernel_out((nkv, ncap, hd), DType::BF16, device)?;
+                // zero-filled like ensure_kv's pad (NOT outbuf::kernel_out):
+                // with an uninitialised tail the first verify produced
+                // garbage — see the fix commit / th-d-gpu-tail report
+                let nk = Tensor::zeros((nkv, ncap, hd), DType::BF16, device)?;
+                let nv = Tensor::zeros((nkv, ncap, hd), DType::BF16, device)?;
                 nk.slice_set(&k_all.contiguous()?, 1, 0)?;
                 nv.slice_set(&v_all.contiguous()?, 1, 0)?;
                 *kc = nk;
