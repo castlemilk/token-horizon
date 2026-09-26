@@ -21,7 +21,11 @@
 // Turn ends make the plan prefix-consistent across a conversation: the
 // end of the last user/tool message before the generation prompt is also
 // a turn end in every later turn's history, so turn k's end checkpoint is
-// a boundary of turn k+1's plan with the same history before it.
+// a boundary of turn k+1's plan with the same history before it. A second
+// checkpoint sits on the last step-grid split below the end one: grid
+// splits are boundaries of every plan, so a prompt that shares a long
+// prefix but not the aligned turn end (another question after the same
+// document) still restores up to it.
 //
 // This module is backend-agnostic (the state type is a parameter) and
 // holds only the store + plan policy; capture/restore live with the
@@ -38,7 +42,8 @@ pub struct PrefixCacheConfig {
     /// the end-to-end identity check (same request sequence, same
     /// outputs); not a production setting.
     pub plan_only: bool,
-    /// `TH_PREFIX_CACHE_ENTRIES` — LRU entry cap (default 4).
+    /// `TH_PREFIX_CACHE_ENTRIES` — LRU entry cap (default 8: a prompt
+    /// stores up to two — its grid and end checkpoints).
     pub max_entries: usize,
     /// `TH_PREFIX_CACHE_MB` — LRU byte cap in MiB (default 4096).
     pub max_bytes: usize,
@@ -65,7 +70,7 @@ impl PrefixCacheConfig {
         Self {
             enabled: mode.as_deref() != Some("0"),
             plan_only: mode.as_deref() == Some("miss"),
-            max_entries: num("TH_PREFIX_CACHE_ENTRIES", 4),
+            max_entries: num("TH_PREFIX_CACHE_ENTRIES", 8),
             max_bytes: num("TH_PREFIX_CACHE_MB", 4096).saturating_mul(1 << 20),
             block: num("TH_PREFIX_CACHE_BLOCK", 128).max(16),
             margin: num("TH_PREFIX_CACHE_MARGIN", 16),
@@ -128,7 +133,10 @@ impl ChunkPlan {
 /// first message boundary and at every turn end; with no recognised chat
 /// structure, one split at `n - margin` rounded down (then only exact
 /// repeats and same-length prompts share it). Checkpoints: the split of
-/// the last turn end (or that fallback) and of the first boundary.
+/// the last turn end (or that fallback), of the first boundary, and the
+/// last grid split below the end one (below `n - margin` without one) —
+/// no extra chunk, and shared by every prompt with the same first tokens
+/// up to it.
 pub fn plan(
     n: usize,
     step: usize,
@@ -153,6 +161,10 @@ pub fn plan(
         }
         checkpoints.extend(first.and_then(align));
         checkpoints.extend(end);
+        let grid = end.unwrap_or(n.saturating_sub(c.margin)).saturating_sub(1) / step * step;
+        if grid > 0 && grid < n {
+            checkpoints.push(grid);
+        }
         splits.extend(extra);
     }
     splits.sort_unstable();
@@ -435,9 +447,10 @@ mod tests {
         assert_eq!(plan(1432, 512, None, Some(35), &[1427]).splits, vec![512, 1024]);
         assert!(plan(1432, 512, None, Some(35), &[1427]).checkpoints.is_empty());
         // bench ctx1500 shape: 35-token system, user message ends at 1427,
-        // 5-token generation prompt → one extra split + checkpoint at 1408
+        // 5-token generation prompt → one extra split + checkpoint at 1408,
+        // grid checkpoint at 1024 (no extra chunk)
         let p = plan(1432, 512, Some(&c), Some(35), &[1427]);
-        assert_eq!(p, ChunkPlan { splits: vec![512, 1024, 1408], checkpoints: vec![1408] });
+        assert_eq!(p, ChunkPlan { splits: vec![512, 1024, 1408], checkpoints: vec![1024, 1408] });
         assert_eq!(p.history(1408), vec![512, 1024, 1408]);
         assert_eq!(p.history(1407), vec![512, 1024]);
         // the same passage + a longer question shares the 1408 checkpoint
@@ -449,7 +462,7 @@ mod tests {
         let t1 = plan(1432, 512, Some(&c), Some(35), &[1427]);
         let t2 = plan(2100, 512, Some(&c), Some(35), &[1427, 2090]);
         assert_eq!(t2.splits, vec![512, 1024, 1408, 1536, 2048]);
-        assert_eq!(t2.checkpoints, vec![2048]);
+        assert_eq!(t2.checkpoints, vec![1536, 2048]);
         assert_eq!(t2.history(1408), t1.history(1408));
         // a long system prompt: its own split + checkpoint
         let p = plan(2605, 512, Some(&c), Some(2100), &[2600]);
@@ -457,11 +470,18 @@ mod tests {
         assert_eq!(p.checkpoints, vec![2048, 2560]);
         // no chat structure: n - margin rounded down (split + checkpoint)
         let p = plan(1000, 512, Some(&c), None, &[]);
-        assert_eq!(p, ChunkPlan { splits: vec![512, 896], checkpoints: vec![896] });
+        assert_eq!(p, ChunkPlan { splits: vec![512, 896], checkpoints: vec![512, 896] });
         // structure but no turn end (e.g. no generation prompt): the first
-        // boundary only
+        // boundary (+ the grid below n - margin)
         let p = plan(1000, 512, Some(&c), Some(700), &[]);
-        assert_eq!(p, ChunkPlan { splits: vec![512, 640], checkpoints: vec![640] });
+        assert_eq!(p, ChunkPlan { splits: vec![512, 640], checkpoints: vec![512, 640] });
+        // 8k document, two questions: different aligned turn ends (7424 vs
+        // 7552 → no shared end checkpoint), one shared grid checkpoint
+        let (a, b) = (plan(7550, 512, Some(&c), Some(35), &[7545]), plan(7560, 512, Some(&c), Some(35), &[7555]));
+        assert_eq!((a.checkpoints.clone(), b.checkpoints.clone()), (vec![7168, 7424], vec![7168, 7552]));
+        assert_eq!(a.history(7168), b.history(7168));
+        // short prompts: no grid checkpoint either
+        assert!(plan(600, 512, Some(&c), Some(35), &[595]).checkpoints == vec![512]);
         // checkpoints below one block never happen
         assert!(plan(143, 512, Some(&c), None, &[]).checkpoints.is_empty());
         assert_eq!(plan(144, 512, Some(&c), None, &[]).checkpoints, vec![128]);
