@@ -783,6 +783,11 @@ fn generate_blocking(
             )?;
             if let Emit::Done(r) = emit_token(&mut ec, anchor, pos) {
                 finish = r;
+                // the warm-up still runs (main ran it before every first
+                // sample): the next request in this slot reads ring rows
+                // this one wrote (anchor protocol), so its history must
+                // not depend on how this request ended
+                inner.backend.draft_prefill(0)?;
             } else {
                 pos += 1;
                 if first {
@@ -1806,14 +1811,14 @@ fn admit(
         }
     }
     // the draft ring warm-up after the first token (as the single-slot
-    // loop); synced so the next lockstep round's timing excludes it
-    if run.finish.is_none() {
-        let mut clk = PhaseClock::new();
-        inner.backend.draft_prefill(slot)?;
-        inner.device.synchronize()?;
-        if clk.on {
-            eprintln!("  [prefill] slot={slot} draft_warmup={:.1}ms", clk.mark(&inner.device));
-        }
+    // loop); synced so the next lockstep round's timing excludes it. It
+    // runs even when the request already ended (main ran it before every
+    // first sample): the slot's next request reads ring rows written here
+    let mut clk = PhaseClock::new();
+    inner.backend.draft_prefill(slot)?;
+    inner.device.synchronize()?;
+    if clk.on {
+        eprintln!("  [prefill] slot={slot} draft_warmup={:.1}ms", clk.mark(&inner.device));
     }
     Ok(Some(run))
 }
