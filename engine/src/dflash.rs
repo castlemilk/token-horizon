@@ -1334,13 +1334,11 @@ mod tests {
 }
 
 
-/// `TH_DRAFT_EAGER` — eager draft ops instead of the fused kernels.
-/// Read once: propose checks it ~35 times per round.
-#[cfg_attr(not(all(feature = "metal", target_os = "macos")), allow(dead_code))]
 /// Draft commit writes the K/V rings through `quant_kernel::
 /// draft_ring_write` (one dispatch per layer, head views instead of
 /// reshape copies). `TH_DRAFT_RING=legacy` restores the permute + index
 /// upload + scatter_set path (A/B; ring contents are identical). Read once.
+#[cfg_attr(not(all(feature = "metal", target_os = "macos")), allow(dead_code))]
 fn ring_fused() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ON.get_or_init(|| std::env::var("TH_DRAFT_RING").as_deref() != Ok("legacy"))
@@ -1348,11 +1346,15 @@ fn ring_fused() -> bool {
 
 /// `TH_CAND_SORT=legacy`: the candle sort path in `cand_tables` (A/B arm;
 /// the fused top-16 kernel is bit-identical). Read once.
+#[cfg_attr(not(all(feature = "metal", target_os = "macos")), allow(dead_code))]
 fn cand_sort_legacy() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ON.get_or_init(|| std::env::var("TH_CAND_SORT").as_deref() == Ok("legacy"))
 }
 
+/// `TH_DRAFT_EAGER` — eager draft ops instead of the fused kernels.
+/// Read once: propose checks it ~35 times per round.
+#[cfg_attr(not(all(feature = "metal", target_os = "macos")), allow(dead_code))]
 fn draft_eager() -> bool {
     static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *V.get_or_init(|| std::env::var("TH_DRAFT_EAGER").is_ok())

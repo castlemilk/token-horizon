@@ -3885,7 +3885,10 @@ impl Qwen35 {
             // transposed `v`), and the first verify's ensure_kv re-copied
             // all 32 of them through the generic strided kernel (~0.3-0.4 ms
             // each, ~11 ms per request, R0c). Same capacity rule as
-            // ensure_kv's first growth; rows >= kv_tokens are never read.
+            // ensure_kv's first growth. Rows >= kv_tokens are never read,
+            // EXCEPT row n_prompt: the DFlash anchor off-by-one (engine.rs,
+            // fixed on th/c-loop-anchor, not merged) attends it before any
+            // forward writes it — hence the zero fill below.
             let need = pos + seq;
             let (nkv, hd) = (k_all.dim(0)?, k_all.dim(2)?);
             if kc.dim(1)? >= need && kc.is_contiguous() && vc.is_contiguous() {
