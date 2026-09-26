@@ -145,6 +145,7 @@ impl Engine {
         tracing::info!(
             enabled = prefix_cfg.enabled,
             plan_only = prefix_cfg.plan_only,
+            grid_only = prefix_cfg.grid_only,
             max_entries = prefix_cfg.max_entries,
             max_mb = prefix_cfg.max_bytes >> 20,
             block = prefix_cfg.block,

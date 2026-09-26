@@ -42,6 +42,12 @@ pub struct PrefixCacheConfig {
     /// the end-to-end identity check (same request sequence, same
     /// outputs); not a production setting.
     pub plan_only: bool,
+    /// `TH_PREFIX_CACHE=grid`: main's chunk plan exactly (the step grid,
+    /// no turn-end splits) with one checkpoint at the last grid split
+    /// `margin` before the end. Hits and misses are then bit-identical to
+    /// a cache-off server (and to main), at the cost of longer suffixes
+    /// (up to a step + the tail) on a hit.
+    pub grid_only: bool,
     /// `TH_PREFIX_CACHE_ENTRIES` — LRU entry cap (default 8: a prompt
     /// stores up to two — its grid and end checkpoints).
     pub max_entries: usize,
@@ -70,6 +76,7 @@ impl PrefixCacheConfig {
         Self {
             enabled: mode.as_deref() != Some("0"),
             plan_only: mode.as_deref() == Some("miss"),
+            grid_only: mode.as_deref() == Some("grid"),
             max_entries: num("TH_PREFIX_CACHE_ENTRIES", 8),
             max_bytes: num("TH_PREFIX_CACHE_MB", 4096).saturating_mul(1 << 20),
             block: num("TH_PREFIX_CACHE_BLOCK", 128).max(16),
@@ -78,7 +85,7 @@ impl PrefixCacheConfig {
     }
 
     pub fn disabled() -> Self {
-        Self { enabled: false, plan_only: false, max_entries: 0, max_bytes: 0, block: 128, margin: 16 }
+        Self { enabled: false, plan_only: false, grid_only: false, max_entries: 0, max_bytes: 0, block: 128, margin: 16 }
     }
 }
 
@@ -147,6 +154,14 @@ pub fn plan(
     let step = step.max(1);
     let mut splits: Vec<usize> = (1..).map(|k| k * step).take_while(|&s| s < n).collect();
     let mut checkpoints = Vec::new();
+    if let Some(c) = cache.filter(|c| c.grid_only) {
+        // main's chunks; the last grid split at least `margin` before the end
+        let grid = n.saturating_sub(c.margin).saturating_sub(1) / step * step;
+        if grid > 0 {
+            checkpoints.push(grid);
+        }
+        return ChunkPlan { splits, checkpoints };
+    }
     if let Some(c) = cache.filter(|c| c.block > 0) {
         let g = c.block;
         let align = |b: usize| (b / g * g > 0 && b / g * g < n).then_some(b / g * g);
@@ -320,7 +335,7 @@ mod tests {
     use super::*;
 
     fn cfg(entries: usize, bytes: usize) -> PrefixCacheConfig {
-        PrefixCacheConfig { enabled: true, plan_only: false, max_entries: entries, max_bytes: bytes, block: 32, margin: 16 }
+        PrefixCacheConfig { enabled: true, plan_only: false, grid_only: false, max_entries: entries, max_bytes: bytes, block: 32, margin: 16 }
     }
 
     /// Grid-only plan (no chat structure, no fallback reach) for store tests.
@@ -449,6 +464,28 @@ mod tests {
         // b's grid checkpoint is a's (same tokens, step, history): replaced, not duplicated
         assert_eq!(store.len(), 3);
         assert_eq!(store.lookup(&b, 512, &pb, b.len() - 1).map(|(n, _)| n), Some(7552));
+    }
+
+    /// TH_PREFIX_CACHE=grid: the plain step grid (main's chunks) whatever
+    /// the chat structure, one checkpoint at the last grid split `margin`
+    /// before the end — so hit, miss and cache-off prefill the same chunks.
+    #[test]
+    fn grid_mode_keeps_mains_chunks() {
+        let g = PrefixCacheConfig { grid_only: true, block: 128, ..cfg(8, 1 << 30) };
+        for (n, first, ends, ck) in [
+            (1432usize, Some(35usize), vec![1427usize], vec![1024usize]),
+            (7550, Some(35), vec![7545], vec![7168]),
+            (1030, None, vec![], vec![512]),
+            (2605, Some(2100), vec![2600], vec![2560]),
+            (500, Some(35), vec![495], vec![]),
+        ] {
+            let p = plan(n, 512, Some(&g), first, &ends);
+            assert_eq!(p.splits, plan(n, 512, None, None, &[]).splits, "n={n}: grid mode must keep main's chunks");
+            assert_eq!(p.checkpoints, ck, "n={n}");
+        }
+        // a grid checkpoint is shared by the same document with another question
+        let (a, b) = (plan(1432, 512, Some(&g), Some(35), &[1427]), plan(1454, 512, Some(&g), Some(35), &[1449]));
+        assert_eq!(a.history(1024), b.history(1024));
     }
 
     const M: ChatMarks = ChatMarks { im_start: 7, im_end: 9, newline: 5, assistant: 3 };

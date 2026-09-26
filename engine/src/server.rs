@@ -117,7 +117,8 @@ fn prefix_cache_json(s: &EngineState) -> Value {
     let p = &s.prefix_stats;
     let n = |a: &std::sync::atomic::AtomicU64| a.load(Ordering::Relaxed);
     json!({
-        "enabled": c.enabled, "plan_only": c.plan_only, "max_entries": c.max_entries,
+        "enabled": c.enabled, "plan_only": c.plan_only, "grid_only": c.grid_only,
+        "max_entries": c.max_entries,
         "max_bytes": c.max_bytes, "block": c.block, "margin": c.margin,
         "entries": n(&p.entries), "bytes": n(&p.bytes),
         "hits": n(&p.hits), "misses": n(&p.misses), "bypassed": n(&p.bypassed),
