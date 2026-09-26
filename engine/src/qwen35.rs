@@ -4685,6 +4685,155 @@ impl Qwen35 {
         self.restore(other, keep_o)?;
         Ok((untouched, equal))
     }
+
+    /// Host bits of what a later forward of `slot` reads: each GDN
+    /// layer's committed state (conv window, recurrent) and each attention
+    /// layer's live K/V rows (`0..kv_tokens`).
+    pub(crate) fn slot_state_bits(&self, slot: usize) -> Result<Vec<Vec<u32>>> {
+        let sl = &self.slots[slot];
+        let cur = sl.gdn_par.cur;
+        let mut out = Vec::new();
+        for (i, layer) in self.layers.iter().enumerate() {
+            match &layer.kind {
+                Kind::Gdn(_) => {
+                    let g = sl.gdn[i].as_ref().context("gdn state missing")?;
+                    out.push(tensor_bits(&g.conv[cur])?);
+                    out.push(tensor_bits(&g.rec[cur])?);
+                }
+                Kind::Attn(_) => {
+                    let (k, v) = sl.kv[i].as_ref().context("kv state missing")?;
+                    out.push(tensor_bits(&k.narrow(1, 0, sl.kv_tokens)?)?);
+                    out.push(tensor_bits(&v.narrow(1, 0, sl.kv_tokens)?)?);
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// T1 prefix-cache gate on the real model (TH_TEST_ROLLBACK probe):
+    /// the uncached prefill of `prompt` on `slot` in the chunks `[0, at)`,
+    /// `[at, n)` — checkpointing at `at` on the way — against restoring
+    /// that checkpoint into the cleared slot `into` (may be `slot`) and
+    /// prefilling only `[at, n)`. Bit-compares the last-row logits, the
+    /// post-prefill slot state (GDN + K/V), the next verify's logits
+    /// (`seq` at `n`), and the checkpoint before vs after the restored
+    /// slot's forwards. Leaves `slot` as it found it and `into` cleared.
+    pub(crate) fn prefix_restore_check(
+        &mut self,
+        slot: usize,
+        into: usize,
+        prompt: &[u32],
+        at: usize,
+        seq: &[u32],
+    ) -> Result<PrefixRestoreCheck> {
+        let n = prompt.len();
+        anyhow::ensure!(at > 0 && at < n, "prefix check: split {at} outside (0, {n})");
+        let keep = self.snapshot_deep(slot)?;
+        // uncached reference, checkpoint at `at` on the way
+        self.clear_kv_cache(slot);
+        let _ = self.forward(slot, &prompt[..at], 0)?;
+        let ck = self.prefix_capture(slot)?;
+        let ck_bits = ck.state_bits()?;
+        let l_ref = tensor_bits(&self.forward(slot, &prompt[at..], at)?)?;
+        let s_ref = self.slot_state_bits(slot)?;
+        let v_ref = tensor_bits(&self.forward_multi(slot, seq, n)?)?;
+        // restored: checkpoint + the suffix only
+        self.clear_kv_cache(into);
+        self.prefix_restore(into, &ck)?;
+        let l_got = tensor_bits(&self.forward(into, &prompt[at..], at)?)?;
+        let s_got = self.slot_state_bits(into)?;
+        let v_got = tensor_bits(&self.forward_multi(into, seq, n)?)?;
+        let r = PrefixRestoreCheck {
+            pos: at,
+            logits_diff: bit_diffs(&[l_ref], &[l_got]),
+            state_diff: bit_diffs(&s_ref, &s_got),
+            verify_diff: bit_diffs(&[v_ref], &[v_got]),
+            ckpt_diff: bit_diffs(&ck_bits, &ck.state_bits()?),
+        };
+        self.clear_kv_cache(into);
+        self.restore(slot, keep)?;
+        Ok(r)
+    }
+}
+
+/// [`Qwen35::prefix_restore_check`]: bit-mismatch counts of the restored
+/// path against the uncached prefill — all must be zero.
+#[cfg(all(feature = "metal", target_os = "macos"))]
+#[derive(Debug, Default, Clone)]
+pub(crate) struct PrefixRestoreCheck {
+    /// checkpoint position (prompt tokens restored)
+    pub pos: usize,
+    /// last prompt row's logits (f32 elements)
+    pub logits_diff: usize,
+    /// post-prefill committed GDN state + live K/V elements
+    pub state_diff: usize,
+    /// the next verify's logits (bf16 elements)
+    pub verify_diff: usize,
+    /// the checkpoint's own tensors before vs after the restored slot's
+    /// forwards (a restore must never be written through)
+    pub ckpt_diff: usize,
+}
+
+#[cfg(all(feature = "metal", target_os = "macos"))]
+impl PrefixRestoreCheck {
+    pub fn ok(&self) -> bool {
+        self.logits_diff == 0 && self.state_diff == 0 && self.verify_diff == 0 && self.ckpt_diff == 0
+    }
+}
+
+/// Host bit patterns of a float tensor (f32 as-is, other dtypes via
+/// bf16) — the T1 prefix-cache bitwise checks.
+#[cfg(all(feature = "metal", target_os = "macos"))]
+pub(crate) fn tensor_bits(t: &Tensor) -> Result<Vec<u32>> {
+    Ok(match t.dtype() {
+        DType::F32 => t.flatten_all()?.to_vec1::<f32>()?.iter().map(|v| v.to_bits()).collect(),
+        _ => t
+            .to_dtype(DType::BF16)?
+            .flatten_all()?
+            .to_vec1::<half::bf16>()?
+            .iter()
+            .map(|v| v.to_bits() as u32)
+            .collect(),
+    })
+}
+
+/// Differing elements between two lists of bit vectors (a count or
+/// length mismatch counts the whole longer side as differing).
+#[cfg(all(feature = "metal", target_os = "macos"))]
+fn bit_diffs(a: &[Vec<u32>], b: &[Vec<u32>]) -> usize {
+    if a.len() != b.len() {
+        return a.iter().chain(b).map(|v| v.len()).sum::<usize>().max(1);
+    }
+    a.iter()
+        .zip(b)
+        .map(|(x, y)| {
+            if x.len() != y.len() {
+                x.len().max(y.len()).max(1)
+            } else {
+                x.iter().zip(y).filter(|(p, q)| p != q).count()
+            }
+        })
+        .sum()
+}
+
+#[cfg(all(feature = "metal", target_os = "macos"))]
+impl PrefixState {
+    /// Host bits of every stored tensor (GDN states, K/V, capture rows).
+    pub(crate) fn state_bits(&self) -> Result<Vec<Vec<u32>>> {
+        let mut out = Vec::new();
+        for (c, r) in self.gdn.iter().flatten() {
+            out.push(tensor_bits(c)?);
+            out.push(tensor_bits(r)?);
+        }
+        for (k, v) in self.kv.iter().flatten() {
+            out.push(tensor_bits(k)?);
+            out.push(tensor_bits(v)?);
+        }
+        for t in &self.caps {
+            out.push(tensor_bits(t)?);
+        }
+        Ok(out)
+    }
 }
 
 /// G1a parity state: model-free (tiny random-weight, all-GDN qwen3_5)
@@ -5017,55 +5166,6 @@ mod prefix_tests {
         Device::new_metal(0).ok()
     }
 
-    /// Host bits of a tensor (any float dtype) — bitwise comparisons.
-    fn bits(t: &Tensor) -> Result<Vec<u32>> {
-        Ok(match t.dtype() {
-            DType::F32 => t.flatten_all()?.to_vec1::<f32>()?.iter().map(|v| v.to_bits()).collect(),
-            _ => t
-                .to_dtype(DType::BF16)?
-                .flatten_all()?
-                .to_vec1::<half::bf16>()?
-                .iter()
-                .map(|v| v.to_bits() as u32)
-                .collect(),
-        })
-    }
-
-    /// Everything a later forward reads: committed GDN state + live K/V.
-    fn slot_bits(m: &Qwen35, slot: usize) -> Result<Vec<Vec<u32>>> {
-        let sl = &m.slots[slot];
-        let cur = sl.gdn_par.cur;
-        let mut out = Vec::new();
-        for (i, layer) in m.layers.iter().enumerate() {
-            match &layer.kind {
-                Kind::Gdn(_) => {
-                    let g = sl.gdn[i].as_ref().context("gdn")?;
-                    out.push(bits(&g.conv[cur])?);
-                    out.push(bits(&g.rec[cur])?);
-                }
-                Kind::Attn(_) => {
-                    let (k, v) = sl.kv[i].as_ref().context("kv")?;
-                    out.push(bits(&k.narrow(1, 0, sl.kv_tokens)?)?);
-                    out.push(bits(&v.narrow(1, 0, sl.kv_tokens)?)?);
-                }
-            }
-        }
-        Ok(out)
-    }
-
-    fn ckpt_bits(p: &PrefixState) -> Result<Vec<Vec<u32>>> {
-        let mut out = Vec::new();
-        for (c, r) in p.gdn.iter().flatten() {
-            out.push(bits(c)?);
-            out.push(bits(r)?);
-        }
-        for (k, v) in p.kv.iter().flatten() {
-            out.push(bits(k)?);
-            out.push(bits(v)?);
-        }
-        Ok(out)
-    }
-
     /// Canonical-chunk prefill of `prompt[from..]` (chunks of `step`
     /// anchored at 0), capturing at `ck`. Returns (last logits, capture).
     fn prefill(
@@ -5085,7 +5185,7 @@ mod prefix_tests {
                 cap = Some(m.prefix_capture(slot)?);
             }
         }
-        Ok((bits(&last.context("empty prompt")?)?, cap))
+        Ok((tensor_bits(&last.context("empty prompt")?)?, cap))
     }
 
     #[test]
@@ -5105,9 +5205,9 @@ mod prefix_tests {
         let (l_ref, cap) = prefill(&mut m, 0, &prompt, 0, step, Some(32))?;
         let cap = cap.context("no capture at 32")?;
         assert_eq!(cap.pos(), 32);
-        let ck0 = ckpt_bits(&cap)?;
-        let s_ref = slot_bits(&m, 0)?;
-        let v_ref = bits(&m.forward_multi(0, &seq8, n)?)?;
+        let ck0 = cap.state_bits()?;
+        let s_ref = m.slot_state_bits(0)?;
+        let v_ref = tensor_bits(&m.forward_multi(0, &seq8, n)?)?;
 
         // restored: same logits, same state, same next verify
         m.clear_kv_cache(0);
@@ -5115,27 +5215,27 @@ mod prefix_tests {
         assert_eq!(m.slots[0].kv_tokens, 32);
         let (l_got, _) = prefill(&mut m, 0, &prompt, 32, step, None)?;
         assert!(l_got == l_ref, "suffix-prefill logits differ from the uncached prefill");
-        assert!(slot_bits(&m, 0)? == s_ref, "post-prefill state differs from the uncached prefill");
-        let v_got = bits(&m.forward_multi(0, &seq8, n)?)?;
+        assert!(m.slot_state_bits(0)? == s_ref, "post-prefill state differs from the uncached prefill");
+        let v_got = tensor_bits(&m.forward_multi(0, &seq8, n)?)?;
         assert!(v_got == v_ref, "next verify logits differ after a restore");
 
         // the same checkpoint in slot 1 with a different suffix: slot 0 is
         // untouched, and slot 1 matches its own uncached reference
-        let s0 = slot_bits(&m, 0)?;
+        let s0 = m.slot_state_bits(0)?;
         let mut other = prompt[..32].to_vec();
         other.extend((0..27u32).map(|i| (i * 3 + 1) % 97));
         m.clear_kv_cache(1);
         m.prefix_restore(1, &cap)?;
         let (l1, _) = prefill(&mut m, 1, &other, 32, step, None)?;
         m.forward_multi(1, &seq8, other.len())?;
-        assert!(slot_bits(&m, 0)? == s0, "a restore + prefill on slot 1 changed slot 0");
+        assert!(m.slot_state_bits(0)? == s0, "a restore + prefill on slot 1 changed slot 0");
         m.clear_kv_cache(1);
         let (l1_ref, _) = prefill(&mut m, 1, &other, 0, step, None)?;
         assert!(l1 == l1_ref, "slot 1's restored prefill differs from its uncached prefill");
 
         // nobody wrote the checkpoint: two restores, prefills and verifies
         // later it is bit-for-bit the captured state
-        assert!(ckpt_bits(&cap)? == ck0, "a restoring slot wrote into the checkpoint");
+        assert!(cap.state_bits()? == ck0, "a restoring slot wrote into the checkpoint");
 
         // capacity-buffer capture (after a <= 8-row fused step the K/V
         // live in a grown buffer): the live rows are copied out
@@ -5147,12 +5247,12 @@ mod prefix_tests {
         for (k, _) in cap2.kv.iter().flatten() {
             assert_eq!(k.dim(1)?, n + 4, "capacity-buffer capture must be exact-size");
         }
-        let s2 = slot_bits(&m, 0)?;
-        let after = bits(&m.forward_multi(0, &seq8[4..], n + 4)?)?;
+        let s2 = m.slot_state_bits(0)?;
+        let after = tensor_bits(&m.forward_multi(0, &seq8[4..], n + 4)?)?;
         m.clear_kv_cache(1);
         m.prefix_restore(1, &cap2)?;
-        assert!(slot_bits(&m, 1)? == s2, "restored state differs from the captured slot");
-        assert!(bits(&m.forward_multi(1, &seq8[4..], n + 4)?)? == after);
+        assert!(m.slot_state_bits(1)? == s2, "restored state differs from the captured slot");
+        assert!(tensor_bits(&m.forward_multi(1, &seq8[4..], n + 4)?)? == after);
         Ok(())
     }
 }

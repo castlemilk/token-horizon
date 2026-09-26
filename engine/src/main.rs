@@ -229,6 +229,28 @@ async fn main() -> Result<()> {
                         "rollback state-bitwise: {}",
                         if state_fail { "FAIL" } else { "PASS" }
                     );
+                    // T1 prefix cache: checkpoint two rows before the end
+                    // (a >8-row prefill chunk, then a fused <=8-row suffix
+                    // that must grow out of the shared exact-size K/V),
+                    // restored into slot 0 and, with >= 2 slots, slot 1
+                    let mut prefix_fail = false;
+                    if ids.len() >= 3 {
+                        let at = ids.len() - 2;
+                        for into in 0..q.nslots().min(2) {
+                            let r = q.prefix_restore_check(0, into, &ids, at, &seq8)?;
+                            eprintln!(
+                                "  prefix restore at {} slot0→slot{into}: logits≠ {} state≠ {} verify≠ {} checkpoint≠ {} | {}",
+                                r.pos, r.logits_diff, r.state_diff, r.verify_diff, r.ckpt_diff,
+                                if r.ok() { "ok" } else { "MISMATCH" }
+                            );
+                            prefix_fail |= !r.ok();
+                        }
+                    }
+                    eprintln!(
+                        "prefix restore bitwise: {}",
+                        if prefix_fail { "FAIL" } else { "PASS" }
+                    );
+                    state_fail |= prefix_fail;
                 }
 
                 // restore points at `pos` for the two compare paths —
