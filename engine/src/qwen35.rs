@@ -1638,16 +1638,13 @@ fn state_copy(t: &Tensor) -> Result<Tensor> {
     Ok(out)
 }
 
-/// `state_copy` into an uninitialised pooled buffer (T1 prefix-cache
-/// capture/restore): `slice_set` of a same-shape source writes every
-/// element, so the zero fill is dead work — and on Metal `Tensor::zeros`
-/// is a blit fill that ends candle's compute encoder and waits on every
-/// live fence (see outbuf.rs), ~100 of them per checkpoint.
+/// Bit-exact copy of a state tensor into a fresh buffer for the T1
+/// prefix cache (capture/restore): `outbuf::copy_uninit` — one compute
+/// dispatch per tensor instead of `state_copy`'s blit fill + blit copy
+/// (each ends candle's compute encoder and waits on every live fence;
+/// ~100 per checkpoint).
 fn state_copy_uninit(t: &Tensor) -> Result<Tensor> {
-    // SAFETY: slice_set below overwrites all elements (same shape, offset 0)
-    let out = unsafe { Tensor::empty(t.shape(), t.dtype(), t.device())? };
-    out.slice_set(&t.contiguous()?, 0, 0)?;
-    Ok(out)
+    Ok(crate::outbuf::copy_uninit(t)?)
 }
 
 /// (parity `cur`, parity `1 - cur`) of a double-buffered state pair.
@@ -3245,8 +3242,9 @@ impl Qwen35 {
                         let r0 = parts[0].dim(0)?;
                         parts[0] = parts[0].narrow(0, skip, r0 - skip)?;
                     }
-                    // fresh exact-size buffer (a 1-part cat is a clone)
-                    let t = if parts.len() == 1 { state_copy_uninit(&parts[0])? } else { Tensor::cat(&parts, 0)? };
+                    // fresh exact-size buffer, compute copies (a 1-part
+                    // Tensor::cat would be a clone)
+                    let t = crate::outbuf::cat0_uninit(&parts)?;
                     bytes += tensor_bytes(&t);
                     caps.push(t);
                 }
