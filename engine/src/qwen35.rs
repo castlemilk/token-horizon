@@ -1668,6 +1668,14 @@ fn add_rms_norm(
 /// as a K45 presum block (`quant_kernel::presum_block_bytes`) — the third
 /// value says so, and the next projection takes it with `presum: true`
 /// (no pad copy, no in-kernel input sums). Values are bit-identical.
+/// Prefill (eager attention) writes K/V into a contiguous capacity buffer
+/// instead of leaving an exact-length view for the first verify to regrow.
+/// `TH_KV_CAP_PREFILL=0` restores the old behaviour (A/B). Read once.
+fn kv_cap_prefill() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("TH_KV_CAP_PREFILL").as_deref() != Ok("0"))
+}
+
 /// `TH_ARN_LEGACY=1`: the pre-R0c single-threadgroup add+RMSNorm kernels
 /// (A/B arm; outputs are bit-identical either way). Read once.
 fn arn_legacy() -> bool {
@@ -3868,9 +3876,34 @@ impl Qwen35 {
         let k_pre = if kc.dim(1)? > pos { kc.narrow(1, 0, pos)? } else { kc.clone() };
         let v_pre = if vc.dim(1)? > pos { vc.narrow(1, 0, pos)? } else { vc.clone() };
         let k_all = Tensor::cat(&[k_pre, k.squeeze(0)?], 1)?;
-        let v_all = Tensor::cat(&[v_pre, v], 1)?;
-        *kc = k_all.clone();
-        *vc = v_all.clone();
+        let v_all = Tensor::cat(&[v_pre, v.clone()], 1)?;
+        if kv_cap_prefill() {
+            // store into a contiguous capacity buffer — the decode path's
+            // attn_prepare appends in place, so the first verify no longer
+            // regrows it. The old exact-length `k_all`/`v_all` caches were
+            // non-contiguous views (cat's transposed fallback for the
+            // transposed `v`), and the first verify's ensure_kv re-copied
+            // all 32 of them through the generic strided kernel (~0.3-0.4 ms
+            // each, ~11 ms per request, R0c). Same capacity rule as
+            // ensure_kv's first growth; rows >= kv_tokens are never read.
+            let need = pos + seq;
+            let (nkv, hd) = (k_all.dim(0)?, k_all.dim(2)?);
+            if kc.dim(1)? >= need && kc.is_contiguous() && vc.is_contiguous() {
+                kc.slice_set(&k.squeeze(0)?.contiguous()?, 1, pos)?;
+                vc.slice_set(&v.contiguous()?, 1, pos)?;
+            } else {
+                let ncap = (need * 2).max(2048);
+                let nk = crate::outbuf::kernel_out((nkv, ncap, hd), DType::BF16, device)?;
+                let nv = crate::outbuf::kernel_out((nkv, ncap, hd), DType::BF16, device)?;
+                nk.slice_set(&k_all.contiguous()?, 1, 0)?;
+                nv.slice_set(&v_all.contiguous()?, 1, 0)?;
+                *kc = nk;
+                *vc = nv;
+            }
+        } else {
+            *kc = k_all.clone();
+            *vc = v_all.clone();
+        }
         let kv_seq = k_all.dim(1)?;
 
         let rep = l.n_heads / l.n_kv;
