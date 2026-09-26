@@ -224,6 +224,7 @@ impl DraftLayer {
     /// (non-Metal / untiled weights) the eager fallback narrows the fused
     /// `[.., 2 * INTER]` projection on its last dim.
     fn mlp(&self, x: &Tensor) -> Result<Tensor> {
+        crate::gpuprof::region("mlp.gate_up");
         let fused = match &self.gate_up {
             Lin::Quant(q) => q.gate_up_act_ps(x, false),
             _ => None,
@@ -238,6 +239,7 @@ impl DraftLayer {
                 (candle_nn::ops::silu(&gate)?.mul(&up)?, false)
             }
         };
+        crate::gpuprof::region("mlp.down");
         lin_apply_ps(&inter, &self.down, inter_ps)
     }
 }
@@ -379,18 +381,45 @@ impl DraftWeights {
         if rows == 0 {
             return Ok(());
         }
+        crate::gpuprof::region("fc");
         let proj = lin_apply(&captured.narrow(0, 0, rows)?.contiguous()?, &self.fc)?;
-        let hidden = rms_norm(&proj, &self.hidden_norm, 1e-6)?; // [rows, 5120]
+        crate::gpuprof::region("norm");
+        // decode commits (rows <= 8): a presum block for the five qkv
+        // projections (no pad copy at rows < 8, PreSums tiles)
+        let (hidden, hidden_ps) = rms_norm_ps(&proj, &self.hidden_norm, 0, rows)?; // [rows, 5120]
+        crate::gpuprof::region("rope_table");
         let (cos, sin) = rope_table(&self.device, start_pos, rows)?;
         for (li, l) in self.layers.iter().enumerate() {
-            let qkv = lin_apply(&hidden, &l.qkv)?; // [rows, 6144]
+            crate::gpuprof::region("qkv");
+            let qkv = lin_apply_ps(&hidden, &l.qkv, hidden_ps)?; // [rows, 6144]
+            #[cfg(all(feature = "metal", target_os = "macos"))]
+            if qkv.device().is_metal() && !draft_eager() && ring_fused() && qkv.is_contiguous() {
+                // head views of the projection rows (no reshape copies —
+                // draft_norm_rope and the ring write honour the row stride)
+                let heads = qkv.reshape((rows, QKV / HEAD_DIM, HEAD_DIM))?;
+                let k = heads.narrow(1, ATTN / HEAD_DIM, KV_HEADS)?;
+                let v = heads.narrow(1, ATTN / HEAD_DIM + KV_HEADS, KV_HEADS)?;
+                crate::gpuprof::region("knorm_rope");
+                let k = dnorm_rope(&k, &l.k_norm, &cos, &sin)?;
+                crate::gpuprof::region("ring_write");
+                crate::quant_kernel::draft_ring_write(
+                    &k,
+                    &v,
+                    &ctx.ring_k[li],
+                    &ctx.ring_v[li],
+                    start_pos % WINDOW,
+                )?;
+                continue;
+            }
             let k = qkv
                 .narrow(1, ATTN, KV_HEADS * HEAD_DIM)?
                 .reshape((rows, KV_HEADS, HEAD_DIM))?;
             let v = qkv
                 .narrow(1, ATTN + KV_HEADS * HEAD_DIM, KV_HEADS * HEAD_DIM)?
                 .reshape((rows, KV_HEADS, HEAD_DIM))?;
+            crate::gpuprof::region("knorm_rope");
             let k = dnorm_rope(&k, &l.k_norm, &cos, &sin)?;
+            crate::gpuprof::region("ring_scatter");
             // in-place ring write: src [heads, rows, dim], indexes give
             // the slot for each row (positions are contiguous → slots
             // are contiguous mod WINDOW).
@@ -430,41 +459,61 @@ impl DraftWeights {
         let ids: Vec<u32> = std::iter::once(anchor)
             .chain(std::iter::repeat(MASK_TOKEN).take(PROPOSALS))
             .collect();
+        crate::gpuprof::region("embed");
         let mut x = embed
             .i(&Tensor::new(ids.as_slice(), &self.device)?)?
             .unsqueeze(0)?; // [1, 8, 5120]
+        crate::gpuprof::region("rope_table");
         let (cos, sin) = rope_table(&self.device, pos, ROWS)?;
         for (li, l) in self.layers.iter().enumerate() {
-            let n = rms_norm(&x, &l.input_norm, 1e-6)?; // [1,8,5120]
-            let dyn_ = lin_apply(&n, &l.attn_dyn)?; // [1,8,1280]
-            let conv = dconv(&n, &dyn_, &l.conv_base, 0, None)?;
-            let qkv = lin_apply(&conv, &l.qkv)?; // [1,8,6144]
-            let q = qkv
-                .narrow(2, 0, ATTN)?
-                .reshape((ROWS, HEADS, HEAD_DIM))?;
-            let k = qkv
-                .narrow(2, ATTN, KV_HEADS * HEAD_DIM)?
-                .reshape((ROWS, KV_HEADS, HEAD_DIM))?;
+            crate::gpuprof::region("norm.in");
+            // n / conv: K45 presum blocks when `draft_ps` (plain [1,8,5120]
+            // views otherwise — dconv reads the block's rows as a plain x)
+            let (n, n_ps) = rms_norm_ps(&x, &l.input_norm, 0, ROWS)?; // [1,8,5120]
+            crate::gpuprof::region("dyn");
+            let dyn_ = lin_apply_ps(&n, &l.attn_dyn, n_ps)?; // [1,8,1280]
+            crate::gpuprof::region("dconv");
+            let (conv, conv_ps) = dconv_ps(&n, &dyn_, &l.conv_base, 0, None)?;
+            crate::gpuprof::region("qkv");
+            let qkv = lin_apply_ps(&conv, &l.qkv, conv_ps)?; // [1,8,6144]
+            // q / k: head views of the projection rows (no reshape copies —
+            // draft_norm_rope honours the row stride, as in the commit)
+            let heads = qkv.reshape((ROWS, QKV / HEAD_DIM, HEAD_DIM))?;
+            let q = heads.narrow(1, 0, HEADS)?;
+            let k = heads.narrow(1, HEADS, KV_HEADS)?;
             let v = qkv
                 .narrow(2, ATTN + KV_HEADS * HEAD_DIM, KV_HEADS * HEAD_DIM)?
                 .reshape((ROWS, KV_HEADS, HEAD_DIM))?;
+            crate::gpuprof::region("qknorm_rope");
             let q = dnorm_rope(&q, &l.q_norm, &cos, &sin)?;
             let k = dnorm_rope(&k, &l.k_norm, &cos, &sin)?;
+            crate::gpuprof::region("attn");
             let attn = self.attention(ctx, li, &q, &k, &v)?;
+            crate::gpuprof::region("o");
             let proj = lin_apply(&attn, &l.o_proj)?; // [1,8,5120]
+            crate::gpuprof::region("dconv");
             let x2 = dconv(&proj, &dyn_, &l.conv_base, 1, Some(&x))?;
-            let n2 = rms_norm(&x2, &l.post_norm, 1e-6)?;
-            let dyn2 = lin_apply(&n2, &l.mlp_dyn)?;
+            crate::gpuprof::region("norm.post");
+            let (n2, n2_ps) = rms_norm_ps(&x2, &l.post_norm, 0, ROWS)?;
+            crate::gpuprof::region("dyn");
+            let dyn2 = lin_apply_ps(&n2, &l.mlp_dyn, n2_ps)?;
+            crate::gpuprof::region("dconv");
             let conv2 = dconv(&n2, &dyn2, &l.mlp_conv_base, 0, None)?;
             let proj2 = l.mlp(&conv2)?;
+            crate::gpuprof::region("dconv");
             x = dconv(&proj2, &dyn2, &l.mlp_conv_base, 1, Some(&x2))?;
         }
-        let fh = rms_norm(&x, &self.final_norm, 1e-6)?; // [1,8,5120]
+        crate::gpuprof::region("norm.final");
         // only rows 1..7 feed the proposal — row 0 is the anchor and
-        // its logits/selector outputs are never read.
-        let fh7 = fh.narrow(1, 1, PROPOSALS)?.contiguous()?;
-        let logits = lin_apply(&fh7, lm_head)?.squeeze(0)?; // [7, vocab]
-        let sel = lin_apply(&fh7, &self.selector)?.squeeze(0)?; // [7, 256]
+        // its logits/selector outputs are never read: norm just those
+        // (a 7-row presum block when `draft_ps`: lm_head binds it with no
+        // pad copy, the selector takes the PreSums tile)
+        let (fh7, fh_ps) = rms_norm_ps(&x, &self.final_norm, 1, PROPOSALS)?; // [1,7,5120]
+        crate::gpuprof::region("lm_head");
+        let logits = lin_apply_ps(&fh7, lm_head, fh_ps)?.squeeze(0)?; // [7, vocab]
+        crate::gpuprof::region("selector");
+        let sel = lin_apply_ps(&fh7, &self.selector, fh_ps)?.squeeze(0)?; // [7, 256]
+        crate::gpuprof::region("select");
         self.select(&logits, &sel, anchor, temp, &mut uniform)
     }
 
@@ -591,22 +640,15 @@ impl DraftWeights {
         // CPU.
         const CHUNKS: usize = CB_ROWS / CHUNK_W;
         const CHUNK_W: usize = 512;
-        let cand_rows = logits.contiguous()?.to_dtype(DType::F32)?; // [n, 248320]
-        let chunked = cand_rows.reshape((n, CHUNKS, CHUNK_W))?;
-        let (vals, ids) = chunked.sort_last_dim(false)?; // desc per chunk
         // D1: ONE host sync for everything the walk needs — per-chunk
         // top-16 values, their in-chunk ids (u32 < 512, exact in f32) and
         // the selector rows, packed into one f32 buffer and read back
         // together (was three separate readbacks, each a commit + wait).
         let nk = n * CHUNKS * TOPK;
-        let top_v = vals.narrow(2, 0, TOPK)?.contiguous()?.flatten_all()?;
-        let top_i = ids
-            .narrow(2, 0, TOPK)?
-            .contiguous()?
-            .flatten_all()?
-            .to_dtype(DType::F32)?;
-        let sel_f = sel.to_dtype(DType::F32)?.flatten_all()?;
-        let packed: Vec<f32> = Tensor::cat(&[&top_v, &top_i, &sel_f], 0)?.to_vec1()?;
+        let packed: Vec<f32> = match Self::cand_packed_fused(logits, sel, n)? {
+            Some(p) => p,
+            None => Self::cand_packed_sort(logits, sel, n)?,
+        };
         if packed.len() != 2 * nk + n * RANK {
             bail!("cand_tables: packed readback {} != {}", packed.len(), 2 * nk + n * RANK);
         }
@@ -631,6 +673,45 @@ impl DraftWeights {
         }
         let sel_h: Vec<Vec<f32>> = sh.chunks_exact(RANK).map(|c| c.to_vec()).collect(); // [n, 256]
         Ok((unary, cand, sel_h))
+    }
+
+    /// The packed `[top-16 values | ids | selector]` vector via candle ops:
+    /// f32 cast, per-chunk descending sort, narrows, casts, one cat.
+    fn cand_packed_sort(logits: &Tensor, sel: &Tensor, n: usize) -> Result<Vec<f32>> {
+        const CHUNK_W: usize = 512;
+        const CHUNKS: usize = CB_ROWS / CHUNK_W;
+        let cand_rows = logits.contiguous()?.to_dtype(DType::F32)?; // [n, 248320]
+        let chunked = cand_rows.reshape((n, CHUNKS, CHUNK_W))?;
+        let (vals, ids) = chunked.sort_last_dim(false)?; // desc per chunk
+        let top_v = vals.narrow(2, 0, TOPK)?.contiguous()?.flatten_all()?;
+        let top_i = ids
+            .narrow(2, 0, TOPK)?
+            .contiguous()?
+            .flatten_all()?
+            .to_dtype(DType::F32)?;
+        let sel_f = sel.to_dtype(DType::F32)?.flatten_all()?;
+        Ok(Tensor::cat(&[&top_v, &top_i, &sel_f], 0)?.to_vec1()?)
+    }
+
+    /// The packed `[top-16 values | ids | selector]` vector in one Metal
+    /// dispatch (`quant_kernel::ChunkTop16`: candle's exact bitonic network
+    /// over a threadgroup copy — bit-identical to the sort path, which R0c
+    /// measured at 656 us/round). `None` off Metal, for non-bf16 inputs, or
+    /// with `TH_CAND_SORT=legacy` (read once) — the caller sorts.
+    fn cand_packed_fused(logits: &Tensor, sel: &Tensor, n: usize) -> Result<Option<Vec<f32>>> {
+        #[cfg(all(feature = "metal", target_os = "macos"))]
+        if logits.device().is_metal()
+            && logits.dtype() == DType::BF16
+            && sel.dtype() == DType::BF16
+            && !cand_sort_legacy()
+        {
+            let lg = logits.contiguous()?;
+            let sl = sel.contiguous()?;
+            let op = crate::quant_kernel::ChunkTop16 { n, chunks: CB_ROWS / 512, rank: RANK };
+            return Ok(Some(lg.apply_op2_no_bwd(&sl, &op)?.to_vec1()?));
+        }
+        let _ = (logits, sel, n);
+        Ok(None)
     }
 
     /// Codebook rows needed by the walk: pred rows for
@@ -1034,6 +1115,225 @@ mod tests {
         }
     }
 
+    /// The fused Metal top-16 (candle's bitonic network over a threadgroup
+    /// copy) reproduces the sort path's packed vector bit for bit —
+    /// including the tie order: logits are drawn from 24 bf16 levels, so
+    /// every 512-chunk is full of equal values.
+    #[cfg(all(feature = "metal", target_os = "macos"))]
+    #[test]
+    fn cand_packed_fused_matches_sort_bitwise() {
+        let dev = Device::new_metal(0).unwrap();
+        for &(n, levels) in &[(1usize, 24usize), (3, 24), (7, 3), (7, 4096)] {
+            let mut seed = 0x9e3779b97f4a7c15u64 ^ (n as u64 * 131 + levels as u64);
+            let mut next = || {
+                seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                (seed >> 33) as usize
+            };
+            let logits: Vec<f32> = (0..n * CB_ROWS)
+                .map(|_| (next() % levels) as f32 * 0.125 - 1.5)
+                .collect();
+            let sel: Vec<f32> = (0..n * RANK).map(|i| (i as f32 * 0.37).sin()).collect();
+            let lt = Tensor::from_vec(logits, (n, CB_ROWS), &dev).unwrap().to_dtype(DType::BF16).unwrap();
+            let st = Tensor::from_vec(sel, (n, RANK), &dev).unwrap().to_dtype(DType::BF16).unwrap();
+            let fused = DraftWeights::cand_packed_fused(&lt, &st, n).unwrap().expect("metal path");
+            let sorted = DraftWeights::cand_packed_sort(&lt, &st, n).unwrap();
+            assert_eq!(fused.len(), sorted.len(), "n {n} levels {levels}: length");
+            let diff = fused.iter().zip(&sorted).filter(|(a, b)| a.to_bits() != b.to_bits()).count();
+            assert_eq!(diff, 0, "n {n} levels {levels}: {diff} of {} entries differ", fused.len());
+        }
+    }
+
+    #[cfg(all(feature = "metal", target_os = "macos"))]
+    fn host_ring(seed: &mut u64) -> Vec<f32> {
+        (0..KV_HEADS * WINDOW * HEAD_DIM)
+            .map(|_| {
+                *seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                ((*seed >> 33) as f32 / (1u64 << 31) as f32) * 4.0 - 2.0
+            })
+            .collect()
+    }
+
+    /// The fused commit ring write (head views + one draft_ring_write)
+    /// leaves the K/V rings byte-identical to the legacy reshape + permute
+    /// + index upload + scatter_set path, including a slot wrap-around.
+    #[cfg(all(feature = "metal", target_os = "macos"))]
+    #[test]
+    fn ring_write_matches_scatter_bitwise() {
+        let dev = Device::new_metal(0).unwrap();
+        let mut seed = 0x2545f4914f6cdd1du64;
+        let mut host = |n: usize| -> Vec<f32> {
+            (0..n)
+                .map(|_| {
+                    seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                    ((seed >> 33) as f32 / (1u64 << 31) as f32) * 4.0 - 2.0
+                })
+                .collect()
+        };
+        // NB: Tensor::copy() aliases the buffer on Metal (MetalStorage::
+        // try_clone clones the Arc) — every ring below is built from host
+        // data so the two paths write into distinct buffers.
+        let dev_t = |v: &[f32]| Tensor::from_vec(v.to_vec(), v.len(), &dev).unwrap().to_dtype(DType::BF16).unwrap();
+        let mut rnd = |n: usize| -> Tensor { dev_t(&host(n)) };
+        let knorm = rnd(HEAD_DIM);
+        let mut ring_seed = 0x9e3779b97f4a7c15u64;
+        for &(rows, start) in &[(1usize, 0usize), (4, 17), (8, 2045), (3, 2047), (8, 777)] {
+            let qkv = rnd(rows * QKV).reshape((rows, QKV)).unwrap();
+            let hk = host_ring(&mut ring_seed);
+            let hv = host_ring(&mut ring_seed);
+            let ring = |h: &[f32]| dev_t(h).reshape((KV_HEADS, WINDOW, HEAD_DIM)).unwrap();
+            let init_k = ring(&hk);
+            let (cos, sin) = rope_table(&dev, start, rows).unwrap();
+            // legacy
+            let (lk, lv) = (ring(&hk), ring(&hv));
+            let k = qkv.narrow(1, ATTN, KV_HEADS * HEAD_DIM).unwrap().reshape((rows, KV_HEADS, HEAD_DIM)).unwrap();
+            let v = qkv
+                .narrow(1, ATTN + KV_HEADS * HEAD_DIM, KV_HEADS * HEAD_DIM)
+                .unwrap()
+                .reshape((rows, KV_HEADS, HEAD_DIM))
+                .unwrap();
+            let k = dnorm_rope(&k, &knorm, &cos, &sin).unwrap();
+            let kp = k.permute((1, 0, 2)).unwrap().contiguous().unwrap();
+            let vp = v.permute((1, 0, 2)).unwrap().contiguous().unwrap();
+            let slots: Vec<u32> = (0..rows).map(|r| ((start + r) % WINDOW) as u32).collect();
+            let idx = Tensor::new(slots.as_slice(), &dev)
+                .unwrap()
+                .reshape((1, rows, 1))
+                .unwrap()
+                .broadcast_as((KV_HEADS, rows, HEAD_DIM))
+                .unwrap()
+                .contiguous()
+                .unwrap();
+            lk.scatter_set(&idx, &kp, 1).unwrap();
+            lv.scatter_set(&idx, &vp, 1).unwrap();
+            // fused
+            let (fk, fv) = (ring(&hk), ring(&hv));
+            let heads = qkv.reshape((rows, QKV / HEAD_DIM, HEAD_DIM)).unwrap();
+            let k2 = heads.narrow(1, ATTN / HEAD_DIM, KV_HEADS).unwrap();
+            let v2 = heads.narrow(1, ATTN / HEAD_DIM + KV_HEADS, KV_HEADS).unwrap();
+            let k2 = dnorm_rope(&k2, &knorm, &cos, &sin).unwrap();
+            crate::quant_kernel::draft_ring_write(&k2, &v2, &fk, &fv, start % WINDOW).unwrap();
+            let bits = |t: &Tensor| -> Vec<u16> {
+                t.flatten_all().unwrap().to_vec1::<bf16>().unwrap().iter().map(|x| x.to_bits()).collect()
+            };
+            assert_eq!(bits(&k), bits(&k2), "rows {rows} start {start}: normed k");
+            let changed = bits(&lk).iter().zip(bits(&init_k)).filter(|(a, b)| **a != *b).count();
+            assert!(changed > 0, "rows {rows} start {start}: legacy path wrote nothing");
+            assert_eq!(bits(&lk), bits(&fk), "rows {rows} start {start}: ring k");
+            assert_eq!(bits(&lv), bits(&fv), "rows {rows} start {start}: ring v");
+        }
+    }
+
+    /// K45 follow-up: the draft presum producers. (1) `draft_rmsnorm_ps`
+    /// rows are bit-identical to `candle_nn::ops::rms_norm` (8-row block,
+    /// the 7-row final-norm block at row offset 1, the 2-D commit shape at
+    /// rows 1/3/8) with zero padding rows; `draft_conv_ps` is bit-identical
+    /// to `draft_conv_fused` (stage 0 plain, stage 1 with residual). (2) The
+    /// blocks' input sums are what the tiles would compute: every draft
+    /// projection shape fed the block (`presum: true`, PreSums split-K
+    /// tiles / bind-only paired lm_head-class tile) equals the plain-input
+    /// projection AND the projection of a `Q4AttachSums` block, bit for bit.
+    #[cfg(all(feature = "metal", target_os = "macos"))]
+    #[test]
+    fn draft_presum_producers_match_plain_bitwise() {
+        let dev = Device::new_metal(0).unwrap();
+        if !crate::quant_kernel::presum_enabled() {
+            return;
+        }
+        let seed = std::cell::Cell::new(0x51ed2701f3a5c4b9u64);
+        let next = || {
+            let s = seed.get().wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            seed.set(s);
+            (s >> 33) as u32
+        };
+        let host = |n: usize, lo: f32, hi: f32| -> Vec<f32> {
+            (0..n).map(|_| lo + (next() as f32 / (1u64 << 31) as f32) * (hi - lo)).collect()
+        };
+        let bf = |v: Vec<f32>, shape: &[usize]| {
+            Tensor::from_vec(v, shape, &dev).unwrap().to_dtype(DType::BF16).unwrap()
+        };
+        let bits = |t: &Tensor| -> Vec<u16> {
+            t.flatten_all().unwrap().to_vec1::<bf16>().unwrap().iter().map(|x| x.to_bits()).collect()
+        };
+        // random tiled Q4 weights in the draft's projection shapes
+        let qlin = |out: usize, inp: usize| -> Lin {
+            let ng = inp / 64;
+            let words: Vec<u32> = (0..out * inp / 8).map(|_| next() ^ (next() << 16)).collect();
+            let mut sbv = vec![bf16::ZERO; out * 2 * ng];
+            for o in 0..out {
+                for g in 0..ng {
+                    sbv[o * 2 * ng + g] = bf16::from_f32(0.002 + (next() % 1000) as f32 * 2e-5);
+                    sbv[o * 2 * ng + ng + g] = bf16::from_f32(((next() % 2001) as f32 - 1000.0) * 1e-4);
+                }
+            }
+            let wq = Tensor::from_vec(words, (out, inp / 8), &dev).unwrap();
+            let sb = Tensor::from_vec(sbv, (out, 2 * ng), &dev).unwrap();
+            crate::qwen35::maybe_tiled(Lin::Quant(QLin::new(wq, sb, out, inp, 64))).unwrap()
+        };
+        let dyn_w = qlin(DYN, HIDDEN);
+        let qkv_w = qlin(QKV, HIDDEN);
+        let sel_w = qlin(RANK, HIDDEN);
+        // paired-tile class (lm_head-like): the narrowest shape plain_tile
+        // routes to Paired256 on this GPU
+        let wide_out = crate::quant_kernel::PAIRED256_TILES_PER_CORE * crate::quant_kernel::gpu_cores() * 256;
+        assert_eq!(
+            crate::quant_kernel::plain_tile(wide_out, HIDDEN),
+            crate::quant_kernel::DecodeTile::Paired256,
+            "wide test weight must take the paired tile"
+        );
+        let wide_w = qlin(wide_out, HIDDEN);
+        let check_proj = |tag: &str, block: &Tensor, plain: &Tensor, w: &Lin| {
+            let rows = plain.elem_count() / HIDDEN;
+            let y_plain = lin_apply(plain, w).unwrap();
+            let y_ps = lin_apply_ps(block, w, true).unwrap();
+            let att = plain
+                .reshape((rows, HIDDEN))
+                .unwrap()
+                .apply_op1_no_bwd(&crate::quant_kernel::Q4AttachSums { m: rows, inp: HIDDEN })
+                .unwrap()
+                .narrow(0, 0, rows)
+                .unwrap();
+            let y_att = lin_apply_ps(&att, w, true).unwrap();
+            assert_eq!(bits(&y_ps), bits(&y_plain), "{tag}: block vs plain projection");
+            assert_eq!(bits(&y_ps), bits(&y_att), "{tag}: block vs attach-sums projection");
+        };
+        let w_norm = bf(host(HIDDEN, 0.5, 1.5), &[HIDDEN]);
+        for case in 0..3 {
+            let x = bf(host(ROWS * HIDDEN, -3.0, 3.0), &[1, ROWS, HIDDEN]);
+            // full 8-row block
+            let plain = rms_norm(&x, &w_norm, 1e-6).unwrap();
+            let blk = crate::quant_kernel::draft_rmsnorm_ps(&x, &w_norm, 1e-6, 0, ROWS).unwrap().expect("producer applies");
+            assert_eq!(blk.dims(), &[1, ROWS, HIDDEN]);
+            assert_eq!(bits(&blk), bits(&plain), "case {case}: rms_norm block values");
+            check_proj(&format!("case {case} dyn"), &blk, &plain, &dyn_w);
+            // final norm: rows 1..8 as a 7-row block (row 7 of the block zero)
+            let p7 = plain.narrow(1, 1, PROPOSALS).unwrap().contiguous().unwrap();
+            let b7 = crate::quant_kernel::draft_rmsnorm_ps(&x, &w_norm, 1e-6, 1, PROPOSALS).unwrap().expect("producer applies");
+            assert_eq!(bits(&b7), bits(&p7), "case {case}: 7-row block values");
+            check_proj(&format!("case {case} selector m=7"), &b7, &p7, &sel_w);
+            check_proj(&format!("case {case} wide m=7"), &b7, &p7, &wide_w);
+            // dconv: stage 0 (qkv input) and stage 1 with a residual
+            let dy = bf(host(ROWS * DYN, -0.5, 0.5), &[1, ROWS, DYN]);
+            let base = bf(host(4 * HIDDEN, -0.5, 0.5), &[4, HIDDEN]);
+            let res = bf(host(ROWS * HIDDEN, -2.0, 2.0), &[1, ROWS, HIDDEN]);
+            for (stage, r) in [(0usize, None), (1, Some(&res))] {
+                let cp = crate::draft_kernel::draft_conv_fused(&blk, &dy, &base, r, stage).unwrap();
+                let cb = crate::quant_kernel::draft_conv_ps(&blk, &dy, &base, r, stage).unwrap();
+                assert_eq!(bits(&cb), bits(&cp), "case {case} stage {stage}: dconv block values");
+                check_proj(&format!("case {case} stage {stage} qkv"), &cb, &cp, &qkv_w);
+            }
+            // 2-D commit shapes: [rows, 5120] at rows < 8 (the pad-copy case)
+            for rows in [1usize, 3, 8] {
+                let pr = bf(host(rows * HIDDEN, -3.0, 3.0), &[rows, HIDDEN]);
+                let pl = rms_norm(&pr, &w_norm, 1e-6).unwrap();
+                let (b2, is_blk) = rms_norm_ps(&pr, &w_norm, 0, rows).unwrap();
+                assert!(is_blk, "rows {rows}: producer applies");
+                assert_eq!(b2.dims(), &[rows, HIDDEN]);
+                assert_eq!(bits(&b2), bits(&pl), "case {case} rows {rows}: 2-D block values");
+                check_proj(&format!("case {case} commit qkv rows {rows}"), &b2, &pl, &qkv_w);
+            }
+        }
+    }
+
     /// D1: host codebook gather = row slices of the row-major table.
     #[test]
     fn gather_cb_host_rows() {
@@ -1049,6 +1349,24 @@ mod tests {
 
 }
 
+
+/// Draft commit writes the K/V rings through `quant_kernel::
+/// draft_ring_write` (one dispatch per layer, head views instead of
+/// reshape copies). `TH_DRAFT_RING=legacy` restores the permute + index
+/// upload + scatter_set path (A/B; ring contents are identical). Read once.
+#[cfg_attr(not(all(feature = "metal", target_os = "macos")), allow(dead_code))]
+fn ring_fused() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("TH_DRAFT_RING").as_deref() != Ok("legacy"))
+}
+
+/// `TH_CAND_SORT=legacy`: the candle sort path in `cand_tables` (A/B arm;
+/// the fused top-16 kernel is bit-identical). Read once.
+#[cfg_attr(not(all(feature = "metal", target_os = "macos")), allow(dead_code))]
+fn cand_sort_legacy() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("TH_CAND_SORT").as_deref() == Ok("legacy"))
+}
 
 /// `TH_DRAFT_EAGER` — eager draft ops instead of the fused kernels.
 /// Read once: propose checks it ~35 times per round.
@@ -1083,6 +1401,61 @@ fn dconv(
     draft_conv(x, dyn_, base, stage, residual)
 }
 
+/// K45 follow-up (draft presum producers): the single-slot propose and
+/// the decode-time commit hand the draft's m <= 8 projections (attn / mlp
+/// dyn, qkv, lm_head, selector, commit qkv) K45 presum blocks from their
+/// producers — `quant_kernel::draft_rmsnorm_ps` (candle's own rms_norm
+/// instantiation + the input-sum epilogue) and `draft_conv_ps`
+/// (`draft_conv_fused`'s expression + the epilogue) — so the split-K tiles
+/// take their PreSums kernels and m < 8 inputs skip the pad copy. Values
+/// are bit-identical. `TH_DRAFT_PS=0` (read once) restores plain inputs;
+/// off whenever K45 presum blocks are (`TH_Q4_PRESUM=0`, legacy policy).
+fn draft_ps() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| {
+        std::env::var("TH_DRAFT_PS").as_deref() != Ok("0")
+            && crate::quant_kernel::presum_enabled()
+    })
+}
+
+/// `rms_norm` of rows `row_off..row_off + t` of `x` (last dim = channels)
+/// → `([1, t, c]` (or `[t, c]` for 2-D `x`), is-a-presum-block). Falls back
+/// to `rms_norm` + narrow when the producer does not apply.
+fn rms_norm_ps(x: &Tensor, w: &Tensor, row_off: usize, t: usize) -> Result<(Tensor, bool)> {
+    #[cfg(all(feature = "metal", target_os = "macos"))]
+    if x.device().is_metal() && draft_ps() && !draft_eager() && x.is_contiguous() {
+        if let Some(b) = crate::quant_kernel::draft_rmsnorm_ps(x, w, 1e-6, row_off, t)? {
+            let b = if x.rank() == 2 { b.squeeze(0)? } else { b };
+            return Ok((b, true));
+        }
+    }
+    let n = rms_norm(x, w, 1e-6)?;
+    let rd = x.rank().saturating_sub(2);
+    let n = if row_off == 0 && t == x.dim(rd)? { n } else { n.narrow(rd, row_off, t)?.contiguous()? };
+    Ok((n, false))
+}
+
+/// `dconv` emitting a presum block (one 8-row draft block) when possible.
+fn dconv_ps(
+    x: &Tensor,
+    dyn_: &Tensor,
+    base: &Tensor,
+    stage: usize,
+    residual: Option<&Tensor>,
+) -> Result<(Tensor, bool)> {
+    #[cfg(all(feature = "metal", target_os = "macos"))]
+    if x.device().is_metal()
+        && draft_ps()
+        && !draft_eager()
+        && x.is_contiguous()
+        && x.elem_count() == ROWS * HIDDEN
+        && dyn_.is_contiguous()
+    {
+        return Ok((crate::quant_kernel::draft_conv_ps(x, dyn_, base, residual, stage)?, true));
+    }
+    Ok((dconv(x, dyn_, base, stage, residual)?, false))
+}
+
 /// head_norm_rope on the fused kernel when possible.
 fn dnorm_rope(
     x: &Tensor,
@@ -1097,5 +1470,7 @@ fn dnorm_rope(
     {
         return Ok(crate::draft_kernel::draft_norm_rope(x, w, cos, sin)?);
     }
-    head_norm_rope(x, w, cos, sin)
+    // the eager chain's candle rms_norm needs contiguous rows (callers may
+    // pass strided head views of the qkv projection)
+    head_norm_rope(&x.contiguous()?, w, cos, sin)
 }

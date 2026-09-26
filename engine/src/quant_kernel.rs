@@ -17,7 +17,8 @@
 #[cfg(all(feature = "metal", target_os = "macos"))]
 pub use metal_impl::{
     AffineDequant, AffineQmm, AffineQmpp, AffineQmppPrefill, AffineQmv, AffineQmvT, AffineQsg,
-    AllocBf16, Q4AttachSums, QMPP_BIND_ONLY, mpp_probe, qmvt_warm,
+    AllocBf16, ChunkTop16, Q4AttachSums, QMPP_BIND_ONLY, draft_conv_ps, draft_ring_write,
+    draft_rmsnorm_ps, mpp_probe, qmvt_warm,
 };
 
 // MARK: - decode (m <= 8) tile policy
@@ -461,6 +462,553 @@ mod metal_impl {
     use objc2_metal::MTLSize;
     use std::sync::OnceLock;
     use super::QmvtCfg;
+
+    // -- DFlash draft select: exact per-chunk top-16 ----------------------
+
+    /// The draft proposal's candidate tables in ONE dispatch: for each of
+    /// `n` bf16 logits rows (`chunks` x 512 columns), the top-16 values and
+    /// in-chunk ids of every 512-column chunk, plus the selector rows as
+    /// f32 — the exact packed vector `dflash::cand_tables` built from
+    /// `to_dtype(F32)` + `sort_last_dim` (candle's bitonic `asort_desc_f32`
+    /// + a value gather) + narrows + casts + a cat. Output (f32):
+    /// `[n*chunks*16 values | n*chunks*16 ids | n*rank selector]`.
+    ///
+    /// R0c measured the sort alone at 656 us/round: candle's argsort re-reads
+    /// every compared value from device memory at each of its 45 bitonic
+    /// stages. This kernel runs the IDENTICAL network (same compare/swap
+    /// rule per stage, desc order, 512 = ncols_pad) over a threadgroup copy
+    /// of the chunk's values: float(bf16) equals the f32-cast input, so every
+    /// comparison, swap and tie order is the same and the top-16 (values and
+    /// ids, in order) is bit-identical.
+    pub struct ChunkTop16 {
+        pub n: usize,
+        pub chunks: usize,
+        pub rank: usize,
+    }
+
+    const TOP16_SRC: &str = r#"
+#include <metal_stdlib>
+using namespace metal;
+#define SWAP(x, y) { auto tmp = (x); (x) = (y); (y) = tmp; }
+struct Top16Params { uint n; uint chunks; uint row_stride; uint sel_stride; uint rank; };
+// grid (n*chunks + 1) threadgroups x 512 threads; the last threadgroup
+// copies the selector rows (bf16 -> f32) behind the two top-16 planes.
+kernel void chunk_top16(
+    device const bfloat* x        [[buffer(0)]],
+    device const bfloat* sel      [[buffer(1)]],
+    device float*        out      [[buffer(2)]],
+    constant Top16Params& p       [[buffer(3)]],
+    uint tg  [[threadgroup_position_in_grid]],
+    uint col [[thread_position_in_threadgroup]])
+{
+    threadgroup float tv[512];
+    threadgroup uint  ti[512];
+    const uint nck = p.n * p.chunks;
+    if (tg >= nck) {
+        device float* so = out + 2 * nck * 16;
+        for (uint i = col; i < p.n * p.rank; i += 512) {
+            so[i] = float(sel[(i / p.rank) * p.sel_stride + i % p.rank]);
+        }
+        return;
+    }
+    const uint row = tg / p.chunks, chunk = tg % p.chunks;
+    // this thread's element (value, in-chunk id) — the network's position
+    // `col`. candle's argsort<SORT_DESC> (ncols == ncols_pad == 512) does,
+    // per stage (k, j), for each pair (c, c ^ j) with c < c ^ j: in a
+    // descending segment ((c & k) == 0) swap iff x[c] < x[c^j], else swap
+    // iff x[c] > x[c^j]. Both threads of a pair evaluate that same rule on
+    // the same two elements, so each can take its own result: partners
+    // j < 32 sit in the same simdgroup (register shuffles, no barrier),
+    // j >= 32 exchange through threadgroup memory.
+    float v = float(x[row * p.row_stride + chunk * 512 + col]);
+    uint i = col;
+    for (uint k = 2; k <= 512; k *= 2) {
+        for (uint j = k / 2; j > 0; j /= 2) {
+            float pv;
+            uint pi;
+            if (j < 32) {
+                pv = simd_shuffle_xor(v, ushort(j));
+                pi = simd_shuffle_xor(i, ushort(j));
+            } else {
+                tv[col] = v;
+                ti[col] = i;
+                threadgroup_barrier(mem_flags::mem_threadgroup);
+                pv = tv[col ^ j];
+                pi = ti[col ^ j];
+                threadgroup_barrier(mem_flags::mem_threadgroup);
+            }
+            const bool lower = (col & j) == 0;          // this thread is c
+            const float a = lower ? v : pv;              // element at c
+            const float b = lower ? pv : v;              // element at c ^ j
+            const bool desc = (((lower ? col : (col ^ j)) & k) == 0);
+            const bool swap = desc ? (a < b) : (a > b);
+            if (swap) {
+                v = pv;
+                i = pi;
+            }
+        }
+    }
+    if (col < 16) {
+        const uint o = tg * 16 + col;
+        out[o] = v;
+        out[nck * 16 + o] = float(i);
+    }
+}
+"#;
+
+    static TOP16_PIPE: OnceLock<ComputePipeline> = OnceLock::new();
+
+    impl CustomOp2 for ChunkTop16 {
+        fn name(&self) -> &'static str {
+            "chunk-top16"
+        }
+        fn cpu_fwd(&self, _: &CpuStorage, _: &Layout, _: &CpuStorage, _: &Layout) -> Result<(CpuStorage, Shape)> {
+            candle_core::bail!("chunk-top16: Metal only")
+        }
+        fn metal_fwd(
+            &self,
+            s_x: &MetalStorage,
+            l_x: &Layout,
+            s_s: &MetalStorage,
+            l_s: &Layout,
+        ) -> Result<(MetalStorage, Shape)> {
+            if s_x.dtype() != DType::BF16 || s_s.dtype() != DType::BF16 {
+                candle_core::bail!("chunk-top16: logits / selector must be bf16");
+            }
+            let (xd, sd) = (l_x.shape().dims(), l_s.shape().dims());
+            if xd.len() != 2 || xd[0] != self.n || xd[1] != self.chunks * 512
+                || sd.len() != 2 || sd[0] != self.n || sd[1] != self.rank
+                || l_x.stride()[1] != 1 || l_s.stride()[1] != 1
+            {
+                candle_core::bail!(
+                    "chunk-top16: logits {:?}/{:?} selector {:?}/{:?} vs n {} chunks {} rank {}",
+                    xd, l_x.stride(), sd, l_s.stride(), self.n, self.chunks, self.rank
+                );
+            }
+            let device = s_x.device();
+            if TOP16_PIPE.get().is_none() {
+                let raw = device.metal_device();
+                let lib = raw
+                    .new_library_with_source(TOP16_SRC, None)
+                    .map_err(candle_core::Error::wrap)?;
+                let f = lib.get_function("chunk_top16", None).map_err(candle_core::Error::wrap)?;
+                let pipe = raw
+                    .new_compute_pipeline_state_with_function(&f)
+                    .map_err(candle_core::Error::wrap)?;
+                let _ = TOP16_PIPE.set(pipe);
+            }
+            let pipe = TOP16_PIPE.get().unwrap();
+            if pipe.max_total_threads_per_threadgroup() < 512 {
+                candle_core::bail!("chunk-top16: pipeline allows < 512 threads");
+            }
+            let nck = self.n * self.chunks;
+            let elems = 2 * nck * 16 + self.n * self.rank;
+            let out = device
+                .new_buffer_builder()
+                .with_size_for(elems, DType::F32)
+                .with_label("draft.top16")
+                .build()
+                .map_err(candle_core::Error::wrap)?;
+            #[repr(C)]
+            struct Top16Params {
+                n: u32,
+                chunks: u32,
+                row_stride: u32,
+                sel_stride: u32,
+                rank: u32,
+            }
+            let params = Top16Params {
+                n: self.n as u32,
+                chunks: self.chunks as u32,
+                row_stride: l_x.stride()[0] as u32,
+                sel_stride: l_s.stride()[0] as u32,
+                rank: self.rank as u32,
+            };
+            let encoder = device.command_encoder().map_err(candle_core::Error::wrap)?;
+            encoder.set_label("chunk_top16");
+            let enc_ref = &encoder;
+            let enc: &candle_metal_kernels::metal::ComputeCommandEncoder =
+                enc_ref.encoder().as_ref();
+            enc.set_compute_pipeline_state(pipe);
+            enc.set_input_buffer(0, Some(s_x.buffer()), l_x.start_offset() * 2);
+            enc.set_input_buffer(1, Some(s_s.buffer()), l_s.start_offset() * 2);
+            enc.set_output_buffer(2, Some(&out), 0);
+            enc.set_bytes(3, &params);
+            enc.dispatch_thread_groups(
+                MTLSize { width: nck + 1, height: 1, depth: 1 },
+                MTLSize { width: 512, height: 1, depth: 1 },
+            );
+            drop(encoder);
+            Ok((MetalStorage::new(out, device.clone(), elems, DType::F32), elems.into()))
+        }
+    }
+
+    // -- DFlash draft commit: ring write ----------------------------------
+
+    const RING_SRC: &str = r#"
+#include <metal_stdlib>
+using namespace metal;
+struct RingParams { int rows; int start_slot; int ks; int vs; int window; int heads; };
+// grid (rows, heads) threadgroups x 128 threads: ring[h][(start + r) % W][d]
+// = src[r][h][d] for K and V (src rows strided by ks / vs elements).
+kernel void draft_ring_write(
+    device const bfloat* k   [[buffer(0)]],
+    device const bfloat* v   [[buffer(1)]],
+    device bfloat*       rk  [[buffer(2)]],
+    device bfloat*       rv  [[buffer(3)]],
+    constant RingParams& p   [[buffer(4)]],
+    uint2 g [[threadgroup_position_in_grid]],
+    uint  t [[thread_index_in_threadgroup]])
+{
+    const int r = int(g.x), h = int(g.y);
+    const int slot = (p.start_slot + r) % p.window;
+    const ulong dst = (ulong(h) * ulong(p.window) + ulong(slot)) * 128ul + t;
+    rk[dst] = k[r * p.ks + h * 128 + int(t)];
+    rv[dst] = v[r * p.vs + h * 128 + int(t)];
+}
+"#;
+
+    static RING_PIPE: OnceLock<ComputePipeline> = OnceLock::new();
+
+    /// DFlash draft commit: write `rows` K and V rows (`[rows, heads, 128]`
+    /// bf16, rows strided, heads contiguous) into the per-layer rings
+    /// `[heads, window, 128]` at slots `(start_slot + r) % window`, in place,
+    /// in one dispatch — replaces two permute copies, a host-built index
+    /// upload, a broadcast copy and two `scatter_set`s per layer. The rings
+    /// are the caller's persistent state, bound as tracked outputs (later
+    /// readers — the next propose's draft attention — get barriers); no
+    /// storage is created around an existing buffer.
+    pub fn draft_ring_write(
+        k: &candle_core::Tensor,
+        v: &candle_core::Tensor,
+        ring_k: &candle_core::Tensor,
+        ring_v: &candle_core::Tensor,
+        start_slot: usize,
+    ) -> Result<()> {
+        use candle_core::Storage;
+        let (rows, heads) = (k.dim(0)?, k.dim(1)?);
+        let window = ring_k.dim(1)?;
+        for (t, name) in [(k, "k"), (v, "v")] {
+            let st = t.stride();
+            if t.dims() != [rows, heads, 128] || st[1] != 128 || st[2] != 1 || t.dtype() != DType::BF16 {
+                candle_core::bail!("draft_ring_write: {name} {:?}/{:?} needs [rows, heads, 128] bf16 with contiguous heads", t.dims(), st);
+            }
+        }
+        for (t, name) in [(ring_k, "ring_k"), (ring_v, "ring_v")] {
+            if t.dims() != [heads, window, 128] || !t.is_contiguous() || t.dtype() != DType::BF16 {
+                candle_core::bail!("draft_ring_write: {name} {:?} needs contiguous [{heads}, {window}, 128] bf16", t.dims());
+            }
+        }
+        if rows == 0 || rows > window || start_slot >= window {
+            candle_core::bail!("draft_ring_write: rows {rows} start {start_slot} window {window}");
+        }
+        let (gk, lk) = k.storage_and_layout();
+        let (gv, lv) = v.storage_and_layout();
+        let (grk, lrk) = ring_k.storage_and_layout();
+        let (grv, lrv) = ring_v.storage_and_layout();
+        let (Storage::Metal(sk), Storage::Metal(sv), Storage::Metal(srk), Storage::Metal(srv)) =
+            (&*gk, &*gv, &*grk, &*grv)
+        else {
+            candle_core::bail!("draft_ring_write: Metal only")
+        };
+        if srk.buffer() == srv.buffer() && lrk.start_offset() == lrv.start_offset() {
+            candle_core::bail!("draft_ring_write: ring_k aliases ring_v");
+        }
+        let device = sk.device();
+        if RING_PIPE.get().is_none() {
+            let raw = device.metal_device();
+            let lib = raw
+                .new_library_with_source(RING_SRC, None)
+                .map_err(candle_core::Error::wrap)?;
+            let f = lib.get_function("draft_ring_write", None).map_err(candle_core::Error::wrap)?;
+            let pipe = raw
+                .new_compute_pipeline_state_with_function(&f)
+                .map_err(candle_core::Error::wrap)?;
+            let _ = RING_PIPE.set(pipe);
+        }
+        #[repr(C)]
+        struct RingParams {
+            rows: i32,
+            start_slot: i32,
+            ks: i32,
+            vs: i32,
+            window: i32,
+            heads: i32,
+        }
+        let params = RingParams {
+            rows: rows as i32,
+            start_slot: start_slot as i32,
+            ks: lk.stride()[0] as i32,
+            vs: lv.stride()[0] as i32,
+            window: window as i32,
+            heads: heads as i32,
+        };
+        let encoder = device.command_encoder().map_err(candle_core::Error::wrap)?;
+        encoder.set_label("draft_ring_write");
+        let enc_ref = &encoder;
+        let enc: &candle_metal_kernels::metal::ComputeCommandEncoder =
+            enc_ref.encoder().as_ref();
+        enc.set_compute_pipeline_state(RING_PIPE.get().unwrap());
+        enc.set_input_buffer(0, Some(sk.buffer()), lk.start_offset() * 2);
+        enc.set_input_buffer(1, Some(sv.buffer()), lv.start_offset() * 2);
+        enc.set_output_buffer(2, Some(srk.buffer()), lrk.start_offset() * 2);
+        enc.set_output_buffer(3, Some(srv.buffer()), lrv.start_offset() * 2);
+        enc.set_bytes(4, &params);
+        enc.dispatch_thread_groups(
+            MTLSize { width: rows, height: heads, depth: 1 },
+            MTLSize { width: 128, height: 1, depth: 1 },
+        );
+        drop(encoder);
+        Ok(())
+    }
+
+    // -- DFlash draft presum producers (K45 follow-up) ---------------------
+
+    /// candle's own `rms_norm<bfloat, 1024>` (reduce.metal — the exact
+    /// instantiation `candle_nn::ops::rms_norm` runs for the draft's C = 5120
+    /// rows: one 1024-thread threadgroup per row), compiled from candle's
+    /// REDUCE source with a K45 presum epilogue appended: after the row is
+    /// normed, a device barrier, then per 64-channel quant group the input
+    /// sum with the decode tiles' lane pattern `simd_sum(x[64g+l] +
+    /// x[64g+32+l])`. Rows >= t are the block's zero padding.
+    const DRN_PS_SRC: &str = r#"
+// th-engine: DFlash draft presum producer (see quant_kernel.rs)
+kernel void th_draft_rmsnorm_ps(
+    constant uint &src_numel    [[buffer(0)]],
+    constant uint &el_per_block [[buffer(1)]],
+    device const bfloat *src    [[buffer(2)]],
+    device bfloat *dst          [[buffer(3)]],
+    device const bfloat *alpha  [[buffer(4)]],
+    constant float &eps         [[buffer(5)]],
+    constant uint &t_rows       [[buffer(6)]],
+    uint tid    [[ thread_index_in_threadgroup ]],
+    uint dst_id [[ threadgroup_position_in_grid ]],
+    uint lane   [[ thread_index_in_simdgroup ]],
+    uint sg     [[ simdgroup_index_in_threadgroup ]])
+{
+    threadgroup RMS<float> shared[1024];
+    threadgroup float total;
+    const uint C = el_per_block;
+    const uint ng = C / 64;
+    device float *sums = (device float *)(dst + 8 * C);
+    if (dst_id >= t_rows) {
+        for (uint i = tid; i < C; i += 1024) dst[dst_id * C + i] = bfloat(0.0f);
+        for (uint g = tid; g < ng; g += 1024) sums[g * 8 + dst_id] = 0.0f;
+        return;
+    }
+    rms_norm<bfloat, 1024>(src_numel, el_per_block, src, dst, alpha, eps,
+                           shared, total, tid, dst_id);
+    threadgroup_barrier(mem_flags::mem_device);
+    for (uint g = sg; g < ng; g += 32) {
+        const uint o = dst_id * C + g * 64 + lane;
+        const float s = simd_sum(float(dst[o]) + float(dst[o + 32]));
+        if (lane == 0) sums[g * 8 + dst_id] = s;
+    }
+}
+"#;
+
+    /// `draft_conv_fused`'s per-element expression (draft_kernel.rs, stage
+    /// 0/1 without and with residual — the same source text) regrouped so
+    /// that one simdgroup owns one (row, 64-channel quant group): lane l
+    /// computes channels 64g+l and 64g+32+l, writes them into the block and
+    /// emits the group's presum sum with the tiles' lane pattern.
+    const DCONV_PS_SRC: &str = r#"
+#include <metal_stdlib>
+using namespace metal;
+struct DcpParams { int stage; int has_res; int t; int _pad; };
+// grid (C/64 groups, 8 rows) threadgroups x 32 threads.
+kernel void th_draft_conv_ps(
+    device const bfloat* x     [[buffer(0)]],
+    device const bfloat* dyn   [[buffer(1)]],
+    device const bfloat* base  [[buffer(2)]],
+    device const bfloat* res   [[buffer(3)]],
+    device bfloat*       out   [[buffer(4)]],
+    constant DcpParams&  p     [[buffer(5)]],
+    uint2 tg   [[threadgroup_position_in_grid]],
+    uint  lane [[thread_index_in_simdgroup]])
+{
+    const int gq = int(tg.x), r = int(tg.y);
+    device float* sums = (device float*)(out + 8 * 5120);
+    if (r >= p.t) {
+        out[r * 5120 + gq * 64 + int(lane)] = bfloat(0.0f);
+        out[r * 5120 + gq * 64 + 32 + int(lane)] = bfloat(0.0f);
+        if (lane == 0) sums[gq * 8 + r] = 0.0f;
+        return;
+    }
+    float h[2];
+    for (int k = 0; k < 2; ++k) {
+        const int c = gq * 64 + k * 32 + int(lane);
+        const int i = r * 5120 + c;
+        const int g = c / 16;
+        const int off = p.stage * 640;
+        const float t0 = float(dyn[r * 1280 + off + g])
+                       + float(base[p.stage * 2 * 5120 + c]);
+        const float t1 = float(dyn[r * 1280 + off + 320 + g])
+                       + float(base[(p.stage * 2 + 1) * 5120 + c]);
+        const float prev = (r & 7) > 0 ? float(x[i - 5120]) : 0.0f;
+        float v = float(x[i]) * t0 + prev * t1;
+        if (p.has_res) v += float(res[i]);
+        const bfloat b = bfloat(v);
+        out[i] = b;
+        h[k] = float(b);
+    }
+    const float s = simd_sum(h[0] + h[1]);
+    if (lane == 0) sums[gq * 8 + r] = s;
+}
+"#;
+
+    static DRN_PS_PIPE: OnceLock<Option<ComputePipeline>> = OnceLock::new();
+    static DCONV_PS_PIPE: OnceLock<ComputePipeline> = OnceLock::new();
+
+    fn metal_parts(
+        t: &candle_core::Tensor,
+    ) -> Result<(candle_core::MetalDevice, candle_metal_kernels::metal::Buffer, usize)> {
+        let (st, l) = t.storage_and_layout();
+        match &*st {
+            candle_core::Storage::Metal(m) => {
+                Ok((m.device().clone(), m.buffer().clone(), l.start_offset() * t.dtype().size_in_bytes()))
+            }
+            _ => candle_core::bail!("draft presum producer: Metal only"),
+        }
+    }
+
+    /// DFlash draft RMSNorm emitting a K45 presum block. `x` holds >= `row_off
+    /// + t` contiguous rows of `c` (any leading dims); rows `row_off..row_off
+    /// + t` are normed into block rows `0..t` (bit-identical to
+    /// `candle_nn::ops::rms_norm` on those rows), rows `t..8` are zero, then
+    /// the input sums. Returns the `[1, t, c]` view of the block (the buffer
+    /// holds `presum_block_bytes(c)`), or `None` when the shape does not match
+    /// candle's 1024-thread instantiation (c < 2048, c % 64 != 0, t not in
+    /// 1..=8) — the caller keeps `rms_norm`.
+    pub fn draft_rmsnorm_ps(
+        x: &candle_core::Tensor,
+        w: &candle_core::Tensor,
+        eps: f32,
+        row_off: usize,
+        t: usize,
+    ) -> Result<Option<candle_core::Tensor>> {
+        let c = *x.dims().last().unwrap_or(&0);
+        let rows_avail = x.elem_count() / c.max(1);
+        if c < 2048 || c % 64 != 0 || !(1..=8).contains(&t) || row_off + t > rows_avail
+            || !x.is_contiguous() || !w.is_contiguous() || w.elem_count() != c
+            || x.dtype() != DType::BF16 || w.dtype() != DType::BF16
+        {
+            return Ok(None);
+        }
+        let (device, xb, xo) = metal_parts(x)?;
+        let (_, wb, wo) = metal_parts(w)?;
+        let pipe = DRN_PS_PIPE.get_or_init(|| {
+            let raw = device.metal_device();
+            let src = format!("{}\n{}", candle_metal_kernels::source::REDUCE, DRN_PS_SRC);
+            let lib = raw.new_library_with_source(&src, None).ok()?;
+            let f = lib.get_function("th_draft_rmsnorm_ps", None).ok()?;
+            let p = raw.new_compute_pipeline_state_with_function(&f).ok()?;
+            (p.max_total_threads_per_threadgroup() >= 1024).then_some(p)
+        });
+        let Some(pipe) = pipe.as_ref() else {
+            return Ok(None);
+        };
+        let block = crate::outbuf::kernel_out(
+            (super::presum_block_bytes(c) / 2,),
+            DType::BF16,
+            x.device(),
+        )?;
+        let (_, bb, bo) = metal_parts(&block)?;
+        let (numel, epb, trows) = ((t * c) as u32, c as u32, t as u32);
+        let encoder = device.command_encoder().map_err(candle_core::Error::wrap)?;
+        encoder.set_label("th_draft_rmsnorm_ps");
+        let enc_ref = &encoder;
+        let enc: &candle_metal_kernels::metal::ComputeCommandEncoder = enc_ref.encoder().as_ref();
+        enc.set_compute_pipeline_state(pipe);
+        enc.set_bytes(0, &numel);
+        enc.set_bytes(1, &epb);
+        enc.set_input_buffer(2, Some(&xb), xo + row_off * c * 2);
+        enc.set_output_buffer(3, Some(&bb), bo);
+        enc.set_input_buffer(4, Some(&wb), wo);
+        enc.set_bytes(5, &eps);
+        enc.set_bytes(6, &trows);
+        enc.dispatch_thread_groups(
+            MTLSize { width: 8, height: 1, depth: 1 },
+            MTLSize { width: 1024, height: 1, depth: 1 },
+        );
+        drop(encoder);
+        Ok(Some(block.narrow(0, 0, t * c)?.reshape((1, t, c))?))
+    }
+
+    /// `draft_conv_fused` emitting a K45 presum block: `x` / `res` are
+    /// contiguous `[1, 8, 5120]` (one draft block), `dyn_` `[1, 8, 1280]`,
+    /// `base` `[4, 5120]`. Values are bit-identical to `draft_conv_fused`;
+    /// returns the `[1, 8, 5120]` view of the block.
+    pub fn draft_conv_ps(
+        x: &candle_core::Tensor,
+        dyn_: &candle_core::Tensor,
+        base: &candle_core::Tensor,
+        res: Option<&candle_core::Tensor>,
+        stage: usize,
+    ) -> Result<candle_core::Tensor> {
+        const C: usize = 5120;
+        for (t, n, name) in [(x, 8 * C, "x"), (dyn_, 8 * 1280, "dyn"), (base, 4 * C, "base")] {
+            if !t.is_contiguous() || t.elem_count() != n || t.dtype() != DType::BF16 {
+                candle_core::bail!("draft_conv_ps: {name} {:?} needs {n} contiguous bf16", t.dims());
+            }
+        }
+        if let Some(r) = res {
+            if !r.is_contiguous() || r.elem_count() != 8 * C || r.dtype() != DType::BF16 {
+                candle_core::bail!("draft_conv_ps: res {:?} needs [1, 8, 5120] contiguous bf16", r.dims());
+            }
+        }
+        if stage > 1 {
+            candle_core::bail!("draft_conv_ps: stage {stage}");
+        }
+        let (device, xb, xo) = metal_parts(x)?;
+        let (_, db, dbo) = metal_parts(dyn_)?;
+        let (_, bsb, bso) = metal_parts(base)?;
+        let (rb, ro) = match res {
+            Some(r) => {
+                let (_, b, o) = metal_parts(r)?;
+                (b, o)
+            }
+            None => (xb.clone(), xo),
+        };
+        if DCONV_PS_PIPE.get().is_none() {
+            let raw = device.metal_device();
+            let lib = raw
+                .new_library_with_source(DCONV_PS_SRC, None)
+                .map_err(candle_core::Error::wrap)?;
+            let f = lib.get_function("th_draft_conv_ps", None).map_err(candle_core::Error::wrap)?;
+            let p = raw
+                .new_compute_pipeline_state_with_function(&f)
+                .map_err(candle_core::Error::wrap)?;
+            let _ = DCONV_PS_PIPE.set(p);
+        }
+        let block = crate::outbuf::kernel_out((super::presum_block_bytes(C) / 2,), DType::BF16, x.device())?;
+        let (_, bb, bo) = metal_parts(&block)?;
+        #[repr(C)]
+        struct DcpParams {
+            stage: i32,
+            has_res: i32,
+            t: i32,
+            _pad: i32,
+        }
+        let params = DcpParams { stage: stage as i32, has_res: res.is_some() as i32, t: 8, _pad: 0 };
+        let encoder = device.command_encoder().map_err(candle_core::Error::wrap)?;
+        encoder.set_label("th_draft_conv_ps");
+        let enc_ref = &encoder;
+        let enc: &candle_metal_kernels::metal::ComputeCommandEncoder = enc_ref.encoder().as_ref();
+        enc.set_compute_pipeline_state(DCONV_PS_PIPE.get().unwrap());
+        enc.set_input_buffer(0, Some(&xb), xo);
+        enc.set_input_buffer(1, Some(&db), dbo);
+        enc.set_input_buffer(2, Some(&bsb), bso);
+        enc.set_input_buffer(3, Some(&rb), ro);
+        enc.set_output_buffer(4, Some(&bb), bo);
+        enc.set_bytes(5, &params);
+        enc.dispatch_thread_groups(
+            MTLSize { width: C / 64, height: 8, depth: 1 },
+            MTLSize { width: 32, height: 1, depth: 1 },
+        );
+        drop(encoder);
+        Ok(block.narrow(0, 0, 8 * C)?.reshape((1, 8, C))?)
+    }
 
     /// Packed dims for one affine-quantized `[out, in]` weight.
     /// `gs` is baked into the shader (power of two; 64 for MLX defaults).

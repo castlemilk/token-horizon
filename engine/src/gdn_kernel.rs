@@ -26,8 +26,8 @@
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
 pub use metal_impl::{
-    AddRmsNorm, GdnConv, GdnGateNorm, GdnQkNorm, GdnStep, gdn_conv_carry, gdn_fused_step,
-    gdn_step,
+    AddRmsNorm, GdnCommitLayer, GdnConv, GdnGateNorm, GdnQkNorm, GdnStep, gdn_commit_all,
+    gdn_conv_carry, gdn_fused_step, gdn_step,
 };
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
@@ -472,6 +472,200 @@ kernel void gdn_fused_step(
     }
 }
 
+// Wide form of gdn_fused_step (R0c: 48 threadgroups x 8 simdgroups left
+// each simdgroup walking 16 state rows serially, ~38 us per layer): the
+// same kernel text with WSG simdgroups per value head. Every element,
+// row norm and state row is computed by one thread / one simdgroup with
+// the identical expression and lane pattern — only the work-to-simdgroup
+// strides change — so outputs are bit-identical to gdn_fused_step.
+#ifndef WSG
+#define WSG 32
+#endif
+kernel void gdn_fused_step_w(
+    device const bfloat* xnew  [[buffer(0)]],
+    device const bfloat* cst   [[buffer(1)]],
+    device const bfloat* cw    [[buffer(2)]],
+    device const float*  dsi   [[buffer(3)]],
+    device const bfloat* ab    [[buffer(4)]],
+    device const bfloat* zz    [[buffer(5)]],
+    device const bfloat* nw    [[buffer(6)]],
+    device bfloat*       y     [[buffer(7)]],
+    device bfloat*       pack  [[buffer(8)]],
+    constant GdnFusedParams& p [[buffer(9)]],
+    device float*        dso   [[buffer(10)]],
+    device bfloat*       cso   [[buffer(11)]],
+    uint hv  [[threadgroup_position_in_grid]],
+    uint tid [[thread_index_in_threadgroup]],
+    uint lane [[thread_index_in_simdgroup]],
+    uint sg  [[simdgroup_index_in_threadgroup]])
+{
+    constexpr int C = 2 * HK * DK + HV * DV;
+    constexpr int REP = HV / HK;
+    const uint hk = hv / REP;
+    const int T = p.t;
+    const bool owner = (hv % REP) == 0;
+
+    threadgroup float qn[TMAX * DK];
+    threadgroup float kn[TMAX * DK];
+    threadgroup float vr[TMAX * DV];
+    threadgroup float ov[TMAX * DV];
+    threadgroup float gdec[TMAX];
+    threadgroup float bta[TMAX];
+
+    // g/beta per row — computed once, shared across sgs
+    {
+        const float eA = exp(p.a_log[hv]);
+        const float dtb = p.dt_bias[hv];
+        for (int t = int(tid); t < T; t += WSG * 32) {
+            const float ap = float(ab[t * p.abs_ + hv]) + dtb;
+            gdec[t] = exp(-eA * (ap > 30.0f ? ap : log(1.0f + exp(ap))));
+            bta[t] = 1.0f / (1.0f + exp(-float(ab[t * p.abs_ + HV + hv])));
+        }
+    }
+
+    // ---- conv window carry: new row r = source row T + r of [cst | xnew]
+    // (this head's v channels; its k-head's q/k channels by the owner) ----
+    for (uint w = tid; w < uint(3 * DK) * 3u; w += WSG * 32) {
+        const int i = int(w) % (3 * DK);
+        const int r = int(w) / (3 * DK);
+        if (i < 2 * DK && !owner) continue;
+        int g;
+        if (i < DK) g = int(hk) * DK + i;
+        else if (i < 2 * DK) g = HK * DK + int(hk) * DK + (i - DK);
+        else g = 2 * HK * DK + int(hv) * DV + (i - 2 * DK);
+        const int s = T + r;
+        cso[r * C + g] = s < 3 ? cst[s * p.ss + g] : xnew[(s - 3) * p.xs + g];
+    }
+
+    // ---- conv + silu: this head's 384 channels x T rows ----
+    for (uint w = tid; w < uint(3 * DK) * uint(T); w += WSG * 32) {
+        const int i = int(w) % (3 * DK);   // local channel
+        const int t = int(w) / (3 * DK);   // row
+        int g;
+        if (i < DK) g = int(hk) * DK + i;
+        else if (i < 2 * DK) g = HK * DK + int(hk) * DK + (i - DK);
+        else g = 2 * HK * DK + int(hv) * DV + (i - 2 * DK);
+        float acc = 0.0f;
+        for (int j = 0; j < 4; ++j) {
+            const int r = t + j;
+            const float v = r < 3
+                ? float(cst[r * p.ss + g])
+                : float(xnew[(r - 3) * p.xs + g]);
+            acc += float(cw[g * 4 + j]) * v;
+        }
+        const float sv = float(bfloat(acc / (1.0f + exp(-acc))));
+        if (i < DK) qn[t * DK + i] = sv;
+        else if (i < 2 * DK) kn[t * DK + i - DK] = sv;
+        else {
+            vr[t * DV + i - 2 * DK] = sv;
+            if (p.pack) pack[t * C + g] = bfloat(sv);   // v rows go raw to the stash
+        }
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    // ---- per-row l2norm on q/k (all siblings recompute; owner writes pack) ----
+    for (int t = int(sg); t < T; t += WSG) {
+        float qs = 0.0f, ks = 0.0f;
+        for (int i = 0; i < DK / 32; ++i) {
+            const float q = qn[t * DK + lane * 4 + i];
+            const float k = kn[t * DK + lane * 4 + i];
+            qs += q * q;
+            ks += k * k;
+        }
+        qs = simd_sum(qs);
+        ks = simd_sum(ks);
+        const float qi = rsqrt(qs / DK + 1e-6f) / float(DK);
+        const float ki = rsqrt(ks / DK + 1e-6f) * rsqrt(float(DK));
+        for (int i = 0; i < DK / 32; ++i) {
+            const int e = lane * 4 + i;
+            const bfloat qb = bfloat(qn[t * DK + e] * qi);
+            const bfloat kb = bfloat(kn[t * DK + e] * ki);
+            qn[t * DK + e] = float(qb);
+            kn[t * DK + e] = float(kb);
+            if (owner && p.pack) {
+                pack[t * C + hk * DK + e] = qb;
+                pack[t * C + HK * DK + hk * DK + e] = kb;
+            }
+        }
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    // ---- delta recurrence: one simdgroup per dv row, stride 8 ----
+    for (uint dv = sg; dv < uint(DV); dv += WSG) {
+        device const float* sr = dsi + (hv * DV + int(dv)) * DK;
+        device float* sw = dso + (hv * DV + int(dv)) * DK;
+        float s0 = sr[4 * lane + 0], s1 = sr[4 * lane + 1];
+        float s2 = sr[4 * lane + 2], s3 = sr[4 * lane + 3];
+        for (int t = 0; t < T; ++t) {
+            const float k0 = kn[t * DK + 4 * lane + 0];
+            const float k1 = kn[t * DK + 4 * lane + 1];
+            const float k2 = kn[t * DK + 4 * lane + 2];
+            const float k3 = kn[t * DK + 4 * lane + 3];
+            const float g = gdec[t];
+            s0 *= g; s1 *= g; s2 *= g; s3 *= g;
+            float kv = s0 * k0 + s1 * k1 + s2 * k2 + s3 * k3;
+            kv = simd_sum(kv);
+            const float delta = (vr[t * DV + int(dv)] - kv) * bta[t];
+            s0 += k0 * delta; s1 += k1 * delta;
+            s2 += k2 * delta; s3 += k3 * delta;
+            float out = s0 * qn[t * DK + 4 * lane + 0]
+                      + s1 * qn[t * DK + 4 * lane + 1]
+                      + s2 * qn[t * DK + 4 * lane + 2]
+                      + s3 * qn[t * DK + 4 * lane + 3];
+            out = simd_sum(out);
+            if (lane == 0) ov[t * DV + int(dv)] = float(bfloat(out));
+        }
+        sw[4 * lane + 0] = s0; sw[4 * lane + 1] = s1;
+        sw[4 * lane + 2] = s2; sw[4 * lane + 3] = s3;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (p.commit) return;   // rollback re-scan: no gated norm / y
+
+    // ---- gated rmsnorm: y = (rmsnorm(o)·w) ⊙ silu(z) ----
+    for (int t = int(sg); t < T; t += WSG) {
+        float ss = 0.0f;
+        for (int i = 0; i < DV / 32; ++i) {
+            const float v = ov[t * DV + lane * 4 + i];
+            ss += v * v;
+        }
+        ss = simd_sum(ss);
+        const float inv = rsqrt(ss / DV + p.eps);
+        for (int i = 0; i < DV / 32; ++i) {
+            const int d = lane * 4 + i;
+            const float zf = float(zz[t * p.zs + hv * DV + d]);
+            const bfloat yv = bfloat(
+                ov[t * DV + d] * inv * float(nw[d]) * zf / (1.0f + exp(-zf)));
+            y[t * HV * DV + hv * DV + d] = yv;
+            if (p.sums) ov[t * DV + d] = float(yv);
+        }
+        if (p.sums) {
+            // K45: this head's two quant groups of the out projection's
+            // input sums, in the Q4 decode tiles' lane pattern
+            // simd_sum(y[64g + l] + y[64g + 32 + l]) (bit-identical)
+            simdgroup_barrier(mem_flags::mem_threadgroup);
+            device float* sums = (device float*)(y + 8 * HV * DV);
+            const float s0 = simd_sum(ov[t * DV + lane] + ov[t * DV + 32 + lane]);
+            const float s1 =
+                simd_sum(ov[t * DV + 64 + lane] + ov[t * DV + 96 + lane]);
+            if (lane == 0) {
+                sums[(2 * hv) * 8 + t] = s0;
+                sums[(2 * hv + 1) * 8 + t] = s1;
+            }
+        }
+    }
+    if (p.sums && int(sg) >= T && int(sg) < 8) {
+        // presum block padding: rows T..7 of this head are zero
+        const int t = int(sg);
+        for (int i = 0; i < DV / 32; ++i)
+            y[t * HV * DV + hv * DV + lane * 4 + i] = bfloat(0.0f);
+        if (lane == 0) {
+            device float* sums = (device float*)(y + 8 * HV * DV);
+            sums[(2 * hv) * 8 + t] = 0.0f;
+            sums[(2 * hv + 1) * 8 + t] = 0.0f;
+        }
+    }
+}
+
 "#;
 
     static PIPELINE: OnceLock<ComputePipeline> = OnceLock::new();
@@ -705,10 +899,105 @@ kernel void gdn_conv_carry(
         pack: i32,
     }
 
-    static FUSED_PIPE: OnceLock<ComputePipeline> = OnceLock::new();
+
+    /// Simdgroups per value head for `gdn_fused_step`: 32 (the wide
+    /// kernel, default), 16, or 8 (the original kernel). `TH_GDN_WSG`
+    /// overrides (A/B; read once). Outputs are bit-identical across widths.
+    pub fn gdn_wsg() -> usize {
+        static W: OnceLock<usize> = OnceLock::new();
+        *W.get_or_init(|| match std::env::var("TH_GDN_WSG").as_deref() {
+            Ok("8") => 8,
+            Ok("16") => 16,
+            _ => 32,
+        })
+    }
+
+    /// Which `gdn_fused_step` kernel text runs. All three are bit-identical
+    /// (same per-element expressions and lane patterns); they differ only
+    /// in the work split.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum GdnKern {
+        /// the original kernel: 8 simdgroups per value head
+        Orig,
+        /// `gdn_fused_step_w`: WSG simdgroups per head (16 | 32), each
+        /// walking its state rows one after another
+        Wide(usize),
+    }
+
+    impl GdnKern {
+        fn threads(self) -> usize {
+            match self {
+                GdnKern::Orig => 256,
+                GdnKern::Wide(w) => w * 32,
+            }
+        }
+    }
+
+    /// The production `gdn_fused_step` kernel per `TH_GDN_WSG`.
+    pub fn gdn_kern() -> GdnKern {
+        match gdn_wsg() {
+            8 => GdnKern::Orig,
+            w => GdnKern::Wide(w),
+        }
+    }
+
+    /// Simdgroups per (head, layer) threadgroup of `gdn_commit_all`
+    /// (`TH_GDN_CSG` = 8 | 16 | 32, default 8; read once).
+    pub fn gdn_csg() -> usize {
+        static W: OnceLock<usize> = OnceLock::new();
+        *W.get_or_init(|| match std::env::var("TH_GDN_CSG").as_deref() {
+            Ok("16") => 16,
+            Ok("32") => 32,
+            _ => 8,
+        })
+    }
+
+    type PipeKey = (&'static str, usize, usize, usize, usize, usize);
+
+    /// Compiled GDN pipelines keyed by (function, hk, hv, dk, dv, width —
+    /// any value that identifies the `defines`):
+    /// the head dims are baked into the source, so a process that runs
+    /// two models (the unit tests' tiny model next to another shape) must
+    /// never share one pipeline across shapes.
+    fn gdn_pipe(
+        device: &candle_core::MetalDevice,
+        src: &str,
+        key: PipeKey,
+        defines: &[(&str, usize)],
+    ) -> Result<&'static ComputePipeline> {
+        use std::collections::HashMap;
+        use std::sync::Mutex;
+        static PIPES: OnceLock<Mutex<HashMap<PipeKey, &'static ComputePipeline>>> = OnceLock::new();
+        let map = PIPES.get_or_init(|| Mutex::new(HashMap::new()));
+        if let Some(p) = map.lock().unwrap().get(&key) {
+            return Ok(p);
+        }
+        let (func, hk, hv, dk, dv, _) = key;
+        let mut text = String::new();
+        for (name, n) in defines {
+            text.push_str(&format!("#define {name} {n}\n"));
+        }
+        text.push_str(
+            &src.replace("{HK}", &hk.to_string())
+                .replace("{HV}", &hv.to_string())
+                .replace("{DK}", &dk.to_string())
+                .replace("{DV}", &dv.to_string()),
+        );
+        let raw = device.metal_device();
+        let lib = raw
+            .new_library_with_source(&text, None)
+            .map_err(candle_core::Error::wrap)?;
+        let f = lib.get_function(func, None).map_err(candle_core::Error::wrap)?;
+        let pipe = raw
+            .new_compute_pipeline_state_with_function(&f)
+            .map_err(candle_core::Error::wrap)?;
+        let pipe: &'static ComputePipeline = Box::leak(Box::new(pipe));
+        map.lock().unwrap().insert(key, pipe);
+        Ok(pipe)
+    }
 
     /// One-dispatch GDN step: conv+silu, l2norm, delta recurrence and
-    /// gated norm in a single kernel (48 threadgroups x 256 threads).
+    /// gated norm in a single kernel (one threadgroup per value head).
     /// Mirrors the conv -> qknorm -> scan -> gatenorm chain bit-for-bit
     /// in bf16 rounding.
     ///
@@ -719,9 +1008,80 @@ kernel void gdn_conv_carry(
     /// receives the normed q/k + raw v rows (the step-rescan stash).
     /// Commit mode (`z` and `y` both `None`, the rollback re-scan of the
     /// kept rows) writes only `state_out`/`conv_out`, through the same
-    /// instruction stream as a forward of those rows.
+    /// instruction stream as a forward of those rows. Kernel: [`gdn_kern`].
     #[allow(clippy::too_many_arguments)]
     pub fn gdn_fused_step(
+        xnew: &Tensor,
+        conv_in: &Tensor,
+        cw: &Tensor,
+        state_in: &Tensor,
+        state_out: &Tensor,
+        conv_out: &Tensor,
+        ab: &Tensor,
+        z: Option<&Tensor>,
+        normw: &Tensor,
+        y: Option<&Tensor>,
+        pack: Option<&Tensor>,
+        seq: usize,
+        hk: usize,
+        hv: usize,
+        dk: usize,
+        dv: usize,
+        eps: f32,
+        a_log: [f32; 64],
+        dt_bias: [f32; 64],
+        sums: bool,
+    ) -> Result<()> {
+        gdn_fused_step_k(
+            xnew, conv_in, cw, state_in, state_out, conv_out, ab, z, normw, y, pack, seq, hk, hv,
+            dk, dv, eps, a_log, dt_bias, sums, gdn_kern(),
+        )
+    }
+
+    /// The pipeline for `kern` at these head dims. A pipeline the device
+    /// cannot run at the kernel's thread count falls back to the original
+    /// 256-thread kernel; the kernel actually used is returned.
+    fn gdn_select(
+        device: &candle_core::MetalDevice,
+        kern: GdnKern,
+        hk: usize,
+        hv: usize,
+        dk: usize,
+        dv: usize,
+    ) -> Result<(GdnKern, &'static ComputePipeline)> {
+        let pipe_of = |k: GdnKern| match k {
+            GdnKern::Orig => gdn_pipe(device, SOURCE_TMPL, ("gdn_fused_step", hk, hv, dk, dv, 8), &[]),
+            GdnKern::Wide(w) => gdn_pipe(
+                device, SOURCE_TMPL, ("gdn_fused_step_w", hk, hv, dk, dv, w), &[("WSG", w)],
+            ),
+        };
+        let pipeline = pipe_of(kern)?;
+        if pipeline.max_total_threads_per_threadgroup() < kern.threads() {
+            return Ok((GdnKern::Orig, pipe_of(GdnKern::Orig)?));
+        }
+        Ok((kern, pipeline))
+    }
+
+    /// The kernel [`gdn_fused_step_k`] actually runs for `kern` on `dev`
+    /// (tests / benches: a fallback must never pass for the variant).
+    #[cfg(test)]
+    pub fn gdn_effective_kern(
+        dev: &candle_core::Device,
+        kern: GdnKern,
+        hk: usize,
+        hv: usize,
+        dk: usize,
+        dv: usize,
+    ) -> Result<GdnKern> {
+        match dev {
+            candle_core::Device::Metal(m) => Ok(gdn_select(m, kern, hk, hv, dk, dv)?.0),
+            _ => candle_core::bail!("gdn_effective_kern: Metal only"),
+        }
+    }
+
+    /// [`gdn_fused_step`] through an explicit kernel text ([`GdnKern`]).
+    #[allow(clippy::too_many_arguments)]
+    pub fn gdn_fused_step_k(
         xnew: &Tensor,      // [seq, conv_dim] strided view of the fused proj
         conv_in: &Tensor,   // [k-1, conv_dim] bf16 — parity p (read)
         cw: &Tensor,        // [conv_dim, k] bf16
@@ -742,7 +1102,13 @@ kernel void gdn_conv_carry(
         a_log: [f32; 64],
         dt_bias: [f32; 64],
         sums: bool,
+        kern: GdnKern,
     ) -> Result<()> {
+        match kern {
+            GdnKern::Orig => {}
+            GdnKern::Wide(w) if w == 16 || w == 32 => {}
+            k => candle_core::bail!("gdn_fused_step: kernel {k:?} unsupported (dv {dv})"),
+        }
         let commit = z.is_none();
         if commit != y.is_none() || (commit && (sums || pack.is_some())) {
             candle_core::bail!("gdn_fused_step: commit mode takes no z/y/pack/sums");
@@ -825,25 +1191,7 @@ kernel void gdn_conv_carry(
         }
 
         let device = s_x.device();
-        if FUSED_PIPE.get().is_none() {
-            let src = SOURCE_TMPL
-                .replace("{HK}", &hk.to_string())
-                .replace("{HV}", &hv.to_string())
-                .replace("{DK}", &dk.to_string())
-                .replace("{DV}", &dv.to_string());
-            let raw = device.metal_device();
-            let lib = raw
-                .new_library_with_source(&src, None)
-                .map_err(candle_core::Error::wrap)?;
-            let f = lib
-                .get_function("gdn_fused_step", None)
-                .map_err(candle_core::Error::wrap)?;
-            let pipe = raw
-                .new_compute_pipeline_state_with_function(&f)
-                .map_err(candle_core::Error::wrap)?;
-            let _ = FUSED_PIPE.set(pipe);
-        }
-        let pipeline = FUSED_PIPE.get().unwrap();
+        let (kern, pipeline) = gdn_select(device, kern, hk, hv, dk, dv)?;
 
         let row_str = |l: &Layout| -> usize {
             let d = l.shape().dims();
@@ -906,8 +1254,387 @@ kernel void gdn_conv_carry(
         enc.set_output_buffer(11, Some(s_co.buffer()), l_co.start_offset() * b2);
         enc.dispatch_thread_groups(
             MTLSize { width: hv, height: 1, depth: 1 },
-            MTLSize { width: 256, height: 1, depth: 1 },
+            MTLSize { width: kern.threads(), height: 1, depth: 1 },
         );
+        drop(encoder);
+        Ok(())
+    }
+
+    // -- one dispatch for every layer's rollback commit -------------------
+
+    /// One GDN layer's rollback commit for [`gdn_commit_all`]: the
+    /// `gdn_fused_step` commit-mode operands of that layer.
+    pub struct GdnCommitLayer<'a> {
+        /// the stashed verify input rows [>= kept, conv_dim] (strided view)
+        pub xnew: &'a Tensor,
+        /// pre-verify conv window [3, conv_dim] bf16 (read)
+        pub conv_in: &'a Tensor,
+        /// depthwise taps [conv_dim, 4] bf16
+        pub cw: &'a Tensor,
+        /// pre-verify recurrent state [hv, dv, dk] f32 (read)
+        pub state_in: &'a Tensor,
+        /// the stashed [a | b] rows [.., >= kept, 2*hv] (strided view)
+        pub ab: &'a Tensor,
+        /// committed-parity state / window (written)
+        pub state_out: &'a Tensor,
+        pub conv_out: &'a Tensor,
+        /// row of `consts` holding this layer's a_log / dt_bias
+        pub layer: usize,
+    }
+
+    /// Mirrors `GdnCommitDesc` in COMMIT_SRC: GPU addresses (byte offsets
+    /// applied) + row strides in elements.
+    #[repr(C)]
+    #[derive(Clone, Copy, Default)]
+    struct CommitDesc {
+        xnew: u64,
+        cst: u64,
+        cw: u64,
+        dsi: u64,
+        ab: u64,
+        dso: u64,
+        cso: u64,
+        xs: i32,
+        ss: i32,
+        abs_: i32,
+        layer: i32,
+    }
+
+    /// set_bytes carries at most 4 KiB — 56 layers of descriptors.
+    const COMMIT_MAX_LAYERS: usize = 4096 / std::mem::size_of::<CommitDesc>();
+
+    const COMMIT_SRC: &str = r#"
+#include <metal_stdlib>
+#include <metal_math>
+using namespace metal;
+
+constant constexpr int HK = {HK};
+constant constexpr int HV = {HV};
+constant constexpr int DK = {DK};
+constant constexpr int DV = {DV};
+constant constexpr int TMAX = 8;
+
+struct GdnCommitDesc {
+    device const bfloat* xnew;
+    device const bfloat* cst;
+    device const bfloat* cw;
+    device const float*  dsi;
+    device const bfloat* ab;
+    device float*        dso;
+    device bfloat*       cso;
+    int xs;
+    int ss;
+    int abs_;
+    int layer;
+};
+
+// G1a follow-up: every GDN layer's rollback commit in ONE dispatch, grid
+// (HV, layers) — Splash's verify_gdn_commit shape. Per (hv, layer) this is
+// gdn_fused_step's commit=1 instruction stream verbatim (gate/beta, conv
+// window carry, conv+silu, l2norm, delta recurrence, state write-back),
+// minus the work commit mode never consumes (q channels, the readout).
+// Operands are reached through GPU addresses in `descs` (candle buffers
+// are resident via the queue's residency set).
+#ifndef CSG
+#define CSG 8
+#endif
+kernel void gdn_commit_all(
+    constant GdnCommitDesc* descs [[buffer(0)]],
+    device const float* consts    [[buffer(1)]],   // [layers][2][64]: a_log | dt_bias
+    constant int& T_              [[buffer(2)]],
+    uint2 tg   [[threadgroup_position_in_grid]],
+    uint tid   [[thread_index_in_threadgroup]],
+    uint lane  [[thread_index_in_simdgroup]],
+    uint sg    [[simdgroup_index_in_threadgroup]])
+{
+    constexpr int C = 2 * HK * DK + HV * DV;
+    constexpr int REP = HV / HK;
+    const uint hv = tg.x;
+    constant GdnCommitDesc& p = descs[tg.y];
+    device const bfloat* xnew = p.xnew;
+    device const bfloat* cst = p.cst;
+    device const bfloat* cw = p.cw;
+    device const bfloat* ab = p.ab;
+    const uint hk = hv / REP;
+    const int T = T_;
+    const bool owner = (hv % REP) == 0;
+
+    threadgroup float kn[TMAX * DK];
+    threadgroup float vr[TMAX * DV];
+    threadgroup float gdec[TMAX];
+    threadgroup float bta[TMAX];
+
+    {
+        const float eA = exp(consts[p.layer * 128 + hv]);
+        const float dtb = consts[p.layer * 128 + 64 + hv];
+        for (int t = int(tid); t < T; t += CSG * 32) {
+            const float ap = float(ab[t * p.abs_ + hv]) + dtb;
+            gdec[t] = exp(-eA * (ap > 30.0f ? ap : log(1.0f + exp(ap))));
+            bta[t] = 1.0f / (1.0f + exp(-float(ab[t * p.abs_ + HV + hv])));
+        }
+    }
+
+    // conv window carry: new row r = source row T + r of [cst | xnew]
+    for (uint w = tid; w < uint(3 * DK) * 3u; w += CSG * 32) {
+        const int i = int(w) % (3 * DK);
+        const int r = int(w) / (3 * DK);
+        if (i < 2 * DK && !owner) continue;
+        int g;
+        if (i < DK) g = int(hk) * DK + i;
+        else if (i < 2 * DK) g = HK * DK + int(hk) * DK + (i - DK);
+        else g = 2 * HK * DK + int(hv) * DV + (i - 2 * DK);
+        const int s = T + r;
+        p.cso[r * C + g] = s < 3 ? cst[s * p.ss + g] : xnew[(s - 3) * p.xs + g];
+    }
+
+    // conv + silu on this head's k and v channels (q is never read here)
+    for (uint w = tid; w < uint(2 * DK) * uint(T); w += CSG * 32) {
+        const int i = DK + int(w) % (2 * DK);
+        const int t = int(w) / (2 * DK);
+        int g;
+        if (i < 2 * DK) g = HK * DK + int(hk) * DK + (i - DK);
+        else g = 2 * HK * DK + int(hv) * DV + (i - 2 * DK);
+        float acc = 0.0f;
+        for (int j = 0; j < 4; ++j) {
+            const int r = t + j;
+            const float v = r < 3
+                ? float(cst[r * p.ss + g])
+                : float(xnew[(r - 3) * p.xs + g]);
+            acc += float(cw[g * 4 + j]) * v;
+        }
+        const float sv = float(bfloat(acc / (1.0f + exp(-acc))));
+        if (i < 2 * DK) kn[t * DK + i - DK] = sv;
+        else vr[t * DV + i - 2 * DK] = sv;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    // per-row l2norm on k
+    for (int t = int(sg); t < T; t += CSG) {
+        float ks = 0.0f;
+        for (int i = 0; i < DK / 32; ++i) {
+            const float k = kn[t * DK + lane * 4 + i];
+            ks += k * k;
+        }
+        ks = simd_sum(ks);
+        const float ki = rsqrt(ks / DK + 1e-6f) * rsqrt(float(DK));
+        for (int i = 0; i < DK / 32; ++i) {
+            const int e = lane * 4 + i;
+            const bfloat kb = bfloat(kn[t * DK + e] * ki);
+            kn[t * DK + e] = float(kb);
+        }
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    // delta recurrence: one simdgroup per dv row, stride 8
+    for (uint dv = sg; dv < uint(DV); dv += CSG) {
+        device const float* sr = p.dsi + (hv * DV + int(dv)) * DK;
+        device float* sw = p.dso + (hv * DV + int(dv)) * DK;
+        float s0 = sr[4 * lane + 0], s1 = sr[4 * lane + 1];
+        float s2 = sr[4 * lane + 2], s3 = sr[4 * lane + 3];
+        for (int t = 0; t < T; ++t) {
+            const float k0 = kn[t * DK + 4 * lane + 0];
+            const float k1 = kn[t * DK + 4 * lane + 1];
+            const float k2 = kn[t * DK + 4 * lane + 2];
+            const float k3 = kn[t * DK + 4 * lane + 3];
+            const float g = gdec[t];
+            s0 *= g; s1 *= g; s2 *= g; s3 *= g;
+            float kv = s0 * k0 + s1 * k1 + s2 * k2 + s3 * k3;
+            kv = simd_sum(kv);
+            const float delta = (vr[t * DV + int(dv)] - kv) * bta[t];
+            s0 += k0 * delta; s1 += k1 * delta;
+            s2 += k2 * delta; s3 += k3 * delta;
+        }
+        sw[4 * lane + 0] = s0; sw[4 * lane + 1] = s1;
+        sw[4 * lane + 2] = s2; sw[4 * lane + 3] = s3;
+    }
+}
+"#;
+
+
+    /// Every listed GDN layer's rollback commit (`gdn_fused_step` commit
+    /// mode over the first `kept` stashed rows, pre-verify parity in,
+    /// committed parity out) in ONE dispatch instead of one per layer.
+    /// `consts` is `[n, 2, 64]` f32 (a_log | dt_bias per layer row).
+    ///
+    /// The kernel reaches the per-layer buffers through GPU addresses, so
+    /// candle's encoder cannot see those reads/writes: a buffer barrier
+    /// goes before the dispatch (inputs written earlier in this encoder)
+    /// and after it (later readers of the written state, and pooled
+    /// buffers the caller drops right after), and the first layer's state
+    /// is bound as a tracked output so later encoders wait on this one's
+    /// fence. The caller keeps every tensor alive across the call.
+    #[allow(clippy::too_many_arguments)]
+    pub fn gdn_commit_all(
+        layers: &[GdnCommitLayer<'_>],
+        consts: &Tensor,
+        kept: usize,
+        hk: usize,
+        hv: usize,
+        dk: usize,
+        dv: usize,
+    ) -> Result<()> {
+        gdn_commit_all_w(layers, consts, kept, hk, hv, dk, dv, gdn_csg())
+    }
+
+    /// [`gdn_commit_all`] at an explicit width (simdgroups per threadgroup).
+    #[allow(clippy::too_many_arguments)]
+    pub fn gdn_commit_all_w(
+        layers: &[GdnCommitLayer<'_>],
+        consts: &Tensor,
+        kept: usize,
+        hk: usize,
+        hv: usize,
+        dk: usize,
+        dv: usize,
+        csg: usize,
+    ) -> Result<()> {
+        if ![8, 16, 32].contains(&csg) {
+            candle_core::bail!("gdn_commit_all: width {csg} not in 8/16/32");
+        }
+        use objc2_metal::MTLBuffer as _;
+        if layers.is_empty() {
+            return Ok(());
+        }
+        if kept == 0 || kept > 8 || dk != dv || hv > 64 || hv % hk != 0 {
+            candle_core::bail!("gdn_commit_all: kept {kept} hk {hk} hv {hv} dk {dk} dv {dv}");
+        }
+        if layers.len() > COMMIT_MAX_LAYERS {
+            candle_core::bail!("gdn_commit_all: {} layers > {COMMIT_MAX_LAYERS}", layers.len());
+        }
+        let conv_dim = 2 * hk * dk + hv * dv;
+        let n_state = hv * dv * dk;
+        let (g_c, l_c) = consts.storage_and_layout();
+        let s_c = metal_of(&g_c, "gdn_commit_all")?;
+        if s_c.dtype() != DType::F32 || !l_c.is_contiguous() || l_c.dims().len() != 3
+            || l_c.dims()[1..] != [2, 64]
+        {
+            candle_core::bail!("gdn_commit_all: consts {:?} must be contiguous f32 [n, 2, 64]", l_c.shape());
+        }
+        let n_consts = l_c.dims()[0];
+        let b2 = DType::BF16.size_in_bytes() as u64;
+        let f4 = DType::F32.size_in_bytes() as u64;
+        let row_str = |l: &Layout| -> usize {
+            let d = l.shape().dims();
+            l.stride()[d.len() - 2]
+        };
+        let addr = |m: &MetalStorage, l: &Layout, esz: u64| -> u64 {
+            m.buffer().as_ref().gpuAddress() + l.start_offset() as u64 * esz
+        };
+        let mut descs = [CommitDesc::default(); COMMIT_MAX_LAYERS];
+        let mut first_out: Option<(candle_metal_kernels::metal::Buffer, usize)> = None;
+        let device = s_c.device().clone();
+        for (n, c) in layers.iter().enumerate() {
+            let (g_x, l_x) = c.xnew.storage_and_layout();
+            let s_x = metal_of(&g_x, "gdn_commit_all")?;
+            let (g_st, l_st) = c.conv_in.storage_and_layout();
+            let s_st = metal_of(&g_st, "gdn_commit_all")?;
+            let (g_w, l_w) = c.cw.storage_and_layout();
+            let s_w = metal_of(&g_w, "gdn_commit_all")?;
+            let (g_si, l_si) = c.state_in.storage_and_layout();
+            let s_si = metal_of(&g_si, "gdn_commit_all")?;
+            let (g_ab, l_ab) = c.ab.storage_and_layout();
+            let s_ab = metal_of(&g_ab, "gdn_commit_all")?;
+            let (g_so, l_so) = c.state_out.storage_and_layout();
+            let s_so = metal_of(&g_so, "gdn_commit_all")?;
+            let (g_co, l_co) = c.conv_out.storage_and_layout();
+            let s_co = metal_of(&g_co, "gdn_commit_all")?;
+            // gdn_fused_step's checks, per layer
+            if !(l_x.stride().last() == Some(&1)
+                && l_st.stride().last() == Some(&1)
+                && l_ab.stride().last() == Some(&1)
+                && l_w.is_contiguous()
+                && l_si.is_contiguous()
+                && l_so.is_contiguous()
+                && l_co.is_contiguous())
+            {
+                candle_core::bail!(
+                    "gdn_commit_all layer {n} layouts: x {:?} st {:?} ab {:?} si {:?} so {:?} co {:?}",
+                    l_x.shape(), l_st.shape(), l_ab.shape(), l_si.shape(), l_so.shape(), l_co.shape()
+                );
+            }
+            let xd = l_x.shape().dims();
+            let abd = l_ab.shape().dims();
+            if l_st.shape().dims() != [3, conv_dim]
+                || l_co.shape().dims() != [3, conv_dim]
+                || xd.len() != 2
+                || xd[1] != conv_dim
+                || xd[0] < kept
+                || abd.len() < 2
+                || abd[abd.len() - 2] < kept
+                || abd[abd.len() - 1] < 2 * hv
+                || l_w.shape().elem_count() != conv_dim * 4
+                || l_si.shape().elem_count() != n_state
+                || l_so.shape().elem_count() != n_state
+                || c.layer >= n_consts
+            {
+                candle_core::bail!(
+                    "gdn_commit_all layer {n}: x {:?} ab {:?} windows {:?}/{:?} kept {kept} layer {} of {n_consts}",
+                    l_x.shape(), l_ab.shape(), l_st.shape(), l_co.shape(), c.layer
+                );
+            }
+            if (s_si.buffer() == s_so.buffer() && l_si.start_offset() == l_so.start_offset())
+                || (s_st.buffer() == s_co.buffer() && l_st.start_offset() == l_co.start_offset())
+            {
+                candle_core::bail!("gdn_commit_all layer {n}: state/conv output aliases its input");
+            }
+            if s_x.dtype() != DType::BF16 || s_w.dtype() != DType::BF16
+                || s_st.dtype() != DType::BF16 || s_ab.dtype() != DType::BF16
+                || s_co.dtype() != DType::BF16
+                || s_si.dtype() != DType::F32 || s_so.dtype() != DType::F32
+            {
+                candle_core::bail!("gdn_commit_all layer {n}: dtypes");
+            }
+            descs[n] = CommitDesc {
+                xnew: addr(s_x, l_x, b2),
+                cst: addr(s_st, l_st, b2),
+                cw: addr(s_w, l_w, b2),
+                dsi: addr(s_si, l_si, f4),
+                ab: addr(s_ab, l_ab, b2),
+                dso: addr(s_so, l_so, f4),
+                cso: addr(s_co, l_co, b2),
+                xs: row_str(l_x) as i32,
+                ss: row_str(l_st) as i32,
+                abs_: row_str(l_ab) as i32,
+                layer: c.layer as i32,
+            };
+            if first_out.is_none() {
+                first_out = Some((s_so.buffer().clone(), l_so.start_offset() * f4 as usize));
+            }
+        }
+        let mut csg = csg;
+        let mut pipeline =
+            gdn_pipe(&device, COMMIT_SRC, ("gdn_commit_all", hk, hv, dk, dv, csg), &[("CSG", csg)])?;
+        if pipeline.max_total_threads_per_threadgroup() < csg * 32 {
+            csg = 8;
+            pipeline =
+                gdn_pipe(&device, COMMIT_SRC, ("gdn_commit_all", hk, hv, dk, dv, 8), &[("CSG", 8)])?;
+        }
+        let t = kept as i32;
+        let encoder = device.command_encoder().map_err(candle_core::Error::wrap)?;
+        encoder.set_label("gdn_commit_all");
+        let enc_ref = &encoder;
+        let enc: &candle_metal_kernels::metal::ComputeCommandEncoder =
+            enc_ref.encoder().as_ref();
+        // inputs may have been written earlier in this encoder (untracked)
+        enc.insert_memory_barrier();
+        enc.set_compute_pipeline_state(pipeline);
+        enc.set_bytes_directly(
+            0,
+            layers.len() * std::mem::size_of::<CommitDesc>(),
+            descs.as_ptr() as *const std::ffi::c_void,
+        );
+        enc.set_input_buffer(1, Some(s_c.buffer()), l_c.start_offset() * f4 as usize);
+        enc.set_bytes(2, &t);
+        if let Some((b, off)) = first_out.as_ref() {
+            // tracked output: later encoders wait on this encoder's fence
+            enc.set_output_buffer(3, Some(b), *off);
+        }
+        enc.dispatch_thread_groups(
+            MTLSize { width: hv, height: layers.len(), depth: 1 },
+            MTLSize { width: csg * 32, height: 1, depth: 1 },
+        );
+        // later dispatches of this encoder must see the written state
+        enc.insert_memory_barrier();
         drop(encoder);
         Ok(())
     }
@@ -1131,6 +1858,12 @@ kernel void gdn_conv_carry(
         /// presum_block_bytes`). Requires t <= 8 and c % 64 == 0; the
         /// residual and normed values are bit-identical to `sums: false`.
         pub sums: bool,
+        /// The pre-R0c kernels: ONE threadgroup of 256 threads for all
+        /// rows (one simdgroup per row), latency-bound at ~84 us per 8 x
+        /// 5120 call (R0c). Default (false): one 1024-thread threadgroup
+        /// per row with the identical per-element arithmetic and the same
+        /// lane-order sum of squares — bit-identical outputs.
+        pub legacy: bool,
     }
 
     #[repr(C)]
@@ -1219,10 +1952,122 @@ kernel void add_rmsnorm_sums(
         if (lane == 0) sums[g * 8 + t] = s;
     }
 }
+
+// R0c latency fix: one threadgroup PER ROW (up to 1024 threads) instead of
+// one threadgroup for all rows. The old kernels ran each row on a single
+// simdgroup: 160 dependent load iterations per lane (C = 5120) with one
+// resident threadgroup on one core, ~84 us per call, 127 calls a verify.
+// Here every thread stages v = x + r (and writes the residual) in
+// parallel; simdgroup 0 then runs the old per-lane sum of squares — lane l
+// accumulates columns l, l+32, ... in the same order with the same
+// `ss += v * v` — plus the same simd_sum and rsqrt, so `inv` is
+// bit-identical; the normed values and the presum sums reuse the old
+// per-element expressions (float(bfloat(v)) is what the old kernels read
+// back from `res`). tv = [C] f32 in dynamic threadgroup memory.
+kernel void add_rmsnorm_p(
+    device const bfloat* x   [[buffer(0)]],
+    device const bfloat* r   [[buffer(1)]],
+    device const bfloat* w   [[buffer(2)]],
+    device bfloat*       out [[buffer(3)]],   // [2, T, C]
+    constant ArnParams&  p   [[buffer(4)]],
+    threadgroup float*   tv  [[threadgroup(0)]],
+    uint  t    [[threadgroup_position_in_grid]],
+    uint  tid  [[thread_index_in_threadgroup]],
+    uint  nt   [[threads_per_threadgroup]],
+    uint  lane [[thread_index_in_simdgroup]],
+    uint  sg   [[simdgroup_index_in_threadgroup]])
+{
+    threadgroup float tinv;
+    device const bfloat* xr = x + t * p.C;
+    device const bfloat* rr = r + t * p.C;
+    device bfloat* res = out + t * p.C;
+    device bfloat* nrm = out + (p.T + t) * p.C;
+    for (int c = int(tid); c < p.C; c += int(nt)) {
+        const float v = float(xr[c]) + float(rr[c]);
+        res[c] = bfloat(v);
+        tv[c] = v;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (sg == 0) {
+        float ss = 0.0f;
+        for (int c = int(lane); c < p.C; c += 32) {
+            const float v = tv[c];
+            ss += v * v;
+        }
+        ss = simd_sum(ss);
+        if (lane == 0) tinv = rsqrt(ss / float(p.C) + p.eps);
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    const float inv = tinv;
+    for (int c = int(tid); c < p.C; c += int(nt)) {
+        nrm[c] = bfloat(float(bfloat(tv[c])) * inv * float(w[c]));
+    }
+}
+
+// presum form of add_rmsnorm_p (T <= 8, C % 64 == 0; grid = 8 threadgroups,
+// rows >= T write the zero padding): out = res [T, C] | nrm [8, C] | sums.
+kernel void add_rmsnorm_sums_p(
+    device const bfloat* x   [[buffer(0)]],
+    device const bfloat* r   [[buffer(1)]],
+    device const bfloat* w   [[buffer(2)]],
+    device bfloat*       out [[buffer(3)]],
+    constant ArnParams&  p   [[buffer(4)]],
+    threadgroup float*   tv  [[threadgroup(0)]],
+    uint  t    [[threadgroup_position_in_grid]],
+    uint  tid  [[thread_index_in_threadgroup]],
+    uint  nt   [[threads_per_threadgroup]],
+    uint  lane [[thread_index_in_simdgroup]],
+    uint  sg   [[simdgroup_index_in_threadgroup]])
+{
+    threadgroup float tinv;
+    const int ng = p.C / 64;
+    const int nsg = int(nt) / 32;
+    device bfloat* nrm = out + (p.T + t) * p.C;
+    device float* sums = (device float*)(out + (p.T + 8) * p.C);
+    if (int(t) >= p.T) {
+        for (int c = int(tid); c < p.C; c += int(nt)) nrm[c] = bfloat(0.0f);
+        for (int g = int(tid); g < ng; g += int(nt)) sums[g * 8 + t] = 0.0f;
+        return;
+    }
+    device const bfloat* xr = x + t * p.C;
+    device const bfloat* rr = r + t * p.C;
+    device bfloat* res = out + t * p.C;
+    for (int c = int(tid); c < p.C; c += int(nt)) {
+        const float v = float(xr[c]) + float(rr[c]);
+        res[c] = bfloat(v);
+        tv[c] = v;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (sg == 0) {
+        float ss = 0.0f;
+        for (int c = int(lane); c < p.C; c += 32) {
+            const float v = tv[c];
+            ss += v * v;
+        }
+        ss = simd_sum(ss);
+        if (lane == 0) tinv = rsqrt(ss / float(p.C) + p.eps);
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    const float inv = tinv;
+    for (int g = int(sg); g < ng; g += nsg) {
+        const int c0 = g * 64 + int(lane);
+        const bfloat a = bfloat(float(bfloat(tv[c0])) * inv * float(w[c0]));
+        const bfloat b = bfloat(float(bfloat(tv[c0 + 32])) * inv * float(w[c0 + 32]));
+        nrm[c0] = a;
+        nrm[c0 + 32] = b;
+        const float s = simd_sum(float(a) + float(b));
+        if (lane == 0) sums[g * 8 + t] = s;
+    }
+}
 "#;
 
     static ARN_PIPE: OnceLock<ComputePipeline> = OnceLock::new();
     static ARN_SUMS_PIPE: OnceLock<ComputePipeline> = OnceLock::new();
+    static ARN_P_PIPE: OnceLock<ComputePipeline> = OnceLock::new();
+    static ARN_SUMS_P_PIPE: OnceLock<ComputePipeline> = OnceLock::new();
+    /// Largest row the per-row kernels stage in threadgroup memory
+    /// (C f32 + the broadcast slot, under the 32 KiB limit).
+    const ARN_P_MAX_C: usize = 7936;
 
     impl CustomOp3 for AddRmsNorm {
         fn name(&self) -> &'static str {
@@ -1260,14 +2105,17 @@ kernel void add_rmsnorm_sums(
                 candle_core::bail!("add-rmsnorm dtypes must be bf16");
             }
             let device = s_x.device();
-            if ARN_PIPE.get().is_none() || ARN_SUMS_PIPE.get().is_none() {
+            if ARN_PIPE.get().is_none() || ARN_SUMS_P_PIPE.get().is_none() {
                 let raw = device.metal_device();
                 let lib = raw
                     .new_library_with_source(ARN_SRC, None)
                     .map_err(candle_core::Error::wrap)?;
-                for (cell, name) in
-                    [(&ARN_PIPE, "add_rmsnorm"), (&ARN_SUMS_PIPE, "add_rmsnorm_sums")]
-                {
+                for (cell, name) in [
+                    (&ARN_PIPE, "add_rmsnorm"),
+                    (&ARN_SUMS_PIPE, "add_rmsnorm_sums"),
+                    (&ARN_P_PIPE, "add_rmsnorm_p"),
+                    (&ARN_SUMS_P_PIPE, "add_rmsnorm_sums_p"),
+                ] {
                     let f = lib
                         .get_function(name, None)
                         .map_err(candle_core::Error::wrap)?;
@@ -1284,10 +2132,14 @@ kernel void add_rmsnorm_sums(
                     self.c
                 );
             }
-            let pipeline = if self.sums {
-                ARN_SUMS_PIPE.get().unwrap()
-            } else {
-                ARN_PIPE.get().unwrap()
+            // per-row kernels unless asked for the legacy ones (or the row
+            // does not fit the threadgroup staging buffer)
+            let per_row = !self.legacy && self.c <= ARN_P_MAX_C;
+            let pipeline = match (per_row, self.sums) {
+                (false, false) => ARN_PIPE.get().unwrap(),
+                (false, true) => ARN_SUMS_PIPE.get().unwrap(),
+                (true, false) => ARN_P_PIPE.get().unwrap(),
+                (true, true) => ARN_SUMS_P_PIPE.get().unwrap(),
             };
 
             let y_elems = 2 * self.t * self.c;
@@ -1334,14 +2186,24 @@ kernel void add_rmsnorm_sums(
                 eps: self.eps,
             };
             enc.set_bytes(4, &params);
-            enc.dispatch_thread_groups(
-                MTLSize {
-                    width: if self.sums { 1 } else { self.t.div_ceil(8) },
-                    height: 1,
-                    depth: 1,
-                },
-                MTLSize { width: 256, height: 1, depth: 1 },
-            );
+            if per_row {
+                // one threadgroup per row (8 with the presum padding rows)
+                let nt = (pipeline.max_total_threads_per_threadgroup().min(1024) / 32 * 32).max(32);
+                enc.set_threadgroup_memory_length(0, (self.c * 4).div_ceil(16) * 16);
+                enc.dispatch_thread_groups(
+                    MTLSize { width: if self.sums { 8 } else { self.t }, height: 1, depth: 1 },
+                    MTLSize { width: nt, height: 1, depth: 1 },
+                );
+            } else {
+                enc.dispatch_thread_groups(
+                    MTLSize {
+                        width: if self.sums { 1 } else { self.t.div_ceil(8) },
+                        height: 1,
+                        depth: 1,
+                    },
+                    MTLSize { width: 256, height: 1, depth: 1 },
+                );
+            }
             let storage =
                 MetalStorage::new(y_buf, device.clone(), y_elems, DType::BF16);
             Ok((storage, Shape::from((2, self.t, self.c))))
@@ -1568,4 +2430,294 @@ kernel void add_rmsnorm_sums(
         }
     }
 
+}
+#[cfg(all(test, feature = "metal", target_os = "macos"))]
+mod arn_tests {
+    use super::metal_impl::AddRmsNorm;
+    use candle_core::backend::BackendStorage;
+    use candle_core::{DType, Device, Storage, Tensor};
+
+    fn lcg(seed: &mut u64) -> f32 {
+        *seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        ((*seed >> 33) as f32 / (1u64 << 31) as f32) * 2.0 - 1.0
+    }
+
+    fn rand(dev: &Device, n: usize, scale: f32, seed: u64) -> Tensor {
+        let mut s = seed;
+        let v: Vec<f32> = (0..n).map(|_| lcg(&mut s) * scale).collect();
+        Tensor::from_vec(v, n, dev).unwrap().to_dtype(DType::BF16).unwrap()
+    }
+
+    /// Raw bytes of `t`'s whole buffer from its start offset (the presum
+    /// padding rows and sums live past the [2, T, C] shape): blit-copied
+    /// out of the private output buffer into a shared one.
+    fn raw(t: &Tensor, bytes: usize) -> Vec<u8> {
+        let (st, l) = t.storage_and_layout();
+        match &*st {
+            Storage::Metal(m) => {
+                let off = l.start_offset() * 2;
+                assert!(m.buffer().length() >= off + bytes);
+                let dev = m.device();
+                let shared = dev.new_buffer_builder().with_size(bytes).build().unwrap();
+                {
+                    let mut blit = dev.blit_command_encoder().unwrap();
+                    blit.copy_from_buffer(m.buffer(), off, &shared, 0, bytes);
+                }
+                dev.wait_until_completed().unwrap();
+                // SAFETY: shared-storage buffer of `bytes`, copy completed
+                unsafe { std::slice::from_raw_parts(shared.contents(), bytes).to_vec() }
+            }
+            _ => panic!("metal only"),
+        }
+    }
+
+    fn randf(dev: &Device, n: usize, scale: f32, seed: u64) -> Tensor {
+        let mut s = seed;
+        let v: Vec<f32> = (0..n).map(|_| lcg(&mut s) * scale).collect();
+        Tensor::from_vec(v, n, dev).unwrap()
+    }
+
+    fn bytes_of(t: &Tensor) -> Vec<u8> {
+        let n = t.elem_count() * t.dtype().size_in_bytes();
+        raw(t, n)
+    }
+
+    /// gdn_fused_step at widths 16 / 32 (gdn_fused_step_w) reproduces the
+    /// original 8-simdgroup kernel bit for bit — state, conv window, y
+    /// (incl. the presum block's padding rows and sums) and pack — and the
+    /// batched commit at every width equals the per-layer commit.
+    #[test]
+    fn gdn_widths_match_original_bitwise() {
+        use super::metal_impl::{gdn_commit_all_w, gdn_fused_step_k, GdnCommitLayer, GdnKern};
+        let dev = Device::new_metal(0).unwrap();
+        let (hk, hv, dk, dv) = (1usize, 3usize, 128usize, 128usize);
+        let conv = 2 * hk * dk + hv * dv; // 640
+        let vd = hv * dv; // 384
+        let mut a_log = [0f32; 64];
+        let mut dt_bias = [0f32; 64];
+        for h in 0..hv {
+            a_log[h] = -0.5 + 0.3 * h as f32;
+            dt_bias[h] = 0.1 * h as f32 - 0.2;
+        }
+        let cw = rand(&dev, conv * 4, 0.5, 3).reshape((conv, 4)).unwrap();
+        let normw = rand(&dev, dv, 1.0, 4);
+        let state_in = randf(&dev, hv * dv * dk, 0.2, 5).reshape((hv, dv, dk)).unwrap();
+        let conv_in = rand(&dev, 3 * conv, 1.0, 6).reshape((3, conv)).unwrap();
+        for t in 1..=8usize {
+            // the stashed-verify shape: x / z / ab are strided views of one
+            // fused projection row [conv | z | a b]
+            let fused = rand(&dev, t * (conv + vd + 2 * hv), 1.5, 100 + t as u64)
+                .reshape((t, conv + vd + 2 * hv))
+                .unwrap();
+            let x = fused.narrow(1, 0, conv).unwrap();
+            let z = fused.narrow(1, conv, vd).unwrap();
+            let ab = fused.narrow(1, conv + vd, 2 * hv).unwrap();
+            for mode in 0..3 {
+                // 0: forward + presum y + pack, 1: forward plain y, 2: commit
+                let run = |kern: GdnKern| -> Vec<Vec<u8>> {
+                    let so = Tensor::zeros((hv, dv, dk), DType::F32, &dev).unwrap();
+                    let co = Tensor::zeros((3, conv), DType::BF16, &dev).unwrap();
+                    let sums = mode == 0;
+                    let y = (mode < 2).then(|| {
+                        let elems = if sums { crate::quant_kernel::presum_block_bytes(vd) / 2 } else { t * vd };
+                        Tensor::zeros(elems, DType::BF16, &dev).unwrap()
+                    });
+                    let yv = y.as_ref().map(|y| y.narrow(0, 0, t * vd).unwrap().reshape((t, vd)).unwrap());
+                    let pk = (mode == 0).then(|| Tensor::zeros((t, conv), DType::BF16, &dev).unwrap());
+                    gdn_fused_step_k(
+                        &x, &conv_in, &cw, &state_in, &so, &co, &ab,
+                        (mode < 2).then_some(&z), &normw, yv.as_ref(), pk.as_ref(),
+                        t, hk, hv, dk, dv, 1e-6, a_log, dt_bias, sums, kern,
+                    )
+                    .unwrap();
+                    let mut out = vec![bytes_of(&so), bytes_of(&co)];
+                    if let Some(y) = &y {
+                        out.push(bytes_of(y));
+                    }
+                    if let Some(p) = &pk {
+                        out.push(bytes_of(p));
+                    }
+                    out
+                };
+                let base = run(GdnKern::Orig);
+                for kern in [GdnKern::Wide(16), GdnKern::Wide(32)] {
+                    assert_eq!(
+                        super::metal_impl::gdn_effective_kern(&dev, kern, hk, hv, dk, dv).unwrap(),
+                        kern,
+                        "{kern:?} fell back to another kernel"
+                    );
+                    let o = run(kern);
+                    for (k, (a, b)) in base.iter().zip(&o).enumerate() {
+                        let d = a.iter().zip(b).filter(|(p, q)| p != q).count();
+                        assert_eq!(d, 0, "t {t} mode {mode} {kern:?} output {k}: {d} bytes differ");
+                    }
+                }
+                if mode == 2 {
+                    // batched commit (2 layers, same inputs) vs the per-layer commit
+                    let consts = {
+                        let mut c = vec![0f32; 2 * 128];
+                        for l in 0..2 {
+                            c[l * 128..l * 128 + 64].copy_from_slice(&a_log);
+                            c[l * 128 + 64..l * 128 + 128].copy_from_slice(&dt_bias);
+                        }
+                        Tensor::from_vec(c, (2, 2, 64), &dev).unwrap()
+                    };
+                    for csg in [8, 16, 32] {
+                        let so: Vec<Tensor> = (0..2)
+                            .map(|_| Tensor::zeros((hv, dv, dk), DType::F32, &dev).unwrap())
+                            .collect();
+                        let co: Vec<Tensor> = (0..2)
+                            .map(|_| Tensor::zeros((3, conv), DType::BF16, &dev).unwrap())
+                            .collect();
+                        let list: Vec<GdnCommitLayer<'_>> = (0..2)
+                            .map(|l| GdnCommitLayer {
+                                xnew: &x, conv_in: &conv_in, cw: &cw, state_in: &state_in,
+                                ab: &ab, state_out: &so[l], conv_out: &co[l], layer: l,
+                            })
+                            .collect();
+                        gdn_commit_all_w(&list, &consts, t, hk, hv, dk, dv, csg).unwrap();
+                        for l in 0..2 {
+                            assert_eq!(bytes_of(&so[l]), base[0], "t {t} csg {csg} layer {l}: commit state");
+                            assert_eq!(bytes_of(&co[l]), base[1], "t {t} csg {csg} layer {l}: commit window");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Kernel timing at the 27B's GDN shape (hk 16, hv 48, dk = dv 128,
+    /// T = 8): every `gdn_fused_step` kernel text, forward (presum y, the
+    /// verify's config) and commit mode. Each timed run is `TH_BENCH_GDN_N`
+    /// (480 = 10 forwards) dependent dispatches — consecutive dispatches
+    /// alternate the state/window parity, so each reads what the previous
+    /// wrote and candle barriers them like the forward's layer chain.
+    /// `TH_BENCH_GDN_LAYERS=L` (default 1) cycles L distinct state/window
+    /// pairs (48 = the model's GDN layers, 302 MB of state: cold like the
+    /// real forward, where each layer's state is touched once per verify);
+    /// L > 1 runs the forward only, serialized through the shared y block.
+    /// Wall clock incl. encode (GPU-bound at these sizes); variants
+    /// interleaved over reps. Opt-in: `TH_BENCH_GDN=1 cargo test --release
+    /// gdn_step_bench -- --nocapture` (no-op otherwise).
+    #[test]
+    fn gdn_step_bench() {
+        use super::metal_impl::{gdn_fused_step_k, GdnKern};
+        if std::env::var("TH_BENCH_GDN").is_err() {
+            return;
+        }
+        let n: usize = std::env::var("TH_BENCH_GDN_N").ok().and_then(|v| v.parse().ok()).unwrap_or(480);
+        let reps: usize = std::env::var("TH_BENCH_GDN_REPS").ok().and_then(|v| v.parse().ok()).unwrap_or(7);
+        let dev = Device::new_metal(0).unwrap();
+        let (hk, hv, dk, dv, t) = (16usize, 48usize, 128usize, 128usize, 8usize);
+        let conv = 2 * hk * dk + hv * dv;
+        let vd = hv * dv;
+        let mut a_log = [0f32; 64];
+        let mut dt_bias = [0f32; 64];
+        for h in 0..hv {
+            a_log[h] = -1.0 + 0.04 * h as f32;
+            dt_bias[h] = 0.02 * h as f32 - 0.5;
+        }
+        let cw = rand(&dev, conv * 4, 0.5, 3).reshape((conv, 4)).unwrap();
+        let normw = rand(&dev, dv, 1.0, 4);
+        let layers: usize =
+            std::env::var("TH_BENCH_GDN_LAYERS").ok().and_then(|v| v.parse().ok()).unwrap_or(1).max(1);
+        // st[l][p] / cv[l][p]: layer l's two parities
+        let st: Vec<[Tensor; 2]> = (0..layers)
+            .map(|l| {
+                let s = 5 + 4 * l as u64;
+                [
+                    randf(&dev, hv * dv * dk, 0.2, s).reshape((hv, dv, dk)).unwrap(),
+                    randf(&dev, hv * dv * dk, 0.2, s + 1).reshape((hv, dv, dk)).unwrap(),
+                ]
+            })
+            .collect();
+        let cv: Vec<[Tensor; 2]> = (0..layers)
+            .map(|l| {
+                let s = 7 + 4 * l as u64;
+                [
+                    rand(&dev, 3 * conv, 1.0, s).reshape((3, conv)).unwrap(),
+                    rand(&dev, 3 * conv, 1.0, s + 1).reshape((3, conv)).unwrap(),
+                ]
+            })
+            .collect();
+        let fused = rand(&dev, t * (conv + vd + 2 * hv), 1.5, 9).reshape((t, conv + vd + 2 * hv)).unwrap();
+        let x = fused.narrow(1, 0, conv).unwrap();
+        let z = fused.narrow(1, conv, vd).unwrap();
+        let ab = fused.narrow(1, conv + vd, 2 * hv).unwrap();
+        let yb = Tensor::zeros(crate::quant_kernel::presum_block_bytes(vd) / 2, DType::BF16, &dev).unwrap();
+        let yv = yb.narrow(0, 0, t * vd).unwrap().reshape((t, vd)).unwrap();
+        let kerns = [GdnKern::Orig, GdnKern::Wide(16), GdnKern::Wide(32)];
+        let run = |kern: GdnKern, commit: bool, count: usize| {
+            for i in 0..count {
+                // layer l, parity flipping on each visit of that layer
+                let l = i % layers;
+                let (a, b) = ((i / layers) % 2, 1 - (i / layers) % 2);
+                let (st, cv) = (&st[l], &cv[l]);
+                gdn_fused_step_k(
+                    &x, &cv[a], &cw, &st[a], &st[b], &cv[b], &ab,
+                    (!commit).then_some(&z), &normw, (!commit).then_some(&yv), None,
+                    t, hk, hv, dk, dv, 1e-6, a_log, dt_bias, !commit, kern,
+                )
+                .unwrap();
+            }
+            dev.synchronize().unwrap();
+        };
+        let modes: &[bool] = if layers > 1 { &[false] } else { &[false, true] };
+        for &commit in modes {
+            let mut ts: Vec<Vec<f64>> = vec![Vec::new(); kerns.len()];
+            for &k in &kerns {
+                run(k, commit, 32); // compile + warm
+            }
+            for rep in 0..reps {
+                for ki in 0..kerns.len() {
+                    // alternate the order rep by rep (drift hits all variants)
+                    let ki = if rep % 2 == 0 { ki } else { kerns.len() - 1 - ki };
+                    let t0 = std::time::Instant::now();
+                    run(kerns[ki], commit, n);
+                    ts[ki].push(t0.elapsed().as_secs_f64() * 1e6 / n as f64);
+                }
+            }
+            for (ki, v) in ts.iter_mut().enumerate() {
+                v.sort_by(|a, b| a.total_cmp(b));
+                let eff = super::metal_impl::gdn_effective_kern(&dev, kerns[ki], hk, hv, dk, dv).unwrap();
+                eprintln!(
+                    "[gdn-bench] {} L{layers:<2} {:12} us/dispatch min {:6.2} med {:6.2} max {:6.2} (n {n} x {reps}){}",
+                    if commit { "commit " } else { "forward" },
+                    format!("{:?}", kerns[ki]),
+                    v[0], v[v.len() / 2], v[v.len() - 1],
+                    if eff != kerns[ki] { format!(" FELL BACK to {eff:?}") } else { String::new() }
+                );
+            }
+        }
+    }
+
+    /// The per-row kernels reproduce the legacy single-threadgroup kernels
+    /// bit for bit: residual, normed plane, presum padding rows and sums.
+    #[test]
+    fn add_rmsnorm_per_row_matches_legacy_bitwise() {
+        let dev = Device::new_metal(0).unwrap();
+        for &(t, c, sums) in &[
+            (1usize, 5120usize, true), (3, 5120, true), (8, 5120, true), (5, 256, true),
+            (8, 6144, true), (1, 5120, false), (8, 5120, false), (13, 5120, false), (37, 1024, false),
+        ] {
+            let x = rand(&dev, t * c, 4.0, 1 + t as u64 * 31 + c as u64).reshape((1, t, c)).unwrap();
+            let r = rand(&dev, t * c, 2.0, 7 + t as u64 * 17 + c as u64).reshape((1, t, c)).unwrap();
+            let w = rand(&dev, c, 1.5, 99 + c as u64);
+            let run = |legacy: bool| {
+                let y = x
+                    .apply_op3_no_bwd(&r, &w, &AddRmsNorm { t, c, eps: 1e-6, sums, legacy })
+                    .unwrap();
+                dev.synchronize().unwrap();
+                let bytes = if sums {
+                    t * c * 2 + crate::quant_kernel::presum_block_bytes(c)
+                } else {
+                    2 * t * c * 2
+                };
+                raw(&y, bytes)
+            };
+            let (a, b) = (run(true), run(false));
+            let diff = a.iter().zip(&b).filter(|(p, q)| p != q).count();
+            assert_eq!(diff, 0, "t {t} c {c} sums {sums}: {diff} differing bytes");
+        }
+    }
 }

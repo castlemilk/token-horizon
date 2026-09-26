@@ -1674,6 +1674,15 @@ fn prefill_sync_min() -> usize {
     })
 }
 
+/// The fused rollback commits of all GDN layers go out as ONE dispatch
+/// (`gdn_kernel::gdn_commit_all`) instead of one `gdn_fused_step` per
+/// layer. `TH_GDN_COMMIT_ALL=0` restores the per-layer dispatches (A/B).
+/// Read once.
+fn gdn_commit_all_on() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("TH_GDN_COMMIT_ALL").as_deref() != Ok("0"))
+}
+
 /// `TH_DEBUG_ROLLBACK`: per-layer rollback dumps. Read once.
 fn debug_rollback() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
@@ -1731,6 +1740,21 @@ fn add_rms_norm(
 /// as a K45 presum block (`quant_kernel::presum_block_bytes`) — the third
 /// value says so, and the next projection takes it with `presum: true`
 /// (no pad copy, no in-kernel input sums). Values are bit-identical.
+/// Prefill (eager attention) writes K/V into a contiguous capacity buffer
+/// instead of leaving an exact-length view for the first verify to regrow.
+/// `TH_KV_CAP_PREFILL=0` restores the old behaviour (A/B). Read once.
+fn kv_cap_prefill() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("TH_KV_CAP_PREFILL").as_deref() != Ok("0"))
+}
+
+/// `TH_ARN_LEGACY=1`: the pre-R0c single-threadgroup add+RMSNorm kernels
+/// (A/B arm; outputs are bit-identical either way). Read once.
+fn arn_legacy() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("TH_ARN_LEGACY").as_deref() == Ok("1"))
+}
+
 fn add_rms_norm_ps(
     x: &Tensor,
     r: &Tensor,
@@ -1748,7 +1772,7 @@ fn add_rms_norm_ps(
         let out = x.apply_op3_no_bwd(
             r,
             w,
-            &crate::gdn_kernel::AddRmsNorm { t: seq, c, eps: eps as f32, sums },
+            &crate::gdn_kernel::AddRmsNorm { t: seq, c, eps: eps as f32, sums, legacy: arn_legacy() },
         )?;
         // out is [2, T, C] — plane 0 = residual, plane 1 = normed
         let res = out.narrow(0, 0, 1)?;
@@ -2062,6 +2086,10 @@ pub struct Qwen35 {
     /// Shared DFlash draft weights — set once, slots own rings.
     draft_w: Option<crate::dflash::DraftWeights>,
     debug: bool,
+    /// `[layers, 2, 64]` f32 GDN gate constants (a_log | dt_bias per
+    /// layer row, zero rows for attention layers) for the one-dispatch
+    /// rollback commit — built on first use.
+    gdn_consts: Option<Tensor>,
 }
 
 impl Qwen35 {
@@ -2851,6 +2879,7 @@ impl Qwen35 {
             draft_w: None,
             tq: None,
             debug: std::env::var("TH_DEBUG_LAYERS").is_ok(),
+            gdn_consts: None,
         })
     }
 
@@ -3000,6 +3029,23 @@ impl Qwen35 {
     /// no allocations of state buffers.
     pub fn rollback_verify(&mut self, slot: usize, snap: Snapshot, kept: usize) -> Result<()> {
         let dev = self.device.clone();
+        // one-dispatch commit: the per-layer gate constants, built once
+        let batch_commit = dev.is_metal() && gdn_commit_all_on() && !gdn_commit_step();
+        if batch_commit && self.gdn_consts.is_none() {
+            let mut c = vec![0f32; self.layers.len() * 128];
+            for (i, layer) in self.layers.iter().enumerate() {
+                if let Kind::Gdn(l) = &layer.kind {
+                    c[i * 128..i * 128 + 64].copy_from_slice(&l.a_log64);
+                    c[i * 128 + 64..i * 128 + 128].copy_from_slice(&l.dt_bias64);
+                }
+            }
+            self.gdn_consts = Some(Tensor::from_vec(c, (self.layers.len(), 2, 64), &dev)?);
+        }
+        let consts = self.gdn_consts.clone();
+        // (layer, kept input rows, pre-verify window, pre-verify state,
+        // kept ab rows, committed state, committed window)
+        #[allow(clippy::type_complexity)]
+        let mut batch: Vec<(usize, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor)> = Vec::new();
         let sl = &mut self.slots[slot];
         let new_len = snap.kv_tokens + kept;
         let cur = sl.gdn_par.cur;
@@ -3012,6 +3058,8 @@ impl Qwen35 {
             );
         }
         let mut rewrote = false;
+        crate::gpuprof::phase("rollback");
+        crate::gpuprof::region("gdn.commit");
         for (i, layer) in self.layers.iter().enumerate() {
             let Kind::Gdn(l) = &layer.kind else { continue };
             let Some(st) = sl.gdn[i].as_mut() else { continue };
@@ -3042,6 +3090,18 @@ impl Qwen35 {
                 }
             }
             match vc {
+                #[cfg(all(feature = "metal", target_os = "macos"))]
+                GdnVerifyCache { qkv: Some(qkv), ab: Some(ab), fused: true, .. }
+                    if batch_commit && consts.is_some() && kept <= 8 =>
+                {
+                    // collected: all layers commit in one dispatch below
+                    let x = qkv.narrow(0, 0, kept)?;
+                    let abk = ab.narrow(ab.rank() - 2, 0, kept)?;
+                    batch.push((
+                        i, x, src_conv, src_rec, abk,
+                        st.rec[cur].clone(), st.conv[cur].clone(),
+                    ));
+                }
                 #[cfg(all(feature = "metal", target_os = "macos"))]
                 GdnVerifyCache { qkv: Some(qkv), ab: Some(ab), fused: true, .. }
                     if !gdn_commit_step() && dev.is_metal() =>
@@ -3079,6 +3139,36 @@ impl Qwen35 {
                 }
             }
         }
+        #[cfg(all(feature = "metal", target_os = "macos"))]
+        if let (Some(consts), Some((i0, ..))) = (consts.as_ref(), batch.first()) {
+            // every collected layer's fused-step commit in one dispatch:
+            // the same instruction stream as the per-layer commit (state
+            // bit-identical to a kept-row forward — the R0a gate)
+            let Kind::Gdn(l) = &self.layers[*i0].kind else {
+                bail!("rollback_verify: batched commit on a non-GDN layer {i0}")
+            };
+            let list: Vec<crate::gdn_kernel::GdnCommitLayer<'_>> = batch
+                .iter()
+                .map(|(i, x, sc, sr, abk, so, co)| {
+                    let Kind::Gdn(li) = &self.layers[*i].kind else { unreachable!() };
+                    crate::gdn_kernel::GdnCommitLayer {
+                        xnew: x,
+                        conv_in: sc,
+                        cw: &li.conv,
+                        state_in: sr,
+                        ab: abk,
+                        state_out: so,
+                        conv_out: co,
+                        layer: *i,
+                    }
+                })
+                .collect();
+            crate::gdn_kernel::gdn_commit_all(
+                &list, consts, kept, l.num_k_heads, l.num_v_heads, l.head_k, l.head_v,
+            )?;
+        }
+        drop(batch);
+        let sl = &mut self.slots[slot];
         if rewrote || !light {
             sl.gdn_par.rewrote_cur();
         }
@@ -3193,6 +3283,7 @@ impl Qwen35 {
         if sl.captures.is_empty() {
             return Ok(None);
         }
+        crate::gpuprof::phase("captures");
         let mut calls = Vec::new();
         for group in sl.captures.chunks_exact(5) {
             calls.push(Tensor::cat(group, 1)?); // [seq, 25600]
@@ -3211,6 +3302,7 @@ impl Qwen35 {
     /// ever be attended, so earlier prompt rows are skipped.
     pub fn draft_prefill(&mut self, slot: usize) -> Result<()> {
         let caps = self.take_captures(slot)?;
+        crate::gpuprof::phase("draft_prefill");
         let (w, sl) = (self.draft_w.as_ref(), &mut self.slots[slot]);
         if let (Some(w), Some(d), Some(c)) = (w, sl.draft.as_mut(), caps) {
             let p = c.dim(0)?;
@@ -3225,6 +3317,7 @@ impl Qwen35 {
     /// starting at absolute position `start_pos`.
     pub fn draft_commit(&mut self, slot: usize, captured: &Tensor, start_pos: usize, rows: usize) -> Result<()> {
         if let (Some(w), Some(d)) = (self.draft_w.as_ref(), self.slots[slot].draft.as_mut()) {
+            crate::gpuprof::phase("draft_commit");
             w.commit(d, captured, start_pos, rows)?;
         }
         Ok(())
@@ -3243,6 +3336,9 @@ impl Qwen35 {
     ) -> Result<crate::dflash::Proposal> {
         let w = self.draft_w.as_ref().context("draft not loaded")?;
         let d = self.slots[slot].draft.as_mut().context("draft ctx")?;
+        // R0c: one decode round starts with its propose
+        crate::gpuprof::round();
+        crate::gpuprof::phase("propose");
         w.propose(d, &self.embed, &self.lm_head, anchor, pos, temp, uniform)
     }
 
@@ -3257,6 +3353,8 @@ impl Qwen35 {
         uniform: &mut dyn FnMut(usize) -> f64,
     ) -> Result<Vec<crate::dflash::Proposal>> {
         let w = self.draft_w.as_ref().context("draft not loaded")?;
+        crate::gpuprof::round();
+        crate::gpuprof::phase("propose_b");
         // move each slot's ring ctx out — disjoint-index mutable borrows.
         // Every taken ctx goes back before any Err is returned, and the
         // hand-back is infallible (no placeholder ring allocation).
@@ -3384,6 +3482,7 @@ impl Qwen35 {
                 } else {
                     None
                 };
+                crate::gpuprof::region("gdn.core");
                 crate::gdn_kernel::gdn_fused_step(
                     &qkv, &st.conv[cur], &l.conv, &st.rec[cur], &st.rec[nxt],
                     &st.conv[nxt], &ab, Some(&z), &l.norm_w, Some(&gated),
@@ -3395,8 +3494,10 @@ impl Qwen35 {
                     c.ab = Some(ab.clone());
                     c.fused = true;
                 }
+                crate::gpuprof::region("gdn.out");
                 return lin_apply_ps(&gated.unsqueeze(0)?, &l.out, ps);
             }
+            crate::gpuprof::region("gdn.core");
             let conv_out = st.conv[cur]
                 .apply_op3_no_bwd(
                     &qkv,
@@ -3448,6 +3549,7 @@ impl Qwen35 {
                     eps: eps as f32,
                 },
             )?;
+            crate::gpuprof::region("gdn.out");
             return lin_apply(
                 &gated.reshape((1, seq, l.value_dim))?,
                 &l.out,
@@ -3678,6 +3780,7 @@ impl Qwen35 {
         // they run `attn_quant` below on the compressed cache.
         #[cfg(all(feature = "metal", target_os = "macos"))]
         if device.is_metal() && tq.is_none() && seq <= 8 && !no_attn_fused() {
+            crate::gpuprof::region("attn.core");
             let (kc, vc) = kvc;
             Self::ensure_kv(kc, vc, pos + seq, device)?;
             // N3: past `TH_ATTN_SPLIT_MIN` visible keys the split-key
@@ -3842,8 +3945,10 @@ impl Qwen35 {
                 let do_ = of.iter().zip(&oe).map(|(a,b)| (a-b).abs()).fold(0.0f32, f32::max);
                 eprintln!("  [attn] seq={seq} pos={pos} outΔ={do_:.4}");
             }
+            crate::gpuprof::region("attn.o");
             return lin_apply(&out.unsqueeze(0)?, &l.o);
         }
+        crate::gpuprof::region("attn.core");
 
         let qg = qkv
             .narrow(D::Minus1, 0, qd)?
@@ -3880,9 +3985,45 @@ impl Qwen35 {
         let k_pre = if kc.dim(1)? > pos { kc.narrow(1, 0, pos)? } else { kc.clone() };
         let v_pre = if vc.dim(1)? > pos { vc.narrow(1, 0, pos)? } else { vc.clone() };
         let k_all = Tensor::cat(&[k_pre, k.squeeze(0)?], 1)?;
-        let v_all = Tensor::cat(&[v_pre, v], 1)?;
-        *kc = k_all.clone();
-        *vc = v_all.clone();
+        let v_all = Tensor::cat(&[v_pre, v.clone()], 1)?;
+        if kv_cap_prefill() {
+            // store into a contiguous capacity buffer — the decode path's
+            // attn_prepare appends in place, so the first verify no longer
+            // regrows it. The old exact-length `k_all`/`v_all` caches were
+            // non-contiguous views (cat's transposed fallback for the
+            // transposed `v`), and the first verify's ensure_kv re-copied
+            // all 32 of them through the generic strided kernel (~0.3-0.4 ms
+            // each, ~11 ms per request, R0c). Same capacity rule as
+            // ensure_kv's first growth. Rows >= kv_tokens are never read,
+            // EXCEPT row n_prompt: the DFlash anchor off-by-one (engine.rs,
+            // fixed on th/c-loop-anchor, not merged) attends it before any
+            // forward writes it — hence the zero fill below.
+            let need = pos + seq;
+            let (nkv, hd) = (k_all.dim(0)?, k_all.dim(2)?);
+            if kc.dim(1)? >= need && kc.is_contiguous() && vc.is_contiguous() {
+                kc.slice_set(&k.squeeze(0)?.contiguous()?, 1, pos)?;
+                vc.slice_set(&v.contiguous()?, 1, pos)?;
+            } else {
+                // whole 256-row blocks, as in ensure_kv: the N3 split kernel
+                // reads full 32-key pages and falls back to the single-pass
+                // kernel on a capacity that is not page-aligned
+                // (`split_plan`) — which would also make a request's
+                // numerics depend on where its capacity was first allocated
+                let ncap = (need * 2).max(2048).next_multiple_of(256);
+                // zero-filled like ensure_kv's pad (NOT outbuf::kernel_out):
+                // with an uninitialised tail the first verify produced
+                // garbage — see the fix commit / th-d-gpu-tail report
+                let nk = Tensor::zeros((nkv, ncap, hd), DType::BF16, device)?;
+                let nv = Tensor::zeros((nkv, ncap, hd), DType::BF16, device)?;
+                nk.slice_set(&k_all.contiguous()?, 1, 0)?;
+                nv.slice_set(&v_all.contiguous()?, 1, 0)?;
+                *kc = nk;
+                *vc = nv;
+            }
+        } else {
+            *kc = k_all.clone();
+            *vc = v_all.clone();
+        }
         let kv_seq = k_all.dim(1)?;
 
         let rep = l.n_heads / l.n_kv;
@@ -3937,6 +4078,7 @@ impl Qwen35 {
         let out = out.broadcast_mul(&candle_nn::ops::sigmoid(
             &gate.reshape((seq, l.n_heads * l.head_dim))?,
         )?)?;
+        crate::gpuprof::region("attn.o");
         lin_apply(&out.unsqueeze(0)?, &l.o)
     }
 
@@ -4020,6 +4162,7 @@ impl Qwen35 {
             .broadcast_mul(&candle_nn::ops::sigmoid(
                 &gate.reshape((seq, l.n_heads * l.head_dim))?,
             )?)?;
+        crate::gpuprof::region("attn.o");
         lin_apply(&out.unsqueeze(0)?, &l.o)
     }
 
@@ -4047,6 +4190,8 @@ impl Qwen35 {
         if seq > 8 && pos > 0 && pos >= prefill_sync_min() {
             self.device.synchronize()?;
         }
+        crate::gpuprof::phase(if seq > 8 { "prefill" } else if last_only { "fwd1" } else { "verify" });
+        crate::gpuprof::region("embed");
         let ids = Tensor::new(tokens, &self.device)?;
         let mut x = self.embed.i(&ids)?.unsqueeze(0)?; // [1, seq, hidden]
         // stash GDN scan inputs during multi-row verify passes so a
@@ -4068,11 +4213,15 @@ impl Qwen35 {
             let layer = &self.layers[i];
             let (h, h_ps) = match h_next.take() {
                 Some(v) => v,
-                None => (rms_norm(&x, &layer.input_norm, self.cfg.rms_norm_eps)?, false),
+                None => {
+                    crate::gpuprof::region("norm.in");
+                    (rms_norm(&x, &layer.input_norm, self.cfg.rms_norm_eps)?, false)
+                }
             };
             let r = match &layer.kind {
                 Kind::Gdn(l) => {
                     // K45: `h` may be a presum block (add_rms_norm_ps)
+                    crate::gpuprof::region("gdn.in_all");
                     let fused = lin_apply_ps(&h, &l.in_all, h_ps)?;
                     let mut st = self.slots[slot].gdn[i]
                         .take()
@@ -4087,6 +4236,7 @@ impl Qwen35 {
                     r?
                 }
                 Kind::Attn(l) => {
+                    crate::gpuprof::region("attn.qkv");
                     let qkv = lin_apply_ps(&h, &l.in_qkv, h_ps)?;
                     let mut kvc = self.slots[slot].kv[i]
                         .take()
@@ -4102,8 +4252,10 @@ impl Qwen35 {
                 }
             };
             // fused: x += r; h2 = rms_norm(x)·post_norm — one dispatch
+            crate::gpuprof::region("norm.post");
             let (xn, h2, h2_ps) =
                 add_rms_norm_ps(&x, &r, &layer.post_norm, self.cfg.rms_norm_eps)?;
+            crate::gpuprof::region("mlp.gate_up");
             // fused gate|up projection with in-kernel silu·mul epilogue
             // (eager narrow + silu·mul fallback off-Metal / prefill);
             // act_ps = the N256 tile emitted a presum block for `down`
@@ -4136,7 +4288,9 @@ impl Qwen35 {
                     (candle_nn::ops::silu(&gate)?.mul(&up)?, false)
                 }
             };
+            crate::gpuprof::region("mlp.down");
             let mlp = lin_apply_ps(&act, &layer.mlp.down, act_ps)?;
+            crate::gpuprof::region("norm.next");
             if i + 1 < self.layers.len() {
                 // fused: x += mlp; h_next = rms_norm(x)·next input_norm
                 let (xn2, hn, hn_ps) = add_rms_norm_ps(
@@ -4153,6 +4307,7 @@ impl Qwen35 {
             if self.slots[slot].draft.is_some()
                 && crate::dflash::CAPTURE_LAYERS.contains(&i)
             {
+                crate::gpuprof::region("capture");
                 self.slots[slot]
                     .captures
                     .push(x.squeeze(0)?.contiguous()?);
@@ -4166,6 +4321,7 @@ impl Qwen35 {
                 eprintln!("L{i:02} mean|x|={mean:.4} x[-1,:8]={last:?}");
             }
         }
+        crate::gpuprof::region("norm.final");
         let x = rms_norm(&x, &self.norm, self.cfg.rms_norm_eps)?;
         if let Some(t0) = phase_t {
             self.device.synchronize()?;
@@ -4177,14 +4333,19 @@ impl Qwen35 {
         let t1 = phase_t.map(|_| std::time::Instant::now());
         self.slots[slot].kv_tokens = pos + seq;
         self.slots[slot].gdn_par.flip();
+        crate::gpuprof::region("lm_head");
         if last_only {
             let last = x.narrow(1, seq - 1, 1)?; // [1, 1, hidden]
             let logits =
                 lin_apply(&last, &self.lm_head)?.reshape((self.cfg.vocab_size,))?;
-            return Ok(logits.to_dtype(DType::F32)?);
+            let logits = logits.to_dtype(DType::F32)?;
+            crate::gpuprof::region("post");
+            return Ok(logits);
         }
         // [1, seq, vocab] — keep bf16 (halves the accept readback)
         let out = lin_apply(&x, &self.lm_head)?.squeeze(0)?;
+        // the caller's argmax / readback lands here
+        crate::gpuprof::region("post");
         if let Some(t) = t1 {
             self.device.synchronize()?;
             eprintln!("[phase] lm_head={:.1}ms", t.elapsed().as_secs_f64() * 1e3);
@@ -4212,6 +4373,8 @@ impl Qwen35 {
         }
         let flat: Vec<u32> =
             seqs.iter().flat_map(|s| s.iter().copied()).collect();
+        crate::gpuprof::phase("vbatch");
+        crate::gpuprof::region("embed");
         let ids = Tensor::new(flat.as_slice(), &self.device)?;
         let mut x = self.embed.i(&ids)?.unsqueeze(0)?; // [1, total, hidden]
         for &sb in slots {
@@ -4234,10 +4397,14 @@ impl Qwen35 {
             let layer = &self.layers[i];
             let (h, h_ps) = match h_next.take() {
                 Some(v) => v,
-                None => (rms_norm(&x, &layer.input_norm, eps)?, false),
+                None => {
+                    crate::gpuprof::region("norm.in");
+                    (rms_norm(&x, &layer.input_norm, eps)?, false)
+                }
             };
             let r = match &layer.kind {
                 Kind::Gdn(l) => {
+                    crate::gpuprof::region("gdn.in_all");
                     let fused = lin_apply_ps(&h, &l.in_all, h_ps)?;
                     let mut parts = Vec::with_capacity(nb);
                     for b in 0..nb {
@@ -4261,6 +4428,7 @@ impl Qwen35 {
                     Tensor::cat(&parts, 1)?
                 }
                 Kind::Attn(l) => {
+                    crate::gpuprof::region("attn.qkv");
                     let qkv = lin_apply_ps(&h, &l.in_qkv, h_ps)?;
                     let mut parts = Vec::with_capacity(nb);
                     for b in 0..nb {
@@ -4283,8 +4451,10 @@ impl Qwen35 {
                     Tensor::cat(&parts, 1)?
                 }
             };
+            crate::gpuprof::region("norm.post");
             let (xn, h2, h2_ps) =
                 add_rms_norm_ps(&x, &r, &layer.post_norm, eps)?;
+            crate::gpuprof::region("mlp.gate_up");
             let (act, act_ps) = match &layer.mlp.gate_up {
                 Lin::Quant(q) => match q.gate_up_act_ps(&h2, h2_ps) {
                     Some(r) => r?,
@@ -4318,7 +4488,9 @@ impl Qwen35 {
                     (candle_nn::ops::silu(&gate)?.mul(&up)?, false)
                 }
             };
+            crate::gpuprof::region("mlp.down");
             let mlp = lin_apply_ps(&act, &layer.mlp.down, act_ps)?;
+            crate::gpuprof::region("norm.next");
             if i + 1 < self.layers.len() {
                 let (xn2, hn, hn_ps) = add_rms_norm_ps(
                     &xn,
@@ -4332,6 +4504,7 @@ impl Qwen35 {
                 x = xn.add(&mlp)?;
             }
             if crate::dflash::CAPTURE_LAYERS.contains(&i) {
+                crate::gpuprof::region("capture");
                 let x2 = x.squeeze(0)?.contiguous()?;
                 for b in 0..nb {
                     let sb = slots[b];
@@ -4348,8 +4521,12 @@ impl Qwen35 {
             self.slots[slots[b]].kv_tokens = poss[b] + seqs[b].len();
             self.slots[slots[b]].gdn_par.flip();
         }
+        crate::gpuprof::region("norm.final");
         let x = rms_norm(&x, &self.norm, eps)?;
-        Ok(lin_apply(&x, &self.lm_head)?.squeeze(0)?) // [total, vocab]
+        crate::gpuprof::region("lm_head");
+        let out = lin_apply(&x, &self.lm_head)?.squeeze(0)?; // [total, vocab]
+        crate::gpuprof::region("post");
+        Ok(out)
     }
 }
 
@@ -4712,6 +4889,7 @@ mod gdn_parity_tests {
             slots,
             draft_w: None,
             debug: false,
+            gdn_consts: None,
         })
     }
 
@@ -4906,6 +5084,7 @@ mod mem6_tests {
             slots,
             draft_w: None,
             debug: false,
+            gdn_consts: None,
         })
     }
 
