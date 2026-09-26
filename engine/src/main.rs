@@ -611,6 +611,103 @@ async fn main() -> Result<()> {
                     drop((ck, gck));
                 }
             }
+            if let Ok(spec) = std::env::var("TH_BENCH_ATTN") {
+                // Eager prefill attention at long context — qwen35
+                // attn_forward's seq > 8 path re-created with the same
+                // candle ops on random data (24 q heads, 4 kv heads, d 256),
+                // for each `seq:kv` (kv = pos + seq), synced, median of 7:
+                //   eager   — as attn_forward: K and V broadcast to all 24
+                //             heads (materialising reshape), K^T contiguous,
+                //             host-built mask, softmax, @V
+                //   copies  — only those three [24, kv, 256] materialisations
+                //   grouped — GQA without replication: q grouped per kv head
+                //             [4, 6·seq, 256] @ K^T [4, 256, kv], @V [4, kv, 256]
+                // + max|d| eager vs grouped. Per call = one attention layer
+                // (16 per forward).
+                use candle_core::{DType, Tensor, D};
+                let dev = loaded.device.clone();
+                let (nh, nkv, hd) = (24usize, 4usize, 256usize);
+                let rep = nh / nkv;
+                for pair in spec.split(',') {
+                    let Some((seq, kv)) = pair.split_once(':').and_then(|(a, b)| {
+                        Some((a.trim().parse::<usize>().ok()?, b.trim().parse::<usize>().ok()?))
+                    }) else {
+                        continue;
+                    };
+                    if seq == 0 || kv < seq {
+                        continue;
+                    }
+                    let pos = kv - seq;
+                    let q = Tensor::randn(0f32, 1.0, (1, nh, seq, hd), &dev)?.to_dtype(DType::BF16)?;
+                    let k_all = Tensor::randn(0f32, 1.0, (nkv, kv, hd), &dev)?.to_dtype(DType::BF16)?;
+                    let v_all = Tensor::randn(0f32, 1.0, (nkv, kv, hd), &dev)?.to_dtype(DType::BF16)?;
+                    let scale = (hd as f64).powf(-0.5);
+                    let mask = || -> Result<Tensor> {
+                        let mut m = vec![f32::NEG_INFINITY; seq * kv];
+                        for i in 0..seq {
+                            for x in m.iter_mut().skip(i * kv).take(pos + i + 1) {
+                                *x = 0.0;
+                            }
+                        }
+                        Ok(Tensor::from_vec(m, (1, 1, seq, kv), &dev)?.to_dtype(DType::BF16)?)
+                    };
+                    let bcast = |t: &Tensor| -> Result<Tensor> {
+                        Ok(t.unsqueeze(1)?.broadcast_as((nkv, rep, kv, hd))?.reshape((nh, kv, hd))?)
+                    };
+                    let eager = || -> Result<Tensor> {
+                        let k_r = bcast(&k_all)?.unsqueeze(0)?;
+                        let v_r = bcast(&v_all)?.unsqueeze(0)?;
+                        let scores = q
+                            .contiguous()?
+                            .matmul(&k_r.transpose(D::Minus2, D::Minus1)?.contiguous()?)?
+                            .affine(scale, 0.0)?;
+                        let probs = candle_nn::ops::softmax(&scores.broadcast_add(&mask()?)?, D::Minus1)?;
+                        Ok(probs.matmul(&v_r.contiguous()?)?)
+                    };
+                    let copies = || -> Result<Tensor> {
+                        let kt = bcast(&k_all)?.transpose(1, 2)?.contiguous()?;
+                        let v_r = bcast(&v_all)?.contiguous()?;
+                        drop(v_r);
+                        Ok(kt)
+                    };
+                    let grouped = || -> Result<Tensor> {
+                        let qg = q.squeeze(0)?.contiguous()?.reshape((nkv, rep * seq, hd))?;
+                        let kt = k_all.transpose(1, 2)?.contiguous()?;
+                        let scores = qg.matmul(&kt)?.affine(scale, 0.0)?.reshape((nkv, rep, seq, kv))?;
+                        let m = mask()?; // [1, 1, seq, kv] broadcasts over (nkv, rep)
+                        let probs = candle_nn::ops::softmax(&scores.broadcast_add(&m)?, D::Minus1)?
+                            .reshape((nkv, rep * seq, kv))?;
+                        Ok(probs.matmul(&v_all)?.reshape((1, nh, seq, hd))?)
+                    };
+                    let time = |f: &dyn Fn() -> Result<Tensor>| -> Result<(f64, f64)> {
+                        let _ = f()?;
+                        dev.synchronize()?;
+                        let mut v = Vec::new();
+                        for _ in 0..7 {
+                            let t = std::time::Instant::now();
+                            let _o = f()?;
+                            dev.synchronize()?;
+                            v.push(t.elapsed().as_secs_f64() * 1e3);
+                        }
+                        v.sort_by(|a, b| a.total_cmp(b));
+                        Ok((v[0], v[3]))
+                    };
+                    let ((emin, emed), (cmin, cmed), (gmin, gmed)) = (time(&eager)?, time(&copies)?, time(&grouped)?);
+                    let d = eager()?
+                        .to_dtype(DType::F32)?
+                        .sub(&grouped()?.to_dtype(DType::F32)?)?
+                        .abs()?
+                        .flatten_all()?
+                        .max(0)?
+                        .to_scalar::<f32>()?;
+                    eprintln!(
+                        "attn seq={seq:4} kv={kv:5} | eager min={emin:.2} med={emed:.2}ms (x16 = {:.0} ms/forward) | copies min={cmin:.2} med={cmed:.2}ms ({:.0}% of eager) | grouped min={gmin:.2} med={gmed:.2}ms ({:.2}x faster) | max|eager-grouped|={d:.4}",
+                        emed * 16.0,
+                        cmed / emed * 100.0,
+                        emed / gmed,
+                    );
+                }
+            }
             #[cfg(all(feature = "metal", target_os = "macos"))]
             if let Ok(spec) = std::env::var("TH_BENCH_BATCH") {
                 // batched verify forward — the target pass of a TH_BATCH > 1
