@@ -1602,6 +1602,18 @@ fn gdn_commit_step() -> bool {
     *ON.get_or_init(|| std::env::var("TH_GDN_COMMIT").as_deref() == Ok("step"))
 }
 
+/// Eager attention (chunks of more than 8 rows: prefill) groups the q
+/// heads per KV head (`[n_kv, rep*seq, d]` against the n_kv K/V heads)
+/// instead of broadcasting K and V to every q head. Same kernels on the
+/// same values per output element (bit-identical, see TH_BENCH_ATTN);
+/// saves the per-layer `[n_heads, kv, d]` K, K^T and V copies, which
+/// dominate prefill chunks at long context. `TH_ATTN_GQA=0` restores
+/// the broadcast path (A/B reference). Read once.
+fn attn_gqa() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("TH_ATTN_GQA").as_deref() != Ok("0"))
+}
+
 /// `TH_DEBUG_ROLLBACK`: per-layer rollback dumps. Read once.
 fn debug_rollback() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
@@ -3987,46 +3999,86 @@ impl Qwen35 {
         let v_all = Tensor::cat(&[v_pre, v], 1)?;
         *kc = k_all.clone();
         *vc = v_all.clone();
+
+        let out = Self::attn_eager(
+            &q, &k_all, &v_all, pos, seq, l.n_heads, l.n_kv, l.head_dim, attn_gqa(), device,
+        )?;
+        let out = out.broadcast_mul(&candle_nn::ops::sigmoid(
+            &gate.reshape((seq, l.n_heads * l.head_dim))?,
+        )?)?;
+        lin_apply(&out.unsqueeze(0)?, &l.o)
+    }
+
+    /// Eager attention for `seq` query rows at positions `pos..pos+seq`
+    /// over keys `0..kv` (causal): `q` [1, n_heads, seq, d] post-rope,
+    /// `k_all`/`v_all` [n_kv, kv, d] → [seq, n_heads*d] (before the output
+    /// gate). `grouped` (T1b, `TH_ATTN_GQA`): q head h = g*rep + r reads
+    /// KV head g, so the rep heads of group g are the rows of one
+    /// [rep*seq, d] matrix — per output element the same dot products,
+    /// mask and softmax rows through the same kernels (MLX nn gemm, all
+    /// tiles BK = 16, no split-K; per-row reductions sized by kv only) as
+    /// the broadcast form, without its three [n_heads, kv, d] copies (K,
+    /// K^T, V) per layer. Bitwise equal: `gqa_tests`, TH_BENCH_ATTN.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn attn_eager(
+        q: &Tensor,
+        k_all: &Tensor,
+        v_all: &Tensor,
+        pos: usize,
+        seq: usize,
+        n_heads: usize,
+        n_kv: usize,
+        head_dim: usize,
+        grouped: bool,
+        device: &Device,
+    ) -> Result<Tensor> {
         let kv_seq = k_all.dim(1)?;
-
-        let rep = l.n_heads / l.n_kv;
-        let k_r = k_all
-            .unsqueeze(1)?
-            .broadcast_as((l.n_kv, rep, kv_seq, l.head_dim))?
-            .reshape((l.n_heads, kv_seq, l.head_dim))?
-            .unsqueeze(0)?; // [1, 24, kv, 256]
-        let v_r = v_all
-            .unsqueeze(1)?
-            .broadcast_as((l.n_kv, rep, kv_seq, l.head_dim))?
-            .reshape((l.n_heads, kv_seq, l.head_dim))?
-            .unsqueeze(0)?;
-
-        let scale = (l.head_dim as f64).powf(-0.5);
-        let scores = q
-            .contiguous()?
-            .matmul(&k_r.transpose(D::Minus2, D::Minus1)?.contiguous()?)
-            .with_context(|| {
-                format!(
-                    "attn q@k q={:?}/{:?} k_r={:?}",
-                    q.shape(),
-                    q.layout().stride(),
-                    k_r.shape()
-                )
-            })?
-            .affine(scale, 0.0)?;
-        // seq==1 decode attends over the whole cache — no mask needed
-        let probs = if seq == 1 {
-            candle_nn::ops::softmax(&scores, D::Minus1)?
-        } else {
+        let rep = n_heads / n_kv;
+        let scale = (head_dim as f64).powf(-0.5);
+        // causal mask for rows pos..pos+seq over keys 0..kv_seq
+        let mask = || -> Result<Tensor> {
             let mut mask = vec![f32::NEG_INFINITY; seq * kv_seq];
             for i in 0..seq {
                 for m in mask.iter_mut().skip(i * kv_seq).take(pos + i + 1) {
                     *m = 0.0;
                 }
             }
-            let mask_t = Tensor::from_vec(mask, (1, 1, seq, kv_seq), device)?
-                .to_dtype(DType::BF16)?;
-            candle_nn::ops::softmax(&scores.broadcast_add(&mask_t)?, D::Minus1)?
+            Ok(Tensor::from_vec(mask, (1, 1, seq, kv_seq), device)?.to_dtype(DType::BF16)?)
+        };
+        if grouped && seq > 1 {
+            let qg = q.squeeze(0)?.contiguous()?.reshape((n_kv, rep * seq, head_dim))?;
+            let kt = k_all.transpose(1, 2)?.contiguous()?; // [n_kv, d, kv]
+            let scores = qg.matmul(&kt)?.affine(scale, 0.0)?.reshape((n_kv, rep, seq, kv_seq))?;
+            let probs = candle_nn::ops::softmax(&scores.broadcast_add(&mask()?)?, D::Minus1)?
+                .reshape((n_kv, rep * seq, kv_seq))?;
+            return Ok(probs
+                .matmul(v_all)? // [n_kv, rep*seq, d]
+                .reshape((n_heads, seq, head_dim))?
+                .transpose(0, 1)?
+                .reshape((seq, n_heads * head_dim))?);
+        }
+        let k_r = k_all
+            .unsqueeze(1)?
+            .broadcast_as((n_kv, rep, kv_seq, head_dim))?
+            .reshape((n_heads, kv_seq, head_dim))?
+            .unsqueeze(0)?; // [1, 24, kv, 256]
+        let v_r = v_all
+            .unsqueeze(1)?
+            .broadcast_as((n_kv, rep, kv_seq, head_dim))?
+            .reshape((n_heads, kv_seq, head_dim))?
+            .unsqueeze(0)?;
+        let scores = q
+            .contiguous()?
+            .matmul(&k_r.transpose(D::Minus2, D::Minus1)?.contiguous()?)
+            .with_context(|| {
+                format!("attn q@k q={:?}/{:?} k_r={:?}", q.shape(), q.layout().stride(), k_r.shape())
+            })?
+            .affine(scale, 0.0)?;
+        // seq==1 decode attends over the whole cache — no mask needed
+        let probs = if seq == 1 {
+            candle_nn::ops::softmax(&scores, D::Minus1)?
+        } else {
+            candle_nn::ops::softmax(&scores.broadcast_add(&mask()?)?, D::Minus1)?
         };
         let out = probs.matmul(&v_r.contiguous()?).with_context(|| {
             format!(
@@ -4037,14 +4089,7 @@ impl Qwen35 {
                 v_r.layout().stride()
             )
         })?; // [1, 24, seq, 256]
-        let out = out
-            .squeeze(0)?
-            .transpose(0, 1)?
-            .reshape((seq, l.n_heads * l.head_dim))?;
-        let out = out.broadcast_mul(&candle_nn::ops::sigmoid(
-            &gate.reshape((seq, l.n_heads * l.head_dim))?,
-        )?)?;
-        lin_apply(&out.unsqueeze(0)?, &l.o)
+        Ok(out.squeeze(0)?.transpose(0, 1)?.reshape((seq, n_heads * head_dim))?)
     }
 
     /// Grow the fixed-capacity KV caches to hold `need` rows. Appended
@@ -5550,6 +5595,67 @@ mod mem6_tests {
             }
         }
         assert!(bad.is_empty(), "in-flight slot A corrupted by B's admission: {bad:?}");
+        Ok(())
+    }
+}
+
+/// T1b: the GQA-grouped eager attention (`attn_eager(grouped)`) is
+/// bitwise equal to the broadcast form it replaces, over the prefill chunk
+/// shapes that reach it (seq 9..513 rows, tiny to long contexts, both GEMM
+/// tile regimes) at Qwen3.8's head layout (24 q heads, 4 KV heads, d 256)
+/// and another GQA ratio. Skips when no Metal device exists.
+#[cfg(all(test, feature = "metal", target_os = "macos"))]
+mod gqa_tests {
+    use super::*;
+
+    fn fill(dims: &[usize], seed: u64, scale: f32, dev: &Device) -> Result<Tensor> {
+        let n: usize = dims.iter().product();
+        let mut s = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
+        let v: Vec<f32> = (0..n)
+            .map(|_| {
+                s ^= s >> 12;
+                s ^= s << 25;
+                s ^= s >> 27;
+                let u = (s.wrapping_mul(0x2545_F491_4F6C_DD1D) >> 11) as f32
+                    / (1u64 << 53) as f32;
+                (u * 2.0 - 1.0) * scale
+            })
+            .collect();
+        Ok(Tensor::from_vec(v, dims, dev)?.to_dtype(DType::BF16)?)
+    }
+
+    #[test]
+    fn grouped_attention_is_bitwise_equal_to_broadcast() -> Result<()> {
+        let Ok(dev) = Device::new_metal(0) else {
+            return Ok(());
+        };
+        let mut seed = 1u64;
+        for &(nh, nkv, d) in &[(24usize, 4usize, 256usize), (8, 2, 64)] {
+            for &(seq, pos) in &[
+                (2usize, 0usize),
+                (9, 0),
+                (12, 100),
+                (24, 1408),
+                (46, 1408),
+                (126, 700),
+                (200, 0),
+                (384, 1024),
+                (513, 511),
+            ] {
+                let kv = pos + seq;
+                seed += 3;
+                let q = fill(&[1, nh, seq, d], seed, 1.0, &dev)?;
+                let k = fill(&[nkv, kv, d], seed + 1, 1.0, &dev)?;
+                let v = fill(&[nkv, kv, d], seed + 2, 1.0, &dev)?;
+                let b = Qwen35::attn_eager(&q, &k, &v, pos, seq, nh, nkv, d, false, &dev)?;
+                let g = Qwen35::attn_eager(&q, &k, &v, pos, seq, nh, nkv, d, true, &dev)?;
+                assert_eq!(b.dims(), &[seq, nh * d]);
+                assert_eq!(g.dims(), b.dims());
+                let (bb, gb) = (tensor_bits(&b)?, tensor_bits(&g)?);
+                let diff = bb.iter().zip(&gb).filter(|(x, y)| x != y).count();
+                assert_eq!(diff, 0, "heads {nh}/{nkv} d {d} seq {seq} pos {pos}: {diff} elements differ");
+            }
+        }
         Ok(())
     }
 }
