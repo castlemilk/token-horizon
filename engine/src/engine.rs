@@ -581,11 +581,12 @@ fn generate_blocking(
                     // `verify_adaptive`. The legacy rule caps the chain
                     // at the accept EMA + 1 headroom (2..=7).
                     let verify_len = dflash_verify_len(verify_adaptive(), accept_ema);
+                    let dsamp = sampler.draft_sampling();
                     let prop = inner.backend.draft_propose(
                         0,
                         anchor,
                         pos,
-                        sampler.temperature,
+                        dsamp,
                         || sampler.next_f64(),
                     )?;
                     let t_prop = t0.elapsed();
@@ -633,6 +634,21 @@ fn generate_blocking(
                             emitted.push(argmax_rows[verify_len]);
                         }
                     } else {
+                        if accept_stats() {
+                            eprintln!(
+                                "{}",
+                                accept_stats_line(
+                                    &mut sampler,
+                                    &rows,
+                                    &prop,
+                                    verify_len,
+                                    ec.completion,
+                                    &prompt_tokens,
+                                    sp.repeat_penalty,
+                                    sp.repeat_last_n,
+                                )
+                            );
+                        }
                         let mut rows_it = rows.drain(..);
                         for i in 0..verify_len {
                             let row: Vec<f32> = rows_it
@@ -926,6 +942,21 @@ impl Sampler {
         }
     }
 
+    /// Draft proposal policy for this request: `None` = greedy chaining;
+    /// sampled requests chain at the request temperature and, with
+    /// `draft_filter()`, draw from the draft distribution after the
+    /// request's own top-k / top-p (R0b).
+    fn draft_sampling(&self) -> Option<crate::dflash::DraftSampling> {
+        self.temperature.map(|t| {
+            let f = draft_filter();
+            crate::dflash::DraftSampling {
+                temp: t,
+                top_k: if f { self.top_k.unwrap_or(0) } else { 0 },
+                top_p: if f { self.top_p.unwrap_or(1.0) } else { 1.0 },
+            }
+        })
+    }
+
     #[inline]
     fn next_f64(&mut self) -> f64 {
         // xorshift64* — plenty for token sampling
@@ -962,11 +993,27 @@ impl Sampler {
     /// pass read all rows in one GPU→CPU transfer.
     fn dist_vec(
         &mut self,
+        l: Vec<f32>,
+        completion: &[u32],
+        prompt: &[u32],
+        repeat_penalty: f32,
+        repeat_last_n: usize,
+    ) -> Vec<(u32, f32)> {
+        let renorm = top_p_renorm();
+        self.dist_vec_sem(l, completion, prompt, repeat_penalty, repeat_last_n, renorm)
+    }
+
+    /// `dist_vec` with an explicit top-p semantics: `renorm` = Splash /
+    /// HF / vLLM (top-p over the top-k set renormalised), else candle's
+    /// global-partition rule (the historical th behaviour).
+    fn dist_vec_sem(
+        &mut self,
         mut l: Vec<f32>,
         completion: &[u32],
         prompt: &[u32],
         repeat_penalty: f32,
         repeat_last_n: usize,
+        renorm: bool,
     ) -> Vec<(u32, f32)> {
         if (repeat_penalty - 1.0).abs() > f32::EPSILON {
             for &tid in
@@ -986,6 +1033,9 @@ impl Sampler {
         let Some(temp) = self.temperature else {
             return vec![(greedy_argmax(&l), 1.0)];
         };
+        if renorm {
+            return dist_topk_renorm(&l, temp, self.top_k, self.top_p);
+        }
         let inv_t = 1.0 / temp as f32;
         // top-k candidate set via partial select (O(n))
         let k = self.top_k.unwrap_or(n).min(n);
@@ -1137,6 +1187,167 @@ fn spec_accept_step(
         }
     }
     Ok(resid[resid.len() - 1].0)
+}
+
+/// `TH_TOP_P` (read once): `renorm` = Splash / HF / vLLM / llama.cpp
+/// top-k→top-p semantics (top-p over the top-k set renormalised); unset
+/// or `global` = candle's TopKThenTopP rule (cumulative mass measured
+/// against the full-vocab partition, which keeps a longer tail).
+fn top_p_renorm() -> bool {
+    static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *V.get_or_init(|| {
+        let v = std::env::var("TH_TOP_P").ok();
+        let on = matches!(v.as_deref().map(str::trim), Some("renorm" | "splash" | "hf"));
+        tracing::info!(semantics = if on { "renorm (top-k set)" } else { "global (candle)" }, "top-p semantics (TH_TOP_P)");
+        on
+    })
+}
+
+/// `TH_DRAFT_FILTER` (read once): `1` = apply the request's top-k / top-p
+/// to the draft's 16-candidate distribution before each proposal is
+/// drawn (the acceptance ratio uses the filtered q, so the output
+/// distribution is unchanged — speculative sampling is exact for any
+/// proposal distribution).
+fn draft_filter() -> bool {
+    static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *V.get_or_init(|| {
+        let on = std::env::var("TH_DRAFT_FILTER").is_ok_and(|v| !v.is_empty() && v != "0");
+        tracing::info!(on, "draft proposal filter (TH_DRAFT_FILTER)");
+        on
+    })
+}
+
+/// `TH_ACCEPT_STATS=1` (read once): per sampled DFlash round, log the
+/// Rao-Blackwellised acceptance of the round's draft block under both
+/// top-p semantics — R0b's paired, trajectory-free comparison. Debug
+/// only: it costs 2 x 7 full-vocab distributions per round on the CPU.
+fn accept_stats() -> bool {
+    static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *V.get_or_init(|| std::env::var("TH_ACCEPT_STATS").is_ok_and(|v| !v.is_empty() && v != "0"))
+}
+
+/// Splash / HF top-k→top-p distribution: softmax at `temp` over the
+/// top-k candidates (ties: lower id first), keep ranks while the
+/// renormalised mass BEFORE them is <= top_p (so the crossing element is
+/// kept, as Splash's `top32_probs_row`), renormalise. `(id, prob)` in
+/// rank order.
+fn dist_topk_renorm(
+    l: &[f32],
+    temp: f64,
+    top_k: Option<usize>,
+    top_p: Option<f64>,
+) -> Vec<(u32, f32)> {
+    let n = l.len();
+    let k = match top_k {
+        Some(k) if k > 0 => k.min(n),
+        _ => n,
+    };
+    let inv_t = 1.0 / temp as f32;
+    let cmp = |a: &u32, b: &u32| l[*b as usize].total_cmp(&l[*a as usize]).then(a.cmp(b));
+    let mut idx: Vec<u32> = (0..n as u32).collect();
+    if k < n {
+        idx.select_nth_unstable_by(k - 1, cmp);
+        idx.truncate(k);
+    }
+    idx.sort_unstable_by(cmp);
+    let max = l[idx[0] as usize];
+    let w: Vec<f32> = idx.iter().map(|&i| ((l[i as usize] - max) * inv_t).exp()).collect();
+    let wsum: f64 = w.iter().map(|&v| v as f64).sum();
+    let mut keep = w.len();
+    if let Some(p) = top_p {
+        if p > 0.0 && p < 1.0 && wsum > 0.0 {
+            let mut prefix = 0.0f64;
+            for (i, &v) in w.iter().enumerate() {
+                if prefix / wsum > p {
+                    keep = i;
+                    break;
+                }
+                prefix += v as f64;
+            }
+        }
+    }
+    let s: f64 = w[..keep].iter().map(|&v| v as f64).sum();
+    idx[..keep]
+        .iter()
+        .zip(&w[..keep])
+        .map(|(&i, &v)| (i, (v as f64 / s) as f32))
+        .collect()
+}
+
+/// R0b `[accstats]` line for one sampled round (see `accept_stats`):
+/// per verified position i, a = min(1, p(d_i)/q(d_i)) for the draft's
+/// actual token and alpha = sum_x min(p(x), q(x)) (the acceptance
+/// probability had d_i been redrawn), under the global (g) and renorm
+/// (r) top-p semantics; e = sum_i prod_{j<=i} a_j = E[accepted | block].
+fn accept_stats_line(
+    sampler: &mut Sampler,
+    rows: &[Vec<half::bf16>],
+    prop: &crate::dflash::Proposal,
+    vlen: usize,
+    completion: &[u32],
+    prompt: &[u32],
+    repeat_penalty: f32,
+    repeat_last_n: usize,
+) -> String {
+    let (mut ag, mut ar, mut alg, mut alr) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    let (mut kg, mut kr) = (Vec::new(), Vec::new());
+    let (mut afg, mut afr) = (Vec::new(), Vec::new());
+    for i in 0..vlen.min(rows.len()) {
+        let l: Vec<f32> = rows[i].iter().map(|v| v.to_f32()).collect();
+        let dg = sampler.dist_vec_sem(l.clone(), completion, prompt, repeat_penalty, repeat_last_n, false);
+        let dr = sampler.dist_vec_sem(l, completion, prompt, repeat_penalty, repeat_last_n, true);
+        let q = |id: u32| {
+            prop.cand_ids[i]
+                .iter()
+                .position(|c| *c == id)
+                .map(|j| prop.cand_probs[i][j])
+                .unwrap_or(0.0)
+        };
+        let p_of = |d: &[(u32, f32)], id: u32| {
+            d.iter().find(|(x, _)| *x == id).map(|(_, p)| *p).unwrap_or(0.0)
+        };
+        let want = prop.tokens[i];
+        let a = |d: &[(u32, f32)]| {
+            let (p, qq) = (p_of(d, want), q(want));
+            if d.len() == 1 {
+                (d[0].0 == want) as u8 as f32
+            } else if p > 0.0 && qq > 0.0 {
+                (p / qq).min(1.0)
+            } else {
+                0.0
+            }
+        };
+        let overlap = |d: &[(u32, f32)]| d.iter().map(|&(id, p)| p.min(q(id))).sum::<f32>();
+        // overlap had the draft drawn from its target-filtered q'
+        let mut qf = prop.cand_probs[i];
+        crate::dflash::filter_q(&mut qf, sampler.top_k.unwrap_or(0), sampler.top_p.unwrap_or(1.0));
+        let qfo = |id: u32| {
+            prop.cand_ids[i].iter().position(|c| *c == id).map(|j| qf[j]).unwrap_or(0.0)
+        };
+        let overlap_f = |d: &[(u32, f32)]| d.iter().map(|&(id, p)| p.min(qfo(id))).sum::<f32>();
+        afg.push(overlap_f(&dg));
+        afr.push(overlap_f(&dr));
+        ag.push(a(&dg));
+        ar.push(a(&dr));
+        alg.push(overlap(&dg));
+        alr.push(overlap(&dr));
+        kg.push(dg.len());
+        kr.push(dr.len());
+    }
+    let e = |a: &[f32]| {
+        let (mut prod, mut s) = (1.0f32, 0.0f32);
+        for &x in a {
+            prod *= x;
+            s += prod;
+        }
+        s
+    };
+    let f = |v: &[f32]| v.iter().map(|x| format!("{x:.3}")).collect::<Vec<_>>().join(",");
+    let u = |v: &[usize]| v.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(",");
+    format!(
+        "[accstats] eg={:.4} er={:.4} ag=[{}] ar=[{}] alg=[{}] alr=[{}] kg=[{}] kr=[{}] afg=[{}] afr=[{}]",
+        e(&ag), e(&ar), f(&ag), f(&ar), f(&alg), f(&alr), u(&kg), u(&kr), f(&afg), f(&afr)
+    )
 }
 
 /// Greedy pick with the same tie rule as candle's Metal (and CPU)
@@ -1607,9 +1818,9 @@ fn batch_round(
     }
     let anchors: Vec<u32> = active.iter().map(|&b| runs[b].as_ref().unwrap().anchor).collect();
     let poss: Vec<usize> = active.iter().map(|&b| runs[b].as_ref().unwrap().pos).collect();
-    let temps: Vec<Option<f64>> = active
+    let temps: Vec<Option<crate::dflash::DraftSampling>> = active
         .iter()
-        .map(|&b| runs[b].as_ref().unwrap().sampler.temperature)
+        .map(|&b| runs[b].as_ref().unwrap().sampler.draft_sampling())
         .collect();
     let props = {
         // propose needs the sampler's uniform — run it per slot through

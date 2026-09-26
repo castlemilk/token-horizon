@@ -296,6 +296,50 @@ impl Draft {
     }
 }
 
+/// Sampled-chaining policy for the draft walk (`None` = greedy chaining).
+#[derive(Clone, Copy, Debug)]
+pub struct DraftSampling {
+    /// Softmax temperature over the corrected candidate scores.
+    pub temp: f64,
+    /// R0b: the request's top-k / top-p applied to the draft's
+    /// 16-candidate distribution before each proposal is drawn
+    /// (`top_k == 0` and `top_p >= 1` = off). The acceptance test uses
+    /// the filtered `q`, so the output distribution is unchanged.
+    pub top_k: usize,
+    pub top_p: f64,
+}
+
+impl DraftSampling {
+    fn filters(&self) -> bool {
+        (self.top_k > 0 && self.top_k < TOPK) || (self.top_p > 0.0 && self.top_p < 1.0)
+    }
+}
+
+/// Top-k / top-p over a normalised 16-candidate distribution, in place:
+/// rank by probability (ties: lower index first), keep ranks while the
+/// mass BEFORE them is <= top_p (the crossing candidate is kept — the
+/// target rule of `dist_topk_renorm` / Splash `top32_probs_row`), zero
+/// the rest and renormalise over the kept set.
+pub fn filter_q(q: &mut [f32; TOPK], top_k: usize, top_p: f64) {
+    let mut order: [usize; TOPK] = std::array::from_fn(|i| i);
+    order.sort_by(|&a, &b| q[b].total_cmp(&q[a]).then(a.cmp(&b)));
+    let k = if top_k == 0 { TOPK } else { top_k.min(TOPK) };
+    let mut keep = [false; TOPK];
+    let mut prefix = 0.0f64;
+    let total: f64 = order[..k].iter().map(|&i| q[i] as f64).sum();
+    for (r, &i) in order[..k].iter().enumerate() {
+        if r > 0 && top_p > 0.0 && top_p < 1.0 && total > 0.0 && prefix / total > top_p {
+            break;
+        }
+        keep[i] = true;
+        prefix += q[i] as f64;
+    }
+    let s: f64 = (0..TOPK).filter(|&i| keep[i]).map(|i| q[i] as f64).sum();
+    for i in 0..TOPK {
+        q[i] = if keep[i] && s > 0.0 { (q[i] as f64 / s) as f32 } else { 0.0 };
+    }
+}
+
 /// Proposals for one draft round: the chained 7-token block plus the
 /// per-position candidate table the sampled acceptance rule needs.
 pub struct Proposal {
@@ -424,7 +468,7 @@ impl DraftWeights {
         lm_head: &Lin,
         anchor: u32,
         pos: usize,
-        temp: Option<f64>,
+        temp: Option<DraftSampling>,
         mut uniform: impl FnMut() -> f64,
     ) -> Result<Proposal> {
         let ids: Vec<u32> = std::iter::once(anchor)
@@ -544,7 +588,7 @@ impl DraftWeights {
         logits: &Tensor,  // [8, vocab]
         sel: &Tensor,     // [8, 256]
         anchor: u32,
-        temp: Option<f64>,
+        temp: Option<DraftSampling>,
         uniform: &mut dyn FnMut() -> f64,
     ) -> Result<Proposal> {
         let (unary_all, cand_all, sel_all) =
@@ -643,7 +687,7 @@ impl DraftWeights {
         sel_h: &[Vec<f32>],
         pred_all: &[Vec<f32>],
         succ_all: &[Vec<f32>],
-        temp: Option<f64>,
+        temp: Option<DraftSampling>,
         uniform: &mut dyn FnMut() -> f64,
     ) -> Result<Proposal> {
         let mut tokens = [0u32; PROPOSALS];
@@ -676,7 +720,7 @@ impl DraftWeights {
                 }
             }
             // corrected scores + selection
-            let t = temp.unwrap_or(1.0) as f32;
+            let t = temp.map(|d| d.temp).unwrap_or(1.0) as f32;
             let mut best = (0usize, f32::NEG_INFINITY);
             let mut logits_p = [0f32; TOPK];
             for i in 0..TOPK {
@@ -687,6 +731,34 @@ impl DraftWeights {
             }
             let sel_i = match temp {
                 None => best.0,
+                Some(ds) if ds.filters() => {
+                    // R0b: draw from the target-filtered draft distribution
+                    // q' (and record q' for the acceptance ratio)
+                    let mx = logits_p.iter().fold(f32::NEG_INFINITY, |a, &b| a.max(b));
+                    let mut sum = 0f32;
+                    for i in 0..TOPK {
+                        cand_probs[p][i] = ((logits_p[i] - mx) / t).exp();
+                        sum += cand_probs[p][i];
+                    }
+                    for i in 0..TOPK {
+                        cand_probs[p][i] /= sum;
+                    }
+                    filter_q(&mut cand_probs[p], ds.top_k, ds.top_p);
+                    let u = uniform() as f32;
+                    let mut cum = 0f32;
+                    let mut pick = None;
+                    let mut last = best.0;
+                    for i in 0..TOPK {
+                        if cand_probs[p][i] > 0.0 {
+                            last = i;
+                            cum += cand_probs[p][i];
+                            if pick.is_none() && cum > u {
+                                pick = Some(i);
+                            }
+                        }
+                    }
+                    pick.unwrap_or(last)
+                }
                 Some(_) => {
                     let mx = logits_p.iter().fold(f32::NEG_INFINITY, |a, &b| a.max(b));
                     let mut sum = 0f32;
@@ -728,7 +800,7 @@ impl DraftWeights {
         lm_head: &Lin,
         anchors: &[u32],
         poss: &[usize],
-        temps: &[Option<f64>],
+        temps: &[Option<DraftSampling>],
         uniform: &mut dyn FnMut(usize) -> f64,
     ) -> Result<Vec<Proposal>> {
         let nb = ctxs.len();
