@@ -390,6 +390,25 @@ impl DraftWeights {
         for (li, l) in self.layers.iter().enumerate() {
             crate::gpuprof::region("qkv");
             let qkv = lin_apply(&hidden, &l.qkv)?; // [rows, 6144]
+            #[cfg(all(feature = "metal", target_os = "macos"))]
+            if qkv.device().is_metal() && !draft_eager() && ring_fused() && qkv.is_contiguous() {
+                // head views of the projection rows (no reshape copies —
+                // draft_norm_rope and the ring write honour the row stride)
+                let heads = qkv.reshape((rows, QKV / HEAD_DIM, HEAD_DIM))?;
+                let k = heads.narrow(1, ATTN / HEAD_DIM, KV_HEADS)?;
+                let v = heads.narrow(1, ATTN / HEAD_DIM + KV_HEADS, KV_HEADS)?;
+                crate::gpuprof::region("knorm_rope");
+                let k = dnorm_rope(&k, &l.k_norm, &cos, &sin)?;
+                crate::gpuprof::region("ring_write");
+                crate::quant_kernel::draft_ring_write(
+                    &k,
+                    &v,
+                    &ctx.ring_k[li],
+                    &ctx.ring_v[li],
+                    start_pos % WINDOW,
+                )?;
+                continue;
+            }
             let k = qkv
                 .narrow(1, ATTN, KV_HEADS * HEAD_DIM)?
                 .reshape((rows, KV_HEADS, HEAD_DIM))?;
@@ -1104,6 +1123,86 @@ mod tests {
         }
     }
 
+    #[cfg(all(feature = "metal", target_os = "macos"))]
+    fn host_ring(seed: &mut u64) -> Vec<f32> {
+        (0..KV_HEADS * WINDOW * HEAD_DIM)
+            .map(|_| {
+                *seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                ((*seed >> 33) as f32 / (1u64 << 31) as f32) * 4.0 - 2.0
+            })
+            .collect()
+    }
+
+    /// The fused commit ring write (head views + one draft_ring_write)
+    /// leaves the K/V rings byte-identical to the legacy reshape + permute
+    /// + index upload + scatter_set path, including a slot wrap-around.
+    #[cfg(all(feature = "metal", target_os = "macos"))]
+    #[test]
+    fn ring_write_matches_scatter_bitwise() {
+        let dev = Device::new_metal(0).unwrap();
+        let mut seed = 0x2545f4914f6cdd1du64;
+        let mut host = |n: usize| -> Vec<f32> {
+            (0..n)
+                .map(|_| {
+                    seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                    ((seed >> 33) as f32 / (1u64 << 31) as f32) * 4.0 - 2.0
+                })
+                .collect()
+        };
+        // NB: Tensor::copy() aliases the buffer on Metal (MetalStorage::
+        // try_clone clones the Arc) — every ring below is built from host
+        // data so the two paths write into distinct buffers.
+        let dev_t = |v: &[f32]| Tensor::from_vec(v.to_vec(), v.len(), &dev).unwrap().to_dtype(DType::BF16).unwrap();
+        let mut rnd = |n: usize| -> Tensor { dev_t(&host(n)) };
+        let knorm = rnd(HEAD_DIM);
+        let mut ring_seed = 0x9e3779b97f4a7c15u64;
+        for &(rows, start) in &[(1usize, 0usize), (4, 17), (8, 2045), (3, 2047), (8, 777)] {
+            let qkv = rnd(rows * QKV).reshape((rows, QKV)).unwrap();
+            let hk = host_ring(&mut ring_seed);
+            let hv = host_ring(&mut ring_seed);
+            let ring = |h: &[f32]| dev_t(h).reshape((KV_HEADS, WINDOW, HEAD_DIM)).unwrap();
+            let init_k = ring(&hk);
+            let (cos, sin) = rope_table(&dev, start, rows).unwrap();
+            // legacy
+            let (lk, lv) = (ring(&hk), ring(&hv));
+            let k = qkv.narrow(1, ATTN, KV_HEADS * HEAD_DIM).unwrap().reshape((rows, KV_HEADS, HEAD_DIM)).unwrap();
+            let v = qkv
+                .narrow(1, ATTN + KV_HEADS * HEAD_DIM, KV_HEADS * HEAD_DIM)
+                .unwrap()
+                .reshape((rows, KV_HEADS, HEAD_DIM))
+                .unwrap();
+            let k = dnorm_rope(&k, &knorm, &cos, &sin).unwrap();
+            let kp = k.permute((1, 0, 2)).unwrap().contiguous().unwrap();
+            let vp = v.permute((1, 0, 2)).unwrap().contiguous().unwrap();
+            let slots: Vec<u32> = (0..rows).map(|r| ((start + r) % WINDOW) as u32).collect();
+            let idx = Tensor::new(slots.as_slice(), &dev)
+                .unwrap()
+                .reshape((1, rows, 1))
+                .unwrap()
+                .broadcast_as((KV_HEADS, rows, HEAD_DIM))
+                .unwrap()
+                .contiguous()
+                .unwrap();
+            lk.scatter_set(&idx, &kp, 1).unwrap();
+            lv.scatter_set(&idx, &vp, 1).unwrap();
+            // fused
+            let (fk, fv) = (ring(&hk), ring(&hv));
+            let heads = qkv.reshape((rows, QKV / HEAD_DIM, HEAD_DIM)).unwrap();
+            let k2 = heads.narrow(1, ATTN / HEAD_DIM, KV_HEADS).unwrap();
+            let v2 = heads.narrow(1, ATTN / HEAD_DIM + KV_HEADS, KV_HEADS).unwrap();
+            let k2 = dnorm_rope(&k2, &knorm, &cos, &sin).unwrap();
+            crate::quant_kernel::draft_ring_write(&k2, &v2, &fk, &fv, start % WINDOW).unwrap();
+            let bits = |t: &Tensor| -> Vec<u16> {
+                t.flatten_all().unwrap().to_vec1::<bf16>().unwrap().iter().map(|x| x.to_bits()).collect()
+            };
+            assert_eq!(bits(&k), bits(&k2), "rows {rows} start {start}: normed k");
+            let changed = bits(&lk).iter().zip(bits(&init_k)).filter(|(a, b)| **a != *b).count();
+            assert!(changed > 0, "rows {rows} start {start}: legacy path wrote nothing");
+            assert_eq!(bits(&lk), bits(&fk), "rows {rows} start {start}: ring k");
+            assert_eq!(bits(&lv), bits(&fv), "rows {rows} start {start}: ring v");
+        }
+    }
+
     /// D1: host codebook gather = row slices of the row-major table.
     #[test]
     fn gather_cb_host_rows() {
@@ -1123,6 +1222,15 @@ mod tests {
 /// `TH_DRAFT_EAGER` — eager draft ops instead of the fused kernels.
 /// Read once: propose checks it ~35 times per round.
 #[cfg_attr(not(all(feature = "metal", target_os = "macos")), allow(dead_code))]
+/// Draft commit writes the K/V rings through `quant_kernel::
+/// draft_ring_write` (one dispatch per layer, head views instead of
+/// reshape copies). `TH_DRAFT_RING=legacy` restores the permute + index
+/// upload + scatter_set path (A/B; ring contents are identical). Read once.
+fn ring_fused() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("TH_DRAFT_RING").as_deref() != Ok("legacy"))
+}
+
 /// `TH_CAND_SORT=legacy`: the candle sort path in `cand_tables` (A/B arm;
 /// the fused top-16 kernel is bit-identical). Read once.
 fn cand_sort_legacy() -> bool {

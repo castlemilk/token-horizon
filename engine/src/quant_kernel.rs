@@ -17,7 +17,7 @@
 #[cfg(all(feature = "metal", target_os = "macos"))]
 pub use metal_impl::{
     AffineDequant, AffineQmm, AffineQmpp, AffineQmppPrefill, AffineQmv, AffineQmvT, AffineQsg,
-    AllocBf16, ChunkTop16, Q4AttachSums, QMPP_BIND_ONLY, mpp_probe, qmvt_warm,
+    AllocBf16, ChunkTop16, Q4AttachSums, QMPP_BIND_ONLY, draft_ring_write, mpp_probe, qmvt_warm,
 };
 
 // MARK: - decode (m <= 8) tile policy
@@ -626,6 +626,125 @@ kernel void chunk_top16(
             drop(encoder);
             Ok((MetalStorage::new(out, device.clone(), elems, DType::F32), elems.into()))
         }
+    }
+
+    // -- DFlash draft commit: ring write ----------------------------------
+
+    const RING_SRC: &str = r#"
+#include <metal_stdlib>
+using namespace metal;
+struct RingParams { int rows; int start_slot; int ks; int vs; int window; int heads; };
+// grid (rows, heads) threadgroups x 128 threads: ring[h][(start + r) % W][d]
+// = src[r][h][d] for K and V (src rows strided by ks / vs elements).
+kernel void draft_ring_write(
+    device const bfloat* k   [[buffer(0)]],
+    device const bfloat* v   [[buffer(1)]],
+    device bfloat*       rk  [[buffer(2)]],
+    device bfloat*       rv  [[buffer(3)]],
+    constant RingParams& p   [[buffer(4)]],
+    uint2 g [[threadgroup_position_in_grid]],
+    uint  t [[thread_index_in_threadgroup]])
+{
+    const int r = int(g.x), h = int(g.y);
+    const int slot = (p.start_slot + r) % p.window;
+    const ulong dst = (ulong(h) * ulong(p.window) + ulong(slot)) * 128ul + t;
+    rk[dst] = k[r * p.ks + h * 128 + int(t)];
+    rv[dst] = v[r * p.vs + h * 128 + int(t)];
+}
+"#;
+
+    static RING_PIPE: OnceLock<ComputePipeline> = OnceLock::new();
+
+    /// DFlash draft commit: write `rows` K and V rows (`[rows, heads, 128]`
+    /// bf16, rows strided, heads contiguous) into the per-layer rings
+    /// `[heads, window, 128]` at slots `(start_slot + r) % window`, in place,
+    /// in one dispatch — replaces two permute copies, a host-built index
+    /// upload, a broadcast copy and two `scatter_set`s per layer. The rings
+    /// are the caller's persistent state, bound as tracked outputs (later
+    /// readers — the next propose's draft attention — get barriers); no
+    /// storage is created around an existing buffer.
+    pub fn draft_ring_write(
+        k: &candle_core::Tensor,
+        v: &candle_core::Tensor,
+        ring_k: &candle_core::Tensor,
+        ring_v: &candle_core::Tensor,
+        start_slot: usize,
+    ) -> Result<()> {
+        use candle_core::Storage;
+        let (rows, heads) = (k.dim(0)?, k.dim(1)?);
+        let window = ring_k.dim(1)?;
+        for (t, name) in [(k, "k"), (v, "v")] {
+            let st = t.stride();
+            if t.dims() != [rows, heads, 128] || st[1] != 128 || st[2] != 1 || t.dtype() != DType::BF16 {
+                candle_core::bail!("draft_ring_write: {name} {:?}/{:?} needs [rows, heads, 128] bf16 with contiguous heads", t.dims(), st);
+            }
+        }
+        for (t, name) in [(ring_k, "ring_k"), (ring_v, "ring_v")] {
+            if t.dims() != [heads, window, 128] || !t.is_contiguous() || t.dtype() != DType::BF16 {
+                candle_core::bail!("draft_ring_write: {name} {:?} needs contiguous [{heads}, {window}, 128] bf16", t.dims());
+            }
+        }
+        if rows == 0 || rows > window || start_slot >= window {
+            candle_core::bail!("draft_ring_write: rows {rows} start {start_slot} window {window}");
+        }
+        let (gk, lk) = k.storage_and_layout();
+        let (gv, lv) = v.storage_and_layout();
+        let (grk, lrk) = ring_k.storage_and_layout();
+        let (grv, lrv) = ring_v.storage_and_layout();
+        let (Storage::Metal(sk), Storage::Metal(sv), Storage::Metal(srk), Storage::Metal(srv)) =
+            (&*gk, &*gv, &*grk, &*grv)
+        else {
+            candle_core::bail!("draft_ring_write: Metal only")
+        };
+        if srk.buffer() == srv.buffer() && lrk.start_offset() == lrv.start_offset() {
+            candle_core::bail!("draft_ring_write: ring_k aliases ring_v");
+        }
+        let device = sk.device();
+        if RING_PIPE.get().is_none() {
+            let raw = device.metal_device();
+            let lib = raw
+                .new_library_with_source(RING_SRC, None)
+                .map_err(candle_core::Error::wrap)?;
+            let f = lib.get_function("draft_ring_write", None).map_err(candle_core::Error::wrap)?;
+            let pipe = raw
+                .new_compute_pipeline_state_with_function(&f)
+                .map_err(candle_core::Error::wrap)?;
+            let _ = RING_PIPE.set(pipe);
+        }
+        #[repr(C)]
+        struct RingParams {
+            rows: i32,
+            start_slot: i32,
+            ks: i32,
+            vs: i32,
+            window: i32,
+            heads: i32,
+        }
+        let params = RingParams {
+            rows: rows as i32,
+            start_slot: start_slot as i32,
+            ks: lk.stride()[0] as i32,
+            vs: lv.stride()[0] as i32,
+            window: window as i32,
+            heads: heads as i32,
+        };
+        let encoder = device.command_encoder().map_err(candle_core::Error::wrap)?;
+        encoder.set_label("draft_ring_write");
+        let enc_ref = &encoder;
+        let enc: &candle_metal_kernels::metal::ComputeCommandEncoder =
+            enc_ref.encoder().as_ref();
+        enc.set_compute_pipeline_state(RING_PIPE.get().unwrap());
+        enc.set_input_buffer(0, Some(sk.buffer()), lk.start_offset() * 2);
+        enc.set_input_buffer(1, Some(sv.buffer()), lv.start_offset() * 2);
+        enc.set_output_buffer(2, Some(srk.buffer()), lrk.start_offset() * 2);
+        enc.set_output_buffer(3, Some(srv.buffer()), lrv.start_offset() * 2);
+        enc.set_bytes(4, &params);
+        enc.dispatch_thread_groups(
+            MTLSize { width: rows, height: heads, depth: 1 },
+            MTLSize { width: 128, height: 1, depth: 1 },
+        );
+        drop(encoder);
+        Ok(())
     }
 
     /// Packed dims for one affine-quantized `[out, in]` weight.
