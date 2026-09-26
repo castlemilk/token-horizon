@@ -17,7 +17,7 @@
 #[cfg(all(feature = "metal", target_os = "macos"))]
 pub use metal_impl::{
     AffineDequant, AffineQmm, AffineQmpp, AffineQmppPrefill, AffineQmv, AffineQmvT, AffineQsg,
-    AllocBf16, Q4AttachSums, QMPP_BIND_ONLY, mpp_probe, qmvt_warm,
+    AllocBf16, ChunkTop16, Q4AttachSums, QMPP_BIND_ONLY, mpp_probe, qmvt_warm,
 };
 
 // MARK: - decode (m <= 8) tile policy
@@ -461,6 +461,172 @@ mod metal_impl {
     use objc2_metal::MTLSize;
     use std::sync::OnceLock;
     use super::QmvtCfg;
+
+    // -- DFlash draft select: exact per-chunk top-16 ----------------------
+
+    /// The draft proposal's candidate tables in ONE dispatch: for each of
+    /// `n` bf16 logits rows (`chunks` x 512 columns), the top-16 values and
+    /// in-chunk ids of every 512-column chunk, plus the selector rows as
+    /// f32 — the exact packed vector `dflash::cand_tables` built from
+    /// `to_dtype(F32)` + `sort_last_dim` (candle's bitonic `asort_desc_f32`
+    /// + a value gather) + narrows + casts + a cat. Output (f32):
+    /// `[n*chunks*16 values | n*chunks*16 ids | n*rank selector]`.
+    ///
+    /// R0c measured the sort alone at 656 us/round: candle's argsort re-reads
+    /// every compared value from device memory at each of its 45 bitonic
+    /// stages. This kernel runs the IDENTICAL network (same compare/swap
+    /// rule per stage, desc order, 512 = ncols_pad) over a threadgroup copy
+    /// of the chunk's values: float(bf16) equals the f32-cast input, so every
+    /// comparison, swap and tie order is the same and the top-16 (values and
+    /// ids, in order) is bit-identical.
+    pub struct ChunkTop16 {
+        pub n: usize,
+        pub chunks: usize,
+        pub rank: usize,
+    }
+
+    const TOP16_SRC: &str = r#"
+#include <metal_stdlib>
+using namespace metal;
+#define SWAP(x, y) { auto tmp = (x); (x) = (y); (y) = tmp; }
+struct Top16Params { uint n; uint chunks; uint row_stride; uint sel_stride; uint rank; };
+// grid (n*chunks + 1) threadgroups x 512 threads; the last threadgroup
+// copies the selector rows (bf16 -> f32) behind the two top-16 planes.
+kernel void chunk_top16(
+    device const bfloat* x        [[buffer(0)]],
+    device const bfloat* sel      [[buffer(1)]],
+    device float*        out      [[buffer(2)]],
+    constant Top16Params& p       [[buffer(3)]],
+    uint tg  [[threadgroup_position_in_grid]],
+    uint col [[thread_position_in_threadgroup]])
+{
+    threadgroup float xs[512];
+    threadgroup uint  ix[512];
+    const uint nck = p.n * p.chunks;
+    if (tg >= nck) {
+        device float* so = out + 2 * nck * 16;
+        for (uint i = col; i < p.n * p.rank; i += 512) {
+            so[i] = float(sel[(i / p.rank) * p.sel_stride + i % p.rank]);
+        }
+        return;
+    }
+    const uint row = tg / p.chunks, chunk = tg % p.chunks;
+    xs[col] = float(x[row * p.row_stride + chunk * 512 + col]);
+    ix[col] = col;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    // candle sort.metal argsort<SORT_DESC> with ncols == ncols_pad == 512
+    for (int k = 2; k <= 512; k *= 2) {
+        for (int j = k / 2; j > 0; j /= 2) {
+            const int c = int(col);
+            const int ixj = c ^ j;
+            if (ixj > c) {
+                if ((c & k) == 0) {
+                    if (xs[ix[c]] < xs[ix[ixj]]) {
+                        SWAP(ix[c], ix[ixj]);
+                    }
+                } else {
+                    if (xs[ix[c]] > xs[ix[ixj]]) {
+                        SWAP(ix[c], ix[ixj]);
+                    }
+                }
+            }
+            threadgroup_barrier(mem_flags::mem_threadgroup);
+        }
+    }
+    if (col < 16) {
+        const uint o = tg * 16 + col;
+        out[o] = xs[ix[col]];
+        out[nck * 16 + o] = float(ix[col]);
+    }
+}
+"#;
+
+    static TOP16_PIPE: OnceLock<ComputePipeline> = OnceLock::new();
+
+    impl CustomOp2 for ChunkTop16 {
+        fn name(&self) -> &'static str {
+            "chunk-top16"
+        }
+        fn cpu_fwd(&self, _: &CpuStorage, _: &Layout, _: &CpuStorage, _: &Layout) -> Result<(CpuStorage, Shape)> {
+            candle_core::bail!("chunk-top16: Metal only")
+        }
+        fn metal_fwd(
+            &self,
+            s_x: &MetalStorage,
+            l_x: &Layout,
+            s_s: &MetalStorage,
+            l_s: &Layout,
+        ) -> Result<(MetalStorage, Shape)> {
+            if s_x.dtype() != DType::BF16 || s_s.dtype() != DType::BF16 {
+                candle_core::bail!("chunk-top16: logits / selector must be bf16");
+            }
+            let (xd, sd) = (l_x.shape().dims(), l_s.shape().dims());
+            if xd.len() != 2 || xd[0] != self.n || xd[1] != self.chunks * 512
+                || sd.len() != 2 || sd[0] != self.n || sd[1] != self.rank
+                || l_x.stride()[1] != 1 || l_s.stride()[1] != 1
+            {
+                candle_core::bail!(
+                    "chunk-top16: logits {:?}/{:?} selector {:?}/{:?} vs n {} chunks {} rank {}",
+                    xd, l_x.stride(), sd, l_s.stride(), self.n, self.chunks, self.rank
+                );
+            }
+            let device = s_x.device();
+            if TOP16_PIPE.get().is_none() {
+                let raw = device.metal_device();
+                let lib = raw
+                    .new_library_with_source(TOP16_SRC, None)
+                    .map_err(candle_core::Error::wrap)?;
+                let f = lib.get_function("chunk_top16", None).map_err(candle_core::Error::wrap)?;
+                let pipe = raw
+                    .new_compute_pipeline_state_with_function(&f)
+                    .map_err(candle_core::Error::wrap)?;
+                let _ = TOP16_PIPE.set(pipe);
+            }
+            let pipe = TOP16_PIPE.get().unwrap();
+            if pipe.max_total_threads_per_threadgroup() < 512 {
+                candle_core::bail!("chunk-top16: pipeline allows < 512 threads");
+            }
+            let nck = self.n * self.chunks;
+            let elems = 2 * nck * 16 + self.n * self.rank;
+            let out = device
+                .new_buffer_builder()
+                .with_size_for(elems, DType::F32)
+                .with_label("draft.top16")
+                .build()
+                .map_err(candle_core::Error::wrap)?;
+            #[repr(C)]
+            struct Top16Params {
+                n: u32,
+                chunks: u32,
+                row_stride: u32,
+                sel_stride: u32,
+                rank: u32,
+            }
+            let params = Top16Params {
+                n: self.n as u32,
+                chunks: self.chunks as u32,
+                row_stride: l_x.stride()[0] as u32,
+                sel_stride: l_s.stride()[0] as u32,
+                rank: self.rank as u32,
+            };
+            let encoder = device.command_encoder().map_err(candle_core::Error::wrap)?;
+            encoder.set_label("chunk_top16");
+            let enc_ref = &encoder;
+            let enc: &candle_metal_kernels::metal::ComputeCommandEncoder =
+                enc_ref.encoder().as_ref();
+            enc.set_compute_pipeline_state(pipe);
+            enc.set_input_buffer(0, Some(s_x.buffer()), l_x.start_offset() * 2);
+            enc.set_input_buffer(1, Some(s_s.buffer()), l_s.start_offset() * 2);
+            enc.set_output_buffer(2, Some(&out), 0);
+            enc.set_bytes(3, &params);
+            enc.dispatch_thread_groups(
+                MTLSize { width: nck + 1, height: 1, depth: 1 },
+                MTLSize { width: 512, height: 1, depth: 1 },
+            );
+            drop(encoder);
+            Ok((MetalStorage::new(out, device.clone(), elems, DType::F32), elems.into()))
+        }
+    }
 
     /// Packed dims for one affine-quantized `[out, in]` weight.
     /// `gs` is baked into the shader (power of two; 64 for MLX defaults).

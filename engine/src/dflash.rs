@@ -601,22 +601,15 @@ impl DraftWeights {
         // CPU.
         const CHUNKS: usize = CB_ROWS / CHUNK_W;
         const CHUNK_W: usize = 512;
-        let cand_rows = logits.contiguous()?.to_dtype(DType::F32)?; // [n, 248320]
-        let chunked = cand_rows.reshape((n, CHUNKS, CHUNK_W))?;
-        let (vals, ids) = chunked.sort_last_dim(false)?; // desc per chunk
         // D1: ONE host sync for everything the walk needs — per-chunk
         // top-16 values, their in-chunk ids (u32 < 512, exact in f32) and
         // the selector rows, packed into one f32 buffer and read back
         // together (was three separate readbacks, each a commit + wait).
         let nk = n * CHUNKS * TOPK;
-        let top_v = vals.narrow(2, 0, TOPK)?.contiguous()?.flatten_all()?;
-        let top_i = ids
-            .narrow(2, 0, TOPK)?
-            .contiguous()?
-            .flatten_all()?
-            .to_dtype(DType::F32)?;
-        let sel_f = sel.to_dtype(DType::F32)?.flatten_all()?;
-        let packed: Vec<f32> = Tensor::cat(&[&top_v, &top_i, &sel_f], 0)?.to_vec1()?;
+        let packed: Vec<f32> = match Self::cand_packed_fused(logits, sel, n)? {
+            Some(p) => p,
+            None => Self::cand_packed_sort(logits, sel, n)?,
+        };
         if packed.len() != 2 * nk + n * RANK {
             bail!("cand_tables: packed readback {} != {}", packed.len(), 2 * nk + n * RANK);
         }
@@ -641,6 +634,45 @@ impl DraftWeights {
         }
         let sel_h: Vec<Vec<f32>> = sh.chunks_exact(RANK).map(|c| c.to_vec()).collect(); // [n, 256]
         Ok((unary, cand, sel_h))
+    }
+
+    /// The packed `[top-16 values | ids | selector]` vector via candle ops:
+    /// f32 cast, per-chunk descending sort, narrows, casts, one cat.
+    fn cand_packed_sort(logits: &Tensor, sel: &Tensor, n: usize) -> Result<Vec<f32>> {
+        const CHUNK_W: usize = 512;
+        const CHUNKS: usize = CB_ROWS / CHUNK_W;
+        let cand_rows = logits.contiguous()?.to_dtype(DType::F32)?; // [n, 248320]
+        let chunked = cand_rows.reshape((n, CHUNKS, CHUNK_W))?;
+        let (vals, ids) = chunked.sort_last_dim(false)?; // desc per chunk
+        let top_v = vals.narrow(2, 0, TOPK)?.contiguous()?.flatten_all()?;
+        let top_i = ids
+            .narrow(2, 0, TOPK)?
+            .contiguous()?
+            .flatten_all()?
+            .to_dtype(DType::F32)?;
+        let sel_f = sel.to_dtype(DType::F32)?.flatten_all()?;
+        Ok(Tensor::cat(&[&top_v, &top_i, &sel_f], 0)?.to_vec1()?)
+    }
+
+    /// The packed `[top-16 values | ids | selector]` vector in one Metal
+    /// dispatch (`quant_kernel::ChunkTop16`: candle's exact bitonic network
+    /// over a threadgroup copy — bit-identical to the sort path, which R0c
+    /// measured at 656 us/round). `None` off Metal, for non-bf16 inputs, or
+    /// with `TH_CAND_SORT=legacy` (read once) — the caller sorts.
+    fn cand_packed_fused(logits: &Tensor, sel: &Tensor, n: usize) -> Result<Option<Vec<f32>>> {
+        #[cfg(all(feature = "metal", target_os = "macos"))]
+        if logits.device().is_metal()
+            && logits.dtype() == DType::BF16
+            && sel.dtype() == DType::BF16
+            && !cand_sort_legacy()
+        {
+            let lg = logits.contiguous()?;
+            let sl = sel.contiguous()?;
+            let op = crate::quant_kernel::ChunkTop16 { n, chunks: CB_ROWS / 512, rank: RANK };
+            return Ok(Some(lg.apply_op2_no_bwd(&sl, &op)?.to_vec1()?));
+        }
+        let _ = (logits, sel, n);
+        Ok(None)
     }
 
     /// Codebook rows needed by the walk: pred rows for
@@ -1044,6 +1076,34 @@ mod tests {
         }
     }
 
+    /// The fused Metal top-16 (candle's bitonic network over a threadgroup
+    /// copy) reproduces the sort path's packed vector bit for bit —
+    /// including the tie order: logits are drawn from 24 bf16 levels, so
+    /// every 512-chunk is full of equal values.
+    #[cfg(all(feature = "metal", target_os = "macos"))]
+    #[test]
+    fn cand_packed_fused_matches_sort_bitwise() {
+        let dev = Device::new_metal(0).unwrap();
+        for &(n, levels) in &[(1usize, 24usize), (3, 24), (7, 3), (7, 4096)] {
+            let mut seed = 0x9e3779b97f4a7c15u64 ^ (n as u64 * 131 + levels as u64);
+            let mut next = || {
+                seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                (seed >> 33) as usize
+            };
+            let logits: Vec<f32> = (0..n * CB_ROWS)
+                .map(|_| (next() % levels) as f32 * 0.125 - 1.5)
+                .collect();
+            let sel: Vec<f32> = (0..n * RANK).map(|i| (i as f32 * 0.37).sin()).collect();
+            let lt = Tensor::from_vec(logits, (n, CB_ROWS), &dev).unwrap().to_dtype(DType::BF16).unwrap();
+            let st = Tensor::from_vec(sel, (n, RANK), &dev).unwrap().to_dtype(DType::BF16).unwrap();
+            let fused = DraftWeights::cand_packed_fused(&lt, &st, n).unwrap().expect("metal path");
+            let sorted = DraftWeights::cand_packed_sort(&lt, &st, n).unwrap();
+            assert_eq!(fused.len(), sorted.len(), "n {n} levels {levels}: length");
+            let diff = fused.iter().zip(&sorted).filter(|(a, b)| a.to_bits() != b.to_bits()).count();
+            assert_eq!(diff, 0, "n {n} levels {levels}: {diff} of {} entries differ", fused.len());
+        }
+    }
+
     /// D1: host codebook gather = row slices of the row-major table.
     #[test]
     fn gather_cb_host_rows() {
@@ -1063,6 +1123,13 @@ mod tests {
 /// `TH_DRAFT_EAGER` — eager draft ops instead of the fused kernels.
 /// Read once: propose checks it ~35 times per round.
 #[cfg_attr(not(all(feature = "metal", target_os = "macos")), allow(dead_code))]
+/// `TH_CAND_SORT=legacy`: the candle sort path in `cand_tables` (A/B arm;
+/// the fused top-16 kernel is bit-identical). Read once.
+fn cand_sort_legacy() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("TH_CAND_SORT").as_deref() == Ok("legacy"))
+}
+
 fn draft_eager() -> bool {
     static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *V.get_or_init(|| std::env::var("TH_DRAFT_EAGER").is_ok())
