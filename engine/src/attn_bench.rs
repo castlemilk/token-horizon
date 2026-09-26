@@ -343,3 +343,161 @@ pub fn bench_attn() -> Result<()> {
     }
     Ok(())
 }
+
+/// E1 prefill attention probe (no model load):
+/// `TH_BENCH_PREFILL_ATTN=seq:kv,... th-engine probe --model x --tokens 1`.
+/// Per `seq:kv` (a prefill chunk of `seq` query rows at pos = kv - seq),
+/// one attention layer at Qwen3.8's layout, host-synced, `reps` calls per
+/// sample (a forward runs 16 attention layers back to back), median and
+/// min of 7 samples, rotating over 4 distinct K/V sets:
+///   grouped — `Qwen35::attn_eager(grouped)` (T1b, the current default),
+///             on the cat layout it gets in attn_forward (K head-major, V
+///             time-major, exact length)
+///   sdpa    — candle's fused MLX steel attention (causal, GQA)
+///   fused   — `attn_prefill` variants on the capacity-buffer layout
+///             ([nkv, cap, d] K and V) and, `tmV`, on the cat layout
+/// Numerics: max|x - f32 reference| (kv <= TH_BENCH_PREFILL_ATTN_REF_MAX,
+/// default 8192) and max|fused - grouped|. Knobs:
+///   TH_BENCH_PREFILL_ATTN_QSCALE=4   score std (peaked, like real heads)
+///   TH_BENCH_PREFILL_ATTN_VARIANTS=ph4,ph2,g4,g2,g4r,g4tm   (ph = per head,
+///   g = GQA-fused rows; digit = row groups of 16; r = relaxed; tm = time-major V)
+pub fn bench_prefill_attn(spec: &str) -> Result<()> {
+    use crate::attn_kernel::{attn_prefill, PrefillVariant};
+    let dev = Device::new_metal(0)?;
+    let qscale: f64 = std::env::var("TH_BENCH_PREFILL_ATTN_QSCALE")
+        .ok()
+        .and_then(|v| v.trim().parse().ok())
+        .unwrap_or(4.0);
+    let ref_max = env_list("TH_BENCH_PREFILL_ATTN_REF_MAX", &[8192])[0];
+    let names: Vec<String> = std::env::var("TH_BENCH_PREFILL_ATTN_VARIANTS")
+        .unwrap_or_else(|_| "ph4,ph2,g4,g2,g4r,g4tm".into())
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+    let parse = |n: &str| -> Option<(PrefillVariant, bool)> {
+        let (gqa, rest) = if let Some(r) = n.strip_prefix("ph") { (false, r) } else { (true, n.strip_prefix('g')?) };
+        let wm: usize = rest.chars().next()?.to_digit(10)? as usize;
+        let rest = &rest[1..];
+        Some((PrefillVariant { gqa, relaxed: rest.contains('r'), gate: false, wm }, rest.contains("tm")))
+    };
+    let nsets = 4usize;
+    for pair in spec.split(',') {
+        let Some((seq, kv)) = pair.split_once(':').and_then(|(a, b)| {
+            Some((a.trim().parse::<usize>().ok()?, b.trim().parse::<usize>().ok()?))
+        }) else {
+            continue;
+        };
+        if seq == 0 || kv < seq {
+            continue;
+        }
+        let pos = kv - seq;
+        let cap = kv.next_multiple_of(256);
+        let reps = if seq * kv <= 1 << 20 { 16 } else if seq * kv <= 1 << 22 { 8 } else { 4 };
+        // q: scores q.k/16 with k ~ N(0,1) have std qscale
+        let q = (Tensor::randn(0f32, 1.0, (1, NH, seq, HD), &dev)? * qscale)?.to_dtype(DType::BF16)?;
+        let mut kc = Vec::new();
+        let mut vc = Vec::new();
+        let mut k_all = Vec::new();
+        let mut v_tm = Vec::new();
+        for _ in 0..nsets {
+            let k = Tensor::randn(0f32, 1.0, (NKV, cap, HD), &dev)?.to_dtype(DType::BF16)?;
+            let v = Tensor::randn(0f32, 1.0, (NKV, cap, HD), &dev)?.to_dtype(DType::BF16)?;
+            k_all.push(k.narrow(1, 0, kv)?.contiguous()?);
+            v_tm.push(v.narrow(1, 0, kv)?.transpose(0, 1)?.contiguous()?.transpose(0, 1)?);
+            kc.push(k);
+            vc.push(v);
+        }
+        let time = |f: &dyn Fn(usize) -> Result<Tensor>| -> Result<(f64, f64)> {
+            for i in 0..2 {
+                let _ = f(i % nsets)?;
+            }
+            dev.synchronize()?;
+            let mut v = Vec::new();
+            for _ in 0..7 {
+                let t = std::time::Instant::now();
+                for r in 0..reps {
+                    let _o = f(r % nsets)?;
+                }
+                dev.synchronize()?;
+                v.push(t.elapsed().as_secs_f64() * 1e3 / reps as f64);
+            }
+            v.sort_by(|a, b| a.total_cmp(b));
+            Ok((v[0], v[3]))
+        };
+        let grouped = |s: usize| -> Result<Tensor> {
+            crate::qwen35::Qwen35::attn_eager(&q, &k_all[s], &v_tm[s], pos, seq, NH, NKV, HD, true, &dev)
+                .map_err(|e| candle_core::Error::Msg(e.to_string()))
+        };
+        let sdpa = |s: usize| -> Result<Tensor> {
+            let o = candle_nn::ops::sdpa(
+                &q,
+                &k_all[s].unsqueeze(0)?,
+                &v_tm[s].unsqueeze(0)?.contiguous()?,
+                None,
+                true,
+                (HD as f32).powf(-0.5),
+                1.0,
+            )?;
+            o.squeeze(0)?.transpose(0, 1)?.reshape((seq, NH * HD))
+        };
+        let (gmin, gmed) = time(&grouped)?;
+        let (_smin, smed) = time(&sdpa)?;
+        let reference = if kv <= ref_max {
+            Some(host(&prefill_reference_f32(&q, &kc[0], &vc[0], pos, seq)?)?)
+        } else {
+            None
+        };
+        let g0 = host(&grouped(0)?)?;
+        let s0 = host(&sdpa(0)?)?;
+        let rd = |x: &[f32]| reference.as_ref().map_or(f32::NAN, |r| maxdiff(x, r));
+        let mut line = format!(
+            "pattn seq={seq:4} kv={kv:5} | grouped med={gmed:7.3} min={gmin:7.3} ms (ref {:.4}) | sdpa med={smed:6.3} ({:.2}x, ref {:.4})",
+            rd(&g0),
+            gmed / smed,
+            rd(&s0)
+        );
+        for n in &names {
+            let Some((var, tm)) = parse(n) else {
+                continue;
+            };
+            let fused = |s: usize| {
+                if tm {
+                    attn_prefill(&q, &k_all[s], &v_tm[s], None, pos, seq, NH, NKV, HD, var)
+                } else {
+                    attn_prefill(&q, &kc[s], &vc[s], None, pos, seq, NH, NKV, HD, var)
+                }
+            };
+            let (fmin, fmed) = time(&fused)?;
+            let f0 = host(&fused(0)?)?;
+            line += &format!(
+                " | {n} med={fmed:6.3} min={fmin:6.3} ({:.1}x vs grouped, {:.2}x vs sdpa, ref {:.4}, vs grouped {:.4})",
+                gmed / fmed,
+                smed / fmed,
+                rd(&f0),
+                maxdiff(&f0, &g0)
+            );
+        }
+        eprintln!("{line}");
+    }
+    Ok(())
+}
+
+/// f32 reference of causal prefill attention (broadcast GQA, -inf mask).
+fn prefill_reference_f32(q: &Tensor, k: &Tensor, v: &Tensor, pos: usize, seq: usize) -> Result<Tensor> {
+    use candle_core::D;
+    let kv = pos + seq;
+    let f = |t: &Tensor| t.to_dtype(DType::F32);
+    let kb = f(k)?.narrow(1, 0, kv)?.unsqueeze(1)?.broadcast_as((NKV, GRP, kv, HD))?.reshape((NH, kv, HD))?;
+    let vb = f(v)?.narrow(1, 0, kv)?.unsqueeze(1)?.broadcast_as((NKV, GRP, kv, HD))?.reshape((NH, kv, HD))?;
+    let s = (f(q)?.squeeze(0)?.contiguous()?.matmul(&kb.transpose(1, 2)?.contiguous()?)? * (HD as f64).powf(-0.5))?;
+    let mut mask = vec![f32::NEG_INFINITY; seq * kv];
+    for i in 0..seq {
+        for m in mask.iter_mut().skip(i * kv).take(pos + i + 1) {
+            *m = 0.0;
+        }
+    }
+    let mask = Tensor::from_vec(mask, (1, seq, kv), q.device())?;
+    let p = candle_nn::ops::softmax(&s.broadcast_add(&mask)?, D::Minus1)?;
+    p.matmul(&vb.contiguous()?)?.transpose(0, 1)?.reshape((seq, NH * HD))
+}

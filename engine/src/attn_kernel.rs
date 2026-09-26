@@ -362,6 +362,11 @@ kernel void attn_decode(
 
     /// Buffer + byte-offset pair for a tensor (layout must have a
     /// contiguous inner dim; strided rows are fine).
+    #[cfg(test)]
+    pub(crate) fn msl_buf_pub(t: &Tensor, elem_size: usize) -> Result<(Buffer, usize)> {
+        msl_buf(t, elem_size)
+    }
+
     fn msl_buf(t: &Tensor, elem_size: usize) -> Result<(Buffer, usize)> {
         let (st, l) = t.storage_and_layout();
         match &*st {
@@ -1117,10 +1122,563 @@ kernel void attn_split_reduce(
             _ => None,
         }
     }
+
+    // ------------------------------------------------------------------
+    // E1: fused causal prefill attention (Metal 4 / MPP NAX fragments)
+    // ------------------------------------------------------------------
+
+    /// Flash-style causal attention for prefill chunks (> 8 query rows).
+    /// Structure after MLX's `attention_nax_dsplit` (steel/attn,
+    /// mlx 0.32.2, Copyright © 2024-25 Apple Inc., MIT): register-resident
+    /// 16x16 fragments fed to per-simdgroup MPP `matmul2d` (16x32x16,
+    /// cooperative-tensor operands), BK = 32 keys per block, the head dim
+    /// split across a pair of simdgroups (each owns 128 of 256 channels for
+    /// q.k and p.v; the pair adds its partial q.k scores through
+    /// threadgroup memory — a + b == b + a, so both halves see identical
+    /// scores and row statistics), online softmax in f32 (exp2 with the
+    /// log2(e) folded into the scale), f32 scores, row statistics and
+    /// accumulators, f16 probabilities for p.v (scaled by 2^15; a strict
+    /// f32 left operand does not take this fragment layout — see
+    /// `nax_fragment_mma_matches_cpu`), bf16 in/out. Changes vs MLX:
+    /// GQA-fused rows (`PA_GQA`: a
+    /// threadgroup runs 16*WM fused rows (query row, q head of the group)
+    /// of one KV head, so the group's six heads share every K/V fragment
+    /// load), the causal limit per fused row with the chunk's query offset
+    /// (`pos`), strided K/V straight from the model's caches (head- or
+    /// time-major, inner dim contiguous; rows >= kv are never loaded), the
+    /// output written as `[seq, HN*D]` rows, and the sigmoid output gate
+    /// optionally fused into the epilogue (`PA_GATE`, as `attn_decode`).
+    /// Deterministic: a row's key blocks are the absolute 32-key blocks
+    /// 0..=(pos+row)/32 in order, whatever query tile holds it; blocks past
+    /// a row's limit are masked to exact zeros.
+    const PREFILL_SRC: &str = r#"
+#include <MetalPerformancePrimitives/MetalPerformancePrimitives.h>
+#include <metal_simdgroup>
+#include <metal_stdlib>
+using namespace metal;
+
+struct PrefillAttnParams {
+    int seq;    // query rows of the chunk
+    int pos;    // absolute position of query row 0: row r sees keys [0, pos + r]
+    int kv;     // pos + seq: rows of K/V that may be read
+    int rows;   // fused rows: seq * GRP (GQA) or seq (per head)
+    int q_hs;   // q element strides: head, row (inner dim contiguous)
+    int q_ts;
+    int k_hs;   // cache element strides: head, time
+    int k_ts;
+    int v_hs;
+    int v_ts;
+    int o_ts;   // out row stride (HN * D)
+    int g_ts;   // gate source (packed qkv) row stride, PA_GATE only
+};
+
+constant constexpr float PA_NEG = -3.402823466e+38f; // lowest finite f32 (MLX finite_min)
+
+constant constexpr float PA_PSCALE = 32768.0f;
+
+typedef vec<float, 8> pa_ffrag;
+typedef vec<bfloat, 8> pa_bfrag;
+typedef vec<half, 8> pa_hfrag;
+
+// NAX 16x16 fragment lane map (MLX BaseNAXFrag::get_coord): a lane holds
+// rows fm and fm + 8, columns fn .. fn + 3.
+inline short2 pa_coord(ushort lane) {
+    const short qid = lane >> 2;
+    const short fm = (qid & 4) | ((lane >> 1) & 3);
+    const short fn = ((qid & 2) | (lane & 1)) * 4;
+    return short2(fn, fm);
+}
+
+// C[16 x 32] += A[16 x 16] * B[16 x 32] on one simdgroup (B given as two
+// 16x16 fragments; TB: B fragments are [n][k], i.e. B transposed).
+template <typename CT, typename AT, typename BT, bool TB>
+inline void pa_mma(thread vec<CT, 8>& c0, thread vec<CT, 8>& c1,
+                   thread const vec<AT, 8>& a,
+                   thread const vec<BT, 8>& b0, thread const vec<BT, 8>& b1) {
+    constexpr auto desc = mpp::tensor_ops::matmul2d_descriptor(
+        16, 32, 16, false, TB, PA_RELAXED,
+        mpp::tensor_ops::matmul2d_descriptor::mode::multiply_accumulate);
+    mpp::tensor_ops::matmul2d<desc, execution_simdgroup> op;
+    auto ca = op.template get_left_input_cooperative_tensor<AT, BT, CT>();
+    auto cb = op.template get_right_input_cooperative_tensor<AT, BT, CT>();
+    auto cc = op.template get_destination_cooperative_tensor<
+        metal::remove_addrspace_t<decltype(ca)>,
+        metal::remove_addrspace_t<decltype(cb)>, CT>();
+#pragma unroll
+    for (short i = 0; i < 8; i++) ca[i] = a[i];
+#pragma unroll
+    for (short i = 0; i < 8; i++) { cb[i] = b0[i]; cb[8 + i] = b1[i]; }
+#pragma unroll
+    for (short i = 0; i < 8; i++) { cc[i] = c0[i]; cc[8 + i] = c1[i]; }
+    op.run(ca, cb, cc);
+#pragma unroll
+    for (short i = 0; i < 8; i++) { c0[i] = cc[i]; c1[i] = cc[8 + i]; }
+}
+
+// 16 rows x 16 columns of a row-major bf16 matrix at `src` (row stride
+// `ld`, column offset `c`), rows at or past `nrows` read as zero.
+inline void pa_load(thread pa_bfrag& dst, device const bfloat* src, int ld,
+                    short sm, short sn, int c, int nrows) {
+#pragma unroll
+    for (short i = 0; i < 2; i++) {
+        const int r = sm + i * 8;
+        device const bfloat* p = src + long(r) * ld + c + sn;
+#pragma unroll
+        for (short j = 0; j < 4; j++)
+            dst[i * 4 + j] = r < nrows ? p[j] : bfloat(0.0f);
+    }
+}
+
+inline void pa_load_full(thread pa_bfrag& dst, device const bfloat* src, int ld,
+                         short sm, short sn, int c) {
+#pragma unroll
+    for (short i = 0; i < 2; i++) {
+        device const bfloat* p = src + long(sm + i * 8) * ld + c + sn;
+#pragma unroll
+        for (short j = 0; j < 4; j++) dst[i * 4 + j] = p[j];
+    }
+}
+
+// grid (query blocks, HKV [GQA] | HN) x (WM * 64) threads.
+[[kernel, max_total_threads_per_threadgroup(PA_WM * 64)]]
+void prefill_attn(
+    device const bfloat* Q      [[buffer(0)]],
+    device const bfloat* K      [[buffer(1)]],
+    device const bfloat* V      [[buffer(2)]],
+    device bfloat* O            [[buffer(3)]],
+    device const bfloat* G      [[buffer(4)]],
+    constant PrefillAttnParams& p [[buffer(5)]],
+    ushort lane [[thread_index_in_simdgroup]],
+    ushort sg   [[simdgroup_index_in_threadgroup]],
+    uint2 tid   [[threadgroup_position_in_grid]])
+{
+    constexpr int BQ = PA_WM * 16;   // fused rows per threadgroup
+    constexpr int BK = 32;           // keys per block
+    constexpr int DH = PA_D / 2;     // channels per simdgroup of a pair
+    constexpr int TDH = DH / 16;     // 16-channel fragments per half
+    static_assert(TDH % 2 == 0, "p.v pairs output fragments");
+
+    const short rg = sg >> 1;        // row group (16 fused rows)
+    const short dh = sg & 1;         // head-dim half
+    const short2 sc = pa_coord(lane);
+    const short sm = sc.y, sn = sc.x;
+
+    // the threadgroup's fused rows [f0, f1) -> query rows [qmin, qmax]
+    const int f0 = int(tid.x) * BQ;
+    const int f1 = min(p.rows, f0 + BQ);
+#if PA_GQA
+    const int kvh = int(tid.y);
+    const int qmin = f0 / PA_GRP, qmax = (f1 - 1) / PA_GRP;
+#else
+    const int kvh = int(tid.y) / PA_GRP;
+    const int qmin = f0, qmax = f1 - 1;
+#endif
+    // key blocks: [0, kb_lim) visible to some row; below kb_min every key
+    // is visible to every row of the threadgroup (no causal mask needed)
+    const int kb_lim = (p.pos + qmax) / BK + 1;
+    const int kb_min = (p.pos + qmin) / BK;
+
+    // this thread's two rows (fm, fm + 8 of its simdgroup's 16)
+    int head[2], qrow[2], lim[2];
+    bool valid[2];
+#pragma unroll
+    for (short i = 0; i < 2; i++) {
+        const int f = f0 + rg * 16 + sm + i * 8;
+#if PA_GQA
+        qrow[i] = f / PA_GRP;
+        head[i] = kvh * PA_GRP + (f - qrow[i] * PA_GRP);
+#else
+        qrow[i] = f;
+        head[i] = int(tid.y);
+#endif
+        valid[i] = f < p.rows;
+        // last visible key; padding rows (never stored) see what the
+        // threadgroup's last row sees
+        lim[i] = p.pos + (valid[i] ? qrow[i] : qmax);
+    }
+
+    // q half resident in registers for the whole key loop
+    pa_bfrag Qt[TDH];
+#pragma unroll
+    for (short i = 0; i < 2; i++) {
+        device const bfloat* qp =
+            Q + long(head[i]) * p.q_hs + long(qrow[i]) * p.q_ts + dh * DH + sn;
+#pragma unroll
+        for (short id = 0; id < TDH; id++) {
+#pragma unroll
+            for (short j = 0; j < 4; j++)
+                Qt[id][i * 4 + j] = valid[i] ? qp[id * 16 + j] : bfloat(0.0f);
+        }
+    }
+
+    pa_ffrag Ot[TDH];
+#pragma unroll
+    for (short id = 0; id < TDH; id++) Ot[id] = pa_ffrag(0.0f);
+    float mx[2] = {PA_NEG, PA_NEG};
+    float sum[2] = {0.0f, 0.0f};
+
+    threadgroup float xchg[PA_WM][2][16 * 32];
+    threadgroup float* mine = xchg[rg][dh];
+    threadgroup const float* peer = xchg[rg][1 - dh];
+
+    device const bfloat* Kh = K + long(kvh) * p.k_hs + dh * DH;
+    device const bfloat* Vh = V + long(kvh) * p.v_hs + dh * DH;
+
+    for (int kb = 0; kb < kb_lim; kb++) {
+        const int k0 = kb * BK;
+        const int nk = p.kv - k0;          // rows readable in this block
+        const bool full = nk >= BK;
+        device const bfloat* Kb = Kh + long(k0) * p.k_ts;
+        device const bfloat* Vb = Vh + long(k0) * p.v_ts;
+
+        // S = q . k^T over this half of the head dim
+        pa_ffrag S0 = pa_ffrag(0.0f), S1 = pa_ffrag(0.0f);
+#pragma unroll
+        for (short id = 0; id < TDH; id++) {
+            pa_bfrag K0, K1;
+            if (full) {
+                pa_load_full(K0, Kb, p.k_ts, sm, sn, id * 16);
+                pa_load_full(K1, Kb + 16 * long(p.k_ts), p.k_ts, sm, sn, id * 16);
+            } else {
+                pa_load(K0, Kb, p.k_ts, sm, sn, id * 16, nk);
+                pa_load(K1, Kb + 16 * long(p.k_ts), p.k_ts, sm, sn, id * 16, nk - 16);
+            }
+            pa_mma<float, bfloat, bfloat, true>(S0, S1, Qt[id], K0, K1);
+        }
+        // add the peer half's partial scores (same lane map)
+#pragma unroll
+        for (short i = 0; i < 8; i++) {
+            mine[lane * 16 + i] = S0[i];
+            mine[lane * 16 + 8 + i] = S1[i];
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+#pragma unroll
+        for (short i = 0; i < 8; i++) {
+            S0[i] += peer[lane * 16 + i];
+            S1[i] += peer[lane * 16 + 8 + i];
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+#pragma unroll
+        for (short i = 0; i < 8; i++) {
+            S0[i] *= PA_SCALE2;
+            S1[i] *= PA_SCALE2;
+        }
+        if (kb >= kb_min) {
+#pragma unroll
+            for (short i = 0; i < 2; i++) {
+#pragma unroll
+                for (short j = 0; j < 4; j++) {
+                    const int c = k0 + sn + j;
+                    if (c > lim[i]) S0[i * 4 + j] = PA_NEG;
+                    if (c + 16 > lim[i]) S1[i * 4 + j] = PA_NEG;
+                }
+            }
+        }
+
+        // online softmax (MLX row_reduce order: 4 elements, xor 1, xor 8)
+#pragma unroll
+        for (short i = 0; i < 2; i++) {
+            float m0 = max(max(S0[i * 4], S0[i * 4 + 1]), max(S0[i * 4 + 2], S0[i * 4 + 3]));
+            m0 = max(m0, simd_shuffle_xor(m0, ushort(1)));
+            m0 = max(m0, simd_shuffle_xor(m0, ushort(8)));
+            float m1 = max(max(S1[i * 4], S1[i * 4 + 1]), max(S1[i * 4 + 2], S1[i * 4 + 3]));
+            m1 = max(m1, simd_shuffle_xor(m1, ushort(1)));
+            m1 = max(m1, simd_shuffle_xor(m1, ushort(8)));
+            const float nmax = max(max(mx[i], m0), m1);
+            const float factor = fast::exp2(mx[i] - nmax);
+            mx[i] = nmax;
+#pragma unroll
+            for (short j = 0; j < 4; j++) {
+                S0[i * 4 + j] = fast::exp2(S0[i * 4 + j] - nmax);
+                S1[i * 4 + j] = fast::exp2(S1[i * 4 + j] - nmax);
+            }
+            float s0 = (S0[i * 4] + S0[i * 4 + 1]) + (S0[i * 4 + 2] + S0[i * 4 + 3]);
+            s0 += simd_shuffle_xor(s0, ushort(1));
+            s0 += simd_shuffle_xor(s0, ushort(8));
+            float s1 = (S1[i * 4] + S1[i * 4 + 1]) + (S1[i * 4 + 2] + S1[i * 4 + 3]);
+            s1 += simd_shuffle_xor(s1, ushort(1));
+            s1 += simd_shuffle_xor(s1, ushort(8));
+            sum[i] = sum[i] * factor + s0 + s1;
+#pragma unroll
+            for (short id = 0; id < TDH; id++) {
+#pragma unroll
+                for (short j = 0; j < 4; j++) Ot[id][i * 4 + j] *= factor;
+            }
+        }
+        // p.v operand: f16 probabilities scaled by 2^15 (PA_PSCALE) so a
+        // probability down to 2^-29 of the row max stays a normal f16 (the
+        // f32 row sums above use the unrounded values; the scale folds
+        // exactly into the final reciprocal). A strict f32 left operand
+        // does not take this fragment layout (garbage) and a relaxed one
+        // rounds to ~f16 anyway (nax_fragment_mma_matches_cpu).
+        pa_hfrag P0, P1;
+#pragma unroll
+        for (short k = 0; k < 8; k++) {
+            P0[k] = half(S0[k] * PA_PSCALE);
+            P1[k] = half(S1[k] * PA_PSCALE);
+        }
+        simdgroup_barrier(mem_flags::mem_none);
+
+        // O += P . V over this half of the head dim
+#pragma unroll
+        for (short id = 0; id < TDH; id += 2) {
+#pragma unroll
+            for (short ik = 0; ik < 2; ik++) {
+                pa_bfrag V0, V1;
+                device const bfloat* vr = Vb + long(ik * 16) * p.v_ts;
+                if (full) {
+                    pa_load_full(V0, vr, p.v_ts, sm, sn, id * 16);
+                    pa_load_full(V1, vr, p.v_ts, sm, sn, id * 16 + 16);
+                } else {
+                    pa_load(V0, vr, p.v_ts, sm, sn, id * 16, nk - ik * 16);
+                    pa_load(V1, vr, p.v_ts, sm, sn, id * 16 + 16, nk - ik * 16);
+                }
+                pa_mma<float, half, bfloat, false>(Ot[id], Ot[id + 1], ik == 0 ? P0 : P1, V0, V1);
+            }
+        }
+    }
+
+#pragma unroll
+    for (short i = 0; i < 2; i++) {
+        if (!valid[i]) continue;
+        const float rcp = 1.0f / (sum[i] * PA_PSCALE);
+        device bfloat* op = O + long(qrow[i]) * p.o_ts + head[i] * PA_D + dh * DH + sn;
+#if PA_GATE
+        device const bfloat* gp =
+            G + long(qrow[i]) * p.g_ts + head[i] * 2 * PA_D + PA_D + dh * DH + sn;
+#endif
+#pragma unroll
+        for (short id = 0; id < TDH; id++) {
+#pragma unroll
+            for (short j = 0; j < 4; j++) {
+                float v = Ot[id][i * 4 + j] * rcp;
+#if PA_GATE
+                v = v / (1.0f + exp(-float(gp[id * 16 + j])));
+#endif
+                op[id * 16 + j] = bfloat(v);
+            }
+        }
+    }
+}
+"#;
+
+    /// Compile-time shape of the prefill kernel (one pipeline each).
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub struct PrefillVariant {
+        /// GQA-fused rows (else one q head per threadgroup, MLX's layout).
+        pub gqa: bool,
+        /// MPP relaxed precision for both matmuls.
+        pub relaxed: bool,
+        /// Sigmoid output gate fused into the epilogue.
+        pub gate: bool,
+        /// Row groups (16 fused rows each) per threadgroup.
+        pub wm: usize,
+    }
+
+    impl PrefillVariant {
+        fn key(&self) -> usize {
+            (self.gqa as usize) | (self.relaxed as usize) << 1 | (self.gate as usize) << 2 | self.wm << 3
+        }
+    }
+
+    /// The prefill library source for one attention geometry + variant.
+    pub(crate) fn render_prefill(nh: usize, nkv: usize, d: usize, v: PrefillVariant) -> String {
+        format!(
+            "#define PA_HN {nh}\n#define PA_HKV {nkv}\n#define PA_GRP {}\n#define PA_D {d}\n\
+             #define PA_WM {}\n#define PA_GQA {}\n#define PA_RELAXED {}\n#define PA_GATE {}\n\
+             #define PA_SCALE2 {:.9e}f\n{PREFILL_SRC}",
+            nh / nkv,
+            v.wm,
+            v.gqa as u32,
+            if v.relaxed { "true" } else { "false" },
+            v.gate as u32,
+            std::f64::consts::LOG2_E / (d as f64).sqrt(),
+        )
+    }
+
+    /// Compile the prefill kernel (Metal 4 language: MPP tensor_ops with
+    /// cooperative-tensor operands).
+    pub(crate) fn compile_prefill(
+        raw: &candle_metal_kernels::metal::Device,
+        nh: usize,
+        nkv: usize,
+        d: usize,
+        v: PrefillVariant,
+    ) -> Result<ComputePipeline> {
+        let opts = objc2_metal::MTLCompileOptions::new();
+        opts.setLanguageVersion(objc2_metal::MTLLanguageVersion::Version4_0);
+        let lib = raw
+            .new_library_with_source(&render_prefill(nh, nkv, d, v), Some(&opts))
+            .map_err(candle_core::Error::wrap)?;
+        let f = lib.get_function("prefill_attn", None).map_err(candle_core::Error::wrap)?;
+        raw.new_compute_pipeline_state_with_function(&f).map_err(candle_core::Error::wrap)
+    }
+
+    static PREFILL: GeomCache<Option<ComputePipeline>> = GeomCache::new();
+
+    /// Geometries the prefill kernel serves: head dim 256 (the fragment
+    /// loop is built for 2 x 8 16-channel fragments), GQA groups up to 16.
+    pub fn prefill_supported(nh: usize, nkv: usize, d: usize) -> bool {
+        nkv > 0 && nh % nkv == 0 && nh / nkv <= 16 && d == 256
+    }
+
+    /// The prefill pipeline for one geometry + variant, compiled once;
+    /// `None` when unsupported or the library does not compile here (the
+    /// caller keeps the eager attention — logged once per key).
+    pub(crate) fn prefill_pipe(
+        device: &candle_core::MetalDevice,
+        nh: usize,
+        nkv: usize,
+        d: usize,
+        v: PrefillVariant,
+    ) -> Option<&'static ComputePipeline> {
+        PREFILL
+            .get((nh, nkv, d, v.key()), || {
+                if !prefill_supported(nh, nkv, d) || !(v.wm == 2 || v.wm == 4) {
+                    eprintln!("[attn] prefill kernel: unsupported nh={nh} nkv={nkv} d={d} {v:?}; eager attention");
+                    return None;
+                }
+                match compile_prefill(device.metal_device(), nh, nkv, d, v) {
+                    Ok(p) => Some(p),
+                    Err(e) => {
+                        let m = e.to_string();
+                        eprintln!("[attn] prefill kernel unavailable ({}); eager attention", &m[..m.len().min(600)]);
+                        None
+                    }
+                }
+            })
+            .as_ref()
+    }
+
+    #[repr(C)]
+    struct PrefillParams {
+        seq: i32,
+        pos: i32,
+        kv: i32,
+        rows: i32,
+        q_hs: i32,
+        q_ts: i32,
+        k_hs: i32,
+        k_ts: i32,
+        v_hs: i32,
+        v_ts: i32,
+        o_ts: i32,
+        g_ts: i32,
+    }
+
+    /// Fused causal prefill attention: `q` [1, nh, seq, d] (post-rope,
+    /// inner dim contiguous), `k`/`v` [nkv, >= pos+seq, d] (any head/time
+    /// strides, inner dim contiguous; rows >= pos+seq are never read) →
+    /// `[seq, nh*d]` bf16, row r attending keys [0, pos + r]. With
+    /// `v.gate` the sigmoid of `gate`'s gate lanes (packed qkv [1, seq, _],
+    /// q head h's gate at h*2d + d) is applied (else the caller gates).
+    #[allow(clippy::too_many_arguments)]
+    pub fn attn_prefill(
+        q: &Tensor,
+        k: &Tensor,
+        v: &Tensor,
+        gate: Option<&Tensor>,
+        pos: usize,
+        seq: usize,
+        nh: usize,
+        nkv: usize,
+        d: usize,
+        var: PrefillVariant,
+    ) -> Result<Tensor> {
+        let (s_q, l_q) = q.storage_and_layout();
+        let Storage::Metal(s_q) = &*s_q else {
+            candle_core::bail!("attn_prefill: non-Metal q")
+        };
+        use candle_core::backend::BackendStorage;
+        let device = s_q.device();
+        let Some(pipe) = prefill_pipe(device, nh, nkv, d, var) else {
+            candle_core::bail!("attn_prefill: pipeline unavailable")
+        };
+        let kv = pos + seq;
+        let qd = q.dims();
+        if qd.len() != 4 || qd[0] != 1 || qd[1] != nh || qd[2] != seq || qd[3] != d {
+            candle_core::bail!("attn_prefill: q {:?}", q.shape());
+        }
+        let (q_st, k_st, v_st) = (l_q.stride(), k.stride(), v.stride());
+        if q_st[3] != 1 || k_st[2] != 1 || v_st[2] != 1 {
+            candle_core::bail!("attn_prefill: inner dims must be contiguous");
+        }
+        if k.dim(0)? != nkv || v.dim(0)? != nkv || k.dim(1)? < kv || v.dim(1)? < kv || k.dim(2)? != d {
+            candle_core::bail!("attn_prefill: k {:?} v {:?} for {kv} keys", k.shape(), v.shape());
+        }
+        if var.gate != gate.is_some() {
+            candle_core::bail!("attn_prefill: gate operand mismatch");
+        }
+        for t in [k, v] {
+            if t.dtype() != DType::BF16 {
+                candle_core::bail!("attn_prefill: bf16 only");
+            }
+        }
+        if q.dtype() != DType::BF16 {
+            candle_core::bail!("attn_prefill: bf16 only");
+        }
+        let grp = nh / nkv;
+        let rows = if var.gqa { seq * grp } else { seq };
+        let bq = 16 * var.wm;
+        // every (row, head, channel) is written once (grid covers all rows)
+        let out = crate::outbuf::kernel_out((seq, nh * d), DType::BF16, q.device())?;
+        let (g_b, g_o, g_ts) = match gate {
+            Some(g) => {
+                let (b, o) = msl_buf(g, 2)?;
+                let gl = g.layout();
+                if gl.stride().last() != Some(&1) {
+                    candle_core::bail!("attn_prefill: gate inner dim must be contiguous");
+                }
+                (Some(b), o, gl.stride()[gl.shape().dims().len() - 2])
+            }
+            None => (None, 0, 0),
+        };
+        let params = PrefillParams {
+            seq: seq as i32,
+            pos: pos as i32,
+            kv: kv as i32,
+            rows: rows as i32,
+            q_hs: q_st[1] as i32,
+            q_ts: q_st[2] as i32,
+            k_hs: k_st[0] as i32,
+            k_ts: k_st[1] as i32,
+            v_hs: v_st[0] as i32,
+            v_ts: v_st[1] as i32,
+            o_ts: (nh * d) as i32,
+            g_ts: g_ts as i32,
+        };
+        let (kb_b, kb_o) = msl_buf(k, 2)?;
+        let (vb_b, vb_o) = msl_buf(v, 2)?;
+        let (ob_b, ob_o) = msl_buf(&out, 2)?;
+        let encoder = device.command_encoder().map_err(candle_core::Error::wrap)?;
+        encoder.set_label("attn_prefill");
+        let enc_ref = &encoder;
+        let enc: &candle_metal_kernels::metal::ComputeCommandEncoder = enc_ref.encoder().as_ref();
+        enc.set_compute_pipeline_state(pipe);
+        enc.set_input_buffer(0, Some(s_q.buffer()), l_q.start_offset() * 2);
+        enc.set_input_buffer(1, Some(&kb_b), kb_o as _);
+        enc.set_input_buffer(2, Some(&vb_b), vb_o as _);
+        enc.set_output_buffer(3, Some(&ob_b), ob_o as _);
+        // unused without the gate: bind q again (never read)
+        match &g_b {
+            Some(b) => enc.set_input_buffer(4, Some(b), g_o as _),
+            None => enc.set_input_buffer(4, Some(s_q.buffer()), 0),
+        }
+        enc.set_bytes(5, &params);
+        enc.dispatch_thread_groups(
+            MTLSize { width: rows.div_ceil(bq), height: if var.gqa { nkv } else { nh }, depth: 1 },
+            MTLSize { width: 64 * var.wm, height: 1, depth: 1 },
+        );
+        drop(encoder);
+        Ok(out)
+    }
 }
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
-pub use metal_impl::{attn_decode, attn_decode_split, attn_prepare, split_plan};
+pub use metal_impl::{
+    attn_decode, attn_decode_split, attn_prefill, attn_prepare, prefill_supported, split_plan, PrefillVariant,
+};
 
 #[cfg(not(all(feature = "metal", target_os = "macos")))]
 pub mod stub {
@@ -1193,10 +1751,40 @@ pub mod stub {
     ) -> Option<usize> {
         None
     }
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub struct PrefillVariant {
+        pub gqa: bool,
+        pub relaxed: bool,
+        pub gate: bool,
+        pub wm: usize,
+    }
+
+    pub fn prefill_supported(_: usize, _: usize, _: usize) -> bool {
+        false
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn attn_prefill(
+        _: &Tensor,
+        _: &Tensor,
+        _: &Tensor,
+        _: Option<&Tensor>,
+        _: usize,
+        _: usize,
+        _: usize,
+        _: usize,
+        _: usize,
+        _: PrefillVariant,
+    ) -> Result<Tensor> {
+        candle_core::bail!("attn_prefill: Metal only")
+    }
 }
 
 #[cfg(not(all(feature = "metal", target_os = "macos")))]
-pub use stub::{attn_decode, attn_decode_split, attn_prepare, split_plan};
+pub use stub::{
+    attn_decode, attn_decode_split, attn_prefill, attn_prepare, prefill_supported, split_plan, PrefillVariant,
+};
 
 #[cfg(test)]
 mod tests {
@@ -1340,6 +1928,279 @@ mod tests {
         let b2 = C.get((2, 1, 256, 32), || 99);
         assert_eq!((*a, *b, *a2, *b2), (1, 2, 1, 2));
         assert!(std::ptr::eq(a, a2) && std::ptr::eq(b, b2));
+    }
+
+    /// Deterministic bf16 fill in [-scale, scale] (xorshift).
+    #[cfg(all(feature = "metal", target_os = "macos"))]
+    fn fill_bf16(dims: &[usize], seed: u64, scale: f32, dev: &candle_core::Device) -> candle_core::Result<candle_core::Tensor> {
+        let n: usize = dims.iter().product();
+        let mut s = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
+        let v: Vec<f32> = (0..n)
+            .map(|_| {
+                s ^= s >> 12;
+                s ^= s << 25;
+                s ^= s >> 27;
+                ((s.wrapping_mul(0x2545_F491_4F6C_DD1D) >> 11) as f32 / (1u64 << 53) as f32 * 2.0 - 1.0) * scale
+            })
+            .collect();
+        candle_core::Tensor::from_vec(v, dims, dev)?.to_dtype(candle_core::DType::BF16)
+    }
+
+    /// f32 reference of the causal prefill attention (broadcast GQA,
+    /// explicit -inf mask): q [1, nh, seq, d], k/v [nkv, kv, d] → [seq, nh*d].
+    #[cfg(all(feature = "metal", target_os = "macos"))]
+    fn prefill_reference(
+        q: &candle_core::Tensor,
+        k: &candle_core::Tensor,
+        v: &candle_core::Tensor,
+        pos: usize,
+        seq: usize,
+        nh: usize,
+        nkv: usize,
+        d: usize,
+    ) -> candle_core::Result<candle_core::Tensor> {
+        use candle_core::{DType, Tensor, D};
+        let kv = pos + seq;
+        let rep = nh / nkv;
+        let f = |t: &Tensor| t.to_dtype(DType::F32);
+        let kb = f(k)?.narrow(1, 0, kv)?.unsqueeze(1)?.broadcast_as((nkv, rep, kv, d))?.reshape((nh, kv, d))?;
+        let vb = f(v)?.narrow(1, 0, kv)?.unsqueeze(1)?.broadcast_as((nkv, rep, kv, d))?.reshape((nh, kv, d))?;
+        let s = f(q)?.squeeze(0)?.contiguous()?.matmul(&kb.transpose(1, 2)?.contiguous()?)?;
+        let s = (s * (d as f64).powf(-0.5))?;
+        let mut mask = vec![f32::NEG_INFINITY; seq * kv];
+        for i in 0..seq {
+            for m in mask.iter_mut().skip(i * kv).take(pos + i + 1) {
+                *m = 0.0;
+            }
+        }
+        let mask = Tensor::from_vec(mask, (1, seq, kv), q.device())?;
+        let p = candle_nn::ops::softmax(&s.broadcast_add(&mask)?, D::Minus1)?;
+        p.matmul(&vb.contiguous()?)?.transpose(0, 1)?.reshape((seq, nh * d))
+    }
+
+    /// E1 primitive: the NAX 16x16 fragment lane map + per-simdgroup MPP
+    /// 16x32x16 matmul (cooperative-tensor operands) against a CPU matmul:
+    /// B as stored ([k][n]) and transposed ([n][k]) with bf16 A, and the
+    /// p.v operand types (A = f32 strict / f32 relaxed / half / bf16).
+    #[cfg(all(feature = "metal", target_os = "macos"))]
+    #[test]
+    fn nax_fragment_mma_matches_cpu() {
+        use candle_metal_kernels::utils::EncoderProvider;
+        let Ok(candle_core::Device::Metal(md)) = candle_core::Device::new_metal(0) else {
+            return;
+        };
+        let src = metal_impl::render_prefill(24, 4, 256, metal_impl::PrefillVariant { gqa: false, relaxed: false, gate: false, wm: 4 })
+            + r#"
+template <typename AT, bool RELAX>
+inline void pr_mma(thread pa_ffrag& c0, thread pa_ffrag& c1, thread const vec<AT, 8>& a,
+                   thread const pa_bfrag& b0, thread const pa_bfrag& b1, device float* cap) {
+    constexpr auto desc = mpp::tensor_ops::matmul2d_descriptor(16, 32, 16, false, false, RELAX,
+        mpp::tensor_ops::matmul2d_descriptor::mode::multiply_accumulate);
+    mpp::tensor_ops::matmul2d<desc, execution_simdgroup> op;
+    auto ca = op.template get_left_input_cooperative_tensor<AT, bfloat, float>();
+    auto cb = op.template get_right_input_cooperative_tensor<AT, bfloat, float>();
+    auto cc = op.template get_destination_cooperative_tensor<
+        metal::remove_addrspace_t<decltype(ca)>, metal::remove_addrspace_t<decltype(cb)>, float>();
+    cap[0] = ca.get_capacity(); cap[1] = cb.get_capacity(); cap[2] = cc.get_capacity();
+    for (short i = 0; i < 8; i++) ca[i] = a[i];
+    for (short i = 0; i < 8; i++) { cb[i] = b0[i]; cb[8 + i] = b1[i]; }
+    for (short i = 0; i < 8; i++) { cc[i] = c0[i]; cc[8 + i] = c1[i]; }
+    op.run(ca, cb, cc);
+    for (short i = 0; i < 8; i++) { c0[i] = cc[i]; c1[i] = cc[8 + i]; }
+}
+
+kernel void nax_probe(device const bfloat* A [[buffer(0)]], device const bfloat* B [[buffer(1)]],
+                      device float* C [[buffer(2)]], device const float* Af [[buffer(3)]],
+                      ushort lane [[thread_index_in_simdgroup]]) {
+    const short2 sc = pa_coord(lane);
+    const short sm = sc.y, sn = sc.x;
+    pa_bfrag a, b0, b1, t0, t1;
+    pa_load_full(a, A, 16, sm, sn, 0);
+    pa_load_full(b0, B, 32, sm, sn, 0);
+    pa_load_full(b1, B, 32, sm, sn, 16);
+    pa_load_full(t0, B + 16 * 32, 16, sm, sn, 0);
+    pa_load_full(t1, B + 16 * 32 + 16 * 16, 16, sm, sn, 0);
+    pa_ffrag c[12];
+    for (short k = 0; k < 12; k++) c[k] = 0.0f;
+    pa_mma<float, bfloat, bfloat, false>(c[0], c[1], a, b0, b1);
+    pa_mma<float, bfloat, bfloat, true>(c[2], c[3], a, t0, t1);
+    pa_ffrag af; vec<half, 8> ah; pa_bfrag ab;
+    for (short i = 0; i < 2; i++) for (short j = 0; j < 4; j++) {
+        const float x = Af[(sm + i * 8) * 16 + sn + j];
+        af[i * 4 + j] = x; ah[i * 4 + j] = half(x); ab[i * 4 + j] = bfloat(x);
+    }
+    device float* cap = C + 3584;
+    pr_mma<float, false>(c[4], c[5], af, b0, b1, cap);
+    pr_mma<float, true>(c[6], c[7], af, b0, b1, cap + 3);
+    pr_mma<half, false>(c[8], c[9], ah, b0, b1, cap + 6);
+    pr_mma<bfloat, false>(c[10], c[11], ab, b0, b1, cap + 9);
+    for (short k = 0; k < 6; k++)
+    for (short i = 0; i < 2; i++) for (short j = 0; j < 4; j++) {
+        const int r = sm + i * 8, cc = sn + j;
+        C[k * 512 + r * 32 + cc] = c[2 * k][i * 4 + j];
+        C[k * 512 + r * 32 + 16 + cc] = c[2 * k + 1][i * 4 + j];
+    }
+}
+"#;
+        let raw = md.metal_device();
+        let opts = objc2_metal::MTLCompileOptions::new();
+        opts.setLanguageVersion(objc2_metal::MTLLanguageVersion::Version4_0);
+        let lib = raw.new_library_with_source(&src, Some(&opts)).expect("probe compiles");
+        let f = lib.get_function("nax_probe", None).unwrap();
+        let pipe = raw.new_compute_pipeline_state_with_function(&f).unwrap();
+        let bf = |x: f32| half::bf16::from_f32(x);
+        let a: Vec<f32> = (0..256).map(|i| ((i * 7 % 13) as f32 - 6.0) / 4.0 + (i % 3) as f32 * 0.0037).collect();
+        let b: Vec<f32> = (0..512).map(|i| ((i * 5 % 11) as f32 - 5.0) / 4.0).collect();
+        let mut bt = vec![0f32; 512];
+        for k in 0..16 { for n in 0..32 { bt[n * 16 + k] = b[k * 32 + n]; } }
+        let a_b: Vec<half::bf16> = a.iter().map(|&x| bf(x)).collect();
+        let mut b_all: Vec<half::bf16> = b.iter().map(|&x| bf(x)).collect();
+        b_all.extend(bt.iter().map(|&x| bf(x)));
+        let dev = candle_core::Device::Metal(md.clone());
+        let ta = candle_core::Tensor::from_vec(a_b, 256, &dev).unwrap();
+        let tb = candle_core::Tensor::from_vec(b_all, 1024, &dev).unwrap();
+        let taf = candle_core::Tensor::from_vec(a.clone(), 256, &dev).unwrap();
+        let tc = candle_core::Tensor::zeros(4096, candle_core::DType::F32, &dev).unwrap();
+        {
+            let (ab, ao) = metal_impl::msl_buf_pub(&ta, 2).unwrap();
+            let (bb, bo) = metal_impl::msl_buf_pub(&tb, 2).unwrap();
+            let (cb, co) = metal_impl::msl_buf_pub(&tc, 4).unwrap();
+            let (fb, fo) = metal_impl::msl_buf_pub(&taf, 4).unwrap();
+            let encoder = md.command_encoder().unwrap();
+            let enc_ref = &encoder;
+            let enc: &candle_metal_kernels::metal::ComputeCommandEncoder = enc_ref.encoder().as_ref();
+            enc.set_compute_pipeline_state(&pipe);
+            enc.set_input_buffer(0, Some(&ab), ao as _);
+            enc.set_input_buffer(1, Some(&bb), bo as _);
+            enc.set_output_buffer(2, Some(&cb), co as _);
+            enc.set_input_buffer(3, Some(&fb), fo as _);
+            enc.dispatch_thread_groups(objc2_metal::MTLSize { width: 1, height: 1, depth: 1 }, objc2_metal::MTLSize { width: 32, height: 1, depth: 1 });
+            drop(encoder);
+        }
+        let c: Vec<f32> = tc.to_vec1().unwrap();
+        let mm = |aa: &dyn Fn(usize) -> f32| -> Vec<f32> {
+            let mut w = vec![0f32; 512];
+            for r in 0..16 { for n in 0..32 { let mut s = 0f64; for k in 0..16 { s += aa(r * 16 + k) as f64 * bf(b[k * 32 + n]).to_f32() as f64; } w[r * 32 + n] = s as f32; } }
+            w
+        };
+        let want_b = mm(&|i| bf(a[i]).to_f32());
+        let want_f = mm(&|i| a[i]);
+        let want_h = mm(&|i| half::f16::from_f32(a[i]).to_f32());
+        let md_ = |x: &[f32], y: &[f32]| x.iter().zip(y).map(|(p, q)| (p - q).abs()).fold(0f32, f32::max);
+        let names = ["bf16 NN", "bf16 NT", "f32-A strict", "f32-A relaxed", "half-A", "bf16-A (p.v form)"];
+        let wants = [&want_b, &want_b, &want_f, &want_f, &want_h, &want_b];
+        let mut bad = Vec::new();
+        for k in 0..6 {
+            let e = md_(&c[k * 512..(k + 1) * 512], wants[k]);
+            eprintln!("nax probe {:18}: max|d| vs f64 CPU {e:.3e}", names[k]);
+            if e > 1e-3 { bad.push(names[k]); }
+        }
+        eprintln!("capacities (left, right, dest): f32 strict {:?}, f32 relaxed {:?}, half {:?}, bf16 {:?}", &c[3584..3587], &c[3587..3590], &c[3590..3593], &c[3593..3596]);
+        assert!(!bad.contains(&"bf16 NN") && !bad.contains(&"bf16 NT") && !bad.contains(&"bf16-A (p.v form)"), "NAX fragment mma layout mismatch: {bad:?}");
+    }
+
+    /// E1: every prefill kernel variant compiles (Metal 4 / MPP with
+    /// cooperative-tensor operands) for Qwen3.8's geometry.
+    #[cfg(all(feature = "metal", target_os = "macos"))]
+    #[test]
+    fn prefill_library_compiles() {
+        let Ok(candle_core::Device::Metal(md)) = candle_core::Device::new_metal(0) else {
+            return;
+        };
+        for gqa in [false, true] {
+            for relaxed in [false, true] {
+                for gate in [false, true] {
+                    for wm in [2usize, 4] {
+                        let v = metal_impl::PrefillVariant { gqa, relaxed, gate, wm };
+                        if let Err(e) = metal_impl::compile_prefill(md.metal_device(), 24, 4, 256, v) {
+                            panic!("prefill attention library {v:?}: {e}");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// E1: the fused prefill kernel matches an f32 reference within bf16
+    /// output rounding (both cache layouts, per-head and GQA-fused rows,
+    /// chunk sizes / query offsets off every tile boundary, the fused
+    /// gate), two runs are bitwise equal, and a row's result does not
+    /// depend on the chunk that holds it (rows 40..100 of a [0, 100) chunk
+    /// == rows 0..60 of a [40, 100) chunk, bit for bit).
+    #[cfg(all(feature = "metal", target_os = "macos"))]
+    #[test]
+    fn prefill_attention_matches_reference() -> candle_core::Result<()> {
+        use candle_core::{DType, Device, Tensor};
+        let Ok(dev) = Device::new_metal(0) else {
+            return Ok(());
+        };
+        let (nh, nkv, d) = (24usize, 4usize, 256usize);
+        let packed = nh * 2 * d + 2 * nkv * d;
+        let host = |t: &Tensor| -> candle_core::Result<Vec<f32>> { t.to_dtype(DType::F32)?.flatten_all()?.to_vec1() };
+        let maxd = |a: &[f32], b: &[f32]| a.iter().zip(b).map(|(x, y)| (x - y).abs()).fold(0f32, f32::max);
+        let mut worst = [0f32; 2];
+        let mut seed = 7u64;
+        for &(seq, pos) in &[(9usize, 0usize), (16, 0), (17, 5), (64, 0), (65, 31), (100, 1000), (130, 1408), (24, 1408), (300, 2000), (512, 0), (512, 511)] {
+            let kv = pos + seq;
+            seed += 5;
+            // q scaled so the scores are peaked (std ~3), as in the model
+            let q = fill_bf16(&[1, nh, seq, d], seed, 3.0 * 1.7, &dev)?;
+            let cap = kv.next_multiple_of(256);
+            let k_hm = fill_bf16(&[nkv, cap, d], seed + 1, 1.0, &dev)?;
+            let v_hm = fill_bf16(&[nkv, cap, d], seed + 2, 1.0, &dev)?;
+            // the time-major layout attn_forward's cat hands over
+            let v_tm = v_hm.narrow(1, 0, kv)?.transpose(0, 1)?.contiguous()?.transpose(0, 1)?;
+            let k_tm = k_hm.narrow(1, 0, kv)?.transpose(0, 1)?.contiguous()?.transpose(0, 1)?;
+            let reference = host(&prefill_reference(&q, &k_hm, &v_hm, pos, seq, nh, nkv, d)?)?;
+            let qkv = fill_bf16(&[1, seq, packed], seed + 3, 2.0, &dev)?;
+            let gate = qkv.narrow(2, 0, nh * 2 * d)?.reshape((seq, nh, 2 * d))?.narrow(2, d, d)?.reshape((seq, nh * d))?;
+            let gated_ref: Vec<f32> = reference
+                .iter()
+                .zip(host(&gate)?)
+                .map(|(r, g)| r / (1.0 + (-g).exp()))
+                .collect();
+            for (li, (kk, vv)) in [(&k_hm, &v_hm), (&k_tm, &v_tm)].into_iter().enumerate() {
+                for gqa in [false, true] {
+                    for relaxed in [false, true] {
+                        for wm in [2usize, 4] {
+                            for gate_on in [false, true] {
+                                let var = metal_impl::PrefillVariant { gqa, relaxed, gate: gate_on, wm };
+                                let g = if gate_on { Some(&qkv) } else { None };
+                                let o1 = attn_prefill(&q, kk, vv, g, pos, seq, nh, nkv, d, var)?;
+                                let o2 = attn_prefill(&q, kk, vv, g, pos, seq, nh, nkv, d, var)?;
+                                let (a, b) = (host(&o1)?, host(&o2)?);
+                                assert!(
+                                    a.iter().zip(&b).all(|(x, y)| x.to_bits() == y.to_bits()),
+                                    "not deterministic: seq {seq} pos {pos} layout {li} {var:?}"
+                                );
+                                let md_ = maxd(&a, if gate_on { &gated_ref } else { &reference });
+                                assert!(md_.is_finite() && md_ < 1.6e-2, "seq {seq} pos {pos} layout {li} {var:?}: max|fused - f32 ref| {md_}");
+                                worst[relaxed as usize] = worst[relaxed as usize].max(md_);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        eprintln!("prefill fused vs f32 reference: worst max|d| strict {:.5}, relaxed {:.5}", worst[0], worst[1]);
+        // chunk invariance: [0, 100) vs [40, 100) over the same K/V
+        let q = fill_bf16(&[1, nh, 100, d], 99, 5.0, &dev)?;
+        let k = fill_bf16(&[nkv, 256, d], 98, 1.0, &dev)?;
+        let v = fill_bf16(&[nkv, 256, d], 97, 1.0, &dev)?;
+        let q_tail = q.narrow(2, 40, 60)?.contiguous()?;
+        for gqa in [false, true] {
+            for relaxed in [false, true] {
+                let var = metal_impl::PrefillVariant { gqa, relaxed, gate: false, wm: 4 };
+                let full = host(&attn_prefill(&q, &k, &v, None, 0, 100, nh, nkv, d, var)?.narrow(0, 40, 60)?)?;
+                let tail = host(&attn_prefill(&q_tail, &k, &v, None, 40, 60, nh, nkv, d, var)?)?;
+                let diff = full.iter().zip(&tail).filter(|(x, y)| x.to_bits() != y.to_bits()).count();
+                eprintln!("prefill chunk invariance gqa={gqa} relaxed={relaxed}: {diff}/{} elements differ", full.len());
+                if !relaxed {
+                    assert_eq!(diff, 0, "gqa={gqa}: a row's result depends on its chunk");
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Every page lands in exactly one split and the reduce's `written`

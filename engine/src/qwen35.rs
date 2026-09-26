@@ -1695,6 +1695,76 @@ fn attn_gqa() -> bool {
     *ON.get_or_init(|| std::env::var("TH_ATTN_GQA").as_deref() != Ok("0"))
 }
 
+/// E1 routing (read once): prefill chunks (seq > 8 rows) take the fused
+/// causal flash kernel `attn_kernel::attn_prefill` instead of the eager
+/// matmul/mask/softmax/matmul chain. `TH_PREFILL_ATTN=eager` keeps the
+/// eager path (A/B reference); `TH_PREFILL_ATTN_VARIANT` picks the kernel
+/// shape (`g2` default: GQA-fused rows, 2 row groups of 16 per
+/// threadgroup; `ph4` = MLX's per-head layout with 4 row groups, `r`
+/// suffix = MPP relaxed precision); `TH_PREFILL_ATTN_GATE=0` applies the
+/// output gate outside the kernel. Not bitwise equal to the eager path
+/// (f32 scores and softmax, f16 probabilities; eager rounds scores and
+/// probabilities to bf16) — closer to an f32 reference (TH_BENCH_PREFILL_ATTN).
+fn prefill_attn_cfg() -> Option<crate::attn_kernel::PrefillVariant> {
+    static V: std::sync::OnceLock<Option<crate::attn_kernel::PrefillVariant>> = std::sync::OnceLock::new();
+    *V.get_or_init(|| {
+        if std::env::var("TH_PREFILL_ATTN").is_ok_and(|v| v.trim() == "eager") {
+            return None;
+        }
+        let name = std::env::var("TH_PREFILL_ATTN_VARIANT").unwrap_or_else(|_| "g2".into());
+        let name = name.trim();
+        let (gqa, rest) = match name.strip_prefix("ph") {
+            Some(r) => (false, r),
+            None => (true, name.strip_prefix('g').unwrap_or("2")),
+        };
+        let wm = match rest.chars().next() {
+            Some('4') => 4,
+            _ => 2,
+        };
+        Some(crate::attn_kernel::PrefillVariant {
+            gqa,
+            relaxed: rest.contains('r'),
+            gate: std::env::var("TH_PREFILL_ATTN_GATE").as_deref() != Ok("0"),
+            wm,
+        })
+    })
+}
+
+/// In-process A/B hook (`TH_BENCH_PREFILL_LOGITS`): route every prefill
+/// chunk to the eager attention while set. One relaxed load per attention
+/// layer call; never set on the serving path.
+static PREFILL_FORCE_EAGER: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn prefill_attn_force_eager(on: bool) {
+    PREFILL_FORCE_EAGER.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// The fused prefill kernel variant for this attention call, or `None`
+/// for the eager path: Metal, bf16, a prefill chunk (seq > 8; the decode
+/// kernels serve <= 8), a supported geometry and a compiled pipeline.
+fn prefill_attn_variant(
+    device: &Device,
+    seq: usize,
+    dtype: DType,
+    nh: usize,
+    nkv: usize,
+    d: usize,
+) -> Option<crate::attn_kernel::PrefillVariant> {
+    if seq <= 8 || dtype != DType::BF16 || !crate::attn_kernel::prefill_supported(nh, nkv, d) {
+        return None;
+    }
+    if PREFILL_FORCE_EAGER.load(std::sync::atomic::Ordering::Relaxed) {
+        return None;
+    }
+    let var = prefill_attn_cfg()?;
+    #[cfg(all(feature = "metal", target_os = "macos"))]
+    if let Device::Metal(md) = device {
+        return crate::attn_kernel::metal_impl::prefill_pipe(md, nh, nkv, d, var).map(|_| var);
+    }
+    let _ = device;
+    None
+}
+
 /// `TH_DEBUG_ROLLBACK`: per-layer rollback dumps. Read once.
 fn debug_rollback() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
@@ -4203,6 +4273,16 @@ impl Qwen35 {
         }
 
         let (kc, vc) = kvc;
+        // E1: the fused causal prefill kernel reads K/V straight from the
+        // cache after the store below, so the exact-length cat is only built
+        // when something needs it (the eager path, or a (re)allocation)
+        let fused = prefill_attn_variant(device, seq, q.dtype(), l.n_heads, l.n_kv, l.head_dim);
+        let need = pos + seq;
+        if fused.is_some() && kv_cap_prefill() && kc.dim(1)? >= need && kc.is_contiguous() && vc.is_contiguous() {
+            kc.slice_set(&k.squeeze(0)?.contiguous()?, 1, pos)?;
+            vc.slice_set(&v.contiguous()?, 1, pos)?;
+            return Self::attn_fused_out(l, kc, vc, &q, qkv, &gate, pos, seq, fused.unwrap());
+        }
         // narrow to the committed prefix — the cache may be a
         // fixed-capacity buffer whose tail is uninitialised
         let k_pre = if kc.dim(1)? > pos { kc.narrow(1, 0, pos)? } else { kc.clone() };
@@ -4247,6 +4327,10 @@ impl Qwen35 {
             *kc = k_all.clone();
             *vc = v_all.clone();
         }
+        if let Some(var) = fused {
+            drop((k_all, v_all));
+            return Self::attn_fused_out(l, kc, vc, &q, qkv, &gate, pos, seq, var);
+        }
 
         let out = Self::attn_eager(
             &q, &k_all, &v_all, pos, seq, l.n_heads, l.n_kv, l.head_dim, attn_gqa(), device,
@@ -4254,6 +4338,43 @@ impl Qwen35 {
         let out = out.broadcast_mul(&candle_nn::ops::sigmoid(
             &gate.reshape((seq, l.n_heads * l.head_dim))?,
         )?)?;
+        crate::gpuprof::region("attn.o");
+        lin_apply(&out.unsqueeze(0)?, &l.o)
+    }
+
+    /// E1: the fused causal prefill attention (`attn_kernel::attn_prefill`)
+    /// over the cache rows `0..pos+seq` (just stored), gated (fused into the
+    /// kernel's epilogue unless `TH_PREFILL_ATTN_GATE=0`), then o_proj.
+    #[allow(clippy::too_many_arguments)]
+    fn attn_fused_out(
+        l: &AttnLayer,
+        kc: &Tensor,
+        vc: &Tensor,
+        q: &Tensor,
+        qkv: &Tensor,
+        gate: &Tensor,
+        pos: usize,
+        seq: usize,
+        var: crate::attn_kernel::PrefillVariant,
+    ) -> Result<Tensor> {
+        let q = if q.stride()[3] == 1 { q.clone() } else { q.contiguous()? };
+        let out = crate::attn_kernel::attn_prefill(
+            &q,
+            kc,
+            vc,
+            if var.gate { Some(qkv) } else { None },
+            pos,
+            seq,
+            l.n_heads,
+            l.n_kv,
+            l.head_dim,
+            var,
+        )?;
+        let out = if var.gate {
+            out
+        } else {
+            out.broadcast_mul(&candle_nn::ops::sigmoid(&gate.reshape((seq, l.n_heads * l.head_dim))?)?)?
+        };
         crate::gpuprof::region("attn.o");
         lin_apply(&out.unsqueeze(0)?, &l.o)
     }
