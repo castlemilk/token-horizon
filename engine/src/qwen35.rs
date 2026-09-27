@@ -529,6 +529,10 @@ impl QLin {
                             m: rows,
                             up_tile: 0,
                             cfg,
+                            // E1(c): > 8 rows + presum = a prefill presum
+                            // block (the decode block only exists at <= 8)
+                            presum,
+                            emit: false,
                         },
                     )?;
                     let mut out = dims;
@@ -693,6 +697,9 @@ impl QLin {
                     .then(|| crate::quant_kernel::pf_route(rows, half, self.inp, true))
                     .flatten()
                 {
+                    // E1(c): the vec up·silu pass emits the down projection's
+                    // prefill presum block
+                    let emit = cfg.vec && crate::quant_kernel::pf_presum_on(rows);
                     return Some(
                         self.wq
                             .apply_op3_no_bwd(
@@ -705,14 +712,15 @@ impl QLin {
                                     m: rows,
                                     up_tile: half / 256,
                                     cfg,
+                                    presum,
+                                    emit,
                                 },
                             )
                             .map_err(Into::into)
                             .and_then(|y| {
                                 let mut out = dims.clone();
                                 *out.last_mut().unwrap() = half;
-                                // a >8-row activation is never a presum block
-                                Ok((y.reshape(out)?, false))
+                                Ok((y.reshape(out)?, emit))
                             }),
                     );
                 }
@@ -1855,15 +1863,24 @@ fn add_rms_norm_ps(
             && (1..=8).contains(&seq)
             && c % 64 == 0
             && x.dim(0)? == 1;
+        // E1(c): long-prompt chunks — the normed plane as a prefill presum
+        // block (the next projection's vec tile skips its pf_prep pass)
+        let pfsums = !sums
+            && seq > 8
+            && c % 64 == 0
+            && c <= 7936
+            && x.dim(0)? == 1
+            && !arn_legacy()
+            && crate::quant_kernel::pf_presum_on(seq);
         let out = x.apply_op3_no_bwd(
             r,
             w,
-            &crate::gdn_kernel::AddRmsNorm { t: seq, c, eps: eps as f32, sums, legacy: arn_legacy() },
+            &crate::gdn_kernel::AddRmsNorm { t: seq, c, eps: eps as f32, sums, pfsums, legacy: arn_legacy() },
         )?;
         // out is [2, T, C] — plane 0 = residual, plane 1 = normed
         let res = out.narrow(0, 0, 1)?;
         let nrm = out.narrow(0, 1, 1)?;
-        return Ok((res, nrm, sums));
+        return Ok((res, nrm, sums || pfsums));
     }
     let res = x.add(r)?;
     let nrm = rms_norm(&res, w, eps)?;
@@ -2717,6 +2734,17 @@ impl Qwen35 {
                     }
                     let base = PfCfg::new(r, tn, sg);
                     let mut cfgs = vec![base];
+                    // E1: the vectorized-epilogue tile (bitwise equal to the
+                    // legacy op; only where the layout probe passes)
+                    let dev_m = match device {
+                        Device::Metal(d) => Some(d),
+                        _ => None,
+                    };
+                    if dev_m.is_some_and(|d| {
+                        crate::quant_kernel::pf_vec_layout_ok(d, &PfCfg { vec: true, ..base })
+                    }) {
+                        cfgs.push(PfCfg { vec: true, ..base });
+                    }
                     if gu {
                         cfgs.push(PfCfg { fused: true, ..base });
                     } else {
@@ -2729,7 +2757,7 @@ impl Qwen35 {
                         }
                     }
                     for cfg in cfgs {
-                        let op = AffineQpf { inp: q.inp, out: n, padded, m, up_tile, cfg };
+                        let op = AffineQpf { inp: q.inp, out: n, padded, m, up_tile, cfg, presum: false, emit: false };
                         cands.push((
                             cfg.label(),
                             Box::new(move || -> Result<Tensor> {
@@ -2745,7 +2773,12 @@ impl Qwen35 {
                     let y = f()?.to_dtype(DType::F32)?;
                     deltas.push((maxd(&yref, &y)?, maxd(&yleg, &y)?));
                 }
-                // calibrate ~8ms trials, then interleaved rounds
+                // calibrate ~8ms trials, then interleaved rounds. With
+                // TH_GPU_PROF=1 a trial is timed by the GPU-exclusive busy
+                // time of its command buffers (R0c), not host wall time —
+                // robust to host load (E1: the wall-clock sweep drifted
+                // +-40% on a loaded machine)
+                let gpu_t = crate::gpuprof::on();
                 let mut iters = Vec::with_capacity(cands.len());
                 for (_, f) in &cands {
                     let _ = f()?;
@@ -2765,12 +2798,18 @@ impl Qwen35 {
                         let f = &cands[i].1;
                         let _ = f()?;
                         device.synchronize()?;
+                        let _ = crate::gpuprof::drain_busy_ms();
                         let t = std::time::Instant::now();
                         for _ in 0..iters[i] {
                             let _ = f()?;
                         }
                         device.synchronize()?;
-                        samples[i].push(t.elapsed().as_secs_f64() * 1e3 / iters[i] as f64);
+                        let ms = if gpu_t {
+                            crate::gpuprof::drain_busy_ms()
+                        } else {
+                            t.elapsed().as_secs_f64() * 1e3
+                        };
+                        samples[i].push(ms / iters[i] as f64);
                     }
                 }
                 for (i, (name, _)) in cands.iter().enumerate() {

@@ -273,6 +273,16 @@ pub const fn presum_block_bytes(inp: usize) -> usize {
     8 * inp * 2 + (inp / 64) * 8 * 4
 }
 
+/// E1(c) prefill presum block for `m > 8` rows of `inp` columns: the
+/// activation zero-padded to whole 32-row tiles, then the f32 per-(row,
+/// quant group) input sums in the prefill tiles' layout
+/// [m_pad/32][inp/64][32] (what `pf_prep` would write). In bf16 elements.
+pub const fn pf_presum_elems(m: usize, inp: usize) -> usize {
+    let m_pad = m.div_ceil(32) * 32;
+    m_pad * inp + 2 * m_pad * (inp / 64)
+}
+
+
 /// K45: whether decode projections use presum blocks (producer-emitted
 /// input sums, no pad copy). Read once: `TH_Q4_PRESUM=0` or the legacy
 /// policy turns it off (A/B arm).
@@ -448,7 +458,10 @@ pub fn qmvt_cfg_for(out: usize, _inp: usize, gate_up: bool) -> QmvtCfg {
 }
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
-pub use metal_impl::{pf_compile, pf_force_legacy, pf_route, pf_shapes, pf_warm, AffineQpf, PfCfg};
+pub use metal_impl::{
+    pf_compile, pf_force_legacy, pf_force_legacy_large, pf_presum_on, pf_route, pf_shapes,
+    pf_vec_layout_ok, pf_warm, AffineQpf, PfCfg,
+};
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
 mod metal_impl {
@@ -4188,6 +4201,212 @@ kernel void Name(device const bfloat* input  [[buffer(0)]],                 \
       uint(p.split_groups), tg.y * TileN, lane, sgi, tsums);                \
 }
 
+// E1 large-M tile ("+v"): pf_tile's math with a vectorized epilogue. The
+// destination cooperative tensor gives every thread its Cap elements in runs
+// of 4 consecutive columns on one row (i = 4j..4j+3 -> cols c_j..c_j+3, row
+// r_j; `pf_vec_layout_ok` verifies this per shape before the host routes
+// here). Per quant group a run needs one 8-byte scale load, one 8-byte bias
+// load and one row sum, instead of a 64-bit parameter index plus two scalar
+// loads per element. The per-element arithmetic is legacy
+// th_mpp_prefill_tile's source form `acc += p*s + sum*b` (same contraction),
+// so plain / up·silu outputs are bitwise equal to AffineQmppPrefill on the
+// same sums (pf_prep's lane pattern == the legacy sums pass). Unsplit only.
+// Emit (E1(c), up·silu only): `out` is a prefill presum block with whole
+// 32-row tiles — rows >= live are stored as zero — and `osums` receives the
+// tile's per-(row, quant group) sums in pf_prep's lane pattern over the
+// stored bf16 values (the down projection's input sums, bit-identical to a
+// pf_prep pass over the same activation).
+template <ushort Rows, ushort TileN, ushort Sgs, ushort Mode, bool Staged,
+          bool Emit>
+inline void pf_vtile(device bfloat *input, device uchar *w0, device bfloat *s0,
+                     device bfloat *b0, device const float *sums,
+                     device bfloat *aux, device bfloat *out, uint out_size,
+                     uint in_size, uint live, uint output_origin, uint lane,
+                     uint sgi, threadgroup float *tsums, device float *osums) {
+  constexpr ushort StorageN = 256;
+  constexpr uint Batch = 256;
+  constexpr ushort Cap = ushort(uint(Rows) * TileN / (uint(Sgs) * 32u));
+  constexpr ushort Runs = Cap / 4;
+  auto a = tensor(input, dextents<int, 2>{int(in_size), Rows},
+                  array<int, 2>{1, int(in_size)});
+  constexpr auto descriptor =
+      matmul2d_descriptor(Rows, TileN, 64, false, true, false);
+  matmul2d<descriptor, execution_simdgroups<Sgs>> operation;
+  const uint total_groups = in_size / 64;
+  const uint tile = output_origin / StorageN;
+  const uint tile_offset = output_origin % StorageN;
+  device uchar *tw =
+      w0 + (ulong(tile) * total_groups * StorageN + tile_offset) * 32;
+  tensor<device uint4b_format, dextents<int, 2>, tensor_inline> fb(
+      tw, dextents<int, 2>{64, TileN}, array<int, 2>{1, 64});
+  auto a0 = a.slice<64, Rows>(0, 0);
+  auto b0s = fb.slice<64, TileN>(0, 0);
+  auto acc = operation.template get_destination_cooperative_tensor<
+      decltype(a0), decltype(b0s), float>();
+  ushort colr[Runs];
+  ushort rowr[Runs];
+#pragma unroll
+  for (ushort j = 0; j < Runs; ++j) {
+    auto idx = acc.get_multidimensional_index(j * 4);
+    colr[j] = ushort(idx[0]);
+    rowr[j] = ushort(idx[1]);
+  }
+#pragma unroll
+  for (ushort i = 0; i < Cap; ++i) acc[i] = 0.0f;
+  device const bfloat *sp =
+      s0 + ulong(tile) * total_groups * StorageN + tile_offset;
+  device const bfloat *bp =
+      b0 + ulong(tile) * total_groups * StorageN + tile_offset;
+  if constexpr (Staged) {
+    for (uint idx = sgi * 32 + lane; idx < min(Batch, total_groups) * Rows;
+         idx += Sgs * 32)
+      tsums[idx] = sums[idx];
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+  }
+  for (uint g = 0; g < total_groups; ++g) {
+    auto a_slice = a.slice<64, Rows>(g * 64, 0);
+    tensor<device uint4b_format, dextents<int, 2>, tensor_inline> bq(
+        tw + ulong(g) * StorageN * 32, dextents<int, 2>{64, TileN},
+        array<int, 2>{1, 64});
+    auto bs = bq.slice<64, TileN>(0, 0);
+    auto pr = operation.template get_destination_cooperative_tensor<
+        decltype(a_slice), decltype(bs), float>();
+    operation.run(a_slice, bs, pr);
+#pragma unroll
+    for (ushort j = 0; j < Runs; ++j) {
+      const bfloat4 s4 = *(device const bfloat4 *)(sp + colr[j]);
+      const bfloat4 b4 = *(device const bfloat4 *)(bp + colr[j]);
+      float sum;
+      if constexpr (Staged)
+        sum = tsums[(g % Batch) * Rows + rowr[j]];
+      else
+        sum = sums[g * Rows + rowr[j]];
+#pragma unroll
+      for (ushort k = 0; k < 4; ++k)
+        acc[j * 4 + k] += pr[j * 4 + k] * float(s4[k]) + sum * float(b4[k]);
+    }
+    sp += StorageN;
+    bp += StorageN;
+    if constexpr (Staged) {
+      if (g % Batch == Batch - 1 && g + 1 < total_groups) {
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        for (uint idx = sgi * 32 + lane;
+             idx < min(Batch, total_groups - g - 1) * Rows; idx += Sgs * 32)
+          tsums[idx] = sums[(g + 1) * Rows + idx];
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+      }
+    }
+  }
+  auto conv = operation.template get_destination_cooperative_tensor<
+      decltype(a0), decltype(b0s), bfloat>();
+#pragma unroll
+  for (ushort j = 0; j < Runs; ++j) {
+#pragma unroll
+    for (ushort k = 0; k < 4; ++k) {
+      float value = float(bfloat(acc[j * 4 + k]));
+      if constexpr (Mode == PfUpSilu) {
+        const uint col = output_origin + colr[j] + k;
+        const uint row = rowr[j];
+        const bool ok = row < live && col < out_size;
+        value = pf_silu_mul(
+            ok ? float(aux[ulong(row) * out_size + col]) : 0.0f, value);
+      }
+      if constexpr (Emit) {
+        if (rowr[j] >= live) value = 0.0f;
+      }
+      conv[j * 4 + k] = bfloat(value);
+    }
+  }
+  if constexpr (Emit) {
+    // whole 32-row tile (the block is padded); out_size % TileN == 0
+    auto c = tensor(out, dextents<int, 2>{int(out_size), Rows},
+                    array<int, 2>{1, int(out_size)});
+    conv.store(c.slice<TileN, Rows>(output_origin, 0));
+    threadgroup_barrier(mem_flags::mem_device);
+    constexpr uint G = TileN / 64;
+    for (uint task = sgi; task < uint(Rows) * G; task += Sgs) {
+      const uint row = task / G, lg = task % G;
+      const ulong o = ulong(row) * out_size + output_origin + lg * 64 + lane;
+      const float s = simd_sum(float(out[o]) + float(out[o + 32]));
+      if (lane == 0) osums[(output_origin / 64 + lg) * Rows + row] = s;
+    }
+    return;
+  }
+  if (live == Rows && output_origin + TileN <= out_size) {
+    auto c = tensor(out, dextents<int, 2>{int(out_size), Rows},
+                    array<int, 2>{1, int(out_size)});
+    conv.store(c.slice<TileN, Rows>(output_origin, 0));
+    return;
+  }
+#pragma unroll
+  for (ushort j = 0; j < Runs; ++j) {
+#pragma unroll
+    for (ushort k = 0; k < 4; ++k) {
+      const uint col = output_origin + colr[j] + k;
+      const uint row = rowr[j];
+      if (row < live && col < out_size)
+        out[ulong(row) * out_size + col] = conv[j * 4 + k];
+    }
+  }
+}
+
+// Same buffer interface as PF_ENTRY (the host's tile pass binds both alike);
+// with Emit, buffer 6 (`part`) is the output block's sums plane.
+#define PF_VENTRY(Name, Rows, TileN, Sgs, Mode, Emit)                        \
+kernel void Name(device const bfloat* input  [[buffer(0)]],                 \
+                 device const uchar*  weights [[buffer(1)]],                \
+                 device const bfloat* sb      [[buffer(2)]],                \
+                 device const float*  sums    [[buffer(3)]],                \
+                 device bfloat*       aux     [[buffer(4)]],                \
+                 device bfloat*       out     [[buffer(5)]],                \
+                 device float*        part    [[buffer(6)]],                \
+                 constant PfParams&   p       [[buffer(7)]],                \
+                 uint3 tg [[threadgroup_position_in_grid]],                 \
+                 uint lane [[thread_index_in_simdgroup]],                   \
+                 uint sgi [[simdgroup_index_in_threadgroup]]) {             \
+  threadgroup float tsums[(Sgs) == 8 ? (Rows) * 256 : 1];                   \
+  const uint ng = uint(p.in_dim) / 64;                                      \
+  const uint row0 = tg.x * Rows;                                            \
+  const uint live = min(uint(Rows), uint(p.m) - row0);                      \
+  const ulong ob = ulong(row0) * uint(p.out_dim);                           \
+  device uchar* wb = const_cast<device uchar*>(weights);                    \
+  device bfloat* sbb = const_cast<device bfloat*>(sb);                      \
+  pf_vtile<Rows, TileN, Sgs, Mode, (Sgs) == 8, Emit>(                       \
+      const_cast<device bfloat*>(input) + ulong(row0) * uint(p.in_dim),     \
+      wb + p.w_off, sbb + p.s_off, sbb + p.bias_base + p.s_off,             \
+      sums + ulong(tg.x) * ng * Rows, aux + ob, out + ob, uint(p.out_dim),  \
+      uint(p.in_dim), live, tg.y * TileN, lane, sgi, tsums,                 \
+      part + ulong(tg.x) * (uint(p.out_dim) / 64) * Rows);                  \
+}
+
+// Layout probe for `pf_vec_layout_ok`: out[1 + (tid*cap + i)*3 + {0,1,2}] =
+// (valid, col, row) of destination element i of thread tid; out[0] = cap.
+#define PF_VPROBE(Name, Rows, TileN, Sgs)                                    \
+kernel void Name(device const bfloat* x [[buffer(0)]],                      \
+                 device const uchar* w [[buffer(1)]],                       \
+                 device int* out [[buffer(2)]],                             \
+                 uint tid [[thread_index_in_threadgroup]]) {                \
+  auto a = tensor(const_cast<device bfloat*>(x), dextents<int, 2>{64, Rows}, \
+                  array<int, 2>{1, 64});                                    \
+  tensor<device uint4b_format, dextents<int, 2>, tensor_inline> b(          \
+      const_cast<device uchar*>(w), dextents<int, 2>{64, TileN},            \
+      array<int, 2>{1, 64});                                                \
+  constexpr auto d = matmul2d_descriptor(Rows, TileN, 64, false, true, false); \
+  matmul2d<d, execution_simdgroups<Sgs>> op;                                \
+  auto a0 = a.slice<64, Rows>(0, 0);                                        \
+  auto b0 = b.slice<64, TileN>(0, 0);                                       \
+  auto acc = op.template get_destination_cooperative_tensor<                \
+      decltype(a0), decltype(b0), float>();                                 \
+  const int cap = acc.get_capacity();                                       \
+  if (tid == 0) out[0] = cap;                                               \
+  for (int i = 0; i < cap; ++i) {                                           \
+    auto idx = acc.get_multidimensional_index(i);                           \
+    out[1 + (tid * cap + i) * 3 + 0] = acc.is_valid_element(i) ? 1 : 0;     \
+    out[1 + (tid * cap + i) * 3 + 1] = idx[0];                              \
+    out[1 + (tid * cap + i) * 3 + 2] = idx[1];                              \
+  }                                                                         \
+}
+
 // Two-stream gate/up: stream 0 = gate, stream 1 = up (tiles from
 // p.up_woff/p.up_soff), output silu(bf16 gate)·bf16 up over out_size
 // columns — the same values as the gate→scratch + up·silu passes.
@@ -4315,6 +4534,9 @@ kernel void pf_reduce(device const float* part [[buffer(0)]],
     ];
     /// single-stream epilogues (`PF_ENTRY`); "gu" is `PF_GU_ENTRY`
     const PF_MODES: &[(&str, usize)] = &[("pl", 0), ("us", 2), ("pt", 3)];
+    /// E1 vectorized-epilogue tiles (`PF_VENTRY`): plain, up·silu(gate),
+    /// up·silu(gate) emitting the down projection's prefill presum block
+    const PF_VMODES: &[(&str, usize, bool)] = &[("vpl", 0, false), ("vus", 2, false), ("vuse", 2, true)];
 
     /// The instantiated (rows, tile_n, simdgroups) shapes (bench sweeps).
     pub fn pf_shapes() -> &'static [(usize, usize, usize)] {
@@ -4338,11 +4560,14 @@ kernel void pf_reduce(device const float* part [[buffer(0)]],
         pub splits: usize,
         /// gate/up: one two-stream pass (else gate→scratch, up·silu)
         pub fused: bool,
+        /// E1: vectorized-epilogue tile (`pf_vtile`, "+v"; unsplit,
+        /// unfused) — bitwise equal to the legacy `AffineQmppPrefill`
+        pub vec: bool,
     }
 
     impl PfCfg {
         pub const fn new(rows: usize, tile_n: usize, sgs: usize) -> Self {
-            Self { rows, tile_n, sgs, splits: 1, fused: false }
+            Self { rows, tile_n, sgs, splits: 1, fused: false, vec: false }
         }
         pub fn exists(&self) -> bool {
             PF_SHAPES.contains(&(self.rows, self.tile_n, self.sgs))
@@ -4355,6 +4580,9 @@ kernel void pf_reduce(device const float* part [[buffer(0)]],
             }
             if self.fused {
                 s += "+gu";
+            }
+            if self.vec {
+                s += "+v";
             }
             s
         }
@@ -4419,6 +4647,14 @@ kernel void pf_reduce(device const float* part [[buffer(0)]],
         let name = pf_name(r, n, sg, "gu");
         src += &format!("PF_GU_ENTRY({name}, {r}, {n}, {sg})\n");
         names.push(name);
+        for &(mode, id, emit) in PF_VMODES {
+            let name = pf_name(r, n, sg, mode);
+            src += &format!("PF_VENTRY({name}, {r}, {n}, {sg}, {id}, {emit})\n");
+            names.push(name);
+        }
+        let name = pf_name(r, n, sg, "vprobe");
+        src += &format!("PF_VPROBE({name}, {r}, {n}, {sg})\n");
+        names.push(name);
         let lib = pf_build(device, &src, &names)?;
         let _ = PF_LIBS[idx].set(lib);
         Ok(PF_LIBS[idx].get().unwrap())
@@ -4434,9 +4670,110 @@ kernel void pf_reduce(device const float* part [[buffer(0)]],
         Ok(n)
     }
 
+    /// E1: per `PF_SHAPES` entry, whether its destination cooperative
+    /// tensor has the layout `pf_vtile` assumes (`pf_vec_layout_check`).
+    /// MPP's layout is implementation-defined — an OS update may change
+    /// it — so it is probed once per process (`pf_warm`); a shape whose
+    /// probe fails, or never ran, never routes to the vec tile.
+    static PF_VLAYOUT: [OnceLock<bool>; PF_SHAPES.len()] =
+        [const { OnceLock::new() }; PF_SHAPES.len()];
+
+    fn pf_shape_idx(c: &PfCfg) -> Option<usize> {
+        PF_SHAPES.iter().position(|&t| t == (c.rows, c.tile_n, c.sgs))
+    }
+
+    /// The layout the vec epilogue relies on, from `PF_VPROBE`'s dump
+    /// (`dump[0]` = capacity, then (valid, col, row) per thread element):
+    /// capacity * threads == rows * tile_n, elements 4j..4j+3 of every
+    /// thread are 4 consecutive columns (4-aligned) on one row, all valid,
+    /// and every tile element is owned exactly once.
+    pub(crate) fn pf_vec_layout_check(dump: &[i32], threads: usize, rows: usize, tile_n: usize) -> bool {
+        let cap = dump.first().copied().unwrap_or(0).max(0) as usize;
+        if cap == 0 || cap % 4 != 0 || cap * threads != rows * tile_n || dump.len() < 1 + threads * cap * 3 {
+            return false;
+        }
+        let mut seen = vec![false; rows * tile_n];
+        for t in 0..threads {
+            let e = |i: usize| {
+                let b = 1 + (t * cap + i) * 3;
+                (dump[b], dump[b + 1], dump[b + 2])
+            };
+            for j in 0..cap / 4 {
+                let (_, c0, r0) = e(4 * j);
+                if c0 < 0 || c0 % 4 != 0 {
+                    return false;
+                }
+                for k in 0..4 {
+                    let (v, c, r) = e(4 * j + k);
+                    if v != 1 || c != c0 + k as i32 || r != r0 || r < 0 {
+                        return false;
+                    }
+                    let (c, r) = (c as usize, r as usize);
+                    if c >= tile_n || r >= rows || std::mem::replace(&mut seen[r * tile_n + c], true) {
+                        return false;
+                    }
+                }
+            }
+        }
+        seen.iter().all(|&x| x)
+    }
+
+    /// Run `PF_VPROBE` for `c`'s shape and check its layout.
+    fn pf_vec_layout_probe(device: &candle_core::MetalDevice, c: &PfCfg) -> Result<bool> {
+        let lib = pf_shape_lib(device, c)?;
+        let name = pf_name(c.rows, c.tile_n, c.sgs, "vprobe");
+        let pipe = lib
+            .get(&name)
+            .ok_or_else(|| candle_core::Error::Msg(format!("affine-qpf: no kernel {name}")))?;
+        let threads = 32 * c.sgs;
+        let n = 1 + threads * 256 * 3;
+        let alloc = |bytes: usize| {
+            device.new_buffer_builder().with_size(bytes).build().map_err(candle_core::Error::wrap)
+        };
+        let x = alloc(64 * c.rows * 2)?;
+        let w = alloc(64 * c.tile_n / 2)?;
+        let out = alloc(n * 4)?;
+        {
+            let encoder = device.command_encoder().map_err(candle_core::Error::wrap)?;
+            encoder.set_label("pf_vprobe");
+            let enc_ref = &encoder;
+            let enc: &candle_metal_kernels::metal::ComputeCommandEncoder = enc_ref.encoder().as_ref();
+            enc.set_compute_pipeline_state(pipe);
+            enc.set_input_buffer(0, Some(&x), 0);
+            enc.set_input_buffer(1, Some(&w), 0);
+            enc.set_output_buffer(2, Some(&out), 0);
+            enc.dispatch_thread_groups(
+                MTLSize { width: 1, height: 1, depth: 1 },
+                MTLSize { width: threads, height: 1, depth: 1 },
+            );
+        }
+        device.wait_until_completed().map_err(candle_core::Error::wrap)?;
+        // SAFETY: shared-storage buffer of `n` i32, the dispatch completed
+        let dump = unsafe { std::slice::from_raw_parts(out.contents() as *const i32, n) };
+        Ok(pf_vec_layout_check(dump, threads, c.rows, c.tile_n))
+    }
+
+    /// Probe (once) and report whether `c`'s shape may take the vec tile.
+    pub fn pf_vec_layout_ok(device: &candle_core::MetalDevice, c: &PfCfg) -> bool {
+        let Some(idx) = pf_shape_idx(c) else { return false };
+        *PF_VLAYOUT[idx].get_or_init(|| match pf_vec_layout_probe(device, c) {
+            Ok(true) => true,
+            Ok(false) => {
+                tracing::warn!(shape = %c.label(), "prefill vec tile: unexpected cooperative-tensor layout — legacy path");
+                false
+            }
+            Err(e) => {
+                tracing::warn!(shape = %c.label(), error = %e, "prefill vec tile: layout probe failed — legacy path");
+                false
+            }
+        })
+    }
+
     /// The (rows, tile_n, simdgroups) shapes `pf_policy` can return (unit
     /// test `pf_policy_only_returns_warmed_shapes` keeps them in sync).
     const PF_POLICY_SHAPES: [(usize, usize, usize); 2] = [(16, 128, 4), (32, 256, 8)];
+    /// E1: the shapes `pf_policy_large` can return (warmed + probed at load).
+    const PF_LARGE_SHAPES: [(usize, usize, usize); 1] = [(32, 128, 4)];
 
     /// Compile, at model load, every tile library `pf_route` can pick
     /// under the current env (the policy's shapes, or the TH_PF-forced
@@ -4451,7 +4788,7 @@ kernel void pf_reduce(device const float* part [[buffer(0)]],
         if off {
             return Ok(0);
         }
-        let shapes: Vec<PfCfg> = match forced {
+        let mut shapes: Vec<PfCfg> = match forced {
             Some(c) if c.exists() => vec![c],
             Some(_) => return Ok(0),
             None => PF_POLICY_SHAPES
@@ -4459,9 +4796,22 @@ kernel void pf_reduce(device const float* part [[buffer(0)]],
                 .map(|&(r, n, sg)| PfCfg::new(r, n, sg))
                 .collect(),
         };
+        let large = pf_large_env();
+        if forced.is_none() && !large.0 {
+            match large.1 {
+                Some(c) if c.exists() => shapes.push(c),
+                _ => shapes.extend(PF_LARGE_SHAPES.iter().map(|&(r, n, sg)| PfCfg::new(r, n, sg))),
+            }
+        }
         let mut n = pf_common(device)?.len();
         for c in &shapes {
             n += pf_shape_lib(device, c)?.len();
+        }
+        // E1: probe the vec tile's layout assumption for every warmed shape
+        // (a forced "+v" config included) before a request can route there
+        for c in &shapes {
+            let ok = pf_vec_layout_ok(device, c);
+            tracing::debug!(shape = %c.label(), ok, "prefill vec tile layout");
         }
         Ok(n)
     }
@@ -4497,6 +4847,14 @@ kernel void pf_reduce(device const float* part [[buffer(0)]],
         pub m: usize,
         pub up_tile: usize,
         pub cfg: PfCfg,
+        /// E1(c): `x` is a prefill presum block (`pf_presum_elems`: rows
+        /// padded to 32, then the pf-layout sums) — no pf_prep pass. Only
+        /// honoured by 32-row configs (the block's sums layout).
+        pub presum: bool,
+        /// E1(c), gate/up with the vec tile: the output is itself a
+        /// prefill presum block (the down projection's input sums emitted
+        /// by the up·silu pass).
+        pub emit: bool,
     }
 
     impl CustomOp3 for AffineQpf {
@@ -4534,10 +4892,20 @@ kernel void pf_reduce(device const float* part [[buffer(0)]],
             if ng % splits != 0 || (gate_up && splits > 1) {
                 candle_core::bail!("affine-qpf: bad split {splits} for ng={ng} gate_up={gate_up}");
             }
+            if c.vec && (splits > 1 || c.fused) {
+                candle_core::bail!("affine-qpf: the vec tile is unsplit and unfused ({c:?})");
+            }
             if l_x.shape().elem_count() != self.m * self.inp {
                 candle_core::bail!("affine-qpf: x {:?} != [{}, {}]", l_x.shape(), self.m, self.inp);
             }
             let device = s_wq.device();
+            let x_off = l_x.start_offset() * 2;
+            // E1(c): a prefill presum block carries its padded rows + sums
+            let presum = self.presum
+                && c.rows == 32
+                && x_off % 16 == 0
+                && s_x.buffer().length() >= x_off + super::pf_presum_elems(self.m, self.inp) * 2;
+            let emit = self.emit && gate_up && c.vec && c.rows == 32 && self.out % c.tile_n == 0;
             let common = pf_common(device)?;
             let shape_lib = pf_shape_lib(device, &c)?;
             let pipe = |name: &str| {
@@ -4549,13 +4917,22 @@ kernel void pf_reduce(device const float* part [[buffer(0)]],
                 "pt"
             } else if gate_up && c.fused {
                 "gu"
+            } else if c.vec {
+                "vpl"
             } else {
                 "pl"
             };
             let p_prep = pipe("pf_prep")?;
             let p_tile = pipe(&pf_name(c.rows, c.tile_n, c.sgs, mode))?;
             let p_up = if gate_up && !c.fused {
-                Some(pipe(&pf_name(c.rows, c.tile_n, c.sgs, "us"))?)
+                let up = if emit {
+                    "vuse"
+                } else if c.vec {
+                    "vus"
+                } else {
+                    "us"
+                };
+                Some(pipe(&pf_name(c.rows, c.tile_n, c.sgs, up))?)
             } else {
                 None
             };
@@ -4563,10 +4940,9 @@ kernel void pf_reduce(device const float* part [[buffer(0)]],
 
             let row_tiles = self.m.div_ceil(c.rows);
             let m_pad = row_tiles * c.rows;
-            let x_off = l_x.start_offset() * 2;
             // the tiles read whole Rows-row blocks: pad unless the live
             // rows fill them (and the base is 16-byte aligned)
-            let copy = m_pad != self.m || x_off % 16 != 0;
+            let copy = !presum && (m_pad != self.m || x_off % 16 != 0);
             let alloc = |n: usize, dt: DType, label: &'static str| {
                 device
                     .new_buffer_builder()
@@ -4576,8 +4952,18 @@ kernel void pf_reduce(device const float* part [[buffer(0)]],
                     .map_err(candle_core::Error::wrap)
             };
             let x_pad = if copy { Some(alloc(m_pad * self.inp, DType::BF16, "qpf.x")?) } else { None };
-            let sums = alloc(m_pad * ng, DType::F32, "qpf.sums")?;
-            let y = alloc(self.m * self.out, DType::BF16, "qpf.y")?;
+            // presum: the sums are the block's plane (bound from s_x below)
+            let sums = alloc(if presum { 1 } else { m_pad * ng }, DType::F32, "qpf.sums")?;
+            let y = alloc(
+                if emit { super::pf_presum_elems(self.m, self.out) } else { self.m * self.out },
+                DType::BF16,
+                "qpf.y",
+            )?;
+            let (sb_buf, sb_off) = if presum {
+                (s_x.buffer(), x_off + m_pad * self.inp * 2)
+            } else {
+                (sums.as_ref(), 0usize)
+            };
             let gate = if p_up.is_some() {
                 Some(alloc(self.m * self.out, DType::BF16, "qpf.gate")?)
             } else {
@@ -4614,22 +5000,24 @@ kernel void pf_reduce(device const float* part [[buffer(0)]],
             let enc_ref = &encoder;
             let enc: &candle_metal_kernels::metal::ComputeCommandEncoder =
                 enc_ref.encoder().as_ref();
-            // 1. pad + sums
-            enc.set_compute_pipeline_state(p_prep);
-            enc.set_input_buffer(0, Some(s_x.buffer()), x_off);
-            match &x_pad {
-                Some(b) => enc.set_output_buffer(1, Some(b), 0),
-                // unused slot (copy = 0): bound read-only, never written
-                None => enc.set_input_buffer(1, Some(s_x.buffer()), x_off),
+            // 1. pad + sums (not for a presum block: it carries both)
+            if !presum {
+                enc.set_compute_pipeline_state(p_prep);
+                enc.set_input_buffer(0, Some(s_x.buffer()), x_off);
+                match &x_pad {
+                    Some(b) => enc.set_output_buffer(1, Some(b), 0),
+                    // unused slot (copy = 0): bound read-only, never written
+                    None => enc.set_input_buffer(1, Some(s_x.buffer()), x_off),
+                }
+                enc.set_output_buffer(2, Some(&sums), 0);
+                let d: [i32; 4] =
+                    [self.m as i32, self.inp as i32, c.rows as i32, copy as i32];
+                enc.set_bytes(3, &d);
+                enc.dispatch_thread_groups(
+                    MTLSize { width: ng, height: m_pad / 8, depth: 1 },
+                    MTLSize { width: 256, height: 1, depth: 1 },
+                );
             }
-            enc.set_output_buffer(2, Some(&sums), 0);
-            let d: [i32; 4] =
-                [self.m as i32, self.inp as i32, c.rows as i32, copy as i32];
-            enc.set_bytes(3, &d);
-            enc.dispatch_thread_groups(
-                MTLSize { width: ng, height: m_pad / 8, depth: 1 },
-                MTLSize { width: 256, height: 1, depth: 1 },
-            );
             // 2. tile pass(es) — every buffer a pass reads is bound as an
             // input and every buffer it writes as an output, so candle's
             // barrier tracking orders prep → tile → (up | reduce)
@@ -4640,17 +5028,22 @@ kernel void pf_reduce(device const float* part [[buffer(0)]],
             let tile_pass = |pipe: &ComputePipeline,
                              aux: Option<&candle_metal_kernels::metal::Buffer>,
                              out: &candle_metal_kernels::metal::Buffer,
-                             prm: &PfParams| {
+                             prm: &PfParams,
+                             osums: bool| {
                 enc.set_compute_pipeline_state(pipe);
                 enc.set_input_buffer(0, Some(xb), xo);
                 enc.set_input_buffer(1, Some(s_wq.buffer()), l_wq.start_offset() * 4);
                 enc.set_input_buffer(2, Some(s_sb.buffer()), l_sb.start_offset() * 2);
-                enc.set_input_buffer(3, Some(&sums), 0);
+                enc.set_input_buffer(3, Some(sb_buf), sb_off);
                 // unused aux/part slots are bound read-only to `sums`
                 enc.set_input_buffer(4, Some(aux.unwrap_or(&sums)), 0);
                 if splits > 1 {
                     enc.set_input_buffer(5, Some(&sums), 0);
                     enc.set_output_buffer(6, Some(out), 0);
+                } else if osums {
+                    // E1(c) emit: the block's sums plane follows its padded rows
+                    enc.set_output_buffer(5, Some(out), 0);
+                    enc.set_output_buffer(6, Some(out), m_pad * self.out * 2);
                 } else {
                     enc.set_output_buffer(5, Some(out), 0);
                     enc.set_input_buffer(6, Some(&sums), 0);
@@ -4661,16 +5054,16 @@ kernel void pf_reduce(device const float* part [[buffer(0)]],
             match (&p_up, &gate, &part) {
                 (Some(p_up), Some(g), _) => {
                     // gate stream → scratch, then up·silu(gate) → y
-                    tile_pass(p_tile, None, g, &params);
+                    tile_pass(p_tile, None, g, &params, false);
                     let up = PfParams {
                         w_off: params.up_woff,
                         s_off: params.up_soff,
                         ..params
                     };
-                    tile_pass(p_up, Some(g), &y, &up);
+                    tile_pass(p_up, Some(g), &y, &up, emit);
                 }
                 (_, _, Some(pt)) => {
-                    tile_pass(p_tile, None, pt, &params);
+                    tile_pass(p_tile, None, pt, &params, false);
                     let p_red = p_red.unwrap();
                     enc.set_compute_pipeline_state(p_red);
                     enc.set_input_buffer(0, Some(pt), 0);
@@ -4682,7 +5075,7 @@ kernel void pf_reduce(device const float* part [[buffer(0)]],
                         MTLSize { width: 256, height: 1, depth: 1 },
                     );
                 }
-                _ => tile_pass(p_tile, None, &y, &params),
+                _ => tile_pass(p_tile, None, &y, &params, false),
             }
             let storage =
                 MetalStorage::new(y, device.clone(), self.m * self.out, DType::BF16);
@@ -4727,12 +5120,94 @@ kernel void pf_reduce(device const float* part [[buffer(0)]],
             return None;
         }
         let ng = inp / 64;
-        let valid = |c: PfCfg| c.exists() && ng % c.splits == 0 && !(gate_up && c.splits > 1);
+        let valid = |c: PfCfg| {
+            c.exists()
+                && ng % c.splits == 0
+                && !(gate_up && c.splits > 1)
+                && (!c.vec || (c.splits == 1 && !c.fused && pf_vec_probed_ok(&c)))
+        };
         if let Some(c) = forced {
             let c = PfCfg { fused: c.fused && gate_up, ..c };
             return valid(c).then_some(c);
         }
+        if m > 128 {
+            // E1: long-prompt chunks — the vec tile (bitwise equal to the
+            // legacy AffineQmppPrefill) unless TH_PF_LARGE=0
+            let (large_off, large_forced) = pf_large_env();
+            if large_off || PF_LARGE_LEGACY.load(std::sync::atomic::Ordering::Relaxed) {
+                return None;
+            }
+            let c = large_forced.or_else(|| pf_policy_large(m, out, inp, gate_up))?;
+            let c = PfCfg { fused: c.fused && gate_up, ..c };
+            return valid(c).then_some(c);
+        }
         pf_policy(m, out, inp, gate_up, cores).filter(|&c| valid(c))
+    }
+
+    /// E1(c): whether an m-row prefill activation should be produced as a
+    /// prefill presum block (`pf_presum_elems`) — the m > 128 route is the
+    /// vec tile on 32-row tiles (probed), and TH_PF_PRESUM=1 (read once).
+    /// Producers: `AddRmsNorm { pfsums }` (in_all / in_qkv / gate_up
+    /// inputs) and the gate/up up·silu pass (`AffineQpf { emit }`, the down
+    /// input). Consumers bind the block's sums instead of a pf_prep pass.
+    /// OPT-IN (default off): bitwise equal to the pf_prep path, but the
+    /// saving (the pf_prep passes, ~1 % of a long-prompt forward) measured
+    /// below the end-to-end noise floor (th-e-prefill-gemm.md §6).
+    pub fn pf_presum_on(m: usize) -> bool {
+        static ON: OnceLock<bool> = OnceLock::new();
+        let on = *ON.get_or_init(|| std::env::var("TH_PF_PRESUM").as_deref() == Ok("1"));
+        if !on || m <= 128 {
+            return false;
+        }
+        let (off, forced, _) = pf_env();
+        let (large_off, large_forced) = pf_large_env();
+        if off || forced.is_some() || large_off || PF_LEGACY.load(std::sync::atomic::Ordering::Relaxed)
+            || PF_LARGE_LEGACY.load(std::sync::atomic::Ordering::Relaxed)
+        {
+            return false;
+        }
+        let c = large_forced.unwrap_or(PfCfg { vec: true, ..PfCfg::new(32, 128, 4) });
+        c.vec && c.rows == 32 && c.splits == 1 && !c.fused && pf_vec_probed_ok(&c)
+    }
+
+    /// The layout probe ran for `c`'s shape and passed (`pf_warm`).
+    fn pf_vec_probed_ok(c: &PfCfg) -> bool {
+        pf_shape_idx(c).and_then(|i| PF_VLAYOUT[i].get().copied()).unwrap_or(false)
+    }
+
+    /// E1 bench hook: force the legacy tile for m > 128 at runtime so
+    /// TH_BENCH_PREFILL can interleave legacy and vec forwards in one
+    /// process. Off by default; a relaxed load is its only per-call cost.
+    static PF_LARGE_LEGACY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+    pub fn pf_force_legacy_large(on: bool) {
+        PF_LARGE_LEGACY.store(on, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// (off, forced) from TH_PF_LARGE, read once: `0` keeps m > 128 on the
+    /// legacy AffineQmppPrefill (the pre-E1 path); a config label (e.g.
+    /// `r32n256s8+v`) forces that tile for m > 128 (A/B).
+    fn pf_large_env() -> (bool, Option<PfCfg>) {
+        static ENV: OnceLock<(bool, Option<PfCfg>)> = OnceLock::new();
+        *ENV.get_or_init(|| {
+            let v = std::env::var("TH_PF_LARGE").ok();
+            let off = v.as_deref() == Some("0");
+            let forced = if off { None } else { v.as_deref().and_then(pf_parse) };
+            (off, forced)
+        })
+    }
+
+    /// E1 policy for m > 128 (long-prompt chunks, the draft's prompt-row
+    /// fc/qkv): the 32x128 four-simdgroup vec tile — Splash's Apple10
+    /// prefill shape with the vectorized epilogue. Measured (GPU
+    /// timestamps, M5 Max, M = 256..4096, every model projection) ahead of
+    /// the legacy op (pad + one-threadgroup-per-32-rows sums pass + 32x256
+    /// tile + narrow copy) on every shape; see th-e-prefill-gemm.md.
+    pub(crate) fn pf_policy_large(m: usize, _out: usize, inp: usize, _gate_up: bool) -> Option<PfCfg> {
+        if m <= 128 || inp % 64 != 0 {
+            return None;
+        }
+        Some(PfCfg { vec: true, ..PfCfg::new(32, 128, 4) })
     }
 
     /// Parse "r16n128s4[+k4][+gu]".
@@ -4748,6 +5223,8 @@ kernel void pf_reduce(device const float* part [[buffer(0)]],
                 c.splits = k.parse().ok()?;
             } else if p == "gu" {
                 c.fused = true;
+            } else if p == "v" {
+                c.vec = true;
             }
         }
         Some(c)
@@ -4882,6 +5359,223 @@ kernel void pf_reduce(device const float* part [[buffer(0)]],
                 if let Some(c) = got {
                     assert!(valid(c, inp, gu), "invalid {c:?} for m={m} out={out} inp={inp}");
                 }
+            }
+        }
+
+        /// A dump in the layout the M5's MPP produces for 32x128 / 4 sg
+        /// (probe: thread t, run j -> cols 4*(t%16) + 64*((j>>1)&1) .. +3,
+        /// row (t/16) + 8*(j&1) + 16*(j>>2)) passes; perturbations fail.
+        #[test]
+        fn pf_vec_layout_check_accepts_runs_rejects_others() {
+            let (rows, tile_n, threads) = (32usize, 128usize, 128usize);
+            let cap = rows * tile_n / threads;
+            let mut dump = vec![0i32; 1 + threads * cap * 3];
+            dump[0] = cap as i32;
+            for t in 0..threads {
+                for j in 0..cap / 4 {
+                    for k in 0..4 {
+                        let b = 1 + (t * cap + 4 * j + k) * 3;
+                        dump[b] = 1;
+                        dump[b + 1] = (4 * (t % 16) + 64 * ((j >> 1) & 1) + k) as i32;
+                        dump[b + 2] = ((t / 16) + 8 * (j & 1) + 16 * (j >> 2)) as i32;
+                    }
+                }
+            }
+            assert!(pf_vec_layout_check(&dump, threads, rows, tile_n));
+            // a run whose columns are not consecutive
+            let mut d = dump.clone();
+            d[1 + 1 * 3 + 1] += 1;
+            assert!(!pf_vec_layout_check(&d, threads, rows, tile_n));
+            // an invalid element
+            let mut d = dump.clone();
+            d[1 + 5 * 3] = 0;
+            assert!(!pf_vec_layout_check(&d, threads, rows, tile_n));
+            // two threads owning the same element (row of thread 1 := thread 0's)
+            let mut d = dump.clone();
+            for i in 0..cap {
+                d[1 + (16 * cap + i) * 3 + 2] = d[1 + i * 3 + 2];
+            }
+            assert!(!pf_vec_layout_check(&d, threads, rows, tile_n));
+            // wrong capacity
+            let mut d = dump.clone();
+            d[0] = 16;
+            assert!(!pf_vec_layout_check(&d, threads, rows, tile_n));
+        }
+
+        /// E1 route: m > 128 takes the vec tile (unsplit, unfused) for
+        /// every model shape, plain and gate/up; <= 128 keeps `pf_policy`.
+        #[test]
+        fn pf_policy_large_table() {
+            for &(out, inp, gu) in &[
+                (17408usize, 5120usize, true),
+                (5120, 17408, false),
+                (16480, 5120, false),
+                (14336, 5120, false),
+                (5120, 6144, false),
+                (5120, 25600, false),
+                (6144, 5120, false),
+            ] {
+                for m in [129usize, 256, 512, 896, 1450, 2048, 4096, 8192] {
+                    let c = pf_policy_large(m, out, inp, gu).expect("large route");
+                    assert_eq!(c.label(), "r32n128s4+v", "m={m} out={out} inp={inp}");
+                    assert!(valid(c, inp, gu) && c.splits == 1 && !c.fused);
+                    assert!(PF_LARGE_SHAPES.contains(&(c.rows, c.tile_n, c.sgs)));
+                }
+                assert_eq!(pf_policy_large(128, out, inp, gu), None);
+            }
+        }
+
+        fn lcg(seed: &mut u64) -> u32 {
+            *seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            (*seed >> 32) as u32
+        }
+
+        /// The vec tile (plain and up·silu) is bitwise equal to the legacy
+        /// AffineQmppPrefill — the pre-E1 path for m > 128 — on random
+        /// tiled weights, including ragged rows (m % 32 != 0) and a ragged
+        /// last column tile (out % 128 != 0, out % 256 != 0).
+        #[test]
+        fn pf_vec_matches_legacy_bitwise() {
+            use candle_core::{Device, Tensor};
+            let dev = Device::new_metal(0).unwrap();
+            let Device::Metal(md) = &dev else { unreachable!() };
+            let cfg = PfCfg { vec: true, ..PfCfg::new(32, 128, 4) };
+            if !pf_vec_layout_ok(md, &cfg) {
+                eprintln!("pf_vec_matches_legacy_bitwise: layout probe failed on this GPU — vec route disabled, skipped");
+                return;
+            }
+            let mut seed = 0x5eedu64;
+            // (out per stream, inp, gate_up, m)
+            for &(out, inp, gu, m) in &[
+                (640usize, 512usize, false, 130usize),
+                (720, 256, false, 257),
+                (384, 1024, false, 64),
+                (1280, 512, false, 200),
+                (512, 512, true, 161),
+                (256, 1024, true, 96),
+            ] {
+                let ng = inp / 64;
+                let total = if gu { 2 * out } else { out };
+                let padded = total.div_ceil(256) * 256;
+                let wq: Vec<u32> = (0..padded * ng * 8).map(|_| lcg(&mut seed)).collect();
+                let sb: Vec<half::bf16> = (0..2 * padded * ng)
+                    .map(|i| {
+                        let u = (lcg(&mut seed) % 1000) as f32 / 1000.0;
+                        half::bf16::from_f32(if i < padded * ng { 0.002 + 0.01 * u } else { -0.05 + 0.02 * u })
+                    })
+                    .collect();
+                let x: Vec<half::bf16> = (0..m * inp)
+                    .map(|_| half::bf16::from_f32((lcg(&mut seed) % 2000) as f32 / 500.0 - 2.0))
+                    .collect();
+                let wq = Tensor::from_vec(wq, (padded * ng * 8,), &dev).unwrap();
+                let sb = Tensor::from_vec(sb, (2 * padded * ng,), &dev).unwrap();
+                let x = Tensor::from_vec(x, (m, inp), &dev).unwrap();
+                let up_tile = if gu { out / 256 } else { 0 };
+                let legacy = wq
+                    .apply_op3_no_bwd(&sb, &x, &AffineQmppPrefill { inp, out, padded, m, up_tile })
+                    .unwrap()
+                    .narrow(0, 0, m)
+                    .unwrap()
+                    .narrow(1, 0, out)
+                    .unwrap()
+                    .contiguous()
+                    .unwrap();
+                let vec = wq
+                    .apply_op3_no_bwd(&sb, &x, &AffineQpf { inp, out, padded, m, up_tile, cfg, presum: false, emit: false })
+                    .unwrap();
+                let a: Vec<u16> = legacy.flatten_all().unwrap().to_dtype(candle_core::DType::F32).unwrap()
+                    .to_vec1::<f32>().unwrap().iter().map(|v| half::bf16::from_f32(*v).to_bits()).collect();
+                let b: Vec<u16> = vec.flatten_all().unwrap().to_dtype(candle_core::DType::F32).unwrap()
+                    .to_vec1::<f32>().unwrap().iter().map(|v| half::bf16::from_f32(*v).to_bits()).collect();
+                assert_eq!(a.len(), m * out);
+                let diff = a.iter().zip(&b).filter(|(p, q)| p != q).count();
+                assert_eq!(diff, 0, "vec vs legacy: {diff} of {} differ (out={out} inp={inp} gu={gu} m={m})", a.len());
+            }
+        }
+
+        /// E1(c): the prefill presum chain is bitwise equal to the pf_prep
+        /// path — AddRmsNorm { pfsums } keeps residual / normed values and
+        /// its block feeds a vec projection exactly like pf_prep's sums; the
+        /// gate/up up·silu pass with `emit` stores the same activation and
+        /// its block feeds `down` exactly like a pf_prep pass over it.
+        #[test]
+        fn pf_presum_chain_matches_prep_bitwise() {
+            use candle_core::{DType, Device, Tensor};
+            let dev = Device::new_metal(0).unwrap();
+            let Device::Metal(md) = &dev else { unreachable!() };
+            let cfg = PfCfg { vec: true, ..PfCfg::new(32, 128, 4) };
+            if !pf_vec_layout_ok(md, &cfg) {
+                eprintln!("pf_presum_chain_matches_prep_bitwise: layout probe failed — skipped");
+                return;
+            }
+            let bits = |t: &Tensor| -> Vec<u16> {
+                t.flatten_all().unwrap().to_dtype(DType::F32).unwrap().to_vec1::<f32>().unwrap()
+                    .iter().map(|v| half::bf16::from_f32(*v).to_bits()).collect()
+            };
+            let mut seed = 0xc0ffeeu64;
+            fn rndv(seed: &mut u64, n: usize, scale: f32) -> Vec<half::bf16> {
+                (0..n).map(|_| half::bf16::from_f32(((lcg(seed) % 2000) as f32 / 1000.0 - 1.0) * scale)).collect()
+            }
+            let qw = |seed: &mut u64, rows: usize, inp: usize| -> (Tensor, Tensor) {
+                let ng = inp / 64;
+                let wq: Vec<u32> = (0..rows * ng * 8).map(|_| lcg(seed)).collect();
+                let sb: Vec<half::bf16> = (0..2 * rows * ng)
+                    .map(|i| {
+                        let u = (lcg(seed) % 1000) as f32 / 1000.0;
+                        half::bf16::from_f32(if i < rows * ng { 0.002 + 0.01 * u } else { -0.05 + 0.02 * u })
+                    })
+                    .collect();
+                (Tensor::from_vec(wq, (rows * ng * 8,), &dev).unwrap(), Tensor::from_vec(sb, (2 * rows * ng,), &dev).unwrap())
+            };
+            for &(t, c) in &[(161usize, 1024usize), (256, 512), (133, 1024)] {
+                let x = Tensor::from_vec(rndv(&mut seed, t * c, 3.0), (1, t, c), &dev).unwrap();
+                let r = Tensor::from_vec(rndv(&mut seed, t * c, 3.0), (1, t, c), &dev).unwrap();
+                let w = Tensor::from_vec(rndv(&mut seed, c, 1.5), (c,), &dev).unwrap();
+                let arn = |pfsums: bool| {
+                    x.apply_op3_no_bwd(
+                        &r,
+                        &w,
+                        &crate::gdn_kernel::AddRmsNorm { t, c, eps: 1e-6, sums: false, pfsums, legacy: false },
+                    )
+                    .unwrap()
+                };
+                let (y0, y1) = (arn(false), arn(true));
+                for plane in 0..2 {
+                    assert_eq!(
+                        bits(&y0.narrow(0, plane, 1).unwrap()),
+                        bits(&y1.narrow(0, plane, 1).unwrap()),
+                        "add-rmsnorm plane {plane} t={t} c={c}"
+                    );
+                }
+                let n0 = y0.narrow(0, 1, 1).unwrap().reshape((t, c)).unwrap();
+                let n1 = y1.narrow(0, 1, 1).unwrap().reshape((t, c)).unwrap();
+                // plain projection (ragged columns: 640 % 128 != 0 ... = 5 tiles)
+                let out = 640usize;
+                let (wq, sb) = qw(&mut seed, 768, c);
+                let proj = |xin: &Tensor, presum: bool| {
+                    wq.apply_op3_no_bwd(&sb, xin, &AffineQpf { inp: c, out, padded: 768, m: t, up_tile: 0, cfg, presum, emit: false })
+                        .unwrap()
+                };
+                assert_eq!(bits(&proj(&n0, false)), bits(&proj(&n1, true)), "proj presum t={t} c={c}");
+                // gate/up (512 per stream) with emit, then down on its block
+                let half = 512usize;
+                let (gwq, gsb) = qw(&mut seed, 2 * half, c);
+                let gu = |xin: &Tensor, presum: bool, emit: bool| {
+                    gwq.apply_op3_no_bwd(
+                        &gsb,
+                        xin,
+                        &AffineQpf { inp: c, out: half, padded: 2 * half, m: t, up_tile: half / 256, cfg, presum, emit },
+                    )
+                    .unwrap()
+                };
+                let (a0, a1) = (gu(&n0, false, false), gu(&n1, true, true));
+                assert_eq!(bits(&a0), bits(&a1), "gate/up emit t={t} c={c}");
+                let (dwq, dsb) = qw(&mut seed, 256, half);
+                let down = |xin: &Tensor, presum: bool| {
+                    dwq.apply_op3_no_bwd(&dsb, xin, &AffineQpf { inp: half, out: 256, padded: 256, m: t, up_tile: 0, cfg, presum, emit: false })
+                        .unwrap()
+                };
+                assert_eq!(bits(&down(&a0, false)), bits(&down(&a1, true)), "down on emitted block t={t} c={c}");
             }
         }
 

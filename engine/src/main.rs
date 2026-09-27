@@ -164,6 +164,24 @@ async fn main() -> Result<()> {
             server::serve(engine, port).await
         }
         Cmd::Probe { model, tokens, dump } => {
+            // E1 bench aid: TH_TOKENIZE=<text file> prints the comma-separated
+            // ids of that text as one user message, rendered and encoded
+            // exactly as the server does (chat template + generation
+            // prompt) — real prompts for the TH_BENCH_* probes / --dump.
+            // No model load.
+            if let Ok(path) = std::env::var("TH_TOKENIZE") {
+                let dir = std::path::Path::new(&model);
+                let tok = tokenizers::Tokenizer::from_file(dir.join("tokenizer.json"))
+                    .map_err(|e| anyhow::anyhow!("tokenizer: {e}"))?;
+                let text = std::fs::read_to_string(&path)?;
+                let msgs = [template::ChatMessage { role: "user".into(), content: text }];
+                let bos = tok.token_to_id("<s>").map(|_| "<s>");
+                let prompt = template::render(template::chat_template_from(dir).as_deref(), &msgs, bos)?;
+                let ids = tok.encode(prompt.as_str(), false).map_err(|e| anyhow::anyhow!("tokenize: {e}"))?;
+                let v: Vec<String> = ids.get_ids().iter().map(|i| i.to_string()).collect();
+                println!("{}", v.join(","));
+                return Ok(());
+            }
             let ids: Vec<u32> = tokens
                 .split(',')
                 .map(|t| t.trim().parse())
@@ -470,15 +488,26 @@ async fn main() -> Result<()> {
                 // flipped each pair) so clock/thermal drift hits both
                 // equally; one warm-up run each first.
                 let dev = loaded.device.clone();
+                // E1: TH_BENCH_PREFILL_LARGE_ONLY=1 toggles only the m > 128
+                // route (legacy AffineQmppPrefill vs the vec tile); with
+                // TH_GPU_PROF=1 each run is timed by its GPU busy time
+                let large_only = std::env::var("TH_BENCH_PREFILL_LARGE_ONLY").is_ok();
                 let mut fwd = |seq: &[u32], legacy: bool| -> Result<f64> {
                     #[cfg(all(feature = "metal", target_os = "macos"))]
-                    quant_kernel::pf_force_legacy(legacy);
+                    if large_only {
+                        quant_kernel::pf_force_legacy_large(legacy);
+                    } else {
+                        quant_kernel::pf_force_legacy(legacy);
+                    }
                     // forward() runs decode slot 0
                     loaded.backend.clear_kv_cache(0);
+                    dev.synchronize()?;
+                    let _ = gpuprof::drain_busy_ms();
                     let t = std::time::Instant::now();
                     let lg = loaded.backend.forward(seq, 0, &dev)?;
                     let _ = lg.to_vec1::<f32>()?;
-                    Ok(t.elapsed().as_secs_f64() * 1e3)
+                    let wall = t.elapsed().as_secs_f64() * 1e3;
+                    Ok(if gpuprof::on() { gpuprof::drain_busy_ms() } else { wall })
                 };
                 let stat = |v: &mut Vec<f64>| {
                     v.sort_by(|a, b| a.total_cmp(b));
@@ -505,7 +534,71 @@ async fn main() -> Result<()> {
                     );
                 }
                 #[cfg(all(feature = "metal", target_os = "macos"))]
-                quant_kernel::pf_force_legacy(false);
+                {
+                    quant_kernel::pf_force_legacy(false);
+                    quant_kernel::pf_force_legacy_large(false);
+                }
+            }
+            if let Ok(spec) = std::env::var("TH_BENCH_STEPS") {
+                // E1(d): prefill chunk size — the whole probe prompt from a
+                // cleared slot 0 in `step`-row chunks (the plain grid that
+                // `--prefill-step` sets), for each step in the comma list,
+                // alternating run by run (TH_BENCH_STEPS_REPS, default 5);
+                // GPU busy ms with TH_GPU_PROF=1, else wall ms. Prints
+                // max|d| / argmax of each step's last logits vs the first.
+                let dev = loaded.device.clone();
+                let steps: Vec<usize> =
+                    spec.split(',').filter_map(|t| t.trim().parse().ok()).filter(|&s: &usize| s >= 32).collect();
+                let reps: usize = std::env::var("TH_BENCH_STEPS_REPS").ok().and_then(|v| v.parse().ok()).unwrap_or(5);
+                let n = ids.len();
+                let run = |b: &mut model::ModelBackend, step: usize| -> Result<(f64, f64, Vec<f32>)> {
+                    b.clear_kv_cache(0);
+                    dev.synchronize()?;
+                    let _ = gpuprof::drain_busy_ms();
+                    let t = std::time::Instant::now();
+                    let mut last = None;
+                    let mut pos = 0;
+                    while pos < n {
+                        let e = (pos + step).min(n);
+                        last = Some(b.forward(&ids[pos..e], pos, &dev)?);
+                        pos = e;
+                    }
+                    let v = last.context("empty prompt")?.to_vec1::<f32>()?;
+                    let wall = t.elapsed().as_secs_f64() * 1e3;
+                    Ok((wall, gpuprof::drain_busy_ms(), v))
+                };
+                let mut first: Vec<Vec<f32>> = Vec::new();
+                for &s in &steps {
+                    first.push(run(&mut loaded.backend, s)?.2);
+                }
+                let mut t: Vec<Vec<(f64, f64)>> = vec![Vec::new(); steps.len()];
+                for r in 0..reps {
+                    for k in 0..steps.len() {
+                        let i = (k + r) % steps.len();
+                        let (w, g, _) = run(&mut loaded.backend, steps[i])?;
+                        t[i].push((w, g));
+                    }
+                }
+                let argmax = |v: &[f32]| v.iter().enumerate().max_by(|a, b| a.1.total_cmp(b.1)).map(|(i, _)| i).unwrap_or(0);
+                for (i, &s) in steps.iter().enumerate() {
+                    let mut w: Vec<f64> = t[i].iter().map(|x| x.0).collect();
+                    let mut g: Vec<f64> = t[i].iter().map(|x| x.1).collect();
+                    w.sort_by(|a, b| a.total_cmp(b));
+                    g.sort_by(|a, b| a.total_cmp(b));
+                    let d = first[0].iter().zip(&first[i]).map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
+                    eprintln!(
+                        "steps n={n} step={s} chunks={} wall min={:.1} med={:.1}ms gpu min={:.1} med={:.1}ms tok/s(med wall) {:.0} | vs step {} max|d|={d:.4} argmax {} / {}",
+                        n.div_ceil(s),
+                        w[0],
+                        w[w.len() / 2],
+                        g[0],
+                        g[g.len() / 2],
+                        n as f64 / w[w.len() / 2] * 1e3,
+                        steps[0],
+                        argmax(&first[i]),
+                        argmax(&first[0]),
+                    );
+                }
             }
             if let Ok(spec) = std::env::var("TH_BENCH_PLAN") {
                 // T1 prefix cache, the GPU side of TTFT (no HTTP, template,
