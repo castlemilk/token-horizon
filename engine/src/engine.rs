@@ -150,6 +150,7 @@ impl Engine {
             max_mb = prefix_cfg.max_bytes >> 20,
             block = prefix_cfg.block,
             margin = prefix_cfg.margin,
+            full = prefix_cfg.full,
             defer = prefix_cfg.defer,
             chat_boundaries = msg_marks.is_some(),
             "prefix cache (TH_PREFIX_CACHE*)"
@@ -515,19 +516,19 @@ struct Prefilled {
 }
 
 /// Deferred T1 captures of one request: the checkpoint positions its
-/// prefill passed, each with its GDN state held — copied during the
-/// prefill when a later chunk rewrites its parity, otherwise still
-/// resident. Built by `finish_captures` after the first token (before the
-/// draft warm-up drains the capture rows and before the first decode
-/// forward rewrites a held parity): K/V rows and capture rows are
-/// append-only until then, so the build reads the same values the prefill
-/// wrote.
+/// prefill passed (and the prompt end), each with its GDN state held —
+/// copied during the prefill when a later chunk rewrites its parity,
+/// otherwise still resident. Built by `finish_captures` after the first
+/// token (before the draft warm-up drains the capture rows and before the
+/// first decode forward rewrites a held parity): K/V rows and capture rows
+/// are append-only until then, so the build reads the same values the
+/// prefill wrote.
 #[derive(Default)]
 struct PendingCaptures {
     slot: usize,
     step: usize,
-    /// (tokens, history key, position, held state)
-    items: Vec<(Vec<u32>, Vec<usize>, usize, model::BackendHold)>,
+    /// (tokens, history key, full, position, held state, logits)
+    items: Vec<(Vec<u32>, Vec<usize>, bool, usize, model::BackendHold, Option<Tensor>)>,
 }
 
 /// Prefill `prompt` into `slot` — already cleared for this request — by
@@ -536,11 +537,12 @@ struct PendingCaptures {
 /// `prompt.chunks(step)` loop. With the T1 prefix cache on, the plan also
 /// splits at chat turn ends; the longest checkpoint computed through the
 /// same boundaries is restored first (so the chunks that follow are the
-/// ones the uncached prefill runs: bit-identical), and the plan's
-/// checkpoints are queued as the prefill passes them (`PendingCaptures`,
-/// built by `finish_captures` after the first token). A capture/restore
-/// failure never fails the request — it logs and falls back to a full
-/// prefill.
+/// ones the uncached prefill runs: bit-identical) — an exact repeat
+/// restores the prompt-end checkpoint and runs no forward (its stored
+/// logits are the uncached request's own) — and the plan's checkpoints are
+/// queued as the prefill passes them (`PendingCaptures`, built by
+/// `finish_captures` after the first token). A capture/restore failure
+/// never fails the request — it logs and falls back to a full prefill.
 fn prefill_slot(
     inner: &mut ModelInner,
     state: &EngineState,
@@ -576,17 +578,28 @@ fn prefill_slot(
         prefix_cache::plan(n, step, None, None, &[])
     };
     let mut pos = 0usize;
+    let mut logits = None;
     if use_cache {
-        // the suffix must be non-empty: its forward yields the logits
-        let found = if restore { inner.prefix.lookup(prompt, step, &plan, n - 1) } else { None };
+        // a checkpoint of the whole prompt only when it carries logits
+        // (a full one); otherwise the suffix yields them
+        let found = if restore { inner.prefix.lookup(prompt, step, &plan, n) } else { None };
         if let Some((len, entry)) = found {
-            let r = if entry.pos() == len {
-                inner.backend.prefix_restore(slot, entry)
-            } else {
+            let r = if entry.pos() != len {
                 Err(anyhow::anyhow!("checkpoint at kv {} keyed by {len} tokens", entry.pos()))
+            } else if len == n && entry.logits().is_none() {
+                Err(anyhow::anyhow!("prompt-end checkpoint at {len} without logits"))
+            } else {
+                let full = (len == n).then(|| entry.logits().cloned()).flatten();
+                inner.backend.prefix_restore(slot, entry).map(|()| full)
             };
             match r {
-                Ok(()) => pos = len,
+                Ok(full) => {
+                    pos = len;
+                    if full.is_some() {
+                        ps.full_hits.fetch_add(1, Ordering::Relaxed);
+                    }
+                    logits = full;
+                }
                 Err(e) => {
                     ps.errors.fetch_add(1, Ordering::Relaxed);
                     tracing::warn!(error = %e, slot, "prefix restore failed — full prefill");
@@ -605,10 +618,9 @@ fn prefill_slot(
         }
     }
     let cached = pos;
-    let mut logits = None;
     let mut prefill_ms = 0.0f64;
     let mut pending = PendingCaptures { slot, step, items: Vec::new() };
-    // a restored position is one of the plan's splits
+    // a restored position is one of the plan's splits (or the end)
     let start = pos;
     let bounds: Vec<usize> =
         plan.splits.iter().copied().chain(std::iter::once(n)).filter(|&b| b > start).collect();
@@ -627,14 +639,14 @@ fn prefill_slot(
         }
         pos = end;
         if restore && end < n && plan.checkpoints.contains(&pos) {
-            let key = plan.history(pos);
+            let key = plan.history_at(pos, n);
             if !inner.prefix.contains(&prompt[..pos], step, &key) {
                 // G1a: the parity holding the state at `pos` survives the
                 // next forward only — the tail chunk when this is the last
                 // split (held as is), else copy it now
                 let last_split = bi + 2 == bounds.len();
                 match inner.backend.prefix_hold(slot, !last_split) {
-                    Ok(h) => pending.items.push((prompt[..pos].to_vec(), key, pos, h)),
+                    Ok(h) => pending.items.push((prompt[..pos].to_vec(), key, false, pos, h, None)),
                     Err(e) => {
                         ps.errors.fetch_add(1, Ordering::Relaxed);
                         tracing::warn!(error = %e, slot, pos, "prefix capture failed");
@@ -647,6 +659,22 @@ fn prefill_slot(
                 }
                 if clk.on {
                     trace += &format!(" hold@{pos}={:.1}", clk.mark(&device));
+                }
+            }
+        }
+    }
+    // the prompt-end checkpoint (+ its logits): an exact repeat is then
+    // restore-only. Held as is — the first decode forward reads it. Like
+    // every checkpoint, only for prompts of at least one block (a
+    // checkpoint's GDN state is ~151 MB whatever the prompt length).
+    if restore && cfg.full && pos == n && pos > cached && n >= cfg.block {
+        let key = plan.history_at(n, n);
+        if !inner.prefix.contains(prompt, step, &key) {
+            match inner.backend.prefix_hold(slot, false) {
+                Ok(h) => pending.items.push((prompt.to_vec(), key, true, n, h, logits.clone())),
+                Err(e) => {
+                    ps.errors.fetch_add(1, Ordering::Relaxed);
+                    tracing::warn!(error = %e, slot, "prefix capture failed");
                 }
             }
         }
@@ -676,14 +704,14 @@ fn finish_captures(inner: &mut ModelInner, state: &EngineState, pending: Pending
     let (slot, step) = (pending.slot, pending.step);
     let mut keys = Vec::with_capacity(pending.items.len());
     let mut specs = Vec::with_capacity(pending.items.len());
-    for (tokens, history, pos, hold) in pending.items {
-        keys.push((tokens, history));
-        specs.push((pos, hold));
+    for (tokens, history, full, pos, hold, logits) in pending.items {
+        keys.push((tokens, history, full));
+        specs.push((pos, hold, logits));
     }
     match inner.backend.prefix_build(slot, specs) {
         Ok(built) => {
             let (kv_id, caps_id) = (inner.prefix.part_id(), inner.prefix.part_id());
-            for ((tokens, history), p) in keys.into_iter().zip(built) {
+            for ((tokens, history, full), p) in keys.into_iter().zip(built) {
                 let parts: Vec<(u64, usize)> = p
                     .parts()
                     .iter()
@@ -693,7 +721,7 @@ fn finish_captures(inner: &mut ModelInner, state: &EngineState, pending: Pending
                         crate::qwen35::CkPart::Own => (inner.prefix.part_id(), b),
                     })
                     .collect();
-                let out = inner.prefix.insert_shared(tokens, step, history, parts, p);
+                let out = inner.prefix.insert_shared(tokens, step, history, parts, full, p);
                 if out.inserted {
                     ps.inserts.fetch_add(1, Ordering::Relaxed);
                 }

@@ -27,6 +27,13 @@
 // prefix but not the aligned turn end (another question after the same
 // document) still restores up to it.
 //
+// A third checkpoint sits at the prompt end itself (`full`, with the last
+// position's logits): an exact repeat restores it and runs no forward at
+// all — the logits sample the first token exactly as the uncached request's
+// own last forward would (same tensor, same sampler seed). Its history ends
+// with the prompt length, so it serves only an identical prompt (or a
+// longer one whose plan has a boundary there).
+//
 // This module is backend-agnostic (the state type is a parameter) and
 // holds only the store + plan policy; capture/restore live with the
 // backend (`qwen35::PrefixState`).
@@ -51,8 +58,8 @@ pub struct PrefixCacheConfig {
     /// a cache-off server (and to main), at the cost of longer suffixes
     /// (up to a step + the tail) on a hit.
     pub grid_only: bool,
-    /// `TH_PREFIX_CACHE_ENTRIES` — LRU entry cap (default 8: a prompt
-    /// stores up to two — its grid and end checkpoints).
+    /// `TH_PREFIX_CACHE_ENTRIES` — LRU entry cap (default 12: a prompt
+    /// stores up to three — its grid, end and full checkpoints).
     pub max_entries: usize,
     /// `TH_PREFIX_CACHE_MB` — LRU byte cap in MiB (default 4096).
     pub max_bytes: usize,
@@ -69,6 +76,9 @@ pub struct PrefixCacheConfig {
     /// split just before it when the merged chunk has at most this many
     /// rows (0: never merge — one extra chunk per turn-end split).
     pub merge: usize,
+    /// `TH_PREFIX_CACHE_FULL=0` disables the prompt-end checkpoint (with
+    /// the last logits) that makes an exact repeat restore-only.
+    pub full: bool,
     /// `TH_PREFIX_CACHE_DEFER=0`: build each checkpoint as the prefill
     /// passes it (integration-3's order) instead of after the first token.
     pub defer: bool,
@@ -87,11 +97,12 @@ impl PrefixCacheConfig {
             enabled: mode.as_deref() != Some("0"),
             plan_only: mode.as_deref() == Some("miss"),
             grid_only: mode.as_deref() == Some("grid"),
-            max_entries: num("TH_PREFIX_CACHE_ENTRIES", 8),
+            max_entries: num("TH_PREFIX_CACHE_ENTRIES", 12),
             max_bytes: num("TH_PREFIX_CACHE_MB", 4096).saturating_mul(1 << 20),
             block: num("TH_PREFIX_CACHE_BLOCK", 128).max(16),
             margin: num("TH_PREFIX_CACHE_MARGIN", 16),
             merge: num("TH_PREFIX_CACHE_MERGE", DEFAULT_MERGE),
+            full: std::env::var("TH_PREFIX_CACHE_FULL").as_deref() != Ok("0"),
             defer: std::env::var("TH_PREFIX_CACHE_DEFER").as_deref() != Ok("0"),
         }
     }
@@ -106,6 +117,7 @@ impl PrefixCacheConfig {
             block: 128,
             margin: 16,
             merge: DEFAULT_MERGE,
+            full: false,
             defer: true,
         }
     }
@@ -154,6 +166,19 @@ impl ChunkPlan {
     /// was computed through.
     pub fn history(&self, len: usize) -> Vec<usize> {
         self.splits.iter().copied().filter(|&s| s <= len).collect()
+    }
+
+    /// `history`, with the prompt end `n` itself counted as a boundary:
+    /// the key of a checkpoint at `len` in a prompt of `n` tokens. For a
+    /// split `len < n` it equals `history(len)`; for the full checkpoint
+    /// (`len == n`) it is every split plus `n` — so it matches only a
+    /// prompt that ends there too, or whose plan splits there.
+    pub fn history_at(&self, len: usize, n: usize) -> Vec<usize> {
+        let mut h = self.history(len);
+        if len == n && h.last() != Some(&len) {
+            h.push(len);
+        }
+        h
     }
 }
 
@@ -247,6 +272,9 @@ struct Entry<S> {
     /// (one K/V copy serving several checkpoints of a prompt) carry the
     /// same id and count once in the byte total
     parts: Vec<(u64, usize)>,
+    /// a prompt-end checkpoint (carries the last logits): restorable
+    /// with an empty suffix
+    full: bool,
     last_used: u64,
     state: S,
 }
@@ -326,10 +354,14 @@ impl<S> PrefixCache<S> {
 
     /// Longest checkpoint that prefixes `prompt`, is at most `max_len`
     /// long, and was computed through exactly `plan`'s boundaries (under
-    /// the same prefill `step`). Touches every usable match, not just the
+    /// the same prefill `step`; the prompt end counts as a boundary —
+    /// `ChunkPlan::history_at`). A checkpoint covering the whole prompt is
+    /// usable only when it is a full one (it carries the logits the empty
+    /// suffix cannot produce). Touches every usable match, not just the
     /// longest: a shared shorter checkpoint (a system prompt) is in use
     /// while longer per-conversation ones are, and must not age out first.
     pub fn lookup(&mut self, prompt: &[u32], step: usize, plan: &ChunkPlan, max_len: usize) -> Option<(usize, &S)> {
+        let total = prompt.len();
         let usable: Vec<usize> = (0..self.entries.len())
             .filter(|&i| {
                 let e = &self.entries[i];
@@ -337,9 +369,10 @@ impl<S> PrefixCache<S> {
                 e.step == step
                     && n > 0
                     && n <= max_len
-                    && n <= prompt.len()
+                    && n <= total
+                    && (n < total || e.full)
                     && prompt[..n] == e.tokens[..]
-                    && plan.history(n) == e.history
+                    && plan.history_at(n, total) == e.history
             })
             .collect();
         let best = *usable.iter().max_by_key(|&&i| self.entries[i].tokens.len())?;
@@ -374,13 +407,14 @@ impl<S> PrefixCache<S> {
     /// then evict least recently used entries until both caps hold. An
     /// entry larger than the byte cap on its own is not stored. Its storage
     /// `parts` may be shared with other entries (same part id = same
-    /// buffer, counted once).
+    /// buffer, counted once); `full` marks a prompt-end checkpoint.
     pub fn insert_shared(
         &mut self,
         tokens: Vec<u32>,
         step: usize,
         history: Vec<usize>,
         parts: Vec<(u64, usize)>,
+        full: bool,
         state: S,
     ) -> InsertOutcome {
         let mut out = InsertOutcome::default();
@@ -394,7 +428,7 @@ impl<S> PrefixCache<S> {
         }
         self.tick += 1;
         self.add_parts(&parts);
-        self.entries.push(Entry { tokens, step, history, parts, last_used: self.tick, state });
+        self.entries.push(Entry { tokens, step, history, parts, full, last_used: self.tick, state });
         out.inserted = true;
         while self.entries.len() > self.cfg.max_entries || self.bytes > self.cfg.max_bytes {
             // never evict the entry just inserted (it fits on its own)
@@ -431,7 +465,7 @@ impl<S> PrefixCache<S> {
     /// Test helper: `insert_shared` with one fresh storage part of `bytes`.
     pub fn insert(&mut self, tokens: Vec<u32>, step: usize, history: Vec<usize>, bytes: usize, state: S) -> InsertOutcome {
         let id = self.part_id();
-        self.insert_shared(tokens, step, history, vec![(id, bytes)], state)
+        self.insert_shared(tokens, step, history, vec![(id, bytes)], false, state)
     }
 }
 
@@ -449,6 +483,7 @@ mod tests {
             block: 32,
             margin: 16,
             merge: 1024,
+            full: true,
             defer: true,
         }
     }
@@ -556,6 +591,50 @@ mod tests {
         assert!(d.lookup(&[1, 2], 1, &grid(2, 512), 9).is_none());
     }
 
+    /// A full (prompt-end) checkpoint: its key history ends with the
+    /// prompt length, it serves only a prompt of exactly that length and
+    /// plan (an empty suffix), and a non-full checkpoint never covers a
+    /// whole prompt (its suffix would be empty, with no logits).
+    #[test]
+    fn full_checkpoint_serves_exact_repeats_only() {
+        let c = PrefixCacheConfig { block: 128, ..cfg(8, 1 << 30) };
+        let mut st: PrefixCache<u32> = PrefixCache::new(c);
+        let doc: Vec<u32> = (0..1440).map(|i| 100 + i % 997).collect();
+        let a: Vec<u32> = doc.iter().copied().chain(1..=19).collect(); // n 1459, turn end 1454
+        let pa = plan(a.len(), 512, Some(&c), Some(35), &[1454]);
+        assert_eq!(pa.splits, vec![512, 1408]);
+        assert_eq!(pa.history_at(1408, a.len()), vec![512, 1408]);
+        assert_eq!(pa.history_at(a.len(), a.len()), vec![512, 1408, 1459]);
+        for &ck in &pa.checkpoints {
+            st.insert(a[..ck].to_vec(), 512, pa.history_at(ck, a.len()), 1, ck as u32);
+        }
+        let id = st.part_id();
+        st.insert_shared(a.clone(), 512, pa.history_at(a.len(), a.len()), vec![(id, 1)], true, 1459);
+        // exact repeat: the full checkpoint (max_len = n)
+        assert_eq!(st.lookup(&a, 512, &pa, a.len()).map(|(n, s)| (n, *s)), Some((1459, 1459)));
+        // a caller that needs a suffix (max_len n - 1) gets the end checkpoint
+        assert_eq!(st.lookup(&a, 512, &pa, a.len() - 1).map(|(n, _)| n), Some(1408));
+        // another question after the same passage: the end checkpoint
+        let b: Vec<u32> = doc.iter().copied().chain(40..60).collect(); // n 1460, turn end 1455
+        let pb = plan(b.len(), 512, Some(&c), Some(35), &[1455]);
+        assert_eq!(st.lookup(&b, 512, &pb, b.len()).map(|(n, _)| n), Some(1408));
+        // a longer prompt extending `a` whose plan has no boundary at 1459
+        let mut ext = a.clone();
+        ext.extend(200..230u32);
+        let pe = plan(ext.len(), 512, Some(&c), Some(35), &[1454, 1484]);
+        assert!(!pe.splits.contains(&1459));
+        assert_eq!(st.lookup(&ext, 512, &pe, ext.len()).map(|(n, _)| n), Some(1408));
+        // ... but one whose plan splits at 1459 (same boundaries up to it) can
+        let pe2 = ChunkPlan { splits: vec![512, 1408, 1459], checkpoints: vec![] };
+        assert_eq!(st.lookup(&ext, 512, &pe2, ext.len()).map(|(n, _)| n), Some(1459));
+        // a non-full checkpoint equal to the whole prompt is never returned
+        let short = a[..1408].to_vec();
+        let ps = ChunkPlan { splits: vec![512], checkpoints: vec![] };
+        let mut st2: PrefixCache<u32> = PrefixCache::new(c);
+        st2.insert(short.clone(), 512, vec![512, 1408], 1, 7);
+        assert!(st2.lookup(&short, 512, &ps, short.len()).is_none());
+    }
+
     /// Shared storage parts count once: the checkpoints of one prompt that
     /// view one K/V copy add its bytes once, and evicting one of them frees
     /// only what no other live entry holds.
@@ -563,17 +642,17 @@ mod tests {
     fn shared_parts_count_once() {
         let mut st: PrefixCache<u8> = PrefixCache::new(cfg(8, 100));
         let (kv, g1, g2) = (st.part_id(), st.part_id(), st.part_id());
-        st.insert_shared(vec![1; 4], 1, vec![4], vec![(kv, 40), (g1, 10)], 1);
-        st.insert_shared(vec![1; 6], 1, vec![6], vec![(kv, 40), (g2, 10)], 2);
+        st.insert_shared(vec![1; 4], 1, vec![4], vec![(kv, 40), (g1, 10)], false, 1);
+        st.insert_shared(vec![1; 6], 1, vec![6], vec![(kv, 40), (g2, 10)], true, 2);
         assert_eq!((st.len(), st.bytes()), (2, 60));
         // a 50-byte exclusive entry: 110 > 100 evicts the LRU one (its g1
         // part only — the K/V part stays with the other entry)
         let e = st.part_id();
-        assert_eq!(st.insert_shared(vec![3; 4], 1, vec![4], vec![(e, 50)], 3).evicted, 1);
+        assert_eq!(st.insert_shared(vec![3; 4], 1, vec![4], vec![(e, 50)], false, 3).evicted, 1);
         assert_eq!((st.len(), st.bytes()), (2, 100));
         assert!(st.contains(&[1; 6], 1, &[6]) && !st.contains(&[1; 4], 1, &[4]));
         // replacing an entry swaps its parts
-        st.insert_shared(vec![1; 6], 1, vec![6], vec![(g2, 10)], 4);
+        st.insert_shared(vec![1; 6], 1, vec![6], vec![(g2, 10)], true, 4);
         assert_eq!(st.bytes(), 60);
         assert_eq!(st.clear(), 2);
         assert_eq!(st.bytes(), 0);

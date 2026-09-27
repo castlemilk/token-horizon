@@ -2112,7 +2112,7 @@ impl Slot {
 /// instead of writing in place; the capture rows are views of one compact
 /// copy (fresh buffers) that `take_captures` only reads. Restoring into
 /// several slots at once is therefore safe: they share only read-only
-/// buffers.
+/// buffers. A prompt-end checkpoint also keeps the last position's logits.
 pub struct PrefixState {
     pos: usize,
     /// per layer: (conv window, recurrent state) for GDN layers
@@ -2125,6 +2125,8 @@ pub struct PrefixState {
     /// last WINDOW-1 rows)
     caps: Vec<Tensor>,
     caps_base: usize,
+    /// f32 logits of position `pos - 1` (prompt-end checkpoints only)
+    logits: Option<Tensor>,
     /// storage for the cache's byte accounting: the K/V copy and the
     /// capture-row copy are shared by the build's checkpoints (their full
     /// size, counted once by the cache), the GDN copy is this one's own
@@ -2138,7 +2140,7 @@ pub enum CkPart {
     Kv,
     /// the build's shared capture-row copy
     Caps,
-    /// this checkpoint's own GDN state
+    /// this checkpoint's own GDN state (+ logits)
     Own,
 }
 
@@ -2148,6 +2150,9 @@ impl PrefixState {
     }
     pub fn parts(&self) -> &[(CkPart, usize)] {
         &self.parts
+    }
+    pub fn logits(&self) -> Option<&Tensor> {
+        self.logits.as_ref()
     }
 }
 
@@ -3379,7 +3384,7 @@ impl Qwen35 {
     pub fn prefix_capture(&mut self, slot: usize) -> Result<PrefixState> {
         let pos = self.slots[slot].kv_tokens;
         let hold = self.prefix_hold(slot, false)?;
-        let mut v = self.prefix_build(slot, vec![(pos, hold)])?;
+        let mut v = self.prefix_build(slot, vec![(pos, hold, None)])?;
         v.pop().context("prefix capture: empty build")
     }
 
@@ -3414,7 +3419,7 @@ impl Qwen35 {
     }
 
     /// Build checkpoints of `slot` at positions `pos <= kv_tokens`, each
-    /// with its held GDN state, from the live K/V
+    /// with its held GDN state and optional logits, from the live K/V
     /// rows (append-only below `kv_tokens`: one exact copy of rows
     /// `0..max pos` serves every checkpoint, views below it) and the live
     /// capture rows (one compact copy of the union of what each needs —
@@ -3425,7 +3430,7 @@ impl Qwen35 {
     pub fn prefix_build(
         &mut self,
         slot: usize,
-        specs: Vec<(usize, GdnHold)>,
+        specs: Vec<(usize, GdnHold, Option<Tensor>)>,
     ) -> Result<Vec<PrefixState>> {
         let sl = &self.slots[slot];
         anyhow::ensure!(!sl.kv_quant, "prefix capture: slot {slot} runs compressed KV");
@@ -3519,7 +3524,7 @@ impl Qwen35 {
             }
         }
         let mut out = Vec::with_capacity(specs.len());
-        for (pos, hold) in specs {
+        for (pos, hold, logits) in specs {
             let gdn = match hold {
                 GdnHold::Copied(g) => g,
                 GdnHold::Parity { parity, id } => {
@@ -3535,6 +3540,9 @@ impl Qwen35 {
             let mut own = 0usize;
             for (c, r) in gdn.iter().flatten() {
                 own += tensor_bytes(c) + tensor_bytes(r);
+            }
+            if let Some(l) = logits.as_ref() {
+                own += tensor_bytes(l);
             }
             let kv: Vec<Option<(Tensor, Tensor)>> = kv_full
                 .iter()
@@ -3558,7 +3566,7 @@ impl Qwen35 {
             if caps_bytes > 0 {
                 parts.push((CkPart::Caps, caps_bytes));
             }
-            out.push(PrefixState { pos, gdn, kv, caps, caps_base, parts });
+            out.push(PrefixState { pos, gdn, kv, caps, caps_base, logits, parts });
         }
         Ok(out)
     }
@@ -5842,10 +5850,10 @@ mod prefix_tests {
     /// order: holds while the prefill passes each checkpoint, one build
     /// after the tail chunk) produce, bit for bit, the checkpoints that
     /// immediate captures take: a mid checkpoint whose parity a later
-    /// chunk rewrites (copied at hold time) and the last split (still
-    /// resident after the tail chunk). The build's checkpoints view one
-    /// K/V copy; each restores to the uncached state; a parity rewritten
-    /// after its hold fails the build.
+    /// chunk rewrites (copied at hold time), the last split (still
+    /// resident after the tail chunk) and the prompt end (+ its logits).
+    /// The build's checkpoints view one K/V copy; each restores to the
+    /// uncached state; a parity rewritten after its hold fails the build.
     #[test]
     fn prefix_build_deferred_matches_immediate_captures() -> Result<()> {
         let Some(d) = metal() else {
@@ -5857,42 +5865,45 @@ mod prefix_tests {
         let seq8: Vec<u32> = (0..8u32).map(|i| (i * 13 + 1) % 97).collect();
         let n = prompt.len();
         let chunks: Vec<(usize, usize)> = vec![(0, 16), (16, 32), (32, 48), (48, n)];
-        // immediate captures at 32 and 48
+        // immediate captures at 32, 48 and the end
         m.clear_kv_cache(0);
         let mut imm = Vec::new();
         let mut last = None;
         for &(a, b) in &chunks {
             last = Some(m.forward(0, &prompt[a..b], a)?);
-            if b >= 32 && b < n {
+            if b >= 32 {
                 imm.push(m.prefix_capture(0)?);
             }
         }
         let l_ref = tensor_bits(last.as_ref().context("no logits")?)?;
         let s_ref = m.slot_state_bits(0)?;
         let v_ref = tensor_bits(&m.forward_multi(0, &seq8, n)?)?;
-        // deferred: hold at 32 (copied — [48, n) rewrites its parity) and at
-        // 48 (resident), build after the tail chunk
+        // deferred: hold at 32 (copied — [48, n) rewrites its parity), at
+        // 48 (resident) and at the end (resident, + logits), build after
         m.clear_kv_cache(0);
         let mut specs = Vec::new();
         for (ci, &(a, b)) in chunks.iter().enumerate() {
-            m.forward(0, &prompt[a..b], a)?;
-            if b >= 32 && b < n {
+            let l = m.forward(0, &prompt[a..b], a)?;
+            if b >= 32 {
                 let last_split = ci + 2 == chunks.len();
-                specs.push((b, m.prefix_hold(0, !last_split)?));
+                let copy = b < n && !last_split;
+                specs.push((b, m.prefix_hold(0, copy)?, (b == n).then(|| l.clone())));
             }
         }
         let built = m.prefix_build(0, specs)?;
-        assert_eq!(built.iter().map(|p| p.pos()).collect::<Vec<_>>(), vec![32, 48]);
+        assert_eq!(built.iter().map(|p| p.pos()).collect::<Vec<_>>(), vec![32, 48, n]);
         for (b, i) in built.iter().zip(&imm) {
             assert!(b.state_bits()? == i.state_bits()?, "deferred checkpoint at {} differs from the immediate one", b.pos());
         }
-        // one K/V copy: the 32 checkpoint is a view of the 48 one's
+        assert!(built[..2].iter().all(|p| p.logits().is_none()));
+        assert!(tensor_bits(built[2].logits().context("prompt-end logits")?)? == l_ref);
+        // one K/V copy: the 32 and 48 checkpoints are views of the end one's
         let k_of = |p: &PrefixState| p.kv.iter().flatten().next().map(|kv| kv.0.clone()).context("no kv");
-        assert!(shares_buffer(&k_of(&built[0])?, &k_of(&built[1])?));
+        assert!(shares_buffer(&k_of(&built[0])?, &k_of(&built[2])?) && shares_buffer(&k_of(&built[1])?, &k_of(&built[2])?));
         assert!(built.iter().all(|p| p.parts().iter().any(|q| q.0 == CkPart::Kv)));
         // the live slot continues unchanged (the build only read it)
         assert!(m.slot_state_bits(0)? == s_ref, "the build changed the live slot");
-        // each restores to the uncached state
+        // each restores to the uncached state (the end one without a forward)
         for p in &built {
             m.clear_kv_cache(1);
             m.prefix_restore(1, p)?;
@@ -5900,7 +5911,11 @@ mod prefix_tests {
             for &(a, b) in chunks.iter().filter(|c| c.0 >= p.pos()) {
                 last = Some(tensor_bits(&m.forward(1, &prompt[a..b], a)?)?);
             }
-            assert!(last.context("suffix logits")? == l_ref, "logits after restoring {}", p.pos());
+            let got = match last {
+                Some(l) => l,
+                None => tensor_bits(p.logits().context("end checkpoint logits")?)?,
+            };
+            assert!(got == l_ref, "logits after restoring {}", p.pos());
             assert!(m.slot_state_bits(1)? == s_ref, "state after restoring {}", p.pos());
             assert!(tensor_bits(&m.forward_multi(1, &seq8, n)?)? == v_ref, "next verify after restoring {}", p.pos());
         }
@@ -5910,7 +5925,7 @@ mod prefix_tests {
         let h = m.prefix_hold(0, false)?;
         m.forward(0, &prompt[16..32], 16)?;
         m.forward(0, &prompt[32..48], 32)?;
-        assert!(m.prefix_build(0, vec![(16, h)]).is_err(), "a stale parity must not be captured");
+        assert!(m.prefix_build(0, vec![(16, h, None)]).is_err(), "a stale parity must not be captured");
         Ok(())
     }
 

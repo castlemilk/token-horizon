@@ -539,6 +539,7 @@ async fn main() -> Result<()> {
                     block: 128,
                     margin: 16,
                     merge: merges[0],
+                    full: false,
                     defer: true,
                 };
                 let gcfg = prefix_cache::PrefixCacheConfig { grid_only: true, ..pcfg };

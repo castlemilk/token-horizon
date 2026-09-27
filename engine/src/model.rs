@@ -49,6 +49,12 @@ impl BackendPrefix {
             Self::Qwen35(p) => p.parts(),
         }
     }
+    /// The last prompt position's logits (prompt-end checkpoints).
+    pub fn logits(&self) -> Option<&Tensor> {
+        match self {
+            Self::Qwen35(p) => p.logits(),
+        }
+    }
 }
 
 /// A pending checkpoint's held GDN state (`qwen35::GdnHold`).
@@ -290,16 +296,16 @@ impl ModelBackend {
         }
     }
 
-    /// T1: build checkpoints of `slot` at `(pos, held GDN state)`
+    /// T1: build checkpoints of `slot` at `(pos, held GDN state, logits)`
     /// from its live K/V and capture rows (deferred captures).
     pub fn prefix_build(
         &mut self,
         slot: usize,
-        specs: Vec<(usize, BackendHold)>,
+        specs: Vec<(usize, BackendHold, Option<Tensor>)>,
     ) -> Result<Vec<BackendPrefix>> {
         match self {
             Self::Qwen35(m) => {
-                let specs = specs.into_iter().map(|(p, BackendHold::Qwen35(h))| (p, h)).collect();
+                let specs = specs.into_iter().map(|(p, BackendHold::Qwen35(h), l)| (p, h, l)).collect();
                 Ok(m.prefix_build(slot, specs)?.into_iter().map(|s| BackendPrefix::Qwen35(Box::new(s))).collect())
             }
             _ => bail!("prefix cache not supported by this backend"),
