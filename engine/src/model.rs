@@ -312,6 +312,15 @@ impl ModelBackend {
         }
     }
 
+    /// Size `slot`'s KV cache for `n` sequence rows + `extra` decode rows
+    /// in one allocation (qwen3_5; a no-op for other backends).
+    pub fn kv_reserve(&mut self, slot: usize, n: usize, extra: usize) -> Result<()> {
+        match self {
+            Self::Qwen35(m) => m.kv_reserve(slot, n, extra),
+            _ => Ok(()),
+        }
+    }
+
     /// T1: put `slot` into a checkpointed state.
     pub fn prefix_restore(&mut self, slot: usize, p: &BackendPrefix) -> Result<()> {
         match (self, p) {

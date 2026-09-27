@@ -530,7 +530,16 @@ struct PendingCaptures {
     step: usize,
     /// (tokens, history key, full, position, held state, logits)
     items: Vec<(Vec<u32>, Vec<usize>, bool, usize, model::BackendHold, Option<Tensor>)>,
+    /// `kv_reserve(slot, n, extra)` still to do: a full hit ran no prefill
+    /// forward, and its first verify would grow the restored rows by the
+    /// decode path's doubling rule
+    reserve: Option<(usize, usize)>,
 }
+
+/// Decode rows `prefill_slot` reserves past the prompt: the request's
+/// `max_tokens` (+16: the verify block and the anchor), at most this many —
+/// a longer reply grows the cache by the decode path's doubling rule.
+const KV_RESERVE_MAX_EXTRA: usize = 2048;
 
 /// Prefill `prompt` into `slot` — already cleared for this request — by
 /// its chunk plan (`prefix_cache::plan`). With the cache off, or bypassed,
@@ -624,7 +633,22 @@ fn prefill_slot(
     }
     let cached = pos;
     let mut prefill_ms = 0.0f64;
-    let mut pending = PendingCaptures { slot, step, items: Vec::new() };
+    let mut pending = PendingCaptures { slot, step, items: Vec::new(), reserve: None };
+    // K/V sized once for the prompt + the reply (`kv_reserve`): the prefill
+    // chunks write in place, and a checkpoint build views a buffer only the
+    // reply's rows longer than the prompt. A full hit runs no forward: its
+    // reserve goes with the deferred captures, after the first token.
+    let extra = sp.max_tokens.min(KV_RESERVE_MAX_EXTRA) + 16;
+    if pos < n {
+        if let Err(e) = inner.backend.kv_reserve(slot, n, extra) {
+            tracing::warn!(error = %e, slot, "kv reserve failed — the prefill grows the cache");
+        }
+    } else {
+        pending.reserve = Some((n, extra));
+    }
+    if clk.on {
+        trace += &format!(" reserve={:.1}", clk.mark(&device));
+    }
     // a restored position is one of the plan's splits (or the end)
     let start = pos;
     let bounds: Vec<usize> =
@@ -660,7 +684,7 @@ fn prefill_slot(
                 // TH_PREFIX_CACHE_DEFER=0: build it now (integration-3's order)
                 if !cfg.defer {
                     let items = std::mem::take(&mut pending.items);
-                    finish_captures(inner, state, PendingCaptures { slot, step, items });
+                    finish_captures(inner, state, PendingCaptures { slot, step, items, reserve: None });
                 }
                 if clk.on {
                     trace += &format!(" hold@{pos}={:.1}", clk.mark(&device));
@@ -702,11 +726,19 @@ fn prefill_slot(
 /// (shared storage parts, counted once by the cache). A failure only logs +
 /// counts.
 fn finish_captures(inner: &mut ModelInner, state: &EngineState, pending: PendingCaptures) {
+    let mut clk = PhaseClock::new();
+    if let Some((n, extra)) = pending.reserve {
+        if let Err(e) = inner.backend.kv_reserve(pending.slot, n, extra) {
+            tracing::warn!(error = %e, slot = pending.slot, "kv reserve failed — the first verify grows the cache");
+        }
+        if clk.on {
+            eprintln!("  [prefill] slot={} reserve={:.1}ms", pending.slot, clk.mark(&inner.device));
+        }
+    }
     if pending.items.is_empty() {
         return;
     }
     let ps = &state.prefix_stats;
-    let mut clk = PhaseClock::new();
     let (slot, step) = (pending.slot, pending.step);
     let mut keys = Vec::with_capacity(pending.items.len());
     let mut specs = Vec::with_capacity(pending.items.len());
@@ -907,7 +939,10 @@ fn generate_blocking(
             )?;
             if let Emit::Done(r) = emit_token(&mut ec, anchor, pos) {
                 finish = r;
-                if let Some(d) = deferred.take() {
+                // checkpoints still build (for later requests); the KV
+                // reserve was for this request's decode — none follows
+                if let Some(mut d) = deferred.take() {
+                    d.reserve = None;
                     finish_captures(&mut inner, state, d);
                 }
                 // the warm-up still runs (main ran it before every first
@@ -1136,7 +1171,8 @@ fn generate_blocking(
 
         if let Emit::Done(r) = emit_token(&mut ec, tok, base_pos) {
             finish = r;
-            if let Some(d) = deferred.take() {
+            if let Some(mut d) = deferred.take() {
+                d.reserve = None; // no decode follows
                 finish_captures(&mut inner, state, d);
             }
             break;
@@ -2147,7 +2183,7 @@ fn admit(
     // shared read-only across slots — see qwen35::PrefixState)
     let pf = prefill_slot(inner, state, slot, &prompt_tokens, &sp)?;
     let pos = n_prompt;
-    let deferred = pf.pending;
+    let mut deferred = pf.pending;
     let last_logits = pf.logits;
     let prefill_ms_total = pf.prefill_ms;
     let cached_tokens = pf.cached;
@@ -2208,7 +2244,11 @@ fn admit(
             }
         }
     }
-    // deferred T1 captures (before the warm-up drains the capture rows)
+    // deferred T1 captures (before the warm-up drains the capture rows);
+    // the KV reserve only when a decode follows
+    if run.finish.is_some() {
+        deferred.reserve = None;
+    }
     finish_captures(inner, state, deferred);
     // the draft ring warm-up after the first token (as the single-slot
     // loop); synced so the next lockstep round's timing excludes it. It

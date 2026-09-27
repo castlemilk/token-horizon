@@ -1810,6 +1810,13 @@ fn ck_kv_copy() -> bool {
     *ON.get_or_init(|| std::env::var("TH_PREFIX_CACHE_KV").as_deref() == Ok("copy"))
 }
 
+/// `TH_KV_RESERVE=0` (read once): `kv_reserve` does nothing — the prefill
+/// store grows the K/V by its own `max(2*need, 2048)` rule (A/B arm).
+fn kv_reserve_on() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("TH_KV_RESERVE").as_deref() != Ok("0"))
+}
+
 /// In-process A/B switch for probes (`TH_BENCH_TTFT`): 0 = the
 /// `TH_KV_CAP_PREFILL` setting, else the forced mode.
 static KV_CAP_OVERRIDE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
@@ -3675,6 +3682,52 @@ impl Qwen35 {
         sl.captures = if sl.draft.is_some() { p.caps.clone() } else { Vec::new() };
         sl.capture_base = if sl.draft.is_some() { p.caps_base } else { 0 };
         sl.kv_tokens = p.pos;
+        Ok(())
+    }
+
+    /// Size `slot`'s attention K/V for a sequence of `n` rows plus `extra`
+    /// decode rows, once: one contiguous buffer per K and V of
+    /// `max(n + extra, 2048)` rows in whole 256-row blocks, holding the
+    /// slot's current rows `0..kv_tokens` (none after a clear; a restored
+    /// checkpoint's view — copied straight from it) with every other row
+    /// zeroed (finite: N3 reads whole 32-key pages past the visible keys).
+    /// The prefill's chunks then write in place: no regrowth copies mid
+    /// prompt (the `kv_store_direct` rule, `max(2*need, 2048)`, grew a
+    /// 7.9k prompt 2048 -> 5120 -> 11264 rows, copying 6.6k rows and
+    /// allocating 1.2 GB) and a checkpoint build views a buffer only
+    /// `extra` rows past the prompt (after a restore that rule sized it at
+    /// twice the prompt, so a partial hit's checkpoint pinned 2x its K/V).
+    /// Capacity never changes results — N3's split plan depends on the
+    /// visible keys, and capacity stays page-aligned — so hit and miss,
+    /// reserved or not, are bit-identical. A no-op unless `KvCap::Direct`,
+    /// for compressed-KV slots, and when the buffers are already
+    /// contiguous and large enough. `TH_KV_RESERVE=0`: never reserve (A/B).
+    pub fn kv_reserve(&mut self, slot: usize, n: usize, extra: usize) -> Result<()> {
+        if !kv_reserve_on() || kv_cap_mode() != KvCap::Direct {
+            return Ok(());
+        }
+        let dev = self.device.clone();
+        let sl = &mut self.slots[slot];
+        if sl.kv_quant {
+            return Ok(());
+        }
+        let have = sl.kv_tokens;
+        anyhow::ensure!(have <= n, "kv reserve: slot {slot} holds {have} rows > {n}");
+        let cap = (n + extra).max(2048).next_multiple_of(256);
+        for kv in sl.kv.iter_mut().flatten() {
+            for t in [&mut kv.0, &mut kv.1] {
+                if t.is_contiguous() && t.dim(1)? >= cap {
+                    continue;
+                }
+                let (a, c) = (t.dim(0)?, t.dim(2)?);
+                anyhow::ensure!(t.dim(1)? >= have, "kv reserve: cache has fewer than {have} rows");
+                // SAFETY: rows 0..have copied, have..cap zeroed below
+                let nt = crate::outbuf::kernel_out((a, cap, c), t.dtype(), &dev)?;
+                crate::outbuf::copy_rows(t, &nt, have)?;
+                crate::outbuf::zero_rows(&nt, have, cap)?;
+                *t = nt;
+            }
+        }
         Ok(())
     }
 
@@ -6013,6 +6066,79 @@ mod prefix_tests {
         m.forward(0, &prompt[16..32], 16)?;
         m.forward(0, &prompt[32..48], 32)?;
         assert!(m.prefix_build(0, vec![(16, h, None)]).is_err(), "a stale parity must not be captured");
+        Ok(())
+    }
+
+    /// `kv_reserve` sizes the K/V once — `max(n + extra, 2048)` rows in
+    /// 256-row blocks — keeping the slot's rows bit for bit (a restored
+    /// checkpoint's view included) and zeroing the rest; the prefill then
+    /// writes in place (no regrowth); and it changes no result: the
+    /// uncached prefill with and without it, and restore + reserve + suffix,
+    /// give the same logits, state and next verify, bit for bit.
+    #[test]
+    fn kv_reserve_keeps_rows_and_results() -> Result<()> {
+        let Some(d) = metal() else {
+            eprintln!("[prefix-cache] skipped: needs a Metal device");
+            return Ok(());
+        };
+        let mut m = tiny_hybrid(&d)?;
+        let prompt: Vec<u32> = (0..53u32).map(|i| (i * 7 + 3) % 97).collect();
+        let seq8: Vec<u32> = (0..8u32).map(|i| (i * 11 + 5) % 97).collect();
+        let n = prompt.len();
+        let chunks: Vec<(usize, usize)> = vec![(0, 16), (16, 32), (32, n)];
+        let first_k = |m: &Qwen35, s: usize| m.slots[s].kv.iter().flatten().next().map(|kv| kv.0.clone()).context("no kv");
+        // reference: no reserve (the prefill store's own growth), capture at 32
+        m.clear_kv_cache(0);
+        let mut last = None;
+        let mut ck = None;
+        for &(a, b) in &chunks {
+            last = Some(m.forward(0, &prompt[a..b], a)?);
+            if b == 32 {
+                ck = Some(m.prefix_capture(0)?);
+            }
+        }
+        let ck = ck.context("no checkpoint")?;
+        let l_ref = tensor_bits(last.as_ref().context("no logits")?)?;
+        let s_ref = m.slot_state_bits(0)?;
+        let v_ref = tensor_bits(&m.forward_multi(0, &seq8, n)?)?;
+        // reserved before the prefill: n + 3000 = 3053 -> 3072 rows, one buffer
+        m.clear_kv_cache(1);
+        m.kv_reserve(1, n, 3000)?;
+        let k0 = first_k(&m, 1)?;
+        assert_eq!(k0.dim(1)?, 3072);
+        assert!(k0.is_contiguous());
+        assert!(tensor_bits(&k0)?.iter().all(|&b| b == 0), "a reserved buffer is zeroed");
+        let mut last = None;
+        for &(a, b) in &chunks {
+            last = Some(m.forward(1, &prompt[a..b], a)?);
+        }
+        assert!(shares_buffer(&first_k(&m, 1)?, &k0), "the prefill regrew a reserved cache");
+        assert!(tensor_bits(last.as_ref().context("no logits")?)? == l_ref, "logits with the reserve");
+        assert!(m.slot_state_bits(1)? == s_ref, "state with the reserve");
+        assert!(tensor_bits(&m.forward_multi(1, &seq8, n)?)? == v_ref, "next verify with the reserve");
+        // restore + reserve: rows 0..32 copied from the view, the rest zero
+        m.clear_kv_cache(1);
+        m.prefix_restore(1, &ck)?;
+        m.kv_reserve(1, n, 16)?; // max(69, 2048) -> 2048
+        let k1 = first_k(&m, 1)?;
+        assert_eq!(k1.dim(1)?, 2048);
+        let ck_k = ck.kv.iter().flatten().next().map(|kv| kv.0.clone()).context("no ck kv")?;
+        assert!(tensor_bits(&k1.narrow(1, 0, 32)?)? == tensor_bits(&ck_k)?, "reserved rows differ from the checkpoint");
+        assert!(tensor_bits(&k1.narrow(1, 32, 2048 - 32)?)?.iter().all(|&b| b == 0), "rows past the restored ones are zeroed");
+        let mut last = None;
+        for &(a, b) in chunks.iter().filter(|c| c.0 >= 32) {
+            last = Some(m.forward(1, &prompt[a..b], a)?);
+        }
+        assert!(shares_buffer(&first_k(&m, 1)?, &k1), "the suffix regrew a reserved cache");
+        assert!(tensor_bits(last.as_ref().context("no logits")?)? == l_ref, "logits after restore + reserve");
+        assert!(m.slot_state_bits(1)? == s_ref, "state after restore + reserve");
+        assert!(tensor_bits(&m.forward_multi(1, &seq8, n)?)? == v_ref, "next verify after restore + reserve");
+        // a slot already reserved large enough is left alone; fewer rows
+        // than the slot holds is an error
+        let live = m.slots[1].kv_tokens;
+        m.kv_reserve(1, live, 16)?;
+        assert!(shares_buffer(&first_k(&m, 1)?, &k1));
+        assert!(m.kv_reserve(1, live - 1, 16).is_err());
         Ok(())
     }
 
