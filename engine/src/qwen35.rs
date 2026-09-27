@@ -529,6 +529,10 @@ impl QLin {
                             m: rows,
                             up_tile: 0,
                             cfg,
+                            // E1(c): > 8 rows + presum = a prefill presum
+                            // block (the decode block only exists at <= 8)
+                            presum,
+                            emit: false,
                         },
                     )?;
                     let mut out = dims;
@@ -693,6 +697,9 @@ impl QLin {
                     .then(|| crate::quant_kernel::pf_route(rows, half, self.inp, true))
                     .flatten()
                 {
+                    // E1(c): the vec up·silu pass emits the down projection's
+                    // prefill presum block
+                    let emit = cfg.vec && crate::quant_kernel::pf_presum_on(rows);
                     return Some(
                         self.wq
                             .apply_op3_no_bwd(
@@ -705,14 +712,15 @@ impl QLin {
                                     m: rows,
                                     up_tile: half / 256,
                                     cfg,
+                                    presum,
+                                    emit,
                                 },
                             )
                             .map_err(Into::into)
                             .and_then(|y| {
                                 let mut out = dims.clone();
                                 *out.last_mut().unwrap() = half;
-                                // a >8-row activation is never a presum block
-                                Ok((y.reshape(out)?, false))
+                                Ok((y.reshape(out)?, emit))
                             }),
                     );
                 }
@@ -1790,15 +1798,24 @@ fn add_rms_norm_ps(
             && (1..=8).contains(&seq)
             && c % 64 == 0
             && x.dim(0)? == 1;
+        // E1(c): long-prompt chunks — the normed plane as a prefill presum
+        // block (the next projection's vec tile skips its pf_prep pass)
+        let pfsums = !sums
+            && seq > 8
+            && c % 64 == 0
+            && c <= 7936
+            && x.dim(0)? == 1
+            && !arn_legacy()
+            && crate::quant_kernel::pf_presum_on(seq);
         let out = x.apply_op3_no_bwd(
             r,
             w,
-            &crate::gdn_kernel::AddRmsNorm { t: seq, c, eps: eps as f32, sums, legacy: arn_legacy() },
+            &crate::gdn_kernel::AddRmsNorm { t: seq, c, eps: eps as f32, sums, pfsums, legacy: arn_legacy() },
         )?;
         // out is [2, T, C] — plane 0 = residual, plane 1 = normed
         let res = out.narrow(0, 0, 1)?;
         let nrm = out.narrow(0, 1, 1)?;
-        return Ok((res, nrm, sums));
+        return Ok((res, nrm, sums || pfsums));
     }
     let res = x.add(r)?;
     let nrm = rms_norm(&res, w, eps)?;
@@ -2675,7 +2692,7 @@ impl Qwen35 {
                         }
                     }
                     for cfg in cfgs {
-                        let op = AffineQpf { inp: q.inp, out: n, padded, m, up_tile, cfg };
+                        let op = AffineQpf { inp: q.inp, out: n, padded, m, up_tile, cfg, presum: false, emit: false };
                         cands.push((
                             cfg.label(),
                             Box::new(move || -> Result<Tensor> {

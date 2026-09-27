@@ -273,6 +273,16 @@ pub const fn presum_block_bytes(inp: usize) -> usize {
     8 * inp * 2 + (inp / 64) * 8 * 4
 }
 
+/// E1(c) prefill presum block for `m > 8` rows of `inp` columns: the
+/// activation zero-padded to whole 32-row tiles, then the f32 per-(row,
+/// quant group) input sums in the prefill tiles' layout
+/// [m_pad/32][inp/64][32] (what `pf_prep` would write). In bf16 elements.
+pub const fn pf_presum_elems(m: usize, inp: usize) -> usize {
+    let m_pad = m.div_ceil(32) * 32;
+    m_pad * inp + 2 * m_pad * (inp / 64)
+}
+
+
 /// K45: whether decode projections use presum blocks (producer-emitted
 /// input sums, no pad copy). Read once: `TH_Q4_PRESUM=0` or the legacy
 /// policy turns it off (A/B arm).
@@ -449,8 +459,8 @@ pub fn qmvt_cfg_for(out: usize, _inp: usize, gate_up: bool) -> QmvtCfg {
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
 pub use metal_impl::{
-    pf_compile, pf_force_legacy, pf_force_legacy_large, pf_route, pf_shapes, pf_vec_layout_ok, pf_warm,
-    AffineQpf, PfCfg,
+    pf_compile, pf_force_legacy, pf_force_legacy_large, pf_presum_on, pf_route, pf_shapes,
+    pf_vec_layout_ok, pf_warm, AffineQpf, PfCfg,
 };
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
@@ -4201,12 +4211,18 @@ kernel void Name(device const bfloat* input  [[buffer(0)]],                 \
 // th_mpp_prefill_tile's source form `acc += p*s + sum*b` (same contraction),
 // so plain / up·silu outputs are bitwise equal to AffineQmppPrefill on the
 // same sums (pf_prep's lane pattern == the legacy sums pass). Unsplit only.
-template <ushort Rows, ushort TileN, ushort Sgs, ushort Mode, bool Staged>
+// Emit (E1(c), up·silu only): `out` is a prefill presum block with whole
+// 32-row tiles — rows >= live are stored as zero — and `osums` receives the
+// tile's per-(row, quant group) sums in pf_prep's lane pattern over the
+// stored bf16 values (the down projection's input sums, bit-identical to a
+// pf_prep pass over the same activation).
+template <ushort Rows, ushort TileN, ushort Sgs, ushort Mode, bool Staged,
+          bool Emit>
 inline void pf_vtile(device bfloat *input, device uchar *w0, device bfloat *s0,
                      device bfloat *b0, device const float *sums,
                      device bfloat *aux, device bfloat *out, uint out_size,
                      uint in_size, uint live, uint output_origin, uint lane,
-                     uint sgi, threadgroup float *tsums) {
+                     uint sgi, threadgroup float *tsums, device float *osums) {
   constexpr ushort StorageN = 256;
   constexpr uint Batch = 256;
   constexpr ushort Cap = ushort(uint(Rows) * TileN / (uint(Sgs) * 32u));
@@ -4295,8 +4311,26 @@ inline void pf_vtile(device bfloat *input, device uchar *w0, device bfloat *s0,
         value = pf_silu_mul(
             ok ? float(aux[ulong(row) * out_size + col]) : 0.0f, value);
       }
+      if constexpr (Emit) {
+        if (rowr[j] >= live) value = 0.0f;
+      }
       conv[j * 4 + k] = bfloat(value);
     }
+  }
+  if constexpr (Emit) {
+    // whole 32-row tile (the block is padded); out_size % TileN == 0
+    auto c = tensor(out, dextents<int, 2>{int(out_size), Rows},
+                    array<int, 2>{1, int(out_size)});
+    conv.store(c.slice<TileN, Rows>(output_origin, 0));
+    threadgroup_barrier(mem_flags::mem_device);
+    constexpr uint G = TileN / 64;
+    for (uint task = sgi; task < uint(Rows) * G; task += Sgs) {
+      const uint row = task / G, lg = task % G;
+      const ulong o = ulong(row) * out_size + output_origin + lg * 64 + lane;
+      const float s = simd_sum(float(out[o]) + float(out[o + 32]));
+      if (lane == 0) osums[(output_origin / 64 + lg) * Rows + row] = s;
+    }
+    return;
   }
   if (live == Rows && output_origin + TileN <= out_size) {
     auto c = tensor(out, dextents<int, 2>{int(out_size), Rows},
@@ -4316,8 +4350,9 @@ inline void pf_vtile(device bfloat *input, device uchar *w0, device bfloat *s0,
   }
 }
 
-// Same buffer interface as PF_ENTRY (the host's tile pass binds both alike).
-#define PF_VENTRY(Name, Rows, TileN, Sgs, Mode)                              \
+// Same buffer interface as PF_ENTRY (the host's tile pass binds both alike);
+// with Emit, buffer 6 (`part`) is the output block's sums plane.
+#define PF_VENTRY(Name, Rows, TileN, Sgs, Mode, Emit)                        \
 kernel void Name(device const bfloat* input  [[buffer(0)]],                 \
                  device const uchar*  weights [[buffer(1)]],                \
                  device const bfloat* sb      [[buffer(2)]],                \
@@ -4336,11 +4371,12 @@ kernel void Name(device const bfloat* input  [[buffer(0)]],                 \
   const ulong ob = ulong(row0) * uint(p.out_dim);                           \
   device uchar* wb = const_cast<device uchar*>(weights);                    \
   device bfloat* sbb = const_cast<device bfloat*>(sb);                      \
-  pf_vtile<Rows, TileN, Sgs, Mode, (Sgs) == 8>(                             \
+  pf_vtile<Rows, TileN, Sgs, Mode, (Sgs) == 8, Emit>(                       \
       const_cast<device bfloat*>(input) + ulong(row0) * uint(p.in_dim),     \
       wb + p.w_off, sbb + p.s_off, sbb + p.bias_base + p.s_off,             \
       sums + ulong(tg.x) * ng * Rows, aux + ob, out + ob, uint(p.out_dim),  \
-      uint(p.in_dim), live, tg.y * TileN, lane, sgi, tsums);                \
+      uint(p.in_dim), live, tg.y * TileN, lane, sgi, tsums,                 \
+      part + ulong(tg.x) * (uint(p.out_dim) / 64) * Rows);                  \
 }
 
 // Layout probe for `pf_vec_layout_ok`: out[1 + (tid*cap + i)*3 + {0,1,2}] =
@@ -4498,8 +4534,9 @@ kernel void pf_reduce(device const float* part [[buffer(0)]],
     ];
     /// single-stream epilogues (`PF_ENTRY`); "gu" is `PF_GU_ENTRY`
     const PF_MODES: &[(&str, usize)] = &[("pl", 0), ("us", 2), ("pt", 3)];
-    /// E1 vectorized-epilogue tiles (`PF_VENTRY`): plain, up·silu(gate)
-    const PF_VMODES: &[(&str, usize)] = &[("vpl", 0), ("vus", 2)];
+    /// E1 vectorized-epilogue tiles (`PF_VENTRY`): plain, up·silu(gate),
+    /// up·silu(gate) emitting the down projection's prefill presum block
+    const PF_VMODES: &[(&str, usize, bool)] = &[("vpl", 0, false), ("vus", 2, false), ("vuse", 2, true)];
 
     /// The instantiated (rows, tile_n, simdgroups) shapes (bench sweeps).
     pub fn pf_shapes() -> &'static [(usize, usize, usize)] {
@@ -4610,9 +4647,9 @@ kernel void pf_reduce(device const float* part [[buffer(0)]],
         let name = pf_name(r, n, sg, "gu");
         src += &format!("PF_GU_ENTRY({name}, {r}, {n}, {sg})\n");
         names.push(name);
-        for &(mode, id) in PF_VMODES {
+        for &(mode, id, emit) in PF_VMODES {
             let name = pf_name(r, n, sg, mode);
-            src += &format!("PF_VENTRY({name}, {r}, {n}, {sg}, {id})\n");
+            src += &format!("PF_VENTRY({name}, {r}, {n}, {sg}, {id}, {emit})\n");
             names.push(name);
         }
         let name = pf_name(r, n, sg, "vprobe");
@@ -4810,6 +4847,14 @@ kernel void pf_reduce(device const float* part [[buffer(0)]],
         pub m: usize,
         pub up_tile: usize,
         pub cfg: PfCfg,
+        /// E1(c): `x` is a prefill presum block (`pf_presum_elems`: rows
+        /// padded to 32, then the pf-layout sums) — no pf_prep pass. Only
+        /// honoured by 32-row configs (the block's sums layout).
+        pub presum: bool,
+        /// E1(c), gate/up with the vec tile: the output is itself a
+        /// prefill presum block (the down projection's input sums emitted
+        /// by the up·silu pass).
+        pub emit: bool,
     }
 
     impl CustomOp3 for AffineQpf {
@@ -4854,6 +4899,13 @@ kernel void pf_reduce(device const float* part [[buffer(0)]],
                 candle_core::bail!("affine-qpf: x {:?} != [{}, {}]", l_x.shape(), self.m, self.inp);
             }
             let device = s_wq.device();
+            let x_off = l_x.start_offset() * 2;
+            // E1(c): a prefill presum block carries its padded rows + sums
+            let presum = self.presum
+                && c.rows == 32
+                && x_off % 16 == 0
+                && s_x.buffer().length() >= x_off + super::pf_presum_elems(self.m, self.inp) * 2;
+            let emit = self.emit && gate_up && c.vec && c.rows == 32 && self.out % c.tile_n == 0;
             let common = pf_common(device)?;
             let shape_lib = pf_shape_lib(device, &c)?;
             let pipe = |name: &str| {
@@ -4873,7 +4925,14 @@ kernel void pf_reduce(device const float* part [[buffer(0)]],
             let p_prep = pipe("pf_prep")?;
             let p_tile = pipe(&pf_name(c.rows, c.tile_n, c.sgs, mode))?;
             let p_up = if gate_up && !c.fused {
-                Some(pipe(&pf_name(c.rows, c.tile_n, c.sgs, if c.vec { "vus" } else { "us" }))?)
+                let up = if emit {
+                    "vuse"
+                } else if c.vec {
+                    "vus"
+                } else {
+                    "us"
+                };
+                Some(pipe(&pf_name(c.rows, c.tile_n, c.sgs, up))?)
             } else {
                 None
             };
@@ -4881,10 +4940,9 @@ kernel void pf_reduce(device const float* part [[buffer(0)]],
 
             let row_tiles = self.m.div_ceil(c.rows);
             let m_pad = row_tiles * c.rows;
-            let x_off = l_x.start_offset() * 2;
             // the tiles read whole Rows-row blocks: pad unless the live
             // rows fill them (and the base is 16-byte aligned)
-            let copy = m_pad != self.m || x_off % 16 != 0;
+            let copy = !presum && (m_pad != self.m || x_off % 16 != 0);
             let alloc = |n: usize, dt: DType, label: &'static str| {
                 device
                     .new_buffer_builder()
@@ -4894,8 +4952,18 @@ kernel void pf_reduce(device const float* part [[buffer(0)]],
                     .map_err(candle_core::Error::wrap)
             };
             let x_pad = if copy { Some(alloc(m_pad * self.inp, DType::BF16, "qpf.x")?) } else { None };
-            let sums = alloc(m_pad * ng, DType::F32, "qpf.sums")?;
-            let y = alloc(self.m * self.out, DType::BF16, "qpf.y")?;
+            // presum: the sums are the block's plane (bound from s_x below)
+            let sums = alloc(if presum { 1 } else { m_pad * ng }, DType::F32, "qpf.sums")?;
+            let y = alloc(
+                if emit { super::pf_presum_elems(self.m, self.out) } else { self.m * self.out },
+                DType::BF16,
+                "qpf.y",
+            )?;
+            let (sb_buf, sb_off) = if presum {
+                (s_x.buffer(), x_off + m_pad * self.inp * 2)
+            } else {
+                (sums.as_ref(), 0usize)
+            };
             let gate = if p_up.is_some() {
                 Some(alloc(self.m * self.out, DType::BF16, "qpf.gate")?)
             } else {
@@ -4932,22 +5000,24 @@ kernel void pf_reduce(device const float* part [[buffer(0)]],
             let enc_ref = &encoder;
             let enc: &candle_metal_kernels::metal::ComputeCommandEncoder =
                 enc_ref.encoder().as_ref();
-            // 1. pad + sums
-            enc.set_compute_pipeline_state(p_prep);
-            enc.set_input_buffer(0, Some(s_x.buffer()), x_off);
-            match &x_pad {
-                Some(b) => enc.set_output_buffer(1, Some(b), 0),
-                // unused slot (copy = 0): bound read-only, never written
-                None => enc.set_input_buffer(1, Some(s_x.buffer()), x_off),
+            // 1. pad + sums (not for a presum block: it carries both)
+            if !presum {
+                enc.set_compute_pipeline_state(p_prep);
+                enc.set_input_buffer(0, Some(s_x.buffer()), x_off);
+                match &x_pad {
+                    Some(b) => enc.set_output_buffer(1, Some(b), 0),
+                    // unused slot (copy = 0): bound read-only, never written
+                    None => enc.set_input_buffer(1, Some(s_x.buffer()), x_off),
+                }
+                enc.set_output_buffer(2, Some(&sums), 0);
+                let d: [i32; 4] =
+                    [self.m as i32, self.inp as i32, c.rows as i32, copy as i32];
+                enc.set_bytes(3, &d);
+                enc.dispatch_thread_groups(
+                    MTLSize { width: ng, height: m_pad / 8, depth: 1 },
+                    MTLSize { width: 256, height: 1, depth: 1 },
+                );
             }
-            enc.set_output_buffer(2, Some(&sums), 0);
-            let d: [i32; 4] =
-                [self.m as i32, self.inp as i32, c.rows as i32, copy as i32];
-            enc.set_bytes(3, &d);
-            enc.dispatch_thread_groups(
-                MTLSize { width: ng, height: m_pad / 8, depth: 1 },
-                MTLSize { width: 256, height: 1, depth: 1 },
-            );
             // 2. tile pass(es) — every buffer a pass reads is bound as an
             // input and every buffer it writes as an output, so candle's
             // barrier tracking orders prep → tile → (up | reduce)
@@ -4958,17 +5028,22 @@ kernel void pf_reduce(device const float* part [[buffer(0)]],
             let tile_pass = |pipe: &ComputePipeline,
                              aux: Option<&candle_metal_kernels::metal::Buffer>,
                              out: &candle_metal_kernels::metal::Buffer,
-                             prm: &PfParams| {
+                             prm: &PfParams,
+                             osums: bool| {
                 enc.set_compute_pipeline_state(pipe);
                 enc.set_input_buffer(0, Some(xb), xo);
                 enc.set_input_buffer(1, Some(s_wq.buffer()), l_wq.start_offset() * 4);
                 enc.set_input_buffer(2, Some(s_sb.buffer()), l_sb.start_offset() * 2);
-                enc.set_input_buffer(3, Some(&sums), 0);
+                enc.set_input_buffer(3, Some(sb_buf), sb_off);
                 // unused aux/part slots are bound read-only to `sums`
                 enc.set_input_buffer(4, Some(aux.unwrap_or(&sums)), 0);
                 if splits > 1 {
                     enc.set_input_buffer(5, Some(&sums), 0);
                     enc.set_output_buffer(6, Some(out), 0);
+                } else if osums {
+                    // E1(c) emit: the block's sums plane follows its padded rows
+                    enc.set_output_buffer(5, Some(out), 0);
+                    enc.set_output_buffer(6, Some(out), m_pad * self.out * 2);
                 } else {
                     enc.set_output_buffer(5, Some(out), 0);
                     enc.set_input_buffer(6, Some(&sums), 0);
@@ -4979,16 +5054,16 @@ kernel void pf_reduce(device const float* part [[buffer(0)]],
             match (&p_up, &gate, &part) {
                 (Some(p_up), Some(g), _) => {
                     // gate stream → scratch, then up·silu(gate) → y
-                    tile_pass(p_tile, None, g, &params);
+                    tile_pass(p_tile, None, g, &params, false);
                     let up = PfParams {
                         w_off: params.up_woff,
                         s_off: params.up_soff,
                         ..params
                     };
-                    tile_pass(p_up, Some(g), &y, &up);
+                    tile_pass(p_up, Some(g), &y, &up, emit);
                 }
                 (_, _, Some(pt)) => {
-                    tile_pass(p_tile, None, pt, &params);
+                    tile_pass(p_tile, None, pt, &params, false);
                     let p_red = p_red.unwrap();
                     enc.set_compute_pipeline_state(p_red);
                     enc.set_input_buffer(0, Some(pt), 0);
@@ -5000,7 +5075,7 @@ kernel void pf_reduce(device const float* part [[buffer(0)]],
                         MTLSize { width: 256, height: 1, depth: 1 },
                     );
                 }
-                _ => tile_pass(p_tile, None, &y, &params),
+                _ => tile_pass(p_tile, None, &y, &params, false),
             }
             let storage =
                 MetalStorage::new(y, device.clone(), self.m * self.out, DType::BF16);
@@ -5067,6 +5142,29 @@ kernel void pf_reduce(device const float* part [[buffer(0)]],
             return valid(c).then_some(c);
         }
         pf_policy(m, out, inp, gate_up, cores).filter(|&c| valid(c))
+    }
+
+    /// E1(c): whether an m-row prefill activation should be produced as a
+    /// prefill presum block (`pf_presum_elems`) — the m > 128 route is the
+    /// vec tile on 32-row tiles (probed), and TH_PF_PRESUM != 0 (read
+    /// once). Producers: `AddRmsNorm { pfsums }` (in_all / in_qkv / gate_up
+    /// inputs) and the gate/up up·silu pass (`AffineQpf { emit }`, the down
+    /// input). Consumers bind the block's sums instead of a pf_prep pass.
+    pub fn pf_presum_on(m: usize) -> bool {
+        static ON: OnceLock<bool> = OnceLock::new();
+        let on = *ON.get_or_init(|| std::env::var("TH_PF_PRESUM").as_deref() != Ok("0"));
+        if !on || m <= 128 {
+            return false;
+        }
+        let (off, forced, _) = pf_env();
+        let (large_off, large_forced) = pf_large_env();
+        if off || forced.is_some() || large_off || PF_LEGACY.load(std::sync::atomic::Ordering::Relaxed)
+            || PF_LARGE_LEGACY.load(std::sync::atomic::Ordering::Relaxed)
+        {
+            return false;
+        }
+        let c = large_forced.unwrap_or(PfCfg { vec: true, ..PfCfg::new(32, 128, 4) });
+        c.vec && c.rows == 32 && c.splits == 1 && !c.fused && pf_vec_probed_ok(&c)
     }
 
     /// The layout probe ran for `c`'s shape and passed (`pf_warm`).
@@ -5380,7 +5478,7 @@ kernel void pf_reduce(device const float* part [[buffer(0)]],
                     .contiguous()
                     .unwrap();
                 let vec = wq
-                    .apply_op3_no_bwd(&sb, &x, &AffineQpf { inp, out, padded, m, up_tile, cfg })
+                    .apply_op3_no_bwd(&sb, &x, &AffineQpf { inp, out, padded, m, up_tile, cfg, presum: false, emit: false })
                     .unwrap();
                 let a: Vec<u16> = legacy.flatten_all().unwrap().to_dtype(candle_core::DType::F32).unwrap()
                     .to_vec1::<f32>().unwrap().iter().map(|v| half::bf16::from_f32(*v).to_bits()).collect();
@@ -5389,6 +5487,92 @@ kernel void pf_reduce(device const float* part [[buffer(0)]],
                 assert_eq!(a.len(), m * out);
                 let diff = a.iter().zip(&b).filter(|(p, q)| p != q).count();
                 assert_eq!(diff, 0, "vec vs legacy: {diff} of {} differ (out={out} inp={inp} gu={gu} m={m})", a.len());
+            }
+        }
+
+        /// E1(c): the prefill presum chain is bitwise equal to the pf_prep
+        /// path — AddRmsNorm { pfsums } keeps residual / normed values and
+        /// its block feeds a vec projection exactly like pf_prep's sums; the
+        /// gate/up up·silu pass with `emit` stores the same activation and
+        /// its block feeds `down` exactly like a pf_prep pass over it.
+        #[test]
+        fn pf_presum_chain_matches_prep_bitwise() {
+            use candle_core::{DType, Device, Tensor};
+            let dev = Device::new_metal(0).unwrap();
+            let Device::Metal(md) = &dev else { unreachable!() };
+            let cfg = PfCfg { vec: true, ..PfCfg::new(32, 128, 4) };
+            if !pf_vec_layout_ok(md, &cfg) {
+                eprintln!("pf_presum_chain_matches_prep_bitwise: layout probe failed — skipped");
+                return;
+            }
+            let bits = |t: &Tensor| -> Vec<u16> {
+                t.flatten_all().unwrap().to_dtype(DType::F32).unwrap().to_vec1::<f32>().unwrap()
+                    .iter().map(|v| half::bf16::from_f32(*v).to_bits()).collect()
+            };
+            let mut seed = 0xc0ffeeu64;
+            fn rndv(seed: &mut u64, n: usize, scale: f32) -> Vec<half::bf16> {
+                (0..n).map(|_| half::bf16::from_f32(((lcg(seed) % 2000) as f32 / 1000.0 - 1.0) * scale)).collect()
+            }
+            let qw = |seed: &mut u64, rows: usize, inp: usize| -> (Tensor, Tensor) {
+                let ng = inp / 64;
+                let wq: Vec<u32> = (0..rows * ng * 8).map(|_| lcg(seed)).collect();
+                let sb: Vec<half::bf16> = (0..2 * rows * ng)
+                    .map(|i| {
+                        let u = (lcg(seed) % 1000) as f32 / 1000.0;
+                        half::bf16::from_f32(if i < rows * ng { 0.002 + 0.01 * u } else { -0.05 + 0.02 * u })
+                    })
+                    .collect();
+                (Tensor::from_vec(wq, (rows * ng * 8,), &dev).unwrap(), Tensor::from_vec(sb, (2 * rows * ng,), &dev).unwrap())
+            };
+            for &(t, c) in &[(161usize, 1024usize), (256, 512), (133, 1024)] {
+                let x = Tensor::from_vec(rndv(&mut seed, t * c, 3.0), (1, t, c), &dev).unwrap();
+                let r = Tensor::from_vec(rndv(&mut seed, t * c, 3.0), (1, t, c), &dev).unwrap();
+                let w = Tensor::from_vec(rndv(&mut seed, c, 1.5), (c,), &dev).unwrap();
+                let arn = |pfsums: bool| {
+                    x.apply_op3_no_bwd(
+                        &r,
+                        &w,
+                        &crate::gdn_kernel::AddRmsNorm { t, c, eps: 1e-6, sums: false, pfsums, legacy: false },
+                    )
+                    .unwrap()
+                };
+                let (y0, y1) = (arn(false), arn(true));
+                for plane in 0..2 {
+                    assert_eq!(
+                        bits(&y0.narrow(0, plane, 1).unwrap()),
+                        bits(&y1.narrow(0, plane, 1).unwrap()),
+                        "add-rmsnorm plane {plane} t={t} c={c}"
+                    );
+                }
+                let n0 = y0.narrow(0, 1, 1).unwrap().reshape((t, c)).unwrap();
+                let n1 = y1.narrow(0, 1, 1).unwrap().reshape((t, c)).unwrap();
+                // plain projection (ragged columns: 640 % 128 != 0 ... = 5 tiles)
+                let out = 640usize;
+                let (wq, sb) = qw(&mut seed, 768, c);
+                let proj = |xin: &Tensor, presum: bool| {
+                    wq.apply_op3_no_bwd(&sb, xin, &AffineQpf { inp: c, out, padded: 768, m: t, up_tile: 0, cfg, presum, emit: false })
+                        .unwrap()
+                };
+                assert_eq!(bits(&proj(&n0, false)), bits(&proj(&n1, true)), "proj presum t={t} c={c}");
+                // gate/up (512 per stream) with emit, then down on its block
+                let half = 512usize;
+                let (gwq, gsb) = qw(&mut seed, 2 * half, c);
+                let gu = |xin: &Tensor, presum: bool, emit: bool| {
+                    gwq.apply_op3_no_bwd(
+                        &gsb,
+                        xin,
+                        &AffineQpf { inp: c, out: half, padded: 2 * half, m: t, up_tile: half / 256, cfg, presum, emit },
+                    )
+                    .unwrap()
+                };
+                let (a0, a1) = (gu(&n0, false, false), gu(&n1, true, true));
+                assert_eq!(bits(&a0), bits(&a1), "gate/up emit t={t} c={c}");
+                let (dwq, dsb) = qw(&mut seed, 256, half);
+                let down = |xin: &Tensor, presum: bool| {
+                    dwq.apply_op3_no_bwd(&dsb, xin, &AffineQpf { inp: half, out: 256, padded: 256, m: t, up_tile: 0, cfg, presum, emit: false })
+                        .unwrap()
+                };
+                assert_eq!(bits(&down(&a0, false)), bits(&down(&a1, true)), "down on emitted block t={t} c={c}");
             }
         }
 
