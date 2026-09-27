@@ -1,0 +1,35 @@
+/* Proposed Token Horizon public-web tokens. Opt in with .th-public-ui.
+   These are hand-authored implementation suggestions, not extracted font metrics. */
+.th-public-ui {
+  --th-canvas: #e9eee8;
+  --th-surface: #ffffff;
+  --th-ink: #101714;
+  --th-muted: #56645c;
+  --th-rule: #cbd5ce;
+  --th-mint: #a9e8bc;
+  --th-selected: #d9efe0;
+  --th-action: #236345;
+  --th-focus: #236345;
+  --th-radius: 6px;
+  --th-space-1: 4px;
+  --th-space-2: 8px;
+  --th-space-3: 12px;
+  --th-space-4: 16px;
+  --th-space-6: 24px;
+  --th-space-8: 32px;
+  --th-space-12: 48px;
+  --th-space-16: 64px;
+  --th-font: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --th-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  color: var(--th-ink);
+  background: var(--th-canvas);
+  font-family: var(--th-font);
+}
+.th-public-ui :focus-visible {
+  outline: 2px solid var(--th-focus);
+  outline-offset: 3px;
+}
+.th-public-ui .th-numeric {
+  font-family: var(--th-mono);
+  font-variant-numeric: tabular-nums;
+}

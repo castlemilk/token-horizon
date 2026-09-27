@@ -1,0 +1,43 @@
+{
+  "name": "token-horizon",
+  "version": "1.0.0",
+  "description": "Model intelligence, community rankings and your Token Horizon account, connected through MCP.",
+  "author": {
+    "name": "Ben Ebsworth",
+    "url": "https://github.com/castlemilk"
+  },
+  "homepage": "https://token-horizon.dev/connect",
+  "repository": "https://github.com/castlemilk/token-horizon",
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "keywords": [
+    "models",
+    "tokens",
+    "usage",
+    "leaderboard",
+    "mcp"
+  ],
+  "interface": {
+    "displayName": "Token Horizon",
+    "shortDescription": "Every model. Your usage. One clear view.",
+    "longDescription": "Search and compare models, prices and subscription plans. Explore community rankings. Sign in with Google to read your claimed profiles and sharing settings; optionally grant permission to revoke report links. Local files and provider credentials stay on your device.",
+    "developerName": "Token Horizon",
+    "category": "Productivity",
+    "capabilities": [
+      "Read",
+      "Write"
+    ],
+    "websiteURL": "https://token-horizon.dev/connect",
+    "defaultPrompt": [
+      "Find the best-value coding models.",
+      "Summarize my Token Horizon usage.",
+      "Compare the community\u2019s most-used models."
+    ],
+    "brandColor": "#20372b",
+    "composerIcon": "./assets/icon.png",
+    "logo": "./assets/icon.png",
+    "screenshots": [
+      "./assets/connection.png"
+    ]
+  }
+}

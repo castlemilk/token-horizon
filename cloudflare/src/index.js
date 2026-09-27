@@ -703,7 +703,7 @@ async function getGoogleJwks(env) {
   return googleJwksCache.keys;
 }
 
-async function verifyGoogleIdToken(token, env) {
+export async function verifyGoogleIdToken(token, env, nonce) {
   const parts = String(token || "").split(".");
   if (parts.length !== 3) return null;
   let header, payload;
@@ -759,6 +759,8 @@ async function verifyGoogleIdToken(token, env) {
   if (env.GOOGLE_CLIENT_ID && payload.aud !== env.GOOGLE_CLIENT_ID) return null;
   if (!payload.sub || !payload.email) return null;
   if (payload.email_verified === false) return null;
+  // Connector consent is bound to this browser transaction, not a reusable login.
+  if (nonce !== undefined && (!env.GOOGLE_CLIENT_ID || payload.email_verified !== true || payload.nonce !== nonce)) return null;
 
   return {
     sub: String(payload.sub),
@@ -1950,6 +1952,11 @@ export default {
         // Legacy deep links (?user=<handle>) get the same unfurl treatment.
         const legacyUser = searchParams.get("user");
         if (legacyUser) return serveProfilePage(env, request, legacyUser);
+        // The public root introduces the product. Existing dashboard query
+        // links still open the SPA, including sign-in and shared reports.
+        const dashboardLink = ["view", "tab", "share", "signin", "period", "model", "provider", "plan", "flat"]
+          .some(key => searchParams.has(key));
+        if (pathname === "/" && !dashboardLink) return env.ASSETS.fetch(request);
         const newUrl = new URL(request.url);
         newUrl.pathname = "/leaderboard";
         return env.ASSETS.fetch(new Request(newUrl.toString(), request));

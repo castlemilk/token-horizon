@@ -9,10 +9,29 @@ the dashboard, the worker, or the published entry schema.
   `Share modal`, `Sharing & Access Control`).
 - **Current**: `docs/leaderboard.html` (static SPA) + `cloudflare/src/index.js`
   (edge API) + the macOS `UsageEngine`/`LeaderboardStore` publish pipeline.
-- **Canonical URL**: <https://token-horizon.dev> (`www` 301s to apex; the
-  legacy `tokens.benebsworth.com` serves `/api/*` and 301s browser traffic).
+- **Canonical URL**: <https://token-horizon.dev/leaderboard>. The plain site
+  root serves the product landing page; existing root dashboard query links,
+  profiles and shared reports retain their routing. `www` 301s to apex; the
+  legacy `tokens.benebsworth.com` serves `/api/*` and 301s browser traffic.
+  See [the landing-page handoff](docs/LANDING.md) for its independent assets
+  and interactive product tour.
 
 ---
+
+## Public discovery redesign — September 2026
+
+`docs/discovery.css` opts the leaderboard and all model routes into the approved
+ivory/graphite/mint design. The shared public header links to the landing,
+documentation and Workspace (the existing personal analytics shell). See
+[DISCOVERY.md](docs/DISCOVERY.md) for design alignment and validation.
+
+The catalog keeps Fuse, primary-listing dedupe, app-exported pricing, provider
+adoption and TanStack sorting. Desktop filters sit alongside the windowed list;
+mobile filters collapse above it. Every virtual row is exactly 72px. A model
+inspector docks at 1300px+, and becomes a keyboard-contained modal below that.
+A session-only tray compares 2–4 selected catalog entries with published direct
+rates, context, capability flags, benchmark provenance and subscription coverage.
+Model selection survives search and filters; nothing is sent to a server.
 
 ## 1. Screen-by-screen alignment
 
@@ -22,13 +41,13 @@ the dashboard, the worker, or the published entry schema.
 |---|---|---|
 | Season selector + dates | ✅ | Current season only; snapshots are bounded to 60 days, so past seasons aren't replayable yet |
 | Global search / filters | ✅ | Search filters the table; Filters = league + team |
-| 4 KPI cards with deltas | ✅ | Deltas come from each entry's snapshot closest to −7d; show "—" until ≥2 days of publishes |
-| League Ladder (7 tiers) | ✅ | Clickable tier filter; "You are here" marker; MMR bands 400 pts each |
-| Table: Tokens/Input/Output/Cost/Requests/Avg/Req/Trend/Efficiency/Streak | ✅ | All real; Input/Output/Requests are period-scoped (today/all) |
-| Top Movers / Most Improved | ✅ | From daily snapshots (rank + cumulative tokens); empty until history accrues |
+| Community summary | ✅ | Three inline totals: all-time tokens, builders active in 7 days, all-time requests. Period buttons select the ranking window |
+| League Ladder (7 tiers) | ✅ | Compact sidebar with existing badge assets and clickable tier filters; no visitor identity inferred from the first entry |
+| Ranking table | ✅ | Builder, tokens, requests, 7-day bars and streak; **More metrics** exposes league, input/output, cost, average and efficiency |
+| Top Movers / Most Improved | ✅ | In the Community highlights disclosure; derived from daily snapshots and empty until history accrues |
 | Token Usage Over Time | ✅ | **Stacked by model** (TanStack Charts) with rich tooltip + total |
-| Usage by Model/Provider donut | ✅ | Provider aggregation across entries |
-| Ready-for-higher-league card | ✅ | Real MMR-to-next-tier progress |
+| Usage by Model/Provider donut | ✅ | Provider aggregation in Community highlights |
+| Community invitation | ✅ | Generated orbit illustration, privacy copy and link to publishing documentation; personal MMR progress remains in profiles/leagues |
 
 ### Screen 2 — Player Profile ✅
 
@@ -87,7 +106,7 @@ the app's own merge pipeline** — no provider calls from the browser:
 | Detail drawer | ✅ | Pricing with promo strike-through, benchmark bars (SWE/LCB + AIME/GPQA from `benchmarks.json` with source/approx), capabilities, description, links (docs/OpenRouter/models.dev/Ollama), community adoption, top adopters linking to their profiles; `?model=<id>` deep link, Esc/backdrop/✕ close |
 | Per-model provider view | ✅ | The drawer is the cross-user view: totals (tokens/requests/share), avg cost/1M, avg tokens/request, input/output split, usage split by provider (tokens/users/share/$/M), catalog **listings** comparison (in/out/cache/context/deal per provider, click to switch the drawer), top publishers |
 | Cross-links | ✅ | Every per-user model list links out: Model Inventory rows, session/activity model chips, calendar day drilldown, Billing **Cost by Model**, shared-report **Model Allocation**, and stacked-chart legends — each model item opens `?view=models&model=<raw>` (raw usage ids resolve to a catalog listing; unknown ids fall back to explorer search), and section headers link to the top-level list. One delegated click handler keeps it SPA-fast |
-| Subscription plans | ✅ | Curated `Resources/plans.json` (verified tiers from provider docs: Copilot, Kimi Code, MiniMax, GLM; docs-only entries for the rest) ships in the export as `plans[]` with per-plan model counts. A **Plans** tab (dashboard) / **Plans** chip (flat) renders tier cards; plan-covered rows link via `plan`/`plans` (matched through source providers) and show "included in plan" instead of a price, with `?plan=<id>` filtering the list |
+| Subscription plans | ✅ | Curated `Resources/plans.json` (verified tiers from provider docs: Copilot, Kimi Code, MiniMax, GLM; docs-only entries for the rest) ships in the export as `plans[]` with per-plan model counts. A **Plans** tab on both catalog routes renders tier cards; plan-covered rows link via `plan`/`plans` (matched through source providers) and show "included in plan" instead of a price, with `?plan=<id>` filtering the list |
 | Community adoption | ✅ | `GET /api/models/usage` aggregates `breakdown.models` across R2 entries (tokens/cost/requests/users/share + input/output splits), falling back to the already-loaded leaderboard payload offline |
 
 The Providers tab keeps the original Screen 5 analytics unchanged.

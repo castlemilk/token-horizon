@@ -1,7 +1,7 @@
 name = "token-horizon-leaderboard"
-main = "src/index.js"
+main = "src/worker.js"
 compatibility_date = "2026-09-01"
-compatibility_flags = ["nodejs_compat"]
+compatibility_flags = ["nodejs_compat", "global_fetch_strictly_public"]
 workers_dev = true
 
 # OG card rasterizer: @resvg/resvg-wasm renders the SVG card to PNG at the
@@ -36,3 +36,8 @@ run_worker_first = true
 binding = "LEADERBOARD_BUCKET"
 bucket_name = "token-horizon-leaderboard"
 preview_bucket_name = "token-horizon-leaderboard-dev"
+
+# OAuth consent transactions, hashed tokens and encrypted grant properties.
+[[kv_namespaces]]
+binding = "OAUTH_KV"
+id = "e1ffd014695c4e54942c1f0b1f477009"

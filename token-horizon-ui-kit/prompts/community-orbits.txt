@@ -1,0 +1,5 @@
+Use case: ads-marketing
+Asset type: reusable website artwork, not a logo or UI screenshot.
+Style: refined technical editorial CGI, graphite #101714, pale mint #A9E8BC, warm ivory #E9EEE8, softly lit precision materials, restrained grain, exceptional clean detail. No text, numerals, logos, watermarks, people or interface controls.
+Use case: stylized-concept
+Primary request: standalone editorial illustration for an empty community leaderboard, genuinely transparent alpha background, 1024x1024 square. A small cluster of three smooth graphite spheres of unequal size connected visually by two very thin elliptical mint orbital rings, one tiny ivory satellite bead. Delicate machined-metal materials, restrained pale mint inlay along one orbit, sculptural and minimal, soft studio illumination from upper left. Full silhouette contained within central 72% of the frame with generous transparent margins. A coherent metaphor for independent developers connected through shared activity. No podium, no trophy, no fictional avatar faces, no text, no background, no contact shadow rectangle.

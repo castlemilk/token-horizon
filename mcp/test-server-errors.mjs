@@ -68,7 +68,8 @@ const catalog = responses.get(4);
 
 const names = list.result.tools.map((t) => t.name);
 assert.ok(names.includes("token_horizon_limits"), "limits advertised");
-assert.equal(names.length, 18, "tool count");
+assert.equal(new Set(names).size, names.length, "tool names are unique");
+for (const name of ["token_horizon_usage", "token_horizon_catalog", "token_horizon_plans", "token_horizon_leaderboard", "token_horizon_traces"]) assert.ok(names.includes(name), `${name} advertised`);
 
 const limitsText = limits.result.content[0].text;
 assert.ok(limitsText.includes("limits need the Token Horizon app"), `limits failure text: ${limitsText}`);

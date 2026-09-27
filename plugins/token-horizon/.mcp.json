@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "token-horizon": {
+      "type": "http",
+      "url": "https://token-horizon.dev/mcp"
+    }
+  }
+}

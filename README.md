@@ -149,6 +149,8 @@ The local script uses an ad-hoc signature for development; published releases ar
 
 ## MCP server
 
+The hosted [Token Horizon connector](https://token-horizon.dev/connect) exposes the model explorer, plans, community rankings and your claimed account through OAuth MCP. Install the [Codex plugin](plugins/token-horizon/README.md), or add `https://token-horizon.dev/mcp` to your client. Public discovery works without sign-in at `/mcp/public`. [Architecture and verification](cloudflare/CONNECTOR.md).
+
 `mcp/token-horizon-mcp.mjs` (zero-dep Node, stdio JSON-RPC). Registered in `~/.config/opencode/opencode.jsonc`. Tools: `token_horizon_usage` (incl. per-model), `token_horizon_system`, `token_horizon_sessions`, `token_horizon_history`, `token_horizon_limits`, `token_horizon_proxy_guide` (Ollama startup sequence plus universal gateway drop-in configs for `client="codex"` / `client="claude"` / `client="opencode"`), `token_horizon_leaderboard` (get rankings, publish/pull Google Sheet, or get GitHub Pages web URL), and `token_horizon_share` (generate text/markdown/json/svg share cards). Call `token_horizon_proxy_guide` with `client="startup"` for the safe Ollama-upstream plus Token Horizon-proxy startup sequence, live proxy status, verification commands, and warnings against binding `ollama serve` to the proxy port. Falls back to direct sqlite for usage/sessions if the app isn't running.
 
 ## Leaderboard & Backend Options

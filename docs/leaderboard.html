@@ -516,8 +516,14 @@ body.th-flat .mx-flat-score{display:none}
 .tier:hover,.tier.you{transform:none}
 }
 </style>
+<link rel="stylesheet" href="./discovery.css" />
 </head>
 <body>
+<a class="discovery-skip" href="#view">Skip to content</a>
+<header class="discovery-header" id="discovery-header">
+  <a class="discovery-brand" href="./">Token Horizon</a>
+  <nav aria-label="Main navigation"><a href="./models/" data-public-view="models">Models</a><a href="./leaderboard.html" data-public-view="leaderboard">Leaderboard</a><a href="./docs/">Docs</a><a href="?view=dashboard" data-public-view="dashboard">Workspace</a><a href="https://github.com/castlemilk/token-horizon">GitHub ↗</a><a class="discovery-install" href="./#install">Install Token Horizon ↗</a></nav>
+</header>
 <div class="app">
   <aside class="sidebar">
     <div class="brand">
@@ -570,7 +576,7 @@ body.th-flat .mx-flat-score{display:none}
       <select id="team-filter" class="season-select" style="background:var(--panel2);border:1px solid var(--line2);color:var(--text);border-radius:8px;padding:6px 9px;font-size:12.5px"></select>
       <button class="pill ghost" id="filters-clear" style="font-size:12px">Clear</button>
     </div>
-    <div class="content" id="view"></div>
+    <div class="content" id="view" role="main" tabindex="-1"></div>
   </div>
 </div>
 
@@ -1578,6 +1584,9 @@ function navigate(view, opts = {}) {
   if (opts.tab) state.profileTab = opts.tab;
   if (opts.modelsTab) state.modelsTab = opts.modelsTab;
   const params = new URLSearchParams();
+  const apiOverride = new URLSearchParams(location.search).get("api");
+  if (apiOverride) params.set("api", apiOverride);
+  if (state.period !== "today") params.set("period", state.period);
   if (view !== "leaderboard") params.set("view", view);
   const handle = opts.handle || state.currentHandle;
   if (handle && (view === "players" || view === "dashboard")) params.set("user", handle);
@@ -1598,7 +1607,7 @@ function navigate(view, opts = {}) {
   // /models is a path-routed view: keep it canonical, and leave it for other
   // views (a relative "?view=x" would otherwise stay on /models).
   const onModelsPath = /^\/models\/?$/.test(location.pathname);
-  const target = (view === "players" && handle)
+  const target = (view === "players" && handle && location.protocol !== "file:")
     ? "/u/" + encodeURIComponent(handle)  // clean permalink — unfurls with a
                                           // dynamic OG card server-side
     : onModelsPath
@@ -1610,6 +1619,9 @@ function navigate(view, opts = {}) {
 }
 window.addEventListener("popstate", () => {
   const p = new URLSearchParams(location.search);
+  mxClose({preserveURL:true});
+  const period = ["today","week","all","streak"].includes(p.get("period")) ? p.get("period") : "today";
+  if (period !== state.period) { state.period = period; state.data = null; state.dataSig = ""; }
   const userPath = location.pathname.match(/^\/u\/([^\/?#]+)\/?$/);
   const sharePath = location.pathname.match(/^\/s\/([^\/?#]+)\/?$/);
   state.view = p.get("view") || (userPath ? "players" : /^\/models\/?$/.test(location.pathname) ? "models" : "leaderboard");
@@ -1634,12 +1646,12 @@ function demoPayload() {
 /// idle 30s ticks never rebuild the DOM or remount charts.
 async function loadLeaderboard(opts = {}) {
   const q = new URLSearchParams({ period: state.period });
-  if (state.teamFilter !== "all") q.set("team", state.teamFilter);
-  if (state.leagueFilter !== "all") q.set("league", state.leagueFilter);
+  // Keep the full community payload; view filters are local and preserve team options.
   if (state.range) q.set("historyDays", state.range);
   perf.dataRefreshes++;
   try {
     const payload = await api("/api/leaderboard?" + q.toString(), opts.force ? { cache: "reload" } : {});
+    if (state.period !== q.get("period")) return false;
     const sig = fnv1a(JSON.stringify(payload));
     if (state.dataSig === sig && state.data) return false;
     state.data = payload;
@@ -1648,7 +1660,15 @@ async function loadLeaderboard(opts = {}) {
     perf.dataChanges++;
     return true;
   } catch (err) {
-    if (state.data) return false;              // keep the last good payload
+    if (state.data) {
+      // Keep the selected period honest when a period switch fails offline.
+      if (state.data.period && state.data.period !== state.period) {
+        state.period = state.data.period;
+        const url = new URL(location.href); url.searchParams.set("period", state.period); history.replaceState(history.state,"",url);
+        toast("Could not load that period. Showing the last available standings.", true);
+      }
+      return false;
+    }
     state.data = demoPayload();
     state.dataSig = "";
     state.demo = true;
@@ -1779,11 +1799,11 @@ const ICONS = {
 /// without rebuilding the rest of the view (and its charts).
 function leaderboardTableHtml(d, local) {
   const sorted = sortRows(filterRows(d.leaderboard || []));
-  return `<div class="card" style="padding:0;overflow:hidden">
+  return `<div class="card community-table ${state.moreMetrics ? "more-metrics" : ""}" style="padding:0;overflow:hidden">
     <div class="card-head" style="padding:16px 16px 10px"><h3>Leaderboard <span class="sub">${d.total || 0} players</span></h3>
       <span class="sub">Click a row for the full profile</span></div>
     <div style="overflow-x:auto"><table id="lb-table"><thead><tr>
-      ${th("rank", "#")}${th("user", "User")}${th("league", "League")}${th("tokens", "Tokens")}${th("input", "Input")}${th("output", "Output")}${th("cost", "Cost")}${th("requests", "Requests")}${th("avg", "Avg / Req", "Average tokens per request in the selected period")}${th("trend", "Trend")}${th("efficiency", "Efficiency")}${th("streak", "Streak")}
+      ${th("rank", "#")}${th("user", "Builder")} ${th("league", "League")}${th("tokens", "Tokens")}${th("input", "Input")}${th("output", "Output")}${th("cost", "Cost")}${th("requests", "Requests")}${th("avg", "Avg / Req", "Average tokens per request in the selected period")}<th>7-day activity</th>${th("efficiency", "Efficiency")}${th("streak", "Streak")}
     </tr></thead><tbody>
     ${sorted.length === 0 ? `<tr><td colspan="12"><div class="empty">No players match your filters.</div></td></tr>` : sorted.map(r => rowHtml(r, local)).join("")}
     </tbody></table></div></div>`;
@@ -1792,31 +1812,15 @@ function viewLeaderboard() {
   const d = state.data;
   if (!d) return `<div class="card"><div class="skeleton" style="height:340px"></div></div>`;
   const k = d.kpis || {};
-  const local = (d.leaderboard || []).find(r => r.entry.isLocal) || (d.leaderboard || [])[0];
+  const local = (d.leaderboard || []).find(r => r.entry.isLocal);
   const season = d.season;
 
-  const kpis = `<div class="grid kpis" style="margin-bottom:16px">
-    ${kpiCard("Total Tokens", k.totalTokensFormatted || fmtTokens(k.totalTokens), deltaHtml(k.totalTokensDelta), ICONS.tokens, "", "#4F8CFF")}
-    ${kpiCard("Total Cost", k.totalCostFormatted || fmtCost(k.totalCost), deltaHtml(k.totalCostDelta), ICONS.cost, "", "#22C55E")}
-    ${kpiCard("Active Users", fmtNum(k.activeDevs), deltaHtml(k.activeDevsDelta), ICONS.users, "", "#8B5CF6")}
-    ${kpiCard("Avg Tokens / Request", fmtNum(k.avgTokensPerRequest), k.totalRequests ? `<span class="faint">${fmtTokens(k.totalRequests)} requests tracked</span>` : "", ICONS.bolt, "", "#F59E0B")}
+  const kpis = `<div class="community-kpis">
+    <div><span>Tokens tracked · all time</span><strong>${esc(k.totalTokensFormatted || fmtTokens(k.totalTokens))}</strong></div>
+    <div><span>Active builders · 7 days</span><strong>${fmtNum(k.activeDevs)}</strong></div>
+    <div><span>Requests · all time</span><strong>${k.totalRequests != null ? fmtTokens(k.totalRequests) : "—"}</strong></div>
   </div>`;
-
-  const ladder = `<div class="card" style="margin-bottom:16px">
-    <div class="card-head"><h3>League Ladder <span class="info" title="Use more tokens. Climb higher. MMR adds consistency and diversity bonuses.">ⓘ</span></h3>
-    <span class="sub">${esc(season ? season.displayName + " · " + season.daysRemaining + " days remaining" : "")}</span></div>
-    <div class="ladder">${LEAGUES.map(l => {
-      const count = (d.leaderboard || []).filter(r => r.league === l.id).length;
-      const isYou = local && local.league === l.id;
-      return `<div class="tier ${state.leagueFilter === l.id ? "active" : ""} ${isYou ? "you" : ""}" data-league="${l.id}" style="--tc:${l.color}">
-        ${leagueIcon(l.id, 44)}<div class="name" style="color:${l.color}">${l.title.toUpperCase()}</div>
-        <div class="range">${fmtTokens(l.min)}${l.max ? " – " + fmtTokens(l.max) : "+"}</div>
-        ${isYou ? `<div class="you">You are here</div>` : `<div class="range">${count} player${count === 1 ? "" : "s"}</div>`}
-      </div>`;
-    }).join("")}<div class="tier" style="cursor:default;--tc:#E0B44C;background:linear-gradient(180deg,#141C2B,#0E1420)">
-        <span style="font-size:26px">👑</span><div class="name" style="color:#C7D2E5">HIGHER LEAGUES</div>
-        <div class="range">Unlock greater possibilities</div></div></div></div>`;
-
+  const ladder = `<section class="card community-ladder"><div class="card-head"><h3>League ladder</h3></div><p class="sub">Seven leagues. Every builder starts somewhere.</p><div class="ladder">${LEAGUES.map(l => `<button class="tier ${state.leagueFilter === l.id ? "active" : ""}" data-league="${l.id}" aria-pressed="${state.leagueFilter === l.id}" title="${l.title}: ${fmtTokens(l.min)}${l.max ? "–"+fmtTokens(l.max) : "+"} tokens">${leagueIcon(l.id,32)}<span class="name">${l.title}</span></button>`).join("")}</div><button class="community-link" data-view-leagues>How rankings work ↗</button>${season ? `<p class="sub">${esc(season.displayName)} · ${esc(season.daysRemaining)} days remaining</p>` : ""}</section>`;
   const table = `<div id="lb-table-wrap">${leaderboardTableHtml(d, local)}</div>`;
 
   const movers = d.movers || {};
@@ -1831,7 +1835,7 @@ function viewLeaderboard() {
   </div>`;
 
   const modelChartData = aggregateUsageChartData(d.usageHistory);
-  const overTime = `<div class="card"><div class="card-head"><h3>Token Usage Over Time</h3><span class="sub">${modelChartData ? "Last " + (d.usageHistory.labels || []).length + " days" : ""}</span></div>
+  const overTime = `<div class="card"><div class="card-head"><h3>Community activity</h3><select id="community-history" aria-label="Activity history window">${[7,14,30,90].map(n=>`<option value="${n}" ${state.range===n?"selected":""}>Last ${n} days</option>`).join("")}</select></div>
     ${modelChartData
       ? stackedUsageChart(modelChartData, { height: 220, ariaLabel: "Token usage by model over time" })
       : areaChart(aggregateHistory(d.leaderboard || []), { color: "#4F8CFF", height: 210 })}</div>`;
@@ -1843,18 +1847,12 @@ function viewLeaderboard() {
     <div class="donut-wrap">${donut(mixTop, 168, fmtTokens(mixTotal), "tokens")}
     <div class="legend">${mixTop.map((s, i) => `<div class="legend-row">${providerLogo(s.provider || s.label, 15)}${esc(s.label)}<span class="val">${fmtTokens(s.value)}</span><span class="pct">${fmtPct(s.value / Math.max(1, mixTotal) * 100, 0)}</span></div>`).join("")}</div></div></div>`;
 
-  const leagueCta = local ? `<div class="card cta">
-    <div style="display:flex;gap:12px;align-items:center"><span style="font-size:26px">🏆</span>
-    <div><div style="font-weight:700">Ready for a higher league?</div><div class="sub">Keep using tokens to climb the ranks. Top performers unlock exclusive benefits.</div></div></div>
-    <div class="progress" style="margin-top:14px"><i style="width:${local.mmrToNext != null ? Math.max(4, 100 - Math.min(100, (local.mmrToNext / 400) * 100)) : 100}%"></i></div>
-    <div class="mini" style="margin-top:6px">${local.mmrToNext != null ? `${fmtNum(local.mmrToNext)} MMR to ${leagueMeta(nextLeague(local.league)).title}` : "Top league reached"}</div>
-    <button class="pill ghost" style="margin-top:12px;width:100%;justify-content:center" data-view-leagues>View League Benefits →</button>
-  </div>` : "";
+  const join = `<section class="community-join"><img src="./assets/landing/community-orbits.webp" alt="" width="600" height="400"/><h2>Your work<br>belongs here.</h2><p>Share a profile when you choose.<br>Your prompts stay private by default.</p><a class="discovery-install" href="./docs/#leaderboard">Join the community ↗</a><button class="community-link" id="community-account">${state.googleSession ? "Open your workspace" : "Already publishing? Sign in"}</button></section>`;
+  const periods = [["today","Today"],["week","7 days"],["all","All time"],["streak","Streak"]];
+  const teams = [...new Set((d.leaderboard || []).map(r => r.entry.team).filter(Boolean))].sort();
+  return `<div class="discovery-title"><div><span class="discovery-eyebrow">BUILD TOGETHER</span><h1>Community leaderboard</h1><p>A shared view of what we are building with AI.</p></div><div class="community-periods" aria-label="Ranking period">${periods.map(([id,label])=>`<button data-period="${id}" aria-pressed="${state.period===id}" class="${state.period===id ? "active" : ""}">${label}</button>`).join("")}</div></div>
+    <div class="community-layout"><div class="community-main">${kpis}<div class="community-tools"><input id="community-search" type="search" aria-label="Find a builder" placeholder="Find a builder…" value="${esc(state.search)}"><select id="community-team" aria-label="Filter builders by team"><option value="all">All teams</option>${teams.map(t=>`<option ${state.teamFilter===t?'selected':''} value="${esc(t)}">${esc(t)}</option>`).join("")}</select><select id="community-league" aria-label="Filter builders by league"><option value="all">All leagues</option>${LEAGUES.map(l=>`<option ${state.leagueFilter===l.id?'selected':''} value="${l.id}">${l.title}</option>`).join("")}</select></div>${table}<div class="community-table-foot"><span>Published profiles · select a builder to explore</span><button class="community-link" id="community-metrics" aria-pressed="${Boolean(state.moreMetrics)}">${state.moreMetrics ? "Fewer" : "More"} metrics</button></div>${overTime}</div><aside class="community-aside">${ladder}${join}<details class="community-extra"><summary>Community highlights</summary>${moversCard}${improvedCard}${mix}</details></aside></div>`;
 
-  return pageHead(["Leaderboard"], "Token Usage Leaderboard", "See who's pushing the boundaries. More tokens. Bigger possibilities.", "Usage today. A smarter tomorrow.")
-    + kpis + ladder
-    + `<div class="two-col" style="margin-bottom:16px"><div>${table}</div><div class="grid" style="align-content:start">${moversCard}${improvedCard}${leagueCta}</div></div>`
-    + `<div class="split">${overTime}${mix}</div>`;
 }
 
 function nextLeague(id) { const i = LEAGUES.findIndex(l => l.id === id); return i >= 0 && i < LEAGUES.length - 1 ? LEAGUES[i + 1].id : id; }
@@ -1863,7 +1861,7 @@ function th(key, label, title = "") {
   return `<th data-sort="${key}" class="${active ? "faint" : ""}" tabindex="0" role="button"${title ? ` title="${esc(title)}"` : ""}>${label}${active ? (state.sortDir > 0 ? " ↑" : " ↓") : ""}</th>`;
 }
 function filterRows(rows) {
-  let out = rows;
+  let out = rows.filter(r => (state.leagueFilter === "all" || r.league === state.leagueFilter) && (state.teamFilter === "all" || r.entry.team === state.teamFilter));
   if (state.search) {
     const q = state.search;
     out = out.filter(r => r.entry.handle.toLowerCase().includes(q) || (r.entry.team || "").toLowerCase().includes(q) || (r.entry.topModel || "").toLowerCase().includes(q));
@@ -1881,7 +1879,7 @@ function sortRows(rows) {
       case "input": return parseFmt(r.inputFormatted);
       case "output": return parseFmt(r.outputFormatted);
       case "cost": return parseFmt(r.costFormatted);
-      case "requests": return parseFloat(r.requestsFormatted) || 0;
+      case "requests": return parseFmt(r.requestsFormatted);
       case "avg": return r.avgPerRequest;
       case "efficiency": return r.efficiency || 0;
       case "streak": return r.entry.streakDays || 0;
@@ -1903,6 +1901,12 @@ function parseFmt(s) {
   const mult = { T: 1e12, B: 1e9, M: 1e6, k: 1e3, "": 1 }[m[2]];
   return parseFloat(m[1]) * mult;
 }
+function communityTrend(trend) {
+  const values = (trend || []).slice(-7).map(n=>Math.max(0,Number(n)||0));
+  if (!values.length) return `<span class="faint">Collecting…</span>`;
+  const max = Math.max(1,...values);
+  return `<span class="community-trend" role="img" aria-label="7-day activity: ${values.map(fmtTokens).join(", ")}">${values.map((v,i)=>`<i style="height:${Math.max(2,v/max*27)}px;opacity:${i===values.length-1?1:.55}" title="${fmtTokens(v)} tokens"></i>`).join("")}</span>`;
+}
 function rowHtml(r, local) {
   const e = r.entry;
   const isYou = e.isLocal || (local && e.handle === local.entry.handle);
@@ -1918,7 +1922,7 @@ function rowHtml(r, local) {
     <td class="num">${esc(r.costFormatted)}</td>
     <td class="num">${esc(r.requestsFormatted || "0")}</td>
     <td class="num">${r.avgPerRequest ? fmtTokens(r.avgPerRequest) : "—"}</td>
-    <td>${sparkline(r.trend, "#38BDF8", 72, 24)}</td>
+    <td>${communityTrend(r.trend)}</td>
     <td><span class="chip ${r.efficiency >= 90 ? "green" : r.efficiency >= 70 ? "" : "orange"}">${Math.round(r.efficiency || 0)}</span></td>
     <td><span class="chip orange">🔥 ${e.streakDays || 0}</span></td>
   </tr>`;
@@ -1951,7 +1955,22 @@ function aggregateModels(rows) {
 /* ============================================================
    MAIN RENDER
    ============================================================ */
+function syncDiscoveryChrome() {
+  const visible = ["leaderboard", "models"].includes(state.view);
+  document.body.classList.toggle("discovery", visible);
+  document.body.dataset.surface = state.view;
+  document.title = `Token Horizon — ${state.view === "models" ? "Model Explorer" : state.view === "leaderboard" ? "Community Leaderboard" : "Analytics"}`;
+  $$("[data-public-view]").forEach(a => {
+    a.setAttribute("aria-current", a.dataset.publicView === state.view ? "page" : "false");
+    a.onclick = e => { if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return; e.preventDefault(); mxClose(); navigate(a.dataset.publicView); };
+  });
+  const slot = $("#auth-slot");
+  const home = visible ? $("#discovery-header nav") : $(".topbar");
+  if (slot.parentElement !== home) home.append(slot);
+  if (state.view !== "models") $("#mx-compare-tray")?.remove();
+}
 async function render() {
+  syncDiscoveryChrome();
   const t0 = performance.now();
   perf.renders++;
   const view = $("#view");
@@ -2018,13 +2037,26 @@ function refreshLeaderboardTable() {
   tableRefreshTimer = 0;
   const wrap = $("#lb-table-wrap");
   if (!wrap || !state.data) return;
-  const local = (state.data.leaderboard || []).find(r => r.entry.isLocal) || (state.data.leaderboard || [])[0];
+  const local = (state.data.leaderboard || []).find(r => r.entry.isLocal);
   wrap.innerHTML = leaderboardTableHtml(state.data, local);
   perf.tableRefreshes++;
   wireLeaderboardTable();
 }
 function wireLeaderboard() {
   wireLeaderboardTable();
+  if ($("#community-search")) {
+  $("#community-history").onchange = e => { state.range = Number(e.target.value); state.data = null; state.dataSig = ""; render(); };
+  $("#community-search").oninput = e => { state.search = e.target.value.toLowerCase(); $("#global-search").value = e.target.value; scheduleLeaderboardTable(); };
+  $("#community-team").onchange = e => { state.teamFilter = e.target.value; refreshLeaderboardTable(); };
+  $("#community-league").onchange = e => { state.leagueFilter = e.target.value; render(); };
+  $("#community-metrics").onclick = () => { state.moreMetrics = !state.moreMetrics; render(); };
+  $("#community-account").onclick = () => state.googleSession ? navigate("dashboard") : openSignInModal();
+  $$("[data-period]").forEach(b => b.onclick = async () => {
+    state.period = b.dataset.period;
+    const url = new URL(location.href); url.searchParams.set("period", state.period); history.replaceState(history.state, "", url);
+    await loadLeaderboard(); render();
+  });
+  }
   $$(".tier[data-league]").forEach(t => {
     t.tabIndex = 0;
     t.setAttribute("role", "button");
@@ -2550,8 +2582,8 @@ function insightCard(label, value, detail, icon, provider) {
    VIEW: MODELS — Explorer (static catalog) + Providers analytics
    ============================================================ */
 
-const MX_ROW_H_DESKTOP = 64;
-const MX_ROW_H_MOBILE = 88;
+const MX_ROW_H_DESKTOP = 72;
+const MX_ROW_H_MOBILE = 72;
 const MX_ROW_H_FLAT = 72;
 const MX_OVERSCAN = 12;
 const MX_CAPS = [
@@ -2650,6 +2682,7 @@ function mxPriceText(v, m) {
 /// canonical rate (or the canonical rate is unknown). Exported as
 /// `priceFrom`/`priceFromOutputPerM`/`priceFromProvider`.
 function mxCheapest(m) {
+  if (m.priceKnown === false && (m.plan || m.plans?.length)) return { in:null, out:null, provider:null };
   const fromIn = Number(m.priceFrom);
   if (!(fromIn > 0)) return { in: null, out: null, provider: null };
   const canonicalIn = Number(m.inputPerM) || 0;
@@ -3058,6 +3091,11 @@ function mxClearFilters() {
   mx.sort = "featured";
   mx.provider = "all";
   mx.caps = new Set();
+  mx.planFilter = "";
+  mx.tableSort = [];
+  if (mx.table) mx.table.setOptions({state:{sorting:[]}});
+  $("[data-plan-clear]")?.remove();
+  const url = new URL(location.href); url.searchParams.delete("plan"); url.searchParams.delete("provider"); history.replaceState(history.state,"",url);
   const q = $("#mx-q"); if (q) q.value = "";
   const sort = $("#mx-sort"); if (sort) sort.value = "featured";
   const prov = $("#mx-provider"); if (prov) prov.value = "all";
@@ -3077,7 +3115,6 @@ function mxSyncChips() {
 }
 function mxHeadHtml() {
   const mx = mxState();
-  const flat = state.flatModels;
   const sortState = mx.tableSort || [];
   const ind = (id) => {
     const s = sortState.find(x => x.id === id);
@@ -3093,19 +3130,7 @@ function mxHeadHtml() {
     score: "Perf score per blended $/1M (app ranking)"
   };
   const cell = (id, label, cls) => `<span class="mx-head-cell ${cls}" data-col="${id}" data-label="${label}" role="button" tabindex="0" title="${esc(titles[id] || ("Sort by " + label))}">${label}${ind(id)}</span>`;
-  return `<div class="mx-head-row" id="mx-head">
-    <span class="mx-head-spacer"></span>
-    ${cell("name", "Model", "mx-head-name")}
-    <span class="mx-stats">
-      ${flat ? "" : cell("context", "Ctx", "mx-stat mx-hide-md")}
-      ${cell("input", "In", "mx-stat mx-keep")}
-      ${cell("output", "Out", "mx-stat mx-keep")}
-      ${flat ? "" : cell("blended", "Blended", "mx-stat mx-hide-sm")}
-      ${cell("swe", "SWE", "mx-stat mx-bench")}
-      ${cell("used", "Used", flat ? "mx-stat" : "mx-stat mx-hide-lg")}
-    </span>
-    ${cell("score", "Value", `mx-head-score ${flat ? "mx-flat-score" : "mx-score"}`)}
-  </div>`;
+  return `<div class="mx-head-row" id="mx-head"><span class="mx-compare-space"></span><span class="mx-head-spacer"></span>${cell("name","Model","mx-head-name")}<span class="mx-stats">${cell("input","Input / 1M","mx-stat mx-keep")}${cell("output","Output / 1M","mx-stat mx-keep")}${cell("context","Context","mx-stat")}</span></div>`;
 }
 function mxSyncSortUI() {
   const mx = mxState();
@@ -3146,7 +3171,7 @@ function mxTabBarHtml() {
 }
 function mxWireTabs() {
   $$("[data-models-tab]").forEach(el => {
-    const go = () => { state.modelsTab = el.dataset.modelsTab; render(); };
+    const go = () => { mxClose(); navigate("models", { modelsTab: el.dataset.modelsTab }); };
     el.onclick = go;
     keyActivate(el, go);
   });
@@ -3161,55 +3186,21 @@ function mxCapChipHtml(key, label) {
   return `<span class="mx-chip cap ${mx.caps.has(key) ? "active" : ""}" data-cap="${key}" tabindex="0" role="button">${label}</span>`;
 }
 function mxShellHtml() {
-  const mx = mxState();
-  const providers = mx.providers || [];
-  const total = mxBase().length;
-  const flat = state.flatModels;
-  const refreshed = mx.catalog?.generatedAt
-    ? new Date(mx.catalog.generatedAt * 1000).toLocaleDateString(undefined, { month: "short", day: "numeric" })
-    : "";
-  return (flat
-    ? pageHead(["Analytics", "Models"], "Models",
-        `The unified catalog — ${mx.primaryHidden.toLocaleString()} duplicate listings collapsed, one row per model.`,
-        refreshed ? `Catalog ${refreshed}` : "")
-    : pageHead(["Analytics", "Models"], "Model Explorer",
-        "Every model Token Horizon tracks — live pricing, coding benchmarks, capabilities and community adoption.",
-        "Explore more. Spend smarter.")
-      + mxTabBarHtml())
-    + `
-    ${state.mx.error ? `<div class="notice err" style="margin-bottom:14px">Catalog unavailable (${esc(state.mx.error)}). <button class="pill ghost" id="mx-retry" style="font-size:11px;margin-left:8px">Retry</button></div>` : ""}
-    ${flat ? "" : `<div class="mx-picks" id="mx-picks"></div>`}
-    <div class="mx-toolbar">
-      <div class="mx-search">
-        <svg viewBox="0 0 24 24" fill="none"><circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="1.8"/><path d="M20 20l-3.5-3.5" stroke="currentColor" stroke-width="1.8"/></svg>
-        <input id="mx-q" type="text" placeholder="Search ${total.toLocaleString()} models — name, provider, capability…" autocomplete="off" spellcheck="false" value="${esc(mx.query)}" aria-label="Search models" />
-        <span class="mx-kbd">/</span>
-      </div>
-      <select class="mx-select" id="mx-sort" aria-label="Sort models">${MX_SORTS.map(([k, l]) => `<option value="${k}" ${mx.sort === k ? "selected" : ""}>${l}</option>`).join("")}</select>
-      <select class="mx-select" id="mx-provider" aria-label="Filter by provider">
-        <option value="all">All providers (${providers.length})</option>
-        ${providers.map(p => `<option value="${esc(p.key)}" ${mx.provider === p.key ? "selected" : ""}>${esc(p.label)} (${p.count.toLocaleString()})</option>`).join("")}
-      </select>
-      ${mx.planFilter ? `<span class="mx-chip active">Plan · ${esc(mxPlanName(mx.planFilter))}<span class="n" data-plan-clear="1" style="cursor:pointer" title="Clear plan filter">✕</span></span>` : ""}
-      ${flat ? `<button class="mx-chip" id="mx-cheapest-toggle" type="button" title="Best price per model across provider listings">Cheapest</button>` : ""}
-      ${flat ? `<button class="mx-chip ${state.modelsTab === "plans" ? "active" : ""}" id="mx-plans-toggle" type="button" title="Show subscription plans and their usage tiers">Plans</button>` : ""}
-      <button class="mx-chip ${mx.primary ? "active" : ""}" id="mx-primary" type="button" title="Collapse reseller/gateway duplicates of the same model into one unified listing">
-        Unified <span class="n" id="mx-primary-n">${mx.primaryHidden.toLocaleString()} hidden</span>
-      </button>
-      <button class="mx-clear" id="mx-clear" type="button">Reset</button>
-      ${flat ? "" : `<a class="mx-clear" href="?view=models&flat=1" style="text-decoration:none" title="Open the clean, standalone model list">Clean view ↗</a>`}
-    </div>
-    ${flat ? "" : `<div class="mx-chips" id="mx-scopes">${MX_SCOPES.map(([k, l]) => mxScopeChipHtml(k, l)).join("")}</div>`}
-    ${flat ? "" : `<div class="mx-chips" id="mx-caps" style="margin:8px 0 14px">${MX_CAPS.map(([k, l]) => mxCapChipHtml(k, l)).join("")}
-      <span class="mx-counts" style="margin-left:auto">${mxCounts().all.toLocaleString()} models · ${new Set(mxBase().map(mxGroup)).size} providers · ${mxCounts().featured.toLocaleString()} benchmarked</span>
-    </div>`}
-    <div class="mx-panel">
-      ${mxHeadHtml()}
-      <div class="mx-scroll" id="mx-scroll" role="listbox" aria-label="Models">
-        <div class="mx-spacer" id="mx-spacer"><div class="mx-rows" id="mx-rows"></div></div>
-      </div>
-    </div>`;
+  const mx = mxState(), providers = mx.providers || [];
+  const refreshed = mx.catalog?.generatedAt ? new Date(mx.catalog.generatedAt * 1000).toLocaleDateString(undefined, {month:"short",day:"numeric",year:"numeric"}) : "Unavailable";
+  return `<div class="discovery-title"><div><span class="discovery-eyebrow">THE MODEL DIRECTORY</span><h1>Find your next model.</h1><p>Compare capabilities, pricing and providers in one place.</p></div><span class="catalog-stamp">Catalog snapshot<br><strong>${esc(refreshed)}</strong></span></div>${mxTabBarHtml()}
+    ${mx.error ? `<div class="notice err">Catalog unavailable (${esc(mx.error)}). <button class="pill" id="mx-retry">Retry</button></div>` : ""}
+    <div class="mx-toolbar"><div class="mx-search"><input id="mx-q" type="search" placeholder="Search ${mx.models.length.toLocaleString()} models…" autocomplete="off" spellcheck="false" value="${esc(mx.query)}" aria-label="Search models"><span class="mx-kbd">/</span></div><select class="mx-select" id="mx-sort" aria-label="Sort models">${MX_SORTS.map(([k,l])=>`<option value="${k}" ${mx.sort===k?'selected':''}>${l}</option>`).join("")}</select></div>
+    <div class="mx-workspace"><aside class="mx-filters"><div class="mx-filter-heading"><button type="button" id="mx-filter-toggle" aria-expanded="false" aria-controls="mx-filter-controls">Filters <span>⌄</span></button><button class="mx-clear" id="mx-clear" type="button">Reset</button></div>
+      <div id="mx-filter-controls"><h3>Browse</h3><div id="mx-scopes">${MX_SCOPES.map(([k,l])=>mxScopeChipHtml(k,l)).join("")}</div>
+      <h3>Capabilities</h3><div id="mx-caps">${MX_CAPS.map(([k,l])=>mxCapChipHtml(k,l)).join("")}</div>
+      <h3>Provider</h3><select class="mx-select" id="mx-provider" aria-label="Filter by provider"><option value="all">All providers (${providers.length})</option>${providers.map(p=>`<option value="${esc(p.key)}" ${mx.provider===p.key?'selected':''}>${esc(p.label)} (${p.count.toLocaleString()})</option>`).join("")}</select>
+      <button class="mx-chip ${mx.primary?'active':''}" id="mx-primary" type="button" title="Collapse reseller duplicates into one model">Primary listings <span class="n" id="mx-primary-n">${mx.primaryHidden.toLocaleString()} hidden</span></button>
+      ${mx.planFilter ? `<button class="mx-chip active" data-plan-clear="1">${esc(mxPlanName(mx.planFilter))} ×</button>` : ""}
+      <p class="sub">Published rates per 1M tokens. “From” is the lowest known listing. Open a model for sources and benchmarks.</p></div></aside>
+      <section class="mx-results" aria-label="Model catalog"><div class="mx-panel">${mxHeadHtml()}<div class="mx-scroll" id="mx-scroll" role="listbox" aria-label="Models"><div class="mx-spacer" id="mx-spacer"><div class="mx-rows" id="mx-rows"></div></div></div></div><div class="mx-result-foot"><span id="mx-shown" role="status"></span><span>Select up to 4 models to compare</span></div>${state.flatModels ? "" : `<details class="community-extra"><summary>Benchmarked picks</summary><div class="mx-picks" id="mx-picks"></div></details>`}</section></div>`;
 }
+
 function mxPickHtml(p) {
   return `<div class="mx-pick" data-mx-id="${esc(p.id)}" tabindex="0" role="button" aria-label="${esc(p.name)}">
     <span class="mx-pick-rank">#${p.rank}</span>
@@ -3222,14 +3213,35 @@ function mxPickHtml(p) {
     <div class="mx-pick-reason"><span class="mx-badge ${esc(p.badgeColor || "cyan")}">${esc(p.badge || "PICK")}</span> ${esc(p.reason || "")}</div>
   </div>`;
 }
+const mxCompared = new Set();
+function mxRenderCompareTray() {
+  $("#mx-compare-tray")?.remove();
+  if (!mxCompared.size || state.view !== "models") return;
+  const models = [...mxCompared].map(id => mxFindModel(id)).filter(Boolean);
+  document.body.insertAdjacentHTML("beforeend", `<section id="mx-compare-tray" aria-label="Selected models"><span>${models.length} selected</span><div class="mx-compare-chips">${models.map(m=>`<button data-uncompare="${esc(m.id)}" aria-label="Remove ${esc(m.name)} from comparison">${esc(m.name)} <span>×</span></button>`).join("")}</div><button class="discovery-install" id="mx-compare-open" ${models.length<2?'disabled':''}>Compare models ↗</button><button class="community-link" id="mx-compare-clear">Clear</button></section>`);
+  $$("[data-uncompare]").forEach(b=>b.onclick=()=>{mxCompared.delete(b.dataset.uncompare);mxRenderList(true);mxRenderCompareTray();});
+  $("#mx-compare-clear").onclick=()=>{mxCompared.clear();mxRenderList(true);mxRenderCompareTray();};
+  $("#mx-compare-open").onclick=()=>mxShowComparison(models);
+}
+function mxShowComparison(models) {
+  $("#mx-comparison")?.remove();
+  const rows = [
+    ["Provider",m=>esc(m.providerName || providerLabel(m.provider))],
+    ["Input / 1M",m=>mxPriceText(m.inputPerM,m)], ["Output / 1M",m=>mxPriceText(m.outputPerM,m)],
+    ["Context",m=>mxCtx(m.contextK)], ["Deployment",m=>m.isLocal?"Local":"Cloud"],
+    ...MX_CAPS.map(([key,label])=>[label,m=>m.capabilities?.[key]?"Yes":"—"]),
+    ["SWE-bench",m=>m.benchmarks?.swe!=null?`${m.benchmarks.approx?'~':''}${Number(m.benchmarks.swe).toFixed(1)}%`:"Not reported"],
+    ["LiveCodeBench",m=>m.benchmarks?.lcb!=null?`${m.benchmarks.approx?'~':''}${Number(m.benchmarks.lcb).toFixed(1)}%`:"Not reported"],
+    ["Benchmark source",m=>esc(m.benchmarks?.source || "Not reported")],
+    ["Subscription coverage",m=>(m.plans || (m.plan?[m.plan]:[])).map(id=>esc(mxPlanName(id))).join(", ") || "—"]
+  ];
+  document.body.insertAdjacentHTML("beforeend",`<dialog id="mx-comparison" aria-labelledby="mx-comparison-title"><div class="mx-comparison-head"><div><span class="discovery-eyebrow">SIDE BY SIDE</span><h2 id="mx-comparison-title">A closer look.</h2><p>Published direct rates. Missing values are not estimates.</p></div><button id="mx-comparison-close" aria-label="Close comparison">×</button></div><div class="mx-comparison-scroll"><table><thead><tr><th>Compare models</th>${models.map(m=>`<th>${providerLogo(m.provider,22,m.id)}<br>${esc(m.name)}</th>`).join("")}</tr></thead><tbody>${rows.map(([label,read])=>`<tr><th>${label}</th>${models.map(m=>`<td>${read(m)}</td>`).join("")}</tr>`).join("")}</tbody></table></div></dialog>`);
+  const dialog=$("#mx-comparison");dialog.showModal();
+  $("#mx-comparison-close").onclick=()=>dialog.close();
+  dialog.addEventListener("close",()=>{$("#mx-compare-open")?.focus();dialog.remove();});
+}
 function mxRowHtml(m) {
   const mx = mxState();
-  const flat = state.flatModels;
-  const u = mxUsageFor(m);
-  const swe = m.benchmarks?.swe;
-  const lcb = m.benchmarks?.lcb;
-  const perf = swe ?? lcb;
-  const score = m.perfScore != null ? Math.round(Number(m.perfScore)) : null;
   const tags = [];
   if (m.capabilities?.reasoning) tags.push(`<span class="mx-tag hot">reasoning</span>`);
   if (m.isLocal) tags.push(`<span class="mx-tag free">local</span>`);
@@ -3237,34 +3249,16 @@ function mxRowHtml(m) {
   if (m.discount) tags.push(`<span class="mx-tag">${esc(m.discount.label || (m.discount.percent ? "-" + m.discount.percent + "%" : "promo"))}</span>`);
   if (m.capabilities?.openWeights) tags.push(`<span class="mx-tag">open</span>`);
   if (m.plan || (m.plans || []).length) tags.push(`<span class="mx-tag plan" data-plan-tag="${esc(m.plan || m.plans[0])}" role="button" tabindex="0" title="Open the subscription plans view">plan</span>`);
-  const sub = flat
-    ? `${esc(m.providerName || providerLabel(m.provider))} · ${mxCtx(m.contextK)} context`
-    : `${esc(m.providerName || providerLabel(m.provider))} · ${esc(m.id)}`;
   const cheapest = mxCheapest(m);
   const inText = cheapest.in != null ? `from ${mxCostText(cheapest.in)}` : mxPriceText(m.inputPerM, m);
   const outText = cheapest.out != null ? `from ${mxCostText(cheapest.out)}` : mxPriceText(m.outputPerM, m);
   const priceTitle = cheapest.in != null
     ? `Cheapest known listing: $${cheapest.in}/1M in, $${cheapest.out}/1M out via ${cheapest.provider}`
     : "Published provider rate";
-  return `<div class="mx-row ${mx.openId === m.id ? "active" : ""}" data-mx-id="${esc(m.id)}" tabindex="0" role="option" aria-label="${esc(m.name)}">
-    <span class="mx-logo">${providerLogo(m.provider, flat ? 28 : 26, m.id)}</span>
-    <span class="mx-main">
-      <span class="mx-name">${esc(m.name)}</span>
-      <span class="mx-sub">${sub}</span>
-      <span class="mx-tags">${tags.join("")}</span>
-    </span>
-    <span class="mx-stats">
-      ${flat ? "" : `<span class="mx-stat mx-hide-md"><span class="l">Ctx</span><span class="v">${mxCtx(m.contextK)}</span></span>`}
-      <span class="mx-stat mx-keep" title="${esc(priceTitle)}"><span class="l">In</span><span class="v">${inText}</span></span>
-      <span class="mx-stat mx-keep" title="${esc(priceTitle)}"><span class="l">Out</span><span class="v">${outText}</span></span>
-      ${flat ? "" : `<span class="mx-stat mx-hide-sm"><span class="l">Blended</span><span class="v">${mxPriceText(m.blendedNetCost, m)}</span></span>`}
-      ${perf != null ? `<span class="mx-stat mx-bench" title="${m.benchmarks?.approx ? "Approximate self-reported score" : "Published benchmark score"}"><span class="l">${swe != null ? "SWE" : "LCB"}</span><span class="v">${m.benchmarks?.approx ? "~" : ""}${Number(perf).toFixed(0)}%</span><span class="bar"><i style="width:${Math.max(2, Math.min(100, Number(perf)))}%"></i></span></span>` : ""}
-      <span class="mx-stat ${flat ? "" : "mx-hide-lg"}"><span class="l">Used</span><span class="v ${u ? "" : "dim"}">${u ? fmtTokens(u.tokens) : "—"}</span></span>
-    </span>
-    ${flat
-      ? `<span class="mx-flat-score ${score == null ? "zero" : ""}">${score ?? "—"}</span>`
-      : `<span class="mx-score ${score == null ? "zero" : ""}">${score ?? "—"}</span>`}
-  </div>`;
+  return `<div class="mx-row ${mx.openId===m.id?'active':''}" data-mx-id="${esc(m.id)}" tabindex="0" role="option" aria-selected="${mx.openId===m.id}" aria-label="${esc(m.name)}">
+    <input class="mx-compare-check" type="checkbox" data-compare="${esc(m.id)}" aria-label="Compare ${esc(m.name)}" ${mxCompared.has(m.id)?'checked':''}>
+    <span class="mx-logo">${providerLogo(m.provider,26,m.id)}</span><span class="mx-main"><span class="mx-name">${esc(m.name)}</span><span class="mx-sub">${esc(m.providerName || providerLabel(m.provider))}</span><span class="mx-tags">${tags.join("")}</span></span>
+    <span class="mx-stats"><span class="mx-stat mx-keep" title="${esc(priceTitle)}"><span class="v">${inText}</span></span><span class="mx-stat mx-keep" title="${esc(priceTitle)}"><span class="v">${outText}</span></span><span class="mx-stat"><span class="v">${mxCtx(m.contextK)}</span></span></span></div>`;
 }
 function mxRenderList(force) {
   const mx = mxState();
@@ -3297,7 +3291,7 @@ function mxRenderList(force) {
 function mxEnsureDrawer() {
   if ($("#mx-backdrop")) return;
   document.body.insertAdjacentHTML("beforeend",
-    `<div class="mx-drawer-backdrop" id="mx-backdrop"></div><aside class="mx-drawer" id="mx-drawer" role="dialog" aria-modal="true" aria-label="Model details"></aside>`);
+    `<div class="mx-drawer-backdrop" id="mx-backdrop"></div><aside class="mx-drawer" id="mx-drawer" role="dialog" aria-hidden="true" inert aria-modal="true" aria-label="Model details"></aside>`);
   $("#mx-backdrop").onclick = mxClose;
 }
 function mxOpen(id, providerHint) {
@@ -3321,9 +3315,14 @@ function mxOpen(id, providerHint) {
   const drawer = $("#mx-drawer");
   if (!backdrop || !drawer) return;
   drawer.innerHTML = mxDrawerHtml(m);
+  drawer.removeAttribute("inert");
+  drawer.setAttribute("aria-hidden", "false");
   backdrop.classList.add("open");
   drawer.classList.add("open");
-  document.body.style.overflow = "hidden";
+  document.body.classList.add("mx-detail-open");
+  const docked = state.view === "models" && matchMedia("(min-width:1300px)").matches;
+  drawer.setAttribute("aria-modal", String(!docked));
+  document.body.style.overflow = docked ? "" : "hidden";
   try {
     const url = new URL(location.href);
     url.searchParams.set("model", id);
@@ -3333,17 +3332,31 @@ function mxOpen(id, providerHint) {
   const row = $(`#mx-rows .mx-row[data-mx-id="${(window.CSS && CSS.escape) ? CSS.escape(id) : id.replace(/"/g, '\\"')}"]`);
   if (row) row.classList.add("active");
   mxDrawerWire(m);
+  drawer.querySelector("button")?.focus({preventScroll:true});
 }
-function mxClose() {
+matchMedia("(min-width:1300px)").addEventListener("change", () => {
+  const drawer = $("#mx-drawer.open");
+  if (!drawer) return;
+  const docked = state.view === "models" && matchMedia("(min-width:1300px)").matches;
+  drawer.setAttribute("aria-modal", String(!docked));
+  document.body.style.overflow = docked ? "" : "hidden";
+  if (!docked) drawer.querySelector("button")?.focus({preventScroll:true});
+});
+function mxClose(opts = {}) {
   const mx = mxState();
+  const returnId = mx.openId;
   mx.openId = null;
+  document.body.classList.remove("mx-detail-open");
   $("#mx-backdrop")?.classList.remove("open");
   $("#mx-drawer")?.classList.remove("open");
+  if (returnId) $("#mx-q")?.focus({preventScroll:true});
+  $("#mx-drawer")?.setAttribute("aria-hidden", "true");
+  $("#mx-drawer")?.setAttribute("inert", "");
   document.body.style.overflow = "";
   $$("#mx-rows .mx-row.active").forEach(el => el.classList.remove("active"));
   try {
     const url = new URL(location.href);
-    if (url.searchParams.get("model")) {
+    if (!opts.preserveURL && url.searchParams.get("model")) {
       url.searchParams.delete("model");
       history.replaceState(history.state, "", url);
     }
@@ -3448,7 +3461,7 @@ function mxDrawerHtml(m) {
       <div class="mx-sec">
         <div class="mx-price-grid">
           <div class="mx-price"><div class="l">Context</div><div class="v">${mxCtx(m.contextK)}</div></div>
-          <div class="mx-price"><div class="l">Blended net / 1M</div><div class="v">${m.blendedNetCost ? mxCostText(m.blendedNetCost) : "—"}</div></div>
+          <div class="mx-price"><div class="l">Blended net / 1M</div><div class="v">${priced && m.blendedNetCost ? mxCostText(m.blendedNetCost) : "—"}</div></div>
           <div class="mx-price"><div class="l">Perf score</div><div class="v">${m.perfScore != null ? Number(m.perfScore).toFixed(1) : "—"}</div></div>
         </div>
       </div>
@@ -3568,12 +3581,12 @@ async function renderPlansTab() {
   $("#view").innerHTML = pageHead(["Analytics", "Models"], "Subscription Plans",
       "Flat-rate plans and their included usage tiers. Models covered by a plan show no per-token price.",
       `${plans.length} plans · updated ${esc(mx.catalog?.plansUpdatedAt || "")}`)
-    + (flat ? `<div class="mx-chips" style="margin-bottom:14px"><button class="mx-chip" type="button" id="mx-back-models">← Models</button></div>`
-            : mxTabBarHtml())
+    + mxTabBarHtml()
+    + (flat ? `<div class="mx-chips" style="margin-bottom:14px"><button class="mx-chip" type="button" id="mx-back-models">← Models</button></div>` : "")
     + `<div class="mx-plan-grid">${plans.map(mxPlanCardHtml).join("") || `<div class="empty">No plans published.</div>`}</div>`;
-  if (!flat) mxWireTabs();
+  mxWireTabs();
   const back = $("#mx-back-models");
-  if (back) back.onclick = () => { state.modelsTab = "explorer"; render(); };
+  if (back) back.onclick = () => navigate("models", { modelsTab: "explorer" });
 }
 
 /* ---------- Cheapest inference (from the listing spread we already track) ---------- */
@@ -3635,8 +3648,8 @@ async function renderCheapestTab() {
   $("#view").innerHTML = pageHead(["Analytics", "Models"], "Cheapest Inference",
       "Best price per model across every provider listing we track, with the discount against the direct rate.",
       `${all.length} priced families · ${totalListings} listings`)
-    + (flat ? `<div class="mx-chips" style="margin-bottom:14px"><button class="mx-chip" type="button" id="mx-back-models">← Models</button></div>`
-            : mxTabBarHtml())
+    + mxTabBarHtml()
+    + (flat ? `<div class="mx-chips" style="margin-bottom:14px"><button class="mx-chip" type="button" id="mx-back-models">← Models</button></div>` : "")
     + `<div class="grid kpis" style="margin-bottom:16px">
         ${kpiCard("Priced Families", all.length.toLocaleString(), `${totalListings.toLocaleString()} provider listings`, ICONS.tokens)}
         ${kpiCard("Cheapest Input", cheapest ? mxCostText(cheapest.bestIn) : "—", cheapest ? `${esc(cheapest.m.name)} via ${esc(providerLabel(cheapest.via))}` : "", ICONS.bolt)}
@@ -3672,9 +3685,9 @@ async function renderCheapestTab() {
           <div class="mini" style="margin-top:10px">Leaders are the cheapest <em>known</em> listing for a model family, aggregated across ${all.length.toLocaleString()} families.</div>
         </div>
       </div>`;
-  if (!flat) mxWireTabs();
+  mxWireTabs();
   const back = $("#mx-back-models");
-  if (back) back.onclick = () => { state.modelsTab = "explorer"; render(); };
+  if (back) back.onclick = () => navigate("models", { modelsTab: "explorer" });
   const head = $("#mx-cheap-head");
   if (head) {
     head.addEventListener("click", (e) => {
@@ -3739,7 +3752,7 @@ function mxCheapRowHtml(r) {
 /* ---------- explorer mounting ---------- */
 async function renderModels() {
   const mx = mxState();
-  if (state.modelsTab === "providers" && !state.flatModels) {
+  if (state.modelsTab === "providers") {
     mx.mounted = false;
     await renderProvidersTab();
     return;
@@ -3810,6 +3823,7 @@ function mxRenderPicks() {
 }
 function mxWire() {
   const mx = mxState();
+  $("#mx-filter-toggle").onclick = e => { const b = e.currentTarget; b.setAttribute("aria-expanded", String(b.getAttribute("aria-expanded") !== "true")); };
   const q = $("#mx-q");
   q.addEventListener("input", () => {
     clearTimeout(mx.debounce);
@@ -3843,6 +3857,7 @@ function mxWire() {
   const planClear = $("[data-plan-clear]");
   if (planClear) planClear.onclick = () => {
     mx.planFilter = "";
+    mx.mounted = false;
     try {
       const url = new URL(location.href);
       url.searchParams.delete("plan");
@@ -3886,19 +3901,29 @@ function mxWire() {
     else mx.caps.add(x.dataset.cap);
   }));
   mxWireTabs();
+  mxRenderCompareTray();
   const scroller = $("#mx-scroll");
   let raf = 0;
   scroller.addEventListener("scroll", () => {
     if (raf) return;
     raf = requestAnimationFrame(() => { raf = 0; mxRenderList(); });
   }, { passive: true });
+  scroller.addEventListener("change", e => {
+    const check = e.target.closest("[data-compare]");
+    if (!check) return;
+    if (check.checked && mxCompared.size >= 4) { check.checked = false; toast("Compare up to four models at a time"); return; }
+    if (check.checked) mxCompared.add(check.dataset.compare); else mxCompared.delete(check.dataset.compare);
+    mxRenderCompareTray();
+  });
   scroller.addEventListener("click", (e) => {
+    if (e.target.closest("[data-compare], [data-plan-tag]")) return;
     const row = e.target.closest("[data-mx-id]");
     if (row) mxOpen(row.dataset.mxId);
     const reset = e.target.closest("#mx-reset");
     if (reset) mxClearFilters();
   });
   scroller.addEventListener("keydown", (e) => {
+    if (e.target.matches("input")) return;
     const row = e.target.closest(".mx-row");
     if (!row) return;
     if (e.key === "Enter" || e.key === " ") { e.preventDefault(); mxOpen(row.dataset.mxId); }
@@ -3916,7 +3941,14 @@ function mxWire() {
 
 window.addEventListener("keydown", (e) => {
   const mx = state.mx;
-  if (e.key === "Escape" && mx?.openId) { mxClose(); return; }
+  const inspector = $("#mx-drawer.open");
+  if (e.key === "Tab" && inspector?.getAttribute("aria-modal") === "true" && !$("#mx-comparison")) {
+    const items = [...inspector.querySelectorAll("button, a[href], input, select, [tabindex='0']")].filter(el=>!el.disabled && el.offsetParent !== null);
+    const first = items[0], last = items[items.length-1];
+    if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last?.focus(); }
+    else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first?.focus(); }
+  }
+  if (e.key === "Escape" && mx?.openId && !$("#mx-comparison")) { mxClose(); return; }
   if (e.key !== "/" || state.view !== "models" || state.modelsTab === "providers") return;
   const tag = (e.target && e.target.tagName || "").toLowerCase();
   if (tag === "input" || tag === "textarea" || tag === "select") return;
@@ -4891,6 +4923,31 @@ function openPublishModal() {
    INIT
    ============================================================ */
 async function init() {
+  const params = new URLSearchParams(location.search);
+  // Clean permalinks served by the worker: /u/<handle> opens the player
+  // profile; /s/<id> opens the shared report (browser URLs carry no query).
+  const userPath = location.pathname.match(/^\/u\/([^\/?#]+)\/?$/);
+  const sharePath = location.pathname.match(/^\/s\/([^\/?#]+)\/?$/);
+  if (params.get("user")) state.currentHandle = params.get("user");
+  if (userPath) state.currentHandle = decodeURIComponent(userPath[1]);
+  state.period = ["today","week","all","streak"].includes(params.get("period")) ? params.get("period") : "today";
+  state.view = params.get("view") || ((params.get("user") || userPath) ? "players" : "leaderboard");
+  // Dedicated /models route: the worker serves the SPA asset with an internal
+  // ?view=models rewrite, so the browser URL has no query — derive it here.
+  if (/^\/models\/?$/.test(location.pathname)) state.view = "models";
+  state.modelsTab = ["providers", "plans", "cheapest"].includes(params.get("tab")) ? params.get("tab") : "explorer";
+  // Flat catalog page: no dashboard chrome — just a searchable model list.
+  state.flatModels = /^\/models\/?$/.test(location.pathname) || params.get("flat") === "1";
+  if (state.flatModels) {
+    state.view = "models";
+    document.body.classList.add("th-flat");
+  }
+  if (params.get("provider")) mxState().pendingProviderFilter = params.get("provider");
+  if (params.get("plan")) mxState().planFilter = params.get("plan");
+  if (params.get("model")) mxState().pendingModel = params.get("model");
+  renderNav();
+  syncDiscoveryChrome();
+  $("#view").innerHTML = `<div class="card" role="status" aria-label="Loading"><div class="skeleton" style="height:340px"></div></div>`;
   wireChrome();
   renderAuthSlot();
   initModalManager();
@@ -4914,28 +4971,6 @@ async function init() {
   $("#global-search").addEventListener("focus", () => {
     if (state.view !== "leaderboard") navigate("leaderboard");
   });
-  const params = new URLSearchParams(location.search);
-  // Clean permalinks served by the worker: /u/<handle> opens the player
-  // profile; /s/<id> opens the shared report (browser URLs carry no query).
-  const userPath = location.pathname.match(/^\/u\/([^\/?#]+)\/?$/);
-  const sharePath = location.pathname.match(/^\/s\/([^\/?#]+)\/?$/);
-  if (params.get("user")) state.currentHandle = params.get("user");
-  if (userPath) state.currentHandle = decodeURIComponent(userPath[1]);
-  state.view = params.get("view") || ((params.get("user") || userPath) ? "players" : "leaderboard");
-  // Dedicated /models route: the worker serves the SPA asset with an internal
-  // ?view=models rewrite, so the browser URL has no query — derive it here.
-  if (/^\/models\/?$/.test(location.pathname)) state.view = "models";
-  state.modelsTab = ["providers", "plans", "cheapest"].includes(params.get("tab")) ? params.get("tab") : "explorer";
-  // Flat catalog page: no dashboard chrome — just a searchable model list.
-  state.flatModels = /^\/models\/?$/.test(location.pathname) || params.get("flat") === "1";
-  if (state.flatModels) {
-    state.view = "models";
-    document.body.classList.add("th-flat");
-  }
-  if (params.get("provider")) mxState().pendingProviderFilter = params.get("provider");
-  if (params.get("plan")) mxState().planFilter = params.get("plan");
-  if (params.get("model")) mxState().pendingModel = params.get("model");
-  renderNav();
   const shareParam = params.get("share") || (sharePath ? sharePath[1] : null);
   if (shareParam) { renderSharedReport(shareParam); return; }
   render();
@@ -4952,7 +4987,7 @@ async function init() {
 }
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") closeModal();
-  if (e.key === "/" && document.activeElement.tagName !== "INPUT") { e.preventDefault(); $("#global-search").focus(); }
+  if (e.key === "/" && !e.defaultPrevented && !["INPUT","TEXTAREA","SELECT"].includes(document.activeElement.tagName)) { e.preventDefault(); ($("#community-search") || $("#global-search")).focus(); }
 });
 init();
 </script>

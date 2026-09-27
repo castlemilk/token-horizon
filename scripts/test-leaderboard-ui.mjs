@@ -297,8 +297,8 @@ async function run() {
   if (badges.length !== 7 || badges.some(b => !b.complete || b.w === 0)) {
     throw new Error('League badge assets did not load');
   }
-  const kpis = await page.$$('.kpi-value');
-  if (kpis.length < 4) throw new Error('Missing KPI cards');
+  const kpis = await page.$$('.community-kpis strong');
+  if (kpis.length !== 3) throw new Error('Missing KPI cards');
   // TanStack stacked usage-by-model chart (vendored bundle must load).
   await page.waitForSelector('.ts-chart svg', { timeout: 10000 });
   const chartSeries = await page.evaluate(() => state.chartHosts.length);
@@ -309,7 +309,8 @@ async function run() {
   const logos = await page.$$eval('.prov-logo', els => els.length);
   if (logos === 0) throw new Error('Provider logos did not render');
   // Official brand marks (docs/assets/brands) must load, not fall back to glyphs.
-  const brandImgs = await page.$$eval('.prov-logo img', els => els.map(e => ({ complete: e.complete, w: e.naturalWidth })));
+  await page.waitForFunction(() => [...document.querySelectorAll('.chart-legend .prov-logo img')].every(e => e.complete && e.naturalWidth));
+  const brandImgs = await page.$$eval('.chart-legend .prov-logo img', els => els.map(e => ({ complete: e.complete, w: e.naturalWidth })));
   if (brandImgs.length === 0 || brandImgs.some(b => !b.complete || b.w === 0)) {
     throw new Error('Brand logo assets did not load');
   }
@@ -357,7 +358,8 @@ async function run() {
   await page.evaluate(async () => { state.view = 'leaderboard'; renderNav(); await render(); });
   // Range pill drives the remote history window.
   if (!apiUrls.some(u => u.includes('historyDays=30'))) throw new Error('Initial load did not request historyDays=30');
-  for (let i = 0; i < 4; i++) { await page.click('#range-pill'); await page.waitForTimeout(180); }
+  for (const days of ['7','14','90','30']) { await page.selectOption('#community-history', days); await page.waitForTimeout(180); }
+  await page.evaluate(async () => { state.view='dashboard'; renderNav(); await render(); });
   if (!apiUrls.some(u => u.includes('historyDays=7'))) throw new Error('Range pill did not request historyDays=7');
   if (!apiUrls.some(u => u.includes('historyDays=90'))) throw new Error('Range pill did not request historyDays=90');
   // Sidebar brand mark: ASCII art renders, animates on hover, pauses on leave.
@@ -378,6 +380,7 @@ async function run() {
   console.log(`   legend=${legendItems.length} columns=${columns.count} (maxGap=${columns.maxGap.toFixed(1)}px) chartMounts=${perfAfter.chartMounts} reuses=${perfAfter.chartReuses} navLogo=animated+paused`);
 
   console.log('2. Opening player profile from a row...');
+  await page.evaluate(async () => { state.view='leaderboard'; renderNav(); await render(); });
   await page.locator('#lb-table tbody tr').first().click();
   await page.waitForSelector('.tabs .tab');
   if (!(await page.locator('h1').first().textContent()).includes('Player Profile')) throw new Error('Player profile did not render');
@@ -423,7 +426,7 @@ async function run() {
   await page.evaluate(() => navigate('prompts'));
   await page.waitForTimeout(250);
   const fallbackH1 = await page.locator('h1').first().textContent();
-  if (!/Leaderboard/.test(fallbackH1)) throw new Error(`Prompts deep link should fall back to leaderboard, got: ${fallbackH1}`);
+  if (!/leaderboard/i.test(fallbackH1)) throw new Error(`Prompts deep link should fall back to leaderboard, got: ${fallbackH1}`);
   if (apiUrls.some(u => u.includes('/api/prompts'))) throw new Error('Dashboard must never fetch the public prompts API');
   await page.evaluate(() => navigate('leaderboard'));
 
@@ -809,7 +812,7 @@ async function run() {
   await page.evaluate(() => navigate('leaderboard'));
   console.log(`   inventoryLinks=${inventoryLinks} listings=${perModel.listings} billingLinks=${billingLinks} shareLinks=${shareLinks} legend=[${legendLinks.slice(0, 3).join(', ')}]`);
 
-  console.log('15. Flat /models page (clean list inside the dashboard shell)...');
+  console.log('15. Public /models page (standalone discovery shell)...');
   await page.goto(filePath + '?view=models&flat=1');
   await page.waitForSelector('#mx-scroll .mx-row', { timeout: 15000 });
   const flat = await page.evaluate(() => ({
@@ -828,13 +831,13 @@ async function run() {
     activeNav: [...document.querySelectorAll('#nav .nav-item.active')].map(e => e.textContent.trim()),
     navItems: [...document.querySelectorAll('#nav .nav-item')].map(e => e.textContent.trim())
   }));
-  if (!flat.flat || !flat.title.includes('Models') || !flat.sidebarVisible || !flat.topbarVisible) {
+  if (!flat.flat || !flat.title.includes('Find your next model') || flat.sidebarVisible || flat.topbarVisible) {
     throw new Error(`Flat shell wrong: ${JSON.stringify(flat)}`);
   }
-  if (flat.tabs || flat.picks || flat.scopes || flat.caps) throw new Error(`Flat page still renders explorer chrome: ${JSON.stringify(flat)}`);
+  if (flat.tabs !== 4 || flat.picks || flat.scopes !== 1 || flat.caps !== 1) throw new Error(`Flat page still renders explorer chrome: ${JSON.stringify(flat)}`);
   if (!flat.rows || flat.rows >= flat.total) throw new Error(`Flat list not windowed: ${flat.rows}/${flat.total}`);
   if (flat.table !== 'object') throw new Error('TanStack Table bundle did not load');
-  if (!flat.heads.includes('name') || !flat.heads.includes('score')) throw new Error(`Sortable headers missing: ${flat.heads}`);
+  if (!flat.heads.includes('name') || !flat.heads.includes('context')) throw new Error(`Sortable headers missing: ${flat.heads}`);
   if (!flat.activeNav.some(n => n === 'Models') || !flat.navItems.includes('Leaderboard')) {
     throw new Error(`Sidenav wrong on /models: ${JSON.stringify(flat.activeNav)} of ${JSON.stringify(flat.navItems)}`);
   }
@@ -879,7 +882,7 @@ async function run() {
   if (flatMob.scroll > 391) throw new Error(`Flat page scrolls horizontally at 390px: ${flatMob.scroll}`);
   if (flatMob.qTop > flatMob.sortTop) throw new Error('Flat mobile search should come before the selects');
   await page.setViewportSize({ width: 1440, height: 1000 });
-  console.log(`   shell=sidebar+topbar title="${flat.title}" windowed=${flat.rows}/${flat.total} search=${flatSearch} provider=${flatProvider.provider}`);
+  console.log(`   shell=public-navigation title="${flat.title}" windowed=${flat.rows}/${flat.total} search=${flatSearch} provider=${flatProvider.provider}`);
 
   console.log('16. Subscription plans view...');
   await page.goto(filePath + '?view=models');
@@ -921,8 +924,8 @@ async function run() {
   await page.waitForTimeout(300);
   // Flat page has a Plans entry and a back link.
   await page.goto(filePath + '?view=models&flat=1');
-  await page.waitForSelector('#mx-plans-toggle', { timeout: 15000 });
-  await page.click('#mx-plans-toggle');
+  await page.waitForSelector('[data-models-tab=plans]', { timeout: 15000 });
+  await page.click('[data-models-tab=plans]');
   await page.waitForSelector('.mx-plan-card', { timeout: 15000 });
   const flatPlans = await page.evaluate(() => ({
     cards: document.querySelectorAll('.mx-plan-card').length,
@@ -962,7 +965,67 @@ async function run() {
   console.log(`   rows=${cheap.rows} listers=${cheap.listers} savings=${cheap.savings.slice(0, 2).join(',')}`);
   await page.evaluate(() => navigate('models'));
 
-  console.log('18. Checking console errors...');
+  console.log('18. Public discovery filters and model comparison...');
+  await page.goto(filePath);
+  await page.waitForSelector('#community-search');
+  const mounts = await page.evaluate(() => window.__thPerf.chartMounts);
+  await page.fill('#community-search', 'samrivera');
+  await page.waitForFunction(() => document.querySelectorAll('#lb-table tbody tr[data-handle]').length === 1);
+  if (!(await page.locator('#lb-table tbody').textContent()).includes('samrivera')) throw new Error('Builder search did not filter');
+  await page.fill('#community-search', '');
+  await page.selectOption('#community-team', 'Engineering');
+  await page.waitForFunction(() => document.querySelectorAll('#lb-table tbody tr[data-handle]').length === 1);
+  if (await page.evaluate(() => window.__thPerf.chartMounts) !== mounts) throw new Error('Table filtering remounted charts');
+  await page.selectOption('#community-team', 'all');
+  await page.click('[data-period="week"]');
+  await page.waitForFunction(() => document.querySelector('[data-period="week"]').getAttribute('aria-pressed') === 'true');
+  if (!apiUrls.some(u => u.includes('period=week'))) throw new Error('Period did not reach the API');
+  await page.reload();
+  await page.waitForSelector('[data-period="week"][aria-pressed="true"]');
+  await page.click('#community-metrics');
+  if (!(await page.locator('#lb-table th[data-sort="input"]').isVisible())) throw new Error('Expanded metrics missing');
+  // Anonymous visitors must never inherit the first ranked publisher's identity.
+  await page.evaluate(async () => { state.data.leaderboard.forEach(r => r.entry.isLocal=false); await render(); });
+  if (await page.locator('#lb-table .chip.you').count()) throw new Error('Anonymous visitor labeled YOU');
+  await page.goto(filePath + '?view=models&flat=1');
+  await page.waitForSelector('.mx-compare-check');
+  const selectedNames = await page.locator('#mx-rows .mx-name').allTextContents();
+  for (let i=0;i<4;i++) await page.locator('.mx-compare-check').nth(i).check();
+  await page.locator('.mx-compare-check').nth(4).click();
+  if (await page.locator('.mx-compare-check:checked').count() !== 4) throw new Error('Comparison exceeded four models');
+  await page.fill('#mx-q','no-such-model-xxzz');
+  await page.waitForTimeout(180);
+  if (await page.locator('[data-uncompare]').count() !== 4) throw new Error('Search cleared model selections');
+  await page.click('#mx-compare-open');
+  await page.waitForSelector('#mx-comparison[open]');
+  const comparison = await page.locator('#mx-comparison').textContent();
+  if (!selectedNames.slice(0,4).every(n => comparison.includes(n)) || !comparison.includes('Input / 1M') || !comparison.includes('SWE-bench')) throw new Error('Incomplete model comparison');
+  await page.keyboard.press('Escape');
+  await page.waitForSelector('#mx-comparison', {state:'detached'});
+  if (await page.evaluate(() => document.activeElement.id) !== 'mx-compare-open') throw new Error('Comparison lost keyboard focus');
+  await page.locator('[data-uncompare]').first().click();
+  if (await page.locator('[data-uncompare]').count() !== 3) throw new Error('Remove selection failed');
+  await page.click('#mx-compare-clear');
+  if (await page.locator('#mx-compare-tray').count()) throw new Error('Clear selection failed');
+  await page.click('#mx-clear');
+  await page.setViewportSize({width:390,height:844});
+  if (await page.locator('#mx-caps').isVisible()) throw new Error('Mobile filters should start collapsed');
+  await page.click('#mx-filter-toggle');
+  await page.click('[data-cap="vision"]');
+  if (!await page.evaluate(() => state.mx.filtered.every(m => m.capabilities?.vision))) throw new Error('Mobile capability filter failed');
+  await page.click('#mx-filter-toggle');
+  const heights = await page.locator('.mx-row').evaluateAll(es => es.map(e=>e.getBoundingClientRect().height));
+  if (heights.some(h => h !== 72)) throw new Error('Virtual model row heights drifted');
+  if (await page.evaluate(() => document.documentElement.scrollWidth > innerWidth)) throw new Error('Mobile explorer overflows');
+  await page.emulateMedia({reducedMotion:'reduce'});
+  await page.locator('.mx-row').first().click();
+  await page.waitForSelector('#mx-drawer.open');
+  const reduced = await page.locator('#mx-drawer').evaluate(e=>getComputedStyle(e).transitionDuration);
+  if (reduced !== '0s') throw new Error('Inspector ignores reduced motion');
+  await page.keyboard.press('Escape');
+  console.log('   filters, period reload, anonymous identity, comparison limit/persistence/focus, mobile controls and reduced motion passed');
+
+  console.log('19. Checking console errors...');
   const realErrors = errors.filter(e =>
     !e.includes('favicon.ico') &&
     !e.includes('accounts.google.com') &&

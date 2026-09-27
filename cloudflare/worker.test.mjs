@@ -778,6 +778,24 @@ describe('Cloudflare Worker API', () => {
     assert.ok(data.models[0].tokensFormatted);
   });
 
+  it('serves the landing root while preserving dashboard query deep links', async () => {
+    const seen = [];
+    const env = {
+      ...createEnv(),
+      ASSETS: { async fetch(request) { seen.push(new URL(request.url)); return new Response('ok'); } }
+    };
+    for (const path of ['/', '/?utm_source=github', '/?campaign=launch']) {
+      assert.equal((await worker.fetch(req(path), env)).status, 200);
+      assert.equal(seen.at(-1).pathname, '/');
+    }
+    for (const path of ['/leaderboard.html', '/?view=players', '/?signin=1', '/?share=abc', '/?period=week', '/?view=models&model=openai%2Fgpt-5']) {
+      assert.equal((await worker.fetch(req(path), env)).status, 200);
+      const target = seen.at(-1);
+      assert.equal(target.pathname, '/leaderboard');
+      assert.equal(target.search, new URL('https://token-horizon.dev' + path).search);
+    }
+  });
+
   it('GET /models rewrites to the dashboard models view', async () => {
     let target = null;
     const env = {

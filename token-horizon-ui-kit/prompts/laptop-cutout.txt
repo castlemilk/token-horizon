@@ -1,0 +1,5 @@
+Use case: ads-marketing
+Asset type: reusable website artwork, not a logo or UI screenshot.
+Style: refined technical editorial CGI, graphite #101714, pale mint #A9E8BC, warm ivory #E9EEE8, softly lit precision materials, restrained grain, exceptional clean detail. No text, numerals, logos, watermarks, people or interface controls.
+Use case: product-mockup
+Primary request: standalone reusable laptop device cutout on genuinely transparent alpha background. A premium unbranded graphite aluminum 14-inch laptop open, perfectly straight-on symmetrical frontal view, viewed only slightly above the keyboard. 1536x1024 canvas, complete laptop fits within central 88% width and 76% height. Razor-thin bezel, small black top-center camera notch, pale matte ivory screen which is completely blank with NO reflections, no UI and no text. Narrow keyboard deck, precise hinge, subtly lit beveled edges, no visible manufacturer logo. Screen front face is nearly rectangular to support a later HTML screenshot overlay. Transparent exterior; screen remains opaque ivory. Soft studio highlights from upper left, no floor, no opaque shadow rectangle, no backdrop.

@@ -8,7 +8,7 @@
 <link rel="canonical" href="https://token-horizon.dev/models" />
 <link rel="icon" href="../assets/favicon.svg" type="image/svg+xml" />
 <meta http-equiv="refresh" content="0;url=../leaderboard.html?view=models&amp;flat=1" />
-<script>location.replace("../leaderboard.html?view=models&flat=1");</script>
+<script>const params = new URLSearchParams(location.search); params.set("view", "models"); params.set("flat", "1"); location.replace("../leaderboard.html?" + params.toString() + location.hash);</script>
 <style>body{background:#080B12;color:#8B95A8;font-family:-apple-system,BlinkMacSystemFont,sans-serif;display:grid;place-items:center;height:100vh;margin:0}a{color:#9CC0FF}</style>
 </head>
 <body>
