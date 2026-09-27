@@ -1240,6 +1240,12 @@ inline void pa_load_full(thread pa_bfrag& dst, device const bfloat* src, int ld,
 }
 
 // grid (query blocks, HKV [GQA] | HN) x (WM * 64) threads.
+//   PA_BK      keys per block (32 | 64)
+//   PA_XBUF    double-buffered score exchange: one barrier per block
+//   PA_SKIPRS  skip the O rescale of a row whose max did not move (the
+//              factor is then exactly 1.0: same bits)
+//   PA_QRES    1: q half resident in registers (MLX dsplit); 0: re-read
+//              from L1 per block (same values, fewer live registers)
 [[kernel, max_total_threads_per_threadgroup(PA_WM * 64)]]
 void prefill_attn(
     device const bfloat* Q      [[buffer(0)]],
@@ -1253,10 +1259,11 @@ void prefill_attn(
     uint2 tid   [[threadgroup_position_in_grid]])
 {
     constexpr int BQ = PA_WM * 16;   // fused rows per threadgroup
-    constexpr int BK = 32;           // keys per block
+    constexpr int BK = PA_BK;        // keys per block
+    constexpr int TK = BK / 16;      // 16-key score fragments per block
     constexpr int DH = PA_D / 2;     // channels per simdgroup of a pair
     constexpr int TDH = DH / 16;     // 16-channel fragments per half
-    static_assert(TDH % 2 == 0, "p.v pairs output fragments");
+    static_assert(TDH % 2 == 0 && TK % 2 == 0, "fragment pairs");
 
     const short rg = sg >> 1;        // row group (16 fused rows)
     const short dh = sg & 1;         // head-dim half
@@ -1297,19 +1304,25 @@ void prefill_attn(
         lim[i] = p.pos + (valid[i] ? qrow[i] : qmax);
     }
 
+    // this thread's two q row pointers (padding rows read row 0: finite,
+    // never stored)
+    device const bfloat* qp[2];
+#pragma unroll
+    for (short i = 0; i < 2; i++)
+        qp[i] = Q + (valid[i] ? long(head[i]) * p.q_hs + long(qrow[i]) * p.q_ts : 0) + dh * DH + sn;
+#if PA_QRES
     // q half resident in registers for the whole key loop
     pa_bfrag Qt[TDH];
 #pragma unroll
     for (short i = 0; i < 2; i++) {
-        device const bfloat* qp =
-            Q + long(head[i]) * p.q_hs + long(qrow[i]) * p.q_ts + dh * DH + sn;
 #pragma unroll
         for (short id = 0; id < TDH; id++) {
 #pragma unroll
             for (short j = 0; j < 4; j++)
-                Qt[id][i * 4 + j] = valid[i] ? qp[id * 16 + j] : bfloat(0.0f);
+                Qt[id][i * 4 + j] = valid[i] ? qp[i][id * 16 + j] : bfloat(0.0f);
         }
     }
+#endif
 
     pa_ffrag Ot[TDH];
 #pragma unroll
@@ -1317,9 +1330,7 @@ void prefill_attn(
     float mx[2] = {PA_NEG, PA_NEG};
     float sum[2] = {0.0f, 0.0f};
 
-    threadgroup float xchg[PA_WM][2][16 * 32];
-    threadgroup float* mine = xchg[rg][dh];
-    threadgroup const float* peer = xchg[rg][1 - dh];
+    threadgroup float xchg[PA_XBUF ? 2 : 1][PA_WM][2][TK * 8 * 32];
 
     device const bfloat* Kh = K + long(kvh) * p.k_hs + dh * DH;
     device const bfloat* Vh = V + long(kvh) * p.v_hs + dh * DH;
@@ -1332,78 +1343,103 @@ void prefill_attn(
         device const bfloat* Vb = Vh + long(k0) * p.v_ts;
 
         // S = q . k^T over this half of the head dim
-        pa_ffrag S0 = pa_ffrag(0.0f), S1 = pa_ffrag(0.0f);
+        pa_ffrag S[TK];
 #pragma unroll
-        for (short id = 0; id < TDH; id++) {
-            pa_bfrag K0, K1;
-            if (full) {
-                pa_load_full(K0, Kb, p.k_ts, sm, sn, id * 16);
-                pa_load_full(K1, Kb + 16 * long(p.k_ts), p.k_ts, sm, sn, id * 16);
-            } else {
-                pa_load(K0, Kb, p.k_ts, sm, sn, id * 16, nk);
-                pa_load(K1, Kb + 16 * long(p.k_ts), p.k_ts, sm, sn, id * 16, nk - 16);
+        for (short f = 0; f < TK; f++) S[f] = pa_ffrag(0.0f);
+#pragma unroll
+        for (short ik = 0; ik < TK; ik += 2) {
+            device const bfloat* kr0 = Kb + long(ik * 16) * p.k_ts;
+            device const bfloat* kr1 = Kb + long(ik * 16 + 16) * p.k_ts;
+#pragma unroll
+            for (short id = 0; id < TDH; id++) {
+                pa_bfrag K0, K1;
+                if (full) {
+                    pa_load_full(K0, kr0, p.k_ts, sm, sn, id * 16);
+                    pa_load_full(K1, kr1, p.k_ts, sm, sn, id * 16);
+                } else {
+                    pa_load(K0, kr0, p.k_ts, sm, sn, id * 16, nk - ik * 16);
+                    pa_load(K1, kr1, p.k_ts, sm, sn, id * 16, nk - ik * 16 - 16);
+                }
+#if PA_QRES
+                pa_mma<float, bfloat, bfloat, true>(S[ik], S[ik + 1], Qt[id], K0, K1);
+#else
+                // q re-read per block from L1 (32 fewer live registers)
+                pa_bfrag qf;
+#pragma unroll
+                for (short i = 0; i < 2; i++) {
+#pragma unroll
+                    for (short j = 0; j < 4; j++) qf[i * 4 + j] = valid[i] ? qp[i][id * 16 + j] : bfloat(0.0f);
+                }
+                pa_mma<float, bfloat, bfloat, true>(S[ik], S[ik + 1], qf, K0, K1);
+#endif
             }
-            pa_mma<float, bfloat, bfloat, true>(S0, S1, Qt[id], K0, K1);
         }
         // add the peer half's partial scores (same lane map)
+        threadgroup float* mine = xchg[PA_XBUF ? (kb & 1) : 0][rg][dh];
+        threadgroup const float* peer = xchg[PA_XBUF ? (kb & 1) : 0][rg][1 - dh];
 #pragma unroll
-        for (short i = 0; i < 8; i++) {
-            mine[lane * 16 + i] = S0[i];
-            mine[lane * 16 + 8 + i] = S1[i];
+        for (short f = 0; f < TK; f++) {
+#pragma unroll
+            for (short i = 0; i < 8; i++) mine[lane * (TK * 8) + f * 8 + i] = S[f][i];
         }
         threadgroup_barrier(mem_flags::mem_threadgroup);
 #pragma unroll
-        for (short i = 0; i < 8; i++) {
-            S0[i] += peer[lane * 16 + i];
-            S1[i] += peer[lane * 16 + 8 + i];
+        for (short f = 0; f < TK; f++) {
+#pragma unroll
+            for (short i = 0; i < 8; i++) S[f][i] += peer[lane * (TK * 8) + f * 8 + i];
         }
+#if !PA_XBUF
         threadgroup_barrier(mem_flags::mem_threadgroup);
+#endif
 
 #pragma unroll
-        for (short i = 0; i < 8; i++) {
-            S0[i] *= PA_SCALE2;
-            S1[i] *= PA_SCALE2;
-        }
+        for (short f = 0; f < TK; f++) S[f] *= PA_SCALE2;
         if (kb >= kb_min) {
 #pragma unroll
             for (short i = 0; i < 2; i++) {
 #pragma unroll
-                for (short j = 0; j < 4; j++) {
-                    const int c = k0 + sn + j;
-                    if (c > lim[i]) S0[i * 4 + j] = PA_NEG;
-                    if (c + 16 > lim[i]) S1[i * 4 + j] = PA_NEG;
+                for (short f = 0; f < TK; f++) {
+#pragma unroll
+                    for (short j = 0; j < 4; j++)
+                        if (k0 + f * 16 + sn + j > lim[i]) S[f][i * 4 + j] = PA_NEG;
                 }
             }
         }
 
-        // online softmax (MLX row_reduce order: 4 elements, xor 1, xor 8)
+        // online softmax (MLX row_reduce order: 4 elements, xor 1, xor 8,
+        // fragments in key order)
 #pragma unroll
         for (short i = 0; i < 2; i++) {
-            float m0 = max(max(S0[i * 4], S0[i * 4 + 1]), max(S0[i * 4 + 2], S0[i * 4 + 3]));
-            m0 = max(m0, simd_shuffle_xor(m0, ushort(1)));
-            m0 = max(m0, simd_shuffle_xor(m0, ushort(8)));
-            float m1 = max(max(S1[i * 4], S1[i * 4 + 1]), max(S1[i * 4 + 2], S1[i * 4 + 3]));
-            m1 = max(m1, simd_shuffle_xor(m1, ushort(1)));
-            m1 = max(m1, simd_shuffle_xor(m1, ushort(8)));
-            const float nmax = max(max(mx[i], m0), m1);
+            float nmax = mx[i];
+#pragma unroll
+            for (short f = 0; f < TK; f++) {
+                float m = max(max(S[f][i * 4], S[f][i * 4 + 1]), max(S[f][i * 4 + 2], S[f][i * 4 + 3]));
+                m = max(m, simd_shuffle_xor(m, ushort(1)));
+                m = max(m, simd_shuffle_xor(m, ushort(8)));
+                nmax = max(nmax, m);
+            }
             const float factor = fast::exp2(mx[i] - nmax);
             mx[i] = nmax;
+            float rs = sum[i] * factor;
 #pragma unroll
-            for (short j = 0; j < 4; j++) {
-                S0[i * 4 + j] = fast::exp2(S0[i * 4 + j] - nmax);
-                S1[i * 4 + j] = fast::exp2(S1[i * 4 + j] - nmax);
+            for (short f = 0; f < TK; f++) {
+#pragma unroll
+                for (short j = 0; j < 4; j++) S[f][i * 4 + j] = fast::exp2(S[f][i * 4 + j] - nmax);
+                float s = (S[f][i * 4] + S[f][i * 4 + 1]) + (S[f][i * 4 + 2] + S[f][i * 4 + 3]);
+                s += simd_shuffle_xor(s, ushort(1));
+                s += simd_shuffle_xor(s, ushort(8));
+                rs += s;
             }
-            float s0 = (S0[i * 4] + S0[i * 4 + 1]) + (S0[i * 4 + 2] + S0[i * 4 + 3]);
-            s0 += simd_shuffle_xor(s0, ushort(1));
-            s0 += simd_shuffle_xor(s0, ushort(8));
-            float s1 = (S1[i * 4] + S1[i * 4 + 1]) + (S1[i * 4 + 2] + S1[i * 4 + 3]);
-            s1 += simd_shuffle_xor(s1, ushort(1));
-            s1 += simd_shuffle_xor(s1, ushort(8));
-            sum[i] = sum[i] * factor + s0 + s1;
+            sum[i] = rs;
+#if PA_SKIPRS
+            if (factor != 1.0f)
+#endif
+            {
 #pragma unroll
-            for (short id = 0; id < TDH; id++) {
+                for (short id = 0; id < TDH; id++) {
 #pragma unroll
-                for (short j = 0; j < 4; j++) Ot[id][i * 4 + j] *= factor;
+                    for (short j = 0; j < 4; j++) Ot[id][i * 4 + j] *= factor;
+                }
             }
         }
         // p.v operand: f16 probabilities scaled by 2^15 (PA_PSCALE) so a
@@ -1412,11 +1448,11 @@ void prefill_attn(
         // exactly into the final reciprocal). A strict f32 left operand
         // does not take this fragment layout (garbage) and a relaxed one
         // rounds to ~f16 anyway (nax_fragment_mma_matches_cpu).
-        pa_hfrag P0, P1;
+        pa_hfrag P[TK];
 #pragma unroll
-        for (short k = 0; k < 8; k++) {
-            P0[k] = half(S0[k] * PA_PSCALE);
-            P1[k] = half(S1[k] * PA_PSCALE);
+        for (short f = 0; f < TK; f++) {
+#pragma unroll
+            for (short k = 0; k < 8; k++) P[f][k] = half(S[f][k] * PA_PSCALE);
         }
         simdgroup_barrier(mem_flags::mem_none);
 
@@ -1424,7 +1460,7 @@ void prefill_attn(
 #pragma unroll
         for (short id = 0; id < TDH; id += 2) {
 #pragma unroll
-            for (short ik = 0; ik < 2; ik++) {
+            for (short ik = 0; ik < TK; ik++) {
                 pa_bfrag V0, V1;
                 device const bfloat* vr = Vb + long(ik * 16) * p.v_ts;
                 if (full) {
@@ -1434,7 +1470,7 @@ void prefill_attn(
                     pa_load(V0, vr, p.v_ts, sm, sn, id * 16, nk - ik * 16);
                     pa_load(V1, vr, p.v_ts, sm, sn, id * 16 + 16, nk - ik * 16);
                 }
-                pa_mma<float, half, bfloat, false>(Ot[id], Ot[id + 1], ik == 0 ? P0 : P1, V0, V1);
+                pa_mma<float, half, bfloat, false>(Ot[id], Ot[id + 1], P[ik], V0, V1);
             }
         }
     }
@@ -1472,13 +1508,61 @@ void prefill_attn(
         pub relaxed: bool,
         /// Sigmoid output gate fused into the epilogue.
         pub gate: bool,
-        /// Row groups (16 fused rows each) per threadgroup.
+        /// Row groups (16 fused rows each) per threadgroup: 1, 2 or 4.
         pub wm: usize,
+        /// Keys per block: 32 or 64.
+        pub bk: usize,
+        /// Double-buffered score exchange (one barrier per block).
+        pub xbuf: bool,
+        /// Skip the O rescale of rows whose max did not move (exact).
+        pub skiprs: bool,
+        /// Re-read q from L1 per block instead of holding it in registers.
+        pub qreload: bool,
     }
 
     impl PrefillVariant {
+        /// The shipped default (`TH_PREFILL_ATTN_VARIANT` unset).
+        pub const DEFAULT: PrefillVariant = PrefillVariant {
+            gqa: true, relaxed: false, gate: true, wm: 2, bk: 32, xbuf: false, skiprs: false, qreload: false,
+        };
+
         fn key(&self) -> usize {
-            (self.gqa as usize) | (self.relaxed as usize) << 1 | (self.gate as usize) << 2 | self.wm << 3
+            (self.gqa as usize)
+                | (self.relaxed as usize) << 1
+                | (self.gate as usize) << 2
+                | (self.xbuf as usize) << 3
+                | (self.skiprs as usize) << 5
+                | (self.qreload as usize) << 6
+                | self.wm << 8
+                | self.bk << 12
+        }
+
+        /// Parse a variant name: `g`|`ph` (GQA-fused | per-head rows), the
+        /// row-group digit (1|2|4), then any of `r` (relaxed), `k64` (BK
+        /// 64), `x` (double-buffered exchange), `s` (skip unit rescales),
+        /// `q` (re-read q per block), `n` (unfused gate). `g2` = DEFAULT.
+        /// None of the non-default shapes paid on the M5 Max (report
+        /// th-e-prefill-attn §2.2); they stay selectable for re-tuning.
+        pub fn parse(name: &str) -> Option<PrefillVariant> {
+            let name = name.trim();
+            let (gqa, rest) = match name.strip_prefix("ph") {
+                Some(r) => (false, r),
+                None => (true, name.strip_prefix('g')?),
+            };
+            let wm = rest.chars().next()?.to_digit(10)? as usize;
+            let rest = &rest[1..];
+            let bk = if rest.contains("k64") { 64 } else { 32 };
+            let rest = rest.replace("k64", "");
+            Some(PrefillVariant {
+                gqa,
+                relaxed: rest.contains('r'),
+                gate: !rest.contains('n'),
+                wm,
+                bk,
+                xbuf: rest.contains('x'),
+                skiprs: rest.contains('s'),
+                qreload: rest.contains('q'),
+            })
         }
     }
 
@@ -1487,12 +1571,17 @@ void prefill_attn(
         format!(
             "#define PA_HN {nh}\n#define PA_HKV {nkv}\n#define PA_GRP {}\n#define PA_D {d}\n\
              #define PA_WM {}\n#define PA_GQA {}\n#define PA_RELAXED {}\n#define PA_GATE {}\n\
+             #define PA_BK {}\n#define PA_XBUF {}\n#define PA_SKIPRS {}\n#define PA_QRES {}\n\
              #define PA_SCALE2 {:.9e}f\n{PREFILL_SRC}",
             nh / nkv,
             v.wm,
             v.gqa as u32,
             if v.relaxed { "true" } else { "false" },
             v.gate as u32,
+            v.bk,
+            v.xbuf as u32,
+            v.skiprs as u32,
+            !v.qreload as u32,
             std::f64::consts::LOG2_E / (d as f64).sqrt(),
         )
     }
@@ -1535,7 +1624,10 @@ void prefill_attn(
     ) -> Option<&'static ComputePipeline> {
         PREFILL
             .get((nh, nkv, d, v.key()), || {
-                if !prefill_supported(nh, nkv, d) || !(v.wm == 2 || v.wm == 4) {
+                if !prefill_supported(nh, nkv, d)
+                    || !matches!(v.wm, 1 | 2 | 4)
+                    || !matches!(v.bk, 32 | 64)
+                {
                     eprintln!("[attn] prefill kernel: unsupported nh={nh} nkv={nkv} d={d} {v:?}; eager attention");
                     return None;
                 }
@@ -1758,6 +1850,20 @@ pub mod stub {
         pub relaxed: bool,
         pub gate: bool,
         pub wm: usize,
+        pub bk: usize,
+        pub xbuf: bool,
+        pub skiprs: bool,
+        pub qreload: bool,
+    }
+
+    impl PrefillVariant {
+        pub const DEFAULT: PrefillVariant = PrefillVariant {
+            gqa: true, relaxed: false, gate: true, wm: 2, bk: 32, xbuf: false, skiprs: false, qreload: false,
+        };
+
+        pub fn parse(_: &str) -> Option<PrefillVariant> {
+            None
+        }
     }
 
     pub fn prefill_supported(_: usize, _: usize, _: usize) -> bool {
@@ -1989,7 +2095,7 @@ mod tests {
         let Ok(candle_core::Device::Metal(md)) = candle_core::Device::new_metal(0) else {
             return;
         };
-        let src = metal_impl::render_prefill(24, 4, 256, metal_impl::PrefillVariant { gqa: false, relaxed: false, gate: false, wm: 4 })
+        let src = metal_impl::render_prefill(24, 4, 256, metal_impl::PrefillVariant { gqa: false, gate: false, wm: 4, ..metal_impl::PrefillVariant::DEFAULT })
             + r#"
 template <typename AT, bool RELAX>
 inline void pr_mma(thread pa_ffrag& c0, thread pa_ffrag& c1, thread const vec<AT, 8>& a,
@@ -2107,16 +2213,11 @@ kernel void nax_probe(device const bfloat* A [[buffer(0)]], device const bfloat*
         let Ok(candle_core::Device::Metal(md)) = candle_core::Device::new_metal(0) else {
             return;
         };
-        for gqa in [false, true] {
-            for relaxed in [false, true] {
-                for gate in [false, true] {
-                    for wm in [2usize, 4] {
-                        let v = metal_impl::PrefillVariant { gqa, relaxed, gate, wm };
-                        if let Err(e) = metal_impl::compile_prefill(md.metal_device(), 24, 4, 256, v) {
-                            panic!("prefill attention library {v:?}: {e}");
-                        }
-                    }
-                }
+        let names = ["g1", "g2", "g4", "ph1", "ph2", "ph4", "g2r", "g2n", "g2k64", "g1k64", "g2x", "g1x", "g2s", "g2xs", "g1k64xs", "ph4k64", "g2q", "g1q", "g4q", "g2xsq"];
+        for n in names {
+            let v = metal_impl::PrefillVariant::parse(n).unwrap();
+            if let Err(e) = metal_impl::compile_prefill(md.metal_device(), 24, 4, 256, v) {
+                panic!("prefill attention library {n} {v:?}: {e}");
             }
         }
     }
@@ -2160,11 +2261,12 @@ kernel void nax_probe(device const bfloat* A [[buffer(0)]], device const bfloat*
                 .map(|(r, g)| r / (1.0 + (-g).exp()))
                 .collect();
             for (li, (kk, vv)) in [(&k_hm, &v_hm), (&k_tm, &v_tm)].into_iter().enumerate() {
-                for gqa in [false, true] {
-                    for relaxed in [false, true] {
-                        for wm in [2usize, 4] {
-                            for gate_on in [false, true] {
-                                let var = metal_impl::PrefillVariant { gqa, relaxed, gate: gate_on, wm };
+                for name in ["ph4", "g2", "g1", "g4", "g4r", "g2k64", "g1k64xs", "g2x", "g2s", "g2xs", "g2q", "g1q", "g2xsq"] {
+                    for gate_on in [false, true] {
+                        {
+                            {
+                                let var = metal_impl::PrefillVariant { gate: gate_on, ..metal_impl::PrefillVariant::parse(name).unwrap() };
+                                let relaxed = var.relaxed;
                                 let g = if gate_on { Some(&qkv) } else { None };
                                 let o1 = attn_prefill(&q, kk, vv, g, pos, seq, nh, nkv, d, var)?;
                                 let o2 = attn_prefill(&q, kk, vv, g, pos, seq, nh, nkv, d, var)?;
@@ -2188,17 +2290,27 @@ kernel void nax_probe(device const bfloat* A [[buffer(0)]], device const bfloat*
         let k = fill_bf16(&[nkv, 256, d], 98, 1.0, &dev)?;
         let v = fill_bf16(&[nkv, 256, d], 97, 1.0, &dev)?;
         let q_tail = q.narrow(2, 40, 60)?.contiguous()?;
-        for gqa in [false, true] {
-            for relaxed in [false, true] {
-                let var = metal_impl::PrefillVariant { gqa, relaxed, gate: false, wm: 4 };
-                let full = host(&attn_prefill(&q, &k, &v, None, 0, 100, nh, nkv, d, var)?.narrow(0, 40, 60)?)?;
-                let tail = host(&attn_prefill(&q_tail, &k, &v, None, 40, 60, nh, nkv, d, var)?)?;
-                let diff = full.iter().zip(&tail).filter(|(x, y)| x.to_bits() != y.to_bits()).count();
-                eprintln!("prefill chunk invariance gqa={gqa} relaxed={relaxed}: {diff}/{} elements differ", full.len());
-                if !relaxed {
-                    assert_eq!(diff, 0, "gqa={gqa}: a row's result depends on its chunk");
-                }
+        for name in ["ph4", "g2", "g1", "g4r", "g2k64", "g1k64xs", "g2xsq"] {
+            let var = metal_impl::PrefillVariant { gate: false, ..metal_impl::PrefillVariant::parse(name).unwrap() };
+            let full = host(&attn_prefill(&q, &k, &v, None, 0, 100, nh, nkv, d, var)?.narrow(0, 40, 60)?)?;
+            let tail = host(&attn_prefill(&q_tail, &k, &v, None, 40, 60, nh, nkv, d, var)?)?;
+            let diff = full.iter().zip(&tail).filter(|(x, y)| x.to_bits() != y.to_bits()).count();
+            eprintln!("prefill chunk invariance {name}: {diff}/{} elements differ", full.len());
+            if !var.relaxed {
+                assert_eq!(diff, 0, "{name}: a row's result depends on its chunk");
             }
+        }
+        // variants that keep the block structure (32 keys, one chain) are
+        // bitwise equal to the default; others differ only by f32 rounding
+        let q = fill_bf16(&[1, nh, 200, d], 77, 5.0, &dev)?;
+        let k = fill_bf16(&[nkv, 1024, d], 76, 1.0, &dev)?;
+        let v = fill_bf16(&[nkv, 1024, d], 75, 1.0, &dev)?;
+        let d0 = host(&attn_prefill(&q, &k, &v, None, 700, 200, nh, nkv, d, metal_impl::PrefillVariant { gate: false, ..metal_impl::PrefillVariant::DEFAULT })?)?;
+        for name in ["ph4", "ph2", "g1", "g4", "g2x", "g2s", "g1x", "g2xs", "g2q", "g1q"] {
+            let var = metal_impl::PrefillVariant { gate: false, ..metal_impl::PrefillVariant::parse(name).unwrap() };
+            let o = host(&attn_prefill(&q, &k, &v, None, 700, 200, nh, nkv, d, var)?)?;
+            let diff = o.iter().zip(&d0).filter(|(x, y)| x.to_bits() != y.to_bits()).count();
+            assert_eq!(diff, 0, "{name} differs from the default in {diff} elements");
         }
         Ok(())
     }

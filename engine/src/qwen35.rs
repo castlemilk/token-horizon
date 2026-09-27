@@ -1711,22 +1711,15 @@ fn prefill_attn_cfg() -> Option<crate::attn_kernel::PrefillVariant> {
         if std::env::var("TH_PREFILL_ATTN").is_ok_and(|v| v.trim() == "eager") {
             return None;
         }
-        let name = std::env::var("TH_PREFILL_ATTN_VARIANT").unwrap_or_else(|_| "g2".into());
-        let name = name.trim();
-        let (gqa, rest) = match name.strip_prefix("ph") {
-            Some(r) => (false, r),
-            None => (true, name.strip_prefix('g').unwrap_or("2")),
+        let var = match std::env::var("TH_PREFILL_ATTN_VARIANT") {
+            Ok(n) => crate::attn_kernel::PrefillVariant::parse(&n).unwrap_or_else(|| {
+                eprintln!("[attn] TH_PREFILL_ATTN_VARIANT={n:?} not understood; default variant");
+                crate::attn_kernel::PrefillVariant::DEFAULT
+            }),
+            Err(_) => crate::attn_kernel::PrefillVariant::DEFAULT,
         };
-        let wm = match rest.chars().next() {
-            Some('4') => 4,
-            _ => 2,
-        };
-        Some(crate::attn_kernel::PrefillVariant {
-            gqa,
-            relaxed: rest.contains('r'),
-            gate: std::env::var("TH_PREFILL_ATTN_GATE").as_deref() != Ok("0"),
-            wm,
-        })
+        let gate = var.gate && std::env::var("TH_PREFILL_ATTN_GATE").as_deref() != Ok("0");
+        Some(crate::attn_kernel::PrefillVariant { gate, ..var })
     })
 }
 

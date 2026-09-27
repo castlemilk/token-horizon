@@ -359,8 +359,8 @@ pub fn bench_attn() -> Result<()> {
 /// Numerics: max|x - f32 reference| (kv <= TH_BENCH_PREFILL_ATTN_REF_MAX,
 /// default 8192) and max|fused - grouped|. Knobs:
 ///   TH_BENCH_PREFILL_ATTN_QSCALE=4   score std (peaked, like real heads)
-///   TH_BENCH_PREFILL_ATTN_VARIANTS=ph4,ph2,g4,g2,g4r,g4tm   (ph = per head,
-///   g = GQA-fused rows; digit = row groups of 16; r = relaxed; tm = time-major V)
+///   TH_BENCH_PREFILL_ATTN_VARIANTS=ph4,ph2,g4,g2,g4r,g4tm   (names as
+///   `PrefillVariant::parse`; a `tm` suffix = time-major V (the cat layout))
 pub fn bench_prefill_attn(spec: &str) -> Result<()> {
     use crate::attn_kernel::{attn_prefill, PrefillVariant};
     let dev = Device::new_metal(0)?;
@@ -375,13 +375,22 @@ pub fn bench_prefill_attn(spec: &str) -> Result<()> {
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .collect();
+    // `tm` suffix: the cat layout (time-major V) instead of the capacity buffers
     let parse = |n: &str| -> Option<(PrefillVariant, bool)> {
-        let (gqa, rest) = if let Some(r) = n.strip_prefix("ph") { (false, r) } else { (true, n.strip_prefix('g')?) };
-        let wm: usize = rest.chars().next()?.to_digit(10)? as usize;
-        let rest = &rest[1..];
-        Some((PrefillVariant { gqa, relaxed: rest.contains('r'), gate: false, wm }, rest.contains("tm")))
+        let tm = n.ends_with("tm");
+        let v = PrefillVariant::parse(n.trim_end_matches("tm"))?;
+        Some((PrefillVariant { gate: false, ..v }, tm))
     };
     let nsets = 4usize;
+    if let Device::Metal(md) = &dev {
+        for n in &names {
+            if let Some((var, _)) = parse(n) {
+                if let Some(p) = crate::attn_kernel::metal_impl::prefill_pipe(md, NH, NKV, HD, var) {
+                    eprintln!("pattn variant {n}: max threads/threadgroup {} (launch {})", p.max_total_threads_per_threadgroup(), 64 * var.wm);
+                }
+            }
+        }
+    }
     for pair in spec.split(',') {
         let Some((seq, kv)) = pair.split_once(':').and_then(|(a, b)| {
             Some((a.trim().parse::<usize>().ok()?, b.trim().parse::<usize>().ok()?))
@@ -461,6 +470,9 @@ pub fn bench_prefill_attn(spec: &str) -> Result<()> {
             let Some((var, tm)) = parse(n) else {
                 continue;
             };
+            if seq == 0 {
+                continue;
+            }
             let fused = |s: usize| {
                 if tm {
                     attn_prefill(&q, &k_all[s], &v_tm[s], None, pos, seq, NH, NKV, HD, var)
