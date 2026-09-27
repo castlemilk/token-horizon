@@ -1,0 +1,36 @@
+#!/usr/bin/env python3
+"""gpu-lock-quiet [--timeout S] [--load L] [--hold S] -- <cmd...>
+Same exclusive lock as $P/bin/gpu-lock (flock on /tmp/th-engine-gpu.lock, same pid/cmd stamp, same release), but it
+only TRIES the lock while the 1-min load has stayed < L (default 6.0) for S seconds straight (default 60), so a quiet-gated
+session never takes the lock (and holds it idle behind its own gate) while the machine is plainly noisy."""
+import fcntl, os, subprocess, sys, time
+LOCK = "/tmp/th-engine-gpu.lock"; a = sys.argv[1:]; to = 21600; L = 6.0; H = 60
+while a and a[0] in ("--timeout", "--load", "--hold"):
+    if a[0] == "--timeout": to = int(a[1])
+    elif a[0] == "--load": L = float(a[1])
+    else: H = int(a[1])
+    a = a[2:]
+if a and a[0] == "--": a = a[1:]
+if not a: print(__doc__); sys.exit(2)
+fd = os.open(LOCK, os.O_RDWR | os.O_CREAT, 0o666); t0 = time.time(); since = None; last = 0
+while True:
+    now = time.time()
+    if now - t0 > to: print("gpu-lock-quiet: timeout", file=sys.stderr); sys.exit(75)
+    l1 = os.getloadavg()[0]
+    if l1 < L:
+        since = since or now
+        if now - since >= H:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB); break
+            except BlockingIOError:
+                pass
+    else:
+        since = None
+    if now - last > 300:
+        print(f"gpu-lock-quiet: waiting {now - t0:.0f}s, load1 {l1:.2f} (need < {L} for {H}s)", file=sys.stderr, flush=True); last = now
+    time.sleep(2)
+print(f"gpu-lock-quiet: acquired after {time.time() - t0:.0f}s, load1 {os.getloadavg()[0]:.2f}", file=sys.stderr, flush=True)
+os.ftruncate(fd, 0); os.write(fd, f"pid={os.getpid()} cmd={' '.join(a)}\n".encode())
+try: rc = subprocess.call(a)
+finally: fcntl.flock(fd, fcntl.LOCK_UN)
+sys.exit(rc)
