@@ -188,6 +188,13 @@ async fn main() -> Result<()> {
                 draft_kernel::bench_draft_attn(&dev)?;
                 return Ok(());
             }
+            // E1: fused prefill attention vs the grouped eager path and
+            // candle's sdpa at prefill chunk shapes (no model load)
+            #[cfg(all(feature = "metal", target_os = "macos"))]
+            if let Ok(spec) = std::env::var("TH_BENCH_PREFILL_ATTN") {
+                attn_bench::bench_prefill_attn(&spec)?;
+                return Ok(());
+            }
             // N3: split-key vs single-pass attention across context
             // lengths (no model load). A `seq:kv,...` list selects T1b's
             // eager prefill attention bench instead (after the model load,
@@ -754,6 +761,104 @@ async fn main() -> Result<()> {
                         emed / smed,
                         gmed / smed,
                     );
+                }
+            }
+            #[cfg(all(feature = "metal", target_os = "macos"))]
+            if let Ok(spec) = std::env::var("TH_BENCH_PREFILL_LOGITS") {
+                // E1: in-model prefill A/B, eager vs fused prefill attention.
+                // For each prompt length N (ids from TH_BENCH_PREFILL_IDS,
+                // cycled), prefill slot 0 in the engine's 512-row grid chunks
+                // (forward_slot, the prefill_slot path), synced per chunk;
+                // alternate eager / fused TH_BENCH_PREFILL_REPS times (default
+                // 3); report per-chunk and total ms (median), and max|d| /
+                // argmax / top-10 overlap of the last-position logits.
+                use candle_core::{DType, Tensor};
+                let dev = loaded.device.clone();
+                let path = std::env::var("TH_BENCH_PREFILL_IDS").map_err(|_| anyhow::anyhow!("TH_BENCH_PREFILL_IDS=<comma-separated ids file>"))?;
+                let base: Vec<u32> = std::fs::read_to_string(&path)?
+                    .split(|c: char| c == ',' || c.is_whitespace())
+                    .filter_map(|t| t.trim().parse().ok())
+                    .collect();
+                let reps: usize = std::env::var("TH_BENCH_PREFILL_REPS").ok().and_then(|v| v.parse().ok()).unwrap_or(3);
+                let step: usize = std::env::var("TH_BENCH_PREFILL_STEP").ok().and_then(|v| v.parse().ok()).unwrap_or(512);
+                for n in spec.split(',').filter_map(|t| t.trim().parse::<usize>().ok()) {
+                    let ids: Vec<u32> = base.iter().copied().cycle().take(n).collect();
+                    // `tail` > 0: the last `tail` rows as their own chunk (the prefix
+                    // cache's default plan splits a chat prompt's tail off like this;
+                    // chunks <= 128 rows take other GEMM tiles: a real numerics change)
+                    let mut run = |eager: bool, tail: usize| -> Result<(Vec<f64>, Tensor)> {
+                        qwen35::prefill_attn_force_eager(eager);
+                        loaded.backend.clear_kv_cache(0);
+                        dev.synchronize()?;
+                        let mut ms = Vec::new();
+                        let mut logits = None;
+                        let mut pos = 0;
+                        let body = n.saturating_sub(tail);
+                        let mut plan: Vec<&[u32]> = ids[..body].chunks(step).collect();
+                        if tail > 0 && body > 0 {
+                            plan.push(&ids[body..]);
+                        }
+                        for chunk in plan {
+                            let t = std::time::Instant::now();
+                            let lg = loaded.backend.forward_slot(0, chunk, pos, &dev)?;
+                            dev.synchronize()?;
+                            ms.push(t.elapsed().as_secs_f64() * 1e3);
+                            logits = Some(lg);
+                            pos += chunk.len();
+                        }
+                        qwen35::prefill_attn_force_eager(false);
+                        Ok((ms, logits.unwrap().to_dtype(DType::F32)?))
+                    };
+                    let mut e_ms: Vec<Vec<f64>> = Vec::new();
+                    let mut f_ms: Vec<Vec<f64>> = Vec::new();
+                    let (mut e_lg, mut f_lg) = (None, None);
+                    for r in 0..reps {
+                        for eager in if r % 2 == 0 { [true, false] } else { [false, true] } {
+                            let (ms, lg) = run(eager, 0)?;
+                            if eager { e_ms.push(ms); e_lg = Some(lg); } else { f_ms.push(ms); f_lg = Some(lg); }
+                        }
+                    }
+                    // noise floor: the eager path with a 24-row tail chunk (the engine's
+                    // own plan-dependent variation), and the same for the fused path
+                    let (_, e2_lg) = run(true, 24)?;
+                    let (_, f2_lg) = run(false, 24)?;
+                    let med = |v: &mut Vec<f64>| { v.sort_by(|a, b| a.total_cmp(b)); v[v.len() / 2] };
+                    let nch = e_ms[0].len();
+                    let per = |runs: &Vec<Vec<f64>>, c: usize| { let mut v: Vec<f64> = runs.iter().map(|r| r[c]).collect(); med(&mut v) };
+                    let tot = |runs: &Vec<Vec<f64>>| { let mut v: Vec<f64> = runs.iter().map(|r| r.iter().sum()).collect(); med(&mut v) };
+                    let ev: Vec<f32> = e_lg.unwrap().to_vec1()?;
+                    let fv: Vec<f32> = f_lg.unwrap().to_vec1()?;
+                    let e2v: Vec<f32> = e2_lg.to_vec1()?;
+                    let f2v: Vec<f32> = f2_lg.to_vec1()?;
+                    // |d|, |d| in bf16 ulps of the reference logit, KL(p_a || p_b) in nats,
+                    // max |d log p| over a's top 10, argmax, top-10 overlap
+                    let cmp = |a: &[f32], b: &[f32]| -> String {
+                        let (mut dmax, mut at) = (0f32, 0usize);
+                        for (i, (x, y)) in a.iter().zip(b).enumerate() {
+                            if (x - y).abs() > dmax { dmax = (x - y).abs(); at = i; }
+                        }
+                        // bf16 ulp at the larger magnitude of the pair
+                        let ulp = |x: f32| { let e = x.abs().max(1e-30).log2().floor(); 2f32.powf(e - 7.0) };
+                        let dulp = dmax / ulp(a[at].abs().max(b[at].abs()));
+                        let big = a.iter().filter(|x| x.abs() >= 16.0).count();
+                        let lse = |v: &[f32]| { let m = v.iter().cloned().fold(f32::MIN, f32::max) as f64; m + v.iter().map(|x| (*x as f64 - m).exp()).sum::<f64>().ln() };
+                        let (la, lb) = (lse(a), lse(b));
+                        let kl: f64 = a.iter().zip(b).map(|(x, y)| { let lpa = *x as f64 - la; let lpb = *y as f64 - lb; lpa.exp() * (lpa - lpb) }).sum();
+                        let top = |v: &[f32], k: usize| { let mut i: Vec<usize> = (0..v.len()).collect(); i.sort_by(|&p, &q| v[q].total_cmp(&v[p])); i.truncate(k); i };
+                        let (ta, tb) = (top(a, 10), top(b, 10));
+                        let dlp = ta.iter().map(|&i| ((a[i] as f64 - la) - (b[i] as f64 - lb)).abs()).fold(0f64, f64::max);
+                        let ov = ta.iter().filter(|x| tb.contains(x)).count();
+                        format!("max|d| {dmax:.4} at logit {:.3}/{:.3} ({dulp:.1} bf16 ulp; {big} logits >= 16) KL {kl:.2e} top10 max|dlogp| {dlp:.4} argmax {} top10 {ov}/10", a[at], b[at],
+                            if ta[0] == tb[0] { "same" } else { "DIFF" })
+                    };
+                    let chunks: Vec<String> = (0..nch).map(|c| format!("{:.0}/{:.0}", per(&e_ms, c), per(&f_ms, c))).collect();
+                    eprintln!(
+                        "prefill n={n} step={step} reps={reps} | total eager {:.1} ms fused {:.1} ms (-{:.1} ms, {:.2}x) | per chunk eager/fused [{}]",
+                        tot(&e_ms), tot(&f_ms), tot(&e_ms) - tot(&f_ms), tot(&e_ms) / tot(&f_ms), chunks.join(" "),
+                    );
+                    eprintln!("  logits n={n} fused vs eager (step {step}): {}", cmp(&ev, &fv));
+                    eprintln!("  logits n={n} NOISE FLOOR eager +24-row tail chunk vs eager grid: {}", cmp(&ev, &e2v));
+                    eprintln!("  logits n={n} fused +24-row tail chunk vs fused grid: {}", cmp(&fv, &f2v));
                 }
             }
             #[cfg(all(feature = "metal", target_os = "macos"))]
