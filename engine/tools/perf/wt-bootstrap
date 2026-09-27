@@ -3,7 +3,7 @@
 # with engine/target/release APFS-cloned from the integration worktree so cargo build --release is incremental. Prints the path. Idempotent.
 set -euo pipefail
 REPO=/Users/benebsworth/projects/token-horizon; BR="$1"; FROM="${2:-main}"; WT="$REPO/.worktrees/$BR"
-SEED="$REPO/.worktrees/report/integration-2/engine/target/release"
+SEED="${WT_SEED:-$REPO/engine/target/release}"   # WT_SEED=<built target/release dir> overrides
 if [ ! -d "$WT" ]; then
   if git -C "$REPO" show-ref --verify --quiet "refs/heads/$BR"; then git -C "$REPO" worktree add "$WT" "$BR" >/dev/null
   else git -C "$REPO" worktree add -b "$BR" "$WT" "$FROM" >/dev/null; fi
