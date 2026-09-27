@@ -37,16 +37,29 @@ pub enum BackendPrefix {
 }
 
 impl BackendPrefix {
-    pub fn bytes(&self) -> usize {
-        match self {
-            Self::Qwen35(p) => p.bytes(),
-        }
-    }
     pub fn pos(&self) -> usize {
         match self {
             Self::Qwen35(p) => p.pos(),
         }
     }
+    /// Storage parts for the cache's byte accounting (see
+    /// `qwen35::PrefixState::parts`).
+    pub fn parts(&self) -> &[(crate::qwen35::CkPart, usize)] {
+        match self {
+            Self::Qwen35(p) => p.parts(),
+        }
+    }
+    /// The last prompt position's logits (prompt-end checkpoints).
+    pub fn logits(&self) -> Option<&Tensor> {
+        match self {
+            Self::Qwen35(p) => p.logits(),
+        }
+    }
+}
+
+/// A pending checkpoint's held GDN state (`qwen35::GdnHold`).
+pub enum BackendHold {
+    Qwen35(crate::qwen35::GdnHold),
 }
 
 impl ModelBackend {
@@ -62,6 +75,22 @@ impl ModelBackend {
             return Ok(m.forward(slot, tokens, pos)?.to_dtype(DType::F32)?);
         }
         self.forward(tokens, pos, device)
+    }
+
+    /// A prefill chunk whose logits are discarded (not a prompt's last):
+    /// qwen3_5 skips the final norm + lm_head; other backends forward and
+    /// drop the logits.
+    pub fn forward_slot_nohead(
+        &mut self,
+        slot: usize,
+        tokens: &[u32],
+        pos: usize,
+        device: &Device,
+    ) -> Result<()> {
+        if let Self::Qwen35(m) = self {
+            return m.forward_nohead(slot, tokens, pos);
+        }
+        self.forward_slot(slot, tokens, pos, device).map(|_| ())
     }
 
     /// Returns logits for the last input position, shape (vocab,).
@@ -255,6 +284,40 @@ impl ModelBackend {
         match self {
             Self::Qwen35(m) => Ok(BackendPrefix::Qwen35(Box::new(m.prefix_capture(slot)?))),
             _ => bail!("prefix cache not supported by this backend"),
+        }
+    }
+
+    /// T1: hold `slot`'s committed GDN state for a later `prefix_build`
+    /// (`copy`: copies now — its parity is rewritten before the build).
+    pub fn prefix_hold(&mut self, slot: usize, copy: bool) -> Result<BackendHold> {
+        match self {
+            Self::Qwen35(m) => Ok(BackendHold::Qwen35(m.prefix_hold(slot, copy)?)),
+            _ => bail!("prefix cache not supported by this backend"),
+        }
+    }
+
+    /// T1: build checkpoints of `slot` at `(pos, held GDN state, logits)`
+    /// from its live K/V and capture rows (deferred captures).
+    pub fn prefix_build(
+        &mut self,
+        slot: usize,
+        specs: Vec<(usize, BackendHold, Option<Tensor>)>,
+    ) -> Result<Vec<BackendPrefix>> {
+        match self {
+            Self::Qwen35(m) => {
+                let specs = specs.into_iter().map(|(p, BackendHold::Qwen35(h), l)| (p, h, l)).collect();
+                Ok(m.prefix_build(slot, specs)?.into_iter().map(|s| BackendPrefix::Qwen35(Box::new(s))).collect())
+            }
+            _ => bail!("prefix cache not supported by this backend"),
+        }
+    }
+
+    /// Size `slot`'s KV cache for `n` sequence rows + `extra` decode rows
+    /// in one allocation (qwen3_5; a no-op for other backends).
+    pub fn kv_reserve(&mut self, slot: usize, n: usize, extra: usize) -> Result<()> {
+        match self {
+            Self::Qwen35(m) => m.kv_reserve(slot, n, extra),
+            _ => Ok(()),
         }
     }
 

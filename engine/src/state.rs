@@ -204,6 +204,9 @@ pub struct PrefixStats {
     /// Requests that could not use the cache (compressed KV mode).
     pub bypassed: AtomicU64,
     pub reused_tokens: AtomicU64,
+    /// Hits that restored a prompt-end checkpoint (exact repeat: no
+    /// prefill forward).
+    pub full_hits: AtomicU64,
     pub inserts: AtomicU64,
     pub evictions: AtomicU64,
     pub entries: AtomicU64,

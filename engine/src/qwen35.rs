@@ -1834,12 +1834,87 @@ fn add_rms_norm(
 /// as a K45 presum block (`quant_kernel::presum_block_bytes`) — the third
 /// value says so, and the next projection takes it with `presum: true`
 /// (no pad copy, no in-kernel input sums). Values are bit-identical.
-/// Prefill (eager attention) writes K/V into a contiguous capacity buffer
-/// instead of leaving an exact-length view for the first verify to regrow.
-/// `TH_KV_CAP_PREFILL=0` restores the old behaviour (A/B). Read once.
-fn kv_cap_prefill() -> bool {
+/// Prefill (eager attention) K/V store. `Direct` (default): each chunk's
+/// K/V rows go straight into a contiguous capacity buffer (the decode
+/// path's layout, so the first verify never regrows 32 caches) and the
+/// attention reads views of it — no per-chunk `cat` of the whole prefix; a
+/// new buffer is allocated uninitialised, gets the old rows (after a
+/// restore / growth) and its unwritten tail zeroed by one compute dispatch
+/// (no blit). `Legacy` (`TH_KV_CAP_PREFILL=legacy`): integration-3's
+/// zero-filled buffer (blit) + `cat` + copy — the same cache contents and
+/// attention inputs, bit for bit. `Off` (`TH_KV_CAP_PREFILL=0`): the
+/// exact-length `cat` result is the cache (the first verify regrows it).
+/// Read once.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum KvCap {
+    Off,
+    Legacy,
+    Direct,
+}
+
+fn kv_cap_mode() -> KvCap {
+    static MODE: std::sync::OnceLock<KvCap> = std::sync::OnceLock::new();
+    match KV_CAP_OVERRIDE.load(std::sync::atomic::Ordering::Relaxed) {
+        1 => KvCap::Off,
+        2 => KvCap::Legacy,
+        3 => KvCap::Direct,
+        _ => *MODE.get_or_init(|| match std::env::var("TH_KV_CAP_PREFILL").as_deref() {
+            Ok("0") => KvCap::Off,
+            Ok("legacy") => KvCap::Legacy,
+            _ => KvCap::Direct,
+        }),
+    }
+}
+
+/// Decode-path K/V growth (`ensure_kv`) the integration-3 way — a
+/// zero-filled pad (blit) + `cat` — under `TH_KV_CAP_PREFILL=legacy`, so
+/// that arm is integration-3's K/V memory handling end to end (A/B).
+/// Otherwise: an uninitialised buffer, the old rows copied in by one
+/// strided compute dispatch, the pad zeroed by another (same contents).
+fn kv_grow_legacy() -> bool {
+    kv_cap_mode() == KvCap::Legacy
+}
+
+/// `TH_PREFIX_CACHE_KV=copy` (read once): a checkpoint build copies the
+/// K/V rows into a fresh exact-size buffer (the A/B arm) instead of
+/// viewing the slot's own K/V buffer (`prefix_build`).
+fn ck_kv_copy() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var("TH_KV_CAP_PREFILL").as_deref() != Ok("0"))
+    *ON.get_or_init(|| std::env::var("TH_PREFIX_CACHE_KV").as_deref() == Ok("copy"))
+}
+
+/// `TH_KV_RESERVE=0` (read once): `kv_reserve` does nothing — the prefill
+/// store grows the K/V by its own `max(2*need, 2048)` rule (A/B arm).
+fn kv_reserve_on() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("TH_KV_RESERVE").as_deref() != Ok("0"))
+}
+
+/// Whether a checkpoint build may VIEW the slot's K/V buffers
+/// (`prefix_build`): the view pins whole capacity buffers (`view_b` bytes)
+/// where exact copies would hold `exact_b`. Allowed while the extra is at
+/// most a third of `exact_b` or 48 MiB, whichever is larger — a 1.45k prompt
+/// in the 2048-row floor (+40 %, 39 MB) or an 8k prompt with the reply
+/// reserve views; a short prompt in the floor, or a large `max_tokens`
+/// reserve past a mid-length prompt, copies (cheap for the short one). Never
+/// with `TH_PREFIX_CACHE_KV=copy` (`force_copy`).
+pub(crate) fn ck_kv_view_ok(exact_b: usize, view_b: usize, force_copy: bool) -> bool {
+    !force_copy && view_b.saturating_sub(exact_b) <= (exact_b / 3).max(48 << 20)
+}
+
+/// In-process A/B switch for probes (`TH_BENCH_TTFT`): 0 = the
+/// `TH_KV_CAP_PREFILL` setting, else the forced mode.
+static KV_CAP_OVERRIDE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+/// Probe hook: force a `KvCap` mode (None = back to the env knob).
+pub(crate) fn set_kv_cap_override(v: Option<KvCap>) {
+    let x = match v {
+        None => 0,
+        Some(KvCap::Off) => 1,
+        Some(KvCap::Legacy) => 2,
+        Some(KvCap::Direct) => 3,
+    };
+    KV_CAP_OVERRIDE.store(x, std::sync::atomic::Ordering::Relaxed);
 }
 
 /// `TH_ARN_LEGACY=1`: the pre-R0c single-threadgroup add+RMSNorm kernels
@@ -2104,6 +2179,12 @@ pub struct Slot {
     /// ring warm-up needs from the checkpoint. Read by `draft_prefill`.
     capture_base: usize,
     pub draft: Option<crate::dflash::Draft>,
+    /// The zero-row (K, V) pair every attention layer starts a sequence
+    /// with (never written: the first forward replaces it). Shared by
+    /// every clear — a fresh zero-element tensor would take an arbitrary
+    /// free buffer from candle's pool (`find_available_buffer(0)`) and pin
+    /// it until the next forward.
+    kv_empty: (Tensor, Tensor),
 }
 
 impl Slot {
@@ -2117,6 +2198,10 @@ impl Slot {
         let mut gdn = Vec::with_capacity(layers.len());
         let mut kv = Vec::with_capacity(layers.len());
         let mut kvq = Vec::with_capacity(layers.len());
+        let kv_empty = (
+            Tensor::zeros((cfg.num_key_value_heads, 0, cfg.head_dim), DType::BF16, device)?,
+            Tensor::zeros((cfg.num_key_value_heads, 0, cfg.head_dim), DType::BF16, device)?,
+        );
         for l in layers {
             if matches!(l.kind, Kind::Gdn(_)) {
                 let conv_dim = 2 * cfg.linear_num_key_heads
@@ -2133,18 +2218,7 @@ impl Slot {
                 kv.push(None);
             } else {
                 gdn.push(None);
-                kv.push(Some((
-                    Tensor::zeros(
-                        (cfg.num_key_value_heads, 0, cfg.head_dim),
-                        DType::BF16,
-                        device,
-                    )?,
-                    Tensor::zeros(
-                        (cfg.num_key_value_heads, 0, cfg.head_dim),
-                        DType::BF16,
-                        device,
-                    )?,
-                )));
+                kv.push(Some(kv_empty.clone()));
             }
             kvq.push(crate::turboquant::QuantKv::default());
         }
@@ -2159,20 +2233,25 @@ impl Slot {
             captures: Vec::new(),
             capture_base: 0,
             draft: None,
+            kv_empty,
         })
     }
 }
 
 /// T1 prefix-cache checkpoint of one slot at KV position `pos`, taken
-/// right after a prefill chunk ending at `pos` (see `prefix_cache.rs`).
-/// Every tensor is private to the checkpoint and never written again:
-/// the GDN state is a bit-exact copy of the committed parity; each
-/// attention K/V is exactly `[n_kv, pos, d]` — a slot that restores it
-/// holds it at full capacity, so its next write grows into a fresh buffer
-/// (`ensure_kv` / the eager path's cat) instead of writing in place; the
-/// capture rows are a compact copy (one group, fresh buffers) that
-/// `take_captures` only reads. Restoring into several slots at once is
-/// therefore safe: they share only read-only buffers.
+/// right after a prefill chunk ending at `pos` (see `prefix_cache.rs`) —
+/// or later, from state that is still intact then (`prefix_build`).
+/// No tensor it holds is ever written again: the GDN state is a bit-exact
+/// copy of the parity that held the state at `pos` (its own); each
+/// attention K/V is a `[n_kv, pos, d]` view of the K/V buffer the building
+/// slot prefilled into (shared by the build's checkpoints; the slot only
+/// appends past its prompt and never rewrites these rows — see
+/// `prefix_build`) — a slot that restores it holds exactly `pos` rows, so
+/// its next write grows into a buffer of its own (`ensure_kv` / the prefill
+/// store) instead of writing in place; the capture rows are views of one
+/// compact copy (fresh buffers) that `take_captures` only reads. Restoring
+/// into several slots at once is therefore safe: they only read the shared
+/// buffers. A prompt-end checkpoint also keeps the last position's logits.
 pub struct PrefixState {
     pos: usize,
     /// per layer: (conv window, recurrent state) for GDN layers
@@ -2185,16 +2264,47 @@ pub struct PrefixState {
     /// last WINDOW-1 rows)
     caps: Vec<Tensor>,
     caps_base: usize,
-    bytes: usize,
+    /// f32 logits of position `pos - 1` (prompt-end checkpoints only)
+    logits: Option<Tensor>,
+    /// storage for the cache's byte accounting: the K/V buffer and the
+    /// capture-row copy are shared by the build's checkpoints (their full
+    /// size, counted once by the cache), the GDN copy is this one's own
+    parts: Vec<(CkPart, usize)>,
+}
+
+/// A checkpoint's storage part (`PrefixState::parts`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CkPart {
+    /// the build's shared K/V buffer (the slot's, viewed — or a copy)
+    Kv,
+    /// the build's shared capture-row copy
+    Caps,
+    /// this checkpoint's own GDN state (+ logits)
+    Own,
 }
 
 impl PrefixState {
     pub fn pos(&self) -> usize {
         self.pos
     }
-    pub fn bytes(&self) -> usize {
-        self.bytes
+    pub fn parts(&self) -> &[(CkPart, usize)] {
+        &self.parts
     }
+    pub fn logits(&self) -> Option<&Tensor> {
+        self.logits.as_ref()
+    }
+}
+
+/// Where a pending checkpoint's GDN state lives until `prefix_build`.
+pub enum GdnHold {
+    /// bit-exact copies taken while it was the committed state (a
+    /// checkpoint whose parity a later prefill chunk overwrites)
+    Copied(Vec<Option<(Tensor, Tensor)>>),
+    /// still resident in `parity` with content id `id` — copied at build
+    /// time, after checking the parity was not rewritten since (G1a: a
+    /// forward writes the other parity, so the state at the last split
+    /// survives the tail chunk, and the prompt-end state the first token)
+    Parity { parity: usize, id: u64 },
 }
 
 fn tensor_bytes(t: &Tensor) -> usize {
@@ -3365,9 +3475,17 @@ impl Qwen35 {
                 // the first transition")
                 Kind::Gdn(l) => match sl.gdn[i].as_mut() {
                     Some(g) => {
+                        // zeroed in place (the slot owns both parity
+                        // buffers exclusively): one compute dispatch each,
+                        // no fresh allocation and no blit fill (which ends
+                        // candle's compute encoder) — 96 per clear, and a
+                        // single-slot request clears twice
                         let cur = sl.gdn_par.cur;
-                        g.rec[cur] = Tensor::zeros_like(&g.rec[cur]).unwrap();
-                        g.conv[cur] = Tensor::zeros_like(&g.conv[cur]).unwrap();
+                        for t in [&mut g.rec[cur], &mut g.conv[cur]] {
+                            if crate::outbuf::zero_all(t).is_err() {
+                                *t = Tensor::zeros_like(t).unwrap();
+                            }
+                        }
                     }
                     None => {
                         sl.gdn[i] = Some(
@@ -3384,20 +3502,9 @@ impl Qwen35 {
                     }
                 },
                 Kind::Attn(_) => {
-                    sl.kv[i] = Some((
-                        Tensor::zeros(
-                            (self.cfg.num_key_value_heads, 0, self.cfg.head_dim),
-                            DType::BF16,
-                            &self.device,
-                        )
-                        .unwrap(),
-                        Tensor::zeros(
-                            (self.cfg.num_key_value_heads, 0, self.cfg.head_dim),
-                            DType::BF16,
-                            &self.device,
-                        )
-                        .unwrap(),
-                    ));
+                    // the slot's shared zero-row pair (no allocation, no
+                    // blit fill)
+                    sl.kv[i] = Some(sl.kv_empty.clone());
                 }
             }
         }
@@ -3432,78 +3539,169 @@ impl Qwen35 {
     }
 
     /// Checkpoint `slot` at its current KV position (call right after the
-    /// prefill chunk that ended there). GPU copies are enqueued in stream
-    /// order — no host sync. Copies the GDN state (~151 MB on Qwen3.8-27B)
-    /// and the draft capture rows (<= WINDOW-1 rows, 51 KB each); K/V are
-    /// shared when exact-size (see [`PrefixState`]).
+    /// prefill chunk that ended there) — one `prefix_build` of the
+    /// committed state. GPU copies are enqueued in stream order, no host
+    /// sync.
     pub fn prefix_capture(&mut self, slot: usize) -> Result<PrefixState> {
+        let pos = self.slots[slot].kv_tokens;
+        let hold = self.prefix_hold(slot, false)?;
+        let mut v = self.prefix_build(slot, vec![(pos, hold, None)])?;
+        v.pop().context("prefix capture: empty build")
+    }
+
+    /// Hold `slot`'s committed GDN state (the state at its current KV
+    /// position) for a later `prefix_build`: bit-exact copies now (`copy`
+    /// — the parity will be rewritten before the build), or just the
+    /// parity and its content id.
+    pub fn prefix_hold(&mut self, slot: usize, copy: bool) -> Result<GdnHold> {
         let sl = &self.slots[slot];
         anyhow::ensure!(!sl.kv_quant, "prefix capture: slot {slot} runs compressed KV");
-        let pos = sl.kv_tokens;
         let cur = sl.gdn_par.cur;
-        let mut bytes = 0usize;
+        if !copy {
+            return Ok(GdnHold::Parity { parity: cur, id: sl.gdn_par.ids[cur] });
+        }
+        Ok(GdnHold::Copied(self.gdn_copies(slot, cur)?))
+    }
+
+    /// Bit-exact copies of every GDN layer's parity `p` state.
+    fn gdn_copies(&self, slot: usize, p: usize) -> Result<Vec<Option<(Tensor, Tensor)>>> {
+        let sl = &self.slots[slot];
         let mut gdn = Vec::with_capacity(sl.gdn.len());
-        let mut kv = Vec::with_capacity(sl.kv.len());
         for (i, layer) in self.layers.iter().enumerate() {
-            match &layer.kind {
+            gdn.push(match &layer.kind {
                 Kind::Gdn(_) => {
                     let st = sl.gdn[i].as_ref().context("prefix capture: gdn state missing")?;
-                    let (c, r) = (state_copy_uninit(&st.conv[cur])?, state_copy_uninit(&st.rec[cur])?);
-                    bytes += tensor_bytes(&c) + tensor_bytes(&r);
-                    gdn.push(Some((c, r)));
-                    kv.push(None);
+                    Some((state_copy_uninit(&st.conv[p])?, state_copy_uninit(&st.rec[p])?))
                 }
+                Kind::Attn(_) => None,
+            });
+        }
+        Ok(gdn)
+    }
+
+    /// Build checkpoints of `slot` at positions `pos <= kv_tokens`, each
+    /// with its held GDN state and optional logits, from the live K/V
+    /// rows (never rewritten below `kv_tokens`: every checkpoint views the
+    /// slot's K/V buffer, no copy) and the live capture rows (one compact
+    /// copy of the union of what each needs — the last WINDOW-1 rows
+    /// before its position — views per checkpoint).
+    /// Call before anything rewrites the held parities, truncates the K/V
+    /// below the positions or drains the captures (`draft_prefill`). GPU
+    /// copies are enqueued in stream order, no host sync.
+    pub fn prefix_build(
+        &mut self,
+        slot: usize,
+        specs: Vec<(usize, GdnHold, Option<Tensor>)>,
+    ) -> Result<Vec<PrefixState>> {
+        let sl = &self.slots[slot];
+        anyhow::ensure!(!sl.kv_quant, "prefix capture: slot {slot} runs compressed KV");
+        if specs.is_empty() {
+            return Ok(Vec::new());
+        }
+        let live = sl.kv_tokens;
+        let pmax = specs.iter().map(|s| s.0).max().unwrap_or(0);
+        anyhow::ensure!(
+            specs.iter().all(|s| s.0 > 0) && pmax <= live,
+            "prefix build: positions must be in 1..={live}"
+        );
+        // K/V: rows 0..pmax, exactly [n_kv, pmax, d]. The slot's own K/V
+        // buffer (the prefill's capacity buffer, or the exact-length cache
+        // under TH_KV_CAP_PREFILL=0) is contiguous and its rows below
+        // `kv_tokens` are never written again: decode appends at
+        // `kv_tokens` (>= every checkpoint position; rollbacks only move it
+        // back to a committed count past the prompt), growth copies into a
+        // new buffer, and a clear or restore replaces the tensor instead of
+        // writing it. So a checkpoint VIEWS rows 0..pos of it — no copy, no
+        // allocation — and holds the whole buffer (counted in full: its
+        // capacity tail included). A slot that restores the view holds
+        // exactly `pos` rows, so its first write grows into a buffer of its
+        // own (`kv_store_direct` / `ensure_kv`, which copy straight from the
+        // view). Another layout (or TH_PREFIX_CACHE_KV=copy) is copied into
+        // a fresh exact-size buffer (`Tensor::copy` is NOT a copy on Metal
+        // in candle 0.11 — try_clone shares).
+        let mut kv_full: Vec<Option<(Tensor, Tensor)>> = Vec::with_capacity(sl.kv.len());
+        let mut kv_bytes = 0usize;
+        // the view pins the whole buffer: allowed while that is at most
+        // `ck_kv_view_ok`'s slack over exact copies (a short prompt's
+        // 2048-row floor or a large max_tokens copies instead)
+        let (mut exact_b, mut view_b) = (0usize, 0usize);
+        for kv in sl.kv.iter().flatten() {
+            for t in [&kv.0, &kv.1] {
+                let row_b = t.dim(0)? * t.dim(2)? * t.dtype().size_in_bytes();
+                exact_b += pmax * row_b;
+                view_b += if t.is_contiguous() { tensor_bytes(t) } else { pmax * row_b };
+            }
+        }
+        let copy = !ck_kv_view_ok(exact_b, view_b, ck_kv_copy());
+        for (i, layer) in self.layers.iter().enumerate() {
+            kv_full.push(match &layer.kind {
                 Kind::Attn(_) => {
                     let (k, v) = sl.kv[i].as_ref().context("prefix capture: kv state missing")?;
-                    // exactly [n_kv, pos, d]: share an exact-size prefill
-                    // cache (never written in place again), copy the live
-                    // rows out of a capacity buffer into a fresh one
-                    // (`Tensor::copy` is NOT a copy on Metal in candle
-                    // 0.11 — try_clone shares the buffer)
-                    let exact = |t: &Tensor| -> Result<Tensor> {
+                    let mut held = 0usize;
+                    let mut exact = |t: &Tensor| -> Result<Tensor> {
                         let rows = t.dim(1)?;
-                        anyhow::ensure!(rows >= pos, "prefix capture: kv has {rows} rows < pos {pos}");
-                        Ok(if rows == pos && t.is_contiguous() {
-                            t.clone()
+                        anyhow::ensure!(rows >= pmax, "prefix capture: kv has {rows} rows < pos {pmax}");
+                        Ok(if t.is_contiguous() && (!copy || rows == pmax) {
+                            held += tensor_bytes(t);
+                            if rows == pmax {
+                                t.clone()
+                            } else {
+                                t.narrow(1, 0, pmax)?
+                            }
                         } else {
-                            state_copy_uninit(&t.narrow(1, 0, pos)?)?
+                            let c = state_copy_uninit(&t.narrow(1, 0, pmax)?)?;
+                            held += tensor_bytes(&c);
+                            c
                         })
                     };
                     let (k, v) = (exact(k)?, exact(v)?);
-                    bytes += tensor_bytes(&k) + tensor_bytes(&v);
-                    gdn.push(None);
-                    kv.push(Some((k, v)));
+                    kv_bytes += held;
+                    Some((k, v))
                 }
-            }
+                Kind::Gdn(_) => None,
+            });
         }
-        // capture rows since the last drain cover capture_base..pos. Keep
-        // exactly what a longer prompt's draft warm-up can reach — its last
-        // WINDOW-1 rows start at or after pos-(WINDOW-1) — as ONE compact
-        // group: a fresh [rows, hidden] tensor per capture layer. (The live
-        // capture tensors are views that pin their forward's whole
-        // [2, T, hidden] residual|normed output, twice their size, so
-        // holding them would break the byte cap.) Row order and values are
-        // unchanged: `take_captures` concatenates the same rows.
-        let mut caps = Vec::new();
-        let mut caps_base = 0;
+        // capture rows since the last drain cover capture_base..live. Each
+        // checkpoint keeps exactly what a longer prompt's draft warm-up can
+        // reach — its last WINDOW-1 rows start at or after pos-(WINDOW-1).
+        // One compact copy of the union (a fresh [rows, hidden] tensor per
+        // capture layer; the live capture tensors are views that pin their
+        // forward's whole [2, T, hidden] residual|normed output, twice
+        // their size, so holding them would break the byte cap); row
+        // order and values are unchanged: `take_captures` concatenates the
+        // same rows.
+        let mut caps_all: Vec<Tensor> = Vec::new();
+        let mut caps_from = 0usize;
+        let mut caps_bytes = 0usize;
+        let from_of = |pos: usize| pos.saturating_sub(crate::dflash::WINDOW - 1).max(sl.capture_base);
         if sl.draft.is_some() && !sl.captures.is_empty() {
             anyhow::ensure!(sl.captures.len() % 5 == 0, "prefix capture: capture groups misaligned");
-            let need_from = pos.saturating_sub(crate::dflash::WINDOW - 1).max(sl.capture_base);
+            let need_from = specs.iter().map(|s| from_of(s.0)).min().unwrap_or(pmax);
             let (mut row, mut from) = (sl.capture_base, None);
             let mut kept: Vec<&[Tensor]> = Vec::new();
             for group in sl.captures.chunks_exact(5) {
                 let rows = group[0].dim(0)?;
-                if row + rows > need_from {
+                if row + rows > need_from && row < pmax {
                     from.get_or_insert(row);
                     kept.push(group);
                 }
                 row += rows;
             }
-            anyhow::ensure!(row == pos, "prefix capture: capture rows end at {row}, kv at {pos}");
+            anyhow::ensure!(row == live, "prefix capture: capture rows end at {row}, kv at {live}");
             if let Some(from) = from {
                 let skip = need_from - from;
+                let mut end = from;
+                for g in &kept {
+                    end += g[0].dim(0)?;
+                }
                 for j in 0..5 {
                     let mut parts: Vec<Tensor> = kept.iter().map(|g| g[j].clone()).collect();
+                    // trim the last group past pmax, then the first before need_from
+                    if end > pmax {
+                        let last = parts.len() - 1;
+                        let r = parts[last].dim(0)?;
+                        parts[last] = parts[last].narrow(0, 0, r - (end - pmax))?;
+                    }
                     if skip > 0 {
                         let r0 = parts[0].dim(0)?;
                         parts[0] = parts[0].narrow(0, skip, r0 - skip)?;
@@ -3511,13 +3709,58 @@ impl Qwen35 {
                     // fresh exact-size buffer, compute copies (a 1-part
                     // Tensor::cat would be a clone)
                     let t = crate::outbuf::cat0_uninit(&parts)?;
-                    bytes += tensor_bytes(&t);
-                    caps.push(t);
+                    caps_bytes += tensor_bytes(&t);
+                    caps_all.push(t);
                 }
-                caps_base = need_from;
+                caps_from = need_from;
             }
         }
-        Ok(PrefixState { pos, gdn, kv, caps, caps_base, bytes })
+        let mut out = Vec::with_capacity(specs.len());
+        for (pos, hold, logits) in specs {
+            let gdn = match hold {
+                GdnHold::Copied(g) => g,
+                GdnHold::Parity { parity, id } => {
+                    let ids = self.slots[slot].gdn_par.ids;
+                    anyhow::ensure!(
+                        id != 0 && ids[parity] == id,
+                        "prefix build: parity {parity} no longer holds state {id} (ids {ids:?})"
+                    );
+                    self.gdn_copies(slot, parity)?
+                }
+            };
+            anyhow::ensure!(gdn.len() == self.layers.len(), "prefix build: gdn layer count");
+            let mut own = 0usize;
+            for (c, r) in gdn.iter().flatten() {
+                own += tensor_bytes(c) + tensor_bytes(r);
+            }
+            if let Some(l) = logits.as_ref() {
+                own += tensor_bytes(l);
+            }
+            let kv: Vec<Option<(Tensor, Tensor)>> = kv_full
+                .iter()
+                .map(|e| match e {
+                    Some((k, v)) if pos < pmax => Ok(Some((k.narrow(1, 0, pos)?, v.narrow(1, 0, pos)?))),
+                    Some((k, v)) => Ok(Some((k.clone(), v.clone()))),
+                    None => Ok(None),
+                })
+                .collect::<Result<_>>()?;
+            let (caps, caps_base) = if caps_all.is_empty() {
+                (Vec::new(), 0)
+            } else {
+                let f = from_of(pos);
+                let caps = caps_all
+                    .iter()
+                    .map(|t| t.narrow(0, f - caps_from, pos - f))
+                    .collect::<candle_core::Result<Vec<_>>>()?;
+                (caps, f)
+            };
+            let mut parts = vec![(CkPart::Own, own), (CkPart::Kv, kv_bytes)];
+            if caps_bytes > 0 {
+                parts.push((CkPart::Caps, caps_bytes));
+            }
+            out.push(PrefixState { pos, gdn, kv, caps, caps_base, logits, parts });
+        }
+        Ok(out)
     }
 
     /// Put `slot` into the checkpointed state (the slot should have been
@@ -3538,8 +3781,13 @@ impl Qwen35 {
         for (i, g) in p.gdn.iter().enumerate() {
             if let Some((conv, rec)) = g {
                 let st = sl.gdn[i].as_mut().context("prefix restore: gdn state missing")?;
-                st.conv[cur] = state_copy_uninit(conv)?;
-                st.rec[cur] = state_copy_uninit(rec)?;
+                // into the slot's own committed-parity buffers (exclusively
+                // owned — no allocation); a fresh copy if the shapes differ
+                for (dst, src) in [(&mut st.conv[cur], conv), (&mut st.rec[cur], rec)] {
+                    if dst.dims() != src.dims() || dst.dtype() != src.dtype() || crate::outbuf::copy_into(src, dst).is_err() {
+                        *dst = state_copy_uninit(src)?;
+                    }
+                }
             }
         }
         sl.gdn_par.ids[1 - cur] = 0;
@@ -3561,6 +3809,52 @@ impl Qwen35 {
         sl.captures = if sl.draft.is_some() { p.caps.clone() } else { Vec::new() };
         sl.capture_base = if sl.draft.is_some() { p.caps_base } else { 0 };
         sl.kv_tokens = p.pos;
+        Ok(())
+    }
+
+    /// Size `slot`'s attention K/V for a sequence of `n` rows plus `extra`
+    /// decode rows, once: one contiguous buffer per K and V of
+    /// `max(n + extra, 2048)` rows in whole 256-row blocks, holding the
+    /// slot's current rows `0..kv_tokens` (none after a clear; a restored
+    /// checkpoint's view — copied straight from it) with every other row
+    /// zeroed (finite: N3 reads whole 32-key pages past the visible keys).
+    /// The prefill's chunks then write in place: no regrowth copies mid
+    /// prompt (the `kv_store_direct` rule, `max(2*need, 2048)`, grew a
+    /// 7.9k prompt 2048 -> 5120 -> 11264 rows, copying 6.6k rows and
+    /// allocating 1.2 GB) and a checkpoint build views a buffer only
+    /// `extra` rows past the prompt (after a restore that rule sized it at
+    /// twice the prompt, so a partial hit's checkpoint pinned 2x its K/V).
+    /// Capacity never changes results — N3's split plan depends on the
+    /// visible keys, and capacity stays page-aligned — so hit and miss,
+    /// reserved or not, are bit-identical. A no-op unless `KvCap::Direct`,
+    /// for compressed-KV slots, and when the buffers are already
+    /// contiguous and large enough. `TH_KV_RESERVE=0`: never reserve (A/B).
+    pub fn kv_reserve(&mut self, slot: usize, n: usize, extra: usize) -> Result<()> {
+        if !kv_reserve_on() || kv_cap_mode() != KvCap::Direct {
+            return Ok(());
+        }
+        let dev = self.device.clone();
+        let sl = &mut self.slots[slot];
+        if sl.kv_quant {
+            return Ok(());
+        }
+        let have = sl.kv_tokens;
+        anyhow::ensure!(have <= n, "kv reserve: slot {slot} holds {have} rows > {n}");
+        let cap = (n + extra).max(2048).next_multiple_of(256);
+        for kv in sl.kv.iter_mut().flatten() {
+            for t in [&mut kv.0, &mut kv.1] {
+                if t.is_contiguous() && t.dim(1)? >= cap {
+                    continue;
+                }
+                let (a, c) = (t.dim(0)?, t.dim(2)?);
+                anyhow::ensure!(t.dim(1)? >= have, "kv reserve: cache has fewer than {have} rows");
+                // SAFETY: rows 0..have copied, have..cap zeroed below
+                let nt = crate::outbuf::kernel_out((a, cap, c), t.dtype(), &dev)?;
+                crate::outbuf::copy_rows(t, &nt, have)?;
+                crate::outbuf::zero_rows(&nt, have, cap)?;
+                *t = nt;
+            }
+        }
         Ok(())
     }
 
@@ -4307,61 +4601,61 @@ impl Qwen35 {
         }
 
         let (kc, vc) = kvc;
-        // E1: the fused causal prefill kernel reads K/V straight from the
-        // cache after the store below, so the exact-length cat is only built
-        // when something needs it (the eager path, or a (re)allocation)
+        // E1 (th/e-prefill-attn): the fused causal prefill kernel reads K/V
+        // straight from the cache after the store below, so the exact-length
+        // K/V (Direct: views; Legacy / Off: a cat) only feed the eager path.
         let fused = prefill_attn_variant(device, seq, q.dtype(), l.n_heads, l.n_kv, l.head_dim);
+        let mode = kv_cap_mode();
         let need = pos + seq;
-        if fused.is_some() && kv_cap_prefill() && kc.dim(1)? >= need && kc.is_contiguous() && vc.is_contiguous() {
+        if fused.is_some()
+            && mode == KvCap::Legacy
+            && kc.dim(1)? >= need
+            && kc.is_contiguous()
+            && vc.is_contiguous()
+        {
+            // integration-3's store with room: rows in place, no cat
+            // (th/e-prefill-attn's fast path; the Legacy A/B arm only)
             kc.slice_set(&k.squeeze(0)?.contiguous()?, 1, pos)?;
             vc.slice_set(&v.contiguous()?, 1, pos)?;
             return Self::attn_fused_out(l, kc, vc, &q, qkv, &gate, pos, seq, fused.unwrap());
         }
-        // narrow to the committed prefix — the cache may be a
-        // fixed-capacity buffer whose tail is uninitialised
-        let k_pre = if kc.dim(1)? > pos { kc.narrow(1, 0, pos)? } else { kc.clone() };
-        let v_pre = if vc.dim(1)? > pos { vc.narrow(1, 0, pos)? } else { vc.clone() };
-        let k_all = Tensor::cat(&[k_pre, k.squeeze(0)?], 1)?;
-        let v_all = Tensor::cat(&[v_pre, v.clone()], 1)?;
-        if kv_cap_prefill() {
-            // store into a contiguous capacity buffer — the decode path's
-            // attn_prepare appends in place, so the first verify no longer
-            // regrows it. The old exact-length `k_all`/`v_all` caches were
-            // non-contiguous views (cat's transposed fallback for the
-            // transposed `v`), and the first verify's ensure_kv re-copied
-            // all 32 of them through the generic strided kernel (~0.3-0.4 ms
-            // each, ~11 ms per request, R0c). Same capacity rule as
-            // ensure_kv's first growth. Rows >= kv_tokens are never read,
-            // EXCEPT row n_prompt: the DFlash anchor off-by-one (engine.rs,
-            // fixed on th/c-loop-anchor, not merged) attends it before any
-            // forward writes it — hence the zero fill below.
-            let need = pos + seq;
-            let (nkv, hd) = (k_all.dim(0)?, k_all.dim(2)?);
-            if kc.dim(1)? >= need && kc.is_contiguous() && vc.is_contiguous() {
-                kc.slice_set(&k.squeeze(0)?.contiguous()?, 1, pos)?;
-                vc.slice_set(&v.contiguous()?, 1, pos)?;
-            } else {
-                // whole 256-row blocks, as in ensure_kv: the N3 split kernel
-                // reads full 32-key pages and falls back to the single-pass
-                // kernel on a capacity that is not page-aligned
-                // (`split_plan`) — which would also make a request's
-                // numerics depend on where its capacity was first allocated
-                let ncap = (need * 2).max(2048).next_multiple_of(256);
-                // zero-filled like ensure_kv's pad (NOT outbuf::kernel_out):
-                // with an uninitialised tail the first verify produced
-                // garbage — see the fix commit / th-d-gpu-tail report
-                let nk = Tensor::zeros((nkv, ncap, hd), DType::BF16, device)?;
-                let nv = Tensor::zeros((nkv, ncap, hd), DType::BF16, device)?;
-                nk.slice_set(&k_all.contiguous()?, 1, 0)?;
-                nv.slice_set(&v_all.contiguous()?, 1, 0)?;
-                *kc = nk;
-                *vc = nv;
-            }
+        let (k_all, v_all) = if mode == KvCap::Direct {
+            // (th/e-ttft-regression) rows written in place into the slot's
+            // own contiguous capacity buffer (grown from a restored view if
+            // needed); the returned views cover rows 0..pos+seq
+            Self::kv_store_direct(kc, vc, &k.squeeze(0)?, &v, pos, device)?
         } else {
-            *kc = k_all.clone();
-            *vc = v_all.clone();
-        }
+            // narrow to the committed prefix — the cache may be a
+            // fixed-capacity buffer whose tail is uninitialised
+            let k_pre = if kc.dim(1)? > pos { kc.narrow(1, 0, pos)? } else { kc.clone() };
+            let v_pre = if vc.dim(1)? > pos { vc.narrow(1, 0, pos)? } else { vc.clone() };
+            let k_all = Tensor::cat(&[k_pre, k.squeeze(0)?], 1)?;
+            let v_all = Tensor::cat(&[v_pre, v.clone()], 1)?;
+            if mode == KvCap::Legacy {
+                // integration-3's store: the capacity buffer is zero-filled
+                // (blit) and the cat result copied into it
+                let (nkv, hd) = (k_all.dim(0)?, k_all.dim(2)?);
+                if kc.dim(1)? >= need && kc.is_contiguous() && vc.is_contiguous() {
+                    kc.slice_set(&k.squeeze(0)?.contiguous()?, 1, pos)?;
+                    vc.slice_set(&v.contiguous()?, 1, pos)?;
+                } else {
+                    let ncap = (need * 2).max(2048).next_multiple_of(256);
+                    let nk = Tensor::zeros((nkv, ncap, hd), DType::BF16, device)?;
+                    let nv = Tensor::zeros((nkv, ncap, hd), DType::BF16, device)?;
+                    nk.slice_set(&k_all.contiguous()?, 1, 0)?;
+                    nv.slice_set(&v_all.contiguous()?, 1, 0)?;
+                    *kc = nk;
+                    *vc = nv;
+                }
+            } else {
+                *kc = k_all.clone();
+                *vc = v_all.clone();
+            }
+            (k_all, v_all)
+        };
         if let Some(var) = fused {
+            // kc/vc now hold rows 0..pos+seq: the capacity buffer (Direct,
+            // Legacy) or the exact-length cat (Off, the strided layout)
             drop((k_all, v_all));
             return Self::attn_fused_out(l, kc, vc, &q, qkv, &gate, pos, seq, var);
         }
@@ -4497,6 +4791,60 @@ impl Qwen35 {
         Ok(out.squeeze(0)?.transpose(0, 1)?.reshape((seq, n_heads * head_dim))?)
     }
 
+    /// `KvCap::Direct` prefill store: append this chunk's `k`/`v`
+    /// ([n_kv, seq, d]; `v` may be the time-major view) at rows
+    /// `pos..pos+seq` of the slot's contiguous capacity buffers and return
+    /// views of rows `0..pos+seq` for the eager attention (its gemm inputs
+    /// are made contiguous there — the same values and layouts as the
+    /// `cat` result, so the output is bit-identical).
+    ///
+    /// Writes in place only into a contiguous buffer with room — a
+    /// restored checkpoint's K/V is exactly `pos` rows (never written in
+    /// place: it is shared read-only), so the first chunk after a restore
+    /// grows. A new buffer is uninitialised (no blit fill): the old rows
+    /// `0..pos` are copied in, the chunk written, and the tail from
+    /// `pos+seq` zeroed by one compute dispatch — the unwritten rows must
+    /// be finite: the N3 split tile multiplies whole 32-key V pages by
+    /// masked (zero) probabilities, and before the anchor fix the first
+    /// verify also attended row `n_prompt` unwritten. Capacity: whole
+    /// 256-row blocks, `max(2*(pos+seq), 2048)` — the `Legacy`/`ensure_kv`
+    /// rule, so the decode path sees the same capacities (split plans).
+    fn kv_store_direct(
+        kc: &mut Tensor,
+        vc: &mut Tensor,
+        k: &Tensor,
+        v: &Tensor,
+        pos: usize,
+        device: &Device,
+    ) -> Result<(Tensor, Tensor)> {
+        let seq = k.dim(1)?;
+        let need = pos + seq;
+        let (nkv, hd) = (k.dim(0)?, k.dim(2)?);
+        let room = kc.dim(1)? >= need && vc.dim(1)? >= need && kc.is_contiguous() && vc.is_contiguous();
+        if !room {
+            let ncap = (need * 2).max(2048).next_multiple_of(256);
+            // SAFETY: rows 0..pos are copied below, pos..need written by
+            // the chunk store, need..ncap zeroed — every element is written
+            let nk = crate::outbuf::kernel_out((nkv, ncap, hd), DType::BF16, device)?;
+            let nv = crate::outbuf::kernel_out((nkv, ncap, hd), DType::BF16, device)?;
+            if pos > 0 {
+                anyhow::ensure!(kc.dim(1)? >= pos && vc.dim(1)? >= pos, "kv store: cache has fewer than {pos} rows");
+                // straight from the old buffer or the restored view: one
+                // strided compute copy per tensor (a view used to be made
+                // contiguous first — a temporary of every row)
+                crate::outbuf::copy_rows(kc, &nk, pos)?;
+                crate::outbuf::copy_rows(vc, &nv, pos)?;
+            }
+            crate::outbuf::zero_rows(&nk, need, ncap)?;
+            crate::outbuf::zero_rows(&nv, need, ncap)?;
+            *kc = nk;
+            *vc = nv;
+        }
+        kc.slice_set(&k.contiguous()?, 1, pos)?;
+        vc.slice_set(&v.contiguous()?, 1, pos)?;
+        Ok((kc.narrow(1, 0, need)?, vc.narrow(1, 0, need)?))
+    }
+
     /// Grow the fixed-capacity KV caches to hold `need` rows. Appended
     /// in place by `attn_prepare`; rows past `kv_tokens` are ignored, so
     /// growth just widens dim 1.
@@ -4514,10 +4862,23 @@ impl Qwen35 {
         // pages past `need` (masked), so capacity is page-aligned
         let ncap = (cap * 2).max(need).max(2048).next_multiple_of(256);
         let (nh, hd) = (kc.dim(0)?, kc.dim(2)?);
+        // `kv_grow_legacy()`: a zero-filled pad (blit) + `cat`. Otherwise
+        // the same contents without a blit or a second allocation: an
+        // uninitialised buffer, every old row copied in (a restored
+        // checkpoint's view included — no temporary), the pad zeroed by one
+        // compute dispatch.
         for t in [&mut *kc, &mut *vc] {
-            let pad =
-                Tensor::zeros((nh, ncap - cap, hd), DType::BF16, dev)?;
-            *t = Tensor::cat(&[&*t, &pad], 1)?;
+            let rows = t.dim(1)?;
+            if kv_grow_legacy() {
+                let pad = Tensor::zeros((nh, ncap - rows, hd), DType::BF16, dev)?;
+                *t = Tensor::cat(&[&*t, &pad], 1)?;
+                continue;
+            }
+            // SAFETY: rows 0..rows copied, rows..ncap zeroed below
+            let n = crate::outbuf::kernel_out((nh, ncap, hd), t.dtype(), dev)?;
+            crate::outbuf::copy_rows(t, &n, rows)?;
+            crate::outbuf::zero_rows(&n, rows, ncap)?;
+            *t = n;
         }
         Ok(())
     }
@@ -4583,13 +4944,21 @@ impl Qwen35 {
 
     /// tokens at absolute position `pos` → logits (vocab,) for the last.
     pub fn forward(&mut self, slot: usize, tokens: &[u32], pos: usize) -> Result<Tensor> {
-        self.forward_inner(slot, tokens, pos, true)
+        self.forward_inner(slot, tokens, pos, true, true)
     }
 
     /// Same, but logits for every position — `[seq, vocab]`. Used by the
     /// speculative-verify pass.
     pub fn forward_multi(&mut self, slot: usize, tokens: &[u32], pos: usize) -> Result<Tensor> {
-        self.forward_inner(slot, tokens, pos, false)
+        self.forward_inner(slot, tokens, pos, false, true)
+    }
+
+    /// A prefill chunk whose logits nobody reads (every chunk but a
+    /// prompt's last): the same forward as `forward` — state, K/V and
+    /// capture rows bit for bit — without the final norm and the lm_head
+    /// (~0.6 GB of weights read per chunk for one discarded row).
+    pub fn forward_nohead(&mut self, slot: usize, tokens: &[u32], pos: usize) -> Result<()> {
+        self.forward_inner(slot, tokens, pos, true, false).map(|_| ())
     }
 
     fn forward_inner(
@@ -4598,6 +4967,7 @@ impl Qwen35 {
         tokens: &[u32],
         pos: usize,
         last_only: bool,
+        head: bool,
     ) -> Result<Tensor> {
         let seq = tokens.len();
         // long-prompt prefill: trim candle's pool before the next chunk
@@ -4735,6 +5105,12 @@ impl Qwen35 {
                     .to_vec1::<f32>()?;
                 eprintln!("L{i:02} mean|x|={mean:.4} x[-1,:8]={last:?}");
             }
+        }
+        if !head {
+            // `forward_nohead`: the caller discards the logits
+            self.slots[slot].kv_tokens = pos + seq;
+            self.slots[slot].gdn_par.flip();
+            return Ok(x);
         }
         crate::gpuprof::region("norm.final");
         let x = rms_norm(&x, &self.norm, self.cfg.rms_norm_eps)?;
@@ -5781,6 +6157,204 @@ mod prefix_tests {
         m.prefix_restore(1, &cap2)?;
         assert!(m.slot_state_bits(1)? == s2, "restored state differs from the captured slot");
         assert!(tensor_bits(&m.forward_multi(1, &seq8[4..], n + 4)?)? == after);
+        Ok(())
+    }
+
+    /// Deferred captures (`prefix_hold` + `prefix_build`, the server's
+    /// order: holds while the prefill passes each checkpoint, one build
+    /// after the tail chunk) produce, bit for bit, the checkpoints that
+    /// immediate captures take: a mid checkpoint whose parity a later
+    /// chunk rewrites (copied at hold time), the last split (still
+    /// resident after the tail chunk) and the prompt end (+ its logits).
+    /// The build's checkpoints view the slot's own K/V buffer (no copy)
+    /// and stay bit-exact while the slot appends past its prompt into that
+    /// buffer; each restores to the uncached state (a restored view is
+    /// grown by `copy_rows`); a parity rewritten after its hold fails the
+    /// build.
+    #[test]
+    fn prefix_build_deferred_matches_immediate_captures() -> Result<()> {
+        let Some(d) = metal() else {
+            eprintln!("[prefix-cache] skipped: needs a Metal device");
+            return Ok(());
+        };
+        let mut m = tiny_hybrid(&d)?;
+        let prompt: Vec<u32> = (0..53u32).map(|i| (i * 5 + 2) % 97).collect();
+        let seq8: Vec<u32> = (0..8u32).map(|i| (i * 13 + 1) % 97).collect();
+        let n = prompt.len();
+        let chunks: Vec<(usize, usize)> = vec![(0, 16), (16, 32), (32, 48), (48, n)];
+        // immediate captures at 32, 48 and the end
+        m.clear_kv_cache(0);
+        let mut imm = Vec::new();
+        let mut last = None;
+        for &(a, b) in &chunks {
+            last = Some(m.forward(0, &prompt[a..b], a)?);
+            if b >= 32 {
+                imm.push(m.prefix_capture(0)?);
+            }
+        }
+        let l_ref = tensor_bits(last.as_ref().context("no logits")?)?;
+        let s_ref = m.slot_state_bits(0)?;
+        let v_ref = tensor_bits(&m.forward_multi(0, &seq8, n)?)?;
+        // deferred: hold at 32 (copied — [48, n) rewrites its parity), at
+        // 48 (resident) and at the end (resident, + logits), build after
+        m.clear_kv_cache(0);
+        let mut specs = Vec::new();
+        for (ci, &(a, b)) in chunks.iter().enumerate() {
+            let l = m.forward(0, &prompt[a..b], a)?;
+            if b >= 32 {
+                let last_split = ci + 2 == chunks.len();
+                let copy = b < n && !last_split;
+                specs.push((b, m.prefix_hold(0, copy)?, (b == n).then(|| l.clone())));
+            }
+        }
+        let built = m.prefix_build(0, specs)?;
+        assert_eq!(built.iter().map(|p| p.pos()).collect::<Vec<_>>(), vec![32, 48, n]);
+        for (b, i) in built.iter().zip(&imm) {
+            assert!(b.state_bits()? == i.state_bits()?, "deferred checkpoint at {} differs from the immediate one", b.pos());
+        }
+        assert!(built[..2].iter().all(|p| p.logits().is_none()));
+        assert!(tensor_bits(built[2].logits().context("prompt-end logits")?)? == l_ref);
+        // no K/V copy: every checkpoint views the live slot's K/V buffer
+        let k_of = |p: &PrefixState| p.kv.iter().flatten().next().map(|kv| kv.0.clone()).context("no kv");
+        let live_k = m.slots[0].kv.iter().flatten().next().map(|kv| kv.0.clone()).context("no live kv")?;
+        for p in &built {
+            assert!(shares_buffer(&k_of(p)?, &live_k), "checkpoint {} copied its K/V", p.pos());
+        }
+        assert!(built.iter().all(|p| p.parts().iter().any(|q| q.0 == CkPart::Kv)));
+        // the live slot continues unchanged (the build only read it)
+        assert!(m.slot_state_bits(0)? == s_ref, "the build changed the live slot");
+        // ... and the checkpoints stay bit-exact while it appends past the
+        // prompt in place (a verify writes rows n..n+8 of the shared buffer)
+        let ck_bits: Vec<_> = built.iter().map(|p| p.state_bits()).collect::<Result<_>>()?;
+        assert!(tensor_bits(&m.forward_multi(0, &seq8, n)?)? == v_ref);
+        let live_k2 = m.slots[0].kv.iter().flatten().next().map(|kv| kv.0.clone()).context("no live kv")?;
+        assert!(shares_buffer(&live_k2, &live_k), "the verify was expected to append in place");
+        for (p, b) in built.iter().zip(&ck_bits) {
+            assert!(p.state_bits()? == *b, "checkpoint {} changed when the live slot appended", p.pos());
+        }
+        // each restores to the uncached state (the end one without a forward)
+        for p in &built {
+            m.clear_kv_cache(1);
+            m.prefix_restore(1, p)?;
+            let mut last = None;
+            for &(a, b) in chunks.iter().filter(|c| c.0 >= p.pos()) {
+                last = Some(tensor_bits(&m.forward(1, &prompt[a..b], a)?)?);
+            }
+            let got = match last {
+                Some(l) => l,
+                None => tensor_bits(p.logits().context("end checkpoint logits")?)?,
+            };
+            assert!(got == l_ref, "logits after restoring {}", p.pos());
+            assert!(m.slot_state_bits(1)? == s_ref, "state after restoring {}", p.pos());
+            assert!(tensor_bits(&m.forward_multi(1, &seq8, n)?)? == v_ref, "next verify after restoring {}", p.pos());
+        }
+        // a held parity rewritten before the build fails it
+        m.clear_kv_cache(0);
+        m.forward(0, &prompt[..16], 0)?;
+        let h = m.prefix_hold(0, false)?;
+        m.forward(0, &prompt[16..32], 16)?;
+        m.forward(0, &prompt[32..48], 32)?;
+        assert!(m.prefix_build(0, vec![(16, h, None)]).is_err(), "a stale parity must not be captured");
+        Ok(())
+    }
+
+    /// The checkpoint K/V view policy (`ck_kv_view_ok`) on Qwen3.8-27B's
+    /// K/V (16 attention layers x K,V x [4, rows, 256] bf16 = 64 KiB per
+    /// row): view within max(1/3, 48 MiB) extra pinned bytes, else copy.
+    #[test]
+    fn ck_kv_view_policy() {
+        let b = |rows: usize| rows * 32 * 4 * 256 * 2;
+        let cap = |n: usize, extra: usize| (n + extra).max(2048).next_multiple_of(256);
+        // (prompt rows, reserve extra, view?)
+        for &(n, extra, want) in &[
+            (1459, 32, true),    // 1.45k, short reply: 2048 rows, +39 MB
+            (1459, 528, true),   // max_tokens 512: still the 2048 floor
+            (1459, 2064, false), // max_tokens 2048: 3584 rows, +139 MB
+            (600, 32, false),    // short prompt in the floor: +95 MB
+            (128, 32, false),    // one block: 16x the exact bytes
+            (1800, 32, true),    // +16 MB
+            (7940, 32, true),    // 8k: 8192 rows, +17 MB
+            (7940, 528, true),   // 8704 rows, +50 MB (< a third)
+            (7940, 2064, true),  // 10240 rows, +151 MB (< 173 MB)
+            (4000, 2064, false), // 6144 rows, +141 MB (> 87 MB)
+        ] {
+            assert_eq!(ck_kv_view_ok(b(n), b(cap(n, extra)), false), want, "n {n} extra {extra}");
+            assert!(!ck_kv_view_ok(b(n), b(cap(n, extra)), true), "forced copy");
+        }
+        // exact-length caches (TH_KV_CAP_PREFILL=0) always view
+        assert!(ck_kv_view_ok(b(300), b(300), false));
+    }
+
+    /// `kv_reserve` sizes the K/V once — `max(n + extra, 2048)` rows in
+    /// 256-row blocks — keeping the slot's rows bit for bit (a restored
+    /// checkpoint's view included) and zeroing the rest; the prefill then
+    /// writes in place (no regrowth); and it changes no result: the
+    /// uncached prefill with and without it, and restore + reserve + suffix,
+    /// give the same logits, state and next verify, bit for bit.
+    #[test]
+    fn kv_reserve_keeps_rows_and_results() -> Result<()> {
+        let Some(d) = metal() else {
+            eprintln!("[prefix-cache] skipped: needs a Metal device");
+            return Ok(());
+        };
+        let mut m = tiny_hybrid(&d)?;
+        let prompt: Vec<u32> = (0..53u32).map(|i| (i * 7 + 3) % 97).collect();
+        let seq8: Vec<u32> = (0..8u32).map(|i| (i * 11 + 5) % 97).collect();
+        let n = prompt.len();
+        let chunks: Vec<(usize, usize)> = vec![(0, 16), (16, 32), (32, n)];
+        let first_k = |m: &Qwen35, s: usize| m.slots[s].kv.iter().flatten().next().map(|kv| kv.0.clone()).context("no kv");
+        // reference: no reserve (the prefill store's own growth), capture at 32
+        m.clear_kv_cache(0);
+        let mut last = None;
+        let mut ck = None;
+        for &(a, b) in &chunks {
+            last = Some(m.forward(0, &prompt[a..b], a)?);
+            if b == 32 {
+                ck = Some(m.prefix_capture(0)?);
+            }
+        }
+        let ck = ck.context("no checkpoint")?;
+        let l_ref = tensor_bits(last.as_ref().context("no logits")?)?;
+        let s_ref = m.slot_state_bits(0)?;
+        let v_ref = tensor_bits(&m.forward_multi(0, &seq8, n)?)?;
+        // reserved before the prefill: n + 3000 = 3053 -> 3072 rows, one buffer
+        m.clear_kv_cache(1);
+        m.kv_reserve(1, n, 3000)?;
+        let k0 = first_k(&m, 1)?;
+        assert_eq!(k0.dim(1)?, 3072);
+        assert!(k0.is_contiguous());
+        assert!(tensor_bits(&k0)?.iter().all(|&b| b == 0), "a reserved buffer is zeroed");
+        let mut last = None;
+        for &(a, b) in &chunks {
+            last = Some(m.forward(1, &prompt[a..b], a)?);
+        }
+        assert!(shares_buffer(&first_k(&m, 1)?, &k0), "the prefill regrew a reserved cache");
+        assert!(tensor_bits(last.as_ref().context("no logits")?)? == l_ref, "logits with the reserve");
+        assert!(m.slot_state_bits(1)? == s_ref, "state with the reserve");
+        assert!(tensor_bits(&m.forward_multi(1, &seq8, n)?)? == v_ref, "next verify with the reserve");
+        // restore + reserve: rows 0..32 copied from the view, the rest zero
+        m.clear_kv_cache(1);
+        m.prefix_restore(1, &ck)?;
+        m.kv_reserve(1, n, 16)?; // max(69, 2048) -> 2048
+        let k1 = first_k(&m, 1)?;
+        assert_eq!(k1.dim(1)?, 2048);
+        let ck_k = ck.kv.iter().flatten().next().map(|kv| kv.0.clone()).context("no ck kv")?;
+        assert!(tensor_bits(&k1.narrow(1, 0, 32)?)? == tensor_bits(&ck_k)?, "reserved rows differ from the checkpoint");
+        assert!(tensor_bits(&k1.narrow(1, 32, 2048 - 32)?)?.iter().all(|&b| b == 0), "rows past the restored ones are zeroed");
+        let mut last = None;
+        for &(a, b) in chunks.iter().filter(|c| c.0 >= 32) {
+            last = Some(m.forward(1, &prompt[a..b], a)?);
+        }
+        assert!(shares_buffer(&first_k(&m, 1)?, &k1), "the suffix regrew a reserved cache");
+        assert!(tensor_bits(last.as_ref().context("no logits")?)? == l_ref, "logits after restore + reserve");
+        assert!(m.slot_state_bits(1)? == s_ref, "state after restore + reserve");
+        assert!(tensor_bits(&m.forward_multi(1, &seq8, n)?)? == v_ref, "next verify after restore + reserve");
+        // a slot already reserved large enough is left alone; fewer rows
+        // than the slot holds is an error
+        let live = m.slots[1].kv_tokens;
+        m.kv_reserve(1, live, 16)?;
+        assert!(shares_buffer(&first_k(&m, 1)?, &k1));
+        assert!(m.kv_reserve(1, live - 1, 16).is_err());
         Ok(())
     }
 
