@@ -1761,12 +1761,31 @@ fn add_rms_norm(
 /// as a K45 presum block (`quant_kernel::presum_block_bytes`) — the third
 /// value says so, and the next projection takes it with `presum: true`
 /// (no pad copy, no in-kernel input sums). Values are bit-identical.
-/// Prefill (eager attention) writes K/V into a contiguous capacity buffer
-/// instead of leaving an exact-length view for the first verify to regrow.
-/// `TH_KV_CAP_PREFILL=0` restores the old behaviour (A/B). Read once.
-fn kv_cap_prefill() -> bool {
-    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var("TH_KV_CAP_PREFILL").as_deref() != Ok("0"))
+/// Prefill (eager attention) K/V store. `Direct` (default): each chunk's
+/// K/V rows go straight into a contiguous capacity buffer (the decode
+/// path's layout, so the first verify never regrows 32 caches) and the
+/// attention reads views of it — no per-chunk `cat` of the whole prefix; a
+/// new buffer is allocated uninitialised, gets the old rows (after a
+/// restore / growth) and its unwritten tail zeroed by one compute dispatch
+/// (no blit). `Legacy` (`TH_KV_CAP_PREFILL=legacy`): integration-3's
+/// zero-filled buffer (blit) + `cat` + copy — the same cache contents and
+/// attention inputs, bit for bit. `Off` (`TH_KV_CAP_PREFILL=0`): the
+/// exact-length `cat` result is the cache (the first verify regrows it).
+/// Read once.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum KvCap {
+    Off,
+    Legacy,
+    Direct,
+}
+
+fn kv_cap_mode() -> KvCap {
+    static MODE: std::sync::OnceLock<KvCap> = std::sync::OnceLock::new();
+    *MODE.get_or_init(|| match std::env::var("TH_KV_CAP_PREFILL").as_deref() {
+        Ok("0") => KvCap::Off,
+        Ok("legacy") => KvCap::Legacy,
+        _ => KvCap::Direct,
+    })
 }
 
 /// `TH_ARN_LEGACY=1`: the pre-R0c single-threadgroup add+RMSNorm kernels
@@ -4203,50 +4222,39 @@ impl Qwen35 {
         }
 
         let (kc, vc) = kvc;
-        // narrow to the committed prefix — the cache may be a
-        // fixed-capacity buffer whose tail is uninitialised
-        let k_pre = if kc.dim(1)? > pos { kc.narrow(1, 0, pos)? } else { kc.clone() };
-        let v_pre = if vc.dim(1)? > pos { vc.narrow(1, 0, pos)? } else { vc.clone() };
-        let k_all = Tensor::cat(&[k_pre, k.squeeze(0)?], 1)?;
-        let v_all = Tensor::cat(&[v_pre, v.clone()], 1)?;
-        if kv_cap_prefill() {
-            // store into a contiguous capacity buffer — the decode path's
-            // attn_prepare appends in place, so the first verify no longer
-            // regrows it. The old exact-length `k_all`/`v_all` caches were
-            // non-contiguous views (cat's transposed fallback for the
-            // transposed `v`), and the first verify's ensure_kv re-copied
-            // all 32 of them through the generic strided kernel (~0.3-0.4 ms
-            // each, ~11 ms per request, R0c). Same capacity rule as
-            // ensure_kv's first growth. Rows >= kv_tokens are never read,
-            // EXCEPT row n_prompt: the DFlash anchor off-by-one (engine.rs,
-            // fixed on th/c-loop-anchor, not merged) attends it before any
-            // forward writes it — hence the zero fill below.
-            let need = pos + seq;
-            let (nkv, hd) = (k_all.dim(0)?, k_all.dim(2)?);
-            if kc.dim(1)? >= need && kc.is_contiguous() && vc.is_contiguous() {
-                kc.slice_set(&k.squeeze(0)?.contiguous()?, 1, pos)?;
-                vc.slice_set(&v.contiguous()?, 1, pos)?;
-            } else {
-                // whole 256-row blocks, as in ensure_kv: the N3 split kernel
-                // reads full 32-key pages and falls back to the single-pass
-                // kernel on a capacity that is not page-aligned
-                // (`split_plan`) — which would also make a request's
-                // numerics depend on where its capacity was first allocated
-                let ncap = (need * 2).max(2048).next_multiple_of(256);
-                // zero-filled like ensure_kv's pad (NOT outbuf::kernel_out):
-                // with an uninitialised tail the first verify produced
-                // garbage — see the fix commit / th-d-gpu-tail report
-                let nk = Tensor::zeros((nkv, ncap, hd), DType::BF16, device)?;
-                let nv = Tensor::zeros((nkv, ncap, hd), DType::BF16, device)?;
-                nk.slice_set(&k_all.contiguous()?, 1, 0)?;
-                nv.slice_set(&v_all.contiguous()?, 1, 0)?;
-                *kc = nk;
-                *vc = nv;
-            }
+        let mode = kv_cap_mode();
+        let (k_all, v_all) = if mode == KvCap::Direct {
+            Self::kv_store_direct(kc, vc, &k.squeeze(0)?, &v, pos, device)?
         } else {
-            *kc = k_all.clone();
-            *vc = v_all.clone();
-        }
+            // narrow to the committed prefix — the cache may be a
+            // fixed-capacity buffer whose tail is uninitialised
+            let k_pre = if kc.dim(1)? > pos { kc.narrow(1, 0, pos)? } else { kc.clone() };
+            let v_pre = if vc.dim(1)? > pos { vc.narrow(1, 0, pos)? } else { vc.clone() };
+            let k_all = Tensor::cat(&[k_pre, k.squeeze(0)?], 1)?;
+            let v_all = Tensor::cat(&[v_pre, v.clone()], 1)?;
+            if mode == KvCap::Legacy {
+                // integration-3's store: the capacity buffer is zero-filled
+                // (blit) and the cat result copied into it
+                let need = pos + seq;
+                let (nkv, hd) = (k_all.dim(0)?, k_all.dim(2)?);
+                if kc.dim(1)? >= need && kc.is_contiguous() && vc.is_contiguous() {
+                    kc.slice_set(&k.squeeze(0)?.contiguous()?, 1, pos)?;
+                    vc.slice_set(&v.contiguous()?, 1, pos)?;
+                } else {
+                    let ncap = (need * 2).max(2048).next_multiple_of(256);
+                    let nk = Tensor::zeros((nkv, ncap, hd), DType::BF16, device)?;
+                    let nv = Tensor::zeros((nkv, ncap, hd), DType::BF16, device)?;
+                    nk.slice_set(&k_all.contiguous()?, 1, 0)?;
+                    nv.slice_set(&v_all.contiguous()?, 1, 0)?;
+                    *kc = nk;
+                    *vc = nv;
+                }
+            } else {
+                *kc = k_all.clone();
+                *vc = v_all.clone();
+            }
+            (k_all, v_all)
+        };
 
         let out = Self::attn_eager(
             &q, &k_all, &v_all, pos, seq, l.n_heads, l.n_kv, l.head_dim, attn_gqa(), device,
@@ -4340,6 +4348,59 @@ impl Qwen35 {
             )
         })?; // [1, 24, seq, 256]
         Ok(out.squeeze(0)?.transpose(0, 1)?.reshape((seq, n_heads * head_dim))?)
+    }
+
+    /// `KvCap::Direct` prefill store: append this chunk's `k`/`v`
+    /// ([n_kv, seq, d]; `v` may be the time-major view) at rows
+    /// `pos..pos+seq` of the slot's contiguous capacity buffers and return
+    /// views of rows `0..pos+seq` for the eager attention (its gemm inputs
+    /// are made contiguous there — the same values and layouts as the
+    /// `cat` result, so the output is bit-identical).
+    ///
+    /// Writes in place only into a contiguous buffer with room — a
+    /// restored checkpoint's K/V is exactly `pos` rows (never written in
+    /// place: it is shared read-only), so the first chunk after a restore
+    /// grows. A new buffer is uninitialised (no blit fill): the old rows
+    /// `0..pos` are copied in, the chunk written, and the tail from
+    /// `pos+seq` zeroed by one compute dispatch — the unwritten rows must
+    /// be finite: the N3 split tile multiplies whole 32-key V pages by
+    /// masked (zero) probabilities, and before the anchor fix the first
+    /// verify also attended row `n_prompt` unwritten. Capacity: whole
+    /// 256-row blocks, `max(2*(pos+seq), 2048)` — the `Legacy`/`ensure_kv`
+    /// rule, so the decode path sees the same capacities (split plans).
+    fn kv_store_direct(
+        kc: &mut Tensor,
+        vc: &mut Tensor,
+        k: &Tensor,
+        v: &Tensor,
+        pos: usize,
+        device: &Device,
+    ) -> Result<(Tensor, Tensor)> {
+        let seq = k.dim(1)?;
+        let need = pos + seq;
+        let (nkv, hd) = (k.dim(0)?, k.dim(2)?);
+        let room = kc.dim(1)? >= need && vc.dim(1)? >= need && kc.is_contiguous() && vc.is_contiguous();
+        if !room {
+            let ncap = (need * 2).max(2048).next_multiple_of(256);
+            // SAFETY: rows 0..pos are copied below, pos..need written by
+            // the chunk store, need..ncap zeroed — every element is written
+            let nk = crate::outbuf::kernel_out((nkv, ncap, hd), DType::BF16, device)?;
+            let nv = crate::outbuf::kernel_out((nkv, ncap, hd), DType::BF16, device)?;
+            if pos > 0 {
+                anyhow::ensure!(kc.dim(1)? >= pos && vc.dim(1)? >= pos, "kv store: cache has fewer than {pos} rows");
+                let ko = if kc.dim(1)? == pos { kc.contiguous()? } else { kc.narrow(1, 0, pos)?.contiguous()? };
+                let vo = if vc.dim(1)? == pos { vc.contiguous()? } else { vc.narrow(1, 0, pos)?.contiguous()? };
+                nk.slice_set(&ko, 1, 0)?;
+                nv.slice_set(&vo, 1, 0)?;
+            }
+            crate::outbuf::zero_rows(&nk, need, ncap)?;
+            crate::outbuf::zero_rows(&nv, need, ncap)?;
+            *kc = nk;
+            *vc = nv;
+        }
+        kc.slice_set(&k.contiguous()?, 1, pos)?;
+        vc.slice_set(&v.contiguous()?, 1, pos)?;
+        Ok((kc.narrow(1, 0, need)?, vc.narrow(1, 0, need)?))
     }
 
     /// Grow the fixed-capacity KV caches to hold `need` rows. Appended

@@ -100,6 +100,27 @@ pub fn cat0_uninit(parts: &[Tensor]) -> Result<Tensor> {
     Tensor::cat(parts, 0)
 }
 
+/// Zero rows `from..to` along dim 1 of a contiguous rank-3 tensor `[a, b, c]`
+/// in place (a KV capacity buffer's unwritten tail): one compute dispatch on
+/// Metal — no blit fill, so no compute-encoder switch and no fence wait.
+/// Off Metal (or with a byte offset/length that is not a multiple of 4) it
+/// falls back to `slice_set` from a zero tensor.
+pub fn zero_rows(t: &Tensor, from: usize, to: usize) -> Result<()> {
+    let dims = t.dims();
+    if dims.len() != 3 || !t.is_contiguous() || from > to || to > dims[1] {
+        candle_core::bail!("zero_rows: need a contiguous [a, b, c] tensor and from <= to <= b (got {dims:?}, {from}..{to})");
+    }
+    if from == to {
+        return Ok(());
+    }
+    #[cfg(all(feature = "metal", target_os = "macos"))]
+    if metal_copy::zero_rows(t, from, to)? {
+        return Ok(());
+    }
+    let z = Tensor::zeros((dims[0], to - from, dims[2]), t.dtype(), t.device())?;
+    t.slice_set(&z, 1, from)
+}
+
 #[cfg(all(feature = "metal", target_os = "macos"))]
 mod metal_copy {
     use candle_core::{Result, Storage, Tensor};
@@ -120,6 +141,66 @@ kernel void th_copy_words(device const uint *src [[buffer(0)]],
 "#;
 
     static PIPE: OnceLock<ComputePipeline> = OnceLock::new();
+
+    const ZSRC: &str = r#"
+#include <metal_stdlib>
+using namespace metal;
+kernel void th_zero_words_2d(device uint *dst [[buffer(0)]],
+                             constant uint &len [[buffer(1)]],
+                             constant uint &stride [[buffer(2)]],
+                             uint2 i [[thread_position_in_grid]]) {
+    if (i.x < len) dst[i.y * stride + i.x] = 0u;
+}
+"#;
+
+    static ZPIPE: OnceLock<ComputePipeline> = OnceLock::new();
+
+    /// Zero rows `from..to` of dim 1 of contiguous `t` [a, b, c]: `a`
+    /// regions of `(to-from)*c` elements, `b*c` apart, one dispatch.
+    /// Ok(false) (nothing enqueued) off Metal or when a region's byte
+    /// offset / length is not a multiple of 4.
+    pub(super) fn zero_rows(t: &Tensor, from: usize, to: usize) -> Result<bool> {
+        if !t.device().is_metal() || !t.is_contiguous() {
+            return Ok(false);
+        }
+        let d = t.dims();
+        let es = t.dtype().size_in_bytes();
+        let (st, l) = t.storage_and_layout();
+        let Storage::Metal(m) = &*st else {
+            return Ok(false);
+        };
+        let off = (l.start_offset() + from * d[2]) * es;
+        let len = (to - from) * d[2] * es;
+        let stride = d[1] * d[2] * es;
+        if len == 0 || len % 4 != 0 || off % 4 != 0 || stride % 4 != 0 || stride / 4 > u32::MAX as usize {
+            return Ok(false);
+        }
+        use candle_core::backend::BackendStorage;
+        let device = m.device();
+        if ZPIPE.get().is_none() {
+            let raw = device.metal_device();
+            let lib = raw.new_library_with_source(ZSRC, None).map_err(candle_core::Error::wrap)?;
+            let f = lib.get_function("th_zero_words_2d", None).map_err(candle_core::Error::wrap)?;
+            let p = raw.new_compute_pipeline_state_with_function(&f).map_err(candle_core::Error::wrap)?;
+            let _ = ZPIPE.set(p);
+        }
+        let (lw, sw) = ((len / 4) as u32, (stride / 4) as u32);
+        let encoder = device.command_encoder().map_err(candle_core::Error::wrap)?;
+        encoder.set_label("th_zero_words_2d");
+        let enc_ref = &encoder;
+        let enc: &candle_metal_kernels::metal::ComputeCommandEncoder = enc_ref.encoder().as_ref();
+        enc.set_compute_pipeline_state(ZPIPE.get().unwrap());
+        enc.set_output_buffer(0, Some(m.buffer()), off);
+        enc.set_bytes(1, &lw);
+        enc.set_bytes(2, &sw);
+        let tg = 256usize;
+        enc.dispatch_thread_groups(
+            MTLSize { width: (lw as usize).div_ceil(tg), height: d[0], depth: 1 },
+            MTLSize { width: tg, height: 1, depth: 1 },
+        );
+        drop(encoder);
+        Ok(true)
+    }
 
     /// Copy contiguous `src` into `dst` at byte offset `dst_off` (+ dst's
     /// own start offset) with one compute dispatch. Ok(false) (nothing
