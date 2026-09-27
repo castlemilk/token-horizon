@@ -1781,11 +1781,31 @@ pub(crate) enum KvCap {
 
 fn kv_cap_mode() -> KvCap {
     static MODE: std::sync::OnceLock<KvCap> = std::sync::OnceLock::new();
-    *MODE.get_or_init(|| match std::env::var("TH_KV_CAP_PREFILL").as_deref() {
-        Ok("0") => KvCap::Off,
-        Ok("legacy") => KvCap::Legacy,
-        _ => KvCap::Direct,
-    })
+    match KV_CAP_OVERRIDE.load(std::sync::atomic::Ordering::Relaxed) {
+        1 => KvCap::Off,
+        2 => KvCap::Legacy,
+        3 => KvCap::Direct,
+        _ => *MODE.get_or_init(|| match std::env::var("TH_KV_CAP_PREFILL").as_deref() {
+            Ok("0") => KvCap::Off,
+            Ok("legacy") => KvCap::Legacy,
+            _ => KvCap::Direct,
+        }),
+    }
+}
+
+/// In-process A/B switch for probes (`TH_BENCH_TTFT`): 0 = the
+/// `TH_KV_CAP_PREFILL` setting, else the forced mode.
+static KV_CAP_OVERRIDE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+/// Probe hook: force a `KvCap` mode (None = back to the env knob).
+pub(crate) fn set_kv_cap_override(v: Option<KvCap>) {
+    let x = match v {
+        None => 0,
+        Some(KvCap::Off) => 1,
+        Some(KvCap::Legacy) => 2,
+        Some(KvCap::Direct) => 3,
+    };
+    KV_CAP_OVERRIDE.store(x, std::sync::atomic::Ordering::Relaxed);
 }
 
 /// `TH_ARN_LEGACY=1`: the pre-R0c single-threadgroup add+RMSNorm kernels

@@ -197,6 +197,14 @@ async fn main() -> Result<()> {
                 attn_bench::bench_attn()?;
                 return Ok(());
             }
+            // allocation cost probe (no model): fresh vs pooled buffers,
+            // private (Tensor::empty) vs zero-filled (Tensor::zeros, blit)
+            #[cfg(all(feature = "metal", target_os = "macos"))]
+            if let Ok(spec) = std::env::var("TH_BENCH_ALLOC") {
+                let dev = candle_core::Device::new_metal(0)?;
+                outbuf::bench_alloc(&dev, &spec)?;
+                return Ok(());
+            }
             #[cfg(all(feature = "metal", target_os = "macos"))]
             if std::env::var("TH_MPP_PROBE").is_ok() {
                 let dev = candle_core::Device::new_metal(0)?;
@@ -663,6 +671,9 @@ async fn main() -> Result<()> {
                     drop((ck, gck));
                 }
             }
+            if let Ok(spec) = std::env::var("TH_BENCH_TTFT") {
+                bench_ttft(&mut loaded, &ids, &spec)?;
+            }
             #[cfg(all(feature = "metal", target_os = "macos"))]
             if let Ok(spec) = std::env::var("TH_BENCH_ATTN") {
                 // Eager prefill attention (qwen35 `attn_eager`, the seq > 8
@@ -874,3 +885,211 @@ async fn main() -> Result<()> {
     }
 }
 
+/// `TH_BENCH_TTFT=n:turn_end,...` — the cold-request TTFT path in one
+/// process, variants alternating run by run (order rotated per rep): from
+/// the request-start slot clear to the first token's argmax readback (the
+/// sync a T=0 first sample makes), prompt = the probe ids cycled to `n`
+/// under the T1 chunk plan with a chat turn end at `turn_end`.
+/// `TH_BENCH_DRAFT=<dir>` attaches the DFlash draft (capture rows, as the
+/// server). `TH_BENCH_TTFT_KINDS` (default `miss,cap,miss-kv0,cap-kv0`):
+///   miss — plan only (TH_PREFIX_CACHE=miss); cap — plus the plan's
+///   checkpoint captures inline (integration-3's order) into an LRU store
+///   (the server's default config); dcap — deferred captures (the
+///   server's order now: holds while prefilling, one build + the prompt-end
+///   checkpoint after the first token's readback; the build is timed in
+///   `capture`, outside `total`);
+///   suffix `-kv0` — TH_KV_CAP_PREFILL off, `-leg` — the integration-3
+///   (legacy) capacity store, none — the direct store (in-process override);
+///   `head` anywhere in the name — every chunk computes its logits (as
+///   integration-3), else only the last (`forward_slot_nohead`).
+/// `TH_BENCH_TTFT_GAP_MS` idle pause and `TH_BENCH_TTFT_THERM=1` a
+/// thermal-level-0 wait before every run (both outside the timed window).
+/// `TH_BENCH_TTFT_REPS` timed runs per kind (5). Prints median/min total,
+/// clear, host enqueue and capture host time per kind.
+fn bench_ttft(loaded: &mut model::LoadedModel, ids: &[u32], spec: &str) -> Result<()> {
+    use std::time::Instant;
+    let dev = loaded.device.clone();
+    if let Ok(d) = std::env::var("TH_BENCH_DRAFT") {
+        if !loaded.backend.has_draft() {
+            loaded.backend.attach_draft(std::path::Path::new(&d))?;
+        }
+    }
+    // TH_BENCH_TTFT_GAP_MS: idle pause before every run (thermal drift)
+    let gap_ms: u64 = std::env::var("TH_BENCH_TTFT_GAP_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
+    let therm_gate = std::env::var("TH_BENCH_TTFT_THERM").as_deref() == Ok("1");
+    let mut therm_wait = 0.0f64;
+    let reps: usize = std::env::var("TH_BENCH_TTFT_REPS").ok().and_then(|v| v.parse().ok()).unwrap_or(5);
+    let kinds: Vec<String> = std::env::var("TH_BENCH_TTFT_KINDS")
+        .unwrap_or_else(|_| "miss,cap,miss-leg,cap-leg,miss-kv0,cap-kv0".into())
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+    // TH_BENCH_TTFT_IDS=<file>: comma-separated prompt ids (else --tokens)
+    let file_ids: Option<Vec<u32>> = match std::env::var("TH_BENCH_TTFT_IDS") {
+        Ok(f) => Some(std::fs::read_to_string(&f)?.split(',').filter_map(|t| t.trim().parse().ok()).collect()),
+        Err(_) => None,
+    };
+    let ids: &[u32] = file_ids.as_deref().unwrap_or(ids);
+    let pcfg = prefix_cache::PrefixCacheConfig::from_env();
+    let pcfg = prefix_cache::PrefixCacheConfig { enabled: true, plan_only: false, grid_only: false, ..pcfg };
+    let mut store: prefix_cache::PrefixCache<model::BackendPrefix> = prefix_cache::PrefixCache::new(pcfg);
+    let mut nonce = 0u32;
+    for pair in spec.split(',') {
+        let Some((n, te)) = pair.split_once(':').and_then(|(a, b)| Some((a.trim().parse::<usize>().ok()?, b.trim().parse::<usize>().ok()?))) else {
+            continue;
+        };
+        let plan = prefix_cache::plan(n, 512, Some(&pcfg), Some(te), &[te]);
+        let bounds: Vec<usize> = plan.splits.iter().copied().chain(std::iter::once(n)).collect();
+        eprintln!("ttft n={n} turn_end={te} splits={:?} checkpoints={:?} kinds={kinds:?} reps={reps}", plan.splits, plan.checkpoints);
+        // (total, clear, enqueue, capture) per kind
+        let mut res: Vec<Vec<(f64, f64, f64, f64)>> = vec![Vec::new(); kinds.len()];
+        let mut first_tok: Vec<Option<u32>> = vec![None; kinds.len()];
+        let mut ref_bits: Vec<(String, Vec<u32>)> = Vec::new();
+        for r in 0..=reps {
+            for k in 0..kinds.len() {
+                let ki = (k + r) % kinds.len();
+                let kind = kinds[ki].as_str();
+                // a fresh first token per run so every run misses the store;
+                // the untimed round 0 runs one fixed prompt in every kind
+                // (bitwise logits identity across kinds; its checkpoints
+                // are inserted once and later hit nothing)
+                nonce += 1;
+                let mut seq: Vec<u32> = (0..n).map(|i| ids[i % ids.len()]).collect();
+                seq[0] = if r == 0 { 999 } else { 1000 + nonce % 50000 };
+                if gap_ms > 0 {
+                    dev.synchronize()?;
+                    std::thread::sleep(std::time::Duration::from_millis(gap_ms));
+                }
+                // TH_BENCH_TTFT_THERM=1: wait (<= 180 s, outside the timed
+                // window) for thermal pressure level 0 before every run
+                if therm_gate {
+                    let t = Instant::now();
+                    while t.elapsed().as_secs() < 180 {
+                        let lvl = std::process::Command::new("notifyutil")
+                            .args(["-g", "com.apple.system.thermalpressurelevel"])
+                            .output()
+                            .ok()
+                            .and_then(|o| String::from_utf8_lossy(&o.stdout).split_whitespace().last().and_then(|x| x.parse::<u32>().ok()));
+                        if lvl.unwrap_or(0) == 0 {
+                            break;
+                        }
+                        std::thread::sleep(std::time::Duration::from_secs(2));
+                    }
+                    therm_wait += t.elapsed().as_secs_f64();
+                }
+                let caps = kind.starts_with("cap") || kind.starts_with("dcap");
+                let deferred = kind.starts_with("dcap");
+                let mut held = Vec::new();
+                qwen35::set_kv_cap_override(Some(if kind.ends_with("-kv0") {
+                    qwen35::KvCap::Off
+                } else if kind.ends_with("-leg") {
+                    qwen35::KvCap::Legacy
+                } else {
+                    qwen35::KvCap::Direct
+                }));
+                let ms = |t: Instant| t.elapsed().as_secs_f64() * 1e3;
+                let t0 = Instant::now();
+                loaded.backend.set_kv_quant(false)?;
+                loaded.backend.clear_kv_cache(0);
+                let clear = ms(t0);
+                let (mut enq, mut cap) = (0.0, 0.0);
+                let mut pos = 0usize;
+                let mut last = None;
+                for &end in &bounds {
+                    let t = Instant::now();
+                    if end < n && !kind.contains("head") {
+                        loaded.backend.forward_slot_nohead(0, &seq[pos..end], pos, &dev)?;
+                    } else {
+                        last = Some(loaded.backend.forward_slot(0, &seq[pos..end], pos, &dev)?);
+                    }
+                    enq += ms(t);
+                    pos = end;
+                    if caps && pos < n && plan.checkpoints.contains(&pos) {
+                        let t = Instant::now();
+                        if deferred {
+                            // the server's order: hold now (copy unless the
+                            // tail chunk is next), build after the first token
+                            let last_split = bounds.iter().position(|&b| b == pos).map_or(false, |i| i + 2 == bounds.len());
+                            held.push((pos, loaded.backend.prefix_hold(0, !last_split)?, None));
+                        } else {
+                            let p = loaded.backend.prefix_capture(0)?;
+                            let parts = vec![(store.part_id(), p.parts().iter().map(|x| x.1).sum())];
+                            store.insert_shared(seq[..pos].to_vec(), 512, plan.history(pos), parts, false, p);
+                        }
+                        cap += ms(t);
+                    }
+                }
+                let last = last.context("empty plan")?;
+                if deferred {
+                    held.push((n, loaded.backend.prefix_hold(0, false)?, Some(last.clone())));
+                }
+                let tok = last.argmax(0)?.to_scalar::<u32>()?;
+                let total = ms(t0);
+                if deferred {
+                    let t = Instant::now();
+                    // the server's accounting: the build's K/V and capture-row
+                    // copies are shared parts
+                    let (kv_id, caps_id) = (store.part_id(), store.part_id());
+                    for p in loaded.backend.prefix_build(0, std::mem::take(&mut held))? {
+                        let pp = p.pos();
+                        let parts: Vec<(u64, usize)> = p
+                            .parts()
+                            .iter()
+                            .map(|&(k, b)| match k {
+                                qwen35::CkPart::Kv => (kv_id, b),
+                                qwen35::CkPart::Caps => (caps_id, b),
+                                qwen35::CkPart::Own => (store.part_id(), b),
+                            })
+                            .collect();
+                        store.insert_shared(seq[..pp].to_vec(), 512, plan.history_at(pp, n), parts, pp == n, p);
+                    }
+                    cap += ms(t);
+                }
+                if r == 0 {
+                    let bits: Vec<u32> = last.to_vec1::<f32>()?.iter().map(|v| v.to_bits()).collect();
+                    ref_bits.push((kind.to_string(), bits));
+                }
+                // drain the draft captures like the server's warm-up would
+                if loaded.backend.has_draft() {
+                    loaded.backend.draft_prefill(0)?;
+                    dev.synchronize()?;
+                }
+                if r > 0 {
+                    res[ki].push((total, clear, enq, cap));
+                }
+                if first_tok[ki].is_none() {
+                    first_tok[ki] = Some(tok);
+                }
+            }
+        }
+        qwen35::set_kv_cap_override(None);
+        if let Some((k0, b0)) = ref_bits.first() {
+            for (k, b) in &ref_bits[1..] {
+                let diff = b.iter().zip(b0).filter(|(x, y)| x != y).count();
+                eprintln!("  logits bits {k} vs {k0}: {diff} of {} differ{}", b.len(), if diff == 0 { "" } else { "  <-- NOT BITWISE" });
+            }
+        }
+        let med = |v: &mut Vec<f64>| {
+            v.sort_by(|a, b| a.total_cmp(b));
+            (v[v.len() / 2], v[0])
+        };
+        for (ki, kind) in kinds.iter().enumerate() {
+            let mut tot: Vec<f64> = res[ki].iter().map(|x| x.0).collect();
+            let mut clr: Vec<f64> = res[ki].iter().map(|x| x.1).collect();
+            let mut enq: Vec<f64> = res[ki].iter().map(|x| x.2).collect();
+            let mut cap: Vec<f64> = res[ki].iter().map(|x| x.3).collect();
+            let (tm, tmin) = med(&mut tot);
+            eprintln!(
+                "  {kind:10} total med {tm:7.1} min {tmin:7.1} ms | clear {:5.1} | enqueue {:6.1} | capture {:5.1} | all {:?} | tok {:?}",
+                med(&mut clr).0,
+                med(&mut enq).0,
+                med(&mut cap).0,
+                res[ki].iter().map(|x| x.0.round() as i64).collect::<Vec<_>>(),
+                first_tok[ki]
+            );
+        }
+        eprintln!("  store: entries {} bytes {:.0} MB; thermal-gate waits {:.0} s", store.len(), store.bytes() as f64 / 1e6, therm_wait);
+    }
+    Ok(())
+}

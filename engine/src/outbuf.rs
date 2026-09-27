@@ -154,6 +154,122 @@ pub fn copy_into(src: &Tensor, dst: &Tensor) -> Result<()> {
     dst.slice_set(&src, 0, 0)
 }
 
+/// `TH_BENCH_ALLOC=count:bytes,...` probe (no model): host cost of `count`
+/// buffers of `bytes` each — fresh private (`Tensor::empty` right after a
+/// sync, which trims candle's pool), pooled (the same sizes again before any
+/// sync), fresh zero-filled (`Tensor::zeros`: shared storage + one blit fill
+/// each) — plus the GPU drain of one word-copy into every fresh buffer
+/// (first touch). Median of 5 trials each.
+#[cfg(all(feature = "metal", target_os = "macos"))]
+pub fn bench_alloc(dev: &Device, spec: &str) -> Result<()> {
+    let ms = |t: std::time::Instant| t.elapsed().as_secs_f64() * 1e3;
+    let med = |mut v: Vec<f64>| {
+        v.sort_by(|a, b| a.total_cmp(b));
+        v[v.len() / 2]
+    };
+    // TH_BENCH_ALLOC_HELD=N: hold N extra live 64 KB buffers first (a
+    // loaded model's weights + checkpoints populate candle's pool and the
+    // residency set the same way)
+    let held_n: usize = std::env::var("TH_BENCH_ALLOC_HELD").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
+    let t = std::time::Instant::now();
+    let _held: Vec<Tensor> = (0..held_n).map(|i| unsafe { Tensor::empty((16384 + (i % 7) * 4096,), DType::F32, dev) }).collect::<Result<_>>()?;
+    if held_n > 0 {
+        eprintln!("held {held_n} live buffers ({:.1} ms)", ms(t));
+    }
+    for item in spec.split(',') {
+        let Some((n, b)) = item.split_once(':').and_then(|(a, b)| Some((a.trim().parse::<usize>().ok()?, b.trim().parse::<usize>().ok()?))) else {
+            continue;
+        };
+        let words = b / 4;
+        let src = Tensor::zeros((words,), DType::F32, dev)?;
+        let (mut fresh, mut touch, mut pooled, mut zeros, mut zsync) = (vec![], vec![], vec![], vec![], vec![]);
+        for _ in 0..5 {
+            dev.synchronize()?;
+            let t = std::time::Instant::now();
+            let v: Vec<Tensor> = (0..n).map(|_| unsafe { Tensor::empty((words,), DType::F32, dev) }).collect::<Result<_>>()?;
+            fresh.push(ms(t));
+            let t = std::time::Instant::now();
+            for x in &v {
+                metal_copy::copy_into(&src, x, 0)?;
+            }
+            dev.synchronize()?;
+            touch.push(ms(t));
+            // keep v alive across the sync (not trimmed), then free it: the
+            // same sizes again come from the pool
+            drop(v);
+            let t = std::time::Instant::now();
+            let v2: Vec<Tensor> = (0..n).map(|_| unsafe { Tensor::empty((words,), DType::F32, dev) }).collect::<Result<_>>()?;
+            pooled.push(ms(t));
+            drop(v2);
+            dev.synchronize()?;
+            let t = std::time::Instant::now();
+            let z: Vec<Tensor> = (0..n).map(|_| Tensor::zeros((words,), DType::F32, dev)).collect::<Result<_>>()?;
+            zeros.push(ms(t));
+            let t = std::time::Instant::now();
+            dev.synchronize()?;
+            zsync.push(ms(t));
+            drop(z);
+        }
+        // pool trim: `n` buffers freed since the last sync are removed from
+        // candle's pool (and the residency set, one commit each) by the
+        // next sync
+        let mut trim = vec![];
+        for _ in 0..5 {
+            dev.synchronize()?;
+            let v: Vec<Tensor> = (0..n).map(|_| unsafe { Tensor::empty((words,), DType::F32, dev) }).collect::<Result<_>>()?;
+            for x in &v {
+                metal_copy::copy_into(&src, x, 0)?;
+            }
+            dev.synchronize()?;
+            drop(v);
+            let t = std::time::Instant::now();
+            dev.synchronize()?;
+            trim.push(ms(t));
+        }
+        eprintln!("  trim {n} freed buffers at a sync: {:.2} ms", med(trim));
+        // the same fresh allocations while the GPU is busy (a queued
+        // ~matmul workload, outputs kept alive so the pool cannot hand them
+        // out): host time of the allocations, and the drain vs the
+        // workload alone
+        let a = Tensor::ones((2048, 2048), DType::F32, dev)?;
+        let work = |k: usize| -> Result<Vec<Tensor>> { (0..k).map(|_| a.matmul(&a)).collect() };
+        let (mut busy_alloc, mut busy_drain, mut idle_drain) = (vec![], vec![], vec![]);
+        for _ in 0..5 {
+            dev.synchronize()?;
+            let t = std::time::Instant::now();
+            let w = work(60)?;
+            dev.synchronize()?;
+            idle_drain.push(ms(t));
+            drop(w);
+            dev.synchronize()?;
+            let t = std::time::Instant::now();
+            let w = work(60)?;
+            let t2 = std::time::Instant::now();
+            let v: Vec<Tensor> = (0..n).map(|_| unsafe { Tensor::empty((words,), DType::F32, dev) }).collect::<Result<_>>()?;
+            busy_alloc.push(ms(t2));
+            for x in &v {
+                metal_copy::copy_into(&src, x, 0)?;
+            }
+            dev.synchronize()?;
+            busy_drain.push(ms(t));
+            drop((w, v));
+        }
+        eprintln!(
+            "alloc {n} x {b} B ({:.1} MB): fresh empty {:.2} ms (+ touch+sync {:.2}) | pooled empty {:.2} ms | fresh zeros {:.2} ms (+ sync {:.2}) | GPU busy: fresh empty {:.2} ms, work+alloc+touch drain {:.1} vs work alone {:.1} ms",
+            (n * b) as f64 / 1e6,
+            med(fresh),
+            med(touch),
+            med(pooled),
+            med(zeros),
+            med(zsync),
+            med(busy_alloc),
+            med(busy_drain),
+            med(idle_drain)
+        );
+    }
+    Ok(())
+}
+
 #[cfg(all(feature = "metal", target_os = "macos"))]
 mod metal_copy {
     use candle_core::{Result, Storage, Tensor};
