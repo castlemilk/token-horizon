@@ -492,6 +492,14 @@ fn chat_marks(tok: &tokenizers::Tokenizer) -> Option<prefix_cache::ChatMarks> {
     })
 }
 
+/// `TH_PREFILL_HEAD=1`: every prefill chunk runs the final norm + lm_head
+/// (the logits of all but the last chunk are discarded) — the A/B arm for
+/// `forward_slot_nohead`. Read once.
+fn prefill_head_all() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("TH_PREFILL_HEAD").as_deref() == Ok("1"))
+}
+
 /// What `prefill_slot` did.
 struct Prefilled {
     /// Logits of the last prompt position (None for an empty prompt).
@@ -584,7 +592,13 @@ fn prefill_slot(
         plan.splits.iter().copied().chain(std::iter::once(n)).filter(|&b| b > start).collect();
     for end in bounds {
         let t = Instant::now();
-        logits = Some(inner.backend.forward_slot(slot, &prompt[pos..end], pos, &device)?);
+        // only the prompt's last chunk needs logits (`TH_PREFILL_HEAD=1`:
+        // every chunk computes them — integration-3's forwards, A/B)
+        if end < n && !prefill_head_all() {
+            inner.backend.forward_slot_nohead(slot, &prompt[pos..end], pos, &device)?;
+        } else {
+            logits = Some(inner.backend.forward_slot(slot, &prompt[pos..end], pos, &device)?);
+        }
         prefill_ms += t.elapsed().as_secs_f64() * 1000.0;
         if clk.on {
             trace += &format!(" [{pos}..{end})={:.1}", clk.mark(&device));

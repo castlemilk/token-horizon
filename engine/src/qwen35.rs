@@ -4489,13 +4489,21 @@ impl Qwen35 {
 
     /// tokens at absolute position `pos` → logits (vocab,) for the last.
     pub fn forward(&mut self, slot: usize, tokens: &[u32], pos: usize) -> Result<Tensor> {
-        self.forward_inner(slot, tokens, pos, true)
+        self.forward_inner(slot, tokens, pos, true, true)
     }
 
     /// Same, but logits for every position — `[seq, vocab]`. Used by the
     /// speculative-verify pass.
     pub fn forward_multi(&mut self, slot: usize, tokens: &[u32], pos: usize) -> Result<Tensor> {
-        self.forward_inner(slot, tokens, pos, false)
+        self.forward_inner(slot, tokens, pos, false, true)
+    }
+
+    /// A prefill chunk whose logits nobody reads (every chunk but a
+    /// prompt's last): the same forward as `forward` — state, K/V and
+    /// capture rows bit for bit — without the final norm and the lm_head
+    /// (~0.6 GB of weights read per chunk for one discarded row).
+    pub fn forward_nohead(&mut self, slot: usize, tokens: &[u32], pos: usize) -> Result<()> {
+        self.forward_inner(slot, tokens, pos, true, false).map(|_| ())
     }
 
     fn forward_inner(
@@ -4504,6 +4512,7 @@ impl Qwen35 {
         tokens: &[u32],
         pos: usize,
         last_only: bool,
+        head: bool,
     ) -> Result<Tensor> {
         let seq = tokens.len();
         // long-prompt prefill: trim candle's pool before the next chunk
@@ -4641,6 +4650,12 @@ impl Qwen35 {
                     .to_vec1::<f32>()?;
                 eprintln!("L{i:02} mean|x|={mean:.4} x[-1,:8]={last:?}");
             }
+        }
+        if !head {
+            // `forward_nohead`: the caller discards the logits
+            self.slots[slot].kv_tokens = pos + seq;
+            self.slots[slot].gdn_par.flip();
+            return Ok(x);
         }
         crate::gpuprof::region("norm.final");
         let x = rms_norm(&x, &self.norm, self.cfg.rms_norm_eps)?;

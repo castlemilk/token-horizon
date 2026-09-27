@@ -64,6 +64,22 @@ impl ModelBackend {
         self.forward(tokens, pos, device)
     }
 
+    /// A prefill chunk whose logits are discarded (not a prompt's last):
+    /// qwen3_5 skips the final norm + lm_head; other backends forward and
+    /// drop the logits.
+    pub fn forward_slot_nohead(
+        &mut self,
+        slot: usize,
+        tokens: &[u32],
+        pos: usize,
+        device: &Device,
+    ) -> Result<()> {
+        if let Self::Qwen35(m) = self {
+            return m.forward_nohead(slot, tokens, pos);
+        }
+        self.forward_slot(slot, tokens, pos, device).map(|_| ())
+    }
+
     /// Returns logits for the last input position, shape (vocab,).
     pub fn forward(&mut self, tokens: &[u32], pos: usize, device: &Device) -> Result<Tensor> {
         let input = Tensor::new(tokens, device)?.unsqueeze(0)?;
