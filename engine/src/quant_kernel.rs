@@ -5146,13 +5146,16 @@ kernel void pf_reduce(device const float* part [[buffer(0)]],
 
     /// E1(c): whether an m-row prefill activation should be produced as a
     /// prefill presum block (`pf_presum_elems`) — the m > 128 route is the
-    /// vec tile on 32-row tiles (probed), and TH_PF_PRESUM != 0 (read
-    /// once). Producers: `AddRmsNorm { pfsums }` (in_all / in_qkv / gate_up
+    /// vec tile on 32-row tiles (probed), and TH_PF_PRESUM=1 (read once).
+    /// Producers: `AddRmsNorm { pfsums }` (in_all / in_qkv / gate_up
     /// inputs) and the gate/up up·silu pass (`AffineQpf { emit }`, the down
     /// input). Consumers bind the block's sums instead of a pf_prep pass.
+    /// OPT-IN (default off): bitwise equal to the pf_prep path, but the
+    /// saving (the pf_prep passes, ~1 % of a long-prompt forward) measured
+    /// below the end-to-end noise floor (th-e-prefill-gemm.md §6).
     pub fn pf_presum_on(m: usize) -> bool {
         static ON: OnceLock<bool> = OnceLock::new();
-        let on = *ON.get_or_init(|| std::env::var("TH_PF_PRESUM").as_deref() != Ok("0"));
+        let on = *ON.get_or_init(|| std::env::var("TH_PF_PRESUM").as_deref() == Ok("1"));
         if !on || m <= 128 {
             return false;
         }
