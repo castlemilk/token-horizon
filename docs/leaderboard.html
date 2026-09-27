@@ -1598,23 +1598,30 @@ function navigate(view, opts = {}) {
   // /models is a path-routed view: keep it canonical, and leave it for other
   // views (a relative "?view=x" would otherwise stay on /models).
   const onModelsPath = /^\/models\/?$/.test(location.pathname);
-  const target = onModelsPath
-    ? (view === "models" ? "/models" : "/leaderboard") + (qs ? "?" + qs : "")
-    : (qs ? "?" + qs : location.pathname);
+  const target = (view === "players" && handle)
+    ? "/u/" + encodeURIComponent(handle)  // clean permalink — unfurls with a
+                                          // dynamic OG card server-side
+    : onModelsPath
+      ? (view === "models" ? "/models" : "/leaderboard") + (qs ? "?" + qs : "")
+      : (qs ? "?" + qs : location.pathname);
   history.pushState({ view, handle }, "", target);
   renderNav();
   render();
 }
 window.addEventListener("popstate", () => {
   const p = new URLSearchParams(location.search);
-  state.view = p.get("view") || (/^\/models\/?$/.test(location.pathname) ? "models" : "leaderboard");
+  const userPath = location.pathname.match(/^\/u\/([^\/?#]+)\/?$/);
+  const sharePath = location.pathname.match(/^\/s\/([^\/?#]+)\/?$/);
+  state.view = p.get("view") || (userPath ? "players" : /^\/models\/?$/.test(location.pathname) ? "models" : "leaderboard");
   state.modelsTab = ["providers", "plans", "cheapest"].includes(p.get("tab")) ? p.get("tab") : "explorer";
   const u = p.get("user");
   if (u) state.currentHandle = u;
+  if (userPath) state.currentHandle = decodeURIComponent(userPath[1]);
   if (p.get("model")) mxState().pendingModel = p.get("model");
   if (p.get("provider")) mxState().pendingProviderFilter = p.get("provider");
   if (p.get("plan")) mxState().planFilter = p.get("plan");
   renderNav();
+  if (sharePath) { renderSharedReport(sharePath[1]); return; }
   render();
 });
 
@@ -2063,6 +2070,14 @@ function wireCharts() {
     if (!requireSignIn({ action: `Sharing @${target}'s report`, onSuccess: () => openShareModal(target) })) return;
     openShareModal(target);
   });
+  $$("[data-copy-profile]").forEach(el => el.onclick = async (ev) => {
+    ev.stopPropagation();
+    // No sign-in needed — the public profile permalink unfurls with a live
+    // usage card (dynamic OG image) anywhere it's pasted.
+    const link = location.origin + "/u/" + encodeURIComponent(el.dataset.copyProfile);
+    try { await navigator.clipboard.writeText(link); toast("Profile link copied — " + link); }
+    catch (_) { toast("Profile link: " + link); }
+  });
   $$("[data-claim-user]").forEach(el => el.onclick = () => openClaimModal(el.dataset.claimUser));
   $$("[data-crumb]").forEach(el => el.onclick = (ev) => { ev.preventDefault(); navigate(el.dataset.crumb); });
   $$("[data-edit-avatar]").forEach(el => {
@@ -2154,6 +2169,7 @@ function profileHero(p) {
             <span class="chip orange">🔥 ${e.streakDays || 0}d streak</span>
             ${canEditAvatar(e) ? `<span class="chip" data-edit-avatar="${esc(e.handle)}" style="cursor:pointer">✎ Edit avatar</span>` : ""}
             <button class="pill" data-share-user="${esc(e.handle)}" style="font-size:11px;padding:6px 10px">Share report</button>
+            <button class="pill ghost" data-copy-profile="${esc(e.handle)}" style="font-size:11px;padding:6px 10px">Copy link</button>
             ${ownedByViewer ? "" : `<button class="pill ghost" data-claim-user="${esc(e.handle)}" style="font-size:11px;padding:6px 10px">Claim profile</button>`}
           </div></div>
       </div>
@@ -4899,8 +4915,13 @@ async function init() {
     if (state.view !== "leaderboard") navigate("leaderboard");
   });
   const params = new URLSearchParams(location.search);
+  // Clean permalinks served by the worker: /u/<handle> opens the player
+  // profile; /s/<id> opens the shared report (browser URLs carry no query).
+  const userPath = location.pathname.match(/^\/u\/([^\/?#]+)\/?$/);
+  const sharePath = location.pathname.match(/^\/s\/([^\/?#]+)\/?$/);
   if (params.get("user")) state.currentHandle = params.get("user");
-  state.view = params.get("view") || (params.get("user") ? "players" : "leaderboard");
+  if (userPath) state.currentHandle = decodeURIComponent(userPath[1]);
+  state.view = params.get("view") || ((params.get("user") || userPath) ? "players" : "leaderboard");
   // Dedicated /models route: the worker serves the SPA asset with an internal
   // ?view=models rewrite, so the browser URL has no query — derive it here.
   if (/^\/models\/?$/.test(location.pathname)) state.view = "models";
@@ -4915,7 +4936,8 @@ async function init() {
   if (params.get("plan")) mxState().planFilter = params.get("plan");
   if (params.get("model")) mxState().pendingModel = params.get("model");
   renderNav();
-  if (params.get("share")) { renderSharedReport(params.get("share")); return; }
+  const shareParam = params.get("share") || (sharePath ? sharePath[1] : null);
+  if (shareParam) { renderSharedReport(shareParam); return; }
   render();
   if (params.get("signin")) openSignInModal();
   setInterval(async () => {

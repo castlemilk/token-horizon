@@ -816,4 +816,109 @@ describe('Cloudflare Worker API', () => {
     assert.equal(slashLoc.pathname, '/models');
     assert.equal(slashLoc.searchParams.get('provider'), 'deepseek');
   });
+
+  it('GET /api/og/profile/<handle>.svg renders the quick-view usage card', async () => {
+    const res = await worker.fetch(req('/api/og/profile/benebsworth.svg'), createEnv());
+    assert.equal(res.status, 200);
+    assert.match(res.headers.get('content-type'), /image\/svg/);
+    const svg = await res.text();
+    assert.match(svg, /@benebsworth/);
+    assert.match(svg, /TOKEN HORIZON/);
+    assert.match(svg, /GRANDMASTER I/);
+    assert.match(svg, /TOKENS TODAY/);
+    assert.match(svg, /LAST \d+ DAYS/);
+    assert.match(svg, /Anthropic/);
+  });
+
+  it('GET /api/og/profile 404s for unknown handles', async () => {
+    const res = await worker.fetch(req('/api/og/profile/definitely_nobody.svg'), createEnv());
+    assert.equal(res.status, 404);
+    const png = await worker.fetch(req('/api/og/profile/definitely_nobody.png'), createEnv());
+    assert.equal(png.status, 404);
+  });
+
+  it('GET /u/<handle> injects profile OG meta + canonical + base into the SPA', async () => {
+    const html = '<!DOCTYPE html><html><head><meta charset="utf-8"><title>Token Horizon</title><meta name="description" content="orig"></head><body>spa</body></html>';
+    const env = {
+      ...createEnv(),
+      ASSETS: { async fetch() { return new Response(html, { status: 200, headers: { 'Content-Type': 'text/html' } }); } }
+    };
+    const res = await worker.fetch(req('/u/benebsworth'), env);
+    assert.equal(res.status, 200);
+    const body = await res.text();
+    assert.match(body, /<base href="\/">/);
+    assert.match(body, /<title>@benebsworth · Grandmaster I · #1 today<\/title>/);
+    assert.match(body, /property="og:image" content="https:\/\/token-horizon\.dev\/api\/og\/profile\/benebsworth\.png\?v=\d+"/);
+    assert.match(body, /property="og:url" content="https:\/\/token-horizon\.dev\/u\/benebsworth"/);
+    assert.match(body, /name="twitter:card" content="summary_large_image"/);
+    assert.match(body, /rel="canonical" href="https:\/\/token-horizon\.dev\/u\/benebsworth"/);
+    // Unknown handles fall through to the plain SPA (its own not-found state).
+    const missing = await worker.fetch(req('/u/definitely_nobody'), env);
+    assert.equal(missing.status, 200);
+    const missingBody = await missing.text();
+    assert.doesNotMatch(missingBody, /og:image/);
+  });
+
+  it('GET /api/og/share/<id>.svg honors anonymize + hideCost share options', async () => {
+    const env = createMultiKeyEnv();
+    const pub = await worker.fetch(req('/api/leaderboard', {
+      method: 'POST',
+      body: { handle: 'og_dev', tokensAll: 3000000, tokensToday: 100000, costAll: 42, topModel: 'claude-opus-5' }
+    }), env);
+    const claimToken = (await pub.json()).claimToken;
+    const created = await worker.fetch(req('/api/share/create', {
+      method: 'POST',
+      body: { handle: 'og_dev', claimToken, options: { anonymizeNames: true, hideCost: true }, publicLink: true }
+    }), env);
+    assert.equal(created.status, 200);
+    const id = (await created.json()).share.id;
+
+    const res = await worker.fetch(req(`/api/og/share/${id}.svg`), env);
+    assert.equal(res.status, 200);
+    const svg = await res.text();
+    assert.match(svg, /@Anonymous/);
+    assert.doesNotMatch(svg, /og_dev/);
+    assert.doesNotMatch(svg, /\$42/);
+
+    // Revoked shares stop unfurling.
+    await worker.fetch(req('/api/share/revoke', {
+      method: 'POST', body: { handle: 'og_dev', id, claimToken }
+    }), env);
+    assert.equal((await worker.fetch(req(`/api/og/share/${id}.svg`), env)).status, 404);
+  });
+
+  it('GET /u/<handle> serves ANSI text to curl, clean text to AI agents, JSON on request', async () => {
+    const env = {
+      ...createEnv(),
+      ASSETS: { async fetch() { return new Response('<html><head><title>spa</title></head></html>', { headers: { 'Content-Type': 'text/html' } }); } }
+    };
+    const get = (headers) => worker.fetch(new Request('https://token-horizon.dev/u/benebsworth', { headers }), env);
+
+    const curl = await get({ 'User-Agent': 'curl/8.7.1', Accept: '*/*' });
+    assert.match(curl.headers.get('content-type'), /text\/plain/);
+    const txt = await curl.text();
+    assert.match(txt, /\x1b\[96m/);          // ANSI color welcome in terminals
+    assert.match(txt, /@benebsworth/);
+    assert.match(txt, /TOKEN HORIZON/);
+    assert.match(txt, /PROVIDER MIX/);
+
+    const gpt = await get({ 'User-Agent': 'GPTBot/1.2 (+https://openai.com/gptbot)' });
+    const gptTxt = await gpt.text();
+    assert.match(gptTxt, /@benebsworth/);
+    assert.doesNotMatch(gptTxt, /\x1b\[/);   // no escape junk in LLM context
+
+    const json = await get({ Accept: 'application/json', 'User-Agent': 'some-agent' });
+    const data = await json.json();
+    assert.equal(data.ok, true);
+    assert.equal(data.card.handle, 'benebsworth');
+    assert.match(data.image, /api\/og\/profile\/benebsworth\.png/);
+
+    // Social unfurlers still get HTML + og:image — they never render text.
+    for (const ua of ['Twitterbot/1.0', 'Discordbot/2.0', 'Slackbot-LinkExpanding 1.0', 'facebookexternalhit/1.1']) {
+      const res = await get({ 'User-Agent': ua });
+      assert.match(res.headers.get('content-type'), /text\/html/, ua);
+      assert.match(await res.text(), /og:image/, ua);
+    }
+  });
+
 });

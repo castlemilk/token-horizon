@@ -4,6 +4,13 @@ compatibility_date = "2026-09-01"
 compatibility_flags = ["nodejs_compat"]
 workers_dev = true
 
+# OG card rasterizer: @resvg/resvg-wasm renders the SVG card to PNG at the
+# edge; fonts/*.ttf ship as Data modules (JetBrains Mono matches --mono).
+rules = [
+  { type = "CompiledWasm", globs = ["**/*.wasm"], fallthrough = false },
+  { type = "Data", globs = ["**/*.ttf"], fallthrough = false }
+]
+
 # Custom Domains (automatic DNS + SSL certificate provisioning).
 # token-horizon.dev is canonical; the legacy host stays routed until the
 # nameserver cutover is verified, then the second entry can be removed.

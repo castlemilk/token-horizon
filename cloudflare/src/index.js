@@ -2,7 +2,8 @@
  * Token Horizon — Cloudflare Edge Webhosting & R2 Leaderboard Backend
  *
  * Provides sub-20ms edge responses globally, direct R2 bucket persistence,
- * dynamic SVG badge generation for READMEs, and static asset webhosting.
+ * dynamic SVG badge generation for READMEs, dynamic PNG OG share cards
+ * (resvg-wasm), and static asset webhosting.
  */
 
 const CORS_HEADERS = {
@@ -1879,6 +1880,40 @@ export default {
       });
     }
 
+    // 6h. GET /api/og/profile/<handle>.png — dynamic OG usage card (PNG).
+    //     GET /api/og/share/<id>.png — share-report card honoring the
+    //     share's anonymize/hide-cost options. Social crawlers need a raster
+    //     image; the SVG card is rasterized by resvg-wasm at the edge.
+    if (request.method === "GET" && pathname.startsWith("/api/og/")) {
+      const rest = safeDecode(pathname.slice("/api/og/".length));
+      const stripExt = s => s.replace(/\.(png|svg)$/i, "");
+      const wantsSvg = /\.svg$/i.test(rest) || searchParams.get("format") === "svg";
+      const respond = async (svg) => wantsSvg ? ogSvgResponse(svg) : ogImageResponse(await renderOgPng(svg));
+      const entries = await getEntriesFromR2(env);
+
+      if (rest.startsWith("share/")) {
+        const id = stripExt(rest.slice(6)).replace(/[^a-zA-Z0-9]/g, "");
+        const share = await getJson(env, `shares/${id}.json`);
+        if (!share || share.revoked || (share.expiresAt && share.expiresAt * 1000 < Date.now())) {
+          return new Response("Not found", { status: 404 });
+        }
+        const entry = entries.find(e => e.handle.toLowerCase() === String(share.handle || "").toLowerCase());
+        if (!entry) return new Response("Not found", { status: 404 });
+        const svg = generateOgSvg(ogCardModel(entry, entries, {
+          anonymize: Boolean(share.options && share.options.anonymizeNames),
+          hideCost: Boolean(share.options && share.options.hideCost)
+        }), url.origin);
+        return respond(svg);
+      }
+
+      const handle = stripExt(rest.replace(/^profile\//, ""))
+        .replace(/^@/, "").trim().toLowerCase();
+      const entry = handle && entries.find(e => e.handle.toLowerCase() === handle);
+      if (!entry) return new Response("Not found", { status: 404 });
+      const svg = generateOgSvg(ogCardModel(entry, entries), url.origin);
+      return respond(svg);
+    }
+
     // Canonicalize the model explorer: /leaderboard?view=models → /models
     // (the flat catalog route). The Providers analytics tab only exists in the
     // dashboard shell, so tab=providers keeps the leaderboard URL. Internal
@@ -1904,17 +1939,27 @@ export default {
 
     // 7. Webhosting: Fallback to static assets binding (docs/leaderboard.html, styles.css, etc.)
     if (env.ASSETS) {
+      // Clean profile permalink: /u/<handle> serves the SPA with per-profile
+      // OG/Twitter meta + a dynamic PNG card injected into <head>. The SPA
+      // parses the path itself (init/popstate) — no query rewrite needed.
+      const profileMatch = pathname.match(/^\/u\/([^\/?#]+)\/?$/);
+      if (profileMatch) {
+        return serveProfilePage(env, request, safeDecode(profileMatch[1]));
+      }
       if (pathname === "/" || pathname === "/leaderboard.html") {
+        // Legacy deep links (?user=<handle>) get the same unfurl treatment.
+        const legacyUser = searchParams.get("user");
+        if (legacyUser) return serveProfilePage(env, request, legacyUser);
         const newUrl = new URL(request.url);
         newUrl.pathname = "/leaderboard";
         return env.ASSETS.fetch(new Request(newUrl.toString(), request));
       }
+      if (pathname === "/leaderboard" && searchParams.get("user")) {
+        return serveProfilePage(env, request, searchParams.get("user"));
+      }
       if (pathname.startsWith("/s/")) {
         const id = pathname.slice(3).replace(/[^a-zA-Z0-9]/g, "");
-        const newUrl = new URL(request.url);
-        newUrl.pathname = "/leaderboard";
-        newUrl.searchParams.set("share", id);
-        return env.ASSETS.fetch(new Request(newUrl.toString(), request));
+        return serveSharePage(env, request, id);
       }
       // Dedicated discovery route: token-horizon.dev/models renders the flat
       // catalog explorer (same SPA shell, deep-linkable).
@@ -2400,4 +2445,539 @@ function parseEntriesFromCSV(csvText) {
     });
   }
   return entries;
+}
+
+// --- Dynamic OG share cards -------------------------------------------------
+// `GET /api/og/profile/<handle>.png` renders a 1200×630 "quick view" usage
+// card at the edge: identity + league/rank chips, hero token count, KPI strip,
+// a 14-day sparkline, and a provider-mix bar. Social crawlers need a raster
+// image (SVG og:images are ignored), so resvg-wasm rasterizes the SVG —
+// bundled JetBrains Mono, since system fonts don't exist in Workers.
+
+// Dynamic imports keep `node --test` working (Node can't resolve .wasm/.ttf);
+// wrangler/esbuild still bundles the modules for the worker.
+let ogWasmReady = null;
+function ogInit() {
+  if (!ogWasmReady) {
+    ogWasmReady = Promise.all([
+      import("@resvg/resvg-wasm"),
+      import("@resvg/resvg-wasm/index_bg.wasm")
+    ]).then(async ([resvgMod, wasmMod]) => {
+      await resvgMod.initWasm(wasmMod.default);
+      return resvgMod;
+    });
+  }
+  return ogWasmReady;
+}
+
+let ogFontsReady = null;
+function ogFonts() {
+  if (!ogFontsReady) {
+    ogFontsReady = Promise.all([
+      import("../fonts/JetBrainsMono-Regular.ttf"),
+      import("../fonts/JetBrainsMono-Bold.ttf"),
+      import("../fonts/JetBrainsMono-ExtraBold.ttf")
+    ]).then(mods => mods.map(m => new Uint8Array(m.default)));
+  }
+  return ogFontsReady;
+}
+
+const OG_PROVIDER_COLORS = {
+  anthropic: "#D97757", openai: "#74AA9C", google: "#4285F4", meta: "#0866FF",
+  opencode: "#8B5CF6", minimax: "#F59E0B", kimi: "#EC4899", zhipu: "#22D3EE",
+  deepseek: "#4D6BFE", alibaba: "#FF6A00", openrouter: "#94A3B8", mistral: "#F59E0B",
+  xai: "#E7ECF5", local: "#22C55E", other: "#6B7280"
+};
+const OG_PALETTE = ["#4F8CFF", "#F59E0B", "#8B5CF6", "#22C55E", "#EC4899", "#38BDF8"];
+
+function ogHash(s) {
+  let h = 0;
+  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0;
+  return h;
+}
+
+const OG_PROVIDER_LABELS = {
+  anthropic: "Anthropic", openai: "OpenAI", google: "Google", meta: "Meta",
+  opencode: "OpenCode", minimax: "MiniMax", kimi: "Kimi", zhipu: "Zhipu",
+  deepseek: "DeepSeek", alibaba: "Alibaba", openrouter: "OpenRouter",
+  mistral: "Mistral", xai: "xAI", local: "Local", other: "Other"
+};
+
+function ogProviderColor(p) {
+  const key = normalizeProvider(p);
+  return OG_PROVIDER_COLORS[key] || OG_PALETTE[Math.abs(ogHash(String(p || "other"))) % OG_PALETTE.length];
+}
+
+/// decodeURIComponent that never throws on malformed %-sequences.
+function safeDecode(s) {
+  try { return decodeURIComponent(s); } catch (_) { return s; }
+}
+
+function ogEsc(s) {
+  return String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
+function ogRoman(n) { return ({ 1: "I", 2: "II", 3: "III" })[n] || String(n || ""); }
+
+function ogInitials(handle) {
+  const parts = String(handle || "").split(/[^a-z0-9]+/i).filter(Boolean);
+  return (parts.map(p => p[0]).join("") || "TH").slice(0, 2).toUpperCase();
+}
+
+/// Flatten an entry + its standing into the card's view model. `opts.anonymize`
+/// strips identity + provider attribution (share-report privacy), `hideCost`
+/// omits cost figures.
+function ogCardModel(entry, entries, opts = {}) {
+  const anonymize = Boolean(opts.anonymize);
+  const sortedAll = [...entries].sort((a, b) => (b.tokensAll || 0) - (a.tokensAll || 0));
+  const rankAll = sortedAll.findIndex(e => e.handle.toLowerCase() === entry.handle.toLowerCase()) + 1;
+  const sortedToday = [...entries].sort((a, b) => (b.tokensToday || 0) - (a.tokensToday || 0));
+  const rankToday = sortedToday.findIndex(e => e.handle.toLowerCase() === entry.handle.toLowerCase()) + 1;
+  const st = standingFor(entry);
+  const models = (entry.breakdown && entry.breakdown.models) || [];
+
+  const byProv = new Map();
+  for (const m of models) {
+    const p = normalizeProvider(m.provider);
+    byProv.set(p, (byProv.get(p) || 0) + (Number(m.tokensAll ?? m.tokens) || 0));
+  }
+  let mixTotal = 0;
+  for (const v of byProv.values()) mixTotal += v;
+  const mix = [...byProv.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 5)
+    .map(([provider, tokens]) => ({ provider, share: mixTotal > 0 ? tokens / mixTotal : 0 }));
+
+  const history = ((entry.breakdown && entry.breakdown.history) || [])
+    .slice(-14).map(h => Math.max(0, Number(h.tokens) || 0));
+
+  const percentile = Math.round(((entries.length - rankAll + 1) / Math.max(1, entries.length)) * 100);
+
+  return {
+    handle: anonymize ? "Anonymous" : entry.handle,
+    team: anonymize ? "" : (entry.team || "Personal"),
+    hardware: entry.hardware || "Apple Silicon",
+    league: st.league, leagueTitle: st.leagueTitle, leagueColor: st.leagueColor,
+    division: st.division, mmr: st.mmr,
+    rank: rankAll || 1, rankToday: rankToday || rankAll || 1,
+    total: Math.max(1, entries.length), percentile,
+    tokensToday: entry.tokensToday || 0,
+    tokens7d: entry.tokens7d || 0,
+    tokensAll: entry.tokensAll || 0,
+    costAll: opts.hideCost ? null : (entry.costAll || 0),
+    costToday: opts.hideCost ? null : (entry.costToday || 0),
+    requestsAll: entry.requestsAll || models.reduce((s, m) => s + (Number(m.requests) || 0), 0),
+    streakDays: entry.streakDays || 0,
+    mix: anonymize ? [] : mix,
+    history,
+    season: seasonFor(),
+    updatedAt: Number(entry.updatedAt) || 0
+  };
+}
+
+/// The 1200×630 "quick view usage" card. Pure SVG — resvg supplies fonts,
+/// gradients and rounded geometry; no emoji (no color-emoji font at the edge).
+function generateOgSvg(vm, origin) {
+  const W = 1200, H = 630;
+  const lc = vm.leagueColor || "#4F8CFF";
+  const handle = ogEsc(vm.handle);
+  const sub = ogEsc([vm.team, vm.hardware].filter(Boolean).join(" · ") || "Token Horizon");
+  const leagueTag = ogEsc(`${vm.leagueTitle} ${ogRoman(vm.division)}`.trim());
+  const seasonTag = ogEsc(vm.season ? vm.season.displayName : "");
+
+  // 14-day sparkline (right of the hero number).
+  const spark = { x: 712, y: 318, w: 432, h: 118 };
+  let sparkPath = "", sparkArea = "", sparkDot = "";
+  if (vm.history.length >= 2) {
+    const max = Math.max(...vm.history, 1);
+    const step = spark.w / (vm.history.length - 1);
+    const pts = vm.history.map((v, i) => [
+      spark.x + i * step,
+      spark.y + spark.h - (v / max) * (spark.h - 8)
+    ]);
+    sparkPath = pts.map((p, i) => `${i ? "L" : "M"}${p[0].toFixed(1)},${p[1].toFixed(1)}`).join(" ");
+    sparkArea = `${sparkPath} L${pts[pts.length - 1][0].toFixed(1)},${spark.y + spark.h} L${spark.x},${spark.y + spark.h} Z`;
+    const last = pts[pts.length - 1];
+    sparkDot = `<circle cx="${last[0].toFixed(1)}" cy="${last[1].toFixed(1)}" r="5" fill="#38BDF8" stroke="#080B12" stroke-width="2"/>`;
+  } else {
+    sparkPath = `M${spark.x},${spark.y + spark.h - 8} L${spark.x + spark.w},${spark.y + spark.h - 8}`;
+  }
+
+  // KPI strip — four cells, cost cell blanked for hideCost shares.
+  const kpis = [
+    ["7D TOKENS", formatTokens(vm.tokens7d)],
+    ["ALL-TIME", formatTokens(vm.tokensAll)],
+    ["ALL-TIME COST", vm.costAll == null ? "hidden" : formatCurrency(vm.costAll)],
+    ["REQUESTS", formatTokens(vm.requestsAll)]
+  ];
+  const cellW = 264, gap = 12, cellY = 466, cellH = 84;
+  const cells = kpis.map(([label, value], i) => {
+    const x = 56 + i * (cellW + gap);
+    return `<rect x="${x}" y="${cellY}" width="${cellW}" height="${cellH}" rx="12" fill="#0F141E" stroke="#1E2635"/>
+      <text x="${x + 18}" y="${cellY + 28}" font-family="JetBrains Mono" font-size="13" font-weight="700" letter-spacing="1.5" fill="#5A6478">${label}</text>
+      <text x="${x + 18}" y="${cellY + 62}" font-family="JetBrains Mono" font-size="30" font-weight="800" fill="#E7ECF5">${ogEsc(value)}</text>`;
+  }).join("");
+
+  // Provider-mix stacked bar + legend.
+  const mixY = 560, mixX = 56, mixW = 1088;
+  let mixBar = "", mixLegend = "";
+  if (vm.mix.length) {
+    let cx = mixX;
+    const segs = vm.mix.map(s => ({ ...s, w: Math.max(3, s.share * mixW) }));
+    const over = segs.reduce((s, g) => s + g.w, 0) - mixW;
+    if (over > 0) segs[segs.length - 1].w = Math.max(3, segs[segs.length - 1].w - over);
+    mixBar = `<clipPath id="mixclip"><rect x="${mixX}" y="${mixY}" width="${mixW}" height="16" rx="8"/></clipPath>`
+      + `<g clip-path="url(#mixclip)">`
+      + segs.map(s => {
+        const r = `<rect x="${cx.toFixed(1)}" y="${mixY}" width="${s.w.toFixed(1)}" height="16" fill="${ogProviderColor(s.provider)}"/>`;
+        cx += s.w;
+        return r;
+      }).join("") + `</g>`;
+    let lx = mixX;
+    mixLegend = segs.map(s => {
+      const label = `${OG_PROVIDER_LABELS[s.provider] || s.provider} ${Math.round(s.share * 100)}%`;
+      const el = `<circle cx="${lx + 5}" cy="${mixY + 28}" r="5" fill="${ogProviderColor(s.provider)}"/>`
+        + `<text x="${lx + 15}" y="${mixY + 33}" font-family="JetBrains Mono" font-size="13.5" fill="#8B95A8">${ogEsc(label)}</text>`;
+      lx += 15 + Math.round(label.length * 8.1) + 22;
+      return el;
+    }).join("");
+  }
+
+  const chips = [
+    { text: `#${vm.rankToday} TODAY`, fg: "#38BDF8", w: 0 },
+    { text: leagueTag.toUpperCase(), fg: lc, w: 0 },
+    { text: `${formatTokens(vm.mmr)} MMR`, fg: "#8B95A8", w: 0 },
+    { text: `${vm.streakDays}D STREAK`, fg: "#F59E0B", w: 0 },
+    { text: `TOP ${Math.max(1, Math.round(100 - (Number(vm.percentile) || 0)))}%`, fg: "#4F8CFF", w: 0 }
+  ];
+  // Monospace font → measure by char count (JetBrains Mono advance ≈ .6em).
+  let chipX = 170;
+  const chipEls = chips.map(c => {
+    const w = Math.round(c.text.length * 7.8) + 22;
+    const el = `<rect x="${chipX}" y="262" width="${w}" height="26" rx="13" fill="${c.fg}22" stroke="${c.fg}55"/>
+      <text x="${chipX + w / 2}" y="279" text-anchor="middle" font-family="JetBrains Mono" font-size="12" font-weight="700" letter-spacing="0.5" fill="${c.fg}">${ogEsc(c.text)}</text>`;
+    chipX += w + 8;
+    return el;
+  }).join("");
+
+  const footerLeft = `token-horizon.dev${vm.handle === "Anonymous" ? "" : "/u/" + vm.handle}`;
+  const updatedLabel = vm.updatedAt
+    ? `updated ${new Date(vm.updatedAt * 1000).toISOString().slice(0, 10)}`
+    : "";
+
+  return `<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <radialGradient id="glow1" cx="58%" cy="-8%" r="72%"><stop offset="0%" stop-color="#4F8CFF" stop-opacity="0.13"/><stop offset="100%" stop-color="#4F8CFF" stop-opacity="0"/></radialGradient>
+    <radialGradient id="glow2" cx="98%" cy="18%" r="58%"><stop offset="0%" stop-color="#8B5CF6" stop-opacity="0.10"/><stop offset="100%" stop-color="#8B5CF6" stop-opacity="0"/></radialGradient>
+    <radialGradient id="glow3" cx="2%" cy="106%" r="52%"><stop offset="0%" stop-color="#38BDF8" stop-opacity="0.06"/><stop offset="100%" stop-color="#38BDF8" stop-opacity="0"/></radialGradient>
+    <linearGradient id="sparkFill" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#38BDF8" stop-opacity="0.30"/><stop offset="100%" stop-color="#38BDF8" stop-opacity="0"/></linearGradient>
+  </defs>
+  <rect width="${W}" height="${H}" fill="#080B12"/>
+  <rect width="${W}" height="${H}" fill="url(#glow1)"/>
+  <rect width="${W}" height="${H}" fill="url(#glow2)"/>
+  <rect width="${W}" height="${H}" fill="url(#glow3)"/>
+  <rect x="1" y="1" width="${W - 2}" height="${H - 2}" rx="22" fill="none" stroke="#1E2635" stroke-width="2"/>
+
+  <!-- brand -->
+  <circle cx="72" cy="66" r="17" fill="none" stroke="#4F8CFF" stroke-width="2.5"/>
+  <circle cx="72" cy="66" r="6.5" fill="#FFD185"/>
+  <text x="100" y="74" font-family="JetBrains Mono" font-size="23" font-weight="800" letter-spacing="3" fill="#E7ECF5">TOKEN HORIZON</text>
+  <text x="100" y="96" font-family="JetBrains Mono" font-size="12" letter-spacing="2.5" fill="#5A6478">AI USAGE LEADERBOARD</text>
+  ${seasonTag ? `<rect x="${W - 56 - seasonTag.length * 7.8 - 22}" y="46" width="${seasonTag.length * 7.8 + 22}" height="26" rx="13" fill="#8B5CF622" stroke="#8B5CF655"/>
+  <text x="${W - 56 - (seasonTag.length * 7.8 + 22) / 2}" y="63" text-anchor="middle" font-family="JetBrains Mono" font-size="12" font-weight="700" fill="#8B5CF6">${seasonTag.toUpperCase()}</text>` : ""}
+
+  <!-- identity -->
+  <circle cx="104" cy="196" r="46" fill="#0F141E" stroke="${lc}" stroke-width="2.5"/>
+  <text x="104" y="210" text-anchor="middle" font-family="JetBrains Mono" font-size="34" font-weight="800" fill="${lc}">${ogEsc(ogInitials(vm.handle))}</text>
+  <text x="170" y="188" font-family="JetBrains Mono" font-size="40" font-weight="800" fill="#E7ECF5">@${handle}</text>
+  <text x="170" y="226" font-family="JetBrains Mono" font-size="17" fill="#8B95A8">${sub}</text>
+  ${chipEls}
+
+  <!-- hero number + sparkline -->
+  <text x="56" y="338" font-family="JetBrains Mono" font-size="13" font-weight="700" letter-spacing="1.5" fill="#5A6478">TOKENS TODAY</text>
+  <text x="56" y="412" font-family="JetBrains Mono" font-size="88" font-weight="800" fill="#22C55E">${ogEsc(formatTokens(vm.tokensToday))}</text>
+  ${vm.costToday != null ? `<text x="56" y="442" font-family="JetBrains Mono" font-size="16" fill="#8B95A8">≈ ${ogEsc(formatCurrency(vm.costToday))} est. today · rank ${ogEsc("#" + vm.rank)} of ${vm.total}</text>`
+    : `<text x="56" y="442" font-family="JetBrains Mono" font-size="16" fill="#8B95A8">rank ${ogEsc("#" + vm.rank)} of ${vm.total}</text>`}
+  <text x="${spark.x}" y="${spark.y - 12}" font-family="JetBrains Mono" font-size="13" font-weight="700" letter-spacing="1.5" fill="#5A6478">LAST ${vm.history.length} DAYS</text>
+  ${sparkArea ? `<path d="${sparkArea}" fill="url(#sparkFill)"/>` : ""}
+  <path d="${sparkPath}" fill="none" stroke="#38BDF8" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
+  ${sparkDot}
+
+  ${cells}
+  ${mixBar}
+  ${mixLegend}
+  <text x="56" y="${H - 16}" font-family="JetBrains Mono" font-size="13" fill="#5A6478">${ogEsc(footerLeft)}</text>
+  <text x="${W - 56}" y="${H - 16}" text-anchor="end" font-family="JetBrains Mono" font-size="13" fill="#3A4356">${ogEsc(updatedLabel)}</text>
+</svg>`;
+}
+
+async function renderOgPng(svg) {
+  const [resvgMod, fontBuffers] = await Promise.all([ogInit(), ogFonts()]);
+  const resvg = new resvgMod.Resvg(svg, {
+    fitTo: { mode: "original" },
+    font: {
+      fontBuffers,
+      loadSystemFonts: false,
+      defaultFontFamily: "JetBrains Mono"
+    },
+    background: "#080B12"
+  });
+  return resvg.render().asPng();
+}
+
+/// Raw-SVG variant of the card — for design iteration and Node-side tests
+/// (the wasm rasterizer only exists inside workerd).
+function ogSvgResponse(svg) {
+  return new Response(svg, {
+    status: 200,
+    headers: {
+      ...CORS_HEADERS,
+      "Content-Type": "image/svg+xml;charset=utf-8",
+      "Cache-Control": "public, max-age=300"
+    }
+  });
+}
+
+function ogImageResponse(png) {
+  return new Response(png, {
+    status: 200,
+    headers: {
+      ...CORS_HEADERS,
+      "Content-Type": "image/png",
+      // Per-hour freshness for crawlers; the ?v= pin on the URL busts longer.
+      "Cache-Control": "public, max-age=1800, s-maxage=21600"
+    }
+  });
+}
+
+// --- OG meta injection (crawler-safe profile/share pages) -------------------
+
+/// Fetch the SPA asset and inject per-target OG/Twitter meta into <head>.
+/// `<base href="/">` keeps the SPA's relative asset paths working when the
+/// page is served at a nested clean URL (/u/<handle>, /s/<id>).
+async function servePageWithOg(env, request, meta) {
+  const assetUrl = new URL(request.url);
+  assetUrl.pathname = "/leaderboard";
+  assetUrl.search = "";
+  const res = await env.ASSETS.fetch(new Request(assetUrl.toString(), request));
+  if (!res.ok) return res;
+  const html = injectOgMeta(await res.text(), meta);
+  return new Response(html, {
+    status: 200,
+    headers: { "Content-Type": "text/html;charset=utf-8", "Cache-Control": "no-cache" }
+  });
+}
+
+function injectOgMeta(html, meta) {
+  const tags = [
+    `<base href="/">`,
+    `<meta property="og:type" content="profile">`,
+    `<meta property="og:site_name" content="Token Horizon">`,
+    `<meta property="og:title" content="${ogEsc(meta.title)}">`,
+    `<meta property="og:description" content="${ogEsc(meta.description)}">`,
+    `<meta property="og:url" content="${ogEsc(meta.url)}">`,
+    `<meta property="og:image" content="${ogEsc(meta.image)}">`,
+    `<meta property="og:image:width" content="1200">`,
+    `<meta property="og:image:height" content="630">`,
+    `<meta name="twitter:card" content="summary_large_image">`,
+    `<meta name="twitter:title" content="${ogEsc(meta.title)}">`,
+    `<meta name="twitter:description" content="${ogEsc(meta.description)}">`,
+    `<meta name="twitter:image" content="${ogEsc(meta.image)}">`,
+    `<link rel="canonical" href="${ogEsc(meta.url)}">`
+  ].join("\n");
+  let out = html.replace(/<title>[^<]*<\/title>/, `<title>${ogEsc(meta.title)}</title>`);
+  out = out.replace(/<meta name="description" content="[^"]*"\s*\/?>/,
+    `<meta name="description" content="${ogEsc(meta.description)}" />`);
+  return out.replace("<head>", `<head>\n${tags}`);
+}
+
+/// /u/<handle> — clean profile permalink with a dynamic OG card. Unknown
+/// handles still get the SPA (it renders its own not-found state).
+async function serveProfilePage(env, request, handle) {
+  const clean = handle.replace(/^@/, "").trim().toLowerCase();
+  const entries = await getEntriesFromR2(env);
+  const entry = clean && entries.find(e => e.handle.toLowerCase() === clean);
+  if (!entry) {
+    const assetUrl = new URL(request.url);
+    assetUrl.pathname = "/leaderboard";
+    return env.ASSETS.fetch(new Request(assetUrl.toString(), request));
+  }
+  const url = new URL(request.url);
+  const vm = ogCardModel(entry, entries);
+  // curl / AI agents / JSON clients get a text rendition instead of HTML
+  // (social unfurlers still get the SPA + OG meta for the PNG card).
+  const tv = textViewKind(request, url.searchParams);
+  if (tv === "json") {
+    return jsonResponse({ ok: true, card: vm, url: `${url.origin}/u/${encodeURIComponent(entry.handle)}`,
+      image: `${url.origin}/api/og/profile/${encodeURIComponent(entry.handle)}.png` });
+  }
+  if (tv) {
+    return new Response(ogTextCard(vm, { origin: url.origin, color: tv === "cli" }), {
+      headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "public, max-age=120" }
+    });
+  }
+  const canon = `${url.origin}/u/${encodeURIComponent(entry.handle)}`;
+  return servePageWithOg(env, request, {
+    title: `@${entry.handle} · ${vm.leagueTitle} ${ogRoman(vm.division)} · #${vm.rankToday} today`,
+    description: `${formatTokens(vm.tokensToday)} tokens today · ${formatTokens(vm.tokensAll)} all-time · ${vm.streakDays}d streak — Token Horizon leaderboard`,
+    url: canon,
+    image: `${url.origin}/api/og/profile/${encodeURIComponent(entry.handle)}.png?v=${Math.floor((vm.updatedAt || dayNumber() * 86400) / 3600)}`
+  });
+}
+
+/// /s/<id> — shared-report pages get the same unfurl treatment, honoring the
+/// share's anonymize/hide-cost privacy options.
+async function serveSharePage(env, request, id) {
+  const share = id && await getJson(env, `shares/${id}.json`);
+  if (share && !share.revoked && !(share.expiresAt && share.expiresAt * 1000 < Date.now())) {
+    const entries = await getEntriesFromR2(env);
+    const entry = entries.find(e => e.handle.toLowerCase() === String(share.handle || "").toLowerCase());
+    if (entry) {
+      const url = new URL(request.url);
+      const opts = share.options || {};
+      const vm = ogCardModel(entry, entries, {
+        anonymize: Boolean(opts.anonymizeNames),
+        hideCost: Boolean(opts.hideCost)
+      });
+      const tv = textViewKind(request, url.searchParams);
+      if (tv === "json") {
+        return jsonResponse({ ok: true, card: vm, url: `${url.origin}/s/${id}`,
+          image: `${url.origin}/api/og/share/${id}.png` });
+      }
+      if (tv) {
+        return new Response(ogTextCard(vm, { origin: url.origin, color: tv === "cli" }), {
+          headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "public, max-age=120" }
+        });
+      }
+      return servePageWithOg(env, request, {
+        title: `${vm.handle === "Anonymous" ? "Shared usage report" : `@${vm.handle} — usage report`} · Token Horizon`,
+        description: `${formatTokens(vm.tokensAll)} tokens all-time · ${vm.leagueTitle} league · ${vm.streakDays}d streak`,
+        url: `${url.origin}/s/${id}`,
+        image: `${url.origin}/api/og/share/${id}.png`
+      });
+    }
+  }
+  const assetUrl = new URL(request.url);
+  assetUrl.pathname = "/leaderboard";
+  assetUrl.searchParams.set("share", id);
+  return env.ASSETS.fetch(new Request(assetUrl.toString(), request));
+}
+
+// --- Text rendition for CLI tools & AI agents ------------------------------
+// Social unfurlers need HTML + og: meta and browsers get the SPA — but curl,
+// wget, httpie, and AI agents (GPTBot, ClaudeBot, ChatGPT-User, Perplexity…)
+// get a framed text card: a text-mode mirror of the PNG OG card. Returns
+// "cli" (ANSI color welcome), "ai" (plain — escape codes pollute LLM
+// context), "json" (structured data), or null (browser/crawler → HTML).
+const OG_CLI_UA = /\bcurl|wget|httpie|lynx|w3m|links\b|aria2|python-requests|python-urllib|aiohttp|httpx|go-http-client|undici|axios|got\/|insomnia|postmanruntime|powershell|java\/|okhttp/i;
+const OG_AI_UA = /gptbot|chatgpt|oai-searchbot|claudebot|claude-web|anthropic|perplexity|cohere-ai|meta-externalagent|bytespider|amazonbot|devin|swe-agent|vertex|bedrock|langchain|llamaindex|cloudflare.*ai|duckassist/i;
+
+function textViewKind(request, searchParams) {
+  const fmt = (searchParams.get("format") || "").toLowerCase();
+  if (fmt === "json") return "json";
+  if (fmt === "text" || fmt === "ascii" || searchParams.has("ascii")) return "ai";
+  const accept = (request.headers.get("Accept") || "").toLowerCase();
+  if (accept.includes("application/json") && !accept.includes("text/html")) return "json";
+  const ua = request.headers.get("User-Agent") || "";
+  if (OG_AI_UA.test(ua)) return "ai";
+  if (OG_CLI_UA.test(ua)) return "cli";
+  if (accept.includes("text/plain") && !accept.includes("text/html")) return "ai";
+  return null;
+}
+
+const OG_ANSI_BY_LEAGUE = {
+  bronze: "\x1b[33m", silver: "\x1b[37m", gold: "\x1b[93m", platinum: "\x1b[96m",
+  diamond: "\x1b[94m", master: "\x1b[95m", grandmaster: "\x1b[91m"
+};
+
+/// Framed ~78-col text card mirroring the PNG layout. `color` enables ANSI
+/// (curl/httpie terminals); AI agents get clean text for easier parsing.
+function ogTextCard(vm, opts = {}) {
+  const ansi = opts.color === true;
+  const R = ansi ? "\x1b[0m" : "";
+  const bold = (s) => ansi ? `\x1b[1m${s}${R}` : s;
+  const dim = (s) => ansi ? `\x1b[2m${s}${R}` : s;
+  const green = (s) => ansi ? `\x1b[92m${s}${R}` : s;
+  const cyan = (s) => ansi ? `\x1b[96m${s}${R}` : s;
+  const amber = (s) => ansi ? `\x1b[93m${s}${R}` : s;
+  const league = (s) => ansi ? `${OG_ANSI_BY_LEAGUE[vm.league] || "\x1b[96m"}${s}${R}` : s;
+  const MIX_COLORS = ["\x1b[91m", "\x1b[94m", "\x1b[92m", "\x1b[95m", "\x1b[96m"];
+  const mixPaint = ansi ? (i, s) => `${MIX_COLORS[i % MIX_COLORS.length]}${s}${R}` : (i, s) => s;
+
+  const INNER = 74;
+  const visLen = (s) => s.replace(/\x1b\[[0-9;]*m/g, "").length;
+  const row = (inner = "") => `│ ${inner}${" ".repeat(Math.max(0, INNER - visLen(inner)))} │`;
+  const split = (l, r) => {
+    const pad = Math.max(1, INNER - visLen(l) - visLen(r));
+    return `│ ${l}${" ".repeat(pad)}${r} │`;
+  };
+
+  const blocks = "▁▂▃▄▅▆▇█";
+  const sparkline = (vals) => {
+    if (!vals || vals.length < 2) return "collecting…";
+    const max = Math.max(...vals, 1);
+    return vals.map(v => blocks[Math.min(7, Math.round((v / max) * 7))]).join("");
+  };
+  const mixChars = "█▓▒░";
+  const mixBar = (mix, width = 26) => {
+    if (!mix.length) return "";
+    let used = 0;
+    return mix.map((s, i) => {
+      const n = i === mix.length - 1 ? Math.max(1, width - used) : Math.max(1, Math.round(s.share * width));
+      used += n;
+      const glyph = ansi ? "█" : mixChars[Math.min(i, mixChars.length - 1)];
+      return mixPaint(i, glyph.repeat(n));
+    }).join("");
+  };
+
+  const season = vm.season ? vm.season.displayName.toUpperCase() : "";
+  const title = " TOKEN HORIZON · AI USAGE LEADERBOARD ";
+  const footer = `${(opts.origin || "https://token-horizon.dev").replace(/^https?:\/\//, "")}${vm.handle === "Anonymous" ? "" : "/u/" + vm.handle}`;
+  const updated = vm.updatedAt ? new Date(vm.updatedAt * 1000).toISOString().slice(0, 10) : "";
+
+  const chips = [
+    `#${vm.rankToday} TODAY`,
+    `${vm.leagueTitle} ${ogRoman(vm.division)}`.trim().toUpperCase(),
+    `${formatTokens(vm.mmr)} MMR`,
+    `${vm.streakDays}D STREAK`,
+    `TOP ${Math.max(1, Math.round(100 - (Number(vm.percentile) || 0)))}%`
+  ];
+  const chipLine = chips.map((c, i) => {
+    const t = `[${c}]`;
+    if (!ansi) return t;
+    return [cyan, league, dim, amber, cyan][i](t);
+  }).join(" ");
+
+  const stat = (label, value, right = "") => {
+    const l = `  ${dim(label.toUpperCase().padEnd(12))} ${bold(String(value))}`;
+    return right ? split(l, `${dim(right)}`) : row(l);
+  };
+
+  const mixLegend = vm.mix.map(s => `${OG_PROVIDER_LABELS[s.provider] || s.provider} ${Math.round(s.share * 100)}%`).join(" · ");
+
+  return [
+    `╭─${title}${"─".repeat(Math.max(0, INNER + 4 - visLen(title) - visLen(` ${season} `)))} ${season} ─╮`,
+    row(),
+    split(`   ${bold("@" + vm.handle)}`, `${dim(vm.team || "")} `),
+    row(`   ${dim(vm.hardware || "")}`),
+    row(`   ${chipLine}`),
+    row(),
+    row(`  ${dim("TOKENS TODAY")}`),
+    split(`   ${green(bold(formatTokens(vm.tokensToday)))}`, vm.costToday != null ? `${dim(`≈ ${formatCurrency(vm.costToday)} est. today`)}` : ""),
+    stat("last 7 days", formatTokens(vm.tokens7d), `rank #${vm.rank} of ${vm.total}`),
+    stat("all-time", formatTokens(vm.tokensAll), vm.costAll != null ? `${formatCurrency(vm.costAll)} est. spend` : ""),
+    stat("requests", formatTokens(vm.requestsAll), `${vm.streakDays}-day streak`),
+    row(),
+    split(`  ${dim("ACTIVITY · " + (vm.history.length || 0) + "D")}    ${cyan(sparkline(vm.history))}`, ""),
+    ...(vm.mix.length ? [
+      row(),
+      row(`  ${dim("PROVIDER MIX")}   ${mixBar(vm.mix)}`),
+      row(`  ${" ".repeat(15)}${dim(mixLegend)}`)
+    ] : []),
+    row(),
+    split(`   ${dim(footer)}`, `${dim(updated)} `),
+    `╰${"─".repeat(INNER + 4)}╯`,
+    ""
+  ].join("\n");
 }

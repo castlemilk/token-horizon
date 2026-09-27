@@ -12,5 +12,8 @@
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20260515.1",
     "wrangler": "^4.92.0"
+  },
+  "dependencies": {
+    "@resvg/resvg-wasm": "^2.6.2"
   }
 }

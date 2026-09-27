@@ -194,6 +194,11 @@ R2 leaderboard.json ────────────────────
 | `POST /api/profile/avatar` | owner-only avatar update: Google photo, image URL, uploaded data URL (stored in R2), or generated style |
 | `GET /api/avatar/:handle` | uploaded avatar bytes (R2, cached 24h) |
 | `GET /api/share` | SVG/Markdown/text cards (README badges) |
+| `GET /api/og/profile/:handle.png` | dynamic 1200×630 OG "quick view" usage card (resvg-wasm PNG; `.svg` for raw) |
+| `GET /api/og/share/:id.png` | share-report OG card honoring anonymize/hide-cost options |
+| `GET /u/:handle` | clean profile permalink — SPA + per-profile OG/Twitter meta injected |
+| `GET /s/:id` | shared-report page with per-share OG meta (privacy-aware) |
+| text rendition | CLI tools (curl/wget/httpie…) get an ANSI card; AI-agent UAs (GPTBot, ClaudeBot, ChatGPT, Perplexity…) get plain text; `Accept: application/json` → JSON |
 | `GET /api/health` | storage, edge colo, build info |
 
 ### 2.4 Auth & claims
