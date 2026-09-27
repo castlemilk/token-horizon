@@ -1817,6 +1817,18 @@ fn kv_reserve_on() -> bool {
     *ON.get_or_init(|| std::env::var("TH_KV_RESERVE").as_deref() != Ok("0"))
 }
 
+/// Whether a checkpoint build may VIEW the slot's K/V buffers
+/// (`prefix_build`): the view pins whole capacity buffers (`view_b` bytes)
+/// where exact copies would hold `exact_b`. Allowed while the extra is at
+/// most a third of `exact_b` or 48 MiB, whichever is larger — a 1.45k prompt
+/// in the 2048-row floor (+40 %, 39 MB) or an 8k prompt with the reply
+/// reserve views; a short prompt in the floor, or a large `max_tokens`
+/// reserve past a mid-length prompt, copies (cheap for the short one). Never
+/// with `TH_PREFIX_CACHE_KV=copy` (`force_copy`).
+pub(crate) fn ck_kv_view_ok(exact_b: usize, view_b: usize, force_copy: bool) -> bool {
+    !force_copy && view_b.saturating_sub(exact_b) <= (exact_b / 3).max(48 << 20)
+}
+
 /// In-process A/B switch for probes (`TH_BENCH_TTFT`): 0 = the
 /// `TH_KV_CAP_PREFILL` setting, else the forced mode.
 static KV_CAP_OVERRIDE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
@@ -3505,7 +3517,18 @@ impl Qwen35 {
         // in candle 0.11 — try_clone shares).
         let mut kv_full: Vec<Option<(Tensor, Tensor)>> = Vec::with_capacity(sl.kv.len());
         let mut kv_bytes = 0usize;
-        let copy = ck_kv_copy();
+        // the view pins the whole buffer: allowed while that is at most
+        // `ck_kv_view_ok`'s slack over exact copies (a short prompt's
+        // 2048-row floor or a large max_tokens copies instead)
+        let (mut exact_b, mut view_b) = (0usize, 0usize);
+        for kv in sl.kv.iter().flatten() {
+            for t in [&kv.0, &kv.1] {
+                let row_b = t.dim(0)? * t.dim(2)? * t.dtype().size_in_bytes();
+                exact_b += pmax * row_b;
+                view_b += if t.is_contiguous() { tensor_bytes(t) } else { pmax * row_b };
+            }
+        }
+        let copy = !ck_kv_view_ok(exact_b, view_b, ck_kv_copy());
         for (i, layer) in self.layers.iter().enumerate() {
             kv_full.push(match &layer.kind {
                 Kind::Attn(_) => {
@@ -6067,6 +6090,33 @@ mod prefix_tests {
         m.forward(0, &prompt[32..48], 32)?;
         assert!(m.prefix_build(0, vec![(16, h, None)]).is_err(), "a stale parity must not be captured");
         Ok(())
+    }
+
+    /// The checkpoint K/V view policy (`ck_kv_view_ok`) on Qwen3.8-27B's
+    /// K/V (16 attention layers x K,V x [4, rows, 256] bf16 = 64 KiB per
+    /// row): view within max(1/3, 48 MiB) extra pinned bytes, else copy.
+    #[test]
+    fn ck_kv_view_policy() {
+        let b = |rows: usize| rows * 32 * 4 * 256 * 2;
+        let cap = |n: usize, extra: usize| (n + extra).max(2048).next_multiple_of(256);
+        // (prompt rows, reserve extra, view?)
+        for &(n, extra, want) in &[
+            (1459, 32, true),    // 1.45k, short reply: 2048 rows, +39 MB
+            (1459, 528, true),   // max_tokens 512: still the 2048 floor
+            (1459, 2064, false), // max_tokens 2048: 3584 rows, +139 MB
+            (600, 32, false),    // short prompt in the floor: +95 MB
+            (128, 32, false),    // one block: 16x the exact bytes
+            (1800, 32, true),    // +16 MB
+            (7940, 32, true),    // 8k: 8192 rows, +17 MB
+            (7940, 528, true),   // 8704 rows, +50 MB (< a third)
+            (7940, 2064, true),  // 10240 rows, +151 MB (< 173 MB)
+            (4000, 2064, false), // 6144 rows, +141 MB (> 87 MB)
+        ] {
+            assert_eq!(ck_kv_view_ok(b(n), b(cap(n, extra)), false), want, "n {n} extra {extra}");
+            assert!(!ck_kv_view_ok(b(n), b(cap(n, extra)), true), "forced copy");
+        }
+        // exact-length caches (TH_KV_CAP_PREFILL=0) always view
+        assert!(ck_kv_view_ok(b(300), b(300), false));
     }
 
     /// `kv_reserve` sizes the K/V once — `max(n + extra, 2048)` rows in
