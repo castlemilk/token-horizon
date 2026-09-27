@@ -79,6 +79,12 @@ pub struct PrefixCacheConfig {
     /// `TH_PREFIX_CACHE_FULL=0` disables the prompt-end checkpoint (with
     /// the last logits) that makes an exact repeat restore-only.
     pub full: bool,
+    /// `TH_PREFIX_CACHE_ASST=1` (default off): also split + checkpoint at
+    /// every assistant-message start (`<|im_start|>assistant\n`), so the
+    /// next turn of a conversation restores the previous turn's
+    /// generation-prompt boundary instead of its block-aligned turn end —
+    /// at the cost of one more (fused, ~2-row) chunk on every miss.
+    pub asst: bool,
     /// `TH_PREFIX_CACHE_DEFER=0`: build each checkpoint as the prefill
     /// passes it (integration-3's order) instead of after the first token.
     pub defer: bool,
@@ -103,6 +109,7 @@ impl PrefixCacheConfig {
             margin: num("TH_PREFIX_CACHE_MARGIN", 16),
             merge: num("TH_PREFIX_CACHE_MERGE", DEFAULT_MERGE),
             full: std::env::var("TH_PREFIX_CACHE_FULL").as_deref() != Ok("0"),
+            asst: std::env::var("TH_PREFIX_CACHE_ASST").as_deref() == Ok("1"),
             defer: std::env::var("TH_PREFIX_CACHE_DEFER").as_deref() != Ok("0"),
         }
     }
@@ -118,6 +125,7 @@ impl PrefixCacheConfig {
             margin: 16,
             merge: DEFAULT_MERGE,
             full: false,
+            asst: false,
             defer: true,
         }
     }
@@ -149,6 +157,18 @@ pub fn chat_boundaries(tokens: &[u32], m: &ChatMarks) -> (Option<usize>, Vec<usi
         }
     }
     (first, turn_ends)
+}
+
+/// Assistant-message starts: positions just past `<|im_start|>`
+/// `assistant` `\n`, strictly inside the prompt (the generation prompt's
+/// own start included: its `<think>` + `\n` follow). A later turn renders
+/// the same three tokens in front of that reply, so the prefix up to here
+/// is shared (the tokens after it are not: `<think>\n` becomes
+/// `<think>\n\n</think>` once the reply is in the history).
+pub fn assistant_starts(tokens: &[u32], m: &ChatMarks) -> Vec<usize> {
+    (3..tokens.len())
+        .filter(|&p| tokens[p - 3] == m.im_start && tokens[p - 2] == m.assistant && tokens[p - 1] == m.newline)
+        .collect()
 }
 
 /// A prompt's prefill chunk plan.
@@ -200,6 +220,20 @@ pub fn plan(
     first: Option<usize>,
     turn_ends: &[usize],
 ) -> ChunkPlan {
+    plan_with(n, step, cache, first, turn_ends, &[])
+}
+
+/// `plan` plus, with `TH_PREFIX_CACHE_ASST=1`, a split and a checkpoint at
+/// the assistant-message starts `asst` (unaligned; the last one is the
+/// checkpoint a continuing conversation's next turn restores).
+pub fn plan_with(
+    n: usize,
+    step: usize,
+    cache: Option<&PrefixCacheConfig>,
+    first: Option<usize>,
+    turn_ends: &[usize],
+    asst: &[usize],
+) -> ChunkPlan {
     let step = step.max(1);
     let mut splits: Vec<usize> = (1..).map(|k| k * step).take_while(|&s| s < n).collect();
     let mut checkpoints = Vec::new();
@@ -223,6 +257,8 @@ pub fn plan(
         if first.is_none() && turn_ends.is_empty() {
             extra.extend(end);
         }
+        let asst: Vec<usize> = if c.asst { asst.iter().copied().filter(|&a| a > 0 && a < n).collect() } else { Vec::new() };
+        extra.extend(asst.iter().copied());
         extra.sort_unstable();
         extra.dedup();
         splits.extend(extra.iter().copied());
@@ -250,6 +286,7 @@ pub fn plan(
         splits.retain(|s| !dropped.contains(s));
         checkpoints.extend(first.and_then(align));
         checkpoints.extend(end);
+        checkpoints.extend(asst.last().copied());
         // the last surviving grid split below the end one (below n - margin
         // without one): a boundary of every plan that shares the prefix
         let limit = end.unwrap_or(n.saturating_sub(c.margin));
@@ -484,6 +521,7 @@ mod tests {
             margin: 16,
             merge: 1024,
             full: true,
+            asst: false,
             defer: true,
         }
     }
@@ -633,6 +671,38 @@ mod tests {
         let mut st2: PrefixCache<u32> = PrefixCache::new(c);
         st2.insert(short.clone(), 512, vec![512, 1408], 1, 7);
         assert!(st2.lookup(&short, 512, &ps, short.len()).is_none());
+    }
+
+    /// TH_PREFIX_CACHE_ASST: the assistant-message starts become splits (the
+    /// generation prompt's start included), the last one a checkpoint, and
+    /// the next turn's plan has the same boundaries up to it.
+    #[test]
+    fn assistant_start_splits() {
+        let c = PrefixCacheConfig { block: 128, asst: true, ..cfg(8, 1 << 30) };
+        // [sys ..35][user .. 1454][<s> assistant \n <think> \n] = 1459
+        let mut t1: Vec<u32> = (0..1459).map(|i| 100 + (i % 50) as u32).collect();
+        t1[33] = M.im_end; t1[34] = M.newline;
+        t1[1452] = M.im_end; t1[1453] = M.newline;
+        t1[1454] = M.im_start; t1[1455] = M.assistant; t1[1456] = M.newline;
+        let a1 = assistant_starts(&t1, &M);
+        assert_eq!(a1, vec![1457]);
+        let (first, ends) = chat_boundaries(&t1, &M);
+        assert_eq!((first, ends.clone()), (Some(35), vec![1454]));
+        let p1 = plan_with(t1.len(), 512, Some(&c), first, &ends, &a1);
+        assert_eq!(p1.splits, vec![512, 1408, 1457]);
+        assert!(p1.checkpoints.contains(&1457));
+        // turn 2: the same first 1457 tokens, then the reply and a new user message
+        let mut t2 = t1[..1457].to_vec();
+        t2.extend((0..140).map(|i| 300 + i as u32));
+        t2.extend([M.im_end, M.newline]);
+        t2.extend((0..20).map(|i| 500 + i as u32));
+        t2.extend([M.im_end, M.newline, M.im_start, M.assistant, M.newline, 7, 8]);
+        let (f2, e2) = chat_boundaries(&t2, &M);
+        let p2 = plan_with(t2.len(), 512, Some(&c), f2, &e2, &assistant_starts(&t2, &M));
+        assert_eq!(p2.history(1457), p1.history(1457));
+        // off: plan() unchanged
+        let off = PrefixCacheConfig { asst: false, ..c };
+        assert_eq!(plan_with(t1.len(), 512, Some(&off), first, &ends, &a1), plan(t1.len(), 512, Some(&off), first, &ends));
     }
 
     /// Shared storage parts count once: the checkpoints of one prompt that

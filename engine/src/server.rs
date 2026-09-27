@@ -124,7 +124,7 @@ fn prefix_cache_json(s: &EngineState) -> Value {
         "hits": n(&p.hits), "misses": n(&p.misses), "bypassed": n(&p.bypassed),
         "reused_tokens": n(&p.reused_tokens), "inserts": n(&p.inserts),
         "evictions": n(&p.evictions), "errors": n(&p.errors),
-        "full": c.full, "full_hits": n(&p.full_hits),
+        "full": c.full, "full_hits": n(&p.full_hits), "asst": c.asst,
     })
 }
 

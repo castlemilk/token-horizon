@@ -151,6 +151,7 @@ impl Engine {
             block = prefix_cfg.block,
             margin = prefix_cfg.margin,
             full = prefix_cfg.full,
+            asst = prefix_cfg.asst,
             defer = prefix_cfg.defer,
             chat_boundaries = msg_marks.is_some(),
             "prefix cache (TH_PREFIX_CACHE*)"
@@ -569,11 +570,15 @@ fn prefill_slot(
     // TH_PREFIX_CACHE=miss: the cache's plan, no restore / capture
     let restore = use_cache && !cfg.plan_only;
     let plan = if use_cache {
-        let (first, turn_ends) = match &inner.msg_marks {
-            Some(m) => prefix_cache::chat_boundaries(prompt, m),
-            None => (None, Vec::new()),
+        let (first, turn_ends, asst) = match &inner.msg_marks {
+            Some(m) => {
+                let (f, t) = prefix_cache::chat_boundaries(prompt, m);
+                let a = if cfg.asst { prefix_cache::assistant_starts(prompt, m) } else { Vec::new() };
+                (f, t, a)
+            }
+            None => (None, Vec::new(), Vec::new()),
         };
-        prefix_cache::plan(n, step, Some(&cfg), first, &turn_ends)
+        prefix_cache::plan_with(n, step, Some(&cfg), first, &turn_ends, &asst)
     } else {
         prefix_cache::plan(n, step, None, None, &[])
     };
