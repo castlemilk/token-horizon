@@ -164,6 +164,24 @@ async fn main() -> Result<()> {
             server::serve(engine, port).await
         }
         Cmd::Probe { model, tokens, dump } => {
+            // E1 bench aid: TH_TOKENIZE=<text file> prints the comma-separated
+            // ids of that text as one user message, rendered and encoded
+            // exactly as the server does (chat template + generation
+            // prompt) — real prompts for the TH_BENCH_* probes / --dump.
+            // No model load.
+            if let Ok(path) = std::env::var("TH_TOKENIZE") {
+                let dir = std::path::Path::new(&model);
+                let tok = tokenizers::Tokenizer::from_file(dir.join("tokenizer.json"))
+                    .map_err(|e| anyhow::anyhow!("tokenizer: {e}"))?;
+                let text = std::fs::read_to_string(&path)?;
+                let msgs = [template::ChatMessage { role: "user".into(), content: text }];
+                let bos = tok.token_to_id("<s>").map(|_| "<s>");
+                let prompt = template::render(template::chat_template_from(dir).as_deref(), &msgs, bos)?;
+                let ids = tok.encode(prompt.as_str(), false).map_err(|e| anyhow::anyhow!("tokenize: {e}"))?;
+                let v: Vec<String> = ids.get_ids().iter().map(|i| i.to_string()).collect();
+                println!("{}", v.join(","));
+                return Ok(());
+            }
             let ids: Vec<u32> = tokens
                 .split(',')
                 .map(|t| t.trim().parse())
@@ -188,6 +206,13 @@ async fn main() -> Result<()> {
                 draft_kernel::bench_draft_attn(&dev)?;
                 return Ok(());
             }
+            // E1: fused prefill attention vs the grouped eager path and
+            // candle's sdpa at prefill chunk shapes (no model load)
+            #[cfg(all(feature = "metal", target_os = "macos"))]
+            if let Ok(spec) = std::env::var("TH_BENCH_PREFILL_ATTN") {
+                attn_bench::bench_prefill_attn(&spec)?;
+                return Ok(());
+            }
             // N3: split-key vs single-pass attention across context
             // lengths (no model load). A `seq:kv,...` list selects T1b's
             // eager prefill attention bench instead (after the model load,
@@ -195,6 +220,14 @@ async fn main() -> Result<()> {
             #[cfg(all(feature = "metal", target_os = "macos"))]
             if std::env::var("TH_BENCH_ATTN").is_ok_and(|v| !v.contains(':')) {
                 attn_bench::bench_attn()?;
+                return Ok(());
+            }
+            // allocation cost probe (no model): fresh vs pooled buffers,
+            // private (Tensor::empty) vs zero-filled (Tensor::zeros, blit)
+            #[cfg(all(feature = "metal", target_os = "macos"))]
+            if let Ok(spec) = std::env::var("TH_BENCH_ALLOC") {
+                let dev = candle_core::Device::new_metal(0)?;
+                outbuf::bench_alloc(&dev, &spec)?;
                 return Ok(());
             }
             #[cfg(all(feature = "metal", target_os = "macos"))]
@@ -463,15 +496,26 @@ async fn main() -> Result<()> {
                 // flipped each pair) so clock/thermal drift hits both
                 // equally; one warm-up run each first.
                 let dev = loaded.device.clone();
+                // E1: TH_BENCH_PREFILL_LARGE_ONLY=1 toggles only the m > 128
+                // route (legacy AffineQmppPrefill vs the vec tile); with
+                // TH_GPU_PROF=1 each run is timed by its GPU busy time
+                let large_only = std::env::var("TH_BENCH_PREFILL_LARGE_ONLY").is_ok();
                 let mut fwd = |seq: &[u32], legacy: bool| -> Result<f64> {
                     #[cfg(all(feature = "metal", target_os = "macos"))]
-                    quant_kernel::pf_force_legacy(legacy);
+                    if large_only {
+                        quant_kernel::pf_force_legacy_large(legacy);
+                    } else {
+                        quant_kernel::pf_force_legacy(legacy);
+                    }
                     // forward() runs decode slot 0
                     loaded.backend.clear_kv_cache(0);
+                    dev.synchronize()?;
+                    let _ = gpuprof::drain_busy_ms();
                     let t = std::time::Instant::now();
                     let lg = loaded.backend.forward(seq, 0, &dev)?;
                     let _ = lg.to_vec1::<f32>()?;
-                    Ok(t.elapsed().as_secs_f64() * 1e3)
+                    let wall = t.elapsed().as_secs_f64() * 1e3;
+                    Ok(if gpuprof::on() { gpuprof::drain_busy_ms() } else { wall })
                 };
                 let stat = |v: &mut Vec<f64>| {
                     v.sort_by(|a, b| a.total_cmp(b));
@@ -498,7 +542,71 @@ async fn main() -> Result<()> {
                     );
                 }
                 #[cfg(all(feature = "metal", target_os = "macos"))]
-                quant_kernel::pf_force_legacy(false);
+                {
+                    quant_kernel::pf_force_legacy(false);
+                    quant_kernel::pf_force_legacy_large(false);
+                }
+            }
+            if let Ok(spec) = std::env::var("TH_BENCH_STEPS") {
+                // E1(d): prefill chunk size — the whole probe prompt from a
+                // cleared slot 0 in `step`-row chunks (the plain grid that
+                // `--prefill-step` sets), for each step in the comma list,
+                // alternating run by run (TH_BENCH_STEPS_REPS, default 5);
+                // GPU busy ms with TH_GPU_PROF=1, else wall ms. Prints
+                // max|d| / argmax of each step's last logits vs the first.
+                let dev = loaded.device.clone();
+                let steps: Vec<usize> =
+                    spec.split(',').filter_map(|t| t.trim().parse().ok()).filter(|&s: &usize| s >= 32).collect();
+                let reps: usize = std::env::var("TH_BENCH_STEPS_REPS").ok().and_then(|v| v.parse().ok()).unwrap_or(5);
+                let n = ids.len();
+                let run = |b: &mut model::ModelBackend, step: usize| -> Result<(f64, f64, Vec<f32>)> {
+                    b.clear_kv_cache(0);
+                    dev.synchronize()?;
+                    let _ = gpuprof::drain_busy_ms();
+                    let t = std::time::Instant::now();
+                    let mut last = None;
+                    let mut pos = 0;
+                    while pos < n {
+                        let e = (pos + step).min(n);
+                        last = Some(b.forward(&ids[pos..e], pos, &dev)?);
+                        pos = e;
+                    }
+                    let v = last.context("empty prompt")?.to_vec1::<f32>()?;
+                    let wall = t.elapsed().as_secs_f64() * 1e3;
+                    Ok((wall, gpuprof::drain_busy_ms(), v))
+                };
+                let mut first: Vec<Vec<f32>> = Vec::new();
+                for &s in &steps {
+                    first.push(run(&mut loaded.backend, s)?.2);
+                }
+                let mut t: Vec<Vec<(f64, f64)>> = vec![Vec::new(); steps.len()];
+                for r in 0..reps {
+                    for k in 0..steps.len() {
+                        let i = (k + r) % steps.len();
+                        let (w, g, _) = run(&mut loaded.backend, steps[i])?;
+                        t[i].push((w, g));
+                    }
+                }
+                let argmax = |v: &[f32]| v.iter().enumerate().max_by(|a, b| a.1.total_cmp(b.1)).map(|(i, _)| i).unwrap_or(0);
+                for (i, &s) in steps.iter().enumerate() {
+                    let mut w: Vec<f64> = t[i].iter().map(|x| x.0).collect();
+                    let mut g: Vec<f64> = t[i].iter().map(|x| x.1).collect();
+                    w.sort_by(|a, b| a.total_cmp(b));
+                    g.sort_by(|a, b| a.total_cmp(b));
+                    let d = first[0].iter().zip(&first[i]).map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
+                    eprintln!(
+                        "steps n={n} step={s} chunks={} wall min={:.1} med={:.1}ms gpu min={:.1} med={:.1}ms tok/s(med wall) {:.0} | vs step {} max|d|={d:.4} argmax {} / {}",
+                        n.div_ceil(s),
+                        w[0],
+                        w[w.len() / 2],
+                        g[0],
+                        g[g.len() / 2],
+                        n as f64 / w[w.len() / 2] * 1e3,
+                        steps[0],
+                        argmax(&first[i]),
+                        argmax(&first[0]),
+                    );
+                }
             }
             if let Ok(spec) = std::env::var("TH_BENCH_PLAN") {
                 // T1 prefix cache, the GPU side of TTFT (no HTTP, template,
@@ -539,6 +647,9 @@ async fn main() -> Result<()> {
                     block: 128,
                     margin: 16,
                     merge: merges[0],
+                    full: false,
+                    asst: false,
+                    defer: true,
                 };
                 let gcfg = prefix_cache::PrefixCacheConfig { grid_only: true, ..pcfg };
                 let stat = |v: &mut Vec<f64>| {
@@ -660,6 +771,9 @@ async fn main() -> Result<()> {
                     drop((ck, gck));
                 }
             }
+            if let Ok(spec) = std::env::var("TH_BENCH_TTFT") {
+                bench_ttft(&mut loaded, &ids, &spec)?;
+            }
             #[cfg(all(feature = "metal", target_os = "macos"))]
             if let Ok(spec) = std::env::var("TH_BENCH_ATTN") {
                 // Eager prefill attention (qwen35 `attn_eager`, the seq > 8
@@ -754,6 +868,104 @@ async fn main() -> Result<()> {
                         emed / smed,
                         gmed / smed,
                     );
+                }
+            }
+            #[cfg(all(feature = "metal", target_os = "macos"))]
+            if let Ok(spec) = std::env::var("TH_BENCH_PREFILL_LOGITS") {
+                // E1: in-model prefill A/B, eager vs fused prefill attention.
+                // For each prompt length N (ids from TH_BENCH_PREFILL_IDS,
+                // cycled), prefill slot 0 in the engine's 512-row grid chunks
+                // (forward_slot, the prefill_slot path), synced per chunk;
+                // alternate eager / fused TH_BENCH_PREFILL_REPS times (default
+                // 3); report per-chunk and total ms (median), and max|d| /
+                // argmax / top-10 overlap of the last-position logits.
+                use candle_core::{DType, Tensor};
+                let dev = loaded.device.clone();
+                let path = std::env::var("TH_BENCH_PREFILL_IDS").map_err(|_| anyhow::anyhow!("TH_BENCH_PREFILL_IDS=<comma-separated ids file>"))?;
+                let base: Vec<u32> = std::fs::read_to_string(&path)?
+                    .split(|c: char| c == ',' || c.is_whitespace())
+                    .filter_map(|t| t.trim().parse().ok())
+                    .collect();
+                let reps: usize = std::env::var("TH_BENCH_PREFILL_REPS").ok().and_then(|v| v.parse().ok()).unwrap_or(3);
+                let step: usize = std::env::var("TH_BENCH_PREFILL_STEP").ok().and_then(|v| v.parse().ok()).unwrap_or(512);
+                for n in spec.split(',').filter_map(|t| t.trim().parse::<usize>().ok()) {
+                    let ids: Vec<u32> = base.iter().copied().cycle().take(n).collect();
+                    // `tail` > 0: the last `tail` rows as their own chunk (the prefix
+                    // cache's default plan splits a chat prompt's tail off like this;
+                    // chunks <= 128 rows take other GEMM tiles: a real numerics change)
+                    let mut run = |eager: bool, tail: usize| -> Result<(Vec<f64>, Tensor)> {
+                        qwen35::prefill_attn_force_eager(eager);
+                        loaded.backend.clear_kv_cache(0);
+                        dev.synchronize()?;
+                        let mut ms = Vec::new();
+                        let mut logits = None;
+                        let mut pos = 0;
+                        let body = n.saturating_sub(tail);
+                        let mut plan: Vec<&[u32]> = ids[..body].chunks(step).collect();
+                        if tail > 0 && body > 0 {
+                            plan.push(&ids[body..]);
+                        }
+                        for chunk in plan {
+                            let t = std::time::Instant::now();
+                            let lg = loaded.backend.forward_slot(0, chunk, pos, &dev)?;
+                            dev.synchronize()?;
+                            ms.push(t.elapsed().as_secs_f64() * 1e3);
+                            logits = Some(lg);
+                            pos += chunk.len();
+                        }
+                        qwen35::prefill_attn_force_eager(false);
+                        Ok((ms, logits.unwrap().to_dtype(DType::F32)?))
+                    };
+                    let mut e_ms: Vec<Vec<f64>> = Vec::new();
+                    let mut f_ms: Vec<Vec<f64>> = Vec::new();
+                    let (mut e_lg, mut f_lg) = (None, None);
+                    for r in 0..reps {
+                        for eager in if r % 2 == 0 { [true, false] } else { [false, true] } {
+                            let (ms, lg) = run(eager, 0)?;
+                            if eager { e_ms.push(ms); e_lg = Some(lg); } else { f_ms.push(ms); f_lg = Some(lg); }
+                        }
+                    }
+                    // noise floor: the eager path with a 24-row tail chunk (the engine's
+                    // own plan-dependent variation), and the same for the fused path
+                    let (_, e2_lg) = run(true, 24)?;
+                    let (_, f2_lg) = run(false, 24)?;
+                    let med = |v: &mut Vec<f64>| { v.sort_by(|a, b| a.total_cmp(b)); v[v.len() / 2] };
+                    let nch = e_ms[0].len();
+                    let per = |runs: &Vec<Vec<f64>>, c: usize| { let mut v: Vec<f64> = runs.iter().map(|r| r[c]).collect(); med(&mut v) };
+                    let tot = |runs: &Vec<Vec<f64>>| { let mut v: Vec<f64> = runs.iter().map(|r| r.iter().sum()).collect(); med(&mut v) };
+                    let ev: Vec<f32> = e_lg.unwrap().to_vec1()?;
+                    let fv: Vec<f32> = f_lg.unwrap().to_vec1()?;
+                    let e2v: Vec<f32> = e2_lg.to_vec1()?;
+                    let f2v: Vec<f32> = f2_lg.to_vec1()?;
+                    // |d|, |d| in bf16 ulps of the reference logit, KL(p_a || p_b) in nats,
+                    // max |d log p| over a's top 10, argmax, top-10 overlap
+                    let cmp = |a: &[f32], b: &[f32]| -> String {
+                        let (mut dmax, mut at) = (0f32, 0usize);
+                        for (i, (x, y)) in a.iter().zip(b).enumerate() {
+                            if (x - y).abs() > dmax { dmax = (x - y).abs(); at = i; }
+                        }
+                        // bf16 ulp at the larger magnitude of the pair
+                        let ulp = |x: f32| { let e = x.abs().max(1e-30).log2().floor(); 2f32.powf(e - 7.0) };
+                        let dulp = dmax / ulp(a[at].abs().max(b[at].abs()));
+                        let big = a.iter().filter(|x| x.abs() >= 16.0).count();
+                        let lse = |v: &[f32]| { let m = v.iter().cloned().fold(f32::MIN, f32::max) as f64; m + v.iter().map(|x| (*x as f64 - m).exp()).sum::<f64>().ln() };
+                        let (la, lb) = (lse(a), lse(b));
+                        let kl: f64 = a.iter().zip(b).map(|(x, y)| { let lpa = *x as f64 - la; let lpb = *y as f64 - lb; lpa.exp() * (lpa - lpb) }).sum();
+                        let top = |v: &[f32], k: usize| { let mut i: Vec<usize> = (0..v.len()).collect(); i.sort_by(|&p, &q| v[q].total_cmp(&v[p])); i.truncate(k); i };
+                        let (ta, tb) = (top(a, 10), top(b, 10));
+                        let dlp = ta.iter().map(|&i| ((a[i] as f64 - la) - (b[i] as f64 - lb)).abs()).fold(0f64, f64::max);
+                        let ov = ta.iter().filter(|x| tb.contains(x)).count();
+                        format!("max|d| {dmax:.4} at logit {:.3}/{:.3} ({dulp:.1} bf16 ulp; {big} logits >= 16) KL {kl:.2e} top10 max|dlogp| {dlp:.4} argmax {} top10 {ov}/10", a[at], b[at],
+                            if ta[0] == tb[0] { "same" } else { "DIFF" })
+                    };
+                    let chunks: Vec<String> = (0..nch).map(|c| format!("{:.0}/{:.0}", per(&e_ms, c), per(&f_ms, c))).collect();
+                    eprintln!(
+                        "prefill n={n} step={step} reps={reps} | total eager {:.1} ms fused {:.1} ms (-{:.1} ms, {:.2}x) | per chunk eager/fused [{}]",
+                        tot(&e_ms), tot(&f_ms), tot(&e_ms) - tot(&f_ms), tot(&e_ms) / tot(&f_ms), chunks.join(" "),
+                    );
+                    eprintln!("  logits n={n} fused vs eager (step {step}): {}", cmp(&ev, &fv));
+                    eprintln!("  logits n={n} NOISE FLOOR eager +24-row tail chunk vs eager grid: {}", cmp(&ev, &e2v));
+                    eprintln!("  logits n={n} fused +24-row tail chunk vs fused grid: {}", cmp(&fv, &f2v));
                 }
             }
             #[cfg(all(feature = "metal", target_os = "macos"))]
@@ -869,4 +1081,213 @@ async fn main() -> Result<()> {
             Ok(())
         }
     }
+}
+
+/// `TH_BENCH_TTFT=n:turn_end,...` — the cold-request TTFT path in one
+/// process, variants alternating run by run (order rotated per rep): from
+/// the request-start slot clear to the first token's argmax readback (the
+/// sync a T=0 first sample makes), prompt = the probe ids cycled to `n`
+/// under the T1 chunk plan with a chat turn end at `turn_end`.
+/// `TH_BENCH_DRAFT=<dir>` attaches the DFlash draft (capture rows, as the
+/// server). `TH_BENCH_TTFT_KINDS` (default `miss,cap,miss-kv0,cap-kv0`):
+///   miss — plan only (TH_PREFIX_CACHE=miss); cap — plus the plan's
+///   checkpoint captures inline (integration-3's order) into an LRU store
+///   (the server's default config); dcap — deferred captures (the
+///   server's order now: holds while prefilling, one build + the prompt-end
+///   checkpoint after the first token's readback; the build is timed in
+///   `capture`, outside `total`);
+///   suffix `-kv0` — TH_KV_CAP_PREFILL off, `-leg` — the integration-3
+///   (legacy) capacity store, none — the direct store (in-process override);
+///   `head` anywhere in the name — every chunk computes its logits (as
+///   integration-3), else only the last (`forward_slot_nohead`).
+/// `TH_BENCH_TTFT_GAP_MS` idle pause and `TH_BENCH_TTFT_THERM=1` a
+/// thermal-level-0 wait before every run (both outside the timed window).
+/// `TH_BENCH_TTFT_REPS` timed runs per kind (5). Prints median/min total,
+/// clear, host enqueue and capture host time per kind.
+fn bench_ttft(loaded: &mut model::LoadedModel, ids: &[u32], spec: &str) -> Result<()> {
+    use std::time::Instant;
+    let dev = loaded.device.clone();
+    if let Ok(d) = std::env::var("TH_BENCH_DRAFT") {
+        if !loaded.backend.has_draft() {
+            loaded.backend.attach_draft(std::path::Path::new(&d))?;
+        }
+    }
+    // TH_BENCH_TTFT_GAP_MS: idle pause before every run (thermal drift)
+    let gap_ms: u64 = std::env::var("TH_BENCH_TTFT_GAP_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
+    let therm_gate = std::env::var("TH_BENCH_TTFT_THERM").as_deref() == Ok("1");
+    let mut therm_wait = 0.0f64;
+    let reps: usize = std::env::var("TH_BENCH_TTFT_REPS").ok().and_then(|v| v.parse().ok()).unwrap_or(5);
+    let kinds: Vec<String> = std::env::var("TH_BENCH_TTFT_KINDS")
+        .unwrap_or_else(|_| "miss,cap,miss-leg,cap-leg,miss-kv0,cap-kv0".into())
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+    // TH_BENCH_TTFT_IDS=<file>: comma-separated prompt ids (else --tokens)
+    let file_ids: Option<Vec<u32>> = match std::env::var("TH_BENCH_TTFT_IDS") {
+        Ok(f) => Some(std::fs::read_to_string(&f)?.split(',').filter_map(|t| t.trim().parse().ok()).collect()),
+        Err(_) => None,
+    };
+    let ids: &[u32] = file_ids.as_deref().unwrap_or(ids);
+    let pcfg = prefix_cache::PrefixCacheConfig::from_env();
+    let pcfg = prefix_cache::PrefixCacheConfig { enabled: true, plan_only: false, grid_only: false, ..pcfg };
+    let mut store: prefix_cache::PrefixCache<model::BackendPrefix> = prefix_cache::PrefixCache::new(pcfg);
+    let mut nonce = 0u32;
+    for pair in spec.split(',') {
+        let Some((n, te)) = pair.split_once(':').and_then(|(a, b)| Some((a.trim().parse::<usize>().ok()?, b.trim().parse::<usize>().ok()?))) else {
+            continue;
+        };
+        let plan = prefix_cache::plan(n, 512, Some(&pcfg), Some(te), &[te]);
+        let bounds: Vec<usize> = plan.splits.iter().copied().chain(std::iter::once(n)).collect();
+        eprintln!("ttft n={n} turn_end={te} splits={:?} checkpoints={:?} kinds={kinds:?} reps={reps}", plan.splits, plan.checkpoints);
+        // (total, clear, enqueue, capture) per kind
+        let mut res: Vec<Vec<(f64, f64, f64, f64)>> = vec![Vec::new(); kinds.len()];
+        let mut first_tok: Vec<Option<u32>> = vec![None; kinds.len()];
+        let mut ref_bits: Vec<(String, Vec<u32>)> = Vec::new();
+        for r in 0..=reps {
+            for k in 0..kinds.len() {
+                let ki = (k + r) % kinds.len();
+                let kind = kinds[ki].as_str();
+                // a fresh first token per run so every run misses the store;
+                // the untimed round 0 runs one fixed prompt in every kind
+                // (bitwise logits identity across kinds; its checkpoints
+                // are inserted once and later hit nothing)
+                nonce += 1;
+                let mut seq: Vec<u32> = (0..n).map(|i| ids[i % ids.len()]).collect();
+                seq[0] = if r == 0 { 999 } else { 1000 + nonce % 50000 };
+                if gap_ms > 0 {
+                    dev.synchronize()?;
+                    std::thread::sleep(std::time::Duration::from_millis(gap_ms));
+                }
+                // TH_BENCH_TTFT_THERM=1: wait (<= 180 s, outside the timed
+                // window) for thermal pressure level 0 before every run
+                if therm_gate {
+                    let t = Instant::now();
+                    while t.elapsed().as_secs() < 180 {
+                        let lvl = std::process::Command::new("notifyutil")
+                            .args(["-g", "com.apple.system.thermalpressurelevel"])
+                            .output()
+                            .ok()
+                            .and_then(|o| String::from_utf8_lossy(&o.stdout).split_whitespace().last().and_then(|x| x.parse::<u32>().ok()));
+                        if lvl.unwrap_or(0) == 0 {
+                            break;
+                        }
+                        std::thread::sleep(std::time::Duration::from_secs(2));
+                    }
+                    therm_wait += t.elapsed().as_secs_f64();
+                }
+                let caps = kind.starts_with("cap") || kind.starts_with("dcap");
+                let deferred = kind.starts_with("dcap");
+                let mut held = Vec::new();
+                qwen35::set_kv_cap_override(Some(if kind.ends_with("-kv0") {
+                    qwen35::KvCap::Off
+                } else if kind.ends_with("-leg") {
+                    qwen35::KvCap::Legacy
+                } else {
+                    qwen35::KvCap::Direct
+                }));
+                let ms = |t: Instant| t.elapsed().as_secs_f64() * 1e3;
+                let t0 = Instant::now();
+                loaded.backend.set_kv_quant(false)?;
+                loaded.backend.clear_kv_cache(0);
+                let clear = ms(t0);
+                let (mut enq, mut cap) = (0.0, 0.0);
+                let mut pos = 0usize;
+                let mut last = None;
+                for &end in &bounds {
+                    let t = Instant::now();
+                    if end < n && !kind.contains("head") {
+                        loaded.backend.forward_slot_nohead(0, &seq[pos..end], pos, &dev)?;
+                    } else {
+                        last = Some(loaded.backend.forward_slot(0, &seq[pos..end], pos, &dev)?);
+                    }
+                    enq += ms(t);
+                    pos = end;
+                    if caps && pos < n && plan.checkpoints.contains(&pos) {
+                        let t = Instant::now();
+                        if deferred {
+                            // the server's order: hold now (copy unless the
+                            // tail chunk is next), build after the first token
+                            let last_split = bounds.iter().position(|&b| b == pos).map_or(false, |i| i + 2 == bounds.len());
+                            held.push((pos, loaded.backend.prefix_hold(0, !last_split)?, None));
+                        } else {
+                            let p = loaded.backend.prefix_capture(0)?;
+                            let parts = vec![(store.part_id(), p.parts().iter().map(|x| x.1).sum())];
+                            store.insert_shared(seq[..pos].to_vec(), 512, plan.history(pos), parts, false, p);
+                        }
+                        cap += ms(t);
+                    }
+                }
+                let last = last.context("empty plan")?;
+                if deferred {
+                    held.push((n, loaded.backend.prefix_hold(0, false)?, Some(last.clone())));
+                }
+                let tok = last.argmax(0)?.to_scalar::<u32>()?;
+                let total = ms(t0);
+                if deferred {
+                    let t = Instant::now();
+                    // the server's accounting: the build's K/V and capture-row
+                    // copies are shared parts
+                    let (kv_id, caps_id) = (store.part_id(), store.part_id());
+                    for p in loaded.backend.prefix_build(0, std::mem::take(&mut held))? {
+                        let pp = p.pos();
+                        let parts: Vec<(u64, usize)> = p
+                            .parts()
+                            .iter()
+                            .map(|&(k, b)| match k {
+                                qwen35::CkPart::Kv => (kv_id, b),
+                                qwen35::CkPart::Caps => (caps_id, b),
+                                qwen35::CkPart::Own => (store.part_id(), b),
+                            })
+                            .collect();
+                        store.insert_shared(seq[..pp].to_vec(), 512, plan.history_at(pp, n), parts, pp == n, p);
+                    }
+                    cap += ms(t);
+                }
+                if r == 0 {
+                    let bits: Vec<u32> = last.to_vec1::<f32>()?.iter().map(|v| v.to_bits()).collect();
+                    ref_bits.push((kind.to_string(), bits));
+                }
+                // drain the draft captures like the server's warm-up would
+                if loaded.backend.has_draft() {
+                    loaded.backend.draft_prefill(0)?;
+                    dev.synchronize()?;
+                }
+                if r > 0 {
+                    res[ki].push((total, clear, enq, cap));
+                }
+                if first_tok[ki].is_none() {
+                    first_tok[ki] = Some(tok);
+                }
+            }
+        }
+        qwen35::set_kv_cap_override(None);
+        if let Some((k0, b0)) = ref_bits.first() {
+            for (k, b) in &ref_bits[1..] {
+                let diff = b.iter().zip(b0).filter(|(x, y)| x != y).count();
+                eprintln!("  logits bits {k} vs {k0}: {diff} of {} differ{}", b.len(), if diff == 0 { "" } else { "  <-- NOT BITWISE" });
+            }
+        }
+        let med = |v: &mut Vec<f64>| {
+            v.sort_by(|a, b| a.total_cmp(b));
+            (v[v.len() / 2], v[0])
+        };
+        for (ki, kind) in kinds.iter().enumerate() {
+            let mut tot: Vec<f64> = res[ki].iter().map(|x| x.0).collect();
+            let mut clr: Vec<f64> = res[ki].iter().map(|x| x.1).collect();
+            let mut enq: Vec<f64> = res[ki].iter().map(|x| x.2).collect();
+            let mut cap: Vec<f64> = res[ki].iter().map(|x| x.3).collect();
+            let (tm, tmin) = med(&mut tot);
+            eprintln!(
+                "  {kind:10} total med {tm:7.1} min {tmin:7.1} ms | clear {:5.1} | enqueue {:6.1} | capture {:5.1} | all {:?} | tok {:?}",
+                med(&mut clr).0,
+                med(&mut enq).0,
+                med(&mut cap).0,
+                res[ki].iter().map(|x| x.0.round() as i64).collect::<Vec<_>>(),
+                first_tok[ki]
+            );
+        }
+        eprintln!("  store: entries {} bytes {:.0} MB; thermal-gate waits {:.0} s", store.len(), store.bytes() as f64 / 1e6, therm_wait);
+    }
+    Ok(())
 }

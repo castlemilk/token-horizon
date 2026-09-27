@@ -1858,6 +1858,12 @@ kernel void gdn_commit_all(
         /// presum_block_bytes`). Requires t <= 8 and c % 64 == 0; the
         /// residual and normed values are bit-identical to `sums: false`.
         pub sums: bool,
+        /// E1(c): emit the normed plane as a PREFILL presum block — rows
+        /// padded to 32 (rows >= t zero) followed by the f32 sums in the
+        /// prefill tiles' layout [t_pad/32][c/64][32]
+        /// (`quant_kernel::pf_presum_elems`). Requires t > 8, c % 64 == 0
+        /// and the per-row kernels; values bit-identical to `pfsums: false`.
+        pub pfsums: bool,
         /// The pre-R0c kernels: ONE threadgroup of 256 threads for all
         /// rows (one simdgroup per row), latency-bound at ~84 us per 8 x
         /// 5120 call (R0c). Default (false): one 1024-thread threadgroup
@@ -2059,12 +2065,75 @@ kernel void add_rmsnorm_sums_p(
         if (lane == 0) sums[g * 8 + t] = s;
     }
 }
+
+// E1(c) prefill presum form of add_rmsnorm_p (T > 8, C % 64 == 0; grid =
+// T_pad = ceil(T/32)*32 threadgroups): out = res [T, C] | nrm [T_pad, C]
+// (rows >= T zero) | sums [T_pad/32][C/64][32] f32 — the prefill tiles'
+// 32-row sums layout, in pf_prep's lane pattern simd_sum(x[64g + l] +
+// x[64g + 32 + l]) over the stored bf16 values. Residual and normed values
+// are add_rmsnorm_p's expressions (bit-identical).
+kernel void add_rmsnorm_pfsums_p(
+    device const bfloat* x   [[buffer(0)]],
+    device const bfloat* r   [[buffer(1)]],
+    device const bfloat* w   [[buffer(2)]],
+    device bfloat*       out [[buffer(3)]],
+    constant ArnParams&  p   [[buffer(4)]],
+    threadgroup float*   tv  [[threadgroup(0)]],
+    uint  t    [[threadgroup_position_in_grid]],
+    uint  tid  [[thread_index_in_threadgroup]],
+    uint  nt   [[threads_per_threadgroup]],
+    uint  lane [[thread_index_in_simdgroup]],
+    uint  sg   [[simdgroup_index_in_threadgroup]])
+{
+    threadgroup float tinv;
+    const int ng = p.C / 64;
+    const int nsg = int(nt) / 32;
+    const int tpad = (p.T + 31) / 32 * 32;
+    device bfloat* nrm = out + (p.T + t) * p.C;
+    device float* sums = (device float*)(out + (p.T + tpad) * p.C)
+                         + (t / 32) * ng * 32 + t % 32;
+    if (int(t) >= p.T) {
+        for (int c = int(tid); c < p.C; c += int(nt)) nrm[c] = bfloat(0.0f);
+        for (int g = int(tid); g < ng; g += int(nt)) sums[g * 32] = 0.0f;
+        return;
+    }
+    device const bfloat* xr = x + t * p.C;
+    device const bfloat* rr = r + t * p.C;
+    device bfloat* res = out + t * p.C;
+    for (int c = int(tid); c < p.C; c += int(nt)) {
+        const float v = float(xr[c]) + float(rr[c]);
+        res[c] = bfloat(v);
+        tv[c] = v;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (sg == 0) {
+        float ss = 0.0f;
+        for (int c = int(lane); c < p.C; c += 32) {
+            const float v = tv[c];
+            ss += v * v;
+        }
+        ss = simd_sum(ss);
+        if (lane == 0) tinv = rsqrt(ss / float(p.C) + p.eps);
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    const float inv = tinv;
+    for (int g = int(sg); g < ng; g += nsg) {
+        const int c0 = g * 64 + int(lane);
+        const bfloat a = bfloat(float(bfloat(tv[c0])) * inv * float(w[c0]));
+        const bfloat b = bfloat(float(bfloat(tv[c0 + 32])) * inv * float(w[c0 + 32]));
+        nrm[c0] = a;
+        nrm[c0 + 32] = b;
+        const float s = simd_sum(float(a) + float(b));
+        if (lane == 0) sums[g * 32] = s;
+    }
+}
 "#;
 
     static ARN_PIPE: OnceLock<ComputePipeline> = OnceLock::new();
     static ARN_SUMS_PIPE: OnceLock<ComputePipeline> = OnceLock::new();
     static ARN_P_PIPE: OnceLock<ComputePipeline> = OnceLock::new();
     static ARN_SUMS_P_PIPE: OnceLock<ComputePipeline> = OnceLock::new();
+    static ARN_PFSUMS_P_PIPE: OnceLock<ComputePipeline> = OnceLock::new();
     /// Largest row the per-row kernels stage in threadgroup memory
     /// (C f32 + the broadcast slot, under the 32 KiB limit).
     const ARN_P_MAX_C: usize = 7936;
@@ -2105,7 +2174,7 @@ kernel void add_rmsnorm_sums_p(
                 candle_core::bail!("add-rmsnorm dtypes must be bf16");
             }
             let device = s_x.device();
-            if ARN_PIPE.get().is_none() || ARN_SUMS_P_PIPE.get().is_none() {
+            if ARN_PIPE.get().is_none() || ARN_PFSUMS_P_PIPE.get().is_none() {
                 let raw = device.metal_device();
                 let lib = raw
                     .new_library_with_source(ARN_SRC, None)
@@ -2115,6 +2184,7 @@ kernel void add_rmsnorm_sums_p(
                     (&ARN_SUMS_PIPE, "add_rmsnorm_sums"),
                     (&ARN_P_PIPE, "add_rmsnorm_p"),
                     (&ARN_SUMS_P_PIPE, "add_rmsnorm_sums_p"),
+                    (&ARN_PFSUMS_P_PIPE, "add_rmsnorm_pfsums_p"),
                 ] {
                     let f = lib
                         .get_function(name, None)
@@ -2135,7 +2205,16 @@ kernel void add_rmsnorm_sums_p(
             // per-row kernels unless asked for the legacy ones (or the row
             // does not fit the threadgroup staging buffer)
             let per_row = !self.legacy && self.c <= ARN_P_MAX_C;
+            let pfsums = self.pfsums && !self.sums;
+            if pfsums && (self.t <= 8 || self.c % 64 != 0 || !per_row) {
+                candle_core::bail!(
+                    "add-rmsnorm pfsums needs t > 8, c % 64 == 0 and the per-row kernels (t {}, c {})",
+                    self.t,
+                    self.c
+                );
+            }
             let pipeline = match (per_row, self.sums) {
+                (true, false) if pfsums => ARN_PFSUMS_P_PIPE.get().unwrap(),
                 (false, false) => ARN_PIPE.get().unwrap(),
                 (false, true) => ARN_SUMS_PIPE.get().unwrap(),
                 (true, false) => ARN_P_PIPE.get().unwrap(),
@@ -2147,6 +2226,9 @@ kernel void add_rmsnorm_sums_p(
             // sums (crate::quant_kernel::presum_block_bytes)
             let alloc_elems = if self.sums {
                 self.t * self.c + crate::quant_kernel::presum_block_bytes(self.c) / 2
+            } else if pfsums {
+                // residual [t, c] | prefill presum block of the normed plane
+                self.t * self.c + crate::quant_kernel::pf_presum_elems(self.t, self.c)
             } else {
                 y_elems
             };
@@ -2190,8 +2272,15 @@ kernel void add_rmsnorm_sums_p(
                 // one threadgroup per row (8 with the presum padding rows)
                 let nt = (pipeline.max_total_threads_per_threadgroup().min(1024) / 32 * 32).max(32);
                 enc.set_threadgroup_memory_length(0, (self.c * 4).div_ceil(16) * 16);
+                let rows = if self.sums {
+                    8
+                } else if pfsums {
+                    self.t.div_ceil(32) * 32
+                } else {
+                    self.t
+                };
                 enc.dispatch_thread_groups(
-                    MTLSize { width: if self.sums { 8 } else { self.t }, height: 1, depth: 1 },
+                    MTLSize { width: rows, height: 1, depth: 1 },
                     MTLSize { width: nt, height: 1, depth: 1 },
                 );
             } else {
@@ -2705,7 +2794,7 @@ mod arn_tests {
             let w = rand(&dev, c, 1.5, 99 + c as u64);
             let run = |legacy: bool| {
                 let y = x
-                    .apply_op3_no_bwd(&r, &w, &AddRmsNorm { t, c, eps: 1e-6, sums, legacy })
+                    .apply_op3_no_bwd(&r, &w, &AddRmsNorm { t, c, eps: 1e-6, sums, pfsums: false, legacy })
                     .unwrap();
                 dev.synchronize().unwrap();
                 let bytes = if sums {

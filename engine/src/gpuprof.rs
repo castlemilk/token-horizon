@@ -45,6 +45,9 @@ mod stub {
     #[inline]
     pub fn region(_: &'static str) {}
     pub fn round() {}
+    pub fn drain_busy_ms() -> f64 {
+        0.0
+    }
 }
 #[cfg(not(all(feature = "metal", target_os = "macos")))]
 pub use stub::*;
@@ -104,6 +107,9 @@ mod imp {
         /// latest end time over all reported buffers (clipping across
         /// window boundaries)
         last_end: f64,
+        /// completion handlers run so far (`drain_busy_ms` waits for
+        /// `completed == seq`)
+        completed: u64,
     }
 
     fn st() -> &'static Mutex<St> {
@@ -174,7 +180,9 @@ mod imp {
             let cb = unsafe { cbp.as_ref() };
             let (start, end) = (cb.GPUStartTime(), cb.GPUEndTime());
             let keys = slot.lock().unwrap().take().unwrap_or_default();
-            st().lock().unwrap().recs.push(Rec { seq, start, end, keys });
+            let mut s = st().lock().unwrap();
+            s.recs.push(Rec { seq, start, end, keys });
+            s.completed += 1;
         });
         // SAFETY: `this` is the command buffer being committed; handlers
         // must be added before `commit`, which is exactly where we are.
@@ -384,6 +392,45 @@ mod imp {
             // the throwaway objects stay alive for the process (same device)
             std::mem::forget((ce, be, cb, q, dev));
         });
+    }
+
+    /// Bench aid (E1): GPU-exclusive busy milliseconds of every command
+    /// buffer completed since the previous call — call it after
+    /// `device.synchronize()`; it waits (bounded, 200 ms) for the completion
+    /// handlers of everything committed so far. Buffers are clipped at the
+    /// end of the latest earlier one, as in [`round`], so overlap is not
+    /// double counted. 0 when profiling is off.
+    pub fn drain_busy_ms() -> f64 {
+        if !on() {
+            return 0.0;
+        }
+        let t0 = std::time::Instant::now();
+        loop {
+            {
+                let s = st().lock().unwrap();
+                if s.completed >= s.seq {
+                    break;
+                }
+            }
+            if t0.elapsed().as_millis() > 200 {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_micros(50));
+        }
+        let mut s = st().lock().unwrap();
+        let mut recs = std::mem::take(&mut s.recs);
+        recs.sort_by_key(|r| r.seq);
+        let mut last_end = s.last_end;
+        let mut busy = 0.0f64;
+        for r in &recs {
+            if !(r.end > r.start && r.start > 0.0) {
+                continue;
+            }
+            busy += (r.end - r.start.max(last_end)).max(0.0);
+            last_end = last_end.max(r.end);
+        }
+        s.last_end = last_end;
+        busy * 1e3
     }
 
     /// One decode round started. Every `TH_GPU_PROF_EVERY` rounds prints the
