@@ -143,12 +143,16 @@ jobs:
           echo "resolved version: $V"
 
       # Non-tag triggers (main auto-bump, manual dispatch): the tag doesn't
-      # exist yet — release.sh syncs the version pins, commits "release
-      # vX.Y.Z", tags, and pushes main + tag. Its own GITHUB_TOKEN pushes do
-      # not retrigger this workflow (and the job guard would skip them).
+      # exist yet — bump the three version pins, commit "release vX.Y.Z",
+      # tag, and push main + tag. Mirrors `task release` (Taskfile.yml).
+      # Its own GITHUB_TOKEN pushes do not retrigger this workflow (and the
+      # job guard would skip them).
       - name: Commit version pins + tag
         if: ${{ !startsWith(github.ref, 'refs/tags/') }}
         run: |
+          set -euo pipefail
+          V="${{ steps.ver.outputs.version }}"
+          TAG="v${V}"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           # A queued main-push run sits on a commit main has since passed
@@ -158,7 +162,19 @@ jobs:
             git fetch origin main
             git rebase origin/main
           fi
-          ./scripts/release.sh "${{ steps.ver.outputs.version }}"
+          git ls-remote --tags origin "refs/tags/${TAG}" | grep -q . \
+            && { echo "::error::${TAG} already exists on origin"; exit 1; }
+          sed -i '' -E "s/^VERSION=\"\\\$\{MARKETING_VERSION:-[0-9]+\.[0-9]+\.[0-9]+\}\"/VERSION=\"\\\${MARKETING_VERSION:-${V}}\"/" scripts/make-app.sh
+          sed -i '' -E "s/fallback: \"[0-9]+\.[0-9]+\.[0-9]+\"/fallback: \"${V}\"/" clients/macos/Sources/TokenHorizon/App/BuildInfo.swift
+          sed -i '' -E "s/^  version \"[0-9]+\.[0-9]+\.[0-9]+\"/  version \"${V}\"/" packaging/homebrew/token-horizon.rb
+          grep -q "MARKETING_VERSION:-${V}" scripts/make-app.sh
+          grep -q "fallback: \"${V}\"" clients/macos/Sources/TokenHorizon/App/BuildInfo.swift
+          grep -q "version \"${V}\"" packaging/homebrew/token-horizon.rb
+          git add scripts/make-app.sh clients/macos/Sources/TokenHorizon/App/BuildInfo.swift packaging/homebrew/token-horizon.rb
+          git commit -m "release ${TAG}"
+          git tag -a "$TAG" -m "Token Horizon ${V}"
+          git push origin HEAD:main
+          git push origin "$TAG"
 
       - name: Build + sign + notarize + package
         env:
@@ -224,8 +240,9 @@ jobs:
           sed -i '' -E "s/^  sha256 \"[0-9a-f]+\"/  sha256 \"${ZIP_SHA}\"/" "$CASK"
           grep -q "version \"${V}\"" "$CASK" && grep -q "sha256 \"${ZIP_SHA}\"" "$CASK"
 
-          # Converge the version pins too — release.sh already sets them for
-          # tag-triggered runs (no-op then), but a manual dispatch skips it.
+          # Converge the version pins too — `task release` already sets them
+          # for tag-triggered runs (no-op then), but a manual dispatch with an
+          # explicit version can drift.
           sed -i '' -E "s/^VERSION=\"\\\$\{MARKETING_VERSION:-[0-9]+\.[0-9]+\.[0-9]+\}\"/VERSION=\"\\\${MARKETING_VERSION:-${V}}\"/" scripts/make-app.sh
           sed -i '' -E "s/fallback: \"[0-9]+\.[0-9]+\.[0-9]+\"/fallback: \"${V}\"/" clients/macos/Sources/TokenHorizon/App/BuildInfo.swift
 

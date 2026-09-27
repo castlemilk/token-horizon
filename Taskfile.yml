@@ -99,8 +99,90 @@ tasks:
 
   release:
     desc: Semver release — bump version pins, tag vX.Y.Z, push (triggers release.yml)
+    # task release [patch|minor|major|X.Y.Z] [--dry-run]
+    # Bumps the three version pins (make-app.sh VERSION, BuildInfo.swift
+    # fallback, cask version), commits "release vX.Y.Z", tags, and pushes
+    # main + tag. The tag push triggers release.yml which builds, signs,
+    # notarizes, publishes (zip + dmg + sha256), updates the Homebrew cask
+    # sha256, and syncs castlemilk/homebrew-tap.
     cmds:
-      - ./scripts/release.sh {{.CLI_ARGS | default "patch"}}
+      - |
+        set -e
+        die() { printf 'error: %s\n' "$1" >&2; exit 1; }
+
+        DRY_RUN=0; BUMP=""
+        for a in {{.CLI_ARGS | default "patch"}}; do
+          case "$a" in --dry-run) DRY_RUN=1 ;; --) ;; *) BUMP="$a" ;; esac
+        done
+        [ -n "$BUMP" ] || BUMP="patch"
+
+        # --- resolve next version ------------------------------------------
+        LATEST="$(git tag --list 'v[0-9]*' --sort=-v:refname | head -1)"
+        LATEST="${LATEST#v}"
+        [ -n "$LATEST" ] || LATEST="0.0.0"
+        OLDIFS="$IFS"; IFS='.'; set -- $LATEST; IFS="$OLDIFS"
+        MA="${1:-0}"; MI="${2:-0}"; PA="${3:-0}"
+
+        case "$BUMP" in
+          patch) PA=$((PA + 1)) ;;
+          minor) MI=$((MI + 1)); PA=0 ;;
+          major) MA=$((MA + 1)); MI=0; PA=0 ;;
+          ''|*[!0-9.]*) die "usage: task release [patch|minor|major|X.Y.Z] [--dry-run]" ;;
+          *)
+            MA="${BUMP%%.*}"; REST="${BUMP#*.}"; MI="${REST%%.*}"; PA="${REST#*.}"
+            case "$REST" in *.*) ;; *) die "invalid version '$BUMP' (want X.Y.Z)" ;; esac
+            case "$PA" in *.*) die "invalid version '$BUMP' (want X.Y.Z)" ;; esac
+            for part in "$MA" "$MI" "$PA"; do
+              case "$part" in ''|*[!0-9]*) die "invalid version '$BUMP' (want X.Y.Z)" ;; esac
+            done ;;
+        esac
+        NEXT="${MA}.${MI}.${PA}"
+        TAG="v${NEXT}"
+
+        git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null 2>&1 && die "${TAG} already exists"
+        [ "$NEXT" = "$LATEST" ] && die "computed version ${NEXT} equals latest tag"
+
+        printf 'latest tag : v%s\n' "$LATEST"
+        printf 'next       : %s\n' "$TAG"
+        printf 'pins       : make-app.sh VERSION, BuildInfo.swift fallback, cask version\n'
+        if [ "$DRY_RUN" = 1 ]; then
+          printf 'dry run — would commit, tag %s, and push main + tag\n' "$TAG"
+          exit 0
+        fi
+
+        # --- guard rails ---------------------------------------------------
+        # A dirty tree is allowed (the tag points at the commit, not the
+        # worktree) but uncommitted changes can surprise — warn loudly.
+        if ! git diff --quiet || ! git diff --cached --quiet; then
+          printf 'warning: working tree has uncommitted changes; %s will tag HEAD only\n' "$TAG" >&2
+        fi
+        git fetch --tags -q origin 2>/dev/null || true
+        git ls-remote --tags origin "refs/tags/${TAG}" | grep -q . && die "${TAG} already exists on origin"
+
+        # --- bump the three version pins -----------------------------------
+        sed -i '' -E "s/^VERSION=\"\\\$\{MARKETING_VERSION:-[0-9]+\.[0-9]+\.[0-9]+\}\"/VERSION=\"\\\${MARKETING_VERSION:-${NEXT}}\"/" scripts/make-app.sh
+        sed -i '' -E "s/fallback: \"[0-9]+\.[0-9]+\.[0-9]+\"/fallback: \"${NEXT}\"/" clients/macos/Sources/TokenHorizon/App/BuildInfo.swift
+        sed -i '' -E "s/^  version \"[0-9]+\.[0-9]+\.[0-9]+\"/  version \"${NEXT}\"/" packaging/homebrew/token-horizon.rb
+        grep -q "MARKETING_VERSION:-${NEXT}" scripts/make-app.sh || die "make-app.sh pin update failed"
+        grep -q "fallback: \"${NEXT}\"" clients/macos/Sources/TokenHorizon/App/BuildInfo.swift || die "BuildInfo.swift pin update failed"
+        grep -q "version \"${NEXT}\"" packaging/homebrew/token-horizon.rb || die "cask pin update failed"
+
+        # --- commit, tag, push ----------------------------------------------
+        # No [skip ci] here — the tag points at this commit and skip tokens
+        # can suppress tag-push triggers too. The release workflow's job guard
+        # skips this push via the 'release v' prefix instead.
+        git add scripts/make-app.sh clients/macos/Sources/TokenHorizon/App/BuildInfo.swift packaging/homebrew/token-horizon.rb
+        git commit -m "release ${TAG}" >/dev/null
+        git tag -a "$TAG" -m "Token Horizon ${NEXT}"
+        git push origin HEAD:main
+        git push origin "$TAG"
+
+        printf '\n%s pushed. The release workflow is building now:\n' "$TAG"
+        printf '  https://github.com/castlemilk/token-horizon/actions/workflows/release.yml\n'
+        printf 'When it finishes:\n'
+        printf '  - GitHub release  -> install.sh /releases/latest picks it up\n'
+        printf '  - Homebrew cask   -> sha256 updated + tap synced (when TAP_GITHUB_TOKEN is set)\n'
+        printf '  - Settings/health -> v%s stamped via CFBundleShortVersionString\n' "$NEXT"
 
   brew-sync:
     desc: Publish packaging/homebrew/token-horizon.rb to castlemilk/homebrew-tap

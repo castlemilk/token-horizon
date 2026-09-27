@@ -76,13 +76,13 @@ shouldn't ship. And cancelling a run mid-flight can leave the tag + pin
 commit pushed but no release published (delete the tag and reset/revert
 the pin commit to undo).
 
-The manual path is `scripts/release.sh` (or `task release`):
+The manual path is `task release` (implemented in Taskfile.yml):
 
 ```bash
-./scripts/release.sh            # next patch after latest tag (v0.3.5 → v0.3.6)
-./scripts/release.sh minor      # v0.3.5 → v0.4.0
-./scripts/release.sh 1.0.0      # explicit version
-./scripts/release.sh --dry-run  # print the plan, change nothing
+task release              # next patch after latest tag (v0.3.5 → v0.3.6)
+task release minor        # v0.3.5 → v0.4.0
+task release 1.0.0        # explicit version
+task release -- --dry-run # print the plan, change nothing
 ```
 
 It computes the next semver from the latest `v*` tag, updates the three
