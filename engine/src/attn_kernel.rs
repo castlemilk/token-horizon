@@ -1521,9 +1521,9 @@ void prefill_attn(
     }
 
     impl PrefillVariant {
-        /// The shipped default (`TH_PREFILL_ATTN_VARIANT` unset).
+        /// The shipped default (`TH_PREFILL_ATTN_VARIANT` unset): `g2q`.
         pub const DEFAULT: PrefillVariant = PrefillVariant {
-            gqa: true, relaxed: false, gate: true, wm: 2, bk: 32, xbuf: false, skiprs: false, qreload: false,
+            gqa: true, relaxed: false, gate: true, wm: 2, bk: 32, xbuf: false, skiprs: false, qreload: true,
         };
 
         fn key(&self) -> usize {
@@ -1540,9 +1540,11 @@ void prefill_attn(
         /// Parse a variant name: `g`|`ph` (GQA-fused | per-head rows), the
         /// row-group digit (1|2|4), then any of `r` (relaxed), `k64` (BK
         /// 64), `x` (double-buffered exchange), `s` (skip unit rescales),
-        /// `q` (re-read q per block), `n` (unfused gate). `g2` = DEFAULT.
-        /// None of the non-default shapes paid on the M5 Max (report
-        /// th-e-prefill-attn §2.2); they stay selectable for re-tuning.
+        /// `q` (re-read q per block), `n` (unfused gate). `g2q` = DEFAULT:
+        /// re-reading q from L1 (32 fewer live registers) is ~15 % faster
+        /// over a whole cold prefill on the M5 Max than holding it (`g2`,
+        /// the 70409a9 kernel) and bitwise equal to it; the other shapes did
+        /// not pay (report th-e-prefill-attn §2.2) and stay selectable.
         pub fn parse(name: &str) -> Option<PrefillVariant> {
             let name = name.trim();
             let (gqa, rest) = match name.strip_prefix("ph") {
@@ -1858,7 +1860,7 @@ pub mod stub {
 
     impl PrefillVariant {
         pub const DEFAULT: PrefillVariant = PrefillVariant {
-            gqa: true, relaxed: false, gate: true, wm: 2, bk: 32, xbuf: false, skiprs: false, qreload: false,
+            gqa: true, relaxed: false, gate: true, wm: 2, bk: 32, xbuf: false, skiprs: false, qreload: true,
         };
 
         pub fn parse(_: &str) -> Option<PrefillVariant> {
@@ -2306,7 +2308,7 @@ kernel void nax_probe(device const bfloat* A [[buffer(0)]], device const bfloat*
         let k = fill_bf16(&[nkv, 1024, d], 76, 1.0, &dev)?;
         let v = fill_bf16(&[nkv, 1024, d], 75, 1.0, &dev)?;
         let d0 = host(&attn_prefill(&q, &k, &v, None, 700, 200, nh, nkv, d, metal_impl::PrefillVariant { gate: false, ..metal_impl::PrefillVariant::DEFAULT })?)?;
-        for name in ["ph4", "ph2", "g1", "g4", "g2x", "g2s", "g1x", "g2xs", "g2q", "g1q"] {
+        for name in ["ph4", "ph2", "g2", "g1", "g4", "g2x", "g2s", "g1x", "g2xs", "g2q", "g1q"] {
             let var = metal_impl::PrefillVariant { gate: false, ..metal_impl::PrefillVariant::parse(name).unwrap() };
             let o = host(&attn_prefill(&q, &k, &v, None, 700, 200, nh, nkv, d, var)?)?;
             let diff = o.iter().zip(&d0).filter(|(x, y)| x.to_bits() != y.to_bits()).count();

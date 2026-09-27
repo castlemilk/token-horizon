@@ -1699,10 +1699,12 @@ fn attn_gqa() -> bool {
 /// causal flash kernel `attn_kernel::attn_prefill` instead of the eager
 /// matmul/mask/softmax/matmul chain. `TH_PREFILL_ATTN=eager` keeps the
 /// eager path (A/B reference); `TH_PREFILL_ATTN_VARIANT` picks the kernel
-/// shape (`g2` default: GQA-fused rows, 2 row groups of 16 per
-/// threadgroup; `ph4` = MLX's per-head layout with 4 row groups, `r`
-/// suffix = MPP relaxed precision); `TH_PREFILL_ATTN_GATE=0` applies the
-/// output gate outside the kernel. Not bitwise equal to the eager path
+/// shape (`g2q` default: GQA-fused rows, 2 row groups of 16 per
+/// threadgroup, q re-read per key block; `g2` = the same kernel holding q
+/// in registers, bitwise equal and slower; `ph4` = MLX's per-head layout
+/// with 4 row groups, `r` suffix = MPP relaxed precision);
+/// `TH_PREFILL_ATTN_GATE=0` applies the output gate outside the kernel.
+/// Not bitwise equal to the eager path
 /// (f32 scores and softmax, f16 probabilities; eager rounds scores and
 /// probabilities to bf16) — closer to an f32 reference (TH_BENCH_PREFILL_ATTN).
 fn prefill_attn_cfg() -> Option<crate::attn_kernel::PrefillVariant> {
