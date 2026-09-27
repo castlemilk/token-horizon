@@ -789,7 +789,12 @@ fn generate_blocking(
                 // not depend on how this request ended
                 inner.backend.draft_prefill(0)?;
             } else {
-                pos += 1;
+                // `pos` stays = committed KV count: the anchor sampled for
+                // position `pos` is forwarded by the first verify (it is
+                // row 0 of [anchor, p1..p7]). Advancing here ran every
+                // verify/draft/commit one position late — a never-written
+                // KV row (and a never-committed draft ring slot) at the
+                // prompt end, and RoPE +1 on every generated token.
                 if first {
                     first = false;
                     ttft_ms = started.elapsed().as_secs_f64() * 1000.0;
@@ -2056,7 +2061,8 @@ fn admit(
     match emit_token(&mut ec, anchor, run.pos) {
         Emit::Done(rsn) => run.finish = Some(rsn),
         Emit::More => {
-            run.pos += 1;
+            // run.pos stays = committed KV count (anchor not forwarded
+            // yet) — see the single-slot loop
             run.ttft_ms = run.started.elapsed().as_secs_f64() * 1000.0;
             if run.tx.send(GenEvent::FirstToken { ttft_ms: run.ttft_ms }).is_err() {
                 run.finish = Some("cancelled");
