@@ -69,6 +69,9 @@ pub struct PrefixCacheConfig {
     /// split just before it when the merged chunk has at most this many
     /// rows (0: never merge — one extra chunk per turn-end split).
     pub merge: usize,
+    /// `TH_PREFIX_CACHE_DEFER=0`: build each checkpoint as the prefill
+    /// passes it (integration-3's order) instead of after the first token.
+    pub defer: bool,
 }
 
 impl PrefixCacheConfig {
@@ -89,6 +92,7 @@ impl PrefixCacheConfig {
             block: num("TH_PREFIX_CACHE_BLOCK", 128).max(16),
             margin: num("TH_PREFIX_CACHE_MARGIN", 16),
             merge: num("TH_PREFIX_CACHE_MERGE", DEFAULT_MERGE),
+            defer: std::env::var("TH_PREFIX_CACHE_DEFER").as_deref() != Ok("0"),
         }
     }
 
@@ -102,6 +106,7 @@ impl PrefixCacheConfig {
             block: 128,
             margin: 16,
             merge: DEFAULT_MERGE,
+            defer: true,
         }
     }
 }
@@ -238,7 +243,10 @@ struct Entry<S> {
     tokens: Vec<u32>,
     step: usize,
     history: Vec<usize>,
-    bytes: usize,
+    /// storage parts `(id, bytes)` — parts shared with other entries
+    /// (one K/V copy serving several checkpoints of a prompt) carry the
+    /// same id and count once in the byte total
+    parts: Vec<(u64, usize)>,
     last_used: u64,
     state: S,
 }
@@ -249,6 +257,9 @@ pub struct PrefixCache<S> {
     entries: Vec<Entry<S>>,
     bytes: usize,
     tick: u64,
+    /// live storage parts: id -> (entries holding it, bytes)
+    parts: std::collections::HashMap<u64, (usize, usize)>,
+    next_part: u64,
 }
 
 /// A store mutation, for the caller's counters.
@@ -260,7 +271,36 @@ pub struct InsertOutcome {
 
 impl<S> PrefixCache<S> {
     pub fn new(cfg: PrefixCacheConfig) -> Self {
-        Self { cfg, entries: Vec::new(), bytes: 0, tick: 0 }
+        Self { cfg, entries: Vec::new(), bytes: 0, tick: 0, parts: std::collections::HashMap::new(), next_part: 1 << 62 }
+    }
+
+    /// A fresh storage-part id (for `insert_shared` callers that share
+    /// one buffer between the checkpoints of a prompt).
+    pub fn part_id(&mut self) -> u64 {
+        self.next_part += 1;
+        self.next_part
+    }
+
+    fn add_parts(&mut self, parts: &[(u64, usize)]) {
+        for &(id, b) in parts {
+            let e = self.parts.entry(id).or_insert((0, b));
+            if e.0 == 0 {
+                self.bytes += b;
+            }
+            e.0 += 1;
+        }
+    }
+
+    fn drop_parts(&mut self, parts: &[(u64, usize)]) {
+        for &(id, _) in parts {
+            if let Some(e) = self.parts.get_mut(&id) {
+                e.0 -= 1;
+                if e.0 == 0 {
+                    self.bytes -= e.1;
+                    self.parts.remove(&id);
+                }
+            }
+        }
     }
 
     pub fn config(&self) -> PrefixCacheConfig {
@@ -332,19 +372,29 @@ impl<S> PrefixCache<S> {
 
     /// Insert a checkpoint (replacing the same tokens + step + history),
     /// then evict least recently used entries until both caps hold. An
-    /// entry larger than the byte cap on its own is not stored.
-    pub fn insert(&mut self, tokens: Vec<u32>, step: usize, history: Vec<usize>, bytes: usize, state: S) -> InsertOutcome {
+    /// entry larger than the byte cap on its own is not stored. Its storage
+    /// `parts` may be shared with other entries (same part id = same
+    /// buffer, counted once).
+    pub fn insert_shared(
+        &mut self,
+        tokens: Vec<u32>,
+        step: usize,
+        history: Vec<usize>,
+        parts: Vec<(u64, usize)>,
+        state: S,
+    ) -> InsertOutcome {
         let mut out = InsertOutcome::default();
-        if !self.enabled() || bytes > self.cfg.max_bytes || tokens.is_empty() {
+        let own: usize = parts.iter().map(|p| p.1).sum();
+        if !self.enabled() || own > self.cfg.max_bytes || tokens.is_empty() {
             return out;
         }
         if let Some(i) = self.position(&tokens, step, &history) {
             let old = self.entries.swap_remove(i);
-            self.bytes -= old.bytes;
+            self.drop_parts(&old.parts);
         }
         self.tick += 1;
-        self.entries.push(Entry { tokens, step, history, bytes, last_used: self.tick, state });
-        self.bytes += bytes;
+        self.add_parts(&parts);
+        self.entries.push(Entry { tokens, step, history, parts, last_used: self.tick, state });
         out.inserted = true;
         while self.entries.len() > self.cfg.max_entries || self.bytes > self.cfg.max_bytes {
             // never evict the entry just inserted (it fits on its own)
@@ -360,7 +410,7 @@ impl<S> PrefixCache<S> {
                 break;
             };
             let old = self.entries.swap_remove(i);
-            self.bytes -= old.bytes;
+            self.drop_parts(&old.parts);
             out.evicted += 1;
         }
         out
@@ -370,8 +420,18 @@ impl<S> PrefixCache<S> {
     pub fn clear(&mut self) -> usize {
         let n = self.entries.len();
         self.entries.clear();
+        self.parts.clear();
         self.bytes = 0;
         n
+    }
+}
+
+#[cfg(test)]
+impl<S> PrefixCache<S> {
+    /// Test helper: `insert_shared` with one fresh storage part of `bytes`.
+    pub fn insert(&mut self, tokens: Vec<u32>, step: usize, history: Vec<usize>, bytes: usize, state: S) -> InsertOutcome {
+        let id = self.part_id();
+        self.insert_shared(tokens, step, history, vec![(id, bytes)], state)
     }
 }
 
@@ -389,6 +449,7 @@ mod tests {
             block: 32,
             margin: 16,
             merge: 1024,
+            defer: true,
         }
     }
 
@@ -493,6 +554,29 @@ mod tests {
         let mut d: PrefixCache<u8> = PrefixCache::new(PrefixCacheConfig::disabled());
         assert!(!d.insert(vec![1], 1, vec![], 1, 1).inserted);
         assert!(d.lookup(&[1, 2], 1, &grid(2, 512), 9).is_none());
+    }
+
+    /// Shared storage parts count once: the checkpoints of one prompt that
+    /// view one K/V copy add its bytes once, and evicting one of them frees
+    /// only what no other live entry holds.
+    #[test]
+    fn shared_parts_count_once() {
+        let mut st: PrefixCache<u8> = PrefixCache::new(cfg(8, 100));
+        let (kv, g1, g2) = (st.part_id(), st.part_id(), st.part_id());
+        st.insert_shared(vec![1; 4], 1, vec![4], vec![(kv, 40), (g1, 10)], 1);
+        st.insert_shared(vec![1; 6], 1, vec![6], vec![(kv, 40), (g2, 10)], 2);
+        assert_eq!((st.len(), st.bytes()), (2, 60));
+        // a 50-byte exclusive entry: 110 > 100 evicts the LRU one (its g1
+        // part only — the K/V part stays with the other entry)
+        let e = st.part_id();
+        assert_eq!(st.insert_shared(vec![3; 4], 1, vec![4], vec![(e, 50)], 3).evicted, 1);
+        assert_eq!((st.len(), st.bytes()), (2, 100));
+        assert!(st.contains(&[1; 6], 1, &[6]) && !st.contains(&[1; 4], 1, &[4]));
+        // replacing an entry swaps its parts
+        st.insert_shared(vec![1; 6], 1, vec![6], vec![(g2, 10)], 4);
+        assert_eq!(st.bytes(), 60);
+        assert_eq!(st.clear(), 2);
+        assert_eq!(st.bytes(), 0);
     }
 
     /// Two questions after the same long document: the end checkpoints

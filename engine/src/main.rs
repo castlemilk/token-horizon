@@ -539,6 +539,7 @@ async fn main() -> Result<()> {
                     block: 128,
                     margin: 16,
                     merge: merges[0],
+                    defer: true,
                 };
                 let gcfg = prefix_cache::PrefixCacheConfig { grid_only: true, ..pcfg };
                 let stat = |v: &mut Vec<f64>| {
@@ -870,3 +871,4 @@ async fn main() -> Result<()> {
         }
     }
 }
+

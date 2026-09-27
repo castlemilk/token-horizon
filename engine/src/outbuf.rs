@@ -121,6 +121,39 @@ pub fn zero_rows(t: &Tensor, from: usize, to: usize) -> Result<()> {
     t.slice_set(&z, 1, from)
 }
 
+/// Zero every element of a contiguous tensor in place — one compute
+/// dispatch on Metal (no blit fill, no fresh allocation); `Tensor::zeros`
+/// + `slice_set` elsewhere. For state buffers a slot owns exclusively.
+pub fn zero_all(t: &Tensor) -> Result<()> {
+    if !t.is_contiguous() {
+        candle_core::bail!("zero_all: needs a contiguous tensor");
+    }
+    let n = t.elem_count();
+    if n == 0 {
+        return Ok(());
+    }
+    zero_rows(&t.reshape((1, n, 1))?, 0, n)
+}
+
+/// Bit-exact copy of contiguous `src` into the existing buffer of `dst`
+/// (same shape and dtype, contiguous, owned by the caller: nothing else
+/// reads it while the copy is in flight) — one compute dispatch on Metal,
+/// no allocation; `slice_set` elsewhere.
+pub fn copy_into(src: &Tensor, dst: &Tensor) -> Result<()> {
+    if src.dims() != dst.dims() || src.dtype() != dst.dtype() || !dst.is_contiguous() {
+        candle_core::bail!("copy_into: shape/dtype mismatch or strided destination");
+    }
+    let src = if src.is_contiguous() { src.clone() } else { src.contiguous()? };
+    #[cfg(all(feature = "metal", target_os = "macos"))]
+    if metal_copy::copy_into(&src, dst, 0)? {
+        return Ok(());
+    }
+    if src.rank() == 0 {
+        candle_core::bail!("copy_into: rank-0 tensors are not supported");
+    }
+    dst.slice_set(&src, 0, 0)
+}
+
 #[cfg(all(feature = "metal", target_os = "macos"))]
 mod metal_copy {
     use candle_core::{Result, Storage, Tensor};

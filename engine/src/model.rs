@@ -37,16 +37,23 @@ pub enum BackendPrefix {
 }
 
 impl BackendPrefix {
-    pub fn bytes(&self) -> usize {
-        match self {
-            Self::Qwen35(p) => p.bytes(),
-        }
-    }
     pub fn pos(&self) -> usize {
         match self {
             Self::Qwen35(p) => p.pos(),
         }
     }
+    /// Storage parts for the cache's byte accounting (see
+    /// `qwen35::PrefixState::parts`).
+    pub fn parts(&self) -> &[(crate::qwen35::CkPart, usize)] {
+        match self {
+            Self::Qwen35(p) => p.parts(),
+        }
+    }
+}
+
+/// A pending checkpoint's held GDN state (`qwen35::GdnHold`).
+pub enum BackendHold {
+    Qwen35(crate::qwen35::GdnHold),
 }
 
 impl ModelBackend {
@@ -270,6 +277,31 @@ impl ModelBackend {
     pub fn prefix_capture(&mut self, slot: usize) -> Result<BackendPrefix> {
         match self {
             Self::Qwen35(m) => Ok(BackendPrefix::Qwen35(Box::new(m.prefix_capture(slot)?))),
+            _ => bail!("prefix cache not supported by this backend"),
+        }
+    }
+
+    /// T1: hold `slot`'s committed GDN state for a later `prefix_build`
+    /// (`copy`: copies now — its parity is rewritten before the build).
+    pub fn prefix_hold(&mut self, slot: usize, copy: bool) -> Result<BackendHold> {
+        match self {
+            Self::Qwen35(m) => Ok(BackendHold::Qwen35(m.prefix_hold(slot, copy)?)),
+            _ => bail!("prefix cache not supported by this backend"),
+        }
+    }
+
+    /// T1: build checkpoints of `slot` at `(pos, held GDN state)`
+    /// from its live K/V and capture rows (deferred captures).
+    pub fn prefix_build(
+        &mut self,
+        slot: usize,
+        specs: Vec<(usize, BackendHold)>,
+    ) -> Result<Vec<BackendPrefix>> {
+        match self {
+            Self::Qwen35(m) => {
+                let specs = specs.into_iter().map(|(p, BackendHold::Qwen35(h))| (p, h)).collect();
+                Ok(m.prefix_build(slot, specs)?.into_iter().map(|s| BackendPrefix::Qwen35(Box::new(s))).collect())
+            }
             _ => bail!("prefix cache not supported by this backend"),
         }
     }

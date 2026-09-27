@@ -150,6 +150,7 @@ impl Engine {
             max_mb = prefix_cfg.max_bytes >> 20,
             block = prefix_cfg.block,
             margin = prefix_cfg.margin,
+            defer = prefix_cfg.defer,
             chat_boundaries = msg_marks.is_some(),
             "prefix cache (TH_PREFIX_CACHE*)"
         );
@@ -508,6 +509,25 @@ struct Prefilled {
     cached: usize,
     /// Host time in the prefill forwards (enqueue — no sync).
     prefill_ms: f64,
+    /// Checkpoints to build once the first token is out
+    /// (`finish_captures`).
+    pending: PendingCaptures,
+}
+
+/// Deferred T1 captures of one request: the checkpoint positions its
+/// prefill passed, each with its GDN state held — copied during the
+/// prefill when a later chunk rewrites its parity, otherwise still
+/// resident. Built by `finish_captures` after the first token (before the
+/// draft warm-up drains the capture rows and before the first decode
+/// forward rewrites a held parity): K/V rows and capture rows are
+/// append-only until then, so the build reads the same values the prefill
+/// wrote.
+#[derive(Default)]
+struct PendingCaptures {
+    slot: usize,
+    step: usize,
+    /// (tokens, history key, position, held state)
+    items: Vec<(Vec<u32>, Vec<usize>, usize, model::BackendHold)>,
 }
 
 /// Prefill `prompt` into `slot` — already cleared for this request — by
@@ -517,9 +537,10 @@ struct Prefilled {
 /// splits at chat turn ends; the longest checkpoint computed through the
 /// same boundaries is restored first (so the chunks that follow are the
 /// ones the uncached prefill runs: bit-identical), and the plan's
-/// checkpoint positions are captured as the prefill passes them. A
-/// capture/restore failure never fails the request — it logs and falls
-/// back to a full prefill.
+/// checkpoints are queued as the prefill passes them (`PendingCaptures`,
+/// built by `finish_captures` after the first token). A capture/restore
+/// failure never fails the request — it logs and falls back to a full
+/// prefill.
 fn prefill_slot(
     inner: &mut ModelInner,
     state: &EngineState,
@@ -586,11 +607,12 @@ fn prefill_slot(
     let cached = pos;
     let mut logits = None;
     let mut prefill_ms = 0.0f64;
+    let mut pending = PendingCaptures { slot, step, items: Vec::new() };
     // a restored position is one of the plan's splits
     let start = pos;
     let bounds: Vec<usize> =
         plan.splits.iter().copied().chain(std::iter::once(n)).filter(|&b| b > start).collect();
-    for end in bounds {
+    for (bi, &end) in bounds.iter().enumerate() {
         let t = Instant::now();
         // only the prompt's last chunk needs logits (`TH_PREFILL_HEAD=1`:
         // every chunk computes them — integration-3's forwards, A/B)
@@ -604,28 +626,28 @@ fn prefill_slot(
             trace += &format!(" [{pos}..{end})={:.1}", clk.mark(&device));
         }
         pos = end;
-        if restore
-            && plan.checkpoints.contains(&pos)
-            && !inner.prefix.contains(&prompt[..pos], step, &plan.history(pos))
-        {
-            match inner.backend.prefix_capture(slot) {
-                Ok(p) => {
-                    let bytes = p.bytes();
-                    let out = inner.prefix.insert(prompt[..pos].to_vec(), step, plan.history(pos), bytes, p);
-                    if out.inserted {
-                        ps.inserts.fetch_add(1, Ordering::Relaxed);
+        if restore && end < n && plan.checkpoints.contains(&pos) {
+            let key = plan.history(pos);
+            if !inner.prefix.contains(&prompt[..pos], step, &key) {
+                // G1a: the parity holding the state at `pos` survives the
+                // next forward only — the tail chunk when this is the last
+                // split (held as is), else copy it now
+                let last_split = bi + 2 == bounds.len();
+                match inner.backend.prefix_hold(slot, !last_split) {
+                    Ok(h) => pending.items.push((prompt[..pos].to_vec(), key, pos, h)),
+                    Err(e) => {
+                        ps.errors.fetch_add(1, Ordering::Relaxed);
+                        tracing::warn!(error = %e, slot, pos, "prefix capture failed");
                     }
-                    ps.evictions.fetch_add(out.evicted as u64, Ordering::Relaxed);
-                    ps.entries.store(inner.prefix.len() as u64, Ordering::Relaxed);
-                    ps.bytes.store(inner.prefix.bytes() as u64, Ordering::Relaxed);
                 }
-                Err(e) => {
-                    ps.errors.fetch_add(1, Ordering::Relaxed);
-                    tracing::warn!(error = %e, slot, pos, "prefix capture failed");
+                // TH_PREFIX_CACHE_DEFER=0: build it now (integration-3's order)
+                if !cfg.defer {
+                    let items = std::mem::take(&mut pending.items);
+                    finish_captures(inner, state, PendingCaptures { slot, step, items });
                 }
-            }
-            if clk.on {
-                trace += &format!(" capture@{pos}={:.1}", clk.mark(&device));
+                if clk.on {
+                    trace += &format!(" hold@{pos}={:.1}", clk.mark(&device));
+                }
             }
         }
     }
@@ -636,7 +658,58 @@ fn prefill_slot(
             t_all.elapsed().as_secs_f64() * 1000.0
         );
     }
-    Ok(Prefilled { logits, cached, prefill_ms })
+    Ok(Prefilled { logits, cached, prefill_ms, pending })
+}
+
+/// Build and insert a request's deferred checkpoints (`PendingCaptures`).
+/// Call once the first token is out and before anything rewrites the held
+/// state: the draft warm-up (it drains the capture rows) and the first
+/// decode forward (it rewrites the parity the last split's state sits in).
+/// One K/V copy and one capture-row copy serve all of them (shared storage
+/// parts, counted once by the cache). A failure only logs + counts.
+fn finish_captures(inner: &mut ModelInner, state: &EngineState, pending: PendingCaptures) {
+    if pending.items.is_empty() {
+        return;
+    }
+    let ps = &state.prefix_stats;
+    let mut clk = PhaseClock::new();
+    let (slot, step) = (pending.slot, pending.step);
+    let mut keys = Vec::with_capacity(pending.items.len());
+    let mut specs = Vec::with_capacity(pending.items.len());
+    for (tokens, history, pos, hold) in pending.items {
+        keys.push((tokens, history));
+        specs.push((pos, hold));
+    }
+    match inner.backend.prefix_build(slot, specs) {
+        Ok(built) => {
+            let (kv_id, caps_id) = (inner.prefix.part_id(), inner.prefix.part_id());
+            for ((tokens, history), p) in keys.into_iter().zip(built) {
+                let parts: Vec<(u64, usize)> = p
+                    .parts()
+                    .iter()
+                    .map(|&(k, b)| match k {
+                        crate::qwen35::CkPart::Kv => (kv_id, b),
+                        crate::qwen35::CkPart::Caps => (caps_id, b),
+                        crate::qwen35::CkPart::Own => (inner.prefix.part_id(), b),
+                    })
+                    .collect();
+                let out = inner.prefix.insert_shared(tokens, step, history, parts, p);
+                if out.inserted {
+                    ps.inserts.fetch_add(1, Ordering::Relaxed);
+                }
+                ps.evictions.fetch_add(out.evicted as u64, Ordering::Relaxed);
+            }
+            ps.entries.store(inner.prefix.len() as u64, Ordering::Relaxed);
+            ps.bytes.store(inner.prefix.bytes() as u64, Ordering::Relaxed);
+        }
+        Err(e) => {
+            ps.errors.fetch_add(1, Ordering::Relaxed);
+            tracing::warn!(error = %e, slot, "prefix capture failed");
+        }
+    }
+    if clk.on {
+        eprintln!("  [prefill] slot={slot} captures={:.1}ms", clk.mark(&inner.device));
+    }
 }
 
 // MARK: - the generation loop
@@ -742,6 +815,9 @@ fn generate_blocking(
     let last_logits: Option<Tensor> = pf.logits;
     let cached_tokens = pf.cached;
     prefill_ms_total += pf.prefill_ms;
+    // T1 checkpoints queued by the prefill: built right after the first
+    // token (before the draft warm-up / first decode forward)
+    let mut deferred = Some(pf.pending);
     pos += n_prompt;
 
     // --- decode loop
@@ -797,6 +873,9 @@ fn generate_blocking(
             )?;
             if let Emit::Done(r) = emit_token(&mut ec, anchor, pos) {
                 finish = r;
+                if let Some(d) = deferred.take() {
+                    finish_captures(&mut inner, state, d);
+                }
                 // the warm-up still runs (main ran it before every first
                 // sample): the next request in this slot reads ring rows
                 // this one wrote (anchor protocol), so its history must
@@ -820,7 +899,11 @@ fn generate_blocking(
                 // first token needs just the prefill logits, the ring is
                 // first read by round 1's propose (same kernels, same
                 // inputs — only the host order moves). The sync keeps the
-                // warm-up out of round 1's timing.
+                // warm-up out of round 1's timing (the deferred T1
+                // captures go first: the warm-up drains the capture rows).
+                if let Some(d) = deferred.take() {
+                    finish_captures(&mut inner, state, d);
+                }
                 let mut clk = PhaseClock::new();
                 inner.backend.draft_prefill(0)?;
                 device.synchronize()?;
@@ -1019,7 +1102,14 @@ fn generate_blocking(
 
         if let Emit::Done(r) = emit_token(&mut ec, tok, base_pos) {
             finish = r;
+            if let Some(d) = deferred.take() {
+                finish_captures(&mut inner, state, d);
+            }
             break;
+        }
+        // deferred T1 captures before the next forward (first token only)
+        if let Some(d) = deferred.take() {
+            finish_captures(&mut inner, state, d);
         }
         pos = base_pos + 1;
         if first {
@@ -2023,6 +2113,7 @@ fn admit(
     // shared read-only across slots — see qwen35::PrefixState)
     let pf = prefill_slot(inner, state, slot, &prompt_tokens, &sp)?;
     let pos = n_prompt;
+    let deferred = pf.pending;
     let last_logits = pf.logits;
     let prefill_ms_total = pf.prefill_ms;
     let cached_tokens = pf.cached;
@@ -2083,6 +2174,8 @@ fn admit(
             }
         }
     }
+    // deferred T1 captures (before the warm-up drains the capture rows)
+    finish_captures(inner, state, deferred);
     // the draft ring warm-up after the first token (as the single-slot
     // loop); synced so the next lockstep round's timing excludes it. It
     // runs even when the request already ended (main ran it before every

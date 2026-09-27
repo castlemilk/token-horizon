@@ -2041,6 +2041,12 @@ pub struct Slot {
     /// ring warm-up needs from the checkpoint. Read by `draft_prefill`.
     capture_base: usize,
     pub draft: Option<crate::dflash::Draft>,
+    /// The zero-row (K, V) pair every attention layer starts a sequence
+    /// with (never written: the first forward replaces it). Shared by
+    /// every clear — a fresh zero-element tensor would take an arbitrary
+    /// free buffer from candle's pool (`find_available_buffer(0)`) and pin
+    /// it until the next forward.
+    kv_empty: (Tensor, Tensor),
 }
 
 impl Slot {
@@ -2054,6 +2060,10 @@ impl Slot {
         let mut gdn = Vec::with_capacity(layers.len());
         let mut kv = Vec::with_capacity(layers.len());
         let mut kvq = Vec::with_capacity(layers.len());
+        let kv_empty = (
+            Tensor::zeros((cfg.num_key_value_heads, 0, cfg.head_dim), DType::BF16, device)?,
+            Tensor::zeros((cfg.num_key_value_heads, 0, cfg.head_dim), DType::BF16, device)?,
+        );
         for l in layers {
             if matches!(l.kind, Kind::Gdn(_)) {
                 let conv_dim = 2 * cfg.linear_num_key_heads
@@ -2070,18 +2080,7 @@ impl Slot {
                 kv.push(None);
             } else {
                 gdn.push(None);
-                kv.push(Some((
-                    Tensor::zeros(
-                        (cfg.num_key_value_heads, 0, cfg.head_dim),
-                        DType::BF16,
-                        device,
-                    )?,
-                    Tensor::zeros(
-                        (cfg.num_key_value_heads, 0, cfg.head_dim),
-                        DType::BF16,
-                        device,
-                    )?,
-                )));
+                kv.push(Some(kv_empty.clone()));
             }
             kvq.push(crate::turboquant::QuantKv::default());
         }
@@ -2096,20 +2095,24 @@ impl Slot {
             captures: Vec::new(),
             capture_base: 0,
             draft: None,
+            kv_empty,
         })
     }
 }
 
 /// T1 prefix-cache checkpoint of one slot at KV position `pos`, taken
-/// right after a prefill chunk ending at `pos` (see `prefix_cache.rs`).
-/// Every tensor is private to the checkpoint and never written again:
-/// the GDN state is a bit-exact copy of the committed parity; each
-/// attention K/V is exactly `[n_kv, pos, d]` — a slot that restores it
-/// holds it at full capacity, so its next write grows into a fresh buffer
-/// (`ensure_kv` / the eager path's cat) instead of writing in place; the
-/// capture rows are a compact copy (one group, fresh buffers) that
-/// `take_captures` only reads. Restoring into several slots at once is
-/// therefore safe: they share only read-only buffers.
+/// right after a prefill chunk ending at `pos` (see `prefix_cache.rs`) —
+/// or later, from state that is still intact then (`prefix_build`).
+/// Every tensor is private to the checkpoints of one build and never
+/// written again: the GDN state is a bit-exact copy of the parity that held
+/// the state at `pos`; each attention K/V is `[n_kv, pos, d]` rows of one
+/// exact copy the build's checkpoints share (a view when `pos` is below the
+/// copy's length) — a slot that restores it holds it at full length, so its
+/// next write grows into a fresh buffer (`ensure_kv` / the prefill store)
+/// instead of writing in place; the capture rows are views of one compact
+/// copy (fresh buffers) that `take_captures` only reads. Restoring into
+/// several slots at once is therefore safe: they share only read-only
+/// buffers.
 pub struct PrefixState {
     pos: usize,
     /// per layer: (conv window, recurrent state) for GDN layers
@@ -2122,16 +2125,42 @@ pub struct PrefixState {
     /// last WINDOW-1 rows)
     caps: Vec<Tensor>,
     caps_base: usize,
-    bytes: usize,
+    /// storage for the cache's byte accounting: the K/V copy and the
+    /// capture-row copy are shared by the build's checkpoints (their full
+    /// size, counted once by the cache), the GDN copy is this one's own
+    parts: Vec<(CkPart, usize)>,
+}
+
+/// A checkpoint's storage part (`PrefixState::parts`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CkPart {
+    /// the build's shared K/V copy
+    Kv,
+    /// the build's shared capture-row copy
+    Caps,
+    /// this checkpoint's own GDN state
+    Own,
 }
 
 impl PrefixState {
     pub fn pos(&self) -> usize {
         self.pos
     }
-    pub fn bytes(&self) -> usize {
-        self.bytes
+    pub fn parts(&self) -> &[(CkPart, usize)] {
+        &self.parts
     }
+}
+
+/// Where a pending checkpoint's GDN state lives until `prefix_build`.
+pub enum GdnHold {
+    /// bit-exact copies taken while it was the committed state (a
+    /// checkpoint whose parity a later prefill chunk overwrites)
+    Copied(Vec<Option<(Tensor, Tensor)>>),
+    /// still resident in `parity` with content id `id` — copied at build
+    /// time, after checking the parity was not rewritten since (G1a: a
+    /// forward writes the other parity, so the state at the last split
+    /// survives the tail chunk, and the prompt-end state the first token)
+    Parity { parity: usize, id: u64 },
 }
 
 fn tensor_bytes(t: &Tensor) -> usize {
@@ -3280,9 +3309,17 @@ impl Qwen35 {
                 // the first transition")
                 Kind::Gdn(l) => match sl.gdn[i].as_mut() {
                     Some(g) => {
+                        // zeroed in place (the slot owns both parity
+                        // buffers exclusively): one compute dispatch each,
+                        // no fresh allocation and no blit fill (which ends
+                        // candle's compute encoder) — 96 per clear, and a
+                        // single-slot request clears twice
                         let cur = sl.gdn_par.cur;
-                        g.rec[cur] = Tensor::zeros_like(&g.rec[cur]).unwrap();
-                        g.conv[cur] = Tensor::zeros_like(&g.conv[cur]).unwrap();
+                        for t in [&mut g.rec[cur], &mut g.conv[cur]] {
+                            if crate::outbuf::zero_all(t).is_err() {
+                                *t = Tensor::zeros_like(t).unwrap();
+                            }
+                        }
                     }
                     None => {
                         sl.gdn[i] = Some(
@@ -3299,20 +3336,9 @@ impl Qwen35 {
                     }
                 },
                 Kind::Attn(_) => {
-                    sl.kv[i] = Some((
-                        Tensor::zeros(
-                            (self.cfg.num_key_value_heads, 0, self.cfg.head_dim),
-                            DType::BF16,
-                            &self.device,
-                        )
-                        .unwrap(),
-                        Tensor::zeros(
-                            (self.cfg.num_key_value_heads, 0, self.cfg.head_dim),
-                            DType::BF16,
-                            &self.device,
-                        )
-                        .unwrap(),
-                    ));
+                    // the slot's shared zero-row pair (no allocation, no
+                    // blit fill)
+                    sl.kv[i] = Some(sl.kv_empty.clone());
                 }
             }
         }
@@ -3347,78 +3373,138 @@ impl Qwen35 {
     }
 
     /// Checkpoint `slot` at its current KV position (call right after the
-    /// prefill chunk that ended there). GPU copies are enqueued in stream
-    /// order — no host sync. Copies the GDN state (~151 MB on Qwen3.8-27B)
-    /// and the draft capture rows (<= WINDOW-1 rows, 51 KB each); K/V are
-    /// shared when exact-size (see [`PrefixState`]).
+    /// prefill chunk that ended there) — one `prefix_build` of the
+    /// committed state. GPU copies are enqueued in stream order, no host
+    /// sync.
     pub fn prefix_capture(&mut self, slot: usize) -> Result<PrefixState> {
+        let pos = self.slots[slot].kv_tokens;
+        let hold = self.prefix_hold(slot, false)?;
+        let mut v = self.prefix_build(slot, vec![(pos, hold)])?;
+        v.pop().context("prefix capture: empty build")
+    }
+
+    /// Hold `slot`'s committed GDN state (the state at its current KV
+    /// position) for a later `prefix_build`: bit-exact copies now (`copy`
+    /// — the parity will be rewritten before the build), or just the
+    /// parity and its content id.
+    pub fn prefix_hold(&mut self, slot: usize, copy: bool) -> Result<GdnHold> {
         let sl = &self.slots[slot];
         anyhow::ensure!(!sl.kv_quant, "prefix capture: slot {slot} runs compressed KV");
-        let pos = sl.kv_tokens;
         let cur = sl.gdn_par.cur;
-        let mut bytes = 0usize;
+        if !copy {
+            return Ok(GdnHold::Parity { parity: cur, id: sl.gdn_par.ids[cur] });
+        }
+        Ok(GdnHold::Copied(self.gdn_copies(slot, cur)?))
+    }
+
+    /// Bit-exact copies of every GDN layer's parity `p` state.
+    fn gdn_copies(&self, slot: usize, p: usize) -> Result<Vec<Option<(Tensor, Tensor)>>> {
+        let sl = &self.slots[slot];
         let mut gdn = Vec::with_capacity(sl.gdn.len());
-        let mut kv = Vec::with_capacity(sl.kv.len());
         for (i, layer) in self.layers.iter().enumerate() {
-            match &layer.kind {
+            gdn.push(match &layer.kind {
                 Kind::Gdn(_) => {
                     let st = sl.gdn[i].as_ref().context("prefix capture: gdn state missing")?;
-                    let (c, r) = (state_copy_uninit(&st.conv[cur])?, state_copy_uninit(&st.rec[cur])?);
-                    bytes += tensor_bytes(&c) + tensor_bytes(&r);
-                    gdn.push(Some((c, r)));
-                    kv.push(None);
+                    Some((state_copy_uninit(&st.conv[p])?, state_copy_uninit(&st.rec[p])?))
                 }
+                Kind::Attn(_) => None,
+            });
+        }
+        Ok(gdn)
+    }
+
+    /// Build checkpoints of `slot` at positions `pos <= kv_tokens`, each
+    /// with its held GDN state, from the live K/V
+    /// rows (append-only below `kv_tokens`: one exact copy of rows
+    /// `0..max pos` serves every checkpoint, views below it) and the live
+    /// capture rows (one compact copy of the union of what each needs —
+    /// the last WINDOW-1 rows before its position — views per checkpoint).
+    /// Call before anything rewrites the held parities, truncates the K/V
+    /// below the positions or drains the captures (`draft_prefill`). GPU
+    /// copies are enqueued in stream order, no host sync.
+    pub fn prefix_build(
+        &mut self,
+        slot: usize,
+        specs: Vec<(usize, GdnHold)>,
+    ) -> Result<Vec<PrefixState>> {
+        let sl = &self.slots[slot];
+        anyhow::ensure!(!sl.kv_quant, "prefix capture: slot {slot} runs compressed KV");
+        if specs.is_empty() {
+            return Ok(Vec::new());
+        }
+        let live = sl.kv_tokens;
+        let pmax = specs.iter().map(|s| s.0).max().unwrap_or(0);
+        anyhow::ensure!(
+            specs.iter().all(|s| s.0 > 0) && pmax <= live,
+            "prefix build: positions must be in 1..={live}"
+        );
+        // K/V: rows 0..pmax, exactly [n_kv, pmax, d] — share an exact-size
+        // contiguous cache (never written in place again), copy the live
+        // rows out of a capacity buffer into a fresh one (`Tensor::copy`
+        // is NOT a copy on Metal in candle 0.11 — try_clone shares)
+        let mut kv_full: Vec<Option<(Tensor, Tensor)>> = Vec::with_capacity(sl.kv.len());
+        let mut kv_bytes = 0usize;
+        for (i, layer) in self.layers.iter().enumerate() {
+            kv_full.push(match &layer.kind {
                 Kind::Attn(_) => {
                     let (k, v) = sl.kv[i].as_ref().context("prefix capture: kv state missing")?;
-                    // exactly [n_kv, pos, d]: share an exact-size prefill
-                    // cache (never written in place again), copy the live
-                    // rows out of a capacity buffer into a fresh one
-                    // (`Tensor::copy` is NOT a copy on Metal in candle
-                    // 0.11 — try_clone shares the buffer)
                     let exact = |t: &Tensor| -> Result<Tensor> {
                         let rows = t.dim(1)?;
-                        anyhow::ensure!(rows >= pos, "prefix capture: kv has {rows} rows < pos {pos}");
-                        Ok(if rows == pos && t.is_contiguous() {
+                        anyhow::ensure!(rows >= pmax, "prefix capture: kv has {rows} rows < pos {pmax}");
+                        Ok(if rows == pmax && t.is_contiguous() {
                             t.clone()
                         } else {
-                            state_copy_uninit(&t.narrow(1, 0, pos)?)?
+                            state_copy_uninit(&t.narrow(1, 0, pmax)?)?
                         })
                     };
                     let (k, v) = (exact(k)?, exact(v)?);
-                    bytes += tensor_bytes(&k) + tensor_bytes(&v);
-                    gdn.push(None);
-                    kv.push(Some((k, v)));
+                    kv_bytes += tensor_bytes(&k) + tensor_bytes(&v);
+                    Some((k, v))
                 }
-            }
+                Kind::Gdn(_) => None,
+            });
         }
-        // capture rows since the last drain cover capture_base..pos. Keep
-        // exactly what a longer prompt's draft warm-up can reach — its last
-        // WINDOW-1 rows start at or after pos-(WINDOW-1) — as ONE compact
-        // group: a fresh [rows, hidden] tensor per capture layer. (The live
-        // capture tensors are views that pin their forward's whole
-        // [2, T, hidden] residual|normed output, twice their size, so
-        // holding them would break the byte cap.) Row order and values are
-        // unchanged: `take_captures` concatenates the same rows.
-        let mut caps = Vec::new();
-        let mut caps_base = 0;
+        // capture rows since the last drain cover capture_base..live. Each
+        // checkpoint keeps exactly what a longer prompt's draft warm-up can
+        // reach — its last WINDOW-1 rows start at or after pos-(WINDOW-1).
+        // One compact copy of the union (a fresh [rows, hidden] tensor per
+        // capture layer; the live capture tensors are views that pin their
+        // forward's whole [2, T, hidden] residual|normed output, twice
+        // their size, so holding them would break the byte cap); row
+        // order and values are unchanged: `take_captures` concatenates the
+        // same rows.
+        let mut caps_all: Vec<Tensor> = Vec::new();
+        let mut caps_from = 0usize;
+        let mut caps_bytes = 0usize;
+        let from_of = |pos: usize| pos.saturating_sub(crate::dflash::WINDOW - 1).max(sl.capture_base);
         if sl.draft.is_some() && !sl.captures.is_empty() {
             anyhow::ensure!(sl.captures.len() % 5 == 0, "prefix capture: capture groups misaligned");
-            let need_from = pos.saturating_sub(crate::dflash::WINDOW - 1).max(sl.capture_base);
+            let need_from = specs.iter().map(|s| from_of(s.0)).min().unwrap_or(pmax);
             let (mut row, mut from) = (sl.capture_base, None);
             let mut kept: Vec<&[Tensor]> = Vec::new();
             for group in sl.captures.chunks_exact(5) {
                 let rows = group[0].dim(0)?;
-                if row + rows > need_from {
+                if row + rows > need_from && row < pmax {
                     from.get_or_insert(row);
                     kept.push(group);
                 }
                 row += rows;
             }
-            anyhow::ensure!(row == pos, "prefix capture: capture rows end at {row}, kv at {pos}");
+            anyhow::ensure!(row == live, "prefix capture: capture rows end at {row}, kv at {live}");
             if let Some(from) = from {
                 let skip = need_from - from;
+                let mut end = from;
+                for g in &kept {
+                    end += g[0].dim(0)?;
+                }
                 for j in 0..5 {
                     let mut parts: Vec<Tensor> = kept.iter().map(|g| g[j].clone()).collect();
+                    // trim the last group past pmax, then the first before need_from
+                    if end > pmax {
+                        let last = parts.len() - 1;
+                        let r = parts[last].dim(0)?;
+                        parts[last] = parts[last].narrow(0, 0, r - (end - pmax))?;
+                    }
                     if skip > 0 {
                         let r0 = parts[0].dim(0)?;
                         parts[0] = parts[0].narrow(0, skip, r0 - skip)?;
@@ -3426,13 +3512,55 @@ impl Qwen35 {
                     // fresh exact-size buffer, compute copies (a 1-part
                     // Tensor::cat would be a clone)
                     let t = crate::outbuf::cat0_uninit(&parts)?;
-                    bytes += tensor_bytes(&t);
-                    caps.push(t);
+                    caps_bytes += tensor_bytes(&t);
+                    caps_all.push(t);
                 }
-                caps_base = need_from;
+                caps_from = need_from;
             }
         }
-        Ok(PrefixState { pos, gdn, kv, caps, caps_base, bytes })
+        let mut out = Vec::with_capacity(specs.len());
+        for (pos, hold) in specs {
+            let gdn = match hold {
+                GdnHold::Copied(g) => g,
+                GdnHold::Parity { parity, id } => {
+                    let ids = self.slots[slot].gdn_par.ids;
+                    anyhow::ensure!(
+                        id != 0 && ids[parity] == id,
+                        "prefix build: parity {parity} no longer holds state {id} (ids {ids:?})"
+                    );
+                    self.gdn_copies(slot, parity)?
+                }
+            };
+            anyhow::ensure!(gdn.len() == self.layers.len(), "prefix build: gdn layer count");
+            let mut own = 0usize;
+            for (c, r) in gdn.iter().flatten() {
+                own += tensor_bytes(c) + tensor_bytes(r);
+            }
+            let kv: Vec<Option<(Tensor, Tensor)>> = kv_full
+                .iter()
+                .map(|e| match e {
+                    Some((k, v)) if pos < pmax => Ok(Some((k.narrow(1, 0, pos)?, v.narrow(1, 0, pos)?))),
+                    Some((k, v)) => Ok(Some((k.clone(), v.clone()))),
+                    None => Ok(None),
+                })
+                .collect::<Result<_>>()?;
+            let (caps, caps_base) = if caps_all.is_empty() {
+                (Vec::new(), 0)
+            } else {
+                let f = from_of(pos);
+                let caps = caps_all
+                    .iter()
+                    .map(|t| t.narrow(0, f - caps_from, pos - f))
+                    .collect::<candle_core::Result<Vec<_>>>()?;
+                (caps, f)
+            };
+            let mut parts = vec![(CkPart::Own, own), (CkPart::Kv, kv_bytes)];
+            if caps_bytes > 0 {
+                parts.push((CkPart::Caps, caps_bytes));
+            }
+            out.push(PrefixState { pos, gdn, kv, caps, caps_base, parts });
+        }
+        Ok(out)
     }
 
     /// Put `slot` into the checkpointed state (the slot should have been
@@ -3453,8 +3581,13 @@ impl Qwen35 {
         for (i, g) in p.gdn.iter().enumerate() {
             if let Some((conv, rec)) = g {
                 let st = sl.gdn[i].as_mut().context("prefix restore: gdn state missing")?;
-                st.conv[cur] = state_copy_uninit(conv)?;
-                st.rec[cur] = state_copy_uninit(rec)?;
+                // into the slot's own committed-parity buffers (exclusively
+                // owned — no allocation); a fresh copy if the shapes differ
+                for (dst, src) in [(&mut st.conv[cur], conv), (&mut st.rec[cur], rec)] {
+                    if dst.dims() != src.dims() || dst.dtype() != src.dtype() || crate::outbuf::copy_into(src, dst).is_err() {
+                        *dst = state_copy_uninit(src)?;
+                    }
+                }
             }
         }
         sl.gdn_par.ids[1 - cur] = 0;
@@ -5702,6 +5835,82 @@ mod prefix_tests {
         m.prefix_restore(1, &cap2)?;
         assert!(m.slot_state_bits(1)? == s2, "restored state differs from the captured slot");
         assert!(tensor_bits(&m.forward_multi(1, &seq8[4..], n + 4)?)? == after);
+        Ok(())
+    }
+
+    /// Deferred captures (`prefix_hold` + `prefix_build`, the server's
+    /// order: holds while the prefill passes each checkpoint, one build
+    /// after the tail chunk) produce, bit for bit, the checkpoints that
+    /// immediate captures take: a mid checkpoint whose parity a later
+    /// chunk rewrites (copied at hold time) and the last split (still
+    /// resident after the tail chunk). The build's checkpoints view one
+    /// K/V copy; each restores to the uncached state; a parity rewritten
+    /// after its hold fails the build.
+    #[test]
+    fn prefix_build_deferred_matches_immediate_captures() -> Result<()> {
+        let Some(d) = metal() else {
+            eprintln!("[prefix-cache] skipped: needs a Metal device");
+            return Ok(());
+        };
+        let mut m = tiny_hybrid(&d)?;
+        let prompt: Vec<u32> = (0..53u32).map(|i| (i * 5 + 2) % 97).collect();
+        let seq8: Vec<u32> = (0..8u32).map(|i| (i * 13 + 1) % 97).collect();
+        let n = prompt.len();
+        let chunks: Vec<(usize, usize)> = vec![(0, 16), (16, 32), (32, 48), (48, n)];
+        // immediate captures at 32 and 48
+        m.clear_kv_cache(0);
+        let mut imm = Vec::new();
+        let mut last = None;
+        for &(a, b) in &chunks {
+            last = Some(m.forward(0, &prompt[a..b], a)?);
+            if b >= 32 && b < n {
+                imm.push(m.prefix_capture(0)?);
+            }
+        }
+        let l_ref = tensor_bits(last.as_ref().context("no logits")?)?;
+        let s_ref = m.slot_state_bits(0)?;
+        let v_ref = tensor_bits(&m.forward_multi(0, &seq8, n)?)?;
+        // deferred: hold at 32 (copied — [48, n) rewrites its parity) and at
+        // 48 (resident), build after the tail chunk
+        m.clear_kv_cache(0);
+        let mut specs = Vec::new();
+        for (ci, &(a, b)) in chunks.iter().enumerate() {
+            m.forward(0, &prompt[a..b], a)?;
+            if b >= 32 && b < n {
+                let last_split = ci + 2 == chunks.len();
+                specs.push((b, m.prefix_hold(0, !last_split)?));
+            }
+        }
+        let built = m.prefix_build(0, specs)?;
+        assert_eq!(built.iter().map(|p| p.pos()).collect::<Vec<_>>(), vec![32, 48]);
+        for (b, i) in built.iter().zip(&imm) {
+            assert!(b.state_bits()? == i.state_bits()?, "deferred checkpoint at {} differs from the immediate one", b.pos());
+        }
+        // one K/V copy: the 32 checkpoint is a view of the 48 one's
+        let k_of = |p: &PrefixState| p.kv.iter().flatten().next().map(|kv| kv.0.clone()).context("no kv");
+        assert!(shares_buffer(&k_of(&built[0])?, &k_of(&built[1])?));
+        assert!(built.iter().all(|p| p.parts().iter().any(|q| q.0 == CkPart::Kv)));
+        // the live slot continues unchanged (the build only read it)
+        assert!(m.slot_state_bits(0)? == s_ref, "the build changed the live slot");
+        // each restores to the uncached state
+        for p in &built {
+            m.clear_kv_cache(1);
+            m.prefix_restore(1, p)?;
+            let mut last = None;
+            for &(a, b) in chunks.iter().filter(|c| c.0 >= p.pos()) {
+                last = Some(tensor_bits(&m.forward(1, &prompt[a..b], a)?)?);
+            }
+            assert!(last.context("suffix logits")? == l_ref, "logits after restoring {}", p.pos());
+            assert!(m.slot_state_bits(1)? == s_ref, "state after restoring {}", p.pos());
+            assert!(tensor_bits(&m.forward_multi(1, &seq8, n)?)? == v_ref, "next verify after restoring {}", p.pos());
+        }
+        // a held parity rewritten before the build fails it
+        m.clear_kv_cache(0);
+        m.forward(0, &prompt[..16], 0)?;
+        let h = m.prefix_hold(0, false)?;
+        m.forward(0, &prompt[16..32], 16)?;
+        m.forward(0, &prompt[32..48], 32)?;
+        assert!(m.prefix_build(0, vec![(16, h)]).is_err(), "a stale parity must not be captured");
         Ok(())
     }
 
