@@ -121,6 +121,38 @@ pub fn zero_rows(t: &Tensor, from: usize, to: usize) -> Result<()> {
     t.slice_set(&z, 1, from)
 }
 
+/// Copy rows `0..rows` along dim 1 of `src` into rows `0..rows` of `dst`
+/// (a KV capacity buffer's growth / a restored checkpoint's rows): `dst` is
+/// a contiguous `[a, b_dst, c]`; `src` is `[a, b_src, c]` with rows of `c`
+/// contiguous elements — a contiguous tensor or a dim-1 `narrow` of one
+/// (a checkpoint's view of a longer K/V buffer). One compute dispatch on
+/// Metal that moves 32-bit words (bit-exact, no temporary: a strided view
+/// used to be made `contiguous()` first — a fresh buffer and a second copy
+/// of every row); any other layout, device or a byte offset / length that
+/// is not a multiple of 4 falls back to `contiguous()` + `slice_set`.
+pub fn copy_rows(src: &Tensor, dst: &Tensor, rows: usize) -> Result<()> {
+    let (sd, dd) = (src.dims(), dst.dims());
+    if sd.len() != 3
+        || dd.len() != 3
+        || sd[0] != dd[0]
+        || sd[2] != dd[2]
+        || rows > sd[1]
+        || rows > dd[1]
+        || src.dtype() != dst.dtype()
+        || !dst.is_contiguous()
+    {
+        candle_core::bail!("copy_rows: need [a, b, c] tensors with rows {rows} <= b, equal a/c/dtype and a contiguous dst (got {sd:?} -> {dd:?})");
+    }
+    if rows == 0 {
+        return Ok(());
+    }
+    #[cfg(all(feature = "metal", target_os = "macos"))]
+    if metal_copy::copy_rows(src, dst, rows)? {
+        return Ok(());
+    }
+    dst.slice_set(&src.narrow(1, 0, rows)?.contiguous()?, 1, 0)
+}
+
 /// Zero every element of a contiguous tensor in place — one compute
 /// dispatch on Metal (no blit fill, no fresh allocation); `Tensor::zeros`
 /// + `slice_set` elsewhere. For state buffers a slot owns exclusively.
@@ -304,6 +336,90 @@ kernel void th_zero_words_2d(device uint *dst [[buffer(0)]],
 
     static ZPIPE: OnceLock<ComputePipeline> = OnceLock::new();
 
+    const RSRC: &str = r#"
+#include <metal_stdlib>
+using namespace metal;
+kernel void th_copy_words_2d(device const uint *src [[buffer(0)]],
+                             device uint *dst [[buffer(1)]],
+                             constant uint &len [[buffer(2)]],
+                             constant uint &sstride [[buffer(3)]],
+                             constant uint &dstride [[buffer(4)]],
+                             uint2 i [[thread_position_in_grid]]) {
+    if (i.x < len) dst[i.y * dstride + i.x] = src[i.y * sstride + i.x];
+}
+"#;
+
+    static RPIPE: OnceLock<ComputePipeline> = OnceLock::new();
+
+    /// Rows `0..rows` of dim 1: `a` regions of `rows*c` elements, `src`
+    /// regions `stride(0)` elements apart (a contiguous tensor or a dim-1
+    /// narrow of one: stride `[b_full*c, c, 1]`), `dst` regions `b_dst*c`
+    /// apart, one dispatch. Ok(false) (nothing enqueued) off Metal, for any
+    /// other `src` layout, or when an offset / length / stride is not a
+    /// multiple of 4 bytes or a word index would not fit in 32 bits.
+    pub(super) fn copy_rows(src: &Tensor, dst: &Tensor, rows: usize) -> Result<bool> {
+        if !src.device().is_metal() || !dst.device().is_metal() || !dst.is_contiguous() {
+            return Ok(false);
+        }
+        let (sd, dd) = (src.dims(), dst.dims());
+        let es = src.dtype().size_in_bytes();
+        let (sst, sl) = src.storage_and_layout();
+        let (dst_st, dl) = dst.storage_and_layout();
+        let (Storage::Metal(s), Storage::Metal(d)) = (&*sst, &*dst_st) else {
+            return Ok(false);
+        };
+        let st = sl.stride();
+        // rows of c contiguous elements, regions stride[0] apart (stride[0]
+        // is irrelevant when there is one region)
+        if st.len() != 3 || st[2] != 1 || st[1] != sd[2] || (sd[0] > 1 && st[0] < sd[1] * sd[2]) {
+            return Ok(false);
+        }
+        let len = rows * sd[2] * es;
+        let s_off = sl.start_offset() * es;
+        let d_off = dl.start_offset() * es;
+        let s_stride = if sd[0] > 1 { st[0] * es } else { 0 };
+        let d_stride = dd[1] * dd[2] * es;
+        let fits = |b: usize| b % 4 == 0 && (b / 4) <= u32::MAX as usize;
+        if len == 0
+            || !fits(len)
+            || s_off % 4 != 0
+            || d_off % 4 != 0
+            || !fits(s_stride)
+            || !fits(d_stride)
+            || !fits(s_stride * sd[0])
+            || !fits(d_stride * dd[0])
+        {
+            return Ok(false);
+        }
+        use candle_core::backend::BackendStorage;
+        let device = s.device();
+        if RPIPE.get().is_none() {
+            let raw = device.metal_device();
+            let lib = raw.new_library_with_source(RSRC, None).map_err(candle_core::Error::wrap)?;
+            let f = lib.get_function("th_copy_words_2d", None).map_err(candle_core::Error::wrap)?;
+            let p = raw.new_compute_pipeline_state_with_function(&f).map_err(candle_core::Error::wrap)?;
+            let _ = RPIPE.set(p);
+        }
+        let (lw, ssw, dsw) = ((len / 4) as u32, (s_stride / 4) as u32, (d_stride / 4) as u32);
+        let encoder = device.command_encoder().map_err(candle_core::Error::wrap)?;
+        encoder.set_label("th_copy_words_2d");
+        let enc_ref = &encoder;
+        let enc: &candle_metal_kernels::metal::ComputeCommandEncoder = enc_ref.encoder().as_ref();
+        enc.set_compute_pipeline_state(RPIPE.get().unwrap());
+        enc.set_input_buffer(0, Some(s.buffer()), s_off);
+        enc.set_output_buffer(1, Some(d.buffer()), d_off);
+        enc.set_bytes(2, &lw);
+        enc.set_bytes(3, &ssw);
+        enc.set_bytes(4, &dsw);
+        let tg = 256usize;
+        enc.dispatch_thread_groups(
+            MTLSize { width: (lw as usize).div_ceil(tg), height: sd[0], depth: 1 },
+            MTLSize { width: tg, height: 1, depth: 1 },
+        );
+        drop(encoder);
+        Ok(true)
+    }
+
     /// Zero rows `from..to` of dim 1 of contiguous `t` [a, b, c]: `a`
     /// regions of `(to-from)*c` elements, `b*c` apart, one dispatch.
     /// Ok(false) (nothing enqueued) off Metal or when a region's byte
@@ -475,6 +591,54 @@ mod tests {
         let q = b.narrow(0, 1, 2)?;
         let got = cat0_uninit(&[b.clone(), q.clone()])?;
         assert_eq!(bits(&got)?, bits(&Tensor::cat(&[b, q], 0)?)?, "cat0 fallback");
+        Ok(())
+    }
+
+    /// `copy_rows` writes exactly rows `0..rows` of `dst` with `src`'s rows,
+    /// bit for bit, and leaves every other `dst` element untouched — from a
+    /// contiguous source, a dim-1 narrow (a checkpoint's view of a longer
+    /// buffer), a dim-0 narrow (non-zero start offset), a single region,
+    /// and the fallbacks (strided rows, odd byte length).
+    #[test]
+    fn copy_rows_is_bit_exact_and_bounded() -> Result<()> {
+        let Ok(dev) = Device::new_metal(0) else {
+            return Ok(());
+        };
+        let bf = |n: usize, seed: u64, shape: (usize, usize, usize)| -> Result<Tensor> {
+            Tensor::from_vec(words(n, seed).into_iter().map(|w| half::bf16::from_bits(w as u16)).collect::<Vec<_>>(), shape, &dev)
+        };
+        let full = bf(4 * 40 * 64, 11, (4, 40, 64))?;
+        let expect = |src: &Tensor, dst0: &Tensor, rows: usize| -> Result<Vec<u32>> {
+            let (a, bd) = (dst0.dim(0)?, dst0.dim(1)?);
+            let head = src.narrow(1, 0, rows)?.contiguous()?;
+            let parts = if rows < bd { vec![head, dst0.narrow(1, rows, bd - rows)?] } else { vec![head] };
+            let e = Tensor::cat(&parts, 1)?;
+            assert_eq!(e.dim(0)?, a);
+            bits(&e)
+        };
+        let cases: Vec<(&str, Tensor, usize, usize)> = vec![
+            ("contiguous, all rows", full.clone(), 40, 48),
+            ("contiguous, first rows", full.clone(), 17, 40),
+            ("dim-1 view", full.narrow(1, 0, 23)?, 23, 32),
+            ("dim-1 view, fewer rows", full.narrow(1, 0, 23)?, 9, 23),
+            ("dim-0 narrow (offset)", full.narrow(0, 1, 2)?.narrow(1, 0, 30)?, 30, 30),
+            ("one region", full.narrow(0, 3, 1)?, 40, 64),
+            ("strided rows (fallback)", full.transpose(1, 2)?.contiguous()?.transpose(1, 2)?, 12, 40),
+            ("odd byte length (fallback)", bf(2 * 9 * 3, 12, (2, 9, 3))?, 3, 9),
+        ];
+        for (name, src, rows, bd) in cases {
+            let (a, c) = (src.dim(0)?, src.dim(2)?);
+            let dst = bf(a * bd * c, 99, (a, bd, c))?;
+            let want = expect(&src, &dst, rows)?;
+            copy_rows(&src, &dst, rows)?;
+            assert_eq!(bits(&dst)?, want, "{name}");
+        }
+        // zero rows: a no-op; bad shapes: an error
+        let dst = bf(4 * 8 * 64, 5, (4, 8, 64))?;
+        let before = bits(&dst)?;
+        copy_rows(&full, &dst, 0)?;
+        assert_eq!(bits(&dst)?, before);
+        assert!(copy_rows(&full, &dst, 9).is_err(), "more rows than dst holds");
         Ok(())
     }
 }

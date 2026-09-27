@@ -698,8 +698,9 @@ fn prefill_slot(
 /// Call once the first token is out and before anything rewrites the held
 /// state: the draft warm-up (it drains the capture rows) and the first
 /// decode forward (it rewrites the parity the last split's state sits in).
-/// One K/V copy and one capture-row copy serve all of them (shared storage
-/// parts, counted once by the cache). A failure only logs + counts.
+/// They share one K/V buffer (the slot's, viewed) and one capture-row copy
+/// (shared storage parts, counted once by the cache). A failure only logs +
+/// counts.
 fn finish_captures(inner: &mut ModelInner, state: &EngineState, pending: PendingCaptures) {
     if pending.items.is_empty() {
         return;
