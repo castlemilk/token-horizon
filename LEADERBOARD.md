@@ -87,7 +87,9 @@ separate public profile view.
 ### Startup and loading resilience
 
 Auth settings and vendored charts, avatars, Fuse and table helpers load
-independently. Content-shaped skeletons use a subtle eclipse/shimmer animation
+independently. The document head preloads each public route's primary data at
+high priority, before the stylesheet/font waterfall; the normal fetch reuses
+that request. Content-shaped skeletons use a subtle eclipse/shimmer animation
 and honor reduced motion. Public rows can render while optional services stall;
 late libraries enhance existing content. GET deadlines include reading the
 response body (5 seconds by default). Catalog reads use a 2.5-second primary

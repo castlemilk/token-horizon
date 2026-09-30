@@ -17,8 +17,18 @@ try {
       const page = await context.newPage();
       const errors = [];
       page.on('pageerror', error => errors.push(error.message));
+      const phases = [];
+      const requestStarts = new Map();
+      let start;
+      page.on('request', request => requestStarts.set(request, performance.now()));
+      page.on('requestfinished', request => {
+        const began = requestStarts.get(request);
+        if (began == null) return;
+        const url = new URL(request.url());
+        if (url.origin === new URL(origin).origin) phases.push({ path: url.pathname, startMs: Math.round(began - start), durationMs: Math.round(performance.now() - began) });
+      });
       try {
-        const start = performance.now();
+        start = performance.now();
         const response = await page.goto(new URL(path, origin).href, { waitUntil: 'commit', timeout: 15000 });
         if (!response.ok()) throw new Error(`${path}: HTTP ${response.status()}`);
         await page.waitForSelector(selector, { timeout: 10000 });
@@ -26,7 +36,7 @@ try {
         const elapsed = Math.round(performance.now() - start);
         samples.push(elapsed);
         if (errors.length) throw new Error(`${path}: ${errors.join('; ')}`);
-        console.log(JSON.stringify({ path, run: i + 1, firstRowsMs: elapsed, rows: await page.locator(selector).count() }));
+        console.log(JSON.stringify({ path, run: i + 1, firstRowsMs: elapsed, rows: await page.locator(selector).count(), ...(process.env.TH_BENCH_PHASES ? { phases } : {}) }));
       } finally { await context.close(); }
     }
     samples.sort((a, b) => a - b);

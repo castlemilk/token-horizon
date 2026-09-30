@@ -290,6 +290,9 @@ async function verifyStartupResilience(browser, filePath) {
       await tab.goto(filePath + '?view=' + view, { waitUntil: 'commit' });
       await tab.waitForSelector(view === 'models' ? '#mx-rows .mx-row' : '#lb-table tbody tr', { timeout: 1500 });
       console.log(`   ${view}: visible rows in ${Date.now() - started}ms with config/vendors stalled`);
+      const primary = view === 'models' ? '/api/models/catalog' : '/api/leaderboard';
+      if (requests.indexOf(primary) >= requests.indexOf('/api/config')) throw new Error('Public data did not start before optional configuration');
+      if (requests.filter(path => path === primary).length !== 1) throw new Error('Primary data preload caused a duplicate download');
       if (view === 'models') {
         if (requests.includes('/api/leaderboard')) throw new Error('Model catalog still depends on leaderboard startup');
         await tab.fill('#mx-q', 'Opus');

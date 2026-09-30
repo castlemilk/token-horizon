@@ -6,6 +6,43 @@
 <title>Token Horizon — AI Usage Leaderboard & Analytics</title>
 <meta name="description" content="Competitive AI token usage leaderboard, league ladders, provider breakdowns, and developer analytics powered by Token Horizon." />
 <link rel="icon" href="./assets/favicon.svg" type="image/svg+xml" />
+<script>
+const CANONICAL_API = "https://token-horizon.dev";
+const API_BASE = (() => {
+  const override = new URLSearchParams(location.search).get("api");
+  if (override) return override.replace(/\/$/, "");
+  // Worker-hosted (custom domain or workers.dev): same-origin API. Static
+  // mirrors (GitHub Pages, Vercel previews) and file:// fall back to canonical.
+  const host = location.hostname;
+  const isLocal = host === "localhost" || host === "127.0.0.1" || host === "::1";
+  const isWorkerHost = isLocal || host === "token-horizon.dev" || host.endsWith(".token-horizon.dev") ||
+    host === "tokens.benebsworth.com" || host.endsWith(".workers.dev");
+  if (location.protocol.startsWith("http") && isWorkerHost) return location.origin;
+  return CANONICAL_API;
+})();
+(() => {
+  // Request the route's public data before styles, fonts and optional vendors.
+  // Fetch later consumes the browser preload; auth is never included here.
+  const params = new URLSearchParams(location.search);
+  const modelRoute = /^\/models\/?$/.test(location.pathname) || params.get("flat") === "1" || params.get("view") === "models";
+  const view = modelRoute ? "models" : params.get("view") || (params.get("user") || /^\/[us]\//.test(location.pathname) ? "profile" : "leaderboard");
+  let path;
+  if (view === "models" && params.get("tab") !== "providers") path = "/api/models/catalog";
+  if (view === "leaderboard") {
+    const period = ["today", "week", "all", "streak"].includes(params.get("period")) ? params.get("period") : "today";
+    path = "/api/leaderboard?" + new URLSearchParams({ period, historyDays: "30" });
+  }
+  if (!path) return;
+  const link = document.createElement("link");
+  link.rel = "preload";
+  link.as = "fetch";
+  link.crossOrigin = "anonymous";
+  link.fetchPriority = "high";
+  link.href = API_BASE + path;
+  link.dataset.startupData = view;
+  document.head.append(link);
+})();
+</script>
 <script src="https://accounts.google.com/gsi/client" async defer></script>
 <script src="./vendor/tanstack-charts.js" async></script>
 <script src="./vendor/dicebear.js" async></script>
@@ -594,19 +631,6 @@ body.th-flat .mx-flat-score{display:none}
      /api/teams        /api/season        /api/share/*
    ============================================================ */
 
-const CANONICAL_API = "https://token-horizon.dev";
-const API_BASE = (() => {
-  const override = new URLSearchParams(location.search).get("api");
-  if (override) return override.replace(/\/$/, "");
-  // Worker-hosted (custom domain or workers.dev): same-origin API. Static
-  // mirrors (GitHub Pages, Vercel previews) and file:// fall back to canonical.
-  const host = location.hostname;
-  const isLocal = host === "localhost" || host === "127.0.0.1" || host === "::1";
-  const isWorkerHost = isLocal || host === "token-horizon.dev" || host.endsWith(".token-horizon.dev") ||
-    host === "tokens.benebsworth.com" || host.endsWith(".workers.dev");
-  if (location.protocol.startsWith("http") && isWorkerHost) return location.origin;
-  return CANONICAL_API;
-})();
 
 const LEAGUES = [
   { id: "bronze", title: "Bronze", min: 0, max: 50000, color: "#B0774B" },
