@@ -4911,7 +4911,7 @@ function openSignInModal(opts = {}) {
   const action = opts.action || "";
   if (typeof opts.onSuccess === "function") state.signInPending = { action, onSuccess: opts.onSuccess };
   const benefits = [
-    ["👥", "Create groups & teams", "Bundle teammates into audiences you can share with in one click."],
+    ["👥", "Invite your crew", "Create a team, share its link, and friends join after Google sign-in."],
     ["🛡️", "Claim your profile", "Own your handle, stats, avatar, and rank history."],
     ["🔗", "Share usage reports", "Invite-only links with expiry and access controls."],
     ["📊", "Publish telemetry", "Push this machine's usage to the global leaderboard."]
@@ -4932,7 +4932,7 @@ function openSignInModal(opts = {}) {
           <div class="signin-benefits">${benefits.map(([ico, t, d]) => `<div class="signin-benefit"><div class="ico">${ico}</div><div><div class="t">${t}</div><div class="d">${d}</div></div></div>`).join("")}</div>
           <div class="signin-gsi" id="signin-gsi"></div>
           <div id="signin-status" class="mini" style="margin-top:10px"></div>
-          <div class="notice" style="margin-top:14px">Google OAuth · Token Horizon only stores your email, name, and avatar choice.</div>
+          <div class="notice" style="margin-top:14px">Google sign-in connects your profile and team membership. Private prompts and local traces stay on your device.</div>
         </div>
         <div class="modal-foot" style="justify-content:space-between;align-items:center">
           <span class="mini">Protected by Google</span>
