@@ -50,6 +50,63 @@ test('model history fallback sums models once and history fallback preserves gap
   assert.equal(historyVm.calendarDays.at(-1).tokens, 250);
 });
 
+test('usage chart keeps 30 chronological days with real gaps and a historical publication anchor', () => {
+  const vm = buildOgModel({ ...entry, breakdown: { daily: [
+    { day: day + 1, tokens: 999999 },
+    { day, tokens: 300 },
+    { day: day - 29, tokens: 25 },
+    { day: day - 2, tokens: 100 },
+    { day: day - 2, tokens: 100 },
+    { day: day - 30, tokens: 9000 }
+  ] } }, options);
+  assert.equal(vm.chartAvailable, true);
+  assert.equal(vm.chartDays.length, 30);
+  assert.equal(vm.chartDays[0].day, day - 29);
+  assert.equal(vm.chartDays.at(-1).date, date);
+  for (let index = 1; index < vm.chartDays.length; index++) {
+    assert.equal(vm.chartDays[index].day, vm.chartDays[index - 1].day + 1, 'Days do not compress missing activity');
+  }
+  assert.equal(vm.chartDays.at(-2).tokens, 0);
+  assert.equal(vm.chartDays.at(-3).tokens, 100, 'Repeated daily rows are not double counted');
+  assert.equal(vm.chartDays.reduce((sum, row) => sum + row.tokens, 0), 425, 'Future and older activity stays outside this chart window');
+});
+
+test('chart uses the same canonical source and token privacy rounding as the heatmap', () => {
+  const vm = buildOgModel({ ...entry, breakdown: {
+    daily: [{ day, tokens: 12345 }],
+    modelHistory: [{ points: [{ day, tokens: 999999 }] }],
+    history: [{ day, tokens: 888888 }]
+  } }, { ...options, fullTokenCounts: false });
+  assert.equal(vm.chartDays.at(-1).tokens, 12000);
+  assert.equal(vm.chartDays.at(-1).tokens, vm.calendarDays.at(-1).tokens);
+  assert.doesNotMatch(renderProfileOgSvg(vm), /12345|12\.35K|999999|888888/);
+});
+
+test('missing chart activity remains unavailable even when aggregate totals exist', () => {
+  const vm = buildOgModel({ ...entry, breakdown: {} }, options);
+  assert.equal(vm.chartAvailable, false);
+  assert.ok(vm.chartDays.every(row => row.tokens === 0));
+  assert.match(renderProfileOgSvg(vm), /Daily activity not published/);
+});
+
+test('usage chart renders above the heatmap beside the preserved profile panel', () => {
+  const svg = renderProfileOgSvg(buildOgModel(entry, options));
+  assert.match(svg, /data-usage-chart(?:=|\s|>)/);
+  const rects = attribute => [...svg.matchAll(new RegExp(`<rect\\b(?=[^>]*\\b${attribute}=")[^>]*>`, 'g'))].map(([tag]) => {
+    const get = name => Number(tag.match(new RegExp(`\\b${name}="([^"]+)"`))?.[1]);
+    return { x: get('x'), y: get('y'), width: get('width'), height: get('height') };
+  });
+  const bars = rects('data-chart-day').filter(rect => rect.height > 0);
+  const cells = rects('data-heatmap-day');
+  assert.ok(bars.length > 0, 'Published daily activity has a visible chart');
+  assert.equal(cells.length, 119);
+  assert.ok(Math.max(...bars.map(rect => rect.y + rect.height)) < Math.min(...cells.map(rect => rect.y)), 'Chart and heatmap occupy separate rows');
+  for (const rect of [...bars, ...cells]) {
+    assert.ok(rect.x >= 416 && rect.x + rect.width <= 1200, 'Both visuals stay beside the left profile panel');
+    assert.ok(rect.y >= 0 && rect.y + rect.height <= 630, 'Both visuals stay inside the social card');
+  }
+});
+
 test('missing data stays unavailable without inferred hardware or activity', () => {
   const vm = buildOgModel({ handle: 'new', tokensAll: 10, updatedAt: entry.updatedAt });
   assert.equal(vm.hardware, '');

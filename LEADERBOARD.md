@@ -243,7 +243,7 @@ R2 leaderboard.json ────────────────────
 | `POST /api/profile/avatar` | owner-only avatar update: Google photo, image URL, uploaded data URL (stored in R2), or generated style |
 | `GET /api/avatar/:handle` | uploaded avatar bytes (R2, cached 24h) |
 | `GET /api/share` | SVG/Markdown/text cards (README badges) |
-| `GET /api/og/profile/:handle.png` | dynamic 1200×630 PNG: total/today/7d tokens, 17-week dated heatmap, streak, rank and provider mix; `.svg` for raw; HEAD supported |
+| `GET /api/og/profile/:handle.png` | dynamic 1200×630 PNG: 30-day token usage chart above a 17-week dated heatmap, beside total/today/7d tokens, streak and rank; provider mix; `.svg` for raw; HEAD supported |
 | `GET /api/og/share/:id.png` | privacy-aware shared-report card; restricted links receive a generic sign-in preview; HEAD supported |
 | `GET /u/:handle` | clean profile permalink — SPA + per-profile OG/Twitter meta injected |
 | `GET /s/:id` | shared-report page with per-share OG meta (privacy-aware) |

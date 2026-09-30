@@ -1283,7 +1283,9 @@ describe('Cloudflare Worker API', () => {
     assert.match(svg, /Token Horizon/);
     assert.match(svg, /GRANDMASTER I/);
     assert.match(svg, /ALL-TIME TOKENS/);
-    assert.match(svg, /17 weeks of published token activity/);
+    assert.match(svg, /data-usage-chart="daily-tokens"/);
+    assert.match(svg, /Activity heatmap/);
+    assert.match(svg, /17 WEEKS \/ UTC/);
     assert.equal((svg.match(/data-heatmap-day=/g) || []).length, 119);
     assert.match(svg, /Anthropic/);
   });

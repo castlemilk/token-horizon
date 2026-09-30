@@ -1,5 +1,5 @@
 // Pure, deterministic social card model and SVG. Rasterization lives in the Worker.
-export const OG_CARD_VERSION = "horizon-3";
+export const OG_CARD_VERSION = "horizon-4";
 
 const DAY = 86400;
 const MAX_DAY = 2932896; // Last supported ISO year: 9999.
@@ -99,6 +99,8 @@ export function buildOgModel(entry = {}, options = {}) {
     ...calendar(entry, round)
   };
   model.history = model.calendarDays.filter(day => day.day <= model.calendarEnd).slice(-14).map(({ tokens }) => tokens);
+  model.chartDays = model.calendarDays.filter(day => day.day <= model.calendarEnd).slice(-30).map(({ day, date, tokens }) => ({ day, date, tokens }));
+  model.chartAvailable = model.calendarAvailable;
   if (rankVisible) Object.assign(model, { rank, rankToday: Math.max(1, Math.floor(number(options.rankToday))), total, percentile: Math.min(100, Math.max(1, Math.ceil(rank / total * 100))), league: text(st.league), leagueTitle: text(st.title || st.leagueTitle || st.league), leagueColor: /^#[a-f\d]{6}$/i.test(st.color || st.leagueColor || "") ? st.color || st.leagueColor : C.forest, division: Math.floor(number(st.division)), mmr: Math.floor(number(st.mmr)) });
   return model;
 }
@@ -124,14 +126,25 @@ function eclipse(x, y, color, size = 28) {
 export function renderProfileOgSvg(vm) {
   const handle = vm.anonymize ? "Anonymous" : "@" + vm.handle.replace(/^@/, "");
   const days = vm.calendarDays || [];
-  const cellX = 490, cellY = 224, stepX = 38, stepY = 34, cellW = 30, cellH = 28;
+  const cellX = 490, cellY = 359, stepX = 33, stepY = 27, cellW = 24, cellH = 24;
+  const chartDays = vm.chartDays || [];
+  const chartMax = chartDays.reduce((max, point) => Math.max(max, point.tokens), 1);
+  const chartBase = 278, chartHeight = 104, chartX = 490, chartWidth = 638;
+  const chartStep = chartWidth / Math.max(1, chartDays.length);
+  const chartBars = vm.chartAvailable ? chartDays.filter(point => point.tokens > 0).map(point => {
+    const index = chartDays.indexOf(point);
+    const height = Math.max(2, point.tokens / chartMax * chartHeight);
+    const x = chartX + index * chartStep + 2;
+    return `<rect data-chart-day="${point.date}" x="${x.toFixed(2)}" y="${(chartBase - height).toFixed(2)}" width="${Math.max(1, chartStep - 5).toFixed(2)}" height="${height.toFixed(2)}" rx="2" fill="${C.forest}"><title>${esc(point.date)} · ${esc(compact(point.tokens))} tokens</title></rect>`;
+  }).join("") : "";
+  const chart = `<g data-usage-chart="daily-tokens">${[0, .5, 1].map(fraction => `<path d="M${chartX} ${chartBase - fraction * chartHeight}H1128" stroke="${C.line}" stroke-width="1"/>${mono(477, chartBase - fraction * chartHeight + 4, fraction === 0 ? "0" : compact(chartMax * fraction), 9, C.muted, 'text-anchor="end"')}`).join("")}${chartBars}${!vm.chartAvailable ? t(808, 234, "Daily usage not published", 17, C.muted, 400, 'text-anchor="middle"') : ""}${vm.chartAvailable ? mono(chartX, 296, shortDate(chartDays[0].day), 10) + mono(1128, 296, shortDate(chartDays.at(-1).day), 10, C.muted, 'text-anchor="end"') : ""}</g>`;
   let heatmap = "", months = "";
   let lastMonth = -1;
   for (let col = 0; col < 17; col++) {
     const first = days[col * 7];
     if (!first) continue;
     const date = new Date(first.day * DAY * 1000), month = date.getUTCMonth();
-    if (month !== lastMonth && (vm.publishedDay !== null || vm.calendarAvailable)) months += mono(cellX + col * stepX, 207, date.toLocaleDateString("en-US", { month: "short", timeZone: "UTC" }), 11);
+    if (month !== lastMonth && (vm.publishedDay !== null || vm.calendarAvailable)) months += mono(cellX + col * stepX, 348, date.toLocaleDateString("en-US", { month: "short", timeZone: "UTC" }), 10);
     lastMonth = month;
     for (let row = 0; row < 7; row++) {
       const d = days[col * 7 + row];
@@ -139,27 +152,20 @@ export function renderProfileOgSvg(vm) {
       heatmap += `<rect ${dateKnown ? `data-heatmap-day="${d.date}" ` : ""}x="${cellX + col * stepX}" y="${cellY + row * stepY}" width="${cellW}" height="${cellH}" rx="4" fill="${d.level < 0 ? C.paper : LEVELS[d.level]}"${d.level < 0 ? ` stroke="${C.line}" stroke-dasharray="2 3"` : ""}><title>${dateKnown ? `${esc(d.date)} · ${esc(compact(d.tokens))} tokens` : "Daily activity not published"}</title></rect>`;
     }
   }
-  const label = vm.calendarAvailable ? `${shortDate(vm.calendarStart)} — ${shortDate(vm.calendarEnd)} · ${vm.activeDays} active days` : "Daily activity not published";
   let providers = "";
   if (vm.mix?.length) {
-    providers = mono(454, 527, "PROVIDER MIX", 10);
-    let x = 454;
+    providers = mono(454, 574, "PROVIDER MIX", 9);
+    let labelX = 565;
     for (const p of vm.mix) {
-      const width = p.share * 688;
-      providers += `<rect x="${x.toFixed(2)}" y="541" width="${width.toFixed(2)}" height="5" fill="${p.color}"/>`;
-      x += width;
+      providers += `<circle cx="${labelX + 3}" cy="570" r="3" fill="${p.color}"/>` + t(labelX + 12, 574, `${truncate(p.label, 13)} ${Math.round(p.share * 100)}%`, 11, C.muted);
+      labelX += p.label.length * 5.8 + 46;
     }
-    let labelX = 454;
-    for (const p of vm.mix) {
-      providers += `<circle cx="${labelX + 3}" cy="565" r="3" fill="${p.color}"/>` + t(labelX + 12, 569, `${truncate(p.label, 13)} ${Math.round(p.share * 100)}%`, 12, C.muted);
-      labelX += p.label.length * 6.1 + 60;
-    }
-  } else providers = mono(454, 553, "TOKENS TRACKED. PERSPECTIVE GAINED.", 11);
+  } else providers = mono(454, 574, "TOKENS TRACKED. PERSPECTIVE GAINED.", 10);
   const league = [vm.leagueTitle, roman(vm.division)].filter(Boolean).join(" ").toUpperCase();
   const badge = vm.includeLeagueRank ? mono(1142, 57, `#${vm.rank} OVERALL${league ? "  /  " + truncate(league, 22) : ""}`, 11, C.forest, 'text-anchor="end"') : mono(1142, 57, "PUBLISHED USAGE", 11, C.forest, 'text-anchor="end"');
   const updated = vm.publishedDay === null ? "Publication date unavailable" : `Published through ${dateLabel(vm.publishedDay)}`;
   return `<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630" role="img" aria-labelledby="card-title card-desc">
-  <title id="card-title">${esc(handle)} · Token Horizon usage</title><desc id="card-desc">${esc(compact(vm.tokensAll))} all-time tokens. ${vm.calendarAvailable ? "17-week published token activity heatmap." : "Daily activity not published."}</desc>
+  <title id="card-title">${esc(handle)} · Token Horizon usage</title><desc id="card-desc">${esc(compact(vm.tokensAll))} all-time tokens. ${vm.calendarAvailable ? "30-day token usage chart above a 17-week published activity heatmap." : "Daily activity not published."}</desc>
   <rect width="1200" height="630" fill="${C.paper}"/><rect width="416" height="630" fill="${C.ink}"/>
   <path d="M416 0V630M454 87H1142M454 588H1142" stroke="${C.line}" stroke-width="1"/>
   ${eclipse(42, 34, C.mint)}${t(82, 57, "Token Horizon", 22, C.white, 600)}${badge}
@@ -171,9 +177,12 @@ export function renderProfileOgSvg(vm) {
   ${t(42, 450, compact(vm.tokensToday), 36, C.white, 500)}${t(215, 450, compact(vm.tokens7d), 36, C.white, 500)}
   <circle cx="49" cy="520" r="4" fill="${C.mint}"/>${t(63, 526, `${vm.streakDays} day streak`, 19, C.white, 500)}
   ${mono(44, 593, vm.anonymize ? "token-horizon.dev" : `token-horizon.dev/u/${truncate(vm.handle, 22)}`, 10, "#AAB8AD")}
-  ${t(454, 134, "Your usage, in orbit.", 32, C.ink, 600, 'letter-spacing="-0.6"')}${t(455, 165, "17 weeks of published token activity · UTC", 15, C.muted)}
-  ${months}${mono(455, 243, "M", 10)}${mono(455, 311, "W", 10)}${mono(455, 379, "F", 10)}${heatmap}
-  ${mono(490, 481, label, 10)}${mono(976, 481, "LESS", 9)}${LEVELS.map((fill, i) => `<rect x="${1013 + i * 20}" y="471" width="15" height="12" rx="2" fill="${fill}"/>`).join("")}${mono(1118, 481, "MORE", 9)}
+  ${t(454, 133, "Token usage", 27, C.ink, 600, 'letter-spacing="-0.5"')}${mono(1142, 133, "LAST 30 DAYS / UTC", 10, C.muted, 'text-anchor="end"')}${chart}
+  ${t(454, 326, "Activity heatmap", 24, C.ink, 600, 'letter-spacing="-0.4"')}${mono(1142, 326, "17 WEEKS / UTC", 10, C.muted, 'text-anchor="end"')}
+  ${months}${mono(455, 375, "M", 10)}${mono(455, 429, "W", 10)}${mono(455, 483, "F", 10)}${heatmap}
+  ${t(1097, 417, vm.calendarAvailable ? vm.activeDays : "—", 40, C.forest, 600, 'text-anchor="middle"')}${mono(1097, 439, "ACTIVE DAYS", 8, C.muted, 'text-anchor="middle"')}
+  ${mono(1054, 484, "LESS", 8)}${mono(1140, 484, "MORE", 8, C.muted, 'text-anchor="end"')}${LEVELS.map((fill, i) => `<rect x="${1054 + i * 18}" y="493" width="14" height="14" rx="2" fill="${fill}"/>`).join("")}
+  ${!vm.calendarAvailable ? mono(490, 553, "Daily activity not published", 9) : ""}
   ${providers}${mono(454, 608, updated, 10)}${mono(1142, 608, "TOKEN HORIZON / PROFILE", 9, C.muted, 'text-anchor="end"')}
   </svg>`;
 }

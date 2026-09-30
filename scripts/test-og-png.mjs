@@ -42,7 +42,14 @@ function fontFamilyNames(font) {
   return names;
 }
 
-function rasterize(svg, label, { fonts = fontBuffers } = {}) {
+function markedRects(svg, attribute) {
+  return [...svg.matchAll(new RegExp(`<rect\\b(?=[^>]*\\b${attribute}=")[^>]*>`, 'g'))].map(([tag]) => {
+    const value = name => tag.match(new RegExp(`\\b${name}="([^"]+)"`))?.[1];
+    return { x: Number(value('x')), y: Number(value('y')), width: Number(value('width')), height: Number(value('height')), fill: value('fill') };
+  });
+}
+
+function rasterize(svg, label, { fonts = fontBuffers, checkTwoRows = false } = {}) {
   if (fonts.length) {
     const available = new Set(fonts.flatMap(fontFamilyNames));
     const declared = new Set([...svg.matchAll(/font-family="([^"]+)"/g)].map(match => match[1]));
@@ -65,6 +72,20 @@ function rasterize(svg, label, { fonts = fontBuffers } = {}) {
     assert.ok(png.byteLength > 5000 && png.byteLength < 1_000_000, `${label}: useful, bounded image size (${png.byteLength})`);
     const pixels = image.pixels;
     assert.equal(pixels.byteLength, 1200 * 630 * 4);
+    if (checkTwoRows) {
+      const bars = markedRects(svg, 'data-chart-day').filter(rect => rect.width >= 4 && rect.height >= 4);
+      const cells = markedRects(svg, 'data-heatmap-day').filter(rect => !['#F3F4EF', '#E1E6DE'].includes(rect.fill));
+      assert.ok(bars.length > 0, `${label}: actual tokens produce visible chart bars`);
+      assert.ok(cells.length > 0, `${label}: actual tokens produce visible heatmap cells`);
+      assert.ok(Math.max(...bars.map(rect => rect.y + rect.height)) < Math.min(...cells.map(rect => rect.y)), `${label}: chart is above the heatmap`);
+      for (const rect of [...bars.slice(0, 5), ...cells.slice(0, 5)]) {
+        assert.ok(rect.x >= 416 && rect.x + rect.width <= 1200, `${label}: both data rows remain beside the profile panel`);
+        const x = Math.floor(rect.x + rect.width / 2), y = Math.floor(rect.y + rect.height / 2);
+        const offset = (y * 1200 + x) * 4;
+        assert.notDeepEqual([...pixels.subarray(offset, offset + 3)], [243, 244, 239], `${label}: each row paints visible activity pixels`);
+        assert.equal(pixels[offset + 3], 255, `${label}: activity is visible in the encoded raster`);
+      }
+    }
     const colors = new Set();
     for (let offset = 0; offset < pixels.length; offset += 52) {
       colors.add(`${pixels[offset]},${pixels[offset + 1]},${pixels[offset + 2]},${pixels[offset + 3]}`);
@@ -114,6 +135,9 @@ const modelOptions = {
 const model = buildOgModel(entry, modelOptions);
 assert.equal(model.calendarDays.length, 119);
 assert.equal(model.calendarAvailable, true);
+assert.equal(model.chartDays.length, 30);
+assert.equal(model.chartAvailable, true);
+assert.equal(model.chartDays.at(-1).day, Math.floor(snapshotDay / 86400));
 assert.ok(model.calendarDays.some(point => point.tokens > 0 && point.level > 0), 'Real daily tokens contribute heatmap activity');
 assert.equal(model.mix.length, 2);
 const fullSvg = renderProfileOgSvg(model);
@@ -123,7 +147,7 @@ assert.match(fullSvg, /heatmap|activity/i);
 for (const secret of ['private-owner', 'private@example.com', 'private-token-hash', 'PRIVATE PROMPT', 'PRIVATE PROJECT']) {
   assert.equal(fullSvg.includes(secret), false, `OG excludes ${secret}`);
 }
-const profilePng = rasterize(fullSvg, '119-day profile activity');
+const profilePng = rasterize(fullSvg, 'daily usage chart and 119-day heatmap', { checkTwoRows: true });
 if (arguments_.preview) {
   await writeFile(arguments_.preview, profilePng);
   console.log(`OG preview written: ${arguments_.preview}`);
@@ -133,6 +157,8 @@ const emptyEntry = { handle: 'new_builder', updatedAt: snapshotDay, tokensAll: 0
 const emptyModel = buildOgModel(emptyEntry, modelOptions);
 assert.equal(emptyModel.calendarDays.length, 119);
 assert.equal(emptyModel.calendarAvailable, false);
+assert.equal(emptyModel.chartAvailable, false);
+assert.ok(emptyModel.chartDays.every(point => point.tokens === 0), 'Missing chart activity is not fabricated');
 assert.ok(emptyModel.calendarDays.every(point => point.tokens === 0), 'Missing activity is not fabricated');
 const emptySvg = renderProfileOgSvg(emptyModel);
 assert.match(emptySvg, /new_builder/);
@@ -173,5 +199,5 @@ if (arguments_['restricted-preview']) {
 // Without usable fonts, geometry and the heatmap still form a valid raster.
 // Production uses all bundled fonts; this catches a renderer exception on its
 // missing-font path rather than depending on fonts installed on the CI host.
-rasterize(fullSvg, 'missing fonts preserve chart geometry', { fonts: [] });
+rasterize(fullSvg, 'missing fonts preserve chart geometry', { fonts: [], checkTwoRows: true });
 console.log('OG PNG rasterization checks passed.');

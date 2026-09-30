@@ -2634,7 +2634,7 @@ function parseEntriesFromCSV(csvText) {
 
 // --- Dynamic OG share cards -------------------------------------------------
 // `GET /api/og/profile/<handle>.png` renders a 1200×630 "quick view" usage
-// card at the edge: identity, token totals, a 17-week activity heatmap, and a
+// card at the edge: identity, token totals, a 30-day chart above a 17-week heatmap, and a
 // provider-mix bar. Social crawlers need a raster
 // image (SVG og:images are ignored), so resvg-wasm rasterizes the SVG —
 // bundled Token Horizon Sans and JetBrains Mono fonts, since system fonts
