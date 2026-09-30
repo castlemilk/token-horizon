@@ -49,7 +49,43 @@ function markedRects(svg, attribute) {
   });
 }
 
-function rasterize(svg, label, { fonts = fontBuffers, checkTwoRows = false, checkProviderColors = false } = {}) {
+function checkLeagueBadgePixels(svg, pixels, label, fonts) {
+  const tag = svg.match(/<image\b(?=[^>]*\bdata-league-icon=")[^>]*(?:\/>|>[\s\S]*?<\/image>)/)?.[0];
+  assert.ok(tag, `${label}: selected league artwork is embedded`);
+  const value = name => tag.match(new RegExp(`\\b${name}="([^"]+)"`))?.[1];
+  const bounds = Object.fromEntries(['x', 'y', 'width', 'height'].map(name => [name, Number(value(name))]));
+  assert.ok(Object.values(bounds).every(Number.isFinite), `${label}: badge has concrete raster bounds`);
+  assert.ok(bounds.x >= 0 && bounds.x + bounds.width <= 416 && bounds.y >= 0 && bounds.y + bounds.height <= 630, `${label}: badge remains in the profile panel`);
+
+  // SVG <image> tags can survive even if a rasterizer cannot decode their PNG.
+  // Compare the badge region with the exact same card without that one image
+  // so text, layout and background cannot make an invisible badge pass.
+  const baselineRenderer = new Resvg(svg.replace(tag, ''), {
+    fitTo: { mode: 'original' },
+    font: { fontBuffers: fonts, loadSystemFonts: false, defaultFontFamily: 'JetBrains Mono' }
+  });
+  const baselineImage = baselineRenderer.render();
+  try {
+    const baseline = baselineImage.pixels;
+    let changedPixels = 0, sampledPixels = 0;
+    for (let y = Math.ceil(bounds.y); y < Math.floor(bounds.y + bounds.height); y++) {
+      for (let x = Math.ceil(bounds.x); x < Math.floor(bounds.x + bounds.width); x++) {
+        sampledPixels++;
+        const offset = (y * 1200 + x) * 4;
+        if (pixels[offset] !== baseline[offset] || pixels[offset + 1] !== baseline[offset + 1] || pixels[offset + 2] !== baseline[offset + 2]) {
+          changedPixels++;
+          assert.equal(pixels[offset + 3], 255, `${label}: badge is composited onto the actual PNG`);
+        }
+      }
+    }
+    assert.ok(changedPixels > sampledPixels * .1, `${label}: decoded league artwork paints a substantial visible region (${changedPixels}/${sampledPixels} pixels)`);
+  } finally {
+    baselineImage.free();
+    baselineRenderer.free();
+  }
+}
+
+function rasterize(svg, label, { fonts = fontBuffers, checkTwoRows = false, checkProviderColors = false, checkLeagueIcon = false } = {}) {
   if (fonts.length) {
     const available = new Set(fonts.flatMap(fontFamilyNames));
     const declared = new Set([...svg.matchAll(/font-family="([^"]+)"/g)].map(match => match[1]));
@@ -72,6 +108,7 @@ function rasterize(svg, label, { fonts = fontBuffers, checkTwoRows = false, chec
     assert.ok(png.byteLength > 5000 && png.byteLength < 1_000_000, `${label}: useful, bounded image size (${png.byteLength})`);
     const pixels = image.pixels;
     assert.equal(pixels.byteLength, 1200 * 630 * 4);
+    if (checkLeagueIcon) checkLeagueBadgePixels(svg, pixels, label, fonts);
     if (checkTwoRows) {
       const bars = markedRects(svg, 'data-chart-day').filter(rect => rect.width >= 4 && rect.height >= 4);
       const cells = markedRects(svg, 'data-heatmap-day').filter(rect => !['#F3F4EF', '#E1E6DE'].includes(rect.fill));
@@ -174,10 +211,16 @@ assert.match(fullSvg, /heatmap|activity/i);
 for (const secret of ['private-owner', 'private@example.com', 'private-token-hash', 'PRIVATE PROMPT', 'PRIVATE PROJECT']) {
   assert.equal(fullSvg.includes(secret), false, `OG excludes ${secret}`);
 }
-const profilePng = rasterize(fullSvg, 'provider-colored usage chart and 119-day heatmap', { checkTwoRows: true, checkProviderColors: true });
+const profilePng = rasterize(fullSvg, 'provider-colored usage chart, heatmap and Grandmaster badge', { checkTwoRows: true, checkProviderColors: true, checkLeagueIcon: true });
 if (arguments_.preview) {
   await writeFile(arguments_.preview, profilePng);
   console.log(`OG preview written: ${arguments_.preview}`);
+}
+
+for (const league of ['bronze', 'silver', 'gold', 'platinum', 'diamond', 'master']) {
+  const leagueSvg = renderProfileOgSvg(buildOgModel(entry, { ...modelOptions, standing: { ...standing, league, leagueTitle: league } }));
+  assert.match(leagueSvg, new RegExp(`data-league-icon="${league}"`));
+  rasterize(leagueSvg, `${league} league artwork`, { checkLeagueIcon: true });
 }
 
 const emptyEntry = { handle: 'new_builder', updatedAt: snapshotDay, tokensAll: 0, tokensToday: 0, breakdown: {} };
@@ -211,7 +254,13 @@ assert.match(anonymizedSvg, /Anonymous/);
 for (const privateValue of [entry.handle, entry.team, entry.hardware, 'Grandmaster', 'Anthropic', 'OpenAI']) {
   assert.equal(anonymizedSvg.includes(privateValue), false, `Anonymized card excludes ${privateValue}`);
 }
+assert.doesNotMatch(anonymizedSvg, /data-league-icon=|data:image\/png;base64,/, 'Rank-hidden shares do not contain league artwork');
 rasterize(anonymizedSvg, 'anonymized public share');
+
+const rankHiddenSvg = renderProfileOgSvg(buildOgModel(entry, { ...modelOptions, includeLeagueRank: false }));
+assert.match(rankHiddenSvg, /orbit_builder/, 'Visible identity can be shared independently of league rank');
+assert.doesNotMatch(rankHiddenSvg, /Grandmaster|data-league-icon=|data:image\/png;base64,/, 'League artwork is hidden even when identity remains public');
+rasterize(rankHiddenSvg, 'public identity with league rank hidden', { checkTwoRows: true, checkProviderColors: true });
 
 const noProviderModel = buildOgModel(entry, { ...modelOptions, providerBreakdown: false });
 assert.equal(noProviderModel.chartProviderAvailable, false);
@@ -234,6 +283,7 @@ const restrictedSvg = renderRestrictedOgSvg();
 for (const privateValue of [entry.handle, entry.team, entry.hardware, String(entry.tokensAll), String(entry.tokensToday)]) {
   assert.equal(restrictedSvg.includes(privateValue), false, 'Restricted card remains generic');
 }
+assert.doesNotMatch(restrictedSvg, /data-league-icon=|data:image\/png;base64,|Grandmaster/, 'Private reports expose no league badge');
 const restrictedPng = rasterize(restrictedSvg, 'restricted share');
 if (arguments_['restricted-preview']) {
   await writeFile(arguments_['restricted-preview'], restrictedPng);
@@ -243,5 +293,5 @@ if (arguments_['restricted-preview']) {
 // Without usable fonts, geometry and the heatmap still form a valid raster.
 // Production uses all bundled fonts; this catches a renderer exception on its
 // missing-font path rather than depending on fonts installed on the CI host.
-rasterize(fullSvg, 'missing fonts preserve chart geometry', { fonts: [], checkTwoRows: true, checkProviderColors: true });
+rasterize(fullSvg, 'missing fonts preserve chart geometry and league artwork', { fonts: [], checkTwoRows: true, checkProviderColors: true, checkLeagueIcon: true });
 console.log('OG PNG rasterization checks passed.');

@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { buildOgModel, renderProfileOgSvg, renderRestrictedOgSvg, ogDay } from './src/og-card.js';
+import { ogLeagueIcon } from './src/og-league-assets.js';
 
 const date = '2026-09-27';
 const day = Date.parse(date) / 86400000;
@@ -11,6 +12,48 @@ const entry = {
   breakdown: { daily: [{ day: (day - 2) * 86400, tokens: 10000 }, { day: day * 86400, tokens: 20000 }], models: [{ provider: 'anthropic', tokensAll: 100000 }, { provider: 'openai', tokensAll: 50000 }] }
 };
 const options = { rank: 3, rankToday: 1, total: 40, standing: { league: 'diamond', title: 'Diamond', division: 2, mmr: 1800 } };
+
+test('every league uses its own embedded PNG artwork in the profile panel', () => {
+  const images = new Set();
+  for (const league of ['bronze', 'silver', 'gold', 'platinum', 'diamond', 'master', 'grandmaster']) {
+    const uri = ogLeagueIcon(league);
+    assert.match(uri, /^data:image\/png;base64,/, `${league}: league artwork is self-contained`);
+    const png = Buffer.from(uri.slice('data:image/png;base64,'.length), 'base64');
+    assert.deepEqual(png.subarray(0, 8), Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), `${league}: genuine PNG signature`);
+    assert.equal(png.toString('ascii', 12, 16), 'IHDR');
+    assert.equal(png.readUInt32BE(16), 128, `${league}: bounded thumbnail width`);
+    assert.equal(png.readUInt32BE(20), 128, `${league}: bounded thumbnail height`);
+    images.add(uri);
+
+    const vm = buildOgModel(entry, { ...options, standing: { ...options.standing, league, title: league } });
+    const svg = renderProfileOgSvg(vm);
+    const tag = svg.match(new RegExp(`<image\\b(?=[^>]*\\bdata-league-icon="${league}")[^>]*>`))?.[0];
+    assert.ok(tag, `${league}: renderer selects the matching league artwork`);
+    assert.equal((svg.match(/data-league-icon=/g) || []).length, 1, `${league}: only the selected league is embedded`);
+    assert.ok(tag.includes(`href="${uri}"`), `${league}: artwork bytes reach the SVG`);
+    const number = name => Number(tag.match(new RegExp(`\\b${name}="([^"]+)"`))?.[1]);
+    assert.ok(number('width') >= 64 && number('height') >= 64, `${league}: badge remains legible at social preview size`);
+    assert.ok(number('x') >= 0 && number('x') + number('width') <= 416, `${league}: badge stays within the profile panel`);
+    assert.ok(number('y') >= 0 && number('y') + number('height') <= 630, `${league}: badge stays inside the card`);
+    assert.doesNotMatch(JSON.stringify(vm), /data:image\/png;base64,/, `${league}: image bytes do not bloat profile JSON`);
+  }
+  assert.equal(images.size, 7, 'The seven leagues have distinct artwork');
+});
+
+test('league artwork accepts only known keys and never renders untrusted image sources', () => {
+  for (const league of ['', 'unknown', '../grandmaster', 'constructor', '__proto__', 'toString', 'grandmaster" onload="alert(1)', 'https://example.com/badge.png', null, undefined]) {
+    assert.equal(ogLeagueIcon(league), '', `Unknown league ${String(league)} has no asset`);
+    const svg = renderProfileOgSvg(buildOgModel(entry, { ...options, standing: { ...options.standing, league, title: 'Unknown' } }));
+    assert.doesNotMatch(svg, /data-league-icon=|data:image\/png;base64,/, 'An unknown league cannot supply an image source');
+  }
+});
+
+test('hiding league rank strips artwork even if a league remains on a renderer input', () => {
+  const vm = buildOgModel(entry, { ...options, includeLeagueRank: false });
+  const svg = renderProfileOgSvg(vm);
+  assert.doesNotMatch(svg, /data-league-icon=|data:image\/png;base64,|Diamond/);
+  assert.doesNotMatch(renderProfileOgSvg({ ...vm, league: 'grandmaster', leagueTitle: 'Grandmaster' }), /data-league-icon=|data:image\/png;base64,|Grandmaster/, 'Visibility is controlled by the sharing option, not field presence');
+});
 
 test('calendar normalizes exporter seconds, day indexes, milliseconds and ISO dates', () => {
   for (const value of [date, date + 'T12:00:00Z', day, day * 86400, day * 86400000]) assert.equal(ogDay(value), day);

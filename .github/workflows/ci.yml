@@ -73,7 +73,9 @@ jobs:
         run: node --test cloudflare/worker.test.mjs cloudflare/connector.test.mjs cloudflare/og-card.test.mjs
 
       - name: Social card PNG regression (real WASM and bundled fonts)
-        run: node scripts/test-og-png.mjs
+        run: |
+          node cloudflare/assets/build-og-leagues.mjs --check
+          node scripts/test-og-png.mjs
 
       - name: MCP tests (catalog helpers + server error contracts)
         run: |

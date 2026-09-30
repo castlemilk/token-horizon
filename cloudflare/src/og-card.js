@@ -1,5 +1,7 @@
 // Pure, deterministic social card model and SVG. Rasterization lives in the Worker.
-export const OG_CARD_VERSION = "horizon-5";
+import { ogLeagueIcon } from './og-league-assets.js';
+
+export const OG_CARD_VERSION = "horizon-6";
 
 const DAY = 86400;
 const MAX_DAY = 2932896; // Last supported ISO year: 9999.
@@ -243,6 +245,8 @@ export function renderProfileOgSvg(vm) {
   } else providers = mono(454, 574, "TOKENS TRACKED. PERSPECTIVE GAINED.", 10);
   const league = [vm.leagueTitle, roman(vm.division)].filter(Boolean).join(" ").toUpperCase();
   const badge = vm.includeLeagueRank ? mono(1142, 57, `#${vm.rank} OVERALL${league ? "  /  " + truncate(league, 22) : ""}`, 11, C.forest, 'text-anchor="end"') : mono(1142, 57, "PUBLISHED USAGE", 11, C.forest, 'text-anchor="end"');
+  const leagueIcon = vm.includeLeagueRank ? ogLeagueIcon(vm.league) : "";
+  const leagueArtwork = leagueIcon ? `<image data-league-icon="${esc(vm.league)}" x="286" y="491" width="92" height="92" href="${leagueIcon}"><title>${esc(league)} league badge</title></image>${mono(63, 550, truncate(league, 24), 11, C.mint)}` : "";
   const updated = vm.publishedDay === null ? "Publication date unavailable" : `Published through ${dateLabel(vm.publishedDay)}`;
   return `<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630" role="img" aria-labelledby="card-title card-desc">
   <title id="card-title">${esc(handle)} · Token Horizon usage</title><desc id="card-desc">${esc(compact(vm.tokensAll))} all-time tokens. ${vm.calendarAvailable ? "30-day token usage chart above a 17-week published activity heatmap." : "Daily activity not published."}</desc>
@@ -256,6 +260,7 @@ export function renderProfileOgSvg(vm) {
   ${mono(44, 399, "TODAY", 10, "#AAB8AD")}${mono(217, 399, "LAST 7 DAYS", 10, "#AAB8AD")}
   ${t(42, 450, compact(vm.tokensToday), 36, C.white, 500)}${t(215, 450, compact(vm.tokens7d), 36, C.white, 500)}
   <circle cx="49" cy="520" r="4" fill="${C.mint}"/>${t(63, 526, `${vm.streakDays} day streak`, 19, C.white, 500)}
+  ${leagueArtwork}
   ${mono(44, 593, vm.anonymize ? "token-horizon.dev" : `token-horizon.dev/u/${truncate(vm.handle, 22)}`, 10, "#AAB8AD")}
   ${t(454, 133, "Token usage", 27, C.ink, 600, 'letter-spacing="-0.5"')}${mono(1142, 133, "LAST 30 DAYS / UTC", 10, C.muted, 'text-anchor="end"')}${chart}
   ${t(454, 326, "Activity heatmap", 24, C.ink, 600, 'letter-spacing="-0.4"')}${mono(1142, 326, "17 WEEKS / UTC", 10, C.muted, 'text-anchor="end"')}

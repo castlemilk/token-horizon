@@ -243,7 +243,7 @@ R2 leaderboard.json ────────────────────
 | `POST /api/profile/avatar` | owner-only avatar update: Google photo, image URL, uploaded data URL (stored in R2), or generated style |
 | `GET /api/avatar/:handle` | uploaded avatar bytes (R2, cached 24h) |
 | `GET /api/share` | SVG/Markdown/text cards (README badges) |
-| `GET /api/og/profile/:handle.png` | dynamic 1200×630 PNG: 30-day token usage chart above a 17-week dated heatmap, beside total/today/7d tokens, streak and rank; provider mix; `.svg` for raw; HEAD supported |
+| `GET /api/og/profile/:handle.png` | dynamic 1200×630 PNG: provider-colored 30-day token chart above a 17-week dated heatmap, beside total/today/7d tokens, streak, league badge and rank; `.svg` for raw; HEAD supported |
 | `GET /api/og/share/:id.png` | privacy-aware shared-report card; restricted links receive a generic sign-in preview; HEAD supported |
 | `GET /u/:handle` | clean profile permalink — SPA + per-profile OG/Twitter meta injected |
 | `GET /s/:id` | shared-report page with per-share OG meta (privacy-aware) |
@@ -279,6 +279,10 @@ R2 leaderboard.json ────────────────────
   activity rather than inventing it. The calendar is anchored to publication
   and uses UTC dates. Bundled static Token Horizon Sans fonts keep edge PNGs
   consistent with the site. `task web-og-fonts` regenerates those derivatives.
+- The profile panel embeds the same league artwork as the dashboard. Small
+  128px thumbnails are baked by `task web-og-leagues`, with no asset fetch on
+  requests. Hiding league rank removes both the badge and its label; restricted
+  reports contain no league artwork. CI verifies derivatives against the originals.
 - The 30-day chart stacks measured daily usage by provider, using published
   `modelHistory` and matching legend colors. Missing attribution stays neutral;
   conflicting provider counts never rescale the canonical daily total. Hidden
