@@ -1,0 +1,7 @@
+Use case: stylized-concept
+Asset type: standalone atmospheric hero artwork for Token Horizon, wide landscape banner with generous copy space.
+Primary request: Imagine an exquisitely restrained event horizon as the signature art of a premium futuristic software brand. A physically evocative black hole rendered like precision optical instrumentation, beautifully minimal and tactile.
+Composition: near-black graphite void fills the frame, a large perfectly dark circular event horizon located in the right half, extremely thin pale silver-mint lensing ring around it, a razor-sharp horizontal light seam running through its center and softly receding into the dark left half. The left 40 percent remains very dark quiet negative space for future HTML copy. The ring's upper edge bends fine mineral-silver light over the sphere. Sparse subtle dither-like particles and faint accretion texture confined near the ring. No busy stars or clouds.
+Lighting: controlled studio-like edge light, titanium silver, quiet pale mint #B6F2CF, charcoal #070A08 and #121714. Cinematic but mathematically clean. Strong silhouette and crisp micro-detail at the edge, restrained bloom, velvety background.
+Style: premium scientific concept art, abstract astrophotography meets high-end industrial design. Flat image, not a photographed poster.
+Constraints: absolutely no text, letters, logos, labels, watermarks, UI panels, device frames, planets, colorful nebulae, orange fire, purple gradients, thick neon glow. Make a usable clean standalone brand artwork.

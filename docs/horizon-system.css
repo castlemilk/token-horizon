@@ -1,0 +1,337 @@
+/* Token Horizon / Quiet precision
+   Shared production overlay. The page-specific styles still own layout and data UI;
+   this file supplies the shared type, semantic palette, geometry, and focus language. */
+@font-face {
+  font-family: "Hubot Sans";
+  src: url("./fonts/HubotSansVF-Regular.ttf") format("truetype");
+  font-weight: 200 900;
+  font-stretch: 80% 120%;
+  font-display: swap;
+}
+@font-face {
+  font-family: "JetBrains Mono";
+  src: url("./fonts/JetBrainsMono-Regular.ttf") format("truetype");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+:root {
+  --th-mineral: #f3f4ef;
+  --th-white: #fff;
+  --th-titanium: #cdd3cc;
+  --th-graphite: #121714;
+  --th-void: #070a08;
+  --th-signal: #b6f2cf;
+  --th-forest: #235e43;
+  --th-muted: #56635a;
+  --th-rule: #cdd3cc;
+  --th-control: #79867c;
+  --th-display: "Hubot Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --th-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  /* Inline the optical 24px mark so static file previews also render it. */
+  --th-mark: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M2 11a10.05 10.05 0 0 1 20 0H2Zm0 2h20A10.05 10.05 0 0 1 2 13Z'/%3E%3C/svg%3E");
+}
+
+/* Landing page */
+body.landing {
+  --bg: var(--th-mineral);
+  --ink: var(--th-graphite);
+  --muted: var(--th-muted);
+  --line: var(--th-rule);
+  --mint: var(--th-signal);
+  --green: var(--th-forest);
+  --dark: var(--th-graphite);
+  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --mono: var(--th-mono);
+  background: var(--th-mineral);
+  color: var(--th-graphite);
+}
+body.landing h1,
+body.landing h2,
+body.landing h3,
+body.landing .brand,
+body.landing .site-footer .brand {
+  font-family: var(--th-display);
+  font-stretch: 108%;
+}
+body.landing .site-header {
+  background: var(--th-graphite);
+  border-bottom: 1px solid #35423a;
+}
+body.landing .nav-wrap {
+  min-height: 80px;
+}
+body.landing .brand {
+  font-weight: 650;
+  letter-spacing: -.045em;
+}
+body.landing .nav-wrap .brand::before,
+body.landing .site-footer .brand::before,
+body.discovery .discovery-brand::before {
+  content: "";
+  display: inline-block;
+  width: 24px;
+  height: 24px;
+  margin-right: 9px;
+  background: currentColor;
+  -webkit-mask: var(--th-mark) center / contain no-repeat;
+  mask: var(--th-mark) center / contain no-repeat;
+  vertical-align: -5px;
+}
+body.landing .hero h1 {
+  font-weight: 650;
+  letter-spacing: -.055em;
+}
+body.landing .hero-actions .button,
+body.landing .nav-install {
+  border-radius: 6px;
+}
+body.landing .hero-actions .dark {
+  background: var(--th-graphite);
+  color: var(--th-mineral);
+}
+body.landing .hero-actions .dark:hover {
+  background: var(--th-forest);
+}
+body.landing .text-link,
+body.landing .section a {
+  text-decoration-thickness: 1px;
+}
+body.landing .device-screen,
+body.landing .expanded-display {
+  background-image: url("./assets/landing/event-horizon.webp");
+  background-position: center;
+}
+body.landing .demo-surface,
+body.landing .desktop-widget,
+body.landing .small-widget,
+body.landing .feature-card,
+body.landing .install-card {
+  border-radius: 10px;
+}
+body.landing .section-top .eyebrow,
+body.landing .eyebrow,
+body.landing .kicker {
+  font-family: var(--th-mono);
+  letter-spacing: .15em;
+}
+body.landing button:focus-visible,
+body.landing a:focus-visible,
+body.landing summary:focus-visible,
+body.landing input:focus-visible {
+  outline: 2px solid var(--th-forest);
+  outline-offset: 4px;
+}
+
+/* Public discovery surfaces: keep the catalog and leaderboard flat and legible. */
+body.discovery {
+  --bg: var(--th-mineral);
+  --panel: var(--th-white);
+  --panel2: #f1f4ef;
+  --panel3: #e1e8e1;
+  --line: var(--th-rule);
+  --line2: #b7c5bc;
+  --text: var(--th-graphite);
+  --muted: var(--th-muted);
+  --faint: #627167;
+  --blue: var(--th-forest);
+  --cyan: var(--th-forest);
+  --green: var(--th-forest);
+  --purple: #65756a;
+  --pink: #65756a;
+  --orange: #89520e;
+  --red: #aa3939;
+  --gold: #89520e;
+  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --mono: var(--th-mono);
+  background: var(--th-mineral);
+  color: var(--th-graphite);
+  background-image: none;
+}
+body.discovery,
+body.discovery * {
+  scrollbar-color: #9caf9f var(--th-mineral);
+}
+body.discovery .discovery-header {
+  background: var(--th-graphite);
+  border-bottom: 1px solid #35423a;
+}
+body.discovery .discovery-brand,
+body.discovery .brand-title {
+  font-family: var(--th-display);
+  font-stretch: 108%;
+  letter-spacing: -.045em;
+}
+body.discovery .discovery-brand {
+  font-weight: 650;
+}
+body.discovery .discovery-install {
+  background: var(--th-signal);
+  border-color: var(--th-signal);
+  border-radius: 6px;
+  color: var(--th-graphite) !important;
+}
+body.discovery .discovery-install:hover {
+  background: #d0f8dd;
+  border-color: #d0f8dd;
+}
+body.discovery .content {
+  padding-top: 56px;
+}
+body.discovery .discovery-title h1,
+body.discovery .page-head h1,
+body.discovery .mx-comparison-head h2,
+body.discovery .community-join h2 {
+  font-family: var(--th-display);
+  font-stretch: 108%;
+  letter-spacing: -.05em;
+  font-weight: 650;
+}
+body.discovery .discovery-title h1 {
+  font-size: clamp(36px, 4vw, 58px);
+}
+body.discovery .discovery-eyebrow,
+body.discovery .catalog-stamp,
+body.discovery .community-table th,
+body.discovery .mx-head-cell {
+  font-family: var(--th-mono);
+  letter-spacing: .11em;
+}
+body.discovery .card,
+body.discovery .mx-panel,
+body.discovery .community-kpis,
+body.discovery .community-join,
+body.discovery #mx-comparison {
+  border-radius: 10px;
+}
+body.discovery .community-kpis,
+body.discovery .community-join,
+body.discovery .mx-panel,
+body.discovery .mx-drawer,
+body.discovery .mx-plan-card {
+  box-shadow: none;
+}
+body.discovery .community-table tr.you,
+body.discovery .mx-row.active,
+body.discovery .mx-filters .mx-chip.active {
+  background: #e0efdf !important;
+}
+body.discovery #lb-table tbody tr:is(.selected, .you) td:nth-child(-n+2) {
+  background: #e0efdf;
+}
+body.discovery .community-table tr:hover,
+body.discovery .mx-row:hover {
+  background: #eef5ec !important;
+}
+body.discovery :focus-visible {
+  outline: 2px solid var(--th-forest);
+  outline-offset: 3px;
+}
+body.discovery .community-link,
+body.discovery .mx-clear,
+body.discovery .mx-drawer a,
+body.discovery .mx-plan-card a {
+  color: var(--th-forest);
+}
+body.discovery .mx-tag.plan {
+  color: #5e476a;
+  background: #f1edf3;
+  border-color: #d7cadc;
+}
+body.discovery .cta {
+  background: linear-gradient(165deg, #e2f1e4, #f8faf6 72%);
+  border-color: #9ab8a0;
+  box-shadow: none;
+  color: var(--th-graphite);
+}
+body.discovery .cta .progress {
+  box-shadow: inset 0 1px 3px #253c2d33;
+}
+body.discovery .cta .progress i {
+  background: var(--th-forest);
+  box-shadow: none;
+}
+
+/* Connect is generated by the worker, so this overlay is also linked there. */
+body[data-mode] {
+  --th-display: "Hubot Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  background: var(--th-mineral);
+}
+body[data-mode] header .brand,
+body[data-mode] h1,
+body[data-mode] h2,
+body[data-mode] h3 {
+  font-family: var(--th-display);
+  font-stretch: 108%;
+  letter-spacing: -.05em;
+}
+body[data-mode] header .brand {
+  font-weight: 650;
+}
+body[data-mode] .brand-mark {
+  width: 24px;
+  height: 24px;
+  font-size: 0;
+  background: currentColor;
+  -webkit-mask: var(--th-mark) center / contain no-repeat;
+  mask: var(--th-mark) center / contain no-repeat;
+}
+body[data-mode] .universe {
+  background: var(--th-graphite);
+}
+body[data-mode] h1 {
+  font-weight: 600;
+}
+body[data-mode] .primary {
+  background: var(--th-forest);
+  border-color: var(--th-forest);
+  border-radius: 6px;
+}
+body[data-mode] .primary:hover {
+  background: #2d7553;
+}
+body[data-mode] .secondary,
+body[data-mode] .endpoint,
+body[data-mode] .app-symbol {
+  border-radius: 6px;
+}
+body[data-mode] .connection {
+  background: var(--th-mineral);
+}
+body[data-mode] button:focus-visible,
+body[data-mode] a:focus-visible,
+body[data-mode] input:focus-visible {
+  outline: 2px solid var(--th-forest);
+  outline-offset: 4px;
+}
+
+/* Dark surfaces use the same focus geometry with a high-contrast signal ring. */
+body.landing :is(.site-header, .desktop-section, .terminal) :focus-visible,
+body.discovery .discovery-header :focus-visible,
+body[data-mode] .universe :focus-visible {
+  outline-color: var(--th-signal);
+}
+
+@media (max-width: 860px) {
+  body.discovery .content {
+    padding-top: 38px;
+  }
+  body[data-mode] .hole-stage {
+    opacity: .45;
+    -webkit-mask-image: linear-gradient(90deg, transparent, #000 60%);
+    mask-image: linear-gradient(90deg, transparent, #000 60%);
+  }
+  body[data-mode] .universe > :not(.hole-stage) {
+    position: relative;
+    z-index: 1;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  :is(body.landing, body.discovery, body[data-mode]) *,
+  :is(body.landing, body.discovery, body[data-mode]) *::before,
+  :is(body.landing, body.discovery, body[data-mode]) *::after {
+    animation: none !important;
+    transition: none !important;
+  }
+}

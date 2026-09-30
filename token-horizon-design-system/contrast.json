@@ -1,0 +1,68 @@
+[
+  {
+    "role": "Light text",
+    "foreground": "#121714",
+    "background": "#f3f4ef",
+    "ratio": 16.4
+  },
+  {
+    "role": "Light secondary",
+    "foreground": "#56635a",
+    "background": "#f3f4ef",
+    "ratio": 5.71
+  },
+  {
+    "role": "Light primary label",
+    "foreground": "#ffffff",
+    "background": "#235e43",
+    "ratio": 7.63
+  },
+  {
+    "role": "Light focus",
+    "foreground": "#235e43",
+    "background": "#f3f4ef",
+    "ratio": 6.9
+  },
+  {
+    "role": "Light control boundary",
+    "foreground": "#79867c",
+    "background": "#ffffff",
+    "ratio": 3.81
+  },
+  {
+    "role": "Dark text",
+    "foreground": "#f3f4ef",
+    "background": "#121714",
+    "ratio": 16.4
+  },
+  {
+    "role": "Dark secondary",
+    "foreground": "#abb5ac",
+    "background": "#121714",
+    "ratio": 8.58
+  },
+  {
+    "role": "Dark primary label",
+    "foreground": "#121714",
+    "background": "#b6f2cf",
+    "ratio": 14.32
+  },
+  {
+    "role": "Dark control boundary",
+    "foreground": "#77877b",
+    "background": "#121714",
+    "ratio": 4.78
+  },
+  {
+    "role": "Caution on light",
+    "foreground": "#89520e",
+    "background": "#ffffff",
+    "ratio": 6.41
+  },
+  {
+    "role": "Error on light",
+    "foreground": "#aa3939",
+    "background": "#ffffff",
+    "ratio": 6.26
+  }
+]

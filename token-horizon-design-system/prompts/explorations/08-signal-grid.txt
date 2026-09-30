@@ -1,0 +1,10 @@
+Use case: productivity-visual
+Asset type: Token Horizon style exploration board, data-dense signal-grid direction, landscape.
+Input images: Image 1 is a visual identity reference only. Preserve its event-horizon metaphor and mineral/graphite/mint palette while pushing information density.
+Primary request: Explore a more technical signal-grid language for Token Horizon's activity, traces and local-engine telemetry surfaces. It should feel like a measured observatory, not a hacker dashboard.
+Composition: wide near-black and mineral split board with a strong 12-column grid. Left two-thirds: activity timeline with hourly bars, token class legend, compact trace rows, request latency markers and a model filter rail. Right third: a stacked local-engine panel with throughput, memory, context fill and a miniature black-hole horizon plot. Bottom band: precise heatmap calendar, provider quota strips, rank delta badges and an MCP connector status. Use calm whitespace around every group.
+Style/medium: high fidelity information-design board, flat orthographic UI, crisp 1px geometry, tiny pale mint indicators, clear monospaced tabular data, subtle crosshair and measurement marks.
+Typography: extended grotesk section headings and monospace data labels. Exact sparse labels: "SIGNAL GRID", "ACTIVITY", "TRACES", "LOCAL ENGINE", "TOKENS / S", "CONTEXT", "MCP CONNECTOR", "LIVE".
+Color palette: void #070A08, graphite #121714, mineral #F3F4EF, titanium #CDD3CC, signal #B6F2CF, forest #235E43. Keep color series to four tones plus Other.
+Materials/textures: matte interface surfaces, faint technical paper grid, no luminous sci-fi bloom, no glass layers.
+Constraints: never use rainbow charts, no noisy code walls, no arbitrary warning red, no rounded dashboard soup, no distorted perspective, no Apple logos, no watermark. Prioritize plausible data hierarchy over decoration.

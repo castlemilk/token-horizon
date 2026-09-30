@@ -8,6 +8,7 @@ Optimized WebP derivatives of the individually generated PNG assets in
 | `horizon-art.webp` | `token-horizon-horizon-art.png` | Laptop display wallpaper |
 | `laptop-cutout.webp` | `token-horizon-laptop-cutout.png` | Transparent product frame |
 | `community-orbits.webp` | `token-horizon-community-orbits.png` | Decorative privacy illustration |
+| `event-horizon.webp` | `token-horizon-design-system/assets/event-horizon.png` | Quiet precision device wallpaper; WebP quality 84, 81 KB |
 
 The source kit includes exact prompts and generation metadata. These are
 decorative assets: the website's text, charts, controls and demonstration

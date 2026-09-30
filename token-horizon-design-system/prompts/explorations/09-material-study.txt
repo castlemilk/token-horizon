@@ -1,0 +1,9 @@
+Use case: stylized-concept
+Asset type: Token Horizon material and object art-direction board, landscape.
+Input images: Image 1 is a visual identity reference only. Preserve the eclipse mark and quiet graphite/mint palette; create a new material study.
+Primary request: Imagine the physical material language behind Token Horizon: a black anodized instrument, mineral ceramic surfaces, a thin mint signal slit and a tiny glass widget floating over a desk.
+Composition: four flat studio still-life studies in a presentation grid. Top left: matte graphite desktop surface with a precision circular eclipse dial and horizontal aperture. Top right: mineral-white ceramic tile with a recessed horizon seam. Bottom left: compact widget-like glass slab with a pale mint chart and dark edge. Bottom right: a paper and ink spec card with the 16, 24 and 64 mark sizes, 1.5 stroke icon construction and six palette chips. Add small exact labels "MATERIAL / 09", "MATTE", "MINERAL", "SIGNAL", "FLOAT".
+Style/medium: high-end industrial design photography blended with a graphic design manual, straight-on orthographic crops, soft directional studio light, tactile but clean.
+Color palette: void #070A08, graphite #121714, mineral #F3F4EF, titanium #CDD3CC, signal #B6F2CF, forest #235E43. No metallic gold.
+Materials/textures: anodized aluminum, unglazed ceramic, smooth mineral paper, restrained glass; realistic contact shadows, no rainbow reflections.
+Constraints: no computers, no hands, no people, no Apple hardware, no generic product logos, no neon, no space scene, no text-heavy fake labels, no watermark. The board should feel like an object and material vocabulary for the UI.

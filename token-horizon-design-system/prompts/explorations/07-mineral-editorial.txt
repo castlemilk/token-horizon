@@ -1,0 +1,10 @@
+Use case: ui-mockup
+Asset type: Token Horizon style exploration board, light mineral editorial direction, landscape art-direction plate.
+Input images: Image 1 is a visual identity reference only. Preserve the eclipse seam and typography character; create a new composition.
+Primary request: Explore a warm mineral-white, highly editorial direction for Token Horizon that makes AI usage feel like a calm printed instrument manual brought to life.
+Composition: generous cream canvas with measured vertical columns and long hairline rules. Left: a hero landing panel with the black eclipse mark and a simple headline "A clearer view." Center: a highly refined model catalog with model names, provider marks reduced to initials, context windows, input/output prices and one forest-green selected row. Right: a leaderboard and a pale desktop widget with a stacked usage chart. Bottom strip shows enlarged type specimens, color chips, icon construction circles, and the phrases "Clarity", "Continuity", "Control".
+Style/medium: luxury editorial identity board, flat print-like planes, exact alignment, tactile mineral paper texture only in background, no perspective.
+Typography: a distinctive wide grotesk display, humanist body text, tabular mono for values. Sparse exact text only: "MINERAL EDITORIAL", "A clearer view.", "MODELS", "LEADERBOARD", "TOKENS", "COST", "128K".
+Color palette: mineral #F3F4EF, white #FFFFFF, graphite #121714, titanium #CDD3CC, forest #235E43, mint only as a tiny signal swatch. No tan, orange, purple or blue.
+Materials/textures: matte paper, ink, one soft-shadow floating widget; thin rules are functional. Panels have 6–12px radii only.
+Constraints: no generic SaaS template, no loud gradient, no giant unrelated illustration, no angled screens, no illegible tiny paragraphs, no Apple logo, no watermark. Keep the interface plausible and calm.

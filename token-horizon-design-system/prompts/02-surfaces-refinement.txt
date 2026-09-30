@@ -1,0 +1,6 @@
+Use case: precise-object-edit
+Input image: edit target, the product surfaces board.
+Change only the left navigation and the row of explorer tabs. Preserve the entire layout, typography, charts, other panels, palette, and illustrative data caption unchanged.
+Left sidebar must show exactly these six items, in order: "Models", "Leaderboard", "Activity", "Billing", "Connect", "Settings". Remove all existing other menu labels and their icons; no Playground, Prompts, Finetunes, Teams or API Keys. Models remains selected. Put matching simple thin-line icons alongside each. Keep empty space below the six items.
+Explorer tabs must read exactly "Explorer", "Cheapest", "Providers", "Plans". Do not add any other tabs.
+Everything else unchanged. The product name is Token Horizon. Maintain crisp legible text.

@@ -1,0 +1,10 @@
+Use case: ui-mockup
+Asset type: Token Horizon style exploration board, premium dark system direction, landscape editorial plate.
+Input images: Image 1 is a visual identity reference only. Preserve the eclipse seam, precise geometry and calm palette; create a new direction.
+Primary request: Explore a darker titanium instrument language for Token Horizon, an AI usage observability platform spanning a macOS notch, desktop dashboard, widgets, model catalog and leaderboard.
+Composition: strict Swiss grid on a deep graphite field. Left half shows a dark desktop dashboard with a slim top rail, expanded notch panel anchored to the screen edge, usage chart, limit gauges and a focused model drawer. Right half shows three compact component studies: a black macOS widget, a leaderboard row set with ranks 01–05, and a model card with context, price and latency. Small construction notes and a single large eclipse symbol sit in the margins. Everything faces the viewer flat-on, no angled devices.
+Style/medium: high fidelity product design presentation board, near-black titanium surfaces, crisp 1px silver rules, restrained pale mint signal accents, no decorative gradients.
+Typography: custom-looking extended technical grotesk for headlines, clear humanist sans for detail, JetBrains-like mono for timestamps and metrics. Use sparse exact labels: "TITANIUM NIGHT", "Today", "24.8M", "MODELS", "LEADERBOARD", "LIMITS", "12:48:09".
+Color palette: void #070A08, graphite #121714, titanium #CDD3CC, signal #B6F2CF, low-contrast olive graphite #26312B. No purple or blue.
+Materials/textures: matte black anodized aluminum, faint screen grain, no glass except a small floating widget. 6px controls, 12px panels, 20px floating surfaces.
+Constraints: preserve strong legibility and hierarchy; no Apple logo, no fake brand logos, no busy code, no neon cyberpunk, no rounded card soup, no watermarks. This is an exploration board, not a literal shipped screenshot.

@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <meta name="description" content="The Token Horizon design system: identity, typography, color, iconography and motion.">
+  <title>Token Horizon — Design system</title>
+  <link rel="icon" href="assets/mark-24.svg" type="image/svg+xml">
+  <link rel="preload" href="fonts/HubotSansVF-Regular.ttf" as="font" type="font/ttf" crossorigin>
+  <link rel="stylesheet" href="tokens.css">
+  <link rel="stylesheet" href="manual.css">
+  <script src="manual.js" defer></script>
+</head>
+<body data-th-system data-theme="light">
+  <a class="skip" href="#main">Skip to content</a>
+  <header class="masthead">
+    <a class="wordmark" href="#main" aria-label="Token Horizon design system">
+      <svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor" aria-hidden="true"><path d="M2 11a10.05 10.05 0 0 1 20 0H2Zm0 2h20A10.05 10.05 0 0 1 2 13Z"/></svg>
+      Token Horizon
+    </a>
+    <nav aria-label="Design manual"><a href="#foundations">Foundations</a><a href="#icons">Icons</a><a href="#motion">Motion</a><a href="#concepts">Concepts</a></nav>
+    <button id="theme" class="button quiet" type="button" aria-pressed="false">Dark mode</button>
+  </header>
+  <main id="main">
+    <section class="hero">
+      <div class="hero-copy">
+        <p class="th-label">Design system · Volume 01</p>
+        <h1 class="th-display">Quiet<br>precision.</h1>
+        <p class="hero-description">A clear view of your AI world.<br>One visual language, from the notch<br>to the horizon.</p>
+        <a class="hero-link" href="DESIGN_SYSTEM.md">Read the specification <span aria-hidden="true">↗</span></a>
+      </div>
+      <div class="hero-footer th-label"><span>Mineral / Graphite / Signal</span><span>Token Horizon · 2026</span></div>
+    </section>
+    <div class="intro section">
+      <p class="th-label">The point of view</p>
+      <h2 class="th-display">Futuristic in its precision.<br>Familiar in your hands.</h2>
+      <div class="principles">
+        <article><span class="index th-label">01 / Clarity</span><h3>Make the signal visible.</h3><p>Useful numbers lead. Labels, units and freshness travel with them. Fine rules give dense information room to breathe.</p></article>
+        <article><span class="index th-label">02 / Continuity</span><h3>Recognizable at every scale.</h3><p>The eclipse, horizontal seam and measured geometry carry from a 16-pixel mark to a full screen.</p></article>
+        <article><span class="index th-label">03 / Control</span><h3>Let the interface settle.</h3><p>Motion explains a change, then comes to rest. Materials preserve legibility. Every action has a clear state.</p></article>
+      </div>
+    </div>
+    <section id="foundations" class="section">
+      <div class="section-heading"><p class="th-label">01 / Foundations</p><h2 class="th-display">A restrained spectrum.</h2></div>
+      <div class="palette">
+        <div style="--swatch:#070a08;--swatch-ink:#f3f4ef"><span>Void</span><code>#070A08</code></div>
+        <div style="--swatch:#121714;--swatch-ink:#f3f4ef"><span>Graphite</span><code>#121714</code></div>
+        <div style="--swatch:#235e43;--swatch-ink:#ffffff"><span>Forest</span><code>#235E43</code></div>
+        <div style="--swatch:#b6f2cf;--swatch-ink:#121714"><span>Signal</span><code>#B6F2CF</code></div>
+        <div style="--swatch:#cdd3cc;--swatch-ink:#121714"><span>Titanium</span><code>#CDD3CC</code></div>
+        <div style="--swatch:#f3f4ef;--swatch-ink:#121714"><span>Mineral</span><code>#F3F4EF</code></div>
+      </div>
+      <div class="section-note"><p>Forest carries actions on light surfaces. Mint carries emphasis on dark surfaces. Color always has a label, shape or position doing the same work.</p><a href="tokens.css" download>Download CSS tokens ↗</a></div>
+      <div class="type-grid">
+        <div class="type-display">
+          <p class="th-label">Hubot Sans / Extended 112</p>
+          <p class="type-sample th-display">Beyond<br>the ordinary.</p>
+          <div class="type-glyphs">Aa Bb Gg Rr<br>0123456789</div>
+        </div>
+        <div class="type-detail">
+          <p class="th-label">Three voices. One hierarchy.</p>
+          <h3 class="th-display">Distinctive headlines.</h3>
+          <p>Hubot Sans gives the display layer its technical character. Extended proportions, open counters and tight optical spacing create the Horizon treatment.</p>
+          <h3>Comfortable reading.</h3>
+          <p>Platform system text keeps long explanations and native controls familiar. Body text starts at 16 pixels on the web.</p>
+          <p class="mono-spec">24.8M &nbsp; 128K &nbsp; $6.42<br>09:41:08 &nbsp; /mcp/public</p>
+          <p>JetBrains Mono carries units, timestamps and technical identifiers. Tabular figures keep changing values steady.</p>
+          <a href="concepts/03-identity.png">View the custom wordmark study ↗</a>
+        </div>
+      </div>
+    </section>
+    <section id="icons" class="section">
+      <div class="section-heading"><p class="th-label">02 / Iconography</p><h2 class="th-display">Drawn from the same line.</h2></div>
+      <div class="icon-meta th-label"><span>24 × 24 units</span><span>1.5 stroke</span><span>Square caps / soft joins</span><span>SVG / currentColor</span></div>
+      <div id="icon-grid" class="icon-grid"></div>
+      <div class="mark-strip">
+        <div class="mark-preview"><img src="assets/mark-16.svg" width="16" height="16" alt="Small eclipse symbol"><code>16</code></div>
+        <div class="mark-preview"><img src="assets/mark-24.svg" width="24" height="24" alt="Medium eclipse symbol"><code>24</code></div>
+        <div class="mark-preview"><img src="assets/mark-64.svg" width="64" height="64" alt="Large eclipse symbol with orbit"><code>64</code></div>
+        <p>The orbit disappears at small sizes. The horizontal seam remains.<br><a href="assets/mark-64.svg" download>Download the master symbol ↗</a></p>
+      </div>
+    </section>
+    <section id="components" class="section">
+      <div class="section-heading"><p class="th-label">03 / Components</p><h2 class="th-display">Useful detail. Clear decisions.</h2></div>
+      <div class="component-grid">
+        <article class="sample-card">
+          <div class="card-heading"><h3>Usage overview</h3><span class="badge">Sample data</span></div>
+          <div class="segmented" role="group" aria-label="Sample usage period">
+            <button type="button" aria-pressed="true" data-period="day">Day</button><button type="button" aria-pressed="false" data-period="week">Week</button><button type="button" aria-pressed="false" data-period="month">Month</button>
+          </div>
+          <div class="metric"><span id="sample-total" class="th-number">24.8M</span><span id="sample-period">tokens today</span></div>
+          <div id="sample-chart" class="bar-chart" role="img" aria-label="Sample hourly token use: 24.8 million tokens today"></div>
+          <div class="chart-legend"><span><i class="key input"></i>Input</span><span><i class="key output"></i>Output</span><a href="#chart-data" class="small-link">Read sample values</a></div>
+          <details id="chart-data"><summary>Sample chart data</summary><div class="table-scroll"><table><caption id="chart-caption">Illustrative hourly tokens, millions</caption><thead><tr><th scope="col">Period</th><th scope="col">Input</th><th scope="col">Output</th></tr></thead><tbody id="chart-rows"></tbody></table></div></details>
+        </article>
+        <article class="sample-card">
+          <div class="card-heading"><h3>Actions &amp; states</h3><span class="th-label">44 px targets</span></div>
+          <div class="button-row"><button class="button primary" id="sample-action" type="button">Preview action</button><button class="button" id="sample-reset" type="button">Reset</button><button class="button" type="button" disabled>Unavailable</button></div>
+          <p id="action-status" class="status-message" role="status">Ready to preview. No account is connected.</p>
+          <label for="specimen-input" class="field-label">Connection name</label>
+          <input id="specimen-input" type="text" value="Personal workspace" autocomplete="off" aria-describedby="field-hint">
+          <p id="field-hint" class="field-hint">A field specimen. This value stays in this page.</p>
+          <div class="state-list"><p><span class="state-dot positive"></span><strong>Current</strong><span>Updated just now</span></p><p><span class="state-dot caution"></span><strong>Stale</strong><span>Last seen 12 min ago</span></p><p><span class="state-dot negative"></span><strong>Unavailable</strong><span>Reconnect to continue</span></p></div>
+        </article>
+      </div>
+      <div class="section-note"><p>Six-pixel controls. Twelve-pixel panels. One-pixel separators. Reserve glass and elevated shadows for transient surfaces.</p><a href="tokens.json" download>Download JSON tokens ↗</a></div>
+    </section>
+    <section id="motion" class="section">
+      <div class="section-heading"><p class="th-label">04 / Motion</p><h2 class="th-display">Calm at rest.<br>Responsive in motion.</h2></div>
+      <div class="motion-grid">
+        <div class="motion-stage">
+          <div class="screen-edge"></div>
+          <div class="notch-demo" id="notch-demo" data-theme="dark">
+            <div class="notch-cap"><span class="notch-status"></span><span>Token Horizon</span></div>
+            <div class="notch-content">
+              <div class="card-heading"><span class="th-label">Today's horizon</span><span class="badge">Sample data</span></div>
+              <div class="notch-metric th-number">24.8M <span>tokens</span></div>
+              <div class="notch-bars" aria-hidden="true"></div>
+              <div class="notch-bottom"><span>12 models</span><span>3.1K requests</span><span>$6.42</span></div>
+            </div>
+          </div>
+          <p class="motion-caption th-label">Notch / entrance specimen</p>
+        </div>
+        <div class="motion-copy">
+          <div class="timing"><strong class="th-number">420<span>ms</span></strong><p>One entrance, anchored to the screen edge. Content follows the enclosure.</p></div>
+          <div class="timing"><strong class="th-number">180<span>ms</span></strong><p>Local controls respond immediately and settle with a short ease-out.</p></div>
+          <button id="replay" class="button primary" type="button">Replay notch opening</button>
+          <label class="check"><input id="reduce-motion" type="checkbox"> Preview reduced motion</label>
+          <p id="motion-status" role="status">Ready. System reduced-motion preferences are also respected.</p>
+        </div>
+      </div>
+    </section>
+    <section id="concepts" class="section">
+      <div class="section-heading"><p class="th-label">05 / Art direction</p><h2 class="th-display">The imagined system.</h2></div>
+      <p class="concept-intro">Five images generated with imagegen establish the visual direction. The boards are illustrative; the specification and tokens define the implementation rules.</p>
+      <figure class="concept"><a href="concepts/01-direction.png"><img src="concepts/01-direction.png" width="1536" height="1024" loading="lazy" alt="Token Horizon identity board with eclipse wordmark, mineral palette, typography and product widget"></a><figcaption><span>01 / Master direction</span><span>Identity, color, materials and visual character</span></figcaption></figure>
+      <figure class="concept"><a href="concepts/02-surfaces.png"><img src="concepts/02-surfaces.png" width="1536" height="1024" loading="lazy" alt="Concepts for the model explorer, expanded notch, usage widget and leaderboard, with illustrative data"></a><figcaption><span>02 / Product surfaces</span><span>Shared visual language across web and macOS</span></figcaption></figure>
+      <figure class="concept"><a href="concepts/03-identity.png"><img src="concepts/03-identity.png" width="1536" height="1024" loading="lazy" alt="Custom wordmark lettering study, three eclipse mark sizes and twelve interface icon concepts"></a><figcaption><span>03 / Identity construction</span><span>Lettering study and icon concept family</span></figcaption></figure>
+      <figure class="concept"><a href="assets/event-horizon.png"><img src="assets/event-horizon.png" width="1983" height="793" loading="lazy" alt="Silver-mint event horizon with a horizontal light seam on a dark background"></a><figcaption><span>04 / Event horizon</span><span>Standalone artwork with copy space</span></figcaption></figure>
+      <figure class="concept"><a href="concepts/05-connection.png"><img src="concepts/05-connection.png" width="1536" height="1024" loading="lazy" alt="Connector consent concept with a dithered black hole and four motion storyboard frames"></a><figcaption><span>05 / Connection</span><span>Authorization concept and motion direction</span></figcaption></figure>
+    </section>
+    <footer class="footer section"><a class="wordmark" href="#main">Token Horizon</a><p>A design language for a clearer view.</p><div><a href="DESIGN_SYSTEM.md">Specification ↗</a><a href="README.md">Assets &amp; source prompts ↗</a></div><small>Concept kit v1 · 27 September 2026 · Local design preview</small></footer>
+  </main>
+</body>
+</html>

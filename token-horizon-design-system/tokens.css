@@ -1,0 +1,124 @@
+/* Token Horizon / Quiet precision / v1.0
+   Opt-in scope: <body data-th-system data-theme="light|dark"> */
+@font-face {
+  font-family: "Hubot Sans";
+  src: url("./fonts/HubotSansVF-Regular.ttf") format("truetype");
+  font-weight: 200 900;
+  font-stretch: 80% 120%;
+  font-display: swap;
+}
+@font-face {
+  font-family: "JetBrains Mono";
+  src: url("./fonts/JetBrainsMono-Regular.ttf") format("truetype");
+  font-weight: 400;
+  font-display: swap;
+}
+[data-th-system] {
+  color-scheme: light;
+  --th-mineral: #f3f4ef;
+  --th-titanium: #cdd3cc;
+  --th-graphite: #121714;
+  --th-void: #070a08;
+  --th-signal: #b6f2cf;
+  --th-forest: #235e43;
+  --th-canvas: var(--th-mineral);
+  --th-surface: #ffffff;
+  --th-raised: #fafbf8;
+  --th-ink: var(--th-graphite);
+  --th-muted: #56635a;
+  --th-rule: var(--th-titanium);
+  --th-control-border: #79867c;
+  --th-action: var(--th-forest);
+  --th-on-action: #ffffff;
+  --th-selected: #e0efdf;
+  --th-focus: #235e43;
+  --th-positive: #235e43;
+  --th-caution: #89520e;
+  --th-negative: #aa3939;
+  --th-info: #265aa6;
+  --th-chart-1: #235e43;
+  --th-chart-2: #586a9b;
+  --th-chart-3: #9c572a;
+  --th-chart-4: #715582;
+  --th-chart-other: #6f7a73;
+  --th-font-display: "Hubot Sans", -apple-system, BlinkMacSystemFont, sans-serif;
+  --th-font-body: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --th-font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  --th-space-1: 4px;
+  --th-space-2: 8px;
+  --th-space-3: 12px;
+  --th-space-4: 16px;
+  --th-space-6: 24px;
+  --th-space-8: 32px;
+  --th-space-12: 48px;
+  --th-space-16: 64px;
+  --th-space-24: 96px;
+  --th-radius-control: 6px;
+  --th-radius-panel: 12px;
+  --th-radius-floating: 20px;
+  --th-rule-width: 1px;
+  --th-icon-stroke: 1.5;
+  --th-duration-feedback: 120ms;
+  --th-duration-control: 180ms;
+  --th-duration-panel: 280ms;
+  --th-duration-arrive: 420ms;
+  --th-ease-out: cubic-bezier(.2,.8,.2,1);
+  --th-ease-in-out: cubic-bezier(.4,0,.2,1);
+  --th-shadow-float: 0 12px 40px #070a0814, 0 2px 6px #070a080a;
+  --th-target: 44px;
+  --th-table-row: 56px;
+}
+[data-th-system][data-theme="dark"],
+[data-th-system] [data-theme="dark"] {
+  color-scheme: dark;
+  --th-canvas: #070a08;
+  --th-surface: #121714;
+  --th-raised: #1c241f;
+  --th-ink: #f3f4ef;
+  --th-muted: #abb5ac;
+  --th-rule: #35423a;
+  --th-control-border: #77877b;
+  --th-action: #b6f2cf;
+  --th-on-action: #121714;
+  --th-selected: #233d2e;
+  --th-focus: #b6f2cf;
+  --th-positive: #b6f2cf;
+  --th-caution: #efc17d;
+  --th-negative: #ffaaa1;
+  --th-info: #a6c4ff;
+  --th-chart-1: #b6f2cf;
+  --th-chart-2: #adbfed;
+  --th-chart-3: #edbd94;
+  --th-chart-4: #cfb6de;
+  --th-chart-other: #abb5ac;
+  --th-shadow-float: 0 12px 40px #00000040, 0 2px 6px #00000026;
+}
+[data-th-system] :focus-visible {
+  outline: 2px solid var(--th-focus);
+  outline-offset: 3px;
+}
+[data-th-system] .th-display {
+  font-family: var(--th-font-display);
+  font-stretch: 112%;
+  font-weight: 600;
+  letter-spacing: -.045em;
+  line-height: 1.02;
+}
+[data-th-system] .th-number {
+  font-family: var(--th-font-display);
+  font-variant-numeric: tabular-nums lining-nums;
+  letter-spacing: -.035em;
+}
+[data-th-system] .th-label {
+  font: 400 11px/1.5 var(--th-font-mono);
+  letter-spacing: .12em;
+  text-transform: uppercase;
+}
+@media (prefers-reduced-motion: reduce) {
+  [data-th-system] {
+    --th-duration-feedback: 0ms;
+    --th-duration-control: 0ms;
+    --th-duration-panel: 0ms;
+    --th-duration-arrive: 0ms;
+  }
+}
