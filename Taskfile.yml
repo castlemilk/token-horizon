@@ -65,6 +65,7 @@ tasks:
       - node mcp/test-catalog.mjs
       - node mcp/test-server-errors.mjs
       - node scripts/test-leaderboard-ui.mjs
+      - node scripts/test-workspace-ui.mjs
       - node scripts/bench-leaderboard.mjs
 
   test-integration:

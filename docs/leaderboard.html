@@ -7,10 +7,10 @@
 <meta name="description" content="Competitive AI token usage leaderboard, league ladders, provider breakdowns, and developer analytics powered by Token Horizon." />
 <link rel="icon" href="./assets/favicon.svg" type="image/svg+xml" />
 <script src="https://accounts.google.com/gsi/client" async defer></script>
-<script src="./vendor/tanstack-charts.js" defer></script>
-<script src="./vendor/dicebear.js" defer></script>
-<script src="./vendor/fuse.js" defer></script>
-<script src="./vendor/tanstack-table.js" defer></script>
+<script src="./vendor/tanstack-charts.js" async></script>
+<script src="./vendor/dicebear.js" async></script>
+<script src="./vendor/fuse.js" async></script>
+<script src="./vendor/tanstack-table.js" async></script>
 <style>
 :root{
   --bg:#080B12; --panel:#0F141E; --panel2:#141B28; --panel3:#1A2233;
@@ -518,6 +518,7 @@ body.th-flat .mx-flat-score{display:none}
 </style>
 <link rel="stylesheet" href="./discovery.css" />
 <link rel="stylesheet" href="./horizon-system.css?v=20260930" />
+<link rel="stylesheet" href="./workspace.css?v=20260930" />
 </head>
 <body>
 <a class="discovery-skip" href="#view">Skip to content</a>
@@ -671,6 +672,7 @@ const state = {
   groupDraft: { name: "", members: [] },
   googleSession: getGoogleSession(),
   googleClientId: "",
+  googleConfig: "loading",
   googleReady: false,
   googleUnavailable: false,
   chartHosts: [],
@@ -744,7 +746,7 @@ function avatar(handle, url, size = 32, preferredStyle) {
   }
   const generated = generatedAvatar(handle, size, preferredStyle);
   if (generated) return `<span class="avatar" style="width:${size}px;height:${size}px">${generated}</span>`;
-  return `<span class="avatar" style="width:${size}px;height:${size}px;font-size:${Math.round(size * 0.36)}px">${esc(initials(handle))}</span>`;
+  return `<span class="avatar" data-generated-avatar="${esc(handle)}" data-avatar-style="${esc(preferredStyle || "")}" data-avatar-size="${size}" style="width:${size}px;height:${size}px;font-size:${Math.round(size * 0.36)}px">${esc(initials(handle))}</span>`;
 }
 function entryAvatar(entry, size = 32) {
   return avatar(entry.handle, entry.avatarUrl, size, entry.avatarStyle);
@@ -1105,27 +1107,39 @@ function calendarHeatmap(daily, opts = {}) {
    scripts/vendor-entry.js). Charts are declared here, mounted after each
    render, and fall back to the hand-rolled SVG when the vendor bundle is
    unavailable (offline / blocked). */
-const CHARTS_READY = (() => {
-  if (typeof window !== "undefined" && window.TanStackCharts) return Promise.resolve(true);
+function optionalVendor(name, file) {
+  if (window[name]) return Promise.resolve(true);
   return new Promise(resolve => {
-    let tries = 0;
-    const timer = setInterval(() => {
-      if (window.TanStackCharts) { clearInterval(timer); resolve(true); }
-      else if (++tries > 50) { clearInterval(timer); resolve(false); }
-    }, 100);
+    const script = document.querySelector('script[src="./vendor/' + file + '.js"]');
+    if (!script) { resolve(false); return; }
+    script.addEventListener("load", () => resolve(Boolean(window[name])), { once: true });
+    script.addEventListener("error", () => resolve(false), { once: true });
   });
-})();
+}
+const CHARTS_READY = optionalVendor("TanStackCharts", "tanstack-charts");
+const DICEBEAR_READY = optionalVendor("DiceBear", "dicebear");
+const FUSE_READY = optionalVendor("Fuse", "fuse");
+const TABLE_READY = optionalVendor("TanStackTable", "tanstack-table");
+const chartFallbacks = new Map();
 
-const DICEBEAR_READY = (() => {
-  if (typeof window !== "undefined" && window.DiceBear) return Promise.resolve(true);
-  return new Promise(resolve => {
-    let tries = 0;
-    const timer = setInterval(() => {
-      if (window.DiceBear) { clearInterval(timer); resolve(true); }
-      else if (++tries > 50) { clearInterval(timer); resolve(false); }
-    }, 100);
+/// Late visual bundles enhance individual nodes without rebuilding the page.
+function enhanceOptionalVisuals() {
+  if (window.DiceBear) $$(".avatar[data-generated-avatar]").forEach(el => {
+    const svg = generatedAvatar(el.dataset.generatedAvatar, Number(el.dataset.avatarSize), el.dataset.avatarStyle);
+    if (svg) { el.innerHTML = svg; el.removeAttribute("data-generated-avatar"); }
   });
-})();
+  if (window.TanStackCharts) {
+    $$("[data-chart-fallback]").forEach(el => {
+      const key = el.dataset.chartFallback;
+      const entry = chartFallbacks.get(key);
+      if (!entry) return;
+      el.innerHTML = stackedUsageChart(entry.data, entry.opts);
+      el.removeAttribute("data-chart-fallback");
+      chartFallbacks.delete(key);
+    });
+    mountCharts();
+  }
+}
 
 const chartRegistry = new Map();
 const chartPool = new Map();                 // contentKey → { el, host, height }
@@ -1221,7 +1235,9 @@ function stackedUsageChart(data, opts = {}) {
   // Brand-aligned colors so every legend item matches its stacked bar.
   assignSeriesColors(series);
   if (!window.TanStackCharts) {
-    return stackedArea(series.map(s => ({ name: s.name, color: s.color, values: s.values })), labels, { height: opts.height || 230 });
+    const id = "fallback-" + (++chartSeq);
+    chartFallbacks.set(id, { data, opts });
+    return `<div data-chart-fallback="${id}">${stackedArea(series.map(s => ({ name: s.name, color: s.color, values: s.values })), labels, { height: opts.height || 230 })}</div>`;
   }
   const TS = window.TanStackCharts;
   // Content key: identical data reuses both the definition and the mounted
@@ -1355,6 +1371,34 @@ function aggregateUsageChartData(usageHistory) {
 const apiCache = new Map();      // "GET path" → { at, ttl, text }
 const apiInflight = new Map();   // "GET path" → Promise<text>
 const API_DEFAULT_TTL = 30000;
+const API_READ_TIMEOUT = 5000;
+
+/// Bound the complete read, including a stalled response body.
+async function fetchText(url, opts = {}, timeoutMs = API_READ_TIMEOUT) {
+  const controller = new AbortController();
+  const abort = () => controller.abort();
+  if (opts.signal?.aborted) controller.abort();
+  else opts.signal?.addEventListener("abort", abort, { once: true });
+  let timer;
+  const read = (async () => {
+    const response = await fetch(url, { ...opts, signal: controller.signal });
+    return { response, text: await response.text() };
+  })();
+  try {
+    if (!timeoutMs) return await read;
+    return await Promise.race([read, new Promise((_, reject) => {
+      timer = setTimeout(() => {
+        const error = new Error("The request took too long. Please try again.");
+        error.code = "timeout";
+        reject(error);
+        controller.abort();
+      }, timeoutMs);
+    })]);
+  } finally {
+    clearTimeout(timer);
+    opts.signal?.removeEventListener("abort", abort);
+  }
+}
 
 function parseMaxAge(header) {
   if (!header) return null;
@@ -1372,7 +1416,15 @@ async function api(path, opts = {}) {
   const method = (opts.method || "GET").toUpperCase();
   const isGet = method === "GET";
   const key = method + " " + path;
-  const bypass = opts.cache === "reload" || opts.cache === "no-store";
+  const headers = new Headers(opts.headers);
+  const privateRead = headers.has("Authorization") || headers.has("X-Google-Token");
+  const requestSession = headers.has("X-Google-Token") ? state.googleSession : null;
+  const destination = new URL(API_BASE + path, location.href);
+  const trustedOrigins = ["https://token-horizon.dev", "https://www.token-horizon.dev", "https://tokens.benebsworth.com"];
+  if (privateRead && destination.origin !== location.origin && !trustedOrigins.includes(destination.origin)) {
+    throw new Error("Sign-in is unavailable for this custom API address. Open Token Horizon to manage your account.");
+  }
+  const bypass = privateRead || opts.cache === "reload" || opts.cache === "no-store";
   if (isGet && !bypass) {
     const hit = apiCache.get(key);
     if (hit && Date.now() - hit.at < hit.ttl) { perf.apiCacheHits++; return JSON.parse(hit.text); }
@@ -1381,18 +1433,21 @@ async function api(path, opts = {}) {
   }
   perf.apiRequests++;
   const request = (async () => {
-    const res = await fetch(API_BASE + path, opts);
+    const { timeoutMs, ...fetchOptions } = opts;
+    const { response: res, text } = await fetchText(destination.href,
+      privateRead ? { ...fetchOptions, redirect: "error" } : fetchOptions,
+      isGet ? (timeoutMs ?? API_READ_TIMEOUT) : 0);
     if (!res.ok) {
       let msg = "HTTP " + res.status;
       let code = "";
       try {
-        const j = await res.json();
+        const j = JSON.parse(text);
         if (j && j.error) msg = j.error;
         if (j && j.code) code = j.code;
       } catch (_) {}
       // A rejected/expired Google credential must not keep masquerading as a
       // signed-in session — drop it and surface the sign-in button again.
-      if (res.status === 401 && state.googleSession &&
+      if (res.status === 401 && requestSession && state.googleSession === requestSession &&
           (code === "auth_required" || (state.googleClientId && !isGoogleSessionValid()))) {
         setGoogleSession(null);
         msg = "Google session expired — sign in again.";
@@ -1402,15 +1457,15 @@ async function api(path, opts = {}) {
       err.status = res.status;
       throw err;
     }
-    const text = await res.text();
-    if (isGet) {
+    JSON.parse(text); // Never cache an invalid/truncated response.
+    if (isGet && !privateRead && opts.cache !== "no-store" && !/\b(?:private|no-store)\b/i.test(res.headers.get("cache-control") || "")) {
       const ttl = parseMaxAge(res.headers.get("cache-control")) ?? API_DEFAULT_TTL;
       apiCache.set(key, { at: Date.now(), ttl, text });
     }
     return text;
   })();
-  if (isGet) {
-    const cleanup = () => apiInflight.delete(key);
+  if (isGet && !privateRead && opts.cache !== "no-store") {
+    const cleanup = () => { if (apiInflight.get(key) === request) apiInflight.delete(key); };
     request.then(cleanup, cleanup);   // handled rejection, no unhandled warning
     apiInflight.set(key, request);
   }
@@ -1421,22 +1476,37 @@ function getGoogleSession() {
   try { return JSON.parse(localStorage.getItem("th_google_session") || "null"); } catch (_) { return null; }
 }
 function setGoogleSession(s) {
+  const previousIdentity = state.googleSession?.sub || state.googleSession?.email;
+  const nextIdentity = s?.sub || s?.email;
+  if (previousIdentity !== nextIdentity && workspaceAutoHandle && state.currentHandle === workspaceAutoHandle) {
+    state.currentHandle = null;
+    workspaceAutoHandle = "";
+    if (state.view === "dashboard") {
+      const url = new URL(location.href);
+      url.searchParams.delete("user");
+      history.replaceState(history.state, "", url);
+    }
+  }
   if (s) localStorage.setItem("th_google_session", JSON.stringify(s));
   else localStorage.removeItem("th_google_session");
   state.googleSession = s;
+  workspaceAccount = null;
   renderAuthSlot();
+  if (!s && state.view === "dashboard") render();
 }
 function googleHeaders(extra = {}) {
   const headers = { "Content-Type": "application/json", ...extra };
   const s = state.googleSession;
   if (s && s.credential) headers["X-Google-Token"] = s.credential;
-  else if (s && s.email && !state.googleClientId) headers["X-Google-Token"] = "google:" + s.email;
+  else if (s && s.email && legacyGoogleAuthAllowed()) headers["X-Google-Token"] = "google:" + s.email;
   return headers;
 }
 /// GSI ID tokens expire (~1h); a credential-less session is a stale dev-mode
 /// artifact. Treat both as signed out so we never claim a session the worker
 /// will reject.
+function legacyGoogleAuthAllowed() { return state.googleConfig === "ready" && !state.googleClientId; }
 function isGoogleSessionValid() {
+  if (state.googleConfig !== "ready") return false;
   const s = state.googleSession;
   if (!s) return false;
   if (state.googleClientId) {
@@ -1512,6 +1582,7 @@ function renderGoogleButton(container, opts = {}) {
   }
 }
 function promptGoogleLogin() {
+  if (!legacyGoogleAuthAllowed()) { openSignInModal(); return; }
   // Legacy dev fallback (no GOOGLE_CLIENT_ID configured on the worker).
   const email = prompt("Sign in with Google (dev mode — no OAuth client configured):", state.googleSession?.email || "");
   if (!email || !email.includes("@")) return;
@@ -1522,6 +1593,30 @@ function promptGoogleLogin() {
 
 const GOOGLE_G = '<svg width="15" height="15" viewBox="0 0 48 48"><path fill="#EA4335" d="M24 9.5c3.5 0 6.6 1.2 9.1 3.6l6.8-6.8C35.6 2.4 30.1 0 24 0 14.6 0 6.5 5.4 2.6 13.2l7.9 6.2C12.4 13.3 17.7 9.5 24 9.5z"/><path fill="#4285F4" d="M46.5 24.5c0-1.6-.1-3.1-.4-4.5H24v9h12.7c-.6 3-2.3 5.5-4.8 7.2l7.6 5.9c4.4-4.1 7-10.2 7-17.6z"/><path fill="#FBBC05" d="M10.5 28.6c-.5-1.5-.8-3-.8-4.6s.3-3.1.8-4.6l-7.9-6.2C1 16.3 0 20 0 24s1 7.7 2.6 10.8l7.9-6.2z"/><path fill="#34A853" d="M24 48c6.1 0 11.3-2 15-5.5l-7.6-5.9c-2.1 1.4-4.6 2.2-7.4 2.2-6.3 0-11.6-3.8-13.5-9.1l-7.9 6.2C6.5 42.6 14.6 48 24 48z"/></svg>';
 
+let authConfigFlight;
+function loadAuthConfig() {
+  if (authConfigFlight) return authConfigFlight;
+  state.googleConfig = "loading";
+  authConfigFlight = (async () => {
+    try {
+      const cfg = await api("/api/config");
+      if (typeof cfg.googleClientId !== "string") throw new Error("Invalid sign-in configuration.");
+      state.googleClientId = cfg.googleClientId;
+      state.googleConfig = "ready";
+      initGoogleSignIn();
+    } catch (_) {
+      // Unknown configuration must never activate the legacy dev flow.
+      state.googleConfig = "error";
+    } finally {
+      authConfigFlight = null;
+      renderAuthSlot();
+      mountSignInOptions();
+      if (state.view === "settings" && state.googleConfig === "ready") render();
+    }
+  })();
+  return authConfigFlight;
+}
+
 function renderAuthSlot() {
   const slot = $("#auth-slot");
   if (state.googleSession && state.googleClientId && !isGoogleSessionValid()) {
@@ -1531,7 +1626,7 @@ function renderAuthSlot() {
     state.googleSession = null;
     if (hadEmail) toast("Google session expired — sign in again");
   }
-  const s = state.googleSession;
+  const s = isGoogleSessionValid() ? state.googleSession : null;
   if (s) {
     slot.innerHTML = `<div class="user-chip" id="user-chip">${avatar(s.name || s.email, s.picture, 28)}<div><div style="font-size:12.5px;font-weight:600">${esc(s.name || s.email)}</div><small>Google · sign out</small></div></div>`;
     $("#user-chip").onclick = () => {
@@ -1544,8 +1639,8 @@ function renderAuthSlot() {
     return;
   }
   // One clear entry point into the animated sign-in modal.
-  const dev = !state.googleClientId;
-  const title = dev
+  const dev = legacyGoogleAuthAllowed();
+  const title = state.googleConfig !== "ready" ? "Sign-in settings are loading or unavailable; public data is ready to browse." : dev
     ? "Google login isn't configured on this deployment (set GOOGLE_CLIENT_ID on the worker)."
     : state.googleUnavailable
       ? "Google sign-in failed to load (script blocked or offline) — click to retry."
@@ -1556,7 +1651,7 @@ function renderAuthSlot() {
 
 /* ---------- navigation ---------- */
 const NAV = [
-  { id: "dashboard", label: "Dashboard", icon: '<path d="M4 11l8-7 8 7v9a1 1 0 01-1 1h-5v-6H10v6H5a1 1 0 01-1-1v-9z" stroke="currentColor" stroke-width="1.6" fill="none"/>' },
+  { id: "dashboard", label: "Workspace", icon: '<path d="M4 11l8-7 8 7v9a1 1 0 01-1 1h-5v-6H10v6H5a1 1 0 01-1-1v-9z" stroke="currentColor" stroke-width="1.6" fill="none"/>' },
   { id: "leaderboard", label: "Leaderboard", icon: '<path d="M8 21h8M12 17v4M7 4h10v5a5 5 0 01-10 0V4z" stroke="currentColor" stroke-width="1.6" fill="none"/><path d="M7 6H4v2a3 3 0 003 3M17 6h3v2a3 3 0 01-3 3" stroke="currentColor" stroke-width="1.6" fill="none"/>' },
   { id: "players", label: "Players", icon: '<circle cx="9" cy="8" r="3.2" stroke="currentColor" stroke-width="1.6" fill="none"/><path d="M3.5 20c0-3.3 2.5-5.5 5.5-5.5s5.5 2.2 5.5 5.5" stroke="currentColor" stroke-width="1.6" fill="none"/><path d="M16 6.5a3 3 0 010 5.8M17.5 14.6c2 .6 3.5 2.3 3.5 4.6" stroke="currentColor" stroke-width="1.6" fill="none"/>' },
   { id: "teams", label: "Teams", icon: '<circle cx="7" cy="9" r="2.6" stroke="currentColor" stroke-width="1.6" fill="none"/><circle cx="17" cy="9" r="2.6" stroke="currentColor" stroke-width="1.6" fill="none"/><path d="M2.5 19c0-2.6 2-4.4 4.5-4.4S11.5 16.4 11.5 19M12.5 19c0-2.6 2-4.4 4.5-4.4s4.5 1.8 4.5 4.4" stroke="currentColor" stroke-width="1.6" fill="none"/>' },
@@ -1567,7 +1662,7 @@ const NAV = [
 function renderNav() {
   const modelsNav = $("#models-nav");
   if (modelsNav) modelsNav.classList.toggle("active", state.view === "models");
-  $("#nav").innerHTML = NAV.map(n => `<div class="nav-item ${state.view === n.id ? "active" : ""}" data-view="${n.id}" tabindex="0" role="link" aria-current="${state.view === n.id ? "page" : "false"}"><svg viewBox="0 0 24 24" fill="none">${n.icon}</svg><span>${n.label}</span></div>`).join("");
+  $("#nav").innerHTML = NAV.map(n => `<div class="nav-item ${state.view === n.id ? "active" : ""}" data-view="${n.id}" aria-label="${n.label}" tabindex="0" role="link" aria-current="${state.view === n.id ? "page" : "false"}"><svg viewBox="0 0 24 24" fill="none">${n.icon}</svg><span>${n.label}</span></div>`).join("");
   $$("#nav .nav-item").forEach(el => {
     el.onclick = () => navigate(el.dataset.view);
     keyActivate(el, () => navigate(el.dataset.view));
@@ -1581,6 +1676,8 @@ function keyActivate(el, fn) {
 }
 function navigate(view, opts = {}) {
   state.view = view;
+  if (view === "dashboard") workspaceAutoHandle = "";
+  if (view === "dashboard" && !opts.handle) state.currentHandle = null;
   if (opts.handle) state.currentHandle = opts.handle;
   if (opts.tab) state.profileTab = opts.tab;
   if (opts.modelsTab) state.modelsTab = opts.modelsTab;
@@ -1628,7 +1725,7 @@ window.addEventListener("popstate", () => {
   state.view = p.get("view") || (userPath ? "players" : /^\/models\/?$/.test(location.pathname) ? "models" : "leaderboard");
   state.modelsTab = ["providers", "plans", "cheapest"].includes(p.get("tab")) ? p.get("tab") : "explorer";
   const u = p.get("user");
-  if (u) state.currentHandle = u;
+  state.currentHandle = u || null;
   if (userPath) state.currentHandle = decodeURIComponent(userPath[1]);
   if (p.get("model")) mxState().pendingModel = p.get("model");
   if (p.get("provider")) mxState().pendingProviderFilter = p.get("provider");
@@ -1811,7 +1908,7 @@ function leaderboardTableHtml(d, local) {
 }
 function viewLeaderboard() {
   const d = state.data;
-  if (!d) return `<div class="card"><div class="skeleton" style="height:340px"></div></div>`;
+  if (!d) return '<div class="discovery-title"><div><span class="discovery-eyebrow">THE COMMUNITY</span><h1>Community leaderboard</h1><p>See what the community is building with AI.</p></div></div>' + discoveryLoading("Loading community activity", "lb-loading");
   const k = d.kpis || {};
   const local = (d.leaderboard || []).find(r => r.entry.isLocal);
   const season = d.season;
@@ -1970,35 +2067,52 @@ function syncDiscoveryChrome() {
   if (slot.parentElement !== home) home.append(slot);
   if (state.view !== "models") $("#mx-compare-tray")?.remove();
 }
+let renderVersion = 0;
 async function render() {
+  const version = ++renderVersion;
+  const route = state.view;
+  const current = () => version === renderVersion && route === state.view;
   syncDiscoveryChrome();
   const t0 = performance.now();
   perf.renders++;
   const view = $("#view");
-  // First paint is instant: show the skeleton shell while data loads instead
-  // of a blank content area (viewLeaderboard renders the same shell when
-  // state.data is absent, so this converges on the real view).
-  if (!state.data) view.innerHTML = viewLeaderboard();
+  if (route === "models") {
+    if (state.modelsTab === "providers" ? !state.providers : !mxState().catalog) {
+      view.innerHTML = mxLoadingHtml();
+      mxWireTabs();
+    }
+  } else if (route === "dashboard") {
+    view.innerHTML = '<section class="ws-boot" role="status" aria-label="Loading workspace"><div class="skeleton" style="height:32px;width:200px;margin-bottom:28px"></div><div class="skeleton" style="height:300px"></div></section>';
+  } else if (!state.data) view.innerHTML = viewLeaderboard();
   try {
-    await ensureData();
+    // Catalog browsing does not depend on leaderboard, auth, or adoption.
+    if (!["models", "dashboard"].includes(route)) await ensureData();
+    if (!current()) return;
     chartRegistry.clear();
+    chartFallbacks.clear();
     renderSeasonSelect();
     renderFilters();
-    switch (state.view) {
-      case "dashboard": await renderDashboard(); break;
-      case "players": await renderPlayers(); break;
-      case "teams": await renderTeams(); break;
-      case "models": await renderModels(); break;
-      case "billing": await renderBilling(); break;
-      case "leagues": await renderLeagues(); break;
-      case "settings": await renderSettings(); break;
+    switch (route) {
+      case "dashboard": await renderDashboard(current); break;
+      case "players": await renderPlayers(current); break;
+      case "teams": await renderTeams(current); break;
+      case "models": await renderModels(current); break;
+      case "billing": await renderBilling(current); break;
+      case "leagues": await renderLeagues(current); break;
+      case "settings": await renderSettings(current); break;
       default: view.innerHTML = viewLeaderboard(); wireLeaderboard();
     }
   } catch (err) {
-    view.innerHTML = `<div class="card"><div class="notice err">Failed to load dashboard data: ${esc(err.message)}</div></div>`;
+    if (!current()) return;
+    if (route === "models") {
+      view.innerHTML = mxLoadingHtml(err.message);
+      mxWireTabs();
+      $("#mx-retry").onclick = mxRetryLoad;
+    } else view.innerHTML = `<div class="card"><div class="notice err">Failed to load dashboard data: ${esc(err.message)}</div></div>`;
   }
-  // Demo fallback must never masquerade as live data.
-  if (state.demo && view.firstChild) {
+  if (!current()) return;
+  // Demo data never masquerades as live data or labels the independent catalog.
+  if (!["models", "dashboard"].includes(route) && state.demo && view.firstChild) {
     view.insertAdjacentHTML("afterbegin", `<div class="notice warn" style="margin-bottom:16px">Live API unreachable — showing bundled demo data. <button class="pill ghost" id="demo-retry" style="font-size:11px;margin-left:8px">Retry live data</button></div>`);
     const retry = $("#demo-retry");
     if (retry) retry.onclick = () => { clearApiCache(); state.data = null; state.dataSig = ""; state.demo = false; render(); };
@@ -2314,70 +2428,99 @@ function profileContent(p) {
 /* ============================================================
    VIEW: DASHBOARD (User Activity Deep Dive)
    ============================================================ */
-async function renderDashboard() {
-  const handle = state.currentHandle || (state.data?.leaderboard || [])[0]?.entry.handle;
-  if (!state.user || state.user.handle.toLowerCase() !== String(handle).toLowerCase()) await loadUser(handle);
-  const p = currentProfile();
-  if (!p) { $("#view").innerHTML = `<div class="empty">No players yet.</div>`; return; }
-  const e = p.entry;
-  const sessions = sessionRows(e, 8);
-  const anomalies = anomalyRows(e);
-  const cats = new Map();
-  for (const s of sessionRows(e, 30).filter(s => s.title)) cats.set(categorize(s.title), (cats.get(categorize(s.title)) || 0) + (s.tokens || 0));
-  const catRows = [...cats.entries()].map(([label, value]) => ({ label, value })).sort((a, b) => b.value - a.value);
-  const st = p.standing || {};
-  const league = leagueMeta(st.league);
-
-  $("#view").innerHTML = pageHead(["Users", e.handle], "User Activity Deep Dive", "Explore detailed activity, costs, and patterns for this user.", "Details turn usage into opportunity.")
-    + `<div class="card" style="margin-bottom:16px;display:flex;gap:20px;align-items:center;flex-wrap:wrap">
-        ${entryAvatar(e, 62)}
-        <div><div style="font-size:21px;font-weight:800">${esc(e.handle)}</div><div class="sub">${esc(e.team || "Personal")} · ${esc(e.hardware || "Apple Silicon")}</div></div>
-        <div style="display:flex;gap:12px;align-items:center">${leagueIcon(league.id, 54)}<div><div style="font-weight:700;color:${league.color}">${esc(league.title.toUpperCase())}</div><div class="mini">${fmtTokens(league.min)} – ${league.max ? fmtTokens(league.max) : "∞"} tokens</div></div></div>
-        <div style="margin-left:auto;display:flex;gap:30px;text-align:right">
-          <div><div class="kpi-label">Total Tokens</div><div style="font-size:20px;font-weight:800">${fmtTokens(e.tokensAll)}</div><div class="mini up">${p.rankDelta7d != null && p.rankDelta7d > 0 ? "▲ " + p.rankDelta7d + " ranks" : "top " + topPercent(p.percentile) + "%"}</div></div>
-          <div><div class="kpi-label">Total Cost</div><div style="font-size:20px;font-weight:800">${fmtCost(e.costAll)}</div><div class="mini">all-time</div></div>
-        </div>
-      </div>`
-    + profileKpis(p, { skipTotals: true })
-    + `<div class="two-col top" style="margin-bottom:16px">
-        <div class="card" style="padding:0;overflow:hidden">
-          <div class="card-head" style="padding:16px 16px 8px"><h3>Recent Activity</h3><span class="sub">detailed request history for this user</span></div>
-          <div style="overflow-x:auto"><table><thead><tr><th>Time</th><th>Prompt / App</th><th>Model</th><th class="right">Tokens</th><th class="right">Cost</th><th class="right">Requests</th></tr></thead><tbody>
-          ${sessions.map(s => `<tr><td class="faint" style="white-space:nowrap">${fmtDate(s.at)}</td><td>${s.title ? esc(s.title) : '<span class="faint">title private</span>'}${s.title ? "" : ' <span class="chip" style="font-size:9.5px;padding:2px 7px">🔒</span>'}</td><td>${sessionModelChip(s.provider, s.model)}</td><td class="num right">${fmtTokens(s.tokens)}</td><td class="num right">${fmtCost(s.cost)}</td><td class="num right">${fmtNum(s.requests)}</td></tr>`).join("") || '<tr><td colspan="6"><div class="empty">Prompt history isn&#39;t published for this profile — owners can enable it in Token Horizon settings.</div></td></tr>'}
-          </tbody></table></div>
-        </div>
-        <div class="grid" style="align-content:start">
-          <div class="card"><div class="card-head"><h3>League Activity</h3><button class="pill ghost" style="font-size:11px" data-view-leagues>View League →</button></div>
-            <div style="display:flex;gap:14px;align-items:center">${leagueIcon(league.id, 58)}<div><div style="font-weight:700;color:${league.color}">${esc(league.title.toUpperCase())} ${roman(st.division || 3)}</div><div class="mini">${fmtTokens(league.min)} – ${league.max ? fmtTokens(league.max) : "∞"} tokens</div></div></div>
-            <div class="progress" style="margin-top:12px"><i style="width:${st.mmrToNext != null ? Math.max(5, 100 - Math.min(100, (st.mmrToNext / 400) * 100)) : 100}%"></i></div>
-            <div class="mini" style="margin-top:6px">${st.mmrToNext != null ? fmtNum(st.mmrToNext) + " MMR to " + leagueMeta(nextLeague(st.league)).title : "Top league reached"}</div>
-            <div style="display:flex;gap:10px;margin-top:14px">
-              ${miniStat("🔥", (e.streakDays || 0) + "d", "Day Streak")}${miniStat("🏆", p.ranks?.week || p.rank, "Weekly Rank")}${miniStat("⚡", Math.round(p.efficiency || 0), "Efficiency")}
-            </div>
-          </div>
-          <div class="card"><div class="card-head"><h3>Achievements</h3><span class="sub">${(p.achievements || []).length} unlocked</span></div>
-            ${(p.achievements || []).slice(0, 4).map(a => `<div class="ach"><div class="ico">${esc(a.icon || "🏅")}</div><div><div class="t">${esc(a.title || a.id)}</div><div class="d">${esc(a.detail || "")}</div></div></div>`).join("") || '<div class="empty" style="padding:10px">None yet</div>'}
-          </div>
-          <div class="card"><div class="card-head"><h3>Anomalies & Spikes</h3><span class="sub">${anomalies.length} detected</span></div>
-            ${anomalies.map(a => `<div class="ach"><div class="ico">${a.level === "high" ? "🔴" : "🟠"}</div><div><div class="t">${esc(a.title)}</div><div class="d">${esc(a.detail)}</div></div></div>`).join("") || '<div class="empty" style="padding:10px">No anomalies in the last 7 days.</div>'}
-          </div>
-        </div>
-      </div>`
-    + `<div class="split" style="margin-bottom:16px">
-        <div class="card"><div class="card-head"><h3>Usage Over Time</h3><span class="chip">By Model</span></div>${(() => {
-          const modelData = modelHistoryChartData(e.breakdown?.modelHistory);
-          return modelData
-            ? stackedUsageChart(modelData, { height: 200, ariaLabel: "Token usage by model over time" })
-            : areaChart((e.breakdown?.history || []).map(x => ({ label: x.dayLabel || fmtDay(x.day), value: x.tokens || 0, cost: x.cost || 0 })), { color: "#38BDF8", height: 200 });
-        })()}</div>
-        <div class="card"><div class="card-head"><h3>Usage Heatmap</h3><span class="sub">${calendarHeatmap(e.breakdown?.daily) ? "last 17 weeks" : "when this user is most active"}</span></div>${calendarHeatmap(e.breakdown?.daily) || heatmap(e.breakdown?.hourly)}</div>
-      </div>`
-    + `<div class="three-col">
-        <div class="card"><div class="card-head"><h3>Usage by Model</h3><span class="sub">${modelsAllLink()}</span></div><div class="donut-wrap">${donut(aggregateModels([{ entry: e }]).slice(0, 5), 140, fmtTokens(e.tokensAll), "tokens")}<div class="legend">${aggregateModels([{ entry: e }]).slice(0, 5).map(s => `<div class="legend-row">${providerLogo(s.provider || s.label, 15)}${esc(s.label)}<span class="val">${fmtTokens(s.value)}</span></div>`).join("")}</div></div></div>
-        <div class="card"><div class="card-head"><h3>Cost by Project</h3></div>${barList((e.breakdown?.projects || []).slice(0, 6).map(pr => ({ label: pr.project, value: pr.cost, valueText: fmtCost(pr.cost) })), { labelWidth: 110 })}</div>
-        <div class="card"><div class="card-head"><h3>Prompt Categories</h3></div>${catRows.length ? barList(catRows, { labelWidth: 120 }) : '<div class="empty" style="padding:10px">Prompt titles are private — enable prompt history in Token Horizon settings.</div>'}</div>
-      </div>`;
-  wireProfile();
+let workspaceModuleFlight;
+let workspaceAccount;
+let workspaceAutoHandle = "";
+function loadWorkspaceModule() {
+  if (window.TokenHorizonWorkspace) return Promise.resolve(window.TokenHorizonWorkspace);
+  if (workspaceModuleFlight) return workspaceModuleFlight;
+  workspaceModuleFlight = new Promise((resolve, reject) => {
+    const script = document.createElement("script");
+    script.src = "./workspace.js?v=20260930";
+    script.async = true;
+    const timer = setTimeout(() => finish(new Error("Workspace took too long to load.")), 5000);
+    function finish(error) {
+      clearTimeout(timer);
+      script.onload = script.onerror = null;
+      if (error) { script.remove(); workspaceModuleFlight = null; reject(error); }
+      else resolve(window.TokenHorizonWorkspace);
+    }
+    script.onload = () => finish(window.TokenHorizonWorkspace ? null : new Error("Workspace could not start."));
+    script.onerror = () => finish(new Error("Workspace could not load. Check your connection and retry."));
+    document.head.append(script);
+  });
+  return workspaceModuleFlight;
+}
+async function loadWorkspaceAccount() {
+  if (state.googleSession && state.googleConfig === "loading") await loadAuthConfig();
+  if (!isGoogleSessionValid()) return { profiles: [] };
+  const key = state.googleSession.credential || state.googleSession.email;
+  if (workspaceAccount?.key === key && Date.now() - workspaceAccount.at < 30000) return workspaceAccount;
+  try {
+    const result = await api("/api/account/profiles", { headers: googleHeaders(), cache: "no-store" });
+    const account = { key, at: Date.now(), profiles: result.profiles || [] };
+    if (key === (state.googleSession?.credential || state.googleSession?.email)) workspaceAccount = account;
+    return account;
+  } catch (error) { return { profiles: [], error: error.message }; }
+}
+async function renderDashboard(current = () => true) {
+  const host = $("#view");
+  let handle = state.currentHandle || "";
+  let entry = null;
+  let error = "";
+  let profiles = [];
+  const retry = () => { workspaceAccount = null; clearApiCache(); render(); };
+  const select = value => {
+    const next = String(value || "").trim().replace(/^@/, "");
+    if (!next) return;
+    navigate("dashboard", { handle: next });
+  };
+  const readEntry = async selected => {
+    try { return { value: await api("/api/user/" + encodeURIComponent(selected)) }; }
+    catch (failure) { return { error: failure.message }; }
+  };
+  // An explicit published profile can load while account discovery is pending.
+  const accountRead = loadWorkspaceAccount();
+  let entryRead = handle ? readEntry(handle) : null;
+  let workspace;
+  try { workspace = await loadWorkspaceModule(); }
+  catch (failure) {
+    if (!current()) return;
+    host.innerHTML = `<section class="card" role="alert"><h1>Workspace</h1><p>${esc(failure.message)}</p><button class="pill" id="workspace-retry">Retry</button></section>`;
+    $("#workspace-retry").onclick = retry;
+    return;
+  }
+  const paint = loading => {
+    if (!current()) return;
+    workspace.render({ host, entry, profiles, selectedHandle: handle, loading, error,
+      signedIn: isGoogleSessionValid(), onSelect: select,
+      onSignIn: () => openSignInModal({ action: "Open your workspace" }), onRetry: retry });
+  };
+  paint(Boolean(handle || state.googleSession));
+  if (entryRead) {
+    const result = await entryRead;
+    if (!current()) return;
+    entry = result.value || null;
+    error = result.error || "";
+    paint(false);
+  }
+  const account = await accountRead;
+  if (!current()) return;
+  profiles = account.profiles;
+  if (!handle && profiles.length) {
+    handle = profiles[0].handle;
+    state.currentHandle = handle;
+    workspaceAutoHandle = handle;
+    const url = new URL(location.href);
+    url.searchParams.set("user", handle);
+    history.replaceState(history.state, "", url);
+    paint(true);
+    const result = await readEntry(handle);
+    if (!current()) return;
+    entry = result.value || null;
+    error = result.error || "";
+  } else if (!handle && account.error) error = account.error;
+  paint(false);
 }
 function miniStat(icon, value, label) {
   return `<div style="flex:1;text-align:center;background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:9px 6px"><div style="font-size:15px">${icon}</div><div style="font-weight:800;font-size:15px;margin-top:2px">${esc(value)}</div><div class="mini">${esc(label)}</div></div>`;
@@ -2386,9 +2529,10 @@ function miniStat(icon, value, label) {
 /* ============================================================
    VIEW: PLAYERS (Player Profile)
    ============================================================ */
-async function renderPlayers() {
+async function renderPlayers(current = () => true) {
   const handle = state.currentHandle || (state.data?.leaderboard || [])[0]?.entry.handle;
   if (!state.user || state.user.handle.toLowerCase() !== String(handle).toLowerCase()) await loadUser(handle);
+  if (!current()) return;
   const p = currentProfile();
   if (!p) { $("#view").innerHTML = `<div class="empty">No players yet.</div>`; return; }
   const progression = (p.rankHistory || []).slice(-12);
@@ -2446,8 +2590,9 @@ function stackedArea(series, labels, opts = {}) {
 /* ============================================================
    VIEW: LEAGUES & SEASON PROGRESSION
    ============================================================ */
-async function renderLeagues() {
+async function renderLeagues(current = () => true) {
   const s = await loadSeason();
+  if (!current()) return;
   const season = s.season || state.data?.season;
   const local = (state.data?.leaderboard || []).find(r => r.entry.isLocal) || (state.data?.leaderboard || [])[0];
   const distribution = s.distribution || [];
@@ -2523,8 +2668,9 @@ async function renderLeagues() {
 /* ============================================================
    VIEW: PROVIDERS (Provider Usage Breakdown)
    ============================================================ */
-async function renderProvidersTab() {
+async function renderProvidersTab(current = () => true) {
   const p = await loadProviders();
+  if (!current()) return;
   const rows = p.providers || [];
   const totalTokens = p.total || rows.reduce((s, r) => s + r.tokens, 0);
   const totalCost = rows.reduce((s, r) => s + r.cost, 0);
@@ -2793,39 +2939,69 @@ function mxListingsFor(m) {
     .sort((a, b) => (Number(a.blendedNetCost) || 0) - (Number(b.blendedNetCost) || 0) || String(a.id).localeCompare(String(b.id)));
 }
 
+function discoveryLoading(label, id) {
+  return `<div class="card discovery-loading" id="${id}" role="status" aria-live="polite" aria-busy="true">
+    <div class="discovery-loading-label"><span class="loading-eclipse" aria-hidden="true"></span><span>${esc(label)}<span aria-hidden="true">…</span></span></div>
+    <div class="loading-table" aria-hidden="true"><div class="loading-table-head"><i class="skeleton"></i><i class="skeleton"></i><i class="skeleton"></i></div>${Array.from({length: 7}, (_, i) => `<div class="loading-table-row" style="--delay:${i * 55}ms"><i class="skeleton loading-avatar"></i><span><i class="skeleton" style="width:${46 + i % 3 * 14}%"></i><i class="skeleton"></i></span><i class="skeleton"></i><i class="skeleton"></i></div>`).join("")}</div>
+  </div>`;
+}
+function mxLoadingHtml(error = "") {
+  return `<div class="discovery-title"><div><span class="discovery-eyebrow">THE MODEL DIRECTORY</span><h1>Find your next model.</h1><p>Compare capabilities, pricing and providers in one place.</p></div></div>${mxTabBarHtml()}
+    ${error ? `<div class="card" id="mx-load-error" role="alert"><h2>Catalog temporarily unavailable</h2><p class="sub">We couldn't load the model directory. Your filters are saved.</p><p class="sub">${esc(error)}</p><button class="pill primary" id="mx-retry" type="button">Retry catalog</button></div>`
+      : discoveryLoading("Loading " + (state.modelsTab === "providers" ? "provider activity" : "model catalog"), "mx-loading")}`;
+}
+function mxRetryLoad() {
+  const mx = mxState();
+  mx.error = "";
+  mx.catalog = null;
+  mx.mounted = false;
+  apiCache.delete("GET /api/models/catalog");
+  render();
+}
 async function mxLoad() {
   const mx = mxState();
   if (mx.catalog) return mx.catalog;
-  try {
-    mx.catalog = await api("/api/models/catalog");
-  } catch (e) {
+  if (mx.loading) return mx.loading;
+  mx.loading = (async () => {
+    let catalog;
+    const validate = value => {
+      if (!value || !Array.isArray(value.models)) throw new Error("Invalid catalog response");
+      return value;
+    };
     try {
-      const res = await fetch("./data/models.json", { cache: "force-cache" });
-      if (!res.ok) throw new Error("HTTP " + res.status);
-      mx.catalog = await res.json();
+      catalog = validate(await api("/api/models/catalog", { timeoutMs: 2500, priority: "high" }));
     } catch (_) {
-      mx.error = e.message || "catalog unavailable";
-      mx.catalog = { models: [], topPicks: [], providers: [], count: 0, schemaVersion: 0 };
+      // The same committed app export is available without the Worker API.
+      const { response, text } = await fetchText("./data/models.json", { cache: "force-cache", priority: "high" }, 3000);
+      if (!response.ok) throw new Error("Catalog request failed (HTTP " + response.status + ").");
+      catalog = validate(JSON.parse(text));
     }
-  }
-  mx.plans = mx.catalog.plans || [];
-  mx.models = (mx.catalog.models || []).map(m => {
-    m._hay = [m.name, m.id, m.providerName, m.provider, m.category, m.description].filter(Boolean).join(" ").toLowerCase();
-    m._key = m.stem || String(m.name || "").toLowerCase().replace(/\s+/g, " ").trim();
-    m._canon = mxKnownProvider(m) || mxHasBench(m) || Number(m.inputPerM) > 0 || Boolean(m.isLocal);
-    return m;
-  });
-  mxBuildProviders();
-  mxBuildPrimary();
-  mxBuildTable();
-  mxLoadUsage().then(() => {
+    mx.catalog = catalog;
+    mx.error = "";
+    mx.plans = catalog.plans || [];
+    mx.models = catalog.models.map(m => {
+      m._hay = [m.name, m.id, m.providerName, m.provider, m.category, m.description].filter(Boolean).join(" ").toLowerCase();
+      m._key = m.stem || String(m.name || "").toLowerCase().replace(/\s+/g, " ").trim();
+      m._canon = mxKnownProvider(m) || mxHasBench(m) || Number(m.inputPerM) > 0 || Boolean(m.isLocal);
+      return m;
+    });
+    mxBuildProviders();
     mxBuildPrimary();
-    mx.counts = null;
-    mxRefreshTableData();
-    if (mx.mounted) mxCompute(true);
-    mxRefreshOpenDrawer();
-  });
-  return mx.catalog;
+    mxBuildTable();
+    // Adoption enriches the mounted list in the background.
+    mxLoadUsage().then(() => {
+      if (state.mx !== mx) return;
+      mxBuildPrimary();
+      mx.counts = null;
+      mxRefreshTableData();
+      if (state.view === "models" && state.modelsTab === "explorer" && mx.mounted && $("#mx-scroll")) mxCompute(true);
+      if (state.view === "models") mxRefreshOpenDrawer();
+    }).catch(() => {});
+    return catalog;
+  })();
+  try { return await mx.loading; }
+  catch (error) { mx.error = error.message; throw error; }
+  finally { mx.loading = null; }
 }
 /// Headless TanStack Table v9: column sorting state is owned here, rows are
 /// rendered by the windowed list (`getRowModel()` order drives the list).
@@ -3574,9 +3750,10 @@ function mxPlanCardHtml(p) {
     </div>
   </div>`;
 }
-async function renderPlansTab() {
+async function renderPlansTab(current = () => true) {
   const mx = mxState();
   await mxLoad();
+  if (!current()) return;
   const flat = state.flatModels;
   const plans = mx.plans || [];
   $("#view").innerHTML = pageHead(["Analytics", "Models"], "Subscription Plans",
@@ -3636,9 +3813,10 @@ function mxCheapestLeaders(rows) {
     avgSavings: l.savings.length ? Math.round(l.savings.reduce((a, b) => a + b, 0) / l.savings.length) : null
   })).sort((a, b) => b.count - a.count || (b.avgSavings || 0) - (a.avgSavings || 0));
 }
-async function renderCheapestTab() {
+async function renderCheapestTab(current = () => true) {
   const mx = mxState();
   await mxLoad();
+  if (!current()) return;
   const flat = state.flatModels;
   const all = mxCheapestRows();
   const rows = all.slice().sort(mxCheapestComparator());
@@ -3697,7 +3875,7 @@ async function renderCheapestTab() {
       const key = cell.dataset.cheapSort;
       const cur = state.cheapSort || { key: "bestIn", dir: 1 };
       state.cheapSort = { key, dir: cur.key === key ? -cur.dir : (key === "name" ? 1 : -1) };
-      renderCheapestTab();
+      render();
     });
   }
   $$("#view .mx-cheap-table tbody tr[data-cheap-id]").forEach(tr => {
@@ -3751,24 +3929,25 @@ function mxCheapRowHtml(r) {
 }
 
 /* ---------- explorer mounting ---------- */
-async function renderModels() {
+async function renderModels(current = () => true) {
   const mx = mxState();
   if (state.modelsTab === "providers") {
     mx.mounted = false;
-    await renderProvidersTab();
+    await renderProvidersTab(current);
     return;
   }
   if (state.modelsTab === "plans") {
     mx.mounted = false;
-    await renderPlansTab();
+    await renderPlansTab(current);
     return;
   }
   if (state.modelsTab === "cheapest") {
     mx.mounted = false;
-    await renderCheapestTab();
+    await renderCheapestTab(current);
     return;
   }
   await mxLoad();
+  if (!current()) return;
   const appliedFilter = mxApplyPendingProvider();
   const needsRender = !mx.mounted || !$("#mx-scroll");
   if (needsRender) {
@@ -3936,7 +4115,7 @@ function mxWire() {
     }
   });
   const retry = $("#mx-retry");
-  if (retry) retry.onclick = () => { state.mx = null; render(); };
+  if (retry) retry.onclick = mxRetryLoad;
   mxEnsureDrawer();
 }
 
@@ -3998,8 +4177,9 @@ document.addEventListener("click", (e) => {
 /* ============================================================
    VIEW: TEAMS
    ============================================================ */
-async function renderTeams() {
+async function renderTeams(current = () => true) {
   const p = await loadProviders();
+  if (!current()) return;
   const teams = p.teams || [];
   $("#view").innerHTML = pageHead(["Players", "Teams"], "Team Leaderboard", "Aggregate usage across every team publishing to Token Horizon.", "Together, teams go further.")
     + apiErrBanner(state.providersError)
@@ -4029,8 +4209,9 @@ async function renderTeams() {
 /* ============================================================
    VIEW: BILLING
    ============================================================ */
-async function renderBilling() {
+async function renderBilling(current = () => true) {
   const p = await loadProviders();
+  if (!current()) return;
   const rows = p.providers || [];
   const totalTokens = rows.reduce((s, r) => s + r.tokens, 0);
   const totalCost = rows.reduce((s, r) => s + r.cost, 0);
@@ -4081,9 +4262,9 @@ function loadDefaultRules() {
 }
 function saveDefaultRules() { localStorage.setItem("th_share_rules", JSON.stringify(state.defaultRules)); }
 
-async function renderSettings() {
+async function renderSettings(current = () => true) {
   const handle = state.currentHandle || (state.data?.leaderboard || [])[0]?.entry.handle;
-  const session = state.googleSession;
+  const session = isGoogleSessionValid() ? state.googleSession : null;
   let shares = [], activity = [], groups = [], err = "";
   if (session) {
     try {
@@ -4091,6 +4272,7 @@ async function renderSettings() {
       shares = res.shares || []; activity = res.activity || []; groups = res.groups || [];
     } catch (e) { err = e.message; }
   }
+  if (!current()) return;
   state.shares = shares; state.groups = groups; state.activity = activity;
   const active = shares.filter(s => !s.revoked && (s.expiresAt || 0) * 1000 > Date.now());
   const internal = active.filter(s => ["people", "group", "org"].includes(s.scope));
@@ -4537,7 +4719,7 @@ function completeSignIn() {
   state.signInPending = null;
   closeModal();
   renderAuthSlot();
-  if (state.view === "settings") render();
+  if (state.view === "settings" || state.view === "dashboard") render();
   if (pendingAction && pendingAction.onSuccess) setTimeout(() => pendingAction.onSuccess(), 60);
 }
 function openSignInModal(opts = {}) {
@@ -4585,6 +4767,12 @@ function mountSignInOptions() {
   const host = $("#signin-gsi");
   if (!host) return;
   const status = $("#signin-status");
+  if (state.googleConfig !== "ready") {
+    status.textContent = state.googleConfig === "error" ? "Sign-in settings could not load. Public browsing is still available." : "Loading sign-in settings…";
+    host.innerHTML = state.googleConfig === "error" ? '<button class="pill" id="signin-config-retry">Retry sign-in</button>' : '<span class="spinner" aria-hidden="true"></span>';
+    $("#signin-config-retry")?.addEventListener("click", () => { loadAuthConfig(); mountSignInOptions(); });
+    return;
+  }
   if (state.googleReady) {
     status.textContent = "";
     host.innerHTML = `<div id="signin-gsi-btn"></div>`;
@@ -4679,10 +4867,12 @@ function openGroupModal(handle) {
    SHARED REPORT (?share=<id>)
    ============================================================ */
 async function renderSharedReport(id) {
+  const version = ++renderVersion;
   const view = $("#view");
   view.innerHTML = `<div class="card"><div class="skeleton" style="height:300px"></div></div>`;
   try {
     const res = await api("/api/shared/" + encodeURIComponent(id));
+    if (version !== renderVersion) return;
     const r = res.report;
     const share = res.share;
     view.innerHTML = pageHead(["Shared", "Report"], `${r.handle} — Usage Report`, `Shared report · ${share.scope} scope · expires ${share.expiresAt ? fmtDay(share.expiresAt) : "never"}`, "Usage today. A smarter tomorrow.")
@@ -4700,6 +4890,7 @@ async function renderSharedReport(id) {
           </tbody></table></div>
       </div>`;
   } catch (e) {
+    if (version !== renderVersion) return;
     view.innerHTML = pageHead(["Shared", "Report"], "Share link unavailable", "This share link may have expired or been revoked.", "")
       + `<div class="card"><div class="notice err">${esc(e.message)}</div><div style="margin-top:14px"><button class="pill" onclick="location.href=location.pathname">Back to leaderboard</button></div></div>`;
   }
@@ -4765,7 +4956,7 @@ async function saveAvatar(handle, payload) {
   const body = { handle, ...payload };
   const tokenEl = $("#avatar-claim-token");
   if (tokenEl && tokenEl.value.trim()) body.claimToken = tokenEl.value.trim();
-  if (state.googleSession && !state.googleClientId) {
+  if (state.googleSession && legacyGoogleAuthAllowed()) {
     body.googleUser = {
       email: state.googleSession.email, sub: state.googleSession.sub,
       name: state.googleSession.name, picture: state.googleSession.picture
@@ -4868,7 +5059,7 @@ function openClaimModal(handle) {
     }
     if (!email.includes("@")) { toast("Enter a valid email", true); return; }
     const body = { handle, claimToken: $("#claim-token").value.trim() || undefined };
-    if (!state.googleClientId) body.googleUser = { email, sub: "google_" + email };
+    if (legacyGoogleAuthAllowed()) body.googleUser = { email, sub: "google_" + email };
     try {
       await api("/api/claim", {
         method: "POST",
@@ -4907,7 +5098,7 @@ function openPublishModal() {
       if (!entry) throw new Error("No local entry found — is the app running?");
       const handle = $("#publish-handle").value.trim() || entry.handle;
       const payload = { ...entry, handle, claimToken: $("#publish-token").value.trim() || undefined };
-      if (state.googleSession && !state.googleClientId) {
+      if (state.googleSession && legacyGoogleAuthAllowed()) {
         payload.googleUser = { email: state.googleSession.email, sub: state.googleSession.sub, name: state.googleSession.name };
       }
       status.textContent = "Publishing…";
@@ -4959,16 +5150,22 @@ async function init() {
     brandLogo.addEventListener("mouseenter", () => NAVHOLE.resume());
     brandLogo.addEventListener("mouseleave", () => NAVHOLE.pause());
   }
-  // Public client config (Google OAuth client ID + season) from the worker.
-  try {
-    const cfg = await api("/api/config");
-    state.googleClientId = cfg.googleClientId || "";
-  } catch (_) {
-    state.googleClientId = "";
-  }
-  await Promise.all([CHARTS_READY, DICEBEAR_READY]);
-  initGoogleSignIn();
-  renderAuthSlot();
+  // Optional settings and visuals never sit on the content path.
+  loadAuthConfig();
+  CHARTS_READY.then(ready => { if (ready) enhanceOptionalVisuals(); });
+  DICEBEAR_READY.then(ready => { if (ready) enhanceOptionalVisuals(); });
+  FUSE_READY.then(ready => {
+    const mx = state.mx;
+    if (!ready || !mx) return;
+    mx.fuseReady = false;
+    if (state.view === "models" && mx.mounted && mx.query && $("#mx-scroll")) mxCompute(true);
+  });
+  TABLE_READY.then(ready => {
+    const mx = state.mx;
+    if (!ready || !mx?.catalog || mx.table) return;
+    mxBuildTable();
+    if (state.view === "models" && mx.mounted && $("#mx-scroll")) mxCompute(true);
+  });
   $("#global-search").addEventListener("focus", () => {
     if (state.view !== "leaderboard") navigate("leaderboard");
   });
@@ -4981,7 +5178,7 @@ async function init() {
     // payload fingerprint actually changed (no chart remounts on no-op ticks).
     if (state.view !== "leaderboard" || document.hidden) return;
     try {
-      if (await loadLeaderboard({ force: true })) render();
+      if (await loadLeaderboard({ force: true })) { if (state.view === "leaderboard") render(); }
       else perf.skippedRenders++;
     } catch (_) {}
   }, 30000);

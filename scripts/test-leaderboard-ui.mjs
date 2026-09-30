@@ -265,6 +265,174 @@ const FIXTURES = {
   '/api/models/usage': MX_USAGE
 };
 
+// Startup must depend only on the requested screen's data. Keep optional
+// responses pending (not failed) to reproduce the production infinite spinner.
+async function verifyStartupResilience(browser, filePath) {
+  console.log('Startup resilience: stalled optional services and catalog recovery...');
+  for (const view of ['models', 'leaderboard']) {
+    const ctx = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
+    const tab = await ctx.newPage();
+    const requests = [];
+    const failures = [];
+    tab.on('pageerror', e => failures.push(e.message));
+    await tab.route('https://accounts.google.com/**', () => {});
+    await tab.route('**/vendor/tanstack-charts.js', () => {});
+    await tab.route('**/vendor/dicebear.js', () => {});
+    await tab.route('https://token-horizon.dev/api/**', route => {
+      const pathname = new URL(route.request().url()).pathname;
+      requests.push(pathname);
+      if (['/api/config', '/api/models/usage'].includes(pathname) ||
+          (view === 'models' && pathname === '/api/leaderboard')) return;
+      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(FIXTURES[pathname] || {}) });
+    });
+    try {
+      const started = Date.now();
+      await tab.goto(filePath + '?view=' + view, { waitUntil: 'commit' });
+      await tab.waitForSelector(view === 'models' ? '#mx-rows .mx-row' : '#lb-table tbody tr', { timeout: 1500 });
+      console.log(`   ${view}: visible rows in ${Date.now() - started}ms with config/vendors stalled`);
+      if (view === 'models') {
+        if (requests.includes('/api/leaderboard')) throw new Error('Model catalog still depends on leaderboard startup');
+        await tab.fill('#mx-q', 'Opus');
+        await tab.waitForFunction(() => [...document.querySelectorAll('#mx-rows .mx-name')].every(e => /Opus/.test(e.textContent)));
+      }
+      await tab.getByRole('button', { name: 'Sign in', exact: true }).click();
+      await tab.waitForSelector('#signin-gsi');
+      if (await tab.locator('#signin-dev').count()) throw new Error('Pending auth config exposed legacy sign-in');
+      if (failures.length) throw new Error(failures.join('\n'));
+    } finally { await ctx.close(); }
+  }
+  // With the primary catalog stalled, the shipped snapshot must recover.
+  // If both sources fail, show an actionable error, then retry successfully.
+  for (const recover of [true, false]) {
+    const ctx = await browser.newContext();
+    const tab = await ctx.newPage();
+    let retry = false;
+    await tab.route('https://accounts.google.com/**', route => route.abort());
+    await tab.route('**/data/models.json', route => recover || retry
+      ? route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(MX_CATALOG) })
+      : route.fulfill({ status: 503, contentType: 'application/json', body: '{}' }));
+    await tab.route('https://token-horizon.dev/api/**', route => {
+      const pathname = new URL(route.request().url()).pathname;
+      if (pathname === '/api/models/catalog' && !retry) return;
+      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(FIXTURES[pathname] || {}) });
+    });
+    try {
+      await tab.goto(filePath + '?view=models', { waitUntil: 'domcontentloaded' });
+      if (!recover) {
+        await tab.waitForSelector('#mx-load-error', { timeout: 6500 });
+        retry = true;
+        await tab.click('#mx-retry');
+      }
+      await tab.waitForSelector('#mx-rows .mx-row', { timeout: 6500 });
+      if (await tab.locator('#mx-loading').count()) throw new Error('Model loading indicator never cleared');
+      console.log(`   stalled catalog: ${recover ? 'static snapshot fallback' : 'visible failure and retry'} passed`);
+    } finally { await ctx.close(); }
+  }
+}
+
+// A response that resolves after navigation must not repaint the newer route,
+// including tab changes that keep state.view === "models".
+async function verifyRouteRaces(browser, filePath) {
+  console.log('Async routes: late model/profile responses preserve the current view...');
+  const cases = [
+    { name: 'catalog → leaderboard', query: '?view=models', held: '/api/models/catalog', next: '[data-public-view="leaderboard"]', visible: '#lb-table tbody tr', view: 'leaderboard', kind: 'catalog' },
+    { name: 'profile → models', query: '?view=players&user=benebsworth', held: '/api/user/benebsworth', next: '#models-nav', visible: '#mx-rows .mx-row', view: 'models', kind: 'profile' },
+    { name: 'Plans → Providers', query: '?view=models&tab=plans', held: '/api/models/catalog', next: '[data-models-tab="providers"]', visible: '.prov-table', view: 'models', kind: 'catalog' }
+  ];
+  for (const scenario of cases) {
+    const ctx = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
+    const tab = await ctx.newPage();
+    const errors = [];
+    tab.on('pageerror', error => errors.push(error.message));
+    let release;
+    const heldResponse = new Promise(resolve => { release = resolve; });
+    let requested;
+    const heldRequest = new Promise(resolve => { requested = resolve; });
+    await tab.route('https://accounts.google.com/**', route => route.abort());
+    await tab.route('https://token-horizon.dev/api/**', async route => {
+      const pathname = new URL(route.request().url()).pathname;
+      if (pathname === scenario.held) { requested(); await heldResponse; }
+      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(FIXTURES[pathname] || {}) });
+    });
+    try {
+      await tab.goto(filePath + scenario.query, { waitUntil: 'domcontentloaded' });
+      await Promise.race([heldRequest, new Promise((_, reject) => setTimeout(() => reject(new Error('Expected request never started: ' + scenario.held)), 1500))]);
+      await tab.locator(scenario.next).click();
+      if (scenario.name === 'Plans → Providers') {
+        await tab.waitForFunction(() => /Provider/.test(document.querySelector('#view h1')?.textContent || ''));
+      } else await tab.waitForSelector(scenario.visible, { timeout: 1500 });
+      const heading = await tab.locator('#view h1').textContent();
+      release();
+      // Drain the delayed data load and two browser frames before asserting
+      // the prior render cannot replace the already visible destination.
+      await tab.waitForFunction(kind => kind === 'catalog'
+        ? Boolean(state.mx?.catalog && !state.mx.loading)
+        : state.user?.handle === 'benebsworth', scenario.kind, { timeout: 1500 });
+      await tab.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+      if (await tab.locator('#view h1').textContent() !== heading) throw new Error('Late response repainted ' + scenario.name);
+      if (await tab.locator('body').getAttribute('data-surface') !== scenario.view) throw new Error('Route chrome drifted: ' + scenario.name);
+      if (scenario.name !== 'Plans → Providers' && !(await tab.locator(scenario.visible).count())) throw new Error('Destination rows disappeared: ' + scenario.name);
+      if (scenario.name === 'Plans → Providers' && await tab.locator('.mx-plan-card').count()) throw new Error('Late catalog replaced Providers with Plans');
+      if (errors.length) throw new Error(errors.join('\n'));
+      console.log('   ' + scenario.name + ' passed');
+    } finally { release(); await ctx.close(); }
+  }
+}
+
+// Playwright route.fulfill sends a complete body. A native streaming Response
+// lets this test distinguish a headers-only timeout from an end-to-end read
+// deadline: fetch resolves, but response.text() cannot complete until aborted.
+async function verifyStalledBodies(browser, filePath) {
+  console.log('Response deadlines: unfinished JSON bodies recover without an endless loader...');
+  await Promise.all(['primary', 'static'].map(async source => {
+    const ctx = await browser.newContext();
+    const tab = await ctx.newPage();
+    const errors = [];
+    tab.on('pageerror', error => errors.push(error.message));
+    await tab.addInitScript(stalledSource => {
+      const originalFetch = window.fetch.bind(window);
+      window.__bodyStall = { headers: 0, aborts: 0, retry: false };
+      window.fetch = async (input, options = {}) => {
+        const url = new URL(typeof input === 'string' ? input : input.url, location.href);
+        const target = stalledSource === 'primary' ? '/api/models/catalog' : '/data/models.json';
+        if (!window.__bodyStall.retry && url.pathname.endsWith(target)) {
+          window.__bodyStall.headers++;
+          const stream = new ReadableStream({ start(controller) {
+            controller.enqueue(new TextEncoder().encode('{"models":['));
+            options.signal.addEventListener('abort', () => {
+              window.__bodyStall.aborts++;
+              controller.error(new DOMException('Body read aborted', 'AbortError'));
+            }, { once: true });
+          } });
+          return new Response(stream, { status: 200, headers: { 'Content-Type': 'application/json' } });
+        }
+        return originalFetch(input, options);
+      };
+    }, source);
+    await tab.route('https://accounts.google.com/**', route => route.abort());
+    await tab.route('**/data/models.json', route => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(MX_CATALOG) }));
+    await tab.route('https://token-horizon.dev/api/**', route => {
+      const pathname = new URL(route.request().url()).pathname;
+      const status = source === 'static' && pathname === '/api/models/catalog' ? 503 : 200;
+      return route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(FIXTURES[pathname] || {}) });
+    });
+    try {
+      await tab.goto(filePath + '?view=models', { waitUntil: 'domcontentloaded' });
+      await tab.waitForSelector(source === 'primary' ? '#mx-rows .mx-row' : '#mx-load-error', { timeout: 6500 });
+      const observed = await tab.evaluate(() => window.__bodyStall);
+      if (observed.headers !== 1 || observed.aborts !== 1) throw new Error(source + ' body was not read and aborted at its deadline: ' + JSON.stringify(observed));
+      if (source === 'static') {
+        await tab.evaluate(() => { window.__bodyStall.retry = true; });
+        await tab.click('#mx-retry');
+        await tab.waitForSelector('#mx-rows .mx-row', { timeout: 1500 });
+      }
+      if (await tab.locator('#mx-loading, #mx-load-error').count()) throw new Error('Stale loading/error UI after ' + source + ' body recovered');
+      if (errors.length) throw new Error(errors.join('\n'));
+      console.log('   ' + source + ' body: deadline abort and ' + (source === 'primary' ? 'snapshot fallback' : 'visible failure/retry') + ' passed');
+    } finally { await ctx.close(); }
+  }));
+}
+
 async function run() {
   const browser = await chromium.launch({ channel: 'chrome', headless: true });
   const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
@@ -284,6 +452,15 @@ async function run() {
   });
 
   const filePath = 'file://' + path.resolve('docs/leaderboard.html');
+  if (process.argv.includes('--startup-only')) {
+    try {
+      await verifyStartupResilience(browser, filePath);
+      await verifyRouteRaces(browser, filePath);
+      await verifyStalledBodies(browser, filePath);
+    }
+    finally { await browser.close(); }
+    return;
+  }
 
   console.log('1. Loading leaderboard view...');
   await page.goto(filePath);
@@ -1024,6 +1201,10 @@ async function run() {
   if (reduced !== '0s') throw new Error('Inspector ignores reduced motion');
   await page.keyboard.press('Escape');
   console.log('   filters, period reload, anonymous identity, comparison limit/persistence/focus, mobile controls and reduced motion passed');
+
+  await verifyStartupResilience(browser, filePath);
+  await verifyRouteRaces(browser, filePath);
+  await verifyStalledBodies(browser, filePath);
 
   console.log('19. Checking console errors...');
   const realErrors = errors.filter(e =>

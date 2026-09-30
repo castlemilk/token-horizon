@@ -581,6 +581,54 @@ describe('Cloudflare Worker API', () => {
     assert.ok(data.canonicalUrl.startsWith('https://'));
   });
 
+  it('account profiles returns only claimed profiles owned by the verified Google subject', async () => {
+    const clientId = 'test-account-client.apps.googleusercontent.com';
+    const { keyPair, jwk } = await makeGoogleKeyPair();
+    const env = createGoogleEnv(clientId, jwk);
+    env.LEADERBOARD_BUCKET = mockR2Bucket([
+      { handle: 'zeta', claimed: true, ownerId: 'google:alice-sub', googleEmail: 'alice@example.com', claimTokenHash: 'private', tokensAll: 100 },
+      { handle: 'alpha', displayName: 'Alpha workspace', claimed: true, ownerId: 'google:alice-sub' },
+      { handle: 'unclaimed', claimed: false, ownerId: 'google:alice-sub' },
+      { handle: 'other', claimed: true, ownerId: 'google:bob-sub', googleEmail: 'alice@example.com' },
+      { handle: 'email-only', claimed: true, googleEmail: 'alice@example.com' }
+    ]);
+    const token = await makeGoogleToken(keyPair, { clientId, sub: 'alice-sub', email: 'alice@example.com' });
+    const response = await worker.fetch(req('/api/account/profiles?handle=other', { headers: { 'X-Google-Token': token } }), env);
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get('Cache-Control'), 'private, no-store');
+    assert.deepEqual(await response.json(), { profiles: [
+      { handle: 'alpha', displayName: 'Alpha workspace' },
+      { handle: 'zeta', displayName: 'zeta' }
+    ] });
+    const stranger = await makeGoogleToken(keyPair, { clientId, sub: 'nobody', email: 'nobody@example.com' });
+    const empty = await worker.fetch(req('/api/account/profiles', { headers: { Authorization: `Bearer ${stranger}` } }), env);
+    assert.equal(empty.status, 200);
+    assert.deepEqual(await empty.json(), { profiles: [] });
+  });
+
+  it('account profiles rejects anonymous, expired and legacy production credentials', async () => {
+    const clientId = 'test-account-denied.apps.googleusercontent.com';
+    const { keyPair, jwk } = await makeGoogleKeyPair();
+    const env = createGoogleEnv(clientId, jwk);
+    const expired = await makeGoogleToken(keyPair, { clientId, exp: Math.floor(Date.now() / 1000) - 60 });
+    for (const headers of [{}, { 'X-Google-Token': expired }, { 'X-Google-Token': 'google:alice@example.com' }, { 'X-Claim-Token': 'claim-token' }]) {
+      const response = await worker.fetch(req('/api/account/profiles', { headers }), env);
+      assert.equal(response.status, 401);
+      assert.equal((await response.json()).code, 'auth_required');
+      assert.equal(response.headers.get('Cache-Control'), 'private, no-store');
+    }
+  });
+
+  it('account profiles retains the existing explicit legacy development auth mode', async () => {
+    const env = createEnv([
+      { handle: 'dev', claimed: true, ownerId: 'google:dev@example.com' },
+      { handle: 'other', claimed: true, ownerId: 'google:other@example.com' }
+    ]);
+    const response = await worker.fetch(req('/api/account/profiles', { headers: { 'X-Google-Token': 'google:dev@example.com' } }), env);
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { profiles: [{ handle: 'dev', displayName: 'dev' }] });
+  });
+
   it('Google ID token: verified RS256 token claims a profile', async () => {
     const clientId = 'test-client-id.apps.googleusercontent.com';
     const { keyPair, jwk } = await makeGoogleKeyPair();
@@ -735,19 +783,45 @@ describe('Cloudflare Worker API', () => {
       ASSETS: {
         async fetch(request) {
           seen.push(new URL(request.url).pathname);
-          return new Response(JSON.stringify(catalog), { status: 200, headers: { 'Content-Type': 'application/json' } });
+          return new Response(JSON.stringify(catalog), { status: 200, headers: { 'Content-Type': 'application/json', ETag: '"catalog-v1"' } });
         }
       }
     };
     const res = await worker.fetch(req('/api/models/catalog'), env);
     assert.equal(res.status, 200);
     assert.equal(res.headers.get('Access-Control-Allow-Origin'), '*');
+    assert.equal(res.headers.get('ETag'), '"catalog-v1"');
     const data = await res.json();
     assert.equal(data.count, 2);
     assert.equal(seen[0], '/data/models.json');
 
     const missing = await worker.fetch(req('/api/models/catalog'), createEnv());
     assert.equal(missing.status, 503);
+  });
+
+  it('catalog revalidation forwards validators and preserves a bodyless 304', async () => {
+    let assetRequest;
+    const modified = 'Wed, 30 Sep 2026 00:00:00 GMT';
+    const env = {
+      ...createEnv(),
+      ASSETS: { async fetch(request) {
+        assetRequest = request;
+        return new Response(null, { status: 304, headers: { ETag: '"catalog-v1"', 'Last-Modified': modified } });
+      } }
+    };
+    const res = await worker.fetch(req('/api/models/catalog', { headers: {
+      'If-None-Match': '"catalog-v1"', 'If-Modified-Since': modified,
+      Authorization: 'Bearer should-not-forward'
+    } }), env);
+    assert.equal(assetRequest.headers.get('If-None-Match'), '"catalog-v1"');
+    assert.equal(assetRequest.headers.get('If-Modified-Since'), modified);
+    assert.equal(assetRequest.headers.get('Authorization'), null);
+    assert.equal(res.status, 304);
+    assert.equal(await res.text(), '');
+    assert.equal(res.headers.get('ETag'), '"catalog-v1"');
+    assert.equal(res.headers.get('Last-Modified'), modified);
+    assert.equal(res.headers.get('Access-Control-Allow-Origin'), '*');
+    assert.match(res.headers.get('Cache-Control'), /max-age=300/);
   });
 
   it('GET /api/models/usage aggregates per-model adoption across profiles', async () => {
@@ -794,6 +868,32 @@ describe('Cloudflare Worker API', () => {
       assert.equal(target.pathname, '/leaderboard');
       assert.equal(target.search, new URL('https://token-horizon.dev' + path).search);
     }
+  });
+
+  it('period deep links render HTML for browsers while legacy JSON requests keep working', async () => {
+    const seen = [];
+    const env = {
+      ...createEnv(),
+      ASSETS: { async fetch(request) {
+        seen.push(new URL(request.url));
+        return new Response('<html>leaderboard</html>', { headers: { 'Content-Type': 'text/html', Vary: 'Accept-Encoding' } });
+      } }
+    };
+    for (const query of ['period=week', 'period=all&team=Engineering', 'format=json']) {
+      const html = await worker.fetch(req('/leaderboard?' + query, { headers: { Accept: 'text/html,application/xhtml+xml' } }), env);
+      assert.equal(html.headers.get('Content-Type'), 'text/html');
+      assert.equal(await html.text(), '<html>leaderboard</html>');
+      assert.equal(seen.at(-1).search, '?' + query);
+      assert.equal(html.headers.get('Vary'), 'Accept-Encoding, Accept');
+    }
+    for (const accept of ['application/json', '*/*']) {
+      const json = await worker.fetch(req('/leaderboard?period=week', { headers: { Accept: accept } }), env);
+      assert.match(json.headers.get('Content-Type'), /application\/json/);
+      assert.equal((await json.json()).period, 'week');
+      assert.equal(json.headers.get('Vary'), 'Accept');
+    }
+    const api = await worker.fetch(req('/api/leaderboard?period=week', { headers: { Accept: 'text/html' } }), env);
+    assert.equal((await api.json()).period, 'week');
   });
 
   it('GET /models rewrites to the dashboard models view', async () => {

@@ -327,6 +327,27 @@ body[data-mode] .universe :focus-visible {
     z-index: 1;
   }
 }
+/* Content-shaped placeholders preserve orientation while each view loads. */
+.discovery-loading { padding: 22px; overflow: hidden; }
+.discovery-loading-label { display: flex; gap: 12px; align-items: center; font-size: 13px; margin-bottom: 24px; }
+.loading-eclipse { width: 20px; height: 20px; border: 1px solid currentColor; border-radius: 50%; position: relative; animation: eclipse-breathe 1.6s ease-in-out infinite; }
+.loading-eclipse::after { content: ""; position: absolute; left: -5px; right: -5px; top: 9px; border-top: 1px solid currentColor; transform: rotate(-22deg); }
+.loading-table-head { display: grid; grid-template-columns: 1fr 100px 80px; gap: 28px; padding: 0 0 18px 48px; }
+.loading-table-head i { height: 7px; max-width: 80px; }
+.loading-table-row { display: grid; grid-template-columns: 32px 1fr 100px 80px; gap: 16px; align-items: center; min-height: 68px; border-top: 1px solid var(--line); }
+.loading-table-row > i:not(.loading-avatar) { height: 9px; width: 70%; justify-self: end; }
+.loading-avatar { width: 28px; height: 28px; border-radius: 7px; }
+.loading-table-row span { display: grid; gap: 8px; }
+.loading-table-row span i { height: 9px; }
+.loading-table-row span i + i { height: 6px; width: 25%; }
+body.discovery .discovery-loading .skeleton { background: linear-gradient(100deg, #e3e7df 15%, #f3f5ef 40%, #e3e7df 65%); background-size: 200% 100%; animation-delay: var(--delay, 0ms); }
+@keyframes eclipse-breathe { 50% { opacity: .38; transform: scale(.87); } }
+@media (max-width: 600px) {
+  .discovery-loading { padding: 16px; }
+  .loading-table-head { grid-template-columns: 1fr 55px; }
+  .loading-table-row { grid-template-columns: 28px 1fr 55px; gap: 12px; }
+  .loading-table-row > i:last-child, .loading-table-head > i:last-child { display: none; }
+}
 @media (prefers-reduced-motion: reduce) {
   :is(body.landing, body.discovery, body[data-mode]) *,
   :is(body.landing, body.discovery, body[data-mode]) *::before,

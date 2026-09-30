@@ -880,10 +880,39 @@ export default {
       }, 200, { "Cache-Control": "public, max-age=300, s-maxage=600" });
     }
 
-    // 3. GET /api/leaderboard (or /leaderboard with JSON accept / query)
+    // Account discovery must use verified ownership, never leaderboard rank
+    // or a matching public email address to choose the viewer's workspace.
+    if (request.method === "GET" && pathname === "/api/account/profiles") {
+      const headers = { "Cache-Control": "private, no-store" };
+      try {
+        const googleAuth = await parseGoogleAuth(request, {}, env);
+        if (!googleAuth) {
+          return jsonResponse({
+            ok: false,
+            code: "auth_required",
+            error: hasGoogleToken(request, {})
+              ? "Your Google session expired or was rejected — sign in again."
+              : "Sign in with Google to view your profiles."
+          }, 401, headers);
+        }
+        const entries = await getEntriesFromR2(env);
+        const profiles = entries
+          .filter(entry => entry.claimed === true && entry.ownerId === `google:${googleAuth.sub}`)
+          .map(entry => ({ handle: entry.handle, displayName: String(entry.displayName || entry.handle) }))
+          .sort((a, b) => a.handle.localeCompare(b.handle));
+        return jsonResponse({ profiles }, 200, headers);
+      } catch (_) {
+        return jsonResponse({ ok: false, error: "Could not load your profiles. Try again." }, 503, headers);
+      }
+    }
+
+    // 3. GET /api/leaderboard (or the legacy /leaderboard JSON endpoint).
+    // A browser reload of a period deep link must still render the page.
+    const accepts = request.headers.get("accept") || "";
     const isGetLeaderboard = request.method === "GET" && (
       pathname === "/api/leaderboard" ||
-      (pathname === "/leaderboard" && (request.headers.get("accept")?.includes("json") || searchParams.has("period") || searchParams.has("format")))
+      (pathname === "/leaderboard" && (accepts.includes("json") ||
+        (!accepts.includes("text/html") && (searchParams.has("period") || searchParams.has("format")))))
     );
     if (isGetLeaderboard) {
       const period = searchParams.get("period") || "today";
@@ -1010,7 +1039,8 @@ export default {
         usageHistory: aggregateUsageHistory(entries, Math.min(120, Math.max(7, parseInt(searchParams.get("historyDays") || "30", 10) || 30))),
         leaderboard: ranked
       }, 200, {
-        "Cache-Control": "public, max-age=5, s-maxage=5, stale-while-revalidate=10"
+        "Cache-Control": "public, max-age=5, s-maxage=5, stale-while-revalidate=10",
+        ...(pathname === "/leaderboard" ? { "Vary": "Accept" } : {})
       });
     }
 
@@ -1857,15 +1887,21 @@ export default {
       if (env.ASSETS) {
         const assetUrl = new URL(request.url);
         assetUrl.pathname = "/data/models.json";
-        const asset = await env.ASSETS.fetch(new Request(assetUrl.toString()));
-        if (asset.ok) {
-          return new Response(asset.body, {
-            status: 200,
-            headers: {
-              ...CORS_HEADERS,
-              "Content-Type": "application/json;charset=utf-8",
-              "Cache-Control": "public, max-age=300, s-maxage=3600"
-            }
+        const conditionalHeaders = new Headers();
+        for (const name of ["If-None-Match", "If-Modified-Since"]) {
+          if (request.headers.has(name)) conditionalHeaders.set(name, request.headers.get(name));
+        }
+        const asset = await env.ASSETS.fetch(new Request(assetUrl.toString(), { headers: conditionalHeaders }));
+        if (asset.ok || asset.status === 304) {
+          // Keep the asset validators so a stale browser cache can revalidate
+          // without downloading the entire catalog again.
+          const headers = new Headers(asset.headers);
+          for (const [name, value] of Object.entries(CORS_HEADERS)) headers.set(name, value);
+          headers.set("Content-Type", "application/json;charset=utf-8");
+          headers.set("Cache-Control", "public, max-age=300, s-maxage=3600");
+          return new Response(asset.status === 304 ? null : asset.body, {
+            status: asset.status,
+            headers
           });
         }
       }
@@ -1976,7 +2012,11 @@ export default {
         newUrl.searchParams.set("view", "models");
         return env.ASSETS.fetch(new Request(newUrl.toString(), request));
       }
-      return env.ASSETS.fetch(request);
+      const asset = await env.ASSETS.fetch(request);
+      if (pathname !== "/leaderboard") return asset;
+      const headers = new Headers(asset.headers);
+      headers.append("Vary", "Accept");
+      return new Response(asset.body, { status: asset.status, statusText: asset.statusText, headers });
     }
 
     return new Response("Not Found", { status: 404 });

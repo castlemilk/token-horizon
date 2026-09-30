@@ -60,11 +60,11 @@ coverage:
 leaderboard-test:
 	node --test cloudflare/worker.test.mjs
 	node scripts/test-leaderboard-ui.mjs
+	node scripts/test-workspace-ui.mjs
 
 mcp-test:
 	cd mcp && npm test
 
 mcp-session:
 	cd mcp && npm run session
-
 

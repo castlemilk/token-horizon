@@ -78,7 +78,9 @@ jobs:
           node mcp/test-server-errors.mjs
 
       - name: Dashboard UI regression (hermetic fixtures)
-        run: node scripts/test-leaderboard-ui.mjs
+        run: |
+          node scripts/test-leaderboard-ui.mjs
+          node scripts/test-workspace-ui.mjs
 
       - name: Dashboard render/API budgets
         run: node scripts/bench-leaderboard.mjs

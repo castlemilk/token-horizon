@@ -50,6 +50,15 @@
       "refinementPrompts": [],
       "originalFilename": "exec-8711613f-bbe5-4c78-b6e3-116398f1c0ca.png",
       "styleReference": "concepts/01-direction.png"
+    },
+    {
+      "file": "concepts/06-workspace.png",
+      "width": 1586,
+      "height": 992,
+      "prompt": "prompts/06-workspace.txt",
+      "refinementPrompts": [],
+      "originalFilename": "exec-7b010cbe-ac23-4519-af9f-20b2f849b7df.png",
+      "styleReference": null
     }
   ],
   "vectors": {
@@ -78,8 +87,8 @@
     },
     {
       "path": "README.md",
-      "bytes": 3159,
-      "sha256": "dd09b4edb950a8c11fe89be115646a891a612ace13ed74ab087e3ae3a2620f03"
+      "bytes": 3342,
+      "sha256": "17daeb660e92859c42b87000ca09aba07c8c0edfde1ca5a89a944480239bf207"
     },
     {
       "path": "VERIFICATION.md",
@@ -280,6 +289,16 @@
       "path": "tokens.json",
       "bytes": 2694,
       "sha256": "f8c8533cfe0673773008b443fb5648e4e150c2125a7c6ae4cf0c596e29a3dffb"
+    },
+    {
+      "path": "concepts/06-workspace.png",
+      "bytes": 1304035,
+      "sha256": "ad29a20cee7808cf42bee83a41cbb9799f477c4d273f6699c221d9cbcb621acd"
+    },
+    {
+      "path": "prompts/06-workspace.txt",
+      "bytes": 2697,
+      "sha256": "6ceae3a49bfe77c019a8b58174dbdcf3d28d2430dd2fe42ebbb2a8ab47583548"
     }
   ]
 }

@@ -22,7 +22,7 @@ the dashboard, the worker, or the published entry schema.
 
 `docs/discovery.css` opts the leaderboard and all model routes into the approved
 ivory/graphite/mint design. The shared public header links to the landing,
-documentation and Workspace (the existing personal analytics shell). See
+documentation and the observability Workspace. See
 [DISCOVERY.md](docs/DISCOVERY.md) for design alignment and validation.
 
 The catalog keeps Fuse, primary-listing dedupe, app-exported pricing, provider
@@ -62,16 +62,44 @@ Model selection survives search and filters; nothing is sent to a server.
 | Top prompts/workloads, recent activity | ✅ | From published sessions (title, provider, model, tokens, cost, requests) |
 | Peer comparison, achievements | ✅ | Percentile/team rank; achievements derived from real thresholds |
 
-### Screen 1 — User Activity Deep Dive ✅
+### Screen 1 — Observability Workspace ✅
 
-Recent-activity table, GitHub-style calendar heatmap, stacked usage over time,
-model donut, cost by project, prompt categories, league activity, achievements,
-anomalies. The heatmap renders the trailing 17-week contribution calendar when
-more than a week of daily history is published (`breakdown.daily`), falling
-back to the weekday × hour grid; anomalies are z-score flags over the published
-7-day history; prompt categories are keyword heuristics over session titles.
-Prompt/session titles are **private by default** (`leaderboardSharePrompts`,
-off) — panels show a privacy note until the owner opts in.
+`?view=dashboard` loads the independent `docs/workspace.js` view with
+`docs/workspace.css`: Overview, Models & costs, Activity and Optimize. It uses
+the full `/api/user/:handle` snapshot for provider history, model token splits,
+costs, sessions, projects and capture sources. Model links open the catalog
+drawer; optimization suggestions cite actual cost concentrations or sessions,
+without claiming unmeasured savings. Old snapshots are visibly dated.
+
+Anonymous visitors choose a public handle explicitly. Signed-in visitors can
+select their claimed profiles from `/api/account/profiles`, which verifies the
+Google subject against `ownerId`, returns only handle/display name, and is
+`private, no-store`. Neither Workspace nor Models waits for leaderboard data.
+Failed profile reads never substitute another participant's data.
+
+Session titles remain **private by default**; metadata still renders. Zero
+costs can mean hidden or unavailable values and are labeled accordingly. Cache
+metrics are not inferred from token differences. Full traces, latency, errors,
+quotas, hardware and engine telemetry remain local; the view explains this and
+links to `tokenhorizon://dashboard`. Gamified ranks and heatmaps remain in the
+separate public profile view.
+
+### Startup and loading resilience
+
+Auth settings and vendored charts, avatars, Fuse and table helpers load
+independently. Content-shaped skeletons use a subtle eclipse/shimmer animation
+and honor reduced motion. Public rows can render while optional services stall;
+late libraries enhance existing content. GET deadlines include reading the
+response body (5 seconds by default). Catalog reads use a 2.5-second primary
+deadline, then a 3-second static-export fallback, followed by a visible retry
+state. Conditional catalog requests retain asset validators and 304 responses.
+Render generations prevent old requests from overwriting a newer route.
+
+`scripts/test-workspace-ui.mjs` covers profile selection, session changes,
+private titles/costs, independent loading, search and narrow screens. The main
+UI suite covers stalled headers/bodies, static fallback, retry and route races.
+`scripts/bench-public-startup.mjs` measures live cold-browser time to usable
+rows; the existing render benchmark guards search and chart reuse budgets.
 
 ### Screen 4 — Leagues & Season Progression ✅
 
