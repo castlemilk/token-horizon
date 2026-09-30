@@ -438,7 +438,7 @@ async function verifyStalledBodies(browser, filePath) {
 
 async function run() {
   const browser = await chromium.launch({ channel: 'chrome', headless: true });
-  const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
+  const context = await browser.newContext({ viewport: { width: 1440, height: 1000 }, reducedMotion: 'no-preference' });
   const page = await context.newPage();
 
   const errors = [];
@@ -547,9 +547,12 @@ async function run() {
   if (navRest.replace(/\s/g, '').length < 40) throw new Error('Nav ASCII logo did not render');
   await page.hover('#brand-logo');
   const navF1 = await page.evaluate(() => document.querySelector('#nav-bh').textContent);
-  await page.waitForTimeout(500);
-  const navF2 = await page.evaluate(() => document.querySelector('#nav-bh').textContent);
-  if (navF1 === navF2) throw new Error('Nav ASCII logo did not animate on hover');
+  // A low-resolution ASCII frame can repeat, and busy CI runners can delay
+  // RAF delivery. Wait for an actual frame change rather than sampling once.
+  await page.waitForFunction(previous => {
+    const art = document.querySelector('#nav-bh');
+    return art && art.textContent !== previous;
+  }, navF1, { timeout: 3000 });
   await page.mouse.move(800, 500);
   await page.waitForTimeout(250);
   const navP1 = await page.evaluate(() => document.querySelector('#nav-bh').textContent);
