@@ -7,10 +7,11 @@
  */
 
 import { handleTeamRequest, applyTeamMemberships } from './team-invites.js';
+import { buildOgModel, renderProfileOgSvg, renderRestrictedOgSvg, OG_CARD_VERSION } from './og-card.js';
 
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
+  "Access-Control-Allow-Methods": "GET, HEAD, POST, DELETE, OPTIONS",
   "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Leaderboard-Secret, X-Claim-Token, X-Google-Token",
 };
 
@@ -1744,19 +1745,23 @@ export default {
       }
     }
 
-    // Public share link payload (respects anonymize/hide-cost options).
+    // Restricted reports require verified ownership or an explicitly named
+    // audience. A public-link capability deliberately makes the report public.
     if (pathname.startsWith("/api/shared/") && request.method === "GET") {
+      const privateHeaders = { "Cache-Control": "private, no-store", "Referrer-Policy": "no-referrer" };
       const id = pathname.slice("/api/shared/".length).replace(/[^a-zA-Z0-9]/g, "");
       const share = await getJson(env, `shares/${id}.json`);
-      if (!share) return jsonResponse({ ok: false, error: "Share link not found" }, 404);
-      if (share.revoked) return jsonResponse({ ok: false, error: "Share link was revoked" }, 410);
-      if (share.expiresAt && share.expiresAt * 1000 < Date.now()) {
-        return jsonResponse({ ok: false, error: "Share link expired" }, 410);
+      if (!share) return jsonResponse({ ok: false, error: "Share link not found" }, 404, privateHeaders);
+      if (share.revoked) return jsonResponse({ ok: false, error: "Share link was revoked" }, 410, privateHeaders);
+      if (share.expiresAt && share.expiresAt * 1000 <= Date.now()) {
+        return jsonResponse({ ok: false, error: "Share link expired" }, 410, privateHeaders);
       }
       const entries = await getEntriesFromR2(env);
-      const entry = entries.find(e => e.handle.toLowerCase() === share.handle.toLowerCase());
-      if (!entry) return jsonResponse({ ok: false, error: "Profile not found" }, 404);
-      return jsonResponse({ ok: true, share: { ...share, ownerKey: undefined }, report: buildSharedReport(entry, share.options, entries) });
+      const entry = entries.find(e => e.handle.toLowerCase() === String(share.handle || "").toLowerCase());
+      if (!entry) return jsonResponse({ ok: false, error: "Profile not found" }, 404, privateHeaders);
+      const access = await canReadSharedReport(env, request, share, entry, entries).catch(() => ({ ok: false, status: 503, code: "share_access_unavailable", error: "Report access could not be verified. Try again shortly." }));
+      if (!access.ok) return jsonResponse({ ok: false, code: access.code, error: access.error }, access.status, privateHeaders);
+      return jsonResponse({ ok: true, share: recipientShareMetadata(share), report: buildSharedReport(entry, share.options, entries) }, 200, privateHeaders);
     }
 
     if (pathname === "/api/groups" && request.method === "GET") {
@@ -1932,38 +1937,69 @@ export default {
       });
     }
 
-    // 6h. GET /api/og/profile/<handle>.png — dynamic OG usage card (PNG).
-    //     GET /api/og/share/<id>.png — share-report card honoring the
-    //     share's anonymize/hide-cost options. Social crawlers need a raster
-    //     image; the SVG card is rasterized by resvg-wasm at the edge.
-    if (request.method === "GET" && pathname.startsWith("/api/og/")) {
+    // Dynamic raster cards and their SVG source share the same published
+    // model. HEAD computes metadata without allocating a rasterizer.
+    if (["GET", "HEAD"].includes(request.method) && pathname.startsWith("/api/og/")) {
       const rest = safeDecode(pathname.slice("/api/og/".length));
       const stripExt = s => s.replace(/\.(png|svg)$/i, "");
       const wantsSvg = /\.svg$/i.test(rest) || searchParams.get("format") === "svg";
-      const respond = async (svg) => wantsSvg ? ogSvgResponse(svg) : ogImageResponse(await renderOgPng(svg));
-      const entries = await getEntriesFromR2(env);
-
-      if (rest.startsWith("share/")) {
+      const shared = rest.startsWith("share/");
+      const privateHeaders = { "Cache-Control": "private, no-store", "Referrer-Policy": "no-referrer" };
+      let svg, model;
+      if (shared) {
         const id = stripExt(rest.slice(6)).replace(/[^a-zA-Z0-9]/g, "");
         const share = await getJson(env, `shares/${id}.json`);
-        if (!share || share.revoked || (share.expiresAt && share.expiresAt * 1000 < Date.now())) {
-          return new Response("Not found", { status: 404 });
+        if (!share || share.revoked || (share.expiresAt && share.expiresAt * 1000 <= Date.now())) {
+          return new Response(request.method === "HEAD" ? null : "Not found", { status: 404, headers: privateHeaders });
         }
-        const entry = entries.find(e => e.handle.toLowerCase() === String(share.handle || "").toLowerCase());
-        if (!entry) return new Response("Not found", { status: 404 });
-        const svg = generateOgSvg(ogCardModel(entry, entries, {
-          anonymize: Boolean(share.options && share.options.anonymizeNames),
-          hideCost: Boolean(share.options && share.options.hideCost)
-        }), url.origin);
-        return respond(svg);
+        if (!isPublicShare(share)) {
+          // Even an authenticated owner receives the same private preview:
+          // crawlers cannot carry credentials, and their caches are public.
+          svg = renderRestrictedOgSvg();
+        } else {
+          const entries = await getEntriesFromR2(env);
+          const entry = entries.find(e => e.handle.toLowerCase() === String(share.handle || "").toLowerCase());
+          if (!entry) return new Response(request.method === "HEAD" ? null : "Not found", { status: 404, headers: privateHeaders });
+          model = ogCardModel(entry, entries, shareOgOptions(share));
+          svg = generateOgSvg(model);
+        }
+      } else {
+        const entries = await getEntriesFromR2(env);
+        const handle = stripExt(rest.replace(/^profile\//, "")).replace(/^@/, "").trim().toLowerCase();
+        const entry = handle && entries.find(e => e.handle.toLowerCase() === handle);
+        if (!entry) return new Response(request.method === "HEAD" ? null : "Not found", { status: 404, headers: { "Cache-Control": "no-store" } });
+        model = ogCardModel(entry, entries);
+        svg = generateOgSvg(model);
       }
-
-      const handle = stripExt(rest.replace(/^profile\//, ""))
-        .replace(/^@/, "").trim().toLowerCase();
-      const entry = handle && entries.find(e => e.handle.toLowerCase() === handle);
-      if (!entry) return new Response("Not found", { status: 404 });
-      const svg = generateOgSvg(ogCardModel(entry, entries), url.origin);
-      return respond(svg);
+      const fingerprint = await ogFingerprint(svg, model);
+      const headers = {
+        ...CORS_HEADERS,
+        "Content-Type": wantsSvg ? "image/svg+xml;charset=utf-8" : "image/png",
+        "Cache-Control": shared ? "private, no-store" : "public, max-age=300, s-maxage=300",
+        "ETag": `"og-${wantsSvg ? "svg" : "png"}-${fingerprint}"`,
+        "X-Content-Type-Options": "nosniff",
+        ...(shared ? { "Referrer-Policy": "no-referrer" } : {})
+      };
+      if (!shared && request.headers.get("If-None-Match") === headers.ETag) return new Response(null, { status: 304, headers });
+      if (request.method === "HEAD") return new Response(null, { headers });
+      // Resolve the current model before looking up the content-addressed edge
+      // image. A newly published card gets a new key immediately; generic or
+      // older ?v= links cannot pin a stale image beyond the five-minute TTL.
+      const edgeCache = !shared && typeof caches !== "undefined" ? caches.default : null;
+      const cacheKey = edgeCache ? new Request(`${url.origin}/api/og/profile/${encodeURIComponent(model.handle)}.${wantsSvg ? "svg" : "png"}?v=${fingerprint}`) : null;
+      if (edgeCache) {
+        try {
+          const cached = await edgeCache.match(cacheKey);
+          if (cached) return new Response(cached.body, { headers });
+        } catch (_) { /* A cache outage must not hide published cards. */ }
+      }
+      const image = new Response(wantsSvg ? svg : await renderOgPng(svg), { headers });
+      if (edgeCache) {
+        const write = edgeCache.put(cacheKey, image.clone()).catch(() => {});
+        if (ctx?.waitUntil) ctx.waitUntil(write);
+        else await write;
+      }
+      return image;
     }
 
     // Canonicalize the model explorer: /leaderboard?view=models → /models
@@ -2404,28 +2440,90 @@ async function getGroups(env, ownerKey) {
   return Array.isArray(groups) ? groups : [];
 }
 
+function isPublicShare(share) { return share.publicLink === true || share.scope === "public"; }
+
+function shareOgOptions(share) {
+  const options = share.options || {};
+  return {
+    anonymize: options.anonymizeNames === true,
+    hideCost: options.hideCost === true,
+    providerBreakdown: options.providerBreakdown !== false,
+    includeLeagueRank: options.includeLeagueRank !== false,
+    fullTokenCounts: options.fullTokenCounts !== false
+  };
+}
+
+// A recipient needs the report's controls, never its private audience list.
+function recipientShareMetadata(share) {
+  return {
+    id: share.id,
+    ...(share.options?.anonymizeNames ? {} : { handle: share.handle }),
+    scope: share.scope,
+    options: share.options || {},
+    publicLink: isPublicShare(share),
+    createdAt: share.createdAt,
+    expiresAt: share.expiresAt
+  };
+}
+
+async function canReadSharedReport(env, request, share, entry, entries) {
+  if (isPublicShare(share)) return { ok: true };
+  const google = await parseGoogleAuth(request, {}, env);
+  if (google && entry.claimed === true && entry.ownerId === `google:${google.sub}`) return { ok: true };
+  const claimToken = String(request.headers.get("X-Claim-Token") || "").trim();
+  if (!entry.claimed && entry.claimTokenHash && claimToken && await sha256Hex(claimToken) === entry.claimTokenHash) return { ok: true };
+  if (!google) return { ok: false, status: 401, code: "auth_required", error: "Sign in to view this private report." };
+
+  // Public handles are identifiers, not credentials. Only handles whose
+  // ownership matches this verified Google subject can authorize a reader.
+  const handles = new Set(entries.filter(e => e.claimed === true && e.ownerId === `google:${google.sub}`)
+    .map(e => e.handle.toLowerCase()));
+  const normalizedHandle = value => String(typeof value === "string" ? value : value?.handle || "").replace(/^@/, "").trim().toLowerCase();
+  const hasNamedRecipient = values => (Array.isArray(values) ? values : []).some(value => handles.has(normalizedHandle(value)));
+  if (share.scope === "people" && hasNamedRecipient(share.audience)) return { ok: true };
+  if (share.scope === "group") {
+    const groups = await getGroups(env, share.ownerKey);
+    const selected = new Set([...(Array.isArray(share.groups) ? share.groups : []), ...(Array.isArray(share.audience) ? share.audience : [])]
+      .map(value => String(typeof value === "string" ? value : value?.id || "").trim()));
+    if (groups.some(group => (selected.has(group.id) || selected.has(group.name)) && hasNamedRecipient(group.members))) return { ok: true };
+  }
+  if (share.scope === "org") {
+    // A matching display label or email domain cannot prove team membership.
+    // Fresh authoritative records also admit teammates before they publish.
+    const recipient = { handle: "_recipient", claimed: true, ownerId: `google:${google.sub}` };
+    await applyTeamMemberships(env, [entry, recipient], { fresh: true });
+    if (entry.teamId && entry.teamId === recipient.teamId) return { ok: true };
+  }
+  return { ok: false, status: 403, code: "share_access_denied", error: "This report is shared with a different audience." };
+}
+
 function buildSharedReport(entry, options, entries) {
   const opts = options || {};
   const sortedAll = [...entries].sort((a, b) => (b.tokensAll || 0) - (a.tokensAll || 0));
   const rank = sortedAll.findIndex(e => e.handle.toLowerCase() === entry.handle.toLowerCase()) + 1;
   const total = Math.max(1, entries.length);
   const st = standingFor(entry);
-  const roundTokens = (n) => opts.fullTokenCounts ? (n || 0) : Math.round((n || 0) / 1000) * 1000;
+  const roundTokens = (n) => opts.fullTokenCounts !== false ? (n || 0) : Math.round((n || 0) / 1000) * 1000;
   const report = {
     handle: opts.anonymizeNames ? "Anonymous" : entry.handle,
     team: opts.anonymizeNames ? "" : (entry.team || ""),
-    hardware: entry.hardware || "Apple Silicon",
+    ...(opts.anonymizeNames ? {} : { hardware: entry.hardware || "" }),
     tokensAll: roundTokens(entry.tokensAll),
     tokensAllFormatted: formatTokens(roundTokens(entry.tokensAll)),
+    tokensToday: roundTokens(entry.tokensToday),
+    tokensTodayFormatted: formatTokens(roundTokens(entry.tokensToday)),
     tokens7d: roundTokens(entry.tokens7d),
     tokens7dFormatted: formatTokens(roundTokens(entry.tokens7d)),
     streakDays: entry.streakDays || 0,
-    rank,
-    percentile: Math.round(((total - rank + 1) / total) * 100),
-    league: st.league,
-    leagueTitle: st.leagueTitle,
-    division: st.division,
-    mmr: st.mmr,
+    updatedAt: Number(entry.updatedAt) || 0,
+    ...(opts.includeLeagueRank === false ? {} : {
+      rank,
+      percentile: Math.round(((total - rank + 1) / total) * 100),
+      league: st.league,
+      leagueTitle: st.leagueTitle,
+      division: st.division,
+      mmr: st.mmr
+    }),
     season: seasonFor(),
     generatedAt: new Date().toISOString()
   };
@@ -2435,15 +2533,18 @@ function buildSharedReport(entry, options, entries) {
     report.cost7d = entry.cost7d || 0;
     report.cost7dFormatted = formatCurrency(entry.cost7d || 0);
   }
-  if (opts.providerBreakdown && entry.breakdown) {
-    report.models = (entry.breakdown.models || []).slice(0, 12).map(m => ({
+  if (opts.providerBreakdown !== false && entry.breakdown) {
+    report.models = (Array.isArray(entry.breakdown.models) ? entry.breakdown.models : []).filter(m => m && typeof m === "object").slice(0, 12).map(m => ({
       provider: m.provider,
       model: opts.anonymizeNames ? "redacted" : m.model,
       tokensAll: roundTokens(m.tokensAll),
       costAll: opts.hideCost ? undefined : (m.costAll || 0),
       sharePercent: m.sharePercent || 0
     }));
-    report.history = (entry.breakdown.history || []).map(h => ({ day: h.day, dayLabel: h.dayLabel, tokens: roundTokens(h.tokens), cost: opts.hideCost ? undefined : h.cost }));
+  }
+  if (entry.breakdown) {
+    report.history = (Array.isArray(entry.breakdown.history) ? entry.breakdown.history : []).filter(h => h && typeof h === "object").slice(-130).map(h => ({ day: h.day, dayLabel: h.dayLabel, tokens: roundTokens(h.tokens), cost: opts.hideCost ? undefined : h.cost }));
+    report.daily = (Array.isArray(entry.breakdown.daily) ? entry.breakdown.daily : []).filter(h => h && typeof h === "object").slice(-130).map(h => ({ day: h.day, tokens: roundTokens(h.tokens) }));
   }
   return report;
 }
@@ -2533,10 +2634,11 @@ function parseEntriesFromCSV(csvText) {
 
 // --- Dynamic OG share cards -------------------------------------------------
 // `GET /api/og/profile/<handle>.png` renders a 1200×630 "quick view" usage
-// card at the edge: identity + league/rank chips, hero token count, KPI strip,
-// a 14-day sparkline, and a provider-mix bar. Social crawlers need a raster
+// card at the edge: identity, token totals, a 17-week activity heatmap, and a
+// provider-mix bar. Social crawlers need a raster
 // image (SVG og:images are ignored), so resvg-wasm rasterizes the SVG —
-// bundled JetBrains Mono, since system fonts don't exist in Workers.
+// bundled Token Horizon Sans and JetBrains Mono fonts, since system fonts
+// don't exist in Workers.
 
 // Dynamic imports keep `node --test` working (Node can't resolve .wasm/.ttf);
 // wrangler/esbuild still bundles the modules for the worker.
@@ -2560,24 +2662,12 @@ function ogFonts() {
     ogFontsReady = Promise.all([
       import("../fonts/JetBrainsMono-Regular.ttf"),
       import("../fonts/JetBrainsMono-Bold.ttf"),
-      import("../fonts/JetBrainsMono-ExtraBold.ttf")
+      import("../fonts/JetBrainsMono-ExtraBold.ttf"),
+      import("../fonts/TokenHorizonSans-Regular.ttf"),
+      import("../fonts/TokenHorizonSans-SemiBold.ttf")
     ]).then(mods => mods.map(m => new Uint8Array(m.default)));
   }
   return ogFontsReady;
-}
-
-const OG_PROVIDER_COLORS = {
-  anthropic: "#D97757", openai: "#74AA9C", google: "#4285F4", meta: "#0866FF",
-  opencode: "#8B5CF6", minimax: "#F59E0B", kimi: "#EC4899", zhipu: "#22D3EE",
-  deepseek: "#4D6BFE", alibaba: "#FF6A00", openrouter: "#94A3B8", mistral: "#F59E0B",
-  xai: "#E7ECF5", local: "#22C55E", other: "#6B7280"
-};
-const OG_PALETTE = ["#4F8CFF", "#F59E0B", "#8B5CF6", "#22C55E", "#EC4899", "#38BDF8"];
-
-function ogHash(s) {
-  let h = 0;
-  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0;
-  return h;
 }
 
 const OG_PROVIDER_LABELS = {
@@ -2586,11 +2676,6 @@ const OG_PROVIDER_LABELS = {
   deepseek: "DeepSeek", alibaba: "Alibaba", openrouter: "OpenRouter",
   mistral: "Mistral", xai: "xAI", local: "Local", other: "Other"
 };
-
-function ogProviderColor(p) {
-  const key = normalizeProvider(p);
-  return OG_PROVIDER_COLORS[key] || OG_PALETTE[Math.abs(ogHash(String(p || "other"))) % OG_PALETTE.length];
-}
 
 /// decodeURIComponent that never throws on malformed %-sequences.
 function safeDecode(s) {
@@ -2604,238 +2689,74 @@ function ogEsc(s) {
 
 function ogRoman(n) { return ({ 1: "I", 2: "II", 3: "III" })[n] || String(n || ""); }
 
-function ogInitials(handle) {
-  const parts = String(handle || "").split(/[^a-z0-9]+/i).filter(Boolean);
-  return (parts.map(p => p[0]).join("") || "TH").slice(0, 2).toUpperCase();
-}
-
 /// Flatten an entry + its standing into the card's view model. `opts.anonymize`
 /// strips identity + provider attribution (share-report privacy), `hideCost`
 /// omits cost figures.
 function ogCardModel(entry, entries, opts = {}) {
-  const anonymize = Boolean(opts.anonymize);
-  const sortedAll = [...entries].sort((a, b) => (b.tokensAll || 0) - (a.tokensAll || 0));
-  const rankAll = sortedAll.findIndex(e => e.handle.toLowerCase() === entry.handle.toLowerCase()) + 1;
-  const sortedToday = [...entries].sort((a, b) => (b.tokensToday || 0) - (a.tokensToday || 0));
-  const rankToday = sortedToday.findIndex(e => e.handle.toLowerCase() === entry.handle.toLowerCase()) + 1;
-  const st = standingFor(entry);
-  const models = (entry.breakdown && entry.breakdown.models) || [];
-
-  const byProv = new Map();
-  for (const m of models) {
-    const p = normalizeProvider(m.provider);
-    byProv.set(p, (byProv.get(p) || 0) + (Number(m.tokensAll ?? m.tokens) || 0));
-  }
-  let mixTotal = 0;
-  for (const v of byProv.values()) mixTotal += v;
-  const mix = [...byProv.entries()]
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, 5)
-    .map(([provider, tokens]) => ({ provider, share: mixTotal > 0 ? tokens / mixTotal : 0 }));
-
-  const history = ((entry.breakdown && entry.breakdown.history) || [])
-    .slice(-14).map(h => Math.max(0, Number(h.tokens) || 0));
-
-  const percentile = Math.round(((entries.length - rankAll + 1) / Math.max(1, entries.length)) * 100);
-
-  return {
-    handle: anonymize ? "Anonymous" : entry.handle,
-    team: anonymize ? "" : (entry.team || "Personal"),
-    hardware: entry.hardware || "Apple Silicon",
-    league: st.league, leagueTitle: st.leagueTitle, leagueColor: st.leagueColor,
-    division: st.division, mmr: st.mmr,
-    rank: rankAll || 1, rankToday: rankToday || rankAll || 1,
-    total: Math.max(1, entries.length), percentile,
-    tokensToday: entry.tokensToday || 0,
-    tokens7d: entry.tokens7d || 0,
-    tokensAll: entry.tokensAll || 0,
-    costAll: opts.hideCost ? null : (entry.costAll || 0),
-    costToday: opts.hideCost ? null : (entry.costToday || 0),
-    requestsAll: entry.requestsAll || models.reduce((s, m) => s + (Number(m.requests) || 0), 0),
-    streakDays: entry.streakDays || 0,
-    mix: anonymize ? [] : mix,
-    history,
+  const rankBy = key => [...entries].sort((a, b) => (Number(b[key]) || 0) - (Number(a[key]) || 0))
+    .findIndex(e => e.handle.toLowerCase() === entry.handle.toLowerCase()) + 1;
+  const standing = standingFor(entry);
+  return buildOgModel(entry, {
+    rank: rankBy("tokensAll") || 1,
+    rankToday: rankBy("tokensToday") || 1,
+    total: Math.max(1, entries.length),
+    standing: { ...standing, title: standing.leagueTitle, color: standing.leagueColor },
     season: seasonFor(),
-    updatedAt: Number(entry.updatedAt) || 0
-  };
+    normalizeProvider,
+    ...opts
+  });
 }
 
-/// The 1200×630 "quick view usage" card. Pure SVG — resvg supplies fonts,
-/// gradients and rounded geometry; no emoji (no color-emoji font at the edge).
-function generateOgSvg(vm, origin) {
-  const W = 1200, H = 630;
-  const lc = vm.leagueColor || "#4F8CFF";
-  const handle = ogEsc(vm.handle);
-  const sub = ogEsc([vm.team, vm.hardware].filter(Boolean).join(" · ") || "Token Horizon");
-  const leagueTag = ogEsc(`${vm.leagueTitle} ${ogRoman(vm.division)}`.trim());
-  const seasonTag = ogEsc(vm.season ? vm.season.displayName : "");
+function generateOgSvg(vm) { return renderProfileOgSvg(vm); }
 
-  // 14-day sparkline (right of the hero number).
-  const spark = { x: 712, y: 318, w: 432, h: 118 };
-  let sparkPath = "", sparkArea = "", sparkDot = "";
-  if (vm.history.length >= 2) {
-    const max = Math.max(...vm.history, 1);
-    const step = spark.w / (vm.history.length - 1);
-    const pts = vm.history.map((v, i) => [
-      spark.x + i * step,
-      spark.y + spark.h - (v / max) * (spark.h - 8)
-    ]);
-    sparkPath = pts.map((p, i) => `${i ? "L" : "M"}${p[0].toFixed(1)},${p[1].toFixed(1)}`).join(" ");
-    sparkArea = `${sparkPath} L${pts[pts.length - 1][0].toFixed(1)},${spark.y + spark.h} L${spark.x},${spark.y + spark.h} Z`;
-    const last = pts[pts.length - 1];
-    sparkDot = `<circle cx="${last[0].toFixed(1)}" cy="${last[1].toFixed(1)}" r="5" fill="#38BDF8" stroke="#080B12" stroke-width="2"/>`;
-  } else {
-    sparkPath = `M${spark.x},${spark.y + spark.h - 8} L${spark.x + spark.w},${spark.y + spark.h - 8}`;
-  }
-
-  // KPI strip — four cells, cost cell blanked for hideCost shares.
-  const kpis = [
-    ["7D TOKENS", formatTokens(vm.tokens7d)],
-    ["ALL-TIME", formatTokens(vm.tokensAll)],
-    ["ALL-TIME COST", vm.costAll == null ? "hidden" : formatCurrency(vm.costAll)],
-    ["REQUESTS", formatTokens(vm.requestsAll)]
-  ];
-  const cellW = 264, gap = 12, cellY = 466, cellH = 84;
-  const cells = kpis.map(([label, value], i) => {
-    const x = 56 + i * (cellW + gap);
-    return `<rect x="${x}" y="${cellY}" width="${cellW}" height="${cellH}" rx="12" fill="#0F141E" stroke="#1E2635"/>
-      <text x="${x + 18}" y="${cellY + 28}" font-family="JetBrains Mono" font-size="13" font-weight="700" letter-spacing="1.5" fill="#5A6478">${label}</text>
-      <text x="${x + 18}" y="${cellY + 62}" font-family="JetBrains Mono" font-size="30" font-weight="800" fill="#E7ECF5">${ogEsc(value)}</text>`;
-  }).join("");
-
-  // Provider-mix stacked bar + legend.
-  const mixY = 560, mixX = 56, mixW = 1088;
-  let mixBar = "", mixLegend = "";
-  if (vm.mix.length) {
-    let cx = mixX;
-    const segs = vm.mix.map(s => ({ ...s, w: Math.max(3, s.share * mixW) }));
-    const over = segs.reduce((s, g) => s + g.w, 0) - mixW;
-    if (over > 0) segs[segs.length - 1].w = Math.max(3, segs[segs.length - 1].w - over);
-    mixBar = `<clipPath id="mixclip"><rect x="${mixX}" y="${mixY}" width="${mixW}" height="16" rx="8"/></clipPath>`
-      + `<g clip-path="url(#mixclip)">`
-      + segs.map(s => {
-        const r = `<rect x="${cx.toFixed(1)}" y="${mixY}" width="${s.w.toFixed(1)}" height="16" fill="${ogProviderColor(s.provider)}"/>`;
-        cx += s.w;
-        return r;
-      }).join("") + `</g>`;
-    let lx = mixX;
-    mixLegend = segs.map(s => {
-      const label = `${OG_PROVIDER_LABELS[s.provider] || s.provider} ${Math.round(s.share * 100)}%`;
-      const el = `<circle cx="${lx + 5}" cy="${mixY + 28}" r="5" fill="${ogProviderColor(s.provider)}"/>`
-        + `<text x="${lx + 15}" y="${mixY + 33}" font-family="JetBrains Mono" font-size="13.5" fill="#8B95A8">${ogEsc(label)}</text>`;
-      lx += 15 + Math.round(label.length * 8.1) + 22;
-      return el;
-    }).join("");
-  }
-
-  const chips = [
-    { text: `#${vm.rankToday} TODAY`, fg: "#38BDF8", w: 0 },
-    { text: leagueTag.toUpperCase(), fg: lc, w: 0 },
-    { text: `${formatTokens(vm.mmr)} MMR`, fg: "#8B95A8", w: 0 },
-    { text: `${vm.streakDays}D STREAK`, fg: "#F59E0B", w: 0 },
-    { text: `TOP ${Math.max(1, Math.round(100 - (Number(vm.percentile) || 0)))}%`, fg: "#4F8CFF", w: 0 }
-  ];
-  // Monospace font → measure by char count (JetBrains Mono advance ≈ .6em).
-  let chipX = 170;
-  const chipEls = chips.map(c => {
-    const w = Math.round(c.text.length * 7.8) + 22;
-    const el = `<rect x="${chipX}" y="262" width="${w}" height="26" rx="13" fill="${c.fg}22" stroke="${c.fg}55"/>
-      <text x="${chipX + w / 2}" y="279" text-anchor="middle" font-family="JetBrains Mono" font-size="12" font-weight="700" letter-spacing="0.5" fill="${c.fg}">${ogEsc(c.text)}</text>`;
-    chipX += w + 8;
-    return el;
-  }).join("");
-
-  const footerLeft = `token-horizon.dev${vm.handle === "Anonymous" ? "" : "/u/" + vm.handle}`;
-  const updatedLabel = vm.updatedAt
-    ? `updated ${new Date(vm.updatedAt * 1000).toISOString().slice(0, 10)}`
-    : "";
-
-  return `<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg">
-  <defs>
-    <radialGradient id="glow1" cx="58%" cy="-8%" r="72%"><stop offset="0%" stop-color="#4F8CFF" stop-opacity="0.13"/><stop offset="100%" stop-color="#4F8CFF" stop-opacity="0"/></radialGradient>
-    <radialGradient id="glow2" cx="98%" cy="18%" r="58%"><stop offset="0%" stop-color="#8B5CF6" stop-opacity="0.10"/><stop offset="100%" stop-color="#8B5CF6" stop-opacity="0"/></radialGradient>
-    <radialGradient id="glow3" cx="2%" cy="106%" r="52%"><stop offset="0%" stop-color="#38BDF8" stop-opacity="0.06"/><stop offset="100%" stop-color="#38BDF8" stop-opacity="0"/></radialGradient>
-    <linearGradient id="sparkFill" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#38BDF8" stop-opacity="0.30"/><stop offset="100%" stop-color="#38BDF8" stop-opacity="0"/></linearGradient>
-  </defs>
-  <rect width="${W}" height="${H}" fill="#080B12"/>
-  <rect width="${W}" height="${H}" fill="url(#glow1)"/>
-  <rect width="${W}" height="${H}" fill="url(#glow2)"/>
-  <rect width="${W}" height="${H}" fill="url(#glow3)"/>
-  <rect x="1" y="1" width="${W - 2}" height="${H - 2}" rx="22" fill="none" stroke="#1E2635" stroke-width="2"/>
-
-  <!-- brand -->
-  <circle cx="72" cy="66" r="17" fill="none" stroke="#4F8CFF" stroke-width="2.5"/>
-  <circle cx="72" cy="66" r="6.5" fill="#FFD185"/>
-  <text x="100" y="74" font-family="JetBrains Mono" font-size="23" font-weight="800" letter-spacing="3" fill="#E7ECF5">TOKEN HORIZON</text>
-  <text x="100" y="96" font-family="JetBrains Mono" font-size="12" letter-spacing="2.5" fill="#5A6478">AI USAGE LEADERBOARD</text>
-  ${seasonTag ? `<rect x="${W - 56 - seasonTag.length * 7.8 - 22}" y="46" width="${seasonTag.length * 7.8 + 22}" height="26" rx="13" fill="#8B5CF622" stroke="#8B5CF655"/>
-  <text x="${W - 56 - (seasonTag.length * 7.8 + 22) / 2}" y="63" text-anchor="middle" font-family="JetBrains Mono" font-size="12" font-weight="700" fill="#8B5CF6">${seasonTag.toUpperCase()}</text>` : ""}
-
-  <!-- identity -->
-  <circle cx="104" cy="196" r="46" fill="#0F141E" stroke="${lc}" stroke-width="2.5"/>
-  <text x="104" y="210" text-anchor="middle" font-family="JetBrains Mono" font-size="34" font-weight="800" fill="${lc}">${ogEsc(ogInitials(vm.handle))}</text>
-  <text x="170" y="188" font-family="JetBrains Mono" font-size="40" font-weight="800" fill="#E7ECF5">@${handle}</text>
-  <text x="170" y="226" font-family="JetBrains Mono" font-size="17" fill="#8B95A8">${sub}</text>
-  ${chipEls}
-
-  <!-- hero number + sparkline -->
-  <text x="56" y="338" font-family="JetBrains Mono" font-size="13" font-weight="700" letter-spacing="1.5" fill="#5A6478">TOKENS TODAY</text>
-  <text x="56" y="412" font-family="JetBrains Mono" font-size="88" font-weight="800" fill="#22C55E">${ogEsc(formatTokens(vm.tokensToday))}</text>
-  ${vm.costToday != null ? `<text x="56" y="442" font-family="JetBrains Mono" font-size="16" fill="#8B95A8">≈ ${ogEsc(formatCurrency(vm.costToday))} est. today · rank ${ogEsc("#" + vm.rank)} of ${vm.total}</text>`
-    : `<text x="56" y="442" font-family="JetBrains Mono" font-size="16" fill="#8B95A8">rank ${ogEsc("#" + vm.rank)} of ${vm.total}</text>`}
-  <text x="${spark.x}" y="${spark.y - 12}" font-family="JetBrains Mono" font-size="13" font-weight="700" letter-spacing="1.5" fill="#5A6478">LAST ${vm.history.length} DAYS</text>
-  ${sparkArea ? `<path d="${sparkArea}" fill="url(#sparkFill)"/>` : ""}
-  <path d="${sparkPath}" fill="none" stroke="#38BDF8" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
-  ${sparkDot}
-
-  ${cells}
-  ${mixBar}
-  ${mixLegend}
-  <text x="56" y="${H - 16}" font-family="JetBrains Mono" font-size="13" fill="#5A6478">${ogEsc(footerLeft)}</text>
-  <text x="${W - 56}" y="${H - 16}" text-anchor="end" font-family="JetBrains Mono" font-size="13" fill="#3A4356">${ogEsc(updatedLabel)}</text>
-</svg>`;
+async function ogFingerprint(svg, model) {
+  return `${OG_CARD_VERSION}-${(await sha256Hex(svg + (model ? JSON.stringify(model) : ""))).slice(0, 20)}`;
 }
 
 async function renderOgPng(svg) {
   const [resvgMod, fontBuffers] = await Promise.all([ogInit(), ogFonts()]);
   const resvg = new resvgMod.Resvg(svg, {
     fitTo: { mode: "original" },
-    font: {
-      fontBuffers,
-      loadSystemFonts: false,
-      defaultFontFamily: "JetBrains Mono"
-    },
-    background: "#080B12"
+    font: { fontBuffers, loadSystemFonts: false, defaultFontFamily: "Token Horizon Sans" },
+    background: "#F3F4EF"
   });
-  return resvg.render().asPng();
-}
-
-/// Raw-SVG variant of the card — for design iteration and Node-side tests
-/// (the wasm rasterizer only exists inside workerd).
-function ogSvgResponse(svg) {
-  return new Response(svg, {
-    status: 200,
-    headers: {
-      ...CORS_HEADERS,
-      "Content-Type": "image/svg+xml;charset=utf-8",
-      "Cache-Control": "public, max-age=300"
-    }
-  });
-}
-
-function ogImageResponse(png) {
-  return new Response(png, {
-    status: 200,
-    headers: {
-      ...CORS_HEADERS,
-      "Content-Type": "image/png",
-      // Per-hour freshness for crawlers; the ?v= pin on the URL busts longer.
-      "Cache-Control": "public, max-age=1800, s-maxage=21600"
-    }
-  });
+  let rendered;
+  try {
+    rendered = resvg.render();
+    // Copy out of WASM before releasing its buffers.
+    return rendered.asPng().slice();
+  } finally {
+    rendered?.free();
+    resvg.free();
+  }
 }
 
 // --- OG meta injection (crawler-safe profile/share pages) -------------------
+
+function ogPageResponse(request, response, privatePage = false) {
+  const headers = new Headers(response.headers);
+  headers.set("Vary", "Accept, User-Agent");
+  headers.set("Referrer-Policy", "no-referrer");
+  if (privatePage) headers.set("Cache-Control", "private, no-store");
+  return new Response(request.method === "HEAD" ? null : response.body, { status: response.status, headers });
+}
+
+async function plainOgPage(env, request, privatePage = false) {
+  const assetUrl = new URL(request.url);
+  assetUrl.pathname = "/leaderboard";
+  assetUrl.search = "";
+  const asset = await fetchCompleteOgAsset(env, assetUrl, request);
+  const html = (await asset.text()).replace(/<head>/i, '<head><base href="/">');
+  return ogPageResponse(request, new Response(html, { status: asset.status, headers: { "Content-Type": "text/html;charset=utf-8", "Cache-Control": "no-cache" } }), privatePage);
+}
+
+function fetchCompleteOgAsset(env, assetUrl, request) {
+  const headers = new Headers(request.headers);
+  headers.delete("If-None-Match");
+  headers.delete("If-Modified-Since");
+  headers.delete("Range");
+  return env.ASSETS.fetch(new Request(assetUrl.toString(), { method: "GET", headers }));
+}
 
 /// Fetch the SPA asset and inject per-target OG/Twitter meta into <head>.
 /// `<base href="/">` keeps the SPA's relative asset paths working when the
@@ -2844,36 +2765,45 @@ async function servePageWithOg(env, request, meta) {
   const assetUrl = new URL(request.url);
   assetUrl.pathname = "/leaderboard";
   assetUrl.search = "";
-  const res = await env.ASSETS.fetch(new Request(assetUrl.toString(), request));
+  const res = await fetchCompleteOgAsset(env, assetUrl, request);
   if (!res.ok) return res;
   const html = injectOgMeta(await res.text(), meta);
-  return new Response(html, {
+  return new Response(request.method === "HEAD" ? null : html, {
     status: 200,
-    headers: { "Content-Type": "text/html;charset=utf-8", "Cache-Control": "no-cache" }
+    headers: { "Content-Type": "text/html;charset=utf-8", "Cache-Control": meta.private ? "private, no-store" : "no-cache", "Vary": "Accept, User-Agent", "Referrer-Policy": "no-referrer" }
   });
 }
 
 function injectOgMeta(html, meta) {
+  html = html.replace(/<meta\s+[^>]*(?:property=["']og:[^"']+["']|name=["']twitter:[^"']+["'])[^>]*>/gi, "")
+    .replace(/<link\s+[^>]*rel=["']canonical["'][^>]*>/gi, "")
+    .replace(/<base\s+[^>]*>/gi, "");
   const tags = [
     `<base href="/">`,
-    `<meta property="og:type" content="profile">`,
+    `<meta property="og:type" content="${ogEsc(meta.type || 'profile')}">`,
     `<meta property="og:site_name" content="Token Horizon">`,
     `<meta property="og:title" content="${ogEsc(meta.title)}">`,
     `<meta property="og:description" content="${ogEsc(meta.description)}">`,
     `<meta property="og:url" content="${ogEsc(meta.url)}">`,
     `<meta property="og:image" content="${ogEsc(meta.image)}">`,
+    `<meta property="og:image:secure_url" content="${ogEsc(meta.image)}">`,
+    `<meta property="og:image:type" content="image/png">`,
     `<meta property="og:image:width" content="1200">`,
     `<meta property="og:image:height" content="630">`,
+    `<meta property="og:image:alt" content="${ogEsc(meta.alt || meta.description)}">`,
     `<meta name="twitter:card" content="summary_large_image">`,
     `<meta name="twitter:title" content="${ogEsc(meta.title)}">`,
     `<meta name="twitter:description" content="${ogEsc(meta.description)}">`,
     `<meta name="twitter:image" content="${ogEsc(meta.image)}">`,
+    `<meta name="twitter:image:alt" content="${ogEsc(meta.alt || meta.description)}">`,
+    `<meta name="twitter:image:width" content="1200">`,
+    `<meta name="twitter:image:height" content="630">`,
     `<link rel="canonical" href="${ogEsc(meta.url)}">`
   ].join("\n");
-  let out = html.replace(/<title>[^<]*<\/title>/, `<title>${ogEsc(meta.title)}</title>`);
+  let out = html.replace(/<title>[^<]*<\/title>/i, `<title>${ogEsc(meta.title)}</title>`);
   out = out.replace(/<meta name="description" content="[^"]*"\s*\/?>/,
     `<meta name="description" content="${ogEsc(meta.description)}" />`);
-  return out.replace("<head>", `<head>\n${tags}`);
+  return out.replace(/<head>/i, `<head>\n${tags}`);
 }
 
 /// /u/<handle> — clean profile permalink with a dynamic OG card. Unknown
@@ -2883,30 +2813,30 @@ async function serveProfilePage(env, request, handle) {
   const entries = await getEntriesFromR2(env);
   const entry = clean && entries.find(e => e.handle.toLowerCase() === clean);
   if (!entry) {
-    const assetUrl = new URL(request.url);
-    assetUrl.pathname = "/leaderboard";
-    return env.ASSETS.fetch(new Request(assetUrl.toString(), request));
+    return plainOgPage(env, request);
   }
   const url = new URL(request.url);
   const vm = ogCardModel(entry, entries);
+  const fingerprint = await ogFingerprint(generateOgSvg(vm), vm);
+  const image = `${url.origin}/api/og/profile/${encodeURIComponent(entry.handle)}.png?v=${fingerprint}`;
   // curl / AI agents / JSON clients get a text rendition instead of HTML
   // (social unfurlers still get the SPA + OG meta for the PNG card).
   const tv = textViewKind(request, url.searchParams);
   if (tv === "json") {
-    return jsonResponse({ ok: true, card: vm, url: `${url.origin}/u/${encodeURIComponent(entry.handle)}`,
-      image: `${url.origin}/api/og/profile/${encodeURIComponent(entry.handle)}.png` });
+    return ogPageResponse(request, jsonResponse({ ok: true, card: vm, url: `${url.origin}/u/${encodeURIComponent(entry.handle)}`, image }, 200, { "Cache-Control": "public, max-age=120" }));
   }
   if (tv) {
-    return new Response(ogTextCard(vm, { origin: url.origin, color: tv === "cli" }), {
+    return ogPageResponse(request, new Response(ogTextCard(vm, { origin: url.origin, color: tv === "cli" }), {
       headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "public, max-age=120" }
-    });
+    }));
   }
   const canon = `${url.origin}/u/${encodeURIComponent(entry.handle)}`;
   return servePageWithOg(env, request, {
     title: `@${entry.handle} · ${vm.leagueTitle} ${ogRoman(vm.division)} · #${vm.rankToday} today`,
     description: `${formatTokens(vm.tokensToday)} tokens today · ${formatTokens(vm.tokensAll)} all-time · ${vm.streakDays}d streak — Token Horizon leaderboard`,
+    alt: `Token Horizon usage card for @${entry.handle}: ${formatTokens(vm.tokensToday)} tokens today, ${formatTokens(vm.tokensAll)} all-time, ${vm.streakDays}-day streak and activity heatmap.`,
     url: canon,
-    image: `${url.origin}/api/og/profile/${encodeURIComponent(entry.handle)}.png?v=${Math.floor((vm.updatedAt || dayNumber() * 86400) / 3600)}`
+    image
   });
 }
 
@@ -2914,38 +2844,46 @@ async function serveProfilePage(env, request, handle) {
 /// share's anonymize/hide-cost privacy options.
 async function serveSharePage(env, request, id) {
   const share = id && await getJson(env, `shares/${id}.json`);
-  if (share && !share.revoked && !(share.expiresAt && share.expiresAt * 1000 < Date.now())) {
+  const url = new URL(request.url);
+  const tv = textViewKind(request, url.searchParams);
+  if (share && !share.revoked && !(share.expiresAt && share.expiresAt * 1000 <= Date.now()) && !isPublicShare(share)) {
+    const image = `${url.origin}/api/og/share/${id}.png?v=${await ogFingerprint(renderRestrictedOgSvg())}`;
+    if (tv === "json") return ogPageResponse(request, jsonResponse({ ok: true, restricted: true, url: `${url.origin}/s/${id}`, image }), true);
+    if (tv) return ogPageResponse(request, new Response("Token Horizon\nPrivate usage report. Sign in to view if it was shared with you.\n", { headers: { "Content-Type": "text/plain; charset=utf-8" } }), true);
+    return servePageWithOg(env, request, {
+      private: true, type: "website", title: "Private usage report · Token Horizon",
+      description: "A private Token Horizon usage report. Sign in to view if it was shared with you.",
+      alt: "Token Horizon private usage report. Sign in to view.",
+      url: `${url.origin}/s/${id}`, image
+    });
+  }
+  if (share && !share.revoked && !(share.expiresAt && share.expiresAt * 1000 <= Date.now())) {
     const entries = await getEntriesFromR2(env);
     const entry = entries.find(e => e.handle.toLowerCase() === String(share.handle || "").toLowerCase());
     if (entry) {
-      const url = new URL(request.url);
-      const opts = share.options || {};
-      const vm = ogCardModel(entry, entries, {
-        anonymize: Boolean(opts.anonymizeNames),
-        hideCost: Boolean(opts.hideCost)
-      });
-      const tv = textViewKind(request, url.searchParams);
+      const vm = ogCardModel(entry, entries, shareOgOptions(share));
+      const image = `${url.origin}/api/og/share/${id}.png?v=${await ogFingerprint(generateOgSvg(vm), vm)}`;
       if (tv === "json") {
-        return jsonResponse({ ok: true, card: vm, url: `${url.origin}/s/${id}`,
-          image: `${url.origin}/api/og/share/${id}.png` });
+        return ogPageResponse(request, jsonResponse({ ok: true, card: vm, url: `${url.origin}/s/${id}`, image }), true);
       }
       if (tv) {
-        return new Response(ogTextCard(vm, { origin: url.origin, color: tv === "cli" }), {
-          headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "public, max-age=120" }
-        });
+        return ogPageResponse(request, new Response(ogTextCard(vm, { origin: url.origin, color: tv === "cli" }), {
+          headers: { "Content-Type": "text/plain; charset=utf-8" }
+        }), true);
       }
       return servePageWithOg(env, request, {
+        private: true,
         title: `${vm.handle === "Anonymous" ? "Shared usage report" : `@${vm.handle} — usage report`} · Token Horizon`,
-        description: `${formatTokens(vm.tokensAll)} tokens all-time · ${vm.leagueTitle} league · ${vm.streakDays}d streak`,
+        description: `${formatTokens(vm.tokensAll)} tokens all-time${vm.leagueTitle ? ` · ${vm.leagueTitle} league` : ""} · ${vm.streakDays}d streak`,
+        alt: `Shared Token Horizon usage report: ${formatTokens(vm.tokensAll)} tokens all-time, ${vm.streakDays}-day streak and activity heatmap.`,
         url: `${url.origin}/s/${id}`,
-        image: `${url.origin}/api/og/share/${id}.png`
+        image
       });
     }
   }
-  const assetUrl = new URL(request.url);
-  assetUrl.pathname = "/leaderboard";
-  assetUrl.searchParams.set("share", id);
-  return env.ASSETS.fetch(new Request(assetUrl.toString(), request));
+  if (tv === "json") return ogPageResponse(request, jsonResponse({ ok: false, error: "Share link unavailable" }), true);
+  if (tv) return ogPageResponse(request, new Response("Token Horizon\nShare link unavailable. It may have expired or been revoked.\n", { headers: { "Content-Type": "text/plain; charset=utf-8" } }), true);
+  return plainOgPage(env, request, true);
 }
 
 // --- Text rendition for CLI tools & AI agents ------------------------------
@@ -3021,11 +2959,13 @@ function ogTextCard(vm, opts = {}) {
   const updated = vm.updatedAt ? new Date(vm.updatedAt * 1000).toISOString().slice(0, 10) : "";
 
   const chips = [
+    ...(vm.includeLeagueRank !== false ? [
     `#${vm.rankToday} TODAY`,
     `${vm.leagueTitle} ${ogRoman(vm.division)}`.trim().toUpperCase(),
     `${formatTokens(vm.mmr)} MMR`,
-    `${vm.streakDays}D STREAK`,
-    `TOP ${Math.max(1, Math.round(100 - (Number(vm.percentile) || 0)))}%`
+    `TOP ${Math.max(1, Math.round(Number(vm.percentile) || 0))}%`
+    ] : []),
+    `${vm.streakDays}D STREAK`
   ];
   const chipLine = chips.map((c, i) => {
     const t = `[${c}]`;
@@ -3039,6 +2979,7 @@ function ogTextCard(vm, opts = {}) {
   };
 
   const mixLegend = vm.mix.map(s => `${OG_PROVIDER_LABELS[s.provider] || s.provider} ${Math.round(s.share * 100)}%`).join(" · ");
+  const history = vm.history.length ? vm.history : (vm.calendarDays || []).filter(day => day.day <= vm.calendarEnd).slice(-14).map(day => day.tokens);
 
   return [
     `╭─${title}${"─".repeat(Math.max(0, INNER + 4 - visLen(title) - visLen(` ${season} `)))} ${season} ─╮`,
@@ -3049,11 +2990,11 @@ function ogTextCard(vm, opts = {}) {
     row(),
     row(`  ${dim("TOKENS TODAY")}`),
     split(`   ${green(bold(formatTokens(vm.tokensToday)))}`, vm.costToday != null ? `${dim(`≈ ${formatCurrency(vm.costToday)} est. today`)}` : ""),
-    stat("last 7 days", formatTokens(vm.tokens7d), `rank #${vm.rank} of ${vm.total}`),
+    stat("last 7 days", formatTokens(vm.tokens7d), vm.includeLeagueRank !== false ? `rank #${vm.rank} of ${vm.total}` : ""),
     stat("all-time", formatTokens(vm.tokensAll), vm.costAll != null ? `${formatCurrency(vm.costAll)} est. spend` : ""),
     stat("requests", formatTokens(vm.requestsAll), `${vm.streakDays}-day streak`),
     row(),
-    split(`  ${dim("ACTIVITY · " + (vm.history.length || 0) + "D")}    ${cyan(sparkline(vm.history))}`, ""),
+    split(`  ${dim("ACTIVITY · " + history.length + "D")}    ${cyan(sparkline(history))}`, ""),
     ...(vm.mix.length ? [
       row(),
       row(`  ${dim("PROVIDER MIX")}   ${mixBar(vm.mix)}`),

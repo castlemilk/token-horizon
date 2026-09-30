@@ -61,13 +61,20 @@ tasks:
   web-test:
     desc: Web gates — worker tests, MCP contracts, hermetic dashboard UI + budgets
     cmds:
-      - node --test cloudflare/worker.test.mjs cloudflare/connector.test.mjs
+      - node --test cloudflare/worker.test.mjs cloudflare/connector.test.mjs cloudflare/og-card.test.mjs
+      - node scripts/test-og-png.mjs
       - node mcp/test-catalog.mjs
       - node mcp/test-server-errors.mjs
       - node scripts/test-leaderboard-ui.mjs
       - node scripts/test-workspace-ui.mjs
       - node scripts/test-team-invites-ui.mjs
+      - node scripts/test-share-preview-ui.mjs
       - node scripts/bench-leaderboard.mjs
+
+  web-og-fonts:
+    desc: Bake existing variable font into static social-card weights (build tool only)
+    cmds:
+      - uv run --no-project --with fonttools python cloudflare/fonts/build-og-fonts.py
 
   test-integration:
     desc: Loopback integration tests (Ollama proxy relay round-trips, no creds needed)

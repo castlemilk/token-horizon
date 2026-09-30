@@ -117,6 +117,41 @@ const req = (path, { method = 'GET', headers = {}, body } = {}) =>
     body: body !== undefined ? JSON.stringify(body) : undefined
   });
 
+async function ogShareFixture() {
+  const { keyPair, jwk } = await makeGoogleKeyPair();
+  const clientId = 'og-shares.apps.googleusercontent.com';
+  const now = Math.floor(Date.now() / 1000);
+  const ownerEntry = {
+    handle: 'private_owner', claimed: true, ownerId: 'google:og-owner', googleEmail: 'owner@example.com',
+    team: 'HiddenTeamXYZ', hardware: 'M999Secret', tokensAll: 712345, tokensToday: 123456, tokens7d: 654321,
+    costAll: 42.19, costToday: 7.11, updatedAt: now, mmr: 987, streakDays: 17,
+    breakdown: { models: [{ provider: 'anthropic', model: 'SecretModelABC', tokensAll: 712345, requests: 83 }],
+      daily: [{ day: now - 86400, tokens: 13579 }], history: [{ day: now - 86400, tokens: 13579, cost: 4.44 }],
+      sessions: [{ title: 'SecretPromptABC', tokens: 12345 }] }
+  };
+  const env = {
+    ...createMultiKeyEnv([ownerEntry,
+      { handle: 'friend_dev', claimed: true, ownerId: 'google:og-friend', tokensAll: 500, team: 'HiddenTeamXYZ' },
+      { handle: 'pretender', claimed: true, ownerId: 'google:og-stranger', googleEmail: 'friend@example.com', tokensAll: 50, team: 'HiddenTeamXYZ' }]),
+    GOOGLE_CLIENT_ID: clientId, GOOGLE_JWKS: JSON.stringify({ keys: [jwk] }),
+    ASSETS: { async fetch(request) {
+      assert.equal(request.method, 'GET', 'metadata injection must fetch complete HTML for HEAD');
+      return new Response('<html><head><title>spa</title><meta name="description" content="static"></head><body>spa</body></html>', { headers: { 'Content-Type': 'text/html' } });
+    } }
+  };
+  const owner = await makeGoogleToken(keyPair, { clientId, sub: 'og-owner', email: 'owner@example.com' });
+  const friend = await makeGoogleToken(keyPair, { clientId, sub: 'og-friend', email: 'friend@example.com' });
+  const stranger = await makeGoogleToken(keyPair, { clientId, sub: 'og-stranger', email: 'stranger@example.com' });
+  const call = (path, token, options = {}) => worker.fetch(req(path, { ...options, headers: { ...options.headers, ...(token ? { 'X-Google-Token': token } : {}) } }), env);
+  const create = async (body = {}) => {
+    const res = await call('/api/share/create', owner, { method: 'POST', body: { handle: ownerEntry.handle, scope: 'private', ...body } });
+    assert.equal(res.status, 200);
+    return (await res.json()).share;
+  };
+  return { env, ownerEntry, owner, friend, stranger, call, create,
+    token: (sub, extra = {}) => makeGoogleToken(keyPair, { clientId, sub, ...extra }) };
+}
+
 async function teamFixture() {
   const { keyPair, jwk } = await makeGoogleKeyPair();
   const clientId = 'team-invites.apps.googleusercontent.com';
@@ -1245,10 +1280,11 @@ describe('Cloudflare Worker API', () => {
     assert.match(res.headers.get('content-type'), /image\/svg/);
     const svg = await res.text();
     assert.match(svg, /@benebsworth/);
-    assert.match(svg, /TOKEN HORIZON/);
+    assert.match(svg, /Token Horizon/);
     assert.match(svg, /GRANDMASTER I/);
-    assert.match(svg, /TOKENS TODAY/);
-    assert.match(svg, /LAST \d+ DAYS/);
+    assert.match(svg, /ALL-TIME TOKENS/);
+    assert.match(svg, /17 weeks of published token activity/);
+    assert.equal((svg.match(/data-heatmap-day=/g) || []).length, 119);
     assert.match(svg, /Anthropic/);
   });
 
@@ -1270,7 +1306,11 @@ describe('Cloudflare Worker API', () => {
     const body = await res.text();
     assert.match(body, /<base href="\/">/);
     assert.match(body, /<title>@benebsworth · Grandmaster I · #1 today<\/title>/);
-    assert.match(body, /property="og:image" content="https:\/\/token-horizon\.dev\/api\/og\/profile\/benebsworth\.png\?v=\d+"/);
+    assert.match(body, /property="og:image" content="https:\/\/token-horizon\.dev\/api\/og\/profile\/benebsworth\.png\?v=horizon-\d+-[a-f0-9]+"/);
+    assert.match(body, /property="og:image:type" content="image\/png"/);
+    assert.match(body, /property="og:image:alt" content="[^"]*activity heatmap/);
+    assert.match(body, /name="twitter:image:width" content="1200"/);
+    assert.equal(res.headers.get('vary'), 'Accept, User-Agent');
     assert.match(body, /property="og:url" content="https:\/\/token-horizon\.dev\/u\/benebsworth"/);
     assert.match(body, /name="twitter:card" content="summary_large_image"/);
     assert.match(body, /rel="canonical" href="https:\/\/token-horizon\.dev\/u\/benebsworth"/);
@@ -1279,6 +1319,7 @@ describe('Cloudflare Worker API', () => {
     assert.equal(missing.status, 200);
     const missingBody = await missing.text();
     assert.doesNotMatch(missingBody, /og:image/);
+    assert.match(missingBody, /<base href="\/">/);
   });
 
   it('GET /api/og/share/<id>.svg honors anonymize + hideCost share options', async () => {
@@ -1298,7 +1339,7 @@ describe('Cloudflare Worker API', () => {
     const res = await worker.fetch(req(`/api/og/share/${id}.svg`), env);
     assert.equal(res.status, 200);
     const svg = await res.text();
-    assert.match(svg, /@Anonymous/);
+    assert.match(svg, /Anonymous/);
     assert.doesNotMatch(svg, /og_dev/);
     assert.doesNotMatch(svg, /\$42/);
 
@@ -1336,10 +1377,200 @@ describe('Cloudflare Worker API', () => {
     assert.match(data.image, /api\/og\/profile\/benebsworth\.png/);
 
     // Social unfurlers still get HTML + og:image — they never render text.
-    for (const ua of ['Twitterbot/1.0', 'Discordbot/2.0', 'Slackbot-LinkExpanding 1.0', 'facebookexternalhit/1.1']) {
+    for (const ua of ['Twitterbot/1.0', 'Discordbot/2.0', 'Slackbot-LinkExpanding 1.0', 'facebookexternalhit/1.1', 'LinkedInBot/1.0', 'WhatsApp/2.24', 'TelegramBot (like TwitterBot)', 'Mastodon/4.0']) {
       const res = await get({ 'User-Agent': ua });
       assert.match(res.headers.get('content-type'), /text\/html/, ua);
       assert.match(await res.text(), /og:image/, ua);
+    }
+  });
+
+  it('keeps restricted shares generic on every unfurl format, including owner requests', async () => {
+    const { owner, stranger, call, create } = await ogShareFixture();
+    const share = await create({ audience: ['private-audience@example.com'], groups: ['SecretGroupABC'] });
+    const forbidden = /private_owner|HiddenTeamXYZ|M999Secret|712345|123456|654321|Anthropic|SecretModelABC|SecretPromptABC|private-audience|SecretGroupABC|ownerKey|data-heatmap-day/i;
+    for (const token of ['', owner, stranger]) {
+      for (const path of [`/api/og/share/${share.id}.svg`, `/s/${share.id}`, `/s/${share.id}?format=json`, `/s/${share.id}?format=text`]) {
+        const response = await call(path, token);
+        assert.equal(response.status, 200, path);
+        assert.match(response.headers.get('cache-control'), /private, no-store/, path);
+        assert.doesNotMatch(await response.text(), forbidden, path);
+      }
+    }
+    const anonymous = await call(`/api/shared/${share.id}`);
+    assert.equal(anonymous.status, 401);
+    assert.equal((await anonymous.json()).code, 'auth_required');
+    const wrongAccount = await call(`/api/shared/${share.id}`, stranger);
+    assert.equal(wrongAccount.status, 403);
+    assert.doesNotMatch(await wrongAccount.text(), forbidden);
+    const allowed = await call(`/api/shared/${share.id}`, owner);
+    assert.equal(allowed.status, 200);
+    assert.match(allowed.headers.get('cache-control'), /private, no-store/);
+    const data = await allowed.json();
+    assert.equal(data.report.tokensAll, 712345);
+    for (const field of ['ownerKey', 'audience', 'groups']) assert.equal(data.share[field], undefined);
+    assert.doesNotMatch(JSON.stringify(data), /SecretPromptABC/);
+  });
+
+  it('authorizes exact claimed handles and saved owner groups; email and team labels cannot grant access', async () => {
+    const { call, create, owner, friend, stranger, token } = await ogShareFixture();
+    const people = await create({ scope: 'people', audience: ['@friend_dev'] });
+    assert.equal((await call(`/api/shared/${people.id}`, friend)).status, 200);
+    assert.equal((await call(`/api/shared/${people.id}`, stranger)).status, 403);
+    assert.equal((await call(`/api/shared/${people.id}`, await token('og-stranger', { email: 'owner@example.com' }))).status, 403, 'an email-only owner match cannot read a private report');
+    const arbitrary = await create({ scope: 'people', audience: ['friend@example.com', 'HiddenTeamXYZ', 'pretended_handle'] });
+    assert.equal((await call(`/api/shared/${arbitrary.id}`, friend)).status, 403);
+    const groupResponse = await call('/api/groups', owner, { method: 'POST', body: { handle: 'private_owner', group: { name: 'Exact saved group', members: ['friend_dev'] } } });
+    const group = (await groupResponse.json()).groups[0];
+    const groupShare = await create({ scope: 'group', groups: [group.id] });
+    assert.equal((await call(`/api/shared/${groupShare.id}`, friend)).status, 200);
+    assert.equal((await call(`/api/shared/${groupShare.id}`, stranger)).status, 403);
+    const wrongGroup = await create({ scope: 'group', groups: ['not-a-saved-group'] });
+    assert.equal((await call(`/api/shared/${wrongGroup.id}`, friend)).status, 403);
+    const orgShare = await create({ scope: 'org' });
+    assert.equal((await call(`/api/shared/${orgShare.id}`, friend)).status, 403, 'matching published labels do not prove membership');
+
+    const teamResponse = await call('/api/team/invites', owner, { method: 'POST', body: { name: 'VerifiedCrew' } });
+    const team = await teamResponse.json();
+    const join = await call('/api/team/join', friend, { method: 'POST', body: { token: team.invites[0].token } });
+    assert.equal(join.status, 200);
+    assert.equal((await call(`/api/shared/${orgShare.id}`, friend)).status, 200);
+    assert.equal((await call(`/api/shared/${orgShare.id}`, stranger)).status, 403);
+    const profileless = await token('new-profileless-friend');
+    assert.equal((await call('/api/team/join', profileless, { method: 'POST', body: { token: team.invites[0].token } })).status, 200);
+    assert.equal((await call(`/api/shared/${orgShare.id}`, profileless)).status, 200, 'verified team members can read before publishing a profile');
+  });
+
+  it('lets only the matching claim-token owner read an unclaimed private report', async () => {
+    const env = createMultiKeyEnv([]);
+    const published = await worker.fetch(req('/api/leaderboard', { method: 'POST', body: { handle: 'unclaimed_og', tokensAll: 123456 } }), env);
+    const claimToken = (await published.json()).claimToken;
+    const created = await worker.fetch(req('/api/share/create', { method: 'POST', body: { handle: 'unclaimed_og', claimToken, scope: 'private' } }), env);
+    const id = (await created.json()).share.id;
+    for (const value of ['', 'not-the-token']) {
+      const response = await worker.fetch(req(`/api/shared/${id}`, { headers: { 'X-Claim-Token': value } }), env);
+      assert.equal(response.status, 401);
+      assert.match(response.headers.get('cache-control'), /private, no-store/);
+    }
+    const allowed = await worker.fetch(req(`/api/shared/${id}`, { headers: { 'X-Claim-Token': claimToken } }), env);
+    assert.equal(allowed.status, 200);
+    assert.equal((await allowed.json()).report.handle, 'unclaimed_og');
+  });
+
+  it('public-link capability overrides scope and respects rounded counts, hidden rank/providers/cost/identity everywhere', async () => {
+    const { call, create } = await ogShareFixture();
+    const share = await create({ publicLink: true, options: { fullTokenCounts: false, providerBreakdown: false, includeLeagueRank: false, anonymizeNames: true, hideCost: true } });
+    const response = await call(`/api/shared/${share.id}`);
+    assert.equal(response.status, 200);
+    const data = await response.json();
+    assert.equal(data.report.tokensAll, 712000);
+    assert.equal(data.report.handle, 'Anonymous');
+    assert.equal(data.report.daily[0].tokens, 14000);
+    for (const key of ['rank', 'percentile', 'league', 'leagueTitle', 'division', 'mmr', 'models', 'costAll', 'hardware']) assert.equal(data.report[key], undefined, key);
+    for (const key of ['handle', 'ownerKey', 'audience', 'groups']) assert.equal(data.share[key], undefined, key);
+    const svg = await (await call(`/api/og/share/${share.id}.svg`)).text();
+    assert.match(svg, /Anonymous/);
+    assert.match(svg, /data-heatmap-day=/);
+    assert.doesNotMatch(svg, /private_owner|HiddenTeamXYZ|M999Secret|Anthropic|712345|123456|987|OVERALL|GOLD|MMR|42\.19/);
+    const json = await (await call(`/s/${share.id}?format=json`)).json();
+    assert.equal(json.card.tokensAll, 712000);
+    for (const key of ['rank', 'rankToday', 'league', 'mmr', 'percentile']) assert.equal(json.card[key], undefined, key);
+    const text = await (await call(`/s/${share.id}?format=text`)).text();
+    assert.doesNotMatch(text, /rank|MMR|#undefined|undefined|NaN|private_owner|Anthropic|42\.19/i);
+    const html = await (await call(`/s/${share.id}`)).text();
+    assert.match(html, /\/api\/og\/share\/[a-zA-Z0-9]+\.png\?v=horizon-/);
+    assert.doesNotMatch(html, /private_owner|HiddenTeamXYZ|M999Secret|undefined|gold league/i);
+  });
+
+  it('makes expired and revoked share images/report pages uncached and removes all prior metadata', async () => {
+    const { env, owner, call, create } = await ogShareFixture();
+    for (const expired of [false, true]) {
+      const share = await create({ scope: 'public' });
+      if (expired) {
+        share.expiresAt = Math.floor(Date.now() / 1000) - 10;
+        await env.LEADERBOARD_BUCKET.put(`shares/${share.id}.json`, JSON.stringify(share));
+      } else await call('/api/share/revoke', owner, { method: 'POST', body: { handle: 'private_owner', id: share.id } });
+      for (const method of ['GET', 'HEAD']) {
+        const image = await call(`/api/og/share/${share.id}.svg`, '', { method });
+        assert.equal(image.status, 404);
+        assert.match(image.headers.get('cache-control'), /no-store/);
+        assert.doesNotMatch(await image.text(), /private_owner|712345|data-heatmap-day/);
+      }
+      const report = await call(`/api/shared/${share.id}`);
+      assert.equal(report.status, 410);
+      assert.match(report.headers.get('cache-control'), /no-store/);
+      const page = await call(`/s/${share.id}`);
+      assert.match(page.headers.get('cache-control'), /no-store/);
+      assert.doesNotMatch(await page.text(), /og:image|private_owner|712345/);
+    }
+  });
+
+  it('supports HEAD parity without rasterization and cache validators for current profile images', async () => {
+    const { call, create } = await ogShareFixture();
+    const share = await create({ scope: 'public' });
+    for (const path of ['/api/og/profile/private_owner.svg', '/u/private_owner', '/u/private_owner?format=json', '/u/private_owner?format=text', `/api/og/share/${share.id}.svg`, `/s/${share.id}`]) {
+      const get = await call(path);
+      const head = await call(path, '', { method: 'HEAD' });
+      assert.equal(head.status, get.status, path);
+      for (const key of ['content-type', 'cache-control', 'etag', 'vary']) assert.equal(head.headers.get(key), get.headers.get(key), `${path}: ${key}`);
+      assert.equal(await head.text(), '');
+    }
+    const png = await call('/api/og/profile/private_owner.png', '', { method: 'HEAD' });
+    assert.equal(png.status, 200);
+    assert.equal(png.headers.get('content-type'), 'image/png');
+    assert.match(png.headers.get('cache-control'), /s-maxage=300/);
+    const svg = await call('/api/og/profile/private_owner.svg');
+    const revalidated = await call('/api/og/profile/private_owner.svg', '', { headers: { 'If-None-Match': svg.headers.get('etag') } });
+    assert.equal(revalidated.status, 304);
+    assert.equal(await revalidated.text(), '');
+    const privatePng = await call(`/api/og/share/${share.id}.png`, '', { method: 'HEAD' });
+    assert.equal(privatePng.status, 200);
+    assert.match(privatePng.headers.get('cache-control'), /private, no-store/);
+  });
+
+  it('changes profile image fingerprints on same-hour data or publication changes while keeping unchanged cards stable', async () => {
+    const { env, ownerEntry, call } = await ogShareFixture();
+    const version = async () => (await (await call('/u/private_owner?format=json')).json()).image;
+    const first = await version();
+    assert.equal(await version(), first);
+    const entries = await (await env.LEADERBOARD_BUCKET.get('leaderboard.json')).json();
+    entries[0].tokensToday += 1; // Compact visual number may not visibly change.
+    await env.LEADERBOARD_BUCKET.put('leaderboard.json', JSON.stringify(entries));
+    const second = await version();
+    assert.notEqual(second, first);
+    entries[0].updatedAt = ownerEntry.updatedAt + 1;
+    await env.LEADERBOARD_BUCKET.put('leaderboard.json', JSON.stringify(entries));
+    assert.notEqual(await version(), second);
+  });
+
+  it('reuses public edge images by current content fingerprint while never caching share capabilities', async () => {
+    const previous = globalThis.caches;
+    const cache = new Map(), storedKeys = [];
+    globalThis.caches = { default: {
+      async match(request) { return cache.get(request.url)?.clone(); },
+      async put(request, response) { storedKeys.push(request.url); cache.set(request.url, response.clone()); }
+    } };
+    try {
+      const { env, call, create } = await ogShareFixture();
+      const first = await call('/api/og/profile/private_owner.svg');
+      assert.equal(first.status, 200);
+      await call('/api/og/profile/private_owner.svg?v=old-version');
+      assert.equal(storedKeys.length, 1);
+      const entries = await (await env.LEADERBOARD_BUCKET.get('leaderboard.json')).json();
+      entries[0].tokensAll += 100;
+      await env.LEADERBOARD_BUCKET.put('leaderboard.json', JSON.stringify(entries));
+      await call('/api/og/profile/private_owner.svg?v=old-version');
+      assert.equal(storedKeys.length, 2);
+      assert.notEqual(storedKeys[0], storedKeys[1]);
+      for (const publicLink of [false, true]) {
+        const share = await create({ publicLink });
+        await call(`/api/og/share/${share.id}.svg`);
+        assert.equal(storedKeys.length, 2, 'private and public share URLs both remain outside edge cache');
+      }
+      globalThis.caches.default.match = async () => { throw new Error('cache unavailable'); };
+      assert.equal((await call('/api/og/profile/private_owner.svg')).status, 200);
+    } finally {
+      if (previous === undefined) delete globalThis.caches;
+      else globalThis.caches = previous;
     }
   });
 

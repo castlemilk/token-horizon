@@ -303,6 +303,22 @@ tbody tr.selected{background:rgba(79,140,255,.08)}
 .switch.on i{left:18px}
 .tag-pill{display:inline-flex;align-items:center;gap:6px;background:var(--panel3);border:1px solid var(--line2);border-radius:999px;padding:5px 10px;font-size:12px;margin:0 6px 6px 0}
 .tag-pill button{background:none;border:none;color:var(--faint);cursor:pointer;font-size:13px;padding:0 2px}
+.share-layout{display:grid;grid-template-columns:minmax(0,1.5fr) minmax(0,1fr);gap:20px}
+.share-preview-frame{position:relative;aspect-ratio:1200/630;overflow:hidden;border:1px solid var(--line);border-radius:12px;background:#F3F4EF;color:#121714;margin-top:12px}
+.share-preview-frame img{display:block;width:100%;height:100%;object-fit:contain;opacity:0;transition:opacity .2s ease}
+.share-preview-frame.ready img{opacity:1}
+.share-preview-pending{position:absolute;inset:0;display:flex;flex-direction:column;justify-content:center;align-items:flex-start;padding:20px;gap:8px}
+.share-preview-mark{width:28px;height:28px;border:1px solid #121714;border-radius:50%;background:linear-gradient(#121714 49%,#B6F2CF 49%,#B6F2CF 52%,#F3F4EF 52%)}
+.share-preview-pending strong{font-size:17px;letter-spacing:-.4px}
+.share-preview-pending span{font-size:11px;color:#56635A;max-width:230px;line-height:1.5}
+.share-preview-frame.ready .share-preview-pending{display:none}
+.share-preview-label{display:flex;align-items:center;gap:7px;font-size:11px;margin-top:10px;color:var(--muted);line-height:1.5}
+.share-preview-label i{width:6px;height:6px;border-radius:50%;background:var(--green);flex:none}
+.share-locked{max-width:620px;padding:28px}
+.share-locked h2{margin:14px 0 8px;font-size:24px}
+.share-locked p{color:var(--muted);line-height:1.6;max-width:480px;margin:0 0 20px}
+.share-locked-actions{display:flex;gap:10px;flex-wrap:wrap}
+@media(max-width:760px){.share-layout{grid-template-columns:1fr}.scope-grid{grid-template-columns:repeat(3,1fr)}.share-layout .opt-grid:not(.scope-grid){grid-template-columns:1fr}}
 
 /* Sign-in modal + animated ASCII black hole (Gargantua-style lensed disk) */
 .signin-modal{max-width:940px;overflow:hidden}
@@ -690,7 +706,11 @@ const state = {
   shareOptions: { fullTokenCounts: true, providerBreakdown: true, anonymizeNames: false, hideCost: false, includeLeagueRank: true, allowDownload: true },
   shareAudience: [],
   shareExpiryDays: 30,
-  sharePublicLink: true,
+  sharePublicLink: false,
+  shareDraftHandle: null,
+  shareResult: null,
+  shareCreating: false,
+  sharedReportId: null,
   currentHandle: null,
   signInPending: null,
   groupDraft: { name: "", members: [] },
@@ -1083,18 +1103,22 @@ function heatmap(grid) {
 /// Used when more than a week of history is available; falls back to the
 /// weekday × hour grid otherwise.
 function calendarHeatmap(daily, opts = {}) {
-  const list = (daily || []).filter(d => d && Number(d.day) > 0);
+  const list = (daily || []).filter(d => d && Number.isFinite(Number(d.day)) && Number(d.day) > 0 && Number(d.day) < 8640000000000);
   if (list.length <= 7) return "";
-  const byDay = new Map(list.map(d => [Number(d.day), Number(d.tokens) || 0]));
-  const today = new Date();
-  const todayStart = Math.floor(new Date(today.getFullYear(), today.getMonth(), today.getDate()).getTime() / 1000);
-  const todayRow = (today.getDay() + 6) % 7; // Mon = 0
+  const byDay = new Map();
+  for (const d of list) {
+    const day = opts.utc ? Math.floor(Number(d.day) / 86400) * 86400 : Number(d.day);
+    byDay.set(day, Math.max(byDay.get(day) || 0, Number(d.tokens) || 0));
+  }
+  const today = opts.anchorDay ? new Date(opts.anchorDay * 1000) : new Date();
+  const todayStart = opts.utc ? Math.floor(today.getTime() / 86400000) * 86400 : Math.floor(new Date(today.getFullYear(), today.getMonth(), today.getDate()).getTime() / 1000);
+  const todayRow = ((opts.utc ? today.getUTCDay() : today.getDay()) + 6) % 7; // Mon = 0
   const weeks = opts.weeks || 17;
   const lastMonday = todayStart - todayRow * 86400;
   const firstMonday = lastMonday - (weeks - 1) * 7 * 86400;
   const maxTokens = Math.max(1, ...list.map(d => Number(d.tokens) || 0));
   const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-  const fmtDayLabel = (ts) => new Date(ts * 1000).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+  const fmtDayLabel = (ts) => new Date(ts * 1000).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric", ...(opts.utc ? { timeZone: "UTC" } : {}) });
   const color = (tokens) => {
     if (tokens <= 0) return "rgba(255,255,255,.06)";
     const level = Math.min(1, Math.log10(tokens + 1) / Math.log10(maxTokens + 1) * 1.4);
@@ -1105,14 +1129,15 @@ function calendarHeatmap(daily, opts = {}) {
   const cells = [];
   for (let col = 0; col < weeks; col++) {
     const monday = firstMonday + col * 7 * 86400;
-    const month = new Date(monday * 1000).getMonth();
+    const date = new Date(monday * 1000);
+    const month = opts.utc ? date.getUTCMonth() : date.getMonth();
     monthCells.push(month !== lastMonth ? `<span>${months[month]}</span>` : "<span></span>");
     lastMonth = month;
     for (let row = 0; row < 7; row++) {
       const day = monday + row * 86400;
       if (day > todayStart) { cells.push('<span class="cal-cell cal-empty"></span>'); continue; }
       const tokens = byDay.get(day) || 0;
-      cells.push(`<span class="cal-cell" style="background:${color(tokens)}" data-tip="${esc(fmtDayLabel(day))} — ${tokens > 0 ? fmtTokens(tokens) + " tokens · click for breakdown" : "no usage"}" data-cal-day="${day}"></span>`);
+      cells.push(`<span class="cal-cell" style="background:${color(tokens)}" data-tip="${esc(fmtDayLabel(day))} — ${tokens > 0 ? fmtTokens(tokens) + " tokens" + (opts.interactive === false ? "" : " · click for breakdown") : "no usage"}" ${opts.interactive === false ? "" : `data-cal-day="${day}"`}></span>`);
     }
   }
   const dayLabels = ["Mon", "", "Wed", "", "Fri", "", ""];
@@ -1473,7 +1498,7 @@ async function api(path, opts = {}) {
       // signed-in session — drop it and surface the sign-in button again.
       if (res.status === 401 && requestSession && state.googleSession === requestSession &&
           (code === "auth_required" || (state.googleClientId && !isGoogleSessionValid()))) {
-        setGoogleSession(null);
+        setGoogleSession(null, { refreshShared: false });
         msg = "Google session expired — sign in again.";
       }
       const err = new Error(msg);
@@ -1499,7 +1524,7 @@ async function api(path, opts = {}) {
 function getGoogleSession() {
   try { return JSON.parse(localStorage.getItem("th_google_session") || "null"); } catch (_) { return null; }
 }
-function setGoogleSession(s) {
+function setGoogleSession(s, { refreshShared = true } = {}) {
   const previousIdentity = state.googleSession?.sub || state.googleSession?.email;
   const nextIdentity = s?.sub || s?.email;
   if (previousIdentity !== nextIdentity && workspaceAutoHandle && state.currentHandle === workspaceAutoHandle) {
@@ -1515,8 +1540,19 @@ function setGoogleSession(s) {
   else localStorage.removeItem("th_google_session");
   state.googleSession = s;
   workspaceAccount = null;
-  if (previousIdentity !== nextIdentity) { teamManager?.close(); teamManager = null; teamInviteResult = null; }
+  if (previousIdentity !== nextIdentity) {
+    teamManager?.close(); teamManager = null; teamInviteResult = null;
+    state.shareResult = null; state.shareDraftHandle = null; state.shareAudience = [];
+    if ($("#share-modal")) closeModal();
+  }
   renderAuthSlot();
+  if (state.googleSession !== s) return; // renderAuthSlot may reject an expired credential.
+  if (previousIdentity !== nextIdentity && state.view === "shared" && state.sharedReportId && refreshShared) {
+    if (state.signInPending?.onSuccess) {
+      ++renderVersion;
+      $("#view").innerHTML = '<div class="card" role="status" aria-label="Loading shared report"><div class="skeleton" style="height:300px"></div></div>';
+    } else renderSharedReport(state.sharedReportId, { promptSignIn: false });
+  }
   if (!s && ["dashboard", "invite"].includes(state.view)) render();
 }
 function googleHeaders(extra = {}) {
@@ -1647,9 +1683,9 @@ function renderAuthSlot() {
   if (state.googleSession && state.googleClientId && !isGoogleSessionValid()) {
     // Drop expired/credential-less sessions so the sign-in button returns.
     const hadEmail = state.googleSession.email;
-    localStorage.removeItem("th_google_session");
-    state.googleSession = null;
+    setGoogleSession(null);
     if (hadEmail) toast("Google session expired — sign in again");
+    return;
   }
   const s = isGoogleSessionValid() ? state.googleSession : null;
   if (s) {
@@ -2105,6 +2141,7 @@ function syncDiscoveryChrome() {
 }
 let renderVersion = 0;
 async function render() {
+  if (state.view === "shared" && state.sharedReportId) return renderSharedReport(state.sharedReportId, { promptSignIn: false });
   const version = ++renderVersion;
   const route = state.view;
   teamInvitePage?.destroy();
@@ -4553,15 +4590,33 @@ function ruleRow(key, title, detail) {
 /* ============================================================
    SHARE MODAL
    ============================================================ */
+function shareDraftKey(handle) {
+  return JSON.stringify({ handle: String(handle).toLowerCase(), scope: state.shareScope,
+    audience: state.shareAudience, options: state.shareOptions,
+    expiryDays: state.shareExpiryDays, publicLink: state.sharePublicLink });
+}
 function openShareModal(handle) {
   const target = handle || state.currentHandle || (state.data?.leaderboard || [])[0]?.entry.handle;
   if (!target) return;
-  state.shareAudience = [];
+  if (state.shareDraftHandle !== target.toLowerCase()) {
+    state.shareDraftHandle = target.toLowerCase();
+    state.shareAudience = [];
+    state.shareResult = null;
+  }
+  const draftKey = shareDraftKey(target);
+  const created = state.shareResult?.draftKey === draftKey ? state.shareResult : null;
+  const publicAccess = state.shareScope === "public" || state.sharePublicLink;
+  const previewUrl = created ? API_BASE + "/api/og/share/" + encodeURIComponent(created.id) + ".png" : "";
+  const previewName = state.shareOptions.anonymizeNames ? "Anonymous" : "@" + target;
+  const audiencePlaceholder = state.shareScope === "people" ? "@handle of a claimed profile" : state.shareScope === "group"
+    ? "Saved group name or ID" : state.shareScope === "org" ? "Members of your joined team" : "No recipients needed";
+  const accessDetail = publicAccess ? "Anyone with the link can view this report." : state.shareScope === "private"
+    ? "Only your signed-in account can view this report." : "Only signed-in people you grant access to can view this report.";
   const scopeCards = [
     ["private", "🔒", "Only me", "Keep this private"],
     ["people", "👤", "Specific people", "Share with selected users"],
-    ["group", "👥", "My group / team", "Share with a group or team"],
-    ["org", "🏢", "All groups in org", "Share with everyone in your team"],
+    ["group", "👥", "Saved group", "Choose a group you created"],
+    ["org", "🏢", "My team", "Members of your joined team"],
     ["public", "🌐", "Global / public", "Anyone with the link can view"]
   ];
   const tabs = [["group", "👥 Groups"], ["people", "👤 Individual"], ["public", "🌐 Global"]];
@@ -4578,32 +4633,36 @@ function openShareModal(handle) {
     <div class="modal-head"><div><h2>Share Usage Report</h2><p>Control who can view this leaderboard, report, or profile.</p></div><button class="x" data-close aria-label="Close dialog">×</button></div>
     <div class="modal-body">
       <div class="seg" style="max-width:420px;margin-bottom:18px">${tabs.map(([id, label]) => `<button data-scope-tab="${id}" class="${state.shareScope === id ? "active" : ""}">${label}</button>`).join("")}</div>
-      <div style="display:grid;grid-template-columns:1.5fr 1fr;gap:20px">
+      <div class="share-layout">
         <div>
           <div class="kpi-label" style="margin-bottom:8px">1. Select Sharing Scope</div>
           <div class="opt-grid scope-grid">${scopeCards.map(([id, ico, t, d]) => `<div class="opt ${state.shareScope === id ? "selected" : ""}" data-scope="${id}" style="flex-direction:column;text-align:center;padding:12px 6px"><div class="ico">${ico}</div><div class="t" style="margin-top:6px">${t}</div><div class="d">${d}</div></div>`).join("")}</div>
           <div class="kpi-label" style="margin:18px 0 8px">2. Add Groups or People</div>
-          <div style="display:flex;gap:8px;margin-bottom:10px"><input id="share-audience-input" placeholder="Search for people, teams, or groups…" style="flex:1;background:var(--panel);border:1px solid var(--line);border-radius:9px;padding:9px 11px;color:var(--text);font-size:12.5px"/><select id="share-perm" style="background:var(--panel2);border:1px solid var(--line2);color:var(--text);border-radius:9px;padding:8px"><option>Can view</option><option>Can comment</option></select></div>
+          <div style="display:flex;gap:8px;margin-bottom:10px"><input id="share-audience-input" aria-label="Add a report recipient" placeholder="${audiencePlaceholder}" ${["people", "group"].includes(state.shareScope) ? "" : "disabled"} style="flex:1;min-width:0;background:var(--panel);border:1px solid var(--line);border-radius:9px;padding:9px 11px;color:var(--text);font-size:12.5px"/><span class="chip">Can view</span></div>
           <div id="share-audience-pills">${state.shareAudience.map(a => `<span class="tag-pill">${esc(a)}<button data-remove-audience="${esc(a)}">×</button></span>`).join("") || '<span class="faint" style="font-size:12px">No people or groups added yet.</span>'}</div>
           <div class="kpi-label" style="margin:18px 0 8px">3. Additional Options</div>
           <div class="opt-grid">${options.map(([id, t, d]) => `<div class="opt" data-opt="${id}"><div style="flex:1"><div class="t">${esc(t)}</div><div class="d">${esc(d)}</div></div><div class="switch ${state.shareOptions[id] ? "on" : ""}"><i></i></div></div>`).join("")}</div>
           <div class="kpi-label" style="margin:18px 0 8px">4. Public Link (Optional)</div>
           <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-            <div class="switch ${state.sharePublicLink ? "on" : ""}" id="share-public-toggle"><i></i></div>
-            <span style="font-size:12.5px">Enable a public link for easy sharing</span>
+            <div class="switch ${publicAccess ? "on" : ""}" id="share-public-toggle" role="switch" aria-label="Public link" aria-checked="${publicAccess}" aria-disabled="${state.shareScope === "public"}" tabindex="${state.shareScope === "public" ? "-1" : "0"}"><i></i></div>
+            <span style="font-size:12.5px">${state.shareScope === "public" ? "Public scope is open to anyone with this link" : "Enable a public link for easy sharing"}</span>
           </div>
-          <div style="display:flex;gap:8px;margin-top:10px"><input id="share-link-input" readonly value="${state.shareLink || "Generated after you click Share Now"}" style="flex:1;background:var(--panel);border:1px solid var(--line);border-radius:9px;padding:9px 11px;color:var(--muted);font-size:12px"/><button class="pill" id="share-copy-link">Copy Link</button></div>
-          <div style="display:flex;gap:10px;align-items:center;margin-top:10px"><span class="mini">Link expires in</span><select id="share-expiry" style="background:var(--panel2);border:1px solid var(--line2);color:var(--text);border-radius:8px;padding:6px 9px;font-size:12px">${[7, 30, 90, 365].map(d => `<option value="${d}" ${state.shareExpiryDays === d ? "selected" : ""}>${d} days</option>`).join("")}</select><span class="mini">Anyone with the link can view this report (no login required).</span></div>
+          <div style="display:flex;gap:8px;margin-top:10px"><input id="share-link-input" aria-label="Share link" readonly value="${esc(created?.url || "Create a link with these settings")}" style="flex:1;min-width:0;background:var(--panel);border:1px solid var(--line);border-radius:9px;padding:9px 11px;color:var(--muted);font-size:12px"/><button class="pill" id="share-copy-link" ${created ? "" : "disabled"}>Copy Link</button></div>
+          <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:10px"><span class="mini">Link expires in</span><select id="share-expiry" aria-label="Link expiry" style="background:var(--panel2);border:1px solid var(--line2);color:var(--text);border-radius:8px;padding:6px 9px;font-size:12px">${[7, 30, 90, 365].map(d => `<option value="${d}" ${state.shareExpiryDays === d ? "selected" : ""}>${d} days</option>`).join("")}</select><span class="mini">${accessDetail}</span></div>
         </div>
         <div>
           <div class="card" style="background:var(--panel2)">
             <div class="card-head"><h3>Share Preview</h3></div>
-            <div style="font-size:12.5px;font-weight:700">${esc(target)} Usage Report</div>
+            <div style="font-size:12.5px;font-weight:700">${esc(previewName)} Usage Report</div>
             <div class="mini" style="margin-top:2px">${esc(state.data?.season?.displayName || "")}</div>
-            <div style="margin-top:10px;border:1px solid var(--line);border-radius:10px;overflow:hidden"><div style="height:54px;background:linear-gradient(135deg,#16203A,#0E1626)"></div><div style="padding:8px"><div class="skeleton" style="height:7px;margin-bottom:6px"></div><div class="skeleton" style="height:7px;width:70%"></div></div></div>
+            <div class="share-preview-frame" id="share-preview-frame">
+              <div class="share-preview-pending"><div class="share-preview-mark" aria-hidden="true"></div><strong>${created ? "Rendering your preview" : "A little window into your usage"}</strong><span>${created ? "Preparing the image people will see when you share this link." : "Create your link to see its live token totals and activity heatmap."}</span></div>
+              ${created ? `<img id="share-og-preview" src="${esc(previewUrl)}" alt="${publicAccess ? esc(previewName) + " usage and activity preview" : "Private report preview with no usage data"}" width="1200" height="630" decoding="async"/>` : ""}
+            </div>
+            <div class="share-preview-label"><i aria-hidden="true"></i><span>${publicAccess ? "Live usage preview for messaging and social apps." : "Private links show a discreet preview. Your usage stays behind sign-in."}</span></div>
           </div>
           <div class="card" style="margin-top:12px"><div class="card-head"><h3>Who will have access</h3></div>
-            ${state.shareAudience.length ? state.shareAudience.map(a => `<div class="mover">${avatar(a, "", 26)}<div><div class="name">${esc(a)}</div><div class="faint" style="font-size:10.5px">Can view</div></div></div>`).join("") : '<div class="empty" style="padding:8px">Only you (until you add people)</div>'}
+            ${publicAccess ? '<div class="empty" style="padding:8px">Anyone with this link</div>' : state.shareAudience.length && ["people", "group"].includes(state.shareScope) ? state.shareAudience.map(a => `<div class="mover">${avatar(a, "", 26)}<div><div class="name">${esc(a)}</div><div class="faint" style="font-size:10.5px">Can view after sign-in</div></div></div>`).join("") : `<div class="empty" style="padding:8px">${state.shareScope === "org" ? "Your account and members of your joined team" : state.shareScope === "group" ? "Only you until you add a saved group" : state.shareScope === "people" ? "Only you until you add a person" : "Only you"}</div>`}
           </div>
           <div class="card" style="margin-top:12px"><div class="card-head"><h3>Share settings</h3></div>
             ${[["Full token counts", state.shareOptions.fullTokenCounts], ["Anonymize names", state.shareOptions.anonymizeNames], ["Include provider breakdown", state.shareOptions.providerBreakdown], ["Include league rank", state.shareOptions.includeLeagueRank], ["Allow download", state.shareOptions.allowDownload], ["Hide cost", state.shareOptions.hideCost]].map(([l, v]) => `<div style="display:flex;justify-content:space-between;font-size:12px;padding:5px 0"><span class="muted">${esc(l)}</span><span class="${v ? "up" : "faint"}">${v ? "Yes" : "No"}</span></div>`).join("")}
@@ -4612,18 +4671,22 @@ function openShareModal(handle) {
         </div>
       </div>
     </div>
-    <div class="modal-foot"><button class="pill ghost" data-close>Cancel</button><button class="pill" id="share-copy-footer">Copy Link</button><button class="pill primary" id="share-now">Share Now</button></div>
+    <div class="modal-foot"><button class="pill ghost" data-close>Cancel</button><button class="pill" id="share-copy-footer" ${created ? "" : "disabled"}>Copy Link</button><button class="pill primary" id="share-now" ${state.shareCreating ? "disabled" : ""}>${state.shareCreating ? '<span class="spinner" aria-label="Creating share link"></span>' : "Share Now"}</button></div>
   </div>`;
   backdrop.classList.add("open");
   $$("[data-close]", backdrop).forEach(b => b.onclick = closeModal);
   backdrop.onclick = (e) => { if (e.target === backdrop) closeModal(); };
-  $$("[data-scope-tab]", backdrop).forEach(b => b.onclick = () => { state.shareScope = b.dataset.scopeTab; openShareModal(target); });
-  $$("[data-scope]", backdrop).forEach(b => b.onclick = () => { state.shareScope = b.dataset.scope; openShareModal(target); });
+  const changeScope = scope => { state.shareScope = scope; state.sharePublicLink = scope === "public"; openShareModal(target); };
+  $$("[data-scope-tab]", backdrop).forEach(b => b.onclick = () => changeScope(b.dataset.scopeTab));
+  $$("[data-scope]", backdrop).forEach(b => b.onclick = () => changeScope(b.dataset.scope));
   $$("[data-opt]", backdrop).forEach(b => b.onclick = () => { state.shareOptions[b.dataset.opt] = !state.shareOptions[b.dataset.opt]; openShareModal(target); });
-  $("#share-public-toggle").onclick = () => { state.sharePublicLink = !state.sharePublicLink; openShareModal(target); };
+  const togglePublic = () => { if (state.shareScope === "public") return; state.sharePublicLink = !state.sharePublicLink; openShareModal(target); };
+  $("#share-public-toggle").onclick = togglePublic;
+  keyActivate($("#share-public-toggle"), togglePublic);
   const input = $("#share-audience-input");
   input.addEventListener("keydown", (e) => {
     if (e.key === "Enter" && input.value.trim()) {
+      e.preventDefault();
       state.shareAudience.push(input.value.trim());
       openShareModal(target);
     }
@@ -4632,16 +4695,30 @@ function openShareModal(handle) {
     state.shareAudience = state.shareAudience.filter(x => x !== b.dataset.removeAudience);
     openShareModal(target);
   });
-  $("#share-expiry").onchange = (e) => { state.shareExpiryDays = parseInt(e.target.value, 10); };
+  $("#share-expiry").onchange = (e) => { state.shareExpiryDays = parseInt(e.target.value, 10); openShareModal(target); };
+  const preview = $("#share-og-preview", backdrop);
+  if (preview) {
+    const loaded = () => $("#share-preview-frame", backdrop)?.classList.add("ready");
+    preview.onload = loaded;
+    preview.onerror = () => {
+      const pending = $(".share-preview-pending", backdrop);
+      if (pending) pending.innerHTML = '<div class="share-preview-mark" aria-hidden="true"></div><strong>Your link is ready</strong><span>The image preview could not load. Your share link is still ready to copy.</span>';
+    };
+    if (preview.complete && preview.naturalWidth) loaded();
+  }
   const copy = async () => {
-    const link = state.shareLink || "https://token-horizon.dev/leaderboard";
-    try { await navigator.clipboard.writeText(link); } catch (_) {}
-    toast("Link copied");
+    if (!created || created.draftKey !== shareDraftKey(target)) return;
+    try { await navigator.clipboard.writeText(created.url); toast("Link copied"); }
+    catch (_) { $("#share-link-input").select(); toast("Select and copy your share link."); }
   };
   $("#share-copy-link").onclick = copy;
   $("#share-copy-footer").onclick = copy;
   $("#share-now").onclick = async () => {
+    if (state.shareCreating) return;
     const btn = $("#share-now");
+    const creationKey = shareDraftKey(target);
+    state.shareCreating = true;
+    btn.disabled = true;
     btn.innerHTML = '<span class="spinner"></span>';
     try {
       const body = {
@@ -4654,13 +4731,18 @@ function openShareModal(handle) {
       };
       if (state.googleSession) body.googleUser = { email: state.googleSession.email, sub: state.googleSession.sub, name: state.googleSession.name, picture: state.googleSession.picture };
       const res = await api("/api/share/create", { method: "POST", headers: googleHeaders(), body: JSON.stringify(body) });
-      state.shareLink = res.url;
+      const id = res.share?.id;
+      if (!id || !res.url) throw new Error("The share link could not be created. Please try again.");
+      if (shareDraftKey(target) === creationKey && state.shareDraftHandle === target.toLowerCase()) {
+        state.shareResult = { id, url: res.url, draftKey: creationKey };
+      }
       toast("Share created");
-      openShareModal(target);
-      $("#share-link-input").value = res.url;
     } catch (e) {
       toast("Share failed: " + e.message, true);
-      btn.textContent = "Share Now";
+    } finally {
+      state.shareCreating = false;
+      // A request may finish after the dialog closes or switches profiles.
+      if ($("#share-modal") && state.shareDraftHandle === target.toLowerCase()) openShareModal(target);
     }
   };
 }
@@ -5051,24 +5133,34 @@ function openGroupModal(handle) {
 /* ============================================================
    SHARED REPORT (?share=<id>)
    ============================================================ */
-async function renderSharedReport(id) {
+async function renderSharedReport(id, { promptSignIn = true } = {}) {
+  state.view = "shared";
+  state.sharedReportId = id;
+  renderNav();
+  syncDiscoveryChrome();
   const version = ++renderVersion;
   const view = $("#view");
   view.innerHTML = `<div class="card"><div class="skeleton" style="height:300px"></div></div>`;
   try {
-    const res = await api("/api/shared/" + encodeURIComponent(id));
+    const res = await api("/api/shared/" + encodeURIComponent(id), { headers: googleHeaders(), cache: "no-store" });
     if (version !== renderVersion) return;
     const r = res.report;
     const share = res.share;
+    const hasRank = r.rank != null && r.leagueTitle && share.options?.includeLeagueRank !== false;
+    const publication = Number(r.updatedAt);
+    const anchorDay = Number.isFinite(publication) && publication > 0 && publication < 8640000000000
+      ? publication : Math.max(0, ...(r.daily || []).map(d => Number(d.day) || 0));
+    const calendar = calendarHeatmap(r.daily, { interactive: false, anchorDay, utc: true });
     view.innerHTML = pageHead(["Shared", "Report"], `${r.handle} — Usage Report`, `Shared report · ${share.scope} scope · expires ${share.expiresAt ? fmtDay(share.expiresAt) : "never"}`, "Usage today. A smarter tomorrow.")
       + `<div class="grid kpis" style="margin-bottom:16px">
         ${kpiCard("Tokens", r.tokensAllFormatted, "", ICONS.tokens)}
-        ${r.costAllFormatted ? kpiCard("Cost", r.costAllFormatted, "", ICONS.cost) : kpiCard("League", r.leagueTitle + " " + roman(r.division || 3), "", ICONS.shield)}
-        ${kpiCard("Rank", "#" + r.rank, `<span class="faint">Top ${topPercent(r.percentile)}%</span>`, ICONS.rank)}
+        ${r.costAllFormatted ? kpiCard("Cost", r.costAllFormatted, "", ICONS.cost) : kpiCard("Last 7 days", r.tokens7dFormatted || fmtTokens(r.tokens7d), "", ICONS.activity)}
+        ${hasRank ? kpiCard("Rank", "#" + r.rank, `<span class="faint">Top ${topPercent(r.percentile)}%</span>`, ICONS.rank) : r.costAllFormatted ? kpiCard("Last 7 days", r.tokens7dFormatted || fmtTokens(r.tokens7d), "", ICONS.activity) : r.tokensToday != null ? kpiCard("Usage today", fmtTokens(r.tokensToday), "", ICONS.tokens) : kpiCard("Published days", r.daily?.length || r.history?.length || "—", "", ICONS.clock)}
         ${kpiCard("Streak", (r.streakDays || 0) + " days", "", ICONS.fire)}
       </div>
+      ${calendar ? `<div class="card" style="margin-bottom:16px"><div class="card-head"><h3>Published Activity</h3><span class="sub">last 17 weeks</span></div>${calendar}</div>` : ""}
       <div class="split">
-        <div class="card"><div class="card-head"><h3>Usage Over Time</h3></div>${areaChart((r.history || []).map(x => ({ label: x.dayLabel || fmtDay(x.day), value: x.tokens || 0, cost: x.cost || 0 })), { color: "#4F8CFF", height: 200 })}</div>
+        <div class="card"><div class="card-head"><h3>Usage Over Time</h3></div>${r.history?.length ? areaChart(r.history.map(x => ({ label: x.dayLabel || fmtDay(x.day), value: x.tokens || 0, cost: x.cost || 0 })), { color: "#235E43", height: 200 }) : '<div class="empty">Daily activity has not been published.</div>'}</div>
         <div class="card"><div class="card-head"><h3>Model Allocation</h3><span class="sub">${modelsAllLink()}</span></div>
           <table><thead><tr><th>Model</th><th>Provider</th><th class="right">Tokens</th><th class="right">Share</th></tr></thead><tbody>
           ${(r.models || []).map(m => `<tr><td>${modelLink(m.provider, m.model)}</td><td>${esc(providerDisplay(m.provider, m.model))}</td><td class="num right">${fmtTokens(m.tokensAll)}</td><td class="num right">${fmtPct(m.sharePercent || 0, 1)}</td></tr>`).join("") || '<tr><td colspan="4"><div class="empty">Not shared</div></td></tr>'}
@@ -5076,8 +5168,23 @@ async function renderSharedReport(id) {
       </div>`;
   } catch (e) {
     if (version !== renderVersion) return;
+    if (e.status === 401 || e.status === 403) {
+      const needsSignIn = e.status === 401;
+      view.innerHTML = pageHead(["Shared", "Report"], needsSignIn ? "Your private report is waiting" : "This report is invite-only", "Shared securely with Token Horizon.", "")
+        + `<div class="card share-locked"><div class="share-preview-mark" aria-hidden="true"></div><h2>${needsSignIn ? "Sign in to open this report" : "You don't have access yet"}</h2><p>${needsSignIn ? "Use the Google account connected to the profile this report was shared with. Your usage preview stays private." : "Ask the person who shared this link to add your claimed profile or group. If they invited another account, sign in with that account."}</p><div class="share-locked-actions"><button class="pill primary" id="shared-report-signin">${needsSignIn ? "Sign in to view report" : "Use another account"}</button><button class="pill ghost" id="shared-report-back">Explore the leaderboard</button></div></div>`;
+      const signIn = () => {
+        const options = { action: "Viewing this private usage report", onSuccess: () => renderSharedReport(id) };
+        if (needsSignIn) { if (requireSignIn(options)) renderSharedReport(id); }
+        else { setGoogleSession(null, { refreshShared: false }); requireSignIn(options); }
+      };
+      $("#shared-report-signin").onclick = signIn;
+      $("#shared-report-back").onclick = () => navigate("leaderboard");
+      if (needsSignIn && promptSignIn) requireSignIn({ action: "Viewing this private usage report", onSuccess: () => renderSharedReport(id) });
+      return;
+    }
     view.innerHTML = pageHead(["Shared", "Report"], "Share link unavailable", "This share link may have expired or been revoked.", "")
-      + `<div class="card"><div class="notice err">${esc(e.message)}</div><div style="margin-top:14px"><button class="pill" onclick="location.href=location.pathname">Back to leaderboard</button></div></div>`;
+      + `<div class="card"><div class="notice err">${esc(e.message)}</div><div style="margin-top:14px"><button class="pill" id="shared-report-back">Back to leaderboard</button></div></div>`;
+    $("#shared-report-back").onclick = () => navigate("leaderboard");
   }
 }
 

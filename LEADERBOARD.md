@@ -243,8 +243,8 @@ R2 leaderboard.json ────────────────────
 | `POST /api/profile/avatar` | owner-only avatar update: Google photo, image URL, uploaded data URL (stored in R2), or generated style |
 | `GET /api/avatar/:handle` | uploaded avatar bytes (R2, cached 24h) |
 | `GET /api/share` | SVG/Markdown/text cards (README badges) |
-| `GET /api/og/profile/:handle.png` | dynamic 1200×630 OG "quick view" usage card (resvg-wasm PNG; `.svg` for raw) |
-| `GET /api/og/share/:id.png` | share-report OG card honoring anonymize/hide-cost options |
+| `GET /api/og/profile/:handle.png` | dynamic 1200×630 PNG: total/today/7d tokens, 17-week dated heatmap, streak, rank and provider mix; `.svg` for raw; HEAD supported |
+| `GET /api/og/share/:id.png` | privacy-aware shared-report card; restricted links receive a generic sign-in preview; HEAD supported |
 | `GET /u/:handle` | clean profile permalink — SPA + per-profile OG/Twitter meta injected |
 | `GET /s/:id` | shared-report page with per-share OG meta (privacy-aware) |
 | text rendition | CLI tools (curl/wget/httpie…) get an ANSI card; AI-agent UAs (GPTBot, ClaudeBot, ChatGPT, Perplexity…) get plain text; `Accept: application/json` → JSON |
@@ -267,9 +267,24 @@ R2 leaderboard.json ────────────────────
 - R2 records: `shares/<id>.json`, `shares-index/<handle>.json`,
   `groups/<owner>.json`, `activity/<owner>.json`.
 - `POST /api/share/create` requires owner auth (Google or claim token) and
-  stores scope, audience, groups, options, expiry. Public links render at
-  `/s/<id>` → `GET /api/shared/<id>`, honoring anonymize / hide-cost /
-  rounded-token options. Revocation returns 410.
+  stores scope, audience, groups, options, expiry. Links render at `/s/<id>`
+  → `GET /api/shared/<id>`, honoring anonymization, hidden cost/provider/rank
+  and rounded-token options. Revocation returns 410. Restricted scopes
+  require the owner, an explicitly named claimed profile, a saved owner group,
+  or authoritative team membership. Selecting a restricted scope disables the
+  public capability; an explicit public-link toggle can enable it again.
+- Profile and public-report pages inject OG/Twitter metadata for real PNGs.
+  The pure renderer in `cloudflare/src/og-card.js` reads published daily totals
+  (model-history/history fallback), fills dated gaps and marks unavailable
+  activity rather than inventing it. The calendar is anchored to publication
+  and uses UTC dates. Bundled static Token Horizon Sans fonts keep edge PNGs
+  consistent with the site. `task web-og-fonts` regenerates those derivatives.
+- Image URLs include a fingerprint of the current privacy-filtered data and
+  design. Profile images use a five-minute content-addressed edge cache;
+  share images and reports use `no-store` so expiry/revocation is checked on
+  every request. Private crawler previews never contain identity or usage.
+  The share modal shows the actual generated image after creation and binds
+  it to the current profile/settings. Signing out clears restricted report data.
 
 ### 2.5.1 Sign-in modal & groups
 

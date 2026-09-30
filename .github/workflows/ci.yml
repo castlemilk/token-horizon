@@ -70,7 +70,10 @@ jobs:
         run: npm ci --prefix cloudflare --ignore-scripts
 
       - name: Worker tests (leaderboard API and OAuth connector)
-        run: node --test cloudflare/worker.test.mjs cloudflare/connector.test.mjs
+        run: node --test cloudflare/worker.test.mjs cloudflare/connector.test.mjs cloudflare/og-card.test.mjs
+
+      - name: Social card PNG regression (real WASM and bundled fonts)
+        run: node scripts/test-og-png.mjs
 
       - name: MCP tests (catalog helpers + server error contracts)
         run: |
@@ -82,6 +85,7 @@ jobs:
           node scripts/test-leaderboard-ui.mjs
           node scripts/test-workspace-ui.mjs
           node scripts/test-team-invites-ui.mjs
+          node scripts/test-share-preview-ui.mjs
 
       - name: Dashboard render/API budgets
         run: node scripts/bench-leaderboard.mjs
