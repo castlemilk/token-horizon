@@ -25,7 +25,7 @@ const API_BASE = (() => {
   // Fetch later consumes the browser preload; auth is never included here.
   const params = new URLSearchParams(location.search);
   const modelRoute = /^\/models\/?$/.test(location.pathname) || params.get("flat") === "1" || params.get("view") === "models";
-  const view = modelRoute ? "models" : params.get("view") || (params.get("user") || /^\/[us]\//.test(location.pathname) ? "profile" : "leaderboard");
+  const view = /^\/invite\//.test(location.pathname) || params.get("invite") ? "invite" : modelRoute ? "models" : params.get("view") || (params.get("user") || /^\/[us]\//.test(location.pathname) ? "profile" : "leaderboard");
   let path;
   if (view === "models" && params.get("tab") !== "providers") path = "/api/models/catalog";
   if (view === "leaderboard") {
@@ -1460,7 +1460,7 @@ async function api(path, opts = {}) {
     const { timeoutMs, ...fetchOptions } = opts;
     const { response: res, text } = await fetchText(destination.href,
       privateRead ? { ...fetchOptions, redirect: "error" } : fetchOptions,
-      isGet ? (timeoutMs ?? API_READ_TIMEOUT) : 0);
+      isGet ? (timeoutMs ?? API_READ_TIMEOUT) : (timeoutMs ?? 0));
     if (!res.ok) {
       let msg = "HTTP " + res.status;
       let code = "";
@@ -1515,8 +1515,9 @@ function setGoogleSession(s) {
   else localStorage.removeItem("th_google_session");
   state.googleSession = s;
   workspaceAccount = null;
+  if (previousIdentity !== nextIdentity) { teamManager?.close(); teamManager = null; teamInviteResult = null; }
   renderAuthSlot();
-  if (!s && state.view === "dashboard") render();
+  if (!s && ["dashboard", "invite"].includes(state.view)) render();
 }
 function googleHeaders(extra = {}) {
   const headers = { "Content-Type": "application/json", ...extra };
@@ -1635,7 +1636,7 @@ function loadAuthConfig() {
       authConfigFlight = null;
       renderAuthSlot();
       mountSignInOptions();
-      if (state.view === "settings" && state.googleConfig === "ready") render();
+      if (["settings", "invite"].includes(state.view) && state.googleConfig === "ready") render();
     }
   })();
   return authConfigFlight;
@@ -1728,7 +1729,7 @@ function navigate(view, opts = {}) {
   const qs = params.toString();
   // /models is a path-routed view: keep it canonical, and leave it for other
   // views (a relative "?view=x" would otherwise stay on /models).
-  const onModelsPath = /^\/models\/?$/.test(location.pathname);
+  const onModelsPath = /^\/(?:models|invite\/[^/]+|u\/[^/]+|s\/[^/]+)\/?$/.test(location.pathname);
   const target = (view === "players" && handle && location.protocol !== "file:")
     ? "/u/" + encodeURIComponent(handle)  // clean permalink — unfurls with a
                                           // dynamic OG card server-side
@@ -1746,7 +1747,8 @@ window.addEventListener("popstate", () => {
   if (period !== state.period) { state.period = period; state.data = null; state.dataSig = ""; }
   const userPath = location.pathname.match(/^\/u\/([^\/?#]+)\/?$/);
   const sharePath = location.pathname.match(/^\/s\/([^\/?#]+)\/?$/);
-  state.view = p.get("view") || (userPath ? "players" : /^\/models\/?$/.test(location.pathname) ? "models" : "leaderboard");
+  const invitePath = location.pathname.match(/^\/invite\/([^\/?#]+)\/?$/);
+  state.view = invitePath || p.get("invite") ? "invite" : p.get("view") || (userPath ? "players" : /^\/models\/?$/.test(location.pathname) ? "models" : "leaderboard");
   state.modelsTab = ["providers", "plans", "cheapest"].includes(p.get("tab")) ? p.get("tab") : "explorer";
   const u = p.get("user");
   state.currentHandle = u || null;
@@ -1834,8 +1836,8 @@ function renderSeasonSelect() {
 function renderFilters() {
   const leagues = ["all", ...LEAGUES.map(l => l.id)];
   $("#league-filter").innerHTML = leagues.map(l => `<option value="${l}" ${state.leagueFilter === l ? "selected" : ""}>${l === "all" ? "All Leagues" : leagueMeta(l).title}</option>`).join("");
-  const teams = ["all", ...new Set((state.data?.leaderboard || []).map(r => r.entry.team).filter(Boolean))];
-  $("#team-filter").innerHTML = teams.map(t => `<option value="${esc(t)}" ${state.teamFilter === t ? "selected" : ""}>${t === "all" ? "All Teams" : esc(t)}</option>`).join("");
+  const teams = communityTeamOptions(state.data?.leaderboard || []);
+  $("#team-filter").innerHTML = '<option value="all">All Teams</option>' + teams.map(t => `<option value="${esc(t.id)}" ${state.teamFilter === t.id ? "selected" : ""}>${esc(t.label)}</option>`).join("");
   const active = (state.leagueFilter !== "all" ? 1 : 0) + (state.teamFilter !== "all" ? 1 : 0);
   $("#filters-label").textContent = active ? `Filters (${active})` : "Filters";
 }
@@ -1930,6 +1932,16 @@ function leaderboardTableHtml(d, local) {
     ${sorted.length === 0 ? `<tr><td colspan="12"><div class="empty">No players match your filters.</div></td></tr>` : sorted.map(r => rowHtml(r, local)).join("")}
     </tbody></table></div></div>`;
 }
+function communityTeamOptions(rows) {
+  const teams = new Map();
+  for (const { entry } of rows) {
+    if (entry.team) teams.set(entry.teamId || entry.team, { id: entry.teamId || entry.team, label: entry.team, canonical: Boolean(entry.teamId) });
+  }
+  const names = new Map();
+  for (const team of teams.values()) names.set(team.label, (names.get(team.label) || 0) + 1);
+  for (const team of teams.values()) if (names.get(team.label) > 1) team.label += team.canonical ? " · Invite team" : " · Published label";
+  return [...teams.values()].sort((a, b) => a.label.localeCompare(b.label));
+}
 function viewLeaderboard() {
   const d = state.data;
   if (!d) return '<div class="discovery-title"><div><span class="discovery-eyebrow">THE COMMUNITY</span><h1>Community leaderboard</h1><p>See what the community is building with AI.</p></div></div>' + discoveryLoading("Loading community activity", "lb-loading");
@@ -1969,11 +1981,11 @@ function viewLeaderboard() {
     <div class="donut-wrap">${donut(mixTop, 168, fmtTokens(mixTotal), "tokens")}
     <div class="legend">${mixTop.map((s, i) => `<div class="legend-row">${providerLogo(s.provider || s.label, 15)}${esc(s.label)}<span class="val">${fmtTokens(s.value)}</span><span class="pct">${fmtPct(s.value / Math.max(1, mixTotal) * 100, 0)}</span></div>`).join("")}</div></div></div>`;
 
-  const join = `<section class="community-join"><img src="./assets/landing/community-orbits.webp" alt="" width="600" height="400"/><h2>Your work<br>belongs here.</h2><p>Share a profile when you choose.<br>Your prompts stay private by default.</p><a class="discovery-install" href="./docs/#leaderboard">Join the community ↗</a><button class="community-link" id="community-account">${state.googleSession ? "Open your workspace" : "Already publishing? Sign in"}</button></section>`;
+  const join = `<section class="community-join"><img src="./assets/landing/community-orbits.webp" alt="" width="600" height="400"/><h2>Your work<br>belongs here.</h2><p>Share a profile when you choose.<br>Your prompts stay private by default.</p><a class="discovery-install" href="./docs/#leaderboard">Join the community ↗</a><button class="community-link" id="community-invite">Invite friends to your team ↗</button><button class="community-link" id="community-account">${state.googleSession ? "Open your workspace" : "Already publishing? Sign in"}</button></section>`;
   const periods = [["today","Today"],["week","7 days"],["all","All time"],["streak","Streak"]];
-  const teams = [...new Set((d.leaderboard || []).map(r => r.entry.team).filter(Boolean))].sort();
+  const teams = communityTeamOptions(d.leaderboard || []);
   return `<div class="discovery-title"><div><span class="discovery-eyebrow">BUILD TOGETHER</span><h1>Community leaderboard</h1><p>A shared view of what we are building with AI.</p></div><div class="community-periods" aria-label="Ranking period">${periods.map(([id,label])=>`<button data-period="${id}" aria-pressed="${state.period===id}" class="${state.period===id ? "active" : ""}">${label}</button>`).join("")}</div></div>
-    <div class="community-layout"><div class="community-main">${kpis}<div class="community-tools"><input id="community-search" type="search" aria-label="Find a builder" placeholder="Find a builder…" value="${esc(state.search)}"><select id="community-team" aria-label="Filter builders by team"><option value="all">All teams</option>${teams.map(t=>`<option ${state.teamFilter===t?'selected':''} value="${esc(t)}">${esc(t)}</option>`).join("")}</select><select id="community-league" aria-label="Filter builders by league"><option value="all">All leagues</option>${LEAGUES.map(l=>`<option ${state.leagueFilter===l.id?'selected':''} value="${l.id}">${l.title}</option>`).join("")}</select></div>${table}<div class="community-table-foot"><span>Published profiles · select a builder to explore</span><button class="community-link" id="community-metrics" aria-pressed="${Boolean(state.moreMetrics)}">${state.moreMetrics ? "Fewer" : "More"} metrics</button></div>${overTime}</div><aside class="community-aside">${ladder}${join}<details class="community-extra"><summary>Community highlights</summary>${moversCard}${improvedCard}${mix}</details></aside></div>`;
+    <div class="community-layout"><div class="community-main">${kpis}<div class="community-tools"><input id="community-search" type="search" aria-label="Find a builder" placeholder="Find a builder…" value="${esc(state.search)}"><select id="community-team" aria-label="Filter builders by team"><option value="all">All teams</option>${teams.map(t=>`<option ${state.teamFilter===t.id?'selected':''} value="${esc(t.id)}">${esc(t.label)}</option>`).join("")}</select><select id="community-league" aria-label="Filter builders by league"><option value="all">All leagues</option>${LEAGUES.map(l=>`<option ${state.leagueFilter===l.id?'selected':''} value="${l.id}">${l.title}</option>`).join("")}</select></div>${table}<div class="community-table-foot"><span>Published profiles · select a builder to explore</span><button class="community-link" id="community-metrics" aria-pressed="${Boolean(state.moreMetrics)}">${state.moreMetrics ? "Fewer" : "More"} metrics</button></div>${overTime}</div><aside class="community-aside">${ladder}${join}<details class="community-extra"><summary>Community highlights</summary>${moversCard}${improvedCard}${mix}</details></aside></div>`;
 
 }
 
@@ -1983,7 +1995,7 @@ function th(key, label, title = "") {
   return `<th data-sort="${key}" class="${active ? "faint" : ""}" tabindex="0" role="button"${title ? ` title="${esc(title)}"` : ""}>${label}${active ? (state.sortDir > 0 ? " ↑" : " ↓") : ""}</th>`;
 }
 function filterRows(rows) {
-  let out = rows.filter(r => (state.leagueFilter === "all" || r.league === state.leagueFilter) && (state.teamFilter === "all" || r.entry.team === state.teamFilter));
+  let out = rows.filter(r => (state.leagueFilter === "all" || r.league === state.leagueFilter) && (state.teamFilter === "all" || (r.entry.teamId || r.entry.team) === state.teamFilter));
   if (state.search) {
     const q = state.search;
     out = out.filter(r => r.entry.handle.toLowerCase().includes(q) || (r.entry.team || "").toLowerCase().includes(q) || (r.entry.topModel || "").toLowerCase().includes(q));
@@ -2078,10 +2090,10 @@ function aggregateModels(rows) {
    MAIN RENDER
    ============================================================ */
 function syncDiscoveryChrome() {
-  const visible = ["leaderboard", "models"].includes(state.view);
+  const visible = ["leaderboard", "models", "invite"].includes(state.view);
   document.body.classList.toggle("discovery", visible);
   document.body.dataset.surface = state.view;
-  document.title = `Token Horizon — ${state.view === "models" ? "Model Explorer" : state.view === "leaderboard" ? "Community Leaderboard" : "Analytics"}`;
+  document.title = `Token Horizon — ${state.view === "invite" ? "Join your crew" : state.view === "models" ? "Model Explorer" : state.view === "leaderboard" ? "Community Leaderboard" : "Analytics"}`;
   $$("[data-public-view]").forEach(a => {
     a.setAttribute("aria-current", a.dataset.publicView === state.view ? "page" : "false");
     a.onclick = e => { if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return; e.preventDefault(); mxClose(); navigate(a.dataset.publicView); };
@@ -2095,6 +2107,8 @@ let renderVersion = 0;
 async function render() {
   const version = ++renderVersion;
   const route = state.view;
+  teamInvitePage?.destroy();
+  teamInvitePage = null;
   const current = () => version === renderVersion && route === state.view;
   syncDiscoveryChrome();
   const t0 = performance.now();
@@ -2105,12 +2119,12 @@ async function render() {
       view.innerHTML = mxLoadingHtml();
       mxWireTabs();
     }
-  } else if (route === "dashboard") {
+  } else if (route === "dashboard" || route === "invite") {
     view.innerHTML = '<section class="ws-boot" role="status" aria-label="Loading workspace"><div class="skeleton" style="height:32px;width:200px;margin-bottom:28px"></div><div class="skeleton" style="height:300px"></div></section>';
   } else if (!state.data) view.innerHTML = viewLeaderboard();
   try {
     // Catalog browsing does not depend on leaderboard, auth, or adoption.
-    if (!["models", "dashboard"].includes(route)) await ensureData();
+    if (!["models", "dashboard", "invite"].includes(route)) await ensureData();
     if (!current()) return;
     chartRegistry.clear();
     chartFallbacks.clear();
@@ -2118,6 +2132,7 @@ async function render() {
     renderFilters();
     switch (route) {
       case "dashboard": await renderDashboard(current); break;
+      case "invite": await renderTeamInvite(current); break;
       case "players": await renderPlayers(current); break;
       case "teams": await renderTeams(current); break;
       case "models": await renderModels(current); break;
@@ -2136,7 +2151,7 @@ async function render() {
   }
   if (!current()) return;
   // Demo data never masquerades as live data or labels the independent catalog.
-  if (!["models", "dashboard"].includes(route) && state.demo && view.firstChild) {
+  if (!["models", "dashboard", "invite"].includes(route) && state.demo && view.firstChild) {
     view.insertAdjacentHTML("afterbegin", `<div class="notice warn" style="margin-bottom:16px">Live API unreachable — showing bundled demo data. <button class="pill ghost" id="demo-retry" style="font-size:11px;margin-left:8px">Retry live data</button></div>`);
     const retry = $("#demo-retry");
     if (retry) retry.onclick = () => { clearApiCache(); state.data = null; state.dataSig = ""; state.demo = false; render(); };
@@ -2190,6 +2205,7 @@ function wireLeaderboard() {
   $("#community-league").onchange = e => { state.leagueFilter = e.target.value; render(); };
   $("#community-metrics").onclick = () => { state.moreMetrics = !state.moreMetrics; render(); };
   $("#community-account").onclick = () => state.googleSession ? navigate("dashboard") : openSignInModal();
+  $("#community-invite").onclick = openInviteFriends;
   $$("[data-period]").forEach(b => b.onclick = async () => {
     state.period = b.dataset.period;
     const url = new URL(location.href); url.searchParams.set("period", state.period); history.replaceState(history.state, "", url);
@@ -2449,6 +2465,139 @@ function profileContent(p) {
   return "";
 }
 
+/* ---------- team invitations: account-bound, independently loaded ---------- */
+let teamModuleFlight;
+let teamManager = null;
+let teamInviteResult = null;
+let teamInvitePage = null;
+function loadTeamModule() {
+  if (window.TokenHorizonInvites) return Promise.resolve(window.TokenHorizonInvites);
+  if (teamModuleFlight) return teamModuleFlight;
+  teamModuleFlight = new Promise((resolve, reject) => {
+    const script = document.createElement("script");
+    script.src = "./team-invites.js?v=20260930a";
+    script.async = true;
+    const style = document.createElement("link");
+    style.rel = "stylesheet";
+    style.href = "./team-invites.css?v=20260930a";
+    const timer = setTimeout(() => finish(new Error("Invites took too long to load. Please retry.")), 5000);
+    function finish(error) {
+      clearTimeout(timer);
+      script.onload = script.onerror = null;
+      if (error) { script.remove(); style.remove(); teamModuleFlight = null; reject(error); }
+      else resolve(window.TokenHorizonInvites);
+    }
+    script.onload = () => finish(window.TokenHorizonInvites ? null : new Error("Invites could not start."));
+    script.onerror = () => finish(new Error("Invites could not load. Check your connection and retry."));
+    document.head.append(style, script);
+  });
+  return teamModuleFlight;
+}
+function teamInviteToken() {
+  const path = location.pathname.match(/^\/invite\/([^\/?#]+)\/?$/);
+  return path ? path[1] : new URLSearchParams(location.search).get("invite") || "";
+}
+function invalidateTeamData() {
+  clearApiCache();
+  state.data = null;
+  state.user = null;
+  state.providers = null;
+  workspaceAccount = null;
+}
+async function openInviteFriends() {
+  if (state.googleConfig === "loading") await loadAuthConfig();
+  if (!requireSignIn({ action: "Invite friends to your team", onSuccess: openInviteFriends })) return;
+  const session = state.googleSession;
+  let module;
+  try { module = await loadTeamModule(); }
+  catch (error) { toast(error.message, true); return; }
+  if (session !== state.googleSession) return;
+  teamManager?.close();
+  let manager;
+  let managerState = { signedIn: true, loading: true, team: null, invites: [] };
+  const current = () => session === state.googleSession && manager === teamManager;
+  const paint = values => { managerState = { ...managerState, ...values }; if (current()) manager.update({ state: managerState }); };
+  const refresh = async () => {
+    if (!current()) return;
+    paint({ loading: true, error: "" });
+    try {
+      const account = await api("/api/account/team", { headers: googleHeaders(), cache: "no-store" });
+      paint({ team: account.team, invites: account.invites || [], loading: false });
+    } catch (error) { paint({ loading: false, error: error.message }); }
+  };
+  const mutate = async (path, body) => {
+    if (!current()) return;
+    paint({ loading: true, error: "" });
+    try {
+      await api(path, { method: "POST", headers: googleHeaders(), body: JSON.stringify(body), timeoutMs: 12000 });
+      if (!current()) return;
+      invalidateTeamData();
+      await refresh();
+    } catch (error) { paint({ loading: false, error: error.message }); }
+  };
+  manager = module.openManager({ state: managerState,
+    onCreate: name => mutate("/api/team/invites", { name }),
+    onRevoke: token => mutate("/api/team/invites/revoke", { token }),
+    onRetry: refresh, onClose: () => { if (teamManager === manager) teamManager = null; } });
+  teamManager = manager;
+  await refresh();
+}
+async function renderTeamInvite(current = () => true) {
+  const host = $("#view");
+  const token = teamInviteToken();
+  const metadataRead = api("/api/team/invites/" + encodeURIComponent(token), { cache: "no-store" })
+    .then(value => ({ value }), error => ({ error }));
+  let module;
+  try { module = await loadTeamModule(); }
+  catch (error) {
+    if (!current()) return;
+    host.innerHTML = `<div class="card" role="alert"><h1>Join your crew</h1><p>${esc(error.message)}</p><button class="pill" id="invite-retry">Try again</button></div>`;
+    $("#invite-retry").onclick = () => render();
+    return;
+  }
+  if (!current()) return;
+  const identity = () => state.googleSession?.sub || state.googleSession?.email || "";
+  let inviteState = { loading: true, signedIn: isGoogleSessionValid(), invite: null };
+  let view;
+  const paint = values => { inviteState = { ...inviteState, ...values }; if (current()) view.update({ state: inviteState }); };
+  const join = async (confirmSwitch = false) => {
+    if (!current()) return;
+    if (state.googleConfig === "loading") await loadAuthConfig();
+    if (state.view !== "invite" || teamInviteToken() !== token) return;
+    if (!requireSignIn({ action: `Join ${inviteState.invite?.team?.name || "your friends’ team"}`,
+      onSuccess: () => { if (state.view === "invite" && teamInviteToken() === token) joinTeamAfterSignIn(token); } })) return;
+    const session = state.googleSession;
+    paint({ loading: true, error: "", needsSwitch: false, signedIn: true });
+    try {
+      const result = await api("/api/team/join", { method: "POST", headers: googleHeaders(),
+        body: JSON.stringify({ token, confirmSwitch }), timeoutMs: 12000 });
+      if (session !== state.googleSession || state.view !== "invite" || teamInviteToken() !== token) return;
+      teamInviteResult = { token, identity: identity(), team: result.team };
+      invalidateTeamData();
+      paint({ loading: false, joined: true, signedIn: true, team: result.team });
+    } catch (error) {
+      if (session !== state.googleSession) return;
+      paint({ loading: false, error: error.message, needsSwitch: error.code === "team_switch_required",
+        invalid: error.status === 404 || error.status === 410 });
+    }
+  };
+  view = module.renderInvite({ host, state: inviteState, onJoin: join,
+    onRetry: () => render(), onContinue: () => navigate("teams") });
+  teamInvitePage = view;
+  // The resumed action always calls the latest route's controller, avoiding a
+  // closed modal or navigation leaving an old join callback active.
+  activeTeamJoin = { token, join, current };
+  const metadata = await metadataRead;
+  if (!current()) return;
+  const joined = teamInviteResult?.token === token && teamInviteResult.identity === identity();
+  paint({ loading: false, invite: metadata.value || null, error: metadata.error?.message || "",
+    signedIn: isGoogleSessionValid(), joined: Boolean(joined), team: joined ? teamInviteResult.team : null });
+}
+let activeTeamJoin;
+function joinTeamAfterSignIn(token) {
+  if (activeTeamJoin?.token === token && activeTeamJoin.current()) activeTeamJoin.join();
+}
+
 /* ============================================================
    VIEW: DASHBOARD (User Activity Deep Dive)
    ============================================================ */
@@ -2518,7 +2667,8 @@ async function renderDashboard(current = () => true) {
     if (!current()) return;
     workspace.render({ host, entry, profiles, selectedHandle: handle, loading, error,
       signedIn: isGoogleSessionValid(), onSelect: select,
-      onSignIn: () => openSignInModal({ action: "Open your workspace" }), onRetry: retry });
+      onSignIn: () => openSignInModal({ action: "Open your workspace" }), onRetry: retry,
+      onInvite: openInviteFriends });
   };
   paint(Boolean(handle || state.googleSession));
   if (entryRead) {
@@ -4206,6 +4356,7 @@ async function renderTeams(current = () => true) {
   if (!current()) return;
   const teams = p.teams || [];
   $("#view").innerHTML = pageHead(["Players", "Teams"], "Team Leaderboard", "Aggregate usage across every team publishing to Token Horizon.", "Together, teams go further.")
+    + '<div class="team-invite-banner"><div><strong>Bring your friends into orbit.</strong><span>One invite link. Sign in, join your team, and climb together.</span></div><button class="pill primary" data-invite-friends>Invite friends ↗</button></div>'
     + apiErrBanner(state.providersError)
     + `<div class="grid kpis" style="margin-bottom:16px">
       ${kpiCard("Teams", String(teams.length), "", ICONS.users)}
@@ -4217,7 +4368,7 @@ async function renderTeams(current = () => true) {
       ${barList(teams.map(t => ({ label: t.team, value: t.tokens, percent: t.tokens / Math.max(1, teams.reduce((s, x) => s + x.tokens, 0)) * 100 })), { labelWidth: 130 })}
     </div>
     <div class="grid" style="grid-template-columns:repeat(auto-fill,minmax(min(320px,100%),1fr))">
-      ${teams.map(t => `<div class="card"><div class="card-head"><h3>${esc(t.team)}</h3><span class="chip">${t.members} member${t.members === 1 ? "" : "s"}</span></div>
+      ${teams.map(t => `<div class="card"><div class="card-head"><h3>${esc(t.team)}</h3><span class="chip">${t.members} published profile${t.members === 1 ? "" : "s"}</span></div>
         <div style="display:flex;gap:16px;margin-bottom:12px">
           <div><div class="kpi-label">Tokens</div><div style="font-weight:800;font-size:17px">${esc(t.tokensFormatted)}</div></div>
           <div><div class="kpi-label">Cost</div><div style="font-weight:800;font-size:17px">${esc(t.costFormatted)}</div></div>
@@ -4228,6 +4379,16 @@ async function renderTeams(current = () => true) {
       </div>`).join("") || '<div class="empty">No teams yet.</div>'}
     </div>`;
   wireProfile();
+  $("[data-invite-friends]").onclick = openInviteFriends;
+  if (isGoogleSessionValid()) {
+    const session = state.googleSession;
+    api("/api/account/team", { headers: googleHeaders(), cache: "no-store" }).then(account => {
+      if (!current() || session !== state.googleSession || !account.team) return;
+      $(".team-invite-banner strong").textContent = account.team.name;
+      $(".team-invite-banner span").textContent = `${account.team.memberCount} members in your crew. Published profiles contribute to the rankings below.`;
+      $("[data-invite-friends]").textContent = account.team.role === "owner" ? "Invite friends ↗" : "Your team ↗";
+    }).catch(() => {});
+  }
 }
 
 /* ============================================================
@@ -4743,7 +4904,7 @@ function completeSignIn() {
   state.signInPending = null;
   closeModal();
   renderAuthSlot();
-  if (state.view === "settings" || state.view === "dashboard") render();
+  if (["settings", "dashboard", "invite"].includes(state.view)) render();
   if (pendingAction && pendingAction.onSuccess) setTimeout(() => pendingAction.onSuccess(), 60);
 }
 function openSignInModal(opts = {}) {
@@ -5144,10 +5305,12 @@ async function init() {
   // profile; /s/<id> opens the shared report (browser URLs carry no query).
   const userPath = location.pathname.match(/^\/u\/([^\/?#]+)\/?$/);
   const sharePath = location.pathname.match(/^\/s\/([^\/?#]+)\/?$/);
+  const invitePath = location.pathname.match(/^\/invite\/([^\/?#]+)\/?$/);
   if (params.get("user")) state.currentHandle = params.get("user");
   if (userPath) state.currentHandle = decodeURIComponent(userPath[1]);
   state.period = ["today","week","all","streak"].includes(params.get("period")) ? params.get("period") : "today";
   state.view = params.get("view") || ((params.get("user") || userPath) ? "players" : "leaderboard");
+  if (invitePath || params.get("invite")) state.view = "invite";
   // Dedicated /models route: the worker serves the SPA asset with an internal
   // ?view=models rewrite, so the browser URL has no query — derive it here.
   if (/^\/models\/?$/.test(location.pathname)) state.view = "models";

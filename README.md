@@ -173,6 +173,8 @@ The edge-hosted **Token Horizon** dashboard (`docs/leaderboard.html`) ships eigh
 
 ### Cloudflare Edge Webhosting & R2 Backend (Ultra-Fast)
 
+Invite friends from **Workspace → Invite friends**, the leaderboard, or Teams. Create a named team and copy its invite link. Friends choose **Sign in & join** and automatically join after Google sign-in; they can join before publishing a profile. Membership follows the account and applies to its owned profiles on future syncs. Links last 30 days, can be retired by the owner, and never expose private prompts or device traces. Sharing audiences in Settings remain separate from team membership.
+
 Deploy a private or team leaderboard edge API and web dashboard in seconds:
 
 1. **Deploy with 1 Command**:

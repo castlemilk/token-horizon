@@ -6,6 +6,8 @@
  * (resvg-wasm), and static asset webhosting.
  */
 
+import { handleTeamRequest, applyTeamMemberships } from './team-invites.js';
+
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
@@ -570,8 +572,9 @@ function aggregateTeams(entries) {
   const map = new Map();
   for (const e of entries) {
     const team = (e.team || "").trim() || "Unassigned";
-    if (!map.has(team)) map.set(team, { team, tokens: 0, cost: 0, members: 0, providers: {}, users: [] });
-    const row = map.get(team);
+    const key = e.teamId ? `id:${e.teamId}` : `legacy:${team}`;
+    if (!map.has(key)) map.set(key, { team, ...(e.teamId ? { teamId: e.teamId } : {}), tokens: 0, cost: 0, members: 0, providers: {}, users: [] });
+    const row = map.get(key);
     row.tokens += e.tokensAll || 0;
     row.cost += e.costAll || 0;
     row.members += 1;
@@ -880,6 +883,9 @@ export default {
       }, 200, { "Cache-Control": "public, max-age=300, s-maxage=600" });
     }
 
+    const teamResponse = await handleTeamRequest(request, env, { parseGoogleAuth, jsonResponse });
+    if (teamResponse) return teamResponse;
+
     // Account discovery must use verified ownership, never leaderboard rank
     // or a matching public email address to choose the viewer's workspace.
     if (request.method === "GET" && pathname === "/api/account/profiles") {
@@ -895,7 +901,7 @@ export default {
               : "Sign in with Google to view your profiles."
           }, 401, headers);
         }
-        const entries = await getEntriesFromR2(env);
+        const entries = await getRawEntriesFromR2(env);
         const profiles = entries
           .filter(entry => entry.claimed === true && entry.ownerId === `google:${googleAuth.sub}`)
           .map(entry => ({ handle: entry.handle, displayName: String(entry.displayName || entry.handle) }))
@@ -924,7 +930,9 @@ export default {
       let filtered = entries;
 
       if (teamFilter) {
-        filtered = filtered.filter(e => e.team && e.team.toLowerCase().includes(teamFilter.toLowerCase()));
+        filtered = filtered.filter(e => e.teamId
+          ? e.teamId === teamFilter
+          : e.team && e.team.toLowerCase().includes(teamFilter.toLowerCase()));
       }
       if (leagueFilter) {
         filtered = filtered.filter(e => standingFor(e).league === leagueFilter);
@@ -1084,7 +1092,7 @@ export default {
       let teamTotal = 0;
       if (entry.team) {
         const teamPeers = entries
-          .filter(e => (e.team || "").toLowerCase() === entry.team.toLowerCase())
+          .filter(e => entry.teamId ? e.teamId === entry.teamId : !e.teamId && (e.team || "").toLowerCase() === entry.team.toLowerCase())
           .sort((a, b) => (b.tokensAll || 0) - (a.tokensAll || 0));
         teamTotal = teamPeers.length;
         const idx = teamPeers.findIndex(e => e.handle.toLowerCase() === clean);
@@ -1154,7 +1162,7 @@ export default {
 
         const handleClean = String(incoming.handle).replace(/^@/, "").trim();
         const incomingClaimToken = String(incoming.claimToken || request.headers.get("X-Claim-Token") || "").trim();
-        const entries = await getEntriesFromR2(env);
+        const entries = await getRawEntriesFromR2(env);
 
         const numOr = (...vals) => {
           for (const v of vals) {
@@ -1363,6 +1371,10 @@ export default {
           entries.push(newEntry);
         }
 
+        // Account membership wins over old clients' local team labels. It is
+        // read fresh on writes; public metadata caching never decides ownership.
+        await applyTeamMemberships(env, [newEntry], { fresh: true });
+
         // Derive league/MMR server-side when the publisher didn't include them
         // (older clients / CSV imports), then stamp today's rank snapshot.
         const derived = standingFor(newEntry);
@@ -1403,7 +1415,7 @@ export default {
           return jsonResponse({ ok: false, error: "Sign in with Google is required to claim a profile" }, 401);
         }
 
-        const entries = await getEntriesFromR2(env);
+        const entries = await getRawEntriesFromR2(env);
         const idx = entries.findIndex(e => e.handle.toLowerCase() === handleClean.toLowerCase());
         if (idx === -1) {
           return jsonResponse({ ok: false, error: `Profile @${handleClean} not found to claim` }, 404);
@@ -1412,7 +1424,8 @@ export default {
         const entry = entries[idx];
         if (entry.claimed) {
           if (entry.ownerId === `google:${googleAuth.sub}` || entry.googleEmail === googleAuth.email) {
-            return jsonResponse({ ok: true, message: `Profile @${handleClean} is already claimed by your Google account`, entry });
+            await applyTeamMemberships(env, [entry], { fresh: true });
+            return jsonResponse({ ok: true, message: `Profile @${handleClean} is already claimed by your Google account`, entry: sanitizeEntry(entry, true) });
           }
           return jsonResponse({ ok: false, error: `Profile @${handleClean} is already claimed by another verified user` }, 409);
         }
@@ -1432,6 +1445,7 @@ export default {
         entry.googleEmail = googleAuth.email;
         if (googleAuth.picture) entry.avatarUrl = googleAuth.picture;
         entry.claimedAt = Date.now() / 1000;
+        await applyTeamMemberships(env, [entry], { fresh: true });
         entries[idx] = entry;
 
         await saveEntriesToR2(env, entries);
@@ -1911,7 +1925,7 @@ export default {
     // 6d. Community model adoption: aggregate per-model totals across every
     // published profile so the explorer can show which models people run.
     if (request.method === "GET" && pathname === "/api/models/usage") {
-      const entries = await getEntriesFromR2(env);
+      const entries = await getRawEntriesFromR2(env);
       const models = aggregateModelUsage(entries);
       return jsonResponse({ ok: true, count: models.length, models }, 200, {
         "Cache-Control": "public, max-age=30, s-maxage=60"
@@ -1977,6 +1991,22 @@ export default {
 
     // 7. Webhosting: Fallback to static assets binding (docs/leaderboard.html, styles.css, etc.)
     if (env.ASSETS) {
+      if (/^\/invite\/[^/]+\/?$/.test(pathname)) {
+        const assetUrl = new URL(request.url);
+        assetUrl.pathname = '/leaderboard';
+        assetUrl.search = '';
+        const asset = await env.ASSETS.fetch(new Request(assetUrl.toString(), request));
+        if (!asset.ok) return asset;
+        const inviteTitle = 'Join your crew on Token Horizon';
+        const inviteDescription = 'Sign in to join your friends’ team and explore your AI usage together.';
+        const html = (await asset.text())
+          .replace(/<title>[^<]*<\/title>/i, `<title>${inviteTitle}</title>`)
+          .replace(/<meta name="description"[^>]*>/i, `<meta name="description" content="${inviteDescription}">`)
+          .replace(/<head>/i, `<head><base href="/"><meta name="referrer" content="no-referrer"><meta property="og:type" content="website"><meta property="og:title" content="${inviteTitle}"><meta property="og:description" content="${inviteDescription}"><meta property="og:image" content="https://token-horizon.dev/assets/landing/community-orbits.webp"><meta name="twitter:card" content="summary_large_image">`);
+        return new Response(html, { status: 200, headers: {
+          'Content-Type': 'text/html;charset=utf-8', 'Cache-Control': 'private, no-store', 'Referrer-Policy': 'no-referrer'
+        } });
+      }
       // Clean profile permalink: /u/<handle> serves the SPA with per-profile
       // OG/Twitter meta + a dynamic PNG card injected into <head>. The SPA
       // parses the path itself (init/popstate) — no query rewrite needed.
@@ -2025,8 +2055,15 @@ export default {
 
 // --- R2 Storage Helpers ---
 async function getEntriesFromR2(env) {
+  const entries = await getRawEntriesFromR2(env);
+  return await applyTeamMemberships(env, entries);
+}
+
+// Backfills persist the original exported entry data before membership is
+// overlaid. Joining a team never rewrites this shared usage-statistics object.
+async function getRawEntriesFromR2(env) {
   if (!env.LEADERBOARD_BUCKET) {
-    return [...DEFAULT_STARTER_ENTRIES];
+    return JSON.parse(JSON.stringify(DEFAULT_STARTER_ENTRIES));
   }
   try {
     const obj = await env.LEADERBOARD_BUCKET.get("leaderboard.json");
@@ -2091,7 +2128,7 @@ async function getEntriesFromR2(env) {
     return entries;
   } catch (err) {
     console.error("R2 get error:", err);
-    return [...DEFAULT_STARTER_ENTRIES];
+    return JSON.parse(JSON.stringify(DEFAULT_STARTER_ENTRIES));
   }
 }
 

@@ -296,3 +296,9 @@ body[data-surface="dashboard"] .brand-sub { display: none; }
 @media (prefers-reduced-motion: reduce) {
   .th-workspace *, .th-workspace *::before, .th-workspace *::after { animation: none !important; transition: none !important; }
 }
+/* A small entry point into the shared crew invitation flow. */
+.tw-invite-button { white-space: nowrap; align-self: end; }
+.team-invite-banner { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 20px 24px; margin-bottom: 20px; border: 1px solid var(--line2); border-radius: 14px; background: var(--panel); }
+.team-invite-banner strong { display: block; font-size: 20px; letter-spacing: -.5px; }
+.team-invite-banner span { display: block; color: var(--muted); font-size: 13px; margin-top: 6px; }
+@media (max-width: 600px) { .team-invite-banner { align-items: start; flex-direction: column; padding: 20px; } }

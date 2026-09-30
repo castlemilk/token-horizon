@@ -1,0 +1,207 @@
+/* Team invitations share the mineral, graphite and orbital language of Token Horizon. */
+.th-team-invites {
+  --ti-paper: #f3f4ef;
+  --ti-ink: #121714;
+  --ti-muted: #56635a;
+  --ti-rule: #dce1da;
+  --ti-green: #235e43;
+  --ti-mint: #b6f2cf;
+  color: var(--ti-ink);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
+}
+.th-team-invites *, .th-team-invites *::before, .th-team-invites *::after { box-sizing: border-box; }
+.th-team-invites :is(h1, h2, h3, p) { margin: 0; }
+.th-team-invites :is(button, input) { font: inherit; }
+.th-team-invites :is(button, a) { -webkit-tap-highlight-color: transparent; }
+.th-team-invites button { cursor: pointer; }
+.th-team-invites button:disabled { cursor: wait; opacity: .6; }
+.th-team-invites :is(button, a, input):focus-visible { outline: 2px solid #235e43; outline-offset: 4px; }
+.th-team-invites svg { width: 18px; height: 18px; flex: none; vertical-align: middle; }
+.th-team-invites .ti-button { display: inline-flex; align-items: center; justify-content: center; gap: 8px; border: 1px solid #c5d0c5; border-radius: 7px; min-height: 42px; padding: 10px 15px; background: #fff; color: #235e43; font-size: 12px; font-weight: 600; text-decoration: none; line-height: 1.5; }
+.th-team-invites .ti-button:hover:not(:disabled) { background: #edf4e9; border-color: #98ad9b; }
+.th-team-invites .ti-button.ti-primary { border-color: #235e43; background: #235e43; color: #fff; }
+.th-team-invites .ti-button.ti-primary:hover:not(:disabled) { background: #17482f; border-color: #17482f; }
+.th-team-invites .ti-wide { width: 100%; }
+.ti-text-button { border: 0; background: transparent; color: #235e43; padding: 3px 0; display: inline-flex; align-items: center; gap: 6px; font-size: 11px !important; line-height: 1.5; }
+.ti-text-button:hover { text-decoration: underline; text-underline-offset: 3px; }
+.ti-text-button svg { width: 13px; height: 13px; }
+.ti-brand-mark { display: inline-block; width: 27px; height: 19px; position: relative; flex: none; color: inherit; }
+.ti-brand-mark::before { content: ""; position: absolute; top: 1px; bottom: 1px; left: 6px; right: 6px; border: 1.5px solid currentColor; border-radius: 50%; }
+.ti-brand-mark::after { content: ""; position: absolute; top: 9px; left: 0; right: 0; height: 1.5px; background: currentColor; box-shadow: 0 1px 0 #121714; }
+.ti-manager { width: min(760px, calc(100vw - 32px)); padding: 0; border: 1px solid #cbd5ca; border-radius: 14px; background: #fff; max-height: calc(100dvh - 48px); overflow: auto; box-shadow: 0 30px 90px #0c170c45; }
+.ti-manager::backdrop { background: #0c160ec9; backdrop-filter: blur(5px); }
+.ti-manager-shell { display: grid; grid-template-columns: minmax(210px, .76fr) minmax(0, 1.24fr); min-height: 470px; position: relative; }
+.ti-close { position: absolute; top: 16px; right: 16px; z-index: 1; display: grid; place-items: center; width: 28px; height: 28px; background: #f3f4ef; color: #526259; border: 1px solid #dce1da; border-radius: 50%; }
+.ti-close svg { width: 14px; height: 14px; }
+.ti-close:hover { background: #e6ede3; color: #121714; }
+.ti-manager-art { background: #121714; color: #b6f2cf; padding: 27px 25px 22px; display: flex; flex-direction: column; overflow: hidden; }
+.ti-art-brand { display: flex; align-items: center; gap: 8px; color: #d9ebdf; font: 550 14px var(--th-display, sans-serif); letter-spacing: -.045em; }
+.ti-art-copy { margin-top: auto; }
+.ti-art-copy > span { display: block; font: 550 24px / 1.14 var(--th-display, sans-serif); letter-spacing: -.05em; color: #f3f4ef; }
+.ti-art-copy p { margin-top: 12px; font-size: 11px; line-height: 1.6; color: #aabfaf; max-width: 190px; }
+.ti-art-foot { display: flex; gap: 7px; align-items: center; font-size: 9px; color: #92ac99; padding-top: 28px; }
+.ti-art-foot > span { width: 4px; height: 4px; border-radius: 50%; background: #b6f2cf; }
+.ti-manager-content { background: #fff; padding: 39px 32px 24px; }
+.ti-manager-content > header { margin-bottom: 27px; padding-right: 5px; }
+.ti-manager-content h2 { color: #121714; font: 550 28px / 1.14 var(--th-display, sans-serif); letter-spacing: -.052em; }
+.ti-manager-content header p { color: #667269; font-size: 12px; line-height: 1.6; margin-top: 10px; }
+.ti-manager-body { min-height: 180px; }
+.ti-manager-body > h3 { font: 550 19px / 1.3 var(--th-display, sans-serif); letter-spacing: -.035em; margin-bottom: 9px; }
+.ti-manager-body > p { font-size: 12px; color: #56635a; line-height: 1.7; margin-bottom: 19px; }
+.ti-manager-body form label { display: block; font-size: 12px; font-weight: 550; color: #3d5043; margin-bottom: 8px; }
+.ti-name-control input { width: 100%; padding: 12px; background: #fafbf8; border: 1px solid #bfcbbd; border-radius: 6px; color: #121714; font-size: 13px; }
+.ti-name-control input::placeholder { color: #859387; }
+.ti-field-help { color: #667269; font-size: 11px; line-height: 1.65; margin: 10px 0 20px !important; }
+.ti-team-details { display: flex; align-items: center; gap: 12px; padding-bottom: 19px; border-bottom: 1px solid #dce1da; }
+.ti-team-badge { width: 38px; height: 38px; border-radius: 9px; border: 1px solid #cadfcb; background: #e7f2e8; color: #235e43; display: grid; place-items: center; flex: none; }
+.ti-team-details h3 { color: #121714; font: 600 18px / 1.3 var(--th-display, sans-serif); letter-spacing: -.035em; overflow-wrap: anywhere; }
+.ti-team-details p { color: #56635a; font-size: 10px; margin-top: 5px; }
+.ti-team-details p span { color: #667269; margin-left: 8px; }
+.ti-invite-list { margin: 0 0 16px; }
+.ti-invite-row { padding: 17px 0; border-bottom: 1px solid #e4e9e1; }
+.ti-invite-meta { display: flex; gap: 10px; justify-content: space-between; align-items: flex-start; margin-bottom: 9px; font-size: 9px; color: #56635a; }
+.ti-invite-meta > span { display: flex; gap: 6px; align-items: center; }
+.ti-invite-meta svg { width: 11px; height: 11px; }
+.ti-invite-meta time { white-space: nowrap; color: #68766c; }
+.ti-link-control { display: flex; gap: 6px; }
+.ti-link-control input { min-width: 0; width: 100%; flex: 1; color: #496052; background: #f7f9f4; border: 1px solid #d3ddd0; border-radius: 6px; padding: 9px; font: 9px var(--th-mono, monospace); }
+.ti-link-control .ti-copy-button { padding: 8px 11px; min-height: 37px; flex: none; font-size: 10px; }
+.ti-copy-button svg { width: 12px; height: 12px; }
+.ti-link-footer { display: flex; align-items: center; justify-content: space-between; gap: 9px; margin-top: 8px; color: #667269; font-size: 9px; }
+.ti-link-footer .ti-revoke { color: #806250; font-size: 9px !important; }
+.ti-invite-expired .ti-link-control input { color: #79847b; }
+.ti-no-links { padding: 23px 0 8px; }
+.ti-no-links p { color: #3e5446; font-size: 12px; font-weight: 550; margin-bottom: 6px; }
+.ti-no-links span { display: block; color: #667269; font-size: 11px; line-height: 1.7; }
+.ti-member-note { display: flex; align-items: flex-start; gap: 10px; padding-top: 19px; color: #4d6654; }
+.ti-member-note > svg { width: 18px; height: 18px; margin-top: 2px; }
+.ti-member-note p { font-size: 12px; line-height: 1.7; color: #56635a; }
+.ti-status { color: #235e43; font-size: 10px; min-height: 22px; margin-top: 12px !important; }
+.ti-privacy-note { display: flex; align-items: flex-start; gap: 7px; color: #667269; font-size: 9px; line-height: 1.7; border-top: 1px solid #e4e9e1; padding-top: 16px; margin-top: 13px; }
+.ti-privacy-note svg { width: 13px; height: 13px; margin-top: 1px; }
+.ti-error { background: #fff8ec; border: 1px solid #e8d8b6; color: #735629; border-radius: 6px; padding: 10px 12px; margin-bottom: 17px; font-size: 11px; line-height: 1.7; }
+.ti-error > span { display: block; overflow-wrap: anywhere; }
+.ti-error .ti-text-button { color: #735629; margin-top: 5px; }
+.ti-orbit-art { position: relative; width: 100%; aspect-ratio: 1; color: #b6f2cf; isolation: isolate; }
+.ti-orbit-line { position: absolute; top: 50%; left: 50%; border: 1px solid #62826b70; border-radius: 50%; transform: translate(-50%, -50%) rotate(-28deg); }
+.ti-orbit-one { width: 72%; height: 48%; }
+.ti-orbit-two { width: 93%; height: 65%; opacity: .5; }
+.ti-orbit-three { width: 47%; height: 79%; opacity: .36; transform: translate(-50%, -50%) rotate(42deg); }
+.ti-horizon { position: absolute; top: 50%; left: 50%; width: 29%; height: 29%; transform: translate(-50%, -50%); background: #121714; border: 1px solid #b6f2cf; border-radius: 50%; box-shadow: 0 0 0 5px #121714, 0 0 0 6px #51765b40; }
+.ti-horizon::after { content: ""; position: absolute; top: 50%; left: -49%; width: 198%; height: 1px; background: #b6f2cf; box-shadow: 0 0 9px #b6f2cf50; }
+.ti-horizon span { position: absolute; inset: 11%; border-radius: 50%; border: 1px solid #52785e4d; }
+.ti-orbit-friend { position: absolute; display: grid; place-items: center; border: 1px solid #658b71; background: #223329; border-radius: 50%; color: #c8ebd3; width: 37px; height: 37px; box-shadow: 0 0 0 6px #121714; }
+.ti-orbit-friend svg { width: 17px; height: 17px; }
+.ti-friend-one { left: 8%; top: 49%; }
+.ti-friend-two { right: 16%; top: 22%; background: #b6f2cf; color: #235e43; }
+.ti-friend-three { right: 12%; bottom: 22%; }
+.ti-star { position: absolute; top: var(--ti-y); left: var(--ti-x); width: 2px; height: 2px; border-radius: 50%; background: #829e89; opacity: .7; }
+.ti-star-2, .ti-star-4 { width: 3px; height: 3px; background: #b6f2cf; }
+.ti-orbit-small { width: calc(100% + 16px); margin: 15px -8px 20px; }
+.ti-orbit-small .ti-orbit-friend { width: 28px; height: 28px; box-shadow: 0 0 0 4px #121714; }
+.ti-orbit-small .ti-orbit-friend svg { width: 13px; height: 13px; }
+.ti-joined-mark { position: absolute; inset: 42%; border-radius: 50%; background: #b6f2cf; color: #235e43; display: grid; place-items: center; box-shadow: 0 0 0 6px #121714; z-index: 1; }
+.ti-joined-mark svg { width: 54%; height: 54%; }
+.ti-orbit-joined .ti-horizon { border-color: #8dc6a0; }
+.ti-orbit-joined .ti-horizon::after { background: #678e72; }
+.ti-orbit-joined .ti-friend-three { background: #b6f2cf; color: #235e43; }
+.ti-invite-page { background: #f3f4ef; min-height: min(780px, calc(100dvh - 70px)); padding: 38px 24px 28px; width: 100%; }
+.ti-page-brand { display: flex; align-items: center; justify-content: center; gap: 9px; text-decoration: none; color: #235e43; font: 550 18px var(--th-display, sans-serif); letter-spacing: -.045em; width: fit-content; margin: 0 auto 37px; }
+.ti-page-brand .ti-brand-mark::after { box-shadow: 0 1px 0 #f3f4ef; }
+.ti-invite-card { width: min(890px, 100%); margin: 0 auto; display: grid; grid-template-columns: minmax(260px, .94fr) minmax(0, 1.06fr); border: 1px solid #d5ddd2; border-radius: 13px; overflow: hidden; background: #fff; }
+.ti-invite-art { background: #121714; padding: 33px 26px 24px; display: flex; flex-direction: column; color: #b6f2cf; position: relative; }
+.ti-invite-art > .ti-orbit-art { max-width: 340px; margin: 0 auto 24px; }
+.ti-orbit-caption { padding: 0 15px 20px; margin-top: auto; }
+.ti-orbit-caption > span { display: block; font: 550 22px / 1.2 var(--th-display, sans-serif); letter-spacing: -.035em; color: #eef6ee; }
+.ti-orbit-caption p { font-size: 11px; color: #9db4a3; margin-top: 10px; line-height: 1.7; max-width: 260px; }
+.ti-coordinate { font: 9px var(--th-mono, monospace); color: #90ac99; padding: 12px 15px 0; border-top: 1px solid #334537; }
+.ti-invite-content { padding: 53px 40px 29px; align-self: center; min-width: 0; }
+.ti-invite-label { color: #56635a; font-size: 12px; }
+.ti-invite-content h1 { color: #121714; font: 550 clamp(31px, 3.5vw, 42px) / 1.08 var(--th-display, sans-serif); font-stretch: 105%; letter-spacing: -.055em; overflow-wrap: anywhere; margin: 11px 0 18px; }
+.ti-invite-content > p:not(.ti-join-help) { font-size: 13px; line-height: 1.8; color: #56635a; max-width: 360px; }
+.ti-crew-line { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; color: #386247; font-size: 11px; padding: 21px 0 23px; }
+.ti-crew-line svg { width: 16px; height: 16px; }
+.ti-crew-line time { color: #667269; border-left: 1px solid #d7dfd3; padding-left: 10px; margin-left: 2px; font-size: 10px; }
+.ti-invite-content .ti-wide { min-height: 45px; font-size: 12px; }
+.ti-join-help { color: #667269; font-size: 10px; line-height: 1.7; margin-top: 11px !important; }
+.ti-invite-content .ti-privacy-note { margin-top: 28px; font-size: 9px; }
+.ti-home-link { display: inline-flex; align-items: center; justify-content: center; gap: 6px; color: #235e43; text-decoration: none; font-size: 11px; margin-top: 15px; width: 100%; padding: 5px 0; }
+.ti-home-link:hover { text-decoration: underline; text-underline-offset: 3px; }
+.ti-home-link svg { width: 14px; height: 14px; }
+.ti-page-footer { margin: 24px auto 0 !important; text-align: center; color: #6b786e; font-size: 10px; }
+/* The hosted SPA already provides the brand and navigation above this view. */
+body[data-surface="invite"] .ti-invite-page { min-height: 0; padding: 12px 0 20px; }
+body[data-surface="invite"] .ti-page-brand { display: none; }
+body[data-surface="invite"] .ti-invite-art > .ti-orbit-art { max-width: 310px; margin-bottom: 18px; }
+body[data-surface="invite"] .ti-invite-content { padding-top: 34px; padding-bottom: 24px; }
+body[data-surface="invite"] .ti-invite-content .ti-privacy-note { margin-top: 22px; }
+.ti-success-label { display: inline-flex; align-items: center; gap: 6px; padding: 6px 9px; border: 1px solid #c8dfc9; border-radius: 5px; background: #edf6ed; color: #235e43; font-size: 10px; }
+.ti-success-label svg { width: 13px; height: 13px; }
+.ti-switch-note { border-left: 2px solid #c9a15f; padding: 7px 0 7px 11px; margin-bottom: 20px; color: #71592f; }
+.ti-switch-note strong { font-size: 11px; font-weight: 600; }
+.ti-switch-note p { margin-top: 5px; font-size: 11px; line-height: 1.7; }
+.ti-button-spinner { width: 14px; height: 14px; border-radius: 50%; border: 1px solid currentColor; border-right-color: transparent; animation: ti-spin .8s linear infinite; }
+.ti-loading { display: flex; align-items: center; gap: 7px; font-size: 11px; color: #56635a; margin-top: 18px !important; }
+.ti-loading-dot { width: 7px; height: 7px; border-radius: 50%; background: #235e43; animation: ti-pulse 1.5s ease-in-out infinite; }
+.ti-skeleton { display: flex; flex-direction: column; gap: 16px; width: 100%; padding: 13px 0; }
+.ti-skeleton > * { display: block; height: 9px; background: #edf0e8; border-radius: 4px; overflow: hidden; position: relative; }
+.ti-skeleton > *::after { content: ""; position: absolute; inset: 0; background: linear-gradient(100deg, transparent 15%, #ffffffbd 50%, transparent 85%); transform: translateX(-100%); animation: ti-shimmer 1.5s ease-in-out infinite; }
+.ti-skeleton > span:first-child { width: 42%; }
+.ti-skeleton > b { width: 90%; height: 34px; }
+.ti-skeleton > span { width: 76%; }
+.ti-skeleton > i { width: 100%; height: 43px; margin-top: 14px; }
+@keyframes ti-spin { to { transform: rotate(360deg); } }
+@keyframes ti-pulse { 50% { opacity: .3; } }
+@keyframes ti-shimmer { to { transform: translateX(100%); } }
+@keyframes ti-crew-arrive { from { opacity: 0; transform: scale(.65); } to { opacity: 1; transform: scale(1); } }
+@keyframes ti-orbit-expand { from { opacity: .15; transform: translate(-50%, -50%) rotate(-28deg) scale(.68); } to { opacity: 1; transform: translate(-50%, -50%) rotate(-28deg) scale(1); } }
+@keyframes ti-star-burst { 0% { opacity: 0; transform: scale(0); } 45% { opacity: 1; transform: scale(3); } 100% { opacity: .7; transform: scale(1); } }
+@media (prefers-reduced-motion: no-preference) {
+  .ti-manager[open] { animation: ti-crew-arrive .2s ease-out; }
+  .ti-orbit-joined .ti-joined-mark { animation: ti-crew-arrive .45s cubic-bezier(.16, 1, .3, 1) both; }
+  .ti-orbit-joined .ti-orbit-one { animation: ti-orbit-expand .8s cubic-bezier(.16, 1, .3, 1) both; }
+  .ti-orbit-joined .ti-star { animation: ti-star-burst .7s ease-out var(--ti-delay) both; }
+}
+@media (max-width: 650px) {
+  .ti-manager { width: min(460px, calc(100vw - 24px)); max-height: calc(100dvh - 24px); }
+  .ti-manager-shell { grid-template-columns: 1fr; min-height: 0; }
+  .ti-manager-art { display: block; padding: 21px 24px; }
+  .ti-manager-art .ti-orbit-art, .ti-art-copy, .ti-art-foot { display: none; }
+  .ti-close { top: 11px; right: 11px; width: 44px; height: 44px; color: #d4e6d9; border-color: #47644d; background: #24382c; }
+  .ti-close:hover { background: #354f3d; color: #fff; }
+  .th-team-invites .ti-close:focus-visible { outline-color: #b6f2cf; }
+  .ti-manager-content { padding: 25px 24px 22px; }
+  .ti-manager-content h2 { font-size: 27px; }
+  .ti-manager-content > header { margin-bottom: 22px; }
+  .ti-manager-body { min-height: 0; }
+  .ti-link-footer { flex-wrap: wrap; }
+  .ti-link-footer .ti-text-button { min-height: 36px; }
+  .ti-link-control .ti-copy-button { min-height: 42px; }
+  .ti-invite-page { padding: 25px 18px 20px; min-height: calc(100dvh - 60px); }
+  .ti-page-brand { margin-bottom: 25px; }
+  .ti-invite-card { max-width: 430px; grid-template-columns: 1fr; }
+  .ti-invite-art { padding: 13px 24px 15px; height: 190px; overflow: hidden; }
+  .ti-invite-art > .ti-orbit-art { width: 210px; height: 210px; position: absolute; top: -10px; right: 9px; margin: 0; }
+  .ti-invite-art .ti-orbit-friend { width: 26px; height: 26px; box-shadow: 0 0 0 4px #121714; }
+  .ti-invite-art .ti-orbit-friend svg { width: 12px; height: 12px; }
+  .ti-orbit-caption { padding: 0; width: 140px; margin: auto 0 0; position: relative; z-index: 1; }
+  .ti-orbit-caption > span { font-size: 18px; max-width: 105px; }
+  .ti-orbit-caption p { display: none; }
+  .ti-coordinate { border: 0; padding: 0; margin-top: 13px; font-size: 8px; }
+  .ti-invite-content { padding: 28px 24px 23px; }
+  .ti-invite-content h1 { font-size: 32px; }
+  .ti-invite-content > p:not(.ti-join-help) { font-size: 12px; }
+  .ti-invite-content .ti-privacy-note { margin-top: 22px; }
+}
+@media (max-width: 360px) {
+  .ti-manager-content { padding-inline: 18px; }
+  .ti-invite-meta { flex-direction: column; gap: 3px; }
+  .ti-link-control .ti-copy-button { padding-inline: 8px; }
+  .ti-invite-content { padding-inline: 19px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .th-team-invites *, .th-team-invites *::before, .th-team-invites *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
+  .ti-skeleton > *::after { display: none; }
+}

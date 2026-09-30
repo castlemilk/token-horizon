@@ -28,6 +28,7 @@ function createEnv(initialEntries = null) {
 /// Keyed in-memory R2 stand-in for share/group/avatar tests.
 function mockR2Store() {
   const store = new Map();
+  const versions = new Map();
   return {
     async get(key) {
       const v = store.get(key);
@@ -40,16 +41,28 @@ function mockR2Store() {
           httpMetadata: { contentType: v.contentType }
         };
       }
-      return { json: async () => JSON.parse(v), text: async () => v };
+      return { json: async () => JSON.parse(v), text: async () => v, etag: String(versions.get(key)) };
     },
     async put(key, value, opts) {
+      const condition = opts?.onlyIf;
+      if (condition?.etagDoesNotMatch === '*' && store.has(key)) return null;
+      if (condition?.etagMatches && condition.etagMatches !== String(versions.get(key))) return null;
+      versions.set(key, (versions.get(key) || 0) + 1);
       if (value instanceof Uint8Array || value instanceof ArrayBuffer) {
         const bytes = value instanceof Uint8Array ? value : new Uint8Array(value);
         store.set(key, { bytes, contentType: (opts && opts.httpMetadata && opts.httpMetadata.contentType) || "application/octet-stream" });
         return;
       }
       store.set(key, typeof value === 'string' ? value : JSON.stringify(value));
-    }
+      return { etag: String(versions.get(key)) };
+    },
+    async list({ prefix = '', limit = 1000, cursor } = {}) {
+      const matching = [...store.keys()].filter(key => key.startsWith(prefix)).sort();
+      const start = Number(cursor) || 0;
+      const page = matching.slice(start, start + limit);
+      return { objects: page.map(key => ({ key })), truncated: start + page.length < matching.length, cursor: String(start + page.length) };
+    },
+    async delete(key) { store.delete(key); versions.delete(key); }
   };
 }
 
@@ -103,6 +116,297 @@ const req = (path, { method = 'GET', headers = {}, body } = {}) =>
     },
     body: body !== undefined ? JSON.stringify(body) : undefined
   });
+
+async function teamFixture() {
+  const { keyPair, jwk } = await makeGoogleKeyPair();
+  const clientId = 'team-invites.apps.googleusercontent.com';
+  const env = { ...createMultiKeyEnv([]), GOOGLE_CLIENT_ID: clientId, GOOGLE_JWKS: JSON.stringify({ keys: [jwk] }) };
+  const token = (sub, extra = {}) => makeGoogleToken(keyPair, { clientId, sub, email: `${sub}@example.com`, ...extra });
+  const call = async (path, auth, body) => {
+    const response = await worker.fetch(req(path, { ...(body !== undefined ? { method: 'POST', body } : {}), headers: auth ? { 'X-Google-Token': auth } : {} }), env);
+    return { response, status: response.status, data: await response.json() };
+  };
+  return { env, token, call };
+}
+
+describe('Account team invites', () => {
+  it('requires verified Google auth, keeps owner links private, and joins without manufacturing a profile', async () => {
+    const { env, token, call } = await teamFixture();
+    const owner = await token('owner'), friend = await token('friend');
+    const expired = await token('owner', { exp: Math.floor(Date.now() / 1000) - 60 });
+    const wrongAudience = await token('owner', { aud: 'another-app' });
+    for (const auth of ['', expired, wrongAudience, 'google:owner@example.com']) {
+      for (const [path, body] of [['/api/account/team', undefined], ['/api/team/invites', { name: 'Orbit Club' }], ['/api/team/join', { token: 'a'.repeat(48) }]]) {
+        const result = await call(path, auth, body);
+        assert.equal(result.status, 401);
+        assert.equal(result.data.code, 'auth_required');
+        assert.equal(result.response.headers.get('Cache-Control'), 'private, no-store');
+      }
+    }
+    assert.deepEqual((await call('/api/account/team', owner)).data, { ok: true, team: null, invites: [] });
+    const created = await call('/api/team/invites', owner, { name: 'Orbit Club' });
+    assert.equal(created.status, 200);
+    assert.equal(created.data.team.role, 'owner');
+    assert.equal(created.data.team.memberCount, 1);
+    assert.match(created.data.team.id, /^[a-f0-9]{32}$/);
+    const invite = created.data.invites[0];
+    assert.match(invite.token, /^[a-f0-9]{48}$/);
+    assert.equal(invite.url, `https://token-horizon.dev/invite/${invite.token}`);
+    assert.equal(invite.expiresAt - invite.createdAt, 30 * 86400000);
+    const publicInvite = await call(`/api/team/invites/${invite.token}`);
+    assert.deepEqual(Object.keys(publicInvite.data).sort(), ['expiresAt', 'ok', 'team']);
+    assert.deepEqual(Object.keys(publicInvite.data.team).sort(), ['id', 'memberCount', 'name']);
+    assert.equal(publicInvite.response.headers.get('Referrer-Policy'), 'no-referrer');
+    const joined = await call('/api/team/join', friend, { token: invite.token, handle: 'someone-elses-profile' });
+    assert.equal(joined.status, 200);
+    assert.equal(joined.data.team.role, 'member');
+    assert.equal(joined.data.team.memberCount, 2);
+    assert.deepEqual(joined.data.invites, []);
+    const repeat = await call('/api/team/join', friend, { token: invite.token });
+    assert.equal(repeat.data.alreadyMember, true);
+    assert.equal(repeat.data.team.memberCount, 2);
+    assert.deepEqual((await call('/api/account/profiles', friend)).data, { profiles: [] });
+    assert.deepEqual(await (await env.LEADERBOARD_BUCKET.get('leaderboard.json')).json(), []);
+    const reused = await call('/api/team/invites', owner, { name: 'Untrusted rename' });
+    assert.equal(reused.data.team.name, 'Orbit Club');
+    assert.equal(reused.data.invites[0].token, invite.token);
+  });
+
+  it('overlays exact account membership on existing/future publishes and keeps equal legacy labels separate', async () => {
+    const { token, call } = await teamFixture();
+    const owner = await token('crew-owner'), friend = await token('crew-friend');
+    await call('/api/leaderboard', owner, { handle: 'captain', team: 'Old label', tokensAll: 1000 });
+    const created = await call('/api/team/invites', owner, { name: 'Star Friends' });
+    const teamId = created.data.team.id, inviteToken = created.data.invites[0].token;
+    assert.equal((await call('/api/user/captain')).data.entry.teamId, teamId);
+    await call('/api/team/join', friend, { token: inviteToken });
+    const firstPublish = await call('/api/leaderboard', friend, { handle: 'navigator', team: 'Local stale label', teamId: 'f'.repeat(32), tokensAll: 500 });
+    assert.equal(firstPublish.data.entry.teamId, teamId);
+    assert.equal(firstPublish.data.entry.team, 'Star Friends');
+    const nextPublish = await call('/api/leaderboard', friend, { handle: 'navigator', team: 'Another stale label', tokensAll: 600 });
+    assert.equal(nextPublish.data.entry.teamId, teamId);
+    await call('/api/leaderboard', undefined, { handle: 'label-spoofer', team: 'Star Friends', teamId, tokensAll: 2000 });
+    const teams = (await call('/api/teams')).data.teams;
+    const canonical = teams.find(team => team.teamId === teamId);
+    assert.equal(canonical.members, 2);
+    assert.equal(canonical.tokens, 1600);
+    assert.equal(teams.filter(team => team.team === 'Star Friends').length, 2);
+    const friendDetails = (await call('/api/user/navigator')).data;
+    assert.equal(friendDetails.teamTotal, 2);
+    assert.equal(friendDetails.teamRank, 2);
+    assert.equal((await call('/api/user/label-spoofer')).data.teamTotal, 1);
+    const filtered = (await call(`/api/leaderboard?team=${teamId}`)).data;
+    assert.equal(filtered.total, 2);
+    assert.ok(filtered.leaderboard.every(row => row.entry.teamId === teamId));
+    const legacyFiltered = (await call('/api/leaderboard?team=Star%20Friends')).data;
+    assert.equal(legacyFiltered.total, 1);
+    assert.equal(legacyFiltered.leaderboard[0].entry.handle, 'label-spoofer');
+    const ownedAgain = await call('/api/claim', friend, { handle: 'navigator' });
+    assert.equal(ownedAgain.data.entry.ownerId, undefined);
+    assert.equal(ownedAgain.data.entry.teamId, teamId);
+  });
+
+  it('applies a profileless membership on claim and does not enroll an email-only ownership match', async () => {
+    const { env, token, call } = await teamFixture();
+    const owner = await token('claim-owner'), friend = await token('claim-friend');
+    const created = await call('/api/team/invites', owner, { name: 'Claim Crew' });
+    const teamId = created.data.team.id;
+    await call('/api/team/join', friend, { token: created.data.invites[0].token });
+    const anonymous = await call('/api/leaderboard', undefined, { handle: 'claim-target', tokensAll: 42 });
+    const claimed = await call('/api/claim', friend, { handle: 'claim-target', claimToken: anonymous.data.claimToken });
+    assert.equal(claimed.data.entry.teamId, teamId);
+    const entries = await (await env.LEADERBOARD_BUCKET.get('leaderboard.json')).json();
+    entries.push({ handle: 'different-subject', team: 'Independent', tokensAll: 99, claimed: true, ownerId: 'google:another-subject', googleEmail: 'claim-friend@example.com', breakdown: { models: [{ model: 'example', provider: 'openai', tokensAll: 99 }] } });
+    await env.LEADERBOARD_BUCKET.put('leaderboard.json', JSON.stringify(entries));
+    const unrelated = (await call('/api/user/different-subject')).data.entry;
+    assert.equal(unrelated.team, 'Independent');
+    assert.equal(unrelated.teamId, undefined);
+    const ownerDetails = await call('/api/account/team', friend);
+    assert.equal(ownerDetails.data.team.memberCount, 2);
+  });
+
+  it('retires links immediately, rejects expired/invalid links, and only lets the owner manage invitations', async () => {
+    const { env, token, call } = await teamFixture();
+    const owner = await token('retire-owner'), friend = await token('retire-friend');
+    const created = await call('/api/team/invites', owner, { name: 'Moon Club' });
+    const inviteToken = created.data.invites[0].token;
+    await call('/api/team/join', friend, { token: inviteToken });
+    assert.equal((await call('/api/team/invites/revoke', friend, { token: inviteToken })).status, 403);
+    assert.equal((await call('/api/team/invites', friend, { name: 'Hijacked' })).status, 403);
+    assert.equal((await call('/api/team/invites/revoke', owner, { token: 'b'.repeat(48) })).status, 404);
+    assert.equal((await call('/api/team/invites/not-valid')).status, 404);
+    const retired = await call('/api/team/invites/revoke', owner, { token: inviteToken });
+    assert.equal(retired.data.invites[0].revoked, true);
+    assert.equal((await call(`/api/team/invites/${inviteToken}`)).data.code, 'invite_revoked');
+    const stranger = await token('late-friend');
+    assert.equal((await call('/api/team/join', stranger, { token: inviteToken })).status, 410);
+    const renewed = await call('/api/team/invites', owner, {});
+    const active = renewed.data.invites.find(invite => !invite.revoked);
+    assert.notEqual(active.token, inviteToken);
+    const inviteKeys = (await env.LEADERBOARD_BUCKET.list({ prefix: `team-membership/invites/${created.data.team.id}/` })).objects;
+    for (const { key } of inviteKeys) {
+      const stored = await (await env.LEADERBOARD_BUCKET.get(key)).json();
+      if (stored.token === active.token) await env.LEADERBOARD_BUCKET.put(key, JSON.stringify({ ...stored, expiresAt: Date.now() - 1 }));
+    }
+    assert.equal((await call(`/api/team/invites/${active.token}`)).data.code, 'invite_expired');
+    assert.equal((await call('/api/team/join', stranger, { token: active.token })).status, 410);
+    assert.equal((await call('/api/account/team', friend)).data.team.memberCount, 2);
+  });
+
+  it('requires confirmation for members switching teams and keeps owners with their own team', async () => {
+    const { token, call } = await teamFixture();
+    const firstOwner = await token('first-owner'), secondOwner = await token('second-owner'), friend = await token('switch-friend');
+    const first = (await call('/api/team/invites', firstOwner, { name: 'Same Name' })).data;
+    const second = (await call('/api/team/invites', secondOwner, { name: 'Same Name' })).data;
+    assert.notEqual(first.team.id, second.team.id);
+    await call('/api/team/join', friend, { token: first.invites[0].token });
+    const pending = await call('/api/team/join', friend, { token: second.invites[0].token });
+    assert.equal(pending.status, 409);
+    assert.equal(pending.data.code, 'team_switch_required');
+    assert.equal((await call('/api/account/team', friend)).data.team.id, first.team.id);
+    const switched = await call('/api/team/join', friend, { token: second.invites[0].token, confirmSwitch: true });
+    assert.equal(switched.data.team.id, second.team.id);
+    assert.equal((await call('/api/account/team', firstOwner)).data.team.memberCount, 1);
+    assert.equal((await call('/api/account/team', secondOwner)).data.team.memberCount, 2);
+    const ownerCannotMove = await call('/api/team/join', firstOwner, { token: second.invites[0].token, confirmSwitch: true });
+    assert.equal(ownerCannotMove.status, 409);
+    assert.equal(ownerCannotMove.data.code, 'team_owner');
+    assert.equal((await call('/api/account/team', firstOwner)).data.team.id, first.team.id);
+  });
+
+  it('keeps simultaneous friends additive and conditionally prevents the same account joining two teams', async () => {
+    const { token, call } = await teamFixture();
+    const owner = await token('parallel-owner'), otherOwner = await token('parallel-other');
+    const first = (await call('/api/team/invites', owner, { name: 'Parallel Crew' })).data;
+    const second = (await call('/api/team/invites', otherOwner, { name: 'Other Crew' })).data;
+    const friends = await Promise.all(Array.from({ length: 12 }, (_, index) => token(`parallel-friend-${index}`)));
+    const joined = await Promise.all(friends.map(auth => call('/api/team/join', auth, { token: first.invites[0].token })));
+    assert.ok(joined.every(result => result.status === 200));
+    assert.equal((await call('/api/account/team', owner)).data.team.memberCount, 13);
+    const racing = await token('racing-account');
+    const race = await Promise.all([first, second].map(team => call('/api/team/join', racing, { token: team.invites[0].token })));
+    assert.deepEqual(race.map(result => result.status).sort(), [200, 409]);
+    const current = (await call('/api/account/team', racing)).data.team.id;
+    assert.ok(current === first.team.id || current === second.team.id);
+    const total = (await call('/api/account/team', owner)).data.team.memberCount + (await call('/api/account/team', otherOwner)).data.team.memberCount;
+    assert.equal(total, 15);
+  });
+
+  it('bounds request bodies and serves nested invite URLs with working relative assets and private referrers', async () => {
+    const { env, token, call } = await teamFixture();
+    const owner = await token('input-owner');
+    for (const name of ['', 'x'.repeat(65), 'Bad\nName', 123]) {
+      assert.equal((await call('/api/team/invites', owner, { name })).status, 400);
+    }
+    const tooLarge = await call('/api/team/invites', owner, { name: 'Crew', padding: 'x'.repeat(9000) });
+    assert.equal(tooLarge.status, 413);
+    let servedPath;
+    env.ASSETS = { async fetch(request) { servedPath = new URL(request.url).pathname; return new Response('<!doctype html><html><head><title>Token Horizon</title></head><body></body></html>'); } };
+    const response = await worker.fetch(req(`/invite/${'c'.repeat(48)}`), env);
+    assert.equal(response.status, 200);
+    assert.equal(servedPath, '/leaderboard');
+    assert.match(await response.text(), /<base href="\/">/);
+    assert.equal(response.headers.get('Cache-Control'), 'private, no-store');
+    assert.equal(response.headers.get('Referrer-Policy'), 'no-referrer');
+  });
+
+  it('repairs the member index when a retry follows a partial storage failure', async () => {
+    const { env, token, call } = await teamFixture();
+    const owner = await token('repair-owner'), friend = await token('repair-friend');
+    const originalPut = env.LEADERBOARD_BUCKET.put.bind(env.LEADERBOARD_BUCKET);
+    let failMemberIndex = true;
+    env.LEADERBOARD_BUCKET.put = async (key, ...args) => {
+      if (failMemberIndex && key.startsWith('team-membership/members/')) {
+        failMemberIndex = false;
+        throw new Error('Simulated storage interruption after account commit');
+      }
+      return await originalPut(key, ...args);
+    };
+    assert.equal((await call('/api/team/invites', owner, { name: 'Resilient Crew' })).status, 503);
+    const recovered = await call('/api/team/invites', owner, { name: 'Resilient Crew' });
+    assert.equal(recovered.status, 200);
+    assert.equal(recovered.data.team.memberCount, 1);
+    failMemberIndex = true;
+    assert.equal((await call('/api/team/join', friend, { token: recovered.data.invites[0].token })).status, 503);
+    const joined = await call('/api/team/join', friend, { token: recovered.data.invites[0].token });
+    assert.equal(joined.status, 200);
+    assert.equal(joined.data.alreadyMember, true);
+    assert.equal(joined.data.team.memberCount, 2);
+  });
+
+  it('deduplicates shared-owner metadata and reuses it across public reads without delaying the static catalog', async () => {
+    const { env, token, call } = await teamFixture();
+    const owner = await token('metadata-owner');
+    await call('/api/leaderboard', owner, { handle: 'work-profile', tokensAll: 100 });
+    await call('/api/leaderboard', owner, { handle: 'home-profile', tokensAll: 200 });
+    await call('/api/team/invites', owner, { name: 'Fast Crew' });
+    const originalGet = env.LEADERBOARD_BUCKET.get.bind(env.LEADERBOARD_BUCKET);
+    const metadataGets = [];
+    env.LEADERBOARD_BUCKET.get = async key => {
+      if (key.startsWith('team-membership/')) metadataGets.push(key);
+      return await originalGet(key);
+    };
+    await call('/api/account/profiles', owner);
+    await call('/api/models/usage');
+    assert.equal(metadataGets.length, 0);
+    await call('/api/leaderboard');
+    assert.equal(metadataGets.filter(key => key.includes('/accounts/')).length, 1);
+    assert.equal(metadataGets.filter(key => key.includes('/teams/')).length, 1);
+    const count = metadataGets.length;
+    await call('/api/user/work-profile');
+    await call('/api/teams');
+    assert.equal(metadataGets.length, count);
+    env.ASSETS = { async fetch() { return new Response(JSON.stringify({ models: [] }), { headers: { 'Content-Type': 'application/json' } }); } };
+    await call('/api/models/catalog');
+    assert.equal(metadataGets.length, count);
+  });
+
+  it('repairs an invite lookup index when creation is retried after a partial storage failure', async () => {
+    const { env, token, call } = await teamFixture();
+    const owner = await token('link-repair-owner');
+    const originalPut = env.LEADERBOARD_BUCKET.put.bind(env.LEADERBOARD_BUCKET);
+    let failPointer = true;
+    env.LEADERBOARD_BUCKET.put = async (key, ...args) => {
+      if (failPointer && key.startsWith('team-membership/invite-links/')) {
+        failPointer = false;
+        throw new Error('Simulated invite lookup index interruption');
+      }
+      return await originalPut(key, ...args);
+    };
+    assert.equal((await call('/api/team/invites', owner, { name: 'Restored Link Crew' })).status, 503);
+    const recovered = await call('/api/team/invites', owner, { name: 'Restored Link Crew' });
+    assert.equal(recovered.status, 200);
+    assert.equal(recovered.data.invites.length, 1);
+    const lookup = await call(`/api/team/invites/${recovered.data.invites[0].token}`);
+    assert.equal(lookup.status, 200);
+    assert.equal(lookup.data.team.id, recovered.data.team.id);
+  });
+
+  it('keeps public usage available during membership read failures without asserting canonical membership', async () => {
+    const { env, token, call } = await teamFixture();
+    const owner = await token('outage-owner');
+    const team = (await call('/api/team/invites', owner, { name: 'Available Crew' })).data;
+    await call('/api/leaderboard', owner, { handle: 'outage-profile', tokensAll: 4321 });
+    const originalGet = env.LEADERBOARD_BUCKET.get.bind(env.LEADERBOARD_BUCKET);
+    env.LEADERBOARD_BUCKET.get = async key => {
+      if (key.startsWith('team-membership/accounts/')) throw new Error('Simulated membership metadata interruption');
+      return await originalGet(key);
+    };
+    const publicUsage = await call('/api/leaderboard');
+    assert.equal(publicUsage.status, 200);
+    assert.equal(publicUsage.data.kpis.totalTokens, 4321);
+    assert.equal(publicUsage.data.leaderboard[0].entry.teamId, undefined);
+    assert.equal(publicUsage.data.leaderboard[0].entry.team, '');
+    const models = await call('/api/models/usage');
+    assert.equal(models.status, 200);
+    assert.equal(models.data.models[0].tokens, 4321);
+    assert.equal((await call('/api/team/join', owner, { token: team.invites[0].token })).status, 503);
+    assert.equal((await call('/api/leaderboard', owner, { handle: 'outage-profile', tokensAll: 9999 })).status, 500);
+    const stored = await (await originalGet('leaderboard.json')).json();
+    assert.equal(stored[0].tokensAll, 4321);
+    assert.equal(stored[0].teamId, team.team.id);
+  });
+});
 
 describe('Cloudflare Worker API', () => {
   it('GET /api/health returns service status and storage info', async () => {

@@ -75,7 +75,7 @@
     const old = stale(entry);
     const knownTime = Number.isFinite(stamp(entry?.updatedAt));
     const description = knownTime ? `Published ${new Date(stamp(entry.updatedAt)).toLocaleString()}.${old ? " This snapshot is more than 24 hours old. Its daily and weekly totals describe the period at publication." : ""}` : "The publisher did not include an update time.";
-    return `<header class="tw-heading"><div><div class="tw-eyebrow">TOKEN HORIZON / OBSERVABILITY</div><h1>Workspace</h1><p>Understand your usage. Find your next improvement.</p></div><div class="tw-heading-controls">${profileControl(options, entry)}${entry ? `<div class="tw-source${old ? " tw-source-stale" : !knownTime ? " tw-source-unknown" : ""}" title="${esc(description)}"><i></i><span>${old ? "Historical snapshot" : "Published snapshot"}<small>${esc(relative(entry.updatedAt))}</small></span>${icon("info")}</div>` : ""}</div></header>`;
+    return `<header class="tw-heading"><div><div class="tw-eyebrow">TOKEN HORIZON / OBSERVABILITY</div><h1>Workspace</h1><p>Understand your usage. Find your next improvement.</p></div><div class="tw-heading-controls">${profileControl(options, entry)}${entry ? `<div class="tw-source${old ? " tw-source-stale" : !knownTime ? " tw-source-unknown" : ""}" title="${esc(description)}"><i></i><span>${old ? "Historical snapshot" : "Published snapshot"}<small>${esc(relative(entry.updatedAt))}</small></span>${icon("info")}</div>` : ""}<button class="tw-button tw-invite-button" data-tw-invite>Invite friends ↗</button></div></header>`;
   }
 
   function skeleton(options) {
@@ -225,6 +225,7 @@
     const { host } = view.options;
     host.querySelector("[data-tw-profile]")?.addEventListener("change", event => view.options.onSelect?.(event.target.value));
     host.querySelector("[data-tw-signin]")?.addEventListener("click", () => view.options.onSignIn?.());
+    host.querySelector("[data-tw-invite]")?.addEventListener("click", () => view.options.onInvite?.());
     host.querySelector("[data-tw-retry]")?.addEventListener("click", () => view.options.onRetry?.());
     host.querySelector("[data-tw-open-profile]")?.addEventListener("submit", event => {
       event.preventDefault();
