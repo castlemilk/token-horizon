@@ -45,11 +45,11 @@ function fontFamilyNames(font) {
 function markedRects(svg, attribute) {
   return [...svg.matchAll(new RegExp(`<rect\\b(?=[^>]*\\b${attribute}=")[^>]*>`, 'g'))].map(([tag]) => {
     const value = name => tag.match(new RegExp(`\\b${name}="([^"]+)"`))?.[1];
-    return { x: Number(value('x')), y: Number(value('y')), width: Number(value('width')), height: Number(value('height')), fill: value('fill') };
+    return { x: Number(value('x')), y: Number(value('y')), width: Number(value('width')), height: Number(value('height')), fill: value('fill'), provider: value('data-chart-provider'), day: value('data-chart-day') };
   });
 }
 
-function rasterize(svg, label, { fonts = fontBuffers, checkTwoRows = false } = {}) {
+function rasterize(svg, label, { fonts = fontBuffers, checkTwoRows = false, checkProviderColors = false } = {}) {
   if (fonts.length) {
     const available = new Set(fonts.flatMap(fontFamilyNames));
     const declared = new Set([...svg.matchAll(/font-family="([^"]+)"/g)].map(match => match[1]));
@@ -86,6 +86,20 @@ function rasterize(svg, label, { fonts = fontBuffers, checkTwoRows = false } = {
         assert.equal(pixels[offset + 3], 255, `${label}: activity is visible in the encoded raster`);
       }
     }
+    if (checkProviderColors) {
+      const segments = markedRects(svg, 'data-chart-provider').filter(rect => rect.width >= 4 && rect.height >= 4);
+      assert.ok(new Set(segments.map(rect => rect.provider)).size >= 2, `${label}: measured usage paints multiple providers`);
+      for (const provider of new Set(segments.map(rect => rect.provider))) {
+        const rect = segments.find(segment => segment.provider === provider);
+        const x = Math.floor(rect.x + rect.width / 2), y = Math.floor(rect.y + rect.height / 2);
+        const offset = (y * 1200 + x) * 4;
+        const color = rect.fill.match(/^#([0-9a-f]{6})$/i);
+        assert.ok(color, `${label}: provider ${provider} has a concrete shared palette color`);
+        const expected = [0, 2, 4].map(index => parseInt(color[1].slice(index, index + 2), 16));
+        assert.deepEqual([...pixels.subarray(offset, offset + 3)], expected, `${label}: ${provider} color reaches actual PNG pixels`);
+        assert.equal(pixels[offset + 3], 255, `${label}: provider color is opaque`);
+      }
+    }
     const colors = new Set();
     for (let offset = 0; offset < pixels.length; offset += 52) {
       colors.add(`${pixels[offset]},${pixels[offset + 1]},${pixels[offset + 2]},${pixels[offset + 3]}`);
@@ -118,6 +132,11 @@ const entry = {
       { provider: 'anthropic', model: 'private-model-a', tokensAll: 180000000, requests: 1000 },
       { provider: 'openai', model: 'private-model-b', tokensAll: 54560000, requests: 234 }
     ],
+    modelHistory: [
+      { provider: 'anthropic', model: 'private-model-a', points: daily.map(point => ({ day: point.day, tokens: Math.floor(point.tokens * .62) })) },
+      { provider: 'openai', model: 'private-model-b', points: daily.map(point => ({ day: point.day, tokens: Math.floor(point.tokens * .30) })) },
+      { provider: 'google', model: 'private-model-c', points: daily.map(point => ({ day: point.day, tokens: point.tokens - Math.floor(point.tokens * .62) - Math.floor(point.tokens * .30) })) }
+    ],
     sessions: [{ title: 'PRIVATE PROMPT CONTENT MUST NEVER APPEAR', at: snapshotDay, tokens: 9000 }],
     projects: [{ project: 'PRIVATE PROJECT MUST NEVER APPEAR', tokens: 8000 }]
   }
@@ -137,7 +156,15 @@ assert.equal(model.calendarDays.length, 119);
 assert.equal(model.calendarAvailable, true);
 assert.equal(model.chartDays.length, 30);
 assert.equal(model.chartAvailable, true);
+assert.equal(model.chartProviderAvailable, true);
+assert.equal(model.chartProviders.length, 3);
 assert.equal(model.chartDays.at(-1).day, Math.floor(snapshotDay / 86400));
+for (const point of model.chartDays) {
+  assert.equal(point.segments.reduce((total, segment) => total + segment.tokens, 0), point.tokens, 'Actual provider segments reconcile with the published daily total');
+  for (const segment of point.segments) {
+    assert.equal(segment.color, model.chartProviders.find(provider => provider.provider === segment.provider)?.color, 'Daily provider bars share their legend colors');
+  }
+}
 assert.ok(model.calendarDays.some(point => point.tokens > 0 && point.level > 0), 'Real daily tokens contribute heatmap activity');
 assert.equal(model.mix.length, 2);
 const fullSvg = renderProfileOgSvg(model);
@@ -147,7 +174,7 @@ assert.match(fullSvg, /heatmap|activity/i);
 for (const secret of ['private-owner', 'private@example.com', 'private-token-hash', 'PRIVATE PROMPT', 'PRIVATE PROJECT']) {
   assert.equal(fullSvg.includes(secret), false, `OG excludes ${secret}`);
 }
-const profilePng = rasterize(fullSvg, 'daily usage chart and 119-day heatmap', { checkTwoRows: true });
+const profilePng = rasterize(fullSvg, 'provider-colored usage chart and 119-day heatmap', { checkTwoRows: true, checkProviderColors: true });
 if (arguments_.preview) {
   await writeFile(arguments_.preview, profilePng);
   console.log(`OG preview written: ${arguments_.preview}`);
@@ -186,6 +213,23 @@ for (const privateValue of [entry.handle, entry.team, entry.hardware, 'Grandmast
 }
 rasterize(anonymizedSvg, 'anonymized public share');
 
+const noProviderModel = buildOgModel(entry, { ...modelOptions, providerBreakdown: false });
+assert.equal(noProviderModel.chartProviderAvailable, false);
+assert.deepEqual(noProviderModel.chartProviders, []);
+assert.ok(noProviderModel.chartDays.every(point => point.segments.length === 0), 'Provider-disabled shares retain no hidden chart attribution');
+const noProviderSvg = renderProfileOgSvg(noProviderModel);
+assert.doesNotMatch(noProviderSvg, /Anthropic|OpenAI|Google|data-chart-provider="(?:anthropic|openai|google)"/);
+rasterize(noProviderSvg, 'public share with provider attribution disabled', { checkTwoRows: true });
+
+const totalOnlyEntry = { ...entry, breakdown: { ...entry.breakdown, modelHistory: undefined } };
+const totalOnlyModel = buildOgModel(totalOnlyEntry, modelOptions);
+assert.equal(totalOnlyModel.chartProviderAvailable, false);
+assert.deepEqual(totalOnlyModel.chartProviders, []);
+assert.ok(totalOnlyModel.chartDays.every(point => point.segments.length === 0), 'All-time mix does not invent daily provider allocation');
+const totalOnlySvg = renderProfileOgSvg(totalOnlyModel);
+assert.doesNotMatch(totalOnlySvg, /data-chart-provider="(?:anthropic|openai|google)"/);
+rasterize(totalOnlySvg, 'daily totals without provider history', { checkTwoRows: true });
+
 const restrictedSvg = renderRestrictedOgSvg();
 for (const privateValue of [entry.handle, entry.team, entry.hardware, String(entry.tokensAll), String(entry.tokensToday)]) {
   assert.equal(restrictedSvg.includes(privateValue), false, 'Restricted card remains generic');
@@ -199,5 +243,5 @@ if (arguments_['restricted-preview']) {
 // Without usable fonts, geometry and the heatmap still form a valid raster.
 // Production uses all bundled fonts; this catches a renderer exception on its
 // missing-font path rather than depending on fonts installed on the CI host.
-rasterize(fullSvg, 'missing fonts preserve chart geometry', { fonts: [], checkTwoRows: true });
+rasterize(fullSvg, 'missing fonts preserve chart geometry', { fonts: [], checkTwoRows: true, checkProviderColors: true });
 console.log('OG PNG rasterization checks passed.');

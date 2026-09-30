@@ -279,6 +279,10 @@ R2 leaderboard.json ────────────────────
   activity rather than inventing it. The calendar is anchored to publication
   and uses UTC dates. Bundled static Token Horizon Sans fonts keep edge PNGs
   consistent with the site. `task web-og-fonts` regenerates those derivatives.
+- The 30-day chart stacks measured daily usage by provider, using published
+  `modelHistory` and matching legend colors. Missing attribution stays neutral;
+  conflicting provider counts never rescale the canonical daily total. Hidden
+  providers remain absent from chart data, labels and image attributes.
 - Image URLs include a fingerprint of the current privacy-filtered data and
   design. Profile images use a five-minute content-addressed edge cache;
   share images and reports use `no-store` so expiry/revocation is checked on

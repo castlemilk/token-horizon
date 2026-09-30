@@ -1,5 +1,5 @@
 // Pure, deterministic social card model and SVG. Rasterization lives in the Worker.
-export const OG_CARD_VERSION = "horizon-4";
+export const OG_CARD_VERSION = "horizon-5";
 
 const DAY = 86400;
 const MAX_DAY = 2932896; // Last supported ISO year: 9999.
@@ -12,6 +12,8 @@ const PROVIDERS = {
   alibaba: ["Alibaba", "#CE6427"], openrouter: ["OpenRouter", "#78877C"], mistral: ["Mistral", "#B98027"],
   xai: ["xAI", "#343E37"], local: ["Local", "#478966"], other: ["Other", "#89978B"]
 };
+const UNATTRIBUTED = { provider: "unattributed", label: "Unattributed", color: "#A6B1A8" };
+const providerStyle = provider => ({ provider, label: PROVIDERS[provider]?.[0] || truncate(provider, 16), color: PROVIDERS[provider]?.[1] || PROVIDERS.other[1] });
 
 const number = value => Number.isFinite(Number(value)) ? Math.min(Number.MAX_SAFE_INTEGER, Math.max(0, Number(value))) : 0;
 const text = value => String(value ?? "").replace(/[\u0000-\u001F\u007F-\u009F]/g, "").slice(0, 256);
@@ -33,8 +35,7 @@ export function ogDay(value) {
   return day <= MAX_DAY ? day : null;
 }
 
-// Publication dates anchor old profiles: a historical card never drifts with the clock.
-function calendar(entry, round) {
+function dailyTotals(entry) {
   const breakdown = entry.breakdown || {};
   const values = new Map();
   const addRows = (rows, target, sum = false) => {
@@ -54,6 +55,11 @@ function calendar(entry, round) {
     }
   }
   if (!values.size) addRows(breakdown.history, values);
+  return values;
+}
+
+// Publication dates anchor old profiles: a historical card never drifts with the clock.
+function calendar(entry, round, values) {
   const publishedDay = entry.updatedAt ? ogDay(entry.updatedAt) : null;
   const latestDay = values.size ? [...values.keys()].reduce((max, day) => Math.max(max, day), 0) : null;
   const anchor = publishedDay ?? latestDay ?? 0;
@@ -66,6 +72,67 @@ function calendar(entry, round) {
     return { day, date: iso(day), tokens: day > anchor ? 0 : tokens, level: day > anchor ? -1 : tokens > 0 ? Math.max(1, Math.min(4, Math.ceil(tokens / max * 4))) : 0 };
   });
   return { calendarDays: days, calendarAvailable: values.size > 0, calendarStart: start, calendarEnd: anchor, publishedDay, activeDays: days.filter(d => d.tokens > 0).length };
+}
+
+function colorProviderChart(entry, model, totals, normalize, rounded, visible) {
+  model.chartProviders = [];
+  model.chartProviderAvailable = false;
+  for (const day of model.chartDays) day.segments = [];
+  if (!visible) return;
+  const byDay = new Map();
+  const window = new Set(model.chartDays.map(point => point.day));
+  for (const series of Array.isArray(entry.breakdown?.modelHistory) ? entry.breakdown.modelHistory : []) {
+    const provider = normalize(series?.provider || "other");
+    const perModel = new Map();
+    for (const point of Array.isArray(series?.points) ? series.points : []) {
+      const day = ogDay(point?.day ?? point?.date ?? point?.dayLabel);
+      if (!window.has(day)) continue;
+      perModel.set(day, Math.max(perModel.get(day) || 0, number(point.tokens)));
+    }
+    for (const [day, tokens] of perModel) {
+      if (!tokens) continue;
+      if (!byDay.has(day)) byDay.set(day, new Map());
+      const providers = byDay.get(day);
+      providers.set(provider, number((providers.get(provider) || 0) + tokens));
+    }
+  }
+  if (!byDay.size) return; // All-time percentages cannot supply daily attribution.
+  for (const point of model.chartDays) {
+    if (!point.tokens) continue;
+    const canonical = totals.get(point.day) || 0;
+    const measured = [...(byDay.get(point.day) || [])].filter(([, tokens]) => tokens > 0);
+    const measuredTotal = measured.reduce((sum, [, tokens]) => number(sum + tokens), 0);
+    // Conflicting measurements retain the canonical total without scaling providers.
+    const parts = measuredTotal > canonical ? [["unattributed", canonical]] : [...measured, ...(measuredTotal < canonical ? [["unattributed", canonical - measuredTotal]] : [])];
+    if (rounded) {
+      // Round the partition in whole thousands, preserving its rounded total.
+      // Largest remainders prevent independent rounding from inflating the bar.
+      const units = parts.map(([, tokens]) => Math.floor(tokens / 1000));
+      let remaining = Math.round(point.tokens / 1000) - units.reduce((sum, value) => sum + value, 0);
+      const order = parts.map(([, tokens], index) => ({ index, remainder: tokens / 1000 - units[index] }))
+        .sort((a, b) => b.remainder - a.remainder || a.index - b.index);
+      for (const { index } of order) { if (remaining-- <= 0) break; units[index]++; }
+      point.segments = parts.map(([provider], index) => ({ provider, tokens: units[index] * 1000 })).filter(part => part.tokens > 0);
+    } else point.segments = parts.map(([provider, tokens]) => ({ provider, tokens })).filter(part => part.tokens > 0);
+  }
+  const observed = new Map();
+  for (const day of model.chartDays) for (const part of day.segments) observed.set(part.provider, number((observed.get(part.provider) || 0) + part.tokens));
+  const leaders = [...observed].filter(([provider]) => !["unattributed", "other"].includes(provider)).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).slice(0, 4).map(([provider]) => provider);
+  const grouped = new Map();
+  for (const day of model.chartDays) {
+    const parts = new Map();
+    for (const part of day.segments) {
+      const provider = part.provider === "unattributed" || leaders.includes(part.provider) ? part.provider : "other";
+      parts.set(provider, number((parts.get(provider) || 0) + part.tokens));
+    }
+    day.segments = [...parts].map(([provider, tokens]) => ({ ...(provider === "unattributed" ? UNATTRIBUTED : providerStyle(provider)), tokens }));
+    for (const part of day.segments) grouped.set(part.provider, number((grouped.get(part.provider) || 0) + part.tokens));
+  }
+  const total = [...grouped.values()].reduce((sum, tokens) => number(sum + tokens), 0);
+  const keys = [...leaders, ...(grouped.has("other") ? ["other"] : []), ...(grouped.has("unattributed") ? ["unattributed"] : [])];
+  model.chartProviders = keys.map(provider => ({ ...(provider === "unattributed" ? UNATTRIBUTED : providerStyle(provider)), tokens: grouped.get(provider), share: total ? grouped.get(provider) / total : 0 }));
+  model.chartProviderAvailable = keys.some(provider => provider !== "unattributed");
+  for (const day of model.chartDays) day.segments.sort((a, b) => keys.indexOf(a.provider) - keys.indexOf(b.provider));
 }
 
 export function buildOgModel(entry = {}, options = {}) {
@@ -89,6 +156,7 @@ export function buildOgModel(entry = {}, options = {}) {
   if (providers.length > 4) top.push(["other", providers.slice(4).reduce((sum, [, tokens]) => number(sum + tokens), 0)]);
   const mix = top.map(([provider, tokens]) => ({ provider, label: PROVIDERS[provider]?.[0] || truncate(provider, 16), color: PROVIDERS[provider]?.[1] || PROVIDERS.other[1], tokens: round(tokens), share: providerTotal ? tokens / providerTotal : 0 }));
   const rank = Math.max(1, Math.floor(number(options.rank)));
+  const totals = dailyTotals(entry);
   const model = {
     handle: anonymize ? "Anonymous" : text(entry.handle || "Profile"), team: anonymize ? "" : text(entry.team), hardware: anonymize ? "" : text(entry.hardware),
     tokensToday: round(entry.tokensToday), tokens7d: round(entry.tokens7d), tokensAll: round(entry.tokensAll),
@@ -96,11 +164,12 @@ export function buildOgModel(entry = {}, options = {}) {
     requestsAll: round(entry.requestsAll ?? (Array.isArray(entry.breakdown?.models) ? entry.breakdown.models : []).reduce((sum, row) => number(sum + number(row?.requests)), 0)), streakDays: Math.floor(number(entry.streakDays)),
     updatedAt: Number.isFinite(Number(entry.updatedAt)) && ogDay(entry.updatedAt) !== null ? number(entry.updatedAt) / (Number(entry.updatedAt) > 1e12 ? 1000 : 1) : 0,
     mix, history: [], season: options.season || null, includeLeagueRank: rankVisible, anonymize, fullTokenCounts: options.fullTokenCounts !== false,
-    ...calendar(entry, round)
+    ...calendar(entry, round, totals)
   };
   model.history = model.calendarDays.filter(day => day.day <= model.calendarEnd).slice(-14).map(({ tokens }) => tokens);
   model.chartDays = model.calendarDays.filter(day => day.day <= model.calendarEnd).slice(-30).map(({ day, date, tokens }) => ({ day, date, tokens }));
   model.chartAvailable = model.calendarAvailable;
+  colorProviderChart(entry, model, totals, normalize, options.fullTokenCounts === false, !anonymize && options.providerBreakdown !== false);
   if (rankVisible) Object.assign(model, { rank, rankToday: Math.max(1, Math.floor(number(options.rankToday))), total, percentile: Math.min(100, Math.max(1, Math.ceil(rank / total * 100))), league: text(st.league), leagueTitle: text(st.title || st.leagueTitle || st.league), leagueColor: /^#[a-f\d]{6}$/i.test(st.color || st.leagueColor || "") ? st.color || st.leagueColor : C.forest, division: Math.floor(number(st.division)), mmr: Math.floor(number(st.mmr)) });
   return model;
 }
@@ -131,11 +200,19 @@ export function renderProfileOgSvg(vm) {
   const chartMax = chartDays.reduce((max, point) => Math.max(max, point.tokens), 1);
   const chartBase = 278, chartHeight = 104, chartX = 490, chartWidth = 638;
   const chartStep = chartWidth / Math.max(1, chartDays.length);
-  const chartBars = vm.chartAvailable ? chartDays.filter(point => point.tokens > 0).map(point => {
-    const index = chartDays.indexOf(point);
+  const chartBars = vm.chartAvailable ? chartDays.map((point, index) => {
+    if (!point.tokens) return "";
     const height = Math.max(2, point.tokens / chartMax * chartHeight);
     const x = chartX + index * chartStep + 2;
-    return `<rect data-chart-day="${point.date}" x="${x.toFixed(2)}" y="${(chartBase - height).toFixed(2)}" width="${Math.max(1, chartStep - 5).toFixed(2)}" height="${height.toFixed(2)}" rx="2" fill="${C.forest}"><title>${esc(point.date)} · ${esc(compact(point.tokens))} tokens</title></rect>`;
+    const width = Math.max(1, chartStep - 5);
+    if (!point.segments?.length) return `<rect data-chart-day="${point.date}" x="${x.toFixed(2)}" y="${(chartBase - height).toFixed(2)}" width="${width.toFixed(2)}" height="${height.toFixed(2)}" rx="2" fill="${PROVIDERS.other[1]}"><title>${esc(point.date)} · ${esc(compact(point.tokens))} tokens</title></rect>`;
+    let used = 0;
+    const clip = `bar-${index}`;
+    return `<defs><clipPath id="${clip}"><rect x="${x.toFixed(2)}" y="${(chartBase - height).toFixed(2)}" width="${width.toFixed(2)}" height="${height.toFixed(2)}" rx="2"/></clipPath></defs><g clip-path="url(#${clip})">${point.segments.map((part, layer) => {
+      const segmentHeight = layer === point.segments.length - 1 ? height - used : height * part.tokens / point.tokens;
+      used += segmentHeight;
+      return `<rect data-chart-day="${point.date}" data-chart-provider="${esc(part.provider)}" x="${x.toFixed(2)}" y="${(chartBase - used).toFixed(2)}" width="${width.toFixed(2)}" height="${Math.max(0, segmentHeight).toFixed(2)}" fill="${part.color}"><title>${esc(point.date)} · ${esc(part.label)} · ${esc(compact(part.tokens))} tokens</title></rect>`;
+    }).join("")}</g>`;
   }).join("") : "";
   const chart = `<g data-usage-chart="daily-tokens">${[0, .5, 1].map(fraction => `<path d="M${chartX} ${chartBase - fraction * chartHeight}H1128" stroke="${C.line}" stroke-width="1"/>${mono(477, chartBase - fraction * chartHeight + 4, fraction === 0 ? "0" : compact(chartMax * fraction), 9, C.muted, 'text-anchor="end"')}`).join("")}${chartBars}${!vm.chartAvailable ? t(808, 234, "Daily usage not published", 17, C.muted, 400, 'text-anchor="middle"') : ""}${vm.chartAvailable ? mono(chartX, 296, shortDate(chartDays[0].day), 10) + mono(1128, 296, shortDate(chartDays.at(-1).day), 10, C.muted, 'text-anchor="end"') : ""}</g>`;
   let heatmap = "", months = "";
@@ -153,12 +230,15 @@ export function renderProfileOgSvg(vm) {
     }
   }
   let providers = "";
-  if (vm.mix?.length) {
-    providers = mono(454, 574, "PROVIDER MIX", 9);
+  const legend = vm.chartProviderAvailable ? vm.chartProviders : vm.mix || [];
+  if (legend.length) {
+    providers = mono(454, 574, vm.chartProviderAvailable ? "PROVIDERS / 30D" : "ALL-TIME MIX", 8);
     let labelX = 565;
-    for (const p of vm.mix) {
-      providers += `<circle cx="${labelX + 3}" cy="570" r="3" fill="${p.color}"/>` + t(labelX + 12, 574, `${truncate(p.label, 13)} ${Math.round(p.share * 100)}%`, 11, C.muted);
-      labelX += p.label.length * 5.8 + 46;
+    const fontSize = Math.min(11, (577 - legend.length * 20) / legend.reduce((sum, p) => sum + truncate(p.label, 12).length + 5, 0) / .62);
+    for (const p of legend) {
+      const label = `${truncate(p.label, 12)} ${Math.round(p.share * 100)}%`;
+      providers += `<circle cx="${labelX + 3}" cy="570" r="3" fill="${p.color}"/>` + t(labelX + 12, 574, label, fontSize, C.muted);
+      labelX += label.length * fontSize * .62 + 20;
     }
   } else providers = mono(454, 574, "TOKENS TRACKED. PERSPECTIVE GAINED.", 10);
   const league = [vm.leagueTitle, roman(vm.division)].filter(Boolean).join(" ").toUpperCase();

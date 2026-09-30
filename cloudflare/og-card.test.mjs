@@ -82,6 +82,130 @@ test('chart uses the same canonical source and token privacy rounding as the hea
   assert.doesNotMatch(renderProfileOgSvg(vm), /12345|12\.35K|999999|888888/);
 });
 
+test('usage chart stacks actual daily providers and deduplicates each model before combining them', () => {
+  const vm = buildOgModel({ ...entry, breakdown: {
+    daily: [{ day, tokens: 1200 }, { day: day - 1, tokens: 400 }],
+    // All-time totals intentionally disagree with the published daily sources.
+    // They must not be used to invent a daily allocation or its legend.
+    models: [{ provider: 'google', tokensAll: 999999999 }],
+    modelHistory: [
+      { model: 'claude-a', provider: 'anthropic', points: [{ day, tokens: 600 }, { day, tokens: 600 }, { day: day - 1, tokens: 100 }] },
+      { model: 'claude-b', provider: 'anthropic', points: [{ day, tokens: 100 }] },
+      { model: 'gpt', provider: 'openai', points: [{ day, tokens: 300 }, { day: day - 1, tokens: 300 }] }
+    ]
+  } }, options);
+  assert.equal(vm.chartProviderAvailable, true);
+  const latest = vm.chartDays.at(-1);
+  assert.equal(latest.tokens, 1200);
+  const segments = Object.fromEntries(latest.segments.map(segment => [segment.provider, segment.tokens]));
+  assert.deepEqual(segments, { anthropic: 700, openai: 300, unattributed: 200 }, 'Attributed provider counts retain their measured values; only the genuine residual is neutral');
+  assert.equal(latest.segments.reduce((sum, segment) => sum + segment.tokens, 0), latest.tokens);
+  assert.equal(vm.chartDays.at(-2).segments.find(segment => segment.provider === 'openai').tokens, 300);
+  assert.equal(vm.chartProviders.some(provider => provider.provider === 'google'), false, 'All-time mix cannot supply the daily legend');
+  for (const segment of latest.segments) {
+    const legend = vm.chartProviders.find(provider => provider.provider === segment.provider);
+    assert.ok(legend, `${segment.provider} has a chart legend`);
+    assert.equal(segment.color, legend.color, 'Bar color matches the same provider in the legend');
+    assert.equal(segment.label, legend.label);
+  }
+  const svg = renderProfileOgSvg(vm);
+  assert.match(svg, /data-chart-provider="anthropic"/);
+  assert.match(svg, /data-chart-provider="openai"/);
+  assert.match(svg, /data-chart-provider="unattributed"/);
+});
+
+test('aggregate provider mix cannot invent colors for days without provider history', () => {
+  const vm = buildOgModel(entry, options);
+  assert.equal(vm.chartAvailable, true);
+  assert.equal(vm.chartProviderAvailable, false);
+  assert.deepEqual(vm.chartProviders, []);
+  assert.ok(vm.chartDays.every(point => point.segments.length === 0));
+  const svg = renderProfileOgSvg(vm);
+  assert.match(svg, /data-chart-day=/, 'Canonical daily usage remains visible');
+  assert.doesNotMatch(svg, /data-chart-provider="(?:anthropic|openai)"/, 'All-time share is never allocated to a daily bar');
+});
+
+test('daily attribution exceeding canonical tokens stays neutral instead of scaling measured counts', () => {
+  const vm = buildOgModel({ ...entry, breakdown: {
+    daily: [{ day, tokens: 1000 }],
+    modelHistory: [
+      { provider: 'anthropic', points: [{ day, tokens: 900 }] },
+      { provider: 'openai', points: [{ day, tokens: 300 }] }
+    ]
+  } }, options);
+  const latest = vm.chartDays.at(-1);
+  assert.equal(latest.tokens, 1000);
+  assert.ok(latest.segments.every(segment => segment.provider === 'unattributed'), 'An inconsistent day carries no provider labels');
+  assert.equal(vm.chartProviders.some(provider => ['anthropic', 'openai'].includes(provider.provider)), false, 'Inconsistent attribution does not enter the daily legend');
+  assert.equal(vm.chartProviderAvailable, false);
+  assert.doesNotMatch(renderProfileOgSvg(vm), /data-chart-provider="(?:anthropic|openai)"/);
+});
+
+test('daily chart groups providers outside its top four into measured Other tokens', () => {
+  const providers = ['anthropic', 'openai', 'google', 'kimi', 'deepseek', 'meta'];
+  const counts = [600, 500, 400, 300, 200, 100];
+  const vm = buildOgModel({ ...entry, breakdown: {
+    daily: [{ day, tokens: 2100 }],
+    modelHistory: providers.map((provider, index) => ({ provider, points: [{ day, tokens: counts[index] }] }))
+  } }, options);
+  assert.equal(vm.chartProviders.length, 5);
+  assert.deepEqual(new Set(vm.chartProviders.map(provider => provider.provider)), new Set(['anthropic', 'openai', 'google', 'kimi', 'other']));
+  assert.equal(vm.chartDays.at(-1).segments.find(segment => segment.provider === 'other').tokens, 300);
+  assert.equal(vm.chartDays.at(-1).segments.reduce((sum, segment) => sum + segment.tokens, 0), 2100);
+});
+
+test('daily provider fallback uses real model history and ignores activity outside the visible window', () => {
+  const vm = buildOgModel({ ...entry, breakdown: { modelHistory: [
+    { provider: 'anthropic', points: [{ day, tokens: 700 }] },
+    { provider: 'openai', points: [{ day, tokens: 300 }] },
+    { provider: 'google', points: [{ day: day - 31, tokens: 99999 }, { day: day + 1, tokens: 99999 }] }
+  ] } }, options);
+  assert.equal(vm.chartDays.at(-1).tokens, 1000);
+  assert.equal(vm.chartProviderAvailable, true);
+  assert.equal(vm.chartProviders.some(provider => provider.provider === 'google'), false, 'Older and unpublished future provider activity does not affect this chart legend');
+  assert.deepEqual(Object.fromEntries(vm.chartDays.at(-1).segments.map(segment => [segment.provider, segment.tokens])), { anthropic: 700, openai: 300 });
+});
+
+test('provider share privacy applies to the chart model, SVG attributes and legend', () => {
+  const sharedEntry = { ...entry, breakdown: {
+    daily: [{ day, tokens: 12000 }],
+    modelHistory: [{ provider: 'anthropic', points: [{ day, tokens: 7000 }] }, { provider: 'openai', points: [{ day, tokens: 5000 }] }]
+  } };
+  for (const privacy of [{ anonymize: true }, { providerBreakdown: false }]) {
+    const vm = buildOgModel(sharedEntry, { ...options, ...privacy });
+    assert.equal(vm.chartProviderAvailable, false);
+    assert.deepEqual(vm.chartProviders, []);
+    assert.ok(vm.chartDays.every(point => point.segments.length === 0), 'Hidden providers do not survive in serialized chart data');
+    const svg = renderProfileOgSvg(vm);
+    assert.doesNotMatch(svg, /Anthropic|OpenAI|data-chart-provider="(?:anthropic|openai)"/);
+    assert.equal(vm.chartDays.at(-1).tokens, 12000, 'Public usage totals remain available independently of hidden providers');
+  }
+});
+
+test('rounded-token shares do not expose exact daily provider counts', () => {
+  const vm = buildOgModel({ ...entry, breakdown: {
+    daily: [{ day, tokens: 12345 }],
+    modelHistory: [
+      { provider: 'anthropic', points: [{ day, tokens: 7890 }] },
+      { provider: 'openai', points: [{ day, tokens: 4455 }] }
+    ]
+  } }, { ...options, fullTokenCounts: false });
+  assert.equal(vm.chartDays.at(-1).tokens, 12000);
+  for (const segment of vm.chartDays.at(-1).segments) assert.equal(segment.tokens % 1000, 0);
+  assert.doesNotMatch(JSON.stringify(vm.chartDays), /7890|4455|12345/);
+  assert.doesNotMatch(renderProfileOgSvg(vm), /7\.89K|4\.46K|12\.35K|7890|4455|12345/);
+});
+
+test('untrusted daily provider names cannot inject SVG attributes or elements', () => {
+  const vm = buildOgModel({ ...entry, breakdown: {
+    daily: [{ day, tokens: 1000 }],
+    modelHistory: [{ provider: 'odd" onload="alert(1)<script>', points: [{ day, tokens: 1000 }] }]
+  } }, options);
+  const svg = renderProfileOgSvg(vm);
+  assert.doesNotMatch(svg, /<script>|<[^>]*\s(?:onload|onclick)="/);
+  assert.doesNotMatch(svg, /NaN|Infinity/);
+});
+
 test('missing chart activity remains unavailable even when aggregate totals exist', () => {
   const vm = buildOgModel({ ...entry, breakdown: {} }, options);
   assert.equal(vm.chartAvailable, false);
