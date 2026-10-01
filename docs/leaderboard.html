@@ -575,7 +575,7 @@ body.th-flat .mx-flat-score{display:none}
 .tier:hover,.tier.you{transform:none}
 }
 </style>
-<link rel="stylesheet" href="./discovery.css" data-ui-style />
+<link rel="stylesheet" href="./discovery.css?v=20261001-2" data-ui-style />
 <link rel="stylesheet" href="./horizon-system.css?v=20260930" data-ui-style />
 <link rel="stylesheet" href="./profile.css?v=20261001" data-ui-style />
 <link rel="stylesheet" href="./auth.css?v=20261001-2" data-ui-style />
@@ -586,7 +586,8 @@ body.th-flat .mx-flat-score{display:none}
 <a class="discovery-skip" href="#view">Skip to content</a>
 <header class="discovery-header" id="discovery-header">
   <a class="discovery-brand" href="./">Token Horizon</a>
-  <nav aria-label="Main navigation"><a href="./models/" data-public-view="models">Models</a><a href="./leaderboard.html" data-public-view="leaderboard">Leaderboard</a><a href="./docs/">Docs</a><a href="?view=dashboard" data-public-view="dashboard">Workspace</a><a href="https://github.com/castlemilk/token-horizon">GitHub ↗</a><a class="discovery-install" href="./#install">Install Token Horizon ↗</a></nav>
+  <nav id="discovery-navigation" aria-label="Main navigation"><a href="./models/" data-public-view="models">Models</a><a href="./leaderboard.html" data-public-view="leaderboard">Leaderboard</a><a href="./docs/">Docs</a><a href="?view=dashboard" data-public-view="dashboard">Workspace</a><a href="https://github.com/castlemilk/token-horizon">GitHub ↗</a><a class="discovery-install" href="./#install" title="Install Token Horizon">Install app ↗</a></nav>
+  <div class="discovery-actions" id="discovery-actions"><button class="discovery-menu-toggle" id="discovery-menu-toggle" type="button" aria-label="Open navigation" aria-expanded="false" aria-controls="discovery-navigation" hidden><span aria-hidden="true"></span><span aria-hidden="true"></span></button></div>
 </header>
 <div class="app">
   <aside class="sidebar">
@@ -1813,7 +1814,7 @@ function renderAuthSlot() {
   if (state.googleSession && state.googleConfig === "ready" && !state.webSessions && !isGoogleSessionValid()) { setGoogleSession(null); return; }
   const s = isGoogleSessionValid() ? state.googleSession : null;
   if (s) {
-    slot.innerHTML = `<div class="auth-account"><button class="user-chip" id="user-chip" aria-expanded="false" aria-controls="account-menu" ${state.authBusy ? "disabled" : ""}>${avatar(s.name || s.email || s.login, s.picture, 28)}<span><strong>${esc(s.name || s.login || s.email)}</strong><small>${s.provider === "github" ? "GitHub" : "Google"} account</small></span><span aria-hidden="true">⌄</span></button><div class="auth-account-menu" id="account-menu" hidden><div class="auth-menu-identity">${esc(s.email || "@" + s.login)}</div><button data-account-workspace>Workspace</button><a href="/connect">Manage connections</a><button data-account-switch>Use another account</button><button data-account-signout>Sign out</button></div></div>`;
+    slot.innerHTML = `<div class="auth-account"><button class="user-chip" id="user-chip" aria-label="${esc(s.name || s.login || s.email)} ${s.provider === "github" ? "GitHub" : "Google"} account" aria-expanded="false" aria-controls="account-menu" ${state.authBusy ? "disabled" : ""}>${avatar(s.name || s.email || s.login, s.picture, 28)}<span><strong>${esc(s.name || s.login || s.email)}</strong><small>${s.provider === "github" ? "GitHub" : "Google"} account</small></span><span aria-hidden="true">⌄</span></button><div class="auth-account-menu" id="account-menu" hidden><div class="auth-menu-identity">${esc(s.email || "@" + s.login)}</div><button data-account-workspace>Workspace</button><a href="/connect">Manage connections</a><button data-account-switch>Use another account</button><button data-account-signout>Sign out</button></div></div>`;
     const chip = $("#user-chip"), menu = $("#account-menu");
     chip.onclick = () => { menu.hidden = !menu.hidden; chip.setAttribute("aria-expanded", String(!menu.hidden)); if (!menu.hidden) menu.querySelector("button").focus(); };
     menu.querySelector('[data-account-workspace]').onclick = () => navigate("dashboard");
@@ -1862,6 +1863,7 @@ function keyActivate(el, fn) {
   });
 }
 function navigate(view, opts = {}) {
+  setDiscoveryNavigation(false, { restoreFocus: Boolean($("#discovery-navigation")?.contains(document.activeElement)) });
   state.view = view;
   if (view === "dashboard") workspaceAutoHandle = "";
   if (view === "dashboard" && !opts.handle) state.currentHandle = null;
@@ -2318,18 +2320,72 @@ function aggregateModels(rows) {
 /* ============================================================
    MAIN RENDER
    ============================================================ */
+let discoveryNavigationMedia = null;
+let discoveryNavigationRoute = null;
+function setDiscoveryNavigation(open, { focusFirst = false, restoreFocus = false } = {}) {
+  const header = $("#discovery-header"), nav = $("#discovery-navigation"), toggle = $("#discovery-menu-toggle");
+  if (!header || !nav || !toggle || !discoveryNavigationMedia) return;
+  const compact = discoveryNavigationMedia.matches;
+  open = compact && open;
+  nav.hidden = compact && !open;
+  toggle.hidden = !compact;
+  toggle.setAttribute("aria-expanded", String(open));
+  toggle.setAttribute("aria-label", open ? "Close navigation" : "Open navigation");
+  header.classList.toggle("nav-open", open);
+  if (open) {
+    const account = $("#account-menu");
+    if (account) account.hidden = true;
+    $("#user-chip")?.setAttribute("aria-expanded", "false");
+    if (focusFirst) nav.querySelector("a")?.focus();
+  } else if (restoreFocus && compact) toggle.focus();
+}
+function initDiscoveryNavigation() {
+  if (discoveryNavigationMedia) return;
+  discoveryNavigationMedia = matchMedia("(max-width: 1200px)");
+  const header = $("#discovery-header"), nav = $("#discovery-navigation"), toggle = $("#discovery-menu-toggle");
+  setDiscoveryNavigation(false);
+  toggle.addEventListener("click", () => setDiscoveryNavigation(toggle.getAttribute("aria-expanded") !== "true", { focusFirst: true }));
+  nav.addEventListener("click", e => {
+    if (e.target.closest("a")) setDiscoveryNavigation(false, { restoreFocus: nav.contains(document.activeElement) });
+  });
+  // Settle the disclosure before a sign-in dialog or account popover opens.
+  $("#discovery-actions").addEventListener("click", e => {
+    if (e.target.closest("#auth-slot")) setDiscoveryNavigation(false);
+  }, true);
+  document.addEventListener("click", e => {
+    if (!header.contains(e.target)) setDiscoveryNavigation(false, { restoreFocus: nav.contains(document.activeElement) });
+  });
+  document.addEventListener("keydown", e => {
+    if (e.key === "Escape" && header.classList.contains("nav-open")) {
+      e.preventDefault(); setDiscoveryNavigation(false, { restoreFocus: true });
+    }
+  });
+  discoveryNavigationMedia.addEventListener("change", () => {
+    const focused = document.activeElement;
+    setDiscoveryNavigation(false, { restoreFocus: nav.contains(focused) });
+    if (!discoveryNavigationMedia.matches && focused === toggle) nav.querySelector("a")?.focus();
+  });
+}
 function syncDiscoveryChrome() {
   const visible = ["leaderboard", "models", "invite", "players", "login"].includes(state.view);
   document.body.classList.toggle("discovery", visible);
   document.body.dataset.surface = state.view;
+  if (discoveryNavigationRoute !== state.view) {
+    setDiscoveryNavigation(false, { restoreFocus: Boolean($("#discovery-navigation")?.contains(document.activeElement)) });
+    discoveryNavigationRoute = state.view;
+  }
   document.title = `Token Horizon — ${state.view === "login" ? "Sign in" : state.view === "invite" ? "Join your crew" : state.view === "models" ? "Model Explorer" : state.view === "leaderboard" ? "Community Leaderboard" : state.view === "players" ? "Builder Profile" : "Analytics"}`;
   $$("[data-public-view]").forEach(a => {
     a.setAttribute("aria-current", a.dataset.publicView === state.view ? "page" : "false");
     a.onclick = e => { if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return; e.preventDefault(); mxClose(); navigate(a.dataset.publicView); };
   });
   const slot = $("#auth-slot");
-  const home = visible ? $("#discovery-header nav") : $(".topbar");
-  if (slot.parentElement !== home) home.append(slot);
+  const home = visible ? $("#discovery-actions") : $(".topbar");
+  if (slot.parentElement !== home) {
+    if (visible) home.insertBefore(slot, $("#discovery-menu-toggle"));
+    else home.append(slot);
+  }
+  if (!visible && $("#discovery-header").contains(document.activeElement)) $("#view").focus({ preventScroll: true });
   if (state.view !== "models") $("#mx-compare-tray")?.remove();
 }
 let renderVersion = 0;
@@ -5830,6 +5886,7 @@ async function init() {
   if (params.get("plan")) mxState().planFilter = params.get("plan");
   if (params.get("model")) mxState().pendingModel = params.get("model");
   renderNav();
+  initDiscoveryNavigation();
   syncDiscoveryChrome();
   $("#view").innerHTML = `<div class="card" role="status" aria-label="Loading"><div class="skeleton" style="height:340px"></div></div>`;
   wireChrome();

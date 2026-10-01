@@ -93,6 +93,7 @@ jobs:
           node scripts/test-share-preview-ui.mjs
           node scripts/test-profile-ui.mjs
           node scripts/test-login-ui.mjs
+          node scripts/test-navigation-ui.mjs
           node scripts/test-ui-updates.mjs
           node scripts/test-connect-ui.mjs
 

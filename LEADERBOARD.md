@@ -25,6 +25,15 @@ ivory/graphite/mint design. The shared public header links to the landing,
 documentation and the observability Workspace. See
 [DISCOVERY.md](docs/DISCOVERY.md) for design alignment and validation.
 
+The public header keeps its labels on one line and switches to a compact
+navigation disclosure at 1200px. Account/sign-in controls remain visible beside
+the menu; long names truncate and small phones use the named avatar control.
+The disclosure preserves all six destinations, supports Escape/focus return,
+closes on navigation or outside activation, and resets when resized to desktop.
+Account and navigation popovers never overlap. Landing navigation collapses at
+760px. `scripts/test-navigation-ui.mjs` covers 320–1920px, long identities,
+keyboard navigation, route changes and reduced motion.
+
 The catalog keeps Fuse, primary-listing dedupe, app-exported pricing, provider
 adoption and TanStack sorting. Desktop filters sit alongside the windowed list;
 mobile filters collapse above it. Every virtual row is exactly 72px. A model
