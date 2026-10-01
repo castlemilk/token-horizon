@@ -25,6 +25,10 @@ routes = [
 [vars]
 GOOGLE_CLIENT_ID = "658875965368-eosj3vhjdg6e6l8jaa27jarvatpa53eb.apps.googleusercontent.com"
 
+# Optional GitHub OAuth App credentials are Worker secrets, never public vars:
+# wrangler secret put GITHUB_CLIENT_ID / GITHUB_CLIENT_SECRET
+# Callback: https://token-horizon.dev/api/auth/github/callback (see AUTH.md).
+
 # Webhosting: Serve static dashboard assets from ../docs
 [assets]
 directory = "../docs"

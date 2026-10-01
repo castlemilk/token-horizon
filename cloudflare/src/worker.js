@@ -3,6 +3,7 @@ import { boundedText } from './request-body.js';
 import site, { verifyGoogleIdToken } from './index.js';
 import { handleMcp, ORIGIN, READ, MANAGE } from './connector.js';
 import { connectPage, pageHeaders } from './connect-page.js';
+import { browserIdentity, identityOwnerId, githubConfigured, sessionsConfigured } from './browser-auth.js';
 
 const SCOPES = [READ, MANAGE, 'offline_access'];
 const json = (body, status = 200, headers = {}) => Response.json(body, { status, headers: { 'Cache-Control': 'no-store', ...headers } });
@@ -23,13 +24,13 @@ const defaultHandler = {
     const url = new URL(request.url), oauth = env.OAUTH_PROVIDER;
     try {
       if (url.pathname === '/oauth/authorize') {
-        if (!env.GOOGLE_CLIENT_ID) return new Response(connectPage({ error: 'Account sign-in is not configured.' }), { status: 503, headers: pageHeaders() });
+        if (!env.GOOGLE_CLIENT_ID && !githubConfigured(env)) return new Response(connectPage({ error: 'Account sign-in is not configured.' }), { status: 503, headers: pageHeaders() });
         if (request.method === 'GET') {
           const auth = await oauth.parseAuthRequest(request);
           if (auth.scope.some(s => !SCOPES.includes(s))) throw new Error('The application requested an unsupported permission.');
           const client = await oauth.lookupClient(auth.clientId);
           const consent = await oauth.beginConsent(auth);
-          return new Response(connectPage({ mode: 'authorize', clientId: env.GOOGLE_CLIENT_ID, handle: consent.handle, clientName: client?.clientName?.slice(0, 80), redirect: new URL(auth.redirectUri).host }), { headers: pageHeaders(consent.headers) });
+          return new Response(connectPage({ mode: 'authorize', clientId: env.GOOGLE_CLIENT_ID, githubAuth: githubConfigured(env), webSessions: sessionsConfigured(env), handle: consent.handle, clientName: client?.clientName?.slice(0, 80), redirect: new URL(auth.redirectUri).host }), { headers: pageHeaders(consent.headers) });
         }
         if (request.method === 'POST') {
           const form = await readForm(request), handle = form.get('handle');
@@ -39,12 +40,15 @@ const defaultHandler = {
             return resultRedirect(request, denied.headers.get('Location'), denied.headers);
           }
           if (form.get('decision') !== 'allow') throw new Error('Choose whether to connect this account.');
-          const identity = await verifyGoogleIdToken(form.get('credential'), env, handle);
-          if (!identity) return json({ error: 'Your Google sign-in expired or could not be verified. Reload and sign in again.' }, 401);
+          // Consent still requires the browser-bound transaction and a human
+          // Connect submission. A remembered login never grants access itself.
+          const credential = form.get('credential');
+          const identity = credential ? await verifyGoogleIdToken(credential, env, handle) : await browserIdentity(request, env);
+          if (!identity) return json({ error: 'Your sign-in expired or could not be verified. Reload and sign in again.' }, 401);
           const scopes = [...new Set(form.getAll('scope'))];
           if (!scopes.includes(READ) || scopes.some(s => !SCOPES.includes(s))) throw new Error('Invalid permissions.');
           const approved = await oauth.approveConsent(request, handle, { scope: scopes });
-          const { redirectTo } = await oauth.completeAuthorization({ request: approved.request, userId: await hash(`google:${identity.sub}`), metadata: {}, scope: scopes, props: { sub: identity.sub } });
+          const { redirectTo } = await oauth.completeAuthorization({ request: approved.request, userId: await hash(identityOwnerId(identity)), metadata: {}, scope: scopes, props: { sub: identity.sub, provider: identity.provider || 'google' } });
           return resultRedirect(request, redirectTo, approved.headers);
         }
         return new Response(null, { status: 405 });
@@ -54,16 +58,17 @@ const defaultHandler = {
         await env.OAUTH_KV.put(`management:${digest}`, '1', { expirationTtl: 600 });
         const headers = pageHeaders();
         headers.append('Set-Cookie', `__Host-th-connect=${digest}; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age=600`);
-        return new Response(connectPage({ clientId: env.GOOGLE_CLIENT_ID, handle: nonce }), { headers });
+        return new Response(connectPage({ clientId: env.GOOGLE_CLIENT_ID, githubAuth: githubConfigured(env), webSessions: sessionsConfigured(env), handle: nonce }), { headers });
       }
       if (url.pathname === '/oauth/connections' && request.method === 'POST') {
         const form = await readForm(request), nonce = form.get('handle') || '';
         const digest = await hash(nonce);
         const bound = (request.headers.get('Cookie') || '').split(';').map(v => v.trim()).includes(`__Host-th-connect=${digest}`);
         if (!bound || !await env.OAUTH_KV.get(`management:${digest}`)) return json({ error: 'Reload the page and sign in again.' }, 401);
-        const identity = await verifyGoogleIdToken(form.get('credential'), env, nonce);
-        if (!identity) return json({ error: 'Sign in with Google to manage connections.' }, 401);
-        const userId = await hash(`google:${identity.sub}`);
+        const credential = form.get('credential');
+        const identity = credential ? await verifyGoogleIdToken(credential, env, nonce) : await browserIdentity(request, env);
+        if (!identity) return json({ error: 'Sign in to manage connections.' }, 401);
+        const userId = await hash(identityOwnerId(identity));
         if (form.get('action') === 'revoke') {
           const id = form.get('id') || '';
           if (!/^[a-zA-Z0-9_-]{1,200}$/.test(id)) throw new Error('Invalid connection ID.');

@@ -86,7 +86,7 @@ without claiming unmeasured savings. Old snapshots are visibly dated.
 
 Anonymous visitors choose a public handle explicitly. Signed-in visitors can
 select their claimed profiles from `/api/account/profiles`, which verifies the
-Google subject against `ownerId`, returns only handle/display name, and is
+immutable Google or GitHub subject against `ownerId`, returns only handle/display name, and is
 `private, no-store`. Neither Workspace nor Models waits for leaderboard data.
 Failed profile reads never substitute another participant's data.
 
@@ -252,7 +252,10 @@ R2 leaderboard.json ────────────────────
 | `GET /api/models/catalog` | static model catalog exported by the app (`docs/data/models.json`): `models[]`, `topPicks[]`, provider rollups; CORS + edge cache |
 | `GET /api/models/usage` | per-model community adoption aggregated across published entries (tokens/cost/requests/users/share) |
 | `GET /api/teams` · `GET /api/season` | team rollups · ladder/distribution/standings/promotions |
-| `GET /api/config` | public client config (Google client ID, canonical URL, season) |
+| `GET /api/config` | cacheable public client config (Google client ID, enabled providers, browser sessions, canonical URL, season) |
+| `GET /login` | cached anonymous sign-in shell; no community-data dependency |
+| `GET /api/auth/session` · `POST /api/auth/google` · `POST /api/auth/logout` | private browser session verification, Google exchange and logout |
+| `GET /api/auth/github` · `GET /api/auth/github/callback` | browser-bound GitHub OAuth with S256 PKCE |
 | `POST /api/profile/avatar` | owner-only avatar update: Google photo, image URL, uploaded data URL (stored in R2), or generated style |
 | `GET /api/avatar/:handle` | uploaded avatar bytes (R2, cached 24h) |
 | `GET /api/share` | SVG/Markdown/text cards (README badges) |
@@ -265,13 +268,20 @@ R2 leaderboard.json ────────────────────
 
 ### 2.4 Auth & claims
 
-- **Google**: the dashboard signs in with Google Identity Services and sends
-  the ID token. When `GOOGLE_CLIENT_ID` is set, the worker verifies RS256
-  against Google's JWKS (`aud`/`iss`/`exp`/`email_verified`); the legacy
-  `google:<email>` / `body.googleUser` paths are disabled.
+- **Browser accounts**: Google Identity Services exchanges a verified RS256
+  ID token for a 30-day opaque HttpOnly session. GitHub uses OAuth App code
+  exchange with S256 PKCE and verified email. Namespaced immutable subjects
+  keep ownership separate even when two providers report the same email.
+  Native signed Google-token clients remain supported; unsigned legacy auth
+  is disabled in production. See [browser auth setup](cloudflare/AUTH.md).
+- **Remembered sign-in**: the official Google account chooser supports browser
+  account personalization and FedCM; Token Horizon does not read Chrome profile
+  files. Public configuration is cached for five minutes, and a local identity
+  hint improves presentation without granting authority. Private auth responses
+  are always `private, no-store`; a server read verifies each page session.
 - **Claims**: first anonymous publish mints a hashed `claimToken`; `POST
-  /api/claim` verifies Google ownership. `ownerId`/`claimTokenHash` are never
-  echoed (`sanitizeEntry`).
+  /api/claim` binds the profile to the verified account. `ownerId`, account email
+  and `claimTokenHash` are never echoed (`sanitizeEntry`).
 - **Machine publishing**: `LEADERBOARD_SECRET` bearer, shared with the app's
   cloud token field.
 
@@ -279,7 +289,7 @@ R2 leaderboard.json ────────────────────
 
 - R2 records: `shares/<id>.json`, `shares-index/<handle>.json`,
   `groups/<owner>.json`, `activity/<owner>.json`.
-- `POST /api/share/create` requires owner auth (Google or claim token) and
+- `POST /api/share/create` requires owner auth (verified account or claim token) and
   stores scope, audience, groups, options, expiry. Links render at `/s/<id>`
   → `GET /api/shared/<id>`, honoring anonymization, hidden cost/provider/rank
   and rounded-token options. Revocation returns 410. Restricted scopes
@@ -317,15 +327,19 @@ R2 leaderboard.json ────────────────────
 
 - Signed-out users get one entry point: the topbar **Sign in** button — and
   every gated action — opens the sign-in modal, a two-column popout with an
-  animated ASCII black hole on the left and the Google Identity Services
-  button on the right (dev email fallback when `GOOGLE_CLIENT_ID` is unset).
+  animated mint ASCII black hole on graphite beside mineral provider controls.
+  `/login` renders the same design as a full page. Google uses its official
+  account button; GitHub is available only when its Worker secrets are configured.
+  The account menu includes Workspace, connections, switch account and logout.
+  Imagegen concepts and complete prompts are in `design/login-uplift/`.
 - The ASCII art (`createBlackHole` in `docs/leaderboard.html`) is a small
   Schwarzschild ray tracer: 72×32 character cells integrate null geodesics
   once into a light map (disk-plane crossings + escape stars), then each
   ~30fps frame only re-evaluates the accretion-disk + inbound token-stream
   field. Classic Gargantua look — dark shadow, photon ring, edge-on disk,
-  lensed arcs — with tokens (amber) spiralling inward. Static single frame
-  under `prefers-reduced-motion`; the RAF loop stops when the modal closes.
+  lensed arcs — with mint tokens spiralling inward. Static single frame
+  under `prefers-reduced-motion`; pause controls and background-tab suspension
+  stop unnecessary frames, and the RAF loop stops when the modal closes.
   A second 22×9 instance is the sidebar brand mark (`#nav-bh`, 62×40 tile
   beside the name, no-star "clean" render): paused at rest, resumes on hover,
   pauses on leave (shield fallback under 860px).
@@ -333,8 +347,8 @@ R2 leaderboard.json ────────────────────
   after the credential callback the modal closes and the action resumes
   (New Group, Share New, profile share, claim profile).
 - **Groups** now have a real modal (name + @handle chips, leaderboard
-  suggestions) replacing the old `prompt()` chain; `POST /api/groups` carries
-  the Google credential and the Settings view re-renders after create. The
+  suggestions) replacing the old `prompt()` chain; `POST /api/groups` uses
+  the verified session and the Settings view re-renders after create. The
   signed-out Settings page shows a "Sign in to unlock sharing" banner.
 
 ### 2.6 Leagues, MMR, season

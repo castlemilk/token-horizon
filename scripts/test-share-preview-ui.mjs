@@ -146,8 +146,8 @@ try {
     await page.evaluate(() => renderSharedReport('private001'));
     assert.equal(requests.filter(item => item.path === '/api/shared/private001').length, 3);
     assert.equal(await page.evaluate(() => state.view), 'shared');
-    page.once('dialog', dialog => dialog.accept());
     await page.locator('#user-chip').click();
+    await page.locator('#account-menu [data-account-signout]').click();
     await page.waitForSelector('#shared-report-signin');
     assert.equal(await page.locator('.kpi-value').count(), 0, 'Signing out must clear the report data');
     assert.equal(await page.locator('.signin-modal').count(), 0, 'Signing out must not open sign-in again');

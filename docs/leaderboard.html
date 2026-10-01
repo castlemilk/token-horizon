@@ -25,7 +25,7 @@ const API_BASE = (() => {
   // Fetch later consumes the browser preload; auth is never included here.
   const params = new URLSearchParams(location.search);
   const modelRoute = /^\/models\/?$/.test(location.pathname) || params.get("flat") === "1" || params.get("view") === "models";
-  const view = /^\/invite\//.test(location.pathname) || params.get("invite") ? "invite" : modelRoute ? "models" : params.get("view") || (params.get("user") || /^\/[us]\//.test(location.pathname) ? "profile" : "leaderboard");
+  const view = /^\/login\/?$/.test(location.pathname) ? "login" : /^\/invite\//.test(location.pathname) || params.get("invite") ? "invite" : modelRoute ? "models" : params.get("view") || (params.get("user") || /^\/[us]\//.test(location.pathname) ? "profile" : "leaderboard");
   let path;
   if (view === "models" && params.get("tab") !== "providers") path = "/api/models/catalog";
   if (view === "profile" || view === "players") {
@@ -49,7 +49,7 @@ const API_BASE = (() => {
   document.head.append(link);
 })();
 </script>
-<script src="https://accounts.google.com/gsi/client" async defer></script>
+<script id="google-identity-sdk" src="https://accounts.google.com/gsi/client" async defer></script>
 <script src="./vendor/tanstack-charts.js" async></script>
 <script src="./vendor/dicebear.js" async></script>
 <script src="./vendor/fuse.js" async></script>
@@ -578,6 +578,7 @@ body.th-flat .mx-flat-score{display:none}
 <link rel="stylesheet" href="./discovery.css" />
 <link rel="stylesheet" href="./horizon-system.css?v=20260930" />
 <link rel="stylesheet" href="./profile.css?v=20261001" />
+<link rel="stylesheet" href="./auth.css?v=20261001" />
 <link rel="stylesheet" href="./workspace.css?v=20260930" />
 </head>
 <body>
@@ -725,6 +726,7 @@ const state = {
   signInPending: null,
   groupDraft: { name: "", members: [] },
   googleSession: getGoogleSession(),
+  authHint: getAuthHint(), authStatus: "idle", authBusy: false, authError: "", webSessions: false, githubAuth: false,
   googleClientId: "",
   googleConfig: "loading",
   googleReady: false,
@@ -807,7 +809,10 @@ function entryAvatar(entry, size = 32) {
 }
 function canEditAvatar(entry) {
   const s = state.googleSession;
-  if (!s) return false;
+  if (!isGoogleSessionValid()) return false;
+  if (s.serverSession) return sessionOwnsEntry(entry) || !entry.claimed;
+  if (sessionOwnsEntry(entry)) return true;
+  if ((s.provider || "google") !== "google") return !entry.claimed;
   if (entry.googleEmail && s.email && entry.googleEmail.toLowerCase() === s.email.toLowerCase()) return true;
   if (!entry.claimed) return true;
   return false;
@@ -1477,8 +1482,9 @@ async function api(path, opts = {}) {
   const isGet = method === "GET";
   const key = method + " " + path;
   const headers = new Headers(opts.headers);
-  const privateRead = headers.has("Authorization") || headers.has("X-Google-Token");
-  const requestSession = headers.has("X-Google-Token") ? state.googleSession : null;
+  const privateRead = opts.auth === true || headers.has("Authorization") || headers.has("X-Google-Token") || /^\/api\/(?:auth(?:\/|$)|account\/|profile\/|team(?:\/|$)|groups(?:\/|$)|share\/)/.test(path.split("?")[0]);
+  const requestSession = privateRead ? state.googleSession : null;
+  const identityRevision = authIdentityRevision;
   const destination = new URL(API_BASE + path, location.href);
   const trustedOrigins = ["https://token-horizon.dev", "https://www.token-horizon.dev", "https://tokens.benebsworth.com"];
   if (privateRead && destination.origin !== location.origin && !trustedOrigins.includes(destination.origin)) {
@@ -1493,9 +1499,9 @@ async function api(path, opts = {}) {
   }
   perf.apiRequests++;
   const request = (async () => {
-    const { timeoutMs, ...fetchOptions } = opts;
+    const { timeoutMs, auth, ...fetchOptions } = opts;
     const { response: res, text } = await fetchText(destination.href,
-      privateRead ? { ...fetchOptions, redirect: "error" } : fetchOptions,
+      privateRead ? { ...fetchOptions, credentials: "same-origin", redirect: "error", cache: "no-store" } : fetchOptions,
       isGet ? (timeoutMs ?? API_READ_TIMEOUT) : (timeoutMs ?? 0));
     if (!res.ok) {
       let msg = "HTTP " + res.status;
@@ -1509,14 +1515,16 @@ async function api(path, opts = {}) {
       // signed-in session — drop it and surface the sign-in button again.
       if (res.status === 401 && requestSession && state.googleSession === requestSession &&
           (code === "auth_required" || (state.googleClientId && !isGoogleSessionValid()))) {
+        state.authStatus = "ready";
         setGoogleSession(null, { refreshShared: false });
-        msg = "Google session expired — sign in again.";
+        msg = "Your session expired — sign in again.";
       }
       const err = new Error(msg);
       err.code = code;
       err.status = res.status;
       throw err;
     }
+    if (privateRead && isGet && identityRevision !== authIdentityRevision) throw new Error("The signed-in account changed. Please try again.");
     JSON.parse(text); // Never cache an invalid/truncated response.
     if (isGet && !privateRead && opts.cache !== "no-store" && !/\b(?:private|no-store)\b/i.test(res.headers.get("cache-control") || "")) {
       const ttl = parseMaxAge(res.headers.get("cache-control")) ?? API_DEFAULT_TTL;
@@ -1532,194 +1540,278 @@ async function api(path, opts = {}) {
   return JSON.parse(await request);
 }
 
+function authStorage(key, value, session = false) {
+  try {
+    const storage = session ? sessionStorage : localStorage;
+    if (arguments.length === 1 || (value === undefined)) return JSON.parse(storage.getItem(key) || "null");
+    if (value === null) storage.removeItem(key); else storage.setItem(key, JSON.stringify(value));
+  } catch (_) { /* Storage can be disabled; verified sign-in still works. */ }
+  return null;
+}
+function authHint(user) {
+  if (!user || typeof user !== "object") return null;
+  const provider = user.provider === "github" ? "github" : "google";
+  const text = (v, max = 200) => String(v || "").slice(0, max);
+  const picture = /^https:\/\//.test(String(user.picture || "")) ? text(user.picture, 2048) : "";
+  return { provider, sub: text(user.sub), email: text(user.email, 254), name: text(user.name), picture, login: text(user.login, 80) };
+}
+function getAuthHint() { return authHint(authStorage("th_auth_hint")); }
 function getGoogleSession() {
-  try { return JSON.parse(localStorage.getItem("th_google_session") || "null"); } catch (_) { return null; }
+  const value = authStorage("th_google_session");
+  // Remembered display information is never proof of authentication.
+  return value?.serverSession ? null : value;
+}
+function sessionIdentity(s) { return s ? s.ownerId || `${s.provider || "google"}:${s.sub || s.email || ""}` : ""; }
+function sessionOwnsEntry(entry) {
+  const s = state.googleSession;
+  if (!isGoogleSessionValid() || !entry?.claimed) return false;
+  if (s.serverSession) return workspaceAccount?.key === sessionIdentity(s) && workspaceAccount.profiles.some(p => String(p.handle).toLowerCase() === String(entry.handle).toLowerCase());
+  if (entry.ownerId) return entry.ownerId === sessionIdentity(s);
+  return (s.provider || "google") === "google" && ((entry.googleSub && entry.googleSub === s.sub) || (entry.googleEmail && s.email && entry.googleEmail.toLowerCase() === s.email.toLowerCase()));
 }
 function setGoogleSession(s, { refreshShared = true } = {}) {
-  const previousIdentity = state.googleSession?.sub || state.googleSession?.email;
-  const nextIdentity = s?.sub || s?.email;
+  const previousIdentity = sessionIdentity(state.googleSession), nextIdentity = sessionIdentity(s);
   if (previousIdentity !== nextIdentity && workspaceAutoHandle && state.currentHandle === workspaceAutoHandle) {
-    state.currentHandle = null;
-    workspaceAutoHandle = "";
-    if (state.view === "dashboard") {
-      const url = new URL(location.href);
-      url.searchParams.delete("user");
-      history.replaceState(history.state, "", url);
-    }
+    state.currentHandle = null; workspaceAutoHandle = "";
+    if (state.view === "dashboard") { const url = new URL(location.href); url.searchParams.delete("user"); history.replaceState(history.state, "", url); }
   }
-  if (s) localStorage.setItem("th_google_session", JSON.stringify(s));
-  else localStorage.removeItem("th_google_session");
+  if (s?.serverSession || state.webSessions) authStorage("th_google_session", null);
+  else authStorage("th_google_session", s);
+  if (s) { state.authHint = authHint(s); authStorage("th_auth_hint", state.authHint); }
   state.googleSession = s;
-  workspaceAccount = null;
   if (previousIdentity !== nextIdentity) {
+    workspaceAccount = null;
+    ++authIdentityRevision;
     teamManager?.close(); teamManager = null; teamInviteResult = null;
-    state.shareResult = null; state.shareDraftHandle = null; state.shareAudience = [];
-    if ($("#share-modal")) closeModal();
+    state.shareResult = null; state.shareDraftHandle = null; state.shareAudience = []; state.shares = null; state.groups = []; state.activity = null; state.groupDraft = { name: "", members: [] };
+    if ($("#modal-backdrop .modal:not(.signin-modal)")) closeModal({ preservePending: true });
   }
   renderAuthSlot();
-  if (state.googleSession !== s) return; // renderAuthSlot may reject an expired credential.
+  if (state.googleSession !== s) return;
   if (previousIdentity !== nextIdentity && state.view === "shared" && state.sharedReportId && refreshShared) {
-    if (state.signInPending?.onSuccess) {
-      ++renderVersion;
-      $("#view").innerHTML = '<div class="card" role="status" aria-label="Loading shared report"><div class="skeleton" style="height:300px"></div></div>';
-    } else renderSharedReport(state.sharedReportId, { promptSignIn: false });
+    if (state.signInPending?.onSuccess) { ++renderVersion; $("#view").innerHTML = '<div class="card" role="status" aria-label="Loading shared report"><div class="skeleton" style="height:300px"></div></div>'; }
+    else renderSharedReport(state.sharedReportId, { promptSignIn: false });
   }
-  if (!s && ["dashboard", "invite"].includes(state.view)) render();
+  if (previousIdentity !== nextIdentity && ["dashboard", "invite", "settings"].includes(state.view)) render();
+  if (s?.serverSession && state.view === "players") {
+    const identity = nextIdentity;
+    loadWorkspaceAccount().then(() => { if (sessionIdentity(state.googleSession) === identity && state.view === "players") render(); });
+  }
 }
 function googleHeaders(extra = {}) {
-  const headers = { "Content-Type": "application/json", ...extra };
-  const s = state.googleSession;
-  if (s && s.credential) headers["X-Google-Token"] = s.credential;
-  else if (s && s.email && legacyGoogleAuthAllowed()) headers["X-Google-Token"] = "google:" + s.email;
+  const headers = { "Content-Type": "application/json", ...extra }, s = state.googleSession;
+  if (!s?.serverSession && s?.credential) headers["X-Google-Token"] = s.credential;
+  else if (!s?.serverSession && s?.email && legacyGoogleAuthAllowed()) headers["X-Google-Token"] = "google:" + s.email;
   return headers;
 }
-/// GSI ID tokens expire (~1h); a credential-less session is a stale dev-mode
-/// artifact. Treat both as signed out so we never claim a session the worker
-/// will reject.
-function legacyGoogleAuthAllowed() { return state.googleConfig === "ready" && !state.googleClientId; }
+function legacyGoogleAuthAllowed() { return state.googleConfig === "ready" && !state.googleClientId && !state.webSessions; }
 function isGoogleSessionValid() {
-  if (state.googleConfig !== "ready") return false;
   const s = state.googleSession;
   if (!s) return false;
-  if (state.googleClientId) {
-    if (!s.credential) return false;
-    const p = decodeJwtPayload(s.credential);
-    if (!p || !p.exp) return false;
-    return p.exp * 1000 > Date.now() + 30_000;
-  }
+  if (s.serverSession) return state.authStatus === "ready" && Number(s.expiresAt) > Date.now() + 30_000;
+  if (state.googleConfig !== "ready" || state.webSessions) return false;
+  if (state.googleClientId) { const p = decodeJwtPayload(s.credential); return Boolean(p?.exp && p.exp * 1000 > Date.now() + 30_000); }
   return true;
 }
 function decodeJwtPayload(jwt) {
   try {
     const b64 = String(jwt).split(".")[1].replace(/-/g, "+").replace(/_/g, "/");
-    const bin = atob(b64);
-    const json = decodeURIComponent([...bin].map(c => "%" + c.charCodeAt(0).toString(16).padStart(2, "0")).join(""));
+    const bin = atob(b64), json = decodeURIComponent([...bin].map(c => "%" + c.charCodeAt(0).toString(16).padStart(2, "0")).join(""));
     return JSON.parse(json);
-  } catch (_) {
-    return null;
+  } catch (_) { return null; }
+}
+let authIdentityRevision = 0;
+let authGeneration = 0, authSessionFlight = null, authSessionController = null, authSessionReadRevision = 0, authSessionCheckedAt = 0;
+function acceptedSession(data) {
+  if (!data?.authenticated || !data.user?.sub || !["google", "github"].includes(data.user.provider) || !(Number(data.expiresAt) > Date.now() + 30_000)) return null;
+  return { ...authHint(data.user), ownerId: data.user.ownerId || `${data.user.provider}:${data.user.sub}`, serverSession: true, expiresAt: Number(data.expiresAt) };
+}
+async function hydrateAuthSession({ force = false } = {}) {
+  if (!state.webSessions) return;
+  if (authSessionFlight && !force) return authSessionFlight;
+  if (force) authSessionController?.abort();
+  if (!force && state.authStatus === "ready" && Date.now() - authSessionCheckedAt < 60_000) return;
+  const generation = authGeneration, readRevision = ++authSessionReadRevision;
+  const controller = new AbortController(); authSessionController = controller;
+  state.authStatus = "checking"; renderAuthSlot(); mountSignInOptions();
+  authSessionFlight = (async () => {
+    try {
+      const data = await api("/api/auth/session", { auth: true, cache: "no-store", signal: controller.signal, timeoutMs: 5000 });
+      if (generation !== authGeneration || readRevision !== authSessionReadRevision) return;
+      state.authStatus = "ready"; state.authError = ""; authSessionCheckedAt = Date.now();
+      const session = acceptedSession(data);
+      const legacy = state.googleSession;
+      if (!session && legacy?.credential && decodeJwtPayload(legacy.credential)?.exp * 1000 > Date.now() + 30_000 && !authStorage("th_auth_signed_out", undefined, true)) {
+        await exchangeGoogleCredential(legacy.credential, { resume: false });
+      } else setGoogleSession(session);
+    } catch (_) {
+      if (generation !== authGeneration || readRevision !== authSessionReadRevision) return;
+      state.authStatus = "error"; state.authError = "Your session could not be checked. Sign in again or try once more.";
+      setGoogleSession(null, { refreshShared: false });
+    } finally {
+      if (authSessionController === controller) {
+        authSessionFlight = null; authSessionController = null; renderAuthSlot(); mountSignInOptions();
+        if (state.view === "login") updateLoginIdentity();
+      }
+    }
+  })();
+  return authSessionFlight;
+}
+async function exchangeGoogleCredential(credential, { resume = true } = {}) {
+  const generation = ++authGeneration;
+  state.authBusy = true; state.authError = ""; mountSignInOptions();
+  try {
+    const data = await api("/api/auth/google", { auth: true, method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ credential }), cache: "no-store", timeoutMs: 8000 });
+    if (generation !== authGeneration) return;
+    const session = acceptedSession(data);
+    if (!session) throw new Error("Sign-in could not be verified. Try again.");
+    state.authStatus = "ready"; authSessionCheckedAt = Date.now();
+    authStorage("th_auth_signed_out", null, true); setGoogleSession(session);
+    if (resume) { toast("Signed in as " + (session.name || session.email)); completeSignIn(); }
+  } catch (error) {
+    if (generation !== authGeneration) return;
+    state.authError = error.message || "Sign-in could not be verified. Try again.";
+  } finally {
+    if (generation === authGeneration) { state.authBusy = false; mountSignInOptions(); if (state.view === "login") updateLoginIdentity(); }
   }
 }
 function handleGoogleCredential(response) {
-  const p = decodeJwtPayload(response && response.credential);
-  if (!p || !p.email) { toast("Google sign-in failed", true); return; }
-  setGoogleSession({
-    email: String(p.email).toLowerCase(),
-    name: p.name || p.email,
-    sub: p.sub || "",
-    picture: p.picture || "",
-    credential: response.credential
-  });
-  toast("Signed in as " + p.email);
-  completeSignIn();
+  if (state.authBusy) return; // Serialize cookie-changing exchanges.
+  const p = decodeJwtPayload(response?.credential);
+  if (!p?.email) { state.authError = "Google sign-in could not be verified. Try again."; mountSignInOptions(); return; }
+  if (state.webSessions) return exchangeGoogleCredential(response.credential);
+  setGoogleSession({ provider: "google", email: String(p.email).toLowerCase(), name: p.name || p.email, sub: p.sub || "", picture: p.picture || "", credential: response.credential });
+  toast("Signed in as " + p.email); completeSignIn();
 }
+let googleInitGeneration = 0, googleInitFlight = false, googleInitializedFor = "", googlePromptedHost = null;
 function initGoogleSignIn() {
-  if (!state.googleClientId) return;
+  if (!state.googleClientId || googleInitFlight) return;
+  let signedOut = Boolean(authStorage("th_auth_signed_out", undefined, true));
+  let initKey = state.googleClientId + "|" + signedOut + "|" + (state.authHint?.provider || "") + "|" + (signedOut ? "" : state.authHint?.email || "");
+  if (googleInitializedFor === initKey && state.googleReady) { mountSignInOptions(); return; }
+  googleInitFlight = true;
+  const generation = ++googleInitGeneration;
   let attempts = 0;
   const tryInit = () => {
-    if (window.google && window.google.accounts && window.google.accounts.id) {
+    if (generation !== googleInitGeneration) return;
+    if (window.google?.accounts?.id) {
       try {
-        google.accounts.id.initialize({
-          client_id: state.googleClientId,
-          callback: handleGoogleCredential,
-          auto_select: false,
-          cancel_on_tap_outside: true
-        });
-        state.googleReady = true;
-      } catch (_) {
-        state.googleReady = false;
-      }
-      renderAuthSlot();
-      mountSignInOptions();
-      return;
+        // The SDK may arrive after the user changes account choice.
+        signedOut = Boolean(authStorage("th_auth_signed_out", undefined, true));
+        initKey = state.googleClientId + "|" + signedOut + "|" + (state.authHint?.provider || "") + "|" + (signedOut ? "" : state.authHint?.email || "");
+        const options = { client_id: state.googleClientId, callback: handleGoogleCredential, auto_select: !signedOut && state.authHint?.provider !== "github", use_fedcm_for_button: true, button_auto_select: !signedOut && state.authHint?.provider !== "github", cancel_on_tap_outside: true };
+        if (!signedOut && state.authHint?.provider === "google" && state.authHint.email) options.login_hint = state.authHint.email;
+        google.accounts.id.initialize(options);
+        state.googleReady = true; state.googleUnavailable = false; googleInitializedFor = initKey;
+      } catch (_) { state.googleReady = false; state.googleUnavailable = true; }
+      googleInitFlight = false; renderAuthSlot(); mountSignInOptions(); return;
     }
     if (++attempts < 40) { setTimeout(tryInit, 250); return; }
-    // GSI script unavailable (offline/blocked): fall back to a clear label
-    // instead of an eternal spinner.
-    state.googleUnavailable = true;
-    renderAuthSlot();
-    mountSignInOptions();
+    googleInitFlight = false; state.googleUnavailable = true; renderAuthSlot(); mountSignInOptions();
   };
   tryInit();
 }
+function reloadGoogleSDK() {
+  ++googleInitGeneration; googleInitFlight = false; state.googleUnavailable = false;
+  if (!window.google?.accounts?.id) {
+    $("#google-identity-sdk")?.remove();
+    const script = document.createElement("script"); script.id = "google-identity-sdk"; script.src = "https://accounts.google.com/gsi/client"; script.async = true;
+    script.onerror = () => { ++googleInitGeneration; googleInitFlight = false; state.googleUnavailable = true; mountSignInOptions(); };
+    script.onload = () => initGoogleSignIn(); document.head.append(script);
+  }
+  initGoogleSignIn(); mountSignInOptions();
+}
 function renderGoogleButton(container, opts = {}) {
   if (!state.googleReady || !window.google?.accounts?.id || !container) return false;
-  try {
-    google.accounts.id.renderButton(container, {
-      theme: "outline", size: "large", shape: "pill",
-      text: "signin_with", logo_alignment: "left", width: opts.width || 200
-    });
-    return true;
-  } catch (_) {
-    return false;
-  }
+  try { google.accounts.id.renderButton(container, { theme: "outline", size: "large", shape: "rectangular", text: "continue_with", logo_alignment: "left", width: Math.max(200, Math.min(400, opts.width || 320)) }); return true; }
+  catch (_) { return false; }
+}
+function maybePromptGoogle(host) {
+  if (state.webSessions && state.authStatus !== "ready") return;
+  if (state.authHint?.provider === "github") return;
+  if (!host || googlePromptedHost === host || !state.googleReady || isGoogleSessionValid() || state.authBusy || authStorage("th_auth_signed_out", undefined, true)) return;
+  googlePromptedHost = host;
+  try { google.accounts.id.prompt(); } catch (_) { /* The regular button remains available. */ }
 }
 function promptGoogleLogin() {
   if (!legacyGoogleAuthAllowed()) { openSignInModal(); return; }
-  // Legacy dev fallback (no GOOGLE_CLIENT_ID configured on the worker).
-  const email = prompt("Sign in with Google (dev mode — no OAuth client configured):", state.googleSession?.email || "");
-  if (!email || !email.includes("@")) return;
+  const email = prompt("Sign in with Google (dev mode — no OAuth client configured):", state.authHint?.email || "");
+  if (!email?.includes("@")) return;
   const name = email.split("@")[0].replace(/[._-]+/g, " ").replace(/\b\w/g, c => c.toUpperCase());
-  setGoogleSession({ email: email.toLowerCase(), name, sub: "google_" + email.toLowerCase(), picture: "" });
-  completeSignIn();
+  setGoogleSession({ provider: "google", email: email.toLowerCase(), name, sub: "google_" + email.toLowerCase(), picture: "" }); completeSignIn();
 }
-
-const GOOGLE_G = '<svg width="15" height="15" viewBox="0 0 48 48"><path fill="#EA4335" d="M24 9.5c3.5 0 6.6 1.2 9.1 3.6l6.8-6.8C35.6 2.4 30.1 0 24 0 14.6 0 6.5 5.4 2.6 13.2l7.9 6.2C12.4 13.3 17.7 9.5 24 9.5z"/><path fill="#4285F4" d="M46.5 24.5c0-1.6-.1-3.1-.4-4.5H24v9h12.7c-.6 3-2.3 5.5-4.8 7.2l7.6 5.9c4.4-4.1 7-10.2 7-17.6z"/><path fill="#FBBC05" d="M10.5 28.6c-.5-1.5-.8-3-.8-4.6s.3-3.1.8-4.6l-7.9-6.2C1 16.3 0 20 0 24s1 7.7 2.6 10.8l7.9-6.2z"/><path fill="#34A853" d="M24 48c6.1 0 11.3-2 15-5.5l-7.6-5.9c-2.1 1.4-4.6 2.2-7.4 2.2-6.3 0-11.6-3.8-13.5-9.1l-7.9 6.2C6.5 42.6 14.6 48 24 48z"/></svg>';
-
+const GOOGLE_G = '<svg width="18" height="18" viewBox="0 0 48 48" aria-hidden="true"><path fill="#EA4335" d="M24 9.5c3.5 0 6.6 1.2 9.1 3.6l6.8-6.8C35.6 2.4 30.1 0 24 0 14.6 0 6.5 5.4 2.6 13.2l7.9 6.2C12.4 13.3 17.7 9.5 24 9.5z"/><path fill="#4285F4" d="M46.5 24.5c0-1.6-.1-3.1-.4-4.5H24v9h12.7c-.6 3-2.3 5.5-4.8 7.2l7.6 5.9c4.4-4.1 7-10.2 7-17.6z"/><path fill="#FBBC05" d="M10.5 28.6c-.5-1.5-.8-3-.8-4.6s.3-3.1.8-4.6l-7.9-6.2C1 16.3 0 20 0 24s1 7.7 2.6 10.8l7.9-6.2z"/><path fill="#34A853" d="M24 48c6.1 0 11.3-2 15-5.5l-7.6-5.9c-2.1 1.4-4.6 2.2-7.4 2.2-6.3 0-11.6-3.8-13.5-9.1l-7.9 6.2C6.5 42.6 14.6 48 24 48z"/></svg>';
+const GITHUB_G = '<svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 .75a11.25 11.25 0 0 0-3.56 21.92c.56.1.77-.24.77-.54v-2.1c-3.13.68-3.79-1.33-3.79-1.33-.51-1.3-1.25-1.64-1.25-1.64-1.02-.7.08-.68.08-.68 1.13.08 1.72 1.16 1.72 1.16 1 .1.77 1.43 3.27.97.1-.72.4-1.21.72-1.49-2.5-.28-5.13-1.25-5.13-5.57 0-1.23.44-2.23 1.16-3.02-.12-.28-.5-1.43.11-2.98 0 0 .94-.3 3.1 1.16a10.7 10.7 0 0 1 5.62 0c2.15-1.46 3.09-1.16 3.09-1.16.61 1.55.23 2.7.11 2.98.72.79 1.16 1.8 1.16 3.02 0 4.33-2.64 5.28-5.15 5.56.4.35.76 1.03.76 2.08v3.04c0 .3.2.65.78.54A11.25 11.25 0 0 0 12 .75Z"/></svg>';
 let authConfigFlight;
-function loadAuthConfig() {
+function applyAuthConfig(cfg) {
+  if (typeof cfg?.googleClientId !== "string") throw new Error("Invalid sign-in configuration.");
+  state.googleClientId = cfg.googleClientId; state.githubAuth = cfg.githubAuth === true; state.webSessions = cfg.webSessions === true; state.googleConfig = "ready";
+}
+function loadAuthConfig({ force = false } = {}) {
   if (authConfigFlight) return authConfigFlight;
+  const cached = authStorage("th_auth_config"), age = Date.now() - Number(cached?.savedAt);
+  if (!force && age >= 0 && age < 300_000 && cached?.config && typeof cached.config.googleClientId === "string") {
+    applyAuthConfig(cached.config); initGoogleSignIn(); renderAuthSlot(); mountSignInOptions();
+    return hydrateAuthSession().then(() => restoreAuthReturn());
+  }
   state.googleConfig = "loading";
   authConfigFlight = (async () => {
     try {
-      const cfg = await api("/api/config");
-      if (typeof cfg.googleClientId !== "string") throw new Error("Invalid sign-in configuration.");
-      state.googleClientId = cfg.googleClientId;
-      state.googleConfig = "ready";
-      initGoogleSignIn();
-    } catch (_) {
-      // Unknown configuration must never activate the legacy dev flow.
-      state.googleConfig = "error";
-    } finally {
-      authConfigFlight = null;
-      renderAuthSlot();
-      mountSignInOptions();
+      const cfg = await api("/api/config", force ? { cache: "reload" } : {});
+      applyAuthConfig(cfg); authStorage("th_auth_config", { savedAt: Date.now(), config: { googleClientId: cfg.googleClientId, githubAuth: cfg.githubAuth === true, webSessions: cfg.webSessions === true } });
+      initGoogleSignIn(); await hydrateAuthSession();
+    } catch (_) { state.googleConfig = "error"; }
+    finally {
+      authConfigFlight = null; renderAuthSlot(); mountSignInOptions();
       if (["settings", "invite"].includes(state.view) && state.googleConfig === "ready") render();
+      if (state.view === "login") updateLoginIdentity();
     }
+    await restoreAuthReturn();
   })();
   return authConfigFlight;
 }
-
+async function signOut({ switchAccount = false } = {}) {
+  if (state.authBusy) return;
+  const server = state.googleSession?.serverSession || state.webSessions;
+  ++authGeneration;
+  try { google.accounts.id.cancel(); google.accounts.id.disableAutoSelect(); } catch (_) {}
+  authStorage("th_auth_signed_out", true, true); state.authBusy = true; renderAuthSlot();
+  try {
+    if (server) await api("/api/auth/logout", { method: "POST", auth: true, cache: "no-store", timeoutMs: 5000 });
+    state.authStatus = "ready"; state.authError = "";
+    setGoogleSession(null); state.authHint = null; authStorage("th_auth_hint", null); authStorage("th_google_session", null); authStorage("th_auth_return", null, true); clearApiCache();
+    if (switchAccount) openSignInModal({ action: "Use another account" });
+    else toast("Signed out");
+  } catch (_) { state.authError = "Sign-out could not finish. Check your connection and try again."; toast(state.authError, true); }
+  finally { state.authBusy = false; if (!state.googleSession) initGoogleSignIn(); renderAuthSlot(); mountSignInOptions(); if (state.view === "login") updateLoginIdentity(); }
+}
 function renderAuthSlot() {
-  const slot = $("#auth-slot");
-  if (state.googleSession && state.googleClientId && !isGoogleSessionValid()) {
-    // Drop expired/credential-less sessions so the sign-in button returns.
-    const hadEmail = state.googleSession.email;
-    setGoogleSession(null);
-    if (hadEmail) toast("Google session expired — sign in again");
-    return;
-  }
+  const slot = $("#auth-slot"); if (!slot) return;
+  if (state.googleSession && state.googleConfig === "ready" && !state.webSessions && !isGoogleSessionValid()) { setGoogleSession(null); return; }
   const s = isGoogleSessionValid() ? state.googleSession : null;
   if (s) {
-    slot.innerHTML = `<div class="user-chip" id="user-chip">${avatar(s.name || s.email, s.picture, 28)}<div><div style="font-size:12.5px;font-weight:600">${esc(s.name || s.email)}</div><small>Google · sign out</small></div></div>`;
-    $("#user-chip").onclick = () => {
-      if (!confirm("Sign out of Token Horizon?")) return;
-      if (state.googleReady && window.google?.accounts?.id) {
-        try { google.accounts.id.disableAutoSelect(); } catch (_) {}
-      }
-      setGoogleSession(null);
-    };
+    slot.innerHTML = `<div class="auth-account"><button class="user-chip" id="user-chip" aria-expanded="false" aria-controls="account-menu" ${state.authBusy ? "disabled" : ""}>${avatar(s.name || s.email || s.login, s.picture, 28)}<span><strong>${esc(s.name || s.login || s.email)}</strong><small>${s.provider === "github" ? "GitHub" : "Google"} account</small></span><span aria-hidden="true">⌄</span></button><div class="auth-account-menu" id="account-menu" hidden><div class="auth-menu-identity">${esc(s.email || "@" + s.login)}</div><button data-account-workspace>Workspace</button><a href="/connect">Manage connections</a><button data-account-switch>Use another account</button><button data-account-signout>Sign out</button></div></div>`;
+    const chip = $("#user-chip"), menu = $("#account-menu");
+    chip.onclick = () => { menu.hidden = !menu.hidden; chip.setAttribute("aria-expanded", String(!menu.hidden)); if (!menu.hidden) menu.querySelector("button").focus(); };
+    menu.querySelector('[data-account-workspace]').onclick = () => navigate("dashboard");
+    menu.querySelector('[data-account-switch]').onclick = () => signOut({ switchAccount: true });
+    menu.querySelector('[data-account-signout]').onclick = () => signOut();
+    menu.onkeydown = e => { if (e.key === "Escape") { menu.hidden = true; chip.setAttribute("aria-expanded", "false"); chip.focus(); } };
     return;
   }
-  // One clear entry point into the animated sign-in modal.
-  const dev = legacyGoogleAuthAllowed();
-  const title = state.googleConfig !== "ready" ? "Sign-in settings are loading or unavailable; public data is ready to browse." : dev
-    ? "Google login isn't configured on this deployment (set GOOGLE_CLIENT_ID on the worker)."
-    : state.googleUnavailable
-      ? "Google sign-in failed to load (script blocked or offline) — click to retry."
-      : "Sign in with Google";
-  slot.innerHTML = `<button class="pill ${dev || state.googleUnavailable ? "ghost" : "primary"}" id="signin-btn" title="${esc(title)}">${GOOGLE_G} Sign in</button>`;
+  const checking = state.webSessions && state.authStatus === "checking";
+  slot.innerHTML = `<button class="pill primary" id="signin-btn">${checking ? '<span class="auth-mini-orbit" aria-hidden="true"></span>' : ""}Sign in</button>`;
   $("#signin-btn").onclick = () => openSignInModal();
 }
+document.addEventListener("click", e => { const menu = $("#account-menu"); if (menu && !menu.hidden && !e.target.closest(".auth-account")) { menu.hidden = true; $("#user-chip")?.setAttribute("aria-expanded", "false"); } });
+window.addEventListener("storage", e => {
+  if (!["th_auth_hint", "th_google_session"].includes(e.key)) return;
+  state.authHint = getAuthHint();
+  if (e.key === "th_auth_hint") authStorage("th_auth_signed_out", state.authHint ? null : true, true);
+  if (state.webSessions) { setGoogleSession(null, { refreshShared: false }); hydrateAuthSession({ force: true }); initGoogleSignIn(); }
+  else { setGoogleSession(getGoogleSession()); mountSignInOptions(); }
+});
+document.addEventListener("visibilitychange", () => { if (!document.hidden && state.webSessions && Date.now() - authSessionCheckedAt > 300_000) hydrateAuthSession({ force: true }); });
 
 /* ---------- navigation ---------- */
 const NAV = [
@@ -1776,8 +1868,8 @@ function navigate(view, opts = {}) {
   const qs = params.toString();
   // /models is a path-routed view: keep it canonical, and leave it for other
   // views (a relative "?view=x" would otherwise stay on /models).
-  const onModelsPath = /^\/(?:models|invite\/[^/]+|u\/[^/]+|s\/[^/]+)\/?$/.test(location.pathname);
-  const target = (view === "players" && handle && location.protocol !== "file:")
+  const onModelsPath = /^\/(?:login|models|invite\/[^/]+|u\/[^/]+|s\/[^/]+)\/?$/.test(location.pathname);
+  const target = view === "login" ? "/login" : (view === "players" && handle && location.protocol !== "file:")
     ? "/u/" + encodeURIComponent(handle)  // clean permalink — unfurls with a
                                           // dynamic OG card server-side
     : onModelsPath
@@ -1795,7 +1887,7 @@ window.addEventListener("popstate", () => {
   const userPath = location.pathname.match(/^\/u\/([^\/?#]+)\/?$/);
   const sharePath = location.pathname.match(/^\/s\/([^\/?#]+)\/?$/);
   const invitePath = location.pathname.match(/^\/invite\/([^\/?#]+)\/?$/);
-  state.view = invitePath || p.get("invite") ? "invite" : p.get("view") || (userPath ? "players" : /^\/models\/?$/.test(location.pathname) ? "models" : "leaderboard");
+  state.view = invitePath || p.get("invite") ? "invite" : p.get("view") || (/^\/login\/?$/.test(location.pathname) ? "login" : userPath ? "players" : /^\/models\/?$/.test(location.pathname) ? "models" : "leaderboard");
   state.modelsTab = ["providers", "plans", "cheapest"].includes(p.get("tab")) ? p.get("tab") : "explorer";
   const u = p.get("user");
   state.currentHandle = u || null;
@@ -2204,10 +2296,10 @@ function aggregateModels(rows) {
    MAIN RENDER
    ============================================================ */
 function syncDiscoveryChrome() {
-  const visible = ["leaderboard", "models", "invite", "players"].includes(state.view);
+  const visible = ["leaderboard", "models", "invite", "players", "login"].includes(state.view);
   document.body.classList.toggle("discovery", visible);
   document.body.dataset.surface = state.view;
-  document.title = `Token Horizon — ${state.view === "invite" ? "Join your crew" : state.view === "models" ? "Model Explorer" : state.view === "leaderboard" ? "Community Leaderboard" : state.view === "players" ? "Builder Profile" : "Analytics"}`;
+  document.title = `Token Horizon — ${state.view === "login" ? "Sign in" : state.view === "invite" ? "Join your crew" : state.view === "models" ? "Model Explorer" : state.view === "leaderboard" ? "Community Leaderboard" : state.view === "players" ? "Builder Profile" : "Analytics"}`;
   $$("[data-public-view]").forEach(a => {
     a.setAttribute("aria-current", a.dataset.publicView === state.view ? "page" : "false");
     a.onclick = e => { if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return; e.preventDefault(); mxClose(); navigate(a.dataset.publicView); };
@@ -2222,6 +2314,7 @@ async function render() {
   if (state.view === "shared" && state.sharedReportId) return renderSharedReport(state.sharedReportId, { promptSignIn: false });
   const version = ++renderVersion;
   const route = state.view;
+  if (route !== "login") { LOGINHOLE.stop(); authPageMotionCleanup?.(); authPageMotionCleanup = null; }
   teamInvitePage?.destroy();
   teamInvitePage = null;
   const current = () => version === renderVersion && route === state.view;
@@ -2239,7 +2332,8 @@ async function render() {
     view.innerHTML = '<section class="ws-boot" role="status" aria-label="Loading workspace"><div class="skeleton" style="height:32px;width:200px;margin-bottom:28px"></div><div class="skeleton" style="height:300px"></div></section>';
   } else if (route === "players") {
     if (!state.user || String(state.user.handle).toLowerCase() !== String(state.currentHandle || "").toLowerCase()) view.innerHTML = profileLoadingHtml();
-  } else if (!state.data) view.innerHTML = viewLeaderboard();
+  } else if (route === "login") { /* Independent authentication surface. */ }
+  else if (!state.data) view.innerHTML = viewLeaderboard();
   try {
     // A public permalink needs only its profile endpoint. Community data is
     // fetched separately when the visitor asks to compare builders.
@@ -2248,13 +2342,14 @@ async function render() {
       if (!current()) return;
       const handle = state.currentHandle || (state.data?.leaderboard || [])[0]?.entry.handle;
       profileOutcome = await loadUser(handle);
-    } else if (!["models", "dashboard", "invite"].includes(route)) await ensureData();
+    } else if (!["models", "dashboard", "invite", "login"].includes(route)) await ensureData();
     if (!current()) return;
     chartRegistry.clear();
     chartFallbacks.clear();
     renderSeasonSelect();
     renderFilters();
     switch (route) {
+      case "login": renderLogin(); break;
       case "dashboard": await renderDashboard(current); break;
       case "invite": await renderTeamInvite(current); break;
       case "players":
@@ -2282,7 +2377,7 @@ async function render() {
   }
   if (!current()) return;
   // Demo data never masquerades as live data or labels the independent catalog.
-  if (!["models", "dashboard", "invite", "players"].includes(route) && state.demo && view.firstChild) {
+  if (!["models", "dashboard", "invite", "players", "login"].includes(route) && state.demo && view.firstChild) {
     view.insertAdjacentHTML("afterbegin", `<div class="notice warn" style="margin-bottom:16px">Live API unreachable — showing bundled demo data. <button class="pill ghost" id="demo-retry" style="font-size:11px;margin-left:8px">Retry live data</button></div>`);
     const retry = $("#demo-retry");
     if (retry) retry.onclick = () => { clearApiCache(); state.data = null; state.dataSig = ""; state.demo = false; render(); };
@@ -2578,7 +2673,7 @@ function profileProviderMix(e) {
 }
 function profileHero(p) {
   const e = p.entry, handle = String(e.handle || "").replace(/^@/, "");
-  const ownedByViewer = Boolean(e.claimed && e.googleEmail && state.googleSession?.email && String(e.googleEmail).toLowerCase() === String(state.googleSession.email).toLowerCase());
+  const ownedByViewer = sessionOwnsEntry(e);
   return `<header class="profile-identity">
     <div class="profile-person">${entryAvatar(e, 80)}<div><h1>@${esc(handle)}</h1><div class="profile-meta">${e.team ? `<span>${esc(e.team)}</span>` : '<span>Independent builder</span>'}${e.hardware ? `<span>${esc(e.hardware)}</span>` : ""}${e.isLocal ? '<span class="chip you">You</span>' : ""}</div></div></div>
     <div class="profile-actions"><button class="pill primary" data-share-user="${esc(handle)}"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m8 11 8-5M8 13l8 5" stroke="currentColor" stroke-width="1.5"/><circle cx="5" cy="12" r="3" stroke="currentColor" stroke-width="1.5"/><circle cx="19" cy="4" r="3" stroke="currentColor" stroke-width="1.5"/><circle cx="19" cy="20" r="3" stroke="currentColor" stroke-width="1.5"/></svg> Share report</button><button class="pill ghost" data-copy-profile="${esc(handle)}">Copy link</button>${canEditAvatar(e) ? `<button class="pill ghost" data-edit-avatar="${esc(handle)}">Edit photo</button>` : ""}${ownedByViewer ? "" : `<button class="profile-text-button" data-claim-user="${esc(handle)}">Claim profile</button>`}</div>
@@ -2777,7 +2872,7 @@ async function renderTeamInvite(current = () => true) {
     return;
   }
   if (!current()) return;
-  const identity = () => state.googleSession?.sub || state.googleSession?.email || "";
+  const identity = () => sessionIdentity(state.googleSession);
   let inviteState = { loading: true, signedIn: isGoogleSessionValid(), invite: null };
   let view;
   const paint = values => { inviteState = { ...inviteState, ...values }; if (current()) view.update({ state: inviteState }); };
@@ -2824,6 +2919,7 @@ function joinTeamAfterSignIn(token) {
    ============================================================ */
 let workspaceModuleFlight;
 let workspaceAccount;
+const workspaceAccountFlights = new Map();
 let workspaceAutoHandle = "";
 function loadWorkspaceModule() {
   if (window.TokenHorizonWorkspace) return Promise.resolve(window.TokenHorizonWorkspace);
@@ -2846,16 +2942,24 @@ function loadWorkspaceModule() {
   return workspaceModuleFlight;
 }
 async function loadWorkspaceAccount() {
-  if (state.googleSession && state.googleConfig === "loading") await loadAuthConfig();
+  if (state.googleConfig === "loading") await loadAuthConfig();
+  if (state.webSessions && ["idle", "checking"].includes(state.authStatus)) await hydrateAuthSession();
   if (!isGoogleSessionValid()) return { profiles: [] };
-  const key = state.googleSession.credential || state.googleSession.email;
+  const key = sessionIdentity(state.googleSession);
   if (workspaceAccount?.key === key && Date.now() - workspaceAccount.at < 30000) return workspaceAccount;
-  try {
-    const result = await api("/api/account/profiles", { headers: googleHeaders(), cache: "no-store" });
-    const account = { key, at: Date.now(), profiles: result.profiles || [] };
-    if (key === (state.googleSession?.credential || state.googleSession?.email)) workspaceAccount = account;
-    return account;
-  } catch (error) { return { profiles: [], error: error.message }; }
+  const revision = authIdentityRevision, flightKey = `${key}:${revision}`;
+  if (workspaceAccountFlights.has(flightKey)) return workspaceAccountFlights.get(flightKey);
+  const flight = (async () => {
+    try {
+      const result = await api("/api/account/profiles", { headers: googleHeaders(), cache: "no-store" });
+      const account = { key, at: Date.now(), profiles: result.profiles || [] };
+      if (revision === authIdentityRevision && key === sessionIdentity(state.googleSession)) workspaceAccount = account;
+      return account;
+    } catch (error) { return { profiles: [], error: error.message }; }
+    finally { workspaceAccountFlights.delete(flightKey); }
+  })();
+  workspaceAccountFlights.set(flightKey, flight);
+  return flight;
 }
 async function renderDashboard(current = () => true) {
   const host = $("#view");
@@ -2938,6 +3042,12 @@ async function renderPlayers(current = () => true, outcome = state.profileLoad) 
     + profileTotals(p)
     + `<div class="profile-layout"><div class="profile-main" id="profile-panel" role="tabpanel" aria-labelledby="profile-tab-${state.profileTab}">${profileContent(p)}</div>${profileRail(p)}</div></article>`;
   wireProfile();
+  if (state.googleSession?.serverSession && isGoogleSessionValid() && workspaceAccount?.key !== sessionIdentity(state.googleSession)) {
+    const identity = sessionIdentity(state.googleSession), revision = authIdentityRevision;
+    loadWorkspaceAccount().then(account => {
+      if (current() && revision === authIdentityRevision && identity === sessionIdentity(state.googleSession) && account.key === identity) render();
+    });
+  }
   if (restoreTabFocus) $("#profile-tab-" + state.profileTab)?.focus({ preventScroll: true });
   if (restoreWindowFocus) $('[data-profile-window="' + restoreWindowFocus + '"]')?.focus({ preventScroll: true });
 }
@@ -4695,7 +4805,7 @@ async function renderSettings(current = () => true) {
       <div><div style="font-weight:700;font-size:13.5px">Sign in to unlock sharing</div>
       <div class="mini">Create groups &amp; teams, share reports with access controls, and track every event.</div></div>
     </div>
-    <button class="pill primary" id="settings-signin">${GOOGLE_G} Sign in with Google</button>
+    <button class="pill primary" id="settings-signin">${GOOGLE_G} Sign in</button>
   </div>`;
 
   const rowsHtml = shares.map(s => {
@@ -4935,9 +5045,11 @@ function openShareModal(handle) {
     }
   };
 }
-function closeModal() {
-  state.signInPending = null;
-  BLACKHOLE.stop();
+function closeModal({ preservePending = false } = {}) {
+  if (!preservePending) state.signInPending = null;
+  BLACKHOLE.stop(); authModalMotionCleanup?.(); authModalMotionCleanup = null;
+  googlePromptedHost = null;
+  try { google.accounts.id.cancel(); } catch (_) {}
   $("#modal-backdrop").classList.remove("open");
   $("#modal-backdrop").innerHTML = "";
 }
@@ -4954,7 +5066,7 @@ function initModalManager() {
     if (node && node !== lastModalNode) {
       lastModalNode = node;
       if (!modalOpener || !backdrop.contains(modalOpener)) modalOpener = document.activeElement;
-      const target = backdrop.querySelector(".modal-foot .pill.primary, .modal .x, .modal button, .modal input, .modal [tabindex]");
+      const target = backdrop.querySelector(".modal .x") || backdrop.querySelector(".modal-foot .pill.primary:not(:disabled), .modal button:not(:disabled), .modal input:not(:disabled), .modal [tabindex]");
       if (target) { try { target.focus({ preventScroll: true }); } catch (_) {} }
     } else if (!node) {
       lastModalNode = null;
@@ -5139,7 +5251,7 @@ function createBlackHole(opts = {}) {
       pending = setTimeout(() => { pending = 0; go(); }, startOpts.defer ?? 24);
     },
     resume() {
-      if (!el || running || reduceMotion()) return;
+      if (!el || running || reduceMotion() || !built) return;
       running = true;
       lastNow = 0;
       raf = requestAnimationFrame(frame);
@@ -5157,98 +5269,162 @@ function createBlackHole(opts = {}) {
     get ready() { return built; }
   };
 }
+const LOGINHOLE = createBlackHole();
 const BLACKHOLE = createBlackHole();                                        // sign-in modal (72×32)
 const NAVHOLE = createBlackHole({ width: 22, height: 9, worldHalf: 7.0, maxStep: 160, stars: false, turbBase: 1.0, turbAmp: 0.05, tokGain: 1.2, tokSigma2: 0.012 });  // sidebar brand
 
 /* ============================================================
    SIGN-IN FLOW
    ============================================================ */
-/// Gate an action behind a verified Google session. When signed out,
+/// Gate an action behind a verified account session. When signed out,
 /// opens the animated sign-in modal and resumes the action afterwards.
+function signInResume(action) {
+  const named = /@([a-zA-Z0-9_.-]+)/.exec(action || "")?.[1];
+  const handle = named || state.shareDraftHandle || state.currentHandle;
+  if (/Sharing/i.test(action)) return { type: "share", handle };
+  if (/Creating groups/i.test(action)) return { type: "group", handle };
+  if (/Claiming/i.test(action)) return { type: "claim", handle };
+  if (/Invite friends/i.test(action)) return { type: "team" };
+  if (state.view === "invite" && /^Join /.test(action)) return { type: "invite", token: teamInviteToken() };
+  if (state.view === "shared" && state.sharedReportId) return { type: "shared", id: state.sharedReportId };
+  if (/workspace/i.test(action)) return { type: "workspace" };
+  return null;
+}
+function authReturnPath() {
+  const url = new URL(location.href);
+  for (const key of ["auth", "auth_error", "signin"]) url.searchParams.delete(key);
+  return url.pathname + url.search;
+}
+function startGithubSignIn() {
+  if (!state.githubAuth || state.authBusy) return;
+  const path = authReturnPath();
+  authStorage("th_auth_return", { at: Date.now(), path, resume: state.signInPending?.resume || signInResume(state.signInPending?.action || "") }, true);
+  try { google.accounts.id.cancel(); } catch (_) {}
+  state.authBusy = true; mountSignInOptions();
+  const target = new URL("/api/auth/github", location.origin); target.searchParams.set("returnTo", path);
+  location.assign(target.href);
+}
+let authPageMotionCleanup, authModalMotionCleanup;
+let restoringAuthReturn = false;
+async function restoreAuthReturn() {
+  const params = new URLSearchParams(location.search);
+  if (params.get("auth_error")) {
+    state.authError = "GitHub sign-in did not finish. Try again or use Google.";
+    const url = new URL(location.href); url.searchParams.delete("auth_error"); history.replaceState(history.state, "", url);
+    if (state.view !== "login") openSignInModal(); else mountSignInOptions();
+    authStorage("th_auth_return", null, true); return;
+  }
+  if (restoringAuthReturn || params.get("auth") !== "success" || !isGoogleSessionValid()) return;
+  restoringAuthReturn = true;
+  const saved = authStorage("th_auth_return", undefined, true), path = authReturnPath();
+  const url = new URL(location.href); url.searchParams.delete("auth"); history.replaceState(history.state, "", url);
+  authStorage("th_auth_return", null, true);
+  if (!saved || saved.path !== path || !(Date.now() - saved.at >= 0 && Date.now() - saved.at < 600_000)) return;
+  const resume = saved.resume;
+  if (!resume || !["share", "group", "claim", "invite", "team", "workspace", "shared"].includes(resume.type)) return;
+  await render();
+  const handle = typeof resume.handle === "string" && /^[a-zA-Z0-9_.-]{1,80}$/.test(resume.handle) ? resume.handle : null;
+  if (resume.type === "share" && handle) openShareModal(handle);
+  if (resume.type === "group") openGroupModal(handle);
+  if (resume.type === "claim" && handle) openClaimModal(handle);
+  if (resume.type === "invite" && typeof resume.token === "string" && resume.token === teamInviteToken()) joinTeamAfterSignIn(resume.token);
+  if (resume.type === "team") openInviteFriends();
+  if (resume.type === "workspace") navigate("dashboard");
+  if (resume.type === "shared" && resume.id === state.sharedReportId) renderSharedReport(resume.id);
+}
 function requireSignIn(opts = {}) {
   if (isGoogleSessionValid()) return true;
-  openSignInModal(opts);
-  return false;
+  openSignInModal(opts); return false;
 }
 function completeSignIn() {
   const pendingAction = state.signInPending;
   state.signInPending = null;
-  closeModal();
-  renderAuthSlot();
+  closeModal(); renderAuthSlot();
   if (["settings", "dashboard", "invite"].includes(state.view)) render();
-  if (pendingAction && pendingAction.onSuccess) setTimeout(() => pendingAction.onSuccess(), 60);
+  if (state.view === "login") updateLoginIdentity();
+  if (pendingAction?.onSuccess) setTimeout(() => pendingAction.onSuccess(), 60);
+}
+const AUTH_MARK = '<span class="auth-horizon-mark" aria-hidden="true"></span>';
+const AUTH_LINE_ICONS = [
+  '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="3" y="4" width="18" height="13" rx="2" stroke="currentColor" stroke-width="1.5"/><path d="M9 21h6m-3-4v4" stroke="currentColor" stroke-width="1.5"/></svg>',
+  '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="8" cy="8" r="3" stroke="currentColor" stroke-width="1.5"/><path d="M2 21v-3a6 6 0 0 1 12 0v3m1-16a3 3 0 0 1 0 6m2 3a5 5 0 0 1 5 5v2" stroke="currentColor" stroke-width="1.5"/></svg>',
+  '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M5 21V11m7 10V3m7 18V7" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>'
+];
+function authBenefits() {
+  return `<div class="signin-benefits">${[["Your workspace", "Models and published usage"], ["Your team", "Friends and shared access"], ["Your reports", "Usage you choose to share"]].map(([title, detail], i) => `<div class="signin-benefit"><span class="ico">${AUTH_LINE_ICONS[i]}</span><div><div class="t">${title}</div><div class="d">${detail}</div></div></div>`).join("")}</div>`;
+}
+function authArt(id, page = false) {
+  return `<div class="signin-art${page ? " auth-page-art" : ""}"><div class="auth-art-top">${AUTH_MARK}<span>Token Horizon</span></div><div class="auth-orbit-stage"><pre class="bh-art" id="${id}" aria-hidden="true"></pre></div><div class="auth-art-bottom"><span>Your work.<br>In view.</span><button type="button" data-auth-motion aria-pressed="false" aria-label="Pause black hole animation">Pause animation</button></div></div>`;
+}
+function authPane({ page = false, action = "" } = {}) {
+  return `<div class="signin-pane"><div class="modal-head"><div>${page ? `<div class="auth-form-brand">${AUTH_MARK}<span>Token Horizon</span></div>` : ""}<${page ? "h1" : "h2"} id="signin-title">${action ? "Sign in to continue" : state.authHint ? "Welcome back." : "Welcome."}</${page ? "h1" : "h2"}><p>${action ? esc(action) : "Your workspace, team and shared reports."}</p></div>${page ? "" : '<button class="x" data-close aria-label="Close dialog">×</button>'}</div><div class="modal-body"><div class="signin-options" id="signin-gsi"></div><div id="signin-status" role="status" aria-live="polite"></div><div id="signin-remembered"></div>${authBenefits()}<p class="auth-privacy"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="6" y="10" width="12" height="11" rx="2" stroke="currentColor" stroke-width="1.5"/><path d="M8 10V6a4 4 0 0 1 8 0v4" stroke="currentColor" stroke-width="1.5"/></svg>Your local prompts and traces stay on your device.</p></div><div class="modal-foot">${page ? '<a class="auth-text-link" href="/leaderboard">Explore without signing in</a>' : '<span>Only what you choose to publish.</span><button class="auth-text-link" data-close>Not now</button>'}</div></div>`;
+}
+function wireAuthMotion(root, hole) {
+  const button = $("[data-auth-motion]", root); if (!button) return;
+  const reduced = matchMedia("(prefers-reduced-motion: reduce)");
+  let paused = reduced.matches;
+  const update = () => { if (paused || document.hidden || reduced.matches) hole.pause(); else hole.resume(); button.textContent = paused ? "Play animation" : "Pause animation"; button.setAttribute("aria-pressed", String(paused)); button.setAttribute("aria-label", paused ? "Play black hole animation" : "Pause black hole animation"); };
+  const preference = () => { paused = reduced.matches; update(); };
+  button.onclick = () => { paused = !paused; update(); };
+  reduced.addEventListener("change", preference); document.addEventListener("visibilitychange", update);
+  update();
+  return () => { reduced.removeEventListener("change", preference); document.removeEventListener("visibilitychange", update); };
+}
+function renderLogin() {
+  LOGINHOLE.stop(); authPageMotionCleanup?.();
+  $("#view").innerHTML = `<section class="auth-shell" id="login-page" aria-labelledby="signin-title">${authArt("login-bh-art", true)}${authPane({ page: true })}</section>`;
+  LOGINHOLE.start($("#login-bh-art")); authPageMotionCleanup = wireAuthMotion($("#login-page"), LOGINHOLE);
+  updateLoginIdentity(); mountSignInOptions();
+}
+function updateLoginIdentity() {
+  const page = $("#login-page"); if (!page) return;
+  const pane = $(".signin-pane", page), session = isGoogleSessionValid() ? state.googleSession : null;
+  if (session) {
+    pane.innerHTML = `<div class="auth-success"><div class="auth-form-brand">${AUTH_MARK}<span>Token Horizon</span></div><span class="auth-success-check" aria-hidden="true">✓</span><h1 id="signin-title">You're signed in.</h1><p>Welcome back, ${esc(session.name || session.login || session.email)}.</p><div class="auth-remembered">${avatar(session.name || session.email, session.picture, 44)}<div><strong>${esc(session.name || session.login || session.email)}</strong><small>${session.provider === "github" ? "GitHub" : "Google"} · ${esc(session.email || "@" + session.login)}</small></div></div><button class="auth-primary" id="login-workspace">Open workspace</button><button class="auth-text-link" id="login-switch">Use another account</button><p class="auth-privacy">Your local data stays local.</p></div>`;
+    $("#login-workspace").onclick = () => navigate("dashboard"); $("#login-switch").onclick = () => signOut({ switchAccount: true });
+  } else if (!$("#signin-gsi", pane)) { pane.outerHTML = authPane({ page: true }); mountSignInOptions(); }
 }
 function openSignInModal(opts = {}) {
   const action = opts.action || "";
-  if (typeof opts.onSuccess === "function") state.signInPending = { action, onSuccess: opts.onSuccess };
-  const benefits = [
-    ["👥", "Invite your crew", "Create a team, share its link, and friends join after Google sign-in."],
-    ["🛡️", "Claim your profile", "Own your handle, stats, avatar, and rank history."],
-    ["🔗", "Share usage reports", "Invite-only links with expiry and access controls."],
-    ["📊", "Publish telemetry", "Push this machine's usage to the global leaderboard."]
-  ];
+  if (typeof opts.onSuccess === "function") state.signInPending = { action, onSuccess: opts.onSuccess, resume: opts.resume || signInResume(action) };
+  if (state.view === "login" && !opts.onSuccess) { updateLoginIdentity(); mountSignInOptions(); $("#signin-gsi")?.scrollIntoView({ block: "nearest" }); return; }
   const backdrop = $("#modal-backdrop");
-  backdrop.innerHTML = `<div class="modal signin-modal">
-    <div class="signin-grid">
-      <div class="signin-art">
-        <pre class="bh-art" id="bh-art" aria-hidden="true"></pre>
-        <div class="signin-art-cap">Token Horizon · Singularity Engine</div>
-      </div>
-      <div class="signin-pane">
-        <div class="modal-head"><div>
-          <h2>${action ? "Sign in to continue" : "Welcome to Token Horizon"}</h2>
-          <p>${action ? esc(action) + " requires a verified Google account." : "Sign in to compete, collaborate, and claim your stats."}</p>
-        </div><button class="x" data-close aria-label="Close dialog">×</button></div>
-        <div class="modal-body" style="flex:1">
-          <div class="signin-benefits">${benefits.map(([ico, t, d]) => `<div class="signin-benefit"><div class="ico">${ico}</div><div><div class="t">${t}</div><div class="d">${d}</div></div></div>`).join("")}</div>
-          <div class="signin-gsi" id="signin-gsi"></div>
-          <div id="signin-status" class="mini" style="margin-top:10px"></div>
-          <div class="notice" style="margin-top:14px">Google sign-in connects your profile and team membership. Private prompts and local traces stay on your device.</div>
-        </div>
-        <div class="modal-foot" style="justify-content:space-between;align-items:center">
-          <span class="mini">Protected by Google</span>
-          <button class="pill ghost" data-close>Not now</button>
-        </div>
-      </div>
-    </div>
-  </div>`;
+  backdrop.innerHTML = `<div class="modal signin-modal" role="dialog" aria-modal="true" aria-labelledby="signin-title"><div class="signin-grid">${authArt("bh-art")}${authPane({ action })}</div></div>`;
   backdrop.classList.add("open");
   $$("[data-close]", backdrop).forEach(b => b.onclick = closeModal);
-  backdrop.onclick = (e) => { if (e.target === backdrop) closeModal(); };
-  BLACKHOLE.start($("#bh-art"));
-  mountSignInOptions();
+  backdrop.onclick = e => { if (e.target === backdrop) closeModal(); };
+  authModalMotionCleanup?.(); BLACKHOLE.start($("#bh-art")); authModalMotionCleanup = wireAuthMotion(backdrop, BLACKHOLE); mountSignInOptions();
 }
-/// (Re)render the right-hand sign-in options from the current GSI state.
+let authResizeFrame = 0;
+window.addEventListener("resize", () => { if (authResizeFrame) cancelAnimationFrame(authResizeFrame); authResizeFrame = requestAnimationFrame(() => { authResizeFrame = 0; if ($("#signin-gsi")) mountSignInOptions(); }); });
 function mountSignInOptions() {
-  const host = $("#signin-gsi");
-  if (!host) return;
-  const status = $("#signin-status");
+  const host = $("#signin-gsi"); if (!host) return;
+  const status = $("#signin-status"), remembered = $("#signin-remembered");
+  if (remembered) {
+    const hint = state.authHint;
+    remembered.innerHTML = hint && !isGoogleSessionValid() ? `<div class="auth-remembered">${avatar(hint.name || hint.email || hint.login, hint.picture, 36)}<div><strong>${esc(hint.name || hint.login || hint.email)}</strong><small>Last used on this device</small></div><button class="auth-text-link" id="signin-change-account">Use another account</button></div>` : "";
+    $("#signin-change-account")?.addEventListener("click", () => { state.authHint = null; authStorage("th_auth_hint", null); authStorage("th_auth_signed_out", true, true); try { google.accounts.id.cancel(); google.accounts.id.disableAutoSelect(); } catch (_) {} initGoogleSignIn(); mountSignInOptions(); });
+  }
+  if (state.authBusy) { host.innerHTML = '<div class="auth-provider-skeleton" role="status"><span class="auth-mini-orbit" aria-hidden="true"></span> Verifying your account…</div>'; status.textContent = state.authError; return; }
   if (state.googleConfig !== "ready") {
-    status.textContent = state.googleConfig === "error" ? "Sign-in settings could not load. Public browsing is still available." : "Loading sign-in settings…";
-    host.innerHTML = state.googleConfig === "error" ? '<button class="pill" id="signin-config-retry">Retry sign-in</button>' : '<span class="spinner" aria-hidden="true"></span>';
-    $("#signin-config-retry")?.addEventListener("click", () => { loadAuthConfig(); mountSignInOptions(); });
-    return;
+    host.innerHTML = state.googleConfig === "error" ? '<button class="auth-provider" id="signin-config-retry">Try sign-in again</button>' : '<div class="auth-provider-skeleton" role="status"><span class="auth-mini-orbit" aria-hidden="true"></span> Loading sign-in options…</div><div class="auth-provider-placeholder" aria-hidden="true"></div>';
+    status.textContent = state.googleConfig === "error" ? "Sign-in settings could not load. You can still explore public profiles." : "";
+    $("#signin-config-retry")?.addEventListener("click", () => { loadAuthConfig({ force: true }); mountSignInOptions(); }); return;
   }
-  if (state.googleReady) {
-    status.textContent = "";
-    host.innerHTML = `<div id="signin-gsi-btn"></div>`;
-    if (renderGoogleButton($("#signin-gsi-btn"), { width: 250 })) return;
-    host.innerHTML = `<button class="pill primary" id="signin-retry">Retry Google sign-in</button>`;
-    $("#signin-retry").onclick = () => { state.googleReady = false; state.googleUnavailable = false; initGoogleSignIn(); status.textContent = "Retrying…"; };
-    return;
+  const github = `<button class="auth-provider auth-github" id="signin-github" ${state.githubAuth ? "" : "disabled"}>${GITHUB_G}<span>Continue with GitHub</span></button>${state.githubAuth ? "" : '<small class="auth-provider-note">GitHub sign-in is being configured.</small>'}`;
+  const googleHost = state.googleReady ? '<div id="signin-gsi-btn"></div>' : state.googleClientId ? `<button class="auth-provider" id="signin-retry" ${state.googleUnavailable ? "" : "disabled"}>${GOOGLE_G}<span>${state.googleUnavailable ? "Retry Google sign-in" : "Loading Google sign-in…"}</span></button>` : legacyGoogleAuthAllowed() ? '<button class="auth-provider" id="signin-dev">Continue (dev mode)</button>' : '<p class="auth-provider-note">Google sign-in is unavailable.</p>';
+  host.innerHTML = `${googleHost}${github}`;
+  $("#signin-github")?.addEventListener("click", startGithubSignIn);
+  $("#signin-dev")?.addEventListener("click", promptGoogleLogin);
+  $("#signin-retry")?.addEventListener("click", () => { reloadGoogleSDK(); });
+  status.textContent = state.authError || (state.googleUnavailable ? "Google could not load. Check your connection or use GitHub." : state.webSessions && state.authStatus === "checking" ? "Checking your remembered account…" : "");
+  if (state.authStatus === "error") { status.insertAdjacentHTML("beforeend", ' <button class="auth-text-link" id="signin-session-retry">Try again</button>'); $("#signin-session-retry").onclick = () => hydrateAuthSession({ force: true }); }
+  const container = $("#signin-gsi-btn");
+  if (container) {
+    const width = Math.max(200, Math.min(400, Math.floor(host.getBoundingClientRect().width || 320)));
+    if (!renderGoogleButton(container, { width })) { container.innerHTML = '<button class="auth-provider" id="signin-render-retry">Retry Google sign-in</button>'; $("#signin-render-retry").onclick = () => mountSignInOptions(); }
+    maybePromptGoogle(host);
   }
-  if (state.googleClientId) {
-    host.innerHTML = `<div class="pill" style="opacity:.75"><span class="spinner"></span> ${state.googleUnavailable ? "Google sign-in unavailable" : "Loading Google sign-in…"}</div>`;
-    if (state.googleUnavailable) {
-      host.innerHTML += `<div class="notice err">The Google sign-in script could not load (offline or blocked).</div>
-        <button class="pill" id="signin-retry">Retry</button>`;
-      $("#signin-retry").onclick = () => { state.googleUnavailable = false; initGoogleSignIn(); mountSignInOptions(); };
-    }
-    return;
-  }
-  host.innerHTML = `<button class="pill primary" id="signin-dev">Continue (dev mode)</button>`;
-  status.textContent = "GOOGLE_CLIENT_ID isn't configured on this deployment — dev sign-in uses an email only.";
-  $("#signin-dev").onclick = promptGoogleLogin;
 }
 
 /* ============================================================
@@ -5360,7 +5536,7 @@ async function renderSharedReport(id, { promptSignIn = true } = {}) {
     if (e.status === 401 || e.status === 403) {
       const needsSignIn = e.status === 401;
       view.innerHTML = pageHead(["Shared", "Report"], needsSignIn ? "Your private report is waiting" : "This report is invite-only", "Shared securely with Token Horizon.", "")
-        + `<div class="card share-locked"><div class="share-preview-mark" aria-hidden="true"></div><h2>${needsSignIn ? "Sign in to open this report" : "You don't have access yet"}</h2><p>${needsSignIn ? "Use the Google account connected to the profile this report was shared with. Your usage preview stays private." : "Ask the person who shared this link to add your claimed profile or group. If they invited another account, sign in with that account."}</p><div class="share-locked-actions"><button class="pill primary" id="shared-report-signin">${needsSignIn ? "Sign in to view report" : "Use another account"}</button><button class="pill ghost" id="shared-report-back">Explore the leaderboard</button></div></div>`;
+        + `<div class="card share-locked"><div class="share-preview-mark" aria-hidden="true"></div><h2>${needsSignIn ? "Sign in to open this report" : "You don't have access yet"}</h2><p>${needsSignIn ? "Use the account connected to the profile this report was shared with. Your usage preview stays private." : "Ask the person who shared this link to add your claimed profile or group. If they invited another account, sign in with that account."}</p><div class="share-locked-actions"><button class="pill primary" id="shared-report-signin">${needsSignIn ? "Sign in to view report" : "Use another account"}</button><button class="pill ghost" id="shared-report-back">Explore the leaderboard</button></div></div>`;
       const signIn = () => {
         const options = { action: "Viewing this private usage report", onSuccess: () => renderSharedReport(id) };
         if (needsSignIn) { if (requireSignIn(options)) renderSharedReport(id); }
@@ -5456,18 +5632,17 @@ function openAvatarModal(handle) {
     ((state.data?.leaderboard || []).find(r => r.entry.handle.toLowerCase() === String(handle).toLowerCase()) || {}).entry;
   if (!entry) return;
   const styles = (window.DiceBear && window.DiceBear.styles) || ["identicon"];
-  const isOwner = Boolean(state.googleSession && entry.googleEmail &&
-    state.googleSession.email && entry.googleEmail.toLowerCase() === state.googleSession.email.toLowerCase());
+  const isOwner = sessionOwnsEntry(entry);
   const backdrop = $("#modal-backdrop");
   backdrop.innerHTML = `<div class="modal" style="max-width:660px">
-    <div class="modal-head"><div><h2>Display photo</h2><p>Use your Google photo, upload one, or pick a generated avatar.</p></div><button class="x" data-close aria-label="Close dialog">×</button></div>
+    <div class="modal-head"><div><h2>Display photo</h2><p>Use your account photo, upload one, or pick a generated avatar.</p></div><button class="x" data-close aria-label="Close dialog">×</button></div>
     <div class="modal-body">
       <div style="display:flex;gap:16px;align-items:center;margin-bottom:16px">
         ${entryAvatar(entry, 64)}
         <div><div style="font-weight:700">@${esc(entry.handle)}</div><div class="mini">${entry.avatarUrl ? "Custom photo" : "Generated avatar" + (entry.avatarStyle ? " · " + esc(entry.avatarStyle) : "")}</div></div>
       </div>
-      ${state.googleSession?.picture ? `<div class="card" style="background:var(--panel2);margin-bottom:12px"><div class="card-head"><h3>Google photo</h3></div>
-        <div style="display:flex;gap:12px;align-items:center">${avatar(entry.handle, state.googleSession.picture, 44)}<button class="pill" id="avatar-google">Use my Google photo</button></div></div>` : ""}
+      ${state.googleSession?.picture ? `<div class="card" style="background:var(--panel2);margin-bottom:12px"><div class="card-head"><h3>Account photo</h3></div>
+        <div style="display:flex;gap:12px;align-items:center">${avatar(entry.handle, state.googleSession.picture, 44)}<button class="pill" id="avatar-google">Use my account photo</button></div></div>` : ""}
       <div class="card" style="background:var(--panel2);margin-bottom:12px"><div class="card-head"><h3>Generated avatars</h3><span class="sub">click a style to use it for @${esc(entry.handle)}</span></div>
         <div style="display:flex;gap:10px;flex-wrap:wrap">${styles.map(st => `<span class="avatar" data-avatar-style="${st}" title="${esc(st)}" style="width:46px;height:46px;cursor:pointer;border:2px solid ${entry.avatarStyle === st ? "#4F8CFF" : "var(--line2)"};background:linear-gradient(135deg,#2E3A55,#1D2536)">${window.DiceBear ? window.DiceBear.avatarSvg(st, entry.handle, { size: 92 }) : ""}</span>`).join("")}</div>
       </div>
@@ -5514,18 +5689,18 @@ function openAvatarModal(handle) {
    CLAIM & PUBLISH
    ============================================================ */
 function openClaimModal(handle) {
+  if (!legacyGoogleAuthAllowed() && !isGoogleSessionValid()) { openSignInModal({ action: `Claiming @${handle}`, onSuccess: () => openClaimModal(handle) }); return; }
   const backdrop = $("#modal-backdrop");
   backdrop.innerHTML = `<div class="modal" style="max-width:480px">
-    <div class="modal-head"><div><h2>Claim @${esc(handle)}</h2><p>Verify your Google account to own this profile.</p></div><button class="x" data-close aria-label="Close dialog">×</button></div>
+    <div class="modal-head"><div><h2>Claim @${esc(handle)}</h2><p>Connect this profile to your verified account.</p></div><button class="x" data-close aria-label="Close dialog">×</button></div>
     <div class="modal-body">
-      <div class="notice">${state.googleReady ? "Sign in with Google, then claim this profile." : "Google sign-in isn't configured — enter your email and the claim token issued when the profile first published."}</div>
+      <div class="notice">${legacyGoogleAuthAllowed() ? "Enter your email and the claim token issued when the profile first published." : "Use the claim token issued when this profile was first published, if one is required."}</div>
       <div style="display:flex;flex-direction:column;gap:10px;margin-top:14px;align-items:flex-start">
         <input id="claim-token" placeholder="Claim token (optional)" style="width:100%;background:var(--panel);border:1px solid var(--line);border-radius:9px;padding:10px 12px;color:var(--text)"/>
-        ${state.googleReady
-          ? `<div id="claim-gsi"></div>`
-          : `<input id="claim-email" placeholder="Google email" value="${esc(state.googleSession?.email || "")}" style="width:100%;background:var(--panel);border:1px solid var(--line);border-radius:9px;padding:10px 12px;color:var(--text)"/>`}
+        ${legacyGoogleAuthAllowed()
+          ? `<input id="claim-email" placeholder="Email" value="${esc(state.googleSession?.email || "")}" style="width:100%;background:var(--panel);border:1px solid var(--line);border-radius:9px;padding:10px 12px;color:var(--text)"/>` : ""}
       </div>
-      ${state.googleSession ? `<div class="notice ok" style="margin-top:10px">Signed in as ${esc(state.googleSession.email)}</div>` : ""}
+      ${state.googleSession ? `<div class="notice ok" style="margin-top:10px">Signed in as ${esc(state.googleSession.name || state.googleSession.login || state.googleSession.email)}</div>` : ""}
     </div>
     <div class="modal-foot"><button class="pill ghost" data-close>Cancel</button><button class="pill primary" id="claim-submit">Claim Profile</button></div>
   </div>`;
@@ -5535,11 +5710,11 @@ function openClaimModal(handle) {
   $("#claim-submit").onclick = async () => {
     const emailInput = $("#claim-email");
     const email = emailInput ? emailInput.value.trim() : (state.googleSession?.email || "");
-    if (state.googleReady && !state.googleSession) {
+    if (!legacyGoogleAuthAllowed() && !isGoogleSessionValid()) {
       openSignInModal({ action: `Claiming @${handle}`, onSuccess: () => openClaimModal(handle) });
       return;
     }
-    if (!email.includes("@")) { toast("Enter a valid email", true); return; }
+    if (legacyGoogleAuthAllowed() && !email.includes("@")) { toast("Enter a valid email", true); return; }
     const body = { handle, claimToken: $("#claim-token").value.trim() || undefined };
     if (legacyGoogleAuthAllowed()) body.googleUser = { email, sub: "google_" + email };
     try {
@@ -5611,6 +5786,7 @@ async function init() {
   // Dedicated /models route: the worker serves the SPA asset with an internal
   // ?view=models rewrite, so the browser URL has no query — derive it here.
   if (/^\/models\/?$/.test(location.pathname)) state.view = "models";
+  if (/^\/login\/?$/.test(location.pathname)) state.view = "login";
   state.modelsTab = ["providers", "plans", "cheapest"].includes(params.get("tab")) ? params.get("tab") : "explorer";
   // Flat catalog page: no dashboard chrome — just a searchable model list.
   state.flatModels = /^\/models\/?$/.test(location.pathname) || params.get("flat") === "1";
@@ -5651,7 +5827,7 @@ async function init() {
     if (state.view === "models" && mx.mounted && $("#mx-scroll")) mxCompute(true);
   });
   $("#global-search").addEventListener("focus", () => {
-    if (state.view !== "leaderboard") navigate("leaderboard");
+    if (!["leaderboard", "login"].includes(state.view)) navigate("leaderboard");
   });
   const shareParam = params.get("share") || (sharePath ? sharePath[1] : null);
   if (shareParam) { renderSharedReport(shareParam); return; }

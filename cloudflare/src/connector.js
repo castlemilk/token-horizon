@@ -4,6 +4,7 @@ import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprot
 import { searchCatalog, planList, unifiedModels } from '../../mcp/catalog.mjs';
 import site from './index.js';
 import { boundedText } from './request-body.js';
+import { identityOwns } from './browser-auth.js';
 
 export const ORIGIN = 'https://token-horizon.dev';
 export const READ = 'account:read', MANAGE = 'account:manage';
@@ -24,14 +25,14 @@ export const publicTools = [
   tool('get_plans', 'Curated provider subscription plans, tiers and included models from the same catalog as the Plans view.', { provider: str, plan: str, include_models: { type: 'boolean' }, limit })
 ];
 export const privateTools = [
-  tool('get_my_account', 'List profiles claimed by your signed-in Google account, or read a profile’s published analytics and private sharing settings. Requires account:read.', { handle }),
+  tool('get_my_account', 'List profiles claimed by your signed-in account, or read a profile’s published analytics and private sharing settings. Requires account:read.', { handle }),
   tool('revoke_share', 'Revoke one of your profile’s shared report links. Only call when the user requests revocation. Requires account:manage.', { handle, id: { type: 'string', pattern: '^[a-zA-Z0-9]{1,64}$' } }, ['handle', 'id'], true)
 ];
 // Defense in depth: public API payloads must never carry identity/claim credentials into tool results.
 export function redact(value) {
   if (Array.isArray(value)) return value.map(redact);
   if (!value || typeof value !== 'object') return value;
-  return Object.fromEntries(Object.entries(value).filter(([k]) => !['ownerId', 'ownerKey', 'googleEmail', 'claimToken', 'claimTokenHash', 'googleToken', 'googleCredential'].includes(k)).map(([k, v]) => [k, redact(v)]));
+  return Object.fromEntries(Object.entries(value).filter(([k]) => !['ownerId', 'ownerKey', 'googleEmail', 'claimToken', 'claimTokenHash', 'googleToken', 'googleCredential', 'accountEmail'].includes(k)).map(([k, v]) => [k, redact(v)]));
 }
 async function jsonObject(env, key) {
   const obj = await env.LEADERBOARD_BUCKET?.get(key);
@@ -39,8 +40,8 @@ async function jsonObject(env, key) {
 }
 const ownerFile = v => String(v).replace(/[^a-zA-Z0-9:_-]/g, '_').toLowerCase();
 export function ownedBy(entry, identity) {
-  // Match the immutable Google subject. Email fallback is intentionally excluded.
-  return Boolean(identity?.sub && entry.claimed && entry.ownerId === `google:${identity.sub}`);
+  // Match the immutable provider subject. Email fallback is excluded.
+  return Boolean(entry.claimed && identityOwns(entry, identity));
 }
 async function api(path, args, env, ctx) {
   const url = new URL(path, ORIGIN);
@@ -55,7 +56,7 @@ export async function callTool(name, args, env, ctx, identity, scopes = []) {
     if (name === 'revoke_share' && !scopes.includes(MANAGE)) throw new Error('Reconnect and explicitly grant account:manage to revoke share links.');
     const entries = await jsonObject(env, 'leaderboard.json') || [];
     const owned = entries.filter(e => ownedBy(e, identity));
-    if (name === 'get_my_account' && !args.handle) return { profiles: owned.map(e => ({ handle: e.handle, team: e.team || '', url: `${ORIGIN}/leaderboard?user=${encodeURIComponent(e.handle)}` })), note: 'Only claimed profiles linked to this Google account. Claim your profile in the website first. Device-only data is available through the local MCP server.' };
+    if (name === 'get_my_account' && !args.handle) return { profiles: owned.map(e => ({ handle: e.handle, team: e.team || '', url: `${ORIGIN}/leaderboard?user=${encodeURIComponent(e.handle)}` })), note: 'Only claimed profiles linked to this account. Claim your profile in the website first. Device-only data is available through the local MCP server.' };
     const entry = owned.find(e => e.handle.toLowerCase() === args.handle?.replace(/^@/, '').toLowerCase());
     if (!entry) throw new Error('This profile is not owned by your connected account.');
     if (name === 'revoke_share') {

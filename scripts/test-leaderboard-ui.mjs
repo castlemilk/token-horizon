@@ -663,7 +663,7 @@ async function run() {
   });
   if (!artAnimated) throw new Error('ASCII black hole is not animating');
   const benefits = await page.$$eval('.signin-benefit', els => els.length);
-  if (benefits < 4) throw new Error(`Expected 4 sign-in benefits, found ${benefits}`);
+  if (benefits !== 3) throw new Error(`Expected workspace, team and report benefits, found ${benefits}`);
   if (!(await page.$('#signin-dev'))) throw new Error('Dev sign-in fallback missing');
   await page.click('.signin-modal [data-close]');
   await page.waitForFunction(() => !document.querySelector('.bh-art'));
@@ -682,6 +682,9 @@ async function run() {
   const gsiPage = await context.newPage();
   await gsiPage.route('https://accounts.google.com/**', route => route.abort());
   await gsiPage.addInitScript(() => {
+    // This section intentionally changes the mocked deployment from the
+    // preceding dev-config cases; do not reuse their public client cache.
+    localStorage.removeItem('th_auth_config');
     window.google = {
       accounts: {
         id: {

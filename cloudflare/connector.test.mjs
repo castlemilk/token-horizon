@@ -139,3 +139,40 @@ test('Chunked oversized requests and unexpected tool fields are rejected',async(
   const invalid=await (await rpc(e,'tools/call',{name:'get_user_profile',arguments:{handle:'alice',url:'http://127.0.0.1:8765'}},null,'/mcp/public')).json();assert.equal(invalid.result.isError,true);
   const preflight=await fetchW(e,'/mcp/public',{method:'OPTIONS'});assert.equal(preflight.status,204);assert.equal(preflight.headers.get('access-control-allow-origin'),'*');
 });
+
+test('Remembered Google and GitHub sessions require explicit bound consent and keep grants in separate namespaces', async () => {
+  for (const provider of ['google', 'github']) {
+    const e = env();
+    const sub = provider === 'github' ? '42' : 'alice-sub';
+    if (provider === 'github') await e.LEADERBOARD_BUCKET.put('leaderboard.json', JSON.stringify([...entries, { handle: 'github-alice', claimed: true, ownerId: 'github:42', accountEmail: 'alice@example.com', tokensAll: 20 }]));
+    let sessionCookie;
+    if (provider === 'google') {
+      const login = await fetchW(e, '/api/auth/google', { method: 'POST', headers: { Origin: base, 'Content-Type': 'application/json' }, body: JSON.stringify({ credential: await idToken() }) });
+      assert.equal(login.status, 200); sessionCookie = login.headers.get('Set-Cookie').split(';')[0];
+    } else {
+      // Provider exchange is covered by browser-auth.test. Seed its opaque,
+      // hashed browser session here to focus on real OAuth-provider integration.
+      const opaque = 'a'.repeat(64);
+      const hash = Buffer.from(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(opaque))).toString('hex');
+      await e.OAUTH_KV.put('browser-session:' + hash, JSON.stringify({ identity: { provider, sub, email: 'alice@example.com', name: 'GitHub Alice', picture: '' }, expiresAt: Date.now() + 60000 }));
+      sessionCookie = '__Host-th-session=' + opaque;
+    }
+    const client = await registerClient(e), flow = await start(e, client);
+    assert.equal([...e.OAUTH_KV.store.keys()].some(key => key.startsWith('grant:')), false);
+    const fields = new URLSearchParams({ handle: flow.handle, decision: 'allow', scope: READ });
+    const approveSession = cookie => fetchW(e, '/oauth/authorize', { method: 'POST', headers: { Origin: base, Cookie: cookie, 'Content-Type': 'application/x-www-form-urlencoded', Accept: 'application/json' }, body: fields });
+    assert.equal((await approveSession(flow.cookie)).status, 401);
+    // A login alone cannot replace the transaction cookie.
+    assert.equal((await approveSession(sessionCookie)).status, 400);
+    const allowed = await approveSession(flow.cookie + '; ' + sessionCookie); assert.equal(allowed.status, 200, await allowed.clone().text());
+    const code = new URL((await allowed.json()).redirect).searchParams.get('code');
+    const exchanged = await exchange(e, client, flow, code); assert.equal(exchanged.status, 200);
+    const token = (await exchanged.json()).access_token;
+    const account = await (await rpc(e, 'tools/call', { name: 'get_my_account', arguments: {} }, token)).json();
+    assert.deepEqual(account.result.structuredContent.profiles.map(profile => profile.handle), [provider === 'google' ? 'alice' : 'github-alice']);
+    const management = await fetchW(e, '/connect'), html = await management.text();
+    const nonce = html.match(/data-handle="([^"]+)"/)[1], managementCookie = management.headers.get('Set-Cookie').split(';')[0];
+    const listed = await fetchW(e, '/oauth/connections', { method: 'POST', headers: { Origin: base, Cookie: managementCookie + '; ' + sessionCookie, 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ handle: nonce, action: 'list' }) });
+    assert.equal(listed.status, 200); assert.equal((await listed.json()).connections.length, 1);
+  }
+});

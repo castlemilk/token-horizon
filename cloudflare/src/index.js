@@ -7,8 +7,10 @@
  */
 
 import { handleTeamRequest, applyTeamMemberships } from './team-invites.js';
+import { handleBrowserAuth, browserIdentity, identityOwnerId, identityOwns, githubConfigured, sessionsConfigured } from './browser-auth.js';
 import { buildOgModel, renderProfileOgSvg, renderRestrictedOgSvg, OG_CARD_VERSION } from './og-card.js';
 import { loadOgAvatar } from './og-avatar.js';
+import { boundedText } from './request-body.js';
 
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
@@ -232,6 +234,7 @@ function sanitizeEntry(entry, full = false) {
   if (!full) delete copy.snapshots;
   delete copy.claimTokenHash;
   delete copy.ownerId;
+  delete copy.accountEmail;
   return copy;
 }
 
@@ -701,9 +704,9 @@ async function getGoogleJwks(env) {
   if (googleJwksCache.keys.length && now - googleJwksCache.fetchedAt < 3600_000) {
     return googleJwksCache.keys;
   }
-  const res = await fetch(GOOGLE_JWKS_URL, { cf: { cacheTtl: 3600, cacheEverything: true } });
+  const res = await fetch(GOOGLE_JWKS_URL, { cf: { cacheTtl: 3600, cacheEverything: true }, signal: AbortSignal.timeout(8000), redirect: 'manual' });
   if (!res.ok) throw new Error("Google JWKS fetch failed: HTTP " + res.status);
-  const data = await res.json();
+  const data = JSON.parse(await boundedText(res, 65536, { timeoutMs: 8000 }));
   googleJwksCache = { fetchedAt: now, keys: data.keys || [] };
   return googleJwksCache.keys;
 }
@@ -763,7 +766,7 @@ export async function verifyGoogleIdToken(token, env, nonce) {
   if (iss !== "accounts.google.com" && iss !== "https://accounts.google.com") return null;
   if (env.GOOGLE_CLIENT_ID && payload.aud !== env.GOOGLE_CLIENT_ID) return null;
   if (!payload.sub || !payload.email) return null;
-  if (payload.email_verified === false) return null;
+  if (payload.email_verified !== true) return null;
   // Connector consent is bound to this browser transaction, not a reusable login.
   if (nonce !== undefined && (!env.GOOGLE_CLIENT_ID || payload.email_verified !== true || payload.nonce !== nonce)) return null;
 
@@ -776,6 +779,8 @@ export async function verifyGoogleIdToken(token, env, nonce) {
   };
 }
 
+// Kept as the compatibility seam for native Google-token clients; browser
+// sessions can represent either supported provider.
 async function parseGoogleAuth(request, body = {}, env = {}) {
   let token = request.headers.get("X-Google-Token") || "";
   if (!token) {
@@ -789,10 +794,14 @@ async function parseGoogleAuth(request, body = {}, env = {}) {
   }
   if (!token && body.googleToken) token = body.googleToken;
   if (!token && body.googleCredential) token = body.googleCredential;
+  if (!token) {
+    const identity = await browserIdentity(request, env);
+    if (identity) return identity;
+  }
 
-  if (env.GOOGLE_CLIENT_ID) {
+  if (env.GOOGLE_CLIENT_ID || githubConfigured(env)) {
     // Production: only cryptographically verified ID tokens are accepted.
-    if (token && token.split(".").length === 3) {
+    if (env.GOOGLE_CLIENT_ID && token && token.split(".").length === 3) {
       return await verifyGoogleIdToken(token, env);
     }
     return null;
@@ -855,6 +864,9 @@ export default {
       return Response.redirect(canonical.toString(), 301);
     }
 
+    const authResponse = await handleBrowserAuth(request, env, { verifyGoogleIdToken });
+    if (authResponse) return authResponse;
+
     // 1. Handle CORS Preflight
     if (request.method === "OPTIONS") {
       return new Response(null, { status: 204, headers: CORS_HEADERS });
@@ -880,6 +892,8 @@ export default {
         ok: true,
         googleClientId: env.GOOGLE_CLIENT_ID || "",
         googleAuth: Boolean(env.GOOGLE_CLIENT_ID),
+        githubAuth: githubConfigured(env),
+        webSessions: sessionsConfigured(env),
         canonicalUrl: `https://${url.hostname}`,
         season: seasonFor()
       }, 200, { "Cache-Control": "public, max-age=300, s-maxage=600" });
@@ -899,13 +913,13 @@ export default {
             ok: false,
             code: "auth_required",
             error: hasGoogleToken(request, {})
-              ? "Your Google session expired or was rejected — sign in again."
-              : "Sign in with Google to view your profiles."
+              ? "Your sign-in session expired or was rejected — sign in again."
+              : "Sign in to view your profiles."
           }, 401, headers);
         }
         const entries = await getRawEntriesFromR2(env);
         const profiles = entries
-          .filter(entry => entry.claimed === true && entry.ownerId === `google:${googleAuth.sub}`)
+          .filter(entry => entry.claimed === true && identityOwns(entry, googleAuth))
           .map(entry => ({ handle: entry.handle, displayName: String(entry.displayName || entry.handle) }))
           .sort((a, b) => a.handle.localeCompare(b.handle));
         return jsonResponse({ profiles }, 200, headers);
@@ -1141,18 +1155,18 @@ export default {
       });
     }
 
-    // 4. POST /api/leaderboard (or POST /leaderboard) — Upsert usage stats (supports Anonymous & Google Auth)
+    // 4. POST /api/leaderboard (or POST /leaderboard) — Upsert usage stats.
     if (request.method === "POST" && (pathname === "/api/leaderboard" || pathname === "/leaderboard")) {
       try {
-        // Optional secret enforcement if set on Worker (bypassed if valid Google Auth is provided)
+        // A verified identity may publish its own profile. The deployment's
+        // write credential is a separate authority and must actually be sent.
         const googleAuth = await parseGoogleAuth(request, await request.clone().json().catch(() => ({})), env);
-        if (env.LEADERBOARD_SECRET && !googleAuth) {
-          const authHeader = request.headers.get("Authorization") || "";
-          const customHeader = request.headers.get("X-Leaderboard-Secret") || "";
-          const token = authHeader.replace(/^Bearer\s+/i, "").trim() || customHeader.trim();
-          if (token !== env.LEADERBOARD_SECRET) {
-            return jsonResponse({ ok: false, error: "Unauthorized: invalid write token or Google login required" }, 401);
-          }
+        const authHeader = request.headers.get("Authorization") || "";
+        const customHeader = request.headers.get("X-Leaderboard-Secret") || "";
+        const writeToken = customHeader.trim() || authHeader.replace(/^Bearer\s+/i, "").trim();
+        const hasWriteSecret = Boolean(env.LEADERBOARD_SECRET && writeToken === env.LEADERBOARD_SECRET);
+        if (env.LEADERBOARD_SECRET && !googleAuth && !hasWriteSecret) {
+          return jsonResponse({ ok: false, error: "Unauthorized: invalid write token or sign-in required" }, 401);
         }
 
         const body = await request.json();
@@ -1272,28 +1286,27 @@ export default {
 
           // Check ownership if already claimed
           if (prev.claimed) {
-            const isOwner = googleAuth && (
-              prev.ownerId === `google:${googleAuth.sub}` ||
-              (prev.googleEmail && prev.googleEmail === googleAuth.email)
-            );
-            if (!isOwner && !env.LEADERBOARD_SECRET) {
+            const isOwner = identityOwns(prev, googleAuth, { legacyEmail: true });
+            if (!isOwner && !hasWriteSecret) {
               return jsonResponse({
                 ok: false,
-                error: `Profile @${handleClean} is claimed by a verified Google account. Sign in with Google as ${prev.googleEmail || "the owner"} to publish updates.`
+                error: `Profile @${handleClean} is claimed by a verified account. Sign in as the owner to publish updates.`
               }, 403);
             }
             newEntry.claimed = true;
             newEntry.ownerId = prev.ownerId;
             newEntry.googleEmail = prev.googleEmail;
+            if (prev.accountEmail) newEntry.accountEmail = prev.accountEmail;
             newEntry.avatarUrl = (googleAuth && googleAuth.picture) || prev.avatarUrl || "";
             newEntry.claimedAt = prev.claimedAt;
           } else {
             // Profile is currently unclaimed
             if (googleAuth) {
-              // User is publishing with Google auth — claim profile!
+              // Publishing with a verified account claims this profile.
               newEntry.claimed = true;
-              newEntry.ownerId = `google:${googleAuth.sub}`;
-              newEntry.googleEmail = googleAuth.email;
+              newEntry.ownerId = identityOwnerId(googleAuth);
+              if (googleAuth.provider === 'github') newEntry.accountEmail = googleAuth.email;
+              else newEntry.googleEmail = googleAuth.email;
               newEntry.avatarUrl = googleAuth.picture || prev.avatarUrl || "";
               newEntry.claimedAt = Date.now() / 1000;
             } else {
@@ -1360,8 +1373,9 @@ export default {
           // Brand new entry
           if (googleAuth) {
             newEntry.claimed = true;
-            newEntry.ownerId = `google:${googleAuth.sub}`;
-            newEntry.googleEmail = googleAuth.email;
+            newEntry.ownerId = identityOwnerId(googleAuth);
+            if (googleAuth.provider === 'github') newEntry.accountEmail = googleAuth.email;
+            else newEntry.googleEmail = googleAuth.email;
             newEntry.avatarUrl = googleAuth.picture || "";
             newEntry.claimedAt = Date.now() / 1000;
           } else {
@@ -1414,7 +1428,7 @@ export default {
 
         const googleAuth = await parseGoogleAuth(request, body, env);
         if (!googleAuth) {
-          return jsonResponse({ ok: false, error: "Sign in with Google is required to claim a profile" }, 401);
+          return jsonResponse({ ok: false, error: "Sign in is required to claim a profile" }, 401);
         }
 
         const entries = await getRawEntriesFromR2(env);
@@ -1425,9 +1439,9 @@ export default {
 
         const entry = entries[idx];
         if (entry.claimed) {
-          if (entry.ownerId === `google:${googleAuth.sub}` || entry.googleEmail === googleAuth.email) {
+          if (identityOwns(entry, googleAuth, { legacyEmail: true })) {
             await applyTeamMemberships(env, [entry], { fresh: true });
-            return jsonResponse({ ok: true, message: `Profile @${handleClean} is already claimed by your Google account`, entry: sanitizeEntry(entry, true) });
+            return jsonResponse({ ok: true, message: `Profile @${handleClean} is already claimed by your account`, entry: sanitizeEntry(entry, true) });
           }
           return jsonResponse({ ok: false, error: `Profile @${handleClean} is already claimed by another verified user` }, 409);
         }
@@ -1443,8 +1457,9 @@ export default {
         }
 
         entry.claimed = true;
-        entry.ownerId = `google:${googleAuth.sub}`;
-        entry.googleEmail = googleAuth.email;
+        entry.ownerId = identityOwnerId(googleAuth);
+        if (googleAuth.provider === 'github') entry.accountEmail = googleAuth.email;
+        else entry.googleEmail = googleAuth.email;
         if (googleAuth.picture) entry.avatarUrl = googleAuth.picture;
         entry.claimedAt = Date.now() / 1000;
         await applyTeamMemberships(env, [entry], { fresh: true });
@@ -1696,24 +1711,25 @@ export default {
     }
 
     if (pathname === "/api/share/list" && request.method === "GET") {
+      const privateResponse = (data, status = 200) => jsonResponse(data, status, { "Cache-Control": "private, no-store" });
       try {
         const handleClean = String(searchParams.get("handle") || "").replace(/^@/, "").trim();
-        if (!handleClean) return jsonResponse({ ok: false, error: "Missing handle" }, 400);
+        if (!handleClean) return privateResponse({ ok: false, error: "Missing handle" }, 400);
         const entries = await getEntriesFromR2(env);
         const entry = entries.find(e => e.handle.toLowerCase() === handleClean.toLowerCase());
-        if (!entry) return jsonResponse({ ok: false, error: `Profile @${handleClean} not found` }, 404);
+        if (!entry) return privateResponse({ ok: false, error: `Profile @${handleClean} not found` }, 404);
         const googleAuth = await parseGoogleAuth(request, {}, env);
         const claimToken = String(request.headers.get("X-Claim-Token") || "").trim();
         const ownerCheck = await verifyOwner(entry, googleAuth, claimToken, { hadToken: hasGoogleToken(request, {}) });
-        if (!ownerCheck.ok) return jsonResponse({ ok: false, code: ownerCheck.code || "", error: ownerCheck.error }, ownerCheck.status);
+        if (!ownerCheck.ok) return privateResponse({ ok: false, code: ownerCheck.code || "", error: ownerCheck.error }, ownerCheck.status);
 
         const shares = await listShares(env, entry.handle);
         const groups = await getGroups(env, ownerCheck.ownerKey);
         const activity = await getActivity(env, ownerCheck.ownerKey);
         const publicShares = shares.map(s => ({ ...s, ownerKey: undefined }));
-        return jsonResponse({ ok: true, handle: entry.handle, shares: publicShares, groups, activity });
+        return privateResponse({ ok: true, handle: entry.handle, shares: publicShares, groups, activity });
       } catch (err) {
-        return jsonResponse({ ok: false, error: err.message }, 500);
+        return privateResponse({ ok: false, error: err.message }, 500);
       }
     }
 
@@ -1766,19 +1782,20 @@ export default {
     }
 
     if (pathname === "/api/groups" && request.method === "GET") {
+      const privateResponse = (data, status = 200) => jsonResponse(data, status, { "Cache-Control": "private, no-store" });
       try {
         const handleClean = String(searchParams.get("handle") || "").replace(/^@/, "").trim();
-        if (!handleClean) return jsonResponse({ ok: false, error: "Missing handle" }, 400);
+        if (!handleClean) return privateResponse({ ok: false, error: "Missing handle" }, 400);
         const entries = await getEntriesFromR2(env);
         const entry = entries.find(e => e.handle.toLowerCase() === handleClean.toLowerCase());
-        if (!entry) return jsonResponse({ ok: false, error: `Profile @${handleClean} not found` }, 404);
+        if (!entry) return privateResponse({ ok: false, error: `Profile @${handleClean} not found` }, 404);
         const googleAuth = await parseGoogleAuth(request, {}, env);
         const claimToken = String(request.headers.get("X-Claim-Token") || "").trim();
         const ownerCheck = await verifyOwner(entry, googleAuth, claimToken, { hadToken: hasGoogleToken(request, {}) });
-        if (!ownerCheck.ok) return jsonResponse({ ok: false, code: ownerCheck.code || "", error: ownerCheck.error }, ownerCheck.status);
-        return jsonResponse({ ok: true, groups: await getGroups(env, ownerCheck.ownerKey) });
+        if (!ownerCheck.ok) return privateResponse({ ok: false, code: ownerCheck.code || "", error: ownerCheck.error }, ownerCheck.status);
+        return privateResponse({ ok: true, groups: await getGroups(env, ownerCheck.ownerKey) });
       } catch (err) {
-        return jsonResponse({ ok: false, error: err.message }, 500);
+        return privateResponse({ ok: false, error: err.message }, 500);
       }
     }
 
@@ -2101,6 +2118,20 @@ export default {
         newUrl.searchParams.set("view", "models");
         return env.ASSETS.fetch(new Request(newUrl.toString(), request));
       }
+      if (pathname === "/login" || pathname === "/login/") {
+        if (!['GET', 'HEAD'].includes(request.method)) return new Response(null, { status: 405, headers: { Allow: 'GET, HEAD', 'Cache-Control': 'no-store' } });
+        if (pathname === "/login/") {
+          const canonical = new URL(request.url); canonical.pathname = '/login';
+          return new Response(null, { status: 301, headers: { Location: canonical.href, 'Cache-Control': 'public, max-age=300, s-maxage=600' } });
+        }
+        const assetUrl = new URL('/leaderboard', request.url);
+        const asset = await env.ASSETS.fetch(new Request(assetUrl, { method: request.method === 'HEAD' ? 'HEAD' : 'GET' }));
+        const headers = new Headers(asset.headers);
+        headers.set('Cache-Control', 'public, max-age=300, s-maxage=600');
+        // The cached document is the anonymous shell; identity is only read
+        // through /api/auth/session, whose response is always private/no-store.
+        return new Response(asset.body, { status: asset.status, headers });
+      }
       const asset = await env.ASSETS.fetch(request);
       if (pathname !== "/leaderboard") return asset;
       const headers = new Headers(asset.headers);
@@ -2380,12 +2411,11 @@ async function verifyOwner(entry, googleAuth, claimToken, opts = {}) {
       // Distinguish "never signed in" from "signed in but the credential was
       // rejected/expired" so the client can re-auth instead of guessing.
       const error = opts.hadToken
-        ? `Your Google session expired or was rejected — sign in again to manage @${entry.handle}.`
-        : `Sign in with Google as ${entry.googleEmail || "the owner"} to manage @${entry.handle}.`;
+        ? `Your sign-in session expired or was rejected — sign in again to manage @${entry.handle}.`
+        : `Sign in as the owner to manage @${entry.handle}.`;
       return { ok: false, status: 401, code: "auth_required", error };
     }
-    const isOwner = entry.ownerId === `google:${googleAuth.sub}` ||
-      (entry.googleEmail && entry.googleEmail === googleAuth.email);
+    const isOwner = identityOwns(entry, googleAuth, { legacyEmail: true });
     if (!isOwner) {
       return {
         ok: false, status: 403, code: "not_owner",
@@ -2412,7 +2442,8 @@ function hasGoogleToken(request, body = {}) {
   return Boolean(
     request.headers.get("X-Google-Token") ||
     (request.headers.get("Authorization") || "").toLowerCase().startsWith("bearer ") ||
-    body.googleToken || body.googleCredential || body.googleUser
+    body.googleToken || body.googleCredential || body.googleUser ||
+    (request.headers.get("Cookie") || "").includes("__Host-th-session=")
   );
 }
 
@@ -2492,14 +2523,14 @@ function recipientShareMetadata(share) {
 async function canReadSharedReport(env, request, share, entry, entries) {
   if (isPublicShare(share)) return { ok: true };
   const google = await parseGoogleAuth(request, {}, env);
-  if (google && entry.claimed === true && entry.ownerId === `google:${google.sub}`) return { ok: true };
+  if (google && entry.claimed === true && identityOwns(entry, google)) return { ok: true };
   const claimToken = String(request.headers.get("X-Claim-Token") || "").trim();
   if (!entry.claimed && entry.claimTokenHash && claimToken && await sha256Hex(claimToken) === entry.claimTokenHash) return { ok: true };
   if (!google) return { ok: false, status: 401, code: "auth_required", error: "Sign in to view this private report." };
 
   // Public handles are identifiers, not credentials. Only handles whose
   // ownership matches this verified Google subject can authorize a reader.
-  const handles = new Set(entries.filter(e => e.claimed === true && e.ownerId === `google:${google.sub}`)
+  const handles = new Set(entries.filter(e => e.claimed === true && identityOwns(e, google))
     .map(e => e.handle.toLowerCase()));
   const normalizedHandle = value => String(typeof value === "string" ? value : value?.handle || "").replace(/^@/, "").trim().toLowerCase();
   const hasNamedRecipient = values => (Array.isArray(values) ? values : []).some(value => handles.has(normalizedHandle(value)));
@@ -2513,7 +2544,7 @@ async function canReadSharedReport(env, request, share, entry, entries) {
   if (share.scope === "org") {
     // A matching display label or email domain cannot prove team membership.
     // Fresh authoritative records also admit teammates before they publish.
-    const recipient = { handle: "_recipient", claimed: true, ownerId: `google:${google.sub}` };
+    const recipient = { handle: "_recipient", claimed: true, ownerId: identityOwnerId(google) };
     await applyTeamMemberships(env, [entry, recipient], { fresh: true });
     if (entry.teamId && entry.teamId === recipient.teamId) return { ok: true };
   }

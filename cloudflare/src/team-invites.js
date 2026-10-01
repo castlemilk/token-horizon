@@ -1,6 +1,7 @@
 import { boundedText } from './request-body.js';
+import { identityOwnerId } from './browser-auth.js';
 
-// Membership belongs to a Google subject, never to a public team label or email.
+// Membership belongs to an immutable provider subject, never to a public label or email.
 // Independent account keys make simultaneous friends joining a team additive.
 const PREFIX = 'team-membership/';
 const NO_STORE = { 'Cache-Control': 'private, no-store', 'Referrer-Policy': 'no-referrer' };
@@ -35,7 +36,7 @@ class TeamError extends Error {
 async function hash(value) {
   return Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value))), b => b.toString(16).padStart(2, '0')).join('');
 }
-async function accountKey(subject) { return await hash(`google:${subject}`); }
+async function accountKey(owner) { return await hash(owner); }
 async function record(env, key) {
   const object = await env.LEADERBOARD_BUCKET.get(key);
   if (!object) return null;
@@ -151,8 +152,8 @@ export async function handleTeamRequest(request, env, { parseGoogleAuth, jsonRes
       if (!body || typeof body !== 'object' || Array.isArray(body)) throw new TeamError(400, 'invalid_request', 'Send a valid JSON invite request.');
     }
     const auth = await parseGoogleAuth(request, body, env);
-    if (!auth) throw new TeamError(401, 'auth_required', 'Sign in with Google to join or manage your team.');
-    const key = await accountKey(auth.sub);
+    if (!auth) throw new TeamError(401, 'auth_required', 'Sign in to join or manage your team.');
+    const key = await accountKey(identityOwnerId(auth));
     const { current, team } = await accountTeam(env, key);
     if (request.method === 'GET' && pathname === '/api/account/team') {
       return jsonResponse(await summary(env, key, team), 200, NO_STORE);
@@ -206,13 +207,13 @@ export async function handleTeamRequest(request, env, { parseGoogleAuth, jsonRes
 
 export async function applyTeamMemberships(env, entries, { fresh = false } = {}) {
   if (!env.LEADERBOARD_BUCKET) return entries;
-  const owners = [...new Set(entries.filter(entry => entry.claimed === true && typeof entry.ownerId === 'string' && entry.ownerId.startsWith('google:')).map(entry => entry.ownerId))];
+  const owners = [...new Set(entries.filter(entry => entry.claimed === true && typeof entry.ownerId === 'string' && /^(google|github):/.test(entry.ownerId)).map(entry => entry.ownerId))];
   const byOwner = new Map();
   const teams = new Map();
   const unavailable = new Set();
   await mapConcurrent(owners, async owner => {
     const load = async () => {
-      const key = await accountKey(owner.slice(7));
+      const key = await accountKey(owner);
       const current = await membership(env, key);
       if (!current) return null;
       const id = current.value.teamId;
