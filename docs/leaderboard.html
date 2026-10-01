@@ -2585,8 +2585,10 @@ function profileHero(p) {
   </header>`;
 }
 function profileTotals(p) {
-  const e = p.entry, anchor = profileAnchor(e);
-  return `<div class="profile-totals" aria-label="Published token totals"><div><span>All-time tokens</span><strong>${fmtTokens(e.tokensAll)}</strong><small>Across published usage</small></div><div><span>${anchor ? "Latest day" : "Today"}</span><strong>${fmtTokens(e.tokensToday)}</strong><small>${profileDate(anchor)}</small></div><div><span>Last 7 days</span><strong>${fmtTokens(e.tokens7d)}</strong><small>${anchor ? profileDate(anchor - 6 * 86400) + " – " + profileDate(anchor) : "Published weekly total"}</small></div></div>`;
+  const e = p.entry;
+  // Published aggregate windows use the owner's local midnight; their UTC
+  // boundaries cannot be inferred from updatedAt or sparse daily history.
+  return `<div class="profile-totals" aria-label="Published token totals"><div><span>All-time tokens</span><strong>${fmtTokens(e.tokensAll)}</strong><small>Across published usage</small></div><div><span>Latest day</span><strong>${fmtTokens(e.tokensToday)}</strong><small>At latest publication</small></div><div><span>Last 7 days</span><strong>${fmtTokens(e.tokens7d)}</strong><small>Trailing published week</small></div></div>`;
 }
 function profileRail(p) {
   const e = p.entry, st = p.standing || p, league = st.league ? leagueMeta(st.league) : null;

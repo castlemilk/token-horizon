@@ -139,7 +139,10 @@ try {
       assert(fixture.requests.includes('/api/user/aurora'));
       assert.equal(fixture.requests.filter(p => p === '/api/leaderboard').length, 0, 'A direct profile must not read standings before the Comparisons tab');
       assert.match(await fixture.page.locator('.profile-identity').innerText(), /Orbit Studio/);
-      assert((await fixture.page.locator('.profile-totals').innerText()).includes(await fixture.page.evaluate(() => fmtTokens(1250000))), 'All-time total uses the published profile value');
+      const summaries = fixture.page.locator('.profile-totals');
+      assert.deepEqual(await summaries.locator('strong').allTextContents(), await fixture.page.evaluate(() => [1250000, 7500, 42500].map(fmtTokens)), 'Aggregate totals use the published values rather than recomputing local windows from UTC daily rows');
+      assert.deepEqual(await summaries.locator('small').allTextContents(), ['Across published usage', 'At latest publication', 'Trailing published week']);
+      assert.doesNotMatch(await summaries.innerText(), /20\d\d|UTC|–|—/, 'Owner-local aggregate windows must not acquire an inferred UTC date range');
       assert.equal(await fixture.page.locator('.profile-identity .avatar img').getAttribute('src'), avatar);
     } finally { await fixture.close(); }
   }

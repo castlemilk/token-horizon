@@ -70,6 +70,8 @@ identity appearing after a failed request. Community comparisons load only
 when requested. All six tabs, share/claim/photo actions and catalog links stay
 interactive. `scripts/test-profile-ui.mjs` verifies these behaviors, provider
 accounting, dated calendars, navigation races and mobile/reduced-motion use.
+Aggregate day/week totals retain the publisher's local reporting windows;
+exact UTC boundaries are not inferred from the publication timestamp.
 The imagegen concept and its full prompt are saved in
 `design/profile-uplift/`; the bitmap is a design reference, never usage data.
 
