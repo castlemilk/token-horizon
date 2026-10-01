@@ -15,7 +15,13 @@
   const quota = (name, used, reset, amber = false) => '<div class="quota"><div class="quota-label"><span>' + name + '</span><small>' + used + '% · ' + reset + '</small></div><div class="quota-track' + (amber ? ' amber' : '') + '"><i style="--fill:' + used + '%"></i></div></div>';
   const heatmap = (count = 119, columns = 17) => '<div class="demo-heatmap" style="grid-template-columns:repeat(' + columns + ',1fr)" aria-hidden="true">' + Array.from({length: count}, (_, i) => '<i style="--level:' + ([0.12, 0.3, 0.5, 0.75, 1][(i * 7 + Math.floor(i / 7)) % 5]) + '"></i>').join('') + '</div>';
   const windowPanel = (title, body) => '<div class="demo-surface wide-panel">' + header(title) + body + '</div>';
-  const brand = (name, provider) => `<span class="product-brand"><img src="./assets/brands/${provider}.svg" alt="">${name}</span>`;
+  const brand = (name, provider) => {
+    const asset = provider === 'anthropic' && name.startsWith('Claude') ? 'claude.png'
+      : provider === 'google' && name === 'Gemini' ? 'gemini.svg'
+      : provider === 'google' ? 'google.png'
+      : provider === 'kimi' ? 'kimi.ico' : provider + '.svg';
+    return `<span class="product-brand"><span class="product-mark" data-provider="${provider}"><img src="./assets/brands/${asset}?v=20261001" alt="" onerror="this.parentNode.hidden=true"></span>${name}</span>`;
+  };
   const chip = (text, tone = '') => `<span class="detail-chip ${tone}">${text}</span>`;
   const stats = (items) => '<div class="detail-stats">' + items.map(([label, value, note]) => `<div><span>${label}</span><strong>${value}</strong><small>${note}</small></div>`).join('') + '</div>';
   const foot = (left, right) => `<div class="detail-foot"><span>${left}</span><span>${right}</span></div>`;
@@ -40,7 +46,7 @@
     limits: {
       caption: 'See each provider’s headroom, usage window and next reset.',
       label: 'Illustrative plan limits: Claude 64 percent, Codex 42 percent, Kimi 81 percent, with individual reset windows and remaining capacity.',
-      render: () => windowPanel('Plan limits', `<div class="detail-toolbar"><span>Provider-reported windows</span>${chip('Sorted by reset')}</div><div class="limit-detail">${quota(brand('Claude','anthropic'),64,'resets in 2h 14m')}${foot('5-hour window', '36% remaining')}</div><div class="limit-detail">${quota(brand('Codex','openai'),42,'resets in 4h 08m')}${foot('5-hour window', '58% remaining')}</div><div class="limit-detail">${quota('Kimi',81,'resets in 1d 6h',true)}${foot('Weekly window', '19% remaining')}</div><div class="detail-notice"><span>◷</span><p>Different providers. Different clocks.<br><strong>All your reset windows, one view.</strong></p></div>`)
+      render: () => windowPanel('Plan limits', `<div class="detail-toolbar"><span>Provider-reported windows</span>${chip('Sorted by reset')}</div><div class="limit-detail">${quota(brand('Claude','anthropic'),64,'resets in 2h 14m')}${foot('5-hour window', '36% remaining')}</div><div class="limit-detail">${quota(brand('Codex','openai'),42,'resets in 4h 08m')}${foot('5-hour window', '58% remaining')}</div><div class="limit-detail">${quota(brand('Kimi','kimi'),81,'resets in 1d 6h',true)}${foot('Weekly window', '19% remaining')}</div><div class="detail-notice"><span>◷</span><p>Different providers. Different clocks.<br><strong>All your reset windows, one view.</strong></p></div>`)
     },
     local: {
       caption: 'See the runner, measured throughput and pressure on your Mac.',

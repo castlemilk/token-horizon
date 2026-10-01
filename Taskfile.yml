@@ -67,6 +67,7 @@ tasks:
       - node scripts/test-og-png.mjs
       - node mcp/test-catalog.mjs
       - node mcp/test-server-errors.mjs
+      - python3 scripts/fetch-brand-logos.py --verify
       - node scripts/test-leaderboard-ui.mjs
       - node scripts/test-workspace-ui.mjs
       - node scripts/test-team-invites-ui.mjs
@@ -74,6 +75,7 @@ tasks:
       - node scripts/test-profile-ui.mjs
       - node scripts/test-login-ui.mjs
       - node scripts/test-navigation-ui.mjs
+      - node scripts/test-branding-ui.mjs
       - node scripts/test-ui-updates.mjs
       - node scripts/test-connect-ui.mjs
       - node scripts/bench-leaderboard.mjs

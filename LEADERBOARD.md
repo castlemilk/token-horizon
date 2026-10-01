@@ -34,6 +34,16 @@ Account and navigation popovers never overlap. Landing navigation collapses at
 760px. `scripts/test-navigation-ui.mjs` covers 320–1920px, long identities,
 keyboard navigation, route changes and reduced motion.
 
+League crests remain visible in every builder's identity in the default table;
+the detailed League column is still available under More metrics. The ladder
+uses 44px crests, and an unpublished tier renders a neutral shield. Provider
+marks are vendored under `docs/assets/brands/` with source provenance. Explicit
+serving providers take precedence over model names, including gateways and
+local runtimes; unsupported or failed marks use honest initials. Profiles and
+Workspace reuse these marks while local analytics retain their grouped totals.
+`scripts/test-branding-ui.mjs` checks attribution, visible artwork and image
+failure fallbacks across responsive layouts.
+
 The catalog keeps Fuse, primary-listing dedupe, app-exported pricing, provider
 adoption and TanStack sorting. Desktop filters sit alongside the windowed list;
 mobile filters collapse above it. Every virtual row is exactly 72px. A model
@@ -411,16 +421,16 @@ of cache-hit rate, output ratio, and free/local share.
   budget gate: cold-load-to-chart, view-switch median/p95, zero extra chart
   mounts after warm-up, search→table refresh, idle-tick skip, and API cache
   hit. `task test` / CI stay green independently of it.
-- **Provider brand marks** are official white logos on brand-colored tiles,
-  fetched by `scripts/fetch-brand-logos.py` into `docs/assets/brands/`
-  (Simple Icons CC0 for Anthropic/Google/OpenAI/DeepSeek/Meta/Mistral/xAI/
-  MiniMax/OpenCode/Qwen/Ollama, plus BrandBrain's fetched Moonshot raster),
-  used in chart legends, the provider mix/comparison, model inventories,
-  session chips, billing, and team cards. `providerLogo()` falls back to the
-  ported `ProviderLogos.swift` glyphs for brands without an asset (zhipu,
-  agy, local, unknown). `providerKey()` normalizes provider/model strings to a
-  brand (claude→anthropic, gpt/codex→openai, …). Lozenges use `.chip.logo-chip`
-  (roomier padding, 8px gaps, gradient tile, inset highlight).
+- **Provider brand marks** use locally cached original assets with preserved
+  colors and proportions on simple, contrasting tiles. Primary sources,
+  retained Simple Icons geometry, file hashes and variant choices are recorded
+  in `docs/assets/brands/{README.md,metadata.json,catalog-sources.json}`;
+  `python3 scripts/fetch-brand-logos.py --verify` validates both manifests
+  offline. `providerLogo()` supplies chart legends, provider comparisons,
+  inventories, Workspace, sessions and billing. Explicit serving providers
+  win over model-name inference; local analytics remain grouped while Ollama
+  and MLX show distinct marks. Unavailable or failed images use readable
+  initials, preserving their dimensions and provider label.
 - **League tier badges** are generated art processed into transparent 384px
   PNGs under `docs/assets/leagues/` (`scripts/process-league-badges.py` keys out
   the white background via a border flood fill, drops watermarks with a

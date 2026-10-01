@@ -61,7 +61,9 @@ html:not(.js) .tour-controls,html:not(.js) .widget-controls,html:not(.js) .widge
 .demo-chart>i{background:linear-gradient(to top,#738f7d 0 85%,#e7c895 85% 100%)}
 .demo-chart>i:before{height:var(--share,55%);background:linear-gradient(to top,#8fcda4,#b8efc8)}
 .product-brand{display:inline-flex;align-items:center;gap:1cqw;white-space:nowrap;font-weight:550}
-.product-brand img{width:2.3cqw;height:2.3cqw;object-fit:contain;opacity:.9}
+.product-mark{display:inline-grid;place-items:center;flex:none;width:2.3cqw;height:2.3cqw;overflow:hidden}
+.product-mark img{width:100%;height:100%;object-fit:contain}
+.product-mark[data-provider=openai] img{width:140%;height:140%;max-width:none}
 .detail-tabs{display:flex;gap:3cqw;padding:.4cqw 0 1.3cqw;font-size:1.65cqw;color:#99af9f}
 .detail-tabs b{color:var(--mint);font-weight:550;border-bottom:1px solid var(--mint);padding-bottom:.6cqw}
 .screen-scene .detailed-notch{width:68%;padding:2cqw 2.5cqw;margin-top:-2.6cqw;border-top-left-radius:0;border-top-right-radius:0}
@@ -149,3 +151,13 @@ body.demo-open{overflow:hidden}#demo-dialog{width:min(1040px,calc(100vw - 40px))
 @media(prefers-reduced-motion:no-preference){
   .device .notch-demo,.expanded-display .notch-demo{animation:notch-open .85s cubic-bezier(.22,1,.36,1) .08s both!important}
 }
+
+/* Authentic product marks stay alongside their names, including on phones. */
+.provider-strip b{display:inline-flex;align-items:center;gap:8px;white-space:nowrap}
+.tool-mark{display:inline-grid;place-items:center;flex:none;width:26px;height:26px;border-radius:6px;background:#17251d;overflow:hidden}
+.tool-mark img{width:76%;height:76%;object-fit:contain}
+.tool-mark[data-provider=openai]{background:#171717}
+.tool-mark[data-provider=openai] img{width:140%;height:140%;max-width:none}
+.tool-mark[data-provider=kimi]{background:#000}
+.tool-mark[data-provider=kimi] img{width:95%;height:95%}
+@media(min-width:901px) and (max-width:1200px){.provider-strip{gap:16px;flex-wrap:wrap;justify-content:center}.provider-strip>span{width:100%;text-align:center}}

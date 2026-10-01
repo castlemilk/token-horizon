@@ -1,0 +1,138 @@
+{
+  "schemaVersion": 1,
+  "retrievedAt": "2026-10-01",
+  "purpose": "Locally hosted official marks used to identify model-serving providers. These are additional catalog brands, not a claim that every catalog provider has an official asset.",
+  "providers": {
+    "cloudflare": {
+      "file": "cloudflare.png",
+      "sourcePage": "https://developers.cloudflare.com/",
+      "sourceUrl": "https://developers.cloudflare.com/favicon.png",
+      "tileBackground": "#ff500a",
+      "notes": "Unchanged official 96px documentation icon: white cloud on orange.",
+      "bytes": 1900,
+      "sha256": "a0b50612a24de2d0fbe05e9af46366ff466c2ed879de947e27d557165f0117be"
+    },
+    "vercel": {
+      "file": "vercel.svg",
+      "sourcePage": "https://vercel.com/geist/brands",
+      "sourceUrl": "https://k2mkucxia43oc7fa.public.blob.vercel-storage.com/front/press/vercel-assets.zip",
+      "archiveEntry": "Vercel/icon/dark/vercel-icon-dark.svg",
+      "tileBackground": "#121714",
+      "notes": "Unchanged official white symbol variant.",
+      "bytes": 173,
+      "sha256": "88fb3e9d686b7a165393a2b61e0e6e62c9c86288d01d5bef62955947f54f40fb"
+    },
+    "github": {
+      "file": "github.svg",
+      "sourcePage": "https://brand.github.com/foundations/logo",
+      "sourceUrl": "https://brand.github.com/GitHub_Logos.zip",
+      "archiveEntry": "GitHub Logos/SVG/GitHub_Invertocat_White.svg",
+      "tileBackground": "#121714",
+      "notes": "Unchanged current white Invertocat. Identifies GitHub as the serving platform; does not use the deprecated standalone Copilot mascot.",
+      "bytes": 1559,
+      "sha256": "ccd84c89b1056345608fc3489357f8acc7397e49a3cdc2d418b6c8016911d47b"
+    },
+    "groq": {
+      "file": "groq.svg",
+      "sourcePage": "https://groq.com/",
+      "sourceUrl": "https://groq.com/favicon.svg",
+      "tileBackground": "#f43e01",
+      "notes": "Unchanged current official white bolt on orange; the homepage references this SVG favicon.",
+      "bytes": 362,
+      "sha256": "62f86752be058119931605a9b068496dc931ccb3d8210614ea373f11fdeef6a1"
+    },
+    "huggingface": {
+      "file": "huggingface.svg",
+      "sourcePage": "https://huggingface.co/brand",
+      "sourceUrl": "https://huggingface.co/datasets/huggingface/brand-assets/resolve/main/hf-logo.svg",
+      "tileBackground": "#ffffff",
+      "notes": "Unchanged official full-color 256px mark from the Hugging Face brand-assets dataset.",
+      "bytes": 35286,
+      "sha256": "942cad1ccda905ac5a659dfd2d78b344fccfb84a8a3ac3721e08f488205638a0"
+    },
+    "microsoft": {
+      "file": "microsoft.svg",
+      "sourcePage": "https://learn.microsoft.com/en-us/entra/identity-platform/howto-add-branding-in-apps",
+      "sourceUrl": "https://learn.microsoft.com/en-us/entra/identity-platform/media/howto-add-branding-in-apps/ms-symbollockup_mssymbol_19.svg",
+      "tileBackground": "#ffffff",
+      "notes": "Unchanged official compact four-square corporate Microsoft symbol from the downloadable branding guidelines. Original red, green, blue and yellow colors and geometry preserved; distinct from Azure-A.",
+      "bytes": 343,
+      "sha256": "929f48f88c8ca7f3f5d294be47ec4caf51acc28ac25340c19a903125d7ecd84a"
+    },
+    "azure": {
+      "file": "azure.svg",
+      "sourcePage": "https://learn.microsoft.com/en-us/azure/architecture/icons/",
+      "sourceUrl": "https://arch-center.azureedge.net/icons/Azure_Public_Service_Icons_V24.zip",
+      "archiveEntry": "Azure_Public_Service_Icons/Icons/other/10018-icon-service-Azure-A.svg",
+      "tileBackground": "#ffffff",
+      "notes": "Unchanged official Azure-A symbol and blue gradients. Use for Azure attribution, not a substitute for the corporate Microsoft mark.",
+      "bytes": 2036,
+      "sha256": "dcc1d690bc18e7c7401fb545c51790b4974a69c9d997b27c4fbd9f1f26fe6815"
+    },
+    "aws": {
+      "file": "aws.png",
+      "sourcePage": "https://aws.amazon.com/",
+      "sourceUrl": "https://a0.awsstatic.com/libra-css/images/site/touch-icon-ipad-144-smile.png",
+      "tileBackground": "#232f3e",
+      "notes": "Unchanged official 144px AWS icon: white AWS wordmark and smile on navy. Identifies the AWS platform, including Amazon Bedrock; it is not the Bedrock service icon.",
+      "bytes": 3061,
+      "sha256": "f80d3ec6c5b2adee55267ecfcf2fc4131aa8551a546b7a1971b5e465c05c2403"
+    },
+    "cohere": {
+      "file": "cohere.svg",
+      "sourcePage": "https://cohere.com/newsroom",
+      "sourceUrl": "https://cdn.sanity.io/files/rjtqmwfu/web3-prod/0671b7ad97014967e69e3f7be10acc9a8b0a577b.zip",
+      "archiveEntry": "Cohere Logos/Symbol/Digital (RGB)/Color/cohere_symbol_colour_rgb.svg",
+      "tileBackground": "#ffffff",
+      "notes": "Unchanged official RGB symbol from Cohere's linked press kit; green, purple and coral colors preserved.",
+      "bytes": 960,
+      "sha256": "1365bb692dce95ad7bbb49e4e245bc27af5547139c1cec66ec8977741403a497"
+    },
+    "nvidia": {
+      "file": "nvidia.svg",
+      "sourcePage": "https://www.nvidia.com/en-us/about-nvidia/legal-info/logo-brand-usage/",
+      "sourceUrl": "https://www.nvidia.com/content/nvidiaGDC/us/en_US/about-nvidia/legal-info/logo-brand-usage/_jcr_content/root/responsivegrid/nv_container_392921705/nv_container/nv_image.coreimg.svg/1776076920288/nvidia-logo-vert.svg",
+      "tileBackground": "#ffffff",
+      "notes": "Official two-color vertical lockup, with eye and wordmark together. Only transparent canvas bounds were trimmed with 5% padding; paths, relative geometry and original colors are unchanged.",
+      "bytes": 2844,
+      "sha256": "4923a72c2152374dceda666d759a277cd85830df930e108069e5536c511cf73f"
+    },
+    "togetherai": {
+      "file": "togetherai.png",
+      "sourcePage": "https://www.together.ai/",
+      "sourceUrl": "https://cdn.prod.website-files.com/69654e88dce9154b5f1206dd/69a59cff65ed0f267dd2fbe8_touchicon.png",
+      "tileBackground": "#ffffff",
+      "notes": "Unchanged 256px apple-touch icon referenced by the current Together AI homepage. Uses its current multicolor mark, rather than an older third-party rendering.",
+      "bytes": 4267,
+      "sha256": "b4755d2c1d2ac7c67ff2002ae2d237db5a9c6c592606d64625991e5a7cf8568f"
+    },
+    "fireworksai": {
+      "file": "fireworksai.svg",
+      "sourcePage": "https://fireworks.ai/",
+      "sourceUrl": "https://fireworks.ai/icon0.svg?e3d99deadffb6216",
+      "tileBackground": "#ffffff",
+      "notes": "Unchanged current official purple arrow mark referenced by the homepage as its SVG icon.",
+      "bytes": 1129,
+      "sha256": "86b7f4b33ca48c5617f10e2cef5aaa7096c5e798090ceb2d0c21b01273660c76"
+    },
+    "deepinfra": {
+      "file": "deepinfra.png",
+      "sourcePage": "https://deepinfra.com/",
+      "sourceUrl": "https://deepinfra.com/fav-192.png",
+      "tileBackground": "#121714",
+      "notes": "Unchanged 192px apple-touch icon referenced by the official homepage: purple connected-node mark on transparent background.",
+      "bytes": 7672,
+      "sha256": "04c6da8033fd9c0c2455787f0ad64ff16aaccb71df14ecaf4b38c59facdd1116"
+    },
+    "perplexity": {
+      "file": "perplexity.png",
+      "sourcePage": "https://docs.perplexity.ai/",
+      "sourceUrl": "https://docs.perplexity.ai/mintlify-assets/_mintlify/favicons/perplexity/rSPP83rcZL_iw-xo/_generated/favicon/android-chrome-192x192.png",
+      "tileBackground": "#000000",
+      "notes": "Unchanged 192px official API documentation favicon: white geometric symbol on black.",
+      "bytes": 4007,
+      "sha256": "97d8e57726298a7af87446aa79888562d8cbeb16757c2b10eaf90499cec8c9c3"
+    }
+  },
+  "unavailable": []
+}

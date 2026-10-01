@@ -154,6 +154,11 @@ button{font-family:inherit}
 .league-icon img{width:100%;height:100%;object-fit:contain}
 .league-icon .league-fallback{display:none}
 .league-icon.fallback .league-fallback{display:grid}
+.league-unknown{color:var(--muted)}
+.builder-identity{min-width:128px}
+.builder-meta{display:flex;align-items:center;gap:3px 10px;flex-wrap:wrap;margin-top:3px}
+.builder-league{display:inline-flex;align-items:center;gap:6px;white-space:nowrap;font-size:10px;color:var(--muted)}
+.builder-team{max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin:0!important}
 .chip{display:inline-flex;align-items:center;gap:6px;background:var(--panel2);border:1px solid var(--line);border-radius:999px;padding:4px 10px;font-size:11.5px;color:var(--muted);white-space:nowrap;line-height:1.1}
 .chip.logo-chip{padding:5px 12px 5px 7px;gap:8px;font-size:12px;margin:2px 2px 2px 0;background:linear-gradient(180deg,#161E2D,#121826);box-shadow:inset 0 1px 0 rgba(255,255,255,.05)}
 .chip.you{background:rgba(79,140,255,.15);border-color:rgba(79,140,255,.4);color:#9CC0FF}
@@ -260,9 +265,10 @@ tbody tr.selected{background:rgba(79,140,255,.08)}
 .tooltip-card b{font-size:12px}
 .ts-chart{width:100%}
 .ts-chart svg{overflow:visible}
-.prov-logo{position:relative;display:inline-grid;place-items:center;border-radius:30%;border:1px solid rgba(255,255,255,.16);box-shadow:inset 0 0 0 1px rgba(0,0,0,.35),inset 0 1px 0 rgba(255,255,255,.2),0 1px 3px rgba(0,0,0,.4);flex:none;vertical-align:middle;overflow:hidden}
-.prov-logo::before{content:"";position:absolute;inset:0;border-radius:inherit;background:radial-gradient(circle at 50% 42%,rgba(0,0,0,.34),rgba(0,0,0,0) 68%);pointer-events:none}
-.prov-logo img{position:relative;width:72%;height:72%;object-fit:contain;display:block;filter:drop-shadow(0 1px 1px rgba(0,0,0,.5))}
+.prov-logo{position:relative;display:inline-grid;place-items:center;border-radius:24%;border:1px solid rgba(255,255,255,.16);flex:none;vertical-align:middle;overflow:hidden}
+.prov-logo img{width:76%;height:76%;object-fit:contain;display:block}
+.prov-logo:is([data-provider=mlx],[data-provider=xai],[data-provider=kimi]) img{width:95%;height:95%}
+.prov-logo[data-provider=openai] img{width:140%;height:140%;max-width:none}
 .prov-logo .prov-glyph{display:none;width:100%;height:100%;place-items:center}
 .prov-logo.fallback .prov-glyph{display:grid}
 .prov-logo.fallback img{display:none}
@@ -575,11 +581,11 @@ body.th-flat .mx-flat-score{display:none}
 .tier:hover,.tier.you{transform:none}
 }
 </style>
-<link rel="stylesheet" href="./discovery.css?v=20261001-2" data-ui-style />
+<link rel="stylesheet" href="./discovery.css?v=20261001-3" data-ui-style />
 <link rel="stylesheet" href="./horizon-system.css?v=20260930" data-ui-style />
 <link rel="stylesheet" href="./profile.css?v=20261001" data-ui-style />
 <link rel="stylesheet" href="./auth.css?v=20261001-2" data-ui-style />
-<link rel="stylesheet" href="./workspace.css?v=20260930" data-ui-style />
+<link rel="stylesheet" href="./workspace.css?v=20261001" data-ui-style />
 <script src="./ui-updates.js?v=20261001" defer></script>
 </head>
 <body>
@@ -831,11 +837,13 @@ function leagueSvg(id, size = 26) {
 /// Generated tier badge (docs/assets/leagues/<id>.png) with a league-colored
 /// glow and an inline-SVG fallback if the asset is missing.
 function leagueIcon(id, size = 26) {
-  const key = LEAGUES.some(l => l.id === id) ? id : "bronze";
+  const key = String(id || "").trim().toLowerCase();
+  const league = LEAGUES.find(l => l.id === key);
+  if (!league) return `<span class="league-icon league-unknown" data-league="unpublished" role="img" aria-label="League not published" title="League not published" style="width:${size}px;height:${size}px"><svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 2l8 3v6c0 5-3.5 8.5-8 11-4.5-2.5-8-6-8-11V5l8-3z" stroke="currentColor" stroke-width="1.4"/></svg></span>`;
   const glow = Math.max(4, Math.round(size * 0.22));
-  return `<span class="league-icon" style="width:${size}px;height:${size}px;filter:drop-shadow(0 2px ${glow}px ${leagueColor(key)}55)">
-    <img src="./assets/leagues/${key}.png" alt="" loading="lazy" onerror="this.style.display='none';this.parentNode.classList.add('fallback')"/>
-    <span class="league-fallback">${leagueSvg(key, size)}</span>
+  return `<span class="league-icon" data-league="${key}" role="img" aria-label="${league.title} league" style="width:${size}px;height:${size}px;filter:drop-shadow(0 2px ${glow}px ${leagueColor(key)}55)">
+    <img src="./assets/leagues/${key}.png" width="${size}" height="${size}" alt="" loading="lazy" decoding="async" onerror="this.style.display='none';this.parentNode.classList.add('fallback')"/>
+    <span class="league-fallback" aria-hidden="true">${leagueSvg(key, size)}</span>
   </span>`;
 }
 function roman(n) { return n === 1 ? "I" : n === 2 ? "II" : "III"; }
@@ -873,7 +881,7 @@ function seriesBaseColor(provider) {
 function assignSeriesColors(series) {
   const byProvider = new Map();
   for (const s of series) {
-    const p = String(s.provider || providerKey(s.name)).toLowerCase();
+    const p = String(s.provider || providerKey("", s.name)).toLowerCase();
     if (!byProvider.has(p)) byProvider.set(p, []);
     byProvider.get(p).push(s);
   }
@@ -885,7 +893,7 @@ function assignSeriesColors(series) {
   return series;
 }
 
-/* ---------- Provider brand marks (ported from ProviderLogos.swift) ---------- */
+/* ---------- Provider palette (shared with ProviderLogos.swift) ---------- */
 const PROVIDER_BRANDS = {
   anthropic: { bg: "#D97757", glyph: "asterisk" },
   openai: { bg: "#0FA37F", glyph: "swirl" },
@@ -902,117 +910,86 @@ const PROVIDER_BRANDS = {
   mistral: { bg: "#F2660D", glyph: "steps" },
   meta: { bg: "#0082FA", glyph: "text", text: "∞" },
   agy: { bg: "#612EEF", glyph: "delta" },
+  ollama: { bg: "#252A33" },
+  mlx: { bg: "#252A33" },
   upstage: { bg: "#6B52F2", glyph: "sun" },
   opencode: { bg: "#10A66B", glyph: "text", text: ">_" },
   other: { bg: "#6B7280", glyph: "monogram" }
 };
+// Explicit serving providers win over model names. Model inference is only
+// appropriate when the publisher supplied no provider identity.
+const PROVIDER_ALIASES = {
+  anthropic: "anthropic", claude: "anthropic", "claude-code": "anthropic", "anthropic-sub": "anthropic",
+  openai: "openai", codex: "openai", "codex-cli": "openai", chatgpt: "openai", "openai-sub": "openai",
+  google: "google", gemini: "google", "google-ai": "google", "google-vertex": "google", "google-vertex-anthropic": "google",
+  deepseek: "deepseek", kimi: "kimi", moonshot: "kimi", "moonshot-ai": "kimi", "kimi-coding": "kimi",
+  glm: "zhipu", zai: "zhipu", "z-ai": "zhipu", "z.ai": "zhipu", zhipu: "zhipu", "zai-coding-plan": "zhipu",
+  minimax: "minimax", "minimax-coding-plan": "minimax", qwen: "qwen", alibaba: "alibaba", bailian: "alibaba", "alibaba-coding-plan": "alibaba",
+  openrouter: "openrouter", "open-router": "openrouter", xai: "xai", "x-ai": "xai", "x.ai": "xai", grok: "xai",
+  ollama: "local", "ollama-cloud": "local", mlx: "local", local: "local", "mlx-community": "local",
+  mistral: "mistral", "mistral-ai": "mistral", meta: "meta", llama: "meta",
+  agy: "agy", antigravity: "agy", upstage: "upstage", opencode: "opencode", "opencode-go": "opencode", "opencode-zen": "opencode",
+  cloudflare: "cloudflare", "cloudflare-workers-ai": "cloudflare", "cloudflare-ai-gateway": "cloudflare",
+  vercel: "vercel", v0: "vercel", github: "github", "github-copilot": "github", groq: "groq",
+  huggingface: "huggingface", "hugging-face": "huggingface", azure: "azure", "azure-cognitive-services": "azure",
+  aws: "aws", amazon: "aws", "amazon-bedrock": "aws", bedrock: "aws", microsoft: "microsoft", cohere: "cohere", nvidia: "nvidia",
+  togetherai: "togetherai", together: "togetherai", "together-ai": "togetherai",
+  fireworksai: "fireworksai", fireworks: "fireworksai", "fireworks-ai": "fireworksai", deepinfra: "deepinfra", perplexity: "perplexity"
+};
+function providerId(provider) { return String(provider || "").trim().toLowerCase().replace(/[_\s]+/g, "-"); }
 function providerKey(provider, model = "") {
-  const p = String(provider || "").toLowerCase();
-  const m = String(model || "").toLowerCase();
-  if (p.includes("anthropic") || p.includes("claude") || m.includes("claude")) return "anthropic";
-  if (p.includes("openai") || p.includes("codex") || p.includes("gpt") || m.includes("gpt") || m.startsWith("o1") || m.startsWith("o3")) return "openai";
-  if (p.includes("google") || p.includes("gemini") || m.includes("gemini") || m.includes("gemma")) return "google";
-  if (p.includes("deepseek") || m.includes("deepseek")) return "deepseek";
-  if (p.includes("kimi") || p.includes("moonshot") || m.includes("kimi")) return "kimi";
-  if (p.includes("glm") || p.includes("zai") || p.includes("zhipu") || m.includes("glm")) return "zhipu";
-  if (p.includes("openrouter")) return "openrouter";
-  if (p.includes("minimax") || m.includes("minimax")) return "minimax";
-  if (p.includes("alibaba") || p.includes("qwen") || p.includes("bailian") || m.includes("qwen")) return "qwen";
-  if (p.includes("xai") || p.includes("grok") || m.includes("grok")) return "xai";
-  if (p.includes("ollama") || p.includes("mlx") || p.includes("local")) return "local";
-  if (p.includes("mistral") || m.includes("mistral") || m.includes("codestral")) return "mistral";
-  if (p.includes("meta") || m.includes("llama")) return "meta";
-  if (p.includes("agy") || p.includes("antigravity")) return "agy";
-  if (p.includes("upstage") || m.includes("solar")) return "upstage";
-  if (p.includes("opencode") || p.includes("muse") || m.includes("muse") || m.includes("x-preview") || m.includes("pickle")) return "opencode";
+  const p = providerId(provider);
+  if (Object.hasOwn(PROVIDER_ALIASES, p)) return PROVIDER_ALIASES[p];
+  if (p && !["other", "unknown"].includes(p)) return "other";
+  const m = String(model || "").toLowerCase().split("/").pop();
+  if (m.includes("claude")) return "anthropic";
+  if (m.includes("gpt") || /^o[134](?:-|$)/.test(m) || m.includes("codex")) return "openai";
+  if (m.includes("gemini") || m.includes("gemma")) return "google";
+  if (m.includes("deepseek")) return "deepseek";
+  if (m.includes("kimi")) return "kimi";
+  if (m.includes("glm")) return "zhipu";
+  if (m.includes("minimax")) return "minimax";
+  if (m.includes("qwen")) return "qwen";
+  if (m.includes("grok")) return "xai";
+  if (m.includes("mistral") || m.includes("codestral")) return "mistral";
+  if (m.includes("llama")) return "meta";
+  if (m.includes("solar")) return "upstage";
+  if (m.includes("muse") || m.includes("x-preview") || m.includes("pickle")) return "opencode";
   return "other";
 }
-function brandGlyphSvg(brand, size) {
-  const s = size, c = s / 2, white = "#fff";
-  const wrap = (inner) => `<svg width="${s}" height="${s}" viewBox="0 0 ${s} ${s}" aria-hidden="true">${inner}</svg>`;
-  const n = (v) => v.toFixed(2);
-  switch (brand.glyph) {
-    case "asterisk": {
-      let d = "";
-      for (let i = 0; i < 8; i++) {
-        const a = i * Math.PI / 4;
-        d += `M${n(c)},${n(c)} L${n(c + Math.cos(a) * s * 0.4)},${n(c + Math.sin(a) * s * 0.4)} `;
-      }
-      return wrap(`<path d="${d}" stroke="${white}" stroke-width="${n(s * 0.15)}" stroke-linecap="round"/>`);
-    }
-    case "swirl": {
-      const r = s * 0.42;
-      let d = "";
-      for (let i = 0; i < 6; i++) {
-        const a = i * Math.PI / 3;
-        const p1 = [c + Math.cos(a) * r * 0.4, c + Math.sin(a) * r * 0.4];
-        const p2 = [c + Math.cos(a + 0.8) * r, c + Math.sin(a + 0.8) * r];
-        const ctl = [c + Math.cos(a + 0.4) * r * 1.15, c + Math.sin(a + 0.4) * r * 1.15];
-        d += `M${n(p1[0])},${n(p1[1])} Q${n(ctl[0])},${n(ctl[1])} ${n(p2[0])},${n(p2[1])} `;
-      }
-      return wrap(`<path d="${d}" stroke="${white}" stroke-width="${n(s * 0.14)}" fill="none" stroke-linecap="round"/>`);
-    }
-    case "sparkle": {
-      const w = s * 0.46, h = s * 0.46, pinch = 0.22;
-      const d = `M${n(c)},${n(c - h)} Q${n(c + w * pinch)},${n(c - h * pinch)} ${n(c + w)},${n(c)} Q${n(c + w * pinch)},${n(c + h * pinch)} ${n(c)},${n(c + h)} Q${n(c - w * pinch)},${n(c + h * pinch)} ${n(c - w)},${n(c)} Q${n(c - w * pinch)},${n(c - h * pinch)} ${n(c)},${n(c - h)} Z`;
-      return wrap(`<path d="${d}" fill="${white}"/>`);
-    }
-    case "fin": {
-      const d = `M${n(s * 0.15)},${n(s * 0.85)} C${n(s * 0.3)},${n(s * 0.2)} ${n(s * 0.6)},${n(s * 0.3)} ${n(s * 0.85)},${n(s * 0.25)} Q${n(s * 0.8)},${n(s * 0.7)} ${n(s * 0.55)},${n(s * 0.85)} Z`;
-      return wrap(`<path d="${d}" fill="${white}"/>`);
-    }
-    case "prism": {
-      const d = `M${n(c)},${n(s * 0.16)} L${n(s * 0.84)},${n(c)} L${n(c)},${n(s * 0.84)} L${n(s * 0.16)},${n(c)} Z`;
-      return wrap(`<path d="${d}" fill="${white}"/>`);
-    }
-    case "orbit":
-      return wrap(`<circle cx="${n(c)}" cy="${n(c)}" r="${n(s * 0.3)}" fill="none" stroke="${white}" stroke-width="${n(s * 0.12)}"/><path d="M${n(s * 0.58)},${n(s * 0.58)} L${n(s * 0.84)},${n(s * 0.84)}" stroke="${white}" stroke-width="${n(s * 0.12)}" stroke-linecap="round"/>`);
-    case "llama": {
-      const d = `M${n(s * 0.25)},${n(s * 0.85)} L${n(s * 0.25)},${n(s * 0.35)} L${n(s * 0.38)},${n(s * 0.1)} L${n(s * 0.48)},${n(s * 0.35)} L${n(s * 0.6)},${n(s * 0.1)} L${n(s * 0.7)},${n(s * 0.35)} L${n(s * 0.85)},${n(s * 0.55)} L${n(s * 0.85)},${n(s * 0.75)} L${n(s * 0.65)},${n(s * 0.85)} L${n(s * 0.65)},${n(s * 0.85)} Z`;
-      return wrap(`<path d="${d}" fill="#40E6B3"/>`);
-    }
-    case "steps": {
-      const heights = [0.35, 0.65, 0.95, 0.5];
-      const bars = heights.map((h, i) => `<rect x="${n(s * (0.08 + i * 0.24))}" y="${n(s - s * 0.16 - s * 0.72 * h)}" width="${n(s * 0.16)}" height="${n(s * 0.72 * h)}" rx="1" fill="${white}"/>`).join("");
-      return wrap(bars);
-    }
-    case "delta":
-      return wrap(`<path d="M${n(c)},${n(s * 0.12)} L${n(s * 0.88)},${n(s * 0.85)} L${n(s * 0.12)},${n(s * 0.85)} Z" fill="${white}"/>`);
-    case "sun": {
-      const rays = Array.from({ length: 8 }, (_, i) => {
-        const a = i * Math.PI / 4;
-        return `<path d="M${n(c + Math.cos(a) * s * 0.34)},${n(c + Math.sin(a) * s * 0.34)} L${n(c + Math.cos(a) * s * 0.46)},${n(c + Math.sin(a) * s * 0.46)}" stroke="${white}" stroke-width="${n(s * 0.1)}" stroke-linecap="round"/>`;
-      }).join("");
-      return wrap(`<circle cx="${n(c)}" cy="${n(c)}" r="${n(s * 0.2)}" fill="${white}"/>${rays}`);
-    }
-    case "monogram":
-      return `<span class="glyph-text" style="font-size:${Math.round(s * 0.42)}px">${esc(String(brand.text || "?").slice(0, 2).toUpperCase())}</span>`;
-    case "text":
-    default:
-      return `<span class="glyph-text" style="font-size:${Math.round(s * (String(brand.text || "").length > 1 ? 0.5 : 0.64))}px">${esc(brand.text || "?")}</span>`;
-  }
+function providerBrandKey(provider, model = "") {
+  const p = providerId(provider);
+  if (["ollama", "ollama-cloud"].includes(p)) return "ollama";
+  if (["mlx", "mlx-community"].includes(p)) return "mlx";
+  return providerKey(p, model);
 }
-/// Official white marks fetched by scripts/fetch-brand-logos.py. Brands without
-/// an asset (zhipu, local, other) fall back to the inline glyph.
+/// Local copies of provider artwork; see assets/brands/README.md for sources.
 const BRAND_ASSETS = {
-  anthropic: "svg", openai: "svg", google: "svg", meta: "svg", deepseek: "svg",
+  anthropic: "svg", openai: "svg", google: "png", meta: "svg", deepseek: "svg",
   mistral: "svg", xai: "svg", minimax: "svg", opencode: "svg", qwen: "svg",
-  ollama: "svg", kimi: "png"
+  ollama: "svg", kimi: "ico", openrouter: "svg", zhipu: "svg", alibaba: "svg",
+  mlx: "svg", agy: "png", upstage: "avif", cloudflare: "png", vercel: "svg", github: "svg",
+  groq: "svg", huggingface: "svg", azure: "svg", aws: "png", microsoft: "svg", cohere: "svg", nvidia: "svg",
+  togetherai: "png", fireworksai: "svg", deepinfra: "png", perplexity: "png"
 };
+const BRAND_TILE_BACKGROUNDS = {
+  openai: "#171717", google: "#FFFFFF", kimi: "#000000", alibaba: "#FFFFFF", zhipu: "#171717",
+  openrouter: "#212121", xai: "#171717", mlx: "#252A33", agy: "#252A33", upstage: "#171717",
+  cloudflare: "#ff500a", vercel: "#121714", github: "#121714", groq: "#f43e01", huggingface: "#FFFFFF",
+  azure: "#FFFFFF", aws: "#232f3e", microsoft: "#FFFFFF", cohere: "#FFFFFF", nvidia: "#FFFFFF", togetherai: "#FFFFFF",
+  fireworksai: "#FFFFFF", deepinfra: "#121714", perplexity: "#000000"
+};
+const BRAND_ASSET_VERSION = "20261001";
 function providerLogo(provider, size = 18, model = "") {
-  const key = providerKey(provider, model);
-  // Unknown gateways get their own monogram instead of a generic "?" so the
-  // price leaderboard stays scannable.
-  const monogram = String(provider || "").replace(/[^a-z0-9]/gi, "").slice(0, 2).toUpperCase() || "?";
-  const brand = key === "other"
-    ? { ...PROVIDER_BRANDS.other, text: monogram }
-    : (PROVIDER_BRANDS[key] || PROVIDER_BRANDS.other);
+  const key = providerBrandKey(provider, model);
+  const label = key === "other" ? providerLabel(provider) : providerLabel(key);
+  const monogram = label.replace(/[^a-z0-9]/gi, "").slice(0, 2).toUpperCase() || "?";
+  const brand = PROVIDER_BRANDS[key] || PROVIDER_BRANDS.other;
+  const background = BRAND_TILE_BACKGROUNDS[key] || brand.bg;
+  const fallbackColor = luminance(background) > .55 ? "#171717" : "#FFFFFF";
   const asset = BRAND_ASSETS[key];
-  const glyph = brandGlyphSvg(brand, size);
-  const img = asset
-    ? `<img src="./assets/brands/${key}.${asset}" alt="" loading="lazy" onerror="this.style.display='none';this.parentNode.classList.add('fallback')"/>`
-    : "";
-  return `<span class="prov-logo${asset ? "" : " fallback"}" style="width:${size}px;height:${size}px;background:${brand.bg}" title="${esc(providerLabel(provider))}">${img}<span class="prov-glyph">${glyph}</span></span>`;
+  const img = asset ? `<img src="./assets/brands/${key}.${asset}?v=${BRAND_ASSET_VERSION}" width="${size}" height="${size}" alt="" loading="lazy" decoding="async" onerror="this.style.display='none';this.parentNode.classList.add('fallback')"/>` : "";
+  return `<span class="prov-logo${asset ? "" : " fallback"}" data-provider="${esc(key === "other" ? providerId(provider) || "other" : key)}" style="width:${size}px;height:${size}px;background:${background}" role="img" aria-label="${esc(label)}" title="${esc(label)}">${img}<span class="prov-glyph" aria-hidden="true"><span class="glyph-text" style="color:${fallbackColor};font-size:${Math.max(7, Math.round(size * .38))}px">${esc(monogram)}</span></span></span>`;
 }
 function deltaHtml(delta, suffix = "%") {
   if (delta === null || delta === undefined) return `<span class="faint">— vs previous period</span>`;
@@ -1020,12 +997,14 @@ function deltaHtml(delta, suffix = "%") {
   return `<span class="${up ? "up" : "down"}">${up ? "▲" : "▼"} ${Math.abs(delta).toFixed(1)}${suffix}</span> <span class="faint">vs previous period</span>`;
 }
 function providerLabel(p) {
-  const map = { anthropic: "Anthropic", openai: "OpenAI", google: "Google", meta: "Meta", opencode: "OpenCode", minimax: "MiniMax", kimi: "Kimi", zhipu: "Zhipu (GLM)", deepseek: "DeepSeek", alibaba: "Alibaba", qwen: "Qwen", openrouter: "OpenRouter", agy: "Antigravity", mistral: "Mistral", xai: "xAI", local: "Local", other: "Other", ai: "AI" };
-  return map[String(p || "").toLowerCase()] || String(p || "Other");
+  const map = { ollama: "Ollama", mlx: "MLX", anthropic: "Anthropic", openai: "OpenAI", google: "Google", meta: "Meta", opencode: "OpenCode", minimax: "MiniMax", kimi: "Kimi", zhipu: "Zhipu (GLM)", deepseek: "DeepSeek", alibaba: "Alibaba", qwen: "Qwen", openrouter: "OpenRouter", agy: "Antigravity", mistral: "Mistral", xai: "xAI", upstage: "Upstage", cloudflare: "Cloudflare", vercel: "Vercel", github: "GitHub", groq: "Groq", huggingface: "Hugging Face", azure: "Azure", aws: "AWS", microsoft: "Microsoft", cohere: "Cohere", nvidia: "NVIDIA", togetherai: "Together AI", fireworksai: "Fireworks AI", deepinfra: "DeepInfra", perplexity: "Perplexity", local: "Local", other: "Other", ai: "AI" };
+  const key = String(p || "").toLowerCase();
+  return Object.hasOwn(map, key) ? map[key] : String(p || "Other");
 }
 /// Display label for a raw tool/provider id (claude → Anthropic, opencode-go → OpenCode).
 function providerDisplay(provider, model = "") {
-  return providerLabel(providerKey(provider, model));
+  const key = providerBrandKey(provider, model);
+  return providerLabel(key === "other" ? provider : key);
 }
 
 /* ---------- SVG chart builders ---------- */
@@ -1387,11 +1366,11 @@ function stackedUsageChart(data, opts = {}) {
   // (provider + share of the window) + total tokens.
   const legend = series.map(s => {
     const total = (s.values || []).reduce((a, b) => a + b, 0);
-    const desc = s.description || `${providerDisplay(s.provider || providerKey(s.name), s.name)} · ${fmtPct(total / grandTotal * 100, 1)}`;
+    const desc = s.description || `${providerDisplay(s.provider || providerKey("", s.name), s.name)} · ${fmtPct(total / grandTotal * 100, 1)}`;
     const nameHtml = s.provider && s.name && s.name !== "Other"
       ? modelLink(s.provider, s.name, s.name)
       : esc(s.name);
-    return `<div class="legend-item" title="${esc(s.name)} · ${esc(desc)}"><i class="legend-swatch" style="background:${s.color}"></i>${providerLogo(s.provider || s.name, 16, s.name)}<span class="legend-text"><span class="legend-name">${nameHtml}</span><span class="legend-desc">${esc(desc)}</span></span><span class="legend-value">${fmtTokens(total)}</span></div>`;
+    return `<div class="legend-item" title="${esc(s.name)} · ${esc(desc)}"><i class="legend-swatch" style="background:${s.color}"></i>${providerLogo(s.provider || "", 16, s.name)}<span class="legend-text"><span class="legend-name">${nameHtml}</span><span class="legend-desc">${esc(desc)}</span></span><span class="legend-value">${fmtTokens(total)}</span></div>`;
   }).join("");
   return chart + (opts.hideLegend ? "" : `<div class="chart-legend">${legend}</div>`);
 }
@@ -1413,7 +1392,7 @@ function modelHistoryChartData(modelHistory, opts = {}) {
   const labels = days.map(labelFor);
   const series = list.map((s, i) => ({
     name: s.model === "Other" ? "Other" : s.model,
-    provider: s.provider || providerKey(s.model),
+    provider: s.provider || providerKey("", s.model),
     color: s.model === "Other" ? "#6B7280" : PALETTE[i % PALETTE.length],
     values: days.map(day => (s.points.find(x => x.day === day) || {}).tokens || 0)
   }));
@@ -1427,7 +1406,7 @@ function aggregateUsageChartData(usageHistory) {
     labels: usageHistory.labels,
     series: usageHistory.series.map((s, i) => ({
       name: s.model,
-      provider: s.provider || providerKey(s.model),
+      provider: s.provider || providerKey("", s.model),
       color: s.model === "Other" ? "#6B7280" : PALETTE[i % PALETTE.length],
       values: s.values || []
     }))
@@ -2185,7 +2164,7 @@ function viewLeaderboard() {
     <div><span>Active builders · 7 days</span><strong>${fmtNum(k.activeDevs)}</strong></div>
     <div><span>Requests · all time</span><strong>${k.totalRequests != null ? fmtTokens(k.totalRequests) : "—"}</strong></div>
   </div>`;
-  const ladder = `<section class="card community-ladder"><div class="card-head"><h3>League ladder</h3></div><p class="sub">Seven leagues. Every builder starts somewhere.</p><div class="ladder">${LEAGUES.map(l => `<button class="tier ${state.leagueFilter === l.id ? "active" : ""}" data-league="${l.id}" aria-pressed="${state.leagueFilter === l.id}" title="${l.title}: ${fmtTokens(l.min)}${l.max ? "–"+fmtTokens(l.max) : "+"} tokens">${leagueIcon(l.id,32)}<span class="name">${l.title}</span></button>`).join("")}</div><button class="community-link" data-view-leagues>How rankings work ↗</button>${season ? `<p class="sub">${esc(season.displayName)} · ${esc(season.daysRemaining)} days remaining</p>` : ""}</section>`;
+  const ladder = `<section class="card community-ladder"><div class="card-head"><h3>League ladder</h3></div><p class="sub">Seven leagues. Every builder starts somewhere.</p><div class="ladder">${LEAGUES.map(l => `<button class="tier ${state.leagueFilter === l.id ? "active" : ""}" data-league="${l.id}" aria-pressed="${state.leagueFilter === l.id}" title="${l.title}: ${fmtTokens(l.min)}${l.max ? "–"+fmtTokens(l.max) : "+"} tokens">${leagueIcon(l.id,44)}<span class="name">${l.title}</span></button>`).join("")}</div><button class="community-link" data-view-leagues>How rankings work ↗</button>${season ? `<p class="sub">${esc(season.displayName)} · ${esc(season.daysRemaining)} days remaining</p>` : ""}</section>`;
   const table = `<div id="lb-table-wrap">${leaderboardTableHtml(d, local)}</div>`;
 
   const movers = d.movers || {};
@@ -2277,10 +2256,13 @@ function rowHtml(r, local) {
   const isYou = e.isLocal || (local && e.handle === local.entry.handle);
   const rankClass = r.rank === 1 ? "gold" : r.rank === 2 ? "silver" : r.rank === 3 ? "bronze" : "";
   const medal = r.rank <= 3 ? ["🥇", "🥈", "🥉"][r.rank - 1] : "";
+  const leagueId = String(r.league || e.league || "").trim().toLowerCase();
+  const league = LEAGUES.find(l => l.id === leagueId);
+  const leagueLabel = league ? `${league.title} ${roman(r.division || e.division || 3)}` : "League not published";
   return `<tr class="clickable ${isYou ? "you" : ""} ${r.rank <= 3 ? `r${r.rank}` : ""}" data-handle="${esc(e.handle)}">
     <td><span class="rank-badge ${rankClass}">${medal || r.rank}</span></td>
-    <td><div class="user-cell">${entryAvatar(e, 30)}<div><div class="name">${esc(e.handle)} ${isYou ? '<span class="chip you">YOU</span>' : ""}</div><div class="sub">${esc(e.team || e.hardware || "")}</div></div></div></td>
-    <td><span class="chip league" style="color:${leagueColor(r.league)};border-color:${leagueColor(r.league)}55;background:${leagueColor(r.league)}14">${leagueIcon(r.league, 17)}${esc(leagueMeta(r.league).title)} ${roman(r.division || 3)}</span></td>
+    <td><div class="user-cell">${entryAvatar(e, 30)}<div class="builder-identity"><div class="name">${esc(e.handle)} ${isYou ? '<span class="chip you">YOU</span>' : ""}</div><div class="builder-meta"><span class="builder-league" title="${esc(leagueLabel)}">${leagueIcon(leagueId, 26)}<span>${esc(leagueLabel)}</span></span>${e.team || e.hardware ? `<span class="builder-team sub" title="${esc(e.team || e.hardware)}">${esc(e.team || e.hardware)}</span>` : ""}</div></div></div></td>
+    <td><span class="chip league"${league ? ` style="color:${league.color};border-color:${league.color}55;background:${league.color}14"` : ""}>${leagueIcon(leagueId, 17)}${esc(leagueLabel)}</span></td>
     <td><div class="num score">${esc(r.scoreFormatted)}</div><div class="bar" style="margin-top:4px"><i style="width:${r.relativePercent}%"></i></div></td>
     <td class="num">${esc(r.inputFormatted || "—")}</td>
     <td class="num">${esc(r.outputFormatted || "—")}</td>
@@ -2645,7 +2627,7 @@ function profileTabs() {
   ];
 }
 // Profiles use published daily data, never infer attribution from an all-time mix.
-const PROFILE_COLORS = { anthropic: "#D97757", openai: "#235E43", openrouter: "#78877C", google: "#4285F4", opencode: "#7665B5", kimi: "#B45685", qwen: "#CE6427", deepseek: "#4D6BFE", minimax: "#B98027", zhipu: "#288895", local: "#478966", other: "#89978B", unattributed: "#A6B1A8" };
+const PROFILE_COLORS = { alibaba: "#CE6427", anthropic: "#D97757", openai: "#235E43", openrouter: "#78877C", google: "#4285F4", opencode: "#7665B5", kimi: "#B45685", qwen: "#CE6427", deepseek: "#4D6BFE", minimax: "#B98027", zhipu: "#288895", local: "#478966", other: "#89978B", unattributed: "#A6B1A8" };
 function profileProvider(provider) { return providerKey(provider); }
 function profileNumber(value) { const n = Number(value); return Number.isFinite(n) ? Math.max(0, n) : 0; }
 function profileDay(value) {
@@ -2779,7 +2761,7 @@ function profileRail(p) {
 }
 function profileInventory(p, full = false) {
   const e = p.entry, models = e.breakdown?.models || [], rows = full ? models : models.slice(0, 6);
-  return `<section class="card profile-inventory"><div class="card-head"><h3>Model inventory</h3><span class="sub">${fmtNum(models.length)} models</span></div><div class="profile-table-scroll" role="region" aria-label="Published model usage" tabindex="0"><table><thead><tr><th>Model</th><th>Provider</th><th class="right">Tokens</th><th class="right">Requests</th><th class="right">Cost</th><th class="right">Share</th></tr></thead><tbody>${rows.map(m => { const share = profileNumber(e.tokensAll) ? Math.min(100, profileNumber(m.tokensAll) / e.tokensAll * 100) : 0; return `<tr><td>${modelLink(m.provider, m.model)}</td><td><span class="profile-model-provider">${providerLogo(profileProvider(m.provider), 16)}${esc(providerLabel(profileProvider(m.provider)))}</span></td><td class="num right">${fmtTokens(m.tokensAll)}</td><td class="num right">${m.requests != null ? fmtNum(m.requests) : "—"}</td><td class="num right"${Number(m.costAll) > 0 ? "" : ' title="Cost not reported"'}>${profileCost(m.costAll)}</td><td class="profile-model-share"><span>${fmtPct(share, 1)}</span><i style="--share:${share.toFixed(2)}%;--provider:${PROFILE_COLORS[profileProvider(m.provider)] || PROFILE_COLORS.other}"></i></td></tr>`; }).join("") || '<tr><td colspan="6"><div class="empty">No model usage published yet.</div></td></tr>'}</tbody></table></div><div class="profile-table-footer">${!full && models.length > rows.length ? `<button class="profile-text-button" data-profile-open="usage">View all ${fmtNum(models.length)} models</button>` : '<span>All-time published usage</span>'}${modelsAllLink("Explore the catalog")}</div></section>`;
+  return `<section class="card profile-inventory"><div class="card-head"><h3>Model inventory</h3><span class="sub">${fmtNum(models.length)} models</span></div><div class="profile-table-scroll" role="region" aria-label="Published model usage" tabindex="0"><table><thead><tr><th>Model</th><th>Provider</th><th class="right">Tokens</th><th class="right">Requests</th><th class="right">Cost</th><th class="right">Share</th></tr></thead><tbody>${rows.map(m => { const share = profileNumber(e.tokensAll) ? Math.min(100, profileNumber(m.tokensAll) / e.tokensAll * 100) : 0; return `<tr><td>${modelLink(m.provider, m.model)}</td><td><span class="profile-model-provider">${providerLogo(m.provider, 16, m.model)}${esc(providerDisplay(m.provider, m.model))}</span></td><td class="num right">${fmtTokens(m.tokensAll)}</td><td class="num right">${m.requests != null ? fmtNum(m.requests) : "—"}</td><td class="num right"${Number(m.costAll) > 0 ? "" : ' title="Cost not reported"'}>${profileCost(m.costAll)}</td><td class="profile-model-share"><span>${fmtPct(share, 1)}</span><i style="--share:${share.toFixed(2)}%;--provider:${PROFILE_COLORS[profileProvider(m.provider)] || PROFILE_COLORS.other}"></i></td></tr>`; }).join("") || '<tr><td colspan="6"><div class="empty">No model usage published yet.</div></td></tr>'}</tbody></table></div><div class="profile-table-footer">${!full && models.length > rows.length ? `<button class="profile-text-button" data-profile-open="usage">View all ${fmtNum(models.length)} models</button>` : '<span>All-time published usage</span>'}${modelsAllLink("Explore the catalog")}</div></section>`;
 }
 function profileRecent(p) {
   const rows = [...(p.entry.breakdown?.sessions || [])].sort((a, b) => (Number(b.at) || 0) - (Number(a.at) || 0)).slice(0, 5);
@@ -2848,7 +2830,7 @@ function profileContent(p) {
       </div></div>
       <div class="card"><div class="card-head"><h3>Builders with similar usage</h3><span class="sub">${state.demo ? "Community data unavailable" : "By all-time tokens"}</span></div>
       <div style="overflow-x:auto"><table><thead><tr><th>${peerPeriod} rank</th><th>User</th><th>League</th><th class="right">Tokens</th><th class="right">Efficiency</th><th class="right">Streak</th></tr></thead><tbody>
-      ${peers.map(r => `<tr class="clickable" data-handle-link="${esc(r.entry.handle)}"><td class="faint">${r.rank}</td><td><div class="user-cell">${entryAvatar(r.entry, 26)}<span>${esc(r.entry.handle)}</span></div></td><td><span class="chip" style="color:${leagueColor(r.league)}">${esc(leagueMeta(r.league).title)} ${roman(r.division || 3)}</span></td><td class="num right">${fmtTokens(r.entry.tokensAll)}</td><td class="num right">${Math.round(r.efficiency || 0)}</td><td class="num right">🔥 ${r.entry.streakDays || 0}</td></tr>`).join("")}
+      ${peers.map(r => `<tr class="clickable" data-handle-link="${esc(r.entry.handle)}"><td class="faint">${r.rank}</td><td><div class="user-cell">${entryAvatar(r.entry, 26)}<span>${esc(r.entry.handle)}</span></div></td><td><span class="chip logo-chip" style="color:${leagueColor(r.league)}">${leagueIcon(r.league, 22)}${esc(leagueMeta(r.league).title)} ${roman(r.division || 3)}</span></td><td class="num right">${fmtTokens(r.entry.tokensAll)}</td><td class="num right">${Math.round(r.efficiency || 0)}</td><td class="num right">🔥 ${r.entry.streakDays || 0}</td></tr>`).join("")}
       </tbody></table></div>${state.profilePeersLoading ? '<p class="sub" role="status">Loading community comparison…</p>' : state.profilePeersError ? '<p class="sub">Community comparison could not load. <button class="profile-text-button" id="pf-peers-retry">Retry comparison</button></p>' : !peers.length ? '<div class="empty">No other builders available to compare.</div>' : ""}</div>`;
   }
   if (tab === "achievements") {
@@ -3005,7 +2987,7 @@ function loadWorkspaceModule() {
   if (workspaceModuleFlight) return workspaceModuleFlight;
   workspaceModuleFlight = new Promise((resolve, reject) => {
     const script = document.createElement("script");
-    script.src = "./workspace.js?v=20260930";
+    script.src = "./workspace.js?v=20261001";
     script.async = true;
     const timer = setTimeout(() => finish(new Error("Workspace took too long to load.")), 5000);
     function finish(error) {
@@ -3471,7 +3453,8 @@ function modelsAllLink(label = "All models →") {
 }
 /// Link from a provider row/legend into the explorer filtered to that provider.
 function providerLink(provider, label, opts = {}) {
-  const key = providerKey(provider);
+  const normalized = providerKey(provider);
+  const key = normalized === "other" ? providerId(provider) || "other" : normalized;
   const text = label == null ? providerLabel(provider) : label;
   return `<a class="model-link provider-link" href="?view=models&provider=${encodeURIComponent(key)}" data-provider-link="${esc(key)}" title="${esc(opts.title || ("Browse models available via " + text))}">${esc(text)}</a>`;
 }

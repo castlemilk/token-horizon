@@ -85,6 +85,9 @@ jobs:
           node mcp/test-catalog.mjs
           node mcp/test-server-errors.mjs
 
+      - name: Vendored provider artwork integrity (offline)
+        run: python3 scripts/fetch-brand-logos.py --verify
+
       - name: Dashboard UI regression (hermetic fixtures)
         run: |
           node scripts/test-leaderboard-ui.mjs
@@ -94,6 +97,7 @@ jobs:
           node scripts/test-profile-ui.mjs
           node scripts/test-login-ui.mjs
           node scripts/test-navigation-ui.mjs
+          node scripts/test-branding-ui.mjs
           node scripts/test-ui-updates.mjs
           node scripts/test-connect-ui.mjs
 
