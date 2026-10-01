@@ -17,7 +17,7 @@ const publicConfig = { ok: true, googleClientId: 'test-login.apps.googleusercont
 const credential = 'test.' + Buffer.from(JSON.stringify({ ...googleUser, exp: Math.floor(Date.now() / 1000) + 3600 })).toString('base64url') + '.unsigned';
 const browser = await (await resolveChromium()).launch({ channel: 'chrome', headless: true });
 
-async function fixture({ config = 'ready', sdk = 'ready', session = 'ready', exchange = 'ready', account = 'ready', user = null, remembered = null, cachedConfig = null, entryPatch = {}, width = 1440, reducedMotion = 'no-preference' } = {}) {
+async function fixture({ config = 'ready', sdk = 'ready', session = 'ready', exchange = 'ready', account = 'ready', providerCallback = 'immediate', user = null, remembered = null, cachedConfig = null, entryPatch = {}, width = 1440, reducedMotion = 'no-preference' } = {}) {
   const context = await browser.newContext({ viewport: { width, height: 1000 }, timezoneId: 'UTC', reducedMotion });
   await context.addInitScript(({ remembered, cachedConfig }) => {
     const fetchNative = window.fetch.bind(window);
@@ -62,7 +62,7 @@ async function fixture({ config = 'ready', sdk = 'ready', session = 'ready', exc
   await page.route('https://accounts.google.com/**', async route => {
     requests.push({ path: 'google-sdk', url: route.request().url() });
     if (sdkState === 'error') return route.abort();
-    return route.fulfill({ status: 200, contentType: 'application/javascript', body: `window.google={accounts:{id:{initialize(options){window.testGoogleOptions=options;window.testGoogleCallback=options.callback},renderButton(host,options){window.testGoogleButtons=(window.testGoogleButtons||[]).concat(options);const button=document.createElement('button');button.textContent='Continue with test Google';button.className='fixture-google';button.style.width=options.width+'px';button.onclick=()=>window.testGoogleCallback({credential:${JSON.stringify(credential)}});host.append(button)},prompt(){window.testGooglePrompted=(window.testGooglePrompted||0)+1},cancel(){window.testGoogleCancelled=true},disableAutoSelect(){window.testGoogleDisabled=true}}}};` });
+    return route.fulfill({ status: 200, contentType: 'application/javascript', body: `window.google={accounts:{id:{initialize(options){window.testGoogleOptions=options;window.testGoogleCallback=options.callback},renderButton(host,options){window.testGoogleButtons=(window.testGoogleButtons||[]).concat(options);const button=document.createElement('button');button.type='button';button.textContent='Continue with test Google';button.className='fixture-google';button.style.width=options.width+'px';button.onclick=()=>{options.click_listener?.();${providerCallback === 'immediate' ? `window.testGoogleCallback({credential:${JSON.stringify(credential)}});` : ''}};host.append(button)},prompt(){window.testGooglePrompted=(window.testGooglePrompted||0)+1},cancel(){window.testGoogleCancelled=true},disableAutoSelect(){window.testGoogleDisabled=true}}}};` });
   });
   await page.route('https://avatars.githubusercontent.com/**', route => route.fulfill({ status: 200, contentType: 'image/png', body: png }));
   await page.route(ORIGIN + '/**', async route => {
@@ -168,10 +168,13 @@ try {
         assert.equal(await f.page.locator('#signin-gsi').count(), 1, 'A login page cannot create duplicate auth hosts');
       }
       await assertNoOverflow(f.page, selector);
-      const options = await f.page.evaluate(() => window.testGoogleOptions && ({ clientId: window.testGoogleOptions.client_id, autoSelect: window.testGoogleOptions.auto_select, fedcmPrompt: window.testGoogleOptions.use_fedcm_for_prompt, fedcmButton: window.testGoogleOptions.use_fedcm_for_button }));
+      const options = await f.page.evaluate(() => window.testGoogleOptions && ({ clientId: window.testGoogleOptions.client_id, autoSelect: window.testGoogleOptions.auto_select, mode: window.testGoogleOptions.ux_mode, fedcmButton: window.testGoogleOptions.use_fedcm_for_button, buttonAutoSelect: window.testGoogleOptions.button_auto_select, prompts: window.testGooglePrompted || 0 }));
       assert.equal(options.clientId, publicConfig.googleClientId);
       assert.equal(options.autoSelect, true, 'Eligible browser accounts can reuse a prior provider grant');
-      assert(options.fedcmPrompt || options.fedcmButton, 'Google uses the browser-supported account chooser');
+      assert.equal(options.mode, 'popup', 'An explicit provider click uses the Google popup flow');
+      assert.equal(options.fedcmButton, false, 'The Google button must work without FedCM token retrieval');
+      assert.equal(options.buttonAutoSelect, false);
+      assert.equal(options.prompts, 0, 'Opening login does not invoke automatic One Tap');
       if (surface === 'modal') {
         const semantics = await f.page.locator('.signin-modal').evaluate(node => ({ role: node.getAttribute('role'), modal: node.getAttribute('aria-modal'), label: node.getAttribute('aria-labelledby'), locked: document.body.style.overflow, focus: node.contains(document.activeElement) }));
         assert.equal(semantics.role, 'dialog'); assert.equal(semantics.modal, 'true');
@@ -241,6 +244,42 @@ try {
       assert.equal(await f.page.locator('.bh-art').getAttribute('aria-hidden'), 'true');
       const transitions = await f.page.locator('#login-page').evaluate(node => [...node.querySelectorAll('*')].filter(el => getComputedStyle(el).animationName !== 'none').map(el => ({ name: getComputedStyle(el).animationName, duration: parseFloat(getComputedStyle(el).animationDuration) })));
       assert(transitions.every(animation => animation.duration <= .001), 'Reduced-motion login CSS retains a visible animation');
+    } finally { await f.close(); }
+  }
+
+  console.log('Google popup: pending sign-in keeps the live control, explains blocked popups, and accepts a later credential...');
+  {
+    const f = await fixture({ providerCallback: 'delayed', remembered: googleUser, reducedMotion: 'reduce' });
+    try {
+      await openLogin(f.page);
+      await f.page.waitForSelector('#signin-gsi-btn .fixture-google');
+      await f.page.waitForFunction(() => state.authStatus === 'ready');
+      assert.equal(await f.page.evaluate(() => window.testGoogleOptions.login_hint), googleUser.email, 'The personalized chooser retains the remembered email');
+      await f.page.evaluate(() => { window.testPendingGoogleControl = document.querySelector('#signin-gsi-btn .fixture-google'); });
+      // Advance only the provider watchdog, after startup and cookie hydration
+      // have settled. Requests are still fulfilled by the local route fixtures.
+      await f.page.clock.install();
+      await f.page.locator('#signin-gsi-btn .fixture-google').click();
+      assert.match(await f.page.locator('#signin-status').innerText(), /Opening Google sign-in/);
+      assert.equal(await f.page.evaluate(() => state.authBusy), false, 'Opening the provider window is separate from server verification');
+      assert.equal(await f.page.locator('.user-chip').count(), 0);
+      assert.equal(f.requests.some(row => row.path === '/api/auth/google' || row.path.startsWith('/api/account/')), false, 'A provider click cannot authenticate or load private data before its callback');
+      await f.page.evaluate(async () => { mountSignInOptions(); await hydrateAuthSession({ force: true }); });
+      await f.page.setViewportSize({ width: 390, height: 844 });
+      await f.page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+      assert.equal(await f.page.evaluate(() => window.testPendingGoogleControl === document.querySelector('#signin-gsi-btn .fixture-google')), true, 'Hydration and resize cannot replace a live provider control');
+      await f.page.clock.fastForward(15001);
+      assert.match(await f.page.locator('#signin-status').innerText(), /Google has not completed sign-in.*allow popups.*Google button again/i);
+      assert(await f.page.locator('#signin-gsi-btn .fixture-google').isEnabled(), 'The watchdog leaves an actionable Google button');
+      await f.page.evaluate(() => mountSignInOptions());
+      assert.equal(await f.page.evaluate(() => window.testPendingGoogleControl === document.querySelector('#signin-gsi-btn .fixture-google')), true, 'An advisory cannot disconnect the popup from its original control');
+      assert.equal(f.requests.some(row => row.path === '/api/auth/google'), false, 'The watchdog cannot fabricate a provider credential');
+      assert.equal(await f.page.evaluate(() => window.testGooglePrompted || 0), 0);
+      await f.page.evaluate(value => window.testGoogleCallback({ credential: value }), credential);
+      await f.page.waitForFunction(() => !state.authBusy && state.googleSession?.provider === 'google');
+      assert.equal(f.requests.filter(row => row.path === '/api/auth/google').length, 1, 'A valid delayed callback still verifies exactly once');
+      assert.equal(await f.page.locator('#user-chip').isEnabled(), true);
+      assert.match(await f.page.locator('#login-page').innerText(), /You're signed in/);
     } finally { await f.close(); }
   }
 

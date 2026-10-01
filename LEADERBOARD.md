@@ -287,7 +287,7 @@ R2 leaderboard.json ────────────────────
   Native signed Google-token clients remain supported; unsigned legacy auth
   is disabled in production. See [browser auth setup](cloudflare/AUTH.md).
 - **Remembered sign-in**: the official Google account chooser supports browser
-  account personalization and FedCM; Token Horizon does not read Chrome profile
+  account personalization with Google's popup flow; Token Horizon does not read Chrome profile
   files. Public configuration is cached for five minutes, and a local identity
   hint improves presentation without granting authority. Private auth responses
   are always `private, no-store`; a server read verifies each page session.

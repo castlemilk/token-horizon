@@ -8,7 +8,7 @@ const browser = await (await resolveChromium()).launch({ channel: 'chrome', head
 const google = { provider: 'google', sub: 'google-42', name: 'Aurora Builder', email: 'shared@example.com', picture: '' };
 const github = { provider: 'github', sub: '42', name: 'Orbit Builder', email: 'shared@example.com', login: 'orbit-builder', picture: '' };
 const mime = { '.js': 'text/javascript', '.css': 'text/css', '.ttf': 'font/ttf', '.svg': 'image/svg+xml' };
-async function fixture({ user = null, mode = 'authorize', exchange = 'ready', width = 1440, remembered = null, holdFirstSession = false, holdFirstConnections = false } = {}) {
+async function fixture({ user = null, mode = 'authorize', exchange = 'ready', providerCallback = 'immediate', width = 1440, remembered = null, holdFirstSession = false, holdFirstConnections = false } = {}) {
   const context = await browser.newContext({ viewport: { width, height: 1000 }, reducedMotion: 'reduce' });
   await context.addInitScript(value => {
     if (value) localStorage.setItem('th_auth_hint', JSON.stringify(value));
@@ -28,7 +28,7 @@ async function fixture({ user = null, mode = 'authorize', exchange = 'ready', wi
   await page.route('**/*', async route => {
     const request = route.request(), url = new URL(request.url());
     requests.push({ path: url.pathname, method: request.method(), headers: request.headers(), body: request.postData() });
-    if (url.origin === 'https://accounts.google.com') return route.fulfill({ contentType: 'text/javascript', body: `window.google={accounts:{id:{initialize(opts){window.gsiOptions=opts;window.gsiInitializations=(window.gsiInitializations||[]).concat([{auto_select:opts.auto_select,login_hint:opts.login_hint,button_auto_select:opts.button_auto_select}]);window.gsiCallback=opts.callback},renderButton(host,opts){const b=document.createElement('button');b.textContent='Continue with test Google';b.className='test-gsi';b.style.width=opts.width+'px';b.onclick=()=>window.gsiCallback({credential:'signed-provider-credential'});host.append(b)},prompt(){window.gsiPrompts=(window.gsiPrompts||0)+1},cancel(){},disableAutoSelect(){}}}}` });
+    if (url.origin === 'https://accounts.google.com') return route.fulfill({ contentType: 'text/javascript', body: `window.google={accounts:{id:{initialize(opts){window.gsiOptions=opts;window.gsiInitializations=(window.gsiInitializations||[]).concat([{auto_select:opts.auto_select,login_hint:opts.login_hint,button_auto_select:opts.button_auto_select}]);window.gsiCallback=opts.callback},renderButton(host,opts){window.gsiRenders=(window.gsiRenders||0)+1;const b=document.createElement('button');b.type='button';b.textContent='Continue with test Google';b.className='test-gsi';b.style.width=opts.width+'px';b.onclick=()=>{opts.click_listener?.();${providerCallback === 'immediate' ? "window.gsiCallback({credential:'signed-provider-credential'});" : ''}};host.append(b)},prompt(){window.gsiPrompts=(window.gsiPrompts||0)+1},cancel(){},disableAutoSelect(){}}}}` });
     assert.equal(url.origin, origin, 'Fixture cannot contact external services');
     if (url.pathname === '/api/auth/session') { const snapshot = session(); if (++sessionReads === 1 && holdFirstSession) await sessionHeld; return json(route, snapshot); }
     if (url.pathname === '/api/auth/google') { if (exchange === 'held') await held; if (exchange === 'error') return json(route, { error: 'Identity could not be verified.' }, 401); currentUser = google; return json(route, session()); }
@@ -74,6 +74,38 @@ try {
       assert.equal(await f.page.evaluate(() => document.querySelector('#credential').value), '');
       assert.ok(!(await f.page.evaluate(() => JSON.stringify({ ...localStorage }))).includes('signed-provider-credential'));
       assert.equal(f.requests.filter(request => request.path === '/oauth/authorize' && request.method === 'POST').length, 0);
+    } finally { await f.close(); }
+  }
+  console.log('Connector: a delayed Google popup preserves its control and cannot approve permissions...');
+  {
+    const f = await fixture({ providerCallback: 'delayed', remembered: google });
+    try {
+      await f.page.goto(origin + '/oauth/authorize'); await f.page.waitForSelector('.test-gsi');
+      const settings = await f.page.evaluate(() => ({ mode: window.gsiOptions.ux_mode, fedcm: window.gsiOptions.use_fedcm_for_button, auto: window.gsiOptions.button_auto_select, nonce: window.gsiOptions.nonce, hint: window.gsiOptions.login_hint }));
+      assert.deepEqual(settings, { mode: 'popup', fedcm: false, auto: false, nonce: 'browser-nonce', hint: google.email });
+      await f.page.evaluate(() => { window.pendingGoogleControl = document.querySelector('.test-gsi'); });
+      await f.page.clock.install();
+      await f.page.locator('.test-gsi').click();
+      assert.match(await f.page.locator('#status').innerText(), /Opening Google sign-in/);
+      assert(await f.page.locator('#allow').isDisabled());
+      assert.equal(await f.page.locator('#identity:not([hidden])').count(), 0);
+      assert.equal(f.requests.some(request => request.path === '/api/auth/google' || request.path === '/oauth/connections' || (request.path === '/oauth/authorize' && request.method === 'POST')), false, 'The provider click cannot verify an identity, read connections, or grant consent');
+      await f.page.setViewportSize({ width: 390, height: 844 });
+      await f.page.clock.fastForward(150);
+      await f.page.evaluate(() => window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true })));
+      assert.equal(await f.page.evaluate(() => window.pendingGoogleControl === document.querySelector('.test-gsi')), true, 'Resize and session refresh must preserve the pending provider control');
+      await f.page.clock.fastForward(15000);
+      await f.page.waitForFunction(() => /Google sign-in has not finished/i.test(document.querySelector('#status').textContent));
+      assert.match(await f.page.locator('#status').innerText(), /allow pop-ups.*Continue with Google again/i);
+      assert.equal(await f.page.evaluate(() => window.pendingGoogleControl === document.querySelector('.test-gsi')), true, 'The watchdog keeps the original provider control available for its late callback');
+      assert(await f.page.locator('.test-gsi').isEnabled()); assert(await f.page.locator('#allow').isDisabled());
+      assert.equal(await f.page.evaluate(() => window.gsiPrompts || 0), 0);
+      await f.page.evaluate(() => window.gsiCallback({ credential: 'signed-provider-credential' }));
+      await f.page.waitForSelector('#identity:not([hidden])');
+      await f.page.waitForFunction(() => !document.querySelector('#allow').disabled);
+      assert.match(await f.page.locator('#identity').innerText(), /Aurora Builder/);
+      assert.equal(f.requests.filter(request => request.path === '/api/auth/google').length, 1);
+      assert.equal(f.requests.filter(request => request.path === '/oauth/authorize' && request.method === 'POST').length, 0, 'A delayed login still requires explicit permission approval');
     } finally { await f.close(); }
   }
   console.log('Connector: management remembers sign-in, clears identity on logout, and fits narrow screens...');
@@ -122,9 +154,9 @@ try {
     try {
       await f.page.goto(origin + '/oauth/authorize'); await f.page.waitForSelector('.test-gsi');
       const settings = await f.page.evaluate(() => ({ auto: window.gsiOptions.auto_select, hint: window.gsiOptions.login_hint, prompts: window.gsiPrompts || 0 }));
-      assert.equal(settings.auto, remembered.provider === 'google');
+      assert.equal(settings.auto, false);
       assert.equal(settings.hint, remembered.provider === 'google' ? remembered.email : undefined);
-      assert.equal(settings.prompts > 0, remembered.provider === 'google');
+      assert.equal(settings.prompts, 0, 'Remembered identity personalizes the button without opening automatic One Tap');
       await f.page.locator('.test-gsi').click(); await f.page.waitForSelector('#identity:not([hidden])');
       await f.page.locator('.change-account').click(); await f.page.waitForSelector('.test-gsi');
       const latest = await f.page.evaluate(() => window.gsiInitializations.at(-1));

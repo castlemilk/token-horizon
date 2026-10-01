@@ -18,6 +18,16 @@ Every authentication response is `private, no-store`. `/login` is a cacheable an
 
 Cookie-authenticated writes require exact same-origin `Origin`. Existing signed Google token headers used by native clients remain supported. Legacy unsigned development authentication is unchanged when no Google client is configured; it is never used to mint a remembered browser session or approve MCP consent.
 
+Google's explicit button uses the GIS popup flow (`ux_mode:popup`,
+`use_fedcm_for_button:false`). Forced FedCM returned a `NetworkError` before the
+credential callback in an embedded browser, leaving the old button inert.
+Cookie hydration and Google's personalized button retain remembered accounts;
+the app does not start an automatic One Tap request alongside a button click.
+The official `click_listener` shows opening progress and a 15-second advisory
+when no credential arrives. The live Google iframe survives ordinary session
+refreshes and resize events while that provider request is active; verification
+starts only after Google's credential callback and still requires the Worker.
+
 GitHub transactions expire after ten minutes and require both the KV state record and the `__Host-th-github-state` HttpOnly cookie. Sequential replay consumes the transaction before provider exchange; duplicate authorization codes are also rejected by GitHub. The provider endpoints and avatar host are fixed. Requests never follow provider redirects, have eight-second deadlines, and enforce bounded response bodies. Consent retains the connector library's separate browser binding and requires an explicit Connect submit even when already signed in.
 
 ## GitHub setup

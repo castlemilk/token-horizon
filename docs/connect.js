@@ -25,9 +25,26 @@ syncMotion();
 let credential = '', identity = null, expiresAt = 0, busy = false, cursor = null;
 let authGeneration = 0, identityRevision = 0, sessionReadRevision = 0, refreshPending = false;
 let googleScript = null, googleReady = false, googleInitKey = '';
+let googleRenderHost = null, googleRenderKey = '', googleAttemptPending = false, googleAttemptTimer = null, googleResizePending = false;
 const say = text => { if (status) status.textContent = text; };
 const principal = value => value ? `${value.provider}:${value.sub}` : '';
 const signedIn = () => Boolean(credential || (identity && expiresAt > Date.now() + 30000));
+function finishGoogleAttempt() {
+  clearTimeout(googleAttemptTimer); googleAttemptTimer = null; googleAttemptPending = false;
+}
+function startGoogleAttempt() {
+  if (busy || signedIn()) return;
+  finishGoogleAttempt(); googleAttemptPending = true;
+  say('Opening Google sign-in… Complete sign-in in the Google window.');
+  googleAttemptTimer = setTimeout(() => {
+    googleAttemptTimer = null;
+    if (busy || signedIn()) return;
+    // Keep the official button and its iframe intact. A blocked or cancelled
+    // popup must leave a clear recovery path without interrupting a slow login.
+    say('Google sign-in has not finished. Check for the Google window or allow pop-ups, then choose Continue with Google again.');
+  }, 15000);
+}
+window.addEventListener('pagehide', finishGoogleAttempt);
 function storage(key, value, session = false) {
   try { const store = session ? sessionStorage : localStorage; if (value === undefined) return JSON.parse(store.getItem(key) || 'null'); if (value === null) store.removeItem(key); else store.setItem(key, JSON.stringify(value)); } catch { /* Browser storage is optional; cookies still authenticate. */ }
   return null;
@@ -61,6 +78,7 @@ function renderIdentity() {
   if (options) options.hidden = signedIn();
   const allow = document.querySelector('#allow'); if (allow) allow.disabled = busy || !signedIn();
   const github = document.querySelector('#github-signin'); if (github) github.disabled = busy || !githubAvailable;
+  const googleHost = document.querySelector('#google-signin'); if (googleHost) { googleHost.inert = busy; googleHost.setAttribute('aria-busy', String(busy)); }
   if (!signedIn()) return;
   const photo = document.createElement('span'); photo.className = 'connector-avatar'; photo.textContent = identity?.name?.[0] || identity?.login?.[0] || '✓';
   if (/^https:\/\//.test(identity?.picture || '')) { const img = document.createElement('img'); img.src = identity.picture; img.alt = ''; img.referrerPolicy = 'no-referrer'; img.onerror = () => img.remove(); photo.append(img); }
@@ -71,7 +89,7 @@ function renderIdentity() {
   if (webSessions) { const change = document.createElement('button'); change.type = 'button'; change.className = 'change-account'; change.textContent = 'Use another account'; change.disabled = busy; change.onclick = signOut; host.append(change); }
 }
 function setIdentity(next, expiry = 0) {
-  if (principal(identity) !== principal(next)) { ++identityRevision; document.querySelector('#connections')?.replaceChildren(); }
+  if (principal(identity) !== principal(next)) { finishGoogleAttempt(); ++identityRevision; document.querySelector('#connections')?.replaceChildren(); }
   identity = next; expiresAt = expiry;
   if (next) {
     const hint = identityHint(next);
@@ -108,7 +126,7 @@ async function loadConnections(extra = {}) {
 }
 async function refreshSession() {
   if (!webSessions) return false;
-  if (busy) { refreshPending = true; return false; }
+  if (busy || googleAttemptPending) { refreshPending = true; return false; }
   const generation = authGeneration, revision = ++sessionReadRevision;
   const current = () => generation === authGeneration && revision === sessionReadRevision;
   try {
@@ -121,9 +139,10 @@ async function refreshSession() {
     return true;
   } catch (error) { if (current()) { setIdentity(null); ensureGoogle(); say(error.message); } return false; }
 }
-function flushPendingRefresh() { if (refreshPending && !busy) { refreshPending = false; void refreshSession(); } }
+function flushPendingRefresh() { if (refreshPending && !busy && !googleAttemptPending) { refreshPending = false; void refreshSession(); } }
 async function signOut() {
   if (busy) return;
+  finishGoogleAttempt();
   busy = true; ++authGeneration; renderIdentity();
   try {
     await request('/api/auth/logout', { method: 'POST', json: {} });
@@ -134,7 +153,9 @@ async function signOut() {
   finally { busy = false; renderIdentity(); ensureGoogle(); flushPendingRefresh(); }
 }
 async function receiveGoogle(result) {
-  if (busy || !result?.credential) return;
+  finishGoogleAttempt();
+  if (busy) return;
+  if (!result?.credential) { if (googleResizePending) renderGoogle(); flushPendingRefresh(); return; }
   if (!webSessions) {
     credential = result.credential; document.querySelector('#credential')?.setAttribute('value', credential); renderIdentity();
     if (!form) { try { await loadConnections(); } catch (error) { say(error.message); } } else say('Review permissions, then connect.');
@@ -148,20 +169,21 @@ async function receiveGoogle(result) {
     credential = ''; setIdentity(verified, Number(data.expiresAt)); storage('th_auth_signed_out', null, true);
     if (!form) await loadConnections(); say(form ? 'Review permissions, then connect.' : 'Your connections are up to date.');
   } catch (error) { if (generation === authGeneration) say(error.message); }
-  finally { if (generation === authGeneration) { busy = false; renderIdentity(); flushPendingRefresh(); } }
+  finally { if (generation === authGeneration) { busy = false; renderIdentity(); if (googleResizePending && !signedIn()) renderGoogle(); flushPendingRefresh(); } }
 }
 function initializeGoogle() {
+  if (googleAttemptPending || busy) return;
   const hint = storage('th_auth_hint'), signedOut = Boolean(storage('th_auth_signed_out', undefined, true));
-  const preferGithub = hint?.provider === 'github';
-  const autoSelect = !signedOut && !preferGithub;
   const loginHint = !signedOut && hint?.provider === 'google' && typeof hint.email === 'string' ? hint.email.slice(0, 254) : '';
-  const key = JSON.stringify([body.dataset.clientId, body.dataset.handle, autoSelect, loginHint]);
+  const key = JSON.stringify([body.dataset.clientId, body.dataset.handle, 'popup', loginHint]);
   if (key !== googleInitKey) {
-    google.accounts.id.initialize({ client_id: body.dataset.clientId, nonce: body.dataset.handle, auto_select: autoSelect, use_fedcm_for_button: true, button_auto_select: autoSelect, ...(loginHint ? { login_hint: loginHint } : {}), callback: receiveGoogle });
+    // The browser's FedCM token request can fail before the credential callback.
+    // Use the supported Google popup flow, retaining the personalized account
+    // hint while keeping the client transaction nonce and consent explicit.
+    google.accounts.id.initialize({ client_id: body.dataset.clientId, nonce: body.dataset.handle, ux_mode: 'popup', auto_select: false, use_fedcm_for_button: false, button_auto_select: false, ...(loginHint ? { login_hint: loginHint } : {}), callback: receiveGoogle });
     googleInitKey = key;
   }
   renderGoogle();
-  if (autoSelect && !signedIn()) google.accounts.id.prompt();
 }
 function ensureGoogle() {
   const host = document.querySelector('#google-signin'); if (!host || !body.dataset.clientId || signedIn()) return;
@@ -177,17 +199,26 @@ function ensureGoogle() {
   document.head.append(googleScript);
 }
 function renderGoogle() {
-  const host = document.querySelector('#google-signin'); if (!host || signedIn()) return;
+  const host = document.querySelector('#google-signin'); if (!host || signedIn() || busy || googleAttemptPending) return;
+  const width = Math.floor(Math.max(200, Math.min(360, host.clientWidth || 320)));
+  const key = googleInitKey + '|' + width;
+  googleResizePending = false;
+  if (host === googleRenderHost && key === googleRenderKey && host.firstElementChild) return;
   host.replaceChildren();
-  try { google.accounts.id.renderButton(host, { theme: 'outline', size: 'large', shape: 'rectangular', text: 'continue_with', width: Math.max(200, Math.min(360, host.clientWidth || 320)) }); }
+  try {
+    google.accounts.id.renderButton(host, { theme: 'outline', size: 'large', shape: 'rectangular', text: 'continue_with', width, click_listener: startGoogleAttempt });
+    googleRenderHost = host; googleRenderKey = key;
+  }
   catch { say('Google sign-in could not render. Reload and try again.'); }
 }
 let resizeTimer;
-window.addEventListener('resize', () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(() => { if (googleReady && !signedIn()) renderGoogle(); }, 100); });
+window.addEventListener('resize', () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(() => { if (googleReady && !signedIn()) { if (googleAttemptPending || busy) googleResizePending = true; else renderGoogle(); } }, 100); });
+window.addEventListener('pagehide', () => clearTimeout(resizeTimer));
 form?.addEventListener('submit', async event => {
   event.preventDefault(); if (busy) return;
   const decision = event.submitter?.value || 'allow';
   if (decision === 'allow' && !signedIn()) return say('Sign in to continue.');
+  finishGoogleAttempt();
   busy = true; renderIdentity();
   const fields = new URLSearchParams(new FormData(form)); fields.set('decision', decision); fields.set('credential', credential);
   form.querySelectorAll('button').forEach(button => button.disabled = true);
@@ -196,10 +227,11 @@ form?.addEventListener('submit', async event => {
     const data = await request('/oauth/authorize', { method: 'POST', fields });
     body.classList.add('connected'); say(decision === 'allow' ? 'Connected. Returning to your application…' : 'Connection cancelled. Returning…');
     setTimeout(() => location.assign(data.redirect), reduced.matches ? 0 : 650);
-  } catch (error) { say(error.message); busy = false; form.querySelectorAll('button').forEach(button => button.disabled = false); renderIdentity(); }
+  } catch (error) { say(error.message); busy = false; form.querySelectorAll('button').forEach(button => button.disabled = false); renderIdentity(); ensureGoogle(); }
 });
 document.querySelector('#github-signin')?.addEventListener('click', () => {
   if (!githubAvailable || busy) return;
+  finishGoogleAttempt();
   busy = true; ++authGeneration; renderIdentity();
   try { google.accounts.id.cancel(); } catch { /* Google need not be loaded for GitHub. */ }
   const current = new URL(location.href); current.searchParams.delete('auth'); current.searchParams.delete('auth_error');
@@ -214,6 +246,7 @@ window.addEventListener('storage', event => {
   // A cached name is only a hint. Drop the former account and its grants
   // immediately, then prove the new browser identity with a fresh server read.
   if (event.key === 'th_auth_hint' && event.newValue === null) storage('th_auth_signed_out', true, true);
+  finishGoogleAttempt();
   ++sessionReadRevision; credential = ''; setIdentity(null); say('Checking your remembered account…');
   void refreshSession();
 });

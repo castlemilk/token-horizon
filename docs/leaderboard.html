@@ -1571,6 +1571,7 @@ function sessionOwnsEntry(entry) {
   return (s.provider || "google") === "google" && ((entry.googleSub && entry.googleSub === s.sub) || (entry.googleEmail && s.email && entry.googleEmail.toLowerCase() === s.email.toLowerCase()));
 }
 function setGoogleSession(s, { refreshShared = true } = {}) {
+  if (s) finishGoogleButtonSignIn();
   const previousIdentity = sessionIdentity(state.googleSession), nextIdentity = sessionIdentity(s);
   if (previousIdentity !== nextIdentity && workspaceAutoHandle && state.currentHandle === workspaceAutoHandle) {
     state.currentHandle = null; workspaceAutoHandle = "";
@@ -1682,6 +1683,7 @@ async function exchangeGoogleCredential(credential, { resume = true } = {}) {
   }
 }
 function handleGoogleCredential(response) {
+  finishGoogleButtonSignIn();
   if (state.authBusy) return; // Serialize cookie-changing exchanges.
   const p = decodeJwtPayload(response?.credential);
   if (!p?.email) { state.authError = "Google sign-in could not be verified. Try again."; mountSignInOptions(); return; }
@@ -1689,7 +1691,25 @@ function handleGoogleCredential(response) {
   setGoogleSession({ provider: "google", email: String(p.email).toLowerCase(), name: p.name || p.email, sub: p.sub || "", picture: p.picture || "", credential: response.credential });
   toast("Signed in as " + p.email); completeSignIn();
 }
-let googleInitGeneration = 0, googleInitFlight = false, googleInitializedFor = "", googlePromptedHost = null;
+let googleInitGeneration = 0, googleInitFlight = false, googleInitializedFor = "";
+let googleButtonAttempt = null, googleButtonTimer;
+function finishGoogleButtonSignIn() {
+  clearTimeout(googleButtonTimer); googleButtonAttempt = null;
+}
+function beginGoogleButtonSignIn(container) {
+  finishGoogleButtonSignIn();
+  const host = container.closest("#signin-gsi"), status = $("#signin-status");
+  if (!host || !status || state.authBusy) return;
+  state.authError = "";
+  const attempt = googleButtonAttempt = { container, host, message: "Opening Google sign-in…" };
+  status.textContent = attempt.message;
+  googleButtonTimer = setTimeout(() => {
+    if (googleButtonAttempt !== attempt || !container.isConnected) return;
+    attempt.message = "Google has not completed sign-in. Finish in the Google window, or allow popups and click the Google button again.";
+    status.textContent = attempt.message;
+  }, 15000);
+}
+window.addEventListener("pagehide", finishGoogleButtonSignIn);
 function initGoogleSignIn() {
   if (!state.googleClientId || googleInitFlight) return;
   let signedOut = Boolean(authStorage("th_auth_signed_out", undefined, true));
@@ -1705,7 +1725,9 @@ function initGoogleSignIn() {
         // The SDK may arrive after the user changes account choice.
         signedOut = Boolean(authStorage("th_auth_signed_out", undefined, true));
         initKey = state.googleClientId + "|" + signedOut + "|" + (state.authHint?.provider || "") + "|" + (signedOut ? "" : state.authHint?.email || "");
-        const options = { client_id: state.googleClientId, callback: handleGoogleCredential, auto_select: !signedOut && state.authHint?.provider !== "github", use_fedcm_for_button: true, button_auto_select: !signedOut && state.authHint?.provider !== "github", cancel_on_tap_outside: true };
+        // Remembered sessions hydrate from our cookie. Explicit Google clicks
+        // use the supported popup flow, including browsers without working FedCM.
+        const options = { client_id: state.googleClientId, callback: handleGoogleCredential, ux_mode: "popup", auto_select: !signedOut && state.authHint?.provider !== "github", use_fedcm_for_button: false, button_auto_select: false, cancel_on_tap_outside: true };
         if (!signedOut && state.authHint?.provider === "google" && state.authHint.email) options.login_hint = state.authHint.email;
         google.accounts.id.initialize(options);
         state.googleReady = true; state.googleUnavailable = false; googleInitializedFor = initKey;
@@ -1718,6 +1740,7 @@ function initGoogleSignIn() {
   tryInit();
 }
 function reloadGoogleSDK() {
+  finishGoogleButtonSignIn();
   ++googleInitGeneration; googleInitFlight = false; state.googleUnavailable = false;
   if (!window.google?.accounts?.id) {
     $("#google-identity-sdk")?.remove();
@@ -1729,15 +1752,8 @@ function reloadGoogleSDK() {
 }
 function renderGoogleButton(container, opts = {}) {
   if (!state.googleReady || !window.google?.accounts?.id || !container) return false;
-  try { google.accounts.id.renderButton(container, { theme: "outline", size: "large", shape: "rectangular", text: "continue_with", logo_alignment: "left", width: Math.max(200, Math.min(400, opts.width || 320)) }); return true; }
+  try { google.accounts.id.renderButton(container, { theme: "outline", size: "large", shape: "rectangular", text: "continue_with", logo_alignment: "left", width: Math.max(200, Math.min(400, opts.width || 320)), click_listener: () => beginGoogleButtonSignIn(container) }); return true; }
   catch (_) { return false; }
-}
-function maybePromptGoogle(host) {
-  if (state.webSessions && state.authStatus !== "ready") return;
-  if (state.authHint?.provider === "github") return;
-  if (!host || googlePromptedHost === host || !state.googleReady || isGoogleSessionValid() || state.authBusy || authStorage("th_auth_signed_out", undefined, true)) return;
-  googlePromptedHost = host;
-  try { google.accounts.id.prompt(); } catch (_) { /* The regular button remains available. */ }
 }
 function promptGoogleLogin() {
   if (!legacyGoogleAuthAllowed()) { openSignInModal(); return; }
@@ -1778,6 +1794,7 @@ function loadAuthConfig({ force = false } = {}) {
 }
 async function signOut({ switchAccount = false } = {}) {
   if (state.authBusy) return;
+  finishGoogleButtonSignIn();
   const server = state.googleSession?.serverSession || state.webSessions;
   ++authGeneration;
   try { google.accounts.id.cancel(); google.accounts.id.disableAutoSelect(); } catch (_) {}
@@ -5052,9 +5069,9 @@ function openShareModal(handle) {
   };
 }
 function closeModal({ preservePending = false } = {}) {
+  finishGoogleButtonSignIn();
   if (!preservePending) state.signInPending = null;
   BLACKHOLE.stop(); authModalMotionCleanup?.(); authModalMotionCleanup = null;
-  googlePromptedHost = null;
   try { google.accounts.id.cancel(); } catch (_) {}
   $("#modal-backdrop").classList.remove("open");
   $("#modal-backdrop").innerHTML = "";
@@ -5304,6 +5321,7 @@ function authReturnPath() {
 }
 function startGithubSignIn() {
   if (!state.githubAuth || state.authBusy) return;
+  finishGoogleButtonSignIn();
   const path = authReturnPath();
   authStorage("th_auth_return", { at: Date.now(), path, resume: state.signInPending?.resume || signInResume(state.signInPending?.action || "") }, true);
   try { google.accounts.id.cancel(); } catch (_) {}
@@ -5378,6 +5396,7 @@ function wireAuthMotion(root, hole) {
   return () => { reduced.removeEventListener("change", preference); document.removeEventListener("visibilitychange", update); };
 }
 function renderLogin() {
+  finishGoogleButtonSignIn();
   LOGINHOLE.stop(); authPageMotionCleanup?.();
   $("#view").innerHTML = `<section class="auth-shell" id="login-page" aria-labelledby="signin-title">${authArt("login-bh-art", true)}${authPane({ page: true })}</section>`;
   LOGINHOLE.start($("#login-bh-art")); authPageMotionCleanup = wireAuthMotion($("#login-page"), LOGINHOLE);
@@ -5410,28 +5429,34 @@ function mountSignInOptions() {
   if (remembered) {
     const hint = state.authHint;
     remembered.innerHTML = hint && !isGoogleSessionValid() ? `<div class="auth-remembered">${avatar(hint.name || hint.email || hint.login, hint.picture, 36)}<div><strong>${esc(hint.name || hint.login || hint.email)}</strong><small>Last used on this device</small></div><button class="auth-text-link" id="signin-change-account">Use another account</button></div>` : "";
-    $("#signin-change-account")?.addEventListener("click", () => { state.authHint = null; authStorage("th_auth_hint", null); authStorage("th_auth_signed_out", true, true); try { google.accounts.id.cancel(); google.accounts.id.disableAutoSelect(); } catch (_) {} initGoogleSignIn(); mountSignInOptions(); });
+    $("#signin-change-account")?.addEventListener("click", () => { finishGoogleButtonSignIn(); state.authHint = null; authStorage("th_auth_hint", null); authStorage("th_auth_signed_out", true, true); try { google.accounts.id.cancel(); google.accounts.id.disableAutoSelect(); } catch (_) {} initGoogleSignIn(); mountSignInOptions(); });
   }
-  if (state.authBusy) { host.innerHTML = '<div class="auth-provider-skeleton" role="status"><span class="auth-mini-orbit" aria-hidden="true"></span> Verifying your account…</div>'; status.textContent = state.authError; return; }
+  if (googleButtonAttempt?.container.isConnected && googleButtonAttempt.host === host && !state.authBusy) { status.textContent = googleButtonAttempt.message; return; }
+  if (state.authBusy) { delete host.dataset.authProviders; host.innerHTML = '<div class="auth-provider-skeleton" role="status"><span class="auth-mini-orbit" aria-hidden="true"></span> Verifying your account…</div>'; status.textContent = state.authError; return; }
   if (state.googleConfig !== "ready") {
+    delete host.dataset.authProviders;
     host.innerHTML = state.googleConfig === "error" ? '<button class="auth-provider" id="signin-config-retry">Try sign-in again</button>' : '<div class="auth-provider-skeleton" role="status"><span class="auth-mini-orbit" aria-hidden="true"></span> Loading sign-in options…</div><div class="auth-provider-placeholder" aria-hidden="true"></div>';
     status.textContent = state.googleConfig === "error" ? "Sign-in settings could not load. You can still explore public profiles." : "";
     $("#signin-config-retry")?.addEventListener("click", () => { loadAuthConfig({ force: true }); mountSignInOptions(); }); return;
   }
   const github = `<button class="auth-provider auth-github" id="signin-github" ${state.githubAuth ? "" : "disabled"}>${GITHUB_G}<span>Continue with GitHub</span></button>${state.githubAuth ? "" : '<small class="auth-provider-note">GitHub sign-in is being configured.</small>'}`;
   const googleHost = state.googleReady ? '<div id="signin-gsi-btn"></div>' : state.googleClientId ? `<button class="auth-provider" id="signin-retry" ${state.googleUnavailable ? "" : "disabled"}>${GOOGLE_G}<span>${state.googleUnavailable ? "Retry Google sign-in" : "Loading Google sign-in…"}</span></button>` : legacyGoogleAuthAllowed() ? '<button class="auth-provider" id="signin-dev">Continue (dev mode)</button>' : '<p class="auth-provider-note">Google sign-in is unavailable.</p>';
-  host.innerHTML = `${googleHost}${github}`;
-  $("#signin-github")?.addEventListener("click", startGithubSignIn);
-  $("#signin-dev")?.addEventListener("click", promptGoogleLogin);
-  $("#signin-retry")?.addEventListener("click", () => { reloadGoogleSDK(); });
+  const width = Math.max(200, Math.min(400, Math.floor(host.getBoundingClientRect().width || 320)));
+  const key = JSON.stringify([state.googleReady, googleInitializedFor, state.githubAuth, state.googleClientId, state.googleUnavailable, width]);
+  if (host.dataset.authProviders !== key) {
+    host.innerHTML = `${googleHost}${github}`; host.dataset.authProviders = key;
+    $("#signin-github")?.addEventListener("click", startGithubSignIn);
+    $("#signin-dev")?.addEventListener("click", promptGoogleLogin);
+    $("#signin-retry")?.addEventListener("click", reloadGoogleSDK);
+    const container = $("#signin-gsi-btn");
+    if (container && !renderGoogleButton(container, { width })) {
+      delete host.dataset.authProviders;
+      container.innerHTML = '<button class="auth-provider" id="signin-render-retry">Retry Google sign-in</button>';
+      $("#signin-render-retry").onclick = () => mountSignInOptions();
+    }
+  }
   status.textContent = state.authError || (state.googleUnavailable ? "Google could not load. Check your connection or use GitHub." : state.webSessions && state.authStatus === "checking" ? "Checking your remembered account…" : "");
   if (state.authStatus === "error") { status.insertAdjacentHTML("beforeend", ' <button class="auth-text-link" id="signin-session-retry">Try again</button>'); $("#signin-session-retry").onclick = () => hydrateAuthSession({ force: true }); }
-  const container = $("#signin-gsi-btn");
-  if (container) {
-    const width = Math.max(200, Math.min(400, Math.floor(host.getBoundingClientRect().width || 320)));
-    if (!renderGoogleButton(container, { width })) { container.innerHTML = '<button class="auth-provider" id="signin-render-retry">Retry Google sign-in</button>'; $("#signin-render-retry").onclick = () => mountSignInOptions(); }
-    maybePromptGoogle(host);
-  }
 }
 
 /* ============================================================
