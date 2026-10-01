@@ -72,6 +72,9 @@ jobs:
       - name: Worker tests (leaderboard API and OAuth connector)
         run: node --test cloudflare/worker.test.mjs cloudflare/connector.test.mjs cloudflare/og-card.test.mjs cloudflare/og-avatar.test.mjs
 
+      - name: Profile photo fetch regression (native Worker runtime)
+        run: node scripts/test-og-avatar-worker.mjs
+
       - name: Social card PNG regression (real WASM and bundled fonts)
         run: |
           node cloudflare/assets/build-og-leagues.mjs --check

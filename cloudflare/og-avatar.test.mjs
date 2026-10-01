@@ -73,12 +73,13 @@ describe("optional OG public profile photos", () => {
 
   it("fetches Google/public HTTPS images with no credentials or redirects", async () => {
     let request;
-    const fetchImpl = async (url, options) => { request = { url, options }; return response(png, "image/png; charset=binary"); };
+    const fetchImpl = async function (url, options) { request = { url, options, receiver: this }; return response(png, "image/png; charset=binary"); };
     const uri = await loadOgAvatar(photo("https://lh3.googleusercontent.com/a/public-photo=s96-c"), {}, { fetchImpl });
     assert.match(uri, /^data:image\/png;base64,/);
     assert.equal(request.url, "https://lh3.googleusercontent.com/a/public-photo=s96-c");
-    assert.equal(request.options.credentials, "omit");
-    assert.equal(request.options.redirect, "error");
+    assert.equal(request.receiver, globalThis, "Native Worker fetch preserves its global receiver");
+    assert.equal(request.options.credentials, undefined, "No profile credentials are forwarded");
+    assert.equal(request.options.redirect, "manual");
     assert.deepEqual(Object.keys(request.options.headers), ["Accept"]);
     assert.equal(request.options.headers.Accept, "image/png, image/jpeg, image/gif");
     assert.ok(request.options.signal instanceof AbortSignal);

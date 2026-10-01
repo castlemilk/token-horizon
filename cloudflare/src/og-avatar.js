@@ -221,8 +221,10 @@ export async function loadOgAvatar(entry, env, { anonymize = false, fetchImpl = 
   const url = remoteUrl(source);
   if (!url || typeof fetchImpl !== "function") return "";
   return cached(`url:${scopeId(fetchImpl)}:${url.href}:${cacheRevision}`, async signal => {
-    const response = await fetchImpl(url.href, {
-      signal, redirect: "error", credentials: "omit",
+    // A fresh header set forwards no cookies or auth. Workers supports manual
+    // redirects; the status check below rejects them without following them.
+    const response = await fetchImpl.call(globalThis, url.href, {
+      signal, redirect: "manual",
       headers: { Accept: "image/png, image/jpeg, image/gif" }
     });
     const contentType = response.headers.get("Content-Type") || "";
