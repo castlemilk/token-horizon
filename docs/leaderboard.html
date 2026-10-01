@@ -54,7 +54,7 @@ const API_BASE = (() => {
 <script src="./vendor/dicebear.js" async></script>
 <script src="./vendor/fuse.js" async></script>
 <script src="./vendor/tanstack-table.js" async></script>
-<style>
+<style id="token-horizon-shell-styles">
 :root{
   --bg:#080B12; --panel:#0F141E; --panel2:#141B28; --panel3:#1A2233;
   --line:#1E2635; --line2:#2A3548;
@@ -575,11 +575,12 @@ body.th-flat .mx-flat-score{display:none}
 .tier:hover,.tier.you{transform:none}
 }
 </style>
-<link rel="stylesheet" href="./discovery.css" />
-<link rel="stylesheet" href="./horizon-system.css?v=20260930" />
-<link rel="stylesheet" href="./profile.css?v=20261001" />
-<link rel="stylesheet" href="./auth.css?v=20261001" />
-<link rel="stylesheet" href="./workspace.css?v=20260930" />
+<link rel="stylesheet" href="./discovery.css" data-ui-style />
+<link rel="stylesheet" href="./horizon-system.css?v=20260930" data-ui-style />
+<link rel="stylesheet" href="./profile.css?v=20261001" data-ui-style />
+<link rel="stylesheet" href="./auth.css?v=20261001-2" data-ui-style />
+<link rel="stylesheet" href="./workspace.css?v=20260930" data-ui-style />
+<script src="./ui-updates.js?v=20261001" defer></script>
 </head>
 <body>
 <a class="discovery-skip" href="#view">Skip to content</a>
@@ -646,7 +647,7 @@ body.th-flat .mx-flat-score{display:none}
 <div class="modal-backdrop" id="modal-backdrop"></div>
 <div class="hover-tip" id="hover-tip"></div>
 
-<script>
+<script id="token-horizon-shell">
 "use strict";
 /* ============================================================
    Token Horizon — data-driven leaderboard & analytics dashboard.
@@ -5078,6 +5079,7 @@ function initModalManager() {
       if (modalOpener && modalOpener.isConnected) { try { modalOpener.focus({ preventScroll: true }); } catch (_) {} }
       modalOpener = null;
     }
+    window.TokenHorizonUIUpdates?.mount();
   }).observe(backdrop, { childList: true, attributes: true, attributeFilter: ["class"] });
   document.addEventListener("keydown", (e) => {
     if (e.key !== "Tab" || !backdrop.classList.contains("open")) return;

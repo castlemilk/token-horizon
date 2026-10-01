@@ -110,6 +110,18 @@ deadline, then a 3-second static-export fallback, followed by a visible retry
 state. Conditional catalog requests retain asset validators and 304 responses.
 Render generations prevent old requests from overwriting a newer route.
 
+Open browser tabs retain the JavaScript they loaded even after a deployment.
+`docs/ui-updates.js` checks the anonymous shell after five seconds and every
+five minutes while visible, using a cookie-free conditional GET outside the
+startup path. It compares the marked inline script/styles and versioned CSS
+links without executing the returned document. Reads share a five-second
+deadline and a 1 MiB body cap. A changed shell displays **New version ready**
+with an explicit Reload button, including inside an active modal; drafts and
+sign-in are undisturbed until the visitor chooses to reload. Tabs opened before
+this detector shipped still need one manual reload. `scripts/test-ui-updates.mjs`
+guards comparison, revalidation, throttling, modal accessibility and stalled
+reads alongside sign-in.
+
 `scripts/test-workspace-ui.mjs` covers profile selection, session changes,
 private titles/costs, independent loading, search and narrow screens. The main
 UI suite covers stalled headers/bodies, static fallback, retry and route races.
