@@ -122,7 +122,59 @@ async function assertMenuClosed(page) {
   assert.equal(await page.locator('#discovery-navigation').getAttribute('hidden'), '');
 }
 
+async function assertAccountContrast(page) {
+  const samples = await page.locator('#user-chip').evaluate(chip => {
+    const rgba = value => value.match(/[\d.]+/g).map(Number);
+    const luminance = color => color.slice(0, 3).map(value => {
+      const channel = value / 255;
+      return channel <= .04045 ? channel / 12.92 : ((channel + .055) / 1.055) ** 2.4;
+    }).reduce((sum, value, index) => sum + value * [.2126, .7152, .0722][index], 0);
+    return [...chip.querySelectorAll('strong, small, span[aria-hidden="true"]')].filter(node => node.getClientRects().length).map(node => {
+      // Resolve transparent component layers against their actual painted host.
+      const layers = [];
+      for (let host = node; host; host = host.parentElement) layers.unshift(rgba(getComputedStyle(host).backgroundColor));
+      const background = layers.reduce((result, layer) => {
+        const alpha = layer[3] ?? 1;
+        return layer.slice(0, 3).map((value, index) => value * alpha + result[index] * (1 - alpha));
+      }, [255, 255, 255]);
+      const style = getComputedStyle(node), foreground = rgba(style.color);
+      const alpha = foreground[3] ?? 1;
+      const ink = foreground.slice(0, 3).map((value, index) => value * alpha + background[index] * (1 - alpha));
+      const light = luminance(ink), dark = luminance(background);
+      return { label: node.tagName, color: style.color, background, contrast: (Math.max(light, dark) + .05) / (Math.min(light, dark) + .05) };
+    });
+  });
+  assert.equal(samples.length, 3, 'The name, provider subtitle and chevron must remain visible');
+  for (const sample of samples) assert(sample.contrast >= 4.5, 'Account text must have AA contrast: ' + JSON.stringify(sample));
+}
+
 try {
+  console.log('Account navigation: Google and GitHub text remains readable across palettes, surfaces and missing theme overlays...');
+  for (const provider of ['google', 'github']) {
+    const f = await fixture({ user: { ...longUser, provider }, reducedMotion: 'reduce' });
+    try {
+      await open(f.page, '/leaderboard', true);
+      for (const theme of ['light', 'dark']) {
+        if (await f.page.locator('html').getAttribute('data-theme') !== theme) await f.page.locator('.th-theme-toggle:visible').click();
+        for (const view of ['leaderboard', 'dashboard', 'leaderboard']) {
+          if (view === 'dashboard') await f.page.locator('[data-public-view="dashboard"]').click();
+          else if (await f.page.evaluate(() => state.view === 'dashboard')) await f.page.locator('#nav [data-view="leaderboard"]').click();
+          await f.page.waitForFunction(view => state.view === view, view); await settle(f.page);
+          await f.page.mouse.move(1, 500); await assertAccountContrast(f.page);
+          await f.page.locator('#user-chip').hover(); await assertAccountContrast(f.page);
+        }
+      }
+      // The component itself must remain readable if a stale page or interrupted
+      // stylesheet request leaves the semantic theme/surface overlays unavailable.
+      await f.page.evaluate(() => document.querySelectorAll('link[href*="theme.css"],link[href*="surfaces.css"]').forEach(link => { link.disabled = true; }));
+      await settle(f.page); await assertAccountContrast(f.page);
+      await f.page.locator('[data-public-view="dashboard"]').click();
+      await f.page.waitForFunction(() => state.view === 'dashboard'); await settle(f.page);
+      await f.page.mouse.move(1, 500); await assertAccountContrast(f.page);
+      await f.page.locator('#user-chip').hover(); await assertAccountContrast(f.page);
+    } finally { await f.close(); }
+  }
+
   console.log('Public navigation: anonymous and long signed-in identities fit all compact and desktop widths...');
   for (const user of [null, longUser]) {
     const f = await fixture({ user });
