@@ -574,3 +574,32 @@ scroll within their panels, and private mobile navigation uses a compact ribbon.
 
 Theme and team regressions: `node scripts/test-theme-runtime.mjs`,
 `node scripts/test-themes-ui.mjs`, and `node scripts/test-teams-ui.mjs`.
+
+Team arrivals use a self-hosted Three.js black hole: official provider marks
+spiral inward with token streams. The scene is decorative and loads independently
+of public usage and authentication. Rendering caps DPR at 1.5 and runs at 30fps
+(24fps on narrow screens); it pauses offscreen/hidden, disposes on navigation,
+and skips the GPU download for reduced motion. Pause/play remains explicit.
+
+`/t/:teamId` is a public team permalink backed by `GET /api/team/:teamId`.
+Joined `memberCount` comes from verified account memberships; `publishedProfiles`
+and token totals come only from public profiles. Unpublished members count toward
+the crew without exposing their identities. Legacy name-only usage groups remain
+separate from canonical teams.
+
+Team owners manage a custom icon in **Invite friends → Upload team icon**.
+The browser fits PNG/JPEG/WebP artwork onto a transparent square PNG without
+cropping the mark. `POST /api/team/logo` requires both verified owner identity and
+the expected `teamId`; the worker validates the raster before storing a versioned
+R2 object. Clear uses `{teamId, clear:true}`. Public artwork is served through
+`GET /api/team/:teamId/logo?v=revision`.
+
+**Share team** reveals the real `/api/og/team/:teamId.png` preview and a public
+profile link with team name, custom icon, joined-member count, published usage
+and provider mix. Invite links retain their sign-in/join behavior; their private
+metadata previews the same team but uses the public team canonical URL, keeping
+the secret join token out of OG data. Card cache keys change with team identity,
+membership, usage and logo revisions.
+
+Team branding/card/arrival regressions: `cloudflare/og-team.test.mjs`,
+`scripts/test-team-flow-ui.mjs`, and `scripts/test-team-motion-ui.mjs`.

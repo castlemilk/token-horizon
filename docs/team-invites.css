@@ -205,3 +205,32 @@ body[data-surface="invite"] .ti-invite-content .ti-privacy-note { margin-top: 22
   .th-team-invites *, .th-team-invites *::before, .th-team-invites *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
   .ti-skeleton > *::after { display: none; }
 }
+
+/* This stylesheet is loaded on demand, after the shared palette. Keep the
+   interactive surfaces semantic so both invitation and owner dialogs inherit
+   the current mode; the intentionally dark orbital artwork stays fixed. */
+.th-team-invites{--ti-paper:var(--th-bg,#f3f4ef);--ti-ink:var(--th-text,#121714);--ti-muted:var(--th-muted,#56635a);--ti-rule:var(--th-rule,#dce1da);--ti-green:var(--th-accent,#235e43);font-family:var(--th-body,var(--sans,sans-serif));color:var(--ti-ink)}
+.th-team-invites.ti-manager,.th-team-invites .ti-manager-content,.th-team-invites .ti-invite-card,.th-team-invites .ti-invite-content{background:var(--th-surface,#fff);border-color:var(--ti-rule);color:var(--ti-ink)}
+.th-team-invites.ti-invite-page{background:transparent}
+.th-team-invites .ti-manager-content h2,.th-team-invites .ti-team-details h3,.th-team-invites .ti-invite-content h1,.th-team-invites .ti-no-links p{color:var(--ti-ink);letter-spacing:-.035em}
+.th-team-invites :is(.ti-manager-content header p,.ti-manager-body>p,.ti-field-help,.ti-team-details p,.ti-team-details p span,.ti-invite-meta,.ti-invite-meta time,.ti-link-footer,.ti-no-links span,.ti-member-note p,.ti-privacy-note,.ti-invite-content>p,.ti-crew-line time,.ti-join-help,.ti-page-footer){color:var(--ti-muted)}
+.th-team-invites .ti-manager-body form label{color:var(--ti-ink)}
+.th-team-invites :is(.ti-team-details,.ti-invite-row,.ti-privacy-note,.ti-crew-line time){border-color:var(--ti-rule)}
+.th-team-invites :is(.ti-name-control input,.ti-link-control input){background:var(--th-surface-2,#f7f9f4);border-color:var(--ti-rule);color:var(--ti-ink)}
+.th-team-invites .ti-name-control input::placeholder{color:var(--ti-muted);opacity:1}
+.th-team-invites .ti-team-badge{background:var(--th-selected,#e7f2e8);border-color:var(--ti-rule);color:var(--ti-green)}
+.th-team-invites :is(.ti-text-button,.ti-member-note,.ti-status,.ti-home-link,.ti-crew-line){color:var(--ti-green)}
+.th-team-invites :is(.ti-link-footer,.ti-invite-meta,.ti-team-details p,.ti-privacy-note){font-size:11px}
+.th-team-invites .ti-link-control input{font-size:11px;min-height:44px}
+.th-team-invites .ti-link-control .ti-copy-button{min-height:44px;font-size:11px}
+.th-team-invites .ti-link-footer .ti-revoke{color:var(--th-danger,#a34040);font-size:11px!important}
+.th-team-invites .ti-button{background:var(--th-surface,#fff);border-color:var(--th-rule-strong,#c5d0c5);color:var(--ti-green);min-height:44px}
+.th-team-invites .ti-button:hover:not(:disabled){background:var(--th-hover,#edf4e9);border-color:var(--th-rule-strong,#98ad9b)}
+.th-team-invites .ti-button.ti-primary{background:var(--ti-green);border-color:var(--ti-green);color:var(--th-accent-ink,#fff)}
+.th-team-invites .ti-button.ti-primary:hover:not(:disabled){background:var(--ti-green);border-color:var(--ti-green);filter:brightness(1.1)}
+.th-team-invites :is(button,a,input):focus-visible{outline-color:var(--ti-green)}
+.th-team-invites .ti-error{background:var(--th-danger-bg,#fff8ec);color:var(--th-danger,#735629);border-color:var(--th-rule-strong,#e8d8b6)}
+.th-team-invites .ti-error .ti-text-button{color:inherit}
+.th-team-invites .ti-success-label{background:var(--th-selected,#edf6ed);color:var(--ti-green);border-color:var(--ti-rule)}
+.th-team-invites .ti-switch-note{border:1px solid var(--th-rule);border-radius:8px;padding:12px;color:var(--ti-ink);background:var(--th-surface-2,#f3f4ef)}
+@media(min-width:651px){.th-team-invites .ti-close{background:var(--th-surface-2,#f3f4ef);color:var(--ti-ink);border-color:var(--ti-rule);width:36px;height:36px}.th-team-invites .ti-close:hover{background:var(--th-hover,#e6ede3);color:var(--ti-ink)}}

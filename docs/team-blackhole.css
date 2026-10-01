@@ -1,0 +1,92 @@
+/* The team invitation's single authored moment: providers converge at a horizon.
+   This art keeps its deliberate dark material in both product themes. */
+[data-team-blackhole] {
+  position: relative;
+  width: 100%;
+  min-height: 340px;
+  aspect-ratio: 1.32;
+  isolation: isolate;
+  overflow: hidden;
+  contain: layout paint;
+  background: #09110f;
+  border-radius: 16px;
+}
+[data-team-blackhole] canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 450ms cubic-bezier(.16, 1, .3, 1);
+}
+[data-team-blackhole][data-motion-state="running"] canvas,
+[data-team-blackhole][data-motion-state="paused"] canvas { opacity: 1; }
+.th-team-hole-fallback { position: absolute; inset: 0; pointer-events: none; }
+.th-team-hole-fallback::before {
+  content: "";
+  position: absolute;
+  left: 14%;
+  right: 14%;
+  top: 35%;
+  bottom: 35%;
+  border-radius: 50%;
+  background: radial-gradient(ellipse, transparent 54%, #86b59b 57%, #dcf4d9 59%, #91bda3 61%, #243d32 66%, transparent 71%);
+  transform: rotate(-9deg);
+}
+.th-team-hole-fallback::after {
+  content: "";
+  position: absolute;
+  width: 30%;
+  aspect-ratio: 1;
+  left: 35%;
+  top: 50%;
+  transform: translateY(-50%);
+  border-radius: 50%;
+  background: #050a08;
+  border: 2px solid #b9dac3;
+  box-shadow: 0 5px 32px #253d30;
+}
+[data-team-blackhole][data-motion-state="running"] .th-team-hole-fallback,
+[data-team-blackhole][data-motion-state="paused"] .th-team-hole-fallback { opacity: 0; }
+.th-team-hole-providers { position: absolute; inset: 0; pointer-events: none; }
+.th-team-hole-provider {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  display: grid;
+  place-items: center;
+  width: clamp(36px, 6.7vw, 52px);
+  aspect-ratio: 1;
+  border-radius: 12px;
+  background: var(--provider-bg, #17271e);
+  box-shadow: 0 9px 22px #02090670;
+  overflow: hidden;
+  transform: translate(-50%, -50%);
+  opacity: .92;
+}
+.th-team-hole-provider img { width: 64%; height: 64%; object-fit: contain; display: block; }
+.th-team-hole-provider[data-provider="openai"] img { width: 142%; height: 142%; max-width: none; }
+.th-team-hole-provider[data-provider="google"] img { width: 65%; height: 65%; }
+.th-team-hole-provider[data-provider="mistral"] img { width: 70%; height: 70%; }
+.th-team-hole-provider[data-provider="xai"] img { width: 80%; height: 80%; }
+.th-team-hole-provider:nth-child(1) { left: 14%; top: 35%; transform: translate(-50%, -50%) rotate(-10deg); }
+.th-team-hole-provider:nth-child(2) { left: 32%; top: 17%; transform: translate(-50%, -50%) rotate(7deg); }
+.th-team-hole-provider:nth-child(3) { left: 76%; top: 25%; transform: translate(-50%, -50%) rotate(-7deg); }
+.th-team-hole-provider:nth-child(4) { left: 87%; top: 65%; transform: translate(-50%, -50%) rotate(11deg); }
+.th-team-hole-provider:nth-child(5) { left: 67%; top: 82%; transform: translate(-50%, -50%) rotate(-9deg); }
+.th-team-hole-provider:nth-child(6) { left: 22%; top: 74%; transform: translate(-50%, -50%) rotate(8deg); }
+.th-team-hole-token { position: absolute; left: 50%; top: 50%; font: 10px/1 var(--mono, ui-monospace, monospace); color: #c1e8ce; opacity: 0; pointer-events: none; }
+.th-team-hole-edge { position: absolute; inset: 0; pointer-events: none; background: linear-gradient(180deg, #09110f00 65%, #09110f80); }
+@media(max-width:600px) {
+  [data-team-blackhole] { min-height: 280px; aspect-ratio: 1.25; }
+  .th-team-hole-provider { width: 38px; border-radius: 10px; }
+}
+@media(prefers-reduced-motion:reduce) {
+  [data-team-blackhole] canvas { transition: none; }
+}
+@media(forced-colors:active) {
+  [data-team-blackhole] { border: 1px solid CanvasText; }
+  .th-team-hole-provider { forced-color-adjust: none; }
+}

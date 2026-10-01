@@ -10,7 +10,7 @@ const flags = /^compatibility_flags\s*=\s*(\[[^\n]+\])/m.exec(config)?.[1];
 assert.ok(compatibilityDate && flags, 'Use the deployed Worker compatibility configuration');
 const compatibilityFlags = JSON.parse(flags);
 const source = await readFile(new URL('../cloudflare/src/og-avatar.js', import.meta.url), 'utf8');
-const loaderSource = source.replace(/^export (?=async function loadOgAvatar)/m, '');
+const loaderSource = source.replace(/^export (?=(?:async )?function (?:loadOgAvatar|validatedRasterDataUri)\b)/gm, '');
 assert.notEqual(loaderSource, source, 'Embed the actual exported avatar loader');
 const png = Uint8Array.from(Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jCbkAAAAASUVORK5CYII=', 'base64'));
 const expectedPhoto = `data:image/png;base64,${Buffer.from(png).toString('base64')}`;

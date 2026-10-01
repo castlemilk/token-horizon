@@ -1,6 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import worker from './src/index.js';
+import { loadTeamLogoDataUri } from './src/team-invites.js';
 
 function mockR2Bucket(initialEntries = null) {
   let stored = initialEntries ? JSON.stringify(initialEntries) : null;
@@ -190,7 +191,7 @@ describe('Account team invites', () => {
     assert.equal(invite.expiresAt - invite.createdAt, 30 * 86400000);
     const publicInvite = await call(`/api/team/invites/${invite.token}`);
     assert.deepEqual(Object.keys(publicInvite.data).sort(), ['expiresAt', 'ok', 'team']);
-    assert.deepEqual(Object.keys(publicInvite.data.team).sort(), ['id', 'memberCount', 'name']);
+    assert.deepEqual(Object.keys(publicInvite.data.team).sort(), ['id', 'logoUpdatedAt', 'logoUrl', 'memberCount', 'name', 'ogImage', 'url']);
     assert.equal(publicInvite.response.headers.get('Referrer-Policy'), 'no-referrer');
     const joined = await call('/api/team/join', friend, { token: invite.token, handle: 'someone-elses-profile' });
     assert.equal(joined.status, 200);
@@ -389,11 +390,16 @@ describe('Account team invites', () => {
     assert.equal(metadataGets.filter(key => key.includes('/teams/')).length, 1);
     const count = metadataGets.length;
     await call('/api/user/work-profile');
-    await call('/api/teams');
     assert.equal(metadataGets.length, count);
+    await call('/api/teams');
+    const enrichedCount = metadataGets.length;
+    assert.equal(enrichedCount, count + 2); // One roster index row + its authoritative account.
+    assert.equal(metadataGets.filter(key => key.includes('/teams/')).length, 1);
+    await call('/api/teams');
+    assert.equal(metadataGets.length, enrichedCount);
     env.ASSETS = { async fetch() { return new Response(JSON.stringify({ models: [] }), { headers: { 'Content-Type': 'application/json' } }); } };
     await call('/api/models/catalog');
-    assert.equal(metadataGets.length, count);
+    assert.equal(metadataGets.length, enrichedCount);
   });
 
   it('repairs an invite lookup index when creation is retried after a partial storage failure', async () => {
@@ -1684,4 +1690,266 @@ describe('Cloudflare Worker API', () => {
     }
   });
 
+});
+
+const teamPng = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jCbkAAAAASUVORK5CYII=';
+
+describe('Team identity, logo and public share cards', () => {
+  it('counts joined accounts separately from published profiles and never exposes private roster identities', async () => {
+    const { env, token, call } = await teamFixture();
+    const owner = await token('brand-owner'), friend = await token('brand-friend'), unpublished = await token('brand-unpublished');
+    const created = (await call('/api/team/invites', owner, { name: 'Aster Crew' })).data;
+    const id = created.team.id, invite = created.invites[0].token;
+    await call('/api/team/join', friend, { token: invite });
+    await call('/api/team/join', unpublished, { token: invite });
+    await call('/api/leaderboard', owner, { handle: 'aster-work', tokensAll: 400 });
+    await call('/api/leaderboard', owner, { handle: 'aster-home', tokensAll: 100 });
+    await call('/api/leaderboard', friend, { handle: 'aster-friend', tokensAll: 300 });
+    await call('/api/leaderboard', undefined, { handle: 'aster-imposter', team: 'Aster Crew', teamId: id, tokensAll: 9999 });
+    const details = await call(`/api/team/${id}`);
+    assert.equal(details.status, 200);
+    assert.equal(details.data.team.memberCount, 3);
+    assert.equal(details.data.stats.publishedProfiles, 3);
+    assert.equal(details.data.stats.tokens, 800);
+    assert.equal(details.data.stats.members, 3);
+    assert.equal(details.data.team.url, `https://token-horizon.dev/t/${id}`);
+    assert.equal(details.data.team.ogImage, `https://token-horizon.dev/api/og/team/${id}.png`);
+    const publicJson = JSON.stringify(details.data);
+    assert.doesNotMatch(publicJson, /brand-owner|brand-friend|brand-unpublished|@example\.com|ownerId|claimToken|invites|joinedAt|accounts\//);
+    assert.doesNotMatch(publicJson, new RegExp(invite));
+    const canonical = (await call('/api/providers')).data.teams.find(row => row.teamId === id);
+    assert.equal(canonical.memberCount, 3);
+    assert.equal(canonical.publishedProfiles, 3);
+    const firstCount = canonical.memberCount;
+    const fourth = await token('brand-fourth');
+    await call('/api/team/join', fourth, { token: invite });
+    const next = (await call('/api/teams')).data.teams.find(row => row.teamId === id);
+    assert.equal(next.memberCount, firstCount + 1);
+    assert.equal(next.members, 3);
+    assert.equal(next.publishedProfiles, 3);
+    assert.equal(next.tokens, 800);
+    assert.equal((await call(`/api/team/${'f'.repeat(32)}`)).status, 404);
+  });
+
+  it('allows only verified team owners to upload validated, bounded raster artwork or clear it', async () => {
+    const { env, token, call } = await teamFixture();
+    const owner = await token('icon-owner'), member = await token('icon-member'), stranger = await token('icon-stranger');
+    const created = (await call('/api/team/invites', owner, { name: 'Icon Crew' })).data;
+    const id = created.team.id;
+    await call('/api/team/join', member, { token: created.invites[0].token });
+    for (const auth of ['', member, stranger]) {
+      const denied = await call('/api/team/logo', auth, { image: teamPng, teamId: id });
+      assert.equal(denied.status, auth ? 403 : 401);
+    }
+    for (const image of ['data:image/svg+xml;base64,PHN2Zz48L3N2Zz4=', 'data:image/webp;base64,UklGRg==', 'data:image/png;base64,aGVsbG8=', teamPng.replace('image/png', 'image/jpeg'), 'https://example.com/icon.png']) {
+      const invalid = await call('/api/team/logo', owner, { image, teamId: id });
+      assert.equal(invalid.status, 400);
+      assert.equal(invalid.data.code, 'invalid_logo');
+    }
+    assert.equal((await call('/api/team/logo', owner, { image: `data:image/png;base64,${'A'.repeat(540000)}`, teamId: id })).status, 413);
+    const uploaded = await call('/api/team/logo', owner, { image: teamPng, teamId: id });
+    assert.equal(uploaded.status, 200);
+    assert.match(uploaded.data.team.logoUrl, new RegExp(`^/api/team/${id}/logo\\?v=[a-f0-9]{32}$`));
+    assert.ok(uploaded.data.team.logoUpdatedAt > 0);
+    assert.equal(uploaded.response.headers.get('Cache-Control'), 'private, no-store');
+    assert.equal(await loadTeamLogoDataUri(uploaded.data.team, env), teamPng);
+    assert.equal(await loadTeamLogoDataUri({ ...uploaded.data.team, id: 'e'.repeat(32) }, env), '');
+    const raw = await worker.fetch(req(uploaded.data.team.logoUrl), env);
+    assert.equal(raw.status, 200);
+    assert.equal(raw.headers.get('Content-Type'), 'image/png');
+    assert.equal(raw.headers.get('X-Content-Type-Options'), 'nosniff');
+    assert.deepEqual(Buffer.from(await raw.arrayBuffer()), Buffer.from(teamPng.split(',')[1], 'base64'));
+    const head = await worker.fetch(req(uploaded.data.team.logoUrl, { method: 'HEAD' }), env);
+    assert.equal(head.status, 200);
+    assert.equal(await head.text(), '');
+    const unchanged = await worker.fetch(req(uploaded.data.team.logoUrl, { headers: { 'If-None-Match': raw.headers.get('ETag') } }), env);
+    assert.equal(unchanged.status, 304);
+    const publicInvite = (await call(`/api/team/invites/${created.invites[0].token}`)).data;
+    assert.equal(publicInvite.team.logoUrl, uploaded.data.team.logoUrl);
+    const replaced = await call('/api/team/logo', owner, { image: teamPng, teamId: id });
+    assert.notEqual(replaced.data.team.logoUrl, uploaded.data.team.logoUrl);
+    assert.equal((await worker.fetch(req(uploaded.data.team.logoUrl), env)).status, 404);
+    assert.equal((await call('/api/team/logo', member, { clear: true, teamId: id })).status, 403);
+    const cleared = await call('/api/team/logo', owner, { clear: true, teamId: id });
+    assert.equal(cleared.data.team.logoUrl, '');
+    assert.equal(cleared.data.team.logoUpdatedAt, 0);
+    assert.equal((await worker.fetch(req(replaced.data.team.logoUrl), env)).status, 404);
+  });
+
+  it('renders named member-count previews for teams and private invites without leaking join tokens', async () => {
+    const { env, token, call } = await teamFixture();
+    const owner = await token('preview-owner'), friend = await token('preview-friend');
+    const created = (await call('/api/team/invites', owner, { name: 'Orbit <script> Crew' })).data;
+    const id = created.team.id, invite = created.invites[0].token;
+    await call('/api/team/join', friend, { token: invite });
+    await call('/api/leaderboard', owner, { handle: 'preview-captain', tokensAll: 1234 });
+    await call('/api/team/logo', owner, { image: teamPng, teamId: id });
+    let credentialForwarded = false;
+    env.ASSETS = { async fetch(request) {
+      credentialForwarded ||= request.headers.has('Cookie') || request.headers.has('X-Google-Token');
+      return new Response('<html><head><title>Old title</title><meta property="og:image" content="old.png"></head><body>shell</body></html>', { headers: { 'Content-Type': 'text/html' } });
+    } };
+    const teamPage = await worker.fetch(req(`/t/${id}`, { headers: { 'Cookie': 'private-session=secret', 'X-Google-Token': owner } }), env);
+    const html = await teamPage.text();
+    assert.equal(teamPage.status, 200);
+    assert.match(html, /Orbit &lt;script&gt; Crew · 2 members/);
+    assert.match(html, new RegExp(`/api/og/team/${id}\\.png\\?v=team-horizon-1-`));
+    assert.match(html, new RegExp(`rel="canonical" href="https://token-horizon.dev/t/${id}"`));
+    assert.match(html, /<base href="\/">/);
+    assert.doesNotMatch(html, /old\.png|private-session|preview-owner|ownerId/);
+    assert.equal(credentialForwarded, false);
+    const invitePage = await worker.fetch(req(`/invite/${invite}`), env);
+    const inviteHtml = await invitePage.text();
+    assert.equal(invitePage.headers.get('Cache-Control'), 'private, no-store');
+    assert.equal(invitePage.headers.get('X-Robots-Tag'), 'noindex, nofollow, noarchive');
+    assert.match(inviteHtml, /Join Orbit &lt;script&gt; Crew/);
+    assert.match(inviteHtml, /Join 2 members/);
+    assert.doesNotMatch(inviteHtml, new RegExp(invite));
+    assert.match(inviteHtml, new RegExp(`rel="canonical" href="https://token-horizon.dev/t/${id}"`));
+    const joinAlias = await worker.fetch(req(`/join/${invite}`), env);
+    assert.equal(joinAlias.status, 302);
+    assert.equal(new URL(joinAlias.headers.get('Location')).pathname, `/invite/${invite}`);
+    assert.equal(joinAlias.headers.get('Cache-Control'), 'private, no-store');
+    const svgResponse = await worker.fetch(req(`/api/og/team/${id}.svg`), env);
+    const svg = await svgResponse.text();
+    assert.equal(svgResponse.status, 200);
+    assert.match(svg, /Orbit &lt;script&gt; Crew/);
+    assert.match(svg, /data-team-members="2"/);
+    assert.match(svg, /data:image\/png;base64/);
+    assert.doesNotMatch(svg, /preview-owner|@example\.com|ownerId|claimToken/);
+    const firstEtag = svgResponse.headers.get('ETag');
+    const head = await worker.fetch(req(`/api/og/team/${id}.png`, { method: 'HEAD' }), env);
+    assert.equal(head.status, 200);
+    assert.equal(head.headers.get('Content-Type'), 'image/png');
+    assert.equal(await head.text(), '');
+    const unchanged = await worker.fetch(req(`/api/og/team/${id}.svg`, { headers: { 'If-None-Match': firstEtag } }), env);
+    assert.equal(unchanged.status, 304);
+    await call('/api/team/join', await token('preview-third'), { token: invite });
+    const changed = await worker.fetch(req(`/api/og/team/${id}.svg`, { headers: { 'If-None-Match': firstEtag } }), env);
+    assert.equal(changed.status, 200);
+    assert.notEqual(changed.headers.get('ETag'), firstEtag);
+    assert.match(await changed.text(), /3 joined members/);
+    await call('/api/team/invites/revoke', owner, { token: invite });
+    const unavailableInvite = await worker.fetch(req(`/invite/${invite}`), env);
+    assert.doesNotMatch(await unavailableInvite.text(), /Orbit|preview-captain/);
+    assert.equal((await worker.fetch(req(`/t/${id}`, { method: 'POST', body: {} }), env)).status, 405);
+    assert.equal((await worker.fetch(req(`/t/${'f'.repeat(32)}`), env)).status, 404);
+  });
+
+  it('keeps the previous logo on a failed update and resolves concurrent owner writes with one current revision', async () => {
+    const { env, token, call } = await teamFixture();
+    const owner = await token('atomic-logo-owner');
+    const team = (await call('/api/team/invites', owner, { name: 'Atomic Icons' })).data.team;
+    const first = (await call('/api/team/logo', owner, { image: teamPng, teamId: team.id })).data.team;
+    const put = env.LEADERBOARD_BUCKET.put.bind(env.LEADERBOARD_BUCKET);
+    let failMetadata = true;
+    env.LEADERBOARD_BUCKET.put = async (key, value, options) => {
+      if (failMetadata && key === `team-membership/teams/${team.id}.json`) {
+        failMetadata = false;
+        throw new Error('Simulated metadata commit failure');
+      }
+      return await put(key, value, options);
+    };
+    assert.equal((await call('/api/team/logo', owner, { image: teamPng, teamId: team.id })).status, 503);
+    assert.equal((await call(`/api/team/${team.id}`)).data.team.logoUrl, first.logoUrl);
+    assert.equal((await env.LEADERBOARD_BUCKET.list({ prefix: `team-logos/${team.id}/` })).objects.length, 1);
+    let waiting = 0, release;
+    const bothAtCommit = new Promise(resolve => { release = resolve; });
+    env.LEADERBOARD_BUCKET.put = async (key, value, options) => {
+      if (key === `team-membership/teams/${team.id}.json`) {
+        if (++waiting === 2) release();
+        await bothAtCommit;
+      }
+      return await put(key, value, options);
+    };
+    const updates = await Promise.all([1, 2].map(() => call('/api/team/logo', owner, { image: teamPng, teamId: team.id })));
+    assert.equal(updates.filter(result => result.status === 200).length, 1);
+    assert.equal(updates.filter(result => result.status === 409).length, 1);
+    const winningLogo = updates.find(result => result.status === 200).data.team.logoUrl;
+    assert.equal((await call(`/api/team/${team.id}`)).data.team.logoUrl, winningLogo);
+    assert.equal((await env.LEADERBOARD_BUCKET.list({ prefix: `team-logos/${team.id}/` })).objects.length, 1);
+    assert.equal((await worker.fetch(req(winningLogo), env)).status, 200);
+  });
+
+  it('does not load logo pixels on page metadata or HEAD and avoids pinning unavailable artwork in the edge cache', async () => {
+    const previousCache = globalThis.caches;
+    const cache = new Map(), stored = [];
+    globalThis.caches = { default: {
+      async match(request) { return cache.get(request.url)?.clone(); },
+      async put(request, response) { stored.push(request.url); cache.set(request.url, response.clone()); }
+    } };
+    try {
+      const { env, token, call } = await teamFixture();
+      const owner = await token('cached-logo-owner');
+      const created = (await call('/api/team/invites', owner, { name: 'Cached Crew' })).data;
+      await call('/api/team/logo', owner, { image: teamPng, teamId: created.team.id });
+      let pixelReads = 0;
+      const get = env.LEADERBOARD_BUCKET.get.bind(env.LEADERBOARD_BUCKET);
+      env.LEADERBOARD_BUCKET.get = async key => {
+        if (key.startsWith('team-logos/')) pixelReads++;
+        return await get(key);
+      };
+      env.ASSETS = { async fetch() { return new Response('<html><head></head><body></body></html>'); } };
+      await worker.fetch(req(`/t/${created.team.id}`), env);
+      await worker.fetch(req(`/invite/${created.invites[0].token}`), env);
+      await worker.fetch(req(`/api/og/team/${created.team.id}.png`, { method: 'HEAD' }), env);
+      assert.equal(pixelReads, 0);
+      const first = await worker.fetch(req(`/api/og/team/${created.team.id}.svg`), env);
+      assert.equal(first.status, 200);
+      assert.equal(pixelReads, 1);
+      assert.equal(stored.length, 1);
+      await worker.fetch(req(`/api/og/team/${created.team.id}.svg?v=obsolete`), env);
+      assert.equal(pixelReads, 1);
+      assert.equal(stored.length, 1);
+      await call('/api/team/logo', owner, { image: teamPng, teamId: created.team.id });
+      await worker.fetch(req(`/api/og/team/${created.team.id}.svg?v=obsolete`), env);
+      assert.equal(stored.length, 2);
+      assert.notEqual(stored[0], stored[1]);
+      await call('/api/team/join', await token('cached-logo-friend'), { token: created.invites[0].token });
+      await worker.fetch(req(`/api/og/team/${created.team.id}.svg?v=obsolete`), env);
+      assert.equal(stored.length, 3);
+      const objects = await env.LEADERBOARD_BUCKET.list({ prefix: `team-logos/${created.team.id}/` });
+      await env.LEADERBOARD_BUCKET.delete(objects.objects[0].key);
+      await call('/api/team/join', await token('cached-logo-other'), { token: created.invites[0].token });
+      const absent = await worker.fetch(req(`/api/og/team/${created.team.id}.svg`), env);
+      assert.equal(absent.status, 200);
+      assert.equal(absent.headers.get('Cache-Control'), 'public, max-age=15, s-maxage=15');
+      assert.equal(absent.headers.get('ETag'), null);
+      assert.equal(stored.length, 3);
+    } finally {
+      if (previousCache === undefined) delete globalThis.caches; else globalThis.caches = previousCache;
+    }
+  });
+
+  it('binds artwork changes to the selected team when a shared browser cookie switches owners in another tab', async () => {
+    const { env, token, call } = await teamFixture();
+    const originalOwner = await token('cookie-original-owner'), switchedOwner = await token('cookie-switched-owner');
+    const first = (await call('/api/team/invites', originalOwner, { name: 'Original Crew' })).data.team;
+    const second = (await call('/api/team/invites', switchedOwner, { name: 'Switched Crew' })).data.team;
+    const originalLogo = (await call('/api/team/logo', originalOwner, { teamId: first.id, image: teamPng })).data.team.logoUrl;
+    const sessions = new Map();
+    env.OAUTH_KV = {
+      async get(key) { return sessions.get(key) || null; },
+      async put(key, value) { sessions.set(key, value); },
+      async delete(key) { sessions.delete(key); }
+    };
+    const browserToken = 'b'.repeat(64);
+    const digest = Buffer.from(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(browserToken))).toString('hex');
+    sessions.set(`browser-session:${digest}`, JSON.stringify({
+      identity: { provider: 'google', sub: 'cookie-switched-owner', email: 'switched@example.com' }, expiresAt: Date.now() + 600000
+    }));
+    for (const body of [{ teamId: first.id, image: teamPng }, { teamId: first.id, clear: true }, { image: teamPng }, { clear: true }]) {
+      const response = await worker.fetch(req('/api/team/logo', { method: 'POST',
+        headers: { Cookie: `__Host-th-session=${browserToken}`, Origin: 'https://token-horizon.dev' }, body }), env);
+      assert.equal(response.status, 409);
+      assert.equal((await response.json()).code, 'team_changed');
+    }
+    assert.equal((await call(`/api/team/${first.id}`)).data.team.logoUrl, originalLogo);
+    assert.equal((await call(`/api/team/${second.id}`)).data.team.logoUrl, '');
+    assert.equal((await env.LEADERBOARD_BUCKET.list({ prefix: 'team-logos/' })).objects.length, 1);
+    const deliberate = await worker.fetch(req('/api/team/logo', { method: 'POST',
+      headers: { Cookie: `__Host-th-session=${browserToken}`, Origin: 'https://token-horizon.dev' }, body: { teamId: second.id, image: teamPng } }), env);
+    assert.equal(deliberate.status, 200);
+    assert.match((await deliberate.json()).team.logoUrl, new RegExp(`/api/team/${second.id}/logo`));
+  });
 });

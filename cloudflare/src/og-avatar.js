@@ -125,6 +125,14 @@ function dataUri(bytes, contentType) {
   return `data:${type};base64,${btoa(binary)}`;
 }
 
+// Reuse the photo boundary for owner-uploaded team artwork. Only formats the
+// OG rasterizer can decode are accepted; a browser can normalize WebP to PNG.
+export function validatedRasterDataUri(bytes, contentType, { allowGif = false } = {}) {
+  const type = String(contentType || '').split(';')[0].trim().toLowerCase();
+  if (!['image/png', 'image/jpeg', ...(allowGif ? ['image/gif'] : [])].includes(type)) return '';
+  return dataUri(bytes, type);
+}
+
 function remoteUrl(value) {
   if (value.length > 2048 || /[\u0000-\u0020\u007f\\]/.test(value)) return null;
   try {

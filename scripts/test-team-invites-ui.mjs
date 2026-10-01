@@ -204,6 +204,21 @@ try {
     await rejected.context.close();
   }
 
+  console.log('Invites: refreshing the same identity cannot leave a successful join spinning...');
+  {
+    const { page, context, uiState, fulfill } = await setup({ signedIn: 'friend', holdJoin: true });
+    await openInvite(page);
+    const pending = page.waitForRequest(req => new URL(req.url()).pathname === '/api/team/join');
+    await page.locator('[data-ti-join]').click();
+    await pending;
+    await page.evaluate(() => setGoogleSession({ ...state.googleSession }));
+    await fulfill(uiState.pendingJoin, { ok: true, team: TEAM, invites: [] });
+    await page.waitForSelector('[data-ti-continue]');
+    assert.equal(uiState.joins.length, 1);
+    assert.equal(await page.locator('[data-ti-join]').count(), 0);
+    await context.close();
+  }
+
   console.log('Invites: a pending join cannot paint success for a different signed-in account...');
   {
     const { page, context, uiState, fulfill } = await setup({ signedIn: 'alice', holdJoin: true });

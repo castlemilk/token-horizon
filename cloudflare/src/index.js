@@ -6,10 +6,11 @@
  * (resvg-wasm), and static asset webhosting.
  */
 
-import { handleTeamRequest, applyTeamMemberships } from './team-invites.js';
+import { handleTeamRequest, applyTeamMemberships, getPublicTeam, getInviteTeam, enrichTeamAggregates, loadTeamLogoDataUri } from './team-invites.js';
 import { handleBrowserAuth, browserIdentity, identityOwnerId, identityOwns, githubConfigured, sessionsConfigured } from './browser-auth.js';
 import { buildOgModel, renderProfileOgSvg, renderRestrictedOgSvg, OG_CARD_VERSION } from './og-card.js';
 import { loadOgAvatar } from './og-avatar.js';
+import { renderTeamOgSvg, TEAM_OG_VERSION } from './og-team.js';
 import { boundedText } from './request-body.js';
 import { injectPageMetadata, routePageMetadata, SITE_ORIGIN, PRIVATE_ROBOTS } from './page-metadata.js';
 
@@ -596,6 +597,34 @@ function aggregateTeams(entries) {
   }));
 }
 
+function teamUsageStats(team, entries) {
+  const peers = entries.filter(entry => entry.teamId === team.id);
+  const row = aggregateTeams(peers)[0] || { team: team.name, teamId: team.id, tokens: 0, cost: 0, members: 0, providers: {}, users: [], tokensFormatted: '0', costFormatted: '$0' };
+  const daily = new Map();
+  const start = dayNumber() - 118, end = dayNumber();
+  for (const entry of peers) {
+    for (const point of entry.breakdown?.daily || []) {
+      const day = Math.floor((Number(point.day) || 0) / 86400);
+      const tokens = Number(point.tokens);
+      if (day >= start && day <= end && Number.isFinite(tokens) && tokens > 0) daily.set(day, (daily.get(day) || 0) + tokens);
+    }
+  }
+  return {
+    ...row, publishedProfiles: row.members, memberCount: team.memberCount,
+    tokensToday: peers.reduce((total, entry) => total + (Number(entry.tokensToday) || 0), 0),
+    tokens7d: peers.reduce((total, entry) => total + (Number(entry.tokens7d) || 0), 0),
+    daily: [...daily.entries()].sort((a, b) => a[0] - b[0]).map(([day, tokens]) => ({ day: day * 86400, tokens })),
+    providerHistory: providerHistory(peers, 30)
+  };
+}
+
+async function getTeamPublicData(env, id) {
+  const team = await getPublicTeam(env, id);
+  if (!team) return null;
+  const entries = await getEntriesFromR2(env);
+  return { team, stats: teamUsageStats(team, entries) };
+}
+
 const DEFAULT_STARTER_ENTRIES = [
   {
     id: "local:benebsworth",
@@ -898,7 +927,8 @@ export default {
       }, 200, { "Cache-Control": "public, max-age=300, s-maxage=600" });
     }
 
-    const teamResponse = await handleTeamRequest(request, env, { parseGoogleAuth, jsonResponse });
+    const teamResponse = await handleTeamRequest(request, env, { parseGoogleAuth, jsonResponse,
+      getTeamStats: async team => teamUsageStats(team, await getEntriesFromR2(env)) });
     if (teamResponse) return teamResponse;
 
     // Account discovery must use verified ownership, never leaderboard rank
@@ -1574,7 +1604,7 @@ export default {
       const days = Math.min(60, Math.max(7, parseInt(searchParams.get("days") || "30", 10) || 30));
       const { rows, total } = aggregateProviders(entries);
       const history = providerHistory(entries, days);
-      const teams = aggregateTeams(entries);
+      const teams = await enrichTeamAggregates(env, aggregateTeams(entries));
       const movers = computeMovers(entries);
       const efficient = [...rows].filter(r => r.tokens > 0 && r.cost > 0)
         .sort((a, b) => a.avgCostPerM - b.avgCostPerM);
@@ -1604,7 +1634,7 @@ export default {
     // 6c. GET /api/teams — team aggregation
     if (request.method === "GET" && pathname === "/api/teams") {
       const entries = await getEntriesFromR2(env);
-      return jsonResponse({ ok: true, teams: aggregateTeams(entries), total: entries.length });
+      return jsonResponse({ ok: true, teams: await enrichTeamAggregates(env, aggregateTeams(entries)), total: entries.length }, 200, { 'Cache-Control': 'public, max-age=15, s-maxage=30' });
     }
 
     // 6d. GET /api/season — current season, ladder, distribution, promotions
@@ -1957,6 +1987,49 @@ export default {
 
     // Dynamic raster cards and their SVG source share the same published
     // model. HEAD computes metadata without allocating a rasterizer.
+    const teamOgMatch = pathname.match(/^\/api\/og\/team\/([a-f0-9]{32})\.(png|svg)$/);
+    if (['GET', 'HEAD'].includes(request.method) && teamOgMatch) {
+      let data;
+      try { data = await getTeamPublicData(env, teamOgMatch[1]); }
+      catch { return new Response(request.method === 'HEAD' ? null : 'Team preview unavailable', { status: 503, headers: { 'Cache-Control': 'no-store' } }); }
+      if (!data) return new Response(request.method === 'HEAD' ? null : 'Not found', { status: 404, headers: { 'Cache-Control': 'no-store' } });
+      const { team, stats } = data;
+      const wantsSvg = teamOgMatch[2] === 'svg' || searchParams.get('format') === 'svg';
+      let svg = renderTeamOgSvg(team, stats);
+      const fingerprint = await teamOgFingerprint(team, stats, svg);
+      const headers = {
+        ...CORS_HEADERS, 'Content-Type': wantsSvg ? 'image/svg+xml;charset=utf-8' : 'image/png',
+        'Cache-Control': 'public, max-age=300, s-maxage=300',
+        'ETag': `"og-team-${wantsSvg ? 'svg' : 'png'}-${fingerprint}"`,
+        'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer'
+      };
+      if (request.headers.get('If-None-Match') === headers.ETag) return new Response(null, { status: 304, headers });
+      if (request.method === 'HEAD') return new Response(null, { headers });
+      const edgeCache = typeof caches !== 'undefined' ? caches.default : null;
+      const cacheKey = edgeCache ? new Request(`${url.origin}/api/og/team/${team.id}.${wantsSvg ? 'svg' : 'png'}?v=${fingerprint}`) : null;
+      if (edgeCache) {
+        try { const hit = await edgeCache.match(cacheKey); if (hit) return new Response(hit.body, { headers }); }
+        catch { /* A cache outage must not hide real team totals. */ }
+      }
+      const logoDataUri = await loadTeamLogoDataUri(team, env);
+      if (logoDataUri) svg = renderTeamOgSvg(team, stats, { logoDataUri });
+      let body = svg, unavailableLogo = Boolean(team.logoUrl && !logoDataUri);
+      if (!wantsSvg) {
+        try { body = await renderOgPng(svg); }
+        catch (error) {
+          if (!logoDataUri) throw error;
+          body = await renderOgPng(renderTeamOgSvg(team, stats));
+          unavailableLogo = true;
+        }
+      }
+      if (unavailableLogo) { headers['Cache-Control'] = 'public, max-age=15, s-maxage=15'; delete headers.ETag; }
+      const response = new Response(body, { headers });
+      if (edgeCache && !unavailableLogo) {
+        const write = edgeCache.put(cacheKey, response.clone()).catch(() => {});
+        if (ctx?.waitUntil) ctx.waitUntil(write); else await write;
+      }
+      return response;
+    }
     if (["GET", "HEAD"].includes(request.method) && pathname.startsWith("/api/og/")) {
       const rest = safeDecode(pathname.slice("/api/og/".length));
       const stripExt = s => s.replace(/\.(png|svg)$/i, "");
@@ -2067,11 +2140,15 @@ export default {
 
     // 7. Webhosting: Fallback to static assets binding (docs/leaderboard.html, styles.css, etc.)
     if (env.ASSETS) {
-      if (/^\/invite\/[^/]+\/?$/.test(pathname)) {
-        const assetUrl = new URL(request.url);
-        assetUrl.pathname = '/leaderboard';
-        assetUrl.search = '';
-        return serveRoutePage(env, request, assetUrl);
+      const teamPageMatch = pathname.match(/^\/t\/([^/]+)\/?$/);
+      if (teamPageMatch) return serveTeamPage(env, request, safeDecode(teamPageMatch[1]));
+      const invitePageMatch = pathname.match(/^\/(?:invite|join)\/([^/]+)\/?$/);
+      if (invitePageMatch) {
+        if (pathname.startsWith('/join/')) {
+          const canonical = new URL(request.url); canonical.pathname = `/invite/${invitePageMatch[1]}`;
+          return new Response(null, { status: 302, headers: { Location: canonical.href, 'Cache-Control': 'private, no-store', 'Referrer-Policy': 'no-referrer', 'X-Robots-Tag': PRIVATE_ROBOTS } });
+        }
+        return serveTeamInvitePage(env, request, safeDecode(invitePageMatch[1]));
       }
       // Clean profile permalink: /u/<handle> serves the SPA with per-profile
       // OG/Twitter meta + a dynamic PNG card injected into <head>. The SPA
@@ -2754,6 +2831,10 @@ async function ogFingerprint(svg, model, photoRevision = ogAvatarRevision(model)
   return `${OG_CARD_VERSION}-${(await sha256Hex(svg + (model ? JSON.stringify(model) : "") + photoRevision)).slice(0, 20)}`;
 }
 
+async function teamOgFingerprint(team, stats, svg = renderTeamOgSvg(team, stats)) {
+  return `${TEAM_OG_VERSION}-${(await sha256Hex(svg + JSON.stringify({ team, stats }))).slice(0, 20)}`;
+}
+
 async function renderOgPng(svg) {
   const [resvgMod, fontBuffers] = await Promise.all([ogInit(), ogFonts()]);
   const resvg = new resvgMod.Resvg(svg, {
@@ -2848,6 +2929,54 @@ async function servePageWithOg(env, request, meta) {
   return new Response(request.method === "HEAD" ? null : html, {
     status: 200,
     headers: { "Content-Type": "text/html;charset=utf-8", "Cache-Control": meta.private ? "private, no-store" : "no-cache", "Vary": "Accept, User-Agent", "Referrer-Policy": "no-referrer", ...(meta.private || meta.noindex ? { 'X-Robots-Tag': PRIVATE_ROBOTS } : {}) }
+  });
+}
+
+async function serveTeamPage(env, request, id) {
+  if (!['GET', 'HEAD'].includes(request.method)) return new Response(null, { status: 405, headers: { Allow: 'GET, HEAD', 'Cache-Control': 'no-store' } });
+  let data;
+  try { data = await getTeamPublicData(env, id); }
+  catch { return new Response(request.method === 'HEAD' ? null : 'Team temporarily unavailable', { status: 503, headers: { 'Cache-Control': 'no-store' } }); }
+  if (!data) {
+    const response = await servePageWithOg(env, request, {
+      noindex: true, type: 'website', title: 'Team unavailable · Token Horizon',
+      description: 'This Token Horizon team could not be found.', url: `${SITE_ORIGIN}/leaderboard?view=teams`
+    });
+    return new Response(response.body, { status: 404, headers: response.headers });
+  }
+  const { team, stats } = data;
+  const fingerprint = await teamOgFingerprint(team, stats);
+  const image = `${SITE_ORIGIN}/api/og/team/${team.id}.png?v=${fingerprint}`;
+  return servePageWithOg(env, request, {
+    type: 'website', schemaType: 'ProfilePage', title: `${team.name} · ${team.memberCount} ${team.memberCount === 1 ? 'member' : 'members'} · Token Horizon`,
+    description: `${team.name} on Token Horizon: ${team.memberCount} team ${team.memberCount === 1 ? 'member' : 'members'}, ${stats.tokensFormatted} published tokens and ${stats.publishedProfiles} public ${stats.publishedProfiles === 1 ? 'profile' : 'profiles'}. Explore the crew’s AI activity and provider mix.`,
+    alt: `${team.name} team card: ${team.memberCount} members, ${stats.tokensFormatted} published tokens, ${stats.publishedProfiles} published profiles${team.logoUrl ? ', custom team icon' : ''} and provider mix.`,
+    url: team.url, image
+  });
+}
+
+async function serveTeamInvitePage(env, request, token) {
+  if (!['GET', 'HEAD'].includes(request.method)) return new Response(null, { status: 405, headers: { Allow: 'GET, HEAD', 'Cache-Control': 'private, no-store', 'X-Robots-Tag': PRIVATE_ROBOTS } });
+  let invitation;
+  try { invitation = await getInviteTeam(env, token); } catch { /* Invalid/expired links keep a neutral, private preview. */ }
+  if (!invitation) return servePageWithOg(env, request, {
+    private: true, type: 'website', schemaType: null, title: 'Join your crew · Token Horizon',
+    description: 'Sign in to join your friends’ team and explore your AI usage together.',
+    url: `${SITE_ORIGIN}/leaderboard?view=teams`, image: `${SITE_ORIGIN}/assets/og-leaderboard.png`,
+    alt: 'Join your friends on Token Horizon.'
+  });
+  const { team } = invitation;
+  let stats;
+  try { stats = teamUsageStats(team, await getEntriesFromR2(env)); }
+  catch { stats = teamUsageStats(team, []); }
+  const image = `${SITE_ORIGIN}/api/og/team/${team.id}.png?v=${await teamOgFingerprint(team, stats)}`;
+  return servePageWithOg(env, request, {
+    private: true, type: 'website', schemaType: null, title: `Join ${team.name} · Token Horizon`,
+    description: `Your crew is waiting. Join ${team.memberCount} ${team.memberCount === 1 ? 'member' : 'members'} in ${team.name} and explore your AI activity together. Sign in with Google or GitHub to accept the invite.`,
+    alt: `${team.name}: ${team.memberCount} team members${team.logoUrl ? ' and custom team icon' : ''}. Join your crew on Token Horizon.`,
+    // A secret invite grants membership; only the separate public team URL
+    // belongs in crawler-visible canonical metadata and preview artwork.
+    url: team.url, image
   });
 }
 

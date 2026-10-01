@@ -10,6 +10,11 @@ Allow: /api/models/
 Allow: /api/user/
 Allow: /api/og/profile/
 Allow: /api/og/share/
+Allow: /api/og/team/
+Allow: /api/team/
+Disallow: /api/team/invites
+Disallow: /api/team/join
+Disallow: /api/team/logo
 Allow: /api/avatar/
 Disallow: /api/
 Disallow: /oauth/

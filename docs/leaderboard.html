@@ -53,7 +53,7 @@ const API_BASE = (() => {
   // Fetch later consumes the browser preload; auth is never included here.
   const params = new URLSearchParams(location.search);
   const modelRoute = /^\/models\/?$/.test(location.pathname) || params.get("flat") === "1" || params.get("view") === "models";
-  const view = /^\/login\/?$/.test(location.pathname) ? "login" : /^\/invite\//.test(location.pathname) || params.get("invite") ? "invite" : modelRoute ? "models" : params.get("view") || (params.get("user") || /^\/[us]\//.test(location.pathname) ? "profile" : "leaderboard");
+  const view = /^\/t\/[a-f0-9]{32}\/?$/.test(location.pathname) ? "team" : /^\/login\/?$/.test(location.pathname) ? "login" : /^\/(?:invite|join)\//.test(location.pathname) || params.get("invite") ? "invite" : modelRoute ? "models" : params.get("view") || (params.get("user") || /^\/[us]\//.test(location.pathname) ? "profile" : "leaderboard");
   let path;
   if (view === "models" && params.get("tab") !== "providers") path = "/api/models/catalog";
   if (view === "profile" || view === "players") {
@@ -62,7 +62,8 @@ const API_BASE = (() => {
     if (userPath) { try { handle = decodeURIComponent(userPath[1]); } catch (_) {} }
     if (handle) path = "/api/user/" + encodeURIComponent(handle);
   }
-  if (view === "teams") path = "/api/providers";
+  if (/^\/t\/[a-f0-9]{32}\/?$/.test(location.pathname)) path = "/api/team/" + location.pathname.split("/")[2];
+  else if (view === "teams") path = "/api/providers";
   if (view === "leaderboard") {
     const period = ["today", "week", "all", "streak"].includes(params.get("period")) ? params.get("period") : "today";
     path = "/api/leaderboard?" + new URLSearchParams({ period, historyDays: "30" });
@@ -617,7 +618,7 @@ body.th-flat .mx-flat-score{display:none}
 <link rel="stylesheet" href="./auth.css?v=20261001-2" data-ui-style />
 <link rel="stylesheet" href="./workspace.css?v=20261001" data-ui-style />
 <script src="./ui-updates.js?v=20261001" defer></script>
-<link rel="stylesheet" href="./teams.css?v=20261001-4" data-ui-style /><link rel="stylesheet" href="./surfaces.css?v=20261001-4" data-ui-style /><link rel="stylesheet" href="./theme.css?v=20261001-4" data-ui-style /><script src="./theme.js?v=20261001-4" defer></script>
+<link rel="stylesheet" href="./teams.css?v=20261001-5" data-ui-style /><link rel="stylesheet" href="./surfaces.css?v=20261001-4" data-ui-style /><link rel="stylesheet" href="./theme.css?v=20261001-4" data-ui-style /><script src="./theme.js?v=20261001-4" defer></script><link rel="stylesheet" href="./team-flow.css?v=20261001-5" data-ui-style /><link rel="stylesheet" href="./team-blackhole.css?v=20261001-5" data-ui-style />
 </head>
 <body>
 <a class="discovery-skip" href="#view">Skip to content</a>
@@ -1495,7 +1496,8 @@ async function api(path, opts = {}) {
   const isGet = method === "GET";
   const key = method + " " + path;
   const headers = new Headers(opts.headers);
-  const privateRead = opts.auth === true || headers.has("Authorization") || headers.has("X-Google-Token") || /^\/api\/(?:auth(?:\/|$)|account\/|profile\/|team(?:\/|$)|groups(?:\/|$)|share\/)/.test(path.split("?")[0]);
+  const publicTeamRead = method === "GET" && /^\/api\/team\/[a-f0-9]{32}$/.test(path.split("?")[0]);
+  const privateRead = opts.auth === true || headers.has("Authorization") || headers.has("X-Google-Token") || (!publicTeamRead && /^\/api\/(?:auth(?:\/|$)|account\/|profile\/|team(?:\/|$)|groups(?:\/|$)|share\/)/.test(path.split("?")[0]));
   const requestSession = privateRead ? state.googleSession : null;
   const identityRevision = authIdentityRevision;
   const destination = new URL(API_BASE + path, location.href);
@@ -1611,7 +1613,7 @@ function setGoogleSession(s, { refreshShared = true } = {}) {
     if (state.signInPending?.onSuccess) { ++renderVersion; $("#view").innerHTML = '<div class="card" role="status" aria-label="Loading shared report"><div class="skeleton" style="height:300px"></div></div>'; }
     else renderSharedReport(state.sharedReportId, { promptSignIn: false });
   }
-  if (previousIdentity !== nextIdentity && ["dashboard", "invite", "settings", "teams"].includes(state.view)) render();
+  if (previousIdentity !== nextIdentity && ["dashboard", "invite", "settings", "teams", "team"].includes(state.view)) render();
   if (s?.serverSession && state.view === "players") {
     const identity = nextIdentity;
     loadWorkspaceAccount().then(() => { if (sessionIdentity(state.googleSession) === identity && state.view === "players") render(); });
@@ -1880,6 +1882,7 @@ function navigate(view, opts = {}) {
   if (view === "dashboard" && !opts.handle) state.currentHandle = null;
   if (opts.handle) state.currentHandle = opts.handle;
   if (opts.tab) state.profileTab = opts.tab;
+  if (opts.teamId) state.teamId = opts.teamId;
   if (opts.modelsTab) state.modelsTab = opts.modelsTab;
   const params = new URLSearchParams();
   const apiOverride = new URLSearchParams(location.search).get("api");
@@ -1904,8 +1907,8 @@ function navigate(view, opts = {}) {
   const qs = params.toString();
   // /models is a path-routed view: keep it canonical, and leave it for other
   // views (a relative "?view=x" would otherwise stay on /models).
-  const onModelsPath = /^\/(?:login|models|invite\/[^/]+|u\/[^/]+|s\/[^/]+)\/?$/.test(location.pathname);
-  const target = view === "login" ? "/login" : (view === "players" && handle && location.protocol !== "file:")
+  const onModelsPath = /^\/(?:login|models|(?:invite|join)\/[^/]+|t\/[^/]+|u\/[^/]+|s\/[^/]+)\/?$/.test(location.pathname);
+  const target = view === "team" && /^[a-f0-9]{32}$/.test(state.teamId || "") ? "/t/" + state.teamId : view === "login" ? "/login" : (view === "players" && handle && location.protocol !== "file:")
     ? "/u/" + encodeURIComponent(handle)  // clean permalink — unfurls with a
                                           // dynamic OG card server-side
     : onModelsPath
@@ -1922,8 +1925,10 @@ window.addEventListener("popstate", () => {
   if (period !== state.period) { state.period = period; state.data = null; state.dataSig = ""; }
   const userPath = location.pathname.match(/^\/u\/([^\/?#]+)\/?$/);
   const sharePath = location.pathname.match(/^\/s\/([^\/?#]+)\/?$/);
-  const invitePath = location.pathname.match(/^\/invite\/([^\/?#]+)\/?$/);
-  state.view = invitePath || p.get("invite") ? "invite" : p.get("view") || (/^\/login\/?$/.test(location.pathname) ? "login" : userPath ? "players" : /^\/models\/?$/.test(location.pathname) ? "models" : "leaderboard");
+  const invitePath = location.pathname.match(/^\/(?:invite|join)\/([^\/?#]+)\/?$/);
+  const teamPath = location.pathname.match(/^\/t\/([a-f0-9]{32})\/?$/);
+  state.teamId = teamPath?.[1] || null;
+  state.view = teamPath ? "team" : invitePath || p.get("invite") ? "invite" : p.get("view") || (/^\/login\/?$/.test(location.pathname) ? "login" : userPath ? "players" : /^\/models\/?$/.test(location.pathname) ? "models" : "leaderboard");
   state.modelsTab = ["providers", "plans", "cheapest"].includes(p.get("tab")) ? p.get("tab") : "explorer";
   const u = p.get("user");
   state.currentHandle = u || null;
@@ -2397,12 +2402,26 @@ function syncDiscoveryMetadata(profile = null) {
     players: ["Builder profiles", "Explore the Token Horizon community's published builder profiles.", "/leaderboard", "leaderboard"]
   };
   const view = state.view;
-  const route = routes[view] || routes.dashboard;
+  const route = routes[view] || (view === "team" ? ["Team profile", "Build together on Token Horizon.", "/t/" + state.teamId, "leaderboard"] : routes.dashboard);
   let [title, description, path, imageName] = route;
   let noindex = !["leaderboard", "models", "teams", "leagues"].includes(view);
   let type = "website", schema = null;
   let image = origin + "/assets/og-" + imageName + ".png?v=20261001-2";
   let imageAlt = "Token Horizon — " + title;
+  if (view === "team" && state.teamId) {
+    const detail = state.teamDetail?.team?.id === state.teamId ? state.teamDetail : null;
+    const team = detail?.team;
+    path = "/t/" + state.teamId;
+    if (!team && document.querySelector('link[rel="canonical"]')?.href === origin + path) return;
+    if (team) {
+      title = team.name + " — Team profile";
+      description = `${team.name} on Token Horizon. ${fmtNum(team.memberCount)} ${Number(team.memberCount) === 1 ? "member" : "members"}, ${fmtTokens(detail.stats?.tokens)} published tokens. Different models. Shared horizons.`;
+      image = origin + "/api/og/team/" + team.id + ".png?v=" + encodeURIComponent(team.logoUpdatedAt || "0");
+      imageAlt = `${team.name}: team icon, ${fmtNum(team.memberCount)} members and published AI token usage`;
+      noindex = false;
+      schema = { "@context": "https://schema.org", "@type": "ProfilePage", name: team.name, url: origin + path, mainEntity: { "@type": "Organization", name: team.name, url: origin + path } };
+    }
+  }
   if (view === "models") {
     const tab = ["cheapest", "providers", "plans"].includes(state.modelsTab) ? state.modelsTab : "";
     if (tab) {
@@ -2410,7 +2429,18 @@ function syncDiscoveryMetadata(profile = null) {
       title = { cheapest: "Cheapest AI Models & Provider Prices", providers: "AI Model Providers", plans: "AI Subscription Plans & Included Models" }[tab];
     }
   }
-  if (view === "invite") path = location.pathname.startsWith("/invite/") ? location.pathname : "/leaderboard?view=invite";
+  if (view === "invite") {
+    const team = state.teamInviteMetadata?.token === teamInviteToken() ? state.teamInviteMetadata.team : null;
+    const canonical = document.querySelector('link[rel="canonical"]')?.href;
+    if (!team && canonical?.startsWith(origin + "/t/")) return;
+    path = team ? "/t/" + team.id : "/leaderboard?view=teams";
+    if (team) {
+      title = "Join " + team.name;
+      description = `Your crew is waiting. Join ${fmtNum(team.memberCount)} ${Number(team.memberCount) === 1 ? "member" : "members"} in ${team.name}. Sign in with Google or GitHub to accept the invite.`;
+      image = teamOgUrl(team);
+      imageAlt = `${team.name}: ${fmtNum(team.memberCount)} team members and team icon. Join your crew on Token Horizon.`;
+    }
+  }
   if (view === "players" && state.currentHandle) {
     const handle = String(state.currentHandle).replace(/^@/, "").toLowerCase();
     path = "/u/" + encodeURIComponent(handle);
@@ -2472,7 +2502,7 @@ function syncDiscoveryMetadata(profile = null) {
   if (schema) { const node = document.createElement("script"); node.type = "application/ld+json"; node.id = "th-seo-schema"; node.textContent = JSON.stringify(schema); document.head.append(node); }
 }
 function syncDiscoveryChrome() {
-  const visible = ["leaderboard", "models", "teams", "leagues", "invite", "players", "login"].includes(state.view);
+  const visible = ["leaderboard", "models", "teams", "team", "leagues", "invite", "players", "login"].includes(state.view);
   document.body.classList.toggle("discovery", visible);
   document.body.dataset.surface = state.view;
   if (discoveryNavigationRoute !== state.view) {
@@ -2481,7 +2511,7 @@ function syncDiscoveryChrome() {
   }
   syncDiscoveryMetadata();
   $$("[data-public-view]").forEach(a => {
-    a.setAttribute("aria-current", a.dataset.publicView === state.view ? "page" : "false");
+    a.setAttribute("aria-current", (a.dataset.publicView === state.view || a.dataset.publicView === "teams" && state.view === "team") ? "page" : "false");
     a.onclick = e => { if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return; e.preventDefault(); mxClose(); navigate(a.dataset.publicView); };
   });
   const slot = $("#auth-slot");
@@ -2501,6 +2531,7 @@ async function render() {
   if (route !== "login") { LOGINHOLE.stop(); authPageMotionCleanup?.(); authPageMotionCleanup = null; }
   teamInvitePage?.destroy();
   teamInvitePage = null;
+  destroyTeamMotion();
   const current = () => version === renderVersion && route === state.view;
   syncDiscoveryChrome();
   const t0 = performance.now();
@@ -2512,6 +2543,8 @@ async function render() {
       view.innerHTML = mxLoadingHtml();
       mxWireTabs();
     }
+  } else if (route === "team") {
+    view.innerHTML = teamLandingLoadingHtml();
   } else if (route === "teams") {
     if (!state.providers) view.innerHTML = teamsLoadingHtml();
   } else if (route === "dashboard" || route === "invite") {
@@ -2528,7 +2561,7 @@ async function render() {
       if (!current()) return;
       const handle = state.currentHandle || (state.data?.leaderboard || [])[0]?.entry.handle;
       profileOutcome = await loadUser(handle);
-    } else if (!["models", "teams", "dashboard", "invite", "login"].includes(route)) await ensureData();
+    } else if (!["models", "teams", "team", "dashboard", "invite", "login"].includes(route)) await ensureData();
     if (!current()) return;
     chartRegistry.clear();
     chartFallbacks.clear();
@@ -2543,6 +2576,7 @@ async function render() {
         await renderPlayers(current, profileOutcome);
         break;
       case "teams": await renderTeams(current); break;
+      case "team": await renderTeamLanding(current); break;
       case "models": await renderModels(current); break;
       case "billing": await renderBilling(current); break;
       case "leagues": await renderLeagues(current); break;
@@ -2563,7 +2597,7 @@ async function render() {
   }
   if (!current()) return;
   // Demo data never masquerades as live data or labels the independent catalog.
-  if (!["models", "dashboard", "invite", "players", "login"].includes(route) && state.demo && view.firstChild) {
+  if (!["models", "dashboard", "invite", "team", "players", "login"].includes(route) && state.demo && view.firstChild) {
     view.insertAdjacentHTML("afterbegin", `<div class="notice warn" style="margin-bottom:16px">Live API unreachable — showing bundled demo data. <button class="pill ghost" id="demo-retry" style="font-size:11px;margin-left:8px">Retry live data</button></div>`);
     const retry = $("#demo-retry");
     if (retry) retry.onclick = () => { clearApiCache(); state.data = null; state.dataSig = ""; state.demo = false; render(); };
@@ -2973,11 +3007,11 @@ function loadTeamModule() {
   if (teamModuleFlight) return teamModuleFlight;
   teamModuleFlight = new Promise((resolve, reject) => {
     const script = document.createElement("script");
-    script.src = "./team-invites.js?v=20260930a";
+    script.src = "./team-invites.js?v=20261001-5";
     script.async = true;
     const style = document.createElement("link");
     style.rel = "stylesheet";
-    style.href = "./team-invites.css?v=20260930a";
+    style.href = "./team-invites.css?v=20261001-5";
     const timer = setTimeout(() => finish(new Error("Invites took too long to load. Please retry.")), 5000);
     function finish(error) {
       clearTimeout(timer);
@@ -2992,10 +3026,11 @@ function loadTeamModule() {
   return teamModuleFlight;
 }
 function teamInviteToken() {
-  const path = location.pathname.match(/^\/invite\/([^\/?#]+)\/?$/);
+  const path = location.pathname.match(/^\/(?:invite|join)\/([^\/?#]+)\/?$/);
   return path ? path[1] : new URLSearchParams(location.search).get("invite") || "";
 }
 function invalidateTeamData() {
+  state.teamDetail = null;
   clearApiCache();
   state.data = null;
   state.user = null;
@@ -3005,15 +3040,16 @@ function invalidateTeamData() {
 async function openInviteFriends() {
   if (state.googleConfig === "loading") await loadAuthConfig();
   if (!requireSignIn({ action: "Invite friends to your team", onSuccess: openInviteFriends })) return;
-  const session = state.googleSession;
+  const identity = sessionIdentity(state.googleSession), identityRevision = authIdentityRevision;
   let module;
   try { module = await loadTeamModule(); }
   catch (error) { toast(error.message, true); return; }
-  if (session !== state.googleSession) return;
+  if (identity !== sessionIdentity(state.googleSession) || identityRevision !== authIdentityRevision) return;
   teamManager?.close();
   let manager;
+  let changed = false;
   let managerState = { signedIn: true, loading: true, team: null, invites: [] };
-  const current = () => session === state.googleSession && manager === teamManager;
+  const current = () => identity === sessionIdentity(state.googleSession) && identityRevision === authIdentityRevision && manager === teamManager;
   const paint = values => { managerState = { ...managerState, ...values }; if (current()) manager.update({ state: managerState }); };
   const refresh = async () => {
     if (!current()) return;
@@ -3025,10 +3061,12 @@ async function openInviteFriends() {
   };
   const mutate = async (path, body) => {
     if (!current()) return;
+    if (!isGoogleSessionValid()) { paint({ loading: false, error: "Your sign-in has expired. Close this dialog and sign in again." }); return; }
     paint({ loading: true, error: "" });
     try {
       await api(path, { method: "POST", headers: googleHeaders(), body: JSON.stringify(body), timeoutMs: 12000 });
       if (!current()) return;
+      changed = true;
       invalidateTeamData();
       await refresh();
     } catch (error) { paint({ loading: false, error: error.message }); }
@@ -3036,7 +3074,22 @@ async function openInviteFriends() {
   manager = module.openManager({ state: managerState,
     onCreate: name => mutate("/api/team/invites", { name }),
     onRevoke: token => mutate("/api/team/invites/revoke", { token }),
-    onRetry: refresh, onClose: () => { if (teamManager === manager) teamManager = null; } });
+    onLogo: async file => {
+      const image = file ? await normalizeTeamIcon(file) : null;
+      if (!current()) return;
+      if (!isGoogleSessionValid()) throw new Error("Your sign-in has expired. Close this dialog and sign in again.");
+      // Errors stay inside the manager so a failed upload leaves the old icon intact.
+      await api("/api/team/logo", { method: "POST", headers: googleHeaders(), body: JSON.stringify({ teamId: managerState.team.id, ...(image ? { image } : { clear: true }) }), timeoutMs: 12000 });
+      if (!current()) return;
+      changed = true;
+      invalidateTeamData();
+      await refresh();
+    },
+    onRetry: refresh, onClose: () => {
+      const refreshView = changed && current() && ["teams", "team"].includes(state.view);
+      if (teamManager === manager) teamManager = null;
+      if (refreshView) render();
+    } });
   teamManager = manager;
   await refresh();
 }
@@ -3064,29 +3117,31 @@ async function renderTeamInvite(current = () => true) {
     if (state.view !== "invite" || teamInviteToken() !== token) return;
     if (!requireSignIn({ action: `Join ${inviteState.invite?.team?.name || "your friends’ team"}`,
       onSuccess: () => { if (state.view === "invite" && teamInviteToken() === token) joinTeamAfterSignIn(token); } })) return;
-    const session = state.googleSession;
+    const joinIdentity = identity(), joinRevision = authIdentityRevision;
     paint({ loading: true, error: "", needsSwitch: false, signedIn: true });
     try {
       const result = await api("/api/team/join", { method: "POST", headers: googleHeaders(),
         body: JSON.stringify({ token, confirmSwitch }), timeoutMs: 12000 });
-      if (session !== state.googleSession || state.view !== "invite" || teamInviteToken() !== token) return;
+      if (!current() || joinIdentity !== identity() || joinRevision !== authIdentityRevision || teamInviteToken() !== token) return;
       teamInviteResult = { token, identity: identity(), team: result.team };
       invalidateTeamData();
       paint({ loading: false, joined: true, signedIn: true, team: result.team });
     } catch (error) {
-      if (session !== state.googleSession) return;
+      if (!current() || joinIdentity !== identity() || joinRevision !== authIdentityRevision) return;
       paint({ loading: false, error: error.message, needsSwitch: error.code === "team_switch_required",
         invalid: error.status === 404 || error.status === 410 });
     }
   };
   view = module.renderInvite({ host, state: inviteState, onJoin: join,
-    onRetry: () => render(), onContinue: () => navigate("teams") });
+    onRetry: () => render(), onContinue: () => navigate("teams"), onPaint: mountTeamMotion });
   teamInvitePage = view;
   // The resumed action always calls the latest route's controller, avoiding a
   // closed modal or navigation leaving an old join callback active.
   activeTeamJoin = { token, join, current };
   const metadata = await metadataRead;
   if (!current()) return;
+  state.teamInviteMetadata = metadata.value?.team ? { token, team: metadata.value.team } : null;
+  syncDiscoveryMetadata();
   const joined = teamInviteResult?.token === token && teamInviteResult.identity === identity();
   paint({ loading: false, invite: metadata.value || null, error: metadata.error?.message || "",
     signedIn: isGoogleSessionValid(), joined: Boolean(joined), team: joined ? teamInviteResult.team : null });
@@ -3577,7 +3632,8 @@ function providerLink(provider, label, opts = {}) {
   const normalized = providerKey(provider);
   const key = normalized === "other" ? providerId(provider) || "other" : normalized;
   const text = label == null ? providerLabel(provider) : label;
-  return `<a class="model-link provider-link" href="?view=models&provider=${encodeURIComponent(key)}" data-provider-link="${esc(key)}" title="${esc(opts.title || ("Browse models available via " + text))}">${esc(text)}</a>`;
+  const href = /^\/t\//.test(location.pathname) ? "/models?provider=" + encodeURIComponent(key) : "?view=models&provider=" + encodeURIComponent(key);
+  return `<a class="model-link provider-link" href="${href}" data-provider-link="${esc(key)}" title="${esc(opts.title || ("Browse models available via " + text))}">${esc(text)}</a>`;
 }
 function mxFindModel(raw, providerHint) {
   const mx = mxState();
@@ -4833,6 +4889,7 @@ window.addEventListener("keydown", (e) => {
 // reports and chart legends; one delegated handler keeps them SPA-fast and
 // resolves raw usage ids to catalog listings.
 document.addEventListener("click", (e) => {
+  if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
   const planModels = e.target.closest?.("[data-plan-models]");
   if (planModels) {
     e.preventDefault();
@@ -4857,6 +4914,8 @@ document.addEventListener("click", (e) => {
     navigate("models", { providerFilter: prov.dataset.providerLink });
     return;
   }
+  const team = e.target.closest?.("[data-team-page]");
+  if (team && /^[a-f0-9]{32}$/.test(team.dataset.teamPage)) { e.preventDefault(); navigate("team", { teamId: team.dataset.teamPage }); return; }
   const link = e.target.closest?.("[data-model-link]");
   if (link) {
     e.preventDefault();
@@ -4870,6 +4929,146 @@ document.addEventListener("click", (e) => {
 /* ============================================================
    VIEW: TEAMS
    ============================================================ */
+/* Team visuals are optional; public reads and join actions never await WebGL. */
+let teamMotionFlight;
+const teamMotionHandles = new Set();
+function destroyTeamMotion() { for (const motion of teamMotionHandles) motion.destroy(); teamMotionHandles.clear(); }
+function loadTeamMotion() {
+  if (window.TokenHorizonTeamMotion) return Promise.resolve(window.TokenHorizonTeamMotion);
+  if (teamMotionFlight) return teamMotionFlight;
+  teamMotionFlight = new Promise((resolve, reject) => {
+    const script = document.createElement("script");
+    script.src = "./team-blackhole.js?v=20261001-5"; script.async = true;
+    const timer = setTimeout(() => done(new Error("Motion unavailable")), 6000);
+    function done(error) {
+      clearTimeout(timer); script.onload = script.onerror = null;
+      if (error) { script.remove(); teamMotionFlight = null; reject(error); }
+      else resolve(window.TokenHorizonTeamMotion);
+    }
+    script.onload = () => done(window.TokenHorizonTeamMotion ? null : new Error("Motion unavailable"));
+    script.onerror = () => done(new Error("Motion unavailable"));
+    document.head.append(script);
+  });
+  return teamMotionFlight;
+}
+function mountTeamMotion(scope = $("#view")) {
+  destroyTeamMotion();
+  const hosts = [...scope.querySelectorAll("[data-team-blackhole]")];
+  if (!hosts.length) return;
+  loadTeamMotion().then(module => {
+    for (const host of hosts) {
+      if (!host.isConnected) continue;
+      const motion = module.mount(host); teamMotionHandles.add(motion);
+      const toggle = host.closest("[data-team-hero]")?.querySelector("[data-team-motion-toggle]");
+      if (!toggle) continue;
+      toggle.onclick = () => {
+        const paused = toggle.getAttribute("aria-pressed") !== "true";
+        paused ? motion.pause() : motion.resume();
+        toggle.setAttribute("aria-pressed", String(paused));
+        toggle.setAttribute("aria-label", paused ? "Play animation" : "Pause animation");
+        toggle.querySelector("span").textContent = paused ? "Play animation" : "Pause animation";
+      };
+    }
+  }).catch(() => { /* The local CSS artwork is already visible. */ });
+}
+const TEAM_ARROW = '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 10h12m-5-5 5 5-5 5"/></svg>';
+const TEAM_PAUSE = '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M7 5v10m6-10v10"/></svg>';
+const TEAM_SHARE = '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 13V3M6 7l4-4 4 4M4 10v7h12v-7"/></svg>';
+const TEAM_CHECK = '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="m4 10 4 4 8-8"/></svg>';
+function teamIdentity(team) { const id = team?.id || team?.teamId; return /^[a-f0-9]{32}$/.test(id || "") ? id : ""; }
+function teamLogoHtml(team, className = "tm-team-icon") {
+  const name = team?.name || team?.team || "Crew", logo = String(team?.logoUrl || "");
+  const safe = /^\/api\/team\/[a-f0-9]{32}\/logo(?:\?[^\s]*)?$/.test(logo);
+  return `<span class="${className}" aria-hidden="true">${safe ? `<img src="${esc(API_BASE + logo)}" alt="" width="72" height="72"/>` : className === "tm-row-icon" ? '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="7"/><path d="M2 12h20"/></svg>' : `<span>${esc(Array.from(name.trim()).slice(0, 2).join("").toUpperCase())}</span>`}</span>`;
+}
+function teamDisplayName(name) { return esc(name).replace(/([a-z0-9])(?=[A-Z])/g, "$1<wbr>"); }
+function teamNameHtml(team) {
+  const id = teamIdentity(team), name = team.name || team.team;
+  return id ? `<a href="/t/${id}" data-team-page="${id}">${teamDisplayName(name)}</a>` : teamDisplayName(name);
+}
+function teamOgUrl(team, stats = {}) {
+  return CANONICAL_API + "/api/og/team/" + teamIdentity(team) + ".png?v=" + fnv1a(JSON.stringify([team.logoUpdatedAt, team.memberCount, stats.tokens, stats.publishedProfiles]));
+}
+function teamPublicShareHtml(team, stats = {}) {
+  const id = teamIdentity(team);
+  if (!id) return "";
+  const url = CANONICAL_API + "/t/" + id;
+  return `<details class="tm-share-panel"><summary>${TEAM_SHARE}<span>Share team</span>${TEAM_ARROW}</summary><div class="tm-share-body"><h2>A little crew pride.</h2><p>Share your team name, ${fmtNum(team.memberCount)} ${Number(team.memberCount) === 1 ? "member" : "members"} and custom icon in one link.</p><img src="${esc(teamOgUrl(team, stats))}" width="1200" height="630" loading="lazy" alt="${esc(team.name || team.team)} team share preview with member count, team icon and published token usage"/><div class="tm-share-copy"><label class="tm-visually-hidden" for="tm-share-link">Public team profile link</label><input id="tm-share-link" readonly value="${esc(url)}"/><button type="button" data-team-copy-public>Copy team link</button></div>${typeof navigator.share === "function" ? '<button type="button" class="tm-text-action" data-team-native-share>Share with friends</button>' : ""}<p class="tm-share-status" role="status"></p><small>Invite links join people to the team. This profile link shows your crew’s public page.</small></div></details>`;
+}
+function wireTeamPublicShare(team) {
+  const input = $("#tm-share-link");
+  if (!input) return;
+  const status = $(".tm-share-status");
+  $("[data-team-copy-public]").onclick = async () => {
+    try { if (!navigator.clipboard?.writeText) throw new Error("No clipboard"); await navigator.clipboard.writeText(input.value); status.textContent = "Team link copied. Your share preview travels with it."; }
+    catch (_) { input.focus(); input.select(); status.textContent = "Select and copy your team profile link."; }
+  };
+  const share = $("[data-team-native-share]");
+  if (share) share.onclick = async () => {
+    try { await navigator.share({ title: (team.name || team.team) + " on Token Horizon", text: `${fmtNum(team.memberCount)} members. Different models. Shared horizons.`, url: input.value }); }
+    catch (error) { if (error.name !== "AbortError") status.textContent = "Copy your team link to share it."; }
+  };
+}
+async function normalizeTeamIcon(file) {
+  if (!["image/png", "image/jpeg", "image/webp"].includes(file.type)) throw new Error("Choose a PNG, JPG or WebP team icon.");
+  if (file.size > 8 * 1024 * 1024) throw new Error("Choose a team icon smaller than 8 MB.");
+  const url = URL.createObjectURL(file), image = new Image();
+  try {
+    image.src = url;
+    await image.decode();
+    if (!image.naturalWidth || !image.naturalHeight || image.naturalWidth > 8192 || image.naturalHeight > 8192) throw new Error("Choose an image no larger than 8192 pixels on either side.");
+    const canvas = document.createElement("canvas");
+    const fit = size => {
+      canvas.width = canvas.height = size;
+      const context = canvas.getContext("2d");
+      if (!context) throw new Error("Your browser couldn’t prepare the icon. Try again.");
+      const scale = Math.min(size / image.naturalWidth, size / image.naturalHeight), width = image.naturalWidth * scale, height = image.naturalHeight * scale;
+      context.drawImage(image, (size - width) / 2, (size - height) / 2, width, height);
+      return canvas.toDataURL("image/png");
+    };
+    let data = fit(512);
+    if (data.length > 400 * 1024 * 4 / 3) data = fit(256);
+    if (data.length > 400 * 1024 * 4 / 3) throw new Error("This image is too detailed. Choose a smaller team icon.");
+    return data;
+  } catch (error) {
+    if (error.name === "EncodingError") throw new Error("That image couldn’t be opened. Choose another PNG, JPG or WebP.");
+    throw error;
+  } finally { URL.revokeObjectURL(url); }
+}
+function teamsHeroHtml() {
+  return `<section class="tm-orbit-hero" data-team-hero><div class="tm-orbit-copy"><h1>Build in<br/>good company.</h1><p>Claude, Codex, Gemini. Different models, shared momentum. Bring your friends into one orbit and see what your crew builds together.</p><div class="tm-hero-actions"><button type="button" class="tm-invite-button" data-team-hero-invite>Create your crew ${TEAM_ARROW}</button><a href="#tm-rankings-title">Explore team rankings ${TEAM_ARROW}</a></div><p class="tm-hero-note">One invite link. Your friends join after sign-in.</p></div><div class="tm-orbit-visual"><div data-team-blackhole aria-hidden="true"></div><button type="button" class="tm-motion-toggle" data-team-motion-toggle aria-pressed="false" aria-label="Pause animation">${TEAM_PAUSE}<span>Pause animation</span></button><span class="tm-orbit-caption">Every provider. One shared horizon.</span></div></section>`;
+}
+function teamLandingLoadingHtml() { return `<article class="tm-page tm-team-page" aria-busy="true"><div class="tm-back"><a href="/leaderboard?view=teams">${TEAM_ARROW}All teams</a></div><p role="status" class="tm-loading-label">Getting the crew together…</p><div class="tm-loading-leader skeleton"></div></article>`; }
+async function renderTeamLanding(current = () => true) {
+  const id = state.teamId;
+  try {
+    const detail = await api("/api/team/" + encodeURIComponent(id));
+    if (!current()) return;
+    const team = detail.team, stats = detail.stats || {};
+    if (!team || team.id !== id) throw new Error("This team couldn’t be found.");
+    state.teamDetail = detail;
+    const row = { ...stats, teamId: id, team: team.name, members: Number(stats.publishedProfiles) || 0 };
+    $("#view").innerHTML = `<article class="tm-page tm-team-page"><div class="tm-back"><a href="/leaderboard?view=teams">${TEAM_ARROW}All teams</a><span>Public team profile</span></div><section class="tm-orbit-hero tm-public-hero" data-team-hero><div class="tm-orbit-copy">${teamLogoHtml(team)}<h1>${teamDisplayName(team.name)}</h1><p>${fmtNum(team.memberCount)} ${Number(team.memberCount) === 1 ? "member" : "members"}. Different models. Shared horizons.<br/>Every published profile brings something to the crew.</p><div class="tm-team-membership" data-team-membership><a href="/leaderboard?view=teams">Explore team standings ${TEAM_ARROW}</a></div>${teamPublicShareHtml(team, stats)}</div><div class="tm-orbit-visual"><div data-team-blackhole aria-hidden="true"></div><button type="button" class="tm-motion-toggle" data-team-motion-toggle aria-pressed="false" aria-label="Pause animation">${TEAM_PAUSE}<span>Pause animation</span></button><span class="tm-orbit-caption">Every provider. One shared horizon.</span></div></section><dl class="tm-public-stats"><div><dt>Members in the crew</dt><dd>${fmtNum(team.memberCount)}</dd></div><div><dt>Published profiles</dt><dd>${fmtNum(stats.publishedProfiles)}</dd></div><div><dt>All-time tokens</dt><dd>${fmtTokens(stats.tokens)}</dd></div><div><dt>Providers used</dt><dd>${teamProviders(stats).length}</dd></div></dl><section class="tm-team-insights"><div><h2>The crew’s model universe.</h2><p>Combined usage from profiles published to this team.</p>${teamProviderMixHtml(row)}</div><div><h2>Meet the builders.</h2><p>Explore the crew’s public profiles and their own horizons.</p>${teamProfilesHtml(row, true)}${!stats.publishedProfiles ? '<p class="tm-muted">Your first public profile will bring this page to life. Members can install the app and choose what to publish.</p><a class="tm-text-action" href="/#install">Get Token Horizon ' + TEAM_ARROW + '</a>' : `<button type="button" class="tm-text-action" data-team-profile-rankings>View all published profiles ${TEAM_ARROW}</button>`}</div></section><p class="tm-board-note">Membership is saved to each person’s account. Token totals reflect published profiles. Private prompts and local traces stay private.</p></article>`;
+    syncDiscoveryMetadata(); mountTeamMotion(); wireProfile(); wireTeamPublicShare(team);
+    const ranking = $("[data-team-profile-rankings]");
+    if (ranking) ranking.onclick = () => { state.teamFilter = id; state.leagueFilter = "all"; state.search = ""; if (state.period !== "all") { state.period = "all"; state.data = null; state.dataSig = ""; } navigate("leaderboard"); };
+    if (isGoogleSessionValid()) {
+      const session = state.googleSession;
+      api("/api/account/team", { headers: googleHeaders(), cache: "no-store" }).then(account => {
+        if (!current() || state.googleSession !== session || account.team?.id !== id) return;
+        const membership = $("[data-team-membership]");
+        membership.innerHTML = `<span>${TEAM_CHECK}You’re part of this crew.</span><button type="button" class="tm-text-action" data-team-manage>${account.team.role === "owner" ? "Invite friends & edit team icon" : "Your team"} ${TEAM_ARROW}</button>`;
+        $("[data-team-manage]").onclick = openInviteFriends;
+      }).catch(() => {});
+    }
+  } catch (error) {
+    if (!current()) return;
+    state.teamDetail = null;
+    $("#view").innerHTML = `<article class="tm-page"><section class="tm-error" role="alert"><div><h1>${error.status === 404 ? "This crew couldn’t be found." : "The team page couldn’t load."}</h1><p>${esc(error.message)}</p></div><button type="button" id="tm-retry">Try again</button></section><a href="/leaderboard?view=teams" class="tm-text-action">Explore teams ${TEAM_ARROW}</a></article>`;
+    $("#tm-retry").onclick = () => { clearApiCache(); render(); };
+  }
+}
+
 const teamLeaderboardView = { search: "", sort: "tokens", expanded: new Set() };
 function teamsHeaderHtml() {
   return `<header class="tm-head"><div><h1>Team leaderboard</h1><p>Every published profile adds to your crew’s all-time usage. Build together, climb together.</p></div><a class="tm-individual-link" href="./leaderboard">Individual rankings <svg aria-hidden="true" viewBox="0 0 20 20"><path d="M4 10h12M11 5l5 5-5 5"/></svg></a></header>`;
@@ -4889,7 +5088,7 @@ function teamProfilesHtml(team, featured = false) {
 function teamProviderMixHtml(team) {
   const providers = teamProviders(team), total = providers.reduce((sum, [, value]) => sum + Number(value), 0);
   if (!total) return '<p class="tm-muted">Provider breakdown hasn’t been published.</p>';
-  return `<div class="tm-provider-track" aria-hidden="true">${providers.map(([provider, value]) => `<span style="width:${Number(value) / total * 100}%;background:${providerColor(provider)}"></span>`).join("")}</div><ul class="tm-provider-breakdown">${providers.map(([provider, value]) => `<li><span class="tm-provider-name">${providerLogo(provider, 18)}${esc(providerLabel(provider))}</span><span class="tm-provider-tokens">${fmtTokens(Number(value))}</span><span class="tm-provider-share">${Math.round(Number(value) / total * 100)}%</span></li>`).join("")}</ul><p class="tm-profile-note">Share of reported model usage.</p>`;
+  return `<div class="tm-provider-track" aria-hidden="true">${providers.map(([provider, value]) => `<span style="width:${Number(value) / total * 100}%;background:${providerColor(provider)}"></span>`).join("")}</div><ul class="tm-provider-breakdown">${providers.map(([provider, value]) => `<li><span class="tm-provider-name">${providerLogo(provider, 18)}${providerLink(provider, providerLabel(provider))}</span><span class="tm-provider-tokens">${fmtTokens(Number(value))}</span><span class="tm-provider-share">${Math.round(Number(value) / total * 100)}%</span></li>`).join("")}</ul><p class="tm-profile-note">Share of reported model usage.</p>`;
 }
 function teamsRowsHtml(teams) {
   const query = teamLeaderboardView.search.trim().toLocaleLowerCase();
@@ -4900,7 +5099,7 @@ function teamsRowsHtml(teams) {
   return `<ol class="tm-ranking" aria-label="Team rankings">${rows.map(team => {
     const rank = ranking.get(teamKey(team)), id = "tm-details-" + rank, expanded = teamLeaderboardView.expanded.has(teamKey(team));
     const topProviders = teamProviders(team).slice(0, 3);
-    return `<li class="tm-row${rank === 1 ? " tm-row-leading" : ""}"><button type="button" class="tm-row-summary" data-team-expand="${esc(teamKey(team))}" aria-expanded="${expanded}" aria-controls="${id}"><span class="tm-rank"><span class="tm-visually-hidden">Rank </span>${String(rank).padStart(2, "0")}</span><span class="tm-team-name"><strong>${esc(team.team)}</strong><span>${fmtNum(team.members)} published profile${team.members === 1 ? "" : "s"}</span></span><span class="tm-row-providers" aria-hidden="true">${topProviders.map(([provider]) => `<span class="tm-provider-mark">${providerLogo(provider, 19)}</span>`).join("")}</span><span class="tm-row-tokens"><strong>${fmtTokens(team.tokens)}</strong><span>all-time tokens</span></span><svg class="tm-expand-icon" aria-hidden="true" viewBox="0 0 20 20"><path d="m5 8 5 5 5-5"/></svg></button><section class="tm-row-details" id="${id}" aria-label="${esc(team.team)} details"${expanded ? "" : " hidden"}><div><h3>Provider mix</h3>${teamProviderMixHtml(team)}</div><div><h3>Published profiles</h3>${teamProfilesHtml(team)}<p class="tm-reported-cost"><span>Reported cost</span><strong>${fmtCost(team.cost)}</strong></p><button type="button" class="tm-view-team" data-team-ranking="${esc(team.teamId || team.team)}">View individual rankings <svg aria-hidden="true" viewBox="0 0 20 20"><path d="M4 10h12M11 5l5 5-5 5"/></svg></button></div></section></li>`;
+    return `<li class="tm-row${rank === 1 ? " tm-row-leading" : ""}"><button type="button" class="tm-row-summary" data-team-expand="${esc(teamKey(team))}" aria-expanded="${expanded}" aria-controls="${id}"><span class="tm-rank"><span class="tm-visually-hidden">Rank </span>${String(rank).padStart(2, "0")}</span><span class="tm-team-name"><strong>${teamLogoHtml(team, "tm-row-icon")}${teamDisplayName(team.team)}</strong><span>${team.memberCount != null ? fmtNum(team.memberCount) + " members · " : ""}${fmtNum(team.members)} published profile${team.members === 1 ? "" : "s"}</span></span><span class="tm-row-providers" aria-hidden="true">${topProviders.map(([provider]) => `<span class="tm-provider-mark">${providerLogo(provider, 19)}</span>`).join("")}</span><span class="tm-row-tokens"><strong>${fmtTokens(team.tokens)}</strong><span>all-time tokens</span></span><svg class="tm-expand-icon" aria-hidden="true" viewBox="0 0 20 20"><path d="m5 8 5 5 5-5"/></svg></button><section class="tm-row-details" id="${id}" aria-label="${esc(team.team)} details"${expanded ? "" : " hidden"}><div><h3>Provider mix</h3>${teamProviderMixHtml(team)}</div><div><h3>Published profiles</h3>${teamProfilesHtml(team)}${teamIdentity(team) ? `<a class="tm-text-action" href="/t/${teamIdentity(team)}" data-team-page="${teamIdentity(team)}">Team page & share preview ${TEAM_ARROW}</a>` : ""}<p class="tm-reported-cost"><span>Reported cost</span><strong>${fmtCost(team.cost)}</strong></p><button type="button" class="tm-view-team" data-team-ranking="${esc(team.teamId || team.team)}">View individual rankings <svg aria-hidden="true" viewBox="0 0 20 20"><path d="M4 10h12M11 5l5 5-5 5"/></svg></button></div></section></li>`;
   }).join("")}</ol>`;
 }
 async function renderTeams(current = () => true) {
@@ -4911,7 +5110,7 @@ async function renderTeams(current = () => true) {
   // Canonical team IDs remain distinct from legacy groups with identical names.
   const teams = (p.teams || []).filter(team => team.teamId || team.team !== "Unassigned").map(team => ({ ...team, tokens: Math.max(0, Number(team.tokens) || 0), cost: Math.max(0, Number(team.cost) || 0), members: Math.max(0, Number(team.members) || 0) })).sort((a, b) => b.tokens - a.tokens);
   const totalTokens = teams.reduce((sum, team) => sum + team.tokens, 0), totalProfiles = teams.reduce((sum, team) => sum + team.members, 0), leader = teams[0];
-  $("#view").innerHTML = `<article class="tm-page">${teamsHeaderHtml()}<div class="team-invite-banner"><div><strong>Bring your friends into orbit.</strong><span>Share an invite link. Friends join your team after signing in.</span></div><button type="button" class="tm-invite-button" data-invite-friends>Invite friends <svg aria-hidden="true" viewBox="0 0 20 20"><path d="M10 4v12M4 10h12"/></svg></button></div>${state.providersError ? `<section class="tm-error" role="alert"><div><h2>Team data couldn’t load.</h2><p>${esc(state.providersError)}</p></div><button type="button" id="tm-retry">Try again</button></section>` : ""}${leader ? `<section class="tm-leader" aria-label="Leading team"><div class="tm-leader-rank"><span>Rank</span><strong>01</strong></div><div class="tm-leader-team"><h2>${esc(leader.team)}</h2><p>Leading the community with ${fmtNum(leader.members)} published profile${leader.members === 1 ? "" : "s"}.</p>${teamProfilesHtml(leader, true)}</div><div class="tm-leader-usage"><strong>${fmtTokens(leader.tokens)}</strong><span>all-time tokens</span><p>${totalTokens ? Math.round(leader.tokens / totalTokens * 100) : 0}% of published team usage</p></div></section>` : ""}${teams.length ? `<dl class="tm-community-stats"><div><dt>Published teams</dt><dd>${fmtNum(teams.length)}</dd></div><div><dt>Published profiles</dt><dd>${fmtNum(totalProfiles)}</dd></div><div><dt>Combined tokens</dt><dd>${fmtTokens(totalTokens)}</dd></div></dl><section class="tm-board" aria-labelledby="tm-rankings-title"><div class="tm-board-head"><div><h2 id="tm-rankings-title">The team standings</h2><p>All-time totals from public profiles. Expand a team to explore its usage.</p></div><div class="tm-controls"><label class="tm-search"><svg aria-hidden="true" viewBox="0 0 20 20"><circle cx="8.5" cy="8.5" r="5.5"/><path d="m13 13 4 4"/></svg><span class="tm-visually-hidden">Search teams or profiles</span><input type="search" id="tm-search" value="${esc(teamLeaderboardView.search)}" placeholder="Find a team or profile…" autocomplete="off"/></label><label class="tm-sort"><span class="tm-visually-hidden">Sort teams</span><select id="tm-sort"><option value="tokens"${teamLeaderboardView.sort === "tokens" ? " selected" : ""}>Total tokens</option><option value="profiles"${teamLeaderboardView.sort === "profiles" ? " selected" : ""}>Published profiles</option><option value="name"${teamLeaderboardView.sort === "name" ? " selected" : ""}>Team name</option></select></label></div></div><div id="tm-rows">${teamsRowsHtml(teams)}</div><p class="tm-board-note">Ranks use all-time token totals. Teams appear when members publish their profiles; unpublished members aren’t included.</p></section>` : !state.providersError ? `<section class="tm-empty"><svg aria-hidden="true" viewBox="0 0 48 48"><circle cx="24" cy="24" r="17"/><path d="M7 24h34M17 20a7 7 0 0 1 14 0m-18 13c3-7 19-7 22 0"/></svg><h2>Your crew could be first.</h2><p>Create a team, invite your friends, and publish your usage to start climbing together.</p><button type="button" class="tm-invite-button" data-team-empty-invite>Create your team</button></section>` : ""}</article>`;
+  $("#view").innerHTML = `<article class="tm-page">${teamsHeroHtml()}<div class="team-invite-banner"><div><strong>Bring your friends into orbit.</strong><span>Share an invite link. Friends join your team after signing in.</span></div><button type="button" class="tm-invite-button" data-invite-friends>Invite friends <svg aria-hidden="true" viewBox="0 0 20 20"><path d="M10 4v12M4 10h12"/></svg></button></div>${state.providersError ? `<section class="tm-error" role="alert"><div><h2>Team data couldn’t load.</h2><p>${esc(state.providersError)}</p></div><button type="button" id="tm-retry">Try again</button></section>` : ""}${leader ? `<section class="tm-leader" aria-label="Leading team"><div class="tm-leader-rank"><span>Rank</span><strong>01</strong></div><div class="tm-leader-team"><div class="tm-leader-identity">${teamLogoHtml(leader)}<h2>${teamNameHtml(leader)}</h2></div><p>Leading the community with ${fmtNum(leader.members)} published profile${leader.members === 1 ? "" : "s"}.</p>${teamProfilesHtml(leader, true)}</div><div class="tm-leader-usage"><strong>${fmtTokens(leader.tokens)}</strong><span>all-time tokens</span><p>${totalTokens ? Math.round(leader.tokens / totalTokens * 100) : 0}% of published team usage</p></div></section>` : ""}${teams.length ? `<dl class="tm-community-stats"><div><dt>Published teams</dt><dd>${fmtNum(teams.length)}</dd></div><div><dt>Published profiles</dt><dd>${fmtNum(totalProfiles)}</dd></div><div><dt>Combined tokens</dt><dd>${fmtTokens(totalTokens)}</dd></div></dl><section class="tm-board" aria-labelledby="tm-rankings-title"><div class="tm-board-head"><div><h2 id="tm-rankings-title">The team standings</h2><p>All-time totals from public profiles. Expand a team to explore its usage.</p></div><div class="tm-controls"><label class="tm-search"><svg aria-hidden="true" viewBox="0 0 20 20"><circle cx="8.5" cy="8.5" r="5.5"/><path d="m13 13 4 4"/></svg><span class="tm-visually-hidden">Search teams or profiles</span><input type="search" id="tm-search" value="${esc(teamLeaderboardView.search)}" placeholder="Find a team or profile…" autocomplete="off"/></label><label class="tm-sort"><span class="tm-visually-hidden">Sort teams</span><select id="tm-sort"><option value="tokens"${teamLeaderboardView.sort === "tokens" ? " selected" : ""}>Total tokens</option><option value="profiles"${teamLeaderboardView.sort === "profiles" ? " selected" : ""}>Published profiles</option><option value="name"${teamLeaderboardView.sort === "name" ? " selected" : ""}>Team name</option></select></label></div></div><div id="tm-rows">${teamsRowsHtml(teams)}</div><p class="tm-board-note">Ranks use all-time token totals. Teams appear when members publish their profiles; unpublished members aren’t included.</p></section>` : !state.providersError ? `<section class="tm-empty"><svg aria-hidden="true" viewBox="0 0 48 48"><circle cx="24" cy="24" r="17"/><path d="M7 24h34M17 20a7 7 0 0 1 14 0m-18 13c3-7 19-7 22 0"/></svg><h2>Your crew could be first.</h2><p>Create a team, invite your friends, and publish your usage to start climbing together.</p><button type="button" class="tm-invite-button" data-team-empty-invite>Create your team</button></section>` : ""}</article>`;
   const paintRows = () => {
     $("#tm-rows").innerHTML = teamsRowsHtml(teams);
     wireRows();
@@ -4935,6 +5134,8 @@ async function renderTeams(current = () => true) {
     if (clear) clear.onclick = () => { teamLeaderboardView.search = ""; $("#tm-search").value = ""; paintRows(); $("#tm-search").focus(); };
   };
   wireRows();
+  mountTeamMotion();
+  $("[data-team-hero-invite]").onclick = openInviteFriends;
   const search = $("#tm-search"), sort = $("#tm-sort");
   if (search) search.oninput = () => { teamLeaderboardView.search = search.value; paintRows(); };
   if (sort) sort.onchange = () => { teamLeaderboardView.sort = sort.value; paintRows(); };
@@ -4948,6 +5149,7 @@ async function renderTeams(current = () => true) {
     api("/api/account/team", { headers: googleHeaders(), cache: "no-store" }).then(account => {
       if (!current() || session !== state.googleSession || !account.team) return;
       $(".team-invite-banner strong").textContent = account.team.name;
+      $("[data-team-hero-invite]").innerHTML = `Your crew ${TEAM_ARROW}`;
       $(".team-invite-banner span").textContent = `${account.team.memberCount} members in your crew. Published profiles contribute to the rankings below.`;
       $("[data-invite-friends]").innerHTML = `${account.team.role === "owner" ? "Invite friends" : "Your team"} <svg aria-hidden="true" viewBox="0 0 20 20"><path d="M10 4v12M4 10h12"/></svg>`;
     }).catch(() => {});
@@ -6045,12 +6247,14 @@ async function init() {
   // profile; /s/<id> opens the shared report (browser URLs carry no query).
   const userPath = location.pathname.match(/^\/u\/([^\/?#]+)\/?$/);
   const sharePath = location.pathname.match(/^\/s\/([^\/?#]+)\/?$/);
-  const invitePath = location.pathname.match(/^\/invite\/([^\/?#]+)\/?$/);
+  const invitePath = location.pathname.match(/^\/(?:invite|join)\/([^\/?#]+)\/?$/);
   if (params.get("user")) state.currentHandle = params.get("user");
   if (userPath) state.currentHandle = decodeURIComponent(userPath[1]);
   state.period = ["today","week","all","streak"].includes(params.get("period")) ? params.get("period") : "today";
   state.view = params.get("view") || ((params.get("user") || userPath) ? "players" : "leaderboard");
   if (invitePath || params.get("invite")) state.view = "invite";
+  const teamPath = location.pathname.match(/^\/t\/([a-f0-9]{32})\/?$/);
+  if (teamPath) { state.teamId = teamPath[1]; state.view = "team"; }
   // Dedicated /models route: the worker serves the SPA asset with an internal
   // ?view=models rewrite, so the browser URL has no query — derive it here.
   if (/^\/models\/?$/.test(location.pathname)) state.view = "models";

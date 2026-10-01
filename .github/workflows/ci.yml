@@ -70,7 +70,7 @@ jobs:
         run: npm ci --prefix cloudflare --ignore-scripts
 
       - name: Worker tests (leaderboard API and OAuth connector)
-        run: node --test cloudflare/worker.test.mjs cloudflare/connector.test.mjs cloudflare/browser-auth.test.mjs cloudflare/og-card.test.mjs cloudflare/og-avatar.test.mjs cloudflare/page-metadata.test.mjs
+        run: node --test cloudflare/worker.test.mjs cloudflare/connector.test.mjs cloudflare/browser-auth.test.mjs cloudflare/og-card.test.mjs cloudflare/og-avatar.test.mjs cloudflare/og-team.test.mjs cloudflare/page-metadata.test.mjs
 
       - name: Profile photo fetch regression (native Worker runtime)
         run: node scripts/test-og-avatar-worker.mjs
@@ -95,6 +95,8 @@ jobs:
           node scripts/test-leaderboard-ui.mjs
           node scripts/test-workspace-ui.mjs
           node scripts/test-team-invites-ui.mjs
+          node scripts/test-team-flow-ui.mjs
+          node scripts/test-team-motion-ui.mjs
           node scripts/test-share-preview-ui.mjs
           node scripts/test-profile-ui.mjs
           node scripts/test-login-ui.mjs
