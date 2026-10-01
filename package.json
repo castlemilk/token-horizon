@@ -1,9 +1,11 @@
 {
   "name": "token-horizon-dashboard",
   "private": true,
-  "description": "Vendored chart runtime for the TokenArena dashboard (docs/leaderboard.html).",
+  "description": "Vendored chart runtime and brand assets for the Token Horizon dashboard (docs/leaderboard.html).",
   "scripts": {
     "vendor": "node scripts/build-vendor.mjs",
+    "brand:assets": "node scripts/build-brand-assets.mjs",
+    "brand:check": "node scripts/build-brand-assets.mjs --check",
     "bench:leaderboard": "node scripts/bench-leaderboard.mjs",
     "deploy": "wrangler deploy",
     "preview": "wrangler dev"

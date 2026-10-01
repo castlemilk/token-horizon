@@ -1,0 +1,30 @@
+# Token Horizon
+
+> Local AI usage and observability across coding tools, cloud providers and local models. Native macOS notch and desktop widgets, a public model catalog, and optional community sharing.
+
+The local engine is the source of truth for usage. Token counts come from provider-reported data, not estimates. Model prices are catalog evidence; free, subscription-covered and unpriced models are distinct states. Public profiles contain only data the owner has chosen to publish. Private prompts and local traces stay on the user's device.
+
+## Product and guides
+
+- [Token Horizon](https://token-horizon.dev/): Features and installation.
+- [Documentation](https://token-horizon.dev/docs/): Setup, data rules, local HTTP API, MCP and gateway.
+- [Engineering blog](https://token-horizon.dev/blog/): Product and engineering notes.
+- [Why Token Horizon exists](https://token-horizon.dev/blog/why-token-horizon.html): Local-first usage tracking and honest model evidence.
+- [Why zero isn't zero](https://token-horizon.dev/blog/pricing-evidence.html): Free, plan-covered and unpriced catalog entries.
+
+## Public discovery
+
+- [Community leaderboard](https://token-horizon.dev/leaderboard): Published usage, activity and league progress.
+- [Community teams](https://token-horizon.dev/leaderboard?view=teams): Published team activity and rankings.
+- [Usage leagues](https://token-horizon.dev/leaderboard?view=leagues): The seven leagues and community progress.
+- [Model explorer](https://token-horizon.dev/models): Models, capabilities, context and pricing.
+- [Cheapest model listings](https://token-horizon.dev/models?tab=cheapest): Price comparisons derived from the exported catalog.
+- [Model providers](https://token-horizon.dev/models?tab=providers): Serving providers and their listings.
+- [Subscription plans](https://token-horizon.dev/models?tab=plans): Curated plans and covered models.
+
+## Integrations and source
+
+- [Source and README](https://github.com/castlemilk/token-horizon): Architecture, installation and API usage.
+- [Public MCP endpoint](https://token-horizon.dev/mcp/public): Read-only model and public community tools over Streamable HTTP.
+
+Individual account management, team invitations and shared report links are not public documentation. Never infer access to private reports or undisclosed user data from a public profile.

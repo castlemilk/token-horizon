@@ -14,6 +14,15 @@ body[data-surface="players"] .content{max-width:1380px;padding:34px 36px 80px}
 .profile-actions{display:flex;align-items:center;justify-content:end;gap:8px;flex-wrap:wrap;max-width:350px;flex:none}
 .profile-actions .pill{display:flex;align-items:center;gap:8px;min-height:40px;font-size:12px;padding:10px 14px;border-radius:5px;white-space:nowrap}
 .profile-actions svg{width:14px;height:14px}
+.profile-share-hint{flex-basis:100%;font-size:10px;line-height:1.5;color:var(--muted);text-align:right;max-width:350px}
+.profile-share-modal{max-width:660px;width:calc(100vw - 32px)}
+.profile-share-modal .modal-head p{max-width:510px;line-height:1.6}
+.profile-share-modal .share-preview-frame{margin-top:0}
+.profile-share-link-label{display:block;margin:22px 0 8px;font-size:11px;font-weight:600;color:var(--muted)}
+.profile-share-link{width:100%;min-width:0;padding:12px 14px;border:1px solid var(--line);border-radius:5px;background:var(--panel2);color:var(--text);font-family:var(--font-mono,monospace);font-size:12px}
+.profile-share-controls{display:flex;gap:8px;flex-wrap:wrap;justify-content:end}
+@media(max-width:760px){.profile-share-hint{text-align:left}.profile-identity .profile-actions{max-width:100%;min-width:0}}
+@media(max-width:480px){.profile-share-modal .modal-head,.profile-share-modal .modal-body,.profile-share-modal .modal-foot{padding:20px}.profile-share-modal .modal-foot{gap:12px}.profile-share-controls{flex:1}.profile-share-link{font-size:11px}.profile-share-modal .share-preview-pending{padding:16px}.profile-share-modal .share-preview-pending strong{font-size:15px}}
 .profile-text-button{border:0;background:none;color:var(--th-forest);padding:8px 0;font-size:12px;font-weight:550;cursor:pointer}
 .profile-text-button:hover{text-decoration:underline}
 .profile-actions>.profile-text-button{padding:8px}

@@ -3,9 +3,36 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Token Horizon — AI Usage Leaderboard & Analytics</title>
-<meta name="description" content="Competitive AI token usage leaderboard, league ladders, provider breakdowns, and developer analytics powered by Token Horizon." />
-<link rel="icon" href="./assets/favicon.svg" type="image/svg+xml" />
+<title>AI Usage Leaderboard &amp; Leagues — Token Horizon</title>
+<meta data-th-seo name="description" content="Explore opt-in AI usage rankings, league shields, token heatmaps and provider breakdowns. Compare daily, weekly and all-time community activity." />
+<meta data-th-seo name="theme-color" content="#101714" />
+<meta data-th-seo name="robots" content="index, follow, max-image-preview:large" />
+<link data-th-seo rel="canonical" href="https://token-horizon.dev/leaderboard" />
+<link rel="icon" href="./favicon.ico?v=20261001-2" sizes="16x16 32x32 48x48" />
+<link rel="icon" href="./favicon-32x32.png?v=20261001-2" type="image/png" sizes="32x32" />
+<link rel="icon" href="./favicon-48x48.png?v=20261001-2" type="image/png" sizes="48x48" />
+<link rel="icon" href="./assets/favicon.svg?v=20261001-2" type="image/svg+xml" sizes="any" />
+<link rel="apple-touch-icon" href="./apple-touch-icon.png?v=20261001-2" sizes="180x180" />
+<link rel="mask-icon" href="./assets/safari-pinned-tab.svg?v=20261001-2" color="#235e43" />
+<link rel="manifest" href="./site.webmanifest?v=20261001-2" />
+<meta data-th-seo property="og:type" content="website" />
+<meta data-th-seo property="og:site_name" content="Token Horizon" />
+<meta data-th-seo property="og:locale" content="en_US" />
+<meta data-th-seo property="og:title" content="AI Usage Leaderboard &amp; Leagues — Token Horizon" />
+<meta data-th-seo property="og:description" content="Explore opt-in AI usage rankings, league shields, token heatmaps and provider breakdowns. Compare daily, weekly and all-time community activity." />
+<meta data-th-seo property="og:url" content="https://token-horizon.dev/leaderboard" />
+<meta data-th-seo property="og:image" content="https://token-horizon.dev/assets/og-leaderboard.png?v=20261001-2" />
+<meta data-th-seo property="og:image:secure_url" content="https://token-horizon.dev/assets/og-leaderboard.png?v=20261001-2" />
+<meta data-th-seo property="og:image:type" content="image/png" />
+<meta data-th-seo property="og:image:width" content="1200" />
+<meta data-th-seo property="og:image:height" content="630" />
+<meta data-th-seo property="og:image:alt" content="Token Horizon community leaderboard — follow builder progress, leagues and activity through a clean ranked interface." />
+<meta data-th-seo name="twitter:card" content="summary_large_image" />
+<meta data-th-seo name="twitter:title" content="AI Usage Leaderboard &amp; Leagues — Token Horizon" />
+<meta data-th-seo name="twitter:description" content="Explore opt-in AI usage rankings, league shields, token heatmaps and provider breakdowns. Compare daily, weekly and all-time community activity." />
+<meta data-th-seo name="twitter:image" content="https://token-horizon.dev/assets/og-leaderboard.png?v=20261001-2" />
+<meta data-th-seo name="twitter:image:alt" content="Token Horizon community leaderboard — follow builder progress, leagues and activity through a clean ranked interface." />
+<script id="th-seo-schema" type="application/ld+json">{"@context":"https://schema.org","@graph":[{"@type":"Organization","@id":"https://token-horizon.dev/#organization","name":"Token Horizon","url":"https://token-horizon.dev/","logo":{"@type":"ImageObject","url":"https://token-horizon.dev/icon-512.png?v=20261001-2","width":512,"height":512},"sameAs":["https://github.com/castlemilk/token-horizon"]},{"@type":"WebSite","@id":"https://token-horizon.dev/#website","url":"https://token-horizon.dev/","name":"Token Horizon","inLanguage":"en","publisher":{"@id":"https://token-horizon.dev/#organization"}},{"@type":"CollectionPage","@id":"https://token-horizon.dev/leaderboard#webpage","url":"https://token-horizon.dev/leaderboard","name":"AI Usage Leaderboard & Leagues — Token Horizon","description":"Explore opt-in AI usage rankings, league shields, token heatmaps and provider breakdowns. Compare daily, weekly and all-time community activity.","inLanguage":"en","isPartOf":{"@id":"https://token-horizon.dev/#website"},"about":{"@type":"Thing","name":"Community AI token usage rankings"}},{"@type":"BreadcrumbList","@id":"https://token-horizon.dev/leaderboard#breadcrumbs","itemListElement":[{"@type":"ListItem","position":1,"name":"Token Horizon","item":"https://token-horizon.dev/"},{"@type":"ListItem","position":2,"name":"Leaderboard","item":"https://token-horizon.dev/leaderboard"}]}]}</script>
 <script>
 const CANONICAL_API = "https://token-horizon.dev";
 const API_BASE = (() => {
@@ -584,7 +611,7 @@ body.th-flat .mx-flat-score{display:none}
 </style>
 <link rel="stylesheet" href="./discovery.css?v=20261001-3" data-ui-style />
 <link rel="stylesheet" href="./horizon-system.css?v=20260930" data-ui-style />
-<link rel="stylesheet" href="./profile.css?v=20261001" data-ui-style />
+<link rel="stylesheet" href="./profile.css?v=20261001-2" data-ui-style />
 <link rel="stylesheet" href="./auth.css?v=20261001-2" data-ui-style />
 <link rel="stylesheet" href="./workspace.css?v=20261001" data-ui-style />
 <script src="./ui-updates.js?v=20261001" defer></script>
@@ -2349,6 +2376,97 @@ function initDiscoveryNavigation() {
     if (!discoveryNavigationMedia.matches && focused === toggle) nav.querySelector("a")?.focus();
   });
 }
+let discoveryMetadataKey = "";
+function syncDiscoveryMetadata(profile = null) {
+  const origin = CANONICAL_API;
+  const routes = {
+    leaderboard: ["AI Usage Leaderboard & Leagues", "Explore published AI token usage, developer activity and league progress in the Token Horizon community.", "/leaderboard", "leaderboard"],
+    models: ["AI Model Explorer — Models, Providers & Pricing", "Compare AI models, capabilities, context windows, provider listings and subscription plans in the Token Horizon model catalog.", "/models", "models"],
+    login: ["Sign in", "Sign in to Token Horizon to manage your profile, team and shared usage reports.", "/login", "login"],
+    invite: ["Join your crew", "Join a friend's team on Token Horizon and build alongside your crew.", "/leaderboard", "connect"],
+    dashboard: ["Your Workspace", "Your Token Horizon workspace for AI usage, observability and optimisation insights.", "/leaderboard?view=dashboard", "workspace"],
+    billing: ["Billing & Usage", "Review your published usage and cost breakdowns in Token Horizon.", "/leaderboard?view=billing", "workspace"],
+    settings: ["Settings", "Manage your Token Horizon profile, teams and sharing settings.", "/leaderboard?view=settings", "workspace"],
+    shared: ["Shared usage report", "Open a shared Token Horizon usage report with its owner's chosen access controls.", location.pathname, "workspace"],
+    teams: ["Community teams", "Explore team activity in the Token Horizon community.", "/leaderboard?view=teams", "leaderboard"],
+    leagues: ["AI Usage Leagues", "Explore the seven Token Horizon leagues and follow the community's progress.", "/leaderboard?view=leagues", "leaderboard"],
+    players: ["Builder profiles", "Explore the Token Horizon community's published builder profiles.", "/leaderboard", "leaderboard"]
+  };
+  const view = state.view;
+  const route = routes[view] || routes.dashboard;
+  let [title, description, path, imageName] = route;
+  let noindex = !["leaderboard", "models", "teams", "leagues"].includes(view);
+  let type = "website", schema = null;
+  let image = origin + "/assets/og-" + imageName + ".png?v=20261001-2";
+  let imageAlt = "Token Horizon — " + title;
+  if (view === "models") {
+    const tab = ["cheapest", "providers", "plans"].includes(state.modelsTab) ? state.modelsTab : "";
+    if (tab) {
+      path += "?tab=" + tab;
+      title = { cheapest: "Cheapest AI Models & Provider Prices", providers: "AI Model Providers", plans: "AI Subscription Plans & Included Models" }[tab];
+    }
+  }
+  if (view === "invite") path = location.pathname.startsWith("/invite/") ? location.pathname : "/leaderboard?view=invite";
+  if (view === "players" && state.currentHandle) {
+    const handle = String(state.currentHandle).replace(/^@/, "").toLowerCase();
+    path = "/u/" + encodeURIComponent(handle);
+    const entry = profile?.entry || (state.user?.handle?.toLowerCase() === handle ? state.user.entry : null);
+    // Keep the server's fingerprinted profile preview while the first API
+    // read is pending. Later SPA navigation builds the same public permalink.
+    if (!entry && state.profileLoad?.status !== "missing"
+        && document.querySelector('link[rel="canonical"]')?.href === origin + path
+        && document.querySelector('meta[property="og:type"]')?.content === "profile") return;
+    title = "@" + handle + " — AI Usage Profile";
+    description = "@" + handle + "'s published AI token usage, provider breakdown, activity heatmap and league progress on Token Horizon.";
+    noindex = !entry;
+    type = entry ? "profile" : "website";
+    if (entry) {
+      const version = Math.abs(hashCode(JSON.stringify([entry.updatedAt, entry.tokensAll, entry.tokensToday, entry.league, entry.avatarUrl])));
+      const existingImage = document.querySelector('meta[property="og:image"]')?.content;
+      const profileImage = origin + "/api/og/profile/" + encodeURIComponent(handle) + ".png";
+      image = existingImage?.startsWith(profileImage + "?v=") ? existingImage : profileImage + "?v=" + version;
+      imageAlt = "@" + handle + "'s published token usage chart, activity heatmap and league";
+      schema = { "@context": "https://schema.org", "@type": "ProfilePage", name: "@" + handle + " on Token Horizon", url: origin + path,
+        mainEntity: { "@type": "Person", name: "@" + handle, url: origin + path } };
+    }
+  }
+  if (["leaderboard", "models", "teams", "leagues"].includes(view)) schema = { "@context": "https://schema.org", "@type": "CollectionPage", name: title + " — Token Horizon", description, url: origin + path,
+    isPartOf: { "@type": "WebSite", name: "Token Horizon", url: origin + "/" } };
+  if (new URLSearchParams(location.search).has("signin")) { noindex = true; schema = null; }
+  // A report's server preview already applies its access and anonymity
+  // controls. Retain it only on that exact report's canonical route.
+  if (view === "shared" && document.querySelector('link[rel="canonical"]')?.href === origin + path) {
+    image = document.querySelector('meta[property="og:image"]')?.content || image;
+    imageAlt = document.querySelector('meta[property="og:image:alt"]')?.content || imageAlt;
+  }
+  title += " — Token Horizon";
+  const key = JSON.stringify([title, description, path, image, imageAlt, noindex, type, schema]);
+  if (key === discoveryMetadataKey) return;
+  discoveryMetadataKey = key;
+  document.title = title;
+  const meta = (name, content, property = false) => {
+    const attribute = property ? "property" : "name";
+    const nodes = [...document.head.querySelectorAll('meta[' + attribute + '="' + name + '"]')];
+    const node = nodes.shift() || document.createElement("meta");
+    nodes.forEach(duplicate => duplicate.remove());
+    node.setAttribute(attribute, name); node.content = content; node.dataset.thSeo = "";
+    if (!node.isConnected) document.head.append(node);
+  };
+  meta("description", description);
+  meta("robots", noindex ? "noindex, nofollow" : "index, follow, max-image-preview:large");
+  const canonicals = [...document.head.querySelectorAll('link[rel="canonical"]')];
+  const canonical = canonicals.shift() || document.createElement("link");
+  canonicals.forEach(node => node.remove()); canonical.rel = "canonical"; canonical.href = origin + path;
+  if (!canonical.isConnected) document.head.append(canonical);
+  document.head.querySelectorAll('meta[property^="og:"],meta[name^="twitter:"]').forEach(node => node.remove());
+  for (const [name, value] of Object.entries({ "og:type": type, "og:site_name": "Token Horizon", "og:locale": "en_US", "og:title": title,
+    "og:description": description, "og:url": origin + path, "og:image": image, "og:image:secure_url": image, "og:image:type": "image/png",
+    "og:image:width": "1200", "og:image:height": "630", "og:image:alt": imageAlt })) meta(name, value, true);
+  for (const [name, value] of Object.entries({ "twitter:card": "summary_large_image", "twitter:title": title, "twitter:description": description,
+    "twitter:image": image, "twitter:image:alt": imageAlt })) meta(name, value);
+  document.head.querySelectorAll('script[type="application/ld+json"]').forEach(node => node.remove());
+  if (schema) { const node = document.createElement("script"); node.type = "application/ld+json"; node.id = "th-seo-schema"; node.textContent = JSON.stringify(schema); document.head.append(node); }
+}
 function syncDiscoveryChrome() {
   const visible = ["leaderboard", "models", "invite", "players", "login"].includes(state.view);
   document.body.classList.toggle("discovery", visible);
@@ -2357,7 +2475,7 @@ function syncDiscoveryChrome() {
     setDiscoveryNavigation(false, { restoreFocus: Boolean($("#discovery-navigation")?.contains(document.activeElement)) });
     discoveryNavigationRoute = state.view;
   }
-  document.title = `Token Horizon — ${state.view === "login" ? "Sign in" : state.view === "invite" ? "Join your crew" : state.view === "models" ? "Model Explorer" : state.view === "leaderboard" ? "Community Leaderboard" : state.view === "players" ? "Builder Profile" : "Analytics"}`;
+  syncDiscoveryMetadata();
   $$("[data-public-view]").forEach(a => {
     a.setAttribute("aria-current", a.dataset.publicView === state.view ? "page" : "false");
     a.onclick = e => { if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return; e.preventDefault(); mxClose(); navigate(a.dataset.publicView); };
@@ -2546,13 +2664,9 @@ function wireCharts() {
     if (!requireSignIn({ action: `Sharing @${target}'s report`, onSuccess: () => openShareModal(target) })) return;
     openShareModal(target);
   });
-  $$("[data-copy-profile]").forEach(el => el.onclick = async (ev) => {
+  $$("[data-share-profile]").forEach(el => el.onclick = (ev) => {
     ev.stopPropagation();
-    // No sign-in needed — the public profile permalink unfurls with a live
-    // usage card (dynamic OG image) anywhere it's pasted.
-    const link = location.origin + "/u/" + encodeURIComponent(el.dataset.copyProfile);
-    try { await navigator.clipboard.writeText(link); toast("Profile link copied — " + link); }
-    catch (_) { toast("Profile link: " + link); }
+    openProfileShareModal(el.dataset.shareProfile);
   });
   $$("[data-claim-user]").forEach(el => el.onclick = () => openClaimModal(el.dataset.claimUser));
   $$("[data-crumb]").forEach(el => el.onclick = (ev) => { ev.preventDefault(); navigate(el.dataset.crumb); });
@@ -2738,7 +2852,7 @@ function profileHero(p) {
   const ownedByViewer = sessionOwnsEntry(e);
   return `<header class="profile-identity">
     <div class="profile-person">${entryAvatar(e, 80)}<div><h1>@${esc(handle)}</h1><div class="profile-meta">${e.team ? `<span>${esc(e.team)}</span>` : '<span>Independent builder</span>'}${e.hardware ? `<span>${esc(e.hardware)}</span>` : ""}${e.isLocal ? '<span class="chip you">You</span>' : ""}</div></div></div>
-    <div class="profile-actions"><button class="pill primary" data-share-user="${esc(handle)}"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m8 11 8-5M8 13l8 5" stroke="currentColor" stroke-width="1.5"/><circle cx="5" cy="12" r="3" stroke="currentColor" stroke-width="1.5"/><circle cx="19" cy="4" r="3" stroke="currentColor" stroke-width="1.5"/><circle cx="19" cy="20" r="3" stroke="currentColor" stroke-width="1.5"/></svg> Share report</button><button class="pill ghost" data-copy-profile="${esc(handle)}">Copy link</button>${canEditAvatar(e) ? `<button class="pill ghost" data-edit-avatar="${esc(handle)}">Edit photo</button>` : ""}${ownedByViewer ? "" : `<button class="profile-text-button" data-claim-user="${esc(handle)}">Claim profile</button>`}</div>
+    <div class="profile-actions"><button class="pill primary" data-share-profile="${esc(handle)}" aria-describedby="profile-share-hint"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m8 11 8-5M8 13l8 5" stroke="currentColor" stroke-width="1.5"/><circle cx="5" cy="12" r="3" stroke="currentColor" stroke-width="1.5"/><circle cx="19" cy="4" r="3" stroke="currentColor" stroke-width="1.5"/><circle cx="19" cy="20" r="3" stroke="currentColor" stroke-width="1.5"/></svg> Share profile</button><button class="pill ghost" data-share-user="${esc(handle)}" title="Create a report with audience and expiry controls">Share report</button>${canEditAvatar(e) ? `<button class="pill ghost" data-edit-avatar="${esc(handle)}">Edit photo</button>` : ""}${ownedByViewer ? "" : `<button class="profile-text-button" data-claim-user="${esc(handle)}">Claim profile</button>`}<span class="profile-share-hint" id="profile-share-hint">A link with a usage chart, heatmap and league preview.</span></div>
   </header>`;
 }
 function profileTotals(p) {
@@ -3095,7 +3209,7 @@ async function renderPlayers(current = () => true, outcome = state.profileLoad) 
   if (outcome?.status !== "ready") { $("#view").innerHTML = profileFailureHtml(outcome); wireProfileRetry(outcome); return; }
   const p = outcome.profile;
   if (!p?.entry) return;
-  document.title = `@${p.entry.handle} — Token Horizon`;
+  syncDiscoveryMetadata(p);
   const restoreTabFocus = document.activeElement?.matches(".profile-tabs [data-tab]");
   const restoreWindowFocus = document.activeElement?.dataset.profileWindow;
   $("#view").innerHTML = `<article id="profile-shell"><nav class="profile-breadcrumb" aria-label="Breadcrumb"><a href="./leaderboard" data-crumb="leaderboard">Community</a><span>/</span><span>${esc(p.entry.handle)}</span></nav>`
@@ -4952,6 +5066,38 @@ function ruleRow(key, title, detail) {
 /* ============================================================
    SHARE MODAL
    ============================================================ */
+function openProfileShareModal(handle) {
+  const target = String(handle || "").replace(/^@/, "").toLowerCase();
+  if (!target) return;
+  // The canonical public permalink generates its own social preview. It
+  // needs neither a report grant nor a signed-in account to be shared.
+  const link = CANONICAL_API + "/u/" + encodeURIComponent(target);
+  const entry = state.user?.handle?.toLowerCase() === target ? state.user.entry : null;
+  const revision = entry ? Math.abs(hashCode(JSON.stringify([entry.updatedAt, entry.tokensAll, entry.tokensToday, entry.league, entry.avatarUrl]))) : "";
+  const previewUrl = API_BASE + "/api/og/profile/" + encodeURIComponent(target) + ".png" + (revision ? "?v=" + revision : "");
+  const backdrop = $("#modal-backdrop");
+  backdrop.innerHTML = `<section class="modal profile-share-modal" role="dialog" aria-modal="true" aria-labelledby="profile-share-title" aria-describedby="profile-share-description"><div class="modal-head"><div><h2 id="profile-share-title">Share profile</h2><p id="profile-share-description">Share @${esc(target)} with a preview of their token usage, provider chart, activity heatmap and league.</p></div><button class="x" data-close aria-label="Close share profile">×</button></div><div class="modal-body"><div class="share-preview-frame" id="profile-share-preview-frame"><div class="share-preview-pending" role="status"><div class="share-preview-mark" aria-hidden="true"></div><strong>Preparing the profile preview</strong><span>Published usage, brought together in one card.</span></div><img id="profile-share-preview" src="${esc(previewUrl)}" width="1200" height="630" alt="@${esc(target)}'s published token usage chart, activity heatmap and league" decoding="async"></div><p class="share-preview-label"><i aria-hidden="true"></i>Generated from the latest published usage. Only public profile data appears.</p><label class="profile-share-link-label" for="profile-share-link">Profile link</label><input id="profile-share-link" class="profile-share-link" value="${esc(link)}" readonly></div><div class="modal-foot"><button class="pill ghost" data-close>Done</button><div class="profile-share-controls">${typeof navigator.share === "function" ? '<button class="pill" id="profile-share-native">Share…</button>' : ""}<button class="pill primary" data-copy-profile="${esc(target)}">Copy profile link</button></div></div></section>`;
+  backdrop.classList.add("open");
+  $$("[data-close]", backdrop).forEach(button => button.onclick = closeModal);
+  backdrop.onclick = event => { if (event.target === backdrop) closeModal(); };
+  const frame = $("#profile-share-preview-frame", backdrop), preview = $("#profile-share-preview", backdrop);
+  const loaded = () => frame.classList.add("ready");
+  preview.onload = loaded;
+  preview.onerror = () => {
+    $(".share-preview-pending", frame).innerHTML = '<div class="share-preview-mark" aria-hidden="true"></div><strong>Your profile link is ready</strong><span>The image preview could not load. The profile link is still ready to share.</span>';
+  };
+  if (preview.complete && preview.naturalWidth) loaded();
+  const copy = async () => {
+    try { await navigator.clipboard.writeText(link); toast("Profile link copied — includes the usage preview"); }
+    catch (_) { $("#profile-share-link", backdrop).focus(); $("#profile-share-link", backdrop).select(); toast("Select and copy your profile link."); }
+  };
+  $("[data-copy-profile]", backdrop).onclick = copy;
+  const nativeShare = $("#profile-share-native", backdrop);
+  if (nativeShare) nativeShare.onclick = async () => {
+    try { await navigator.share({ title: "@" + target + " — Token Horizon", text: "Token usage, activity heatmap and league on Token Horizon.", url: link }); }
+    catch (error) { if (error.name !== "AbortError") await copy(); }
+  };
+}
 function shareDraftKey(handle) {
   return JSON.stringify({ handle: String(handle).toLowerCase(), scope: state.shareScope,
     audience: state.shareAudience, options: state.shareOptions,

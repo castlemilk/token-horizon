@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url><loc>https://token-horizon.dev/</loc></url>
+  <url><loc>https://token-horizon.dev/leaderboard</loc></url>
+  <url><loc>https://token-horizon.dev/leaderboard?view=teams</loc></url>
+  <url><loc>https://token-horizon.dev/leaderboard?view=leagues</loc></url>
+  <url><loc>https://token-horizon.dev/models</loc></url>
+  <url><loc>https://token-horizon.dev/models?tab=cheapest</loc></url>
+  <url><loc>https://token-horizon.dev/models?tab=providers</loc></url>
+  <url><loc>https://token-horizon.dev/models?tab=plans</loc></url>
+  <url><loc>https://token-horizon.dev/docs/</loc></url>
+  <url><loc>https://token-horizon.dev/blog/</loc></url>
+  <url><loc>https://token-horizon.dev/blog/why-token-horizon.html</loc></url>
+  <url><loc>https://token-horizon.dev/blog/pricing-evidence.html</loc></url>
+</urlset>

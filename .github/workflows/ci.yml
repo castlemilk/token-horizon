@@ -70,13 +70,15 @@ jobs:
         run: npm ci --prefix cloudflare --ignore-scripts
 
       - name: Worker tests (leaderboard API and OAuth connector)
-        run: node --test cloudflare/worker.test.mjs cloudflare/connector.test.mjs cloudflare/browser-auth.test.mjs cloudflare/og-card.test.mjs cloudflare/og-avatar.test.mjs
+        run: node --test cloudflare/worker.test.mjs cloudflare/connector.test.mjs cloudflare/browser-auth.test.mjs cloudflare/og-card.test.mjs cloudflare/og-avatar.test.mjs cloudflare/page-metadata.test.mjs
 
       - name: Profile photo fetch regression (native Worker runtime)
         run: node scripts/test-og-avatar-worker.mjs
 
       - name: Social card PNG regression (real WASM and bundled fonts)
         run: |
+          node scripts/build-brand-assets.mjs --check
+          node scripts/test-site-seo.mjs
           node cloudflare/assets/build-og-leagues.mjs --check
           node scripts/test-og-png.mjs
 

@@ -1413,7 +1413,7 @@ describe('Cloudflare Worker API', () => {
     assert.equal(res.status, 200);
     const body = await res.text();
     assert.match(body, /<base href="\/">/);
-    assert.match(body, /<title>@benebsworth · Grandmaster I · #1 today<\/title>/);
+    assert.match(body, /<title>@benebsworth · Grandmaster I · #1 today · Token Horizon<\/title>/);
     assert.match(body, /property="og:image" content="https:\/\/token-horizon\.dev\/api\/og\/profile\/benebsworth\.png\?v=horizon-\d+-[a-f0-9]+"/);
     assert.match(body, /property="og:image:type" content="image\/png"/);
     assert.match(body, /property="og:image:alt" content="[^"]*activity heatmap/);
@@ -1446,6 +1446,8 @@ describe('Cloudflare Worker API', () => {
 
     const res = await worker.fetch(req(`/api/og/share/${id}.svg`), env);
     assert.equal(res.status, 200);
+    assert.match(res.headers.get('X-Robots-Tag'), /noindex/, 'Share previews can unfurl without being indexed as public images');
+    assert.equal(res.headers.get('Cache-Control'), 'private, no-store');
     const svg = await res.text();
     assert.match(svg, /Anonymous/);
     assert.doesNotMatch(svg, /og_dev/);

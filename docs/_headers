@@ -1,0 +1,6 @@
+/data/*
+  X-Robots-Tag: noindex
+
+/site.webmanifest
+  Content-Type: application/manifest+json; charset=utf-8
+  X-Robots-Tag: noindex

@@ -1,0 +1,24 @@
+# Public pages and their rendering data are crawlable. Private HTML uses
+# noindex metadata; robots.txt is not an access-control mechanism.
+User-agent: *
+Allow: /
+Allow: /api/leaderboard
+Allow: /api/providers
+Allow: /api/season
+Allow: /api/config
+Allow: /api/models/
+Allow: /api/user/
+Allow: /api/og/profile/
+Allow: /api/og/share/
+Allow: /api/avatar/
+Disallow: /api/
+Disallow: /oauth/
+Disallow: /mcp
+Disallow: /.well-known/
+Disallow: /splash/
+Disallow: /MTPLX/
+Disallow: /.agents/
+Disallow: /*?api=
+Disallow: /*&api=
+
+Sitemap: https://token-horizon.dev/sitemap.xml

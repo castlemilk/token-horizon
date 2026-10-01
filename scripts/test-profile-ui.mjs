@@ -53,11 +53,18 @@ const catalog = {
 const mime = { '.html': 'text/html', '.js': 'application/javascript', '.css': 'text/css', '.json': 'application/json', '.png': 'image/png', '.webp': 'image/webp', '.svg': 'image/svg+xml', '.woff2': 'font/woff2', '.ttf': 'font/ttf' };
 const browser = await (await resolveChromium()).launch({ channel: 'chrome', headless: true });
 
-async function setup({ user = 'ready', standings = 'ready', width = 1440, reducedMotion = 'no-preference', publishedProfile = profile } = {}) {
+async function setup({ user = 'ready', standings = 'ready', width = 1440, reducedMotion = 'no-preference', publishedProfile = profile, preview = 'ready', clipboard = 'ready', nativeShare = false } = {}) {
   const context = await browser.newContext({ viewport: { width, height: 1000 }, timezoneId: 'UTC', reducedMotion });
-  await context.addInitScript(() => {
-    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async value => { window.testCopiedProfile = value; } } });
-  });
+  await context.addInitScript(({ clipboard, nativeShare }) => {
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async value => {
+      if (clipboard === 'blocked') throw new DOMException('Clipboard unavailable', 'NotAllowedError');
+      window.testCopiedProfile = value;
+    } } });
+    Object.defineProperty(navigator, 'share', { configurable: true, value: nativeShare ? async value => {
+      window.testNativeProfile = value;
+      throw new DOMException('Share sheet cancelled', 'AbortError');
+    } : undefined });
+  }, { clipboard, nativeShare });
   if (user === 'body') await context.addInitScript(() => {
     const nativeFetch = window.fetch.bind(window);
     window.testProfileRead = { retry: false, headers: 0, aborts: 0 };
@@ -104,8 +111,11 @@ async function setup({ user = 'ready', standings = 'ready', width = 1440, reduce
     }
     if (url.pathname === '/api/models/catalog' || url.pathname === '/data/models.json') return json(route, catalog);
     if (url.pathname === '/api/models/usage') return json(route, { ok: true, models: [] });
+    if (url.pathname.startsWith('/api/og/profile/')) return preview === 'ready'
+      ? route.fulfill({ contentType: 'image/png', body: await fs.readFile(path.join(docsRoot, 'assets/og.png')) })
+      : route.fulfill({ status: 503, body: '' });
     if (url.pathname.startsWith('/api/')) return json(route, {});
-    const relative = url.pathname.startsWith('/u/') || ['/leaderboard', '/models'].includes(url.pathname) ? 'leaderboard.html' : url.pathname.slice(1);
+    const relative = url.pathname.startsWith('/u/') || ['/leaderboard', '/models', '/login'].includes(url.pathname) ? 'leaderboard.html' : url.pathname.slice(1);
     const file = path.resolve(docsRoot, relative);
     if (!file.startsWith(docsRoot + path.sep)) return route.fulfill({ status: 404, body: '' });
     try {
@@ -201,8 +211,22 @@ try {
         assert.doesNotMatch(await page.locator('#view').innerText(), /undefined|NaN/);
       }
       await page.locator('.tab[data-tab="overview"]').click();
+      const opener = page.getByRole('button', { name: 'Share profile', exact: true });
+      assert.equal(await opener.getAttribute('aria-describedby'), 'profile-share-hint');
+      assert.match(await page.locator('#profile-share-hint').innerText(), /chart, heatmap and league/);
+      await opener.click();
+      await page.waitForSelector('.profile-share-modal');
+      assert.match(await page.locator('#profile-share-description').innerText(), /@aurora.*provider chart.*activity heatmap.*league/);
+      await page.waitForSelector('#profile-share-preview-frame.ready');
+      assert.match(await page.locator('#profile-share-preview').getAttribute('src'), /\/api\/og\/profile\/aurora\.png\?v=/);
+      assert.deepEqual(await page.locator('#profile-share-preview').evaluate(img => [img.naturalWidth, img.naturalHeight]), [1200, 630]);
+      assert.equal(await page.locator('#profile-share-link').inputValue(), ORIGIN + '/u/aurora');
+      assert.equal(await page.locator('.signin-modal').count(), 0, 'A public profile can be shared without signing in');
       await page.locator('[data-copy-profile="aurora"]').click();
       assert.equal(await page.evaluate(() => window.testCopiedProfile), ORIGIN + '/u/aurora');
+      await page.keyboard.press('Escape');
+      await page.waitForSelector('.profile-share-modal', { state: 'detached' });
+      assert.equal(await opener.evaluate(button => button === document.activeElement), true, 'Closing returns keyboard focus to Share profile');
       await page.locator('[data-share-user="aurora"]').click();
       await page.waitForSelector('.signin-modal');
       assert.match(await page.locator('.signin-modal').innerText(), /Sharing @aurora/);
@@ -210,6 +234,63 @@ try {
       await page.locator('#profile-shell [data-model-link]').first().click();
       await page.waitForSelector('#mx-drawer.open');
       assert.match(await page.locator('#mx-drawer').innerText(), /claude-opus-5/);
+    } finally { await fixture.close(); }
+  }
+
+  console.log('Public profile sharing: mobile sizing, failed previews, clipboard fallback and cancelled native share...');
+  {
+    const fixture = await setup({ width: 360, preview: 'error', clipboard: 'blocked', nativeShare: true });
+    try {
+      const { page } = fixture;
+      await page.goto(ORIGIN + '/u/aurora', { waitUntil: 'domcontentloaded' });
+      await assertLoaded(page);
+      await page.getByRole('button', { name: 'Share profile', exact: true }).click();
+      await page.waitForSelector('.profile-share-modal');
+      await page.waitForFunction(() => document.querySelector('.share-preview-pending')?.textContent.includes('profile link is ready'));
+      const box = await page.locator('.profile-share-modal').boundingBox();
+      assert(box.x >= 0 && box.x + box.width <= 360, 'The dialog stays inside a small mobile viewport');
+      await page.getByRole('button', { name: 'Share…', exact: true }).click();
+      assert.equal(await page.evaluate(() => window.testNativeProfile.url), ORIGIN + '/u/aurora');
+      assert.equal(await page.evaluate(() => window.testCopiedProfile), undefined, 'Cancelling a native share does not copy a link');
+      await page.getByRole('button', { name: 'Copy profile link', exact: true }).click();
+      assert.deepEqual(await page.locator('#profile-share-link').evaluate(input => [input === document.activeElement, input.selectionStart, input.selectionEnd]), [true, 0, (ORIGIN + '/u/aurora').length], 'Blocked clipboard selects the complete link for manual copy');
+      await page.keyboard.press('Escape');
+      assert.equal(await page.locator('.profile-share-modal').count(), 0);
+      assert.equal(await page.evaluate(() => document.body.style.overflow), '');
+    } finally { await fixture.close(); }
+  }
+
+  console.log('SPA search metadata: profile, model tabs and private sign-in follow the visible route...');
+  {
+    const fixture = await setup();
+    try {
+      const { page } = fixture;
+      await page.goto(ORIGIN + '/u/aurora', { waitUntil: 'domcontentloaded' });
+      await assertLoaded(page);
+      assert.equal(await page.locator('link[rel="canonical"]').getAttribute('href'), ORIGIN + '/u/aurora');
+      assert.match(await page.locator('meta[property="og:image"]').getAttribute('content'), /\/api\/og\/profile\/aurora\.png/);
+      assert.doesNotMatch(await page.locator('meta[name="robots"]').getAttribute('content'), /noindex/);
+      assert.equal(JSON.parse(await page.locator('#th-seo-schema').textContent()).mainEntity.name, '@aurora');
+      await page.locator('[data-public-view="models"]').click();
+      await page.waitForSelector('#mx-q');
+      assert.equal(await page.locator('link[rel="canonical"]').getAttribute('href'), ORIGIN + '/models');
+      assert.match(await page.locator('meta[property="og:image"]').getAttribute('content'), /\/assets\/og-models\.png/);
+      assert.doesNotMatch(await page.locator('#th-seo-schema').textContent(), /aurora|Person|ProfilePage/);
+      await page.locator('[data-models-tab="plans"]').click();
+      await page.waitForSelector('[data-models-tab="plans"][aria-selected="true"]');
+      assert.equal(await page.locator('link[rel="canonical"]').getAttribute('href'), ORIGIN + '/models?tab=plans');
+      await page.goto(ORIGIN + '/login', { waitUntil: 'domcontentloaded' });
+      await page.waitForSelector('#login-page');
+      assert.match(await page.locator('meta[name="robots"]').getAttribute('content'), /noindex/);
+      assert.equal(await page.locator('#th-seo-schema').count(), 0, 'Private sign-in does not inherit public profile or catalog schema');
+      assert.equal(await page.locator('link[rel="canonical"]').getAttribute('href'), ORIGIN + '/login');
+      assert.match(await page.locator('meta[property="og:image"]').getAttribute('content'), /\/assets\/og-login\.png/);
+      await page.getByRole('link', { name: 'Explore without signing in' }).click();
+      await page.waitForSelector('.community-periods');
+      assert.doesNotMatch(await page.locator('meta[name="robots"]').getAttribute('content'), /noindex/);
+      assert.equal(await page.locator('link[rel="canonical"]').getAttribute('href'), ORIGIN + '/leaderboard');
+      assert.equal(await page.locator('meta[property="og:image"]').count(), 1);
+      assert.equal(await page.locator('meta[name="twitter:image"]').count(), 1);
     } finally { await fixture.close(); }
   }
 

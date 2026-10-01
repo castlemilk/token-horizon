@@ -11,6 +11,7 @@ import { handleBrowserAuth, browserIdentity, identityOwnerId, identityOwns, gith
 import { buildOgModel, renderProfileOgSvg, renderRestrictedOgSvg, OG_CARD_VERSION } from './og-card.js';
 import { loadOgAvatar } from './og-avatar.js';
 import { boundedText } from './request-body.js';
+import { injectPageMetadata, routePageMetadata, SITE_ORIGIN, PRIVATE_ROBOTS } from './page-metadata.js';
 
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
@@ -1935,6 +1936,7 @@ export default {
           const headers = new Headers(asset.headers);
           for (const [name, value] of Object.entries(CORS_HEADERS)) headers.set(name, value);
           headers.set("Content-Type", "application/json;charset=utf-8");
+          headers.set("X-Robots-Tag", "noindex");
           headers.set("Cache-Control", "public, max-age=300, s-maxage=3600");
           return new Response(asset.status === 304 ? null : asset.body, {
             status: asset.status,
@@ -1997,7 +1999,7 @@ export default {
         "Cache-Control": shared ? "private, no-store" : "public, max-age=300, s-maxage=300",
         "ETag": `"og-${wantsSvg ? "svg" : "png"}-${fingerprint}"`,
         "X-Content-Type-Options": "nosniff",
-        ...(shared ? { "Referrer-Policy": "no-referrer" } : {})
+        ...(shared ? { "Referrer-Policy": "no-referrer", "X-Robots-Tag": PRIVATE_ROBOTS } : {})
       };
       if (!shared && request.headers.get("If-None-Match") === headers.ETag) return new Response(null, { status: 304, headers });
       if (request.method === "HEAD") return new Response(null, { headers });
@@ -2071,39 +2073,30 @@ export default {
         const assetUrl = new URL(request.url);
         assetUrl.pathname = '/leaderboard';
         assetUrl.search = '';
-        const asset = await env.ASSETS.fetch(new Request(assetUrl.toString(), request));
-        if (!asset.ok) return asset;
-        const inviteTitle = 'Join your crew on Token Horizon';
-        const inviteDescription = 'Sign in to join your friends’ team and explore your AI usage together.';
-        const html = (await asset.text())
-          .replace(/<title>[^<]*<\/title>/i, `<title>${inviteTitle}</title>`)
-          .replace(/<meta name="description"[^>]*>/i, `<meta name="description" content="${inviteDescription}">`)
-          .replace(/<head>/i, `<head><base href="/"><meta name="referrer" content="no-referrer"><meta property="og:type" content="website"><meta property="og:title" content="${inviteTitle}"><meta property="og:description" content="${inviteDescription}"><meta property="og:image" content="https://token-horizon.dev/assets/landing/community-orbits.webp"><meta name="twitter:card" content="summary_large_image">`);
-        return new Response(html, { status: 200, headers: {
-          'Content-Type': 'text/html;charset=utf-8', 'Cache-Control': 'private, no-store', 'Referrer-Policy': 'no-referrer'
-        } });
+        return serveRoutePage(env, request, assetUrl);
       }
       // Clean profile permalink: /u/<handle> serves the SPA with per-profile
       // OG/Twitter meta + a dynamic PNG card injected into <head>. The SPA
       // parses the path itself (init/popstate) — no query rewrite needed.
       const profileMatch = pathname.match(/^\/u\/([^\/?#]+)\/?$/);
       if (profileMatch) {
+        if (!isProfileDocumentQuery(searchParams)) return serveRoutePage(env, request, new URL('/leaderboard', request.url));
         return serveProfilePage(env, request, safeDecode(profileMatch[1]));
       }
       if (pathname === "/" || pathname === "/leaderboard.html") {
         // Legacy deep links (?user=<handle>) get the same unfurl treatment.
         const legacyUser = searchParams.get("user");
-        if (legacyUser) return serveProfilePage(env, request, legacyUser);
+        if (legacyUser && isProfileDocumentQuery(searchParams)) return serveProfilePage(env, request, legacyUser);
         // The public root introduces the product. Existing dashboard query
         // links still open the SPA, including sign-in and shared reports.
-        const dashboardLink = ["view", "tab", "share", "signin", "period", "model", "provider", "plan", "flat"]
+        const dashboardLink = ["view", "tab", "share", "invite", "signin", "period", "model", "provider", "plan", "flat"]
           .some(key => searchParams.has(key));
         if (pathname === "/" && !dashboardLink) return env.ASSETS.fetch(request);
         const newUrl = new URL(request.url);
         newUrl.pathname = "/leaderboard";
-        return env.ASSETS.fetch(new Request(newUrl.toString(), request));
+        return serveRoutePage(env, request, newUrl);
       }
-      if (pathname === "/leaderboard" && searchParams.get("user")) {
+      if (pathname === "/leaderboard" && searchParams.get("user") && isProfileDocumentQuery(searchParams)) {
         return serveProfilePage(env, request, searchParams.get("user"));
       }
       if (pathname.startsWith("/s/")) {
@@ -2116,7 +2109,7 @@ export default {
         const newUrl = new URL(request.url);
         newUrl.pathname = "/leaderboard";
         newUrl.searchParams.set("view", "models");
-        return env.ASSETS.fetch(new Request(newUrl.toString(), request));
+        return serveRoutePage(env, request, newUrl);
       }
       if (pathname === "/login" || pathname === "/login/") {
         if (!['GET', 'HEAD'].includes(request.method)) return new Response(null, { status: 405, headers: { Allow: 'GET, HEAD', 'Cache-Control': 'no-store' } });
@@ -2125,18 +2118,12 @@ export default {
           return new Response(null, { status: 301, headers: { Location: canonical.href, 'Cache-Control': 'public, max-age=300, s-maxage=600' } });
         }
         const assetUrl = new URL('/leaderboard', request.url);
-        const asset = await env.ASSETS.fetch(new Request(assetUrl, { method: request.method === 'HEAD' ? 'HEAD' : 'GET' }));
-        const headers = new Headers(asset.headers);
-        headers.set('Cache-Control', 'public, max-age=300, s-maxage=600');
         // The cached document is the anonymous shell; identity is only read
         // through /api/auth/session, whose response is always private/no-store.
-        return new Response(asset.body, { status: asset.status, headers });
+        return serveRoutePage(env, request, assetUrl, 'public, max-age=300, s-maxage=600');
       }
-      const asset = await env.ASSETS.fetch(request);
-      if (pathname !== "/leaderboard") return asset;
-      const headers = new Headers(asset.headers);
-      headers.append("Vary", "Accept");
-      return new Response(asset.body, { status: asset.status, statusText: asset.statusText, headers });
+      if (pathname === '/leaderboard') return serveRoutePage(env, request, url);
+      return env.ASSETS.fetch(request);
     }
 
     return new Response("Not Found", { status: 404 });
@@ -2274,6 +2261,7 @@ function jsonResponse(data, status = 200, extraHeaders = {}) {
     headers: {
       ...CORS_HEADERS,
       "Content-Type": "application/json;charset=utf-8",
+      "X-Robots-Tag": "noindex",
       ...extraHeaders
     }
   });
@@ -2736,11 +2724,6 @@ function safeDecode(s) {
   try { return decodeURIComponent(s); } catch (_) { return s; }
 }
 
-function ogEsc(s) {
-  return String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;").replace(/"/g, "&quot;");
-}
-
 function ogRoman(n) { return ({ 1: "I", 2: "II", 3: "III" })[n] || String(n || ""); }
 
 /// Flatten an entry + its standing into the card's view model. `opts.anonymize`
@@ -2797,7 +2780,10 @@ function ogPageResponse(request, response, privatePage = false) {
   const headers = new Headers(response.headers);
   headers.set("Vary", "Accept, User-Agent");
   headers.set("Referrer-Policy", "no-referrer");
-  if (privatePage) headers.set("Cache-Control", "private, no-store");
+  if (privatePage) {
+    headers.set("Cache-Control", "private, no-store");
+    headers.set("X-Robots-Tag", PRIVATE_ROBOTS);
+  }
   return new Response(request.method === "HEAD" ? null : response.body, { status: response.status, headers });
 }
 
@@ -2806,8 +2792,13 @@ async function plainOgPage(env, request, privatePage = false) {
   assetUrl.pathname = "/leaderboard";
   assetUrl.search = "";
   const asset = await fetchCompleteOgAsset(env, assetUrl, request);
-  const html = (await asset.text()).replace(/<head>/i, '<head><base href="/">');
-  return ogPageResponse(request, new Response(html, { status: asset.status, headers: { "Content-Type": "text/html;charset=utf-8", "Cache-Control": "no-cache" } }), privatePage);
+  const html = injectPageMetadata(await asset.text(), {
+    noindex: true, private: privatePage, type: 'website',
+    title: `${privatePage ? 'Share link unavailable' : 'Profile unavailable'} · Token Horizon`,
+    description: privatePage ? 'This Token Horizon report may have expired or been revoked.' : 'This Token Horizon profile could not be found.',
+    url: `${SITE_ORIGIN}${new URL(request.url).pathname}`
+  });
+  return ogPageResponse(request, new Response(html, { status: asset.status, headers: { "Content-Type": "text/html;charset=utf-8", "Cache-Control": "no-cache", "X-Robots-Tag": PRIVATE_ROBOTS } }), privatePage);
 }
 
 function fetchCompleteOgAsset(env, assetUrl, request) {
@@ -2815,7 +2806,32 @@ function fetchCompleteOgAsset(env, assetUrl, request) {
   headers.delete("If-None-Match");
   headers.delete("If-Modified-Since");
   headers.delete("Range");
+  // The asset is an anonymous shell. Forwarding account credentials to the
+  // static binding would undermine the same cached-shell guarantee as /login.
+  for (const name of ['Cookie', 'Authorization', 'X-Google-Token', 'X-Claim-Token', 'X-Leaderboard-Secret']) headers.delete(name);
   return env.ASSETS.fetch(new Request(assetUrl.toString(), { method: "GET", headers }));
+}
+
+function isProfileDocumentQuery(params) {
+  return [null, '', 'players'].includes(params.get('view')) && !['share', 'invite', 'signin', 'flat'].some(key => params.has(key));
+}
+
+async function serveRoutePage(env, request, assetUrl, cacheControl) {
+  if (!['GET', 'HEAD'].includes(request.method)) return new Response(null, { status: 405,
+    headers: { Allow: 'GET, HEAD', 'Cache-Control': 'no-store', 'X-Robots-Tag': 'noindex' } });
+  const meta = routePageMetadata(new URL(request.url));
+  const asset = await fetchCompleteOgAsset(env, assetUrl, request);
+  if (!asset.ok) return new Response(request.method === 'HEAD' ? null : asset.body, { status: asset.status, headers: asset.headers });
+  const html = injectPageMetadata(await asset.text(), meta);
+  const headers = new Headers(asset.headers);
+  // Asset validators describe the unmodified SPA, not this route's document.
+  for (const name of ['ETag', 'Last-Modified', 'Content-Length', 'Content-Encoding', 'Content-Range', 'Accept-Ranges']) headers.delete(name);
+  headers.set('Cache-Control', meta.private ? 'private, no-store' : cacheControl || 'public, max-age=0, s-maxage=300, must-revalidate');
+  headers.set('Referrer-Policy', 'no-referrer');
+  const vary = new Set((headers.get('Vary') || '').split(',').map(s => s.trim()).filter(Boolean));
+  vary.add('Accept'); headers.set('Vary', [...vary].join(', '));
+  if (meta.noindex || meta.private) headers.set('X-Robots-Tag', PRIVATE_ROBOTS);
+  return new Response(request.method === 'HEAD' ? null : html, { status: asset.status, headers });
 }
 
 /// Fetch the SPA asset and inject per-target OG/Twitter meta into <head>.
@@ -2826,44 +2842,15 @@ async function servePageWithOg(env, request, meta) {
   assetUrl.pathname = "/leaderboard";
   assetUrl.search = "";
   const res = await fetchCompleteOgAsset(env, assetUrl, request);
-  if (!res.ok) return res;
-  const html = injectOgMeta(await res.text(), meta);
+  if (!res.ok) {
+    const headers = new Headers(res.headers); headers.set('X-Robots-Tag', PRIVATE_ROBOTS);
+    return ogPageResponse(request, new Response(res.body, { status: res.status, headers }), meta.private);
+  }
+  const html = injectPageMetadata(await res.text(), meta);
   return new Response(request.method === "HEAD" ? null : html, {
     status: 200,
-    headers: { "Content-Type": "text/html;charset=utf-8", "Cache-Control": meta.private ? "private, no-store" : "no-cache", "Vary": "Accept, User-Agent", "Referrer-Policy": "no-referrer" }
+    headers: { "Content-Type": "text/html;charset=utf-8", "Cache-Control": meta.private ? "private, no-store" : "no-cache", "Vary": "Accept, User-Agent", "Referrer-Policy": "no-referrer", ...(meta.private || meta.noindex ? { 'X-Robots-Tag': PRIVATE_ROBOTS } : {}) }
   });
-}
-
-function injectOgMeta(html, meta) {
-  html = html.replace(/<meta\s+[^>]*(?:property=["']og:[^"']+["']|name=["']twitter:[^"']+["'])[^>]*>/gi, "")
-    .replace(/<link\s+[^>]*rel=["']canonical["'][^>]*>/gi, "")
-    .replace(/<base\s+[^>]*>/gi, "");
-  const tags = [
-    `<base href="/">`,
-    `<meta property="og:type" content="${ogEsc(meta.type || 'profile')}">`,
-    `<meta property="og:site_name" content="Token Horizon">`,
-    `<meta property="og:title" content="${ogEsc(meta.title)}">`,
-    `<meta property="og:description" content="${ogEsc(meta.description)}">`,
-    `<meta property="og:url" content="${ogEsc(meta.url)}">`,
-    `<meta property="og:image" content="${ogEsc(meta.image)}">`,
-    `<meta property="og:image:secure_url" content="${ogEsc(meta.image)}">`,
-    `<meta property="og:image:type" content="image/png">`,
-    `<meta property="og:image:width" content="1200">`,
-    `<meta property="og:image:height" content="630">`,
-    `<meta property="og:image:alt" content="${ogEsc(meta.alt || meta.description)}">`,
-    `<meta name="twitter:card" content="summary_large_image">`,
-    `<meta name="twitter:title" content="${ogEsc(meta.title)}">`,
-    `<meta name="twitter:description" content="${ogEsc(meta.description)}">`,
-    `<meta name="twitter:image" content="${ogEsc(meta.image)}">`,
-    `<meta name="twitter:image:alt" content="${ogEsc(meta.alt || meta.description)}">`,
-    `<meta name="twitter:image:width" content="1200">`,
-    `<meta name="twitter:image:height" content="630">`,
-    `<link rel="canonical" href="${ogEsc(meta.url)}">`
-  ].join("\n");
-  let out = html.replace(/<title>[^<]*<\/title>/i, `<title>${ogEsc(meta.title)}</title>`);
-  out = out.replace(/<meta name="description" content="[^"]*"\s*\/?>/,
-    `<meta name="description" content="${ogEsc(meta.description)}" />`);
-  return out.replace(/<head>/i, `<head>\n${tags}`);
 }
 
 /// /u/<handle> — clean profile permalink with a dynamic OG card. Unknown
@@ -2883,16 +2870,17 @@ async function serveProfilePage(env, request, handle) {
   // (social unfurlers still get the SPA + OG meta for the PNG card).
   const tv = textViewKind(request, url.searchParams);
   if (tv === "json") {
-    return ogPageResponse(request, jsonResponse({ ok: true, card: vm, url: `${url.origin}/u/${encodeURIComponent(entry.handle)}`, image }, 200, { "Cache-Control": "public, max-age=120" }));
+    return ogPageResponse(request, jsonResponse({ ok: true, card: vm, url: `${SITE_ORIGIN}/u/${encodeURIComponent(entry.handle)}`, image }, 200, { "Cache-Control": "public, max-age=120" }));
   }
   if (tv) {
-    return ogPageResponse(request, new Response(ogTextCard(vm, { origin: url.origin, color: tv === "cli" }), {
+    return ogPageResponse(request, new Response(ogTextCard(vm, { origin: SITE_ORIGIN, color: tv === "cli" }), {
       headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "public, max-age=120" }
     }));
   }
-  const canon = `${url.origin}/u/${encodeURIComponent(entry.handle)}`;
+  const canon = `${SITE_ORIGIN}/u/${encodeURIComponent(entry.handle)}`;
   return servePageWithOg(env, request, {
-    title: `@${entry.handle} · ${vm.leagueTitle} ${ogRoman(vm.division)} · #${vm.rankToday} today`,
+    type: 'profile', schemaType: 'ProfilePage', profileHandle: entry.handle,
+    title: `@${entry.handle} · ${vm.leagueTitle} ${ogRoman(vm.division)} · #${vm.rankToday} today · Token Horizon`,
     description: `${formatTokens(vm.tokensToday)} tokens today · ${formatTokens(vm.tokensAll)} all-time · ${vm.streakDays}d streak — Token Horizon leaderboard`,
     alt: `Token Horizon usage card for @${entry.handle}: ${formatTokens(vm.tokensToday)} tokens today, ${formatTokens(vm.tokensAll)} all-time, ${vm.streakDays}-day streak and activity heatmap.`,
     url: canon,
@@ -2908,13 +2896,13 @@ async function serveSharePage(env, request, id) {
   const tv = textViewKind(request, url.searchParams);
   if (share && !share.revoked && !(share.expiresAt && share.expiresAt * 1000 <= Date.now()) && !isPublicShare(share)) {
     const image = `${url.origin}/api/og/share/${id}.png?v=${await ogFingerprint(renderRestrictedOgSvg())}`;
-    if (tv === "json") return ogPageResponse(request, jsonResponse({ ok: true, restricted: true, url: `${url.origin}/s/${id}`, image }), true);
+    if (tv === "json") return ogPageResponse(request, jsonResponse({ ok: true, restricted: true, url: `${SITE_ORIGIN}/s/${id}`, image }), true);
     if (tv) return ogPageResponse(request, new Response("Token Horizon\nPrivate usage report. Sign in to view if it was shared with you.\n", { headers: { "Content-Type": "text/plain; charset=utf-8" } }), true);
     return servePageWithOg(env, request, {
       private: true, type: "website", title: "Private usage report · Token Horizon",
       description: "A private Token Horizon usage report. Sign in to view if it was shared with you.",
       alt: "Token Horizon private usage report. Sign in to view.",
-      url: `${url.origin}/s/${id}`, image
+      url: `${SITE_ORIGIN}/s/${id}`, image
     });
   }
   if (share && !share.revoked && !(share.expiresAt && share.expiresAt * 1000 <= Date.now())) {
@@ -2924,10 +2912,10 @@ async function serveSharePage(env, request, id) {
       const vm = ogCardModel(entry, entries, shareOgOptions(share));
       const image = `${url.origin}/api/og/share/${id}.png?v=${await ogFingerprint(generateOgSvg(vm), vm)}`;
       if (tv === "json") {
-        return ogPageResponse(request, jsonResponse({ ok: true, card: vm, url: `${url.origin}/s/${id}`, image }), true);
+        return ogPageResponse(request, jsonResponse({ ok: true, card: vm, url: `${SITE_ORIGIN}/s/${id}`, image }), true);
       }
       if (tv) {
-        return ogPageResponse(request, new Response(ogTextCard(vm, { origin: url.origin, color: tv === "cli" }), {
+        return ogPageResponse(request, new Response(ogTextCard(vm, { origin: SITE_ORIGIN, color: tv === "cli" }), {
           headers: { "Content-Type": "text/plain; charset=utf-8" }
         }), true);
       }
@@ -2936,7 +2924,7 @@ async function serveSharePage(env, request, id) {
         title: `${vm.handle === "Anonymous" ? "Shared usage report" : `@${vm.handle} — usage report`} · Token Horizon`,
         description: `${formatTokens(vm.tokensAll)} tokens all-time${vm.leagueTitle ? ` · ${vm.leagueTitle} league` : ""} · ${vm.streakDays}d streak`,
         alt: `Shared Token Horizon usage report: ${formatTokens(vm.tokensAll)} tokens all-time, ${vm.streakDays}-day streak and activity heatmap.`,
-        url: `${url.origin}/s/${id}`,
+        url: `${SITE_ORIGIN}/s/${id}`,
         image
       });
     }

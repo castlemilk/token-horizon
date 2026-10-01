@@ -6,7 +6,7 @@ import { connectPage, pageHeaders } from './connect-page.js';
 import { browserIdentity, identityOwnerId, githubConfigured, sessionsConfigured } from './browser-auth.js';
 
 const SCOPES = [READ, MANAGE, 'offline_access'];
-const json = (body, status = 200, headers = {}) => Response.json(body, { status, headers: { 'Cache-Control': 'no-store', ...headers } });
+const json = (body, status = 200, headers = {}) => Response.json(body, { status, headers: { 'Cache-Control': 'no-store', 'X-Robots-Tag': 'noindex', ...headers } });
 const hash = async text => Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text))), b => b.toString(16).padStart(2, '0')).join('');
 function validOrigin(request) { return request.headers.get('Origin') === new URL(request.url).origin; }
 async function readForm(request) {
@@ -51,8 +51,10 @@ const defaultHandler = {
           const { redirectTo } = await oauth.completeAuthorization({ request: approved.request, userId: await hash(identityOwnerId(identity)), metadata: {}, scope: scopes, props: { sub: identity.sub, provider: identity.provider || 'google' } });
           return resultRedirect(request, redirectTo, approved.headers);
         }
-        return new Response(null, { status: 405 });
+        return new Response(null, { status: 405, headers: { Allow: 'GET, POST', 'Cache-Control': 'private, no-store', 'X-Robots-Tag': 'noindex' } });
       }
+      // A metadata probe need not create a browser-bound management nonce.
+      if (url.pathname === '/connect' && request.method === 'HEAD') return new Response(null, { headers: pageHeaders() });
       if (url.pathname === '/connect' && request.method === 'GET') {
         const nonce = crypto.randomUUID(), digest = await hash(nonce);
         await env.OAUTH_KV.put(`management:${digest}`, '1', { expirationTtl: 600 });
