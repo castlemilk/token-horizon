@@ -12,6 +12,74 @@ const entry = {
   breakdown: { daily: [{ day: (day - 2) * 86400, tokens: 10000 }, { day: day * 86400, tokens: 20000 }], models: [{ provider: 'anthropic', tokensAll: 100000 }, { provider: 'openai', tokensAll: 50000 }] }
 };
 const options = { rank: 3, rankToday: 1, total: 40, standing: { league: 'diamond', title: 'Diamond', division: 2, mmr: 1800 } };
+// An actual 8×8 RGBA PNG, generated with node:zlib, paints a uniform coral
+// square so the raster test can detect both decoded pixels and circular clipping.
+const avatarDataUri = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAYAAADED76LAAAAEklEQVR4nGN4G+r3Hx9mGBkKAG8Uo8FWIl3AAAAAAElFTkSuQmCC';
+const photoEntry = { ...entry, avatarUrl: 'https://lh3.googleusercontent.com/public-photo.png', ownerId: 'google:private-owner', googleEmail: 'private@example.com', claimTokenHash: 'private-token' };
+
+test('profile model carries the public profile photo without login credentials or owner fields', () => {
+  const vm = buildOgModel(photoEntry, options);
+  assert.equal(vm.avatarUrl, photoEntry.avatarUrl);
+  for (const key of ['ownerId', 'googleEmail', 'claimTokenHash']) assert.equal(key in vm, false, `${key} is excluded from the public model`);
+  const serialized = JSON.stringify(vm);
+  for (const value of ['private-owner', 'private@example.com', 'private-token', avatarDataUri]) assert.equal(serialized.includes(value), false, `${value} stays out of profile JSON`);
+});
+
+test('a supplied embedded profile photo renders as a clipped image above the identity', () => {
+  const svg = renderProfileOgSvg(buildOgModel(photoEntry, options), { avatarDataUri });
+  const tag = svg.match(/<image\b(?=[^>]*\bdata-profile-avatar="photo")[^>]*>/)?.[0];
+  assert.ok(tag, 'The resolved profile photo is represented by a concrete image');
+  assert.equal((svg.match(/data-profile-avatar="photo"/g) || []).length, 1, 'Only one profile photo is rendered');
+  assert.ok(tag.includes(`href="${avatarDataUri}"`), 'Only embedded image bytes reach the renderer');
+  assert.ok(svg.includes('<clipPath') && svg.includes('<circle'), 'The square photograph receives a circular crop');
+  const number = name => Number(tag.match(new RegExp(`\\b${name}="([^"]+)"`))?.[1]);
+  assert.ok(number('width') >= 56 && number('width') <= 80, 'Photo is visible without taking over the profile panel');
+  assert.equal(number('width'), number('height'), 'Photo has square bounds for a circular crop');
+  assert.ok(number('x') >= 0 && number('x') + number('width') <= 416, 'Photo stays within the profile panel');
+  assert.ok(number('y') >= 64 && number('y') + number('height') <= 200, 'Photo appears between the brand and the usage statistics');
+  assert.doesNotMatch(svg, /lh3\.googleusercontent\.com|private-owner|private@example\.com|private-token/, 'Neither a live external fetch nor login data is embedded in the SVG');
+  assert.match(svg, /data-league-icon="diamond"/, 'League artwork remains available alongside the profile photo');
+  assert.match(svg, /data-usage-chart="daily-tokens"/);
+  assert.equal((svg.match(/data-heatmap-day=/g) || []).length, 119, 'The approved chart and heatmap remain intact');
+});
+
+test('missing or invalid resolved photos preserve the current no-photo layout', () => {
+  const vm = buildOgModel(photoEntry, options);
+  const baseline = renderProfileOgSvg(vm);
+  assert.doesNotMatch(baseline, /data-profile-avatar=/);
+  for (const invalid of [
+    undefined, null, '', 'https://example.com/avatar.png', '//example.com/avatar.png',
+    'javascript:alert(1)', 'data:image/svg+xml;base64,PHN2ZyBvbmxvYWQ9ImFsZXJ0KDEpIj4=',
+    'data:text/html;base64,PHNjcmlwdD4=', 'data:image/png;base64,', 'data:image/png;base64,%%%',
+    'data:image/webp;base64,UklGRjwAAABXRUJQVlA4IDAAAADQAQCdASoIAAgAAUAmJZQCdAD0AAD+//vKQAAA',
+    `${avatarDataUri}" onload="alert(1)`, { href: avatarDataUri }
+  ]) {
+    const svg = renderProfileOgSvg(vm, { avatarDataUri: invalid });
+    assert.equal(svg, baseline, `Unavailable or untrusted photo ${String(invalid)} keeps the no-photo card`);
+    assert.doesNotMatch(svg, /data-profile-avatar=|<script>|<[^>]*\s(?:onload|onclick)="/);
+  }
+  assert.match(baseline, /<text x="42" y="135"[^>]*>@orbit<\/text>/, 'Fallback keeps the established identity placement');
+});
+
+test('anonymized shares strip the public photo and refuse even a resolved embedded image', () => {
+  const vm = buildOgModel(photoEntry, { ...options, anonymize: true });
+  assert.ok(!vm.avatarUrl, 'Anonymous models do not retain a public identity photo');
+  assert.equal(JSON.stringify(vm).includes(photoEntry.avatarUrl), false);
+  const svg = renderProfileOgSvg(vm, { avatarDataUri });
+  assert.doesNotMatch(svg, /data-profile-avatar=|lh3\.googleusercontent\.com|@orbit|Crew/);
+  assert.equal(svg.includes(avatarDataUri), false, 'An already resolved photo cannot override anonymity');
+  assert.match(svg, /Anonymous/);
+  const vmWithStalePhoto = { ...vm, avatarUrl: photoEntry.avatarUrl };
+  assert.doesNotMatch(renderProfileOgSvg(vmWithStalePhoto, { avatarDataUri }), /data-profile-avatar=/, 'A stale field cannot override the sharing option');
+});
+
+test('visible identity can include a photo independently of league and provider sharing', () => {
+  const vm = buildOgModel(photoEntry, { ...options, includeLeagueRank: false, providerBreakdown: false });
+  const svg = renderProfileOgSvg(vm, { avatarDataUri });
+  assert.match(svg, /data-profile-avatar="photo"/, 'Public identity photo remains available');
+  assert.match(svg, /@orbit/);
+  assert.doesNotMatch(svg, /data-league-icon=|Diamond|Anthropic|OpenAI/, 'Independent share restrictions continue to apply');
+});
 
 test('every league uses its own embedded PNG artwork in the profile panel', () => {
   const images = new Set();

@@ -61,7 +61,7 @@ tasks:
   web-test:
     desc: Web gates — worker tests, MCP contracts, hermetic dashboard UI + budgets
     cmds:
-      - node --test cloudflare/worker.test.mjs cloudflare/connector.test.mjs cloudflare/og-card.test.mjs
+      - node --test cloudflare/worker.test.mjs cloudflare/connector.test.mjs cloudflare/og-card.test.mjs cloudflare/og-avatar.test.mjs
       - node cloudflare/assets/build-og-leagues.mjs --check
       - node scripts/test-og-png.mjs
       - node mcp/test-catalog.mjs

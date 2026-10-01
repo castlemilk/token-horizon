@@ -283,6 +283,12 @@ R2 leaderboard.json ────────────────────
   128px thumbnails are baked by `task web-og-leagues`, with no asset fetch on
   requests. Hiding league rank removes both the badge and its label; restricted
   reports contain no league artwork. CI verifies derivatives against the originals.
+- Public cards include the user's saved Google photo or uploaded avatar when
+  available, embedded with a circular crop. Photo resolution is bounded to
+  700ms and cached; metadata, HEAD and warm image requests perform no photo I/O.
+  External photo validators and bytes refresh together every five minutes.
+  Missing photos keep the original layout and use a short retry cache. Anonymous
+  and restricted reports never fetch or render identity photos.
 - The 30-day chart stacks measured daily usage by provider, using published
   `modelHistory` and matching legend colors. Missing attribution stays neutral;
   conflicting provider counts never rescale the canonical daily total. Hidden

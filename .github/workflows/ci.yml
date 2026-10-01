@@ -70,7 +70,7 @@ jobs:
         run: npm ci --prefix cloudflare --ignore-scripts
 
       - name: Worker tests (leaderboard API and OAuth connector)
-        run: node --test cloudflare/worker.test.mjs cloudflare/connector.test.mjs cloudflare/og-card.test.mjs
+        run: node --test cloudflare/worker.test.mjs cloudflare/connector.test.mjs cloudflare/og-card.test.mjs cloudflare/og-avatar.test.mjs
 
       - name: Social card PNG regression (real WASM and bundled fonts)
         run: |

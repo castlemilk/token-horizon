@@ -8,6 +8,7 @@
 
 import { handleTeamRequest, applyTeamMemberships } from './team-invites.js';
 import { buildOgModel, renderProfileOgSvg, renderRestrictedOgSvg, OG_CARD_VERSION } from './og-card.js';
+import { loadOgAvatar } from './og-avatar.js';
 
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
@@ -1971,7 +1972,8 @@ export default {
         model = ogCardModel(entry, entries);
         svg = generateOgSvg(model);
       }
-      const fingerprint = await ogFingerprint(svg, model);
+      const photoRevision = ogAvatarRevision(model);
+      const fingerprint = await ogFingerprint(svg, model, photoRevision);
       const headers = {
         ...CORS_HEADERS,
         "Content-Type": wantsSvg ? "image/svg+xml;charset=utf-8" : "image/png",
@@ -1993,8 +1995,29 @@ export default {
           if (cached) return new Response(cached.body, { headers });
         } catch (_) { /* A cache outage must not hide published cards. */ }
       }
-      const image = new Response(wantsSvg ? svg : await renderOgPng(svg), { headers });
-      if (edgeCache) {
+      // Page metadata, HEAD, validators and warm images never wait for a photo.
+      // The published avatar URL/version participates in the model fingerprint;
+      // resolve its bytes only when generating a new image, then embed them.
+      const avatarDataUri = model ? await loadOgAvatar(model, env, { anonymize: model.anonymize, cacheRevision: photoRevision }) : "";
+      if (avatarDataUri) svg = renderProfileOgSvg(model, { avatarDataUri });
+      let unavailablePhoto = Boolean(model?.avatarUrl && !avatarDataUri);
+      let body = svg;
+      if (!wantsSvg) {
+        try { body = await renderOgPng(svg); }
+        catch (error) {
+          if (!avatarDataUri) throw error;
+          // Invalid compressed photo data must not take the usage card down.
+          body = await renderOgPng(generateOgSvg(model));
+          unavailablePhoto = true;
+        }
+      }
+      if (unavailablePhoto) {
+        // A failed optional photo must not pin a blank portrait in edge caches.
+        headers["Cache-Control"] = shared ? "private, no-store" : "public, max-age=15, s-maxage=15";
+        delete headers.ETag;
+      }
+      const image = new Response(body, { headers });
+      if (edgeCache && !unavailablePhoto) {
         const write = edgeCache.put(cacheKey, image.clone()).catch(() => {});
         if (ctx?.waitUntil) ctx.waitUntil(write);
         else await write;
@@ -2709,8 +2732,14 @@ function ogCardModel(entry, entries, opts = {}) {
 
 function generateOgSvg(vm) { return renderProfileOgSvg(vm); }
 
-async function ogFingerprint(svg, model) {
-  return `${OG_CARD_VERSION}-${(await sha256Hex(svg + (model ? JSON.stringify(model) : ""))).slice(0, 20)}`;
+function ogAvatarRevision(model) {
+  // External photos can change at the same URL. Refresh their validators and
+  // cached bytes together, without fetching a photo to serve page metadata.
+  return /^https:\/\//i.test(model?.avatarUrl || "") ? String(Math.floor(Date.now() / 300000)) : "";
+}
+
+async function ogFingerprint(svg, model, photoRevision = ogAvatarRevision(model)) {
+  return `${OG_CARD_VERSION}-${(await sha256Hex(svg + (model ? JSON.stringify(model) : "") + photoRevision)).slice(0, 20)}`;
 }
 
 async function renderOgPng(svg) {

@@ -9,6 +9,10 @@ import { buildOgModel, renderProfileOgSvg, renderRestrictedOgSvg } from '../clou
 // imports. Exercise the same actual rasterizer and bundled fonts here, without
 // a network listener, injected production renderer, or system-font fallback.
 const fromRoot = relative => new URL('../' + relative, import.meta.url);
+// Actual 8×8 RGBA PNG generated with node:zlib. Its uniform coral pixels let
+// the test distinguish a decoded photo from its surrounding card and border.
+const avatarDataUri = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAYAAADED76LAAAAEklEQVR4nGN4G+r3Hx9mGBkKAG8Uo8FWIl3AAAAAAElFTkSuQmCC';
+const gifAvatarDataUri = 'data:image/gif;base64,R0lGODdhAQABAPAAAP8AAAAAACH5BAAAAAAALAAAAAABAAEAAAICRAEAOw==';
 const [wasm, ...fontBuffers] = await Promise.all([
   readFile(fromRoot('cloudflare/node_modules/@resvg/resvg-wasm/index_bg.wasm')),
   readFile(fromRoot('cloudflare/fonts/TokenHorizonSans-Regular.ttf')),
@@ -85,7 +89,56 @@ function checkLeagueBadgePixels(svg, pixels, label, fonts) {
   }
 }
 
-function rasterize(svg, label, { fonts = fontBuffers, checkTwoRows = false, checkProviderColors = false, checkLeagueIcon = false } = {}) {
+function checkProfilePhotoPixels(svg, pixels, label, fonts, { expectedRGB = [237, 85, 78], tolerance = 0 } = {}) {
+  const tag = svg.match(/<image\b(?=[^>]*\bdata-profile-avatar="photo")[^>]*(?:\/>|>[\s\S]*?<\/image>)/)?.[0];
+  assert.ok(tag, `${label}: resolved profile photo is embedded`);
+  const value = name => tag.match(new RegExp(`\\b${name}="([^"]+)"`))?.[1];
+  const bounds = Object.fromEntries(['x', 'y', 'width', 'height'].map(name => [name, Number(value(name))]));
+  assert.ok(Object.values(bounds).every(Number.isFinite), `${label}: photo has concrete bounds`);
+  assert.ok(bounds.x >= 0 && bounds.x + bounds.width <= 416 && bounds.y >= 0 && bounds.y + bounds.height <= 630, `${label}: photo is inside the profile panel`);
+  assert.equal(bounds.width, bounds.height, `${label}: circular photo has square bounds`);
+  const cx = bounds.x + bounds.width / 2, cy = bounds.y + bounds.height / 2, radius = bounds.width / 2;
+
+  // Compare the actual PNG with the same card minus only the <image>. This
+  // proves decoded photo pixels are visible and square corners are clipped,
+  // even when an <image> tag and crop survive in an unrenderable SVG.
+  const baselineRenderer = new Resvg(svg.replace(tag, ''), {
+    fitTo: { mode: 'original' },
+    font: { fontBuffers: fonts, loadSystemFonts: false, defaultFontFamily: 'JetBrains Mono' }
+  });
+  const baselineImage = baselineRenderer.render();
+  try {
+    const baseline = baselineImage.pixels;
+    let changedPixels = 0, cornerPixels = 0;
+    for (let y = Math.ceil(bounds.y); y < Math.floor(bounds.y + bounds.height); y++) {
+      for (let x = Math.ceil(bounds.x); x < Math.floor(bounds.x + bounds.width); x++) {
+        const offset = (y * 1200 + x) * 4;
+        const changed = pixels[offset] !== baseline[offset] || pixels[offset + 1] !== baseline[offset + 1] || pixels[offset + 2] !== baseline[offset + 2];
+        const distance = Math.hypot(x + .5 - cx, y + .5 - cy);
+        if (changed) {
+          changedPixels++;
+          assert.ok(distance <= radius + 1, `${label}: every visible photo pixel stays within the circular crop`);
+        }
+        if (distance >= radius + 2) {
+          cornerPixels++;
+          assert.equal(changed, false, `${label}: square image corners leave the original background intact`);
+        }
+      }
+    }
+    assert.ok(changedPixels > bounds.width * bounds.height * .5, `${label}: decoded photograph paints a substantial visible region (${changedPixels} pixels)`);
+    assert.ok(cornerPixels > 50, `${label}: clipping is checked in actual corner pixels`);
+    const center = (Math.floor(cy) * 1200 + Math.floor(cx)) * 4;
+    for (let channel = 0; channel < 3; channel++) {
+      assert.ok(Math.abs(pixels[center + channel] - expectedRGB[channel]) <= tolerance, `${label}: source photo channel ${channel} reaches the raster center (expected ${expectedRGB[channel]} ± ${tolerance}, got ${pixels[center + channel]})`);
+    }
+    assert.equal(pixels[center + 3], 255, `${label}: decoded photograph is opaque at its center`);
+  } finally {
+    baselineImage.free();
+    baselineRenderer.free();
+  }
+}
+
+function rasterize(svg, label, { fonts = fontBuffers, checkTwoRows = false, checkProviderColors = false, checkLeagueIcon = false, checkProfilePhoto = false } = {}) {
   if (fonts.length) {
     const available = new Set(fonts.flatMap(fontFamilyNames));
     const declared = new Set([...svg.matchAll(/font-family="([^"]+)"/g)].map(match => match[1]));
@@ -109,6 +162,7 @@ function rasterize(svg, label, { fonts = fontBuffers, checkTwoRows = false, chec
     const pixels = image.pixels;
     assert.equal(pixels.byteLength, 1200 * 630 * 4);
     if (checkLeagueIcon) checkLeagueBadgePixels(svg, pixels, label, fonts);
+    if (checkProfilePhoto) checkProfilePhotoPixels(svg, pixels, label, fonts, checkProfilePhoto === true ? {} : checkProfilePhoto);
     if (checkTwoRows) {
       const bars = markedRects(svg, 'data-chart-day').filter(rect => rect.width >= 4 && rect.height >= 4);
       const cells = markedRects(svg, 'data-heatmap-day').filter(rect => !['#F3F4EF', '#E1E6DE'].includes(rect.fill));
@@ -150,7 +204,7 @@ function rasterize(svg, label, { fonts = fontBuffers, checkTwoRows = false, chec
   }
 }
 
-const { values: arguments_ } = parseArgs({ options: { preview: { type: 'string' }, 'restricted-preview': { type: 'string' } } });
+const { values: arguments_ } = parseArgs({ options: { preview: { type: 'string' }, 'restricted-preview': { type: 'string' }, 'avatar-preview': { type: 'string' } } });
 const snapshotDay = Math.floor(Date.now() / 86400000) * 86400;
 const daily = Array.from({ length: 119 }, (_, index) => ({
   day: snapshotDay - (118 - index) * 86400,
@@ -217,6 +271,31 @@ if (arguments_.preview) {
   console.log(`OG preview written: ${arguments_.preview}`);
 }
 
+const photoEntry = { ...entry, avatarUrl: 'https://lh3.googleusercontent.com/public-photo.png' };
+const photoModel = buildOgModel(photoEntry, modelOptions);
+assert.equal(photoModel.avatarUrl, photoEntry.avatarUrl, 'Public photo URL survives in the visible identity model');
+const photoSvg = renderProfileOgSvg(photoModel, { avatarDataUri });
+assert.doesNotMatch(photoSvg, /lh3\.googleusercontent\.com|private-owner|private@example\.com|private-token-hash/, 'Rendered photo contains only bounded embedded pixels, without account credentials or a remote image dependency');
+const photoPng = rasterize(photoSvg, 'profile photo with circular crop, provider chart, heatmap and league badge', { checkTwoRows: true, checkProviderColors: true, checkLeagueIcon: true, checkProfilePhoto: true });
+if (arguments_['avatar-preview']) {
+  await writeFile(arguments_['avatar-preview'], photoPng);
+  console.log(`Avatar OG preview written: ${arguments_['avatar-preview']}`);
+}
+const gifPhotoSvg = renderProfileOgSvg(photoModel, { avatarDataUri: gifAvatarDataUri });
+rasterize(gifPhotoSvg, 'GIF profile photo decodes and clips to a circle', { checkProfilePhoto: { expectedRGB: [255, 0, 0] }, checkTwoRows: true, checkLeagueIcon: true });
+// A native encoder produced this real tiny JPEG from the coral PNG fixture.
+// Keep a small channel tolerance for JPEG compression rather than accepting
+// only the presence of an <image> tag that resvg might silently ignore.
+const jpegAvatarDataUri = 'data:image/jpeg;base64,' + (await readFile(fromRoot('cloudflare/fixtures/og-avatar.jpg'))).toString('base64');
+const jpegPhotoSvg = renderProfileOgSvg(photoModel, { avatarDataUri: jpegAvatarDataUri });
+rasterize(jpegPhotoSvg, 'JPEG profile photo decodes and clips to a circle', { checkProfilePhoto: { tolerance: 3 }, checkTwoRows: true, checkLeagueIcon: true });
+const noPhotoSvg = renderProfileOgSvg(photoModel);
+assert.doesNotMatch(noPhotoSvg, /data-profile-avatar=/, 'Unresolved photos preserve the regular no-photo card');
+assert.equal(noPhotoSvg, fullSvg, 'A failed photo fetch does not alter card layout');
+const invalidPhotoSvg = renderProfileOgSvg(photoModel, { avatarDataUri: 'https://example.com/untrusted-photo.png' });
+assert.equal(invalidPhotoSvg, noPhotoSvg, 'External image hrefs cannot bypass the safe embedded-image path');
+rasterize(invalidPhotoSvg, 'unavailable or rejected profile photo keeps approved layout', { checkTwoRows: true, checkProviderColors: true, checkLeagueIcon: true });
+
 for (const league of ['bronze', 'silver', 'gold', 'platinum', 'diamond', 'master']) {
   const leagueSvg = renderProfileOgSvg(buildOgModel(entry, { ...modelOptions, standing: { ...standing, league, leagueTitle: league } }));
   assert.match(leagueSvg, new RegExp(`data-league-icon="${league}"`));
@@ -246,15 +325,19 @@ const hostileSvg = renderProfileOgSvg(buildOgModel(hostileEntry, modelOptions));
 assert.doesNotMatch(hostileSvg, /<script>|\u0000/);
 rasterize(hostileSvg, 'long identity and escaped input');
 
-const anonymizedSvg = renderProfileOgSvg(buildOgModel(entry, {
+const anonymousModel = buildOgModel(photoEntry, {
   ...modelOptions, anonymize: true, hideCost: true,
   includeLeagueRank: false, providerBreakdown: false, fullTokenCounts: false
-}));
+});
+assert.ok(!anonymousModel.avatarUrl, 'Anonymous model strips the identity photo');
+const anonymizedSvg = renderProfileOgSvg(anonymousModel, { avatarDataUri });
 assert.match(anonymizedSvg, /Anonymous/);
 for (const privateValue of [entry.handle, entry.team, entry.hardware, 'Grandmaster', 'Anthropic', 'OpenAI']) {
   assert.equal(anonymizedSvg.includes(privateValue), false, `Anonymized card excludes ${privateValue}`);
 }
 assert.doesNotMatch(anonymizedSvg, /data-league-icon=|data:image\/png;base64,/, 'Rank-hidden shares do not contain league artwork');
+assert.doesNotMatch(anonymizedSvg, /data-profile-avatar=|lh3\.googleusercontent\.com/, 'A supplied resolved photo cannot override the anonymized share option');
+assert.equal(anonymizedSvg.includes(avatarDataUri), false, 'Anonymous shares do not carry identity photo bytes');
 rasterize(anonymizedSvg, 'anonymized public share');
 
 const rankHiddenSvg = renderProfileOgSvg(buildOgModel(entry, { ...modelOptions, includeLeagueRank: false }));

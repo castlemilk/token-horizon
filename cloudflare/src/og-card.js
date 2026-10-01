@@ -1,7 +1,7 @@
 // Pure, deterministic social card model and SVG. Rasterization lives in the Worker.
 import { ogLeagueIcon } from './og-league-assets.js';
 
-export const OG_CARD_VERSION = "horizon-6";
+export const OG_CARD_VERSION = "horizon-7";
 
 const DAY = 86400;
 const MAX_DAY = 2932896; // Last supported ISO year: 9999.
@@ -161,6 +161,7 @@ export function buildOgModel(entry = {}, options = {}) {
   const totals = dailyTotals(entry);
   const model = {
     handle: anonymize ? "Anonymous" : text(entry.handle || "Profile"), team: anonymize ? "" : text(entry.team), hardware: anonymize ? "" : text(entry.hardware),
+    avatarUrl: anonymize ? "" : String(entry.avatarUrl || "").replace(/[\u0000-\u001F\u007F-\u009F]/g, "").slice(0, 500),
     tokensToday: round(entry.tokensToday), tokens7d: round(entry.tokens7d), tokensAll: round(entry.tokensAll),
     costAll: options.hideCost || entry.costAll == null ? null : number(entry.costAll), costToday: options.hideCost || entry.costToday == null ? null : number(entry.costToday),
     requestsAll: round(entry.requestsAll ?? (Array.isArray(entry.breakdown?.models) ? entry.breakdown.models : []).reduce((sum, row) => number(sum + number(row?.requests)), 0)), streakDays: Math.floor(number(entry.streakDays)),
@@ -194,8 +195,12 @@ function eclipse(x, y, color, size = 28) {
   return `<circle cx="${x + r}" cy="${y + r}" r="${r - 1}" fill="none" stroke="${color}" stroke-width="1.6"/><path d="M${x + 2} ${y + r}H${x + size - 2}" stroke="${color}" stroke-width="1.6"/><path d="M${x + 5} ${y + r + 3}Q${x + r} ${y + size + 2} ${x + size - 5} ${y + r + 3}" fill="${color}"/>`;
 }
 
-export function renderProfileOgSvg(vm) {
+export function renderProfileOgSvg(vm, { avatarDataUri = "" } = {}) {
   const handle = vm.anonymize ? "Anonymous" : "@" + vm.handle.replace(/^@/, "");
+  // Only resolved, bounded raster data can reach the SVG. Remote URLs and SVG
+  // input never become image sources, even if a caller skips the avatar loader.
+  const photo = !vm.anonymize && typeof avatarDataUri === "string" && avatarDataUri.length <= 533360 && /^data:image\/(?:png|jpeg|gif);base64,(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(avatarDataUri) && avatarDataUri.length > 48 ? avatarDataUri : "";
+  const identity = photo ? `<defs><clipPath id="profile-photo-crop"><circle cx="74" cy="132" r="32"/></clipPath></defs><image data-profile-avatar="photo" x="42" y="100" width="64" height="64" preserveAspectRatio="xMidYMid slice" clip-path="url(#profile-photo-crop)" href="${photo}"><title>Profile photo</title></image><circle cx="74" cy="132" r="32.5" fill="none" stroke="#35463A"/>${t(122, 127, truncate(handle, 16), 28, C.white, 600)}${t(123, 155, truncate(vm.team || "Your AI usage, made visible.", 29), 14, "#AAB8AD")}` : `${t(42, 135, truncate(handle, 19), 34, C.white, 600)}${t(43, 166, truncate(vm.team || "Your AI usage, made visible.", 34), 15, "#AAB8AD")}`;
   const days = vm.calendarDays || [];
   const cellX = 490, cellY = 359, stepX = 33, stepY = 27, cellW = 24, cellH = 24;
   const chartDays = vm.chartDays || [];
@@ -253,7 +258,7 @@ export function renderProfileOgSvg(vm) {
   <rect width="1200" height="630" fill="${C.paper}"/><rect width="416" height="630" fill="${C.ink}"/>
   <path d="M416 0V630M454 87H1142M454 588H1142" stroke="${C.line}" stroke-width="1"/>
   ${eclipse(42, 34, C.mint)}${t(82, 57, "Token Horizon", 22, C.white, 600)}${badge}
-  ${t(42, 135, truncate(handle, 19), 34, C.white, 600)}${t(43, 166, truncate(vm.team || "Your AI usage, made visible.", 34), 15, "#AAB8AD")}
+  ${identity}
   ${mono(44, 227, "ALL-TIME TOKENS", 12, "#AAB8AD")}${t(39, 310, compact(vm.tokensAll), 82, C.mint, 600, 'letter-spacing="-3"')}
   ${t(44, 340, "Every token tells a story.", 16, "#AAB8AD")}
   <path d="M44 371H372M44 486H372" stroke="#35463A"/>

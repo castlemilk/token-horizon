@@ -1297,6 +1297,112 @@ describe('Cloudflare Worker API', () => {
     assert.equal(png.status, 404);
   });
 
+  it('embeds a saved profile photo without fetching it on metadata, HEAD or warm edge images', async () => {
+    const photo = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAYAAADED76LAAAAEklEQVR4nGN4G+r3Hx9mGBkKAG8Uo8FWIl3AAAAAAElFTkSuQmCC', 'base64');
+    const uri = 'data:image/png;base64,' + photo.toString('base64');
+    const entry = { handle: 'photo_owner', avatarUrl: '/api/avatar/photo_owner?v=first', tokensAll: 2000000, tokensToday: 1000, streakDays: 7, updatedAt: 1790812800 };
+    const env = createMultiKeyEnv([entry]);
+    env.ASSETS = { async fetch() { return new Response('<html><head><title>Token Horizon</title></head></html>', { headers: { 'Content-Type': 'text/html' } }); } };
+    await env.LEADERBOARD_BUCKET.put('avatars/photo_owner', photo, { httpMetadata: { contentType: 'image/png' } });
+    const get = env.LEADERBOARD_BUCKET.get.bind(env.LEADERBOARD_BUCKET);
+    let photoReads = 0;
+    env.LEADERBOARD_BUCKET.get = async key => { if (key.startsWith('avatars/')) photoReads++; return get(key); };
+    const previous = globalThis.caches;
+    const cache = new Map();
+    globalThis.caches = { default: {
+      async match(request) { return cache.get(request.url)?.clone(); },
+      async put(request, response) { cache.set(request.url, response.clone()); }
+    } };
+    try {
+      const metadata = await (await worker.fetch(req('/u/photo_owner?format=json'), env)).json();
+      assert.equal(metadata.card.avatarUrl, entry.avatarUrl);
+      const head = await worker.fetch(req('/api/og/profile/photo_owner.png', { method: 'HEAD' }), env);
+      assert.equal(head.status, 200);
+      assert.equal(photoReads, 0, 'Metadata and HEAD do not wait for an optional photo');
+      const first = await worker.fetch(req('/api/og/profile/photo_owner.svg'), env);
+      const svg = await first.text();
+      assert.match(svg, /data-profile-avatar="photo"/);
+      assert.ok(svg.includes(uri), 'The saved image bytes reach the card');
+      assert.doesNotMatch(svg, /\/api\/avatar\/photo_owner|ownerId|googleEmail|claimTokenHash/);
+      assert.equal(photoReads, 1);
+      const again = await worker.fetch(req('/api/og/profile/photo_owner.svg?v=old'), env);
+      assert.equal(await again.text(), svg);
+      assert.equal(photoReads, 1, 'Warm cards avoid photo I/O');
+      const revalidated = await worker.fetch(req('/api/og/profile/photo_owner.svg', { headers: { 'If-None-Match': first.headers.get('etag') } }), env);
+      assert.equal(revalidated.status, 304);
+      assert.equal(photoReads, 1);
+      await env.LEADERBOARD_BUCKET.put('leaderboard.json', JSON.stringify([{ ...entry, avatarUrl: '/api/avatar/photo_owner?v=second' }]));
+      const changedMetadata = await (await worker.fetch(req('/u/photo_owner?format=json'), env)).json();
+      assert.notEqual(changedMetadata.image, metadata.image, 'Changing the photo version invalidates the card immediately');
+      const changed = await worker.fetch(req('/api/og/profile/photo_owner.svg'), env);
+      assert.notEqual(changed.headers.get('etag'), first.headers.get('etag'));
+      assert.match(await changed.text(), /data-profile-avatar="photo"/);
+      assert.equal(photoReads, 2, 'A new photo version resolves new bytes');
+    } finally {
+      if (previous === undefined) delete globalThis.caches;
+      else globalThis.caches = previous;
+    }
+  });
+
+  it('anonymous and restricted shares neither fetch nor expose a published profile photo', async () => {
+    const env = createMultiKeyEnv();
+    const publish = await worker.fetch(req('/api/leaderboard', { method: 'POST', body: {
+      handle: 'private_photo', avatarUrl: '/api/avatar/private_photo?v=secret-photo', tokensAll: 1000
+    } }), env);
+    const claimToken = (await publish.json()).claimToken;
+    const get = env.LEADERBOARD_BUCKET.get.bind(env.LEADERBOARD_BUCKET);
+    let reads = 0;
+    env.LEADERBOARD_BUCKET.get = async key => { if (key.startsWith('avatars/')) reads++; return get(key); };
+    for (const publicLink of [true, false]) {
+      const response = await worker.fetch(req('/api/share/create', { method: 'POST', body: {
+        handle: 'private_photo', claimToken, publicLink, options: { anonymizeNames: true }
+      } }), env);
+      const id = (await response.json()).share.id;
+      const image = await worker.fetch(req(`/api/og/share/${id}.svg`), env);
+      assert.equal(image.status, 200);
+      assert.doesNotMatch(await image.text(), /data-profile-avatar=|private_photo|secret-photo/);
+      const metadata = await worker.fetch(req(`/s/${id}?format=json`), env);
+      assert.doesNotMatch(await metadata.text(), /private_photo|secret-photo/);
+    }
+    assert.equal(reads, 0, 'Private photos never load for anonymous or restricted reports');
+  });
+
+  it('refreshes external photo validators every five minutes without loading photos for metadata', async () => {
+    const env = createMultiKeyEnv([{ handle: 'external_photo', avatarUrl: 'https://lh3.googleusercontent.com/public-photo', tokensAll: 2000000, updatedAt: 1790812800 }]);
+    env.ASSETS = { async fetch() { return new Response('<html><head></head></html>', { headers: { 'Content-Type': 'text/html' } }); } };
+    const originalNow = Date.now;
+    const version = async () => (await (await worker.fetch(req('/u/external_photo?format=json'), env)).json()).image;
+    try {
+      Date.now = () => 1800000000000;
+      const first = await version();
+      Date.now = () => 1800000299999;
+      assert.equal(await version(), first, 'Unchanged source photos reuse the same card within the cache window');
+      Date.now = () => 1800000300000;
+      assert.notEqual(await version(), first, 'A same-URL external photo cannot validate an old image indefinitely');
+    } finally { Date.now = originalNow; }
+  });
+
+  it('an unavailable photo keeps a useful card and cannot poison the image cache', async () => {
+    const env = createMultiKeyEnv([{ handle: 'missing_photo', avatarUrl: '/api/avatar/missing_photo?v=none', tokensAll: 2000000, updatedAt: 1790812800 }]);
+    const previous = globalThis.caches;
+    let writes = 0;
+    globalThis.caches = { default: { async match() {}, async put() { writes++; } } };
+    try {
+      const response = await worker.fetch(req('/api/og/profile/missing_photo.svg'), env);
+      assert.equal(response.status, 200);
+      const svg = await response.text();
+      assert.match(svg, /@missing_photo/);
+      assert.match(svg, /ALL-TIME TOKENS/);
+      assert.doesNotMatch(svg, /data-profile-avatar=/);
+      assert.match(response.headers.get('cache-control'), /max-age=15/);
+      assert.equal(response.headers.get('etag'), null, 'Failed-photo fallback is reloaded rather than validating forever');
+      assert.equal(writes, 0, 'Failed optional photos are excluded from the edge cache');
+    } finally {
+      if (previous === undefined) delete globalThis.caches;
+      else globalThis.caches = previous;
+    }
+  });
+
   it('GET /u/<handle> injects profile OG meta + canonical + base into the SPA', async () => {
     const html = '<!DOCTYPE html><html><head><meta charset="utf-8"><title>Token Horizon</title><meta name="description" content="orig"></head><body>spa</body></html>';
     const env = {
