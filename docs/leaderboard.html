@@ -1577,7 +1577,12 @@ function setGoogleSession(s, { refreshShared = true } = {}) {
   }
   if (s?.serverSession || state.webSessions) authStorage("th_google_session", null);
   else authStorage("th_google_session", s);
-  if (s) { state.authHint = authHint(s); authStorage("th_auth_hint", state.authHint); }
+  if (s) {
+    state.authHint = authHint(s);
+    // Other auth surfaces may serialize the same fields in a different order.
+    // Only a real identity change should notify other tabs to revalidate.
+    if (JSON.stringify(getAuthHint()) !== JSON.stringify(state.authHint)) authStorage("th_auth_hint", state.authHint);
+  }
   state.googleSession = s;
   if (previousIdentity !== nextIdentity) {
     workspaceAccount = null;

@@ -32,6 +32,11 @@ function storage(key, value, session = false) {
   try { const store = session ? sessionStorage : localStorage; if (value === undefined) return JSON.parse(store.getItem(key) || 'null'); if (value === null) store.removeItem(key); else store.setItem(key, JSON.stringify(value)); } catch { /* Browser storage is optional; cookies still authenticate. */ }
   return null;
 }
+function identityHint(value) {
+  if (!value || typeof value !== 'object') return null;
+  const text = (field, limit = 200) => String(field || '').slice(0, limit);
+  return { provider: value.provider === 'github' ? 'github' : 'google', sub: text(value.sub), email: text(value.email, 254), name: text(value.name), picture: /^https:\/\//.test(String(value.picture || '')) ? text(value.picture, 2048) : '', login: text(value.login, 80) };
+}
 async function request(path, { method = 'GET', fields, json } = {}) {
   const abort = new AbortController();
   let timer;
@@ -68,7 +73,12 @@ function renderIdentity() {
 function setIdentity(next, expiry = 0) {
   if (principal(identity) !== principal(next)) { ++identityRevision; document.querySelector('#connections')?.replaceChildren(); }
   identity = next; expiresAt = expiry;
-  if (next) storage('th_auth_hint', { provider: next.provider, sub: next.sub, name: next.name, email: next.email, picture: next.picture, login: next.login });
+  if (next) {
+    const hint = identityHint(next);
+    // Both surfaces share this hint. Equivalent names must not trigger another
+    // tab's verification read just because object order or empty fields differ.
+    if (JSON.stringify(identityHint(storage('th_auth_hint'))) !== JSON.stringify(hint)) storage('th_auth_hint', hint);
+  }
   renderIdentity();
 }
 function grantRow(grant) {

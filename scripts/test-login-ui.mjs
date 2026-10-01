@@ -27,12 +27,19 @@ async function fixture({ config = 'ready', sdk = 'ready', session = 'ready', exc
       if (url.pathname.startsWith('/api/auth/') || url.pathname.startsWith('/api/account/')) window.testAuthFetches.push({ path: url.pathname, cache: options.cache, credentials: options.credentials });
       return fetchNative(input, options);
     };
+    const setStorageItem = Storage.prototype.setItem;
+    window.testAuthHintWrites = [];
+    Storage.prototype.setItem = function (key, value) {
+      if (this === localStorage && key === 'th_auth_hint') window.testAuthHintWrites.push(value);
+      return setStorageItem.call(this, key, value);
+    };
     // Seed once; reloads must exercise persisted mutations rather than restoring
     // the initial fake identity after sign out.
     if (sessionStorage.getItem('login-fixture-seeded')) return;
     sessionStorage.setItem('login-fixture-seeded', '1');
     if (remembered) localStorage.setItem('th_auth_hint', JSON.stringify(remembered));
     if (cachedConfig) localStorage.setItem('th_auth_config', JSON.stringify(cachedConfig));
+    window.testAuthHintWrites.length = 0;
   }, { remembered, cachedConfig });
   if (user) await context.addCookies([{ name: '__Host-th-session', value: 'fixture-opaque-cookie', domain: 'token-horizon.dev', path: '/', secure: true, httpOnly: true, sameSite: 'Lax' }]);
   const page = await context.newPage();
@@ -300,6 +307,22 @@ try {
   }
 
   console.log('Remembered identity: a cached Chrome/provider hint fills the chooser without authorizing an unverified account...');
+  {
+    // Connector hint field order differs from authHint(), and its empty login
+    // field is omitted. Equivalent identity must not create storage events
+    // that cause the two surfaces to revalidate one another indefinitely.
+    const connectorHint = { provider: googleUser.provider, sub: googleUser.sub, name: googleUser.name, email: googleUser.email, picture: googleUser.picture };
+    const f = await fixture({ user: googleUser, remembered: connectorHint });
+    try {
+      await openLogin(f.page);
+      await f.page.waitForSelector('.user-chip');
+      assert.deepEqual(await f.page.evaluate(() => window.testAuthHintWrites), [], 'Cookie hydration must not rewrite an equivalent connector hint');
+      assert.equal(await f.page.evaluate(() => localStorage.getItem('th_auth_hint')), JSON.stringify(connectorHint));
+      await f.page.evaluate(async () => { await hydrateAuthSession({ force: true }); await hydrateAuthSession({ force: true }); });
+      assert.equal(f.requests.filter(row => row.path === '/api/auth/session').length, 3);
+      assert.deepEqual(await f.page.evaluate(() => window.testAuthHintWrites), [], 'Repeated verification of unchanged identity must not notify other tabs');
+    } finally { await f.close(); }
+  }
   {
     const f = await fixture({ session: 'held', user: googleUser, remembered: googleUser });
     try {

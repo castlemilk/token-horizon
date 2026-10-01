@@ -10,7 +10,12 @@ const github = { provider: 'github', sub: '42', name: 'Orbit Builder', email: 's
 const mime = { '.js': 'text/javascript', '.css': 'text/css', '.ttf': 'font/ttf', '.svg': 'image/svg+xml' };
 async function fixture({ user = null, mode = 'authorize', exchange = 'ready', width = 1440, remembered = null, holdFirstSession = false, holdFirstConnections = false } = {}) {
   const context = await browser.newContext({ viewport: { width, height: 1000 }, reducedMotion: 'reduce' });
-  if (remembered) await context.addInitScript(value => localStorage.setItem('th_auth_hint', JSON.stringify(value)), remembered);
+  await context.addInitScript(value => {
+    if (value) localStorage.setItem('th_auth_hint', JSON.stringify(value));
+    const write = Storage.prototype.setItem;
+    window.authHintWrites = 0;
+    Storage.prototype.setItem = function(key, next) { if (this === localStorage && key === 'th_auth_hint') ++window.authHintWrites; return write.call(this, key, next); };
+  }, remembered);
   const page = await context.newPage(), errors = [], requests = [];
   let releaseSession, releaseConnections, sessionReads = 0, connectionReads = 0;
   const sessionHeld = new Promise(resolve => { releaseSession = resolve; });
@@ -125,6 +130,28 @@ try {
       const latest = await f.page.evaluate(() => window.gsiInitializations.at(-1));
       assert.equal(latest.auto_select, false); assert.equal(latest.button_auto_select, false); assert.equal(latest.login_hint, undefined);
       assert.equal(await f.page.locator('#allow').isEnabled(), false, 'Logout cannot retain permission approval');
+    } finally { await f.close(); }
+  }
+  console.log('Connector: equivalent cached identity hints do not cause cross-tab refresh loops...');
+  {
+    const dashboardHint = { provider: google.provider, sub: google.sub, email: google.email, name: google.name, picture: google.picture, login: '' };
+    const f = await fixture({ user: google, mode: 'connect', remembered: dashboardHint });
+    try {
+      await f.page.goto(origin + '/connect'); await f.page.waitForSelector('.grant');
+      assert.equal(await f.page.evaluate(() => window.authHintWrites), 0, 'Hydration must preserve an equivalent dashboard-format hint');
+      assert.equal(await f.page.evaluate(() => localStorage.getItem('th_auth_hint')), JSON.stringify(dashboardHint));
+      const other = await f.context.newPage();
+      await other.route('**/*', route => { assert.equal(new URL(route.request().url()).origin, origin); return route.fulfill({ contentType: 'text/html', body: '<main>Other account surface</main>' }); });
+      await other.goto(origin + '/fixture-observer');
+      await other.evaluate(() => { window.identityEvents = 0; addEventListener('storage', event => { if (event.key === 'th_auth_hint') ++window.identityEvents; }); });
+      const verified = f.page.waitForResponse(response => new URL(response.url()).pathname === '/api/auth/session');
+      // This genuine second-tab write changes serialization, but not identity.
+      await other.evaluate(value => localStorage.setItem('th_auth_hint', JSON.stringify(value)), google);
+      await verified; await f.page.waitForSelector('.grant'); await f.page.waitForTimeout(150);
+      assert.equal(await f.page.evaluate(() => window.authHintWrites), 0, 'Verification must not bounce the same identity into localStorage');
+      assert.equal(await other.evaluate(() => window.identityEvents), 0, 'The second tab must not receive a redundant hint write');
+      assert.equal(f.requests.filter(request => request.path === '/api/auth/session').length, 2, 'One storage change causes only one additional verification');
+      assert.equal(f.requests.filter(request => request.path === '/oauth/connections').length, 2, 'Grant reads must settle after the second verification');
     } finally { await f.close(); }
   }
   console.log('Connector browser checks passed.');
