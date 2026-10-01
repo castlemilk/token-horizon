@@ -260,6 +260,13 @@ try {
       await f.page.waitForSelector('.user-chip');
       assert.match(await f.page.locator('.user-chip').innerText(), /Aurora Builder/);
       assert.equal(await f.page.locator('.signin-modal').count(), 0);
+      await f.page.waitForFunction(() => !state.authBusy);
+      assert.equal(await f.page.locator('#user-chip').isEnabled(), true, 'A completed Google exchange must unlock the account controls');
+      await f.page.locator('#user-chip').click();
+      await f.page.waitForSelector('#account-menu:not([hidden])');
+      assert.equal(await f.page.locator('#user-chip').getAttribute('aria-expanded'), 'true');
+      await f.page.locator('#user-chip').click();
+      assert.equal(await f.page.locator('#user-chip').getAttribute('aria-expanded'), 'false');
       const storage = await f.page.evaluate(() => ({ hint: JSON.parse(localStorage.getItem('th_auth_hint') || 'null'), raw: JSON.stringify({ ...localStorage }), legacy: localStorage.getItem('th_google_session'), cookie: document.cookie }));
       assert.equal(storage.hint?.email, googleUser.email);
       assert.equal(storage.legacy, null);

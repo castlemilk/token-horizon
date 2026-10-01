@@ -1659,7 +1659,7 @@ async function hydrateAuthSession({ force = false } = {}) {
 }
 async function exchangeGoogleCredential(credential, { resume = true } = {}) {
   const generation = ++authGeneration;
-  state.authBusy = true; state.authError = ""; mountSignInOptions();
+  state.authBusy = true; state.authError = ""; renderAuthSlot(); mountSignInOptions();
   try {
     const data = await api("/api/auth/google", { auth: true, method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ credential }), cache: "no-store", timeoutMs: 8000 });
     if (generation !== authGeneration) return;
@@ -1672,7 +1672,7 @@ async function exchangeGoogleCredential(credential, { resume = true } = {}) {
     if (generation !== authGeneration) return;
     state.authError = error.message || "Sign-in could not be verified. Try again.";
   } finally {
-    if (generation === authGeneration) { state.authBusy = false; mountSignInOptions(); if (state.view === "login") updateLoginIdentity(); }
+    if (generation === authGeneration) { state.authBusy = false; renderAuthSlot(); mountSignInOptions(); if (state.view === "login") updateLoginIdentity(); }
   }
 }
 function handleGoogleCredential(response) {
