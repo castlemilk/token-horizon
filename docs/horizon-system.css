@@ -28,8 +28,99 @@
   --th-control: #79867c;
   --th-display: "Hubot Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   --th-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  /* Semantic surfaces are overridden by theme.css. Brand pigments above
+     remain fixed for artwork, provider marks and the graphite navigation. */
+  --th-bg: var(--th-mineral);
+  --th-surface: var(--th-white);
+  --th-surface-2: #edf1ea;
+  --th-surface-3: #e1e8e1;
+  --th-text: var(--th-graphite);
+  --th-faint: #627167;
+  --th-rule-strong: #b7c5bc;
+  --th-accent: var(--th-forest);
+  --th-accent-ink: #fff;
+  --th-selected: #e0efdf;
+  --th-hover: #eef5ec;
+  --th-success: #235e43;
+  --th-warning: #89520e;
+  --th-danger: #aa3939;
+  --th-shadow: #07120c26;
   /* Inline the optical 24px mark so static file previews also render it. */
   --th-mark: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M2 11a10.05 10.05 0 0 1 20 0H2Zm0 2h20A10.05 10.05 0 0 1 2 13Z'/%3E%3C/svg%3E");
+}
+
+/* Keep browser affordances in the same visual language as the controls. */
+:is(body.landing, body.discovery, body.editorial, body[data-mode], body[data-surface]) {
+  caret-color: var(--th-accent);
+  scrollbar-color: var(--th-control) var(--th-bg);
+}
+:is(body.landing, body.discovery, body.editorial, body[data-mode], body[data-surface]) ::selection {
+  background: var(--th-selected);
+  color: var(--th-text);
+}
+:is(body.landing, body.discovery, body.editorial, body[data-mode], body[data-surface]) :is(button, a, input, select, summary, [tabindex]):focus-visible {
+  outline: 2px solid var(--th-accent);
+  outline-offset: 3px;
+}
+:is(body.landing, body.discovery, body.editorial, body[data-mode], body[data-surface]) :is(input, textarea)::placeholder {
+  color: var(--th-faint);
+  opacity: 1;
+}
+:is(body.landing, body.discovery, body.editorial, body[data-mode], body[data-surface]) :is(.num, .kpi-value, .stat .value) {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Theme controls live next to the account/menu; source order stays useful
+   without JavaScript, and menu panels keep their existing behavior. */
+body.landing .nav-wrap > .brand { order: 0; }
+body.landing .nav-wrap > #main-nav { order: 1; margin-left: auto; }
+body.landing .nav-wrap > [data-theme-control] { order: 2; flex: none; }
+body.landing .nav-wrap > .menu-toggle { order: 3; }
+body.editorial .nav > .brand { order: 0; }
+body.editorial .nav > .nav-links { order: 1; margin-left: auto; }
+body.editorial .nav > [data-theme-control] { order: 2; flex: none; }
+body.editorial .nav > .nav-toggle { order: 3; }
+body[data-mode] header > .brand { order: 0; }
+body[data-mode] header > nav { order: 1; margin-left: auto; }
+body[data-mode] header > [data-theme-control] { order: 2; flex: none; }
+body[data-mode] header { gap: 24px; }
+
+@media (max-width: 1080px) {
+  body.landing .nav-wrap { flex-wrap: wrap; gap: 12px; }
+  body.landing .nav-wrap > [data-theme-control] { margin-left: auto; }
+  body.landing .nav-wrap > #main-nav {
+    order: 4; flex-basis: 100%; width: 100%; margin: 0;
+    flex-direction: column; align-items: stretch; gap: 0; padding-top: 12px;
+  }
+  html.js body.landing .nav-wrap > #main-nav { display: none; }
+  html.js body.landing .nav-wrap > #main-nav.open { display: flex; }
+  html.js body.landing .menu-toggle { display: inline-flex; align-items: center; gap: 14px; }
+  body.landing #main-nav > a { padding: 14px 0; border-top: 1px solid #35423a; font-size: 14px; }
+  body.landing #main-nav > .button { padding: 12px 18px; margin-top: 10px; }
+}
+@media (max-width: 760px) {
+  body.editorial .nav > [data-theme-control] { margin-left: auto; }
+  body.editorial .nav > .nav-links { order: 4; }
+}
+@media (max-width: 600px) {
+  body[data-mode] header { min-height: 108px; height: auto; padding: 18px 20px 14px; flex-wrap: wrap; gap: 12px; }
+  body[data-mode] header > [data-theme-control] { margin-left: auto; }
+  body[data-mode] header > nav { order: 3; flex-basis: 100%; margin: 0; gap: 24px; padding-top: 8px; }
+  body[data-mode] header > nav a { white-space: nowrap; }
+}
+@media (max-width: 480px) {
+  body.landing .nav-wrap { gap: 8px; padding-inline: 16px; }
+  body.landing .nav-wrap .brand { font-size: 20px; }
+  body.landing .nav-wrap .brand::before { width: 19px; height: 19px; margin-right: 7px; vertical-align: -4px; }
+  body.landing .menu-toggle { width: 40px; height: 40px; padding: 0; justify-content: center; font-size: 0; }
+  body.landing .menu-toggle span { font-size: 22px; line-height: 1; }
+}
+@media (max-width: 380px) {
+  body.discovery .discovery-header { gap: 8px; padding-inline: 16px; }
+  body.discovery .discovery-brand { font-size: 14px; }
+  body.discovery .discovery-brand::before { width: 18px; height: 18px; margin-right: 4px; vertical-align: -4px; }
+  body.discovery .discovery-actions { gap: 4px; }
+  body.discovery .discovery-actions #auth-slot .pill { font-size: 11px; padding-inline: 9px; }
 }
 
 /* Landing page */

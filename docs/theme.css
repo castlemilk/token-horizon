@@ -1,0 +1,311 @@
+/* Semantic themes. Fixed graphite/mineral pigments remain available to artwork,
+   brand marks and deliberately dark product demonstrations in either mode. */
+:root,
+html[data-theme="light"] {
+  color-scheme: light;
+  --th-bg: #f3f4ef;
+  --th-surface: #ffffff;
+  --th-surface-2: #edf1eb;
+  --th-surface-3: #e1e8e1;
+  --th-text: #121714;
+  --th-muted: #56635a;
+  --th-faint: #607067;
+  --th-rule: #cdd3cc;
+  --th-rule-strong: #a5b5a9;
+  --th-control: #79867c;
+  --th-accent: #235e43;
+  --th-accent-ink: #ffffff;
+  --th-selected: #e0efdf;
+  --th-hover: #eef5ec;
+  --th-warning: #865313;
+  --th-warning-bg: #f8eee0;
+  --th-danger: #a33535;
+  --th-danger-bg: #faeaea;
+  --th-success: #235e43;
+  --th-success-bg: #e4f0e3;
+  --th-plan: #694779;
+  --th-plan-bg: #f1edf3;
+  --th-shadow: #0c1b1120;
+  --th-skeleton: #e0e6db;
+  --th-skeleton-shine: #f5f7f0;
+}
+html[data-theme="dark"] {
+  color-scheme: dark;
+  --th-bg: #0e1411;
+  --th-surface: #151e18;
+  --th-surface-2: #1c2820;
+  --th-surface-3: #27382d;
+  --th-text: #edf4ec;
+  --th-muted: #b3c1b6;
+  --th-faint: #9cac9f;
+  --th-rule: #33463a;
+  --th-rule-strong: #657d6b;
+  --th-control: #93a797;
+  --th-accent: #b6f2cf;
+  --th-accent-ink: #12271b;
+  --th-selected: #2a4533;
+  --th-hover: #223128;
+  --th-warning: #efd092;
+  --th-warning-bg: #362c1c;
+  --th-danger: #ffb7b2;
+  --th-danger-bg: #382321;
+  --th-success: #b6f2cf;
+  --th-success-bg: #243c2d;
+  --th-plan: #d9bfea;
+  --th-plan-bg: #302638;
+  --th-shadow: #00000050;
+  --th-skeleton: #283b2e;
+  --th-skeleton-shine: #3b5142;
+}
+html[data-theme] {
+  background: var(--th-bg);
+  scrollbar-color: var(--th-control) var(--th-bg);
+  accent-color: var(--th-accent);
+}
+html[data-theme] body {
+  --bg: var(--th-bg);
+  --panel: var(--th-surface);
+  --panel2: var(--th-surface-2);
+  --panel3: var(--th-surface-3);
+  --text: var(--th-text);
+  --ink: var(--th-text);
+  --muted: var(--th-muted);
+  --faint: var(--th-faint);
+  --line: var(--th-rule);
+  --line2: var(--th-rule-strong);
+  --blue: var(--th-accent);
+  --cyan: var(--th-accent);
+  --green: var(--th-success);
+  --orange: var(--th-warning);
+  --red: var(--th-danger);
+  --gold: var(--th-warning);
+  --purple: var(--th-plan);
+  --pink: var(--th-plan);
+  background: var(--th-bg);
+  color: var(--th-text);
+  color-scheme: inherit;
+}
+html[data-theme] body * { scrollbar-color: var(--th-control) var(--th-bg); }
+html[data-theme] ::selection { background: var(--th-accent); color: var(--th-accent-ink); }
+html[data-theme] :is(input, textarea) { caret-color: var(--th-accent); }
+html[data-theme] :is(input, textarea)::placeholder { color: var(--th-faint); opacity: 1; }
+html[data-theme] :focus-visible { outline-color: var(--th-accent); }
+html[data-theme] ::-webkit-scrollbar-thumb { background: var(--th-control); border-color: var(--th-bg); }
+
+/* A small orbital motion stays inside the control: the page and charts do not
+   animate, remount or fetch when its palette changes. */
+[data-theme-control] { display: inline-flex; flex: none; align-items: center; justify-content: center; }
+.th-theme-toggle {
+  position: relative;
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  width: 44px;
+  height: 44px;
+  min-width: 44px;
+  min-height: 44px;
+  padding: 9px;
+  border: 1px solid var(--th-rule-strong);
+  border-radius: 6px;
+  background: var(--th-surface);
+  color: var(--th-text);
+  cursor: pointer;
+  touch-action: manipulation;
+  isolation: isolate;
+  -webkit-tap-highlight-color: transparent;
+}
+.th-theme-toggle:hover { border-color: var(--th-accent); background: var(--th-hover); }
+.th-theme-toggle:focus-visible { outline: 2px solid var(--th-accent); outline-offset: 3px; }
+.th-theme-toggle .th-theme-orbit { width: 24px; height: 24px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; overflow: visible; }
+.th-theme-sun, .th-theme-moon { transform-origin: 12px 12px; transition: transform 540ms cubic-bezier(.2,.8,.2,1), opacity 260ms ease; }
+.th-theme-sun { opacity: 1; transform: rotate(0); }
+.th-theme-moon { opacity: 0; transform: rotate(-70deg) scale(.5); }
+.th-theme-toggle[data-theme="dark"] .th-theme-sun { opacity: 0; transform: rotate(110deg) scale(.5); }
+.th-theme-toggle[data-theme="dark"] .th-theme-moon { opacity: 1; transform: rotate(0) scale(1); }
+.th-theme-satellite { position: absolute; width: 3px; height: 3px; top: 6px; right: 7px; border-radius: 50%; background: currentColor; opacity: .5; transition: transform 540ms cubic-bezier(.2,.8,.2,1), opacity 260ms ease; }
+.th-theme-toggle[data-theme="dark"] .th-theme-satellite { transform: translate(-23px, 24px); opacity: .8; }
+html[data-theme] :is(.site-header, .discovery-header, #site-nav) .th-theme-toggle {
+  background: transparent;
+  color: #e4f0e4;
+  border-color: #62786a;
+}
+html[data-theme] :is(.site-header, .discovery-header, #site-nav) .th-theme-toggle:hover { background: #293c2f; color: #b6f2cf; border-color: #b6f2cf; }
+html[data-theme] :is(.site-header, .discovery-header, #site-nav) .th-theme-toggle:focus-visible { outline-color: #b6f2cf; }
+
+/* Public rankings, model directory, drawers, dialogs and comparison sheets. */
+html[data-theme] body.discovery :is(.community-kpis, .community-join, .mx-panel, .mx-scroll, .mx-drawer, .mx-plan-card, .mx-pick, #mx-comparison, #mx-compare-tray) { background: var(--th-surface); color: var(--th-text); border-color: var(--th-rule); }
+html[data-theme] body.discovery :is(.community-periods, .community-tools input, .community-tools select, .mx-search, .mx-select, .mx-head-row, .mx-drawer-head, .mx-price, .mx-spec, .mx-bench-row, .mx-compare-chips button, #mx-comparison thead th) { background: var(--th-surface-2); color: var(--th-text); border-color: var(--th-rule); }
+html[data-theme] body.discovery :is(.community-table td, .mx-row, .mx-drawer-head) { border-color: var(--th-rule); }
+html[data-theme] body.discovery .community-table tr.you,
+html[data-theme] body.discovery .mx-row.active,
+html[data-theme] body.discovery .mx-row:has(.mx-compare-check:checked),
+html[data-theme] body.discovery .mx-filters .mx-chip.active { background: var(--th-selected) !important; color: var(--th-text); }
+html[data-theme] body.discovery #lb-table tbody tr:is(.selected, .you) td:nth-child(-n+2) { background: var(--th-selected); }
+html[data-theme] body.discovery .community-table tr:hover,
+html[data-theme] body.discovery .mx-row:hover { background: var(--th-hover) !important; }
+html[data-theme] body.discovery .community-table tr:hover td { background: var(--th-hover); }
+html[data-theme] body.discovery .community-ladder .tier.active { background: var(--th-selected); outline-color: var(--th-rule-strong); }
+html[data-theme] body.discovery :is(.community-link, .mx-clear, .mx-drawer a, .mx-plan-card a, .mx-head-cell.sorted, .mx-chip.active .n, .up) { color: var(--th-accent); }
+html[data-theme] body.discovery .mx-filters .mx-chip.cap.active::before { background: var(--th-accent); box-shadow: inset 0 0 0 2px var(--th-selected); }
+html[data-theme] body.discovery .mx-tag { background: var(--th-success-bg); color: var(--th-success); border-color: var(--th-rule); }
+html[data-theme] body.discovery .mx-tag.plan { background: var(--th-plan-bg); color: var(--th-plan); border-color: var(--th-rule); }
+html[data-theme] body.discovery .mx-tag.hot { color: var(--th-success); border-color: var(--th-rule); }
+html[data-theme] body :is(.mx-score, .mx-flat-score, .mx-plan-price, .mx-plan-name) { color: var(--th-text); }
+html[data-theme] body .mx-score { background: var(--th-surface-2); border-color: var(--th-rule); }
+html[data-theme] body :is(.mx-badge.green, .mx-badge.blue, .mx-badge.cyan) { color: var(--th-success); background: var(--th-success-bg); border-color: var(--th-rule-strong); }
+html[data-theme] body .mx-badge.purple { color: var(--th-plan); background: var(--th-plan-bg); border-color: var(--th-rule-strong); }
+html[data-theme] body :is(.mx-badge.yellow, .mx-badge.orange) { color: var(--th-warning); background: var(--th-warning-bg); border-color: var(--th-rule-strong); }
+html[data-theme] body :is(.model-link, a.model-chip, .model-all-link):hover { color: var(--th-accent); border-color: var(--th-accent); }
+html[data-theme] body .mx-user-row:hover .u { color: var(--th-accent); }
+html[data-theme] body.discovery :is(.mx-drawer-close, .mx-close) { background: var(--th-surface-3); color: var(--th-text); border-color: var(--th-rule); }
+html[data-theme] body.discovery .community-periods button.active { background: var(--th-accent); color: var(--th-accent-ink); }
+html[data-theme] body.discovery :is(.tab.active, .profile-tabs .tab.active) { color: var(--th-accent); border-color: var(--th-accent); }
+html[data-theme] body.discovery .cta { background: var(--th-success-bg); border-color: var(--th-rule-strong); color: var(--th-text); }
+html[data-theme] body.discovery .cta .progress i { background: var(--th-accent); }
+html[data-theme] body.discovery .community-join img { mix-blend-mode: normal; }
+
+/* Existing dialogs also appear inside the private workspace shell. */
+html[data-theme] body :is(.modal, .modal-head, .modal-foot, .tooltip-card) { background: var(--th-surface); color: var(--th-text); border-color: var(--th-rule); }
+html[data-theme] body :is(.pill, .chip) { color: var(--th-accent); background: var(--th-success-bg); border-color: var(--th-rule-strong); }
+html[data-theme] body .pill.primary { color: var(--th-accent-ink); background: var(--th-accent); border-color: var(--th-accent); }
+html[data-theme] body .seg button.active { color: var(--th-text); background: var(--th-selected); }
+html[data-theme] body .opt.selected { border-color: var(--th-accent); background: var(--th-selected); }
+html[data-theme] body .switch i { background: var(--th-control); }
+html[data-theme] body .switch.on i { background: var(--th-accent-ink); }
+html[data-theme] body .rank-badge.gold,
+html[data-theme] body .rank-badge.bronze { color: var(--th-warning); background: var(--th-warning-bg); }
+html[data-theme] body .rank-badge.silver { color: var(--th-muted); background: var(--th-surface-2); }
+html[data-theme] body .kpi-delta .up { color: var(--th-success); background: var(--th-success-bg); }
+html[data-theme] body .kpi-delta .down { color: var(--th-danger); background: var(--th-danger-bg); }
+html[data-theme] body .chip.orange { color: var(--th-warning); background: var(--th-warning-bg); border-color: var(--th-rule-strong); }
+html[data-theme] body .chip.red { color: var(--th-danger); background: var(--th-danger-bg); border-color: var(--th-rule-strong); }
+html[data-theme] body .chip.logo-chip { background: var(--th-surface-2); color: var(--th-text); }
+html[data-theme] body .notice { background: var(--th-surface-2); color: var(--th-muted); border-color: var(--th-rule); }
+html[data-theme] body .notice.err { background: var(--th-danger-bg); color: var(--th-danger); border-color: var(--th-rule-strong); }
+html[data-theme] body .notice.ok { background: var(--th-success-bg); color: var(--th-success); border-color: var(--th-rule-strong); }
+html[data-theme] body .notice.warn { background: var(--th-warning-bg); color: var(--th-warning); border-color: var(--th-rule-strong); }
+html[data-theme] body :is(.skeleton, .discovery-loading .skeleton) { background: linear-gradient(100deg, var(--th-skeleton) 15%, var(--th-skeleton-shine) 40%, var(--th-skeleton) 65%); background-size: 200% 100%; border-color: var(--th-rule); }
+html[data-theme] body .empty { background: var(--th-surface-2); color: var(--th-muted); border-color: var(--th-rule-strong); }
+html[data-theme] body :is(.topbar .pill, .topbar .season-select) { background: var(--th-surface); color: var(--th-text); border-color: var(--th-rule); }
+html[data-theme] body .topbar .pill.primary { background: var(--th-accent); color: var(--th-accent-ink); }
+html[data-theme] body.discovery .discovery-header #auth-slot :is(.pill, .user-chip) { color: #e4f0e4; background: transparent; border-color: #62786a; }
+html[data-theme] body.discovery .discovery-header #auth-slot :is(.pill, .user-chip):hover { background: #293c2f; }
+html[data-theme] .spinner { border-color: var(--th-rule-strong); border-top-color: currentColor; }
+
+/* Axis and grid paint follows CSS; measured series colors and pooled chart
+   hosts stay intact. Explicit axes selectors avoid altering colored data. */
+html[data-theme] body .ts-chart-tooltip { background: var(--th-surface) !important; color: var(--th-text) !important; border-color: var(--th-rule-strong) !important; box-shadow: 0 12px 34px var(--th-shadow) !important; }
+html[data-theme] body .ts-chart-tooltip__title { color: var(--th-text) !important; }
+html[data-theme] body .ts-chart__axes text { fill: var(--th-faint) !important; fill-opacity: 1 !important; }
+html[data-theme] body .ts-chart__axes :is(line, path) { stroke: var(--th-rule-strong) !important; }
+html[data-theme] body .ts-chart__grid { stroke: var(--th-rule) !important; stroke-opacity: 1 !important; }
+html[data-theme] body :is(.area-wrap, .stacked-area) svg text { fill: var(--th-faint); }
+html[data-theme] body :is(.area-wrap, .stacked-area) svg line { stroke: var(--th-rule); }
+
+/* Public profile retains its dark league rail and the original OG preview.
+   Only live panels, form fields, labels and empty calendar cells are themed. */
+html[data-theme] body .profile-main .card,
+html[data-theme] body .profile-usage-details { background: var(--th-surface); color: var(--th-text); border-color: var(--th-rule); }
+html[data-theme] body :is(.profile-window, .profile-person > .avatar, .profile-inventory td) { border-color: var(--th-rule); }
+html[data-theme] body .profile-window button[aria-pressed="true"] { background: var(--th-accent); color: var(--th-accent-ink); }
+html[data-theme] body :is(.profile-text-button, .profile-totals > div:first-child strong, .profile-table-footer a) { color: var(--th-accent); }
+html[data-theme] body :is(.profile-chart-note, .profile-calendar .cal-days, .profile-calendar .cal-months, .profile-calendar .cal-legend) { color: var(--th-muted); }
+html[data-theme] body .profile-chart svg text { fill: var(--th-faint); }
+html[data-theme] body .profile-chart svg line { stroke: var(--th-rule); }
+html[data-theme] body .profile-calendar .cal-empty { border-color: var(--th-rule); }
+html[data-theme] body .heat-cell { background: var(--th-surface-3); }
+html[data-theme="dark"] body .profile-calendar :is(.cal-cell, .cal-legend i)[style*="#e1e8e0" i] { background: var(--th-surface-3) !important; }
+
+/* Authentication: preserve the animated black-hole art and provider logos. */
+html[data-theme] body :is(.auth-shell, .signin-modal) {
+  --auth-bg: var(--th-surface);
+  --auth-ink: var(--th-text);
+  --auth-line: var(--th-rule);
+  --auth-muted: var(--th-muted);
+  --auth-forest: var(--th-accent);
+  --auth-mint: #c9f0d2;
+  background: var(--th-surface);
+  color: var(--th-text);
+  border-color: var(--th-rule);
+}
+html[data-theme] body :is(.auth-shell, .signin-modal) .signin-pane { background: var(--th-surface); }
+html[data-theme] body .auth-form-brand .auth-horizon-mark::after { background: var(--th-surface); }
+html[data-theme] body :is(.auth-remembered, .auth-provider-placeholder, .auth-provider-skeleton, .auth-account-menu, .ui-update-notice) { background: var(--th-surface-2); color: var(--th-text); border-color: var(--th-rule); }
+html[data-theme] body :is(.auth-account-menu button, .auth-account-menu a) { color: var(--th-text); }
+html[data-theme] body :is(.auth-menu-identity, .auth-account-menu [data-account-signout]) { border-color: var(--th-rule); }
+html[data-theme] body .auth-account .user-chip { background: var(--th-surface); color: var(--th-text); border-color: var(--th-rule-strong); }
+html[data-theme] body .auth-account .user-chip small { color: var(--th-muted); }
+html[data-theme] body :is(.auth-account-menu button, .auth-account-menu a):hover { background: var(--th-hover); }
+html[data-theme] body :is(.auth-provider, .auth-primary) { background: var(--th-surface-2); color: var(--th-text); border-color: var(--th-rule-strong); }
+html[data-theme] body :is(.auth-provider, .auth-primary):hover:not(:disabled) { background: var(--th-hover); }
+html[data-theme] body :is(.auth-github, .auth-primary) { background: var(--th-accent); color: var(--th-accent-ink); border-color: var(--th-accent); }
+html[data-theme] body :is(.auth-github, .auth-primary):hover:not(:disabled) { background: var(--th-accent); filter: brightness(.93); }
+html[data-theme] body :is(.signin-benefit .ico, .signin-benefit .t, .auth-success-check, .signin-modal .modal-head .x) { color: var(--th-accent); }
+html[data-theme] body .auth-success-check { background: var(--th-success-bg); border-color: var(--th-rule-strong); }
+html[data-theme] body #signin-status { color: var(--th-warning); }
+html[data-theme] body .ui-update-notice span { color: var(--th-muted); }
+html[data-theme] body .ui-update-notice button { background: var(--th-accent); color: var(--th-accent-ink); border-color: var(--th-accent); }
+html[data-theme] body .ui-update-notice .ui-update-dismiss { background: transparent; color: var(--th-muted); }
+
+/* Workspace's measured charts and statistics use the same semantic palette. */
+html[data-theme] body .th-workspace { --tw-ink: var(--th-text); --tw-muted: var(--th-muted); --tw-rule: var(--th-rule); --tw-green: var(--th-accent); color: var(--th-text); }
+html[data-theme] body[data-surface="dashboard"] .topbar { background: var(--th-bg); color: var(--th-text); border-color: var(--th-rule); }
+html[data-theme] body :is(.tw-summary, .tw-panel, .tw-welcome, .tw-skeleton-summary, .tw-profile select, .tw-sort select, .tw-button) { background: var(--th-surface); color: var(--th-text); border-color: var(--th-rule); }
+html[data-theme] body :is(.tw-period, .tw-token-classes, .tw-search, .tw-visibility, .tw-handle-form input, .tw-table th) { background: var(--th-surface-2); color: var(--th-text); border-color: var(--th-rule); }
+html[data-theme] body .tw-period button[aria-pressed="true"] { background: var(--th-surface); color: var(--th-text); }
+html[data-theme] body :is(.tw-table td, .tw-opportunity, .tw-opportunities .tw-panel-heading, .tw-method-note, .tw-table-foot, .tw-token-classes > div) { border-color: var(--th-rule); }
+html[data-theme] body .tw-table td { color: var(--th-text); }
+html[data-theme] body .tw-table tbody tr:hover { background: var(--th-hover); }
+html[data-theme] body :is(.tw-eyebrow, .tw-source small, .tw-summary > div > span, .tw-summary svg, .tw-summary small, .tw-summary strong.tw-unavailable, .tw-panel-heading > div > span, .tw-label, .tw-chart-legend b, .tw-token-classes span, .tw-token-classes small, .tw-opportunity p, .tw-evidence, .tw-table th, .tw-table .tw-cell-unavailable, .tw-model-name small, .tw-session-title svg, .tw-session-meta, .tw-method-note, .tw-sort, .tw-table-foot, .tw-data-note, .tw-empty-panel span, .tw-local-strip p, .tw-footnote, .tw-project small, .tw-sources > div > span:last-child, .tw-visibility p, .tw-welcome p, .tw-handle-form > label, .tw-welcome p.tw-welcome-note, .tw-feature-grid p, .tw-loading-detail, .tw-cost-note) { color: var(--th-muted); }
+html[data-theme] body :is(.tw-tabs button.active, .tw-panel-heading h2 > svg, .tw-token-classes strong, .tw-text-button, .tw-model-link, .tw-project span, .tw-feature-grid svg, .tw-loading-message) { color: var(--th-accent) !important; }
+html[data-theme] body .tw-tabs button { color: var(--th-muted); }
+html[data-theme] body .tw-tabs button.active { border-color: var(--th-accent); }
+html[data-theme] body .tw-tabs button:hover { color: var(--th-text); }
+html[data-theme] body :is(.tw-op-icon, .tw-op-title > span, .tw-evidence > span) { color: var(--th-accent); background: var(--th-success-bg); }
+html[data-theme] body :is(.tw-session-title, .tw-empty-panel p, .tw-local-strip strong) { color: var(--th-text); }
+html[data-theme] body .tw-button:hover { background: var(--th-hover); border-color: var(--th-rule-strong); }
+html[data-theme] body .tw-button.tw-primary { background: var(--th-accent); color: var(--th-accent-ink); border-color: var(--th-accent); }
+html[data-theme] body .tw-alert { color: var(--th-warning); background: var(--th-warning-bg); border-color: var(--th-rule-strong); }
+html[data-theme] body .tw-source-stale { color: var(--th-warning); }
+html[data-theme] body .tw-chart text { fill: var(--th-faint); }
+html[data-theme] body .tw-chart line { stroke: var(--th-rule); }
+html[data-theme] body :is(.tw-skeleton-summary i, .tw-skeleton-summary b, .tw-skeleton-panels i, .tw-skeleton-panels b) { background: var(--th-skeleton); }
+html[data-theme] body .tw-meter { background: var(--th-surface-3); }
+
+/* Landing page keeps physical product screens dark while its surrounding live
+   content, install options, previews and dialog follow the selected mode. */
+html[data-theme] body.landing { --green: var(--th-accent); --dark: #121714; --mint: #b6f2cf; }
+html[data-theme] body.landing :is(.site-header, .desktop-section, .terminal) { color: #f3f4ef; }
+html[data-theme] body.landing .menu-toggle { color: #f3f4ef; }
+html[data-theme] body.landing :is(.mint, .nav-install) { color: #121714; }
+html[data-theme] body.landing .hero-actions .dark { background: var(--th-accent); color: var(--th-accent-ink); }
+html[data-theme] body.landing :is(.preview-table, .installer-line, #demo-dialog) { background: var(--th-surface); color: var(--th-text); border-color: var(--th-rule); }
+html[data-theme] body.landing .scene-select button:hover { background: var(--th-hover); color: var(--th-text); }
+html[data-theme] body.landing .scene-select button[aria-pressed="true"] { background: var(--th-accent); color: var(--th-accent-ink); }
+html[data-theme] body.landing .detail-dialog-bottom button { background: var(--th-accent); color: var(--th-accent-ink); }
+
+/* Worker-generated connector: the left universe stays dark; the permission,
+   identity and grant panels follow the user's site preference. */
+html[data-theme] body[data-mode] :is(header, footer, main) { border-color: var(--th-rule); }
+html[data-theme] body[data-mode] .connection { background: var(--th-bg); color: var(--th-text); }
+html[data-theme] body[data-mode] :is(.connection-top, .step, .lede, .destination > span, .destination small, .permission p, .permission i, .trust-note, .help, .local-details, .manage-heading span, .grant p, footer, .auth-provider-note, .connector-identity small) { color: var(--th-muted); }
+html[data-theme] body[data-mode] :is(.app-symbol, .endpoint, .connector-identity) { background: var(--th-surface-2); color: var(--th-text); border-color: var(--th-rule); }
+html[data-theme] body[data-mode] :is(.permission, .permission i, .trust-note, .package-link, .grant, .grant button, .secondary) { border-color: var(--th-rule); }
+html[data-theme] body[data-mode] :is(.primary, .github-signin) { background: var(--th-accent); color: var(--th-accent-ink); border-color: var(--th-accent); }
+html[data-theme] body[data-mode] :is(.primary, .github-signin):hover:not(:disabled) { background: var(--th-accent); filter: brightness(.93); }
+html[data-theme] body[data-mode] :is(.secondary, .check, #identity, .endpoint > div, .endpoint button, .change-account) { color: var(--th-accent); }
+html[data-theme] body[data-mode] :is(#status, .grant button) { color: var(--th-warning); }
+
+@media (prefers-reduced-motion: reduce) {
+  html[data-theme] { scroll-behavior: auto; }
+  .th-theme-toggle *, .th-theme-toggle::before, .th-theme-toggle::after { transition: none !important; animation: none !important; }
+}
+@media (max-width: 480px) {
+  html[data-theme] :is(.site-header, .discovery-header, #site-nav) .th-theme-toggle { width: 40px; min-width: 40px; padding: 7px; }
+  html[data-theme] :is(.site-header, .discovery-header, #site-nav) .th-theme-toggle::after { content: ""; position: absolute; inset: 0 -2px; }
+}
+@media (forced-colors: active) {
+  .th-theme-toggle { background: ButtonFace; color: ButtonText; border-color: ButtonText; }
+  .th-theme-toggle:focus-visible { outline-color: Highlight; }
+  .th-theme-toggle[aria-pressed="true"] { border: 2px solid Highlight; }
+}

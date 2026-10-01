@@ -99,6 +99,9 @@ jobs:
           node scripts/test-profile-ui.mjs
           node scripts/test-login-ui.mjs
           node scripts/test-navigation-ui.mjs
+          node scripts/test-theme-runtime.mjs
+          node scripts/test-themes-ui.mjs
+          node scripts/test-teams-ui.mjs
           node scripts/test-branding-ui.mjs
           node scripts/test-ui-updates.mjs
           node scripts/test-connect-ui.mjs

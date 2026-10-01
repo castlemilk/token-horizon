@@ -551,3 +551,26 @@ rounds and enforced by `scripts/test-leaderboard-ui.mjs` §11:
   sides of the edge; worker no longer rounds `avgCostPerM` to 4dp.
 - **Donut consistency**: ring, center, and legend share one denominator and
   every time-based card labels its window ("Last N days" vs "All-time").
+
+### Shared themes and team standings
+
+All web surfaces load `horizon-system.css`, `surfaces.css`, and `theme.css`.
+Use semantic `--th-bg`, `--th-surface`, `--th-text`, `--th-muted`, `--th-rule`,
+and `--th-accent` tokens for live UI; fixed graphite/mineral pigments remain
+available for artwork and deliberately dark product previews. The tiny head
+bootstrap applies `th-theme` before paint, falling back to the system preference.
+The CSP-protected connector runs the same `theme.js` synchronously in its head.
+`[data-theme-control]` mounts an accessible animated control; switching modes
+updates CSS only, preserving fetched data and pooled chart hosts.
+
+Teams and Leagues share public discovery navigation. Teams hydrate directly
+from the cached `/api/providers` aggregate without waiting for the individual
+leaderboard. Rankings use full published all-time token totals; provider mix
+uses reported model usage, and the API's top public profile references support
+search and drilldown. Canonical team IDs stay separate from legacy name groups;
+the synthetic `Unassigned` bucket is excluded. Remembered-session verification
+updates personal team controls after public standings paint. Dense report tables
+scroll within their panels, and private mobile navigation uses a compact ribbon.
+
+Theme and team regressions: `node scripts/test-theme-runtime.mjs`,
+`node scripts/test-themes-ui.mjs`, and `node scripts/test-teams-ui.mjs`.

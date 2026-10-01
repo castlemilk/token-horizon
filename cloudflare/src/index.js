@@ -21,11 +21,9 @@ const CORS_HEADERS = {
 
 // --- League ladder (mirrors Sources/TokenHorizon/Leaderboard/LeaderboardAnalytics.swift) ---
 const SEASON_REWARDS = [
-  { icon: "👑", title: "Higher Token Quotas", detail: "Larger rate limits for higher leagues." },
-  { icon: "⭐", title: "Exclusive Badge Cosmetics", detail: "Show off your rank across your profile." },
-  { icon: "📊", title: "Advanced Analytics", detail: "Unlock deeper usage insights." },
-  { icon: "⌨️", title: "API Quota Boosts", detail: "Higher tiers get increased API limits." },
-  { icon: "🤝", title: "Team Bragging Rights", detail: "Represent your org on the global stage." }
+  { icon: "shield", title: "Your league shield", detail: "Your published profile and share preview carry your league." },
+  { icon: "activity", title: "A history of progress", detail: "Usage heatmaps and ranking snapshots show how your activity develops." },
+  { icon: "users", title: "Your team, together", detail: "Published team usage contributes to community team standings." }
 ];
 
 const LEAGUES = [

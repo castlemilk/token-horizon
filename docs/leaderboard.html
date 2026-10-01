@@ -3,6 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
+<script>(()=>{let t;try{t=localStorage.getItem('th-theme')}catch(_){}t=t==='light'||t==='dark'?t:matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light';document.documentElement.dataset.theme=t;document.documentElement.style.colorScheme=t;})();</script>
 <title>AI Usage Leaderboard &amp; Leagues — Token Horizon</title>
 <meta data-th-seo name="description" content="Explore opt-in AI usage rankings, league shields, token heatmaps and provider breakdowns. Compare daily, weekly and all-time community activity." />
 <meta data-th-seo name="theme-color" content="#101714" />
@@ -61,6 +62,7 @@ const API_BASE = (() => {
     if (userPath) { try { handle = decodeURIComponent(userPath[1]); } catch (_) {} }
     if (handle) path = "/api/user/" + encodeURIComponent(handle);
   }
+  if (view === "teams") path = "/api/providers";
   if (view === "leaderboard") {
     const period = ["today", "week", "all", "streak"].includes(params.get("period")) ? params.get("period") : "today";
     path = "/api/leaderboard?" + new URLSearchParams({ period, historyDays: "30" });
@@ -610,18 +612,19 @@ body.th-flat .mx-flat-score{display:none}
 }
 </style>
 <link rel="stylesheet" href="./discovery.css?v=20261001-3" data-ui-style />
-<link rel="stylesheet" href="./horizon-system.css?v=20260930" data-ui-style />
+<link rel="stylesheet" href="./horizon-system.css?v=20261001-4" data-ui-style />
 <link rel="stylesheet" href="./profile.css?v=20261001-2" data-ui-style />
 <link rel="stylesheet" href="./auth.css?v=20261001-2" data-ui-style />
 <link rel="stylesheet" href="./workspace.css?v=20261001" data-ui-style />
 <script src="./ui-updates.js?v=20261001" defer></script>
+<link rel="stylesheet" href="./teams.css?v=20261001-4" data-ui-style /><link rel="stylesheet" href="./surfaces.css?v=20261001-4" data-ui-style /><link rel="stylesheet" href="./theme.css?v=20261001-4" data-ui-style /><script src="./theme.js?v=20261001-4" defer></script>
 </head>
 <body>
 <a class="discovery-skip" href="#view">Skip to content</a>
 <header class="discovery-header" id="discovery-header">
   <a class="discovery-brand" href="./">Token Horizon</a>
-  <nav id="discovery-navigation" aria-label="Main navigation"><a href="./models/" data-public-view="models">Models</a><a href="./leaderboard.html" data-public-view="leaderboard">Leaderboard</a><a href="./docs/">Docs</a><a href="?view=dashboard" data-public-view="dashboard">Workspace</a><a href="https://github.com/castlemilk/token-horizon">GitHub ↗</a><a class="discovery-install" href="./#install" title="Install Token Horizon">Install app ↗</a></nav>
-  <div class="discovery-actions" id="discovery-actions"><button class="discovery-menu-toggle" id="discovery-menu-toggle" type="button" aria-label="Open navigation" aria-expanded="false" aria-controls="discovery-navigation" hidden><span aria-hidden="true"></span><span aria-hidden="true"></span></button></div>
+  <nav id="discovery-navigation" aria-label="Main navigation"><a href="./models/" data-public-view="models">Models</a><a href="./leaderboard.html" data-public-view="leaderboard">Leaderboard</a><a href="?view=teams" data-public-view="teams">Teams</a><a href="?view=leagues" data-public-view="leagues">Leagues</a><a href="./docs/">Docs</a><a href="?view=dashboard" data-public-view="dashboard">Workspace</a><a href="https://github.com/castlemilk/token-horizon">GitHub ↗</a><a class="discovery-install" href="./#install" title="Install Token Horizon">Install app ↗</a></nav>
+  <div class="discovery-actions" id="discovery-actions"><span data-theme-control></span><button class="discovery-menu-toggle" id="discovery-menu-toggle" type="button" aria-label="Open navigation" aria-expanded="false" aria-controls="discovery-navigation" hidden><span aria-hidden="true"></span><span aria-hidden="true"></span></button></div>
 </header>
 <div class="app">
   <aside class="sidebar">
@@ -666,6 +669,7 @@ body.th-flat .mx-flat-score{display:none}
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M4 6h16M7 12h10M10 18h4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
         <span id="filters-label">Filters</span>
       </div>
+      <span data-theme-control></span>
       <div id="auth-slot"></div>
     </div>
     <div id="filters-row" style="display:none;padding:10px 24px;border-bottom:1px solid var(--line);gap:10px;align-items:center;flex-wrap:wrap" class="topbar">
@@ -1063,10 +1067,10 @@ function areaChart(points, opts = {}) {
   const grid = [0, 0.25, 0.5, 0.75, 1].map(f => {
     const gy = padT + f * (hgt - padT - padB);
     const val = max * (1 - f);
-    return `<line x1="${padL}" y1="${gy}" x2="${w - padR}" y2="${gy}" stroke="#1B2434" stroke-width="1"/><text x="${padL - 6}" y="${gy + 3}" text-anchor="end" font-size="9" fill="#5A6478">${fmtTokens(val)}</text>`;
+    return `<line x1="${padL}" y1="${gy}" x2="${w - padR}" y2="${gy}" stroke="var(--line)" stroke-width="1"/><text x="${padL - 6}" y="${gy + 3}" text-anchor="end" font-size="9" fill="var(--faint)">${fmtTokens(val)}</text>`;
   }).join("");
   const labels = points.map((p, i) => (i % Math.ceil(n / 6) === 0 || i === n - 1)
-    ? `<text x="${x(i)}" y="${hgt - 8}" text-anchor="middle" font-size="9" fill="#5A6478">${esc(p.label)}</text>` : "").join("");
+    ? `<text x="${x(i)}" y="${hgt - 8}" text-anchor="middle" font-size="9" fill="var(--faint)">${esc(p.label)}</text>` : "").join("");
   const dots = points.map((p, i) => `<circle class="pt" cx="${x(i).toFixed(1)}" cy="${y(p.value).toFixed(1)}" r="9" fill="transparent" data-i="${i}"/>`).join("");
   return `<div class="stack-area" data-area='${esc(JSON.stringify(points.map(p => ({ label: p.label, value: p.value, cost: p.cost || 0, extra: p.extra || "" }))))}'>
     <svg viewBox="0 0 ${w} ${hgt}" width="100%" height="${hgt}" preserveAspectRatio="none" style="overflow:visible">
@@ -1091,8 +1095,8 @@ function donut(segments, size = 170, centerTitle = "", centerSub = "") {
   }).join("");
   return `<svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}">
     ${arcs}
-    <text x="${cx}" y="${cy - 2}" text-anchor="middle" font-size="17" font-weight="800" fill="#E7ECF5">${esc(centerTitle)}</text>
-    <text x="${cx}" y="${cy + 14}" text-anchor="middle" font-size="9.5" fill="#5A6478">${esc(centerSub)}</text>
+    <text x="${cx}" y="${cy - 2}" text-anchor="middle" font-size="17" font-weight="800" fill="var(--text)">${esc(centerTitle)}</text>
+    <text x="${cx}" y="${cy + 14}" text-anchor="middle" font-size="9.5" fill="var(--faint)">${esc(centerSub)}</text>
   </svg>`;
 }
 
@@ -1607,7 +1611,7 @@ function setGoogleSession(s, { refreshShared = true } = {}) {
     if (state.signInPending?.onSuccess) { ++renderVersion; $("#view").innerHTML = '<div class="card" role="status" aria-label="Loading shared report"><div class="skeleton" style="height:300px"></div></div>'; }
     else renderSharedReport(state.sharedReportId, { promptSignIn: false });
   }
-  if (previousIdentity !== nextIdentity && ["dashboard", "invite", "settings"].includes(state.view)) render();
+  if (previousIdentity !== nextIdentity && ["dashboard", "invite", "settings", "teams"].includes(state.view)) render();
   if (s?.serverSession && state.view === "players") {
     const identity = nextIdentity;
     loadWorkspaceAccount().then(() => { if (sessionIdentity(state.googleSession) === identity && state.view === "players") render(); });
@@ -2468,7 +2472,7 @@ function syncDiscoveryMetadata(profile = null) {
   if (schema) { const node = document.createElement("script"); node.type = "application/ld+json"; node.id = "th-seo-schema"; node.textContent = JSON.stringify(schema); document.head.append(node); }
 }
 function syncDiscoveryChrome() {
-  const visible = ["leaderboard", "models", "invite", "players", "login"].includes(state.view);
+  const visible = ["leaderboard", "models", "teams", "leagues", "invite", "players", "login"].includes(state.view);
   document.body.classList.toggle("discovery", visible);
   document.body.dataset.surface = state.view;
   if (discoveryNavigationRoute !== state.view) {
@@ -2508,6 +2512,8 @@ async function render() {
       view.innerHTML = mxLoadingHtml();
       mxWireTabs();
     }
+  } else if (route === "teams") {
+    if (!state.providers) view.innerHTML = teamsLoadingHtml();
   } else if (route === "dashboard" || route === "invite") {
     view.innerHTML = '<section class="ws-boot" role="status" aria-label="Loading workspace"><div class="skeleton" style="height:32px;width:200px;margin-bottom:28px"></div><div class="skeleton" style="height:300px"></div></section>';
   } else if (route === "players") {
@@ -2522,7 +2528,7 @@ async function render() {
       if (!current()) return;
       const handle = state.currentHandle || (state.data?.leaderboard || [])[0]?.entry.handle;
       profileOutcome = await loadUser(handle);
-    } else if (!["models", "dashboard", "invite", "login"].includes(route)) await ensureData();
+    } else if (!["models", "teams", "dashboard", "invite", "login"].includes(route)) await ensureData();
     if (!current()) return;
     chartRegistry.clear();
     chartFallbacks.clear();
@@ -2639,7 +2645,7 @@ function wireCharts() {
       const p = points[idx];
       if (!p) return;
       tip.style.display = "block";
-      tip.innerHTML = `<b>${esc(p.label)}</b><div style="margin-top:4px;color:#8B95A8">${fmtTokens(p.value)} tokens${p.cost ? " · " + fmtCost(p.cost) : ""}</div>${p.extra ? `<div style="color:#5A6478;margin-top:3px">${esc(p.extra)}</div>` : ""}`;
+      tip.innerHTML = `<b>${esc(p.label)}</b><div style="margin-top:4px;color:var(--muted)">${fmtTokens(p.value)} tokens${p.cost ? " · " + fmtCost(p.cost) : ""}</div>${p.extra ? `<div style="color:var(--faint);margin-top:3px">${esc(p.extra)}</div>` : ""}`;
       tip.style.left = Math.min(area.clientWidth - 180, Math.max(0, ev.clientX - rect.left - 80)) + "px";
       tip.style.top = "6px";
     });
@@ -3266,10 +3272,10 @@ function stackedArea(series, labels, opts = {}) {
   }).join("");
   const grid = [0, 0.5, 1].map(f => {
     const gy = padT + f * (hgt - padT - padB);
-    return `<line x1="${padL}" y1="${gy}" x2="${w - padR}" y2="${gy}" stroke="#1B2434"/><text x="${padL - 6}" y="${gy + 3}" text-anchor="end" font-size="9" fill="#5A6478">${fmtTokens(max * (1 - f))}</text>`;
+    return `<line x1="${padL}" y1="${gy}" x2="${w - padR}" y2="${gy}" stroke="var(--line)"/><text x="${padL - 6}" y="${gy + 3}" text-anchor="end" font-size="9" fill="var(--faint)">${fmtTokens(max * (1 - f))}</text>`;
   }).join("");
   const labelsHtml = labels.map((l, i) => (i % Math.ceil(n / 6) === 0 || i === n - 1)
-    ? `<text x="${x(i)}" y="${hgt - 8}" text-anchor="middle" font-size="9" fill="#5A6478">${esc(l)}</text>` : "").join("");
+    ? `<text x="${x(i)}" y="${hgt - 8}" text-anchor="middle" font-size="9" fill="var(--faint)">${esc(l)}</text>` : "").join("");
   return `<svg viewBox="0 0 ${w} ${hgt}" width="100%" height="${hgt}" preserveAspectRatio="none">${grid}${paths}${labelsHtml}</svg>`;
 }
 
@@ -3280,41 +3286,41 @@ async function renderLeagues(current = () => true) {
   const s = await loadSeason();
   if (!current()) return;
   const season = s.season || state.data?.season;
-  const local = (state.data?.leaderboard || []).find(r => r.entry.isLocal) || (state.data?.leaderboard || [])[0];
+  const own = (state.data?.leaderboard || []).find(r => sessionOwnsEntry(r.entry) || r.entry.isLocal);
+  const local = own || (state.data?.leaderboard || [])[0];
   const distribution = s.distribution || [];
+  const standings = (s.standings || []).filter(row => state.leagueFilter === "all" || row.league === state.leagueFilter);
   const maxUsers = Math.max(1, ...distribution.map(d => d.users));
   const how = [
-    ["🏆", "Points & MMR", "Earn MMR based on token usage, consistency, and diversity."],
-    ["🔀", "Promotion & Relegation", "Climb by reaching the minimum MMR. Inactive users may be relegated."],
-    ["🥇", "Divisions", "Each league has 3 divisions (I, II, III). Top performers advance."],
-    ["🎯", "Placement", "New users start with a 7-day placement window to determine rank."],
-    ["🔄", "Season Resets", "Ranks reset each season with a soft MMR reset. Keep your momentum!"],
-    ["⏳", "Decay Rules", "Inactivity over 14 days may result in MMR decay to keep competitions fair."],
-    ["🎁", "Rewards", "Higher leagues unlock bigger quotas, exclusive badges, and more."]
+    [ICONS.tokens, "Published usage", "All-time token totals set the base of your MMR band."],
+    [ICONS.activity, "Consistency", "Streaks and active days add bonuses to your rating."],
+    [ICONS.bolt, "Model diversity", "Using more models contributes a measured diversity bonus."],
+    [ICONS.shield, "Seven leagues", "Each 400 MMR band advances you to the next league."],
+    [ICONS.rank, "Three divisions", "Move from division III through II to I within each league."],
+    [ICONS.clock, "Quarterly seasons", "Season snapshots preserve your progress and ranking history."]
   ];
   const endTs = season ? new Date(season.end).getTime() / 1000 : 0;
   const timeline = season ? [
-    { label: "Preseason", at: "—", done: true },
-    { label: "Active Season", at: fmtDay(new Date(season.start).getTime() / 1000), active: true },
-    { label: "Playoffs & Finals", at: fmtDay(endTs - 14 * 86400), done: false },
-    { label: "Season Reset", at: fmtDay(endTs), done: false }
+    { label: "Season opened", at: fmtDay(new Date(season.start).getTime() / 1000), done: true },
+    { label: "In progress", at: `${season.daysRemaining} days remaining`, active: true },
+    { label: "Next season", at: fmtDay(endTs), done: false }
   ] : [];
 
-  $("#view").innerHTML = pageHead(["Leaderboard", "Leagues"], "Leagues & Season Progression", "Compete, climb, and earn rewards. Your LLM usage builds more than raw tokens — it builds your rank.", "Higher usage. Bigger possibilities.")
+  $("#view").innerHTML = pageHead(["Leaderboard", "Leagues"], "Find your next horizon.", "Seven leagues, three divisions. Follow published usage, consistency and model diversity as your ranking grows.", "")
     + apiErrBanner(state.seasonError)
     + `<div class="card" style="margin-bottom:16px">
       <div class="card-head"><h3>League Tier Ladder</h3><span class="sub">Climb the ranks based on your token usage, consistency, and impact. Click a tier to filter standings.</span></div>
-      <div class="ladder">${LEAGUES.map(l => `<div class="tier ${state.leagueFilter === l.id ? "active" : ""}" data-league="${l.id}">
+      <div class="ladder">${LEAGUES.map(l => `<button class="tier ${state.leagueFilter === l.id ? "active" : ""}" data-league="${l.id}" aria-pressed="${state.leagueFilter === l.id}">
         ${leagueIcon(l.id, 48)}<div class="name" style="color:${l.color}">${l.title.toUpperCase()}</div>
         <div class="range">${fmtTokens(l.min)}${l.max ? " – " + fmtTokens(l.max) : "+"}</div>
-        <div class="range">${l.max ? "tokens / season" : "tokens / season"}</div>
-      </div>`).join("")}</div>
+        <div class="range">base token band</div>
+      </button>`).join("")}</div>
       <div style="display:flex;gap:16px;margin-top:16px;flex-wrap:wrap">
         <div class="card" style="flex:1;min-width:260px;background:var(--panel2)">
-          <div class="kpi-label">Your Current League</div>
-          ${local ? `<div style="display:flex;gap:12px;align-items:center;margin-top:8px">${leagueIcon(local.league, 58)}<div><div style="font-weight:800;font-size:16px;color:${leagueColor(local.league)}">${esc(leagueMeta(local.league).title.toUpperCase())} ${roman(local.division || 3)}</div><div class="mini">Rank #${local.rank} overall · ${fmtNum(local.mmr)} MMR</div></div></div>
-          <div class="progress" style="margin-top:12px"><i style="width:${local.mmrToNext != null ? Math.max(5, 100 - Math.min(100, (local.mmrToNext / 400) * 100)) : 100}%"></i></div>
-          <div class="mini" style="margin-top:6px">${local.mmrToNext != null ? fmtNum(local.mmrToNext) + " MMR to " + leagueMeta(nextLeague(local.league)).title : "Top league reached"}</div>` : '<div class="empty">No local entry.</div>'}
+          <div class="kpi-label">${own ? "Your current league" : "Leading builder"}</div>
+          ${local ? `<div style="display:flex;gap:12px;align-items:center;margin-top:8px">${leagueIcon(local.league, 58)}<div><div style="font-weight:800;font-size:16px;color:${leagueColor(local.league)}">${esc(leagueMeta(local.league).title.toUpperCase())} ${roman(local.division || 3)}</div><div class="mini">${esc(local.entry.handle)} · Rank #${local.rank} · ${fmtNum(local.mmr)} MMR</div></div></div>
+          <div class="progress" style="margin-top:12px"><i style="width:${local.mmrToNext != null ? Math.max(5, 100 - Math.min(100, (local.mmrToNext / 400) * 100)) : (local.league === "grandmaster" ? 100 : 0)}%"></i></div>
+          <div class="mini" style="margin-top:6px">${local.mmrToNext != null ? fmtNum(local.mmrToNext) + " MMR to " + leagueMeta(nextLeague(local.league)).title : local.league === "grandmaster" ? "Top league reached" : "Progress to next league not published"}</div>` : '<div class="empty">Published builders will appear here.</div>'}
         </div>
       </div>
     </div>`
@@ -3325,7 +3331,7 @@ async function renderLeagues(current = () => true) {
         ${barList(distribution.map(d => ({ label: d.title, value: d.users, valueText: d.users + " users", percent: d.percent, color: d.color })), { labelWidth: 110 })}
       </div>
       <div class="card"><div class="card-head"><h3>Season Timeline</h3></div>
-        ${season ? `<div style="display:flex;justify-content:space-between;position:relative;margin:10px 0 18px">${timeline.map((t, i) => `<div style="text-align:center;flex:1"><div style="width:16px;height:16px;border-radius:50%;margin:0 auto;background:${t.active ? "#4F8CFF" : t.done ? "#22C55E" : "#1E2635"};border:2px solid ${t.active ? "#8FB6FF" : "var(--line2)"}"></div><div style="font-size:11.5px;font-weight:600;margin-top:8px">${esc(t.label)}</div><div class="mini">${esc(t.at)}</div></div>${i < timeline.length - 1 ? `<div style="position:absolute;top:7px;left:${(i + 0.5) * 25}%;width:25%;height:2px;background:var(--line2)"></div>` : ""}`).join("")}</div>
+        ${season ? `<div style="display:flex;justify-content:space-between;position:relative;margin:10px 0 18px">${timeline.map((t, i) => `<div style="text-align:center;flex:1"><div style="width:16px;height:16px;border-radius:50%;margin:0 auto;background:${t.active ? "var(--blue)" : t.done ? "var(--green)" : "var(--line)"};border:2px solid var(--line2)"></div><div style="font-size:11.5px;font-weight:600;margin-top:8px">${esc(t.label)}</div><div class="mini">${esc(t.at)}</div></div>${i < timeline.length - 1 ? `<div style="position:absolute;top:7px;left:${(i + 0.5) * (100 / timeline.length)}%;width:${100 / timeline.length}%;height:2px;background:var(--line2)"></div>` : ""}`).join("")}</div>
           <div class="card" style="background:var(--panel2)"><div style="display:flex;justify-content:space-between;align-items:center"><div><div style="font-weight:700">${esc(season.displayName)}</div><div class="mini">${fmtDay(new Date(season.start).getTime() / 1000)} – ${fmtDay(new Date(season.end).getTime() / 1000)}</div></div><span class="chip green">Active</span></div>
           <div class="progress" style="margin-top:10px"><i style="width:${Math.round((season.progress || 0) * 100)}%"></i></div>
           <div class="mini" style="margin-top:5px">${season.daysRemaining} days remaining</div></div>` : '<div class="empty">No active season.</div>'}
@@ -3334,7 +3340,7 @@ async function renderLeagues(current = () => true) {
     + `<div class="split top" style="margin-bottom:16px">
       <div class="card" style="padding:0;overflow:hidden"><div class="card-head" style="padding:16px 16px 8px"><h3>Current Standings</h3></div>
         <div style="overflow-x:auto"><table><thead><tr><th>#</th><th>Player</th><th>League</th><th>Division</th><th class="right">MMR</th><th class="right">Tokens</th></tr></thead><tbody>
-        ${(s.standings || []).map((r, i) => `<tr class="clickable" data-handle-link="${esc(r.handle)}"><td class="faint">${i + 1}</td><td><div class="user-cell">${avatar(r.handle, r.avatarUrl, 26, r.avatarStyle)}<span>${esc(r.handle)}</span></div></td><td><span class="chip logo-chip" style="color:${r.leagueColor}">${leagueIcon(r.league, 16)}${esc(r.leagueTitle)}</span></td><td class="num">${roman(r.division)}</td><td class="num right">${fmtNum(r.mmr)}</td><td class="num right">${esc(r.tokensFormatted)}</td></tr>`).join("") || '<tr><td colspan="6"><div class="empty">No standings.</div></td></tr>'}
+        ${standings.map((r, i) => `<tr class="clickable" data-handle-link="${esc(r.handle)}"><td class="faint">${i + 1}</td><td><div class="user-cell">${avatar(r.handle, r.avatarUrl, 26, r.avatarStyle)}<span>${esc(r.handle)}</span></div></td><td><span class="chip logo-chip" style="color:${r.leagueColor}">${leagueIcon(r.league, 16)}${esc(r.leagueTitle)}</span></td><td class="num">${roman(r.division)}</td><td class="num right">${fmtNum(r.mmr)}</td><td class="num right">${esc(r.tokensFormatted)}</td></tr>`).join("") || '<tr><td colspan="6"><div class="empty">No standings.</div></td></tr>'}
         </tbody></table></div></div>
       <div class="grid" style="align-content:start">
         <div class="card"><div class="card-head"><h3>Top Climbers</h3><span class="sub">Last 7 days</span></div>
@@ -3343,8 +3349,8 @@ async function renderLeagues(current = () => true) {
         <div class="card"><div class="card-head"><h3>Recent Promotions</h3></div>
           ${(s.promotions || []).map(p => `<div class="mover"><div><div class="name">${esc(p.handle)}</div><div class="faint" style="font-size:10.5px">${esc(p.from)} → ${esc(p.to)}</div></div><div class="val faint">${fmtDay(p.at)}</div></div>`).join("") || '<div class="empty" style="padding:10px">No promotions recorded yet.</div>'}
         </div>
-        <div class="card"><div class="card-head"><h3>Season Rewards & Perks</h3></div>
-          ${(s.rewards || []).map(r => `<div class="ach"><div class="ico">${esc(r.icon)}</div><div><div class="t">${esc(r.title)}</div><div class="d">${esc(r.detail)}</div></div></div>`).join("")}
+        <div class="card"><div class="card-head"><h3>Carry your progress with you</h3></div>
+          ${(s.rewards || []).map(r => `<div class="ach"><div class="ico">${ICONS.shield}</div><div><div class="t">${esc(r.title)}</div><div class="d">${esc(r.detail)}</div></div></div>`).join("")}
         </div>
       </div>
     </div>`;
@@ -4864,42 +4870,86 @@ document.addEventListener("click", (e) => {
 /* ============================================================
    VIEW: TEAMS
    ============================================================ */
+const teamLeaderboardView = { search: "", sort: "tokens", expanded: new Set() };
+function teamsHeaderHtml() {
+  return `<header class="tm-head"><div><h1>Team leaderboard</h1><p>Every published profile adds to your crew’s all-time usage. Build together, climb together.</p></div><a class="tm-individual-link" href="./leaderboard">Individual rankings <svg aria-hidden="true" viewBox="0 0 20 20"><path d="M4 10h12M11 5l5 5-5 5"/></svg></a></header>`;
+}
+function teamsLoadingHtml() {
+  return `<section class="tm-page tm-loading" aria-busy="true">${teamsHeaderHtml()}<p class="tm-loading-label" role="status">Loading team rankings…</p><div class="tm-loading-leader skeleton"></div><div class="tm-loading-lines">${[1, 2, 3].map(() => '<div class="skeleton"></div>').join("")}</div></section>`;
+}
+function teamKey(team) { return team.teamId ? "id:" + team.teamId : "legacy:" + team.team; }
+function teamProviders(team) {
+  return Object.entries(team.providers || {}).filter(([, value]) => Number(value) > 0).sort((a, b) => Number(b[1]) - Number(a[1]));
+}
+function teamProfilesHtml(team, featured = false) {
+  const users = team.users || [];
+  if (!users.length) return '<p class="tm-muted">No public profiles available.</p>';
+  return `<div class="tm-profiles${featured ? " tm-profiles-featured" : ""}">${users.map(user => `<button type="button" class="tm-profile" data-handle-link="${esc(user.handle)}" aria-label="View ${esc(user.handle)}’s profile">${avatar(user.handle, user.avatarUrl, featured ? 32 : 26, user.avatarStyle)}<span>${esc(user.handle)}</span></button>`).join("")}</div>${team.members > users.length ? `<p class="tm-profile-note">Top ${users.length} of ${fmtNum(team.members)} published profiles.</p>` : ""}`;
+}
+function teamProviderMixHtml(team) {
+  const providers = teamProviders(team), total = providers.reduce((sum, [, value]) => sum + Number(value), 0);
+  if (!total) return '<p class="tm-muted">Provider breakdown hasn’t been published.</p>';
+  return `<div class="tm-provider-track" aria-hidden="true">${providers.map(([provider, value]) => `<span style="width:${Number(value) / total * 100}%;background:${providerColor(provider)}"></span>`).join("")}</div><ul class="tm-provider-breakdown">${providers.map(([provider, value]) => `<li><span class="tm-provider-name">${providerLogo(provider, 18)}${esc(providerLabel(provider))}</span><span class="tm-provider-tokens">${fmtTokens(Number(value))}</span><span class="tm-provider-share">${Math.round(Number(value) / total * 100)}%</span></li>`).join("")}</ul><p class="tm-profile-note">Share of reported model usage.</p>`;
+}
+function teamsRowsHtml(teams) {
+  const query = teamLeaderboardView.search.trim().toLocaleLowerCase();
+  const rows = teams.filter(team => !query || [team.team, ...(team.users || []).map(user => user.handle)].some(value => String(value).toLocaleLowerCase().includes(query)));
+  const ranking = new Map(teams.map((team, index) => [teamKey(team), index + 1]));
+  rows.sort((a, b) => teamLeaderboardView.sort === "profiles" ? b.members - a.members || b.tokens - a.tokens : teamLeaderboardView.sort === "name" ? String(a.team).localeCompare(String(b.team)) || b.tokens - a.tokens : b.tokens - a.tokens);
+  if (!rows.length) return `<div class="tm-no-results" role="status"><h3>No matching teams</h3><p>Try a team name or a published profile’s handle.</p><button type="button" class="tm-clear-search">Clear search</button></div>`;
+  return `<ol class="tm-ranking" aria-label="Team rankings">${rows.map(team => {
+    const rank = ranking.get(teamKey(team)), id = "tm-details-" + rank, expanded = teamLeaderboardView.expanded.has(teamKey(team));
+    const topProviders = teamProviders(team).slice(0, 3);
+    return `<li class="tm-row${rank === 1 ? " tm-row-leading" : ""}"><button type="button" class="tm-row-summary" data-team-expand="${esc(teamKey(team))}" aria-expanded="${expanded}" aria-controls="${id}"><span class="tm-rank"><span class="tm-visually-hidden">Rank </span>${String(rank).padStart(2, "0")}</span><span class="tm-team-name"><strong>${esc(team.team)}</strong><span>${fmtNum(team.members)} published profile${team.members === 1 ? "" : "s"}</span></span><span class="tm-row-providers" aria-hidden="true">${topProviders.map(([provider]) => `<span class="tm-provider-mark">${providerLogo(provider, 19)}</span>`).join("")}</span><span class="tm-row-tokens"><strong>${fmtTokens(team.tokens)}</strong><span>all-time tokens</span></span><svg class="tm-expand-icon" aria-hidden="true" viewBox="0 0 20 20"><path d="m5 8 5 5 5-5"/></svg></button><section class="tm-row-details" id="${id}" aria-label="${esc(team.team)} details"${expanded ? "" : " hidden"}><div><h3>Provider mix</h3>${teamProviderMixHtml(team)}</div><div><h3>Published profiles</h3>${teamProfilesHtml(team)}<p class="tm-reported-cost"><span>Reported cost</span><strong>${fmtCost(team.cost)}</strong></p><button type="button" class="tm-view-team" data-team-ranking="${esc(team.teamId || team.team)}">View individual rankings <svg aria-hidden="true" viewBox="0 0 20 20"><path d="M4 10h12M11 5l5 5-5 5"/></svg></button></div></section></li>`;
+  }).join("")}</ol>`;
+}
 async function renderTeams(current = () => true) {
+  if (!state.providers) $("#view").innerHTML = teamsLoadingHtml();
   const p = await loadProviders();
   if (!current()) return;
-  const teams = p.teams || [];
-  $("#view").innerHTML = pageHead(["Players", "Teams"], "Team Leaderboard", "Aggregate usage across every team publishing to Token Horizon.", "Together, teams go further.")
-    + '<div class="team-invite-banner"><div><strong>Bring your friends into orbit.</strong><span>One invite link. Sign in, join your team, and climb together.</span></div><button class="pill primary" data-invite-friends>Invite friends ↗</button></div>'
-    + apiErrBanner(state.providersError)
-    + `<div class="grid kpis" style="margin-bottom:16px">
-      ${kpiCard("Teams", String(teams.length), "", ICONS.users)}
-      ${kpiCard("Team Tokens", fmtTokens(teams.reduce((s, t) => s + t.tokens, 0)), "", ICONS.tokens)}
-      ${kpiCard("Team Cost", fmtCost(teams.reduce((s, t) => s + t.cost, 0)), "", ICONS.cost)}
-      ${kpiCard("Top Team", teams[0] ? teams[0].team : "—", teams[0] ? fmtTokens(teams[0].tokens) + " tokens" : "", ICONS.rank)}
-    </div>
-    <div class="card" style="margin-bottom:16px"><div class="card-head"><h3>Team Comparison</h3></div>
-      ${barList(teams.map(t => ({ label: t.team, value: t.tokens, percent: t.tokens / Math.max(1, teams.reduce((s, x) => s + x.tokens, 0)) * 100 })), { labelWidth: 130 })}
-    </div>
-    <div class="grid" style="grid-template-columns:repeat(auto-fill,minmax(min(320px,100%),1fr))">
-      ${teams.map(t => `<div class="card"><div class="card-head"><h3>${esc(t.team)}</h3><span class="chip">${t.members} published profile${t.members === 1 ? "" : "s"}</span></div>
-        <div style="display:flex;gap:16px;margin-bottom:12px">
-          <div><div class="kpi-label">Tokens</div><div style="font-weight:800;font-size:17px">${esc(t.tokensFormatted)}</div></div>
-          <div><div class="kpi-label">Cost</div><div style="font-weight:800;font-size:17px">${esc(t.costFormatted)}</div></div>
-        </div>
-        <div style="display:flex;height:8px;border-radius:4px;overflow:hidden;margin-bottom:12px">${Object.entries(t.providers || {}).sort((a, b) => b[1] - a[1]).map(([prov, val]) => `<span style="width:${(val / Math.max(1, t.tokens)) * 100}%;background:${providerColor(prov)}" title="${providerLabel(prov)}"></span>`).join("")}</div>
-        <div class="chart-legend" style="margin:0 0 12px">${Object.keys(t.providers || {}).map(prov => `<span class="chip logo-chip">${providerLogo(prov, 13)}${providerLabel(prov)}</span>`).join("")}</div>
-        <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">${(t.users || []).map(u => `<span class="chip" data-handle-link="${esc(u.handle)}" style="cursor:pointer">${avatar(u.handle, u.avatarUrl, 18, u.avatarStyle)} ${esc(u.handle)}</span>`).join("")}</div>
-      </div>`).join("") || '<div class="empty">No teams yet.</div>'}
-    </div>`;
-  wireProfile();
+  // Unassigned is an aggregate of independent profiles, not a community team.
+  // Canonical team IDs remain distinct from legacy groups with identical names.
+  const teams = (p.teams || []).filter(team => team.teamId || team.team !== "Unassigned").map(team => ({ ...team, tokens: Math.max(0, Number(team.tokens) || 0), cost: Math.max(0, Number(team.cost) || 0), members: Math.max(0, Number(team.members) || 0) })).sort((a, b) => b.tokens - a.tokens);
+  const totalTokens = teams.reduce((sum, team) => sum + team.tokens, 0), totalProfiles = teams.reduce((sum, team) => sum + team.members, 0), leader = teams[0];
+  $("#view").innerHTML = `<article class="tm-page">${teamsHeaderHtml()}<div class="team-invite-banner"><div><strong>Bring your friends into orbit.</strong><span>Share an invite link. Friends join your team after signing in.</span></div><button type="button" class="tm-invite-button" data-invite-friends>Invite friends <svg aria-hidden="true" viewBox="0 0 20 20"><path d="M10 4v12M4 10h12"/></svg></button></div>${state.providersError ? `<section class="tm-error" role="alert"><div><h2>Team data couldn’t load.</h2><p>${esc(state.providersError)}</p></div><button type="button" id="tm-retry">Try again</button></section>` : ""}${leader ? `<section class="tm-leader" aria-label="Leading team"><div class="tm-leader-rank"><span>Rank</span><strong>01</strong></div><div class="tm-leader-team"><h2>${esc(leader.team)}</h2><p>Leading the community with ${fmtNum(leader.members)} published profile${leader.members === 1 ? "" : "s"}.</p>${teamProfilesHtml(leader, true)}</div><div class="tm-leader-usage"><strong>${fmtTokens(leader.tokens)}</strong><span>all-time tokens</span><p>${totalTokens ? Math.round(leader.tokens / totalTokens * 100) : 0}% of published team usage</p></div></section>` : ""}${teams.length ? `<dl class="tm-community-stats"><div><dt>Published teams</dt><dd>${fmtNum(teams.length)}</dd></div><div><dt>Published profiles</dt><dd>${fmtNum(totalProfiles)}</dd></div><div><dt>Combined tokens</dt><dd>${fmtTokens(totalTokens)}</dd></div></dl><section class="tm-board" aria-labelledby="tm-rankings-title"><div class="tm-board-head"><div><h2 id="tm-rankings-title">The team standings</h2><p>All-time totals from public profiles. Expand a team to explore its usage.</p></div><div class="tm-controls"><label class="tm-search"><svg aria-hidden="true" viewBox="0 0 20 20"><circle cx="8.5" cy="8.5" r="5.5"/><path d="m13 13 4 4"/></svg><span class="tm-visually-hidden">Search teams or profiles</span><input type="search" id="tm-search" value="${esc(teamLeaderboardView.search)}" placeholder="Find a team or profile…" autocomplete="off"/></label><label class="tm-sort"><span class="tm-visually-hidden">Sort teams</span><select id="tm-sort"><option value="tokens"${teamLeaderboardView.sort === "tokens" ? " selected" : ""}>Total tokens</option><option value="profiles"${teamLeaderboardView.sort === "profiles" ? " selected" : ""}>Published profiles</option><option value="name"${teamLeaderboardView.sort === "name" ? " selected" : ""}>Team name</option></select></label></div></div><div id="tm-rows">${teamsRowsHtml(teams)}</div><p class="tm-board-note">Ranks use all-time token totals. Teams appear when members publish their profiles; unpublished members aren’t included.</p></section>` : !state.providersError ? `<section class="tm-empty"><svg aria-hidden="true" viewBox="0 0 48 48"><circle cx="24" cy="24" r="17"/><path d="M7 24h34M17 20a7 7 0 0 1 14 0m-18 13c3-7 19-7 22 0"/></svg><h2>Your crew could be first.</h2><p>Create a team, invite your friends, and publish your usage to start climbing together.</p><button type="button" class="tm-invite-button" data-team-empty-invite>Create your team</button></section>` : ""}</article>`;
+  const paintRows = () => {
+    $("#tm-rows").innerHTML = teamsRowsHtml(teams);
+    wireRows();
+  };
+  const wireRows = () => {
+    wireProfile();
+    $$("[data-team-expand]").forEach(button => button.onclick = () => {
+      const expanded = button.getAttribute("aria-expanded") !== "true", key = button.dataset.teamExpand;
+      expanded ? teamLeaderboardView.expanded.add(key) : teamLeaderboardView.expanded.delete(key);
+      button.setAttribute("aria-expanded", String(expanded));
+      document.getElementById(button.getAttribute("aria-controls")).hidden = !expanded;
+    });
+    $$("[data-team-ranking]").forEach(button => button.onclick = () => {
+      state.teamFilter = button.dataset.teamRanking;
+      state.leagueFilter = "all";
+      state.search = "";
+      if (state.period !== "all") { state.period = "all"; state.data = null; state.dataSig = ""; }
+      navigate("leaderboard");
+    });
+    const clear = $(".tm-clear-search");
+    if (clear) clear.onclick = () => { teamLeaderboardView.search = ""; $("#tm-search").value = ""; paintRows(); $("#tm-search").focus(); };
+  };
+  wireRows();
+  const search = $("#tm-search"), sort = $("#tm-sort");
+  if (search) search.oninput = () => { teamLeaderboardView.search = search.value; paintRows(); };
+  if (sort) sort.onchange = () => { teamLeaderboardView.sort = sort.value; paintRows(); };
   $("[data-invite-friends]").onclick = openInviteFriends;
+  const emptyInvite = $("[data-team-empty-invite]");
+  if (emptyInvite) emptyInvite.onclick = openInviteFriends;
+  const retry = $("#tm-retry");
+  if (retry) retry.onclick = () => { clearApiCache(); state.providers = null; state.providersError = ""; render(); };
   if (isGoogleSessionValid()) {
     const session = state.googleSession;
     api("/api/account/team", { headers: googleHeaders(), cache: "no-store" }).then(account => {
       if (!current() || session !== state.googleSession || !account.team) return;
       $(".team-invite-banner strong").textContent = account.team.name;
       $(".team-invite-banner span").textContent = `${account.team.memberCount} members in your crew. Published profiles contribute to the rankings below.`;
-      $("[data-invite-friends]").textContent = account.team.role === "owner" ? "Invite friends ↗" : "Your team ↗";
+      $("[data-invite-friends]").innerHTML = `${account.team.role === "owner" ? "Invite friends" : "Your team"} <svg aria-hidden="true" viewBox="0 0 20 20"><path d="M10 4v12M4 10h12"/></svg>`;
     }).catch(() => {});
   }
 }
@@ -5745,9 +5795,9 @@ async function renderSharedReport(id, { promptSignIn = true } = {}) {
       <div class="split">
         <div class="card"><div class="card-head"><h3>Usage Over Time</h3></div>${r.history?.length ? areaChart(r.history.map(x => ({ label: x.dayLabel || fmtDay(x.day), value: x.tokens || 0, cost: x.cost || 0 })), { color: "#235E43", height: 200 }) : '<div class="empty">Daily activity has not been published.</div>'}</div>
         <div class="card"><div class="card-head"><h3>Model Allocation</h3><span class="sub">${modelsAllLink()}</span></div>
-          <table><thead><tr><th>Model</th><th>Provider</th><th class="right">Tokens</th><th class="right">Share</th></tr></thead><tbody>
+          <div class="table-scroll" tabindex="0" role="region" aria-label="Shared model allocation"><table><thead><tr><th>Model</th><th>Provider</th><th class="right">Tokens</th><th class="right">Share</th></tr></thead><tbody>
           ${(r.models || []).map(m => `<tr><td>${modelLink(m.provider, m.model)}</td><td>${esc(providerDisplay(m.provider, m.model))}</td><td class="num right">${fmtTokens(m.tokensAll)}</td><td class="num right">${fmtPct(m.sharePercent || 0, 1)}</td></tr>`).join("") || '<tr><td colspan="4"><div class="empty">Not shared</div></td></tr>'}
-          </tbody></table></div>
+          </tbody></table></div></div>
       </div>`;
   } catch (e) {
     if (version !== renderVersion) return;

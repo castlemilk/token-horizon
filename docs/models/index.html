@@ -3,6 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
+<script>(()=>{let t;try{t=localStorage.getItem('th-theme')}catch(_){}t=t==='light'||t==='dark'?t:matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light';document.documentElement.dataset.theme=t;document.documentElement.style.colorScheme=t;})();</script>
 <title>AI Models, Provider Pricing &amp; Plans — Token Horizon</title>
 <meta data-th-seo name="description" content="Compare AI models, provider listings, published token prices and subscription plans. Search the Token Horizon catalog for cloud and local models." />
 <meta data-th-seo name="theme-color" content="#101714" />
@@ -36,6 +37,7 @@
 <meta http-equiv="refresh" content="0;url=../leaderboard.html?view=models&amp;flat=1" />
 <script>const params = new URLSearchParams(location.search); params.set("view", "models"); params.set("flat", "1"); location.replace("../leaderboard.html?" + params.toString() + location.hash);</script>
 <style>body{background:#080B12;color:#8B95A8;font-family:-apple-system,BlinkMacSystemFont,sans-serif;display:grid;place-items:center;height:100vh;margin:0}a{color:#9CC0FF}</style>
+<link rel="stylesheet" href="../surfaces.css?v=20261001-4" /><link rel="stylesheet" href="../theme.css?v=20261001-4" /><script src="../theme.js?v=20261001-4" defer></script>
 </head>
 <body>
 <p>Loading the model explorer… <a href="../leaderboard.html?view=models&amp;flat=1">Continue</a></p>

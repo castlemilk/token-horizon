@@ -2,6 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<script>(()=>{let t;try{t=localStorage.getItem('th-theme')}catch(_){}t=t==='light'||t==='dark'?t:matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light';document.documentElement.dataset.theme=t;document.documentElement.style.colorScheme=t;})();</script>
 <title>Token Horizon — AI usage, costs &amp; model observability</title>
 <meta data-th-seo name="description" content="Track AI token usage, costs and plan limits in a native Mac app. Explore model pricing, desktop widgets, local model telemetry and optional community profiles." />
 <meta data-th-seo name="theme-color" content="#101714" />
@@ -32,13 +33,15 @@
 <meta data-th-seo name="twitter:image" content="https://token-horizon.dev/assets/og.png?v=20261001-2" />
 <meta data-th-seo name="twitter:image:alt" content="Token Horizon — every token, every model, one clear view. Native Mac observability with a crisp horizon mark and mineral green accents." />
 <script id="th-seo-schema" type="application/ld+json">{"@context":"https://schema.org","@graph":[{"@type":"Organization","@id":"https://token-horizon.dev/#organization","name":"Token Horizon","url":"https://token-horizon.dev/","logo":{"@type":"ImageObject","url":"https://token-horizon.dev/icon-512.png?v=20261001-2","width":512,"height":512},"sameAs":["https://github.com/castlemilk/token-horizon"]},{"@type":"WebSite","@id":"https://token-horizon.dev/#website","url":"https://token-horizon.dev/","name":"Token Horizon","inLanguage":"en","publisher":{"@id":"https://token-horizon.dev/#organization"}},{"@type":"SoftwareApplication","@id":"https://token-horizon.dev/#app","name":"Token Horizon","url":"https://token-horizon.dev/","description":"Track AI token usage, costs and plan limits in a native Mac app. Explore model pricing, desktop widgets, local model telemetry and optional community profiles.","applicationCategory":"DeveloperApplication","operatingSystem":"macOS","downloadUrl":"https://github.com/castlemilk/token-horizon/releases/latest","softwareHelp":{"@id":"https://token-horizon.dev/docs/#webpage"},"publisher":{"@id":"https://token-horizon.dev/#organization"},"featureList":["AI token usage and cost tracking","Provider plan limits and reset windows","Native Mac notch dashboard and desktop widgets","Local model telemetry and LLM request traces","AI model catalog and subscription plans","Optional community profiles and usage sharing","HTTP API, command-line tools and MCP connector"]},{"@type":"WebPage","@id":"https://token-horizon.dev/#webpage","url":"https://token-horizon.dev/","name":"Token Horizon — AI usage, costs & model observability","description":"Track AI token usage, costs and plan limits in a native Mac app. Explore model pricing, desktop widgets, local model telemetry and optional community profiles.","inLanguage":"en","isPartOf":{"@id":"https://token-horizon.dev/#website"},"mainEntity":{"@id":"https://token-horizon.dev/#app"}}]}</script>
-<link rel="stylesheet" href="./landing.css?v=20261001-3"><link rel="stylesheet" href="./horizon-system.css?v=20260930"><link rel="preload" href="./assets/landing/event-horizon.webp" as="image" type="image/webp"><script src="./landing.js?v=20261001" defer></script>
+<link rel="stylesheet" href="./landing.css?v=20261001-3"><link rel="stylesheet" href="./horizon-system.css?v=20261001-4"><link rel="preload" href="./assets/landing/event-horizon.webp" as="image" type="image/webp"><script src="./landing.js?v=20261001" defer></script>
+<link rel="stylesheet" href="./surfaces.css?v=20261001-4" /><link rel="stylesheet" href="./theme.css?v=20261001-4" /><script src="./theme.js?v=20261001-4" defer></script>
 </head>
 <body class="landing">
 <a class="skip-link" href="#main">Skip to content</a>
 <svg class="icon-defs" aria-hidden="true" xmlns="http://www.w3.org/2000/svg"><defs><symbol id="arrow" viewBox="0 0 24 24"><path d="M6 18 18 6M6 6h12v12"/></symbol><symbol id="download" viewBox="0 0 24 24"><path d="M12 3v12m-5-5 5 5 5-5M5 16v5h14v-5"/></symbol><symbol id="copy" viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="13" rx="2"/><path d="M16 8V3H3v13h5"/></symbol></defs></svg>
 <header class="site-header"><div class="nav-wrap">
 <a class="brand" href="./" aria-label="Token Horizon home">Token Horizon</a>
+<span data-theme-control></span>
 <button class="menu-toggle" aria-expanded="false" aria-controls="main-nav">Menu <span aria-hidden="true">+</span></button>
 <nav id="main-nav" aria-label="Main navigation"><a href="./models/">Models</a><a href="./leaderboard.html">Leaderboard</a><a href="./connect">Connect</a><a href="./docs/">Docs</a><a href="https://github.com/castlemilk/token-horizon">GitHub</a><a class="button mint nav-install" href="#install">Install for macOS</a></nav>
 </div></header>

@@ -135,7 +135,7 @@ try {
           await f.page.locator('#discovery-menu-toggle').click();
           await assertLayout(f.page, Boolean(user), true);
           assert.equal(await f.page.locator('#discovery-menu-toggle').getAttribute('aria-label'), 'Close navigation');
-          assert.equal(await f.page.locator('#discovery-navigation > a').count(), 6, 'Compact menus retain all destinations');
+          assert.equal(await f.page.locator('#discovery-navigation > a').count(), 8, 'Compact menus retain all destinations');
           if (user && width === 390) await f.page.screenshot({ path: '/tmp/token-horizon-nav-mobile.png', animations: 'disabled' });
           await f.page.locator('#discovery-menu-toggle').click(); await assertMenuClosed(f.page);
         }
