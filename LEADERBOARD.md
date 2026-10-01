@@ -53,14 +53,25 @@ Model selection survives search and filters; nothing is sent to a server.
 
 | Wireframe element | State | Notes |
 |---|---|---|
-| Hero: avatar, league, MMR, rank, rank Δ, streak | ✅ | League/division derived from MMR; rank Δ from snapshots |
+| Identity + league rail | ✅ | Real login/uploaded avatar, public handle/team/hardware, canonical league artwork, MMR, rank, streak and provider share; mineral analytics surfaces align with the landing page and share cards |
 | Tabs: Overview / Usage & Costs / Prompts / Projects / Comparisons / Achievements | ✅ | Six real tabs |
-| 8 KPI cards | ✅ | Tokens, Input, Output, Cost, Requests, Avg/Req, Efficiency, Active Days. The mockup's "prompt success rate" is not tracked anywhere, so it is replaced with a real metric rather than faked |
-| League progression | ✅ | MMR/rank history from snapshots (empty until ≥2 days) |
-| Token usage over time | ✅ | Stacked by model |
+| Published totals + usage details | ✅ | All-time/latest-day/7-day tokens first; input/output/requests/active days in the rail, costs/average/efficiency in Usage & Costs. Unavailable costs stay unavailable |
+| League progression | ✅ | Real MMR snapshots in Comparisons when at least three snapshots exist |
+| Token usage over time | ✅ | 7/30-day provider stacks above the 17-week calendar; explicit gateway attribution is preserved and unassigned/conflicting daily attribution remains neutral |
+| Dated activity calendar | ✅ | Anchored to publication (or latest published history), UTC normalized, keyboard accessible day drilldowns; no future usage implied |
 | Usage by model/provider, by project/team | ✅ | Real model shares + working-directory rollups |
 | Top prompts/workloads, recent activity | ✅ | From published sessions (title, provider, model, tokens, cost, requests) |
 | Peer comparison, achievements | ✅ | Percentile/team rank; achievements derived from real thresholds |
+
+Clean `/u/:handle` links preload and read their profile directly, with no
+leaderboard dependency. Content-shaped skeletons, bounded reads, explicit
+missing/error states and retry prevent indefinite loading or another user's
+identity appearing after a failed request. Community comparisons load only
+when requested. All six tabs, share/claim/photo actions and catalog links stay
+interactive. `scripts/test-profile-ui.mjs` verifies these behaviors, provider
+accounting, dated calendars, navigation races and mobile/reduced-motion use.
+The imagegen concept and its full prompt are saved in
+`design/profile-uplift/`; the bitmap is a design reference, never usage data.
 
 ### Screen 1 — Observability Workspace ✅
 

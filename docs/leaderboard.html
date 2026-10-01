@@ -28,6 +28,12 @@ const API_BASE = (() => {
   const view = /^\/invite\//.test(location.pathname) || params.get("invite") ? "invite" : modelRoute ? "models" : params.get("view") || (params.get("user") || /^\/[us]\//.test(location.pathname) ? "profile" : "leaderboard");
   let path;
   if (view === "models" && params.get("tab") !== "providers") path = "/api/models/catalog";
+  if (view === "profile" || view === "players") {
+    const userPath = location.pathname.match(/^\/u\/([^/]+)\/?$/);
+    let handle = params.get("user") || "";
+    if (userPath) { try { handle = decodeURIComponent(userPath[1]); } catch (_) {} }
+    if (handle) path = "/api/user/" + encodeURIComponent(handle);
+  }
   if (view === "leaderboard") {
     const period = ["today", "week", "all", "streak"].includes(params.get("period")) ? params.get("period") : "today";
     path = "/api/leaderboard?" + new URLSearchParams({ period, historyDays: "30" });
@@ -571,6 +577,7 @@ body.th-flat .mx-flat-score{display:none}
 </style>
 <link rel="stylesheet" href="./discovery.css" />
 <link rel="stylesheet" href="./horizon-system.css?v=20260930" />
+<link rel="stylesheet" href="./profile.css?v=20261001" />
 <link rel="stylesheet" href="./workspace.css?v=20260930" />
 </head>
 <body>
@@ -697,6 +704,9 @@ const state = {
   flatModels: false,
   data: null,
   user: null,
+  profileLoad: { status: "idle", handle: "", profile: null, error: "" },
+  profilePeersLoading: false,
+  profilePeersError: "",
   providers: null,
   season: null,
   shares: null,
@@ -1104,7 +1114,7 @@ function heatmap(grid) {
 /// weekday × hour grid otherwise.
 function calendarHeatmap(daily, opts = {}) {
   const list = (daily || []).filter(d => d && Number.isFinite(Number(d.day)) && Number(d.day) > 0 && Number(d.day) < 8640000000000);
-  if (list.length <= 7) return "";
+  if (list.length <= (opts.minDays ?? 7)) return "";
   const byDay = new Map();
   for (const d of list) {
     const day = opts.utc ? Math.floor(Number(d.day) / 86400) * 86400 : Number(d.day);
@@ -1120,9 +1130,9 @@ function calendarHeatmap(daily, opts = {}) {
   const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
   const fmtDayLabel = (ts) => new Date(ts * 1000).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric", ...(opts.utc ? { timeZone: "UTC" } : {}) });
   const color = (tokens) => {
-    if (tokens <= 0) return "rgba(255,255,255,.06)";
-    const level = Math.min(1, Math.log10(tokens + 1) / Math.log10(maxTokens + 1) * 1.4);
-    return `rgba(34,197,94,${(0.22 + 0.78 * level).toFixed(2)})`;
+    if (tokens <= 0) return opts.palette === "mineral" ? "#E1E8E0" : "rgba(255,255,255,.06)";
+    const level = opts.palette === "mineral" ? Math.sqrt(tokens / maxTokens) : Math.min(1, Math.log10(tokens + 1) / Math.log10(maxTokens + 1) * 1.4);
+    return opts.palette === "mineral" ? shadeHex("#235E43", 0.8 * (1 - level)) : `rgba(34,197,94,${(0.22 + 0.78 * level).toFixed(2)})`;
   };
   const monthCells = [];
   let lastMonth = -1;
@@ -1137,7 +1147,8 @@ function calendarHeatmap(daily, opts = {}) {
       const day = monday + row * 86400;
       if (day > todayStart) { cells.push('<span class="cal-cell cal-empty"></span>'); continue; }
       const tokens = byDay.get(day) || 0;
-      cells.push(`<span class="cal-cell" style="background:${color(tokens)}" data-tip="${esc(fmtDayLabel(day))} — ${tokens > 0 ? fmtTokens(tokens) + " tokens" + (opts.interactive === false ? "" : " · click for breakdown") : "no usage"}" ${opts.interactive === false ? "" : `data-cal-day="${day}"`}></span>`);
+      const label = fmtDayLabel(day) + " — " + (tokens > 0 ? fmtTokens(tokens) + " tokens" : opts.palette === "mineral" ? "no published usage" : "no usage");
+      cells.push(`<span class="cal-cell" style="background:${color(tokens)}" data-tip="${esc(label)}" title="${esc(label)}" aria-label="${esc(label)}" ${opts.interactive === false ? "" : `data-cal-day="${day}"`}></span>`);
     }
   }
   const dayLabels = ["Mon", "", "Wed", "", "Fri", "", ""];
@@ -1147,7 +1158,7 @@ function calendarHeatmap(daily, opts = {}) {
       <div class="cal-days">${dayLabels.map(d => `<span>${d}</span>`).join("")}</div>
       <div class="cal-grid">${cells.join("")}</div>
     </div>
-    <div class="cal-legend"><span>Less</span>${[0, 1, 2, 3, 4, 5].map(l => `<i style="background:${color(l === 0 ? 0 : Math.pow(10, (Math.log10(maxTokens + 1) * (l / 5) / 1.4)) - 1)}"></i>`).join("")}<span>More</span></div>
+    <div class="cal-legend"><span>Less</span>${[0, 1, 2, 3, 4, 5].map(l => `<i style="background:${color(l === 0 ? 0 : opts.palette === "mineral" ? maxTokens * (l / 5) ** 2 : Math.pow(10, (Math.log10(maxTokens + 1) * (l / 5) / 1.4)) - 1)}"></i>`).join("")}<span>More</span></div>
   </div>`;
 }
 
@@ -1282,7 +1293,7 @@ function stackedUsageChart(data, opts = {}) {
   const series = (data.series || []).filter(s => (s.values || []).some(v => v > 0));
   if (!labels.length || !series.length) return `<div class="empty">Collecting model history…</div>`;
   // Brand-aligned colors so every legend item matches its stacked bar.
-  assignSeriesColors(series);
+  if (!opts.preserveColors) assignSeriesColors(series);
   if (!window.TanStackCharts) {
     const id = "fallback-" + (++chartSeq);
     chartFallbacks.set(id, { data, opts });
@@ -1375,7 +1386,7 @@ function stackedUsageChart(data, opts = {}) {
       : esc(s.name);
     return `<div class="legend-item" title="${esc(s.name)} · ${esc(desc)}"><i class="legend-swatch" style="background:${s.color}"></i>${providerLogo(s.provider || s.name, 16, s.name)}<span class="legend-text"><span class="legend-name">${nameHtml}</span><span class="legend-desc">${esc(desc)}</span></span><span class="legend-value">${fmtTokens(total)}</span></div>`;
   }).join("");
-  return chart + `<div class="chart-legend">${legend}</div>`;
+  return chart + (opts.hideLegend ? "" : `<div class="chart-legend">${legend}</div>`);
 }
 
 /// Adapter: leaderboard entry breakdown modelHistory → chart data.
@@ -1820,6 +1831,7 @@ async function loadLeaderboard(opts = {}) {
     perf.dataChanges++;
     return true;
   } catch (err) {
+    if (opts.allowDemo === false && (!state.data || state.demo)) throw err;
     if (state.data) {
       // Keep the selected period honest when a period switch fails offline.
       if (state.data.period && state.data.period !== state.period) {
@@ -1839,10 +1851,76 @@ function e0total(list) { return list.reduce((s, e) => s + (e.tokensAll || 0), 0)
 /// Manual refresh hook for the bench harness (and future UI refresh button).
 window.__thRefresh = async () => (await loadLeaderboard({ force: true })) ? render() : false;
 
-async function loadUser(handle) {
-  if (!handle) { state.user = null; return; }
-  try { state.user = await api("/api/user/" + encodeURIComponent(handle)); }
-  catch (_) { state.user = null; }
+let profileLoadVersion = 0;
+let profileLoadFlight = null;
+async function loadUser(handle, { force = false } = {}) {
+  handle = String(handle || "");
+  const key = handle.toLowerCase();
+  const cached = state.profileLoad;
+  // Existing mutation handlers clear state.user after avatar/claim/team edits.
+  // Honor that invalidation instead of reviving the old cached profile.
+  if (cached.status === "ready" && cached.handle.toLowerCase() === key && state.user !== cached.profile) force = true;
+  if (!force && cached.handle.toLowerCase() === key && ["ready", "missing", "error"].includes(cached.status)) return cached;
+  if (!force && profileLoadFlight?.key === key) return profileLoadFlight.promise;
+  const version = ++profileLoadVersion;
+  state.profileLoad = { status: "loading", handle, profile: null, error: "" };
+  if (!state.user || String(state.user.handle).toLowerCase() !== key) state.user = null;
+  const promise = (async () => {
+    let outcome;
+    if (!handle) outcome = { status: "missing", handle, profile: null, error: "No published profiles are available yet." };
+    else {
+      try {
+        const profile = await api("/api/user/" + encodeURIComponent(handle), force ? { cache: "reload", priority: "high" } : { priority: "high" });
+        if (!profile?.entry || profile.ok === false || String(profile.handle).toLowerCase() !== key || String(profile.entry.handle).toLowerCase() !== key) {
+          throw new Error("The profile response did not match this handle. Please try again.");
+        }
+        outcome = { status: "ready", handle, profile, error: "" };
+      } catch (error) {
+        outcome = { status: error.status === 404 ? "missing" : "error", handle, profile: null, error: error.message || "The profile could not be loaded." };
+      }
+    }
+    // A slow request for a previous profile cannot replace the new selection.
+    if (version === profileLoadVersion) {
+      state.user = outcome.profile;
+      state.profileLoad = outcome;
+    }
+    return outcome;
+  })();
+  profileLoadFlight = { key, promise };
+  try { return await promise; }
+  finally { if (profileLoadFlight?.promise === promise) profileLoadFlight = null; }
+}
+function profileLoadingHtml(handle = state.currentHandle) {
+  return `<section class="pf-loading" role="status" aria-live="polite" aria-busy="true" aria-label="Loading ${esc(handle ? "@" + handle + "'s profile" : "profile")}">
+    <span class="sr-only">Loading profile…</span><div class="pf-loading-identity"><div class="skeleton" style="height:72px;width:72px;border-radius:50%"></div><div><div class="skeleton" style="height:30px;width:240px;max-width:100%;margin-bottom:12px"></div><div class="skeleton" style="height:14px;width:160px"></div></div></div>
+    <div class="pf-loading-metrics">${Array.from({ length: 3 }, () => '<div class="skeleton" style="height:100px"></div>').join("")}</div>
+    <div class="pf-loading-grid"><div><div class="skeleton" style="height:260px;margin-bottom:20px"></div><div class="skeleton" style="height:150px"></div></div><div class="skeleton" style="height:430px"></div></div>
+  </section>`;
+}
+function profileFailureHtml(outcome = state.profileLoad) {
+  const missing = outcome?.status === "missing";
+  const handle = outcome?.handle || state.currentHandle || "";
+  return `<section class="card pf-load-error" role="alert"><span class="discovery-eyebrow">PUBLIC PROFILE</span><h1>${missing ? "Profile not found." : "This profile couldn’t load."}</h1><p>${missing ? `${handle ? "@" + esc(handle) + " hasn’t published a profile here yet." : "Explore the community to find a builder."}` : "Your profile link is saved. Try again to load the published usage data."}</p>${!missing && outcome?.error ? `<p class="sub">${esc(outcome.error)}</p>` : ""}<div class="pf-load-actions"><button class="pill primary" id="pf-retry" type="button">Try again</button><button class="pill ghost" data-crumb="leaderboard" type="button">Explore builders ↗</button></div></section>`;
+}
+function wireProfileRetry(outcome = state.profileLoad) {
+  const retry = $("#pf-retry");
+  if (retry) retry.onclick = () => {
+    apiCache.delete("GET /api/user/" + encodeURIComponent(outcome?.handle || state.currentHandle || ""));
+    state.user = null;
+    state.profileLoad = { status: "idle", handle: "", profile: null, error: "" };
+    render();
+  };
+}
+async function loadProfilePeers() {
+  if (state.profilePeersLoading || (state.data && !state.demo)) return;
+  state.profilePeersLoading = true;
+  state.profilePeersError = "";
+  try { await loadLeaderboard({ force: Boolean(state.demo), allowDemo: false }); }
+  catch (error) { state.profilePeersError = error.message || "Community comparisons could not load."; }
+  finally {
+    state.profilePeersLoading = false;
+    if (state.view === "players" && state.profileTab === "comparisons") render();
+  }
 }
 
 async function loadProviders() {
@@ -2126,10 +2204,10 @@ function aggregateModels(rows) {
    MAIN RENDER
    ============================================================ */
 function syncDiscoveryChrome() {
-  const visible = ["leaderboard", "models", "invite"].includes(state.view);
+  const visible = ["leaderboard", "models", "invite", "players"].includes(state.view);
   document.body.classList.toggle("discovery", visible);
   document.body.dataset.surface = state.view;
-  document.title = `Token Horizon — ${state.view === "invite" ? "Join your crew" : state.view === "models" ? "Model Explorer" : state.view === "leaderboard" ? "Community Leaderboard" : "Analytics"}`;
+  document.title = `Token Horizon — ${state.view === "invite" ? "Join your crew" : state.view === "models" ? "Model Explorer" : state.view === "leaderboard" ? "Community Leaderboard" : state.view === "players" ? "Builder Profile" : "Analytics"}`;
   $$("[data-public-view]").forEach(a => {
     a.setAttribute("aria-current", a.dataset.publicView === state.view ? "page" : "false");
     a.onclick = e => { if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return; e.preventDefault(); mxClose(); navigate(a.dataset.publicView); };
@@ -2151,6 +2229,7 @@ async function render() {
   const t0 = performance.now();
   perf.renders++;
   const view = $("#view");
+  let profileOutcome;
   if (route === "models") {
     if (state.modelsTab === "providers" ? !state.providers : !mxState().catalog) {
       view.innerHTML = mxLoadingHtml();
@@ -2158,10 +2237,18 @@ async function render() {
     }
   } else if (route === "dashboard" || route === "invite") {
     view.innerHTML = '<section class="ws-boot" role="status" aria-label="Loading workspace"><div class="skeleton" style="height:32px;width:200px;margin-bottom:28px"></div><div class="skeleton" style="height:300px"></div></section>';
+  } else if (route === "players") {
+    if (!state.user || String(state.user.handle).toLowerCase() !== String(state.currentHandle || "").toLowerCase()) view.innerHTML = profileLoadingHtml();
   } else if (!state.data) view.innerHTML = viewLeaderboard();
   try {
-    // Catalog browsing does not depend on leaderboard, auth, or adoption.
-    if (!["models", "dashboard", "invite"].includes(route)) await ensureData();
+    // A public permalink needs only its profile endpoint. Community data is
+    // fetched separately when the visitor asks to compare builders.
+    if (route === "players") {
+      if (!state.currentHandle) await ensureData();
+      if (!current()) return;
+      const handle = state.currentHandle || (state.data?.leaderboard || [])[0]?.entry.handle;
+      profileOutcome = await loadUser(handle);
+    } else if (!["models", "dashboard", "invite"].includes(route)) await ensureData();
     if (!current()) return;
     chartRegistry.clear();
     chartFallbacks.clear();
@@ -2170,7 +2257,10 @@ async function render() {
     switch (route) {
       case "dashboard": await renderDashboard(current); break;
       case "invite": await renderTeamInvite(current); break;
-      case "players": await renderPlayers(current); break;
+      case "players":
+        if (profileOutcome?.status === "ready" && state.profileTab === "comparisons" && (!state.data || state.demo) && !state.profilePeersLoading && !state.profilePeersError) loadProfilePeers();
+        await renderPlayers(current, profileOutcome);
+        break;
       case "teams": await renderTeams(current); break;
       case "models": await renderModels(current); break;
       case "billing": await renderBilling(current); break;
@@ -2184,11 +2274,15 @@ async function render() {
       view.innerHTML = mxLoadingHtml(err.message);
       mxWireTabs();
       $("#mx-retry").onclick = mxRetryLoad;
+    } else if (route === "players") {
+      profileOutcome = { status: "error", handle: state.currentHandle, profile: null, error: err.message };
+      view.innerHTML = profileFailureHtml(profileOutcome);
+      wireProfileRetry(profileOutcome);
     } else view.innerHTML = `<div class="card"><div class="notice err">Failed to load dashboard data: ${esc(err.message)}</div></div>`;
   }
   if (!current()) return;
   // Demo data never masquerades as live data or labels the independent catalog.
-  if (!["models", "dashboard", "invite"].includes(route) && state.demo && view.firstChild) {
+  if (!["models", "dashboard", "invite", "players"].includes(route) && state.demo && view.firstChild) {
     view.insertAdjacentHTML("afterbegin", `<div class="notice warn" style="margin-bottom:16px">Live API unreachable — showing bundled demo data. <button class="pill ghost" id="demo-retry" style="font-size:11px;margin-left:8px">Retry live data</button></div>`);
     const retry = $("#demo-retry");
     if (retry) retry.onclick = () => { clearApiCache(); state.data = null; state.dataSig = ""; state.demo = false; render(); };
@@ -2277,7 +2371,8 @@ function wireCharts() {
     svg.addEventListener("mouseleave", () => { tip.style.display = "none"; });
   });
   $$("[data-tab]").forEach(t => {
-    t.tabIndex = 0;
+    t.tabIndex = t.dataset.tab === state.profileTab ? 0 : -1;
+    t.setAttribute("aria-selected", String(t.dataset.tab === state.profileTab));
     t.setAttribute("role", "tab");
     t.onclick = () => { state.profileTab = t.dataset.tab; render(); };
     keyActivate(t, () => { state.profileTab = t.dataset.tab; render(); });
@@ -2323,9 +2418,9 @@ function wireCharts() {
    ============================================================ */
 function currentProfile() {
   const handle = state.currentHandle;
-  if (state.user && (!handle || state.user.handle.toLowerCase() === handle.toLowerCase())) return state.user;
-  const row = (state.data?.leaderboard || []).find(r => !handle || r.entry.handle.toLowerCase() === handle.toLowerCase())
-    || (state.data?.leaderboard || [])[0];
+  if (state.user && (!handle || String(state.user.handle).toLowerCase() === String(handle).toLowerCase())) return state.user;
+  if (handle && state.profileLoad.handle.toLowerCase() === String(handle).toLowerCase() && ["missing", "error"].includes(state.profileLoad.status)) return null;
+  const row = (state.data?.leaderboard || []).find(r => !handle || r.entry.handle.toLowerCase() === String(handle).toLowerCase());
   if (!row) return null;
   const e = row.entry;
   return {
@@ -2375,90 +2470,176 @@ function profileTabs() {
     ["projects", "Projects"], ["comparisons", "Comparisons"], ["achievements", "Achievements"]
   ];
 }
+// Profiles use published daily data, never infer attribution from an all-time mix.
+const PROFILE_COLORS = { anthropic: "#D97757", openai: "#235E43", openrouter: "#78877C", google: "#4285F4", opencode: "#7665B5", kimi: "#B45685", qwen: "#CE6427", deepseek: "#4D6BFE", minimax: "#B98027", zhipu: "#288895", local: "#478966", other: "#89978B", unattributed: "#A6B1A8" };
+function profileProvider(provider) { return providerKey(provider); }
+function profileNumber(value) { const n = Number(value); return Number.isFinite(n) ? Math.max(0, n) : 0; }
+function profileDay(value) {
+  let n = typeof value === "string" && !/^\d+(\.\d+)?$/.test(value) ? Date.parse(value) / 1000 : Number(value);
+  if (!Number.isFinite(n) || n <= 0) return 0;
+  if (n > 1e12) n /= 1000;
+  if (n < 1e6) n *= 86400;
+  return n <= 8640000000000 ? Math.floor(n / 86400) * 86400 : 0;
+}
+function profileDate(day) {
+  return day ? new Date(day * 1000).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric", timeZone: "UTC" }) : "Not published";
+}
+function profileAnchor(e) {
+  return profileDay(e.updatedAt) || profileDaily(e).at(-1)?.day || 0;
+}
+function profileCost(value) { return Number(value) > 0 ? fmtCost(value) : "—"; }
+function profileDaily(e) {
+  const bd = e.breakdown || {}, points = new Map();
+  const source = bd.daily?.length ? bd.daily : bd.history || [];
+  for (const point of source) {
+    const day = profileDay(point.day);
+    if (day) points.set(day, Math.max(points.get(day) || 0, profileNumber(point.tokens)));
+  }
+  if (!points.size) {
+    const byModel = new Map();
+    for (const series of bd.modelHistory || []) {
+      const key = String(series.provider || "") + "|" + String(series.model || "");
+      if (!byModel.has(key)) byModel.set(key, new Map());
+      const rows = byModel.get(key);
+      for (const point of series.points || []) {
+        const day = profileDay(point.day);
+        if (day) rows.set(day, Math.max(rows.get(day) || 0, profileNumber(point.tokens)));
+      }
+    }
+    for (const rows of byModel.values()) for (const [day, tokens] of rows) points.set(day, (points.get(day) || 0) + tokens);
+  }
+  return [...points].map(([day, tokens]) => ({ day, tokens })).sort((a, b) => a.day - b.day);
+}
+function profileUsageData(e, windowDays = 30) {
+  const daily = profileDaily(e), anchor = profileAnchor(e) || daily.at(-1)?.day;
+  if (!daily.length || !anchor) return null;
+  const days = Array.from({ length: windowDays }, (_, i) => anchor - (windowDays - 1 - i) * 86400);
+  const totals = new Map(daily.map(d => [d.day, d.tokens]));
+  const byModel = new Map();
+  for (const item of e.breakdown?.modelHistory || []) {
+    const provider = item.model === "Other" ? "other" : profileProvider(item.provider);
+    const key = String(item.provider || "") + "|" + String(item.model || "");
+    if (!byModel.has(key)) byModel.set(key, { provider, points: new Map() });
+    const row = byModel.get(key);
+    for (const point of item.points || []) {
+      const day = profileDay(point.day);
+      if (day) row.points.set(day, Math.max(row.points.get(day) || 0, profileNumber(point.tokens)));
+    }
+  }
+  const providers = new Map();
+  for (const row of byModel.values()) {
+    if (!providers.has(row.provider)) providers.set(row.provider, new Array(windowDays).fill(0));
+    const values = providers.get(row.provider);
+    days.forEach((day, i) => { values[i] += row.points.get(day) || 0; });
+  }
+  const remainder = new Array(windowDays).fill(0);
+  days.forEach((day, i) => {
+    const total = totals.get(day) || 0, measured = [...providers.values()].reduce((sum, values) => sum + values[i], 0);
+    if (measured > total) { for (const values of providers.values()) values[i] = 0; remainder[i] = total; }
+    else remainder[i] = total - measured;
+  });
+  const entries = [...providers].filter(([, values]) => values.some(v => v > 0)).sort((a, b) => b[1].reduce((s, v) => s + v, 0) - a[1].reduce((s, v) => s + v, 0));
+  if (entries.length > 5) {
+    const keep = entries.slice(0, 5), rest = entries.slice(5);
+    const other = keep.find(([provider]) => provider === "other");
+    const values = other?.[1] || new Array(windowDays).fill(0);
+    for (const [, restValues] of rest) restValues.forEach((v, i) => { values[i] += v; });
+    if (!other) keep.push(["other", values]);
+    entries.splice(0, entries.length, ...keep);
+  }
+  if (remainder.some(v => v > 0)) entries.push(["unattributed", remainder]);
+  return {
+    labels: days.map(day => new Date(day * 1000).toLocaleDateString(undefined, { month: "short", day: "numeric", timeZone: "UTC" })),
+    series: entries.map(([key, values]) => ({ name: key === "unattributed" ? "Unattributed" : providerLabel(key), provider: key, color: PROFILE_COLORS[key] || PROFILE_COLORS.other, values })),
+    days, total: days.reduce((sum, day) => sum + (totals.get(day) || 0), 0)
+  };
+}
+function profileProviderMix(e) {
+  const totals = new Map(), models = new Map(), total = profileNumber(e.tokensAll);
+  for (const m of e.breakdown?.models || []) {
+    const provider = profileProvider(m.provider), key = String(m.provider || "") + "|" + String(m.model || "");
+    const old = models.get(key);
+    if (!old || profileNumber(m.tokensAll) > old.tokens) models.set(key, { provider, tokens: profileNumber(m.tokensAll) });
+  }
+  for (const { provider, tokens } of models.values()) totals.set(provider, (totals.get(provider) || 0) + tokens);
+  const measured = [...totals.values()].reduce((s, v) => s + v, 0);
+  if (measured > total) return total ? [{ provider: "unattributed", tokens: total, share: 100 }] : [];
+  if (total > measured) totals.set("unattributed", total - measured);
+  const unknown = totals.get("unattributed") || 0;
+  const rows = [...totals].filter(([provider, tokens]) => provider !== "unattributed" && tokens > 0).sort((a, b) => b[1] - a[1]);
+  if (rows.length > 6) {
+    const kept = rows.slice(0, 5), rest = rows.slice(5), existing = kept.find(([provider]) => provider === "other");
+    const extra = rest.reduce((sum, [, tokens]) => sum + tokens, 0);
+    if (existing) existing[1] += extra; else kept.push(["other", extra]);
+    rows.splice(0, rows.length, ...kept);
+  }
+  if (unknown > 0) rows.push(["unattributed", unknown]);
+  return rows.map(([provider, tokens]) => ({ provider, tokens, share: total ? tokens / total * 100 : 0 }));
+}
 function profileHero(p) {
-  const e = p.entry;
-  const st = p.standing || { league: p.league, division: p.division, mmr: p.mmr, mmrToNext: p.mmrToNext };
-  const league = leagueMeta(st.league);
-  const ownedByViewer = Boolean(e.claimed && e.googleEmail && state.googleSession?.email &&
-    String(e.googleEmail).toLowerCase() === String(state.googleSession.email).toLowerCase());
-  return `<div class="card" style="margin-bottom:16px">
-    <div style="display:flex;gap:22px;align-items:center;flex-wrap:wrap">
-      <div style="display:flex;gap:16px;align-items:center;min-width:280px">
-        ${entryAvatar(e, 74)}
-        <div><div style="font-size:24px;font-weight:800">${esc(e.handle)}</div>
-          <div class="sub" style="margin-top:3px">${esc(e.team || "Personal")} · ${esc(e.hardware || "Apple Silicon")}</div>
-          <div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap">
-            ${e.isLocal ? '<span class="chip you">YOU</span>' : ""}
-            <span class="chip">Rank #${p.rank} of ${p.total}</span>
-            <span class="chip orange">🔥 ${e.streakDays || 0}d streak</span>
-            ${canEditAvatar(e) ? `<span class="chip" data-edit-avatar="${esc(e.handle)}" style="cursor:pointer">✎ Edit avatar</span>` : ""}
-            <button class="pill" data-share-user="${esc(e.handle)}" style="font-size:11px;padding:6px 10px">Share report</button>
-            <button class="pill ghost" data-copy-profile="${esc(e.handle)}" style="font-size:11px;padding:6px 10px">Copy link</button>
-            ${ownedByViewer ? "" : `<button class="pill ghost" data-claim-user="${esc(e.handle)}" style="font-size:11px;padding:6px 10px">Claim profile</button>`}
-          </div></div>
-      </div>
-      <div style="display:flex;gap:16px;align-items:center;min-width:240px">
-        ${leagueIcon(league.id, 76)}
-        <div><div style="font-weight:800;font-size:17px;color:${league.color}">${esc(league.title.toUpperCase())} ${roman(st.division || 3)}</div>
-          <div class="sub" style="margin-top:3px">${fmtNum(st.mmr)} MMR · Top ${topPercent(p.percentile)}% globally</div>
-          <div class="progress" style="margin-top:8px;width:180px"><i style="width:${st.mmrToNext != null ? Math.max(5, 100 - Math.min(100, (st.mmrToNext / 400) * 100)) : 100}%"></i></div>
-          <div class="mini" style="margin-top:4px">${st.mmrToNext != null ? fmtNum(st.mmrToNext) + " MMR to " + leagueMeta(nextLeague(st.league)).title : "Top league reached"}</div>
-        </div>
-      </div>
-      <div style="display:flex;gap:26px;margin-left:auto;text-align:center">
-        <div><div class="kpi-label">Rank</div><div style="font-size:20px;font-weight:800">#${p.ranks?.all || p.rank}</div><div class="mini">all-time</div></div>
-        <div><div class="kpi-label">Change</div><div style="font-size:20px;font-weight:800" class="${p.rankDelta7d > 0 ? "up" : p.rankDelta7d < 0 ? "down" : ""}">${p.rankDelta7d == null ? "—" : (p.rankDelta7d > 0 ? "▲ " + p.rankDelta7d : p.rankDelta7d < 0 ? "▼ " + Math.abs(p.rankDelta7d) : "0")}</div><div class="mini">rank 7d</div></div>
-        <div><div class="kpi-label">Team</div><div style="font-size:20px;font-weight:800">${p.teamRank ? "#" + p.teamRank : "—"}</div><div class="mini">${p.teamTotal ? "of " + p.teamTotal : "in team"}</div></div>
-      </div>
-    </div>
-  </div>`;
+  const e = p.entry, handle = String(e.handle || "").replace(/^@/, "");
+  const ownedByViewer = Boolean(e.claimed && e.googleEmail && state.googleSession?.email && String(e.googleEmail).toLowerCase() === String(state.googleSession.email).toLowerCase());
+  return `<header class="profile-identity">
+    <div class="profile-person">${entryAvatar(e, 80)}<div><h1>@${esc(handle)}</h1><div class="profile-meta">${e.team ? `<span>${esc(e.team)}</span>` : '<span>Independent builder</span>'}${e.hardware ? `<span>${esc(e.hardware)}</span>` : ""}${e.isLocal ? '<span class="chip you">You</span>' : ""}</div></div></div>
+    <div class="profile-actions"><button class="pill primary" data-share-user="${esc(handle)}"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m8 11 8-5M8 13l8 5" stroke="currentColor" stroke-width="1.5"/><circle cx="5" cy="12" r="3" stroke="currentColor" stroke-width="1.5"/><circle cx="19" cy="4" r="3" stroke="currentColor" stroke-width="1.5"/><circle cx="19" cy="20" r="3" stroke="currentColor" stroke-width="1.5"/></svg> Share report</button><button class="pill ghost" data-copy-profile="${esc(handle)}">Copy link</button>${canEditAvatar(e) ? `<button class="pill ghost" data-edit-avatar="${esc(handle)}">Edit photo</button>` : ""}${ownedByViewer ? "" : `<button class="profile-text-button" data-claim-user="${esc(handle)}">Claim profile</button>`}</div>
+  </header>`;
+}
+function profileTotals(p) {
+  const e = p.entry, anchor = profileAnchor(e);
+  return `<div class="profile-totals" aria-label="Published token totals"><div><span>All-time tokens</span><strong>${fmtTokens(e.tokensAll)}</strong><small>Across published usage</small></div><div><span>${anchor ? "Latest day" : "Today"}</span><strong>${fmtTokens(e.tokensToday)}</strong><small>${profileDate(anchor)}</small></div><div><span>Last 7 days</span><strong>${fmtTokens(e.tokens7d)}</strong><small>${anchor ? profileDate(anchor - 6 * 86400) + " – " + profileDate(anchor) : "Published weekly total"}</small></div></div>`;
+}
+function profileRail(p) {
+  const e = p.entry, st = p.standing || p, league = st.league ? leagueMeta(st.league) : null;
+  const mix = profileProviderMix(e);
+  const rank = p.ranks?.all || p.rank;
+  return `<aside class="profile-rail" aria-label="League and provider details">
+    <section class="profile-standing"><div class="profile-standing-rank"><span>Overall rank</span><strong>${rank ? "#" + fmtNum(rank) : "—"}</strong><small>${p.total ? "of " + fmtNum(p.total) + (p.total === 1 ? " builder" : " builders") : "Public standing"}</small></div>
+    ${league ? `<div class="profile-crest">${leagueIcon(league.id, 124)}</div><h2>${esc(league.title)} ${roman(st.division || 3)}</h2><p>${st.mmr != null ? fmtNum(st.mmr) + " MMR" : "MMR not published"}${p.percentile != null ? `<span>Top ${topPercent(p.percentile)}% globally</span>` : ""}</p>${st.mmrToNext != null ? `${Number.isFinite(st.progressWithinLeague) ? `<div class="progress" role="progressbar" aria-label="League progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.round(Math.max(0, Math.min(1, st.progressWithinLeague)) * 100)}"><i style="width:${Math.max(0, Math.min(1, st.progressWithinLeague)) * 100}%"></i></div>` : ""}<small>${fmtNum(st.mmrToNext)} MMR to ${esc(leagueMeta(nextLeague(st.league)).title)}</small>` : `<small>${league.id === "grandmaster" ? "Top league reached" : "Progress not published"}</small>`}` : '<h2>League not published</h2>'}
+    <div class="profile-streak"><i aria-hidden="true"></i><strong>${fmtNum(e.streakDays || 0)}</strong><span>day streak</span></div></section>
+    <section class="profile-provider-panel"><h3>Provider share <small>All time</small></h3>${mix.length ? mix.map(row => `<div class="profile-provider-row" data-profile-provider="${row.provider}"><div>${row.provider === "unattributed" ? '<i class="profile-neutral-dot" aria-hidden="true"></i>' : providerLogo(row.provider, 18)}<span>${row.provider === "unattributed" ? "Unattributed" : esc(providerLabel(row.provider))}</span><strong>${fmtPct(row.share, 1)}</strong></div><div class="profile-provider-bar"><i style="width:${row.share.toFixed(2)}%;background:${PROFILE_COLORS[row.provider] || PROFILE_COLORS.other}"></i></div></div>`).join("") : '<p>No provider data published.</p>'}</section>
+    <section class="profile-facts"><h3>Usage details</h3><dl><div><dt>Requests</dt><dd>${p.requestsAll != null || e.requestsAll != null ? fmtNum(p.requestsAll ?? e.requestsAll) : "—"}</dd></div><div><dt>Input tokens</dt><dd>${p.inputTokensAll != null || e.inputTokensAll != null ? fmtTokens(p.inputTokensAll ?? e.inputTokensAll) : "—"}</dd></div><div><dt>Output tokens</dt><dd>${p.outputTokensAll != null || e.outputTokensAll != null ? fmtTokens(p.outputTokensAll ?? e.outputTokensAll) : "—"}</dd></div><div><dt>Active days</dt><dd>${e.breakdown?.activeDays != null ? fmtNum(e.breakdown.activeDays) : "—"}</dd></div></dl></section>
+    <footer class="profile-published"><span>Published through</span><time>${profileDate(profileAnchor(e))}</time><small>Dates shown in UTC</small></footer>
+  </aside>`;
+}
+function profileInventory(p, full = false) {
+  const e = p.entry, models = e.breakdown?.models || [], rows = full ? models : models.slice(0, 6);
+  return `<section class="card profile-inventory"><div class="card-head"><h3>Model inventory</h3><span class="sub">${fmtNum(models.length)} models</span></div><div class="profile-table-scroll" role="region" aria-label="Published model usage" tabindex="0"><table><thead><tr><th>Model</th><th>Provider</th><th class="right">Tokens</th><th class="right">Requests</th><th class="right">Cost</th><th class="right">Share</th></tr></thead><tbody>${rows.map(m => { const share = profileNumber(e.tokensAll) ? Math.min(100, profileNumber(m.tokensAll) / e.tokensAll * 100) : 0; return `<tr><td>${modelLink(m.provider, m.model)}</td><td><span class="profile-model-provider">${providerLogo(profileProvider(m.provider), 16)}${esc(providerLabel(profileProvider(m.provider)))}</span></td><td class="num right">${fmtTokens(m.tokensAll)}</td><td class="num right">${m.requests != null ? fmtNum(m.requests) : "—"}</td><td class="num right"${Number(m.costAll) > 0 ? "" : ' title="Cost not reported"'}>${profileCost(m.costAll)}</td><td class="profile-model-share"><span>${fmtPct(share, 1)}</span><i style="--share:${share.toFixed(2)}%;--provider:${PROFILE_COLORS[profileProvider(m.provider)] || PROFILE_COLORS.other}"></i></td></tr>`; }).join("") || '<tr><td colspan="6"><div class="empty">No model usage published yet.</div></td></tr>'}</tbody></table></div><div class="profile-table-footer">${!full && models.length > rows.length ? `<button class="profile-text-button" data-profile-open="usage">View all ${fmtNum(models.length)} models</button>` : '<span>All-time published usage</span>'}${modelsAllLink("Explore the catalog")}</div></section>`;
+}
+function profileRecent(p) {
+  const rows = [...(p.entry.breakdown?.sessions || [])].sort((a, b) => (Number(b.at) || 0) - (Number(a.at) || 0)).slice(0, 5);
+  return `<section class="card profile-recent"><div class="card-head"><h3>Recent activity</h3><span class="sub">Published sessions</span></div>${rows.length ? `<div class="profile-session-list">${rows.map(s => `<article><div><time>${s.at ? esc(profileDate(profileDay(s.at))) : "Date not published"}</time><p>${s.title ? esc(s.title) : '<span class="faint">Session title private</span>'}</p><div>${sessionModelChip(s.provider, s.model)}</div></div><strong>${fmtTokens(s.tokens)}<small>tokens</small></strong></article>`).join("")}</div>` : '<div class="empty">No recent sessions published. Session titles remain private unless the owner enables sharing.</div>'}</section>`;
+}
+function profileOverview(p) {
+  const e = p.entry, days = Number(state.profileWindow) === 7 ? 7 : 30, chart = profileUsageData(e, days), anchor = profileAnchor(e);
+  const calendar = calendarHeatmap(profileDaily(e), { utc: true, anchorDay: anchor, minDays: 0, palette: "mineral" });
+  return `<section class="card profile-chart"><div class="card-head"><div><h3>Token usage</h3><p class="profile-section-sub">${chart ? fmtTokens(chart.total) + " tokens in this window" : "Published daily usage"}</p></div><div class="profile-window" role="group" aria-label="Usage chart window">${[7, 30].map(n => `<button data-profile-window="${n}" aria-pressed="${days === n}">${n} days</button>`).join("")}</div></div>${chart ? stackedUsageChart(chart, { height: 220, ariaLabel: "Daily token usage by provider", preserveColors: true, hideLegend: true, cacheKey: "profile|" + JSON.stringify([chart.labels, chart.series]) }) : '<div class="empty">Daily history has not been published yet.</div>'}${chart ? `<div class="profile-chart-legend">${chart.series.map(s => `<span><i style="background:${s.color}"></i>${esc(s.name)}</span>`).join("")}</div><div class="profile-chart-note">${chart.series.some(s => s.provider === "unattributed") ? "Gray bars are usage without a published provider breakdown." : "Provider colors follow the measured daily breakdown."} <span>UTC</span></div>` : ""}</section>
+    <section class="card profile-calendar"><div class="card-head"><div><h3>Activity heatmap</h3><p class="profile-section-sub">Select a day to explore its models and sessions</p></div><span class="sub">17 weeks · UTC</span></div>${calendar || '<div class="empty">Daily activity has not been published yet.</div>'}</section>
+    ${state.profileTab === "usage" ? profileKpis(p) + profileInventory(p, true) : profileInventory(p) + profileRecent(p)}`;
 }
 function profileKpis(p, opts = {}) {
-  const e = p.entry;
-  const models = e.breakdown?.models || [];
-  const input = p.inputTokensAll || e.inputTokensAll || models.reduce((s, m) => s + (m.inputTokens || 0), 0);
-  const output = p.outputTokensAll || e.outputTokensAll || models.reduce((s, m) => s + (m.outputTokens || 0), 0);
-  const requests = p.requestsAll || e.requestsAll || models.reduce((s, m) => s + (m.requests || 0), 0);
-  const avg = requests > 0 ? Math.round((e.tokensAll || 0) / requests) : 0;
-  return `<div class="stat-grid" style="margin-bottom:16px">
-    ${opts.skipTotals ? "" : stat("Total Tokens", fmtTokens(e.tokensAll), ICONS.tokens)}
-    ${stat("Input Tokens", fmtTokens(input), ICONS.activity)}
-    ${stat("Output Tokens", fmtTokens(output), ICONS.bolt)}
-    ${opts.skipTotals ? "" : stat("Total Cost", fmtCost(e.costAll), ICONS.cost)}
-    ${stat("Requests", fmtNum(requests), ICONS.users)}
-    ${stat("Avg / Request", fmtTokens(avg), ICONS.clock, "All-time average tokens per request")}
-    ${stat("Efficiency", Math.round(p.efficiency || e.efficiency || 0) + " / 100", ICONS.shield)}
-    ${stat("Active Days", fmtNum(e.breakdown?.activeDays || e.streakDays || 0), ICONS.fire)}
-  </div>`;
+  const e = p.entry, input = p.inputTokensAll ?? e.inputTokensAll, output = p.outputTokensAll ?? e.outputTokensAll, requests = p.requestsAll ?? e.requestsAll;
+  return `<section class="profile-usage-details"><h3>Usage & costs</h3><div class="stat-grid">
+    ${stat("Input tokens", input != null ? fmtTokens(input) : "—", ICONS.activity)}
+    ${stat("Output tokens", output != null ? fmtTokens(output) : "—", ICONS.bolt)}
+    ${stat("Published cost", profileCost(e.costAll), ICONS.cost, "Only published costs are shown; missing costs remain unavailable.")}
+    ${stat("Requests", requests != null ? fmtNum(requests) : "—", ICONS.users)}
+    ${stat("Average / request", requests > 0 ? fmtTokens(Math.round(profileNumber(e.tokensAll) / requests)) : "—", ICONS.clock)}
+    ${stat("Efficiency", p.efficiency != null || e.efficiency != null ? Math.round(p.efficiency ?? e.efficiency) + " / 100" : "—", ICONS.shield)}
+  </div></section>`;
 }
 function stat(label, value, icon, title = "") {
   return `<div class="stat"${title ? ` title="${esc(title)}"` : ""}><div class="label">${icon} ${esc(label)}</div><div class="value">${esc(value)}</div></div>`;
+}
+function profileProgression(p) {
+  const rows = (p.rankHistory || []).filter(row => profileDay(row.day) && Number.isFinite(Number(row.mmr))).slice(-30);
+  if (rows.length < 3) return "";
+  return `<section class="card"><div class="card-head"><h3>League progression</h3><span class="sub">Published daily MMR</span></div>${areaChart(rows.map(row => ({ label: profileDate(profileDay(row.day)), value: Number(row.mmr), extra: "Rank #" + row.rank })), { color: "#235E43", height: 170 })}</section>`;
 }
 function profileContent(p) {
   const e = p.entry;
   const bd = e.breakdown || {};
   const tab = state.profileTab;
-  if (tab === "usage" || tab === "overview") {
-    const hist = (bd.history || []).map(h => ({ label: h.dayLabel || fmtDay(h.day), value: h.tokens || 0, cost: h.cost || 0 }));
-    const models = (bd.models || []).slice(0, 8).map(m => ({ label: m.model || m.provider, value: m.tokensAll || 0, color: providerColor(m.provider) }));
-    const providers = aggregateModels([{ entry: e }]);
-    const modelData = modelHistoryChartData(bd.modelHistory);
-    return `<div class="split" style="margin-bottom:16px">
-      <div class="card"><div class="card-head"><h3>Token Usage Over Time</h3><span class="chip">By Model</span></div>${modelData
-        ? stackedUsageChart(modelData, { height: 220, ariaLabel: "Token usage by model over time" })
-        : areaChart(hist, { color: "#4F8CFF", height: 220 })}</div>
-      <div class="card"><div class="card-head"><h3>Usage by Model / Provider</h3><span class="sub">${modelsAllLink("Browse all models →")}</span></div>
-        <div class="donut-wrap">${donut(providers.slice(0, 5), 150, fmtTokens(e.tokensAll), "tokens")}
-        <div class="legend">${providers.slice(0, 6).map(s => `<div class="legend-row">${providerLogo(s.provider || s.label, 15)}${esc(s.label)}<span class="val">${fmtTokens(s.value)}</span></div>`).join("")}</div></div></div>
-    </div>
-    <div class="two-col top">
-      <div class="card"><div class="card-head"><h3>Model Inventory</h3><span class="sub">${models.length} models · ${modelsAllLink()}</span></div>
-        <div style="overflow-x:auto"><table><thead><tr><th>Model</th><th>Provider</th><th class="right">Tokens</th><th class="right">Requests</th><th class="right">Cost</th><th class="right">Share</th></tr></thead><tbody>
-        ${(bd.models || []).slice(0, 10).map(m => `<tr><td>${modelLink(m.provider, m.model)}</td><td><span class="chip logo-chip">${providerLogo(m.provider, 15, m.model)}${esc(providerDisplay(m.provider, m.model))}</span></td><td class="num right">${fmtTokens(m.tokensAll)}</td><td class="num right">${fmtNum(m.requests)}</td><td class="num right">${fmtCost(m.costAll)}</td><td style="width:110px"><div class="bar"><i style="width:${m.sharePercent || 0}%"></i></div><div class="mini right">${fmtPct(m.sharePercent || 0, 1)}</div></td></tr>`).join("") || '<tr><td colspan="6"><div class="empty">No model data published yet.</div></td></tr>'}
-        </tbody></table></div></div>
-      <div class="card"><div class="card-head"><h3>Usage Heatmap</h3><span class="sub">${calendarHeatmap(bd.daily) ? "last 17 weeks" : "weekday × hour"}</span></div>${calendarHeatmap(bd.daily) || heatmap(bd.hourly)}</div>
-    </div>`;
-  }
+  if (tab === "usage" || tab === "overview") return profileOverview(p);
   if (tab === "prompts") {
     const sessions = sessionRows(e, 12).filter(s => s.title);
     const cats = new Map();
@@ -2466,7 +2647,7 @@ function profileContent(p) {
     const catRows = [...cats.entries()].map(([label, value]) => ({ label, value })).sort((a, b) => b.value - a.value);
     return `<div class="two-col"><div class="card"><div class="card-head"><h3>Top Prompts / Workloads</h3><span class="sub">recent sessions</span></div>
       <div style="overflow-x:auto"><table><thead><tr><th>#</th><th>Prompt / Workflow</th><th>Model</th><th class="right">Tokens</th><th class="right">Cost</th><th class="right">Requests</th></tr></thead><tbody>
-      ${sessions.map((s, i) => `<tr><td class="faint">${i + 1}</td><td>${s.title ? esc(s.title) : '<span class="faint">title private</span> <span class="chip" style="font-size:9.5px;padding:2px 7px">🔒</span>'}</td><td>${sessionModelChip(s.provider, s.model)}</td><td class="num right">${fmtTokens(s.tokens)}</td><td class="num right">${fmtCost(s.cost)}</td><td class="num right">${fmtNum(s.requests)}</td></tr>`).join("") || '<tr><td colspan="6"><div class="empty">Prompt history isn&#39;t published for this profile — owners can enable it in Token Horizon settings.</div></td></tr>'}
+      ${sessions.map((s, i) => `<tr><td class="faint">${i + 1}</td><td>${s.title ? esc(s.title) : '<span class="faint">title private</span> <span class="chip" style="font-size:9.5px;padding:2px 7px">🔒</span>'}</td><td>${sessionModelChip(s.provider, s.model)}</td><td class="num right">${fmtTokens(s.tokens)}</td><td class="num right">${profileCost(s.cost)}</td><td class="num right">${fmtNum(s.requests)}</td></tr>`).join("") || '<tr><td colspan="6"><div class="empty">Prompt history isn&#39;t published for this profile — owners can enable it in Token Horizon settings.</div></td></tr>'}
       </tbody></table></div></div>
       <div class="card"><div class="card-head"><h3>Prompt Categories</h3><span class="sub">keyword-classified</span></div>${barList(catRows, { labelWidth: 130 }) || '<div class="empty">No sessions.</div>'}</div>
     </div>`;
@@ -2476,22 +2657,23 @@ function profileContent(p) {
     return `<div class="two-col"><div class="card"><div class="card-head"><h3>Usage by Project / Team</h3></div>${barList(projects.map(p => ({ label: p.project, value: p.tokens, percent: p.tokens / Math.max(1, e.tokensAll) * 100 })), { labelWidth: 140 })}</div>
       <div class="card"><div class="card-head"><h3>Project Detail</h3></div>
       <div style="overflow-x:auto"><table><thead><tr><th>Project</th><th class="right">Tokens</th><th class="right">Sessions</th><th class="right">Cost</th></tr></thead><tbody>
-      ${projects.map(p => `<tr><td>${esc(p.project)}</td><td class="num right">${fmtTokens(p.tokens)}</td><td class="num right">${fmtNum(p.sessions)}</td><td class="num right">${fmtCost(p.cost)}</td></tr>`).join("") || '<tr><td colspan="4"><div class="empty">No project data.</div></td></tr>'}
+      ${projects.map(p => `<tr><td>${esc(p.project)}</td><td class="num right">${fmtTokens(p.tokens)}</td><td class="num right">${fmtNum(p.sessions)}</td><td class="num right">${profileCost(p.cost)}</td></tr>`).join("") || '<tr><td colspan="4"><div class="empty">No project data.</div></td></tr>'}
       </tbody></table></div></div></div>`;
   }
   if (tab === "comparisons") {
-    const peers = (state.data?.leaderboard || []).filter(r => r.entry.handle !== e.handle).slice(0, 4);
-    return `<div class="card" style="margin-bottom:16px"><div class="card-head"><h3>Peer Comparison</h3></div>
+    const peerPeriod = { today: "Today", week: "7-day", all: "All-time", streak: "Streak" }[state.data?.period || state.period] || "Current";
+    const peers = (state.demo ? [] : state.data?.leaderboard || []).filter(r => r.entry.handle.toLowerCase() !== e.handle.toLowerCase()).sort((a, b) => Math.abs((a.entry.tokensAll || 0) - (e.tokensAll || 0)) - Math.abs((b.entry.tokensAll || 0) - (e.tokensAll || 0))).slice(0, 4);
+    return profileProgression(p) + `<div class="card" style="margin-bottom:16px"><div class="card-head"><h3>Peer Comparison</h3></div>
       <div class="stat-grid">
-        ${stat("Global Percentile", "Top " + topPercent(p.percentile) + "%", ICONS.rank)}
+        ${stat("Global percentile", p.percentile != null ? "Top " + topPercent(p.percentile) + "%" : "—", ICONS.rank)}
         ${stat("Team Rank", p.teamRank ? "#" + p.teamRank : "—", ICONS.users)}
-        ${stat("All-Time Rank", "#" + (p.ranks?.all || p.rank), ICONS.shield)}
-        ${stat("Streak Rank", "#" + (p.ranks?.streak || p.rank), ICONS.fire)}
+        ${stat("All-time rank", p.ranks?.all ? "#" + p.ranks.all : "—", ICONS.shield)}
+        ${stat("Streak rank", p.ranks?.streak ? "#" + p.ranks.streak : "—", ICONS.fire)}
       </div></div>
-      <div class="card"><div class="card-head"><h3>Nearby Players</h3><span class="sub">by all-time tokens</span></div>
-      <div style="overflow-x:auto"><table><thead><tr><th>#</th><th>User</th><th>League</th><th class="right">Tokens</th><th class="right">Efficiency</th><th class="right">Streak</th></tr></thead><tbody>
-      ${peers.map(r => `<tr class="clickable" data-handle-link="${esc(r.entry.handle)}"><td class="faint">${r.rank}</td><td><div class="user-cell">${entryAvatar(r.entry, 26)}<span>${esc(r.entry.handle)}</span></div></td><td><span class="chip" style="color:${leagueColor(r.league)}">${esc(leagueMeta(r.league).title)} ${roman(r.division || 3)}</span></td><td class="num right">${esc(r.scoreFormatted)}</td><td class="num right">${Math.round(r.efficiency || 0)}</td><td class="num right">🔥 ${r.entry.streakDays || 0}</td></tr>`).join("")}
-      </tbody></table></div></div>`;
+      <div class="card"><div class="card-head"><h3>Builders with similar usage</h3><span class="sub">${state.demo ? "Community data unavailable" : "By all-time tokens"}</span></div>
+      <div style="overflow-x:auto"><table><thead><tr><th>${peerPeriod} rank</th><th>User</th><th>League</th><th class="right">Tokens</th><th class="right">Efficiency</th><th class="right">Streak</th></tr></thead><tbody>
+      ${peers.map(r => `<tr class="clickable" data-handle-link="${esc(r.entry.handle)}"><td class="faint">${r.rank}</td><td><div class="user-cell">${entryAvatar(r.entry, 26)}<span>${esc(r.entry.handle)}</span></div></td><td><span class="chip" style="color:${leagueColor(r.league)}">${esc(leagueMeta(r.league).title)} ${roman(r.division || 3)}</span></td><td class="num right">${fmtTokens(r.entry.tokensAll)}</td><td class="num right">${Math.round(r.efficiency || 0)}</td><td class="num right">🔥 ${r.entry.streakDays || 0}</td></tr>`).join("")}
+      </tbody></table></div>${state.profilePeersLoading ? '<p class="sub" role="status">Loading community comparison…</p>' : state.profilePeersError ? '<p class="sub">Community comparison could not load. <button class="profile-text-button" id="pf-peers-retry">Retry comparison</button></p>' : !peers.length ? '<div class="empty">No other builders available to compare.</div>' : ""}</div>`;
   }
   if (tab === "achievements") {
     const achs = p.achievements || [];
@@ -2740,37 +2922,42 @@ function miniStat(icon, value, label) {
 /* ============================================================
    VIEW: PLAYERS (Player Profile)
    ============================================================ */
-async function renderPlayers(current = () => true) {
-  const handle = state.currentHandle || (state.data?.leaderboard || [])[0]?.entry.handle;
-  if (!state.user || state.user.handle.toLowerCase() !== String(handle).toLowerCase()) await loadUser(handle);
+async function renderPlayers(current = () => true, outcome = state.profileLoad) {
   if (!current()) return;
-  const p = currentProfile();
-  if (!p) { $("#view").innerHTML = `<div class="empty">No players yet.</div>`; return; }
-  const progression = (p.rankHistory || []).slice(-12);
-  const progressionHtml = progression.length >= 3
-    ? areaChart(progression.map(x => ({ label: fmtDay(x.day * 86400), value: x.mmr || 0, extra: "Rank #" + x.rank })), { color: "#8B5CF6", height: 150 })
-    : `<div class="empty" style="padding:14px">League progression builds from daily snapshots.</div>`;
-  $("#view").innerHTML = pageHead(["Players", p.entry.handle], "Player Profile", "Detailed performance, usage patterns, and competitive stats.", "Better prompts. Brighter tomorrows.")
+  if (outcome?.status !== "ready") { $("#view").innerHTML = profileFailureHtml(outcome); wireProfileRetry(outcome); return; }
+  const p = outcome.profile;
+  if (!p?.entry) return;
+  document.title = `@${p.entry.handle} — Token Horizon`;
+  const restoreTabFocus = document.activeElement?.matches(".profile-tabs [data-tab]");
+  const restoreWindowFocus = document.activeElement?.dataset.profileWindow;
+  $("#view").innerHTML = `<article id="profile-shell"><nav class="profile-breadcrumb" aria-label="Breadcrumb"><a href="./leaderboard" data-crumb="leaderboard">Community</a><span>/</span><span>${esc(p.entry.handle)}</span></nav>`
     + profileHero(p)
-    + `<div class="tabs">${profileTabs().map(([id, label]) => `<div class="tab ${state.profileTab === id ? "active" : ""}" data-tab="${id}">${label}</div>`).join("")}</div>`
-    + profileKpis(p, { skipTotals: true })
-    + `<div class="two-col top" style="margin-bottom:16px">
-        <div class="card"><div class="card-head"><h3>League Progression</h3><span class="sub">MMR over time</span></div>${progressionHtml}</div>
-        <div class="card"><div class="card-head"><h3>Peer Comparison</h3></div>
-          <div class="stat-grid" style="grid-template-columns:1fr 1fr">
-            ${stat("Global", "Top " + topPercent(p.percentile) + "%", ICONS.rank)}
-            ${stat("Team", p.teamRank ? "#" + p.teamRank + " of " + p.teamTotal : "—", ICONS.users)}
-            ${stat("Rank Δ 7d", p.rankDelta7d == null ? "—" : (p.rankDelta7d >= 0 ? "+" + p.rankDelta7d : p.rankDelta7d), ICONS.activity)}
-            ${stat("Streak", (p.entry.streakDays || 0) + " days", ICONS.fire)}
-          </div>
-        </div>
-      </div>`
-    + profileContent(p);
+    + `<div class="tabs profile-tabs" role="tablist" aria-label="Profile sections">${profileTabs().map(([id, label]) => `<button class="tab ${state.profileTab === id ? "active" : ""}" data-tab="${id}" id="profile-tab-${id}" role="tab" aria-selected="${state.profileTab === id}" aria-controls="profile-panel" tabindex="${state.profileTab === id ? 0 : -1}">${label}</button>`).join("")}</div>`
+    + profileTotals(p)
+    + `<div class="profile-layout"><div class="profile-main" id="profile-panel" role="tabpanel" aria-labelledby="profile-tab-${state.profileTab}">${profileContent(p)}</div>${profileRail(p)}</div></article>`;
   wireProfile();
+  if (restoreTabFocus) $("#profile-tab-" + state.profileTab)?.focus({ preventScroll: true });
+  if (restoreWindowFocus) $('[data-profile-window="' + restoreWindowFocus + '"]')?.focus({ preventScroll: true });
 }
 function wireProfile() {
   $$("[data-handle-link]").forEach(el => el.onclick = () => navigate("players", { handle: el.dataset.handleLink }));
-  $$("[data-tab]").forEach(t => t.onclick = () => { state.profileTab = t.dataset.tab; render(); });
+  $$("[data-tab]").forEach(t => {
+    t.onclick = () => { state.profileTab = t.dataset.tab; render(); };
+    t.onkeydown = ev => {
+      const tabs = $$(".profile-tabs [data-tab]");
+      const index = tabs.indexOf(t);
+      let target;
+      if (ev.key === "ArrowRight") target = tabs[(index + 1) % tabs.length];
+      if (ev.key === "ArrowLeft") target = tabs[(index + tabs.length - 1) % tabs.length];
+      if (ev.key === "Home") target = tabs[0];
+      if (ev.key === "End") target = tabs[tabs.length - 1];
+      if (target) { ev.preventDefault(); target.focus(); }
+    };
+  });
+  const peerRetry = $("#pf-peers-retry");
+  if (peerRetry) peerRetry.onclick = () => { state.profilePeersError = ""; loadProfilePeers(); };
+  $$("[data-profile-window]").forEach(button => button.onclick = () => { state.profileWindow = Number(button.dataset.profileWindow); render(); });
+  $$("[data-profile-open]").forEach(button => button.onclick = () => { state.profileTab = button.dataset.profileOpen; render(); });
 }
 
 function stackedArea(series, labels, opts = {}) {
@@ -5200,16 +5387,17 @@ function openDayDrilldown(day) {
   if (!p) return;
   const e = p.entry;
   const bd = e.breakdown || {};
-  const daily = (bd.daily || []).find(d => d.day === day);
-  const total = daily ? daily.tokens : 0;
+  const matchesDay = value => state.view === "players" ? profileDay(value) === day : value === day;
+  const daily = (bd.daily || bd.history || []).find(d => matchesDay(d.day));
+  const total = state.view === "players" ? profileDaily(e).find(d => d.day === day)?.tokens || 0 : daily?.tokens || 0;
   const cost = daily ? daily.cost : 0;
   const models = (bd.modelHistory || []).map(s => {
-    const pt = (s.points || []).find(x => x.day === day);
+    const pt = (s.points || []).find(x => matchesDay(x.day));
     return pt && pt.tokens > 0 ? { model: s.model, provider: s.provider, tokens: pt.tokens } : null;
   }).filter(Boolean).sort((a, b) => b.tokens - a.tokens);
-  const sessions = (bd.sessions || []).filter(s => s.at && localDayStart(s.at) === day);
+  const sessions = (bd.sessions || []).filter(s => s.at && (state.view === "players" ? profileDay(s.at) : localDayStart(s.at)) === day);
   const label = new Date(day * 1000).toLocaleDateString(undefined, {
-    weekday: "long", month: "long", day: "numeric", year: "numeric"
+    weekday: "long", month: "long", day: "numeric", year: "numeric", ...(state.view === "players" ? { timeZone: "UTC" } : {})
   });
   const backdrop = $("#modal-backdrop");
   backdrop.innerHTML = `<div class="modal" style="max-width:580px">
@@ -5231,7 +5419,7 @@ function openDayDrilldown(day) {
         ? `<div class="card" style="background:var(--panel2);margin-top:12px"><div class="card-head"><h3>Activity</h3><span class="sub">${sessions.length} session${sessions.length === 1 ? "" : "s"}</span></div>
             ${sessions.map(s => `<div class="mover"><div style="min-width:0"><div class="name" style="font-size:12px">${s.title ? esc(s.title) : '<span class="faint">title private</span>'}</div>
               <div class="faint" style="font-size:10.5px;display:flex;align-items:center;gap:5px">${fmtDate(s.at)} · ${s.model ? modelLink(s.provider, s.model, providerDisplay(s.provider, s.model) + " · " + s.model, { logo: true, logoSize: 13 }) : providerLogo(s.provider, 13, s.model) + esc(providerDisplay(s.provider, s.model))}</div></div>
-              <div class="val">${fmtTokens(s.tokens)}<div class="faint">${fmtCost(s.cost)}</div></div></div>`).join("")}</div>`
+              <div class="val">${fmtTokens(s.tokens)}<div class="faint">${state.view === "players" ? profileCost(s.cost) : fmtCost(s.cost)}</div></div></div>`).join("")}</div>`
         : ""}
     </div>
     <div class="modal-foot"><button class="pill ghost" data-close>Close</button></div>

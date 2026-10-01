@@ -339,7 +339,7 @@ async function verifyRouteRaces(browser, filePath) {
   console.log('Async routes: late model/profile responses preserve the current view...');
   const cases = [
     { name: 'catalog → leaderboard', query: '?view=models', held: '/api/models/catalog', next: '[data-public-view="leaderboard"]', visible: '#lb-table tbody tr', view: 'leaderboard', kind: 'catalog' },
-    { name: 'profile → models', query: '?view=players&user=benebsworth', held: '/api/user/benebsworth', next: '#models-nav', visible: '#mx-rows .mx-row', view: 'models', kind: 'profile' },
+    { name: 'profile → models', query: '?view=players&user=benebsworth', held: '/api/user/benebsworth', next: '[data-public-view="models"]', visible: '#mx-rows .mx-row', view: 'models', kind: 'profile' },
     { name: 'Plans → Providers', query: '?view=models&tab=plans', held: '/api/models/catalog', next: '[data-models-tab="providers"]', visible: '.prov-table', view: 'models', kind: 'catalog' }
   ];
   for (const scenario of cases) {
@@ -566,14 +566,18 @@ async function run() {
   await page.evaluate(async () => { state.view='leaderboard'; renderNav(); await render(); });
   await page.locator('#lb-table tbody tr').first().click();
   await page.waitForSelector('.tabs .tab');
-  if (!(await page.locator('h1').first().textContent()).includes('Player Profile')) throw new Error('Player profile did not render');
+  if (!(await page.locator('#view h1').first().textContent()).includes('benebsworth')) throw new Error('The selected player profile did not render');
   const stats = await page.$$('.stat');
-  if (stats.length < 8) throw new Error(`Expected >=8 stat cards, found ${stats.length}`);
+  if (!(await page.locator('.profile-totals').textContent()).includes('23.84B')) throw new Error('Published all-time token total is missing');
+  if (!(await page.locator('.profile-rail').textContent()).toLowerCase().includes('grandmaster')) throw new Error('Profile league summary is missing');
+  const chartBox = await page.locator('.profile-chart').boundingBox();
+  const calendarBox = await page.locator('.profile-calendar').boundingBox();
+  if (!chartBox || !calendarBox || calendarBox.y < chartBox.y + chartBox.height - 1) throw new Error('Profile chart and calendar must occupy two sequential rows');
   if (!page.url().includes('user=')) throw new Error('URL missing ?user=');
   const calCells = await page.$$eval('.cal-grid .cal-cell', els => els.length);
   if (calCells === 0) throw new Error('GitHub-style calendar heatmap did not render');
   // Per-day drilldown: clicking a day opens the model breakdown modal.
-  await page.locator('.cal-grid .cal-cell[data-cal-day]').last().click();
+  await page.locator('.cal-grid .cal-cell[data-cal-day][data-tip*="tokens"]').last().click();
   await page.waitForSelector('#modal-backdrop.open', { timeout: 10000 });
   const dayModels = await page.$$eval('#modal-backdrop .card .bar', els => els.length);
   if (dayModels === 0) throw new Error('Day drilldown did not render model rows');
@@ -591,7 +595,7 @@ async function run() {
   console.log('4. Deep link ?user=benebsworth...');
   await page.goto(filePath + '?user=benebsworth');
   await page.waitForSelector('.tabs .tab');
-  const heroHandle = await page.locator('.card').first().textContent();
+  const heroHandle = await page.locator('.profile-identity').textContent();
   if (!heroHandle.includes('benebsworth')) throw new Error('Deep link did not open benebsworth');
   console.log('   deep link ok');
 

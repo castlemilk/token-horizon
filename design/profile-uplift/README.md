@@ -1,0 +1,14 @@
+# Public profile uplift
+
+Generated with the built-in imagegen tool. `concept-v1.png` is a visual direction, not a screenshot of production or a source of usage data. The implemented profile keeps the shared public header, existing identity/league assets, real published metrics and owner privacy controls.
+
+## Final generation prompt
+
++ Use case: ui-mockup
+ Asset type: high-fidelity redesign concept for Token Horizon's real public per-user profile web page, desktop.
+ Primary request: Reimagine the profile as a crisp futuristic Apple HIG-inspired analytics interface, aligned to the existing Token Horizon share card, preserving useful detailed data and an authentic developer identity.
+ Input images: Image 1 (/tmp/token-horizon-profile-before.jpg) is the existing page reference only, showing features to reorganize; Image 2 (token-horizon-og-avatar-live.png) is the approved art direction reference only, for mineral green, charcoal, typography, provider palette, real league badge and identity.
+ Composition: flat front-on polished website screenshot, generous readable layout at desktop proportions. Narrow graphite app navigation at left. Main page has a concise breadcrumb and quiet Share profile button. Large handle and round profile photo, Castlemilk team. Below: a large main analytics column with 'Token usage' provider-colored stacked daily bars, directly below a wide 17-week 'Activity heatmap'; both have quiet gridlines, precise dates and a compact time control. Compact contrasting graphite identity/league rail on the right contains the real Grandmaster league crest, '#1 overall', '2,938 MMR', '19 day streak', provider share bars. Three large top editorial metrics: '31.02B' All-time tokens, '887M' Latest day, '19.3B' Last 7 days. Below charts: refined 'Model inventory' table and 'Recent activity' panel; preserve tabs Overview, Usage & Costs, Prompts, Projects, Comparisons, Achievements.
+ Style: bespoke restrained Token Horizon design, flat crisp 1px lines, geometric Grotesk display headings, monospaced tiny data labels, clean slightly squared controls, airy but data rich. Mineral off-white analytics surfaces, near-black graphite identity rail, pale mint accents; restrained coral for Anthropic and deep green for OpenAI. This is a beautiful working analytics interface, no giant decorative hero, no purple glow, no glassmorphism, no sprawling disconnected rounded KPI cards.
+ Text: 'Token Horizon', '@benebsworth', 'Castlemilk', 'Grandmaster I', 'Token usage', 'Activity heatmap', 'Model inventory', 'Anthropic', 'OpenAI'.
+ Constraints: use the supplied real profile identity, league artwork and published values as concept labels; never invent private data, growth percentages or claims; no actual browser chrome, device mockup, perspective, watermark or marketing slogans. Carefully align columns, readable axis labels, preserve hierarchy.

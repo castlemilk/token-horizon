@@ -71,6 +71,7 @@ tasks:
       - node scripts/test-workspace-ui.mjs
       - node scripts/test-team-invites-ui.mjs
       - node scripts/test-share-preview-ui.mjs
+      - node scripts/test-profile-ui.mjs
       - node scripts/bench-leaderboard.mjs
 
   web-og-fonts:
