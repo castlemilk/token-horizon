@@ -93,11 +93,12 @@ to pin an explicit version. The workflow pins the version, tags `vX.Y.Z`,
 builds, signs, notarizes, publishes the GitHub release, and syncs the
 Homebrew cask. Pushes without a token (docs, WIP, ordinary fixes — and the
 pipeline's own `release v…`/`release metadata…` commits) never release.
-Rapid pushes serialize via the workflow's `concurrency` group — each
-queued token-bearing push still gets its own release. `queue: max` preserves
-up to 100 pending runs; the default single pending slot would replace an
+Rapid pushes serialize via the native release job's `concurrency` group — each
+queued token-bearing push still gets its own release. Ordinary pushes skip
+that job before acquiring the release lock. `queue: max` preserves up to
+100 pending jobs; the default single pending slot would replace an
 earlier release request when another push arrives. See
-[GitHub's queue documentation](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#concurrency).
+[GitHub's queue documentation](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#jobsjob_idconcurrency).
 
 Caveat: the token matches anywhere in the commit message, including its
 body. Only include it when that commit should ship. Failed packaging can

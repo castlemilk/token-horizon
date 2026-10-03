@@ -19,12 +19,12 @@ on:
         default: false
 permissions:
   contents: write
-concurrency:
-  group: release
-  queue: max
-  cancel-in-progress: false
 jobs:
   build-and-release:
+    concurrency:
+      group: release
+      queue: max
+      cancel-in-progress: false
     runs-on: macos-15
     timeout-minutes: 90
     env:
