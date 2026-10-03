@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -356,8 +357,12 @@ func TestCloudIdentityRoundTrip(t *testing.T) {
 	if got == nil || got.Handle != "wock" || got.UserID != "u-1" || got.SavedAt <= 0 {
 		t.Fatalf("round trip: %+v", got)
 	}
-	info, _ := os.Stat(platform.CloudIdentityPath())
-	if info.Mode().Perm() != 0o600 {
+	info, err := os.Stat(platform.CloudIdentityPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Windows permissions are expressed through ACLs, not POSIX mode bits.
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
 		t.Fatalf("identity must be 0600: %v", info.Mode())
 	}
 	platform.ClearCloudIdentity()

@@ -59,7 +59,7 @@ let closed = false
 const pending = new Map()
 let requestId = 0
 
-async function until(check, description) {
+async function until(check, description, diagnostic = () => '') {
   const deadline = Date.now() + 30000
   while (Date.now() < deadline) {
     if (closed) throw new Error(`Desktop exited before ${description}\n${logs}`)
@@ -71,7 +71,7 @@ async function until(check, description) {
     }
     await delay(200)
   }
-  throw new Error(`Timed out waiting for ${description}\n${logs}`)
+  throw new Error(`Timed out waiting for ${description}${diagnostic()}\n${logs}`)
 }
 
 function evaluate(expression) {
@@ -146,17 +146,24 @@ try {
     if (message.error || message.result?.exceptionDetails) waiter.reject(new Error(JSON.stringify(message)))
     else waiter.resolve(message.result?.result?.value)
   })
-  await until(async () => {
-    const value = await evaluate(
-      `({ title: document.title, text: document.body.innerText, bridge: typeof window.conveyor?.invoke })`
-    )
-    return (
-      value.title === 'Token Horizon' &&
-      value.text.includes('Tokens Today') &&
-      value.text.includes('Connected') &&
-      value.bridge === 'function'
-    )
-  }, 'a rendered dashboard with the preload bridge and live API connection')
+  let lastRendererSnapshot
+  await until(
+    async () => {
+      const value = await evaluate(
+        `({ title: document.title, text: document.body.innerText, bridge: typeof window.conveyor?.invoke })`
+      )
+      lastRendererSnapshot = { ...value, text: value.text.slice(0, 5000) }
+      // innerText reflects CSS text-transform; the metric label renders uppercase.
+      return (
+        value.title === 'Token Horizon' &&
+        /\btokens today\b/i.test(value.text) &&
+        /\bconnected\b/i.test(value.text) &&
+        value.bridge === 'function'
+      )
+    },
+    'a rendered dashboard with the preload bridge and live API connection',
+    () => `\nLast renderer state: ${JSON.stringify(lastRendererSnapshot)}`
+  )
   // Exercise the window-control IPC, then let before-quit tear down the owned daemon.
   await evaluate("window.conveyor.invoke('conveyor:window', 'close')").catch(() => {})
   const deadline = Date.now() + 10000
