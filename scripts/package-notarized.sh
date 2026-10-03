@@ -67,6 +67,20 @@ PY
 }
 # END notarization submission policy
 
+# BEGIN disk image signing policy (exercised without Apple services by test-dmg-signing.mjs)
+sign_disk_image() {
+    local artifact="$1" identity="$2" expected_team="$3" metadata team
+    codesign --force --sign "$identity" --timestamp --identifier local.benebsworth.token-horizon.dmg "$artifact"
+    codesign --verify --strict --verbose=2 "$artifact"
+    metadata="$(codesign -dv --verbose=4 "$artifact" 2>&1)"
+    printf '%s\n' "$metadata" | grep '^Authority=Developer ID Application: ' >/dev/null || die "Disk image is not Developer ID signed"
+    printf '%s\n' "$metadata" | grep '^Timestamp=.' >/dev/null || die "Disk image lacks a secure timestamp"
+    printf '%s\n' "$metadata" | grep '^Identifier=local\.benebsworth\.token-horizon\.dmg$' >/dev/null || die "Disk image lacks its stable signing identifier"
+    team="$(printf '%s\n' "$metadata" | sed -n 's/^TeamIdentifier=//p')"
+    [ -n "$expected_team" ] && [ "$team" = "$expected_team" ] || die "Disk image signing team differs from the app"
+}
+# END disk image signing policy
+
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/token-horizon-notary.XXXXXX")"
 MOUNT=""
 cleanup() {
@@ -170,10 +184,18 @@ ditto -c -k --keepParent "$APP" "$WORK/output/$ZIP"
 ditto "$APP" "$WORK/dmg/$APP"
 ln -s /Applications "$WORK/dmg/Applications"
 hdiutil create -volname "Token Horizon ${VERSION}" -srcfolder "$WORK/dmg" -format UDZO "$WORK/output/$DMG" >/dev/null
+if [ -n "$SIGN_IDENTITY" ]; then sign_disk_image "$WORK/output/$DMG" "$SIGN_IDENTITY" "$SIGNED_TEAM"; fi
 if [ "$CAN_NOTARIZE" = 1 ]; then
     submit "$WORK/output/$DMG"
     xcrun stapler staple "$WORK/output/$DMG"
     xcrun stapler validate "$WORK/output/$DMG"
+    codesign --verify --strict --verbose=2 "$WORK/output/$DMG"
+    assessment="$(spctl --assess --type open --context context:primary-signature --verbose=2 "$WORK/output/$DMG" 2>&1)" || {
+        printf '%s\n' "$assessment" >&2
+        die "Disk image failed Gatekeeper assessment"
+    }
+    printf '%s\n' "$assessment"
+    printf '%s\n' "$assessment" | grep '^source=Notarized Developer ID$' >/dev/null || die "Disk image lacks a notarized Gatekeeper assessment"
 fi
 # Verify the final archives and both installable bundles before exposing output.
 ditto -x -k "$WORK/output/$ZIP" "$WORK/unzipped"

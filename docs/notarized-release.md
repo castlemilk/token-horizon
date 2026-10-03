@@ -44,7 +44,7 @@ CURRENT_PROJECT_VERSION=3 \
 ./scripts/package-notarized.sh
 ```
 
-Artifacts are written to `dist/`. The script validates credentials before building, checks signatures on the app, widget and both sidecars, notarizes and staples the app, then packages ZIP and DMG. It notarizes and staples the DMG, checks both installable bundles with Gatekeeper, and verifies the SHA-256 manifest before exposing the final files. Existing artifacts are never overwritten and the output directory is never cleared.
+Artifacts are written to `dist/`. The script validates credentials before building, checks signatures on the app, widget and both sidecars, notarizes and staples the app, then packages ZIP and DMG. The DMG receives a timestamped Developer ID signature from the app's signing team before notarization and stapling. Both installable bundles and the disk image itself must pass Gatekeeper, and the SHA-256 manifest is verified before exposing the final files. Existing artifacts are never overwritten and the output directory is never cleared.
 
 Notary uploads use S3 acceleration by default (`NOTARY_S3_ACCELERATION=1`).
 Set `NOTARY_S3_ACCELERATION=0` to use the standard upload endpoint from the
