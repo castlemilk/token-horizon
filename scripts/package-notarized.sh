@@ -15,6 +15,58 @@ NOTARY_TEAM_ID="${NOTARY_TEAM_ID:-}"
 NOTARY_PASSWORD="${NOTARY_APP_PASSWORD:-}"
 RELEASE_BUILD="${RELEASE_BUILD:-0}"
 die() { printf 'error: %s\n' "$1" >&2; exit 1; }
+
+# BEGIN notarization submission policy (exercised without building by test-notarization.mjs)
+NOTARY_S3_ACCELERATION="${NOTARY_S3_ACCELERATION-1}"
+case "$NOTARY_S3_ACCELERATION" in 0|1) ;; *) die "NOTARY_S3_ACCELERATION must be 0 or 1" ;; esac
+submit() {
+    local artifact="$1" result="$WORK/notary-result.json" errors="$WORK/notary-errors.txt"
+    local acceleration=--s3-acceleration
+    [ "$NOTARY_S3_ACCELERATION" = 1 ] || acceleration=--no-s3-acceleration
+    printf 'Notarizing %s\n' "$(basename "$artifact")"
+    # Keep diagnostics private: notarytool errors can contain credential details.
+    if ! xcrun notarytool submit "$artifact" "${NOTARY_ARGS[@]}" "$acceleration" --wait --output-format json > "$result" 2> "$errors"; then
+        if [ "$NOTARY_S3_ACCELERATION" != 1 ] || ! python3 - "$result" "$errors" <<'PY'
+import json, re, sys
+from pathlib import Path
+output = Path(sys.argv[1]).read_text(errors='replace')
+errors = Path(sys.argv[2]).read_text(errors='replace')
+try:
+    response = json.loads(output)
+except ValueError:
+    response = None
+# A reported submission/status must not be duplicated, even if diagnostics
+# also mention a transport problem during the processing wait.
+if isinstance(response, dict) and (response.get('status') or response.get('id')):
+    raise SystemExit(1)
+diagnostics = output + '\n' + errors
+if re.search(r'invalid credentials|unauthorized|forbidden|authentication failed|HTTP status code:\s*(401|403)\b', diagnostics, re.I):
+    raise SystemExit(1)
+raise SystemExit(0 if any(error in diagnostics for error in ('abortedUpload', 'HTTPClientError.deadlineExceeded')) else 1)
+PY
+        then
+            die "Apple notarization submission failed; no transport retry was attempted"
+        fi
+        printf 'Notarization upload failed; retrying once with S3 acceleration disabled\n'
+        if ! xcrun notarytool submit "$artifact" "${NOTARY_ARGS[@]}" --no-s3-acceleration --wait --output-format json > "$result" 2> "$errors"; then
+            die "Apple notarization submission failed after the standard-endpoint retry"
+        fi
+    fi
+    python3 - "$result" <<'PY'
+import json, sys
+try:
+    with open(sys.argv[1]) as f: result = json.load(f)
+except (OSError, ValueError):
+    raise SystemExit('Apple returned an invalid notarization result')
+status = result.get('status') if isinstance(result, dict) else None
+if status != 'Accepted':
+    status = status if status in ('Invalid', 'Rejected', 'In Progress') else 'unknown'
+    raise SystemExit('Apple did not accept notarization: ' + status)
+print('Notarization accepted: ' + str(result.get('id', '')))
+PY
+}
+# END notarization submission policy
+
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/token-horizon-notary.XXXXXX")"
 MOUNT=""
 cleanup() {
@@ -63,18 +115,6 @@ if [ "$RELEASE_BUILD" = 1 ]; then
     command -v go >/dev/null || die "Go is required for release packaging"
     [ -x "${CARGO:-$HOME/.cargo/bin/cargo}" ] || die "Cargo is required for the bundled TH Engine"
 fi
-submit() {
-    local artifact="$1" result="$WORK/notary-result.json"
-    printf 'Notarizing %s\n' "$(basename "$artifact")"
-    xcrun notarytool submit "$artifact" "${NOTARY_ARGS[@]}" --wait --output-format json > "$result"
-    python3 - "$result" <<'PY'
-import json, sys
-with open(sys.argv[1]) as f: result = json.load(f)
-if result.get('status') != 'Accepted':
-    raise SystemExit('Apple did not accept notarization: ' + str(result.get('status', 'unknown')))
-print('Notarization accepted: ' + str(result.get('id', '')))
-PY
-}
 build_env=(SKIP_INSTALL=1 SKIP_LAUNCH=1)
 [ -n "$SIGN_IDENTITY" ] && build_env+=(SIGN_IDENTITY="$SIGN_IDENTITY")
 [ -n "${MARKETING_VERSION:-}" ] && build_env+=(MARKETING_VERSION="$MARKETING_VERSION")

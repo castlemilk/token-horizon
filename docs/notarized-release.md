@@ -46,7 +46,22 @@ CURRENT_PROJECT_VERSION=3 \
 
 Artifacts are written to `dist/`. The script validates credentials before building, checks signatures on the app, widget and both sidecars, notarizes and staples the app, then packages ZIP and DMG. It notarizes and staples the DMG, checks both installable bundles with Gatekeeper, and verifies the SHA-256 manifest before exposing the final files. Existing artifacts are never overwritten and the output directory is never cleared.
 
+Notary uploads use S3 acceleration by default (`NOTARY_S3_ACCELERATION=1`).
+Set `NOTARY_S3_ACCELERATION=0` to use the standard upload endpoint from the
+first attempt; values other than `0` or `1` fail before any build or credential
+check. An accelerated submit retries once through the standard endpoint only
+after an upload transport error (`abortedUpload` or
+`HTTPClientError.deadlineExceeded`). Credential failures and Apple's returned
+submission or rejection status never trigger that retry. Both modes still
+require an `Accepted` result before stapling or exposing release artifacts.
+Raw submit diagnostics stay in the private temporary directory and are removed
+on exit, so packaging logs do not reveal credential details.
+
 Production packaging additionally sets `RELEASE_BUILD=1`. It requires clean, committed source at the exact version tag with all three canonical version pins, both sidecars, a widget, and complete Developer ID/notarization credentials. The resulting app must carry the release version and the exact clean source commit; its widget must match the app version and build counter. CI uses the workflow run number as `CFBundleVersion`.
+
+CI grants private-key access specifically to `/usr/bin/codesign` during
+certificate import. A timed signing probe checks that access and Apple
+timestamping before the production build can reach widget signing.
 
 ## Final Checks
 
