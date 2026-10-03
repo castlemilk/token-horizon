@@ -3,8 +3,16 @@ import Foundation
 final class PlanLimitsEngine {
     static let shared = PlanLimitsEngine()
     private let lock = NSLock()
+    private let fetchLimits: () -> [ProviderLimit]
+    private let clock: THClock
     private var cache: [ProviderLimit] = []
     private var lastFetch = Date.distantPast
+    private var refreshInFlight = false
+
+    init(fetchLimits: @escaping () -> [ProviderLimit] = { PlanLimitsEngine.fetchAll() }, clock: THClock = SystemClock()) {
+        self.fetchLimits = fetchLimits
+        self.clock = clock
+    }
 
     func cachedLimits() -> [ProviderLimit] {
         lock.lock(); defer { lock.unlock() }
@@ -12,25 +20,31 @@ final class PlanLimitsEngine {
     }
 
     func refreshNow() {
-        lock.lock()
-        lastFetch = .distantPast
-        lock.unlock()
-        refreshIfDue(maxAge: .infinity)
+        refresh(maxAge: 0, force: true)
     }
 
     func refreshIfDue(maxAge: TimeInterval = 60) {
+        refresh(maxAge: maxAge, force: false)
+    }
+
+    private func refresh(maxAge: TimeInterval, force: Bool) {
         lock.lock()
-        if Date().timeIntervalSince(lastFetch) < maxAge {
+        if refreshInFlight || (!force && clock.now().timeIntervalSince(lastFetch) < maxAge) {
             lock.unlock()
             return
         }
-        lastFetch = Date()
+        refreshInFlight = true
+        let fetch = fetchLimits
         lock.unlock()
         DispatchQueue.global(qos: .utility).async { [weak self] in
-            let limits = Self.fetchAll()
-            self?.lock.lock()
-            self?.cache = limits
-            self?.lock.unlock()
+            // The fetch may block; retain only its closure until it finishes.
+            let limits = fetch()
+            guard let self else { return }
+            self.lock.lock()
+            self.cache = limits
+            self.lastFetch = self.clock.now()
+            self.refreshInFlight = false
+            self.lock.unlock()
             DispatchQueue.main.async {
                 NotificationCenter.default.post(name: Notification.Name("planLimitsUpdated"), object: limits)
             }

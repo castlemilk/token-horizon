@@ -232,12 +232,24 @@ jobs:
           try { if (statSync('dist/TokenHorizon-film.mp4').size > 0) paths.push('dist/TokenHorizon-film.mp4'); } catch {}
           appendFileSync(process.env.GITHUB_OUTPUT, `files<<RELEASE_ASSETS\n${paths.join('\n')}\nRELEASE_ASSETS\n`);
           JS
+      - name: Retain validated native archives for publication recovery
+        uses: actions/upload-artifact@v4
+        with:
+          name: TokenHorizon-${{ steps.ver.outputs.version }}-${{ steps.source.outputs.commit }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            dist/TokenHorizon-${{ steps.ver.outputs.version }}.zip
+            dist/TokenHorizon-${{ steps.ver.outputs.version }}.dmg
+            dist/TokenHorizon-${{ steps.ver.outputs.version }}.sha256
+          retention-days: 7
+          if-no-files-found: error
       - name: Stage validated native assets in a draft
         id: draft
         uses: softprops/action-gh-release@v2.6.2
         with:
+          # The exact tag already exists and passed source validation. Supplying
+          # its historical commit can require workflow authorization unavailable
+          # to GITHUB_TOKEN; the existing tag determines the release source.
           tag_name: ${{ steps.ver.outputs.tag }}
-          target_commitish: ${{ steps.source.outputs.commit }}
           files: ${{ steps.assets.outputs.files }}
           fail_on_unmatched_files: true
           overwrite_files: false

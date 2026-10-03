@@ -162,6 +162,19 @@ failures stop the operation rather than falling back to stale local tags.
 the exact tag after validating its pins and clean source. It tests the native
 app, gateway, release policy and desktop authentication contracts, provisions Rust for TH Engine, signs and notarizes the app
 and DMG, then validates exactly `TokenHorizon-X.Y.Z.zip`, `.dmg` and `.sha256`.
+Before creating the draft, CI retains those three exact notarized files in a
+recovery artifact for seven days. Its name identifies the version, source
+commit and workflow run. A publication failure can therefore be recovered
+using the original signed bytes and checksum manifest without rebuilding;
+the recovery artifact contains no film or signing credentials. Verify its
+checksums and original tag before publishing, and inspect any existing draft
+before continuing so published assets remain immutable.
+
+Draft creation uses the validated existing tag without supplying a historical
+`target_commitish`. GitHub's [release API authorization rules](https://docs.github.com/en/rest/releases/releases?apiVersion=latest#create-a-release)
+can require workflow permissions when that commit's workflow files differ
+from main; `GITHUB_TOKEN` cannot receive those permissions.
+
 The release remains a draft until all three uploaded assets match the local
 sizes and SHA-256 digests. Only then is it published as a full release;
 backfills cannot displace a newer full release as latest.

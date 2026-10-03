@@ -1,5 +1,6 @@
 import Foundation
 import CryptoKit
+import Darwin
 
 final class ClaudeDiscovery {
     static let shared = ClaudeDiscovery()
@@ -254,55 +255,24 @@ final class ClaudeDiscovery {
     }
 
     private func runSecurityItemAttributes(service: String) -> String? {
-        let task = Process()
-        task.executableURL = URL(fileURLWithPath: "/usr/bin/security")
-        task.arguments = ["find-generic-password", "-s", service]
-        let stdoutPipe = Pipe()
-        task.standardOutput = stdoutPipe
-        task.standardError = Pipe()
-        do {
-            try task.run()
-            task.waitUntilExit()
-        } catch {
-            return nil
-        }
-        guard task.terminationStatus == 0 else { return nil }
-        let data = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
+        guard let data = runSecurity(arguments: ["find-generic-password", "-s", service]) else { return nil }
         return String(data: data, encoding: .utf8)
     }
 
     private func runSecurityAddGenericPassword(service: String, account: String, secret: String) -> Bool {
-        let task = Process()
-        task.executableURL = URL(fileURLWithPath: "/usr/bin/security")
-        task.arguments = ["add-generic-password", "-U", "-s", service, "-a", account, "-w", secret]
-        task.standardOutput = Pipe()
-        task.standardError = Pipe()
-        do {
-            try task.run()
-            task.waitUntilExit()
-        } catch {
-            return false
-        }
-        return task.terminationStatus == 0
+        runSecurity(arguments: ["add-generic-password", "-U", "-s", service, "-a", account, "-w", secret]) != nil
     }
 
     private func runSecurityFindGenericPassword(service: String) -> String? {
+        guard let data = runSecurity(arguments: ["find-generic-password", "-s", service, "-w"]) else { return nil }
+        return String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func runSecurity(arguments: [String]) -> Data? {
         let task = Process()
         task.executableURL = URL(fileURLWithPath: "/usr/bin/security")
-        task.arguments = ["find-generic-password", "-s", service, "-w"]
-        let stdoutPipe = Pipe()
-        let stderrPipe = Pipe()
-        task.standardOutput = stdoutPipe
-        task.standardError = stderrPipe
-        do {
-            try task.run()
-            task.waitUntilExit()
-        } catch {
-            return nil
-        }
-        guard task.terminationStatus == 0 else { return nil }
-        let data = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
-        return String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        task.arguments = arguments
+        return ClaudeSecurityProcess.runCapture(task)
     }
 
     func fetchUsageAPI(token: String, timeout: TimeInterval = 8) -> LiveUsageResult {
@@ -523,5 +493,73 @@ final class ClaudeDiscovery {
     func accounts() -> [ClaudeAccount] {
         lock.lock(); defer { lock.unlock() }
         return cachedAccounts
+    }
+}
+
+/// The Keychain CLI can emit more than a pipe's capacity. Capture to private
+/// files before waiting, and bound prompts/tool failures without logging secrets.
+/// Internal so tests run the actual helper with hermetic child executables.
+enum ClaudeSecurityProcess {
+    static func runCapture(_ task: Process, timeout: TimeInterval = 8,
+                           temporaryDirectory: URL = FileManager.default.temporaryDirectory) -> Data? {
+        guard timeout.isFinite, timeout > 0, !task.isRunning,
+              let directory = privateDirectory(in: temporaryDirectory) else { return nil }
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let outputURL = directory.appendingPathComponent("stdout")
+        guard let output = privateFile(at: outputURL),
+              let errors = privateFile(at: directory.appendingPathComponent("stderr")) else { return nil }
+        defer { try? output.close(); try? errors.close() }
+        task.standardInput = FileHandle.nullDevice
+        task.standardOutput = output
+        task.standardError = errors
+        do {
+            try task.run()
+            guard waitForExit(task, timeout: timeout) else {
+                // Only this Process's spawned child is signaled. No broad
+                // process-name matching or existing Keychain processes.
+                if task.isRunning { task.terminate() }
+                if !waitForExit(task, timeout: 0.1), task.isRunning {
+                    _ = kill(task.processIdentifier, SIGKILL)
+                }
+                _ = waitForExit(task, timeout: 0.5)
+                return nil
+            }
+            guard task.terminationStatus == 0 else { return nil }
+            let reader = try FileHandle(forReadingFrom: outputURL)
+            defer { try? reader.close() }
+            let maximumOutput = 4 * 1024 * 1024
+            let data = try reader.read(upToCount: maximumOutput + 1) ?? Data()
+            guard data.count <= maximumOutput else { return nil }
+            return data
+        } catch {
+            return nil
+        }
+    }
+
+    private static func waitForExit(_ task: Process, timeout: TimeInterval) -> Bool {
+        let deadline = ProcessInfo.processInfo.systemUptime + timeout
+        while task.isRunning {
+            let remaining = deadline - ProcessInfo.processInfo.systemUptime
+            guard remaining > 0 else { return false }
+            // Polling avoids depending on a termination callback obtaining a
+            // dispatch worker when a provider has already exhausted the pool.
+            Thread.sleep(forTimeInterval: min(0.01, remaining))
+        }
+        return true
+    }
+
+    private static func privateDirectory(in parent: URL) -> URL? {
+        var template = Array(parent.appendingPathComponent("token-horizon-claude-security.XXXXXX").path.utf8CString)
+        let path = template.withUnsafeMutableBufferPointer { buffer -> String? in
+            guard let base = buffer.baseAddress, let created = mkdtemp(base) else { return nil }
+            return String(cString: created)
+        }
+        return path.map { URL(fileURLWithPath: $0, isDirectory: true) }
+    }
+
+    private static func privateFile(at url: URL) -> FileHandle? {
+        let descriptor = url.path.withCString { Darwin.open($0, O_RDWR | O_CREAT | O_EXCL, mode_t(0o600)) }
+        guard descriptor >= 0 else { return nil }
+        return FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
     }
 }
