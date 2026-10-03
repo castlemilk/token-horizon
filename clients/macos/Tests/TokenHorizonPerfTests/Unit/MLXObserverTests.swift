@@ -183,6 +183,8 @@ final class MLXObserverTests: XCTestCase {
     func testSnapshotUsesWeightedRecentTelemetryRate() {
         let model = "qwen-test-\(UUID().uuidString)"
         let store = OllamaTelemetryStore.shared
+        store.resetForTesting(storageURL: nil)
+        defer { store.resetForTesting(storageURL: nil) }
         store.record(OllamaTelemetrySample(model: model, completedAt: Date(timeIntervalSince1970: 1), evalCount: 70, evalDurationNs: 1_000_000_000, promptEvalCount: nil, promptEvalDurationNs: nil))
         store.record(OllamaTelemetrySample(model: model, completedAt: Date(timeIntervalSince1970: 2), evalCount: 1, evalDurationNs: 100_000_000, promptEvalCount: nil, promptEvalDurationNs: nil))
 

@@ -15,13 +15,23 @@ APP=TokenHorizon.app
 INSTALLED=/Applications/TokenHorizon.app
 BIN=$MACOS/.build/arm64-apple-macosx/release/TokenHorizon
 GIT_SHA=$(git rev-parse --short HEAD 2>/dev/null || echo "dirty")
-if git status --short 2>/dev/null | grep -q .; then GIT_SHA="${GIT_SHA}-dirty"; fi
+# Read the whole status under pipefail; an early grep exit can SIGPIPE git
+# in a busy checkout and incorrectly stamp a modified build as clean.
+if git status --short 2>/dev/null | grep . >/dev/null; then GIT_SHA="${GIT_SHA}-dirty"; fi
 BUILT_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 # Release pipeline overrides: version from the tag, Developer ID identity for
 # hardened-runtime signing (notarization requires it). Unset = dev defaults.
 VERSION="${MARKETING_VERSION:-0.3.14}"
 BUILD_NUMBER="${CURRENT_PROJECT_VERSION:-8}"
 SIGN_IDENTITY="${SIGN_IDENTITY:-}"
+[[ "$VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || {
+    echo "FATAL: MARKETING_VERSION must be a canonical stable X.Y.Z version"
+    exit 1
+}
+[[ "$BUILD_NUMBER" =~ ^[1-9][0-9]*$ ]] || {
+    echo "FATAL: CURRENT_PROJECT_VERSION must be a positive build number"
+    exit 1
+}
 
 # Never run this script via sudo: it cannot bypass macOS App Management
 # (TCC) protection on /Applications, and a root build leaves root-owned
@@ -37,6 +47,78 @@ if [ "$(id -u)" -eq 0 ] && [ -z "${SKIP_INSTALL:-}" ]; then
     exit 1
 fi
 
+if [ -n "${INSTALL_RELEASE_APP:-}" ]; then
+    # Install an authenticated release download without rebuilding or changing
+    # its signatures. Its archive stamp remains the serving health target.
+    RELEASE_STATUS="$(git status --porcelain)"
+    [ -z "$RELEASE_STATUS" ] || { echo "FATAL: release installation requires a clean source checkout"; exit 1; }
+    node scripts/release.mjs check "$VERSION"
+    RELEASE_TAG_COMMIT="$(git rev-parse --verify "refs/tags/v$VERSION^{commit}")" || { echo "FATAL: release installation requires the exact v$VERSION tag"; exit 1; }
+    [ "$RELEASE_TAG_COMMIT" = "$(git rev-parse HEAD)" ] || { echo "FATAL: release installation source must be at v$VERSION"; exit 1; }
+    RELEASE_INFO="$(python3 - "$INSTALL_RELEASE_APP" "$VERSION" "$GIT_SHA" "$INSTALLED" <<'PY'
+import json, os, pathlib, plistlib, re, sys
+
+def reject(message):
+    raise SystemExit('FATAL: ' + message)
+
+requested = pathlib.Path(os.path.abspath(sys.argv[1]))
+if requested.is_symlink() or not requested.is_dir():
+    reject('INSTALL_RELEASE_APP must be an existing app directory, not a symlink')
+source = requested.resolve(strict=True)
+installed = pathlib.Path(sys.argv[4]).resolve()
+if source == installed or installed in source.parents:
+    reject('The release source must be outside the installed app')
+if '\n' in str(source) or '\r' in str(source):
+    reject('The release source path must not contain line breaks')
+
+def inside(relative):
+    path = source / relative
+    try:
+        resolved = path.resolve(strict=True)
+        resolved.relative_to(source)
+    except (OSError, ValueError, RuntimeError):
+        reject('Missing or external bundle component: ' + relative)
+    return resolved
+
+def plist(relative):
+    try:
+        with inside(relative).open('rb') as handle:
+            return plistlib.load(handle)
+    except (OSError, ValueError, plistlib.InvalidFileException):
+        reject('Invalid bundle metadata: ' + relative)
+
+info = plist('Contents/Info.plist')
+expected = {'CFBundleIdentifier': 'local.benebsworth.token-horizon',
+            'CFBundleExecutable': 'TokenHorizon', 'CFBundlePackageType': 'APPL',
+            'CFBundleShortVersionString': sys.argv[2], 'THGitSHA': sys.argv[3]}
+for key, value in expected.items():
+    if info.get(key) != value:
+        reject('Release bundle ' + key + ' differs from this source checkout')
+built_at, build_number = info.get('THBuiltAt'), info.get('CFBundleVersion')
+if not isinstance(built_at, str) or not built_at.strip():
+    reject('Release bundle lacks its build time')
+if not isinstance(build_number, str) or not re.fullmatch(r'[1-9][0-9]*', build_number):
+    reject('Release bundle lacks a positive build counter')
+widget = plist('Contents/PlugIns/TokenHorizonWidget.appex/Contents/Info.plist')
+if widget.get('CFBundleShortVersionString') != sys.argv[2] or widget.get('CFBundleVersion') != build_number:
+    reject('Release widget version or build counter differs from the app')
+for executable in ['Contents/MacOS/TokenHorizon',
+                   'Contents/Resources/token-horizon-gateway', 'Contents/Resources/th-engine',
+                   'Contents/PlugIns/TokenHorizonWidget.appex/Contents/MacOS/TokenHorizonWidget']:
+    path = inside(executable)
+    if not path.is_file() or not os.access(path, os.X_OK):
+        reject('Release bundle executable is missing: ' + executable)
+print(json.dumps({'app': str(source), 'built_at': built_at, 'build_number': build_number}))
+PY
+    )"
+    APP="$(printf '%s' "$RELEASE_INFO" | python3 -c 'import json,sys; print(json.load(sys.stdin)["app"])')"
+    BUILT_AT="$(printf '%s' "$RELEASE_INFO" | python3 -c 'import json,sys; print(json.load(sys.stdin)["built_at"])')"
+    BUILD_NUMBER="$(printf '%s' "$RELEASE_INFO" | python3 -c 'import json,sys; print(json.load(sys.stdin)["build_number"])')"
+    codesign --verify --deep --strict --verbose=2 "$APP"
+    spctl --assess --type execute --verbose=2 "$APP"
+    xcrun stapler validate "$APP"
+    echo "verified notarized release v${VERSION} build ${BUILD_NUMBER} (${GIT_SHA}, ${BUILT_AT})"
+else
 (cd "$MACOS" && swift build -c release)
 
 # Gateway sidecar (portable Go binary, supervised by the app at runtime).
@@ -50,7 +132,9 @@ if [ -z "${TOKEN_HORIZON_NO_GATEWAY:-}" ]; then
     # macOS kills quarantined Mach-O binaries missing LC_UUID (dyld: "missing
     # LC_UUID load command" then SIGABRT) — a real release shipped a dead
     # sidecar because an old Go internal linker omits it. gate the toolchain.
-    if command -v otool >/dev/null 2>&1 && ! otool -l gateway/token-horizon-gateway | grep -q LC_UUID; then
+    # Consume otool's entire output: grep -q exits early and can SIGPIPE
+    # otool under pipefail, falsely rejecting a binary that has LC_UUID.
+    if command -v otool >/dev/null 2>&1 && ! otool -l gateway/token-horizon-gateway | grep LC_UUID >/dev/null; then
         echo "FATAL: gateway sidecar lacks LC_UUID (Go toolchain too old for Mach-O LC_UUID emission; need the version pinned in gateway/go.mod)"
         exit 1
     fi
@@ -66,7 +150,7 @@ if [ -z "${TOKEN_HORIZON_NO_TH_ENGINE:-}" ]; then
     if [ -x "$CARGO" ]; then
         (cd engine && "$CARGO" build --release) || { echo "FATAL: th-engine build failed"; exit 1; }
         [ -x engine/target/release/th-engine ] || { echo "FATAL: th-engine build produced no binary"; exit 1; }
-        if command -v otool >/dev/null 2>&1 && ! otool -l engine/target/release/th-engine | grep -q LC_UUID; then
+        if command -v otool >/dev/null 2>&1 && ! otool -l engine/target/release/th-engine | grep LC_UUID >/dev/null; then
             echo "FATAL: th-engine lacks LC_UUID"
             exit 1
         fi
@@ -137,6 +221,7 @@ if [ -n "$SIGN_IDENTITY" ]; then
 else
     codesign --force --sign - "$APP"
 fi
+fi
 
 if [ -z "${SKIP_INSTALL:-}" ] && pgrep -x TokenHorizon >/dev/null; then
     pkill -x TokenHorizon || true
@@ -174,9 +259,17 @@ if [ -z "${SKIP_LAUNCH:-}" ] && [ -z "${SKIP_INSTALL:-}" ]; then
 
 # Health gate: the SERVING instance must report our stamp, or fail loudly.
 # A green build that isn't what's on :8765 is exactly the confusion we ended.
-for i in $(seq 1 30); do
+for _ in $(seq 1 30); do
     HEALTH=$(curl -s -m 2 localhost:8765/health 2>/dev/null || true)
-    if echo "$HEALTH" | grep -q "\"commit\":\"${GIT_SHA}\""; then
+    if printf '%s' "$HEALTH" | python3 -c '
+import json, sys
+try:
+    build = json.load(sys.stdin).get("build", {})
+    expected = {"commit": sys.argv[1], "built_at": sys.argv[2], "version": sys.argv[3]}
+    sys.exit(0 if all(build.get(key) == value for key, value in expected.items()) else 1)
+except (ValueError, AttributeError):
+    sys.exit(1)
+' "$GIT_SHA" "$BUILT_AT" "$VERSION"; then
         echo "verified serving build ${GIT_SHA} (${BUILT_AT})"
         if [ -n "${TOKEN_HORIZON_NO_GATEWAY:-}" ]; then
             echo "TOKEN_HORIZON_NO_GATEWAY=1: skipping gateway gate"
@@ -184,7 +277,7 @@ for i in $(seq 1 30); do
         fi
         # Gateway gate: the app must ship with its proxy available. The
         # supervisor needs a moment after launch to attach/spawn the sidecar.
-        for j in $(seq 1 20); do
+        for _ in $(seq 1 20); do
             GW_PORT=$(curl -s -m 2 localhost:8765/health 2>/dev/null | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('llm_gateway_port') or '')" 2>/dev/null || true)
             if [ -n "$GW_PORT" ]; then
                 echo "verified gateway sidecar on :$GW_PORT"
@@ -197,12 +290,16 @@ for i in $(seq 1 30); do
     fi
     sleep 1
 done
-echo "FATAL: :8765 is not serving build ${GIT_SHA} after 30s. Health said:"
+echo "FATAL: :8765 is not serving v${VERSION} build ${GIT_SHA} (${BUILT_AT}) after 30s. Health said:"
 echo "$HEALTH" | head -c 600; echo
 exit 1
 fi
 if [ -n "${SKIP_INSTALL:-}" ]; then
-    echo "SKIP_INSTALL=1: built $APP in place (not installed to $INSTALLED)"
+    if [ -n "${INSTALL_RELEASE_APP:-}" ]; then
+        echo "SKIP_INSTALL=1: verified release $APP (not installed to $INSTALLED)"
+    else
+        echo "SKIP_INSTALL=1: built $APP in place (not installed to $INSTALLED)"
+    fi
 else
     echo "SKIP_LAUNCH=1: installed to $INSTALLED without launching"
 fi

@@ -561,6 +561,14 @@ struct LeaderboardRankedEntry: Codable, Identifiable {
 final class LeaderboardStore {
     static let shared = LeaderboardStore()
 
+    private static let cloudPublishSession: URLSession = {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.httpCookieStorage = nil
+        configuration.httpShouldSetCookies = false
+        configuration.urlCache = nil
+        return URLSession(configuration: configuration, delegate: CloudPublishRedirectGuard(), delegateQueue: nil)
+    }()
+
     private let lock = NSLock()
     private let path: String
     private var entries: [LeaderboardEntry] = []
@@ -1759,6 +1767,28 @@ final class LeaderboardStore {
     private var lastPublishedTokens: [String: Int] = [:]
     private var cloudEtag: String?
 
+    /// Avoid announcing a fresh sync for an automatic tick that would only
+    /// return cached rows. Reads and writes retain their independent policies.
+    func hasSyncWork(for backend: LeaderboardSyncBackend, now: Date = Date()) -> Bool {
+        let key: String
+        let writable: Bool
+        switch backend {
+        case .cloud:
+            key = "cloud"
+            writable = true
+        case .sheets:
+            key = "sheets"
+            writable = Self.resolveGoogleSheetsURL(SettingsStore.shared.leaderboardSheetsURL).writeURL != nil
+        }
+        lock.lock()
+        defer { lock.unlock() }
+        if LeaderboardSyncPolicy.shouldPull(now: now, lastPull: lastPullAt[key], forced: false) { return true }
+        guard writable, let local = entries.first(where: { $0.isLocal }) else { return false }
+        return LeaderboardSyncPolicy.shouldPublish(now: now, lastPublish: lastPublishAt[key],
+                                                  lastTokens: lastPublishedTokens[key], currentTokens: local.tokensAll,
+                                                  forced: false)
+    }
+
     static func headerValue(_ response: URLResponse?, _ name: String) -> String? {
         guard let http = response as? HTTPURLResponse else { return nil }
         for (key, value) in http.allHeaderFields {
@@ -1795,14 +1825,7 @@ final class LeaderboardStore {
 
     func cloudLeaderboardURL() -> URL? {
         guard let base = cloudBaseURL() else { return nil }
-        let trimmed = base.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        if trimmed.hasSuffix("/leaderboard") {
-            return URL(string: trimmed)
-        }
-        if trimmed.hasSuffix("/api") {
-            return URL(string: "\(trimmed)/leaderboard")
-        }
-        return URL(string: "\(trimmed)/api/leaderboard")
+        return CloudPublishCredentials.endpointURL(baseURL: base)
     }
 
     /// Pull the team board from the Cloudflare Worker + R2 backend.
@@ -1901,18 +1924,24 @@ final class LeaderboardStore {
         req.httpMethod = "POST"
         req.timeoutInterval = 8.0
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        let token = SettingsStore.shared.leaderboardCloudToken
+        let settings = SettingsStore.shared
+        let desktopAccount = DesktopCloudAccountStore.shared.account(baseURL: settings.leaderboardCloudURL, handle: local.handle)
+        let token = desktopAccount?.accessToken ?? settings.leaderboardCloudToken
+        guard !token.isEmpty else {
+            completion(.failure(NSError(domain: "TokenHorizon", code: 401, userInfo: [NSLocalizedDescriptionKey:
+                "Connect your account first. Click Sync now to sign in and choose your profile."])))
+            return
+        }
         if !token.isEmpty {
             req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         }
-        let encoder = JSONEncoder()
-        encoder.dateEncodingStrategy = .secondsSince1970
-        guard let body = try? encoder.encode(local) else {
+        let claimToken = SettingsStore.shared.leaderboardClaimToken(endpoint: url, handle: local.handle)
+        guard let body = try? CloudPublishCredentials.requestBody(entry: local, claimToken: claimToken) else {
             completion(.failure(NSError(domain: "TokenHorizon", code: 500, userInfo: [NSLocalizedDescriptionKey: "Failed to serialize entry JSON."])))
             return
         }
         req.httpBody = body
-        URLSession.shared.dataTask(with: req) { [weak self] _, resp, err in
+        Self.cloudPublishSession.dataTask(with: req) { [weak self] data, resp, err in
             guard let self else { return }
             if let err {
                 completion(.failure(err))
@@ -1920,9 +1949,25 @@ final class LeaderboardStore {
             }
             guard let http = resp as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
                 let code = (resp as? HTTPURLResponse)?.statusCode ?? 500
-                let msg = code == 401 ? "Cloud rejected the write token — check Settings." : "Cloud publish returned HTTP \(code)."
+                let msg: String
+                if token.hasPrefix("thd_"), code == 401 || code == 403 {
+                    DesktopCloudAccountStore.shared.invalidate(accessToken: token)
+                    msg = "Your account connection expired or no longer owns this profile. Click Sync now to sign in and reconnect."
+                } else { msg = CloudPublishCredentials.failureMessage(statusCode: code, data: data) }
                 completion(.failure(NSError(domain: "TokenHorizon", code: code, userInfo: [NSLocalizedDescriptionKey: msg])))
                 return
+            }
+            guard let data, let acknowledgment = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  acknowledgment["ok"] as? Bool == true,
+                  CloudPublishCredentials.effectiveHandle(acknowledgment["handle"] as? String ?? "") == CloudPublishCredentials.effectiveHandle(local.handle) else {
+                completion(.failure(NSError(domain: "TokenHorizon", code: 502, userInfo: [NSLocalizedDescriptionKey:
+                    "The cloud did not confirm your publish. Try Sync now again."])))
+                return
+            }
+            if let issued = CloudPublishCredentials.responseClaimToken(data: data, expectedHandle: local.handle) {
+                // Settings can change while this request is in flight. Associate
+                // the response with the immutable endpoint/handle we sent.
+                SettingsStore.shared.setLeaderboardClaimToken(issued, endpoint: url, handle: local.handle)
             }
             self.lock.lock()
             self.lastPublishAt["cloud"] = Date()

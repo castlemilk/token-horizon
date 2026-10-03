@@ -951,6 +951,35 @@ describe('Cloudflare Worker API', () => {
     assert.deepEqual(await empty.json(), { profiles: [] });
   });
 
+  it('account profiles strictly reads R2 without seeding, backfill or starter fallback', async () => {
+    const clientId = 'test-account-storage.apps.googleusercontent.com';
+    const { keyPair, jwk } = await makeGoogleKeyPair();
+    const env = createGoogleEnv(clientId, jwk);
+    const token = await makeGoogleToken(keyPair, { clientId, sub: 'alice-sub', email: 'alice@example.com' });
+    const read = () => worker.fetch(req('/api/account/profiles', { headers: { 'X-Google-Token': token } }), env);
+    let writes = 0;
+    const put = async () => { ++writes; };
+    for (const bucket of [undefined,
+      { get: async () => { throw new Error('private R2 failure'); }, put },
+      { get: async () => ({ text: async () => '{invalid' }), put },
+      { get: async () => ({ text: async () => '{"profiles":[]}' }), put }]) {
+      env.LEADERBOARD_BUCKET = bucket;
+      const response = await read();
+      assert.equal(response.status, 503);
+      assert.equal(response.headers.get('Cache-Control'), 'private, no-store');
+      assert.deepEqual(await response.json(), { ok: false, error: 'Could not load your profiles. Try again.' });
+    }
+    env.LEADERBOARD_BUCKET = { get: async () => null, put };
+    assert.deepEqual(await (await read()).json(), { profiles: [] }, 'A missing object is genuinely empty, without starter seeding');
+    env.LEADERBOARD_BUCKET = { get: async () => ({ text: async () => JSON.stringify([
+      { handle: 'alice', claimed: true, ownerId: 'google:alice-sub' }
+    ]) }), put };
+    const owned = await read();
+    assert.equal(owned.status, 200);
+    assert.deepEqual(await owned.json(), { profiles: [{ handle: 'alice', displayName: 'alice' }] });
+    assert.equal(writes, 0, 'Private discovery never writes analytics backfills or seed data');
+  });
+
   it('account profiles rejects anonymous, expired and legacy production credentials', async () => {
     const clientId = 'test-account-denied.apps.googleusercontent.com';
     const { keyPair, jwk } = await makeGoogleKeyPair();

@@ -9,6 +9,12 @@
 #
 # Run:  make lint   (or: swiftlint lint)
 
+included:
+  - clients/macos/Sources
+  - clients/macos/Tests
+  - clients/macos/Widget
+  - scripts/make-icon.swift
+
 excluded:
   - .build
   - .swiftpm

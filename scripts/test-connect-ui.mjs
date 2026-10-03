@@ -8,7 +8,7 @@ const browser = await (await resolveChromium()).launch({ channel: 'chrome', head
 const google = { provider: 'google', sub: 'google-42', name: 'Aurora Builder', email: 'shared@example.com', picture: '' };
 const github = { provider: 'github', sub: '42', name: 'Orbit Builder', email: 'shared@example.com', login: 'orbit-builder', picture: '' };
 const mime = { '.js': 'text/javascript', '.css': 'text/css', '.ttf': 'font/ttf', '.svg': 'image/svg+xml' };
-async function fixture({ user = null, mode = 'authorize', exchange = 'ready', providerCallback = 'immediate', width = 1440, remembered = null, holdFirstSession = false, holdFirstConnections = false } = {}) {
+async function fixture({ user = null, mode = 'authorize', exchange = 'ready', providerCallback = 'immediate', width = 1440, remembered = null, holdFirstSession = false, holdFirstConnections = false, desktopState = 'pending', desktopFailure = null, desktopExpired = false } = {}) {
   const context = await browser.newContext({ viewport: { width, height: 1000 }, reducedMotion: 'reduce' });
   await context.addInitScript(value => {
     if (value) localStorage.setItem('th_auth_hint', JSON.stringify(value));
@@ -21,6 +21,7 @@ async function fixture({ user = null, mode = 'authorize', exchange = 'ready', pr
   const sessionHeld = new Promise(resolve => { releaseSession = resolve; });
   const connectionsHeld = new Promise(resolve => { releaseConnections = resolve; });
   let currentUser = user, releaseExchange;
+  let approvalFailure = desktopFailure;
   const held = new Promise(resolve => { releaseExchange = resolve; });
   const json = (route, value, status = 200) => route.fulfill({ status, contentType: 'application/json', headers: { 'Cache-Control': 'private,no-store' }, body: JSON.stringify(value) });
   const session = () => ({ ok: true, authenticated: Boolean(currentUser), user: currentUser, expiresAt: currentUser ? Date.now() + 86400000 : null });
@@ -34,10 +35,18 @@ async function fixture({ user = null, mode = 'authorize', exchange = 'ready', pr
     if (url.pathname === '/api/auth/google') { if (exchange === 'held') await held; if (exchange === 'error') return json(route, { error: 'Identity could not be verified.' }, 401); currentUser = google; return json(route, session()); }
     if (url.pathname === '/api/auth/logout') { currentUser = null; return json(route, session()); }
     if (url.pathname === '/api/auth/github') return route.fulfill({ contentType: 'text/html', body: '<main id="github-start">Provider redirect intercepted</main>' });
+    if (url.pathname === '/api/desktop/request') return desktopExpired
+      ? json(route, { ok: false, code: 'connection_expired', error: 'This connection expired.' }, 410)
+      : json(route, { ok: true, id: 'a'.repeat(64), handle: 'aurora', expiresAt: Date.now() + 600000, status: desktopState });
+    if (url.pathname === '/api/desktop/approve') {
+      if (approvalFailure) { const failure = approvalFailure; approvalFailure = null; return json(route, failure, failure.status || 403); }
+      const fields = JSON.parse(request.postData());
+      return json(route, { ok: true, status: fields.decision === 'deny' ? 'denied' : 'approved', handle: fields.handle });
+    }
     if (url.pathname === '/oauth/authorize' && request.method() === 'POST') return json(route, { redirect: origin + '/fixture-return' });
     if (url.pathname === '/fixture-return') return route.fulfill({ contentType: 'text/html', body: '<main id="returned">Connected</main>' });
     if (url.pathname === '/oauth/connections') { const snapshot = { connections: [{ id: 'grant42', name: currentUser?.provider === 'github' ? 'GitHub Tool' : 'Google Tool', destination: 'localhost:8765', scope: ['account:read'] }], cursor: null, name: currentUser?.name }; if (++connectionReads === 1 && holdFirstConnections) await connectionsHeld; return json(route, snapshot); }
-    if (url.pathname === '/connect' || url.pathname === '/oauth/authorize') return route.fulfill({ contentType: 'text/html', headers: Object.fromEntries(pageHeaders()), body: connectPage({ mode, clientId: 'test-web-client', handle: 'browser-nonce', githubAuth: true, webSessions: true, clientName: 'Test Connector', redirect: 'localhost:4567' }) });
+    if (url.pathname === '/connect' || url.pathname === '/oauth/authorize') return route.fulfill({ contentType: 'text/html', headers: Object.fromEntries(pageHeaders()), body: connectPage({ mode, desktopId: mode === 'desktop' ? 'a'.repeat(64) : '', clientId: 'test-web-client', handle: 'browser-nonce', githubAuth: true, webSessions: true, clientName: 'Test Connector', redirect: 'localhost:4567' }) });
     const file = path.resolve(root, url.pathname.slice(1));
     if (!file.startsWith(root + path.sep)) return route.fulfill({ status: 404, body: '' });
     try { return route.fulfill({ contentType: mime[path.extname(file)] || 'application/octet-stream', body: await fs.readFile(file) }); }
@@ -46,6 +55,53 @@ async function fixture({ user = null, mode = 'authorize', exchange = 'ready', pr
   return { page, context, requests, release: releaseExchange, releaseSession, releaseConnections, setUser(value) { currentUser = value; }, async close() { releaseExchange(); releaseSession(); releaseConnections(); await context.close(); assert.deepEqual(errors, [], 'Connector must not throw browser errors'); } };
 }
 try {
+  console.log('Desktop sync: sign-in requires explicit profile approval and returns visible completion...');
+  {
+    const f = await fixture({ mode: 'desktop', remembered: google });
+    try {
+      await f.page.goto(origin + '/connect?desktop=' + 'a'.repeat(64)); await f.page.waitForSelector('.test-gsi');
+      await f.page.waitForFunction(() => !document.querySelector('#desktop-handle').disabled);
+      assert.equal(await f.page.locator('#desktop-handle').inputValue(), 'aurora');
+      assert(await f.page.locator('#allow').isDisabled());
+      assert.equal(f.requests.filter(request => request.path === '/api/desktop/approve').length, 0);
+      await f.page.locator('.test-gsi').click(); await f.page.waitForFunction(() => !document.querySelector('#allow').disabled);
+      assert.equal(f.requests.filter(request => request.path === '/api/desktop/approve').length, 0, 'Sign-in alone never approves desktop publication');
+      await f.page.locator('#allow').click(); await f.page.waitForSelector('#desktop-result:not([hidden])');
+      assert.match(await f.page.locator('#desktop-result').innerText(), /Return to Token Horizon.*sync continues automatically/s);
+      assert(await f.page.locator('#desktop-form').isHidden());
+      const approved = JSON.parse(f.requests.find(request => request.path === '/api/desktop/approve').body);
+      assert.deepEqual(approved, { id: 'a'.repeat(64), handle: 'aurora', decision: 'allow' });
+      assert.equal(f.requests.some(request => request.path === '/oauth/connections' || request.path === '/oauth/authorize'), false);
+      assert.ok(!(await f.page.evaluate(() => JSON.stringify({ ...localStorage })) ).includes('signed-provider-credential'));
+    } finally { await f.close(); }
+  }
+  console.log('Desktop sync: remembered GitHub account chooses another handle after ownership conflict...');
+  {
+    const f = await fixture({ mode: 'desktop', user: github, width: 320, desktopFailure: { code: 'profile_owned', error: 'This handle belongs to another account. Choose another handle.' } });
+    try {
+      await f.page.goto(origin + '/connect?desktop=' + 'a'.repeat(64)); await f.page.waitForFunction(() => !document.querySelector('#allow').disabled);
+      assert.match(await f.page.locator('#identity').innerText(), /Orbit Builder/);
+      const dimensions = await f.page.evaluate(() => ({ width: innerWidth, scroll: document.documentElement.scrollWidth })); assert(dimensions.scroll <= dimensions.width + 1, JSON.stringify(dimensions));
+      await f.page.locator('#allow').click(); await f.page.waitForFunction(() => /belongs to another/.test(document.querySelector('#status').textContent));
+      assert(await f.page.locator('#allow').isEnabled());
+      await f.page.locator('#desktop-handle').fill('orbit-builder'); await f.page.locator('#allow').click();
+      await f.page.waitForSelector('#desktop-result:not([hidden])');
+      assert.equal(await f.page.locator('.desktop-profile-link').getAttribute('href'), '/u/orbit-builder');
+      assert.equal(f.requests.filter(request => request.path === '/api/desktop/approve').length, 2);
+    } finally { await f.close(); }
+  }
+  console.log('Desktop sync: expired, cancelled and completed requests have clear terminal states...');
+  for (const state of ['expired', 'deny', 'approved', 'exchanged', 'denied']) {
+    const f = await fixture({ mode: 'desktop', desktopState: ['approved', 'exchanged', 'denied'].includes(state) ? state : 'pending', desktopExpired: state === 'expired' });
+    try {
+      await f.page.goto(origin + '/connect?desktop=' + 'a'.repeat(64));
+      if (state === 'deny') { await f.page.waitForFunction(() => !document.querySelector('#desktop-form [value="deny"]').disabled); await f.page.locator('#desktop-form [value="deny"]').click(); }
+      await f.page.waitForSelector('#desktop-result:not([hidden])');
+      assert(await f.page.locator('#desktop-form').isHidden());
+      assert.match(await f.page.locator('#connection-title').innerText(), state === 'expired' ? /expired/i : ['deny', 'denied'].includes(state) ? /cancelled/i : /connected/i);
+      assert.equal(f.requests.filter(request => request.path === '/api/desktop/approve').length, state === 'deny' ? 1 : 0);
+    } finally { await f.close(); }
+  }
   console.log('Connector: remembered GitHub identity still requires explicit permission approval...');
   {
     const f = await fixture({ user: github });

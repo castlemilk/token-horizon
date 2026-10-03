@@ -73,6 +73,8 @@ final class MLXServerMetricsTests: XCTestCase {
     }
 
     func testSnapshotPrefersTelemetryProxyOverRunnerMetrics() {
+        OllamaTelemetryStore.shared.resetForTesting(storageURL: nil)
+        defer { OllamaTelemetryStore.shared.resetForTesting(storageURL: nil) }
         let port = 18938
         let command = "python -m mlx_vlm server --model \(model) --host 127.0.0.1 --port \(port)"
         let url = URL(string: "http://127.0.0.1:\(port)/metrics")!

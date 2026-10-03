@@ -3,7 +3,12 @@ import SwiftUI
 struct DashboardTabs: View {
     @ObservedObject var model: UIModel
     var compact: Bool = true
-    @State private var tab: DashboardTab = .activity
+    @State private var tab: DashboardTab = .tokens
+    @State private var settingsSection: AppSettingsSection = .general
+    @State private var profileSaveNotice: String?
+    @State private var connectionSaveNotice: String?
+    @ObservedObject private var syncController = LeaderboardSyncController.shared
+    @ObservedObject private var cloudSignIn = CloudSignInController.shared
     @State private var heatmapExpanded = false
     @State private var cookieDraft: String = ""
     @State private var notifyDraft: Bool = true
@@ -12,6 +17,8 @@ struct DashboardTabs: View {
     @State private var launchDraft: Bool = false
     @State private var persistenceDraft: Bool = true
     @State private var cacheStatusMessage: String? = nil
+    @State private var cacheSummary: String?
+    @State private var cacheResetRunning = false
     @State private var modelSearch: String = ""
     @State private var modelSortColumn: ModelTableColumn = .sweBench
     @State private var modelSortAscending: Bool = false
@@ -29,8 +36,6 @@ struct DashboardTabs: View {
     @State private var leaderboardTeamFilter: String = ""
     @State private var leaderboardShareFormat: ShareCardFormat = .markdown
     @State private var leaderboardCopiedNotice: Bool = false
-    @State private var leaderboardPublishing: Bool = false
-    @State private var leaderboardPublishNotice: String? = nil
     @State private var selectedLeaderboardEntry: LeaderboardRankedEntry? = nil
     @State private var leaderboardHandleDraft: String = SettingsStore.shared.leaderboardHandle
     @State private var leaderboardTeamDraft: String = SettingsStore.shared.leaderboardTeam
@@ -40,13 +45,16 @@ struct DashboardTabs: View {
     @State private var leaderboardSheetsDraft: String = SettingsStore.shared.leaderboardSheetsURL
     @State private var leaderboardCloudDraft: String = SettingsStore.shared.leaderboardCloudURL
     @State private var leaderboardCloudTokenDraft: String = SettingsStore.shared.leaderboardCloudToken
+    @State private var leaderboardClaimTokenDraft: String = ""
     @State private var leaderboardAutoSyncDraft: Bool = SettingsStore.shared.leaderboardAutoSync
-    @State private var leaderboardSheetsNotice: String? = nil
-    @State private var leaderboardShowConfig: Bool = false
+        && (SettingsStore.shared.leaderboardCloudConfigured || !SettingsStore.shared.leaderboardSheetsURL.isEmpty)
+    @State private var syncDestinationDraft: String = SettingsStore.shared.leaderboardCloudConfigured
+        || SettingsStore.shared.leaderboardSheetsURL.isEmpty ? "cloud" : "sheets"
     @ObservedObject private var updater = SelfUpdater.shared
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
+            appHeader
             tabBar
             Divider().overlay(Color.white.opacity(0.12))
             ScrollView(.vertical, showsIndicators: false) {
@@ -70,56 +78,203 @@ struct DashboardTabs: View {
                         .onChange(of: geo.size.height) { _ in planViewportH = geo.size.height }
                 }
             )
+            Divider().overlay(Color.white.opacity(0.12))
+            webShortcuts
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .onAppear { NotificationCenter.default.post(name: .refreshTrends, object: nil) }
+        .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity, alignment: .topLeading)
+        .onReceive(NotificationCenter.default.publisher(for: .selectDashboardTab)) { note in
+            guard !compact, let destination = note.object as? DashboardTab else { return }
+            tab = destination
+            if let section = note.userInfo?["settingsSection"] as? AppSettingsSection {
+                settingsSection = section
+            }
+        }
+        .onAppear {
+            if compact {
+                tab = model.compactDashboardTab
+                settingsSection = model.compactSettingsSection
+            }
+            NotificationCenter.default.post(name: .refreshTrends, object: nil)
+        }
+        .onChange(of: tab) { destination in
+            if compact { model.compactDashboardTab = destination }
+        }
+        .onChange(of: settingsSection) { section in
+            if compact { model.compactSettingsSection = section }
+        }
         .sheet(item: $selectedMLXProcess) { process in
             MLXRunnerDetailView(process: process)
+        }
+        .sheet(isPresented: Binding(get: { !compact && cloudSignIn.isPresented },
+                                    set: { if !$0 && !compact { cloudSignIn.cancel() } })) {
+            CloudSignInView(controller: cloudSignIn)
+        }
+    }
+
+    private var appHeader: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Token Horizon")
+                        .font(.system(size: 16, weight: .semibold))
+                    Text(syncController.statusText)
+                        .font(.system(size: 11))
+                        .foregroundStyle(syncController.lastError == nil ? Color.white.opacity(0.7) : Color.orange)
+                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
+                    if !syncController.isSyncing, syncController.lastError == nil,
+                       let syncedAt = syncController.lastSuccessAt {
+                        (Text("Last completed ") + Text(syncedAt, style: .relative) + Text(" ago"))
+                            .font(.system(size: 10)).foregroundStyle(.white.opacity(0.7))
+                    }
+                }
+                Spacer(minLength: 8)
+                Button { syncController.syncNow() } label: {
+                    HStack(spacing: 6) {
+                        if syncController.isSyncing {
+                            ProgressView().controlSize(.small)
+                        } else {
+                            Image(systemName: "arrow.triangle.2.circlepath")
+                        }
+                        Text(syncController.isSyncing ? "Syncing…" : "Sync now")
+                    }
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(.black)
+                    .padding(.horizontal, 12).padding(.vertical, 8)
+                    .background(RoundedRectangle(cornerRadius: 8).fill(Color.cyan))
+                }
+                .buttonStyle(.plain)
+                .disabled(syncController.isSyncing)
+                .help("Refresh local usage, publish your sharing preferences, and update cloud rankings")
+                Button { openSettings() } label: {
+                    Image(systemName: "gearshape")
+                        .font(.system(size: 15))
+                        .frame(width: 32, height: 32)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help("Settings")
+                .accessibilityLabel("Open Settings")
+                .keyboardShortcut(",", modifiers: .command)
+                if compact {
+                    Button {
+                        NotificationCenter.default.post(name: .dismissNotch, object: nil)
+                    } label: {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 12, weight: .medium))
+                            .frame(width: 28, height: 32)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .help("Close panel (Escape)")
+                    .accessibilityLabel("Close panel")
+                    .keyboardShortcut(.escape, modifiers: [])
+                }
+            }
+            if let error = syncController.lastError {
+                Text(error)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.orange)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .help(error)
+                    .textSelection(.enabled)
+            }
         }
     }
 
     private var tabBar: some View {
-        HStack(spacing: 4) {
-            ForEach(DashboardTab.allCases) { t in
-                Button { withAnimation(.easeOut(duration: 0.15)) { tab = t } } label: {
-                    // Icon always; label only on the active pill — the bar
-                    // stays single-line at popover width (~530pt).
-                    HStack(spacing: 5) {
-                        Image(systemName: t.icon)
-                            .font(.system(size: 9, weight: .bold))
-                        if tab == t {
-                            Text(t.rawValue)
-                                .font(.system(size: 9, weight: .heavy, design: .monospaced))
-                                .lineLimit(1).fixedSize()
-                        }
+        HStack(spacing: 6) {
+            ForEach(DashboardTab.quickTabs) { destination in
+                tabButton(destination)
+            }
+            Menu {
+                ForEach(DashboardTab.allCases.filter { !DashboardTab.quickTabs.contains($0) && $0 != .settings }) { destination in
+                    Button { tab = destination } label: {
+                        Label(destination.title, systemImage: destination.icon)
                     }
-                    .foregroundStyle(tab == t ? Color.black : Color.white.opacity(0.5))
-                    .padding(.horizontal, tab == t ? 12 : 9).padding(.vertical, 4)
-                    .background(Capsule().fill(tab == t ? Color.white : Color.white.opacity(0.14)))
-                    .contentShape(Capsule())
                 }
-                .buttonStyle(.plain)
-                .help(t.rawValue)
+                Divider()
+                Button { openSettings() } label: { Label("Settings…", systemImage: "gearshape") }
+                Button { openWeb(.webSettings) } label: { Label("Web account settings", systemImage: "person.crop.circle") }
+                Button { openWeb(.signIn) } label: { Label("Connect account", systemImage: "person.badge.key") }
+                Divider()
+                Button("Quit Token Horizon") { NSApp.terminate(nil) }
+                    .keyboardShortcut("q", modifiers: .command)
+            } label: {
+                Label(DashboardTab.quickTabs.contains(tab) ? "More" : tab.title, systemImage: "ellipsis.circle")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(DashboardTab.quickTabs.contains(tab) ? Color.white.opacity(0.75) : Color.cyan)
             }
-            Spacer()
-            Button { NotificationCenter.default.post(name: NSNotification.Name("openDashboard"), object: nil) } label: {
-                Image(systemName: "arrow.up.left.and.arrow.down.right")
-                    .font(.system(size: 9)).foregroundStyle(.white.opacity(0.5))
-                    .padding(4)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .help("Open dashboard window")
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            .help("Local engines, traces, model inventory, shells, and leaderboard")
+            Spacer(minLength: 4)
             if compact {
-                Button { NSApp.terminate(nil) } label: {
-                    Image(systemName: "power").font(.system(size: 10)).foregroundStyle(.white.opacity(0.5))
-                        .padding(4)
+                Button {
+                    NotificationCenter.default.post(name: .openDashboard, object: tab,
+                                                    userInfo: ["settingsSection": settingsSection])
+                } label: {
+                    Image(systemName: "arrow.up.left.and.arrow.down.right")
+                        .font(.system(size: 12))
+                        .frame(width: 28, height: 28)
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .help("Quit")
+                .help("Open this tab in the native window")
+                .accessibilityLabel("Open this tab in the native window")
             }
         }
+    }
+
+    private func tabButton(_ destination: DashboardTab) -> some View {
+        Button { tab = destination } label: {
+            Label(destination.title, systemImage: destination.icon)
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(tab == destination ? Color.black : Color.white.opacity(0.8))
+                .padding(.horizontal, 12).padding(.vertical, 7)
+                .background(RoundedRectangle(cornerRadius: 8).fill(tab == destination ? Color.white : Color.white.opacity(0.06)))
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(tab == destination ? .isSelected : [])
+    }
+
+    private var webShortcuts: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Label("Open on web", systemImage: "arrow.up.right.square")
+                .font(.system(size: 11, weight: .medium)).foregroundStyle(.white.opacity(0.7))
+            HStack(spacing: 4) {
+                webShortcut("Dashboard", icon: "rectangle.grid.2x2", destination: .workspace)
+                webShortcut("Leaderboard", icon: "trophy", destination: .leaderboard)
+                webShortcut("Models", icon: "cube", destination: .models)
+                webShortcut("My profile", icon: "person.crop.circle", destination: .profile)
+                webShortcut("Teams", icon: "person.2", destination: .teams)
+            }
+        }
+    }
+
+    private func webShortcut(_ title: String, icon: String, destination: WebDestination) -> some View {
+        Button { openWeb(destination) } label: {
+            Label(title, systemImage: icon)
+                .font(.system(size: 11, weight: .medium))
+                .lineLimit(1)
+            .foregroundStyle(.white.opacity(0.8))
+            .frame(maxWidth: .infinity, minHeight: 30)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help("Open \(title.lowercased()) in your browser")
+        .accessibilityLabel("Open \(title) in your browser")
+    }
+
+    private func openWeb(_ destination: WebDestination) {
+        NotificationCenter.default.post(name: .openWebDestination, object: destination)
+    }
+
+    private func openSettings(_ section: AppSettingsSection = .general) {
+        tab = .settings
+        settingsSection = section
     }
 
     private var activityTab: some View {
@@ -1041,7 +1196,7 @@ struct DashboardTabs: View {
             Divider().overlay(Color.white.opacity(0.12))
             if !model.usage.perTool.isEmpty {
                 sectionLabel("BY TOOL")
-                HStack(spacing: 14) {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 180), alignment: .leading)], alignment: .leading, spacing: 8) {
                     ForEach(model.usage.perTool, id: \.tool) { tool in
                         HStack(spacing: 4) {
                             Circle().fill(DashboardTabs.toolColor(tool.tool)).frame(width: 4, height: 4)
@@ -1053,7 +1208,6 @@ struct DashboardTabs: View {
                             }
                         }
                     }
-                    Spacer()
                 }
                 Divider().overlay(Color.white.opacity(0.12))
             }
@@ -1066,11 +1220,15 @@ struct DashboardTabs: View {
                             Text(acct.label)
                                 .font(.system(size: 8.5, weight: .bold, design: .monospaced))
                                 .foregroundStyle(.white.opacity(0.95))
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                                .help(acct.label)
                                 .frame(width: 95, alignment: .leading)
                             Text(acct.email.isEmpty ? acct.id : acct.email)
                                 .font(.system(size: 7.5, design: .monospaced))
                                 .foregroundStyle(.secondary)
                                 .lineLimit(1)
+                                .help(acct.email.isEmpty ? acct.id : acct.email)
                                 .frame(maxWidth: .infinity, alignment: .leading)
                             MonospacedText(text: "\(UsageSnapshot.tokens(acct.tokensToday)) today", color: .green, size: 8.5)
                                 .frame(width: 80, alignment: .trailing)
@@ -1375,51 +1533,11 @@ struct DashboardTabs: View {
     }
 
     private var tokensTrendsAndHeatmap: some View {
-        let trendTotal = model.trendPoints.reduce(0) { $0 + $1.tokens }
-        let activeBuckets = model.trendPoints.filter { $0.tokens > 0 }.count
-        return HStack(alignment: .top, spacing: 10) {
-            VStack(alignment: .leading, spacing: 6) {
-                HStack(alignment: .top, spacing: 8) {
-                    HeatmapGrid(points: heatmapPoints, maxTokens: heatmapMax, cellSize: heatmapExpanded ? 4.5 : 5.5)
-                    HeatmapKPIs(points: heatmapPoints).frame(width: 72)
-                }
-                Button { withAnimation { heatmapExpanded.toggle() } } label: {
-                    Text(heatmapExpanded ? "collapse 24W" : "expand 52W")
-                        .font(.system(size: 7, weight: .heavy, design: .monospaced)).foregroundStyle(.white.opacity(0.45))
-                }
-                .buttonStyle(.plain)
-            }
-            VStack(alignment: .leading, spacing: 6) {
-                HStack(spacing: 3) {
-                    ForEach(TrendWindow.allCases) { w in
-                        Button { model.trendWindow = w; NotificationCenter.default.post(name: .refreshTrends, object: nil) } label: {
-                            Text(w.rawValue)
-                                .font(.system(size: 7, weight: .heavy, design: .monospaced))
-                                .foregroundStyle(model.trendWindow == w ? Color.black : Color.white.opacity(0.5))
-                                .padding(.horizontal, 6).padding(.vertical, 2)
-                                .background(Capsule().fill(model.trendWindow == w ? Color.white : Color.white.opacity(0.08)))
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-                HStack(spacing: 8) {
-                    stat("window", UsageSnapshot.tokens(trendTotal), .green)
-                    stat("avg", activeBuckets > 0 ? UsageSnapshot.tokens(trendTotal / Swift.max(activeBuckets, 1)) : "0", .secondary)
-                }
-                if model.trendPoints.isEmpty {
-                    MonospacedText(text: "loading…", color: .secondary, size: 9).frame(maxWidth: .infinity, alignment: .center).padding(.vertical, 16)
-                } else {
-                    StackedTrends(points: model.trendPoints).frame(height: 80)
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
+        UsageHistorySection(history: model.historyPoints, trend: model.trendPoints,
+                            window: $model.trendWindow, expandedCalendar: $heatmapExpanded) {
+            NotificationCenter.default.post(name: .refreshTrends, object: nil)
         }
     }
-
-    private var heatmapPoints: [HistoryPoint] {
-        Array(model.historyPoints.suffix(heatmapExpanded ? 364 : 168))
-    }
-    private var heatmapMax: Int { Swift.max(heatmapPoints.map { $0.tokens }.max() ?? 1, 1) }
 
     private var shellsTab: some View {
         VStack(alignment: .leading, spacing: 5) {
@@ -1501,350 +1619,19 @@ struct DashboardTabs: View {
                 }
                 .buttonStyle(.plain)
 
-                // Publish Stats Button
-                Button {
-                    guard !leaderboardPublishing else { return }
-                    leaderboardPublishing = true
-                    leaderboardPublishNotice = nil
-                    // First ensure local usage is fresh
-                    LeaderboardStore.shared.syncLocal(snapshot: model.usage, history: model.historyPoints, streak: model.historyStreak)
-                    // Push to Cloud (defaulting to https://token-horizon.dev)
-                    LeaderboardStore.shared.publishToCloud(forced: true) { res in
-                        DispatchQueue.main.async {
-                            leaderboardPublishing = false
-                            switch res {
-                            case .success:
-                                leaderboardPublishNotice = "Published!"
-                                // Pull down updated global rankings immediately
-                                LeaderboardStore.shared.pullFromCloud(forced: true) { pullRes in
-                                    DispatchQueue.main.async {
-                                        if case .success = pullRes {
-                                            model.leaderboardRankings = LeaderboardStore.shared.rankings(for: leaderboardPeriod)
-                                        }
-                                    }
-                                }
-                                DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
-                                    if leaderboardPublishNotice == "Published!" {
-                                        leaderboardPublishNotice = nil
-                                    }
-                                }
-                            case .failure(let err):
-                                leaderboardPublishNotice = "Failed"
-                                leaderboardSheetsNotice = "❌ Publish error: \(err.localizedDescription)"
-                                DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
-                                    if leaderboardPublishNotice == "Failed" {
-                                        leaderboardPublishNotice = nil
-                                    }
-                                }
-                            }
-                        }
-                    }
-                } label: {
-                    HStack(spacing: 4) {
-                        if leaderboardPublishing {
-                            ProgressView().controlSize(.mini)
-                                .scaleEffect(0.65)
-                        } else {
-                            Image(systemName: leaderboardPublishNotice == "Published!" ? "checkmark.circle.fill" : (leaderboardPublishNotice == "Failed" ? "exclamationmark.circle.fill" : "arrow.up.circle.fill"))
-                                .font(.system(size: 8.5))
-                        }
-                        Text(leaderboardPublishing ? "Publishing..." : (leaderboardPublishNotice ?? "Publish Stats"))
-                            .font(.system(size: 8.5, weight: .heavy, design: .monospaced))
-                    }
-                    .foregroundStyle(leaderboardPublishNotice == "Published!" ? Color.black : (leaderboardPublishNotice == "Failed" ? Color.white : Color.black))
-                    .padding(.horizontal, 7).padding(.vertical, 3.5)
-                    .background(RoundedRectangle(cornerRadius: 4).fill(leaderboardPublishNotice == "Published!" ? Color.green : (leaderboardPublishNotice == "Failed" ? Color.red.opacity(0.8) : Color.cyan)))
-                    .contentShape(RoundedRectangle(cornerRadius: 4))
-                }
-                .buttonStyle(.plain)
-                .disabled(leaderboardPublishing)
-                .help("Publish your token usage to the global leaderboard at token-horizon.dev")
-
-                // Sync button
-                Button {
-                    LeaderboardStore.shared.syncLocal(snapshot: model.usage, history: model.historyPoints, streak: model.historyStreak)
-                } label: {
-                    Image(systemName: "arrow.clockwise")
-                        .font(.system(size: 9))
-                        .foregroundStyle(.white.opacity(0.7))
-                        .padding(4)
-                        .background(Circle().fill(Color.white.opacity(0.1)))
-                }
-                .buttonStyle(.plain)
-                .help("Sync live token usage to leaderboard")
-
-                // Settings drawer toggle
-                Button {
-                    withAnimation(.easeInOut(duration: 0.15)) {
-                        leaderboardShowConfig.toggle()
-                    }
-                } label: {
-                    Image(systemName: leaderboardShowConfig ? "chevron.up" : "gearshape")
-                        .font(.system(size: 9))
-                        .foregroundStyle(leaderboardShowConfig ? Color.cyan : Color.white.opacity(0.7))
-                        .padding(4)
-                        .background(Circle().fill(Color.white.opacity(0.1)))
-                }
-                .buttonStyle(.plain)
-                .help("Customize leaderboard profile")
             }
 
-            // Optional profile customization drawer
-            if leaderboardShowConfig {
-                VStack(alignment: .leading, spacing: 6) {
-                    HStack(spacing: 8) {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("HANDLE").font(.system(size: 7.5, weight: .heavy, design: .monospaced)).foregroundStyle(.tertiary)
-                            TextField("Handle", text: $leaderboardHandleDraft)
-                                .textFieldStyle(.roundedBorder)
-                                .font(.system(size: 8.5, design: .monospaced))
-                        }
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("TEAM / ORGANIZATION").font(.system(size: 7.5, weight: .heavy, design: .monospaced)).foregroundStyle(.tertiary)
-                            TextField("Team name", text: $leaderboardTeamDraft)
-                                .textFieldStyle(.roundedBorder)
-                                .font(.system(size: 8.5, design: .monospaced))
-                        }
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("TEAM FILTER").font(.system(size: 7.5, weight: .heavy, design: .monospaced)).foregroundStyle(.tertiary)
-                            TextField("Filter table", text: $leaderboardTeamFilter)
-                                .textFieldStyle(.roundedBorder)
-                                .font(.system(size: 8.5, design: .monospaced))
-                        }
-                        Button {
-                            SettingsStore.shared.leaderboardHandle = leaderboardHandleDraft
-                            SettingsStore.shared.leaderboardTeam = leaderboardTeamDraft
-                            LeaderboardStore.shared.syncLocal(snapshot: model.usage, history: model.historyPoints, streak: model.historyStreak)
-                            withAnimation { leaderboardShowConfig = false }
-                        } label: {
-                            Text("Save")
-                                .font(.system(size: 8.5, weight: .heavy, design: .monospaced))
-                                .foregroundStyle(.black).padding(.horizontal, 8).padding(.vertical, 4)
-                                .background(Capsule().fill(Color.cyan))
-                        }
-                        .buttonStyle(.plain)
-                        .padding(.top, 12)
-                    }
-                    HStack(spacing: 14) {
-                        Toggle("Share Cost / Billing", isOn: Binding(
-                            get: { leaderboardShareCostDraft },
-                            set: {
-                                leaderboardShareCostDraft = $0
-                                SettingsStore.shared.leaderboardShareCost = $0
-                                LeaderboardStore.shared.syncLocal(snapshot: model.usage, history: model.historyPoints, streak: model.historyStreak)
-                            }
-                        ))
-                        .toggleStyle(.checkbox)
-                        .font(.system(size: 8, design: .monospaced))
-
-                        Toggle("Share Hardware (\(SystemStats.cpuBrandString()))", isOn: Binding(
-                            get: { leaderboardShareHwDraft },
-                            set: {
-                                leaderboardShareHwDraft = $0
-                                SettingsStore.shared.leaderboardShareHardware = $0
-                                LeaderboardStore.shared.syncLocal(snapshot: model.usage, history: model.historyPoints, streak: model.historyStreak)
-                            }
-                        ))
-                        .toggleStyle(.checkbox)
-                        .font(.system(size: 8, design: .monospaced))
-                    }
-
-                    Toggle("Share Prompt History (session titles)", isOn: Binding(
-                        get: { leaderboardSharePromptsDraft },
-                        set: {
-                            leaderboardSharePromptsDraft = $0
-                            SettingsStore.shared.leaderboardSharePrompts = $0
-                            LeaderboardStore.shared.syncLocal(snapshot: model.usage, history: model.historyPoints, streak: model.historyStreak)
-                        }
-                    ))
-                    .toggleStyle(.checkbox)
-                    .font(.system(size: 8, design: .monospaced))
-                    .help("Off by default: session titles can reveal project or client names. Enables Recent Activity and Top Prompts panels.")
-
-                    Divider().overlay(Color.white.opacity(0.1))
-
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("CLOUDFLARE CLOUD BACKEND (FAST)").font(.system(size: 7.5, weight: .heavy, design: .monospaced)).foregroundStyle(.orange)
-                        Text("Worker + R2 team board with edge caching. Takes over auto-sync when set; Sheets becomes the fallback.")
-                            .font(.system(size: 7, design: .monospaced)).foregroundStyle(.secondary)
-                        HStack(spacing: 6) {
-                            TextField("https://<worker>.workers.dev", text: $leaderboardCloudDraft)
-                                .textFieldStyle(.roundedBorder)
-                                .font(.system(size: 8, design: .monospaced))
-
-                            SecureField("write token", text: $leaderboardCloudTokenDraft)
-                                .textFieldStyle(.roundedBorder)
-                                .font(.system(size: 8, design: .monospaced))
-                                .frame(width: 120)
-
-                            Button {
-                                SettingsStore.shared.leaderboardCloudURL = leaderboardCloudDraft
-                                SettingsStore.shared.leaderboardCloudToken = leaderboardCloudTokenDraft
-                                LeaderboardStore.shared.publishToCloud(forced: true) { res in
-                                    DispatchQueue.main.async {
-                                        switch res {
-                                        case .success(let msg):
-                                            leaderboardSheetsNotice = "☁️ Published: \(msg)"
-                                        case .failure(let err):
-                                            leaderboardSheetsNotice = "❌ \(err.localizedDescription)"
-                                        }
-                                    }
-                                }
-                            } label: {
-                                HStack(spacing: 3) {
-                                    Image(systemName: "arrow.up.circle.fill")
-                                    Text("Push")
-                                }
-                                .font(.system(size: 8, weight: .bold, design: .monospaced))
-                                .foregroundStyle(.white)
-                                .padding(.horizontal, 6).padding(.vertical, 3)
-                                .background(Capsule().fill(Color.blue.opacity(0.6)))
-                            }
-                            .buttonStyle(.plain)
-
-                            Button {
-                                SettingsStore.shared.leaderboardCloudURL = leaderboardCloudDraft
-                                SettingsStore.shared.leaderboardCloudToken = leaderboardCloudTokenDraft
-                                LeaderboardStore.shared.pullFromCloud(forced: true) { res in
-                                    DispatchQueue.main.async {
-                                        switch res {
-                                        case .success(let count):
-                                            leaderboardSheetsNotice = "⚡ Pulled \(count) rows from cloud"
-                                            model.leaderboardRankings = LeaderboardStore.shared.rankings(for: leaderboardPeriod)
-                                        case .failure(let err):
-                                            leaderboardSheetsNotice = "❌ \(err.localizedDescription)"
-                                        }
-                                    }
-                                }
-                            } label: {
-                                HStack(spacing: 3) {
-                                    Image(systemName: "arrow.down.circle.fill")
-                                    Text("Pull")
-                                }
-                                .font(.system(size: 8, weight: .bold, design: .monospaced))
-                                .foregroundStyle(.white)
-                                .padding(.horizontal, 6).padding(.vertical, 3)
-                                .background(Capsule().fill(Color.green.opacity(0.6)))
-                            }
-                            .buttonStyle(.plain)
-                        }
-
-                        if SettingsStore.shared.leaderboardCloudConfigured {
-                            Text("● cloud active — auto-sync uses Worker+R2 (5-min pulls, change-gated pushes)")
-                                .font(.system(size: 7, design: .monospaced)).foregroundStyle(.green)
-                        }
-                    }
-
-                    Divider().overlay(Color.white.opacity(0.1))
-
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("GOOGLE SHEETS BACKEND (LEGACY FALLBACK)").font(.system(size: 7.5, weight: .heavy, design: .monospaced)).foregroundStyle(.cyan)
-                        Text("Apps Script Web App URL (publish+pull) or Published Sheet CSV URL (read-only):")
-                            .font(.system(size: 7, design: .monospaced)).foregroundStyle(.secondary)
-                        HStack(spacing: 6) {
-                            TextField("https://script.google.com/.../exec or https://docs.google.com/spreadsheets/d/...", text: $leaderboardSheetsDraft)
-                                .textFieldStyle(.roundedBorder)
-                                .font(.system(size: 8, design: .monospaced))
-
-                            Button {
-                                SettingsStore.shared.leaderboardSheetsURL = leaderboardSheetsDraft
-                                LeaderboardStore.shared.publishToGoogleSheet(forced: true) { res in
-                                    DispatchQueue.main.async {
-                                        switch res {
-                                        case .success(let msg):
-                                            leaderboardSheetsNotice = "☁️ Published: \(msg)"
-                                        case .failure(let err):
-                                            leaderboardSheetsNotice = "❌ \(err.localizedDescription)"
-                                        }
-                                    }
-                                }
-                            } label: {
-                                HStack(spacing: 3) {
-                                    Image(systemName: "arrow.up.circle.fill")
-                                    Text("Push")
-                                }
-                                .font(.system(size: 8, weight: .bold, design: .monospaced))
-                                .foregroundStyle(.white)
-                                .padding(.horizontal, 6).padding(.vertical, 3)
-                                .background(Capsule().fill(Color.blue.opacity(0.6)))
-                            }
-                            .buttonStyle(.plain)
-
-                            Button {
-                                SettingsStore.shared.leaderboardSheetsURL = leaderboardSheetsDraft
-                                LeaderboardStore.shared.pullFromGoogleSheet(forced: true) { res in
-                                    DispatchQueue.main.async {
-                                        switch res {
-                                        case .success(let count):
-                                            leaderboardSheetsNotice = "🔄 Pulled \(count) rows from Sheet"
-                                            model.leaderboardRankings = LeaderboardStore.shared.rankings(for: leaderboardPeriod)
-                                        case .failure(let err):
-                                            leaderboardSheetsNotice = "❌ \(err.localizedDescription)"
-                                        }
-                                    }
-                                }
-                            } label: {
-                                HStack(spacing: 3) {
-                                    Image(systemName: "arrow.down.circle.fill")
-                                    Text("Pull")
-                                }
-                                .font(.system(size: 8, weight: .bold, design: .monospaced))
-                                .foregroundStyle(.white)
-                                .padding(.horizontal, 6).padding(.vertical, 3)
-                                .background(Capsule().fill(Color.green.opacity(0.6)))
-                            }
-                            .buttonStyle(.plain)
-                        }
-
-                        HStack(spacing: 12) {
-                            Toggle("Auto-sync on background refresh tick", isOn: Binding(
-                                get: { leaderboardAutoSyncDraft },
-                                set: {
-                                    leaderboardAutoSyncDraft = $0
-                                    SettingsStore.shared.leaderboardAutoSync = $0
-                                }
-                            ))
-                            .toggleStyle(.checkbox)
-                            .font(.system(size: 7.5, design: .monospaced))
-
-                            if let msg = leaderboardSheetsNotice {
-                                Text(msg)
-                                    .font(.system(size: 7.5, weight: .semibold, design: .monospaced))
-                                    .foregroundStyle(.orange)
-                            }
-                        }
-
-                        HStack(spacing: 8) {
-                            Button {
-                                let sheetUrl = SettingsStore.shared.leaderboardSheetsURL
-                                var target = "https://token-horizon.dev/leaderboard"
-                                if !sheetUrl.isEmpty, let encoded = sheetUrl.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) {
-                                    target += "?sheet=\(encoded)"
-                                }
-                                if let url = URL(string: target) {
-                                    NSWorkspace.shared.open(url)
-                                }
-                            } label: {
-                                HStack(spacing: 4) {
-                                    Image(systemName: "safari")
-                                    Text("Open GitHub Pages Leaderboard ↗")
-                                }
-                                .font(.system(size: 8, weight: .bold, design: .monospaced))
-                                .foregroundStyle(Color.cyan)
-                                .padding(.horizontal, 7).padding(.vertical, 3.5)
-                                .background(RoundedRectangle(cornerRadius: 4).fill(Color.cyan.opacity(0.12)))
-                            }
-                            .buttonStyle(.plain)
-                            .help("Open web leaderboard hosted on GitHub Pages")
-
-                            Spacer()
-                        }
-                    }
-                }
-                .padding(8)
-                .background(RoundedRectangle(cornerRadius: 6).fill(Color.white.opacity(0.04)))
-                .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color.white.opacity(0.1)))
+            HStack(spacing: 10) {
+                TextField("Filter by team", text: $leaderboardTeamFilter)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(maxWidth: 220)
+                Spacer()
+                Button("Sharing settings…") { openSettings(.sharing) }
+                    .buttonStyle(.plain).foregroundStyle(.cyan)
+                Button("Open web leaderboard ↗") { openWeb(.leaderboard) }
+                    .buttonStyle(.plain).foregroundStyle(.cyan)
             }
+            .font(.system(size: 11))
 
             // 4 Hero KPI Cards
             HStack(spacing: 8) {
@@ -2354,37 +2141,39 @@ struct DashboardTabs: View {
     }
 
     private var settingsTab: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            WidgetSettingsView(model: model)
-            settingsCard("Surface", icon: "macwindow") { surfaceSettings }
-            settingsCard("Startup & notifications", icon: "power") {
-                startupSettings
-                Divider().overlay(Color.white.opacity(0.08))
-                notificationSettings
-            }
-            settingsCard("History & cache", icon: "externaldrive") { cacheSettings }
-            settingsCard("Provider credentials", icon: "key") {
-                DisclosureGroup("Alibaba token plan cookie") {
-                    cookieSettings.padding(.top, 10)
-                }
-                Divider().overlay(Color.white.opacity(0.08))
-                DisclosureGroup("Claude accounts") {
-                    claudeAccountSettings.padding(.top, 10)
-                }
-                Divider().overlay(Color.white.opacity(0.08))
-                providerDiscoverySettings
-            }
-            settingsCard("Leaderboard", icon: "person.crop.circle") {
-                leaderboardProfileSettings
-                Divider().overlay(Color.white.opacity(0.08))
-                DisclosureGroup("Publishing & sync") {
-                    leaderboardSyncSettings.padding(.top, 10)
+        VStack(alignment: .leading, spacing: 16) {
+            Picker("Settings section", selection: $settingsSection) {
+                ForEach(AppSettingsSection.allCases) { section in
+                    Text(section.rawValue).tag(section)
                 }
             }
-            settingsCard("Updates", icon: "arrow.triangle.2.circlepath") { updateSettings }
-            settingsCard("App build", icon: "info.circle") {
-                MonospacedText(text: "v\(BuildInfo.display) — this exact build serves :8765; if these differ from `git rev-parse --short HEAD`, relaunch via ./scripts/make-app.sh", color: .secondary, size: 11)
-                    .fixedSize(horizontal: false, vertical: true)
+            .pickerStyle(.segmented)
+            switch settingsSection {
+            case .general:
+                settingsCard("Appearance", icon: "macwindow") { surfaceSettings }
+                settingsCard("Startup & notifications", icon: "power") {
+                    startupSettings
+                    Divider().overlay(Color.white.opacity(0.08))
+                    notificationSettings
+                }
+                settingsCard("History & cache", icon: "externaldrive") { cacheSettings }
+                settingsCard("Updates", icon: "arrow.triangle.2.circlepath") { updateSettings }
+                settingsCard("App build", icon: "info.circle") {
+                    MonospacedText(text: "v\(BuildInfo.display)", color: .secondary, size: 11)
+                }
+            case .sharing:
+                settingsCard("Profile & privacy", icon: "person.crop.circle") { leaderboardProfileSettings }
+                settingsCard("Sync connection", icon: "arrow.triangle.2.circlepath") { leaderboardSyncSettings }
+            case .providers:
+                settingsCard("Provider credentials", icon: "key") {
+                    DisclosureGroup("Alibaba token plan cookie") { cookieSettings.padding(.top, 10) }
+                    Divider().overlay(Color.white.opacity(0.08))
+                    DisclosureGroup("Claude accounts") { claudeAccountSettings.padding(.top, 10) }
+                    Divider().overlay(Color.white.opacity(0.08))
+                    providerDiscoverySettings
+                }
+            case .widget:
+                WidgetSettingsView(model: model)
             }
         }
         .padding(.vertical, 4)
@@ -2401,9 +2190,49 @@ struct DashboardTabs: View {
             leaderboardShareHwDraft = SettingsStore.shared.leaderboardShareHardware
             leaderboardSharePromptsDraft = SettingsStore.shared.leaderboardSharePrompts
             leaderboardCloudDraft = SettingsStore.shared.leaderboardCloudURL
+            leaderboardCloudTokenDraft = SettingsStore.shared.leaderboardCloudToken
+            leaderboardClaimTokenDraft = ""
             leaderboardSheetsDraft = SettingsStore.shared.leaderboardSheetsURL
             leaderboardAutoSyncDraft = SettingsStore.shared.leaderboardAutoSync
+                && (SettingsStore.shared.leaderboardCloudConfigured || !SettingsStore.shared.leaderboardSheetsURL.isEmpty)
+            syncDestinationDraft = SettingsStore.shared.leaderboardCloudConfigured
+                || SettingsStore.shared.leaderboardSheetsURL.isEmpty ? "cloud" : "sheets"
+            if compact, let draft = model.compactSettingsDraft {
+                cookieDraft = draft.cookie
+                leaderboardHandleDraft = draft.handle
+                leaderboardTeamDraft = draft.team
+                leaderboardCloudDraft = draft.cloudURL
+                leaderboardCloudTokenDraft = draft.appToken
+                leaderboardClaimTokenDraft = draft.claimToken
+                leaderboardSheetsDraft = draft.sheetsURL
+                syncDestinationDraft = draft.destination
+                profileSaveNotice = draft.profileNotice
+                connectionSaveNotice = draft.connectionNotice
+            }
+            refreshCacheSummary()
         }
+        .onDisappear {
+            if compact {
+                model.compactSettingsDraft = CompactSettingsDraft(
+                    cookie: cookieDraft, handle: leaderboardHandleDraft, team: leaderboardTeamDraft,
+                    cloudURL: leaderboardCloudDraft, appToken: leaderboardCloudTokenDraft,
+                    claimToken: leaderboardClaimTokenDraft, sheetsURL: leaderboardSheetsDraft,
+                    destination: syncDestinationDraft, profileNotice: profileSaveNotice,
+                    connectionNotice: connectionSaveNotice)
+            }
+        }
+    }
+
+    private func refreshCacheSummary() {
+        DispatchQueue.global(qos: .utility).async {
+            let stats = DurableStore.shared.cacheStats()
+            let summary = "\(stats.filesCount) cached files (\(stats.totalBytes / 1024) KB)"
+            DispatchQueue.main.async { cacheSummary = summary }
+        }
+    }
+
+    private func stageLocalProfile() {
+        NotificationCenter.default.post(name: .refreshLocalLeaderboard, object: nil)
     }
 
     private func settingsCard<Content: View>(_ title: String, icon: String, @ViewBuilder content: () -> Content) -> some View {
@@ -2435,7 +2264,8 @@ struct DashboardTabs: View {
                     color: updater.phase == .failed ? .red : .secondary,
                     size: 11
                 )
-                .lineLimit(1)
+                .lineLimit(3)
+                .fixedSize(horizontal: false, vertical: true)
                 if busy {
                     ProgressView()
                         .scaleEffect(0.55)
@@ -2494,7 +2324,9 @@ struct DashboardTabs: View {
         case .idle: return "v\(BuildInfo.version) installed"
         case .checking: return "checking for updates…"
         case .upToDate: return "v\(BuildInfo.version) — up to date"
-        case .available: return "\(updater.latestTag) available — you're on v\(BuildInfo.version)"
+        case .available: return updater.statusDetail.isEmpty
+            ? "\(updater.latestTag) available — you're on v\(BuildInfo.version)"
+            : updater.statusDetail
         case .downloading, .installing, .relaunching, .failed: return updater.statusDetail
         }
     }
@@ -2631,11 +2463,18 @@ struct DashboardTabs: View {
 
             VStack(alignment: .leading, spacing: 8) {
                 Button {
-                    let res = DurableStore.shared.resetAll()
-                    cacheStatusMessage = "Cleared \(res.clearedFiles) cache files (\(res.clearedBytes / 1024) KB). Rebuilding..."
-                    NotificationCenter.default.post(name: .tokenHorizonCacheReset, object: nil)
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
-                        cacheStatusMessage = nil
+                    cacheResetRunning = true
+                    cacheStatusMessage = "Clearing cache…"
+                    DispatchQueue.global(qos: .utility).async {
+                        let result = DurableStore.shared.resetAll()
+                        DispatchQueue.main.async {
+                            cacheResetRunning = false
+                            cacheStatusMessage = "Cleared \(result.clearedFiles) cache files (\(result.clearedBytes / 1024) KB). Rebuilding…"
+                            refreshCacheSummary()
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+                                cacheStatusMessage = nil
+                            }
+                        }
                     }
                 } label: {
                     Text("Reset / Rebuild History Cache")
@@ -2646,13 +2485,13 @@ struct DashboardTabs: View {
                         .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color.red.opacity(0.5)))
                 }
                 .buttonStyle(.plain)
+                .disabled(cacheResetRunning)
 
                 if let msg = cacheStatusMessage {
                     MonospacedText(text: msg, color: .orange, size: 11)
                         .fixedSize(horizontal: false, vertical: true)
                 } else {
-                    let stats = DurableStore.shared.cacheStats()
-                    MonospacedText(text: "\(stats.filesCount) cached files (\(stats.totalBytes / 1024) KB)", color: .secondary, size: 11)
+                    MonospacedText(text: cacheSummary ?? "Reading cache size…", color: .secondary, size: 11)
                 }
             }
         }
@@ -2672,6 +2511,7 @@ struct DashboardTabs: View {
                                 Text(acct.email.isEmpty ? acct.id : acct.email)
                                     .font(.system(size: 12, weight: .semibold))
                                     .foregroundStyle(.white.opacity(0.95))
+                                    .lineLimit(1).truncationMode(.middle)
                                 HStack(spacing: 6) {
                                     if !acct.organizationType.isEmpty {
                                         Text(acct.organizationType)
@@ -2695,6 +2535,8 @@ struct DashboardTabs: View {
                                 Text(acct.configDir)
                                     .font(.system(size: 11, design: .monospaced))
                                     .foregroundStyle(.secondary)
+                                    .lineLimit(2)
+                                    .fixedSize(horizontal: false, vertical: true)
                                 if !acct.organizationName.isEmpty && acct.organizationName != acct.email {
                                     Text("· \(acct.organizationName)")
                                         .font(.system(size: 11))
@@ -2722,17 +2564,19 @@ struct DashboardTabs: View {
     }
 
     private var leaderboardProfileSettings: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        let configuredHandle = SettingsStore.shared.leaderboardHandle
+        let savedHandle = configuredHandle.isEmpty ? NSUserName() : configuredHandle
+        return VStack(alignment: .leading, spacing: 12) {
             VStack(alignment: .leading, spacing: 10) {
                 HStack(alignment: .top, spacing: 10) {
                     VStack(alignment: .leading, spacing: 4) {
                         Text("Handle").font(.system(size: 11)).foregroundStyle(.secondary)
-                        TextField("Username", text: $leaderboardHandleDraft)
+                        TextField(NSUserName(), text: $leaderboardHandleDraft)
                             .textFieldStyle(.roundedBorder)
                             .font(.system(size: 12))
                     }
                     VStack(alignment: .leading, spacing: 4) {
-                        Text("Team / Organization").font(.system(size: 11)).foregroundStyle(.secondary)
+                        Text("Published team label").font(.system(size: 11)).foregroundStyle(.secondary)
                         TextField("Team", text: $leaderboardTeamDraft)
                             .textFieldStyle(.roundedBorder)
                             .font(.system(size: 12))
@@ -2741,21 +2585,50 @@ struct DashboardTabs: View {
                 Button {
                     SettingsStore.shared.leaderboardHandle = leaderboardHandleDraft
                     SettingsStore.shared.leaderboardTeam = leaderboardTeamDraft
-                    LeaderboardStore.shared.syncLocal(snapshot: model.usage, history: model.historyPoints, streak: model.historyStreak)
+                    stageLocalProfile()
+                    profileSaveNotice = "Profile saved locally. Use Sync now to publish your changes."
                 } label: {
-                    Text("Save")
+                    Text("Save profile")
                         .font(.system(size: 12, weight: .semibold))
                         .foregroundStyle(.black).padding(.horizontal, 12).padding(.vertical, 6)
                         .background(Capsule().fill(Color.white))
                 }
                 .buttonStyle(.plain)
+                if let notice = profileSaveNotice {
+                    Text(notice).font(.system(size: 11)).foregroundStyle(.secondary)
+                }
+            }
+            HStack(spacing: 14) {
+                Button("My profile ↗") { openWeb(.profile) }
+                Button("Manage teams ↗") { openWeb(.teams) }
+                Button("Web account settings ↗") { openWeb(.webSettings) }
+            }
+            .buttonStyle(.plain).foregroundStyle(.cyan)
+            Text("Team membership and invitations are managed on the web. The team label here is published with your usage; account membership takes precedence.")
+                .font(.system(size: 11)).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            VStack(alignment: .leading, spacing: 5) {
+                HStack(spacing: 10) {
+                    Button("Connect / claim my handle") { openWeb(.claimHandle) }
+                        .buttonStyle(.bordered)
+                    Text(savedHandle.hasPrefix("@") ? savedHandle : "@\(savedHandle)")
+                        .font(.system(size: 12, weight: .semibold))
+                        .lineLimit(1).truncationMode(.middle)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                Text("Sign in and choose the profile this Mac publishes to. A new handle is created when your first sync finishes.")
+                    .font(.system(size: 11)).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text("Your connection is saved securely in Keychain, and sync continues automatically after approval.")
+                    .font(.system(size: 11)).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             Toggle(isOn: Binding(
                 get: { leaderboardShareCostDraft },
                 set: {
                     leaderboardShareCostDraft = $0
                     SettingsStore.shared.leaderboardShareCost = $0
-                    LeaderboardStore.shared.syncLocal(snapshot: model.usage, history: model.historyPoints, streak: model.historyStreak)
+                    stageLocalProfile()
                 }
             )) {
                 Text("Share billing / estimated cost on leaderboard")
@@ -2768,7 +2641,7 @@ struct DashboardTabs: View {
                 set: {
                     leaderboardShareHwDraft = $0
                     SettingsStore.shared.leaderboardShareHardware = $0
-                    LeaderboardStore.shared.syncLocal(snapshot: model.usage, history: model.historyPoints, streak: model.historyStreak)
+                    stageLocalProfile()
                 }
             )) {
                 Text("Share hardware chip name (\(SystemStats.cpuBrandString()))")
@@ -2781,7 +2654,7 @@ struct DashboardTabs: View {
                 set: {
                     leaderboardSharePromptsDraft = $0
                     SettingsStore.shared.leaderboardSharePrompts = $0
-                    LeaderboardStore.shared.syncLocal(snapshot: model.usage, history: model.historyPoints, streak: model.historyStreak)
+                    stageLocalProfile()
                 }
             )) {
                 Text("Share prompt history / session titles (off by default)")
@@ -2794,68 +2667,111 @@ struct DashboardTabs: View {
 
     private var leaderboardSyncSettings: some View {
         VStack(alignment: .leading, spacing: 12) {
-            VStack(alignment: .leading, spacing: 10) {
+            let savedHandle = SettingsStore.shared.leaderboardHandle.isEmpty ? NSUserName() : SettingsStore.shared.leaderboardHandle
+            if let account = DesktopCloudAccountStore.shared.account(baseURL: SettingsStore.shared.leaderboardCloudURL, handle: savedHandle) {
                 HStack {
-                    Text("Cloudflare Edge Leaderboard URL").font(.system(size: 11)).foregroundStyle(.orange)
+                    Label("Connected as \(account.displayName)", systemImage: "checkmark.shield.fill")
+                        .font(.system(size: 12)).foregroundStyle(.cyan)
                     Spacer()
-                    if SettingsStore.shared.leaderboardCloudConfigured {
-                        Text("● connected").font(.system(size: 11, weight: .bold)).foregroundStyle(.green)
-                    }
+                    Button("Disconnect this Mac") { cloudSignIn.disconnect() }.buttonStyle(.bordered)
                 }
-                HStack(spacing: 8) {
-                    TextField("https://token-horizon.dev", text: $leaderboardCloudDraft)
-                        .textFieldStyle(.roundedBorder)
-                        .font(.system(size: 12))
-                        .onChange(of: leaderboardCloudDraft) { val in
-                            SettingsStore.shared.leaderboardCloudURL = val
-                        }
-
-                    Button {
-                        LeaderboardStore.shared.syncLocal(snapshot: model.usage, history: model.historyPoints, streak: model.historyStreak)
-                        LeaderboardStore.shared.publishToCloud(forced: true) { _ in
-                            LeaderboardStore.shared.pullFromCloud(forced: true) { _ in
-                                DispatchQueue.main.async {
-                                    model.leaderboardRankings = LeaderboardStore.shared.rankings(for: leaderboardPeriod)
-                                }
-                            }
-                        }
-                    } label: {
-                        HStack(spacing: 4) {
-                            Image(systemName: "arrow.up.circle.fill")
-                            Text("Publish")
-                        }
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(.black)
-                        .padding(.horizontal, 10).padding(.vertical, 5)
-                        .background(Capsule().fill(Color.cyan))
-                    }
-                    .buttonStyle(.plain)
-                    .help("Publish your stats directly to token-horizon.dev")
-                }
+            } else {
+                Button("Sign in & connect this Mac") { openWeb(.signIn) }.buttonStyle(.bordered)
             }
-
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Google Spreadsheet Backend URL (Apps Script / Published Sheet CSV)").font(.system(size: 11)).foregroundStyle(.secondary)
-                TextField("https://script.google.com/.../exec or https://docs.google.com/spreadsheets/d/...", text: $leaderboardSheetsDraft)
-                    .textFieldStyle(.roundedBorder)
-                    .font(.system(size: 12))
-                    .onChange(of: leaderboardSheetsDraft) { val in
-                        SettingsStore.shared.leaderboardSheetsURL = val
-                    }
+            if let error = cloudSignIn.error, !cloudSignIn.isPresented {
+                Text(error).font(.system(size: 11)).foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
             }
-
-            Toggle(isOn: Binding(
+            Text("Use Sync now in the header to refresh local usage, publish it, and update rankings.")
+                .fixedSize(horizontal: false, vertical: true)
+            if let error = syncController.lastError {
+                Text(error)
+                    .font(.system(size: 11)).foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
+            }
+            Toggle("Sync automatically", isOn: Binding(
                 get: { leaderboardAutoSyncDraft },
                 set: {
                     leaderboardAutoSyncDraft = $0
+                    if $0, !SettingsStore.shared.leaderboardCloudConfigured,
+                       SettingsStore.shared.leaderboardSheetsURL.isEmpty {
+                        SettingsStore.shared.leaderboardCloudURL = WebDestination.defaultBaseURL
+                        leaderboardCloudDraft = WebDestination.defaultBaseURL
+                        syncDestinationDraft = "cloud"
+                    }
                     SettingsStore.shared.leaderboardAutoSync = $0
                 }
-            )) {
-                Text("Auto-sync leaderboard on background refresh")
-                    .font(.system(size: 12))
-                    .fixedSize(horizontal: false, vertical: true)
-            }.toggleStyle(.switch).tint(.green)
-
+            ))
+            .toggleStyle(.switch)
+            Text("Local usage is collected automatically. Cloud sync uses the privacy choices above.")
+                .font(.system(size: 11)).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            DisclosureGroup("Advanced connection") {
+                VStack(alignment: .leading, spacing: 8) {
+                    Picker("Sync destination", selection: $syncDestinationDraft) {
+                        Text("Cloud").tag("cloud")
+                        Text("Google Sheets").tag("sheets")
+                    }
+                    .pickerStyle(.segmented)
+                    Text("Cloud URL").foregroundStyle(.secondary)
+                    TextField("https://token-horizon.dev", text: $leaderboardCloudDraft)
+                        .textFieldStyle(.roundedBorder)
+                    Text("App write token").foregroundStyle(.secondary)
+                    SecureField("Optional for anonymous profiles", text: $leaderboardCloudTokenDraft)
+                        .textFieldStyle(.roundedBorder)
+                    Text("Restore anonymous profile token").foregroundStyle(.secondary)
+                    SecureField("Paste the original claim token only if needed", text: $leaderboardClaimTokenDraft)
+                        .textFieldStyle(.roundedBorder)
+                    Text("New anonymous profile tokens are saved automatically. Restore an original token here if this Mac cannot update an existing anonymous profile.")
+                        .font(.system(size: 11)).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Text("Account connections are managed above. This optional token is for administrator-managed deployments.")
+                        .font(.system(size: 11)).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Text("Google Sheets URL · fallback").foregroundStyle(.secondary)
+                    TextField("Apps Script or published CSV URL", text: $leaderboardSheetsDraft)
+                        .textFieldStyle(.roundedBorder)
+                    Button("Save connection") {
+                        let cloudURL = leaderboardCloudDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+                        let sheetsURL = leaderboardSheetsDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+                        if !cloudURL.isEmpty, CloudPublishCredentials.endpointURL(baseURL: cloudURL) == nil {
+                            connectionSaveNotice = "Enter a valid HTTP or HTTPS cloud URL."
+                            return
+                        }
+                        if !sheetsURL.isEmpty, LeaderboardStore.resolveGoogleSheetsURL(sheetsURL).readURL == nil {
+                            connectionSaveNotice = "Enter a valid Apps Script or published Google Sheets URL."
+                            return
+                        }
+                        if syncDestinationDraft == "sheets", sheetsURL.isEmpty {
+                            connectionSaveNotice = "Enter a Google Sheets URL to use this sync destination."
+                            return
+                        }
+                        let restored = leaderboardClaimTokenDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+                        if !restored.isEmpty, CloudPublishCredentials.validatedToken(restored) == nil {
+                            connectionSaveNotice = "The profile token contains invalid characters or is too long."
+                            return
+                        }
+                        SettingsStore.shared.leaderboardCloudURL = syncDestinationDraft == "cloud"
+                            ? (cloudURL.isEmpty ? WebDestination.defaultBaseURL : cloudURL) : ""
+                        SettingsStore.shared.leaderboardCloudToken = leaderboardCloudTokenDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+                        SettingsStore.shared.leaderboardSheetsURL = leaderboardSheetsDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+                        SettingsStore.shared.leaderboardAutoSync = leaderboardAutoSyncDraft
+                        if !restored.isEmpty,
+                           let endpoint = CloudPublishCredentials.endpointURL(baseURL: SettingsStore.shared.leaderboardCloudURL) {
+                            let handle = SettingsStore.shared.leaderboardHandle.isEmpty ? NSUserName() : SettingsStore.shared.leaderboardHandle
+                            SettingsStore.shared.setLeaderboardClaimToken(restored, endpoint: endpoint, handle: handle)
+                            leaderboardClaimTokenDraft = ""
+                        }
+                        connectionSaveNotice = "Connection saved. Use Sync now to try it."
+                    }
+                    .buttonStyle(.bordered)
+                    if let notice = connectionSaveNotice {
+                        Text(notice).font(.system(size: 11)).foregroundStyle(.secondary)
+                    }
+                }
+                .padding(.top, 10)
+            }
         }
     }
 
@@ -3459,4 +3375,3 @@ struct DashboardTabs: View {
         .frame(width: 130, alignment: .leading)
     }
 }
-

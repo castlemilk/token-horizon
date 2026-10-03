@@ -43,6 +43,7 @@ final class SettingsStore {
     private var _leaderboardSheetsURL: String = ""
     private var _leaderboardCloudURL: String = ""
     private var _leaderboardCloudToken: String = ""
+    private var _leaderboardClaimTokens: [String: String] = [:]
     private var _leaderboardAutoSync: Bool = false
     private var _leaderboardShareCost: Bool = true
     private var _leaderboardShareHardware: Bool = true
@@ -152,6 +153,26 @@ final class SettingsStore {
             saveLocked()
             lock.unlock()
         }
+    }
+
+    /// Anonymous profile write credentials are scoped to the actual API
+    /// endpoint and effective handle. Never include this map in public snapshots.
+    func leaderboardClaimToken(endpoint: URL, handle: String) -> String? {
+        guard let key = CloudPublishCredentials.storageKey(endpoint: endpoint, handle: handle) else { return nil }
+        lock.lock(); defer { lock.unlock() }
+        return _leaderboardClaimTokens[key]
+    }
+
+    /// Also accepts an original token recovered by the user in a SecureField.
+    /// Empty input removes only the credential for this endpoint/profile pair.
+    func setLeaderboardClaimToken(_ token: String, endpoint: URL, handle: String) {
+        guard let key = CloudPublishCredentials.storageKey(endpoint: endpoint, handle: handle) else { return }
+        let value = CloudPublishCredentials.validatedToken(token)
+        guard value != nil || token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        lock.lock()
+        _leaderboardClaimTokens[key] = value
+        saveLocked()
+        lock.unlock()
     }
 
     /// True when a cloud backend is configured (reads don't need the token).
@@ -307,6 +328,7 @@ final class SettingsStore {
             "leaderboardCloudURL": _leaderboardCloudURL,
             "leaderboardCloudflareURL": _leaderboardCloudURL,
             "leaderboardCloudToken": _leaderboardCloudToken,
+            "leaderboardClaimTokens": _leaderboardClaimTokens,
             "leaderboardAutoSync": _leaderboardAutoSync,
             "leaderboardShareCost": _leaderboardShareCost,
             "leaderboardShareHardware": _leaderboardShareHardware,
@@ -319,6 +341,10 @@ final class SettingsStore {
             } ?? [:]
         ]
         if let data = try? JSONSerialization.data(withJSONObject: payload) {
+            if !FileManager.default.fileExists(atPath: path) {
+                FileManager.default.createFile(atPath: path, contents: nil, attributes: [.posixPermissions: 0o600])
+            }
+            chmod(path, 0o600)
             try? data.write(to: URL(fileURLWithPath: path))
             chmod(path, 0o600)
         }
@@ -381,6 +407,9 @@ final class SettingsStore {
             }
             if let lt = obj["leaderboardCloudToken"] as? String {
                 cloudToken = lt.trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+            if let tokens = obj["leaderboardClaimTokens"] as? [String: String] {
+                _leaderboardClaimTokens = tokens.compactMapValues(CloudPublishCredentials.validatedToken)
             }
             if let las = obj["leaderboardAutoSync"] as? Bool {
                 autoSync = las

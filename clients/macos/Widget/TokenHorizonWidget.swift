@@ -25,7 +25,8 @@ struct HorizonProvider: TimelineProvider {
 
     func getTimeline(in context: Context, completion: @escaping (Timeline<HorizonEntry>) -> Void) {
         load { entry in
-            let stale = HorizonEntry(date: Date().addingTimeInterval(901), snapshot: entry.snapshot, offline: entry.offline)
+            let stale = HorizonEntry(date: Date().addingTimeInterval(901), snapshot: entry.snapshot,
+                                     offline: entry.offline, page: entry.page, window: entry.window)
             completion(Timeline(entries: [entry, stale], policy: .after(Date().addingTimeInterval(300))))
         }
     }
@@ -88,7 +89,7 @@ struct TokenHorizonWidget: Widget {
             HorizonWidgetView(entry: entry)
         }
         .configurationDisplayName("Token Horizon")
-        .description("Token usage and plan limits. Configure in Token Horizon Settings. Updates are scheduled by macOS.")
+        .description("Token usage and plan limits, with Sync now and web sign-in. Configure in Token Horizon Settings. Updates are scheduled by macOS.")
         .supportedFamilies([.systemSmall, .systemMedium, .systemLarge])
     }
 }

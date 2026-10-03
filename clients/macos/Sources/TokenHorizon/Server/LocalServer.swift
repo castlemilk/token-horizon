@@ -294,6 +294,12 @@ final class LocalServer {
         }
     }
 
+    private static func rawResponse(_ text: String, contentType: String, status: Int = 200) -> Data {
+        let payload = Data(text.utf8)
+        let header = "HTTP/1.1 \(status) OK\r\nContent-Type: \(contentType)\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: \(payload.count)\r\nConnection: close\r\n\r\n"
+        return Data(header.utf8) + payload
+    }
+
     /// Web catalog export for the dashboard explorer / refresh script.
     /// Extracted from the router so `handle` stays under its lint budgets.
     static func handle(method: String, path: String, body: Data, server: LocalServer) -> Data {
@@ -304,12 +310,6 @@ final class LocalServer {
         func json(_ obj: Any, status: Int = 200) -> Data {
             let payload = (try? JSONSerialization.data(withJSONObject: obj)) ?? Data("{}".utf8)
             let header = "HTTP/1.1 \(status) OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: \(payload.count)\r\nConnection: close\r\n\r\n"
-            return Data(header.utf8) + payload
-        }
-
-        func rawResponse(_ text: String, contentType: String, status: Int = 200) -> Data {
-            let payload = Data(text.utf8)
-            let header = "HTTP/1.1 \(status) OK\r\nContent-Type: \(contentType)\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: \(payload.count)\r\nConnection: close\r\n\r\n"
             return Data(header.utf8) + payload
         }
 

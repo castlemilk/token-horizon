@@ -101,10 +101,12 @@ final class MiscHelperTests: XCTestCase {
 
     // MARK: - Engine flush no-op
 
-    func testFlushEngineState_withoutStagedPayloadIsNoop() {
-        // Must never crash and must not require staged state. (When other
-        // tests stage payloads first, this writes the valid staged state —
-        // the same write the app performs constantly.)
-        DurableStore.shared.flushEngineState()
+    func testFlushEngineState_withoutStagedPayloadIsNoop() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("th-flush-fixture-\(UUID().uuidString)")
+        let store = DurableStore(cacheDirectory: directory, notificationCenter: NotificationCenter())
+        defer { try? FileManager.default.removeItem(at: directory) }
+        store.flushEngineState()
+        XCTAssertEqual(store.cacheStats().filesCount, 0)
     }
 }

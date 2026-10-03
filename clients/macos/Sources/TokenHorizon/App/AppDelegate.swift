@@ -13,6 +13,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     var dashboardWindow: NSWindow?
     private var usingTray = false
     private var surfacesBuilt = false
+    private var surfaceRebuildScheduled = false
+    private let heavyRefresh = HeavyRefreshCoordinator()
+    private let refreshQueue = DispatchQueue(label: "token-horizon.refresh", qos: .utility)
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSLog("TokenHorizon starting (build %@)", BuildInfo.display)
@@ -113,6 +116,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         NotificationCenter.default.addObserver(forName: .tokenHorizonWidgetDidChange, object: nil, queue: .main) { [weak self] _ in
             self?.publishWidget(force: true)
         }
+        LeaderboardSyncController.shared.configureCollector { [weak self] completion in
+            DispatchQueue.global(qos: .utility).async { [weak self] in
+                guard let self else { return }
+                let usage = self.engine.snapshot()
+                let history = self.engine.history(days: 370)
+                let heatmap = self.engine.activityHeatmap(days: 28)
+                completion(.success(LeaderboardSyncLocalData(snapshot: usage, history: history.points,
+                                                            streak: history.streak, heatmap: heatmap)))
+                DispatchQueue.main.async {
+                    self.model.usage = usage
+                    self.model.historyPoints = history.points
+                    self.model.historyStreak = history.streak
+                    self.publishWidget()
+                }
+            }
+        }
         refresh()
         refreshHistory()
         refreshTrends()
@@ -188,8 +207,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         }
         RunLoop.main.add(heavyTimer, forMode: .common)
 
-        NotificationCenter.default.addObserver(forName: .openDashboard, object: nil, queue: .main) { [weak self] _ in
-            self?.openDashboard()
+        NotificationCenter.default.addObserver(forName: .openDashboard, object: nil, queue: .main) { [weak self] note in
+            self?.openDashboard(tab: note.object as? DashboardTab,
+                                settingsSection: note.userInfo?["settingsSection"] as? AppSettingsSection)
+        }
+        NotificationCenter.default.addObserver(forName: .openWebDestination, object: nil, queue: .main) { [weak self] note in
+            guard let destination = note.object as? WebDestination else { return }
+            self?.openWeb(destination)
         }
         NotificationCenter.default.addObserver(forName: NSNotification.Name("planLimitsUpdated"), object: nil, queue: .main) { [weak self] note in
             let limits = (note.object as? [ProviderLimit]) ?? PlanLimitsEngine.shared.cachedLimits()
@@ -214,27 +238,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             }
         }
         NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { [weak self] _ in
-            self?.rebuildSurfaces()
+            self?.scheduleSurfaceRebuild()
         }
         NotificationCenter.default.addObserver(forName: .tokenHorizonSurfaceDidChange, object: nil, queue: .main) { [weak self] _ in
-            self?.rebuildSurfaces()
+            self?.scheduleSurfaceRebuild()
+        }
+        NotificationCenter.default.addObserver(forName: .dismissNotch, object: nil, queue: .main) { [weak self] _ in
+            self?.popover?.close()
+        }
+        NotificationCenter.default.addObserver(forName: .refreshLocalLeaderboard, object: nil, queue: .main) { [weak self] _ in
+            self?.refreshLocalLeaderboard()
         }
     }
 
     /// Surface precedence: TOKEN_HORIZON_FORCE_TRAY=1 (escape hatch) >
     /// Settings surfaceMode > auto-detect (notch screen present?).
-    enum ActiveSurface { case notch, tray }
+    enum ActiveSurface: Equatable { case notch, tray }
 
     func resolveSurface() -> ActiveSurface {
-        if ProcessInfo.processInfo.environment["TOKEN_HORIZON_FORCE_TRAY"] == "1" { return .tray }
-        // An explicit notch choice still can't render on a notch-less rig
-        // (lid-closed clamshell, external-only displays) — the floating pill
-        // looks broken there, so fall back to the tray.
-        if !hasNotch { return .tray }
-        switch SettingsStore.shared.surfaceMode {
+        Self.resolveSurface(mode: SettingsStore.shared.surfaceMode,
+                            forceTray: ProcessInfo.processInfo.environment["TOKEN_HORIZON_FORCE_TRAY"] == "1",
+                            hasNotch: hasNotch)
+    }
+
+    static func resolveSurface(mode: SurfaceMode, forceTray: Bool, hasNotch: Bool) -> ActiveSurface {
+        if forceTray { return .tray }
+        switch mode {
         case .tray: return .tray
         case .notch: return .notch
-        case .auto: return .notch
+        case .auto: return hasNotch ? .notch : .tray
         }
     }
 
@@ -242,6 +274,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         // Active-display check matters on clamshell rigs: the lid-closed
         // internal panel can linger in NSScreen.screens while inactive.
         NSScreen.screens.contains { $0.safeAreaInsets.top > 0 && $0.isActiveDisplay }
+    }
+
+    private func scheduleSurfaceRebuild() {
+        guard !surfaceRebuildScheduled else { return }
+        surfaceRebuildScheduled = true
+        // Let the control's event and Settings draft update finish before
+        // removing any host view. Multiple settings notifications fold here.
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.surfaceRebuildScheduled = false
+            self.rebuildSurfaces()
+        }
     }
 
     func rebuildSurfaces() {
@@ -260,19 +304,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         }
 
         if wantNotch {
-            // Exclusive-notch closes the dashboard window (tray→notch
-            // transition); with both surfaces the window is independent.
-            if !extraTray { closeDashboard() }
+            // Settings lives in this independent window. Changing the quick
+            // surface must not close it or discard an in-progress draft.
             if notchPanel == nil {
                 let panel = NotchPanel(model: model)
                 panel.relayout(expanded: false)
                 panel.orderFrontRegardless()
                 notchPanel = panel
-            } else {
-                notchPanel?.relayout(expanded: false)
-                notchPanel?.orderFrontRegardless()
             }
         } else {
+            // Clear expansion and process-monitoring state before releasing
+            // the host. Extra-tray changes retain the existing panel above.
+            notchPanel?.dismiss()
             notchPanel?.orderOut(nil)
             notchPanel = nil
         }
@@ -286,11 +329,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             button.image = StatusIcon.image(cpuPercent: 0, memPercent: 0)
         }
         let pop = NSPopover()
-        pop.contentSize = NSSize(width: 560, height: 680)
+        pop.contentSize = NSSize(width: 740, height: 680)
         pop.behavior = .transient
         pop.appearance = NSAppearance(named: .darkAqua)
         let wrap = FirstMouseHostingController(rootView:
-            DashboardTabs(model: model, compact: false)
+            DashboardTabs(model: model, compact: true)
                 .padding(14)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background(Color.black.opacity(0.96))
@@ -321,7 +364,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         }
     }
 
-    func openDashboard() {
+    func openDashboard(tab: DashboardTab? = nil, settingsSection: AppSettingsSection? = nil) {
         popover?.close()
         let window: NSWindow
         if let existing = dashboardWindow {
@@ -331,6 +374,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                              styleMask: [.titled, .closable, .resizable, .miniaturizable],
                              backing: .buffered, defer: false)
             w.title = "Token Horizon"
+            w.minSize = NSSize(width: 740, height: 540)
             w.appearance = NSAppearance(named: .darkAqua)
             w.isReleasedWhenClosed = false
             w.center()
@@ -348,7 +392,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         }
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+        if let tab {
+            // Deliver after the new hosting view has subscribed; reused windows
+            // receive the same route without recreating their view or drafts.
+            DispatchQueue.main.async {
+                var info: [AnyHashable: Any] = [:]
+                if let settingsSection { info["settingsSection"] = settingsSection }
+                NotificationCenter.default.post(name: .selectDashboardTab, object: tab, userInfo: info)
+            }
+        }
         refreshHeavy()
+    }
+
+    private func openWeb(_ destination: WebDestination) {
+        popover?.close()
+        if destination == .signIn || destination == .claimHandle {
+            CloudSignInController.shared.signIn { result in
+                if case .success = result { LeaderboardSyncController.shared.syncNow() }
+            }
+            return
+        }
+        let settings = SettingsStore.shared
+        // Workspace and sign-in discover the browser account's owned profiles.
+        // Profile, claims, and web settings target the identity published by this Mac.
+        let localHandle = settings.leaderboardHandle.isEmpty ? NSUserName() : settings.leaderboardHandle
+        let handle = destination == .profile || destination == .webSettings || destination == .claimHandle ? localHandle : ""
+        NSWorkspace.shared.open(destination.url(baseURL: settings.leaderboardCloudURL,
+                                                handle: handle))
     }
 
     private func closeDashboard() {
@@ -370,10 +440,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     }
 
     func application(_ application: NSApplication, open urls: [URL]) {
-        for url in urls where url.scheme == "tokenhorizon" {
+        for url in urls where url.scheme?.lowercased() == "tokenhorizon" {
+            if let action = WidgetDeepLink.action(from: url) {
+                switch action {
+                case .sync:
+                    // The widget opens the shared operation's visible status,
+                    // including recovery advice if publication fails.
+                    openDashboard(tab: .tokens)
+                    LeaderboardSyncController.shared.syncNow { [weak self] _ in
+                        guard let self else { return }
+                        self.refreshLeaderboardRankings { self.publishWidget(force: true) }
+                    }
+                case .signIn:
+                    openWeb(.signIn)
+                }
+                continue
+            }
             switch url.host {
             case "dashboard":
-                openDashboard()
+                let components = URLComponents(url: url, resolvingAgainstBaseURL: false)
+                let rawTab = components?.queryItems?.first(where: { $0.name == "tab" })?.value
+                let tab = rawTab.flatMap { DashboardTab(rawValue: $0.uppercased()) }
+                let rawSection = components?.queryItems?.first(where: { $0.name == "section" })?.value
+                let section = rawSection.flatMap { value in
+                    AppSettingsSection.allCases.first { $0.rawValue.localizedCaseInsensitiveCompare(value) == .orderedSame }
+                }
+                openDashboard(tab: tab, settingsSection: section)
+            case "settings":
+                openDashboard(tab: .settings)
             case "window":
                 // tokenhorizon://window?value=hours|days|weeks — same effect as
                 // the widget picker's link.
@@ -402,43 +496,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     }
 
     func refreshHeavy() {
+        guard heavyRefresh.request() else { return }
+        // Filesystem activity may request a refresh from a utility queue.
+        // Capture UI-owned values only after crossing to main.
+        DispatchQueue.main.async { [weak self] in self?.performHeavyRefresh() }
+    }
+
+    private func performHeavyRefresh() {
+        let history = model.historyPoints
+        let streak = model.historyStreak
         KimiLimitsEngine.shared.refreshIfDue(maxAge: 30)
         PlanLimitsEngine.shared.refreshIfDue(maxAge: 30)
-        DispatchQueue.global(qos: .utility).async { [weak self] in
+        refreshQueue.async { [weak self] in
             guard let self else { return }
             let usage = self.engine.snapshot()
             let procs = SystemStats.processSamples()
             let containers = DockerObserver.sampleContainers()
+            LeaderboardStore.shared.syncLocal(snapshot: usage, history: history, streak: streak)
+            let rankings = LeaderboardStore.shared.rankings(for: .today)
             DispatchQueue.main.async {
                 self.model.usage = usage
                 self.publishWidget()
                 self.model.storeProcesses(all: procs.all, byCPU: procs.byCPU, byMem: procs.byMem,
                                           byDisk: procs.byDisk, byNet: procs.byNet)
                 self.model.dockerContainers = containers
-                LeaderboardStore.shared.syncLocal(snapshot: usage, history: self.model.historyPoints, streak: self.model.historyStreak)
-                self.model.leaderboardRankings = LeaderboardStore.shared.rankings(for: .today)
+                self.model.leaderboardRankings = rankings
 
                 if SettingsStore.shared.leaderboardAutoSync {
-                    // Cloud backend preferred: edge-cached reads + TTL/change-gated
-                    // writes. Sheets stays as the legacy fallback. Both paths are
-                    // policy-gated inside the store (no per-tick network hammer)
-                    // and rankings always serve instantly from memory.
-                    if SettingsStore.shared.leaderboardCloudConfigured {
-                        LeaderboardStore.shared.publishToCloud { _ in }
-                        LeaderboardStore.shared.pullFromCloud { _ in
-                            DispatchQueue.main.async {
-                                self.model.leaderboardRankings = LeaderboardStore.shared.rankings(for: .today)
-                            }
-                        }
-                    } else if !SettingsStore.shared.leaderboardSheetsURL.isEmpty {
-                        LeaderboardStore.shared.publishToGoogleSheet { _ in }
-                        LeaderboardStore.shared.pullFromGoogleSheet { _ in
-                            DispatchQueue.main.async {
-                                self.model.leaderboardRankings = LeaderboardStore.shared.rankings(for: .today)
-                            }
-                        }
+                    // Shares the manual run state while retaining the store's
+                    // TTL/change gates. Publishing precedes the ranking pull.
+                    LeaderboardSyncController.shared.syncAutomatically { _ in
+                        self.refreshLeaderboardRankings()
                     }
                 }
+                if self.heavyRefresh.finish() { self.performHeavyRefresh() }
             }
         }
     }
@@ -463,16 +554,50 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     }
 
     func refreshHistory() {
-        DispatchQueue.global(qos: .utility).async { [weak self] in
+        DispatchQueue.main.async { [weak self] in
             guard let self else { return }
-            let result = engine.history(days: 370)
-            let heatmap = engine.activityHeatmap(days: 28)
-            DispatchQueue.main.async {
-                self.model.historyPoints = result.points
-                self.model.historyStreak = result.streak
-                LeaderboardStore.shared.syncLocal(snapshot: self.model.usage, history: result.points,
+            let usage = self.model.usage
+            self.refreshQueue.async {
+                let result = self.engine.history(days: 370)
+                let heatmap = self.engine.activityHeatmap(days: 28)
+                // A preceding collector may have finished while its main
+                // publication is queued. Prefer the engine's locked current
+                // value so a startup history refresh cannot restage old usage.
+                let currentUsage = self.engine.cachedSnapshot() ?? usage
+                LeaderboardStore.shared.syncLocal(snapshot: currentUsage, history: result.points,
                                                   streak: result.streak, heatmap: heatmap)
-                self.model.leaderboardRankings = LeaderboardStore.shared.rankings(for: .today)
+                let rankings = LeaderboardStore.shared.rankings(for: .today)
+                DispatchQueue.main.async {
+                    self.model.historyPoints = result.points
+                    self.model.historyStreak = result.streak
+                    self.model.leaderboardRankings = rankings
+                }
+            }
+        }
+    }
+
+    /// Settings changes only restage the captured values; they do not scan
+    /// providers, processes, or Docker, and privacy filtering stays in store.
+    private func refreshLocalLeaderboard() {
+        let usage = model.usage
+        let history = model.historyPoints
+        let streak = model.historyStreak
+        refreshQueue.async {
+            // A queued profile save must not replace a collector's newer
+            // usage totals. This locked cached read performs no provider scan.
+            let currentUsage = self.engine.cachedSnapshot() ?? usage
+            LeaderboardStore.shared.syncLocal(snapshot: currentUsage, history: history, streak: streak)
+            let rankings = LeaderboardStore.shared.rankings(for: .today)
+            DispatchQueue.main.async { self.model.leaderboardRankings = rankings }
+        }
+    }
+
+    private func refreshLeaderboardRankings(completion: (() -> Void)? = nil) {
+        refreshQueue.async {
+            let rankings = LeaderboardStore.shared.rankings(for: .today)
+            DispatchQueue.main.async {
+                self.model.leaderboardRankings = rankings
+                completion?()
             }
         }
     }

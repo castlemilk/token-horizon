@@ -11,6 +11,7 @@ final class DurableStore {
     static let shared = DurableStore()
     private let lock = NSLock()
     private let cacheDirectoryURL: URL
+    private let notificationCenter: NotificationCenter
 
     // Debounce state for engine parser saves
     private var isEngineSavePending = false
@@ -148,11 +149,17 @@ final class DurableStore {
         var updatedAt: Date
     }
 
-    private init() {
+    private convenience init() {
         let dir = NSString(string: "~/.config/token-horizon/cache").expandingTildeInPath
-        let url = URL(fileURLWithPath: dir, isDirectory: true)
-        self.cacheDirectoryURL = url
-        try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        self.init(cacheDirectory: URL(fileURLWithPath: dir, isDirectory: true))
+    }
+
+    /// Allows isolated cache fixtures without touching the user's singleton or
+    /// notifying live engine observers during tests.
+    init(cacheDirectory: URL, notificationCenter: NotificationCenter = .default) {
+        self.cacheDirectoryURL = cacheDirectory
+        self.notificationCenter = notificationCenter
+        try? FileManager.default.createDirectory(at: cacheDirectory, withIntermediateDirectories: true)
     }
 
     var snapshotURL: URL { cacheDirectoryURL.appendingPathComponent("snapshot.json") }
@@ -344,7 +351,6 @@ final class DurableStore {
     @discardableResult
     func resetAll() -> (clearedFiles: Int, clearedBytes: Int64) {
         lock.lock()
-        defer { lock.unlock() }
         cachedTrends.removeAll()
         pendingEnginePayload = nil
         lastEngineWrite = .distantPast
@@ -363,9 +369,12 @@ final class DurableStore {
                 clearedFiles += 1
             }
         }
+        lock.unlock()
 
         durableLog.info("Reset all durable caches: removed \(clearedFiles) files (\(clearedBytes) bytes)")
-        NotificationCenter.default.post(name: .tokenHorizonCacheReset, object: nil)
+        // Engine observers acquire their own lock, and engine reads call back
+        // into this store. Notify only after releasing the durable lock.
+        notificationCenter.post(name: .tokenHorizonCacheReset, object: nil)
         return (clearedFiles, clearedBytes)
     }
 

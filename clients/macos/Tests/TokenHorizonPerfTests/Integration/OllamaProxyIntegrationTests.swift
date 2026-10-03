@@ -7,7 +7,12 @@ final class OllamaProxyIntegrationTests: XCTestCase {
 
     override func setUp() {
         super.setUp()
-        OllamaTelemetryStore.shared.resetForTesting()
+        OllamaTelemetryStore.shared.resetForTesting(storageURL: nil)
+    }
+
+    override func tearDown() {
+        OllamaTelemetryStore.shared.resetForTesting(storageURL: nil)
+        super.tearDown()
     }
 
     func testParseTelemetry_nativeOllamaNDJSONStream() {

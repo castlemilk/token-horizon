@@ -1,6 +1,7 @@
 import SwiftUI
 
 struct WingRingGauge: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let percent: Double
     let color: Color
     var help: String = ""
@@ -19,7 +20,10 @@ struct WingRingGauge: View {
                 .minimumScaleFactor(0.6)
         }
         .frame(width: 22, height: 22)
-        .animation(.easeOut(duration: 0.5), value: clamped)
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.5), value: clamped)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(help)
+        .accessibilityValue("\(Int(clamped)) percent")
         .help(help)
     }
 }
@@ -56,141 +60,198 @@ struct HeatmapGrid: View {
     let points: [HistoryPoint]
     let maxTokens: Int
     var cellSize: CGFloat = 7
-    @State private var hovered: (point: HistoryPoint, col: Int, row: Int)?
+    @State private var hovered: (point: HistoryPoint, column: Int)?
     private let gap: CGFloat = 1.5
-    private let tooltipWidth: CGFloat = 158
-    private let weekdayLabels = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+    private let weekdayWidth: CGFloat = 26
+    private let weekdayLabels = ["Mon", "", "Wed", "", "Fri", "", ""]
 
     var body: some View {
-        let cal = Calendar.current
-        var weekColumns: [[HistoryPoint?]] = Array(repeating: Array(repeating: nil, count: 7), count: (points.count + 6) / 7)
-        var monthAtColumn: [Int: String] = [:]
-        let f = DateFormatter(); f.dateFormat = "MMM"
-        for (i, point) in points.enumerated() {
-            let date = Date(timeIntervalSince1970: TimeInterval(point.day))
-            let weekday = cal.component(.weekday, from: date)
-            let col = i / 7
-            let row = (weekday + 5) % 7
-            if col < weekColumns.count {
-                weekColumns[col][row] = point
-                if monthAtColumn[col] == nil {
-                    let m = f.string(from: date)
-                    let prev = col - 1
-                    if prev < 0 || monthAtColumn[prev] != m { monthAtColumn[col] = m }
-                }
-            }
-        }
-        let gridWidth = CGFloat(weekColumns.count) * (cellSize + gap)
-        _ = gridWidth
-        let monthLabelsWidth = CGFloat(weekColumns.count) * (cellSize + gap) + 22
-        return VStack(alignment: .leading, spacing: 3) {
+        let columns = Self.weekColumns(points)
+        let width = CGFloat(columns.count) * (cellSize + gap) + weekdayWidth
+        let labels = positionedMonthLabels(columns, width: width)
+        return VStack(alignment: .leading, spacing: 5) {
             ZStack(alignment: .topLeading) {
-                ForEach(Array(monthAtColumn.sorted(by: { $0.key < $1.key })), id: \.key) { col, month in
-                    Text(month)
-                        .font(.system(size: 7, weight: .medium, design: .monospaced))
-                        .foregroundStyle(.white.opacity(0.45))
-                        .offset(x: 22 + CGFloat(col) * (cellSize + gap))
+                ForEach(labels, id: \.column) { label in
+                    Text(label.title)
+                        .font(.system(size: 9, weight: .medium))
+                        .foregroundStyle(.white.opacity(0.65))
+                        .offset(x: label.x)
                 }
             }
-            .frame(width: monthLabelsWidth, height: 9, alignment: .leading)
+            .frame(width: width, height: 12, alignment: .leading)
             HStack(alignment: .top, spacing: 0) {
                 VStack(alignment: .trailing, spacing: gap) {
                     ForEach(0..<7, id: \.self) { row in
                         Text(weekdayLabels[row])
-                            .font(.system(size: 6.5, design: .monospaced))
-                            .foregroundStyle(.white.opacity(0.4))
-                            .frame(width: 20, height: cellSize, alignment: .trailing)
+                            .font(.system(size: 8))
+                            .foregroundStyle(.white.opacity(0.6))
+                            .frame(width: weekdayWidth, height: cellSize, alignment: .leading)
                     }
                 }
-                ZStack(alignment: .topLeading) {
-                    HStack(alignment: .top, spacing: gap) {
-                        ForEach(Array(weekColumns.enumerated()), id: \.offset) { col, week in
-                            VStack(spacing: gap) {
-                                ForEach(0..<7, id: \.self) { row in
-                                    if let p = week[row] {
-                                        RoundedRectangle(cornerRadius: 2)
-                                            .fill(cellColor(p.tokens))
-                                            .frame(width: cellSize, height: cellSize)
-                                            .onHover { over in
-                                                if over { hovered = (p, col, row) }
-                                                else if hovered?.point.day == p.day { hovered = nil }
-                                            }
-                                    } else {
-                                        Color.clear.frame(width: cellSize, height: cellSize)
-                                    }
+                HStack(alignment: .top, spacing: gap) {
+                    ForEach(Array(columns.enumerated()), id: \.offset) { column, week in
+                        VStack(spacing: gap) {
+                            ForEach(0..<7, id: \.self) { row in
+                                if let point = week[row] {
+                                    let description = tooltipDescription(point)
+                                    RoundedRectangle(cornerRadius: 2)
+                                        .fill(cellColor(point.tokens))
+                                        .frame(width: cellSize, height: cellSize)
+                                        .help(description)
+                                        .accessibilityLabel(description)
+                                        .onHover { over in
+                                            if over { hovered = (point, column) }
+                                            else if hovered?.point.day == point.day { hovered = nil }
+                                        }
+                                } else {
+                                    Color.clear.frame(width: cellSize, height: cellSize)
                                 }
                             }
                         }
                     }
-                    if let h = hovered {
-                        tooltipCard(h.point)
-                            .offset(x: tooltipX(col: h.col, totalCols: weekColumns.count) + 22,
-                                    y: h.row < 3 ? 7 * (cellSize + gap) + 6 : -tooltipHeight(h.point))
-                    }
                 }
             }
-            HStack(spacing: 3) {
-                Spacer()
-                Text("Less").font(.system(size: 6.5, design: .monospaced)).foregroundStyle(.white.opacity(0.35))
+            HStack(spacing: 4) {
+                Spacer(minLength: 0)
+                Text("Less")
                 ForEach(0..<6, id: \.self) { level in
                     RoundedRectangle(cornerRadius: 1.5)
                         .fill(heatColor(level: Double(level) / 5.0))
-                        .frame(width: 6, height: 6)
+                        .frame(width: 7, height: 7)
                 }
-                Text("More").font(.system(size: 6.5, design: .monospaced)).foregroundStyle(.white.opacity(0.35))
+                Text("More")
+            }
+            .font(.system(size: 8))
+            .foregroundStyle(.white.opacity(0.6))
+            .frame(maxWidth: .infinity)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .overlay(alignment: .topLeading) {
+            GeometryReader { bounds in
+                if let hovered {
+                    // Native help is not delivered in the nonactivating notch.
+                    // Keep a custom bubble inside the calendar's actual width.
+                    tooltip(hovered.point)
+                        .offset(x: tooltipX(column: hovered.column, width: bounds.size.width))
+                        .allowsHitTesting(false)
+                }
             }
         }
+        .onChange(of: cellSize) { _ in hovered = nil }
     }
 
-    /// Heat color scale. Internal for hermetic unit tests.
+    /// Monday-aligned columns retain missing days and bound allocation to a
+    /// trailing year, including the partial weeks at either end.
+    static func weekColumns(_ points: [HistoryPoint], calendar: Calendar = .current) -> [[HistoryPoint?]] {
+        guard let earliest = points.map(\.day).min(), let latest = points.map(\.day).max() else { return [] }
+        let lastDay = calendar.startOfDay(for: Date(timeIntervalSince1970: TimeInterval(latest)))
+        let earliestDay = calendar.startOfDay(for: Date(timeIntervalSince1970: TimeInterval(earliest)))
+        let yearStart = calendar.date(byAdding: .day, value: -363, to: lastDay) ?? earliestDay
+        let firstDay = max(earliestDay, yearStart)
+        let leading = (calendar.component(.weekday, from: firstDay) + 5) % 7
+        let days = max(0, calendar.dateComponents([.day], from: firstDay, to: lastDay).day ?? 0)
+        var columns = Array(repeating: Array<HistoryPoint?>(repeating: nil, count: 7),
+                            count: (leading + days + 7) / 7)
+        for point in points {
+            let day = calendar.startOfDay(for: Date(timeIntervalSince1970: TimeInterval(point.day)))
+            let offset = calendar.dateComponents([.day], from: firstDay, to: day).day ?? -1
+            guard offset >= 0, offset <= days else { continue }
+            let index = leading + offset
+            columns[index / 7][index % 7] = point
+        }
+        return columns
+    }
+
+    /// Label each month once instead of re-emitting it after an unlabeled week.
+    static func monthLabels(_ columns: [[HistoryPoint?]], calendar: Calendar = .current) -> [(column: Int, title: String)] {
+        let formatter = DateFormatter()
+        formatter.calendar = calendar
+        formatter.dateFormat = "MMM"
+        var previous: DateComponents?
+        var labels: [(column: Int, title: String)] = []
+        for (index, column) in columns.enumerated() {
+            guard let point = column.compactMap({ $0 }).first else { continue }
+            let date = Date(timeIntervalSince1970: TimeInterval(point.day))
+            let month = calendar.dateComponents([.year, .month], from: date)
+            if month != previous {
+                labels.append((index, formatter.string(from: date)))
+                previous = month
+            }
+        }
+        return labels
+    }
+
+    private func positionedMonthLabels(_ columns: [[HistoryPoint?]], width: CGFloat) -> [(column: Int, title: String, x: CGFloat)] {
+        var labels: [(column: Int, title: String, x: CGFloat)] = []
+        var nextX = CGFloat.infinity
+        for label in Self.monthLabels(columns).reversed() {
+            let x = min(weekdayWidth + CGFloat(label.column) * (cellSize + gap), max(weekdayWidth, width - 24))
+            if nextX - x >= 26 {
+                labels.append((label.column, label.title, x))
+                nextX = x
+            }
+        }
+        return Array(labels.reversed())
+    }
+
     func heatColor(level: Double) -> Color {
         Color.green.opacity(0.22 + 0.78 * level)
     }
-    /// Log-scaled cell color. Internal for hermetic unit tests.
+
     func cellColor(_ tokens: Int) -> Color {
         guard tokens > 0 else { return Color.white.opacity(0.06) }
-        let ratio = log(Double(tokens) + 1) / log(Double(maxTokens) + 1)
+        let ratio = log(Double(tokens) + 1) / log(Double(max(maxTokens, 1)) + 1)
         return heatColor(level: Swift.min(ratio * 1.4, 1))
     }
-    /// Clamped tooltip anchor. Internal for hermetic unit tests.
-    func tooltipX(col: Int, totalCols: Int) -> CGFloat {
-        let raw = CGFloat(col) * (cellSize + gap) - tooltipWidth / 2 + cellSize / 2
-        let maxX = CGFloat(totalCols) * (cellSize + gap) - tooltipWidth
-        return Swift.min(Swift.max(raw, 0), Swift.max(maxX, 0))
+
+    private static let tooltipDateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateStyle = .medium
+        formatter.timeStyle = .none
+        return formatter
+    }()
+
+    private func tooltipDescription(_ point: HistoryPoint) -> String {
+        let date = Self.tooltipDateFormatter.string(from: Date(timeIntervalSince1970: TimeInterval(point.day)))
+        let summary = point.tokens > 0 ? "\(UsageSnapshot.tokens(point.tokens)) tokens" : "No usage"
+        let tools = point.byTool.filter { $0.value > 0 }.sorted { $0.value > $1.value }.prefix(4)
+            .map { "\($0.key): \(UsageSnapshot.tokens($0.value))" }
+        return ([date, summary] + tools).joined(separator: "\n")
     }
-    /// Tooltip height by content. Internal for hermetic unit tests.
-    func tooltipHeight(_ p: HistoryPoint) -> CGFloat { p.tokens > 0 ? 58 : 40 }
-    private func tooltipCard(_ p: HistoryPoint) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(dayString(p.day))
-                .font(.system(size: 8, weight: .heavy, design: .monospaced))
-                .foregroundStyle(.white.opacity(0.6))
-            Text(p.tokens > 0 ? "\(UsageSnapshot.tokens(p.tokens)) tokens" : "no usage")
-                .font(.system(size: 10, weight: .bold, design: .monospaced))
-                .foregroundStyle(p.tokens > 0 ? .green : .secondary)
-            if p.tokens > 0 {
-                ForEach(Array(p.byTool.filter { $0.value > 0 }.sorted { $0.value > $1.value }.prefix(4)), id: \.key) { tool, tokens in
-                    HStack(spacing: 3) {
-                        Circle().fill(DashboardTabs.toolColor(tool)).frame(width: 3, height: 3)
-                        Text(tool).font(.system(size: 8, design: .monospaced)).foregroundStyle(.white.opacity(0.75))
-                        Spacer()
-                        Text(UsageSnapshot.tokens(tokens)).font(.system(size: 8, design: .monospaced)).foregroundStyle(.white.opacity(0.55))
-                    }
+
+    /// The weekday gutter is added once; first and last cells share the same
+    /// bounds regardless of the calendar's current number of weeks.
+    func tooltipX(column: Int, width: CGFloat) -> CGFloat {
+        let center = weekdayWidth + CGFloat(column) * (cellSize + gap) + cellSize / 2
+        return min(max(0, center - 79), max(0, width - 158))
+    }
+
+    private func tooltip(_ point: HistoryPoint) -> some View {
+        let tools = point.byTool.filter { $0.value > 0 }.sorted { $0.value > $1.value }.prefix(4)
+        return VStack(alignment: .leading, spacing: 2) {
+            Text(Self.tooltipDateFormatter.string(from: Date(timeIntervalSince1970: TimeInterval(point.day))))
+                .font(.system(size: 8, weight: .semibold)).foregroundStyle(.white.opacity(0.7))
+            Text(point.tokens > 0 ? "\(UsageSnapshot.tokens(point.tokens)) tokens" : "No usage")
+                .font(.system(size: 10, weight: .semibold)).monospacedDigit().foregroundStyle(.green)
+            ForEach(Array(tools), id: \.key) { tool, tokens in
+                HStack(spacing: 3) {
+                    Circle().fill(DashboardTabs.toolColor(tool)).frame(width: 3, height: 3)
+                    Text(tool).font(.system(size: 8)).foregroundStyle(.white.opacity(0.75)).lineLimit(1)
+                    Spacer(minLength: 3)
+                    Text(UsageSnapshot.tokens(tokens)).font(.system(size: 8)).monospacedDigit()
+                        .foregroundStyle(.white.opacity(0.65))
                 }
             }
         }
-        .padding(7).frame(width: tooltipWidth, alignment: .leading)
+        .padding(7).frame(width: 158, alignment: .leading)
         .background(RoundedRectangle(cornerRadius: 6).fill(Color.black.opacity(0.97))
             .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color.white.opacity(0.18))))
-    }
-    private func dayString(_ epochDay: Int) -> String {
-        DateFormatter.localizedString(from: Date(timeIntervalSince1970: TimeInterval(epochDay)),
-                                      dateStyle: .medium, timeStyle: .none)
     }
 }
 
 struct HeatmapKPIs: View {
     let points: [HistoryPoint]
+    var horizontal = false
     var body: some View {
         var total = 0
         var peak = 0
@@ -200,17 +261,27 @@ struct HeatmapKPIs: View {
             if p.tokens > peak { peak = p.tokens }
             if p.tokens > 0 { active += 1 }
         }
-        return VStack(alignment: .leading, spacing: 12) {
-            kpi(UsageSnapshot.tokens(total), "Total tokens")
-            kpi(UsageSnapshot.tokens(peak), "Peak tokens")
-            kpi("\(active)", "Active days")
+        return Group {
+            if horizontal {
+                HStack(alignment: .top, spacing: 16) {
+                    kpi(UsageSnapshot.tokens(total), "Total tokens")
+                    kpi(UsageSnapshot.tokens(peak), "Peak day")
+                    kpi("\(active)", "Active days")
+                }
+            } else {
+                VStack(alignment: .leading, spacing: 12) {
+                    kpi(UsageSnapshot.tokens(total), "Total tokens")
+                    kpi(UsageSnapshot.tokens(peak), "Peak tokens")
+                    kpi("\(active)", "Active days")
+                }
+            }
         }
     }
     private func kpi(_ value: String, _ caption: String) -> some View {
         VStack(alignment: .leading, spacing: 1) {
-            Text(value).font(.system(size: 14, weight: .bold, design: .monospaced))
-                .foregroundStyle(.white).lineLimit(1).minimumScaleFactor(0.6)
-            Text(caption).font(.system(size: 7.5, design: .monospaced)).foregroundStyle(.secondary)
+            Text(value).font(.system(size: 13, weight: .semibold)).monospacedDigit()
+                .foregroundStyle(.white).lineLimit(1).minimumScaleFactor(0.8)
+            Text(caption).font(.system(size: 9)).foregroundStyle(.white.opacity(0.65))
         }
     }
 }
@@ -228,35 +299,59 @@ struct StackedTrends: View {
                 HStack(alignment: .bottom, spacing: 0) {
                     ForEach(Array(points.enumerated()), id: \.offset) { i, point in
                         VStack(alignment: .leading, spacing: 0) {
-                            ForEach(Array(sortedTools(point).reversed()), id: \.0) { tool, tokens in
+                            ForEach(Array(segmentHeights(point, maxTotal: maxTotal, container: geo.size.height).reversed()), id: \.0) { tool, height in
                                 Rectangle()
                                     .fill(DashboardTabs.toolColor(tool).opacity(hovered?.index == i ? 1 : 0.88))
-                                    .frame(height: barHeight(tokens, maxTotal, container: geo.size.height))
+                                    .frame(height: height)
                             }
                             if point.tokens == 0 { Rectangle().fill(Color.white.opacity(0.05)).frame(height: 1) }
                         }
                         .frame(width: barW, height: geo.size.height, alignment: .bottom)
                         .contentShape(Rectangle())
+                        .accessibilityLabel("\(dayString(point.day)), \(UsageSnapshot.tokens(point.tokens)) tokens")
                         .onHover { over in
                             if over { hovered = (point, i) }
                             else if hovered?.index == i { hovered = nil }
                         }
                     }
                 }
-                .frame(maxHeight: .infinity, alignment: .bottom)
+                .frame(width: geo.size.width, height: geo.size.height, alignment: .bottom)
+                .clipped()
                 Rectangle().fill(Color.white.opacity(0.15)).frame(height: 1).frame(maxHeight: .infinity, alignment: .bottom)
                 if let h = hovered, h.point.tokens > 0 {
                     let rawX = (CGFloat(h.index) + 0.5) * barW - bubbleW / 2
-                    let clampedX = Swift.min(Swift.max(rawX, 0), geo.size.width - bubbleW)
-                    trendTooltip(h.point).offset(x: clampedX, y: -46)
+                    let clampedX = Swift.min(Swift.max(rawX, 0), Swift.max(0, geo.size.width - bubbleW))
+                    trendTooltip(h.point)
+                        .offset(x: clampedX, y: 4)
+                        .allowsHitTesting(false)
                 }
             }
         }
     }
     /// Sqrt-scaled bar height. Internal for hermetic unit tests.
     func barHeight(_ tokens: Int, _ maxTotal: Int, container: CGFloat) -> CGFloat {
-        let ratio = sqrt(Double(tokens) / Double(maxTotal))
-        return max(1.5, CGFloat(ratio * Double(container - 4)))
+        guard container.isFinite, container > 0 else { return 0 }
+        let ratio = sqrt(min(1, Double(max(0, tokens)) / Double(max(1, maxTotal))))
+        return min(container, max(min(1.5, container), CGFloat(ratio) * max(0, container - 4)))
+    }
+
+    /// Scale the bucket once, then divide its height linearly. Scaling each
+    /// provider separately makes a multi-provider stack exceed the plot.
+    func segmentHeights(_ point: HistoryPoint, maxTotal: Int, container: CGFloat) -> [(String, CGFloat)] {
+        guard point.tokens > 0, container.isFinite, container > 0 else { return [] }
+        var values = sortedTools(point).map { ($0.0, Double($0.1)) }
+        let known = values.reduce(0.0) { $0 + $1.1 }
+        let missing = max(0, Double(point.tokens) - known)
+        if missing > 0 {
+            if let index = values.firstIndex(where: { $0.0 == "other" }) {
+                values[index].1 += missing
+            } else {
+                values.append(("other", missing))
+            }
+        }
+        let denominator = max(Double(point.tokens), known)
+        let height = barHeight(point.tokens, maxTotal, container: container)
+        return values.map { ($0.0, height * CGFloat($0.1 / denominator)) }
     }
     /// Tools sorted by tokens desc. Internal for hermetic unit tests.
     func sortedTools(_ point: HistoryPoint) -> [(String, Int)] {
@@ -273,7 +368,7 @@ struct StackedTrends: View {
             ForEach(Array(sortedTools(p).prefix(4)), id: \.0) { tool, tokens in
                 HStack(spacing: 3) {
                     Circle().fill(DashboardTabs.toolColor(tool)).frame(width: 3, height: 3)
-                    Text(tool).font(.system(size: 8, design: .monospaced)).foregroundStyle(.white.opacity(0.75))
+                    Text(tool).font(.system(size: 8, design: .monospaced)).foregroundStyle(.white.opacity(0.75)).lineLimit(1)
                     Spacer()
                     Text(UsageSnapshot.tokens(tokens)).font(.system(size: 8, design: .monospaced)).foregroundStyle(.white.opacity(0.55))
                 }
@@ -327,4 +422,3 @@ struct Sparkline: View {
         }
     }
 }
-

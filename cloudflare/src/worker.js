@@ -56,6 +56,12 @@ const defaultHandler = {
       // A metadata probe need not create a browser-bound management nonce.
       if (url.pathname === '/connect' && request.method === 'HEAD') return new Response(null, { headers: pageHeaders() });
       if (url.pathname === '/connect' && request.method === 'GET') {
+        if (url.searchParams.has('desktop')) {
+          const id = url.searchParams.get('desktop') || '';
+          if (!/^[a-f0-9]{64}$/.test(id)) return new Response(connectPage({ error: 'This app connection is invalid. Return to Token Horizon and choose Sync now again.' }), { status: 400, headers: pageHeaders() });
+          return new Response(connectPage({ mode: 'desktop', desktopId: id, handle: id,
+            clientId: env.GOOGLE_CLIENT_ID, githubAuth: githubConfigured(env), webSessions: sessionsConfigured(env) }), { headers: pageHeaders() });
+        }
         const nonce = crypto.randomUUID(), digest = await hash(nonce);
         await env.OAUTH_KV.put(`management:${digest}`, '1', { expirationTtl: 600 });
         const headers = pageHeaders();

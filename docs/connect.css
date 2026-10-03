@@ -2,3 +2,63 @@
 
 /* Account surfaces follow the same mineral/graphite system as /login. */
 body{font-family:"Hubot Sans",-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#F3F4EF}.connection{min-width:0}.connector-auth-options{display:grid;gap:10px;margin:21px 0 16px;max-width:400px}.connector-auth-options[hidden],.connector-identity[hidden]{display:none}#google-signin{margin:0;min-height:44px;max-width:100%;overflow:hidden}.github-signin{display:flex;align-items:center;justify-content:center;gap:11px;width:100%;min-height:46px;border:1px solid #17251C;border-radius:7px;background:#17251C;color:#F0F6EC;font-size:13px;font-weight:550;padding:12px 15px}.github-signin:hover:not(:disabled){background:#2B4B35}.github-signin:disabled{opacity:.48;cursor:not-allowed}.auth-provider-note{font-size:10px;color:#68796A;line-height:1.5}.connector-identity{display:flex;align-items:center;gap:11px;padding:13px;border:1px solid #C4D2BE;border-radius:8px;background:#E8EFE4;margin:23px 0;min-width:0}.connector-avatar{position:relative;display:grid;place-items:center;flex:none;width:40px;height:40px;border-radius:50%;background:#D4E0CC;color:#235E43;font-size:18px;overflow:hidden}.connector-avatar img{position:absolute;width:100%;height:100%;object-fit:cover}.connector-identity>div{min-width:0;flex:1}.connector-identity strong{display:block;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.connector-identity small{display:block;font-size:10px;line-height:1.5;color:#60775F;overflow-wrap:anywhere}.change-account{border:0;background:transparent;color:#235E43;font-size:10px;padding:5px 0;max-width:70px;text-align:right}.change-account:hover{text-decoration:underline}.change-account:disabled{opacity:.45;cursor:not-allowed}@media(max-width:360px){.connection{padding:30px 20px}.connector-identity{padding:11px;gap:8px}.connector-avatar{width:33px;height:33px}.change-account{font-size:9px;max-width:58px}nav{gap:10px}.brand{font-size:15px}header{padding:0 20px}}
+
+.connect-redirect main { display: block; min-height: 0; max-width: 720px; padding: 32px 24px; }
+.desktop-profile { margin: 24px 0 18px; }
+.desktop-profile > label { display: block; margin-bottom: 8px; font-size: 13px; font-weight: 600; }
+.desktop-handle-field { display: flex; align-items: center; gap: 4px; padding: 0 13px; min-height: 48px; border: 1px solid var(--th-rule-strong, #a9bca7); border-radius: 7px; background: var(--th-surface, #fff); color: var(--th-muted, #49684d); }
+.desktop-handle-field:focus-within { outline: 2px solid var(--th-accent, #327960); outline-offset: 2px; }
+.desktop-handle-field input { min-width: 0; width: 100%; border: 0; padding: 12px 5px; background: transparent; color: var(--th-text, #17251e); font-size: 16px; outline: none; }
+.desktop-handle-field:has(input:disabled) { opacity: .55; }
+.desktop-profile .help { margin: 9px 0 0; }
+#desktop-form[hidden], .desktop-result[hidden] { display: none; }
+.desktop-result { margin: 24px 0; }
+.desktop-profile-link { display: inline-flex; align-items: center; min-height: 44px; font-size: 14px; color: var(--th-accent, #235e43); text-decoration: underline; text-underline-offset: 4px; }
+body[data-mode="desktop"] .connection { align-self: start; padding-top: 58px; }
+@media (max-width: 680px) { body[data-mode="desktop"] .connection { padding-top: 28px; } .desktop-profile > label { font-size: 15px; } }
+.connect-redirect a { display: inline-flex; align-items: center; min-height: 44px; text-decoration: underline; text-underline-offset: 4px; }
+html body[data-mode] main > *, html body[data-mode] .connection > *, html body[data-mode] .permission > * { min-width: 0; }
+html body[data-mode] .connection h2, html body[data-mode] .destination strong, html body[data-mode] .connector-identity strong { max-width: 100%; overflow-wrap: anywhere; }
+html body[data-mode] .grant > div { min-width: 0; flex: 1; overflow-wrap: anywhere; }
+html body[data-mode] .grant button { flex-shrink: 0; }
+@media (max-width: 860px) {
+  html body[data-mode] main { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 680px) {
+  html body[data-mode] main { min-height: 0; }
+  html body[data-mode] > header { height: auto; min-height: 72px; padding: 12px 20px; gap: 8px 16px; }
+  html body[data-mode] header nav { gap: 4px 12px; }
+  html body[data-mode] header nav a { display: inline-flex; align-items: center; min-width: 44px; min-height: 44px; padding: 8px 4px; font-size: 13px; }
+  html body[data-mode] .universe { min-height: 0; padding: 24px 22px 18px; }
+  html body[data-mode] .universe .eyebrow, html body[data-mode] .coordinate { display: none; }
+  html body[data-mode] .universe h1 { max-width: none; margin: 0 0 12px; font-size: 30px; letter-spacing: -.03em; }
+  html body[data-mode] .universe .intro { font-size: 14px; max-width: 30ch; }
+  html body[data-mode] .hole-stage { top: 12px; left: 45%; right: -20%; height: 200px; opacity: .5; pointer-events: none; }
+  html body[data-mode] .stage-footer { margin-top: 12px; padding-top: 0; max-width: none; font-family: inherit; font-size: 11px; letter-spacing: 0; }
+  html body[data-mode] .stage-footer button { min-height: 44px; padding: 10px 8px; font-size: 12px; white-space: nowrap; }
+  html body[data-mode] .connection { padding: 28px 22px 36px; }
+  html body[data-mode] .connection-top, html body[data-mode] .app-symbol, html body[data-mode] .capability-grid { display: none; }
+  html body[data-mode] .connection h2 { font-size: 32px; letter-spacing: -.03em; }
+  html body[data-mode] .connection .lede, html body[data-mode] .connection .help { font-size: 16px; line-height: 1.65; }
+  html body[data-mode] .endpoint { margin-top: 24px; padding: 14px 16px; }
+  html body[data-mode] .endpoint > div { font-size: 11px; letter-spacing: .03em; }
+  html body[data-mode] .endpoint button { min-width: 56px; min-height: 44px; padding: 10px 8px; font-size: 14px; }
+  html body[data-mode] .endpoint code { margin-top: 8px; font-size: 13px; }
+  html body[data-mode] .package-link, html body[data-mode] .local-details summary, html body[data-mode] .change-account, html body[data-mode] .grant button { min-height: 44px; }
+  html body[data-mode] .local-details summary { padding-block: 10px; font-size: 14px; }
+  html body[data-mode] .local-details p, html body[data-mode] .permission p { font-size: 14px; }
+  html body[data-mode] .permission strong { font-size: 15px; }
+  html body[data-mode] .form-actions { flex-wrap: wrap; }
+  html body[data-mode] .form-actions > * { min-height: 48px; font-size: 14px; }
+  html body[data-mode] .destination, html body[data-mode] .connector-identity { font-size: 14px; }
+  html body[data-mode] .connector-identity strong { font-size: 14px; }
+  html body[data-mode] .connector-identity small, html body[data-mode] .destination small, html body[data-mode] .auth-provider-note { font-size: 12px; }
+  html body[data-mode] .change-account { font-size: 12px; }
+  html body[data-mode] .trust-note > span, html body[data-mode] footer > span { display: none; }
+  html body[data-mode] .trust-note p { font-size: 13px; }
+  html body[data-mode] footer { padding: 16px 22px max(16px, env(safe-area-inset-bottom)); }
+  html body[data-mode] footer a { display: inline-flex; align-items: center; min-height: 44px; font: 14px var(--th-display); letter-spacing: 0; }
+}
+@media (max-width: 760px) {
+  html body[data-mode] .connection .lede { overflow-wrap: anywhere; }
+}

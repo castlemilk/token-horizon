@@ -1,285 +1,309 @@
 name: release
 on:
   push:
-    branches: ["main"]
+    branches: [main]
     tags: ["v*"]
   workflow_dispatch:
     inputs:
       version:
-        description: "Version to release (X.Y.Z). Blank = next patch after the latest v* tag."
+        description: "New version X.Y.Z; blank selects the next patch."
         required: false
         type: string
-
+      release_tag:
+        description: "Existing unreleased tag vX.Y.Z to resume or backfill. Leave version blank."
+        required: false
+        type: string
+      desktop_installers:
+        description: "Also build and attach Linux/Windows installers after the native Mac release."
+        type: boolean
+        default: false
 permissions:
   contents: write
-
-# Releases serialize: two rapid main pushes must never race on the same
-# computed version (queued, not cancelled).
 concurrency:
   group: release
   cancel-in-progress: false
-
 jobs:
   build-and-release:
     runs-on: macos-15
+    timeout-minutes: 90
+    env:
+      GH_TOKEN: ${{ github.token }}
     outputs:
-      release_tag: ${{ format('v{0}', steps.ver.outputs.version) }}
-    # Opt-in: a push to main releases only when the head commit message
-    # carries a release token — `[release]` (patch), `[release minor]`,
-    # `[release major]`. Everything else (docs, WIP, ordinary fixes) lands
-    # without a release. The pipeline's own `release v…`/`release metadata…`
-    # commits contain no token and never retrigger; GITHUB_TOKEN pushes
-    # wouldn't retrigger anyway.
+      release_tag: ${{ steps.ver.outputs.tag }}
     if: >-
       github.event_name == 'workflow_dispatch'
       || startsWith(github.ref, 'refs/tags/')
-      || (github.ref_name == 'main'
-          && github.event_name == 'push'
+      || (github.ref_name == 'main' && github.event_name == 'push'
           && (contains(github.event.head_commit.message, '[release]')
               || contains(github.event.head_commit.message, '[release ')))
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0 # tag history needed for semver resolution on dispatch
-
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - name: Resolve release version from the shared CLI
+        id: ver
+        env:
+          HEAD_MSG: ${{ github.event.head_commit.message }}
+          REQUESTED_VERSION: ${{ inputs.version }}
+          REQUESTED_TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          if [ "$GITHUB_REF_TYPE" = tag ]; then REQUESTED_TAG="$GITHUB_REF_NAME"; fi
+          if [ -z "$REQUESTED_TAG" ]; then
+            # Queued releases start from the current main tip. Never rebase or
+            # push an obsolete trigger checkout over newer repository history.
+            git fetch origin main --tags
+            git checkout --detach origin/main
+          fi
+          node scripts/release.mjs resolve --version "$REQUESTED_VERSION" --tag "$REQUESTED_TAG" --message "$HEAD_MSG" --format github >> "$GITHUB_OUTPUT"
+          if [ -n "$REQUESTED_TAG" ]; then echo 'existing_tag=1' >> "$GITHUB_OUTPUT"; else echo 'existing_tag=0' >> "$GITHUB_OUTPUT"; fi
+      - name: Commit canonical native pins and atomically push the release tag
+        if: steps.ver.outputs.existing_tag == '0'
+        env:
+          RELEASE_VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          node scripts/release.mjs release "$RELEASE_VERSION" --ci
+      - name: Check out and validate the exact unreleased tag
+        id: source
+        env:
+          RELEASE_VERSION: ${{ steps.ver.outputs.version }}
+          RELEASE_TAG: ${{ steps.ver.outputs.tag }}
+        run: |
+          git checkout --detach "$RELEASE_TAG"
+          node scripts/release.mjs preflight "$RELEASE_VERSION" --tag --allow-backfill
+          echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "short_commit=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
       - name: Select Xcode
         run: |
-          # Pick the newest installed Xcode: pinned 16.2 (Swift 6.0) can no
-          # longer resolve grpc-swift 1.27+, which needs swift-tools 6.1.
-          XCODE="$(ls -d /Applications/Xcode*.app 2>/dev/null | sort -V | tail -1)"
-          if [ -n "$XCODE" ]; then sudo xcode-select -s "$XCODE/Contents/Developer"; fi
+          XCODE="$(ls -d /Applications/Xcode*.app | sort -V | tail -1)"
+          sudo xcode-select -s "$XCODE/Contents/Developer"
           swift --version
-
-      # The app must ALWAYS ship with its gateway proxy: pin the toolchain
-      # (version follows gateway/go.mod) and let make-app.sh fail hard if
-      # the sidecar build or bundle verification breaks.
-      - name: Set up Go
-        uses: actions/setup-go@v5
+      - uses: actions/setup-go@v5
         with:
           go-version-file: gateway/go.mod
-
-      - name: Resolve signing credentials
-        id: creds
+      - name: Provision Rust for the bundled Metal engine
         run: |
-          if [ -n "${{ secrets.APPLE_CERT_P12_BASE64 }}" ]; then
-            echo "signed=1" >> "$GITHUB_OUTPUT"
-          else
-            echo "signed=0" >> "$GITHUB_OUTPUT"
-            echo "::warning::APPLE_CERT_P12_BASE64 not set — packaging an ad-hoc, un-notarized build"
-          fi
-
-      - name: Import Developer ID certificate + notary key
-        if: steps.creds.outputs.signed == '1'
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          cargo --version
+      - name: Validate release policy and desktop authentication
+        run: |
+          node --test scripts/test-release.mjs
+          npm ci --prefix cloudflare --ignore-scripts --no-audit --no-fund
+          node --test cloudflare/worker.test.mjs cloudflare/browser-auth.test.mjs cloudflare/desktop-auth.test.mjs
+      - name: Validate native app and gateway
+        run: |
+          (cd clients/macos && swift test)
+          (cd gateway && test -z "$(gofmt -l .)" && go vet ./... && go test ./...)
+      - name: Resolve complete signing credentials
+        id: creds
         env:
           CERT_P12: ${{ secrets.APPLE_CERT_P12_BASE64 }}
           CERT_PASSWORD: ${{ secrets.APPLE_CERT_PASSWORD }}
           KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
           API_KEY_P8: ${{ secrets.APPLE_API_KEY_BASE64 }}
+          API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID || vars.APPLE_API_KEY_ID }}
+          API_ISSUER: ${{ secrets.APPLE_API_ISSUER_ID || vars.APPLE_API_ISSUER_ID }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM: ${{ secrets.APPLE_TEAM_ID || vars.APPLE_TEAM_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
         run: |
           set -euo pipefail
+          if [ -z "$CERT_P12" ]; then
+            echo '::error::Production releases require the Developer ID certificate and notarization credentials'
+            exit 1
+          fi
+          [ -n "$CERT_PASSWORD" ] && [ -n "$KEYCHAIN_PASSWORD" ] || { echo '::error::Certificate and keychain passwords are required'; exit 1; }
           KEYCHAIN="$RUNNER_TEMP/app-signing.keychain-db"
-          echo -n "$CERT_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          umask 077
+          security list-keychains -d user > "$RUNNER_TEMP/keychains-before.txt"
+          printf '%s' "$CERT_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
           security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
           security set-keychain-settings -lut 21600 "$KEYCHAIN"
           security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
-          security import "$RUNNER_TEMP/cert.p12" -P "$CERT_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN"
+          security import "$RUNNER_TEMP/cert.p12" -P "$CERT_PASSWORD" -t cert -f pkcs12 -k "$KEYCHAIN"
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN" >/dev/null
-          security list-keychain -d user -s "$KEYCHAIN" login.keychain-db
-          IDENTITY="$(security find-identity -v -p codesigning "$KEYCHAIN" | sed -n 's/.*"\(Developer ID Application[^"]*\)".*/\1/p' | head -1)"
-          if [ -z "$IDENTITY" ]; then
-            echo "::error::no Developer ID Application identity in the imported certificate"
-            exit 1
-          fi
+          python3 - "$RUNNER_TEMP/keychains-before.txt" "$KEYCHAIN" <<'PY'
+          import shlex, subprocess, sys
+          with open(sys.argv[1]) as f: paths = shlex.split(f.read())
+          subprocess.run(['security', 'list-keychains', '-d', 'user', '-s', sys.argv[2], *paths], check=True)
+          PY
+          IDENTITY="$(security find-identity -v -p codesigning "$KEYCHAIN" | sed -n 's/.*"\(Developer ID Application[^"]*\)".*/\1/p')"
+          [ -n "$IDENTITY" ] && [ "$(printf '%s\n' "$IDENTITY" | wc -l | tr -d ' ')" = 1 ] || { echo '::error::Expected exactly one valid Developer ID Application identity'; exit 1; }
           echo "DEVELOPER_ID_APPLICATION=$IDENTITY" >> "$GITHUB_ENV"
+          echo 'REQUIRE_NOTARIZATION=1' >> "$GITHUB_ENV"
           if [ -n "$API_KEY_P8" ]; then
-            mkdir -p "$RUNNER_TEMP/private_keys"
-            echo -n "$API_KEY_P8" | base64 --decode > "$RUNNER_TEMP/private_keys/AuthKey.p8"
-            echo "NOTARY_KEY=$RUNNER_TEMP/private_keys/AuthKey.p8" >> "$GITHUB_ENV"
-            echo "NOTARY_KEY_ID=${{ secrets.APPLE_API_KEY_ID || vars.APPLE_API_KEY_ID }}" >> "$GITHUB_ENV"
-            echo "NOTARY_ISSUER=${{ secrets.APPLE_API_ISSUER_ID || vars.APPLE_API_ISSUER_ID }}" >> "$GITHUB_ENV"
+            [ -n "$API_KEY_ID" ] && [ -n "$API_ISSUER" ] || { echo '::error::API key ID and issuer are required'; exit 1; }
+            printf '%s' "$API_KEY_P8" | base64 --decode > "$RUNNER_TEMP/AuthKey.p8"
+            echo "NOTARY_KEY=$RUNNER_TEMP/AuthKey.p8" >> "$GITHUB_ENV"
+            echo "NOTARY_KEY_ID=$API_KEY_ID" >> "$GITHUB_ENV"
+            echo "NOTARY_ISSUER=$API_ISSUER" >> "$GITHUB_ENV"
           else
-            echo "NOTARY_APPLE_ID=${{ secrets.APPLE_ID }}" >> "$GITHUB_ENV"
-            echo "NOTARY_TEAM_ID=${{ secrets.APPLE_TEAM_ID || vars.APPLE_TEAM_ID }}" >> "$GITHUB_ENV"
-            echo "NOTARY_APP_PASSWORD=${{ secrets.APPLE_APP_PASSWORD }}" >> "$GITHUB_ENV"
+            [ -z "$API_KEY_ID$API_ISSUER" ] && [ -n "$APPLE_ID" ] && [ -n "$APPLE_TEAM" ] && [ -n "$APPLE_PASSWORD" ] || { echo '::error::Complete Apple-ID notary credentials are required'; exit 1; }
+            echo "NOTARY_APPLE_ID=$APPLE_ID" >> "$GITHUB_ENV"
+            echo "NOTARY_TEAM_ID=$APPLE_TEAM" >> "$GITHUB_ENV"
+            echo "NOTARY_APP_PASSWORD=$APPLE_PASSWORD" >> "$GITHUB_ENV"
           fi
-
-      - name: Resolve release version
-        id: ver
-        env:
-          HEAD_MSG: ${{ github.event.head_commit.message }}
-        run: |
-          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
-            V="${GITHUB_REF_NAME#v}"
-          elif [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ] && [ -n "${{ inputs.version }}" ]; then
-            V="${{ inputs.version }}"
-            V="${V#v}"
-          else
-            # Main push (opt-in via [release] token) or blank dispatch:
-            # next patch after the latest tag. [release minor] /
-            # [release major] upgrade the bump; [release X.Y.Z] pins an
-            # explicit version.
-            EXPLICIT="$(printf '%s' "${HEAD_MSG:-}" | sed -n 's/.*\[release \([0-9][0-9.]*[0-9]\)\].*/\1/p')"
-            if [ -n "$EXPLICIT" ]; then
-              V="$EXPLICIT"; echo "explicit version from commit token: $V"
-            else
-              BUMP=patch
-              case "${HEAD_MSG:-}" in
-                *"[release major]"*) BUMP=major ;;
-                *"[release minor]"*) BUMP=minor ;;
-              esac
-              LATEST="$(git tag --list 'v[0-9]*' --sort=-v:refname | head -1)"
-              LATEST="${LATEST#v}"; LATEST="${LATEST:-0.0.0}"
-              IFS='.' read -r MA MI PA <<< "$LATEST"
-              case "$BUMP" in
-                major) V="$(( ${MA:-0} + 1 )).0.0" ;;
-                minor) V="${MA:-0}.$(( ${MI:-0} + 1 )).0" ;;
-                *)     V="${MA:-0}.${MI:-0}.$(( ${PA:-0} + 1 ))" ;;
-              esac
-              echo "auto-bump: $BUMP (latest v${LATEST})"
-            fi
-          fi
-          # Strict X.Y.Z — a malformed tag or input must fail before packaging.
-          echo "$V" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' || {
-            echo "::error::'$V' is not a semantic version (want X.Y.Z)"; exit 1; }
-          echo "version=$V" >> "$GITHUB_OUTPUT"
-          echo "resolved version: $V"
-
-      # Non-tag triggers (main auto-bump, manual dispatch): the tag doesn't
-      # exist yet — bump the three version pins, commit "release vX.Y.Z",
-      # tag, and push main + tag. Mirrors `task release` (Taskfile.yml).
-      # Its own GITHUB_TOKEN pushes do not retrigger this workflow (and the
-      # job guard would skip them).
-      - name: Commit version pins + tag
-        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
-        run: |
-          set -euo pipefail
-          V="${{ steps.ver.outputs.version }}"
-          TAG="v${V}"
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          # A queued main-push run sits on a commit main has since passed
-          # (the earlier run's release commits) — rebase onto the tip so
-          # the pin commit fast-forwards.
-          if [ "${GITHUB_EVENT_NAME}" = "push" ]; then
-            git fetch origin main
-            git rebase origin/main
-          fi
-          git ls-remote --tags origin "refs/tags/${TAG}" | grep -q . \
-            && { echo "::error::${TAG} already exists on origin"; exit 1; }
-          sed -i '' -E "s/^VERSION=\"\\\$\{MARKETING_VERSION:-[0-9]+\.[0-9]+\.[0-9]+\}\"/VERSION=\"\\\${MARKETING_VERSION:-${V}}\"/" scripts/make-app.sh
-          sed -i '' -E "s/fallback: \"[0-9]+\.[0-9]+\.[0-9]+\"/fallback: \"${V}\"/" clients/macos/Sources/TokenHorizon/App/BuildInfo.swift
-          sed -i '' -E "s/^  version \"[0-9]+\.[0-9]+\.[0-9]+\"/  version \"${V}\"/" packaging/homebrew/token-horizon.rb
-          grep -q "MARKETING_VERSION:-${V}" scripts/make-app.sh
-          grep -q "fallback: \"${V}\"" clients/macos/Sources/TokenHorizon/App/BuildInfo.swift
-          grep -q "version \"${V}\"" packaging/homebrew/token-horizon.rb
-          git add scripts/make-app.sh clients/macos/Sources/TokenHorizon/App/BuildInfo.swift packaging/homebrew/token-horizon.rb
-          git commit -m "release ${TAG}"
-          git tag -a "$TAG" -m "Token Horizon ${V}"
-          git push origin HEAD:main
-          git push origin "$TAG"
-
-      - name: Build + sign + notarize + package
+          echo 'signed=1' >> "$GITHUB_OUTPUT"
+      - name: Build, sign, notarize and validate ZIP and DMG
         env:
           MARKETING_VERSION: ${{ steps.ver.outputs.version }}
+          CURRENT_PROJECT_VERSION: ${{ github.run_number }}
+          RELEASE_BUILD: "1"
         run: ./scripts/package-notarized.sh
-
-      - name: Clean up keychain
-        if: always() && steps.creds.outputs.signed == '1'
-        run: security delete-keychain "$RUNNER_TEMP/app-signing.keychain-db" 2>/dev/null || true
-
+      - name: Clean up signing material and restore keychains
+        if: always()
+        run: |
+          security delete-keychain "$RUNNER_TEMP/app-signing.keychain-db" 2>/dev/null || true
+          if [ -f "$RUNNER_TEMP/keychains-before.txt" ]; then
+            python3 - "$RUNNER_TEMP/keychains-before.txt" <<'PY'
+          import shlex, subprocess, sys
+          with open(sys.argv[1]) as f: paths = shlex.split(f.read())
+          subprocess.run(['security', 'list-keychains', '-d', 'user', '-s', *paths], check=True)
+          PY
+          fi
+          rm -f "$RUNNER_TEMP/cert.p12" "$RUNNER_TEMP/AuthKey.p8" "$RUNNER_TEMP/keychains-before.txt"
       - name: Render product film (best effort)
         run: |
           if [ -d video ]; then
-            cd video && npm ci --no-audit --no-fund || exit 0
-            npx --no-install remotion render TokenHorizonFilm --output "../dist/TokenHorizon-film.mp4" || echo "film render skipped (non-fatal)"
+            (cd video && npm ci --no-audit --no-fund && npx --no-install remotion render TokenHorizonFilm --output ../dist/TokenHorizon-film.mp4) || echo 'Film rendering skipped'
           fi
-
-      - name: Publish GitHub release
+      - name: Validate exact release assets
+        id: assets
+        env:
+          RELEASE_VERSION: ${{ steps.ver.outputs.version }}
+          RELEASE_TAG: ${{ steps.ver.outputs.tag }}
+          RELEASE_COMMIT: ${{ steps.source.outputs.commit }}
+        run: |
+          node scripts/release.mjs preflight "$RELEASE_VERSION" --tag --allow-backfill
+          [ "$(git rev-parse HEAD)" = "$RELEASE_COMMIT" ]
+          node --input-type=module <<'JS'
+          import { readFileSync, statSync, appendFileSync } from 'node:fs';
+          import { createHash } from 'node:crypto';
+          const version = process.env.RELEASE_VERSION;
+          const prefix = `TokenHorizon-${version}`, files = [`${prefix}.zip`, `${prefix}.dmg`];
+          const manifest = readFileSync(`dist/${prefix}.sha256`, 'utf8').trim().split(/\r?\n/);
+          if (manifest.length !== 2) throw new Error('Checksum manifest must contain exactly ZIP and DMG');
+          const records = new Map(manifest.map(line => { const match = line.match(/^([a-f0-9]{64})  ([A-Za-z0-9._-]+)$/); if (!match) throw new Error('Invalid checksum line'); return [match[2],match[1]]; }));
+          if (records.size !== 2 || files.some(name => !records.has(name))) throw new Error('Unexpected checksum assets');
+          for (const name of files) {
+            if (!statSync(`dist/${name}`).isFile()) throw new Error(`Missing artifact: ${name}`);
+            const bytes = readFileSync(`dist/${name}`);
+            if (!bytes.length || createHash('sha256').update(bytes).digest('hex') !== records.get(name)) throw new Error(`Checksum mismatch: ${name}`);
+          }
+          const paths = files.map(name => `dist/${name}`).concat(`dist/${prefix}.sha256`);
+          try { if (statSync('dist/TokenHorizon-film.mp4').size > 0) paths.push('dist/TokenHorizon-film.mp4'); } catch {}
+          appendFileSync(process.env.GITHUB_OUTPUT, `files<<RELEASE_ASSETS\n${paths.join('\n')}\nRELEASE_ASSETS\n`);
+          JS
+      - name: Stage validated native assets in a draft
+        id: draft
         uses: softprops/action-gh-release@v2.6.2
         with:
-          # Explicit tag: identical to the trigger tag on tag pushes; on
-          # manual dispatch it creates vX.Y.Z at the checked-out commit.
-          tag_name: v${{ steps.ver.outputs.version }}
-          files: |
-            dist/TokenHorizon-*.zip
-            dist/TokenHorizon-*.dmg
-            dist/TokenHorizon-*.sha256
-            dist/TokenHorizon-film.mp4
-          fail_on_unmatched_files: false
+          tag_name: ${{ steps.ver.outputs.tag }}
+          target_commitish: ${{ steps.source.outputs.commit }}
+          files: ${{ steps.assets.outputs.files }}
+          fail_on_unmatched_files: true
+          overwrite_files: false
           generate_release_notes: true
-          # Full release (not prerelease): install.sh, the landing page, and
-          # README film embeds all resolve through /releases/latest, which
-          # skips prereleases. Preview status lives in the notes instead.
+          draft: true
           prerelease: false
-          # Backfills/retries of older tags must not displace a newer full release.
-          make_latest: legacy
-
-      # --- Homebrew cask: update sha256 + sync the tap -------------------------
-      # The cask sha256 can only exist post-build, so the repo file is updated
-      # here (committed back to main) and castlemilk/homebrew-tap is synced
-      # when TAP_GITHUB_TOKEN (PAT with repo access to the tap) is configured.
-      - name: Check tap credentials
-        id: tap
+      - name: Verify uploaded ZIP, DMG and checksum before publication
+        id: published
         env:
+          RELEASE_VERSION: ${{ steps.ver.outputs.version }}
+          RELEASE_TAG: ${{ steps.ver.outputs.tag }}
+          RELEASE_ID: ${{ steps.draft.outputs.id }}
+        run: |
+          node --input-type=module <<'JS'
+          import assert from 'node:assert/strict';
+          import { readFileSync, statSync, appendFileSync } from 'node:fs';
+          import { createHash } from 'node:crypto';
+          import { execFileSync } from 'node:child_process';
+          const repo = process.env.GITHUB_REPOSITORY, id = process.env.RELEASE_ID, version = process.env.RELEASE_VERSION;
+          const api = (path) => JSON.parse(execFileSync('gh',['api',path],{encoding:'utf8'}));
+          const release = api(`repos/${repo}/releases/${id}`);
+          assert.equal(release.tag_name, process.env.RELEASE_TAG);
+          assert.equal(release.draft, true); assert.equal(release.prerelease, false);
+          const assets = api(`repos/${repo}/releases/${id}/assets?per_page=100`);
+          for (const suffix of ['zip','dmg','sha256']) {
+            const name = `TokenHorizon-${version}.${suffix}`, matches = assets.filter(asset => asset.name === name);
+            assert.equal(matches.length, 1, `Expected one uploaded ${name}`);
+            assert.equal(matches[0].state, 'uploaded');
+            assert.equal(matches[0].size, statSync(`dist/${name}`).size);
+            const digest = 'sha256:' + createHash('sha256').update(readFileSync(`dist/${name}`)).digest('hex');
+            assert.equal(matches[0].digest, digest, `Uploaded checksum mismatch: ${name}`);
+          }
+          const releases = JSON.parse(execFileSync('gh',['api','--paginate','--slurp',`repos/${repo}/releases?per_page=100`],{encoding:'utf8'})).flat();
+          const newer = releases.some(r => !r.draft && !r.prerelease && /^v(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/.test(r.tag_name) && Number(execFileSync('node',['scripts/release.mjs','compare',r.tag_name.slice(1),version],{encoding:'utf8'})) > 0);
+          execFileSync('gh',['api','--method','PATCH',`repos/${repo}/releases/${id}`,'--input','-'],{input:JSON.stringify({draft:false,prerelease:false,make_latest:newer?'false':'true'}),stdio:['pipe','inherit','inherit']});
+          appendFileSync(process.env.GITHUB_OUTPUT, `latest=${!newer}\n`);
+          JS
+      - name: Update cask checksum from fresh main without changing version pins
+        if: steps.published.outputs.latest == 'true'
+        env:
+          RELEASE_VERSION: ${{ steps.ver.outputs.version }}
           TAP_TOKEN: ${{ secrets.TAP_GITHUB_TOKEN }}
         run: |
-          if [ -n "$TAP_TOKEN" ]; then echo "enabled=1" >> "$GITHUB_OUTPUT"; else
-            echo "enabled=0" >> "$GITHUB_OUTPUT"
-            # Tokenless by design: the cask is still committed to this repo;
-            # `task brew-sync` publishes it to the tap with local credentials.
-            echo "::notice::no TAP_GITHUB_TOKEN — cask committed here; run task brew-sync to publish the tap"
-          fi
-
-      - name: Update cask sha256 and sync tap
-        run: |
           set -euo pipefail
-          V="${{ steps.ver.outputs.version }}"
-          SHA_FILE="dist/TokenHorizon-${V}.sha256"
-          [ -f "$SHA_FILE" ] || { echo "::error::no checksum file $SHA_FILE"; exit 1; }
-          ZIP_SHA="$(awk '/\.zip$/{print $1; exit}' "$SHA_FILE")"
-          [ -n "$ZIP_SHA" ] || { echo "::error::no zip sha in $SHA_FILE"; exit 1; }
-
-          CASK="packaging/homebrew/token-horizon.rb"
-          sed -i '' -E "s/^  version \"[0-9]+\.[0-9]+\.[0-9]+\"/  version \"${V}\"/" "$CASK"
-          sed -i '' -E "s/^  sha256 \"[0-9a-f]+\"/  sha256 \"${ZIP_SHA}\"/" "$CASK"
-          grep -q "version \"${V}\"" "$CASK" && grep -q "sha256 \"${ZIP_SHA}\"" "$CASK"
-
-          # Converge the version pins too — `task release` already sets them
-          # for tag-triggered runs (no-op then), but a manual dispatch with an
-          # explicit version can drift.
-          sed -i '' -E "s/^VERSION=\"\\\$\{MARKETING_VERSION:-[0-9]+\.[0-9]+\.[0-9]+\}\"/VERSION=\"\\\${MARKETING_VERSION:-${V}}\"/" scripts/make-app.sh
-          sed -i '' -E "s/fallback: \"[0-9]+\.[0-9]+\.[0-9]+\"/fallback: \"${V}\"/" clients/macos/Sources/TokenHorizon/App/BuildInfo.swift
-
-          # Keep the in-repo metadata accurate (post-tag commit).
-          if ! git diff --quiet -- "$CASK" scripts/make-app.sh clients/macos/Sources/TokenHorizon/App/BuildInfo.swift; then
-            git config user.name "github-actions[bot]"
-            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git add "$CASK" scripts/make-app.sh clients/macos/Sources/TokenHorizon/App/BuildInfo.swift
-            git commit -m "release metadata: v${V} (cask sha256 + version pins) [skip ci]"
-            git push origin HEAD:main || echo "::warning::release-metadata push to main failed — run scripts/sync-homebrew-tap.sh manually"
+          CASK_SOURCE="$RUNNER_TEMP/release-cask.rb"
+          ZIP_SHA="$(awk '/\.zip$/{print $1}' "dist/TokenHorizon-${RELEASE_VERSION}.sha256")"
+          git fetch origin main
+          git checkout --detach origin/main
+          if ! node scripts/release.mjs check "$RELEASE_VERSION"; then
+            echo '::notice::Main has advanced to another version; leaving its cask and pins untouched'
+            exit 0
           fi
-
-          # Sync the tap over HTTPS when a PAT is available.
-          if [ "${{ steps.tap.outputs.enabled }}" = "1" ]; then
-            TAP_DIR="$(mktemp -d)/tap"
-            git clone "https://x-access-token:${{ secrets.TAP_GITHUB_TOKEN }}@github.com/castlemilk/homebrew-tap.git" "$TAP_DIR"
-            mkdir -p "$TAP_DIR/Casks"
-            cp "$CASK" "$TAP_DIR/Casks/token-horizon.rb"
-            if git -C "$TAP_DIR" diff --quiet -- Casks/token-horizon.rb 2>/dev/null; then
-              echo "tap already current"
-            else
-              git -C "$TAP_DIR" add Casks/token-horizon.rb
-              git -C "$TAP_DIR" -c user.name="github-actions[bot]" \
-                -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
-                commit -m "token-horizon ${V}"
-              git -C "$TAP_DIR" push
-              echo "published token-horizon ${V} to castlemilk/homebrew-tap"
-            fi
+          CASK=packaging/homebrew/token-horizon.rb
+          RELEASE_ZIP_SHA="$ZIP_SHA" python3 - "$CASK" <<'PY'
+          import os, re, sys
+          path = sys.argv[1]
+          with open(path) as f: text = f.read()
+          text, count = re.subn(r'^  sha256 "[a-f0-9]{64}"$', '  sha256 "' + os.environ['RELEASE_ZIP_SHA'] + '"', text, flags=re.M)
+          if count != 1: raise SystemExit('Expected exactly one cask checksum pin')
+          with open(path, 'w') as f: f.write(text)
+          PY
+          cp "$CASK" "$CASK_SOURCE"
+          if ! git diff --quiet -- "$CASK"; then
+            git config user.name 'github-actions[bot]'
+            git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+            git add "$CASK"
+            git commit -m "release metadata: v${RELEASE_VERSION} (cask checksum) [skip ci]"
+            git push origin HEAD:main
+          fi
+          if [ -z "$TAP_TOKEN" ]; then echo '::notice::No TAP_GITHUB_TOKEN; cask is updated in this repository'; exit 0; fi
+          TAP_WORK="$(mktemp -d)"
+          trap 'rm -rf "$TAP_WORK" "$CASK_SOURCE"' EXIT
+          # Keep the PAT out of clone URLs, process arguments and git remotes.
+          GH_TOKEN="$TAP_TOKEN" gh api repos/castlemilk/homebrew-tap/contents/Casks/token-horizon.rb > "$TAP_WORK/cask.json"
+          python3 - "$TAP_WORK/cask.json" "$CASK_SOURCE" "$TAP_WORK/update.json" "$RELEASE_VERSION" <<'PY'
+          import base64, json, re, subprocess, sys
+          with open(sys.argv[1]) as f: existing = json.load(f)
+          with open(sys.argv[2], 'rb') as f: current = f.read()
+          previous = base64.b64decode(existing['content'])
+          version = re.search(rb'^  version "([0-9]+\.[0-9]+\.[0-9]+)"$', previous, re.M)
+          if not version: raise SystemExit('Tap cask lacks a canonical version pin')
+          compared = subprocess.check_output(['node', 'scripts/release.mjs', 'compare', version[1].decode(), sys.argv[4]], text=True).strip()
+          if compared == '1': raise SystemExit('Refusing to downgrade the tap cask')
+          if previous == current:
+              open(sys.argv[3], 'w').close()
+              raise SystemExit(0)
+          content = base64.b64encode(current).decode()
+          with open(sys.argv[3], 'w') as f: json.dump({'message':'token-horizon ' + sys.argv[4], 'content':content, 'sha':existing['sha']}, f)
+          PY
+          if [ -s "$TAP_WORK/update.json" ]; then
+            GH_TOKEN="$TAP_TOKEN" gh api --method PUT repos/castlemilk/homebrew-tap/contents/Casks/token-horizon.rb --input "$TAP_WORK/update.json" >/dev/null
           fi
 
   desktop-installers:
     needs: build-and-release
-    if: needs.build-and-release.outputs.release_tag != ''
+    # Native releases are the default. Preserve the tested cross-platform
+    # workflow for an explicit manual opt-in without widening a tag release.
+    if: github.event_name == 'workflow_dispatch' && inputs.desktop_installers && needs.build-and-release.outputs.release_tag != ''
     permissions:
       contents: write
     uses: ./.github/workflows/desktop.yml

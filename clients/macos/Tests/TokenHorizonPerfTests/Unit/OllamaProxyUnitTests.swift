@@ -32,7 +32,7 @@ final class OllamaProxyUnitTests: XCTestCase {
     }
 
     func testOllamaTelemetryStore_recordAndSummary() {
-        let store = OllamaTelemetryStore.shared
+        let store = OllamaTelemetryStore(storageURL: nil)
         let now = Date()
 
         let sample1 = OllamaTelemetrySample(

@@ -61,16 +61,27 @@ final class OllamaTelemetryStore {
     private var isLoaded = false
     private var isSavePending = false
     private var usageRecords: [String: LocalModelUsageRecord] = [:]
+    private var storageURL: URL?
+    private var persistenceGeneration = UUID()
 
-    private static var storageURL: URL {
+    private static var defaultStorageURL: URL {
         let dir = NSString(string: "~/.config/token-horizon").expandingTildeInPath
         return URL(fileURLWithPath: dir).appendingPathComponent("localllm-usage.json")
+    }
+
+    init() {
+        storageURL = Self.defaultStorageURL
+    }
+
+    init(storageURL: URL?) {
+        self.storageURL = storageURL
     }
 
     private func ensureLoadedLocked() {
         if isLoaded { return }
         isLoaded = true
-        guard let data = try? Data(contentsOf: Self.storageURL),
+        guard let storageURL,
+              let data = try? Data(contentsOf: storageURL),
               let state = try? JSONDecoder().decode(LocalLLMTelemetryState.self, from: data) else {
             return
         }
@@ -78,16 +89,19 @@ final class OllamaTelemetryStore {
     }
 
     private func scheduleSaveLocked() {
-        if isSavePending { return }
+        guard let url = storageURL, !isSavePending else { return }
         isSavePending = true
+        let generation = persistenceGeneration
         let snapshot = LocalLLMTelemetryState(version: 1, models: usageRecords)
         DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 1.0) { [weak self] in
             guard let self else { return }
+            let encoded = try? JSONEncoder().encode(snapshot)
             self.lock.lock()
+            defer { self.lock.unlock() }
+            // A reset must invalidate queued writes before they can touch the previous destination.
+            guard self.persistenceGeneration == generation else { return }
             self.isSavePending = false
-            self.lock.unlock()
-            guard let encoded = try? JSONEncoder().encode(snapshot) else { return }
-            let url = Self.storageURL
+            guard let encoded else { return }
             try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
             try? encoded.write(to: url, options: .atomic)
         }
@@ -212,8 +226,12 @@ final class OllamaTelemetryStore {
         )
     }
 
-    func resetForTesting() {
+    /// Test resets use memory only unless an isolated persistence destination is supplied.
+    func resetForTesting(storageURL: URL? = nil) {
         lock.lock()
+        self.storageURL = storageURL
+        persistenceGeneration = UUID()
+        isSavePending = false
         latestSamples.removeAll()
         recentSamples.removeAll()
         usageRecords.removeAll()

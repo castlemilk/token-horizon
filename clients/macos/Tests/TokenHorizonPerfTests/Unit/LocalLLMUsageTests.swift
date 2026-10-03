@@ -4,11 +4,11 @@ import XCTest
 final class LocalLLMUsageTests: XCTestCase {
     override func setUp() {
         super.setUp()
-        OllamaTelemetryStore.shared.resetForTesting()
+        OllamaTelemetryStore.shared.resetForTesting(storageURL: nil)
     }
 
     override func tearDown() {
-        OllamaTelemetryStore.shared.resetForTesting()
+        OllamaTelemetryStore.shared.resetForTesting(storageURL: nil)
         super.tearDown()
     }
 
@@ -78,7 +78,7 @@ final class LocalLLMUsageTests: XCTestCase {
         XCTAssertEqual(summary.models["llama3.2:3b"]?.all, 300)
     }
 
-    func testUsageEngineCollectsLocalLLMTokens() {
+    func testUsageEngineCollectsLocalLLMTokens() throws {
         let now = Date()
         let sample = OllamaTelemetrySample(
             model: "deepseek-coder-v2:16b",
@@ -90,11 +90,20 @@ final class LocalLLMUsageTests: XCTestCase {
         )
         OllamaTelemetryStore.shared.record(sample)
 
-        let engine = UsageEngine()
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("th-local-usage-fixture-\(UUID().uuidString)")
+        let store = DurableStore(cacheDirectory: directory, notificationCenter: NotificationCenter())
+        defer {
+            store.flushEngineState()
+            try? FileManager.default.removeItem(at: directory)
+        }
+        var inputs = UsageEngineInputs()
+        inputs.localLLMSummary = { OllamaTelemetryStore.shared.summary() }
+        let engine = UsageEngine(inputs: inputs, durableStore: store)
         let snap = engine.snapshot()
 
-        XCTAssertTrue(snap.tokensAllTime >= 450)
-        XCTAssertTrue(snap.tokensToday >= 450)
+        XCTAssertEqual(snap.tokensAllTime, 450)
+        XCTAssertEqual(snap.tokensToday, 450)
         let ollamaTool = snap.perTool.first(where: { $0.tool == "ollama" })
         XCTAssertNotNil(ollamaTool)
         XCTAssertEqual(ollamaTool?.tokensAllTime, 450)

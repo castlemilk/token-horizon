@@ -82,7 +82,8 @@ final class GatewayBridgeTests: XCTestCase {
     }
 
     func testIngestOllama() {
-        OllamaTelemetryStore.shared.resetForTesting()
+        OllamaTelemetryStore.shared.resetForTesting(storageURL: nil)
+        defer { OllamaTelemetryStore.shared.resetForTesting(storageURL: nil) }
         let body = Data(#"{"model":"ingest-test","evalCount":100,"evalDurationNs":2000000000,"promptEvalCount":20,"completedAt":1786000000}"#.utf8)
         let (code, json) = call(stubServer(), "POST", "/ingest/ollama", body: body)
         XCTAssertEqual(code, 200)

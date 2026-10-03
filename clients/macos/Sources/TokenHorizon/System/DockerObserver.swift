@@ -1,4 +1,9 @@
 import Foundation
+#if canImport(Darwin)
+import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#endif
 
 struct DockerContainerSample: Identifiable, Codable, Equatable {
     var id: String            // short container ID (e.g. "dd7397b17b9c")
@@ -17,11 +22,42 @@ struct DockerContainerSample: Identifiable, Codable, Equatable {
     var ports: String         // e.g. "8480->8080"
 }
 
+/// Empty successes and failed attempts also back off; concurrent readers get
+/// the last completed value instead of spawning another Docker CLI.
+final class DockerSamplingCache {
+    private let lock = NSLock()
+    private let interval: TimeInterval
+    private var sampling = false
+    private var completedAt = Date.distantPast
+    private var samples: [DockerContainerSample] = []
+
+    init(interval: TimeInterval = 2.5) { self.interval = interval }
+
+    func begin(now: Date = Date()) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        guard !sampling, now.timeIntervalSince(completedAt) >= interval else { return false }
+        sampling = true
+        return true
+    }
+
+    func current() -> [DockerContainerSample] {
+        lock.lock(); defer { lock.unlock() }
+        return samples
+    }
+
+    @discardableResult
+    func finish(_ next: [DockerContainerSample]?, now: Date = Date()) -> [DockerContainerSample] {
+        lock.lock(); defer { lock.unlock() }
+        if let next { samples = next }
+        completedAt = now
+        sampling = false
+        return samples
+    }
+}
+
 enum DockerObserver {
-    private static var cachedSamples: [DockerContainerSample] = []
-    private static var lastSampleTime: Date = .distantPast
-    private static let cacheInterval: TimeInterval = 2.5
-    private static let lock = NSLock()
+    private static let cache = DockerSamplingCache()
+    static let collectionTimeout: TimeInterval = 3
 
     static func findDockerExecutable() -> String? {
         var candidates: [String] = []
@@ -81,70 +117,70 @@ enum DockerObserver {
         return nil
     }
 
-    /// Safe process runner using temporary file to avoid pipe deadlocks on large stdout.
-    static func runCapture(_ task: Process) -> Data? {
+    /// Temp files avoid stdout pipe deadlocks. The deadline applies only to
+    /// our spawned CLI process; it never stops a Docker daemon or container.
+    static func runCapture(_ task: Process, timeout: TimeInterval = DockerObserver.collectionTimeout) -> Data? {
+        guard timeout.isFinite, timeout > 0 else { return nil }
         let tempDir = FileManager.default.temporaryDirectory
         let tempFile = tempDir.appendingPathComponent("docker_stats_\(UUID().uuidString).tmp")
         FileManager.default.createFile(atPath: tempFile.path, contents: nil)
+        defer { try? FileManager.default.removeItem(at: tempFile) }
         guard let handle = FileHandle(forWritingAtPath: tempFile.path) else { return nil }
+        defer { try? handle.close() }
         task.standardOutput = handle
         task.standardError = FileHandle.nullDevice
+        let exited = DispatchSemaphore(value: 0)
+        task.terminationHandler = { _ in exited.signal() }
         do {
             try task.run()
-            task.waitUntilExit()
-            try? handle.close()
-            let data = try? Data(contentsOf: tempFile)
-            try? FileManager.default.removeItem(at: tempFile)
+            guard exited.wait(timeout: .now() + timeout) == .success else {
+                if task.isRunning { task.terminate() }
+                if exited.wait(timeout: .now() + 0.1) == .timedOut, task.isRunning {
+                    #if canImport(Darwin) || canImport(Glibc)
+                    // SIGKILL is restricted to this Process's child PID if
+                    // its CLI ignored termination. No container APIs run.
+                    _ = kill(task.processIdentifier, SIGKILL)
+                    #endif
+                }
+                return nil
+            }
             guard task.terminationStatus == 0 else { return nil }
+            let data = try? Data(contentsOf: tempFile)
             return data
         } catch {
-            try? handle.close()
-            try? FileManager.default.removeItem(at: tempFile)
             return nil
         }
     }
 
     /// Sample running Docker containers with caching.
     static func sampleContainers() -> [DockerContainerSample] {
-        lock.lock()
-        let now = Date()
-        if now.timeIntervalSince(lastSampleTime) < cacheInterval && !cachedSamples.isEmpty {
-            let res = cachedSamples
-            lock.unlock()
-            return res
-        }
-        lock.unlock()
+        guard cache.begin() else { return cache.current() }
 
-        guard let dockerBin = findDockerExecutable() else { return [] }
+        guard let dockerBin = findDockerExecutable() else { return cache.finish(nil) }
+        let deadline = ProcessInfo.processInfo.systemUptime + collectionTimeout
 
         // 1. Fetch metadata (image, status, ports) via docker ps
         var metaMap: [String: (image: String, status: String, ports: String)] = [:]
         let psTask = Process()
         psTask.executableURL = URL(fileURLWithPath: dockerBin)
         psTask.arguments = ["ps", "--format", "{{json .}}"]
-        if let psData = runCapture(psTask) {
+        if let psData = runCapture(psTask, timeout: min(1, collectionTimeout)) {
             metaMap = parsePsOutput(psData)
+            // A successful empty ps result is authoritative. Avoid an extra
+            // stats process (and its collection delay) with no containers.
+            if metaMap.isEmpty { return cache.finish([]) }
         }
 
         // 2. Fetch live metrics via docker stats --no-stream
         let statsTask = Process()
         statsTask.executableURL = URL(fileURLWithPath: dockerBin)
         statsTask.arguments = ["stats", "--no-stream", "--format", "{{json .}}"]
-        guard let statsData = runCapture(statsTask) else {
-            lock.lock()
-            let res = cachedSamples
-            lock.unlock()
-            return res
-        }
+        guard let statsData = runCapture(statsTask, timeout: deadline - ProcessInfo.processInfo.systemUptime)
+        else { return cache.finish(nil) }
 
         let samples = parseStatsOutput(statsData, metadata: metaMap)
 
-        lock.lock()
-        cachedSamples = samples
-        lastSampleTime = now
-        lock.unlock()
-
-        return samples
+        return cache.finish(samples)
     }
 
     // MARK: - Parsing Helpers

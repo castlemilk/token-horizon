@@ -136,6 +136,118 @@ test('Remembered identities work across account, share, avatar, publish and team
   const claim = await fetchSite(env, '/api/claim', post({ handle: 'anonymous' }, githubCookie)); assert.equal(claim.status, 200); assert.equal(JSON.parse(env.LEADERBOARD_BUCKET.values.get('leaderboard.json')).find(entry => entry.handle === 'anonymous').ownerId, 'github:42');
 });
 
+test('Verified Google mutations preserve existing ownership while discovery uses only canonical principals', async () => {
+  const entry = (handle, ownerId, extra = {}) => ({ handle, claimed: true, ownerId,
+    googleEmail: 'shared@example.com', claimedAt: 1234, tokensAll: 100, costAll: 12,
+    league: 'bronze', division: 3, mmr: 500,
+    breakdown: { models: [{ model: 'example-model', provider: 'openai', tokensAll: 100 }] }, ...extra });
+  const env = githubEnv([
+    entry('legacy-publish', 'google:shared@example.com'),
+    entry('legacy-claim', 'google:google_shared@example.com'),
+    entry('benebsworth', 'google:benebsworth'),
+    entry('exact-google', 'google:google-42'),
+    entry('different-google-subject', 'google:another-subject'),
+    entry('github-owned', 'github:42', { accountEmail: 'shared@example.com' }),
+    entry('secret-publisher', 'google:shared@example.com'),
+    entry('github-publisher', 'google:shared@example.com')
+  ]);
+  const google = await googleLogin(env);
+  const owned = async cookie => (await (await fetchSite(env, '/api/account/profiles', { headers: { Cookie: cookie } })).json()).profiles.map(row => row.handle);
+  const stored = handle => JSON.parse(env.LEADERBOARD_BUCKET.values.get('leaderboard.json')).find(row => row.handle === handle);
+  assert.deepEqual(await owned(google.cookie), ['exact-google'], 'Matching email alone never discovers a legacy or different-subject profile');
+  const nativePublish = await fetchSite(env, '/api/leaderboard', post({ handle: 'legacy-publish', tokensAll: 200 }, '', { 'X-Google-Token': await googleToken() }));
+  assert.equal(nativePublish.status, 200, await nativePublish.clone().text());
+  assert.equal(stored('legacy-publish').ownerId, 'google:shared@example.com');
+  assert.equal(stored('legacy-publish').claimedAt, 1234);
+  assert.equal(stored('legacy-publish').costAll, 12);
+  assert.equal((await nativePublish.json()).entry.ownerId, undefined, 'Ownership metadata remains private');
+  for (const handle of ['legacy-claim', 'benebsworth']) {
+    const response = await fetchSite(env, '/api/claim', post({ handle }, google.cookie));
+    assert.equal(response.status, 200, await response.clone().text());
+    assert.equal((await response.json()).entry.ownerId, undefined);
+    assert.equal(stored(handle).ownerId, handle === 'benebsworth' ? 'google:benebsworth' : 'google:google_shared@example.com');
+    assert.equal(stored(handle).claimedAt, 1234);
+    assert.equal(stored(handle).tokensAll, 100);
+  }
+  assert.deepEqual(await owned(google.cookie), ['exact-google'], 'Existing mutation compatibility never broadens private profile discovery');
+  const exactBefore = env.LEADERBOARD_BUCKET.values.get('leaderboard.json');
+  assert.equal((await fetchSite(env, '/api/claim', post({ handle: 'exact-google' }, google.cookie))).status, 200);
+  assert.equal(env.LEADERBOARD_BUCKET.values.get('leaderboard.json'), exactBefore, 'An exact-owner claim stays idempotent');
+  assert.equal((await fetchSite(env, '/api/claim', post({ handle: 'different-google-subject' }, google.cookie))).status, 200);
+  assert.equal(stored('different-google-subject').ownerId, 'google:another-subject', 'An arbitrary canonical subject is not relabeled by matching email');
+  assert.equal((await fetchSite(env, '/api/claim', post({ handle: 'github-owned' }, google.cookie))).status, 409);
+
+  const github = await githubFinish(env, await startGithub(env));
+  const githubCookie = github.response.headers.getSetCookie().find(value => value.startsWith(SESSION_COOKIE)).split(';')[0];
+  assert.deepEqual(await owned(githubCookie), ['github-owned']);
+  assert.equal((await fetchSite(env, '/api/claim', post({ handle: 'legacy-publish' }, githubCookie))).status, 409);
+  assert.equal((await fetchSite(env, '/api/leaderboard', post({ handle: 'github-publisher', tokensAll: 300 }, githubCookie))).status, 403);
+  env.LEADERBOARD_SECRET = 'publisher-only';
+  for (const [handle, cookie] of [['secret-publisher', ''], ['github-publisher', githubCookie]]) {
+    const response = await fetchSite(env, '/api/leaderboard', post({ handle, tokensAll: 300 }, cookie, { 'X-Leaderboard-Secret': env.LEADERBOARD_SECRET }));
+    assert.equal(response.status, 200, await response.clone().text());
+    assert.equal(stored(handle).ownerId, 'google:shared@example.com', 'Write authority without a verified Google owner never migrates ownership');
+  }
+  const dev = { ...environment([entry('unsigned-dev', 'google:google_shared@example.com')]), GOOGLE_CLIENT_ID: '' };
+  const unsigned = await fetchSite(dev, '/api/claim', post({ handle: 'unsigned-dev' }, '', { 'X-Google-Token': 'google:shared@example.com' }));
+  assert.equal(unsigned.status, 200);
+  assert.equal(JSON.parse(dev.LEADERBOARD_BUCKET.values.get('leaderboard.json'))[0].ownerId, 'google:google_shared@example.com');
+});
+
+test('Legacy owner mutations preserve private sharing namespaces without an implicit ownership migration', async () => {
+  const entry = (handle, extra = {}) => ({ handle, claimed: true, ownerId: 'google:google_shared@example.com',
+    googleEmail: 'shared@example.com', tokensAll: 100, league: 'bronze', division: 3, mmr: 500,
+    breakdown: { models: [{ model: 'example-model', tokensAll: 100 }] }, ...extra });
+  for (const privateKey of ['groups/google:google_shared_example_com.json',
+    'activity/google:google_shared_example_com.json', 'shares-index/legacy-private.json']) {
+    const env = environment([entry('legacy-private')]);
+    const privateData = JSON.stringify([{ id: 'existing-private-record' }]);
+    env.LEADERBOARD_BUCKET.values.set(privateKey, privateData);
+    const google = await googleLogin(env);
+    for (const route of ['/api/claim', '/api/leaderboard']) {
+      const response = await fetchSite(env, route, post({ handle: 'legacy-private', tokensAll: 200 }, google.cookie));
+      assert.equal(response.status, 200, await response.clone().text());
+      assert.equal(JSON.parse(env.LEADERBOARD_BUCKET.values.get('leaderboard.json'))[0].ownerId, 'google:google_shared@example.com');
+      assert.equal(env.LEADERBOARD_BUCKET.values.get(privateKey), privateData, 'Existing private records stay in their original namespace');
+    }
+    assert.deepEqual((await (await fetchSite(env, '/api/account/profiles', { headers: { Cookie: google.cookie } })).json()).profiles, []);
+  }
+  const env = environment([entry('storage-unknown')]);
+  const google = await googleLogin(env), get = env.LEADERBOARD_BUCKET.get;
+  env.LEADERBOARD_BUCKET.get = async key => {
+    if (key.startsWith('groups/')) throw new Error('private state unavailable');
+    return get(key);
+  };
+  assert.equal((await fetchSite(env, '/api/claim', post({ handle: 'storage-unknown' }, google.cookie))).status, 200);
+  assert.equal(JSON.parse(env.LEADERBOARD_BUCKET.values.get('leaderboard.json'))[0].ownerId, 'google:google_shared@example.com');
+
+  const unpublished = environment();
+  unpublished.LEADERBOARD_BUCKET.values.delete('leaderboard.json');
+  const owner = await fetchSite(unpublished, '/api/auth/google', post({ credential: await googleToken({ email: 'ben@benebsworth.com' }) }));
+  assert.equal(owner.status, 200);
+  const bucketGet = unpublished.LEADERBOARD_BUCKET.get;
+  // Existing mutation reads can use a starter fallback on an outage. Claiming
+  // that already-claimed fallback must not introduce a stored ownership change.
+  unpublished.LEADERBOARD_BUCKET.get = async key => {
+    if (key === 'leaderboard.json') throw new Error('leaderboard unavailable');
+    return bucketGet(key);
+  };
+  const claim = await fetchSite(unpublished, '/api/claim', post({ handle: 'benebsworth' }, cookieHeader(owner)));
+  assert.equal(claim.status, 200);
+  assert.equal(unpublished.LEADERBOARD_BUCKET.values.has('leaderboard.json'), false, 'A fallback seed cannot become a migrated stored account');
+});
+
+test('Remembered account profile reads expose storage errors without seeding or private error details', async () => {
+  const env = environment(), google = await googleLogin(env);
+  let writes = 0;
+  env.LEADERBOARD_BUCKET = { async get() { throw new Error('private R2 diagnostic'); }, async put() { ++writes; } };
+  const response = await fetchSite(env, '/api/account/profiles', { headers: { Cookie: google.cookie } });
+  assert.equal(response.status, 503);
+  assert.equal(response.headers.get('Cache-Control'), 'private, no-store');
+  assert.deepEqual(await response.json(), { ok: false, error: 'Could not load your profiles. Try again.' });
+  assert.equal(writes, 0);
+});
+
 test('Config reports actual providers and /login caches only an anonymous document', async () => {
   const env = environment(); let requested;
   env.ASSETS = { fetch: async request => { requested = request; return new Response('<!doctype html>Anonymous login shell', { headers: { 'Content-Type': 'text/html', 'Cache-Control': 'public,max-age=0' } }); } };

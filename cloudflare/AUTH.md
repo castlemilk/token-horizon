@@ -52,3 +52,40 @@ When these credentials are absent, the public configuration honestly reports `gi
 ## Verification
 
 Run `node --test cloudflare/browser-auth.test.mjs cloudflare/worker.test.mjs cloudflare/connector.test.mjs`. Browser-auth cases cover expiry, rotation, logout, CSRF, unverified credentials, oversized/stalled data, state/PKCE binding, open redirect rejection, cross-provider ownership separation and the account/team/profile/share APIs. Connector tests use the real OAuth library to verify explicit consent and isolated Google/GitHub grants. Actual Google and GitHub account selection should be completed by the account owner in the live browser.
+
+## Desktop Sync sign-in
+
+Manual Sync opens `/connect?desktop=<public ticket>`, where the user signs in,
+chooses a profile, and explicitly approves this Mac. The app retains an S256
+PKCE verifier and polls `POST /api/desktop/exchange`; neither the verifier nor
+an access token enters a URL. Tickets expire after ten minutes. Approval uses
+the remembered browser session and an exact same-origin `Origin` header. A
+signed-out browser may cancel the ticket without gaining any account access.
+
+An existing claimed profile requires the exact immutable provider subject.
+An existing anonymous profile requires the original app's claim-token hash,
+bound to the originally requested handle. New handles become claimed when the
+first authenticated usage publish succeeds. Legacy email-based owner IDs need
+an explicit ownership migration; matching email alone never transfers a
+profile to a desktop grant.
+
+The resulting `thd_` credential lasts 90 days, stays in macOS Keychain, and
+authorizes only usage publication to its exact profile. It grants no account,
+team, avatar, sharing, or deployment-wide write permissions. Ownership and
+anonymous claim proof are checked again at publication. `POST
+/api/desktop/revoke` revokes that credential using its bearer token.
+
+R2 stores authoritative request and hashed-grant records under `desktop-auth/`
+using the existing private bucket. KV contains optional TTL mirrors. Native
+authorization always reads R2 so a different Cloudflare edge can immediately
+see a newly issued grant, and stale KV reads cannot revive a revoked grant.
+Conditional R2 records make the first browser decision authoritative and
+exchange one-use. Expired private records are pruned in rotating pages of at
+most 20 per collection on subsequent sign-in starts; exchange markers stay
+until the ticket expires. No new storage binding is needed. Request bodies and
+inputs are bounded, with a bounded per-isolate abuse limiter or the optional
+`DESKTOP_AUTH_RATE_LIMIT` edge binding.
+
+Run `node --test cloudflare/desktop-auth.test.mjs` for native consent, PKCE,
+ownership, scope, cancellation, expiry, concurrent exchange, stale KV reads,
+immediate revocation, and bounded cleanup checks.

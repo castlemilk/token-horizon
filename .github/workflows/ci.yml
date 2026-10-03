@@ -9,6 +9,16 @@ on:
 # Releases stay on tag-driven release.yml, which builds via
 # scripts/make-app.sh (the ONLY supported launcher path).
 jobs:
+  release-policy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Native release policy tests
+        run: node --test scripts/test-release.mjs
+
   lint-and-test:
     runs-on: macos-15
     steps:
@@ -70,7 +80,7 @@ jobs:
         run: npm ci --prefix cloudflare --ignore-scripts
 
       - name: Worker tests (leaderboard API and OAuth connector)
-        run: node --test cloudflare/worker.test.mjs cloudflare/connector.test.mjs cloudflare/browser-auth.test.mjs cloudflare/og-card.test.mjs cloudflare/og-avatar.test.mjs cloudflare/og-team.test.mjs cloudflare/page-metadata.test.mjs
+        run: node --test cloudflare/worker.test.mjs cloudflare/connector.test.mjs cloudflare/browser-auth.test.mjs cloudflare/desktop-auth.test.mjs cloudflare/og-card.test.mjs cloudflare/og-avatar.test.mjs cloudflare/og-team.test.mjs cloudflare/page-metadata.test.mjs
 
       - name: Profile photo fetch regression (native Worker runtime)
         run: node scripts/test-og-avatar-worker.mjs

@@ -129,18 +129,28 @@ final class PlanLimitsEngineTests: XCTestCase {
     }
 
     func testFetchAll_preservesProviderOrderWhenParallel() {
-        // Concurrent fetch must not scramble grouping order (glm first when
-        // configured, claude/deepseek/openai last). Pure ordering contract on
-        // the task list itself; network providers are individually optional.
-        let keys = PlanLimitsEngine.authKeys()
-        if keys["zai-coding-plan"] != nil || keys["zai"] != nil {
-            let limits = PlanLimitsEngine.fetchAll()
-            if let firstGlm = limits.firstIndex(where: { $0.provider == "glm" }) {
-                let lastGlm = limits.lastIndex(where: { $0.provider == "glm" })
-                XCTAssertEqual(firstGlm, 0, "glm rows stay first when configured")
-                XCTAssertNotNil(lastGlm)
-            }
+        // The first provider waits for a later provider to finish. Grouping
+        // must follow configured order despite the reversed completion order.
+        let laterFinished = DispatchSemaphore(value: 0)
+        func row(_ provider: String, _ label: String) -> ProviderLimit {
+            ProviderLimit(provider: provider, label: label, usedPercent: 25, resetsAt: nil, detail: "fixture")
         }
+        let limits = PlanLimitsEngine.fetchAll(fetchers: [
+            {
+                guard laterFinished.wait(timeout: .now() + 2) == .success else {
+                    XCTFail("Independent providers must execute concurrently")
+                    return []
+                }
+                return [row("glm", "burst"), row("glm", "monthly")]
+            },
+            {
+                defer { laterFinished.signal() }
+                return [row("claude", "weekly")]
+            },
+            { [row("openai", "session")] }
+        ])
+        XCTAssertEqual(limits.map { $0.provider }, ["glm", "glm", "claude", "openai"])
+        XCTAssertEqual(limits.map { $0.label }, ["burst", "monthly", "weekly", "session"])
     }
 
     func testParseMinimaxPayload_intervalAndWeekly() {

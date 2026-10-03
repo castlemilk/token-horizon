@@ -1,6 +1,8 @@
 import { createBlackHole } from './black-hole.js?v=1';
 const body = document.body, status = document.querySelector('#status');
-const form = document.querySelector('#consent-form');
+const desktopForm = document.querySelector('#desktop-form');
+const desktop = Boolean(desktopForm), desktopId = body.dataset.desktopId || '';
+const form = document.querySelector('#consent-form') || desktopForm;
 const webSessions = body.dataset.webSessions === 'true';
 const githubAvailable = body.dataset.githubAuth === 'true';
 const hole = createBlackHole({ width: 100, height: 44, ramp: ' .:-=+*#%@', frameMs: 33 });
@@ -19,13 +21,14 @@ motion?.addEventListener('click', () => { paused = !paused; syncMotion(); });
 reduced.addEventListener('change', () => { paused = reduced.matches; syncMotion(); });
 document.addEventListener('visibilitychange', syncMotion);
 window.addEventListener('pagehide', () => hole.stop());
-window.addEventListener('pageshow', event => { if (event.persisted && target) { hole.start(target, { animate: !paused }); refreshSession(); } });
+window.addEventListener('pageshow', event => { if (event.persisted && target) { hole.start(target, { animate: !paused }); refreshSession(); if (desktop && !desktopDone) void loadDesktopRequest(); } });
 syncMotion();
 
 let credential = '', identity = null, expiresAt = 0, busy = false, cursor = null;
 let authGeneration = 0, identityRevision = 0, sessionReadRevision = 0, refreshPending = false;
 let googleScript = null, googleReady = false, googleInitKey = '';
 let googleRenderHost = null, googleRenderKey = '', googleAttemptPending = false, googleAttemptTimer = null, googleResizePending = false;
+let desktopReady = false, desktopDone = false, desktopExpiry = 0, desktopExpiryTimer;
 const say = text => { if (status) status.textContent = text; };
 const principal = value => value ? `${value.provider}:${value.sub}` : '';
 const signedIn = () => Boolean(credential || (identity && expiresAt > Date.now() + 30000));
@@ -62,7 +65,7 @@ async function request(path, { method = 'GET', fields, json } = {}) {
       headers: { Accept: 'application/json', ...(method === 'POST' ? { 'Content-Type': json ? 'application/json' : 'application/x-www-form-urlencoded' } : {}) },
       ...(method === 'POST' ? { body: json ? JSON.stringify(json) : new URLSearchParams(fields) } : {}) });
     const data = JSON.parse(await response.text());
-    if (!response.ok) throw new Error(data.error || 'Connection failed. Please try again.');
+    if (!response.ok) { const error = new Error(data.error || 'Connection failed. Please try again.'); error.code = data.code; error.status = response.status; throw error; }
     return data;
   })();
   try { return await Promise.race([operation, new Promise((_, reject) => { timer = setTimeout(() => { reject(new Error('This request took too long. Check your connection and try again.')); abort.abort(); }, 8000); })]); }
@@ -74,9 +77,15 @@ function accepted(data) {
 function renderIdentity() {
   const host = document.querySelector('#identity'), options = document.querySelector('#auth-options');
   if (!host) return;
+  const navigationLabel = document.querySelector('[data-nav-signin-label]');
+  if (navigationLabel) navigationLabel.textContent = signedIn() ? 'Your account' : 'Sign in';
   host.replaceChildren(); host.hidden = !signedIn();
   if (options) options.hidden = signedIn();
-  const allow = document.querySelector('#allow'); if (allow) allow.disabled = busy || !signedIn();
+  const allow = document.querySelector('#allow'); if (allow) allow.disabled = busy || !signedIn() || (desktop && (!desktopReady || desktopDone));
+  if (desktop) {
+    const handle = document.querySelector('#desktop-handle'); if (handle) handle.disabled = busy || !desktopReady || desktopDone;
+    desktopForm.querySelector('[value="deny"]').disabled = busy || !desktopReady || desktopDone;
+  }
   const github = document.querySelector('#github-signin'); if (github) github.disabled = busy || !githubAvailable;
   const googleHost = document.querySelector('#google-signin'); if (googleHost) { googleHost.inert = busy; googleHost.setAttribute('aria-busy', String(busy)); }
   if (!signedIn()) return;
@@ -86,8 +95,66 @@ function renderIdentity() {
   name.textContent = identity?.name || identity?.login || identity?.email || 'Google account ready';
   description.textContent = identity ? `${identity.provider === 'github' ? 'GitHub' : 'Google'} · ${identity.email || '@' + identity.login}` : 'Review your permissions, then connect.';
   details.append(name, description); host.append(photo, details);
-  if (webSessions) { const change = document.createElement('button'); change.type = 'button'; change.className = 'change-account'; change.textContent = 'Use another account'; change.disabled = busy; change.onclick = signOut; host.append(change); }
+  if (webSessions) { const change = document.createElement('button'); change.type = 'button'; change.className = 'change-account'; change.textContent = 'Use another account'; change.disabled = busy || desktopDone; change.onclick = signOut; host.append(change); }
 }
+function desktopMessage() { return signedIn() ? 'Choose your profile, then connect to continue syncing.' : 'Sign in to connect your Mac.'; }
+function finishDesktop(state, handle = '') {
+  desktopReady = false; desktopDone = true; clearTimeout(desktopExpiryTimer); finishGoogleAttempt();
+  body.classList.toggle('connected', state !== 'denied' && state !== 'expired');
+  desktopForm.hidden = true;
+  document.querySelector('#desktop-intro').hidden = true;
+  const title = document.querySelector('#connection-title');
+  title.textContent = state === 'denied' ? 'Connection cancelled.' : state === 'expired' ? 'Connection expired.' : "You're connected.";
+  const result = document.querySelector('#desktop-result'); result.replaceChildren(); result.hidden = false;
+  const message = document.createElement('p'); message.className = 'lede';
+  message.textContent = state === 'denied' ? 'Return to Token Horizon. Choose Sync now whenever you’re ready to connect.' : state === 'expired' ? 'Return to Token Horizon and choose Sync now to start a new connection.' : 'Return to Token Horizon. Your sync continues automatically.';
+  result.append(message);
+  if (handle && !['denied', 'expired'].includes(state)) {
+    const profile = document.createElement('a'); profile.className = 'desktop-profile-link'; profile.href = '/u/' + encodeURIComponent(handle); profile.textContent = 'View @' + handle; result.append(profile);
+  }
+  renderIdentity(); say(''); result.focus({ preventScroll: true });
+}
+async function loadDesktopRequest() {
+  if (!desktop || desktopDone) return;
+  desktopReady = false; renderIdentity(); say('Checking your app connection…');
+  try {
+    const data = await request('/api/desktop/request?id=' + encodeURIComponent(desktopId));
+    if (['approved', 'exchanged', 'denied'].includes(data.status)) return finishDesktop(data.status, data.handle);
+    if (data.status !== 'pending' || !Number.isFinite(Number(data.expiresAt))) throw new Error('This connection could not be verified. Return to the app and choose Sync now again.');
+    desktopExpiry = Number(data.expiresAt);
+    if (desktopExpiry <= Date.now()) return finishDesktop('expired');
+    const input = document.querySelector('#desktop-handle'); input.value = String(data.handle || '').replace(/^@/, '').slice(0, 64);
+    desktopReady = true; renderIdentity(); say(desktopMessage());
+    clearTimeout(desktopExpiryTimer); desktopExpiryTimer = setTimeout(() => { if (!busy && !desktopDone) finishDesktop('expired'); }, desktopExpiry - Date.now());
+  } catch (error) {
+    if (error.status === 410 || error.code === 'connection_expired') return finishDesktop('expired');
+    say(error.message); renderIdentity();
+    const host = document.querySelector('#desktop-result'); host.hidden = false; host.replaceChildren();
+    const retry = document.createElement('button'); retry.type = 'button'; retry.className = 'secondary'; retry.textContent = 'Try connection again'; retry.onclick = () => { host.hidden = true; void loadDesktopRequest(); }; host.append(retry);
+  }
+}
+desktopForm?.addEventListener('submit', async event => {
+  event.preventDefault(); if (busy || !desktopReady || desktopDone) return;
+  if (desktopExpiry <= Date.now()) return finishDesktop('expired');
+  const decision = event.submitter?.value || 'allow';
+  if (decision === 'allow' && !signedIn()) return say('Sign in to connect your Mac.');
+  finishGoogleAttempt(); busy = true; renderIdentity();
+  say(decision === 'allow' ? 'Connecting your Mac…' : 'Cancelling this connection…');
+  try {
+    const handle = document.querySelector('#desktop-handle').value.trim().replace(/^@/, '');
+    const data = await request('/api/desktop/approve', { method: 'POST', json: { id: desktopId, handle, decision } });
+    if (!['approved', 'denied'].includes(data.status)) throw new Error('The connection could not finish. Try again.');
+    finishDesktop(data.status, data.handle);
+  } catch (error) {
+    if (error.status === 410 || error.code === 'connection_expired') finishDesktop('expired');
+    else {
+      say(error.message);
+      if (error.status === 401) { ++authGeneration; credential = ''; setIdentity(null); ensureGoogle(); }
+      if (['profile_owned', 'claim_required'].includes(error.code)) setTimeout(() => document.querySelector('#desktop-handle').focus(), 0);
+    }
+  } finally { busy = false; renderIdentity(); if (!signedIn() && !desktopDone) ensureGoogle(); if (!desktopDone && desktopExpiry <= Date.now()) finishDesktop('expired'); flushPendingRefresh(); }
+});
+window.addEventListener('pagehide', () => clearTimeout(desktopExpiryTimer));
 function setIdentity(next, expiry = 0) {
   if (principal(identity) !== principal(next)) { finishGoogleAttempt(); ++identityRevision; document.querySelector('#connections')?.replaceChildren(); }
   identity = next; expiresAt = expiry;
@@ -167,7 +234,7 @@ async function receiveGoogle(result) {
     if (generation !== authGeneration) return;
     const verified = accepted(data); if (!verified) throw new Error('Your sign-in could not be verified. Try again.');
     credential = ''; setIdentity(verified, Number(data.expiresAt)); storage('th_auth_signed_out', null, true);
-    if (!form) await loadConnections(); say(form ? 'Review permissions, then connect.' : 'Your connections are up to date.');
+    if (!form) await loadConnections(); say(desktop ? desktopMessage() : form ? 'Review permissions, then connect.' : 'Your connections are up to date.');
   } catch (error) { if (generation === authGeneration) say(error.message); }
   finally { if (generation === authGeneration) { busy = false; renderIdentity(); if (googleResizePending && !signedIn()) renderGoogle(); flushPendingRefresh(); } }
 }
@@ -214,7 +281,7 @@ function renderGoogle() {
 let resizeTimer;
 window.addEventListener('resize', () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(() => { if (googleReady && !signedIn()) { if (googleAttemptPending || busy) googleResizePending = true; else renderGoogle(); } }, 100); });
 window.addEventListener('pagehide', () => clearTimeout(resizeTimer));
-form?.addEventListener('submit', async event => {
+if (!desktop) form?.addEventListener('submit', async event => {
   event.preventDefault(); if (busy) return;
   const decision = event.submitter?.value || 'allow';
   if (decision === 'allow' && !signedIn()) return say('Sign in to continue.');
@@ -254,5 +321,6 @@ const initial = new URL(location.href);
 if (!body.dataset.clientId) document.querySelector('#google-signin')?.setAttribute('hidden', '');
 if (initial.searchParams.has('auth_error')) say('GitHub sign-in did not finish. Try again or use Google.');
 if (initial.searchParams.has('auth') || initial.searchParams.has('auth_error')) { initial.searchParams.delete('auth'); initial.searchParams.delete('auth_error'); history.replaceState(history.state, '', initial); }
-if (webSessions) { say(status?.textContent || 'Checking your remembered account…'); refreshSession().then(current => { if (!current) return; if (signedIn()) say(form ? 'Review permissions, then connect.' : 'Your connections are up to date.'); else if (status?.textContent === 'Checking your remembered account…') say('Choose an account to continue.'); }); }
+if (desktop) void loadDesktopRequest();
+if (webSessions) { say(status?.textContent || 'Checking your remembered account…'); refreshSession().then(current => { if (!current || desktopDone || desktop && !desktopReady) return; if (signedIn()) say(desktop ? desktopMessage() : form ? 'Review permissions, then connect.' : 'Your connections are up to date.'); else if (status?.textContent === 'Checking your remembered account…' || desktop && desktopReady) say(desktop ? desktopMessage() : 'Choose an account to continue.'); }); }
 else { ensureGoogle(); if (!body.dataset.clientId) say('Account sign-in is unavailable on this deployment.'); }

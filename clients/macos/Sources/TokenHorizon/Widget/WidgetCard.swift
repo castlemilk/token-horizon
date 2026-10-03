@@ -2,10 +2,31 @@ import SwiftUI
 
 /// Deep links are the widget interaction mechanism: `Button(intent:)` taps
 /// were silently dropped for this ad-hoc-signed extension (no App Intent
-/// delivery at all), while `Link`/widgetURL always opens the host app — an
-/// LSUIElement accessory here, so nothing visibly pops up; the app updates the
-/// preference and force-republishes, and the widget repaints.
+/// delivery at all), while `Link`/widgetURL opens the host app. Preference
+/// links quietly update the page/window and republish; Sync now opens the
+/// dashboard with progress, and Sign in opens the website in the browser.
 enum WidgetDeepLink {
+    enum Action: String, CaseIterable {
+        case sync
+        case signIn = "signin"
+    }
+
+    static func action(_ action: Action) -> URL {
+        URL(string: "tokenhorizon://\(action.rawValue)")!
+    }
+
+    /// Action links carry no content or credentials. Keep other widget
+    /// routes available to the app's page/window/dashboard handlers.
+    static func action(from url: URL) -> Action? {
+        guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              components.scheme?.lowercased() == "tokenhorizon",
+              let host = components.host?.lowercased(),
+              components.user == nil, components.password == nil, components.port == nil,
+              components.path.isEmpty || components.path == "/",
+              components.query == nil, components.fragment == nil else { return nil }
+        return Action(rawValue: host)
+    }
+
     static func window(_ raw: String) -> URL? {
         URL(string: "tokenhorizon://window?value=\(raw)")
     }
@@ -55,7 +76,7 @@ struct WidgetCard: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: size == "large" ? 14 : 8) {
+        VStack(alignment: .leading, spacing: size == "large" ? 14 : 6) {
             HStack(spacing: 5) {
                 Image(systemName: "circle.hexagongrid.fill").foregroundStyle(accent)
                 Text("TOKEN HORIZON").font(.system(size: 10, weight: .bold, design: .rounded))
@@ -74,32 +95,95 @@ struct WidgetCard: View {
                 Spacer(minLength: 0)
             } else {
                 Group {
-                    switch WidgetPage(rawValue: page) ?? .overview {
+                    switch visiblePage {
                     case .overview: overviewPage
                     case .limits: limitsPage
                     case .plans: plansPage
                     }
                 }
-                Spacer(minLength: 0)
-                chrome
             }
+            chrome
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
     private var carouselEnabled: Bool { size != "small" }
 
+    private var visiblePage: WidgetPage {
+        size == "small" ? .overview : (WidgetPage(rawValue: page) ?? .overview)
+    }
+
+    private var showsCarouselControls: Bool {
+        carouselEnabled && snapshot.preferences.enabled && snapshot.updatedAt != nil
+    }
+
     /// Top-right time-window picker: only meaningful on the overview chart
     /// (and never for the small family, which has no carousel).
     private var showsWindowPicker: Bool {
         carouselEnabled
-            && (WidgetPage(rawValue: page) ?? .overview) == .overview
+            && visiblePage == .overview
             && snapshot.preferences.enabled
             && snapshot.updatedAt != nil
             && snapshot.preferences.showChart
     }
 
-    private var overviewPage: some View {
+    @ViewBuilder private var overviewPage: some View {
+        if size == "small" {
+            VStack(alignment: .leading, spacing: 5) {
+                compactSummary
+                if snapshot.preferences.showChart { providerStackBar }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        } else if size == "medium" {
+            HStack(alignment: .top, spacing: 12) {
+                VStack(alignment: .leading, spacing: 4) {
+                    compactSummary
+                    if snapshot.preferences.showChart {
+                        statsLine
+                        windowChart.frame(maxHeight: .infinity)
+                    }
+                }
+                .frame(width: 132, alignment: .leading)
+                .frame(maxHeight: .infinity, alignment: .top)
+                if snapshot.preferences.showChart {
+                    VStack(alignment: .leading, spacing: 3) {
+                        heatmapGrid(WidgetSnapshot.heatmapColumns(for: window, in: snapshot,
+                                                                 weeks: 8, large: false),
+                                    caption: heatmapCaption, compact: true)
+                            .frame(maxHeight: .infinity)
+                        providerLegend
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        } else {
+            largeOverviewPage
+        }
+    }
+
+    /// Small/medium families have a fixed short height. Keep the total and
+    /// its caption to two lines so charts and action links retain their room.
+    private var compactSummary: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(WidgetSnapshot.number(snapshot.tokens))
+                .font(.system(size: size == "small" ? 28 : 26, weight: .semibold, design: .rounded))
+                .monospacedDigit().minimumScaleFactor(0.65).lineLimit(1)
+            HStack(spacing: 3) {
+                Text(snapshot.preferences.period == "today" ? "tokens today" : "tokens all time")
+                if let cost = snapshot.cost, snapshot.preferences.showCost {
+                    Text(String(format: "· $%.2f", cost))
+                } else if size != "small", snapshot.requests > 0 {
+                    Text("· \(snapshot.requests) requests")
+                }
+            }
+            .font(.system(size: 8.5)).foregroundStyle(.secondary)
+            .lineLimit(1).minimumScaleFactor(0.7)
+        }
+        .accessibilityElement(children: .combine)
+    }
+
+    private var largeOverviewPage: some View {
         VStack(alignment: .leading, spacing: size == "large" ? 12 : 8) {
             HStack(alignment: .firstTextBaseline, spacing: 10) {
                 Text(WidgetSnapshot.number(snapshot.tokens))
@@ -222,7 +306,7 @@ struct WidgetCard: View {
                     .frame(maxWidth: .infinity, minHeight: 28, alignment: .center)
             } else {
                 GeometryReader { geo in
-                    let height = max(24, geo.size.height)
+                    let height = max(1, geo.size.height)
                     HStack(alignment: .bottom, spacing: 1) {
                         ForEach(Array(series.enumerated()), id: \.offset) { index, bucket in
                             VStack(spacing: 0) {
@@ -240,7 +324,7 @@ struct WidgetCard: View {
                     .frame(width: geo.size.width, height: geo.size.height, alignment: .bottom)
                     .clipShape(RoundedRectangle(cornerRadius: 3))
                 }
-                .frame(minHeight: size == "large" ? 52 : 30)
+                .frame(minHeight: size == "large" ? 52 : 16)
                 Text((WidgetWindow(rawValue: window) ?? .days).caption)
                     .font(.system(size: 8, weight: .semibold)).foregroundStyle(.secondary)
                     .lineLimit(1).minimumScaleFactor(0.8)
@@ -252,15 +336,15 @@ struct WidgetCard: View {
     /// Legend doubles as the aggregated per-provider summary for the window
     /// (brand mark = color key, value = tokens, pct = share). Bounded rows.
     private var providerLegend: some View {
-        let entries = WidgetSnapshot.aggregateByProvider(days: activeSeries, limit: size == "large" ? 5 : 3)
+        let entries = WidgetSnapshot.aggregateByProvider(days: activeSeries, limit: size == "large" ? 5 : 2)
         let total = max(1, entries.reduce(0) { $0 + $1.tokens })
-        return VStack(alignment: .leading, spacing: 3) {
+        return VStack(alignment: .leading, spacing: size == "medium" ? 2 : 3) {
             ForEach(entries, id: \.provider) { entry in
                 let share = Int(Double(entry.tokens) / Double(total) * 100)
                 HStack(spacing: 5) {
-                    ProviderLogoView(provider: entry.provider, size: size == "large" ? 12 : 11)
+                    ProviderLogoView(provider: entry.provider, size: size == "large" ? 12 : 10)
                     Text(entry.provider)
-                        .font(.system(size: 8.5, weight: .medium))
+                        .font(.system(size: size == "large" ? 8.5 : 8, weight: .medium))
                         .lineLimit(1).truncationMode(.tail)
                     Spacer(minLength: 2)
                     Text(WidgetSnapshot.number(entry.tokens))
@@ -308,7 +392,7 @@ struct WidgetCard: View {
 
     private var limitsPage: some View {
         let rows = Array(snapshot.limits.prefix(size == "large" ? 5 : 3))
-        return VStack(alignment: .leading, spacing: 8) {
+        return VStack(alignment: .leading, spacing: size == "large" ? 8 : 5) {
             Text("Plan limits").font(.system(size: 13, weight: .semibold))
             if rows.isEmpty {
                 Text("No plan limits available").font(.caption).foregroundStyle(.secondary)
@@ -325,10 +409,14 @@ struct WidgetCard: View {
     /// Plans & expiry: what the user has and what resets/expires soonest.
     /// Row styling mirrors the notch app (urgency thresholds <24h / <48h).
     private var plansPage: some View {
-        let rows = Array(snapshot.limits.prefix(size == "large" ? 6 : 4))
+        let rows = Array(snapshot.limits.prefix(size == "large" ? 6 : 3))
+        let spotlight = size == "large" ? rows.first(where: { $0.resetsAt != nil }) : nil
+        // The spotlight already carries this plan's usage and expiry. Avoid
+        // a duplicate row so all six large-family plans retain their room.
+        let listRows = rows.filter { $0.id != spotlight?.id }
         let now = Date()
         let urgentCount = snapshot.limits.filter { $0.urgency(at: now) == "urgent" }.count
-        return VStack(alignment: .leading, spacing: size == "large" ? 9 : 7) {
+        return VStack(alignment: .leading, spacing: size == "large" ? 6 : 5) {
             HStack(alignment: .firstTextBaseline, spacing: 6) {
                 Text("Plans & resets").font(.system(size: 13, weight: .semibold))
                 if urgentCount > 0 {
@@ -341,15 +429,15 @@ struct WidgetCard: View {
                 Spacer(minLength: 4)
                 Text("\(snapshot.limits.count) active").font(.system(size: 9)).foregroundStyle(.secondary)
             }
-            if let next = rows.first(where: { $0.resetsAt != nil }) {
+            if let next = spotlight {
                 planCallout(next)
             }
             if rows.isEmpty {
                 Text("No plan limits available").font(.caption).foregroundStyle(.secondary)
             } else {
-                ForEach(Array(rows.enumerated()), id: \.element.id) { index, limit in
+                ForEach(Array(listRows.enumerated()), id: \.element.id) { index, limit in
                     planRow(limit, showDetail: size == "large")
-                    if size == "large", index < rows.count - 1 { Spacer(minLength: 0) }
+                    if size == "large", index < listRows.count - 1 { Spacer(minLength: 0) }
                 }
             }
         }
@@ -381,6 +469,7 @@ struct WidgetCard: View {
             }
             ProgressView(value: limit.usedPercent, total: 100)
                 .tint(urgencyColor(limit))
+                .frame(height: 4)
             if !limit.detail.isEmpty {
                 Text(limit.detail)
                     .font(.system(size: 7.5)).foregroundStyle(.secondary)
@@ -418,6 +507,7 @@ struct WidgetCard: View {
             }
             ProgressView(value: limit.usedPercent, total: 100)
                 .tint(limit.usedPercent >= 90 ? .orange : Self.providerColor(limit.provider))
+                .frame(height: 4)
         }
         .help(planTooltip(limit))
         .accessibilityElement(children: .combine)
@@ -456,30 +546,78 @@ struct WidgetCard: View {
             }.font(.system(size: 10))
             ProgressView(value: limit.usedPercent, total: 100)
                 .tint(limit.usedPercent >= 90 ? .orange : Self.providerColor(limit.provider))
+                .frame(height: 4)
         }
     }
 
     private var chrome: some View {
-        HStack(spacing: 6) {
-            if carouselEnabled { pageButton(delta: -1, systemImage: "chevron.left") }
-            Circle().fill(offline || snapshot.isStale(at: date) ? Color.orange : accent).frame(width: 5, height: 5)
-            if let updated = snapshot.updatedAt {
-                Text(offline ? "Offline ·" : snapshot.isStale(at: date) ? "Last update" : "Updated")
-                Text(updated, style: .time)
-            }
-            Spacer(minLength: 0)
-            if carouselEnabled {
-                HStack(spacing: 3) {
-                    ForEach(0..<WidgetPage.count, id: \.self) { index in
-                        Circle()
-                            .fill(index == page ? accent : Color.white.opacity(0.25))
-                            .frame(width: 4, height: 4)
+        VStack(alignment: .leading, spacing: 5) {
+            if size == "small" {
+                freshnessLabel
+                actionLinks
+            } else {
+                HStack(spacing: 6) {
+                    if showsCarouselControls { pageButton(delta: -1, systemImage: "chevron.left") }
+                    freshnessLabel
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .layoutPriority(-1)
+                    actionLinks
+                    if showsCarouselControls {
+                        HStack(spacing: 3) {
+                            ForEach(0..<WidgetPage.count, id: \.self) { index in
+                                Circle()
+                                    .fill(index == page ? accent : Color.white.opacity(0.25))
+                                    .frame(width: 4, height: 4)
+                            }
+                        }
+                        pageButton(delta: 1, systemImage: "chevron.right")
                     }
                 }
-                pageButton(delta: 1, systemImage: "chevron.right")
+            }
+        }
+        .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private var freshnessLabel: some View {
+        HStack(spacing: 4) {
+            Circle()
+                .fill(offline || snapshot.isStale(at: date) ? Color.orange : accent)
+                .frame(width: 5, height: 5)
+            if !snapshot.preferences.enabled {
+                Text("Paused")
+            } else if let updated = snapshot.updatedAt {
+                Text(offline ? "Offline ·" : snapshot.isStale(at: date) ? "Last update" : "Updated")
+                Text(updated, style: .time)
+            } else {
+                Text(offline ? "Offline" : "Waiting for usage")
             }
         }
         .font(.system(size: 9)).foregroundStyle(.secondary).lineLimit(1)
+    }
+
+    private var actionLinks: some View {
+        HStack(spacing: 5) {
+            actionLink(.sync, title: "Sync now", systemImage: "arrow.triangle.2.circlepath")
+            actionLink(.signIn, title: "Sign in", systemImage: "person.crop.circle")
+        }
+        .fixedSize(horizontal: true, vertical: false)
+    }
+
+    private func actionLink(_ action: WidgetDeepLink.Action, title: String, systemImage: String) -> some View {
+        Link(destination: WidgetDeepLink.action(action)) {
+            HStack(spacing: 3) {
+                Image(systemName: systemImage).font(.system(size: 8, weight: .semibold))
+                Text(title).font(.system(size: 9, weight: .semibold))
+            }
+            .foregroundStyle(action == .sync ? accent : Color.primary.opacity(0.8))
+            .padding(.horizontal, 5).padding(.vertical, 5)
+            .background(Capsule().fill(Color.primary.opacity(0.07)))
+            .overlay(Capsule().strokeBorder(Color.primary.opacity(0.1), lineWidth: 0.5))
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(action == .signIn ? "Sign in on Token Horizon website" : title)
+        .help(action == .sync ? "Sync usage and open Token Horizon" : "Sign in on the Token Horizon website")
     }
 
     private func pageButton(delta: Int, systemImage: String) -> some View {
@@ -528,18 +666,20 @@ struct WidgetCard: View {
                     Spacer(minLength: 0)
                 }
             }
-            .frame(minHeight: 24)
-            HStack {
-                Text(caption)
-                Spacer()
+            .frame(minHeight: size == "medium" ? 16 : 24)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(caption).lineLimit(1).minimumScaleFactor(0.7)
                 if !compact {
-                    Text("Less")
-                    ForEach([0.0, 0.25, 0.5, 0.75, 1.0], id: \.self) { level in
-                        RoundedRectangle(cornerRadius: 2)
-                            .fill(level == 0 ? Color.white.opacity(0.08) : accent.opacity(0.25 + 0.75 * level))
-                            .frame(width: 8, height: 8)
+                    HStack(spacing: 4) {
+                        Spacer(minLength: 0)
+                        Text("Less")
+                        ForEach([0.0, 0.25, 0.5, 0.75, 1.0], id: \.self) { level in
+                            RoundedRectangle(cornerRadius: 2)
+                                .fill(level == 0 ? Color.white.opacity(0.08) : accent.opacity(0.25 + 0.75 * level))
+                                .frame(width: 8, height: 8)
+                        }
+                        Text("More")
                     }
-                    Text("More")
                 }
             }
             .font(.system(size: 8, weight: .medium)).foregroundStyle(.secondary)

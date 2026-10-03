@@ -19,11 +19,11 @@ final class SelfUpdaterTests: XCTestCase {
         XCTAssertFalse(SelfUpdater.isNewer("0.9.9", than: "1.0.0"))
     }
 
-    func testIsNewer_lengthMismatchAndSuffixes() {
-        // Missing components read as zero; prerelease suffixes strip.
-        XCTAssertTrue(SelfUpdater.isNewer("0.3.6.1", than: "0.3.6"))
+    func testIsNewer_acceptsOnlyStableThreePartVersions() {
+        // This channel requires stable X.Y.Z releases.
+        XCTAssertFalse(SelfUpdater.isNewer("0.3.6.1", than: "0.3.6"))
         XCTAssertFalse(SelfUpdater.isNewer("0.3.6", than: "0.3.6.1"))
-        XCTAssertTrue(SelfUpdater.isNewer("0.4.0-beta", than: "0.3.9"))
+        XCTAssertFalse(SelfUpdater.isNewer("0.4.0-beta", than: "0.3.9"))
         XCTAssertFalse(SelfUpdater.isNewer("0.3.6-rc1", than: "0.3.6"))
     }
 
@@ -31,6 +31,9 @@ final class SelfUpdaterTests: XCTestCase {
         XCTAssertFalse(SelfUpdater.isNewer("", than: "0.3.6"))
         XCTAssertFalse(SelfUpdater.isNewer("banana", than: "0.3.6"))
         XCTAssertFalse(SelfUpdater.isNewer("1..2", than: "0.3.6"))
-        XCTAssertFalse(SelfUpdater.isNewer("v2.0", than: "0.3.6")) // "v2" parses as 0 — no crash
+        XCTAssertFalse(SelfUpdater.isNewer("v2.0", than: "0.3.6"))
+        for malformed in ["01.0.0", "2.01.0", "2.0.01", "-2.0.0", "+2.0.0", "2.0", "2.0.0+build", "2.0.0\n", "999999999999999999999.0.0"] {
+            XCTAssertFalse(SelfUpdater.isNewer(malformed, than: "0.3.6"), malformed)
+        }
     }
 }

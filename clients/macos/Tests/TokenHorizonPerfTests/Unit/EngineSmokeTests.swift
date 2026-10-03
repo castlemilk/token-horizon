@@ -1,42 +1,60 @@
 import XCTest
 @testable import TokenHorizon
 
-/// Smoke tests through the real engine entry points (live HOME, read-only
-/// scans; the same durable-cache writes the app itself performs). Assertions
-/// are structural invariants that hold regardless of activity — never exact
-/// totals (agents may write mid-test) and never timing.
+/// Real engine entry points over bounded provider streams and isolated cache.
 final class EngineSmokeTests: XCTestCase {
 
-    func testSnapshot_isStructuredAndSorted() {
-        let snap = UsageEngine().snapshot()
-        XCTAssertGreaterThanOrEqual(snap.tokensAllTime, 0)
-        XCTAssertGreaterThanOrEqual(snap.tokensToday, 0)
+    func testSnapshot_isStructuredAndSorted() throws {
+        let fixture = try UsageEngineFixture()
+        defer { try? fixture.remove() }
+        let snap = fixture.engine.snapshot()
+        XCTAssertEqual(snap.tokensAllTime, 240)
+        XCTAssertEqual(snap.tokensToday, 170)
+        XCTAssertEqual(snap.inputTokensAllTime, 185)
+        XCTAssertEqual(snap.outputTokensAllTime, 45)
+        XCTAssertEqual(snap.requestsAllTime, 4)
+        XCTAssertEqual(snap.sources, ["codex", "kimi"])
         XCTAssertEqual(snap.sources, snap.perTool.map { $0.tool })
-        if snap.models.count > 1 {
-            XCTAssertGreaterThanOrEqual(snap.models.first!.tokensToday,
-                                        snap.models.last!.tokensToday)
-        }
+        XCTAssertEqual(snap.models.map { $0.model }, ["gpt-fixture", "k3-fixture"])
+        XCTAssertEqual(snap.models.map { $0.tokensToday }, [120, 50])
+        XCTAssertEqual(snap.parserHealth.map { $0.files }, [1, 1])
+        XCTAssertTrue(snap.parserHealth.allSatisfy { $0.suspect == 0 })
+        XCTAssertTrue(fixture.engine.watchSpec.allSatisfy { $0.root.hasPrefix(fixture.root.path + "/") })
+        XCTAssertEqual(fixture.engine.snapshot().tokensAllTime, 240, "Repeated collection must not double count")
     }
 
-    func testHistory_pointCountAndStreak() {
-        let engine = UsageEngine()
-        let result = engine.history(days: 7)
+    func testHistory_pointCountAndStreak() throws {
+        let fixture = try UsageEngineFixture()
+        defer { try? fixture.remove() }
+        let result = fixture.engine.history(days: 7)
         XCTAssertEqual(result.points.count, 7)
-        XCTAssertGreaterThanOrEqual(result.streak, 0)
+        XCTAssertEqual(result.points.map { $0.tokens }, [0, 0, 0, 0, 0, 70, 170])
+        XCTAssertEqual(result.points.last?.byTool, ["codex": 120, "kimi": 50])
+        XCTAssertEqual(result.streak, 2)
     }
 
-    func testTrendHistory_pointCounts() {
-        let engine = UsageEngine()
-        XCTAssertEqual(engine.trendHistory(window: .day).count, 24)
-        XCTAssertEqual(engine.trendHistory(window: .week).count, 7)
+    func testTrendHistory_pointCounts() throws {
+        let fixture = try UsageEngineFixture()
+        defer { try? fixture.remove() }
+        let day = fixture.engine.trendHistory(window: .day)
+        let week = fixture.engine.trendHistory(window: .week)
+        XCTAssertEqual(day.count, 24)
+        XCTAssertEqual(day.last?.tokens, 170)
+        XCTAssertEqual(week.count, 7)
+        XCTAssertEqual(week.reduce(0) { $0 + $1.tokens }, 240)
     }
 
-    func testResetState_rebuildsCleanly() {
-        let engine = UsageEngine()
-        _ = engine.snapshot()
-        engine.resetState()
-        let snap = engine.snapshot()
-        XCTAssertGreaterThanOrEqual(snap.tokensAllTime, 0)
+    func testResetState_rebuildsCleanly() throws {
+        let fixture = try UsageEngineFixture()
+        defer { try? fixture.remove() }
+        XCTAssertEqual(fixture.engine.snapshot().tokensAllTime, 240)
+        try fixture.appendCodex(input: 7, output: 3)
+        fixture.engine.resetState()
+        let snap = fixture.engine.snapshot()
+        XCTAssertEqual(snap.tokensAllTime, 250)
+        XCTAssertEqual(snap.tokensToday, 180)
+        XCTAssertEqual(snap.requestsAllTime, 5)
         XCTAssertEqual(snap.sources, snap.perTool.map { $0.tool })
+        XCTAssertEqual(fixture.engine.snapshot().tokensAllTime, 250)
     }
 }

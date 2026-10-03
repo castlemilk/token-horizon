@@ -5,6 +5,7 @@ extension Notification.Name {
     static let refreshModelExtras = Notification.Name("refreshModelExtras")
     static let ollamaTelemetryUpdated = Notification.Name("ollamaTelemetryUpdated")
     static let openDashboard = Notification.Name("openDashboard")
+    static let refreshLocalLeaderboard = Notification.Name("refreshLocalLeaderboard")
 }
 
 final class UIModel: ObservableObject {
@@ -12,6 +13,10 @@ final class UIModel: ObservableObject {
     @Published var sys = SystemStats.Snapshot()
     @Published var latestEvent: ShellEvent?
     @Published var notchExpanded = false
+    @Published var compactDashboardTab: DashboardTab = .tokens
+    // Main-thread view state; retaining drafts does not invalidate telemetry UI.
+    var compactSettingsSection: AppSettingsSection = .general
+    var compactSettingsDraft: CompactSettingsDraft?
     // Rolling history backed by BoundedSeries (see Core/): appends auto-trim
     // to cap, so the old hand-rolled trim() is gone. The read API stays
     // `[Double]`, so views and tests are untouched.
@@ -173,4 +178,3 @@ enum MLXWindow: String, CaseIterable, Identifiable {
     }
     var coarse: Bool { self == .h6 || self == .h24 }
 }
-

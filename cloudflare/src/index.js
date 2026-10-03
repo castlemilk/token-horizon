@@ -8,6 +8,7 @@
 
 import { handleTeamRequest, applyTeamMemberships, getPublicTeam, getInviteTeam, enrichTeamAggregates, loadTeamLogoDataUri } from './team-invites.js';
 import { handleBrowserAuth, browserIdentity, identityOwnerId, identityOwns, githubConfigured, sessionsConfigured } from './browser-auth.js';
+import { handleDesktopAuth, desktopPublishIdentity, DesktopAuthError } from './desktop-auth.js';
 import { buildOgModel, renderProfileOgSvg, renderRestrictedOgSvg, OG_CARD_VERSION } from './og-card.js';
 import { loadOgAvatar } from './og-avatar.js';
 import { renderTeamOgSvg, TEAM_OG_VERSION } from './og-team.js';
@@ -894,6 +895,8 @@ export default {
 
     const authResponse = await handleBrowserAuth(request, env, { verifyGoogleIdToken });
     if (authResponse) return authResponse;
+    const desktopResponse = await handleDesktopAuth(request, env, ctx);
+    if (desktopResponse) return desktopResponse;
 
     // 1. Handle CORS Preflight
     if (request.method === "OPTIONS") {
@@ -946,7 +949,7 @@ export default {
               : "Sign in to view your profiles."
           }, 401, headers);
         }
-        const entries = await getRawEntriesFromR2(env);
+        const entries = await getAccountProfileEntriesFromR2(env);
         const profiles = entries
           .filter(entry => entry.claimed === true && identityOwns(entry, googleAuth))
           .map(entry => ({ handle: entry.handle, displayName: String(entry.displayName || entry.handle) }))
@@ -1187,9 +1190,12 @@ export default {
     // 4. POST /api/leaderboard (or POST /leaderboard) — Upsert usage stats.
     if (request.method === "POST" && (pathname === "/api/leaderboard" || pathname === "/leaderboard")) {
       try {
+        const body = await request.json();
+        const incoming = body.entry || body;
+        const desktopAuth = await desktopPublishIdentity(request, env, incoming.handle);
         // A verified identity may publish its own profile. The deployment's
         // write credential is a separate authority and must actually be sent.
-        const googleAuth = await parseGoogleAuth(request, await request.clone().json().catch(() => ({})), env);
+        const googleAuth = desktopAuth?.identity || await parseGoogleAuth(request, body, env);
         const authHeader = request.headers.get("Authorization") || "";
         const customHeader = request.headers.get("X-Leaderboard-Secret") || "";
         const writeToken = customHeader.trim() || authHeader.replace(/^Bearer\s+/i, "").trim();
@@ -1198,16 +1204,19 @@ export default {
           return jsonResponse({ ok: false, error: "Unauthorized: invalid write token or sign-in required" }, 401);
         }
 
-        const body = await request.json();
-        const incoming = body.entry || body;
-
         if (!incoming.handle) {
           return jsonResponse({ ok: false, error: "Missing handle in payload" }, 400);
         }
 
-        const handleClean = String(incoming.handle).replace(/^@/, "").trim();
+        const handleClean = desktopAuth?.handle || String(incoming.handle).replace(/^@/, "").trim();
         const incomingClaimToken = String(incoming.claimToken || request.headers.get("X-Claim-Token") || "").trim();
-        const entries = await getRawEntriesFromR2(env);
+        // Scoped native grants must recheck current ownership against real
+        // records. A transient read failure cannot substitute starter data.
+        const entries = desktopAuth
+          ? await getAccountProfileEntriesFromR2(env).catch(() => {
+            throw new DesktopAuthError(503, "auth_unavailable", "Could not verify current profile ownership. Try Sync again.");
+          })
+          : await getRawEntriesFromR2(env);
 
         const numOr = (...vals) => {
           for (const v of vals) {
@@ -1315,7 +1324,7 @@ export default {
 
           // Check ownership if already claimed
           if (prev.claimed) {
-            const isOwner = identityOwns(prev, googleAuth, { legacyEmail: true });
+            const isOwner = identityOwns(prev, googleAuth, { legacyEmail: !desktopAuth });
             if (!isOwner && !hasWriteSecret) {
               return jsonResponse({
                 ok: false,
@@ -1330,6 +1339,9 @@ export default {
             newEntry.claimedAt = prev.claimedAt;
           } else {
             // Profile is currently unclaimed
+            if (desktopAuth && (!prev.claimTokenHash || prev.claimTokenHash !== desktopAuth.claimTokenHash)) {
+              return jsonResponse({ ok: false, code: "claim_required", error: `Reconnect from the app that created @${handleClean}, or choose a new handle.` }, 403);
+            }
             if (googleAuth) {
               // Publishing with a verified account claims this profile.
               newEntry.claimed = true;
@@ -1442,6 +1454,7 @@ export default {
           timestamp: new Date().toISOString()
         });
       } catch (err) {
+        if (err instanceof DesktopAuthError) return jsonResponse({ ok: false, code: err.code, error: err.message }, err.status);
         return jsonResponse({ ok: false, error: err.message }, 500);
       }
     }
@@ -2206,6 +2219,15 @@ export default {
 };
 
 // --- R2 Storage Helpers ---
+async function getAccountProfileEntriesFromR2(env) {
+  if (!env.LEADERBOARD_BUCKET) throw new Error('Profile storage is unavailable');
+  const obj = await env.LEADERBOARD_BUCKET.get('leaderboard.json');
+  if (!obj) return [];
+  const entries = JSON.parse(await obj.text());
+  if (!Array.isArray(entries)) throw new Error('Profile storage is invalid');
+  return entries;
+}
+
 async function getEntriesFromR2(env) {
   const entries = await getRawEntriesFromR2(env);
   return await applyTeamMemberships(env, entries);

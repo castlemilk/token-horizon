@@ -69,7 +69,7 @@ final class PlanLimitsEngine {
         return nil
     }
 
-    static func fetchAll() -> [ProviderLimit] {
+    private static func providerFetchers() -> [() -> [ProviderLimit]] {
         let keys = authKeys()
         var tasks: [() -> [ProviderLimit]] = []
         if let key = keys["zai-coding-plan"] ?? keys["zai"] { tasks.append { zai(key) } }
@@ -80,6 +80,13 @@ final class PlanLimitsEngine {
         tasks.append { claude() }
         tasks.append { deepseek() }
         tasks.append { openai() }
+        return tasks
+    }
+
+    /// Injected fetchers exercise concurrency and grouping without reading
+    /// provider credentials or contacting configured accounts.
+    static func fetchAll(fetchers: [() -> [ProviderLimit]]? = nil) -> [ProviderLimit] {
+        let tasks = fetchers ?? providerFetchers()
         // Independent network calls: run concurrently so one slow provider
         // can't stall the whole /limits response (MCP/UI timeouts used to fire
         // and the list looked frozen). Order is preserved by index.

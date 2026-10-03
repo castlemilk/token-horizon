@@ -37,6 +37,9 @@ struct WidgetSettingsView: View {
                 .overlay(RoundedRectangle(cornerRadius: 20).strokeBorder(Color.white.opacity(0.12)))
                 .frame(maxWidth: .infinity)
                 .accessibilityLabel("Widget preview")
+            Text("Sync now opens Usage and refreshes your published usage and rankings. Sign in opens your account on the web.")
+                .font(.system(size: 11)).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
             Toggle("Show usage in widgets", isOn: $preferences.enabled)
             Group {
                 Picker("Token total", selection: $preferences.period) {

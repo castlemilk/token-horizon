@@ -7,7 +7,7 @@ Token Horizon keeps its full filesystem, process, shell, and loopback telemetry 
 - An Apple Developer Program membership.
 - A `Developer ID Application: ...` certificate installed in the login keychain.
 - An App Store Connect/API or Apple ID notarytool keychain profile.
-- A final bundle identifier owned by the developer. The script defaults to `com.benebsworth.token-horizon`; override it with `BUNDLE_ID` if needed.
+- The canonical native bundle identifier is `local.benebsworth.token-horizon`; released bundle installation verifies that identifier.
 
 Check the local signing setup:
 
@@ -44,12 +44,14 @@ CURRENT_PROJECT_VERSION=3 \
 ./scripts/package-notarized.sh
 ```
 
-Artifacts are written to `dist/`. The script uses the hardened runtime, verifies the signed app, submits the DMG, staples the ticket, and runs Gatekeeper assessment when a notary profile is provided. The ZIP contains the signed app; the stapled DMG is the notarized distribution artifact.
+Artifacts are written to `dist/`. The script validates credentials before building, checks signatures on the app, widget and both sidecars, notarizes and staples the app, then packages ZIP and DMG. It notarizes and staples the DMG, checks both installable bundles with Gatekeeper, and verifies the SHA-256 manifest before exposing the final files. Existing artifacts are never overwritten and the output directory is never cleared.
+
+Production packaging additionally sets `RELEASE_BUILD=1`. It requires clean, committed source at the exact version tag with all three canonical version pins, both sidecars, a widget, and complete Developer ID/notarization credentials. The resulting app must carry the release version and the exact clean source commit; its widget must match the app version and build counter. CI uses the workflow run number as `CFBundleVersion`.
 
 ## Final Checks
 
 ```bash
-codesign --verify --deep --strict --verbose=2 dist/TokenHorizon.app
+codesign --verify --deep --strict --verbose=2 TokenHorizon.app
 xcrun stapler validate dist/TokenHorizon-1.0.0.dmg
 hdiutil attach -nobrowse -readonly dist/TokenHorizon-1.0.0.dmg
 spctl --assess --type execute "/Volumes/Token Horizon 1.0.0/TokenHorizon.app"
@@ -57,6 +59,25 @@ hdiutil detach "/Volumes/Token Horizon 1.0.0"
 ```
 
 Test the stapled app on a clean macOS user account before release. Confirm that the first-run behavior, shell hook, Ollama proxy, local HTTP API, provider credential reads, and process monitoring still work after Gatekeeper launch.
+
+Install the exact published bundle through the supported launcher after
+downloading its ZIP from the trusted GitHub release and verifying the archive
+against that release's SHA-256 manifest. Check out its exact version tag with
+clean source, extract the verified archive, then run:
+
+```bash
+MARKETING_VERSION=1.0.0 \
+INSTALL_RELEASE_APP=/absolute/path/to/extracted/TokenHorizon.app \
+./scripts/make-app.sh
+```
+
+This mode verifies the release's source stamp, native pins, bundle metadata,
+widget version and required executables, then checks its existing signature,
+Gatekeeper assessment and stapled notarization ticket. It installs and
+restarts the original bundle without rebuilding or signing it again. The
+serving health check uses the archive's original commit, version and build
+time. A source app directory that is a symlink, or an executable link that
+leaves the bundle, is rejected before installation.
 
 ## Publish pipeline (GitHub Actions)
 
@@ -70,13 +91,15 @@ pipeline's own `release v…`/`release metadata…` commits) never release.
 Rapid pushes serialize via the workflow's `concurrency` group — each
 queued token-bearing push still gets its own release.
 
-Caveats: the token matches **anywhere in the commit message** (subject or
-body) — don't write a literal `[release]`/bump token in a message that
-shouldn't ship. And cancelling a run mid-flight can leave the tag + pin
-commit pushed but no release published (delete the tag and reset/revert
-the pin commit to undo).
+Caveat: the token matches anywhere in the commit message, including its
+body. Only include it when that commit should ship. Failed packaging can
+leave an unreleased tag; use the workflow's `release_tag` input to resume
+that exact source. Existing releases, including drafts, are protected from
+rebuilding or replacing assets. Inspect a failed draft before deciding how
+to recover it; the workflow never silently deletes one.
 
-The manual path is `task release` (implemented in Taskfile.yml):
+The manual path is `task release`, which delegates to the same
+`scripts/release.mjs` policy used by GitHub Actions:
 
 ```bash
 task release              # next patch after latest tag (v0.3.5 → v0.3.6)
@@ -85,20 +108,33 @@ task release 1.0.0        # explicit version
 task release -- --dry-run # print the plan, change nothing
 ```
 
-It computes the next semver from the latest `v*` tag, updates the three
-version pins (`make-app.sh` `VERSION`, `BuildInfo.swift` fallback, cask
-`version`), commits `release vX.Y.Z`, tags `vX.Y.Z`, and pushes main + tag.
+The helper fetches current main and tag history, requires clean committed
+source, computes a canonical stable version without leading zeros, and
+rejects downgrades or any existing release. It updates only the three native
+pins (`make-app.sh` `VERSION`, `BuildInfo.swift` fallback and the cask's
+`version`), creates an annotated tag, and atomically pushes main and tag.
+Dry runs perform the same checks without writing. Network or authentication
+failures stop the operation rather than falling back to stale local tags.
 
 `.github/workflows/release.yml` then runs `scripts/package-notarized.sh` for
-the tag (or a `workflow_dispatch` with an optional `version` input — blank
-means next patch): builds the app (gateway sidecar + build stamps), signs with
-the imported Developer ID certificate, notarizes + staples the app, packages
-ZIP + DMG, notarizes + staples the DMG, and runs a Gatekeeper assessment. After
-the GitHub release publishes, the workflow writes the zip `sha256` into
-`packaging/homebrew/token-horizon.rb`, commits it back to main, and syncs the
-cask to `castlemilk/homebrew-tap` when `TAP_GITHUB_TOKEN` is set.
-Without the secrets below the workflow still publishes, but warns and produces
-an ad-hoc, un-notarized build.
+the exact tag after validating its pins and clean source. It tests the native
+app, gateway, release policy and desktop authentication contracts, provisions Rust for TH Engine, signs and notarizes the app
+and DMG, then validates exactly `TokenHorizon-X.Y.Z.zip`, `.dmg` and `.sha256`.
+The release remains a draft until all three uploaded assets match the local
+sizes and SHA-256 digests. Only then is it published as a full release;
+backfills cannot displace a newer full release as latest.
+
+The cask checksum update starts from freshly fetched main and changes only
+its checksum when that main still uses this release version. It never pushes
+old version pins from the detached tag. Tap updates also reject downgrades.
+Production releases fail when signing or notarization credentials are absent
+or incomplete. Unsigned development packaging remains available without
+`RELEASE_BUILD=1`.
+
+Manual dispatch supports an optional `version` (blank means next patch), an
+existing unreleased `release_tag` for recovery, and `desktop_installers`.
+The latter defaults off: native Mac releases do not build or publish
+Linux/Windows installers unless explicitly requested for that run.
 
 Repository secrets (Settings → Secrets and variables → Actions):
 
@@ -124,10 +160,6 @@ Export the local certificate for the secret:
 base64 -i DeveloperID.p12 | pbcopy    # paste into APPLE_CERT_P12_BASE64
 ```
 
-## Current State
-
-The Developer ID Application identity
-(`Developer ID Application: Ben Ebsworth (WFTX6CN23F)`) and the local
-`token-horizon-notary` keychain profile exist, so the local commands above
-produce notarized artifacts. CI notarization additionally needs the repository
-secrets listed in the pipeline section.
+Local signing identities and keychain profiles are machine-specific. Check
+them with the prerequisite commands above; CI uses its imported temporary
+keychain and removes the certificate, private key and keychain afterward.

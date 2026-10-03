@@ -4,6 +4,8 @@ import SQLite3
 final class UsageEngine {
     private var db: OpaquePointer?
     private let lock = NSLock()
+    private let inputs: UsageEngineInputs?
+    private let durableStore: DurableStore
 
     private var claudeFiles: [String: AdditiveFileState] = [:]
     private var codexFiles: [String: CodexFileState] = [:]
@@ -327,7 +329,9 @@ final class UsageEngine {
     }()
     private let isoFallback = ISO8601DateFormatter()
 
-    init() {
+    init(inputs: UsageEngineInputs? = nil, durableStore: DurableStore = .shared) {
+        self.inputs = inputs
+        self.durableStore = durableStore
         loadDurableEngineState()
         NotificationCenter.default.addObserver(forName: .tokenHorizonCacheReset, object: nil, queue: nil) { [weak self] _ in
             self?.resetState()
@@ -406,7 +410,7 @@ final class UsageEngine {
         lastSnapshot = snap
         lastSnapshotLock.unlock()
         let t1 = Self.perfNow()
-        DurableStore.shared.saveSnapshot(snap)
+        durableStore.saveSnapshot(snap)
         TokenHorizonTelemetry.shared.recordEngineTick(op: "snapshot", durationSeconds: Self.perfSpanMs(from: t0, to: t1) / 1000, filesTracked: trackedFileCountLocked())
         if Self.perfLogEnabled {
             NSLog("[Perf] snapshot collect=%.1fms save=%.1fms",
@@ -450,7 +454,7 @@ final class UsageEngine {
         var storedByDay: [Int: HistoryPoint] = [:]
         // Overlay durable history for prior days where log files were pruned/deleted
         if SettingsStore.shared.historyPersistenceEnabled,
-           let stored = DurableStore.shared.loadHistory() {
+           let stored = durableStore.loadHistory() {
             for p in stored.points { storedByDay[p.day] = p }
             for i in 0..<points.count {
                 let day = points[i].day
@@ -469,7 +473,7 @@ final class UsageEngine {
         }
 
         let t1 = Self.perfNow()
-        DurableStore.shared.saveHistory(points: points, streak: streak)
+        durableStore.saveHistory(points: points, streak: streak)
         TokenHorizonTelemetry.shared.recordEngineTick(op: "history", durationSeconds: Self.perfSpanMs(from: t0, to: t1) / 1000, filesTracked: trackedFileCountLocked())
         if Self.perfLogEnabled {
             NSLog("[Perf] history(%dd) collect+aggregate=%.1fms save=%.1fms",
@@ -512,7 +516,7 @@ final class UsageEngine {
         }
 
         let t1 = Self.perfNow()
-        DurableStore.shared.saveTrends(window: window, points: points)
+        durableStore.saveTrends(window: window, points: points)
         TokenHorizonTelemetry.shared.recordEngineTick(op: "trends", durationSeconds: Self.perfSpanMs(from: t0, to: t1) / 1000, filesTracked: trackedFileCountLocked())
         if Self.perfLogEnabled {
             NSLog("[Perf] trends(%@) collect+aggregate=%.1fms save=%.1fms",
@@ -630,7 +634,7 @@ final class UsageEngine {
             for (h, b) in st.buckets { add(h, tool, b.tokens, b.cost) }
         }
         for (_, st) in codexFiles { for (h, b) in st.buckets { add(h, "codex", b.tokens, 0) } }
-        let localllm = OllamaTelemetryStore.shared.summary()
+        let localllm = localLLMSummary()
         for (h, tokens) in localllm.hourlyBuckets { add(h, "ollama", tokens, 0) }
         for (day, tokens, cost) in cachedOpencodeLocked().hourly { add(day, "opencode", tokens, cost) }
         return merged
@@ -681,16 +685,16 @@ final class UsageEngine {
         // session subdirs are covered too. Sources with no fs events and
         // no due sweep skip their per-file stat loops entirely — idle
         // collects are pure in-memory summarization.
-        let claudeDirs = ClaudeDiscovery.discoverDirectories()
+        let claudeDirs = inputs?.claudeDirectories ?? ClaudeDiscovery.discoverDirectories()
         var claudeScanDirs: [String] = []
         for dir in claudeDirs {
             claudeScanDirs.append("\(dir)/projects")
             claudeScanDirs.append("\(dir)/transcripts")
         }
-        let codexDirs = Self.codexScanDirs
-        let kimiScanDirs = Self.kimiDirs
-        let generics = Self.genericSources
-        let devinScanDirs = Self.devinDirs
+        let codexDirs = inputs?.codexDirectories ?? Self.codexScanDirs
+        let kimiScanDirs = inputs?.kimiDirectories ?? Self.kimiDirs
+        let generics = inputs?.genericSources ?? Self.genericSources
+        let devinScanDirs = inputs?.devinDirectories ?? Self.devinDirs
 
         var spec: [(root: String, source: String)] = []
         func watch(_ dirs: [String], _ source: String) {
@@ -706,8 +710,9 @@ final class UsageEngine {
         watch(devinScanDirs, "devin")
         // sqlite sources watch their db dirs directly (fingerprint-gated
         // reads stay every-collect; the event only drives the ~1s refresh).
-        spec.append((HomeDiscovery.expand("~/.local/share/opencode"), "opencode"))
-        spec.append((HomeDiscovery.expand("~/Library/Application Support/opencode"), "opencode"))
+        for database in opencodeDatabasePaths {
+            spec.append(((database as NSString).deletingLastPathComponent, "opencode"))
+        }
 
         let oldRoots = Set(watchSpec.map(\.root))
         var pending = consumePendingScans()
@@ -717,7 +722,7 @@ final class UsageEngine {
             pending.insert(source)
         }
         watchSpec = spec
-        watcher.sync(roots: spec.map(\.root))
+        if inputs?.watchesFiles ?? true { watcher.sync(roots: spec.map(\.root)) }
         func due(_ s: String) -> Bool { pending.contains("*") || pending.contains(s) }
 
         let opencode = cachedOpencodeLocked()
@@ -979,7 +984,7 @@ final class UsageEngine {
         }
         ph.mark("devin")
 
-        let localllm = OllamaTelemetryStore.shared.summary()
+        let localllm = localLLMSummary()
         if localllm.allTokens > 0 {
             var ollamaRequestsAll = 0
             for (_, v) in localllm.models { ollamaRequestsAll += v.messages }
@@ -1149,7 +1154,7 @@ final class UsageEngine {
             )
         }
 
-        DurableStore.shared.scheduleEngineStateSave(
+        durableStore.scheduleEngineStateSave(
             claude: toStoredAdditive(claudeFiles),
             kimi: toStoredAdditive(kimiFiles),
             generic: toStoredAdditive(genericFiles),
@@ -1159,7 +1164,7 @@ final class UsageEngine {
 
     private func loadDurableEngineState() {
         guard SettingsStore.shared.historyPersistenceEnabled,
-              let payload = DurableStore.shared.loadEngineState() else { return }
+              let payload = durableStore.loadEngineState() else { return }
         // Pre-v4 payloads kept only an 8-day per-model window; discard them so
         // the first scan rebuilds the full 17-week history for drilldowns.
         guard payload.version >= 4 else { return }
@@ -1525,7 +1530,8 @@ final class UsageEngine {
                         }
 
                         let modelName = p.model.isEmpty ? (prefix == "agy" ? Self.configuredAgyModel() : "\(prefix)-default") : p.model
-                        accumulateAdditive(&st, dIn: deltaIn, dOut: deltaOut, dCw: deltaCw, dCr: deltaCr,
+                        accumulateAdditive(&st, tokens: (input: deltaIn, output: deltaOut,
+                                                        cacheWrite: deltaCw, cacheRead: deltaCr),
                                            cost: cost, hour: p.hour, model: modelName, cwd: p.cwd,
                                            today: today, modelDayCutoff: modelDayCutoff)
                     } else if additiveSuspect(obj) {
@@ -1567,9 +1573,11 @@ final class UsageEngine {
     /// Shared per-record accumulation for additive sources (JSONL lines and
     /// Devin transcript steps alike). `deltaTokens == 0` with an explicit cost
     /// is allowed (cost-only records); request counts only advance on tokens.
-    private func accumulateAdditive(_ st: inout AdditiveFileState, dIn: Int, dOut: Int, dCw: Int, dCr: Int,
+    private func accumulateAdditive(_ st: inout AdditiveFileState,
+                                    tokens: (input: Int, output: Int, cacheWrite: Int, cacheRead: Int),
                                     cost: Double, hour: Int, model: String, cwd: String?,
                                     today: Int, modelDayCutoff: Int) {
+        let (dIn, dOut, dCw, dCr) = tokens
         let deltaTokens = dIn + dOut + dCw + dCr
         st.allTokens += deltaTokens
         st.allCost += cost
@@ -1750,7 +1758,7 @@ final class UsageEngine {
                     let cost = Self.estimateTokenCost(model: model, inputTokens: r.dIn,
                                                       outputTokens: r.dOut, cacheReadTokens: r.dCr,
                                                       cacheWriteTokens: 0)
-                    accumulateAdditive(&st, dIn: r.dIn, dOut: r.dOut, dCw: 0, dCr: r.dCr,
+                    accumulateAdditive(&st, tokens: (input: r.dIn, output: r.dOut, cacheWrite: 0, cacheRead: r.dCr),
                                        cost: cost, hour: hour, model: model, cwd: cwd,
                                        today: today, modelDayCutoff: modelDayCutoff)
                 }
@@ -1784,7 +1792,9 @@ final class UsageEngine {
     private var devinSessionsCache: (fp: String, map: [String: String])?
     /// `base` is injectable for hermetic tests; nil → the real sessions.db.
     func devinProjectDirs(base: String? = nil) -> [String: String] {
-        let base = base ?? NSString("~/.local/share/devin/cli/sessions.db").expandingTildeInPath
+        if let inputs, inputs.devinSessionsDatabase == nil, base == nil { return [:] }
+        let base = base ?? inputs?.devinSessionsDatabase
+            ?? NSString("~/.local/share/devin/cli/sessions.db").expandingTildeInPath
         var parts: [String] = []
         for suffix in ["", "-wal", "-shm"] {
             let p = base + suffix
@@ -2542,13 +2552,21 @@ final class UsageEngine {
     }
     private var opencodeCache: OpencodeSnapshot?
 
+    private var opencodeDatabasePaths: [String] {
+        inputs?.opencodeDatabasePaths ?? [
+            NSString("~/.local/share/opencode/opencode.db").expandingTildeInPath,
+            NSString("~/Library/Application Support/opencode/opencode.db").expandingTildeInPath
+        ]
+    }
+
+    private func localLLMSummary() -> LocalLLMSummary {
+        inputs?.localLLMSummary() ?? OllamaTelemetryStore.shared.summary()
+    }
+
     private func opencodeFingerprint() -> String {
         var parts: [String] = []
         parts.reserveCapacity(6)
-        for base in [
-            NSString("~/.local/share/opencode/opencode.db").expandingTildeInPath,
-            NSString("~/Library/Application Support/opencode/opencode.db").expandingTildeInPath,
-        ] {
+        for base in opencodeDatabasePaths {
             for suffix in ["", "-wal", "-shm"] {
                 let p = base + suffix
                 if let a = try? FileManager.default.attributesOfItem(atPath: p),
@@ -2729,11 +2747,7 @@ final class UsageEngine {
 
     private func openDB() -> OpaquePointer? {
         if let db { return db }
-        let candidates = [
-            NSString("~/.local/share/opencode/opencode.db").expandingTildeInPath,
-            NSString("~/Library/Application Support/opencode/opencode.db").expandingTildeInPath,
-        ]
-        for c in candidates {
+        for c in opencodeDatabasePaths {
             guard FileManager.default.fileExists(atPath: c) else { continue }
             var handle: OpaquePointer?
             let flags = SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX
