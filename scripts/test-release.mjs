@@ -14,6 +14,13 @@ const nativePins = version => [
   ['packaging/homebrew/token-horizon.rb', `cask "token-horizon" do\n  version "${version}"\n  sha256 "keep-this-checksum"\nend\n`]
 ];
 function command(root, args) { return execFileSync('git', args, { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim(); }
+function normalizeCheckoutTag({ root, env }, tag) {
+  const workflow = readFileSync(new URL('../.github/workflows/release.yml', import.meta.url), 'utf8');
+  const snippet = workflow.match(/^( +)if \[ "\$GITHUB_REF_TYPE" = tag \]; then\n[\s\S]*?^\1fi$/m);
+  assert.ok(snippet, 'The workflow must validate and normalize its checked-out event tag');
+  const script = 'set -euo pipefail\n' + snippet[0].split('\n').map(line => line.slice(snippet[1].length)).join('\n');
+  return spawnSync('/bin/bash', ['-c', script], { cwd: root, env: { ...env, GITHUB_REF_TYPE: 'tag', GITHUB_REF_NAME: tag }, encoding: 'utf8', timeout: 10000 });
+}
 function fixture(t) {
   const directory = mkdtempSync(join(tmpdir(), 'th-native-release-')), root = join(directory, 'repo'), remote = join(directory, 'origin.git'), binary = join(directory, 'bin');
   t.after(() => rmSync(directory, { recursive: true, force: true }));
@@ -73,6 +80,37 @@ test('resolver fetches remote tags before picking a version and emits safe GitHu
   const result = run('resolve', '--version', '', '--tag', '', '--message', '', '--format', 'github');
   assert.equal(result.status, 0, result.stderr); assert.equal(result.stdout, 'version=0.3.16\ntag=v0.3.16\nlatest=v0.3.15\nbump=patch\n');
   assert.equal(command(root, ['rev-parse', 'v0.3.15']), source);
+});
+
+test('workflow restores an annotated remote tag over a lightweight checkout ref for the same source', t => {
+  const f = fixture(t), { root, remote, run } = f;
+  command(root, ['checkout', '--detach', 'v0.3.14']);
+  const source = command(root, ['rev-parse', 'HEAD']), tagObject = command(remote, ['rev-parse', 'refs/tags/v0.3.14']);
+  command(root, ['update-ref', 'refs/tags/v0.3.14', source]);
+  assert.equal(command(root, ['cat-file', '-t', 'v0.3.14']), 'commit', 'Reproduce the Actions lightweight checkout ref');
+  const blocked = run('resolve', '--tag', 'v0.3.14');
+  assert.notEqual(blocked.status, 0); assert.match(blocked.stderr, /would clobber existing tag/);
+  const normalized = normalizeCheckoutTag(f, 'v0.3.14');
+  assert.equal(normalized.status, 0, normalized.stderr);
+  assert.equal(command(root, ['rev-parse', 'HEAD']), source, 'Normalization never changes checked-out source');
+  assert.equal(command(root, ['cat-file', '-t', 'v0.3.14']), 'tag');
+  assert.equal(command(root, ['rev-parse', 'refs/tags/v0.3.14']), tagObject);
+  const result = run('resolve', '--tag', 'v0.3.14');
+  assert.equal(result.status, 0, result.stderr); assert.equal(JSON.parse(result.stdout).tag, 'v0.3.14');
+});
+
+test('workflow rejects a remote tag moved to a different commit after source checkout', t => {
+  const f = fixture(t), { root, remote } = f, source = command(root, ['rev-parse', 'HEAD']);
+  writeFileSync(join(root, 'different-source.txt'), 'different release source');
+  command(root, ['add', '.']); command(root, ['commit', '-m', 'different fixture source']);
+  const moved = command(root, ['rev-parse', 'HEAD']);
+  command(root, ['tag', '-f', '-a', 'v0.3.14', '-m', 'moved fixture tag']);
+  command(root, ['push', 'origin', 'main', '+refs/tags/v0.3.14:refs/tags/v0.3.14']);
+  command(root, ['checkout', '--detach', source]); command(root, ['update-ref', 'refs/tags/v0.3.14', source]);
+  assert.equal(command(remote, ['rev-parse', 'v0.3.14^{commit}']), moved);
+  const result = normalizeCheckoutTag(f, 'v0.3.14');
+  assert.notEqual(result.status, 0); assert.match(result.stdout, /remote release tag differs from the checked-out source commit/);
+  assert.equal(command(root, ['rev-parse', 'HEAD']), source, 'Refusing the moved tag retains the original checkout');
 });
 
 test('remote fetch failure stops resolution instead of using stale local tags', t => {

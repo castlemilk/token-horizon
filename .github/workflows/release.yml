@@ -51,7 +51,18 @@ jobs:
           REQUESTED_TAG: ${{ inputs.release_tag }}
         run: |
           set -euo pipefail
-          if [ "$GITHUB_REF_TYPE" = tag ]; then REQUESTED_TAG="$GITHUB_REF_NAME"; fi
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            REQUESTED_TAG="$GITHUB_REF_NAME"
+            CHECKED_OUT_COMMIT="$(git rev-parse HEAD)"
+            # Checkout may represent an annotated event tag as a lightweight
+            # local ref. Restore its remote tag object before the shared fetch,
+            # while refusing a tag whose source commit moved after checkout.
+            git fetch --no-tags origin "+refs/tags/$REQUESTED_TAG:refs/tags/$REQUESTED_TAG"
+            if [ "$(git rev-parse "refs/tags/$REQUESTED_TAG^{commit}")" != "$CHECKED_OUT_COMMIT" ]; then
+              echo '::error::The remote release tag differs from the checked-out source commit'
+              exit 1
+            fi
+          fi
           if [ -z "$REQUESTED_TAG" ]; then
             # Queued releases start from the current main tip. Never rebase or
             # push an obsolete trigger checkout over newer repository history.

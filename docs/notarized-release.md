@@ -98,6 +98,11 @@ that exact source. Existing releases, including drafts, are protected from
 rebuilding or replacing assets. Inspect a failed draft before deciding how
 to recover it; the workflow never silently deletes one.
 
+Recover an unpublished tag by dispatching the corrected workflow from `main`
+with `release_tag` set to that original tag. Keep the tag and native source
+unchanged. Tag runs restore annotated tag metadata locally and reject a
+remote tag whose commit differs from the checked-out source.
+
 The manual path is `task release`, which delegates to the same
 `scripts/release.mjs` policy used by GitHub Actions:
 
