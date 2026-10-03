@@ -23,7 +23,7 @@ enum BuildInfo {
         }
     }
 
-    static var version: String { value("CFBundleShortVersionString", fallback: "0.3.12") }
+    static var version: String { value("CFBundleShortVersionString", fallback: "0.3.13") }
     static var build: String { value("CFBundleVersion", fallback: "0") }
     static var commit: String { value("THGitSHA", fallback: "dev") }
     static var builtAt: String { value("THBuiltAt", fallback: "unknown") }
