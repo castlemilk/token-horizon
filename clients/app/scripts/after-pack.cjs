@@ -16,6 +16,6 @@ module.exports = async function afterPack(context) {
     'out/renderer/index.html',
     'resources/build/icon.png',
   ]) {
-    extractFile(join(resources, 'app.asar'), filename)
+    extractFile(join(resources, 'app.asar'), join(...filename.split('/')))
   }
 }
