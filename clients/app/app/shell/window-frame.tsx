@@ -36,9 +36,7 @@ function ElectronWindowBridge() {
   const setMaximized = useWindowStore((s) => s.setMaximized)
 
   useEffect(() => {
-    conveyor.window
-      .init()
-      .then((i) => setInit({ platform: i.platform, minimizable: i.minimizable, maximizable: i.maximizable }))
+    conveyor.window.init().then((i) => setInit(i))
   }, [setInit])
 
   conveyor.window.onFocusChange.useEvent(setFocused)

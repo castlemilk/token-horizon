@@ -87,6 +87,9 @@ jobs:
           node mcp/test-catalog.mjs
           node mcp/test-server-errors.mjs
 
+      - name: Desktop download selection and installation contracts
+        run: node --test scripts/test-desktop-releases.mjs
+
       - name: Vendored provider artwork integrity (offline)
         run: python3 scripts/fetch-brand-logos.py --verify
 

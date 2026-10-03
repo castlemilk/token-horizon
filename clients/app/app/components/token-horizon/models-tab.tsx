@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react'
 import { Sparkles, Play, RefreshCw } from 'lucide-react'
+import { fetchJSON } from './api'
 
 interface ModelsTabProps {
   proxyUrl: string
@@ -17,38 +18,44 @@ interface LocalModel {
 
 export const ModelsTab: React.FC<ModelsTabProps> = ({ proxyUrl }) => {
   const [models, setModels] = useState<LocalModel[]>([])
-  const [selectedModel, setSelectedModel] = useState<string>('qwen3.8:27b-mlx')
+  const [selectedModel, setSelectedModel] = useState<string>('')
+  const [modelStatus, setModelStatus] = useState<'loading' | 'ready' | 'unavailable'>('loading')
   const [prompt, setPrompt] = useState<string>('Explain how Token Horizon tracks local tok/s in one sentence.')
   const [response, setResponse] = useState<string>('')
   const [isRunning, setIsRunning] = useState(false)
   const [speedMetrics, setSpeedMetrics] = useState<{ tokPerSec: string; tokens: number } | null>(null)
 
-  const fetchModels = async () => {
-    try {
-      const res = await fetch(`${proxyUrl}/api/tags`)
-      if (res.ok) {
-        const data = await res.json()
-        setModels(data.models || [])
-        if (data.models && data.models.length > 0 && !selectedModel) {
-          setSelectedModel(data.models[0].name)
-        }
-      }
-    } catch {
-      // ignore
-    }
-  }
-
   useEffect(() => {
-    fetchModels()
+    const controller = new AbortController()
+    const fetchModels = async () => {
+      try {
+        const data = await fetchJSON<{ models?: LocalModel[] }>(`${proxyUrl}/api/tags`, controller.signal)
+        if (!controller.signal.aborted) {
+          const nextModels = data.models ?? []
+          setModels(nextModels)
+          setSelectedModel((current) =>
+            nextModels.some((model) => model.name === current) ? current : (nextModels[0]?.name ?? '')
+          )
+          setModelStatus('ready')
+        }
+      } catch {
+        if (!controller.signal.aborted) setModelStatus('unavailable')
+      }
+    }
+    void fetchModels()
+    const interval = setInterval(() => void fetchModels(), 10000)
+    return () => {
+      controller.abort()
+      clearInterval(interval)
+    }
   }, [proxyUrl])
 
   const handleTestInference = async () => {
-    if (!prompt.trim() || isRunning) return
+    if (!prompt.trim() || !selectedModel || modelStatus !== 'ready' || isRunning) return
     setIsRunning(true)
     setResponse('')
     setSpeedMetrics(null)
 
-    const startTime = Date.now()
     try {
       const res = await fetch(`${proxyUrl}/api/generate`, {
         method: 'POST',
@@ -63,13 +70,12 @@ export const ModelsTab: React.FC<ModelsTabProps> = ({ proxyUrl }) => {
       if (res.ok) {
         const data = await res.json()
         setResponse(data.response || '')
-        const durationSec = (data.eval_duration || (Date.now() - startTime) * 1e6) / 1e9
-        const evalCount = data.eval_count || 0
-        const tokPerSec = durationSec > 0 ? (evalCount / durationSec).toFixed(1) : 'N/A'
-        setSpeedMetrics({
-          tokPerSec,
-          tokens: evalCount,
-        })
+        if (typeof data.eval_count === 'number' && typeof data.eval_duration === 'number' && data.eval_duration > 0) {
+          setSpeedMetrics({
+            tokPerSec: (data.eval_count / (data.eval_duration / 1e9)).toFixed(1),
+            tokens: data.eval_count,
+          })
+        }
       } else {
         setResponse(`Error: ${res.status} ${res.statusText}`)
       }
@@ -105,7 +111,13 @@ export const ModelsTab: React.FC<ModelsTabProps> = ({ proxyUrl }) => {
           </span>
           <div className="flex flex-col gap-1.5 max-h-[380px] overflow-y-auto pr-1">
             {models.length === 0 ? (
-              <div className="text-xs text-zinc-500 italic py-4 text-center">Loading local models...</div>
+              <div role="status" className="text-xs text-zinc-500 py-4 text-center">
+                {modelStatus === 'loading'
+                  ? 'Loading local models…'
+                  : modelStatus === 'unavailable'
+                    ? 'Ollama telemetry proxy is unavailable. Start Ollama and configure its local meter to use this view.'
+                    : 'No models installed in Ollama yet.'}
+              </div>
             ) : (
               models.map((m) => {
                 const isSel = m.name === selectedModel
@@ -159,7 +171,7 @@ export const ModelsTab: React.FC<ModelsTabProps> = ({ proxyUrl }) => {
             <div className="flex justify-end">
               <button
                 onClick={handleTestInference}
-                disabled={isRunning}
+                disabled={isRunning || !selectedModel || modelStatus !== 'ready' || !prompt.trim()}
                 className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-500 text-white text-xs font-medium transition-all disabled:opacity-50"
               >
                 {isRunning ? (

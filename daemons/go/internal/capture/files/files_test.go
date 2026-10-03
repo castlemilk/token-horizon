@@ -218,8 +218,9 @@ func TestClaudeConsolidator(t *testing.T) {
 	lines := `{"timestamp":"2026-09-19T10:00:00Z","requestId":"req_hdr_1","message":{"usage":{"input_tokens":100,"output_tokens":50}}}` + "\n" +
 		`{"timestamp":"2026-09-19T10:00:01Z","requestId":"req_hdr_2","message":{"usage":{"input_tokens":0,"output_tokens":0}}}` + "\n"
 	os.WriteFile(filepath.Join(dir, "t.jsonl"), []byte(lines), 0o600)
-	// Point the consolidator's home at the test home via HOME env.
+	// os.UserHomeDir resolves HOME on Unix and USERPROFILE on Windows.
 	t.Setenv("HOME", e.Home)
+	t.Setenv("USERPROFILE", e.Home)
 	store := newMemStore()
 	n, err := ClaudeConsolidator{}.Consolidate(store)
 	if err != nil || n != 1 {
@@ -234,6 +235,7 @@ func TestClaudeConsolidator(t *testing.T) {
 func TestBackfillEvents_Assembly(t *testing.T) {
 	e := testHome(t)
 	t.Setenv("HOME", e.Home)
+	t.Setenv("USERPROFILE", e.Home)
 	e.OpenCodeDB = makeOpenCodeDB(t)
 	dir := filepath.Join(e.Home, ".claude/projects")
 	os.MkdirAll(dir, 0o755)

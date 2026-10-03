@@ -36,6 +36,7 @@
 <script id="th-seo-schema" type="application/ld+json">{"@context":"https://schema.org","@graph":[{"@type":"Organization","@id":"https://token-horizon.dev/#organization","name":"Token Horizon","url":"https://token-horizon.dev/","logo":{"@type":"ImageObject","url":"https://token-horizon.dev/icon-512.png?v=20261001-2","width":512,"height":512},"sameAs":["https://github.com/castlemilk/token-horizon"]},{"@type":"WebSite","@id":"https://token-horizon.dev/#website","url":"https://token-horizon.dev/","name":"Token Horizon","inLanguage":"en","publisher":{"@id":"https://token-horizon.dev/#organization"}},{"@type":"TechArticle","@id":"https://token-horizon.dev/docs/#webpage","url":"https://token-horizon.dev/docs/","name":"Documentation & Setup — Token Horizon","description":"Install Token Horizon and learn usage tracking, desktop widgets, model plans, provider limits, the local HTTP API, MCP connector and LLM gateway.","inLanguage":"en","isPartOf":{"@id":"https://token-horizon.dev/#website"},"headline":"Token Horizon documentation","author":{"@id":"https://token-horizon.dev/#organization"},"about":{"@type":"SoftwareApplication","@id":"https://token-horizon.dev/#app","name":"Token Horizon"}},{"@type":"BreadcrumbList","@id":"https://token-horizon.dev/docs/#breadcrumbs","itemListElement":[{"@type":"ListItem","position":1,"name":"Token Horizon","item":"https://token-horizon.dev/"},{"@type":"ListItem","position":2,"name":"Documentation","item":"https://token-horizon.dev/docs/"}]}]}</script>
 <link rel="stylesheet" href="../styles.css" />
 <link rel="stylesheet" href="../horizon-system.css?v=20261001-4" /><link rel="stylesheet" href="../surfaces.css?v=20261001-4" /><link rel="stylesheet" href="../theme.css?v=20261001-4" /><script src="../theme.js?v=20261001-4" defer></script>
+<link rel="stylesheet" href="../platform-logos.css?v=20261003-2">
 </head>
 <body class="editorial">
 <nav class="nav" id="site-nav">
@@ -56,6 +57,10 @@
     <span class="group">Getting started</span>
     <a href="#overview">Overview</a>
     <a href="#install">Install</a>
+    <a href="#install-macos"><span class="platform-logo platform-logo--apple" aria-hidden="true"></span> macOS</a>
+    <a href="#install-windows"><span class="platform-logo platform-logo--windows" aria-hidden="true"></span> Windows</a>
+    <a href="#install-linux"><span class="platform-logo platform-logo--linux" aria-hidden="true"></span> Linux</a>
+    <a href="#desktop-capture">Desktop capture setup</a>
     <a href="#panel">The panel</a>
     <span class="group">Data</span>
     <a href="#widget">Desktop widget</a>
@@ -74,12 +79,16 @@
 
   <main class="docs-body">
     <h1>Token Horizon documentation</h1>
-    <p>Token Horizon is a native macOS app that tracks AI token usage, cost, plan limits and local model performance — locally, from provider-reported data, with an opt-in leaderboard and a web model catalog. This page documents the surfaces, the data rules, and every interface agents can use.</p>
+    <p>Token Horizon tracks AI token usage, cost, plan limits and local model performance from provider-reported data. Use the native macOS app or the desktop dashboard for Windows and Linux. Local tracking works without a Token Horizon account; leaderboard and team sharing are optional.</p>
 
     <h2 id="overview">Overview</h2>
-    <p>The app runs as a notch panel (or menu-bar item on Macs without a notch) and exposes a loopback HTTP API on <code>127.0.0.1:8765</code>. One process, one build, always identifiable: <code>/health</code> reports the exact git commit serving your machine, and the Settings tab shows the same line. If those disagree with <code>git rev-parse --short HEAD</code>, you're looking at a stale binary — rebuild rather than debug the data.</p>
+    <p>On macOS, the app runs as a notch panel or menu-bar item. On Windows and Linux, it opens a desktop dashboard with its portable core included. Both expose the local HTTP API at <code>127.0.0.1:8765</code>; <code>GET /health</code> identifies the running version and build. The notch, WidgetKit extension, and native Mac integrations described later on this page belong to the macOS app.</p>
 
     <h2 id="install">Install</h2>
+    <p><a href="../?platform=macos#install">Choose a macOS download</a>, <a href="../?platform=windows#install">Windows download</a>, or <a href="../?platform=linux#install">Linux download</a>. The download selector shows packages available for each platform. Windows and Linux installers include the core and runtime, so destination machines do not need Go, Node.js, or a separate daemon installation.</p>
+    <p>If the selector reports no published Windows or Linux package, check the <a href="https://github.com/castlemilk/token-horizon/actions/workflows/desktop.yml">Desktop Linux and Windows workflow</a> for a successful review build. When a completed run has downloadable artifacts, download the one matching your machine and extract its ZIP. GitHub requires sign-in to download workflow artifacts; this is separate from using Token Horizon locally. Review builds do not install automatic updates, and Windows review installers are unsigned.</p>
+
+    <h3 id="install-macos"><span class="platform-logo platform-logo--apple" aria-hidden="true"></span> macOS · Apple silicon</h3>
     <p>One line, no sudo:</p>
     <pre><code>curl -fsSL https://raw.githubusercontent.com/castlemilk/token-horizon/main/install.sh | bash</code></pre>
     <p>Homebrew:</p>
@@ -87,7 +96,57 @@
 brew install --cask token-horizon</code></pre>
     <p>Releases are Developer ID signed and Apple-notarized (Gatekeeper reports <code>source=Notarized Developer ID</code>). Local builds via <code>./scripts/make-app.sh</code> are ad-hoc signed.</p>
 
-    <h2 id="panel">The panel</h2>
+    <h3 id="install-windows"><span class="platform-logo platform-logo--windows" aria-hidden="true"></span> Windows 10 or 11 · x64</h3>
+    <ol>
+      <li>Choose <strong>Windows x64</strong> in the <a href="../?platform=windows#install">download selector</a> and download the <code>TokenHorizon-…-windows-x64-setup.exe</code> installer.</li>
+      <li>Run the installer, choose your installation folder, and complete the setup wizard. Installation is for your Windows user and does not require administrator access.</li>
+      <li>Open <strong>Token Horizon</strong> from the Start menu or desktop shortcut. Follow <a href="#desktop-capture">capture setup</a> to select which local usage source to count.</li>
+    </ol>
+    <p>The Windows installer supports x64 machines. Keep provider clients and their histories in the same Windows user profile used to run Token Horizon.</p>
+
+    <h3 id="install-linux"><span class="platform-logo platform-logo--linux" aria-hidden="true"></span> Linux · x64 or ARM64</h3>
+    <p>Use a graphical Linux desktop session and choose the package matching your processor: <strong>x64 / amd64</strong> for Intel or AMD, or <strong>ARM64 / aarch64</strong> for ARM. Run <code>uname -m</code> if unsure. Download a Debian <code>.deb</code> package or portable <code>.AppImage</code> from the <a href="../?platform=linux#install">Linux selector</a>.</p>
+    <p><strong>Debian or Ubuntu:</strong> install the downloaded package, then open Token Horizon from your application launcher or run <code>token-horizon</code>. Replace <code>VERSION</code> with the version in the downloaded filename; use <code>arm64</code> in place of <code>amd64</code> for ARM:</p>
+    <pre><code>sudo apt install ./TokenHorizon-VERSION-linux-amd64.deb
+token-horizon</code></pre>
+    <p><strong>AppImage:</strong> make the downloaded file executable, then launch it. Replace <code>VERSION</code> with your downloaded version and <code>x86_64</code> with <code>arm64</code> when appropriate:</p>
+    <pre><code>chmod +x TokenHorizon-VERSION-linux-x86_64.AppImage
+./TokenHorizon-VERSION-linux-x86_64.AppImage</code></pre>
+    <p>AppImage needs FUSE 2 support and Chromium user-namespace sandbox support. If FUSE 2 is missing on Ubuntu 24.04, install <code>libfuse2t64</code>; Ubuntu 22.04 uses <code>libfuse2</code>. See the <a href="https://docs.appimage.org/user-guide/troubleshooting/fuse.html">AppImage FUSE guide</a> for other distributions.</p>
+    <pre><code># Ubuntu 24.04, if FUSE 2 is missing
+sudo apt install libfuse2t64</code></pre>
+    <p>If your Debian or Ubuntu desktop restricts user namespaces and AppImage reports a sandbox error, install the <code>.deb</code> package. Its installer configures the bundled AppArmor profile and sandbox helper. Keep the app sandbox enabled.</p>
+
+    <h3 id="desktop-capture">First-run capture setup · Windows and Linux</h3>
+    <p>A fresh desktop installation starts in <strong>point</strong> mode and counts requests routed through consented local meters. An empty activity view is expected until a meter is configured or you opt in to provider-file capture. The current desktop UI links to setup instructions; configure capture in the local files below.</p>
+    <p>Quit Token Horizon, open its configuration folder, and create or edit <code>settings.json</code> and <code>consents.json</code>. Preserve existing keys and restart the app after editing. Default folders:</p>
+    <ul>
+      <li><strong>Windows:</strong> paste <code>%USERPROFILE%\.config\token-horizon</code> into File Explorer's address bar.</li>
+      <li><strong>Linux:</strong> open <code>~/.config/token-horizon/</code>. If <code>XDG_CONFIG_HOME</code> is set, use <code>$XDG_CONFIG_HOME/token-horizon/</code>.</li>
+    </ul>
+    <p><code>TH_CONFIG_DIR</code> overrides these locations if you configured it yourself.</p>
+    <p><strong>Read existing provider history:</strong> in <code>settings.json</code>, select files mode:</p>
+    <pre><code>{
+  "captureMethodology": "files"
+}</code></pre>
+    <p>In <code>consents.json</code>, grant only the file-reading scope:</p>
+    <pre><code>{
+  "fileReading": { "granted": true, "version": 1 }
+}</code></pre>
+    <p>Restart Token Horizon and allow about 30 seconds for the first history import. Files mode counts provider-reported usage from supported CLI histories on this machine, then imports updates every 15 minutes while the core runs. It does not start request meters. The native macOS app discovers its supported histories directly and uses its own setup flow.</p>
+    <p><strong>Meter live OpenAI requests:</strong> instead, select point mode and enable the OpenAI meter in <code>settings.json</code>:</p>
+    <pre><code>{
+  "captureMethodology": "point",
+  "meterToggles": { "openai": true }
+}</code></pre>
+    <p>Grant the metering scope in <code>consents.json</code>:</p>
+    <pre><code>{
+  "metering": { "granted": true, "version": 1 }
+}</code></pre>
+    <p>Restart the app and set your OpenAI client or SDK's base URL to <code>http://127.0.0.1:9242/v1</code>. Keep its normal provider credentials in that client. Only requests sent through the local meter are counted; other providers have separate meter ports listed at <code>GET /meters</code>. Meter traces are stored locally and can include request and response bodies; set <code>"traceCapture": false</code> in <code>settings.json</code> to disable body capture while retaining usage counts.</p>
+    <p>Opening the desktop app starts its core on <code>127.0.0.1:8765</code>, or attaches to a compatible core already there. Closing the app stops the core it started and preserves your saved history. An independently running service remains available. Local tracking needs no account; enable cloud sharing separately if you want to publish usage.</p>
+
+    <h2 id="panel">The macOS panel</h2>
     <p>Hover the notch (or click the menu-bar rings) to open the panel. Tabs:</p>
     <table>
       <tr><th>Tab</th><th>Shows</th></tr>
@@ -100,7 +159,7 @@ brew install --cask token-horizon</code></pre>
       <tr><td><strong>Settings</strong></td><td>Surface mode (auto/notch/tray), sharing rules, history persistence, start-at-login, and the serving build stamp.</td></tr>
     </table>
 
-    <h2 id="widget">Desktop widget</h2>
+    <h2 id="widget">macOS desktop widget</h2>
     <p>The app ships a native WidgetKit extension (macOS 14+), embedded at build time by <code>scripts/make-widget.sh</code>. Add it from the desktop's <strong>Edit Widgets</strong> gallery in small, medium or large. It has a 3-page carousel — usage, plan limits, plans &amp; resets — and a segmented time-window picker <strong>h · d · w · m · y</strong> (24 hourly bars, 7 daily, 17 weekly, 30 daily, 12 monthly). The GitHub-style activity heatmap always matches the selected window, and the plans page spotlights what expires soonest with urgency colors (&lt;24h red, &lt;48h orange). Configure it in <code>Settings → Desktop widget</code> (enable, period, accent, show cost/limits/chart) with a live preview; every control writes the same app-owned preference the widget reads, so preview, widget and app never disagree. The extension consumes the versioned snapshot at <code>GET /widget</code> and falls back to its last cached copy when the app is down.</p>
 
     <h2 id="usage">Usage tracking</h2>

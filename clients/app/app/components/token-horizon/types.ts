@@ -36,13 +36,23 @@ export interface WeeklyResetRow {
   label: string
   usedPercent: number
   remainingPercent: number
-  resetsAt: number
+  resetsAt?: number
   resetsIn: string
   resetsInShort: string
   resetDateTime: string
   urgency: 'urgent' | 'soon' | 'normal'
   detail: string
   resetsSoon: boolean
+}
+
+export type ServiceStatus = 'checking' | 'connected' | 'unavailable'
+
+export interface DaemonHealth {
+  ok: boolean
+  name?: string
+  platform?: string
+  version?: string | number
+  build?: { version?: string }
 }
 
 export interface SystemStats {

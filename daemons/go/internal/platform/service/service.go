@@ -2,22 +2,27 @@ package service
 
 // Daemon auto-start (Platform/DaemonAutoStart.swift port): user-scoped
 // boot/login registration for the headless daemon. systemd --user + linger
-// on Linux (XDG autostart fallback), LaunchAgent on macOS, unsupported on
-// Windows. Never root/system-level — the daemon needs the user's
+// on Linux (XDG autostart fallback), LaunchAgent on macOS, a current-user
+// Run entry on Windows. Never root/system-level — the daemon needs the user's
 // credentials and config dirs. Generators are pure (unit-tested).
 
 import (
+	"html"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
+
+	"github.com/castlemilk/token-horizon/daemons/go/internal/platform"
 )
 
 const (
-	UnitName      = "token-horizon-daemon.service"
-	LaunchLabel   = "dev.token-horizon.daemon"
-	autostartName = "token-horizon-daemon.desktop"
+	UnitName       = "token-horizon-daemon.service"
+	LaunchLabel    = "dev.token-horizon.daemon"
+	autostartName  = "token-horizon-daemon.desktop"
+	windowsRunKey  = `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`
+	windowsRunName = "TokenHorizonDaemon"
 )
 
 // Status: user-scoped service state for GET /service.
@@ -37,7 +42,7 @@ Description=Token Horizon headless usage daemon (loopback API on :8765)
 After=network-online.target
 
 [Service]
-ExecStart=` + execPath + `
+ExecStart=` + systemdExec(execPath) + `
 Restart=on-failure
 RestartSec=5
 
@@ -52,7 +57,7 @@ func AutostartDesktop(execPath string) string {
 Type=Application
 Name=Token Horizon daemon
 Comment=Token Horizon headless usage daemon (loopback API on :8765)
-Exec=` + execPath + `
+Exec=` + desktopExec(execPath) + `
 Terminal=false
 X-GNOME-Autostart-enabled=true
 
@@ -60,6 +65,7 @@ X-GNOME-Autostart-enabled=true
 }
 
 func LaunchAgentPlist(label, execPath, logPath string) string {
+	label, execPath, logPath = html.EscapeString(label), html.EscapeString(execPath), html.EscapeString(logPath)
 	return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -75,6 +81,14 @@ func LaunchAgentPlist(label, execPath, logPath string) string {
 </plist>
 
 `
+}
+
+func systemdExec(execPath string) string {
+	return `"` + strings.NewReplacer(`\`, `\\`, `"`, `\"`, `%`, `%%`, "\n", `\n`, "\r", `\r`).Replace(execPath) + `"`
+}
+
+func desktopExec(execPath string) string {
+	return `"` + strings.NewReplacer(`\`, `\\\\`, `"`, `\\"`, "`", "\\\\`", `$`, `\\$`, `%`, `%%`).Replace(execPath) + `"`
 }
 
 // ---- paths ----
@@ -110,7 +124,9 @@ func executablePath() string {
 // ---- operations ----
 
 func run(name string, args ...string) (string, error) {
-	out, err := exec.Command(name, args...).CombinedOutput()
+	cmd := exec.Command(name, args...)
+	platform.HideConsole(cmd)
+	out, err := cmd.CombinedOutput()
 	return strings.TrimSpace(string(out)), err
 }
 
@@ -120,6 +136,8 @@ func Current() Status {
 		return linuxStatus()
 	case "darwin":
 		return darwinStatus()
+	case "windows":
+		return windowsStatus()
 	default:
 		return Status{Supported: false, Detail: "auto-start not supported on " + runtime.GOOS}
 	}
@@ -131,6 +149,8 @@ func Install() Status {
 		return linuxInstall()
 	case "darwin":
 		return darwinInstall()
+	case "windows":
+		return windowsInstall()
 	default:
 		return Status{Supported: false, Detail: "auto-start not supported on " + runtime.GOOS}
 	}
@@ -142,9 +162,44 @@ func Uninstall() Status {
 		return linuxUninstall()
 	case "darwin":
 		return darwinUninstall()
+	case "windows":
+		return windowsUninstall()
 	default:
 		return Status{Supported: false, Detail: "auto-start not supported on " + runtime.GOOS}
 	}
+}
+
+// ---- Windows: current-user login registration (no administrator rights) ----
+
+func WindowsRunCommand(execPath string) string { return `"` + execPath + `"` }
+
+func windowsStatus() Status {
+	_, err := run("reg.exe", "query", windowsRunKey, "/v", windowsRunName)
+	installed := err == nil
+	return Status{Supported: true, Installed: installed, Enabled: installed,
+		Detail: "current-user login startup"}
+}
+
+func windowsInstall() Status {
+	out, err := run("reg.exe", "add", windowsRunKey, "/v", windowsRunName,
+		"/t", "REG_SZ", "/d", WindowsRunCommand(executablePath()), "/f")
+	if err != nil {
+		return Status{Supported: true, Detail: "login startup: " + out}
+	}
+	return windowsStatus()
+}
+
+func windowsUninstall() Status {
+	if !windowsStatus().Installed {
+		return Status{Supported: true, Detail: "login startup already removed"}
+	}
+	out, err := run("reg.exe", "delete", windowsRunKey, "/v", windowsRunName, "/f")
+	if err != nil {
+		st := windowsStatus()
+		st.Detail = "remove login startup: " + out
+		return st
+	}
+	return Status{Supported: true, Detail: "login startup removed"}
 }
 
 // ---- Linux: systemd --user (+ linger); XDG autostart fallback ----

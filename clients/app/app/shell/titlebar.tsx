@@ -79,7 +79,7 @@ function WindowControls() {
         </ControlButton>
       )}
       {maximizable && (
-        <ControlButton label="Maximize" onClick={() => conveyor.window.maximizeToggle()}>
+        <ControlButton label={isMaximized ? 'Restore' : 'Maximize'} onClick={() => conveyor.window.maximizeToggle()}>
           {isMaximized ? <Copy className="size-3.5" /> : <Square className="size-3.5" />}
         </ControlButton>
       )}

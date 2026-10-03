@@ -1,52 +1,79 @@
-import { app, BrowserWindow } from 'electron'
+import { app, BrowserWindow, dialog } from 'electron'
 import { electronApp, optimizer } from '@electron-toolkit/utils'
 import { openAppWindow } from './app'
 import { registerResourcesProtocol } from './protocols'
+import { DaemonSupervisor, daemonExecutable } from './daemon-supervisor'
 
-// Chromium only auto-detects a keyring on desktops it recognizes, so on anything else (Hyprland,
-// sway, bare WMs) safeStorage silently degrades to `basic_text` and reports itself unavailable.
-// Naming the backend opts back in where a secret service is actually running; if none is, Chromium
-// falls back on its own. Must run before the app is ready.
 if (process.platform === 'linux') app.commandLine.appendSwitch('password-store', 'gnome-libsecret')
 
-// This method will be called when Electron has finished
-// initialization and is ready to create browser windows.
-// Some APIs can only be used after this event occurs.
-app.whenReady().then(() => {
-  // Set app user model id for windows
-  electronApp.setAppUserModelId('com.electron')
+app.setName('Token Horizon')
 
-  // Register the custom resources protocol once. The IPC surface (modules, stores, context) is
-  // registered by the `@/conveyor/router` import side-effect via ./app.
-  registerResourcesProtocol()
+// A second desktop launch focuses the existing window and never starts another core.
+if (!app.requestSingleInstanceLock()) {
+  app.quit()
+} else {
+  let daemon: DaemonSupervisor | undefined
+  let quitting = false
+  let ready = false
 
-  // Open the main window.
-  openAppWindow()
-
-  // Default open or close DevTools by F12 in development
-  // and ignore CommandOrControl + R in production.
-  // see https://github.com/alex8088/electron-toolkit/tree/master/packages/utils
-  app.on('browser-window-created', (_, window) => {
-    optimizer.watchWindowShortcuts(window)
-  })
-
-  app.on('activate', function () {
-    // On macOS it's common to re-create a window in the app when the
-    // dock icon is clicked and there are no other windows open.
-    if (BrowserWindow.getAllWindows().length === 0) {
-      openAppWindow()
+  app.on('second-instance', () => {
+    const window = BrowserWindow.getAllWindows()[0]
+    if (window) {
+      if (window.isMinimized()) window.restore()
+      window.show()
+      window.focus()
     }
   })
-})
 
-// Quit when all windows are closed, except on macOS. There, it's common
-// for applications and their menu bar to stay active until the user quits
-// explicitly with Cmd + Q.
-app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') {
-    app.quit()
-  }
-})
+  app.on('browser-window-created', (_, window) => optimizer.watchWindowShortcuts(window))
 
-// In this file, you can include the rest of your app's specific main process
-// code. You can also put them in separate files and import them here.
+  app
+    .whenReady()
+    .then(async () => {
+      electronApp.setAppUserModelId('dev.token-horizon.desktop')
+      registerResourcesProtocol()
+      daemon = new DaemonSupervisor({
+        executable: daemonExecutable({
+          packaged: app.isPackaged,
+          resourcesPath: process.resourcesPath,
+          appPath: app.getAppPath(),
+          platform: process.platform,
+          override: process.env.TOKEN_HORIZON_DAEMON_BIN,
+        }),
+        onUnexpectedExit: (message) => {
+          dialog.showErrorBox('Token Horizon local core stopped', message)
+          app.quit()
+        },
+      })
+      try {
+        await daemon.start()
+        ready = true
+        if (!quitting) openAppWindow()
+      } catch (error) {
+        if (!quitting) {
+          dialog.showErrorBox('Token Horizon could not start', error instanceof Error ? error.message : String(error))
+          app.quit()
+        }
+      }
+    })
+    .catch((error) => {
+      dialog.showErrorBox('Token Horizon could not start', String(error))
+      app.quit()
+    })
+
+  app.on('activate', () => {
+    if (ready && !quitting && BrowserWindow.getAllWindows().length === 0) openAppWindow()
+  })
+
+  app.on('window-all-closed', () => {
+    if (process.platform !== 'darwin') app.quit()
+  })
+
+  // Attached services belong to their original owner; stop() only terminates our child.
+  app.on('before-quit', (event) => {
+    if (quitting) return
+    event.preventDefault()
+    quitting = true
+    void (daemon?.stop() ?? Promise.resolve()).finally(() => app.quit())
+  })
+}

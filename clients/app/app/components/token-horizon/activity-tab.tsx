@@ -1,6 +1,7 @@
 import React from 'react'
 import { StatsResponse } from './types'
 import { Activity, Layers, UserCheck } from 'lucide-react'
+import { openExternal } from '@/app/shell/platform'
 
 interface ActivityTabProps {
   stats: StatsResponse | null
@@ -44,6 +45,28 @@ export const ActivityTab: React.FC<ActivityTabProps> = ({ stats }) => {
           </div>
 
           <div className="divide-y divide-zinc-900 font-mono text-xs">
+            {tools.length === 0 && (
+              <div className="py-4 text-zinc-500">
+                <p>{stats ? 'No usage recorded yet on this machine.' : 'Connecting to the local service…'}</p>
+                {stats && (
+                  <>
+                    <p className="mt-2">
+                      Configure a provider meter or opt in to local file capture to start tracking usage.
+                    </p>
+                    <button
+                      className="mt-2 text-sky-400 hover:underline"
+                      onClick={() =>
+                        openExternal(
+                          'https://github.com/castlemilk/token-horizon/tree/main/clients/app#usage-capture-setup'
+                        )
+                      }
+                    >
+                      Open usage capture setup
+                    </button>
+                  </>
+                )}
+              </div>
+            )}
             {tools.map((t) => (
               <div key={t.tool} className="flex items-center justify-between py-2.5">
                 <div className="flex flex-col">
@@ -67,6 +90,9 @@ export const ActivityTab: React.FC<ActivityTabProps> = ({ stats }) => {
           </div>
 
           <div className="divide-y divide-zinc-900 font-mono text-xs">
+            {claudeAccounts.length === 0 && (
+              <p className="py-4 text-zinc-500">No Claude profiles reported by the local service.</p>
+            )}
             {claudeAccounts.map((acct) => (
               <div key={acct.id} className="flex items-center justify-between py-2.5">
                 <div className="flex flex-col">

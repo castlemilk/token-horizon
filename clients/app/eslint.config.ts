@@ -97,6 +97,14 @@ export default [
       ],
     },
   },
+  // Node test files run directly, outside TypeScript's application project.
+  {
+    files: ['tests/**/*.mjs'],
+    languageOptions: {
+      parserOptions: { projectService: false },
+      globals: { Buffer: 'readonly', Response: 'readonly', URL: 'readonly', fetch: 'readonly' },
+    },
+  },
   // Add specific configuration for preload files
   {
     files: ['app/**/*.ts', 'lib/**/*.ts', 'app/**/*.tsx', 'lib/**/*.tsx'],

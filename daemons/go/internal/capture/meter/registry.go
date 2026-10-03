@@ -70,10 +70,11 @@ func DefaultListenPort(vendor string) int {
 
 // Registry tracks live meters.
 type Registry struct {
-	mu     sync.Mutex
-	meters []*Meter
-	store  Storer
-	nudge  func()
+	mu      sync.Mutex
+	meters  []*Meter
+	store   Storer
+	nudge   func()
+	stopped bool
 }
 
 func NewRegistry(store Storer, nudge func()) *Registry {
@@ -108,6 +109,9 @@ func (r *Registry) Add(vendor string, port int, target string, product string) b
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.stopped {
+		return false
+	}
 	for _, m := range r.meters {
 		if m.ListenPort == port {
 			return false
@@ -125,6 +129,17 @@ func (r *Registry) Add(vendor string, port int, target string, product string) b
 	r.meters = append(r.meters, m)
 	fmt.Fprintf(os.Stderr, "token-horizon: meter %s listening on 127.0.0.1:%d → %s\n", key, port, target)
 	return true
+}
+
+// Stop releases every owned listener and blocks late runtime sightings from
+// starting replacements while the desktop-owned daemon is shutting down.
+func (r *Registry) Stop() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.stopped = true
+	for _, m := range r.meters {
+		m.Stop()
+	}
 }
 
 // EnsureVendor: runtime-monitor auto-metering hook — start the vendor's

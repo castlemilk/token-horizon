@@ -48,7 +48,7 @@ func (m *Manager) caCertPath() string {
 func MitmdumpPath() string {
 	for _, candidate := range []string{
 		"/opt/homebrew/bin/mitmdump", "/usr/local/bin/mitmdump",
-		"/usr/bin/mitmdump", filepath.Join(os.Getenv("HOME"), ".local/bin/mitmdump"),
+		"/usr/bin/mitmdump", filepath.Join(platform.HomeDir(), ".local/bin/mitmdump"),
 	} {
 		if _, err := os.Stat(candidate); err == nil {
 			return candidate
@@ -113,6 +113,7 @@ func (m *Manager) Start() {
 		"--scripts", m.addonPath(),
 		"--set", "confdir="+m.caDir(),
 		"--quiet")
+	platform.HideConsole(cmd)
 	cmd.Stdout = nil
 	cmd.Stderr = nil
 	if err := cmd.Start(); err != nil {

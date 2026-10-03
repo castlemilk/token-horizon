@@ -1,0 +1,380 @@
+name: Desktop Linux and Windows
+
+on:
+  push:
+    branches: [main]
+    paths: ["clients/app/**", "daemons/go/**", ".github/workflows/desktop.yml"]
+  pull_request:
+    paths: ["clients/app/**", "daemons/go/**", ".github/workflows/desktop.yml"]
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Existing full release tag (vX.Y.Z); blank builds the selected ref for review."
+        required: false
+        type: string
+      publish:
+        description: "Attach tested installers to that existing full release."
+        required: false
+        type: boolean
+        default: false
+  workflow_call:
+    inputs:
+      release_tag:
+        required: true
+        type: string
+      publish:
+        required: false
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-${{ inputs.publish && 'publish' || 'review' }}-${{ inputs.release_tag || github.ref }}
+  cancel-in-progress: ${{ !inputs.publish }}
+
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    outputs:
+      build_ref: ${{ steps.source.outputs.build_ref }}
+      version: ${{ steps.source.outputs.version }}
+      release_tag: ${{ steps.source.outputs.release_tag }}
+      release_id: ${{ steps.source.outputs.release_id }}
+      publish: ${{ steps.source.outputs.publish }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Resolve source and existing full release
+        id: source
+        env:
+          REQUESTED_TAG: ${{ inputs.release_tag }}
+          REQUESTED_PUBLISH: ${{ inputs.publish == true }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          node --input-type=module <<'JS'
+          import { execFileSync } from 'node:child_process'
+          import { appendFileSync, readFileSync } from 'node:fs'
+          const tag = process.env.REQUESTED_TAG || ''
+          const publish = process.env.REQUESTED_PUBLISH === 'true'
+          if (publish && !tag) throw new Error('Publishing requires an existing full release tag vX.Y.Z')
+          if (tag && !/^v\d+\.\d+\.\d+$/.test(tag)) throw new Error('Use a full release tag vX.Y.Z; prerelease tags are excluded')
+          let buildRef = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim()
+          let version = JSON.parse(readFileSync('clients/app/package.json', 'utf8')).version
+          let releaseId = ''
+          if (tag) {
+            execFileSync('git', ['fetch', 'origin', `refs/tags/${tag}:refs/tags/${tag}`], { stdio: 'inherit' })
+            buildRef = execFileSync('git', ['rev-parse', `${tag}^{commit}`], { encoding: 'utf8' }).trim()
+            version = tag.slice(1)
+            if (publish) {
+              const release = JSON.parse(execFileSync('gh', ['api', `repos/${process.env.GITHUB_REPOSITORY}/releases/tags/${tag}`], { encoding: 'utf8' }))
+              if (release.tag_name !== tag || release.draft || release.prerelease || !release.published_at) {
+                throw new Error('Only an existing published full release can receive desktop installers')
+              }
+              if (release.immutable) throw new Error('This published release is immutable; desktop assets must be staged before its publication')
+              releaseId = String(release.id)
+            }
+          }
+          if (!/^\d+\.\d+\.\d+$/.test(version)) throw new Error(`Invalid desktop release version: ${version}`)
+          for (const [key, value] of Object.entries({ build_ref: buildRef, version, release_tag: tag, release_id: releaseId, publish: String(publish) })) {
+            appendFileSync(process.env.GITHUB_OUTPUT, `${key}=${value}\n`)
+          }
+          JS
+
+  package:
+    needs: prepare
+    name: ${{ matrix.platform }} ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 40
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            platform: linux
+            arch: x64
+          - runner: ubuntu-24.04-arm
+            platform: linux
+            arch: arm64
+          - runner: windows-2022
+            platform: win32
+            arch: x64
+    defaults:
+      run:
+        working-directory: clients/app
+    env:
+      CGO_ENABLED: "0"
+      CSC_IDENTITY_AUTO_DISCOVERY: "false"
+      MARKETING_VERSION: ${{ needs.prepare.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.build_ref }}
+          persist-credentials: false
+
+      - name: Set up native Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          architecture: ${{ matrix.arch }}
+          cache: npm
+          cache-dependency-path: clients/app/package-lock.json
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: daemons/go/go.mod
+          cache-dependency-path: daemons/go/go.sum
+
+      - name: Verify native target
+        run: node -e "const a=require('node:assert/strict');a.equal(process.platform,'${{ matrix.platform }}');a.equal(process.arch,'${{ matrix.arch }}')"
+
+      - name: Install Linux desktop dependencies
+        if: matrix.platform == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb xauth libgtk-3-0t64 libnss3 libxss1 libasound2t64 libgbm1 libsecret-1-0 libfuse2t64
+
+      - name: Install desktop dependencies
+        run: npm ci
+
+      - name: Check daemon
+        working-directory: daemons/go
+        shell: bash
+        run: |
+          go vet ./...
+          go test ./...
+
+      - name: Check desktop types and contracts
+        shell: bash
+        run: |
+          npm run typecheck
+          npm run lint:check
+          npm run test:desktop
+
+      - name: Build native installers with bundled daemon
+        run: node scripts/package-desktop.mjs --platform ${{ matrix.platform }} --arch ${{ matrix.arch }}
+
+      - name: Normalize and verify installer filenames
+        shell: bash
+        env:
+          DESKTOP_PLATFORM: ${{ matrix.platform }}
+          DESKTOP_ARCH: ${{ matrix.arch }}
+        run: |
+          node --input-type=module <<'JS'
+          import { existsSync, renameSync, statSync } from 'node:fs'
+          const prefix = `dist/TokenHorizon-${process.env.MARKETING_VERSION}`
+          const arch = process.env.DESKTOP_ARCH
+          if (process.env.DESKTOP_PLATFORM === 'linux' && arch === 'x64') {
+            const canonical = `${prefix}-linux-x86_64.AppImage`
+            const alias = `${prefix}-linux-x64.AppImage`
+            if (existsSync(alias) && existsSync(canonical)) throw new Error('Duplicate x64 AppImage filenames')
+            if (existsSync(alias)) renameSync(alias, canonical)
+          }
+          const files = process.env.DESKTOP_PLATFORM === 'linux'
+            ? [`${prefix}-linux-${arch === 'x64' ? 'x86_64' : 'arm64'}.AppImage`, `${prefix}-linux-${arch === 'x64' ? 'amd64' : 'arm64'}.deb`]
+            : [`${prefix}-windows-x64-setup.exe`]
+          for (const path of files) {
+            if (!existsSync(path) || !statSync(path).isFile() || statSync(path).size === 0) throw new Error(`Missing installer: ${path}`)
+          }
+          JS
+
+      - name: Install and smoke test Linux desktop
+        if: matrix.platform == 'linux'
+        run: |
+          sudo apt-get install -y ./dist/*.deb
+          test -x '/opt/Token Horizon/token-horizon'
+          xvfb-run -a npm run smoke:desktop -- --directory '/opt/Token Horizon'
+
+      - name: Install and smoke test Windows desktop
+        if: matrix.platform == 'win32'
+        shell: pwsh
+        run: |
+          $installers = @(Get-ChildItem -Path dist -Filter '*-windows-x64-setup.exe')
+          if ($installers.Count -ne 1) { throw 'Expected exactly one Windows NSIS installer' }
+          $installDirectory = Join-Path $env:RUNNER_TEMP 'TokenHorizonSmoke'
+          if ($installDirectory -match '\s') { throw 'The silent NSIS smoke path must not contain spaces' }
+          $installed = Start-Process -FilePath $installers[0].FullName -ArgumentList '/S', '/currentuser', "/D=$installDirectory" -Wait -PassThru
+          if ($installed.ExitCode -ne 0) { throw "NSIS installation failed with exit code $($installed.ExitCode)" }
+          if (-not (Test-Path -LiteralPath (Join-Path $installDirectory 'token-horizon.exe') -PathType Leaf)) {
+            throw 'NSIS did not install the desktop executable at the requested path'
+          }
+          npm run smoke:desktop -- --directory $installDirectory
+
+      - name: Smoke test native AppImage runtime and launcher
+        if: matrix.platform == 'linux'
+        shell: bash
+        run: |
+          TH_APPIMAGE_PATH="$(pwd)/dist/TokenHorizon-${MARKETING_VERSION}-linux-${{ matrix.arch == 'x64' && 'x86_64' || 'arm64' }}.AppImage"
+          TH_PREVIOUS_USERNS="$(sysctl -n kernel.apparmor_restrict_unprivileged_userns)"
+          TH_APPIMAGE_SMOKE="$(mktemp -d)"
+          cleanup() {
+            TH_SMOKE_STATUS=$?
+            sudo sysctl -w "kernel.apparmor_restrict_unprivileged_userns=$TH_PREVIOUS_USERNS" >/dev/null || TH_SMOKE_STATUS=1
+            rm -rf "$TH_APPIMAGE_SMOKE"
+            exit "$TH_SMOKE_STATUS"
+          }
+          trap cleanup EXIT
+          (cd "$TH_APPIMAGE_SMOKE" && "$TH_APPIMAGE_PATH" --appimage-extract >/dev/null)
+          ln -s "$TH_APPIMAGE_SMOKE/squashfs-root/resources" "$TH_APPIMAGE_SMOKE/resources"
+          cat > "$TH_APPIMAGE_SMOKE/token-horizon" <<'SH'
+          #!/bin/sh
+          exec "$TH_SMOKE_APPIMAGE" --appimage-extract-and-run "$@"
+          SH
+          chmod +x "$TH_APPIMAGE_SMOKE/token-horizon"
+          # AppImage runs on hosts with user namespaces enabled; Debian's installed
+          # AppArmor profile was already tested against the runner's default policy.
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          TH_SMOKE_APPIMAGE="$TH_APPIMAGE_PATH" xvfb-run -a npm run smoke:desktop -- --directory "$TH_APPIMAGE_SMOKE"
+
+      - name: Checksum installers
+        run: node scripts/checksums.mjs
+
+      - name: Name platform checksum manifest
+        shell: bash
+        env:
+          DESKTOP_PLATFORM: ${{ matrix.platform }}
+          DESKTOP_ARCH: ${{ matrix.arch }}
+        run: |
+          node --input-type=module <<'JS'
+          import { renameSync } from 'node:fs'
+          const platform = process.env.DESKTOP_PLATFORM
+          const arch = process.env.DESKTOP_ARCH
+          const suffix = platform === 'win32' ? 'windows-x64' : `linux-${arch === 'x64' ? 'x86_64' : 'arm64'}`
+          renameSync(`dist/SHA256SUMS-${platform}-${arch}.txt`, `dist/TokenHorizon-${process.env.MARKETING_VERSION}-${suffix}.sha256`)
+          JS
+
+      - name: Upload reviewable installers
+        uses: actions/upload-artifact@v4
+        with:
+          name: TokenHorizon-${{ needs.prepare.outputs.version }}-${{ matrix.platform }}-${{ matrix.arch }}
+          if-no-files-found: error
+          retention-days: 14
+          path: |
+            clients/app/dist/*.AppImage
+            clients/app/dist/*.deb
+            clients/app/dist/*-setup.exe
+            clients/app/dist/*.blockmap
+            clients/app/dist/TokenHorizon-*.sha256
+            clients/app/resources/daemon/build-info.json
+
+  publish:
+    needs: [prepare, package]
+    if: needs.prepare.outputs.publish == 'true'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.build_ref }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Download all three tested platform bundles
+        uses: actions/download-artifact@v4
+        with:
+          pattern: TokenHorizon-${{ needs.prepare.outputs.version }}-*
+          path: desktop-artifacts
+          merge-multiple: false
+
+      - name: Validate and attach installer assets to the existing release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
+          RELEASE_ID: ${{ needs.prepare.outputs.release_id }}
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+          RELEASE_COMMIT: ${{ needs.prepare.outputs.build_ref }}
+        run: |
+          node --input-type=module <<'JS'
+          import assert from 'node:assert/strict'
+          import { execFileSync } from 'node:child_process'
+          import { createHash } from 'node:crypto'
+          import { readFileSync, statSync } from 'node:fs'
+          import { join } from 'node:path'
+          const repository = process.env.GITHUB_REPOSITORY
+          const tag = process.env.RELEASE_TAG
+          const version = process.env.RELEASE_VERSION
+          const commit = process.env.RELEASE_COMMIT
+          const api = (path) => JSON.parse(execFileSync('gh', ['api', path], { encoding: 'utf8' }))
+          assert.match(tag, /^v\d+\.\d+\.\d+$/)
+          assert.equal(tag, `v${version}`)
+          assert.equal(execFileSync('git', ['rev-parse', `${tag}^{commit}`], { encoding: 'utf8' }).trim(), commit, 'Release tag moved while desktop builds were running')
+          const release = api(`repos/${repository}/releases/tags/${tag}`)
+          assert.equal(String(release.id), process.env.RELEASE_ID, 'Release was replaced while builds were running')
+          assert.equal(release.tag_name, tag)
+          assert.equal(release.draft, false)
+          assert.equal(release.prerelease, false)
+          assert.ok(release.published_at)
+          assert.ok(!release.immutable, 'Published immutable releases cannot receive new assets')
+          const prefix = `TokenHorizon-${version}`
+          const bundles = [
+            { platform: 'linux', arch: 'x64', suffix: 'linux-x86_64', files: [`${prefix}-linux-x86_64.AppImage`, `${prefix}-linux-amd64.deb`] },
+            { platform: 'linux', arch: 'arm64', suffix: 'linux-arm64', files: [`${prefix}-linux-arm64.AppImage`, `${prefix}-linux-arm64.deb`] },
+            { platform: 'win32', arch: 'x64', suffix: 'windows-x64', files: [`${prefix}-windows-x64-setup.exe`] },
+          ]
+          const assets = []
+          const hash = (bytes) => createHash('sha256').update(bytes).digest('hex')
+          for (const bundle of bundles) {
+            const directory = join('desktop-artifacts', `${prefix}-${bundle.platform}-${bundle.arch}`)
+            const info = JSON.parse(readFileSync(join(directory, 'resources/daemon/build-info.json'), 'utf8'))
+            assert.equal(info.version, version)
+            assert.equal(info.commit, commit.slice(0, 12))
+            assert.equal(info.platform, bundle.platform)
+            assert.equal(info.arch, bundle.arch)
+            assert.match(info.sha256, /^[a-f0-9]{64}$/)
+            assert.ok(Number.isFinite(Date.parse(info.built_at)))
+            const checksumName = `${prefix}-${bundle.suffix}.sha256`
+            const checksumPath = join(directory, 'dist', checksumName)
+            const checksumBytes = readFileSync(checksumPath)
+            const recorded = new Map(checksumBytes.toString('utf8').trim().split(/\r?\n/).map((line) => {
+              const match = line.match(/^([a-f0-9]{64})  ([A-Za-z0-9._-]+)$/)
+              assert.ok(match, 'Invalid checksum manifest line')
+              return [match[2], match[1]]
+            }))
+            assert.deepEqual([...recorded.keys()].sort(), [...bundle.files].sort(), 'Checksum manifest contains unexpected assets')
+            for (const name of bundle.files) {
+              const path = join(directory, 'dist', name)
+              assert.ok(statSync(path).isFile())
+              const bytes = readFileSync(path)
+              assert.ok(bytes.length > 0)
+              if (name.endsWith('.deb')) assert.equal(bytes.toString('ascii', 0, 8), '!<arch>\n', 'Debian asset is not a package')
+              else if (name.endsWith('.exe')) assert.equal(bytes.toString('ascii', 0, 2), 'MZ', 'Windows asset is not an executable installer')
+              else {
+                assert.deepEqual(bytes.subarray(0, 4), Buffer.from([0x7f, 0x45, 0x4c, 0x46]), 'AppImage asset is not executable ELF')
+                assert.deepEqual(bytes.subarray(8, 11), Buffer.from([0x41, 0x49, 0x02]), 'AppImage asset is not a type-2 AppImage')
+              }
+              const digest = hash(bytes)
+              assert.equal(digest, recorded.get(name), `Checksum mismatch: ${name}`)
+              assets.push({ name, path, digest: `sha256:${digest}` })
+            }
+            assets.push({ name: checksumName, path: checksumPath, digest: `sha256:${hash(checksumBytes)}` })
+          }
+          // Check every existing asset before uploading any file. Never delete or replace
+          // an existing installer; retrying this upload job can safely skip exact matches.
+          const existing = api(`repos/${repository}/releases/${release.id}/assets?per_page=100`)
+          const pending = assets.filter((asset) => {
+            const found = existing.find((candidate) => candidate.name === asset.name)
+            if (!found) return true
+            assert.equal(found.digest, asset.digest, `Existing release asset differs: ${asset.name}; publish a new version instead of replacing it`)
+            console.log(`Already published with matching digest: ${asset.name}`)
+            return false
+          })
+          for (const asset of pending) {
+            execFileSync('gh', ['release', 'upload', tag, asset.path, '--repo', repository], { stdio: 'inherit' })
+          }
+          // Uploading assets does not create/edit releases, change notes, or promote an
+          // older tag to latest. macOS release.yml remains the single release owner.
+          JS

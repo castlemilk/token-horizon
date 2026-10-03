@@ -1,350 +1,116 @@
-# Electron React App
+# Token Horizon desktop
 
-A modern Electron starter kit with React, Vite, TypeScript, and TailwindCSS — built
-around **[electron-conveyor](https://github.com/guasam/electron-conveyor)** for type-safe IPC and
-cross-window state.
+The Electron desktop app runs on Linux and Windows with the portable Go core bundled in the installer. It opens a desktop dashboard for AI usage, costs, provider limits, and system activity. No separate daemon installation or Go runtime is needed on the destination machine.
 
-<br />
+| Platform | Architecture | Package                        |
+| -------- | ------------ | ------------------------------ |
+| Linux    | x64, arm64   | AppImage and Debian `.deb`     |
+| Windows  | x64          | Per-user NSIS `.exe` installer |
 
-<p align="center">
-    <img src="app/assets/era-conveyor.webp" target="_blank" />
-</p>
+The `Desktop Linux and Windows` GitHub Actions workflow builds installers on native Linux x64/arm64 and Windows x64 runners. It installs the Debian package or per-user NSIS installer, then smoke-tests the installed desktop app and AppImage launcher. Review artifacts contain installers, SHA-256 checksums, and the daemon build manifest. The macOS release workflow calls this pipeline for the same version tag; after all native checks pass, it attaches the desktop installers and versioned checksums to the existing full release. Manual dispatch can backfill a mutable release with `release_tag` and `publish: true`; the default only creates review artifacts. Automatic updates are not configured. Windows installers are currently unsigned.
 
-<br />
+## Install and run
 
-<p align="center">
+Choose your operating system and package on the [website download section](https://token-horizon.dev/#install). It links directly to the latest published installer for that target. If a target has not been published yet, use a successful review artifact for your OS and architecture from the workflow run, then extract its ZIP.
 
-![Electron](https://img.shields.io/badge/v43.5.1-Electron-blue) &nbsp;
-![React](https://img.shields.io/badge/v19.2.8-React-blue) &nbsp;
-![TypeScript](https://img.shields.io/badge/v6.0.3-TypeScript-blue) &nbsp;
-![Vite](https://img.shields.io/badge/v7.3.6-Vite-blue) &nbsp;
-![Shadcn](https://img.shields.io/badge/Shadcn-UI-blue) &nbsp;
-![Tailwind](https://img.shields.io/badge/v4.3.3-Tailwind-blue) &nbsp;
-![Conveyor](https://img.shields.io/badge/v0.4.0-Conveyor-ff5c3a)
+For Linux AppImage, make the file executable and launch it:
 
-</p>
-
-<br />
-
-## Stack
-
-🔹 **[Electron](https://www.electronjs.org)** - Cross-platform desktop application framework.<br />
-🔹 **[React](https://react.dev)** - The library for web and native user interfaces.<br />
-🔹 **[electron-conveyor](https://github.com/guasam/electron-conveyor)** - Type-safe IPC + cross-window state.<br />
-🔹 **[TypeScript](https://www.typescriptlang.org)** - Type-safe JavaScript.<br />
-🔹 **[Shadcn UI](https://ui.shadcn.com)** - Beautiful and accessible component library.<br />
-🔹 **[TailwindCSS](https://tailwindcss.com)** - Utility-first CSS framework.<br />
-🔹 **[Electron Vite](https://electron-vite.org)** - Lightning-fast build tool based on **Vite** for fastest hot-reload.<br />
-🔹 **[Electron Builder](https://www.electron.build/index.html)** - Configured for packaging applications.<br />
-
-<br />
-
-## In-Built Features
-
-| Feature                     | Description                                                                    |
-| --------------------------- | ------------------------------------------------------------------------------ |
-| **Conveyor**                | Type-safe IPC: queries, commands, streams, events — end-to-end inference       |
-| **Cross-Window Stores**     | Main-owned state synced live across every window, with opt-in persistence      |
-| **Demo Branch**             | Live playground of every primitive on the `demo` branch, main stays minimal    |
-| **Sandboxed Renderer**      | `sandbox: true` out of the box — the conveyor preload is sandbox-compatible    |
-| **Custom Titlebar & Menus** | Style the window titlebar and menus as you want                                |
-| **Clean Project Structure** | Separation of main and renderer processes                                      |
-| **Resources Protocol**      | Access local file resources via `res://` protocol                              |
-| **Import Path Aliases**     | Keep your imports organized and clean                                          |
-| **Theme Switcher**          | Built-in theme switching for dark and light mode                               |
-| **Error Boundary**          | Built-in React error boundary with detailed error reporting                    |
-| **Code Formatting**         | Prettier and ESLint pre-configured for code quality                            |
-| **Hot Reload**              | Lightning-fast development with Vite's HMR                                     |
-| **VS Code Debugging**       | Pre-configured launch configurations for debugging main and renderer processes |
-
-<br />
-
-## Installation
-
-```bash
-# Clone the repository
-git clone https://github.com/guasam/electron-react-app
-
-# Change directory
-cd electron-react-app
-
-# Install dependencies (use any package manager: npm, yarn, pnpm, bun)
-npm install
+```sh
+chmod +x TokenHorizon-0.3.12-linux-x86_64.AppImage
+./TokenHorizon-0.3.12-linux-x86_64.AppImage
 ```
 
-<br />
+AppImage requires a desktop session, FUSE 2 support, and Chromium user-namespace sandbox support. On Ubuntu 24.04, install `libfuse2t64` if it is missing. On desktops that restrict user namespaces, use the `.deb` package: its installer also configures the bundled AppArmor profile and sandbox helper.
 
-## Development
-
-```bash
-npm run dev
+```sh
+sudo apt install ./TokenHorizon-0.3.12-linux-amd64.deb
+token-horizon
 ```
 
-This starts Electron with hot-reload. `main` is deliberately minimal — a themed window frame,
-titlebar, menus, and the typed IPC layer — so you can start building your app on top of it
-immediately.
+Use the `arm64` artifacts on ARM Linux machines. For Windows, run `TokenHorizon-0.3.12-windows-x64-setup.exe`, choose the install folder, then open **Token Horizon** from the Start menu or desktop shortcut. Installation is per user and does not require administrator access.
 
-### Removing the welcome screen
+The app starts its bundled core on `127.0.0.1:8765`. If a compatible core already serves that port, it attaches to that core. Closing the app stops only the core it started; an independently running service remains available. An unrelated listener on port 8765 produces a startup error. The dashboard connection indicator and `GET /health` expose the running core version and build stamp.
 
-The window opens on a short tour of the stack. It is the one piece meant to be thrown away, and it
-is built so that costs nothing: it lives entirely in `app/components/welcome`, nothing else imports
-it, and it adds no IPC modules of its own.
+The Go core keeps data in `~/.config/token-horizon/` on Linux and `%USERPROFILE%\.config\token-horizon\` on Windows. `XDG_CONFIG_HOME` changes the config parent; `TH_CONFIG_DIR` selects an explicit directory. Desktop window preferences use Electron's separate user-data directory.
 
-```bash
-rm -rf app/components/welcome
-```
+## Usage capture setup
 
-Then drop the `<Welcome />` line and its import from `app/app.tsx`. What's left is an empty window
-with the shell still around it, ready for your app.
+A fresh installation starts in **point** capture mode. It records requests routed through consented local meters. Until a meter is configured, the activity view can be empty. Provider file scanning requires a separate opt-in.
 
-### Try the demo
+Quit Token Horizon before editing configuration. Use the config directory above and preserve any existing keys when updating these files. Restart the app after changes.
 
-Want to see everything the stack can do first? The **`demo`** branch is an interactive
-playground of every IPC primitive (cross-window state, streaming, background tasks, middleware),
-with the real source behind each demo:
+To capture OpenAI-compatible requests through the OpenAI meter, set these fields in `settings.json`:
 
-```bash
-git switch demo
-npm install
-npm run dev
-```
-
-Switch back to `main` (and re-run `npm install`) when you're ready to build.
-
-<br />
-
-## Conveyor — Inter-Process Communication
-
-IPC is powered by [electron-conveyor](https://github.com/guasam/electron-conveyor).
-One definition in main is the single source of truth for a feature; the renderer client is
-**inferred** from it — no channel strings, no hand-written API classes, no query keys.
-
-Five primitives:
-
-| You want…                            | Use           | Renderer side                        |
-| ------------------------------------ | ------------- | ------------------------------------ |
-| Read something from main             | `query()`     | `await it()`, or `.useQuery()`       |
-| Tell main to do something            | `command()`   | `await it()`, or `.useMutation()`    |
-| Chunks pushed as they're produced    | `stream()`    | `for await`, or `.useStream()`       |
-| Main pushing to the renderer         | `event()`     | `.subscribe(cb)`, or `.useEvent(cb)` |
-| State shared live across all windows | `defineStore` | `useConveyorStore(def)`              |
-
-### Adding a feature (two edits)
-
-**1. Define the module** in `conveyor/modules/`:
-
-```ts
-// conveyor/modules/notes.ts — runs in MAIN only
-import { z } from 'zod'
-import { defineModule, query, command } from '../init'
-
-export const notesModule = defineModule({
-  list: query(() => readNotes()),
-
-  // input crosses the trust boundary → schema required, validated on every call
-  save: command(z.object({ title: z.string(), body: z.string() }), ({ input }) => saveNote(input)),
-})
-```
-
-**2. Register it** in `conveyor/router.ts`:
-
-```ts
-export const router = createRouter(
-  {
-    window: windowModule,
-    web: webModule,
-    notes: notesModule, // ← the key becomes the module id
-  },
-  { createContext, use: [devLogger] }
-)
-```
-
-Done — the renderer client already knows it, fully typed:
-
-```tsx
-import { conveyor } from '@/conveyor/client'
-
-function Notes() {
-  const notes = conveyor.notes.list.useQuery() // key derived from the path — never hand-written
-  const save = conveyor.notes.save.useMutation({
-    onSuccess: () => conveyor.notes.list.invalidate(),
-  })
-
-  return <button onClick={() => save.mutate({ title: 'Hi', body: '...' })}>Save</button>
+```json
+{
+  "captureMethodology": "point",
+  "meterToggles": { "openai": true }
 }
 ```
 
-Outside React, every member is a plain typed call: `await conveyor.notes.list()`.
+Grant only the meter scope in `consents.json`:
 
-### Handler context
-
-Every handler receives `ctx`: the calling `window` and `sender`, plus the app context defined in
-`conveyor/init.ts` (this starter kit provides `appStartedAt`, the `windows` manager, and
-`openWindow`). Middleware can guard and widen it:
-
-```ts
-const authed = command.use(requireUser) // a reusable guarded base
-export const account = defineModule({
-  delete: authed(({ ctx }) => deleteAccount(ctx.user.id)),
-})
+```json
+{
+  "metering": { "granted": true, "version": 1 }
+}
 ```
 
-### Streams (LLM-style)
+Set the client or SDK's OpenAI base URL to `http://127.0.0.1:9242/v1`. Keep its normal provider credentials in the client. Only traffic sent through that meter is counted. Other supported providers have their own deterministic meter ports; the running core exposes them at `GET /meters`.
 
-```ts
-// main
-respond: stream(z.string(), async function* ({ input, signal }) {
-  for await (const token of llm.complete(input)) {
-    if (signal.aborted) return
-    yield token
-  }
-})
+To count supported local provider session files instead, set `captureMethodology` to `files` in `settings.json` and grant the file scope in `consents.json`:
 
-// renderer
-for await (const token of conveyor.stream.respond(prompt)) append(token)
+```json
+{
+  "fileReading": { "granted": true, "version": 1 }
+}
 ```
 
-### Events (main → renderer push)
+Files mode uses provider-reported usage in discovered local CLI histories and does not start request meters. Only providers installed on that machine contribute history. This portable dashboard does not include the native macOS notch or WidgetKit extension. The Workflows and Infra tabs require the optional workflow service on port 8766; its absence does not prevent usage and limits from loading.
 
-```ts
-// main — typed emitters per window or fan-out via the window manager
-const emit = createEmitter(windowModule, win)
-win.on('focus', () => emit.onFocusChange(true))
+## Develop
 
-// renderer
-conveyor.window.onFocusChange.useEvent(setFocused)
+Install Node.js 24+, Go matching `daemons/go/go.mod`, and Git. From this directory:
+
+```sh
+npm ci
+npm run dev
 ```
 
-### Cross-window stores
+Development builds the daemon for the host OS and architecture, then starts Electron with hot reload. The generated executable lives in `resources/daemon/`; it is ignored by Git. `TOKEN_HORIZON_DAEMON_BIN` can point to a development core executable.
 
-```ts
-// conveyor/stores/shared.ts — pure, imported by BOTH processes
-export const sharedStore = defineStore('shared', {
-  state: { count: 0, notes: [] as string[] },
-  schemas: { add: z.string() }, // payloads validated in main; types flow from the schema
-  actions: {
-    add: (s, note) => {
-      s.notes.push(note)
-    },
-    increment: (s) => {
-      s.count += 1
-    },
-  },
-  persist: true, // survives restarts (JSON under userData)
-})
+For browser-only UI work, `npm run dev:web` starts Vite and `npm run build:web` emits the browser bundle. Browser mode expects a separately running core on port 8765.
 
-// renderer — feels local, synced across every window
-const count = useConveyorStore(sharedStore, (s) => s.count)
-const { add, increment } = useConveyorActions(sharedStore)
-```
+## Build installers
 
-### Errors
+Build on the target OS. The packaging script builds the Go core with `CGO_ENABLED=0`, stamps the desktop version, Git commit, and UTC build time, then builds Electron. It validates the daemon executable architecture and SHA-256 in the actual packaged resources before generating installers.
 
-Failures re-throw in the renderer as `ConveyorError` with a stable `code` — including custom codes
-thrown by your handlers (`throw new ConveyorError('LOCKED', '...')`). Branch on `err.code`, never
-on message strings. See the `demo` branch's **Middleware** page for a working example.
+```sh
+# Linux x64 or arm64, selected explicitly
+npm run build:linux -- --arch x64
+npm run build:linux -- --arch arm64
 
-📖 **Full API documentation: [electron-conveyor](https://github.com/guasam/electron-conveyor)**
-
-<br />
-
-## Custom Window Components
-
-This starter kit includes a custom window implementation with:
-
-- Custom titlebar with app icon
-- Window control buttons (minimize, maximize, close)
-- Menu system with keyboard shortcuts
-- Dark/light mode toggle
-- Cross-platform support for Windows and macOS
-
-<br />
-
-### Titlebar Menu Toggle
-
-The titlebar menu can be toggled using:
-
-- **Windows**: Press the `Alt` key
-- **macOS**: Press the `Option (⌥)` key
-
-When you press the toggle key:
-
-- If the menu is hidden, it becomes visible
-- If the menu is already visible, it gets hidden
-- The menu only toggles if menu items are available
-
-<br />
-
-### Customizing Menu Items
-
-To add, remove or modify menu items, update the following file:
-
-- `app/shell/menu.ts`
-
-<br />
-
-## Key Directories Explained
-
-#### `app/` - Renderer Process
-
-- **React application** that runs in the browser window
-- `app/shell/` — titlebar, menus, window frame, theme
-
-#### `conveyor/` - The IPC Surface
-
-- `conveyor/init.ts` — authoring primitives bound to the app's context
-- `conveyor/modules/` — feature modules (**main-process only**; the renderer imports only `type AppRouter`)
-- `conveyor/router.ts` — the single registration point (modules, stores, middleware, context)
-- `conveyor/client.ts` — the typed renderer client with hooks
-
-#### `lib/main/` - Main Process
-
-- Window creation (`app.ts`, with the window manager), app lifecycle, `res://` protocol
-
-#### `lib/preload/` - Preload Script
-
-- Two lines: expose the conveyor bridge. It never changes as your API grows, and it is
-  sandbox-compatible — the renderer runs with `sandbox: true`
-
-<br />
-
-## Path Aliases
-
-```ts
-import { Button } from '@/app/components/ui/button'
-import { conveyor } from '@/conveyor/client'
-```
-
-- `@/app/` → `app/` (renderer)
-- `@/lib/` → `lib/` (main + preload)
-- `@/conveyor/` → `conveyor/` (the IPC surface)
-- `@/resources/` → `resources/` (build resources)
-
-<br />
-
-## Development Workflow
-
-1. **UI Development**: Work in `app/` with React components
-2. **IPC**: Add a module in `conveyor/modules/`, register it in `conveyor/router.ts`
-3. **Window Features**: Customize the shell in `app/shell/`
-4. **Checks**: `npm run typecheck`, `npm run lint`, `npm run format`
-
-<br />
-
-## Building for Production
-
-```bash
-# For Windows
+# Windows x64, on Windows
 npm run build:win
 
-# For macOS
-npm run build:mac
-
-# For Linux
-npm run build:linux
-
-# Unpacked for all platforms
+# Unpacked app for the native host
 npm run build:unpack
 ```
 
-Distribution files will be located in the `dist` directory.
+Output is under `dist/`. The shipped core is outside ASAR at `resources/daemon/token-horizon-daemon` on Linux and `resources/daemon/token-horizon-daemon.exe` on Windows. Do not package multiple architectures concurrently in one checkout: each build replaces the generated daemon with its target binary.
+
+`MARKETING_VERSION` overrides the package version for both installer metadata and the daemon's health stamp. Keep the package version and lockfile root version aligned with the native app version when preparing a future release. The existing macOS Swift app continues to use `scripts/make-app.sh`; `npm run build:mac` is available for Electron development packaging.
+
+## Verify
+
+```sh
+npm run typecheck
+npm run test:desktop
+npm run build:unpack
+npm run smoke:desktop
+node scripts/checksums.mjs
+```
+
+The smoke test runs on native Linux or Windows, requires port 8765 to be free, and launches the desktop executable with temporary configuration. It defaults to the unpacked build directory; pass `-- --directory` to check an installed app instead. CI installs the `.deb` with `apt` and the NSIS installer silently for the current user, then verifies the installed core build, rendered dashboard, preload bridge, API connection, and shutdown of the owned core. On a headless Linux runner use `xvfb-run -a npm run smoke:desktop -- --directory '/opt/Token Horizon'`. Generate checksums after building installers; an unpacked-only build has no installers to hash.
+
+Source areas: `app/` contains the React dashboard, `lib/main/` owns desktop lifecycle and daemon supervision, `conveyor/` defines typed IPC, `scripts/` handles portable packaging and smoke tests, and `../../daemons/go/` implements the cross-platform core.

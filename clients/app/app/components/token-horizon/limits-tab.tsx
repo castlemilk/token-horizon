@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react'
-import { StatsResponse, WeeklyResetRow } from './types'
+import { ProviderLimit, StatsResponse } from './types'
+import { fetchJSON, limitRows } from './api'
 import { ShieldCheck, Clock } from 'lucide-react'
 
 interface LimitsTabProps {
@@ -7,27 +8,31 @@ interface LimitsTabProps {
   stats: StatsResponse | null
 }
 
-export const LimitsTab: React.FC<LimitsTabProps> = ({ serverUrl }) => {
-  const [weeklyResets, setWeeklyResets] = useState<WeeklyResetRow[]>([])
+export const LimitsTab: React.FC<LimitsTabProps> = ({ serverUrl, stats }) => {
+  const [limits, setLimits] = useState<ProviderLimit[] | null>(null)
+  const [status, setStatus] = useState<'loading' | 'ready' | 'unavailable'>('loading')
+  const rows = limitRows(limits ?? stats?.usage.limits ?? [])
 
   useEffect(() => {
+    const controller = new AbortController()
     const fetchLimits = async () => {
       try {
-        const res = await fetch(`${serverUrl}/limits`)
-        if (res.ok) {
-          const data = await res.json()
-          if (data.weeklyResets) {
-            setWeeklyResets(data.weeklyResets)
-          }
+        const data = await fetchJSON<{ limits?: ProviderLimit[] }>(`${serverUrl}/limits`, controller.signal)
+        if (!controller.signal.aborted) {
+          setLimits(data.limits ?? [])
+          setStatus('ready')
         }
       } catch {
-        // ignore
+        if (!controller.signal.aborted) setStatus('unavailable')
       }
     }
 
     fetchLimits()
     const interval = setInterval(fetchLimits, 5000)
-    return () => clearInterval(interval)
+    return () => {
+      controller.abort()
+      clearInterval(interval)
+    }
   }, [serverUrl])
 
   return (
@@ -37,12 +42,8 @@ export const LimitsTab: React.FC<LimitsTabProps> = ({ serverUrl }) => {
         <div className="flex items-center gap-2.5">
           <ShieldCheck className="w-5 h-5 text-sky-400" />
           <div>
-            <span className="font-bold text-sm text-zinc-100 uppercase tracking-wide">
-              Plan Limits & Weekly Refresh Maximizer
-            </span>
-            <p className="text-xs text-zinc-400">
-              Track quota windows and prioritize tokens resetting soonest across multi-account profiles.
-            </p>
+            <span className="font-bold text-sm text-zinc-100 uppercase tracking-wide">Plan Limits & Quota Windows</span>
+            <p className="text-xs text-zinc-400">Track available provider quota windows and their next reset.</p>
           </div>
         </div>
       </div>
@@ -51,18 +52,24 @@ export const LimitsTab: React.FC<LimitsTabProps> = ({ serverUrl }) => {
       <div className="border border-zinc-800 rounded-xl overflow-hidden bg-zinc-950/60">
         <div className="grid grid-cols-6 gap-2 px-4 py-2.5 bg-zinc-900/80 text-[10px] font-mono font-bold uppercase tracking-wider text-zinc-400 border-b border-zinc-800">
           <div>Provider / Profile</div>
-          <div>Burst (5h)</div>
-          <div>Weekly Headroom</div>
+          <div>Window / Usage</div>
+          <div>Remaining</div>
           <div>Resets In</div>
           <div>Local Refresh</div>
           <div className="text-right">Priority</div>
         </div>
 
         <div className="divide-y divide-zinc-900 font-mono text-xs">
-          {weeklyResets.length === 0 ? (
-            <div className="py-8 text-center text-zinc-500 italic">Loading limits and quota windows...</div>
+          {rows.length === 0 ? (
+            <div role="status" className="py-8 px-4 text-center text-zinc-500">
+              {status === 'loading'
+                ? 'Loading limits and quota windows…'
+                : status === 'unavailable'
+                  ? 'The local service is unavailable. Quota windows will refresh when it reconnects.'
+                  : 'No quota windows reported yet. Provider limits appear when credentials are available.'}
+            </div>
           ) : (
-            weeklyResets.map((row, idx) => {
+            rows.map((row, idx) => {
               const used = row.usedPercent
               const remaining = row.remainingPercent
 
@@ -77,15 +84,18 @@ export const LimitsTab: React.FC<LimitsTabProps> = ({ serverUrl }) => {
                     <span className="text-[10px] text-zinc-500 truncate">{row.detail || row.label}</span>
                   </div>
 
-                  {/* Burst (5h) */}
-                  <div className="flex items-center gap-2">
-                    <div className="flex-1 h-1.5 rounded-full bg-zinc-800 overflow-hidden">
-                      <div className="h-full bg-sky-500 transition-all" style={{ width: `${Math.min(100, used)}%` }} />
+                  {/* The reported window and its actual usage */}
+                  <div className="flex flex-col gap-1">
+                    <span className="text-[10px] text-zinc-400">{row.label}</span>
+                    <div className="flex items-center gap-2">
+                      <div className="flex-1 h-1.5 rounded-full bg-zinc-800 overflow-hidden">
+                        <div className="h-full bg-sky-500 transition-all" style={{ width: `${used}%` }} />
+                      </div>
+                      <span className="text-[11px] text-zinc-300 font-bold">{used}%</span>
                     </div>
-                    <span className="text-[11px] text-zinc-300 font-bold">{used}%</span>
                   </div>
 
-                  {/* Weekly Headroom */}
+                  {/* Remaining headroom */}
                   <div className="flex items-center gap-2">
                     <div className="flex-1 h-1.5 rounded-full bg-zinc-800 overflow-hidden">
                       <div

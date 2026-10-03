@@ -87,6 +87,7 @@ func (a *apiServer) mux() *http.ServeMux {
 		writeJSON(w, 200, map[string]any{
 			"ok": true, "name": "token-horizon-daemon", "platform": platform.Name(),
 			"version": platform.Version(), "usage_store": a.store != nil,
+			"build":      platform.Build(),
 			"machine_id": platform.MachineID(), "machine_alias": platform.MachineAlias(),
 			"methodology": platform.LoadSettings().Methodology(),
 			"uptime_s":    int64(time.Since(a.start).Seconds()),
@@ -477,14 +478,13 @@ func (a *apiServer) mux() *http.ServeMux {
 	return mux
 }
 
-// listen tries the loopback port range (8765-8784), same as the Swift
-// daemon and the MITM addon's probe range.
+// listen binds exactly the configured loopback port. Desktop clients share
+// :8765; falling back to another port creates divergent stores and hides a
+// conflicting process from the desktop supervisor.
 func listen(preferred int) (net.Listener, int, error) {
-	for p := preferred; p < preferred+20; p++ {
-		ln, err := net.Listen("tcp", "127.0.0.1:"+strconv.Itoa(p))
-		if err == nil {
-			return ln, p, nil
-		}
+	ln, err := net.Listen("tcp", "127.0.0.1:"+strconv.Itoa(preferred))
+	if err != nil {
+		return nil, 0, err
 	}
-	return nil, 0, &net.OpError{Op: "listen", Err: strconv.ErrSyntax}
+	return ln, ln.Addr().(*net.TCPAddr).Port, nil
 }

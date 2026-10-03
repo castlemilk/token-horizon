@@ -1,15 +1,19 @@
 {
   "name": "token-horizon-ui",
-  "version": "13.0.0",
-  "description": "Token Horizon cross-platform notch popout and agent workflow canvas",
+  "version": "0.3.12",
+  "description": "Token Horizon desktop AI usage, plan limits, and machine observability",
+  "desktopName": "dev.token-horizon.desktop.desktop",
   "main": "./out/main/main.js",
   "license": "MIT",
+  "engines": {
+    "node": ">=24"
+  },
   "author": {
-    "name": "Guasam",
-    "url": "https://github.com/guasam"
+    "name": "Token Horizon",
+    "url": "https://github.com/castlemilk/token-horizon"
   },
   "scripts": {
-    "dev": "cross-env ELECTRON_DISABLE_SANDBOX=1 electron-vite dev -w",
+    "dev": "npm run build:daemon && electron-vite dev -w",
     "dev:web": "vite dev -c vite.web.config.ts",
     "build:web": "vite build -c vite.web.config.ts",
     "preview:web": "vite preview -c vite.web.config.ts",
@@ -17,22 +21,25 @@
     "format:check": "prettier --check .",
     "lint": "eslint . --ext .ts,.tsx --fix",
     "lint:check": "eslint . --ext .ts,.tsx",
-    "start": "electron-vite preview",
+    "start": "npm run build:daemon && electron-vite preview",
     "postinstall": "electron-builder install-app-deps",
     "vite:build:app": "electron-vite build",
-    "electron:build:win": "electron-builder --win",
-    "electron:build:mac": "electron-builder --mac",
-    "electron:build:linux": "electron-builder --linux",
-    "electron:build:dir": "electron-builder --dir",
-    "build:unpack": "npm run vite:build:app && npm run electron:build:dir",
-    "build:win": "npm run vite:build:app && npm run electron:build:win",
-    "build:mac": "npm run vite:build:app && npm run electron:build:mac",
-    "build:linux": "npm run vite:build:app && npm run electron:build:linux",
+    "build:daemon": "node scripts/build-daemon.mjs",
+    "electron:build:win": "npm run build:win",
+    "electron:build:mac": "npm run build:mac",
+    "electron:build:linux": "npm run build:linux",
+    "electron:build:dir": "npm run build:unpack",
+    "build:unpack": "node scripts/package-desktop.mjs --unpacked",
+    "build:win": "node scripts/package-desktop.mjs --platform win32 --arch x64",
+    "build:mac": "node scripts/package-desktop.mjs --platform darwin",
+    "build:linux": "node scripts/package-desktop.mjs --platform linux",
+    "test:desktop": "node scripts/test-desktop.mjs",
+    "smoke:desktop": "node scripts/smoke-desktop.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json"
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/guasam/electron-react-app"
+    "url": "https://github.com/castlemilk/token-horizon"
   },
   "pnpm": {
     "onlyBuiltDependencies": [

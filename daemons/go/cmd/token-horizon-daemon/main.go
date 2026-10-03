@@ -5,10 +5,15 @@ package main
 // same loopback API contract as the Swift daemon it replaces at parity.
 
 import (
+	"context"
 	"flag"
 	"github.com/castlemilk/token-horizon/daemons/go/internal/api"
 	"github.com/castlemilk/token-horizon/daemons/go/internal/platform"
+	"io"
 	"log"
+	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/castlemilk/token-horizon/daemons/go/internal/capture/files"
@@ -23,17 +28,31 @@ import (
 )
 
 func main() {
-	port := flag.Int("port", 8765, "first loopback port to try (next 19 on conflict)")
+	if err := run(); err != nil {
+		log.Printf("token-horizon-daemon: %v", err)
+		os.Exit(1)
+	}
+}
+
+func run() error {
+	port := flag.Int("port", 8765, "loopback API port (fails if occupied)")
+	desktop := flag.Bool("desktop", false, "exit when the owning desktop app closes stdin")
 	flag.Parse()
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+	if *desktop {
+		go cancelOnEOF(ctx, os.Stdin, cancel)
+	}
 
 	daemon, err := api.New()
 	if err != nil {
-		panic(err)
+		return err
 	}
 
 	// Point-mode capture (consent + methodology gated inside the registry;
 	// files methodology starts no meters — the scanners count there).
 	meters := meter.NewRegistry(daemon.Store, func() { daemon.Syncer.NoteActivity(daemon.Store) })
+	defer meters.Stop()
 	meters.StartFromEnv()
 	meters.StartFromToggles()
 
@@ -117,5 +136,14 @@ func main() {
 	defer engineMgr.Shutdown()
 	daemon.Engine = engineMgr
 
-	daemon.Run(*port, meters)
+	return daemon.RunContext(ctx, *port, meters)
+}
+
+// The pipe is a portable ownership signal: closing it works on Windows,
+// where SIGTERM cannot run Go cleanup, and parent crashes also deliver EOF.
+func cancelOnEOF(ctx context.Context, input io.Reader, cancel context.CancelFunc) {
+	_, _ = io.Copy(io.Discard, input)
+	if ctx.Err() == nil {
+		cancel()
+	}
 }

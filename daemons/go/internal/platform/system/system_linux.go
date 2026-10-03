@@ -226,7 +226,7 @@ func psSamples() []ProcSample {
 	if _, err := os.Stat(ps); err != nil {
 		ps = "/usr/bin/ps"
 	}
-	out, err := exec.Command(ps, "-axo", "pid=,ppid=,nlwp=,%cpu=,rss=,etime=,user=,comm=").Output()
+	out, err := exec.Command(ps, "-axo", "pid=,ppid=,nlwp=,%cpu=,rss=,etime=,user=,comm=,args=").Output()
 	if err != nil {
 		return nil
 	}
@@ -234,7 +234,7 @@ func psSamples() []ProcSample {
 	var samples []ProcSample
 	for _, line := range strings.Split(string(out), "\n") {
 		f := strings.Fields(line)
-		if len(f) < 8 {
+		if len(f) < 9 {
 			continue
 		}
 		pid64, err := strconv.ParseInt(f[0], 10, 32)
@@ -246,8 +246,8 @@ func psSamples() []ProcSample {
 		cpu, _ := strconv.ParseFloat(f[3], 64)
 		rssKB, _ := strconv.ParseFloat(f[4], 64)
 		elapsed := parseElapsed(f[5])
-		command := strings.Join(f[7:], " ")
-		name := command
+		command := strings.Join(f[8:], " ")
+		name := f[7]
 		if i := strings.LastIndex(name, "/"); i >= 0 {
 			name = name[i+1:]
 		}

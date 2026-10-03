@@ -7,6 +7,7 @@ package system
 
 import (
 	"os"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -63,12 +64,12 @@ func parseElapsed(s string) float64 {
 		days, _ = strconv.ParseFloat(rest[:dash], 64)
 		rest = rest[dash+1:]
 	}
-	seconds := days * 86_400
+	seconds := 0.0
 	for _, p := range strings.Split(rest, ":") {
 		v, _ := strconv.ParseFloat(p, 64)
 		seconds = seconds*60 + v
 	}
-	return seconds
+	return days*86_400 + seconds
 }
 
 // Kill terminates a process (SIGTERM default).
@@ -76,6 +77,11 @@ func Kill(pid int32, sig os.Signal) error {
 	proc, err := os.FindProcess(int(pid))
 	if err != nil {
 		return err
+	}
+	// Windows does not implement POSIX signals. Terminate the selected
+	// process through the native process handle instead.
+	if runtime.GOOS == "windows" {
+		return proc.Kill()
 	}
 	return proc.Signal(sig)
 }

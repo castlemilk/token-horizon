@@ -277,6 +277,7 @@ func (s *Supervisor) spawnServe(model, tokenizer string, maxMemoryGB, maxContext
 	args := s.backend.SpawnArgs(model, tokenizer, maxMemoryGB, maxContextK)
 
 	cmd := exec.Command(bin, args...)
+	platform.HideConsole(cmd)
 	cmd.Env = append(os.Environ(), "PYTHONDONTWRITEBYTECODE=1")
 	for k, v := range s.backend.SpawnEnv {
 		cmd.Env = append(cmd.Env, k+"="+v)

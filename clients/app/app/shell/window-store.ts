@@ -9,7 +9,13 @@ interface WindowState {
   isMaximized: boolean
   /** Whether the titlebar menu bar (File/Edit/View) is shown. Alt toggles it, like a normal window. */
   menuVisible: boolean
-  setInit: (init: { platform: string; minimizable: boolean; maximizable: boolean }) => void
+  setInit: (init: {
+    platform: string
+    minimizable: boolean
+    maximizable: boolean
+    isFocused: boolean
+    isMaximized: boolean
+  }) => void
   setFocused: (focused: boolean) => void
   setMaximized: (maximized: boolean) => void
   toggleMenu: () => void

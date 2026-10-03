@@ -8,11 +8,13 @@
     "lib/**/*",
     "conveyor/**/*",
     "resources/**/*",
-    "app/**/*"
+    "app/**/*",
+    "tests/**/*.ts"
   ],
   "compilerOptions": {
     "composite": true,
     "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
     "types": ["electron-vite/node"],
     "paths": {
       "@/*": ["./*"],

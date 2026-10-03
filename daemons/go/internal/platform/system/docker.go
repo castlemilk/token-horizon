@@ -14,6 +14,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/castlemilk/token-horizon/daemons/go/internal/platform"
 )
 
 type DockerContainerSample struct {
@@ -42,6 +44,9 @@ var dockerCache struct {
 const dockerCacheTTL = 2500 * time.Millisecond
 
 func FindDockerExecutable() string {
+	if path, err := exec.LookPath("docker"); err == nil {
+		return path
+	}
 	home, _ := os.UserHomeDir()
 	candidates := []string{
 		"/opt/homebrew/bin/docker", "/usr/local/bin/docker", "/usr/bin/docker",
@@ -53,17 +58,13 @@ func FindDockerExecutable() string {
 			return p
 		}
 	}
-	for _, dir := range strings.Split(os.Getenv("PATH"), ":") {
-		p := filepath.Join(strings.TrimSpace(dir), "docker")
-		if fi, err := os.Stat(p); err == nil && fi.Mode()&0o111 != 0 {
-			return p
-		}
-	}
 	return ""
 }
 
 func dockerRun(bin string, args ...string) []byte {
-	out, err := exec.Command(bin, args...).Output()
+	cmd := exec.Command(bin, args...)
+	platform.HideConsole(cmd)
+	out, err := cmd.Output()
 	if err != nil {
 		return nil
 	}

@@ -31,7 +31,7 @@ export function createAppWindow(hash?: string): BrowserWindow {
     backgroundColor: '#0e1011',
     icon: appIcon,
     frame: false,
-    titleBarStyle: 'hiddenInset',
+    ...(process.platform === 'darwin' ? { titleBarStyle: 'hiddenInset' as const } : {}),
     title: 'Token Horizon',
     webPreferences: {
       preload: join(__dirname, '../preload/preload.js'),

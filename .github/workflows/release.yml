@@ -22,6 +22,8 @@ concurrency:
 jobs:
   build-and-release:
     runs-on: macos-15
+    outputs:
+      release_tag: ${{ format('v{0}', steps.ver.outputs.version) }}
     # Opt-in: a push to main releases only when the head commit message
     # carries a release token — `[release]` (patch), `[release minor]`,
     # `[release major]`. Everything else (docs, WIP, ordinary fixes) lands
@@ -193,7 +195,7 @@ jobs:
           fi
 
       - name: Publish GitHub release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v2.6.2
         with:
           # Explicit tag: identical to the trigger tag on tag pushes; on
           # manual dispatch it creates vX.Y.Z at the checked-out commit.
@@ -209,6 +211,8 @@ jobs:
           # README film embeds all resolve through /releases/latest, which
           # skips prereleases. Preview status lives in the notes instead.
           prerelease: false
+          # Backfills/retries of older tags must not displace a newer full release.
+          make_latest: legacy
 
       # --- Homebrew cask: update sha256 + sync the tap -------------------------
       # The cask sha256 can only exist post-build, so the repo file is updated
@@ -272,3 +276,13 @@ jobs:
               echo "published token-horizon ${V} to castlemilk/homebrew-tap"
             fi
           fi
+
+  desktop-installers:
+    needs: build-and-release
+    if: needs.build-and-release.outputs.release_tag != ''
+    permissions:
+      contents: write
+    uses: ./.github/workflows/desktop.yml
+    with:
+      release_tag: ${{ needs.build-and-release.outputs.release_tag }}
+      publish: true

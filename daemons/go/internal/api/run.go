@@ -6,6 +6,8 @@ package api
 // cycle (meter imports core, core never imports meter).
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	rtpkg "github.com/castlemilk/token-horizon/daemons/go/internal/capture/runtime"
 	"github.com/castlemilk/token-horizon/daemons/go/internal/cloudsync"
@@ -96,7 +98,26 @@ func New() (*Daemon, error) {
 
 // Run starts capture hooks (meters passed from the cmd layer) and serves.
 func (d *Daemon) Run(port int, meters MeterRegistry) {
+	if err := d.RunContext(context.Background(), port, meters); err != nil {
+		fmt.Fprintf(os.Stderr, "token-horizon-daemon: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+// RunContext returns after cancellation so the owner can stop supervised
+// child processes. The desktop app cancels when its stdin pipe closes.
+func (d *Daemon) RunContext(ctx context.Context, port int, meters MeterRegistry) error {
 	defer d.Store.Close()
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	if ctx.Err() != nil {
+		return nil
+	}
+	ln, actual, err := listen(port)
+	if err != nil {
+		return fmt.Errorf("cannot bind 127.0.0.1:%d: %w", port, err)
+	}
+	defer ln.Close()
 
 	methodology := platform.LoadSettings().Methodology()
 	fmt.Fprintf(os.Stderr, "token-horizon-daemon %s: methodology=%s\n", platform.Version(), methodology)
@@ -114,10 +135,16 @@ func (d *Daemon) Run(port int, meters MeterRegistry) {
 	// Always running: Sync() self-gates on sign-in, so the backstop starts
 	// pushing as soon as the user completes the identity handoff.
 	go func() {
-		time.Sleep(30 * time.Second)
+		timer := time.NewTimer(30 * time.Second)
+		defer timer.Stop()
 		for {
-			d.Syncer.Sync(d.Store)
-			time.Sleep(300 * time.Second)
+			select {
+			case <-ctx.Done():
+				return
+			case <-timer.C:
+				d.Syncer.Sync(d.Store)
+				timer.Reset(300 * time.Second)
+			}
 		}
 	}()
 
@@ -131,16 +158,29 @@ func (d *Daemon) Run(port int, meters MeterRegistry) {
 		defer exp.Stop()
 	}
 
-	ln, actual, err := listen(port)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "token-horizon-daemon: no free loopback port in %d-%d\n", port, port+19)
-		os.Exit(1)
-	}
 	fmt.Fprintf(os.Stderr, "token-horizon-daemon: listening on http://127.0.0.1:%d\n", actual)
-	if err := http.Serve(ln, srv.mux()); err != nil {
-		fmt.Fprintf(os.Stderr, "token-horizon-daemon: serve: %v\n", err)
-		os.Exit(1)
+	httpServer := &http.Server{Handler: srv.mux(), ReadHeaderTimeout: 5 * time.Second}
+	serveDone := make(chan struct{})
+	shutdownDone := make(chan struct{})
+	go func() {
+		defer close(shutdownDone)
+		select {
+		case <-ctx.Done():
+			shutdownCtx, stop := context.WithTimeout(context.Background(), 2*time.Second)
+			defer stop()
+			if err := httpServer.Shutdown(shutdownCtx); err != nil {
+				_ = httpServer.Close()
+			}
+		case <-serveDone:
+		}
+	}()
+	err = httpServer.Serve(ln)
+	close(serveDone)
+	<-shutdownDone
+	if errors.Is(err, http.ErrServerClosed) && ctx.Err() != nil {
+		return nil
 	}
+	return fmt.Errorf("serve: %w", err)
 }
 
 // collectMetrics builds the OTLP set each push: usage event count,

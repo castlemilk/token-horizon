@@ -13,6 +13,8 @@ export const windowModule = defineModule({
       height,
       minimizable: win.isMinimizable(),
       maximizable: win.isMaximizable(),
+      isMaximized: win.isMaximized(),
+      isFocused: win.isFocused(),
       platform: process.platform,
     }
   }),

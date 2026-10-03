@@ -6,3 +6,5 @@ out
 temp
 # TypeScript incremental build info
 *.tsbuildinfo
+# Generated, platform-specific daemon executable and build manifest
+resources/daemon/

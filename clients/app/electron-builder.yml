@@ -1,44 +1,51 @@
-appId: com.guasam.era
-productName: electron-react-app
+appId: dev.token-horizon.desktop
+productName: Token Horizon
+executableName: token-horizon
 asar: true
-asarUnpack:
-  - resources/**
 directories:
   buildResources: resources/build
+  output: dist
 files:
-  - '!**/.vscode/*'
-  - '!src/*'
-  - '!electron.vite.config.{js,ts,mjs,cjs}'
-  - '!{.eslintignore,.eslintrc.cjs,.prettierignore,.prettierrc.yaml,dev-app-update.yml,CHANGELOG.md,README.md}'
-  - '!{.env,.env.*,.npmrc,pnpm-lock.yaml}'
-  - '!{tsconfig.json,tsconfig.node.json,tsconfig.web.json}'
+  - out/**
+  - package.json
+  - resources/build/icon.png
+extraResources:
+  - from: resources/daemon
+    to: daemon
+    filter:
+      - token-horizon-daemon
+      - token-horizon-daemon.exe
+      - build-info.json
+afterPack: scripts/after-pack.cjs
+artifactName: TokenHorizon-${version}-${os}-${arch}.${ext}
 win:
-  executableName: electron-react-app
+  target:
+    - target: nsis
+      arch: [x64]
+  icon: resources/build/icon.ico
 nsis:
-  artifactName: ${name}-${version}-setup.${ext}
-  shortcutName: ${productName}
-  uninstallDisplayName: ${productName}
+  artifactName: TokenHorizon-${version}-windows-${arch}-setup.${ext}
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  shortcutName: Token Horizon
+  uninstallDisplayName: Token Horizon
   createDesktopShortcut: always
 mac:
+  target: dmg
+  icon: resources/build/icon.icns
   entitlementsInherit: resources/build/entitlements.mac.plist
-  extendInfo:
-    - NSCameraUsageDescription: Application requests access to the device's camera.
-    - NSMicrophoneUsageDescription: Application requests access to the device's microphone.
-    - NSDocumentsFolderUsageDescription: Application requests access to the user's Documents folder.
-    - NSDownloadsFolderUsageDescription: Application requests access to the user's Downloads folder.
   notarize: false
-dmg:
-  artifactName: ${name}-${version}.${ext}
 linux:
+  syncDesktopName: true
   target:
     - AppImage
-    - snap
     - deb
-  maintainer: electronjs.org
+  icon: resources/build/icon.png
+  maintainer: Token Horizon
+  vendor: Token Horizon
   category: Utility
+  synopsis: Local AI usage, plan limits, and machine observability
 appImage:
-  artifactName: ${name}-${version}.${ext}
+  executableArgs: []
 npmRebuild: false
-publish:
-  provider: generic
-  url: https://example.com/auto-updates

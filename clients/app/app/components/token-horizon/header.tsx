@@ -1,6 +1,7 @@
 import React from 'react'
 import { RingGauge } from './gauges'
-import { StatsResponse } from './types'
+import { DaemonHealth, ServiceStatus, StatsResponse } from './types'
+import { daemonVersion } from './api'
 import { Zap, Activity, ShieldCheck, Server, Sparkles } from 'lucide-react'
 
 interface HeaderProps {
@@ -8,13 +9,16 @@ interface HeaderProps {
   activeTab: string
   onTabChange: (tab: string) => void
   activeRunsCount: number
+  health: DaemonHealth | null
+  status: ServiceStatus
 }
 
-export const Header: React.FC<HeaderProps> = ({ stats, activeTab, onTabChange, activeRunsCount }) => {
-  const cpuPercent = stats?.system.cpu_percent ?? 0
-  const ramUsed = stats?.system.ram_used_gb ?? 0
-  const ramTotal = stats?.system.ram_total_gb ?? 128
-  const ramPercent = Math.round((ramUsed / ramTotal) * 100)
+export const Header: React.FC<HeaderProps> = ({ stats, health, status, activeTab, onTabChange, activeRunsCount }) => {
+  const cpuPercent = stats?.system?.cpu_percent ?? 0
+  const ramUsed = stats?.system?.ram_used_gb ?? 0
+  const ramTotal = stats?.system?.ram_total_gb ?? 0
+  const ramPercent = ramTotal > 0 ? Math.round((ramUsed / ramTotal) * 100) : 0
+  const version = daemonVersion(health)
 
   const tokensToday = stats?.usage.tokensToday ?? 0
   const costToday = stats?.usage.costToday ?? 0
@@ -42,24 +46,25 @@ export const Header: React.FC<HeaderProps> = ({ stats, activeTab, onTabChange, a
   return (
     <div className="flex flex-col border-b border-zinc-800 bg-zinc-950/80 backdrop-blur-md px-4 py-3 select-none">
       {/* Top metrics bar */}
-      <div className="flex items-center justify-between gap-4">
+      <div className="flex flex-wrap items-center justify-between gap-4">
         {/* Left: CPU & RAM Wing Gauges */}
         <div className="flex items-center gap-6">
           <RingGauge value={cpuPercent} label="CPU" sublabel={`${cpuPercent}% load`} color="#38bdf8" />
           <RingGauge
             value={ramPercent}
             label="RAM"
-            sublabel={`${ramUsed.toFixed(1)} / ${ramTotal} GB`}
+            sublabel={ramTotal > 0 ? `${ramUsed.toFixed(1)} / ${ramTotal.toFixed(1)} GB` : 'Unavailable'}
             color="#a855f7"
           />
         </div>
 
         {/* Center: Token Horizon Title & Active Status */}
         <div className="flex items-center gap-2">
-          <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+          <div className={`w-2 h-2 rounded-full ${status === 'connected' ? 'bg-emerald-500' : 'bg-amber-500'}`} />
           <span className="font-bold text-sm tracking-wide text-zinc-100 uppercase">Token Horizon</span>
           <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-zinc-800 text-zinc-400 border border-zinc-700/50">
-            v0.2.0 • Cross-Platform Engine
+            {version ? `v${version} • ` : ''}
+            {status === 'connected' ? 'Connected' : status === 'checking' ? 'Connecting…' : 'Reconnecting…'}
           </span>
         </div>
 
@@ -85,7 +90,7 @@ export const Header: React.FC<HeaderProps> = ({ stats, activeTab, onTabChange, a
             <button
               key={tab.id}
               onClick={() => onTabChange(tab.id)}
-              className={`flex items-center gap-2 px-3 py-1.5 rounded-md text-xs font-medium transition-all ${
+              className={`flex shrink-0 items-center gap-2 whitespace-nowrap px-3 py-1.5 rounded-md text-xs font-medium transition-all ${
                 isActive
                   ? 'bg-zinc-800 text-zinc-100 shadow-sm border border-zinc-700'
                   : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900/80'
