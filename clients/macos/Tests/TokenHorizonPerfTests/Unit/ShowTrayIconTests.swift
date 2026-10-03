@@ -1,4 +1,3 @@
-import AppKit
 import XCTest
 @testable import TokenHorizon
 
@@ -25,32 +24,23 @@ final class ShowTrayIconTests: XCTestCase {
         wait(for: [exp], timeout: 2)
     }
 
-    func testResolveSurface_modesAndEnvPrecedence() {
-        // Neutralize the env escape hatch for determinism, restore after.
-        let savedEnv = getenv("TOKEN_HORIZON_FORCE_TRAY").map { String(cString: $0) }
-        unsetenv("TOKEN_HORIZON_FORCE_TRAY")
-        defer {
-            if let s = savedEnv { setenv("TOKEN_HORIZON_FORCE_TRAY", s, 1) }
+    func testResolveSurface_modesAndForceTrayPrecedence() {
+        for hasNotch in [false, true] {
+            let cases: [(SurfaceMode, AppDelegate.ActiveSurface)] = [
+                (.tray, .tray),
+                (.notch, .notch),
+                (.auto, hasNotch ? .notch : .tray)
+            ]
+            for (mode, expected) in cases {
+                XCTAssertEqual(
+                    AppDelegate.resolveSurface(mode: mode, forceTray: false, hasNotch: hasNotch),
+                    expected
+                )
+                XCTAssertEqual(
+                    AppDelegate.resolveSurface(mode: mode, forceTray: true, hasNotch: hasNotch),
+                    .tray
+                )
+            }
         }
-        let store = SettingsStore.shared
-        let originalMode = store.surfaceMode
-        defer { store.surfaceMode = originalMode }
-
-        let app = AppDelegate()
-        let hasNotch = NSScreen.screens.contains { $0.safeAreaInsets.top > 0 && $0.isActiveDisplay }
-        store.surfaceMode = .tray
-        XCTAssertEqual(app.resolveSurface(), .tray)
-        store.surfaceMode = .notch
-        // Explicit notch pin falls back to tray on notch-less rigs
-        // (clamshell/external-only displays) — can't render a floating pill.
-        XCTAssertEqual(app.resolveSurface(), hasNotch ? .notch : .tray)
-        // Auto depends on attached hardware; assert only that it resolves.
-        store.surfaceMode = .auto
-        _ = app.resolveSurface()
-
-        // Env escape hatch wins over an explicit notch pin.
-        setenv("TOKEN_HORIZON_FORCE_TRAY", "1", 1)
-        store.surfaceMode = .notch
-        XCTAssertEqual(app.resolveSurface(), .tray)
     }
 }

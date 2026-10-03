@@ -34,6 +34,8 @@ async function fixture({ user = null, width = 1440, reducedMotion = 'reduce', co
   const json = (route, value, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(value) });
   await context.route('**/*', async route => {
     const request = route.request(), url = new URL(request.url());
+    // The landing page resolves published installers without contacting GitHub in this fixture.
+    if (request.method() === 'GET' && request.url() === 'https://api.github.com/repos/castlemilk/token-horizon/releases?per_page=20') return json(route, []);
     if (url.origin === 'https://accounts.google.com') return route.fulfill({ contentType: 'application/javascript', body: `window.google={accounts:{id:{initialize(){},renderButton(host,options){const button=document.createElement('button');button.type='button';button.textContent='Continue with fixture Google';button.style.width=options.width+'px';host.append(button)},cancel(){},disableAutoSelect(){}}}};` });
     if (url.origin !== origin) { unexpected.push(request.url()); return route.abort(); }
     if (!['GET', 'HEAD'].includes(request.method())) { mutations.push(url.pathname); return json(route, { ok: false, error: 'Navigation fixtures do not mutate data.' }, 405); }

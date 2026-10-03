@@ -50,7 +50,7 @@
 @media (max-width: 1200px) { .install-section { gap: 40px; } }
 @media (max-width: 900px) { .install-section { grid-template-columns: 1fr; gap: 32px; } }
 @media (max-width: 480px) {
-  .download-platform-choices label > span { padding-inline: 10px; font-size: 14px; gap: 6px; }
+  .download-platform-choices label > span { padding-inline: 5px; font-size: 14px; gap: 6px; }
   .download-panel-heading h3 { font-size: 22px; }
   .download-linux-choices { grid-template-columns: 1fr; gap: 12px; }
   .download-meta { font-size: 11px; }

@@ -73,10 +73,15 @@ INSTALL_RELEASE_APP=/absolute/path/to/extracted/TokenHorizon.app \
 
 This mode verifies the release's source stamp, native pins, bundle metadata,
 widget version and required executables, then checks its existing signature,
-Gatekeeper assessment and stapled notarization ticket. It installs and
-restarts the original bundle without rebuilding or signing it again. The
-serving health check uses the archive's original commit, version and build
-time. A source app directory that is a symlink, or an executable link that
+Gatekeeper assessment and stapled notarization ticket. It copies into a fresh
+directory beside the installed app, verifies that copy, then replaces the
+complete bundle by rename. This removes obsolete resources while preserving
+the original signature. The previous app remains at
+`/Applications/TokenHorizon.backup.app`; a failed replacement restores it and
+any existing backup. It restarts the original bundle without rebuilding or
+signing it again. The serving health check uses the archive's original
+commit, version and build time. A source app directory that is a symlink,
+or an executable link that
 leaves the bundle, is rejected before installation.
 
 ## Publish pipeline (GitHub Actions)
@@ -102,6 +107,19 @@ Recover an unpublished tag by dispatching the corrected workflow from `main`
 with `release_tag` set to that original tag. Keep the tag and native source
 unchanged. Tag runs restore annotated tag metadata locally and reject a
 remote tag whose commit differs from the checked-out source.
+
+The installed native app checks for updates shortly after launch and every
+six hours. Settings controls automatic installation and provides a manual
+check. The updater verifies the exact native archive and checksum, requires
+a Developer ID Application signature and a notarized Gatekeeper assessment,
+and preserves the signing team of an existing production installation.
+It replaces the complete app by rename, retains a backup, and verifies the
+new version and commit after restarting. A startup failure restores the
+previous app and pauses automatic retries for that release.
+
+Runtime checks use macOS system tools, so updating does not require Xcode.
+Apple distinguishes the built-in Gatekeeper assessment tool from Xcode's
+packaging tools in [its notarization guidance](https://developer.apple.com/videos/play/wwdc2019/703/).
 
 The manual path is `task release`, which delegates to the same
 `scripts/release.mjs` policy used by GitHub Actions:

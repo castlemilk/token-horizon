@@ -191,16 +191,49 @@ final class SelfUpdater: ObservableObject {
         }
         let commit = try SelfUpdatePlan.validateBundleMetadata(metadata, version: release.version)
         try run("/usr/bin/codesign", ["--verify", "--deep", "--strict", app.path])
-        let currentSignature = try? run("/usr/bin/codesign", ["-d", "--verbose=4", Bundle.main.bundleURL.path])
+        let currentSignature = try run("/usr/bin/codesign", ["-d", "--verbose=4", Bundle.main.bundleURL.path])
         let downloadedSignature = try run("/usr/bin/codesign", ["-d", "--verbose=4", app.path])
-        if let team = Self.teamIdentifier(currentSignature ?? ""), Self.teamIdentifier(downloadedSignature) != team {
-            throw SelfUpdateFailure("The downloaded app has a different signing team from this installation.")
-        }
+        try Self.validateSigningIdentity(candidate: downloadedSignature, current: currentSignature)
+        // Gatekeeper is built into macOS; runtime verification must not need
+        // Xcode's stapler tool. The producer verifies the stapled ticket.
+        let assessment = try run("/usr/sbin/spctl", ["--assess", "--type", "execute", "--verbose=4", app.path])
+        try Self.validateNotarizedAssessment(assessment)
         return commit
     }
 
+    /// An ad hoc bootstrap may adopt a production release; every candidate
+    /// must be Developer ID signed, and an existing team remains bound.
+    @discardableResult
+    static func validateSigningIdentity(candidate: String, current: String) throws -> String {
+        let lines = candidate.split(whereSeparator: \.isNewline)
+        let authority = lines.first(where: { $0.hasPrefix("Authority=") })
+        guard !lines.contains("Signature=adhoc"),
+              authority?.hasPrefix("Authority=Developer ID Application: ") == true,
+              let candidateTeam = teamIdentifier(candidate),
+              candidateTeam.range(of: #"^[A-Z0-9]{10}$"#, options: .regularExpression) != nil else {
+            throw SelfUpdateFailure("The downloaded app must have a Developer ID Application signature and signing team.")
+        }
+        guard current.split(whereSeparator: \.isNewline).filter({ $0.hasPrefix("TeamIdentifier=") }).count == 1 else {
+            throw SelfUpdateFailure("Could not identify this installation's signing team.")
+        }
+        if let currentTeam = teamIdentifier(current), candidateTeam != currentTeam {
+            throw SelfUpdateFailure("The downloaded app has a different signing team from this installation.")
+        }
+        return candidateTeam
+    }
+
+    static func validateNotarizedAssessment(_ text: String) throws {
+        let lines = text.split(whereSeparator: \.isNewline)
+        let sources = lines.filter { $0.hasPrefix("source=") }
+        guard lines.contains(where: { $0.hasSuffix(": accepted") }),
+              sources == ["source=Notarized Developer ID"] else {
+            throw SelfUpdateFailure("Gatekeeper did not accept the downloaded app as a notarized Developer ID release.")
+        }
+    }
+
     static func teamIdentifier(_ text: String) -> String? {
-        guard let line = text.split(whereSeparator: \.isNewline).first(where: { $0.hasPrefix("TeamIdentifier=") }) else { return nil }
+        let lines = text.split(whereSeparator: \.isNewline).filter { $0.hasPrefix("TeamIdentifier=") }
+        guard lines.count == 1, let line = lines.first else { return nil }
         let team = String(line.dropFirst("TeamIdentifier=".count))
         return team.isEmpty || team == "not set" || team == "notset" ? nil : team
     }

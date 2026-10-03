@@ -17,7 +17,7 @@ jobs:
         with:
           node-version: '22'
       - name: Native release policy tests
-        run: node --test scripts/test-release.mjs
+        run: node --test scripts/test-release.mjs scripts/test-install-release.mjs
 
   lint-and-test:
     runs-on: macos-15

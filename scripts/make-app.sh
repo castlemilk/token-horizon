@@ -223,7 +223,86 @@ else
 fi
 fi
 
-if [ -z "${SKIP_INSTALL:-}" ] && pgrep -x TokenHorizon >/dev/null; then
+# BEGIN verified release installation (exercised by test-install-release.mjs)
+install_release_app() (
+    local source="$1" destination="$2" parent backup work prepared previous
+    local previous_moved=0 current_moved=0 committed=0 recovery_failed=0
+    parent="$(dirname "$destination")"
+    backup="${destination%.app}.backup.app"
+    for existing in "$destination" "$backup"; do
+        if [ -L "$existing" ] || { [ -e "$existing" ] && [ ! -d "$existing" ]; }; then
+            echo "FATAL: release destination and backup must be app directories, not symlinks: $existing" >&2
+            return 1
+        fi
+    done
+    work="$(mktemp -d "$parent/.TokenHorizon-install.XXXXXX")" || return 1
+    prepared="$work/TokenHorizon.app"
+    previous="$work/previous.app"
+    # Called indirectly by the EXIT trap.
+    # shellcheck disable=SC2329
+    cleanup_release_install() {
+        local status=$?
+        trap - EXIT INT TERM
+        if [ "$committed" != 1 ]; then
+            if [ "$current_moved" = 1 ]; then
+                if [ -e "$destination" ] || [ -L "$destination" ]; then
+                    mv "$destination" "$work/failed.app" || recovery_failed=1
+                fi
+                if [ "$recovery_failed" = 0 ] && mv "$backup" "$destination"; then
+                    current_moved=0
+                else
+                    recovery_failed=1
+                fi
+            fi
+            if [ "$previous_moved" = 1 ]; then
+                if [ "$current_moved" = 0 ] && mv "$previous" "$backup"; then
+                    previous_moved=0
+                else
+                    recovery_failed=1
+                fi
+            fi
+        fi
+        if [ "$recovery_failed" = 1 ]; then
+            echo "FATAL: release replacement recovery needs attention. Preserved copies: $backup and $work" >&2
+            status=1
+        else
+            rm -rf "$work"
+        fi
+        exit "$status"
+    }
+    trap cleanup_release_install EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+    # Copy into an empty directory: an overlay would retain removed resources
+    # from the old app and could invalidate the notarized resource seal.
+    ditto "$source" "$prepared" || return 1
+    codesign --verify --deep --strict --verbose=2 "$prepared" || return 1
+    spctl --assess --type execute --verbose=2 "$prepared" || return 1
+    xcrun stapler validate "$prepared" || return 1
+    if pgrep -x TokenHorizon >/dev/null; then
+        pkill -x TokenHorizon || true
+        sleep 0.5
+    fi
+    if [ -d "$backup" ]; then
+        mv "$backup" "$previous" || return 1
+        previous_moved=1
+    fi
+    if [ -d "$destination" ]; then
+        mv "$destination" "$backup" || return 1
+        current_moved=1
+    fi
+    mv "$prepared" "$destination" || return 1
+    committed=1
+    if [ "$current_moved" = 1 ]; then
+        echo "previous app retained at $backup"
+    elif [ "$previous_moved" = 1 ]; then
+        # With no installed app, retain the existing recovery copy.
+        mv "$previous" "$backup" || { recovery_failed=1; return 1; }
+    fi
+)
+# END verified release installation
+
+if [ -z "${INSTALL_RELEASE_APP:-}" ] && [ -z "${SKIP_INSTALL:-}" ] && pgrep -x TokenHorizon >/dev/null; then
     pkill -x TokenHorizon || true
     sleep 0.5
 fi
@@ -231,7 +310,9 @@ fi
 # manual launch there can never serve stale code again. SKIP_INSTALL=1
 # (release packaging) builds the bundle in place without touching /Applications.
 if [ -z "${SKIP_INSTALL:-}" ]; then
-    if ! ditto "$APP" "$INSTALLED" 2>/dev/null; then
+    if [ -n "${INSTALL_RELEASE_APP:-}" ]; then
+        install_release_app "$APP" "$INSTALLED" || exit 1
+    elif ! ditto "$APP" "$INSTALLED" 2>/dev/null; then
         echo "direct write to $INSTALLED blocked by macOS App Management (TCC);"
         echo "trying Finder-assisted replacement (approve the Finder prompt if shown)…"
         if [ -d "$INSTALLED" ] && osascript -e 'tell application "Finder" to delete POSIX file "'"$INSTALLED"'"' >/dev/null 2>&1; then

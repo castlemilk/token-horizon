@@ -104,7 +104,7 @@ jobs:
           cargo --version
       - name: Validate release policy and desktop authentication
         run: |
-          node --test scripts/test-release.mjs
+          node --test scripts/test-release.mjs scripts/test-install-release.mjs
           npm ci --prefix cloudflare --ignore-scripts --no-audit --no-fund
           node --test cloudflare/worker.test.mjs cloudflare/browser-auth.test.mjs cloudflare/desktop-auth.test.mjs
       - name: Validate native app and gateway
