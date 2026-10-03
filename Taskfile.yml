@@ -136,7 +136,7 @@ tasks:
   release-test:
     desc: Hermetic native release policy checks (no GitHub writes)
     cmds:
-      - node --test scripts/test-release.mjs scripts/test-install-release.mjs scripts/test-notarization.mjs
+      - node --test scripts/test-release.mjs scripts/test-install-release.mjs scripts/test-notarization.mjs scripts/test-self-update-watchdog.mjs
 
   brew-sync:
     desc: Publish packaging/homebrew/token-horizon.rb to castlemilk/homebrew-tap

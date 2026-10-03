@@ -108,6 +108,7 @@ jobs:
           node --test scripts/test-release.mjs scripts/test-install-release.mjs
           # Historical unreleased tags predate the optional transport suite.
           if [ -f scripts/test-notarization.mjs ]; then node --test scripts/test-notarization.mjs; fi
+          if [ -f scripts/test-self-update-watchdog.mjs ]; then node --test scripts/test-self-update-watchdog.mjs; fi
           npm ci --prefix cloudflare --ignore-scripts --no-audit --no-fund
           node --test cloudflare/worker.test.mjs cloudflare/browser-auth.test.mjs cloudflare/desktop-auth.test.mjs
       - name: Validate native app and gateway
