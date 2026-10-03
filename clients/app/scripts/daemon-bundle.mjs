@@ -61,7 +61,8 @@ export function verifyDaemonBundle(directory, platform, arch, version) {
   ) {
     throw new Error('Daemon build-info.json does not match the executable or desktop version')
   }
-  if (platform !== 'win32' && (statSync(path).mode & 0o111) === 0) {
+  // Windows filesystems do not expose POSIX executable bits for cross-target bundles.
+  if (process.platform !== 'win32' && platform !== 'win32' && (statSync(path).mode & 0o111) === 0) {
     throw new Error('Bundled daemon is missing executable permissions')
   }
   return info
