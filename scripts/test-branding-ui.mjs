@@ -73,6 +73,8 @@ async function fixture({ width = 1440, failedAsset = null } = {}) {
   const json = (route, value) => route.fulfill({ contentType: 'application/json', body: JSON.stringify(value) });
   await page.route('**/*', async route => {
     const request = route.request(), url = new URL(request.url()); requests.push(url.pathname);
+    // The landing page resolves published installers without contacting GitHub in this fixture.
+    if (request.method() === 'GET' && request.url() === 'https://api.github.com/repos/castlemilk/token-horizon/releases?per_page=20') return json(route, []);
     if (url.origin === 'https://accounts.google.com') return route.abort();
     if (url.origin !== origin) { unexpected.push(request.url()); return route.abort(); }
     if (!['GET', 'HEAD'].includes(request.method())) { mutations.push(url.pathname); return route.fulfill({ status: 405, body: '' }); }
