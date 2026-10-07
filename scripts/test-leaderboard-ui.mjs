@@ -881,6 +881,10 @@ async function run() {
   // Sticky rank+user columns keep row identity while the list scrolls sideways.
   await narrow.evaluate(() => { state.view = 'leaderboard'; renderNav(); return render(); });
   await narrow.waitForSelector('#lb-table tbody tr');
+  // The live compact mobile list fits without scrolling; expand its metrics
+  // before checking that identity stays pinned during horizontal scrolling.
+  await narrow.locator('#community-metrics').click();
+  await narrow.waitForSelector('.community-table.more-metrics');
   await narrow.evaluate(() => document.querySelector('#lb-table-wrap .card > div:last-child').scrollTo({ left: 300 }));
   await narrow.waitForTimeout(150);
   const sticky = await narrow.evaluate(() => {
@@ -1054,8 +1058,8 @@ async function run() {
   const legendLinks = await page.$$eval('.chart-legend [data-model-link]', els => els.map(e => e.dataset.model));
   if (!legendLinks.length) throw new Error('Chart legend model names are not linked');
   // Billing and shared reports use the same link contract.
-  await page.evaluate(() => navigate('billing'));
-  await page.waitForTimeout(300);
+  await page.evaluate(() => navigate('billing', { handle: 'benebsworth' }));
+  await page.waitForSelector('#view a[data-model-link]');
   const billingLinks = await page.$$eval('#view a[data-model-link]', els => els.length);
   if (!billingLinks) throw new Error('Billing Cost by Model rows are not linked');
   await page.goto(filePath + '?share=abc');
