@@ -13,12 +13,13 @@ try {
    return route.fulfill({contentType:'text/html',body:url.pathname==='/app'?overviewHTML:`<!doctype html><style>body{margin:0}iframe{border:0;width:100%;height:880px}</style><script>
    window.calls=[];window.addEventListener('message',event=>{const m=event.data;if(!m||m.jsonrpc!=='2.0'||!m.method)return;window.calls.push(m);const reply=result=>event.source.postMessage({jsonrpc:'2.0',id:m.id,result},'*');
    if(m.method==='ui/initialize')reply({protocolVersion:m.params.protocolVersion,hostInfo:{name:'Fixture host',version:'1'},hostCapabilities:{serverTools:{},updateModelContext:{},sendMessage:{}},hostContext:{theme:'dark',displayMode:'inline'}});
-   else if(m.method==='ui/notifications/initialized')event.source.postMessage({jsonrpc:'2.0',method:'ui/notifications/tool-result',params:{content:[{type:'text',text:'metadata'}],structuredContent:${JSON.stringify(metadata)}}},'*');
+   else if(m.method==='ui/notifications/initialized')event.source.postMessage({jsonrpc:'2.0',method:'ui/notifications/tool-result',params:{content:[{type:'text',text:'metadata'}],structuredContent:${JSON.stringify({mode:'local',source:metadata.source,pending:true})}}},'*');
    else if(m.method==='tools/call')reply({content:[{type:'text',text:'metadata'}],structuredContent:${JSON.stringify(metadata)}});
    else if(m.id!==undefined)reply({});});</script><iframe src='/app'></iframe>`});
   });
   await page.goto('https://mcp-fixture.invalid/');const app=page.frameLocator('iframe');
   await app.locator('#status').filter({hasText:'Metadata ready'}).waitFor();
+  assert.equal((await page.evaluate(()=>calls)).filter(c=>c.method==='tools/call').length,1,'Pending entrypoint hydrates once');
   assert.equal(await app.locator('html').getAttribute('data-theme'),'dark');
   assert.match(await app.locator('#content').innerText(),/Not reported/);
   await page.evaluate(()=>document.querySelector('iframe').contentWindow.postMessage({jsonrpc:'2.0',method:'ui/notifications/host-context-changed',params:{theme:'light','openai/deepLink':{url:'/usage'}}},'*'));

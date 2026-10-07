@@ -11,6 +11,10 @@ test('Entrypoints and mentions advertise read-only app contracts',()=>{
  for(const tool of extensionTools) assert.equal(tool.annotations.readOnlyHint,true);
  assert.deepEqual(extensionTools[2]._meta['openai/extensions'],{'mentions/search':{}});
 });
+test('Entrypoint returns immediately without reading a data source',async()=>{
+ const result=await callExtension('token_horizon_app',{}, {mode:'local',read:()=>{throw new Error('Entrypoint must not read')}});
+ assert.equal(result.pending,true);
+});
 test('Mentions return exact scoped resources and reject arbitrary input',async()=>{
  const result=await callExtension('token_horizon_search_mentions',{query:'model a'},context());
  assert.equal(result.items[0].uri,'tokenhorizon://models/openai%2Fmodel-a');

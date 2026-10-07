@@ -18,6 +18,15 @@ type cancelledReader struct{ cancel context.CancelFunc }
 
 func (r cancelledReader) Read([]byte) (int, error) { r.cancel(); return 0, io.ErrUnexpectedEOF }
 
+func TestBodyCaptureRequiresExactOptIn(t *testing.T) {
+	for _, value := range []string{"", "0", "true", "1"} {
+		t.Setenv("TOKEN_HORIZON_CAPTURE_BODIES", value)
+		if ConfigFromEnv().CaptureBodies != (value == "1") {
+			t.Fatalf("unexpected capture for %q", value)
+		}
+	}
+}
+
 func TestAbortHandlerStillRecordsCancelledTrace(t *testing.T) {
 	_, proxy, store, _ := testSetup(t, nil)
 	ctx, cancel := context.WithCancel(context.WithValue(context.Background(), http.ServerContextKey, &http.Server{}))
@@ -115,5 +124,17 @@ func TestInterruptedStreamReportsPartialUsage(t *testing.T) {
 	tr := store.Recent(1, TraceFilter{})[0]
 	if tr.CompletionState != "partial" || tr.UsageCoverage != "partial" || (tr.Usage.InputTokens == nil || *tr.Usage.InputTokens != 3) {
 		t.Fatalf("partial stream laundered as complete: %+v", tr)
+	}
+}
+
+func TestAnthropicUsageSnapshotsAreNotDoubleCounted(t *testing.T) {
+	var observer streamMetadata
+	observer.write([]byte("data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg\",\"model\":\"claude\",\"usage\":{\"input_tokens\":11,\"output_tokens\":0}}}\n\n" +
+		"data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":5}}\n\n" +
+		"data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":13}}\n\n" +
+		"data: {\"type\":\"message_stop\"}\n\n"))
+	usage := ExtractUsage(ProviderAnthropic, EndpointMessages, observer.finish())
+	if usage.InputTokens == nil || *usage.InputTokens != 11 || usage.OutputTokens == nil || *usage.OutputTokens != 13 || !observer.complete {
+		t.Fatalf("usage snapshots %+v", usage)
 	}
 }
