@@ -4,12 +4,12 @@
 //
 // Clients point their base URL at it:
 //
-//	OPENAI_BASE_URL=http://127.0.0.1:11436      (Codex, OpenAI SDKs)
+//	OPENAI_BASE_URL=http://127.0.0.1:11436      (compatible OpenAI SDKs)
 //	ANTHROPIC_BASE_URL=http://127.0.0.1:11436   (Claude Code)
 //	OLLAMA_HOST=http://127.0.0.1:11436          (Ollama clients)
 //
-// Responses stream back unchanged while the gateway captures a bounded
-// prefix per side, measures TTFT/duration, and appends a trace record as
+// Responses stream back unchanged while the gateway observes usage metadata,
+// measures TTFT/duration, and appends a metadata trace record as
 // JSONL under ~/.config/token-horizon/traces/. Auth headers pass through
 // upstream and are never stored; traces never leave the machine.
 //
@@ -142,30 +142,35 @@ type ToolCall struct {
 }
 
 type Trace struct {
-	ID                string     `json:"id"`
-	Provider          Provider   `json:"provider"`
-	Endpoint          Endpoint   `json:"endpoint"`
-	Path              string     `json:"path"`
-	Model             string     `json:"model"`
-	StartedAt         UnixTime   `json:"startedAt"`
-	TTFTMs            *float64   `json:"ttftMs"`
-	DurationMs        float64    `json:"durationMs"`
-	Stream            bool       `json:"stream"`
-	StatusCode        int        `json:"statusCode"`
-	Usage             Usage      `json:"usage"`
-	ToolCalls         []ToolCall `json:"toolCalls"`
-	FinishReasons     []string   `json:"finishReasons"`
-	ErrorClass        ErrorClass `json:"errorClass"`
-	ErrorMessage      *string    `json:"errorMessage,omitempty"`
-	RequestBody       *string    `json:"requestBody,omitempty"`
-	ResponseBody      *string    `json:"responseBody,omitempty"`
-	RequestTruncated  bool       `json:"requestTruncated"`
-	ResponseTruncated bool       `json:"responseTruncated"`
-	RequestBytes      int        `json:"requestBytes"`
-	ResponseBytes     int        `json:"responseBytes"`
-	SessionKey        *string    `json:"sessionKey,omitempty"`
-	RequestHash       string     `json:"requestHash"`
-	RetrySuspect      bool       `json:"retrySuspect"`
+	RequestedModel     string     `json:"requestedModel,omitempty"`
+	ProviderResponseID string     `json:"providerResponseId,omitempty"`
+	CompletionState    string     `json:"completionState,omitempty"`
+	UsageCoverage      string     `json:"usageCoverage,omitempty"`
+	CaptureMode        string     `json:"captureMode,omitempty"`
+	ID                 string     `json:"id"`
+	Provider           Provider   `json:"provider"`
+	Endpoint           Endpoint   `json:"endpoint"`
+	Path               string     `json:"path"`
+	Model              string     `json:"model"`
+	StartedAt          UnixTime   `json:"startedAt"`
+	TTFTMs             *float64   `json:"ttftMs"`
+	DurationMs         float64    `json:"durationMs"`
+	Stream             bool       `json:"stream"`
+	StatusCode         int        `json:"statusCode"`
+	Usage              Usage      `json:"usage"`
+	ToolCalls          []ToolCall `json:"toolCalls"`
+	FinishReasons      []string   `json:"finishReasons"`
+	ErrorClass         ErrorClass `json:"errorClass"`
+	ErrorMessage       *string    `json:"errorMessage,omitempty"`
+	RequestBody        *string    `json:"requestBody,omitempty"`
+	ResponseBody       *string    `json:"responseBody,omitempty"`
+	RequestTruncated   bool       `json:"requestTruncated"`
+	ResponseTruncated  bool       `json:"responseTruncated"`
+	RequestBytes       int        `json:"requestBytes"`
+	ResponseBytes      int        `json:"responseBytes"`
+	SessionKey         *string    `json:"sessionKey,omitempty"`
+	RequestHash        string     `json:"requestHash"`
+	RetrySuspect       bool       `json:"retrySuspect"`
 	// Source identifies the capture pipeline ("proxy" for gateway-observed
 	// traffic); reserved for future file/OTLP-sourced spans.
 	Source string `json:"source,omitempty"`

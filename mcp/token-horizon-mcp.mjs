@@ -3,6 +3,7 @@ import { spawn } from "node:child_process";
 import { homedir } from "node:os";
 import { existsSync } from "node:fs";
 import readline from "node:readline";
+import { extensionTools, extensionResources, extensionTemplates, callExtension, readExtensionResource } from "./extensions.mjs";
 import { fetchCatalog, searchCatalog, planList } from "./catalog.mjs";
 
 const BASE = process.env.NOTCHMON_URL || "http://127.0.0.1:8765";
@@ -376,6 +377,7 @@ async function sessionsFallback(limit) {
 }
 
 async function callTool(name, args) {
+  if (extensionTools.some(t => t.name === name)) return callExtension(name, args || {}, localExtensionContext);
   try {
     switch (name) {
       case "token_horizon_usage": {
@@ -935,6 +937,13 @@ async function callTool(name, args) {
   }
 }
 
+const localExtensionContext = { mode: 'local', read: async key => {
+  if (key === 'catalog') return fetchCatalog();
+  if (key === 'usage') { const d = await api('/stats'); return { tokensToday: d.usage?.tokensToday, tokensAll: d.usage?.tokensAllTime, costToday: d.usage?.costToday, costAll: d.usage?.costAllTime }; }
+  if (key === 'traces') return api('/traces?limit=20');
+  throw new Error('Unknown local metadata source.');
+} };
+
 const rl = readline.createInterface({ input: process.stdin });
 rl.on("line", async (line) => {
   if (!line.trim()) return;
@@ -943,13 +952,19 @@ rl.on("line", async (line) => {
   const { id, method, params } = msg;
 
   if (method === "initialize")
-    return send({ id, result: { protocolVersion: "2024-11-05", capabilities: { tools: {} }, serverInfo: { name: "token-horizon", version: "0.3.5" } } });
+    return send({ id, result: { protocolVersion: "2024-11-05", capabilities: { tools: {}, resources: {} }, serverInfo: { name: "token-horizon", version: "0.3.5" } } });
   if (method === "tools/list")
-    return send({ id, result: { tools: TOOLS } });
+    return send({ id, result: { tools: [...TOOLS, ...extensionTools] } });
+  if (method === 'resources/list') return send({ id, result: { resources: extensionResources } });
+  if (method === 'resources/templates/list') return send({ id, result: { resourceTemplates: extensionTemplates } });
+  if (method === 'resources/read') {
+    try { return send({ id, result: await readExtensionResource(params.uri, localExtensionContext) }); }
+    catch { return send({ id, error: { code: -32602, message: 'Resource unavailable or invalid.' } }); }
+  }
   if (method === "tools/call") {
     try {
       const out = await callTool(params.name, params.arguments);
-      send({ id, result: { content: [{ type: "text", text: JSON.stringify(out, null, 2) }] } });
+      send({ id, result: { content: [{ type: "text", text: JSON.stringify(out, null, 2) }], ...(extensionTools.some(t => t.name === params.name) ? { structuredContent: out } : {}) } });
     } catch (e) {
       send({ id, result: { content: [{ type: "text", text: `error: ${e.message}` }], isError: true } });
     }

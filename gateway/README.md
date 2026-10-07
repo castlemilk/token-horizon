@@ -1,11 +1,11 @@
 # token-horizon-gateway
 
-Standalone loopback-only LLM reverse proxy with full conversation-trace
-capture. Zero dependencies (stdlib only), one static binary, runs anywhere
+Standalone loopback-only LLM reverse proxy with metadata trace capture by
+default and explicit opt-in body capture. Zero dependencies (stdlib only), one static binary, runs anywhere
 Go builds: macOS, Linux, Windows.
 
 ```bash
-export OPENAI_BASE_URL="http://127.0.0.1:11436"       # Codex, OpenAI SDKs
+export OPENAI_BASE_URL="http://127.0.0.1:11436"       # compatible OpenAI SDKs
 export ANTHROPIC_BASE_URL="http://127.0.0.1:11436"    # Claude Code
 export OLLAMA_HOST="http://127.0.0.1:11436"           # Ollama clients
 ```
@@ -54,6 +54,7 @@ build instead.
 | `TOKEN_HORIZON_GROK_UPSTREAM` | `https://api.x.ai` | xAI Grok (OpenAI + Responses shapes) |
 | `TOKEN_HORIZON_GEMINI_UPSTREAM` | `https://generativelanguage.googleapis.com` | Google Gemini (native + OpenAI shapes) |
 | `TOKEN_HORIZON_OPENCODE_UPSTREAM` | `https://opencode.ai/zen` | OpenCode Zen (OpenAI + Anthropic shapes) |
+| `TOKEN_HORIZON_CAPTURE_BODIES` | `0` | Set exactly `1` to opt into local prompt/response storage; existing files are not rewritten |
 | `TOKEN_HORIZON_TRACE_DIR` | `~/.config/token-horizon/traces` | JSONL day-file directory |
 | `TOKEN_HORIZON_INGEST_URL` | `http://127.0.0.1:8765/ingest/ollama` | Best-effort Ollama sample POST to the app (empty disables) |
 | `TOKEN_HORIZON_GATEWAY_BIN` | — | App-side only: sidecar binary override |
@@ -93,8 +94,10 @@ the remainder is still classified by wire shape, so e.g.
   Rate-limit/request-id headers relay for SDK backoff; auth/cookies never
   flow downstream. Redirects are never followed with client credentials.
   Requests over 32MB get 413.
-- **Traces**: full bodies local-only (`256KB`/side, 30 day-files, 256MB,
-  oldest pruned). Token counts are provider-reported or absent — never
+- **Traces**: metadata by default; raw error messages and request/response
+  bodies are omitted. Explicit content mode retains bounded bodies locally
+  (`256KB`/side, 30 day-files, 256MB, oldest pruned). Existing content-mode
+  files are not automatically purged. Token counts are provider-reported or absent — never
   estimated. `estCostUSD` is always null: pricing lives with the catalog,
   not the proxy.
 - **Usage totals**: cloud traces do NOT feed usage engines (file parsers
@@ -107,7 +110,7 @@ the remainder is still classified by wire shape, so e.g.
   `providerRequestId` (upstream `x-request-id`/`request-id`/`x-trace-id`),
   and `source` (`proxy`).
 - **Read API** (same port, loopback): `GET /traces?provider=&model=&client=&session=&errors=&limit=`
-  (bodies omitted), `GET /traces/<id>` (full bodies),
+  (bodies omitted), `GET /traces/<id>` (bodies only when explicitly captured),
   `GET /traces/sessions?hours=&limit=` (session spans: first/last ts,
   span, providers, models, clients, tokens, tool calls, errors),
   `GET /proxy/stats?provider=&model=&hours=` (totals, byProvider/
@@ -124,3 +127,53 @@ cd gateway && gofmt -l . && go vet ./... && go test ./...
 `usage_test.go` pins every wire format; `proxy_test.go` round-trips a
 split SSE stream through a stub upstream and asserts byte-identical relay,
 trace-id correlation, parsed usage, and store bounds.
+
+## Stream coverage and Codex routing
+
+Usage frames are observed across the entire HTTP SSE/NDJSON stream, independently
+of the retained body prefix. Bounded oversized frames are skipped and reported as
+partial coverage. Traces carry `requestedModel`, returned `model`, provider request
+and response IDs, `completionState` (complete/partial/failed/cancelled),
+`usageCoverage` (reported/partial/unavailable), and `captureMode`.
+A connection ending without its protocol terminal event is partial, not a
+successful complete stream. Missing usage stays unavailable, not zero. Reported
+token counts are not billed spend; `estCostUSD` remains unavailable.
+
+Codex model traffic can use a named custom provider in the **user** configuration.
+The following is an opt-in example for an API-key HTTP Responses session; it is
+not installed or activated by Token Horizon:
+
+```toml
+[model_providers.token_horizon]
+name = "Token Horizon local HTTP gateway"
+base_url = "http://127.0.0.1:11436/th-openai/v1"
+env_key = "OPENAI_API_KEY"
+wire_api = "responses"
+supports_websockets = false
+```
+
+Select that provider for an explicitly approved API-key session using the Codex
+provider override. Do not change the default provider or copy subscription tokens
+into `OPENAI_API_KEY`. The gateway defaults to the OpenAI API upstream; ChatGPT
+subscription authentication uses a different service and has not been verified
+through this route. A custom provider can change billing and authentication.
+
+| Traffic | Current analytics coverage |
+|---|---|
+| Explicitly routed local HTTP Responses/SSE | Provider usage, timing, IDs, completion state; tested with synthetic upstreams |
+| HTTP request retry | Separate trace per attempt; existing retry-suspect heuristic, no automatic bill deduplication |
+| WebSocket Responses | Not frame-metered; no claim of token coverage |
+| ChatGPT subscription / desktop built-in provider | Not verified through this gateway; local rollout ingestion remains separate |
+| Remote/cloud Codex tasks | Not routed through a local loopback gateway |
+| Tools, OAuth, MCP and app traffic | Not model usage and not redirected by this feature |
+
+Codex also exposes OpenTelemetry exporters and `otel.log_user_prompt`; prompt
+export is an explicit opt-in. Token Horizon does not configure an exporter or
+collector here. Local rollout totals, proxy traces and community published usage
+are distinct sources and must not be summed as independent spend.
+
+References: [Codex configuration](https://learn.chatgpt.com/docs/config-file/config-reference),
+[advanced configuration](https://learn.chatgpt.com/docs/config-file/config-advanced).
+Before activation, verify the selected client/version, auth mode, chosen upstream,
+HTTP transport and loopback health with a synthetic request. Real inference and
+live routing changes require separate authorization.

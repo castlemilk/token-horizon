@@ -142,8 +142,13 @@ func (h *ProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		r.Body = io.NopCloser(bytes.NewReader(reqBody))
 		r.ContentLength = int64(len(reqBody))
 	}
+	defer func() {
+		if r.Context().Err() != nil {
+			ctx.cancelled = true
+		}
+		h.finalize(ctx)
+	}()
 	h.proxy.ServeHTTP(cw, r)
-	h.finalize(ctx)
 }
 
 func (h *ProxyHandler) director(req *http.Request) {
@@ -169,6 +174,11 @@ func (h *ProxyHandler) modifyResponse(res *http.Response) error {
 		return nil
 	}
 	ctx.statusCode = res.StatusCode
+	contentType := strings.ToLower(res.Header.Get("Content-Type"))
+	// Some providers stream by default when the request omits its flag.
+	if strings.HasPrefix(contentType, "text/event-stream") || strings.HasPrefix(contentType, "application/x-ndjson") {
+		ctx.stream = true
+	}
 	for name := range res.Header {
 		lower := strings.ToLower(name)
 		if lower == "request-id" || lower == "x-request-id" || lower == "x-requestid" {
@@ -218,6 +228,10 @@ func (h *ProxyHandler) finalize(ctx *requestContext) {
 		networkError = ""
 	}
 	usage := ExtractUsage(ctx.provider, ctx.endpoint, captured)
+	metadata := cw.metadata.finish()
+	if observed := ExtractUsage(ctx.provider, ctx.endpoint, metadata); observed.Source != TokenAbsent {
+		usage = observed
+	}
 	toolCalls, reasons := ExtractToolCalls(ctx.provider, ctx.endpoint, captured)
 	errorClass, errorMessage := ClassifyError(ctx.statusCode, captured, networkError)
 
@@ -249,10 +263,38 @@ func (h *ProxyHandler) finalize(ctx *requestContext) {
 		RequestBytes:      len(ctx.requestBody), ResponseBytes: respBytes,
 		RequestHash: RequestFingerprint(ctx.provider, ctx.endpoint, ctx.model, ctx.requestBody),
 	}
-	if reqStored != "" {
+	trace.RequestedModel = ctx.model
+	if cw.metadata.model != "" {
+		trace.Model = cw.metadata.model
+	}
+	trace.ProviderResponseID = cw.metadata.responseID
+	trace.CaptureMode = "metadata"
+	trace.CompletionState = "complete"
+	if ctx.stream && !cw.metadata.complete {
+		trace.CompletionState = "partial"
+	}
+	if ctx.statusCode >= 400 || ctx.networkError != "" {
+		trace.CompletionState = "failed"
+	}
+	if ctx.cancelled {
+		trace.CompletionState = "cancelled"
+	}
+	trace.UsageCoverage = "unavailable"
+	if usage.Source != TokenAbsent {
+		trace.UsageCoverage = "reported"
+	}
+	if cw.metadata.skipped || (ctx.stream && !cw.metadata.complete) {
+		trace.UsageCoverage = "partial"
+	}
+	if h.cfg.CaptureBodies {
+		trace.CaptureMode = "content"
+	} else {
+		trace.ErrorMessage = nil
+	}
+	if h.cfg.CaptureBodies && reqStored != "" {
 		trace.RequestBody = &reqStored
 	}
-	if respStored != "" {
+	if h.cfg.CaptureBodies && respStored != "" {
 		trace.ResponseBody = &respStored
 	}
 	if ctx.sessionKey != "" {
@@ -321,6 +363,7 @@ func outOrZero(u Usage) int {
 // captureWriter tees response bytes to the client while retaining a bounded
 // prefix for trace analysis. Forwarding is never truncated.
 type captureWriter struct {
+	metadata streamMetadata
 	http.ResponseWriter
 	ollama      bool
 	status      int
@@ -342,6 +385,7 @@ func (w *captureWriter) WriteHeader(status int) {
 }
 
 func (w *captureWriter) Write(b []byte) (int, error) {
+	w.metadata.write(b)
 	if !w.hasBody {
 		w.hasBody = true
 		w.firstByte = time.Now()
@@ -372,6 +416,7 @@ func min(a, b int) int {
 }
 
 type requestContext struct {
+	cancelled         bool
 	provider          Provider
 	endpoint          Endpoint
 	path              string

@@ -150,6 +150,7 @@ func (a *API) handleConfig(w http.ResponseWriter, r *http.Request) {
 		"providers":            AllProviders,
 		"request_cap_bytes":    MaxRequestBytes,
 		"body_cap_bytes":       BodyCapBytes,
+		"capture_bodies":       a.cfg.CaptureBodies,
 		"trace_retention_days": MaxDayFiles,
 		"traces_memory":        mem,
 		"trace_day_files":      days,
