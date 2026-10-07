@@ -215,7 +215,8 @@ try {
       for (const width of [1440, 390]) {
         await f.page.setViewportSize({ width, height: 1100 }); await settled(f.page);
         const crest = f.page.locator('.profile-crest .league-icon'); await assertImage(crest.locator('img'), 'grandmaster.png');
-        assert.deepEqual(await footprint(crest), { width: 124, height: 124 });
+        const size = width <= 720 ? 88 : 124;
+        assert.deepEqual(await footprint(crest), { width: size, height: size });
         for (const [key, asset] of [['openrouter', 'openrouter.svg'], ['opencode', 'opencode.svg'], ['ollama', 'ollama.svg']]) {
           const image = f.page.locator('.profile-inventory .profile-model-provider .prov-logo[data-provider="' + key + '"] img');
           await assertImage(image, asset);
@@ -250,7 +251,8 @@ try {
         }
         await noOverflow(f.page, width, 'The supported tools strip');
         for (const scene of ['notch', 'widgets', 'dashboard', 'limits', 'local', 'traces', 'models']) {
-          await f.page.locator('button[data-scene="' + scene + '"]').click();
+          if (await f.page.locator('#tour-feature').isVisible()) await f.page.locator('#tour-feature').selectOption(scene);
+          else await f.page.locator('button[data-scene="' + scene + '"]').click();
           await f.page.waitForSelector('#tour-screen[data-scene="' + scene + '"]'); await settled(f.page);
           const brands = f.page.locator('#tour-screen .product-brand');
           for (let index = 0; index < await brands.count(); index++) {
@@ -261,7 +263,9 @@ try {
           await noOverflow(f.page, width, 'The ' + scene + ' feature tour');
         }
         if ([390, 1440].includes(width)) {
-          await f.page.locator('button[data-scene="notch"]').click(); await settled(f.page);
+          if (await f.page.locator('#tour-feature').isVisible()) await f.page.locator('#tour-feature').selectOption('notch');
+          else await f.page.locator('button[data-scene="notch"]').click();
+          await settled(f.page);
           await f.page.evaluate(() => window.scrollTo(0, 0));
           await f.page.screenshot({ path: width === 390 ? '/tmp/token-horizon-branding-landing-mobile.png' : '/tmp/token-horizon-branding-landing-desktop.png', animations: 'disabled' });
         }
