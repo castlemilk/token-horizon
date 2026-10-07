@@ -79,3 +79,41 @@ Run the automated test suite:
 ```bash
 npm test
 ```
+
+## MCP Apps and OpenAI extensions
+
+The hosted connector and local stdio server share a self-contained Usage
+observatory resource. Compatible hosts discover global/sidebar and thread
+entrypoints through `token_horizon_app`; `token_horizon_overview` also renders the
+app inline. Text tools continue to work in hosts without MCP Apps support.
+
+The app follows host light/dark theme and accepts `/models`, `/usage`, `/traces`
+deep links through `openai/deepLink`. Composer mentions use
+`token_horizon_search_mentions` and exact `tokenhorizon://models/{encoded-id}`
+resources. Unknown or arbitrary resource URLs are rejected. The app can attach
+metadata to context and ask a question in chat only after the user clicks the
+corresponding button. It declares inline/fullscreen display support and a CSP
+with no external network/resource domains.
+
+Hosted connections show published community KPIs and catalog metadata. They do
+not access local usage, device traces, prompts or account credentials. Local
+stdio connections read the configured local daemon's usage and bounded trace
+metadata; prompt/response bodies, raw error text and session keys are excluded.
+Failures remain unavailable with a warning, rather than becoming fabricated
+zero totals. Catalog prices are estimates per million tokens, not billed spend.
+This extension does not activate proxy routing or modify credentials.
+
+Build and verify the pinned SDK bundle:
+
+```bash
+npm ci --prefix cloudflare --ignore-scripts
+node scripts/build-mcp-ui.mjs
+node scripts/build-mcp-ui.mjs --check
+node --test mcp/test-extensions.mjs cloudflare/connector.test.mjs
+node scripts/test-mcp-extensions-ui.mjs
+```
+
+The fixture exercises the actual SDK message bridge without a connected account,
+live network or user browser profile. The bundle is vendored for offline loading.
+General file viewers, forms and resource writes are not advertised: the app is a
+read-only metadata observatory. [Extension specification](https://github.com/openai/mcp-extensions/blob/main/docs/spec.md).

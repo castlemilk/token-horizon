@@ -67,13 +67,29 @@ async function authorized(env, scopes = [READ,'offline_access']) {
 }
 const rpc = (env,name,args,token,path='/mcp') => fetchW(env,path,{method:'POST',headers:{'Content-Type':'application/json',Accept:'application/json, text/event-stream',...(token?{Authorization:`Bearer ${token}`}:{})},body:JSON.stringify({jsonrpc:'2.0',id:1,method:name,params:args})});
 
+test('Public MCP extensions expose scoped model references and self-contained app resources',async()=>{
+  const e=env(), request=(method,params={})=>rpc(e,method,params,null,'/mcp/public');
+  const init=await(await request('initialize',{protocolVersion:'2025-03-26',capabilities:{},clientInfo:{name:'extension-test',version:'1'}})).json();
+  assert.deepEqual(init.result.capabilities.resources,{});
+  const resources=await(await request('resources/list')).json();
+  const app=resources.result.resources.find(r=>r.uri==='ui://token-horizon/usage-v1.html');assert.ok(app);
+  const html=await(await request('resources/read',{uri:app.uri})).json();assert.match(html.result.contents[0].text,/Usage observatory/);
+  const mentions=await(await request('tools/call',{name:'token_horizon_search_mentions',arguments:{query:'Model A'}})).json();
+  assert.equal(mentions.result.structuredContent.items[0].uri,'tokenhorizon://models/test%2Fa');
+  const model=await(await request('resources/read',{uri:mentions.result.structuredContent.items[0].uri})).json();assert.equal(JSON.parse(model.result.contents[0].text).model.id,'test/a');
+  const invalid=await(await request('resources/read',{uri:'https://evil.example'})).json();assert.ok(invalid.error);
+  const overview=await(await request('tools/call',{name:'token_horizon_overview',arguments:{}})).json();
+  assert.equal(overview.result.structuredContent.mode,'hosted');assert.deepEqual(overview.result.structuredContent.traces,[]);
+  assert.equal(overview.result.structuredContent.usage,undefined);
+});
+
 test('OAuth metadata, audience challenge and public MCP initialization/tools',async()=>{
   const e=env();
   const meta=await (await fetchW(e,'/.well-known/oauth-authorization-server')).json();
   assert.equal(meta.authorization_endpoint,base+'/oauth/authorize');assert.deepEqual(meta.code_challenge_methods_supported,['S256']);
   const denied=await rpc(e,'tools/list',{});assert.equal(denied.status,401);assert.match(denied.headers.get('www-authenticate'),/oauth-protected-resource/);
   const init=await rpc(e,'initialize',{protocolVersion:'2025-03-26',capabilities:{},clientInfo:{name:'test',version:'1'}},null,'/mcp/public'); assert.equal(init.status,200);
-  const listed=await (await rpc(e,'tools/list',{},null,'/mcp/public')).json();assert.equal(listed.result.tools.length,7);assert.ok(!listed.result.tools.some(t=>t.name==='get_my_account'));
+  const listed=await (await rpc(e,'tools/list',{},null,'/mcp/public')).json();assert.equal(listed.result.tools.length,10);assert.ok(!listed.result.tools.some(t=>t.name==='get_my_account'));
   const result=await (await rpc(e,'tools/call',{name:'search_models',arguments:{query:'Model A'}},null,'/mcp/public')).json();assert.equal(result.result.structuredContent.models[0].id,'test/a');
 });
 test('PKCE exchange, owner-only reads, least privilege and refresh',async()=>{
@@ -130,7 +146,7 @@ test('Catalog comparison, plan-only price exclusion, bounded inputs and private 
   assert.equal((await callTool('compare_models',{ids:['test/a']},e,ctx())).models[0].priceFrom,1);
   const invalid=await (await rpc(e,'tools/call',{name:'search_models',arguments:{limit:100000}},null,'/mcp/public')).json();assert.equal(invalid.result.isError,true);
   const privateCall=await (await rpc(e,'tools/call',{name:'get_my_account',arguments:{}},null,'/mcp/public')).json();assert.equal(privateCall.result.isError,true);
-  const privateToken=await authorized(e,[READ,MANAGE]);const publicWithToken=await (await rpc(e,'tools/list',{},privateToken.access_token,'/mcp/public')).json();assert.equal(publicWithToken.result.tools.length,7);
+  const privateToken=await authorized(e,[READ,MANAGE]);const publicWithToken=await (await rpc(e,'tools/list',{},privateToken.access_token,'/mcp/public')).json();assert.equal(publicWithToken.result.tools.length,10);
 });
 
 test('Chunked oversized requests and unexpected tool fields are rejected',async()=>{

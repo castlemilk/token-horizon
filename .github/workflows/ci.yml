@@ -99,6 +99,9 @@ jobs:
         run: |
           node mcp/test-catalog.mjs
           node mcp/test-server-errors.mjs
+          node --test mcp/test-extensions.mjs
+          node scripts/build-mcp-ui.mjs --check
+          node scripts/test-mcp-extensions-ui.mjs
 
       - name: Desktop download selection and installation contracts
         run: node --test scripts/test-desktop-releases.mjs
