@@ -2,6 +2,7 @@ import { resolveChromium } from './playwright.mjs';
 
 const chromium = await resolveChromium();
 import path from 'path';
+import fs from 'node:fs/promises';
 import assert from 'node:assert/strict';
 
 /**
@@ -450,6 +451,29 @@ async function waitForModelSearch(page, query, options = {}) {
 
 async function run() {
   const browser = await chromium.launch({ channel: 'chrome', headless: true });
+  // Serve the real asset tree under the production origin. file:// gives the
+  // document an opaque origin and rejects pushState after the shared base URL
+  // is established, so it cannot exercise the deployed routing behavior.
+  const createContext = browser.newContext.bind(browser);
+  browser.newContext = async options => {
+    const ctx = await createContext(options);
+    const root = path.resolve('docs');
+    const mime = { '.html': 'text/html', '.js': 'application/javascript', '.css': 'text/css', '.json': 'application/json', '.svg': 'image/svg+xml', '.png': 'image/png', '.webp': 'image/webp', '.woff2': 'font/woff2', '.ttf': 'font/ttf', '.ico': 'image/x-icon' };
+    await ctx.route('https://token-horizon.dev/**', async route => {
+      const url = new URL(route.request().url());
+      if (url.pathname.startsWith('/api/')) return route.fulfill({ status: 404, contentType: 'application/json', body: JSON.stringify({ ok: false, error: 'No fixture' }) });
+      const relative = /^\/(?:leaderboard(?:\.html)?|models|teams|login|[us]\/[^/]+)\/?$/.test(url.pathname) ? 'leaderboard.html' : url.pathname.slice(1);
+      const file = path.resolve(root, relative);
+      if (!file.startsWith(root + path.sep)) return route.fulfill({ status: 404, body: '' });
+      try {
+        let body = await fs.readFile(file);
+        if (relative === 'leaderboard.html') body = Buffer.from(body.toString().replace('<head>', '<head><base href="/">'));
+        return route.fulfill({ status: 200, contentType: mime[path.extname(file)] || 'application/octet-stream', body });
+      } catch { return route.fulfill({ status: 404, body: '' }); }
+    });
+    return ctx;
+  };
+
   const context = await browser.newContext({ viewport: { width: 1440, height: 1000 }, reducedMotion: 'no-preference' });
   const page = await context.newPage();
 
@@ -466,7 +490,7 @@ async function run() {
     return route.fulfill({ status: 404, contentType: 'application/json', body: JSON.stringify({ ok: false, error: 'not found' }) });
   });
 
-  const filePath = 'file://' + path.resolve('docs/leaderboard.html');
+  const filePath = 'https://token-horizon.dev/leaderboard';
   if (process.argv.includes('--startup-only')) {
     try {
       await verifyStartupResilience(browser, filePath);
@@ -577,7 +601,7 @@ async function run() {
   console.log('2. Opening player profile from a row...');
   await page.evaluate(async () => { state.view='leaderboard'; renderNav(); await render(); });
   await page.locator('#lb-table tbody tr').first().click();
-  await page.waitForSelector('.tabs .tab');
+  await page.waitForSelector('.profile-tabs [data-tab]');
   if (!(await page.locator('#view h1').first().textContent()).includes('benebsworth')) throw new Error('The selected player profile did not render');
   const stats = await page.$$('.stat');
   if (!(await page.locator('.profile-totals').textContent()).includes('23.84B')) throw new Error('Published all-time token total is missing');
@@ -585,7 +609,7 @@ async function run() {
   const chartBox = await page.locator('.profile-chart').boundingBox();
   const calendarBox = await page.locator('.profile-calendar').boundingBox();
   if (!chartBox || !calendarBox || calendarBox.y < chartBox.y + chartBox.height - 1) throw new Error('Profile chart and calendar must occupy two sequential rows');
-  if (!page.url().includes('user=')) throw new Error('URL missing ?user=');
+  if (!page.url().includes('user=') && !page.url().includes('/u/benebsworth')) throw new Error('URL missing selected profile');
   const calCells = await page.$$eval('.cal-grid .cal-cell', els => els.length);
   if (calCells === 0) throw new Error('GitHub-style calendar heatmap did not render');
   // Per-day drilldown: clicking a day opens the model breakdown modal.
@@ -599,14 +623,14 @@ async function run() {
 
   console.log('3. Switching profile tabs...');
   for (const tab of ['prompts', 'projects', 'comparisons', 'achievements', 'usage']) {
-    await page.click(`.tab[data-tab="${tab}"]`);
+    await page.click(`.profile-tabs [data-tab="${tab}"]`);
     await page.waitForTimeout(120);
   }
   console.log('   all tabs rendered');
 
   console.log('4. Deep link ?user=benebsworth...');
   await page.goto(filePath + '?user=benebsworth');
-  await page.waitForSelector('.tabs .tab');
+  await page.waitForSelector('.profile-tabs [data-tab]');
   const heroHandle = await page.locator('.profile-identity').textContent();
   if (!heroHandle.includes('benebsworth')) throw new Error('Deep link did not open benebsworth');
   console.log('   deep link ok');
@@ -679,13 +703,13 @@ async function run() {
   if (!(await page.$('#signin-dev'))) throw new Error('Dev sign-in fallback missing');
   await page.click('.signin-modal [data-close]');
   await page.waitForFunction(() => !document.querySelector('.bh-art'));
-  // Gated action: New Group while signed out must route into the sign-in modal.
-  await page.evaluate(() => navigate('settings'));
-  await page.waitForSelector('#new-group-btn');
-  await page.click('#new-group-btn');
+  // Signed-out profile report sharing is the public gated entry point.
+  await page.evaluate(() => navigate('players', { handle: 'benebsworth' }));
+  await page.waitForSelector('[data-share-user="benebsworth"]');
+  await page.click('[data-share-user="benebsworth"]');
   await page.waitForSelector('.signin-modal');
   const signInCopy = await page.locator('.signin-modal .modal-head p').textContent();
-  if (!signInCopy.includes('Creating groups & teams')) throw new Error(`Sign-in modal missing action context: ${signInCopy}`);
+  if (!signInCopy.includes("Sharing @benebsworth's report")) throw new Error(`Sign-in modal missing action context: ${signInCopy}`);
   await page.evaluate(() => closeModal());
   console.log(`   art ${artInfo.cols} cols (built ${artInfo.buildMs}ms), animated=${artAnimated}, benefits=${benefits}, gated copy ok`);
 
@@ -730,9 +754,10 @@ async function run() {
   });
   await gsiPage.goto(filePath);
   await gsiPage.waitForSelector('#signin-btn');
-  await gsiPage.evaluate(() => navigate('settings'));
-  await gsiPage.waitForSelector('#new-group-btn');
-  await gsiPage.click('#new-group-btn');
+  // Report sharing now requires an owned profile before exposing New Group.
+  // Exercise the same pending-action handler directly to keep group resume
+  // and credential forwarding covered without inventing an anonymous owner.
+  await gsiPage.evaluate(() => requireSignIn({ action: 'Creating groups & teams', onSuccess: () => openGroupModal('benebsworth') }));
   await gsiPage.waitForSelector('.signin-modal');
   await gsiPage.waitForFunction(() => window.__gsiRendered === true, null, { timeout: 10000 });
   const gsiCfg = await gsiPage.evaluate(() => window.__gsiInit);
@@ -789,7 +814,7 @@ async function run() {
   if (!kbRoles.nav) throw new Error('Nav items missing keyboard roles');
   // Profile Share/Claim entry points.
   await page.evaluate(() => navigate('players', { handle: 'benebsworth' }));
-  await page.waitForSelector('.tabs .tab');
+  await page.waitForSelector('.profile-tabs [data-tab]');
   if (!(await page.locator('[data-share-user]').count())) throw new Error('Profile Share button missing');
   if (!(await page.locator('[data-claim-user]').count())) throw new Error('Profile Claim button missing');
   // Modal focus trap + labelled close + scroll lock.
@@ -982,7 +1007,7 @@ async function run() {
 
   console.log('14. Model cross-links + per-model provider view...');
   await page.evaluate(() => navigate('players', { handle: 'benebsworth' }));
-  await page.waitForSelector('.tabs .tab');
+  await page.waitForSelector('.profile-tabs [data-tab]');
   await page.waitForSelector('a[data-model-link][data-model="claude-opus-5"]', { timeout: 10000 });
   const inventoryLinks = await page.$$eval('td a[data-model-link]', els => els.length);
   const allLink = await page.$('[data-models-all]');
