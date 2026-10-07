@@ -341,8 +341,8 @@ async function verifyStartupResilience(browser, filePath) {
 async function verifyRouteRaces(browser, filePath) {
   console.log('Async routes: late model/profile responses preserve the current view...');
   const cases = [
-    { name: 'catalog → leaderboard', query: '?view=models', held: '/api/models/catalog', next: '[data-public-view="leaderboard"]', visible: '#lb-table tbody tr', view: 'leaderboard', kind: 'catalog' },
-    { name: 'profile → models', query: '?view=players&user=benebsworth', held: '/api/user/benebsworth', next: '[data-public-view="models"]', visible: '#mx-rows .mx-row', view: 'models', kind: 'profile' },
+    { name: 'catalog → leaderboard', query: '?view=models', held: '/api/models/catalog', menu: 'community', next: '[data-explore-panel] [data-explore-link="rankings"]', visible: '#lb-table tbody tr', view: 'leaderboard', kind: 'catalog' },
+    { name: 'profile → models', query: '?view=players&user=benebsworth', held: '/api/user/benebsworth', menu: 'models', next: '[data-explore-panel] [data-explore-link="explorer"]', visible: '#mx-rows .mx-row', view: 'models', kind: 'profile' },
     { name: 'Plans → Providers', query: '?view=models&tab=plans', held: '/api/models/catalog', next: '[data-models-tab="providers"]', visible: '.prov-table', view: 'models', kind: 'catalog' }
   ];
   for (const scenario of cases) {
@@ -363,6 +363,7 @@ async function verifyRouteRaces(browser, filePath) {
     try {
       await tab.goto(filePath + scenario.query, { waitUntil: 'domcontentloaded' });
       await Promise.race([heldRequest, new Promise((_, reject) => setTimeout(() => reject(new Error('Expected request never started: ' + scenario.held)), 1500))]);
+      if (scenario.menu) await tab.locator(`[data-explore-trigger="${scenario.menu}"]`).click();
       await tab.locator(scenario.next).click();
       if (scenario.name === 'Plans → Providers') {
         await tab.waitForFunction(() => /Provider/.test(document.querySelector('#view h1')?.textContent || ''));
