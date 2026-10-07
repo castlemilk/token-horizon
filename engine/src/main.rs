@@ -17,6 +17,7 @@ mod draft_kernel;
 mod engine;
 mod gdn_kernel;
 mod gpuprof;
+mod idle;
 mod model;
 mod outbuf;
 mod prefix_cache;
@@ -53,6 +54,9 @@ enum Cmd {
         /// Listen port.
         #[arg(long, default_value_t = 8001)]
         port: u16,
+        /// Exit after this many idle seconds; 0 explicitly keeps the model loaded.
+        #[arg(long, default_value_t = idle::DEFAULT_IDLE_TIMEOUT_SECS)]
+        idle_timeout_secs: u64,
         /// Sampling defaults applied to requests that don't override them.
         #[arg(long)]
         temperature: Option<f64>,
@@ -122,6 +126,7 @@ async fn main() -> Result<()> {
             file,
             tokenizer,
             port,
+            idle_timeout_secs,
             temperature,
             top_p,
             top_k,
@@ -161,7 +166,7 @@ async fn main() -> Result<()> {
 
             let engine =
                 engine::Engine::load(&model, file.as_deref(), tokenizer.as_deref(), cfg).await?;
-            server::serve(engine, port).await
+            server::serve(engine, port, idle_timeout_secs).await
         }
         Cmd::Probe { model, tokens, dump } => {
             // E1 bench aid: TH_TOKENIZE=<text file> prints the comma-separated

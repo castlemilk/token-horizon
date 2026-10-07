@@ -10,6 +10,9 @@ use crate::state::{rss_bytes, ConfigPatch, EngineState};
 use crate::template::ChatMessage;
 use anyhow::Result;
 use axum::extract::State;
+use axum::body::Body;
+use axum::extract::Request;
+use axum::middleware::{self, Next};
 use axum::http::StatusCode;
 use axum::response::sse::{Event, Sse};
 use axum::response::{IntoResponse, Response};
@@ -17,8 +20,10 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde_json::{json, Value};
 use std::convert::Infallible;
+use std::future::IntoFuture;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::{BroadcastStream, UnboundedReceiverStream};
 use tokio_stream::StreamExt;
@@ -26,14 +31,24 @@ use tokio_stream::StreamExt;
 struct App {
     engine: Engine,
     started_unix: u64,
+    idle_timeout_secs: u64,
 }
 
-pub async fn serve(engine: Engine, port: u16) -> Result<()> {
+pub async fn serve(engine: Engine, port: u16, idle_timeout_secs: u64) -> Result<()> {
+    let activity = engine.state.activity.clone();
+    // Start the idle window after loading, once the server can accept requests.
+    let loading = activity.begin().unwrap();
     let app = Arc::new(App {
         engine,
         started_unix: unix_now(),
+        idle_timeout_secs,
     });
+    let inference = Router::new()
+        .route("/v1/chat/completions", post(chat_completions))
+        .route("/v1/messages", post(messages))
+        .route_layer(middleware::from_fn_with_state(activity.clone(), inference_activity));
     let router = Router::new()
+        .merge(inference)
         // probes
         .route("/health", get(health))
         .route("/ready", get(ready))
@@ -41,9 +56,6 @@ pub async fn serve(engine: Engine, port: u16) -> Result<()> {
         .route("/metrics", get(metrics))
         // OpenAI
         .route("/v1/models", get(models))
-        .route("/v1/chat/completions", post(chat_completions))
-        // Anthropic
-        .route("/v1/messages", post(messages))
         // TH hook surface
         .route("/engine/status", get(engine_status))
         .route("/engine/config", get(get_config).post(patch_config))
@@ -53,9 +65,53 @@ pub async fn serve(engine: Engine, port: u16) -> Result<()> {
         .with_state(app);
 
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", port)).await?;
+    drop(loading);
     tracing::info!(port, "th-engine serving");
-    axum::serve(listener, router).await?;
+    serve_router(listener, router, activity, Duration::from_secs(idle_timeout_secs)).await
+}
+
+async fn serve_router(
+    listener: tokio::net::TcpListener,
+    router: Router,
+    activity: Arc<crate::idle::IdleActivity>,
+    timeout: Duration,
+) -> Result<()> {
+    tokio::select! {
+        result = axum::serve(listener, router).into_future() => { result?; }
+        _ = wait_until_idle(activity, timeout) => {
+            // No inference bodies or GPU jobs remain. Drop telemetry SSE
+            // connections too, so observers cannot keep model memory alive.
+            tracing::info!(idle_timeout_secs = timeout.as_secs(), "th-engine stopping after inactivity");
+        }
+    }
     Ok(())
+}
+
+async fn wait_until_idle(activity: Arc<crate::idle::IdleActivity>, timeout: Duration) {
+    if timeout.is_zero() {
+        std::future::pending::<()>().await;
+    }
+    loop {
+        tokio::time::sleep(timeout.min(Duration::from_secs(1))).await;
+        if activity.close_if_idle(timeout) { return; }
+    }
+}
+
+async fn inference_activity(
+    State(activity): State<Arc<crate::idle::IdleActivity>>,
+    request: Request,
+    next: Next,
+) -> Response {
+    let Some(guard) = activity.begin() else {
+        return err(StatusCode::SERVICE_UNAVAILABLE, "engine is stopping after inactivity");
+    };
+    let response = next.run(request).await;
+    let (parts, body) = response.into_parts();
+    let stream = body.into_data_stream().map(move |chunk| {
+        let _active = &guard;
+        chunk
+    });
+    Response::from_parts(parts, Body::from_stream(stream))
 }
 
 fn unix_now() -> u64 {
@@ -88,6 +144,7 @@ async fn status(State(app): State<Arc<App>>) -> Json<Value> {
             "pid": std::process::id(),
             "uptime_s": s.started.elapsed().as_secs(),
         },
+        "lifecycle": {"idle_timeout_s": app.idle_timeout_secs, "keep_loaded": app.idle_timeout_secs == 0},
         "model": s.model_meta,
         "maximum_context_tokens": s.model_meta["context_length"],
         "requests": {
@@ -396,3 +453,56 @@ fn err(code: StatusCode, msg: &str) -> Response {
 // Silence unused-import warnings for items used in later milestones.
 #[allow(unused)]
 fn _unused(s: &EngineState) {}
+
+#[cfg(test)]
+mod lifecycle_tests {
+    use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpStream;
+
+    async fn connect(addr: std::net::SocketAddr, method: &str, path: &str) -> TcpStream {
+        let mut socket = TcpStream::connect(addr).await.unwrap();
+        socket.write_all(format!("{method} {path} HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").as_bytes()).await.unwrap();
+        socket
+    }
+
+    #[tokio::test]
+    async fn polling_does_not_prevent_shutdown_or_keep_listener_open() {
+        let activity = crate::idle::IdleActivity::new();
+        let router = Router::new().route("/status", get(health)).route("/metrics", get(health));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(serve_router(listener, router, activity, Duration::from_millis(250)));
+        for path in ["/status", "/metrics", "/status"] {
+            let mut socket = connect(addr, "GET", path).await;
+            let mut response = String::new();
+            socket.read_to_string(&mut response).await.unwrap();
+            assert!(response.starts_with("HTTP/1.1 200"));
+        }
+        tokio::time::timeout(Duration::from_secs(2), server).await.unwrap().unwrap().unwrap();
+        assert!(TcpStream::connect(addr).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn active_stream_survives_deadline_and_disconnect_releases_it() {
+        let activity = crate::idle::IdleActivity::new();
+        let router = Router::new()
+            .route("/v1/chat/completions", post(|| async {
+                let stream = tokio_stream::once(Ok::<_, Infallible>("chunk"))
+                    .chain(tokio_stream::pending());
+                Body::from_stream(stream)
+            }))
+            .route_layer(middleware::from_fn_with_state(activity.clone(), inference_activity));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(serve_router(listener, router, activity, Duration::from_millis(100)));
+        let mut socket = connect(addr, "POST", "/v1/chat/completions").await;
+        let mut response = [0; 1024];
+        let read = socket.read(&mut response).await.unwrap();
+        assert!(String::from_utf8_lossy(&response[..read]).starts_with("HTTP/1.1 200"));
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        assert!(!server.is_finished(), "streaming inference must survive the idle deadline");
+        drop(socket);
+        tokio::time::timeout(Duration::from_secs(2), server).await.unwrap().unwrap().unwrap();
+    }
+}

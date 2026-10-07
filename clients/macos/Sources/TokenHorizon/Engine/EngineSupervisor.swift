@@ -35,7 +35,7 @@ struct EngineBackend {
     /// `tokenizer` is only meaningful for thengine (GGUF repos ship no
     /// tokenizer.json — the catalog carries the sibling base repo).
     func spawnArgs(model: String, tokenizer: String?,
-                   maxMemoryGB: Int?, maxContextK: Int?) -> [String] {
+                   maxMemoryGB: Int?, maxContextK: Int?, keepLoaded: Bool = false) -> [String] {
         switch id {
         case "splash":
             var args = ["serve", "--model", model]
@@ -43,15 +43,15 @@ struct EngineBackend {
             if let c = maxContextK { args += ["--max-context", "\(c)K"] }
             return args
         default: // thengine
-            var args = ["serve", "--model", model, "--port", "\(port)"]
+            var args = ["serve", "--model", model, "--port", "\(port)",
+                        "--idle-timeout-secs", keepLoaded ? "0" : "300"]
             if let t = tokenizer { args += ["--tokenizer", t] }
             if let c = maxContextK { args += ["--max-context", "\(c * 1024)"] }
             // DFlash draft auto-attach: the only packaged draft is
             // trained against Qwen3.8-27B-class targets — a mismatched
             // draft just burns verify cycles, so gate on the model id.
-            if let draft = Self.dflashDraftDir(),
-               model.lowercased().contains("qwen3.8"),
-               model.contains("27") {
+            if model.lowercased().contains("qwen3.8"), model.contains("27"),
+               let draft = Self.dflashDraftDir() {
                 args += ["--draft", draft]
             }
             return args
@@ -134,6 +134,7 @@ final class BackendSupervisor: ObservableObject {
 
     private let lock = NSLock()
     private var process: Process?
+    private var activationID: UUID?
     private var pollTimer: Timer?
 
     init(backend: EngineBackend) {
@@ -184,17 +185,25 @@ final class BackendSupervisor: ObservableObject {
     /// Serve a model. If a server already answers on the backend's port we
     /// adopt it instead of double-serving.
     func serve(model: String, tokenizer: String? = nil,
-               maxMemoryGB: Int?, maxContextK: Int?) {
+               maxMemoryGB: Int?, maxContextK: Int?, keepLoaded: Bool = false) {
         lock.lock()
-        let busy = state.isBusy || state.isServing
+        let busy = activationID != nil || state.isBusy || state.isServing
+        let activation = UUID()
+        if !busy { activationID = activation }
         lock.unlock()
         guard !busy else { return }
 
         DispatchQueue.global(qos: .utility).async { [weak self] in
             guard let self else { return }
-            if self.probeAndUpdate() != nil { return }
+            if self.probeAndUpdate() != nil {
+                self.lock.lock()
+                if self.activationID == activation { self.activationID = nil }
+                self.lock.unlock()
+                return
+            }
             self.spawnServe(model: model, tokenizer: tokenizer,
-                            maxMemoryGB: maxMemoryGB, maxContextK: maxContextK)
+                            maxMemoryGB: maxMemoryGB, maxContextK: maxContextK,
+                            keepLoaded: keepLoaded, activation: activation)
         }
     }
 
@@ -203,6 +212,7 @@ final class BackendSupervisor: ObservableObject {
         lock.lock()
         let proc = process
         process = nil
+        activationID = nil
         lock.unlock()
         if let proc, proc.isRunning {
             proc.terminate()
@@ -284,13 +294,18 @@ final class BackendSupervisor: ObservableObject {
     }
 
     private func spawnServe(model: String, tokenizer: String?,
-                            maxMemoryGB: Int?, maxContextK: Int?) {
+                            maxMemoryGB: Int?, maxContextK: Int?,
+                            keepLoaded: Bool, activation: UUID) {
         guard let bin = binaryURL() else {
+            lock.lock()
+            if activationID == activation { activationID = nil }
+            lock.unlock()
             publishFail("\(backend.id) not installed")
             return
         }
         let args = backend.spawnArgs(model: model, tokenizer: tokenizer,
-                                     maxMemoryGB: maxMemoryGB, maxContextK: maxContextK)
+                                     maxMemoryGB: maxMemoryGB, maxContextK: maxContextK,
+                                     keepLoaded: keepLoaded)
 
         let proc = Process()
         proc.executableURL = bin
@@ -309,31 +324,47 @@ final class BackendSupervisor: ObservableObject {
         proc.terminationHandler = { [weak self] p in
             DispatchQueue.main.async {
                 guard let self else { return }
+                self.lock.lock()
+                guard self.process === p else { self.lock.unlock(); return }
+                self.process = nil
+                self.activationID = nil
+                self.lock.unlock()
                 if case .starting(let m) = self.state, m == model {
                     self.state = .failed("\(self.backend.id) exited (\(p.terminationStatus)) during startup — see ~/Library/Logs/token-horizon-engine-\(self.backend.id).log")
+                } else {
+                    self.state = .stopped
+                    self.status = nil
                 }
-                self.process = nil
             }
         }
+        lock.lock()
+        guard activationID == activation else { lock.unlock(); return }
         do {
             try proc.run()
         } catch {
+            activationID = nil
+            lock.unlock()
             publishFail("spawn failed: \(error.localizedDescription)")
             return
         }
-        lock.lock()
         process = proc
         lock.unlock()
-        DispatchQueue.main.async { self.state = .starting(model: model) }
+        DispatchQueue.main.async {
+            self.lock.lock()
+            let current = self.process === proc
+            self.lock.unlock()
+            if current { self.state = .starting(model: model) }
+        }
         engineLog.info("Engine supervisor: spawned \(self.backend.id, privacy: .public) serve \(model, privacy: .public)")
 
         // First-serve model downloads can take a very long time (~20 GB).
         for _ in 0..<360 { // ~30 min ceiling
             if self.probeAndUpdate() != nil { return }
-            lock.lock(); let alive = process?.isRunning == true; lock.unlock()
+            lock.lock(); let alive = process === proc && proc.isRunning; lock.unlock()
             if !alive { return }
             Thread.sleep(forTimeInterval: 5)
         }
+        stop()
         publishFail("timed out waiting for \(backend.id) to come up")
     }
 

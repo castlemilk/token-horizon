@@ -11,6 +11,7 @@ struct EngineTabView: View {
     @State private var overrides = false
     @State private var memDraft = ""
     @State private var ctxDraft = ""
+    @State private var keepLoaded = false
 
     private let machine = HardwareProfile.probe()
 
@@ -69,12 +70,22 @@ struct EngineTabView: View {
                 Text(statusTitle)
                     .font(.system(size: 12, weight: .semibold, design: .monospaced))
                 Spacer()
-                if case .serving = sup.state {
+                if canStop {
                     Button("STOP") { sup.stop() }
                         .font(.system(size: 10, weight: .bold, design: .monospaced))
                         .foregroundStyle(.red.opacity(0.9))
                         .buttonStyle(.plain)
                 }
+            }
+
+            if backend == "thengine" {
+                Toggle("Keep model loaded until stopped", isOn: $keepLoaded)
+                    .toggleStyle(.checkbox)
+                    .font(.system(size: 10))
+                    .disabled(sup.state.isServing || sup.state.isBusy)
+                Text(thengineLifecycleText)
+                    .font(.system(size: 10))
+                    .foregroundStyle(.white.opacity(0.45))
             }
 
             if case .failed(let reason) = sup.state {
@@ -141,6 +152,23 @@ struct EngineTabView: View {
         }
         .padding(12)
         .background(RoundedRectangle(cornerRadius: 10).fill(Color.white.opacity(0.05)))
+    }
+
+    private var canStop: Bool {
+        switch sup.state {
+        case .starting, .serving(_, _, false): return true
+        default: return false
+        }
+    }
+
+    private var thengineLifecycleText: String {
+        if case .serving(_, _, true) = sup.state {
+            return "Started outside Token Horizon. Stop it in the app or terminal that launched it."
+        }
+        let pinned = (sup.status?["lifecycle"] as? [String: Any])?["keep_loaded"] as? Bool ?? keepLoaded
+        return pinned
+            ? "Starts when you press Serve and stays loaded until you stop it."
+            : "Starts when you press Serve. Releases memory after 5 minutes without inference."
     }
 
     private var statusColor: Color {
@@ -301,7 +329,7 @@ struct EngineTabView: View {
             serveButton(enabled: !serving && sup.engineAvailable) {
                 let ctx = overrides ? Int(ctxDraft) : nil
                 sup.serve(model: m.modelSpec, tokenizer: m.tokenizerRepo,
-                          maxMemoryGB: nil, maxContextK: ctx)
+                          maxMemoryGB: nil, maxContextK: ctx, keepLoaded: keepLoaded)
             }
         }
     }

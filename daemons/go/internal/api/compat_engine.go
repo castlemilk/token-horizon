@@ -7,7 +7,7 @@ package api
 //   GET  /engine        — per-backend supervisor state + hardware + catalogs
 //   GET  /engine/bench  — latest scripts/bench-engines.sh results
 //   POST /engine/serve  {backend?, model, tokenizer?, max_memory_gb?,
-//                        max_context_k?}  — backend defaults to "splash"
+//                        max_context_k?, keep_loaded?} — backend defaults to "splash"
 //   POST /engine/stop   {backend?}       — defaults to "splash"
 //   GET|POST /widget/window ?value=hours|days|weeks|months|years
 
@@ -69,7 +69,7 @@ func (a *apiServer) compatEngineServe(w http.ResponseWriter, r *http.Request) {
 	}
 	var obj map[string]any
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&obj); err != nil {
-		writeErr(w, 400, "expected JSON body {backend?, model, tokenizer?, max_memory_gb?, max_context_k?}")
+		writeErr(w, 400, "expected JSON body {backend?, model, tokenizer?, max_memory_gb?, max_context_k?, keep_loaded?}")
 		return
 	}
 	model, _ := obj["model"].(string)
@@ -93,7 +93,8 @@ func (a *apiServer) compatEngineServe(w http.ResponseWriter, r *http.Request) {
 		}
 		return 0
 	}
-	sup.Serve(model, tokenizer, num("max_memory_gb"), num("max_context_k"))
+	keepLoaded, _ := obj["keep_loaded"].(bool)
+	sup.Serve(model, tokenizer, num("max_memory_gb"), num("max_context_k"), keepLoaded)
 	writeJSON(w, 202, map[string]any{"ok": true})
 }
 

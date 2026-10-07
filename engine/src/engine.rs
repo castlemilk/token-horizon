@@ -207,11 +207,16 @@ impl Engine {
     ) {
         let inner = self.inner.clone();
         let state = self.state.clone();
+        let Some(activity) = state.activity.begin() else {
+            let _ = tx.send(GenEvent::Error("engine is stopping after inactivity".into()));
+            return;
+        };
         let id = uuidish();
         state.counters.requests_total.fetch_add(1, Ordering::Relaxed);
         state.counters.requests_active.fetch_add(1, Ordering::Relaxed);
         if let Some(q) = &self.job_tx {
             let job = BatchJob {
+                activity,
                 id: id.clone(),
                 messages,
                 req,
@@ -237,6 +242,7 @@ impl Engine {
         // fire-and-forget: awaiting the JoinHandle would buffer every
         // delta until generation completes and break SSE streaming
         tokio::task::spawn_blocking(move || {
+            let _activity = activity;
             let started = Instant::now();
             // Q1: optional decode-thread QoS (TH_DECODE_QOS, default off)
             let _qos = decode_qos::enter();
@@ -2019,6 +2025,7 @@ fn ngram_draft(hist: &[u32], k: usize) -> Vec<u32> {
 // then per-slot accept / emit / commit / rollback.
 
 struct BatchJob {
+    activity: crate::idle::ActivityGuard,
     id: String,
     messages: Vec<ChatMessage>,
     req: RequestSampling,
@@ -2028,6 +2035,7 @@ struct BatchJob {
 
 /// Live decode state for one slot.
 struct Run {
+    _activity: crate::idle::ActivityGuard,
     #[allow(dead_code)]
     slot: usize,
     id: String,
@@ -2196,6 +2204,7 @@ fn admit(
         sp.repeat_last_n,
     )?;
     let mut run = Run {
+        _activity: job.activity,
         slot,
         id: job.id,
         tx: job.tx,

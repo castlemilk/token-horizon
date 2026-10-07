@@ -45,7 +45,7 @@ type Backend struct {
 // spec (HF repo id for splash; repo/path or repo:file for thengine).
 // `tokenizer` is only meaningful for thengine (GGUF repos ship no
 // tokenizer.json — the catalog carries the sibling base repo).
-func (b Backend) SpawnArgs(model, tokenizer string, maxMemoryGB, maxContextK int) []string {
+func (b Backend) SpawnArgs(model, tokenizer string, maxMemoryGB, maxContextK int, keepLoaded bool) []string {
 	if b.ID == "splash" {
 		args := []string{"serve", "--model", model}
 		if maxMemoryGB > 0 {
@@ -58,6 +58,11 @@ func (b Backend) SpawnArgs(model, tokenizer string, maxMemoryGB, maxContextK int
 	}
 	// thengine
 	args := []string{"serve", "--model", model, "--port", fmt.Sprintf("%d", b.Port)}
+	idleTimeout := "300"
+	if keepLoaded {
+		idleTimeout = "0"
+	}
+	args = append(args, "--idle-timeout-secs", idleTimeout)
 	if tokenizer != "" {
 		args = append(args, "--tokenizer", tokenizer)
 	}
@@ -197,7 +202,7 @@ func (s *Supervisor) Refresh() { s.probe() }
 
 // Serve starts a model. If a server already answers on the backend's port we
 // adopt it instead of double-serving.
-func (s *Supervisor) Serve(model, tokenizer string, maxMemoryGB, maxContextK int) {
+func (s *Supervisor) Serve(model, tokenizer string, maxMemoryGB, maxContextK int, keepLoaded bool) {
 	s.mu.Lock()
 	busy := s.state.State == StateStarting || s.state.State == StateServing
 	s.mu.Unlock()
@@ -208,7 +213,7 @@ func (s *Supervisor) Serve(model, tokenizer string, maxMemoryGB, maxContextK int
 		if s.probe() != nil {
 			return // adopted a foreign server
 		}
-		s.spawnServe(model, tokenizer, maxMemoryGB, maxContextK)
+		s.spawnServe(model, tokenizer, maxMemoryGB, maxContextK, keepLoaded)
 	}()
 }
 
@@ -268,13 +273,13 @@ func (s *Supervisor) Payload() map[string]any {
 	}
 }
 
-func (s *Supervisor) spawnServe(model, tokenizer string, maxMemoryGB, maxContextK int) {
+func (s *Supervisor) spawnServe(model, tokenizer string, maxMemoryGB, maxContextK int, keepLoaded bool) {
 	bin := s.Binary()
 	if bin == "" {
 		s.fail(s.backend.ID + " not installed")
 		return
 	}
-	args := s.backend.SpawnArgs(model, tokenizer, maxMemoryGB, maxContextK)
+	args := s.backend.SpawnArgs(model, tokenizer, maxMemoryGB, maxContextK, keepLoaded)
 
 	cmd := exec.Command(bin, args...)
 	platform.HideConsole(cmd)
@@ -314,6 +319,9 @@ func (s *Supervisor) spawnServe(model, tokenizer string, maxMemoryGB, maxContext
 				s.state = supervisorState{State: StateFailed,
 					Error: fmt.Sprintf("%s exited during startup — see %s", s.backend.ID, logPath)}
 				s.lastErr = s.state.Error
+			} else {
+				s.state = supervisorState{State: StateStopped}
+				s.status = nil
 			}
 			_ = err
 		}

@@ -217,6 +217,7 @@ pub struct PrefixStats {
 
 /// Shared mutable state — one instance behind the HTTP layer.
 pub struct EngineState {
+    pub activity: std::sync::Arc<crate::idle::IdleActivity>,
     pub config: RwLock<EngineConfig>,
     pub requests: RwLock<VecDeque<RequestRecord>>,
     pub counters: Counters,
@@ -239,6 +240,7 @@ impl EngineState {
     pub fn new(model_id: String, model_meta: serde_json::Value, config: EngineConfig) -> Self {
         let (events, _) = tokio::sync::broadcast::channel(256);
         Self {
+            activity: crate::idle::IdleActivity::new(),
             config: RwLock::new(config),
             requests: RwLock::new(VecDeque::with_capacity(101)),
             counters: Counters::default(),
