@@ -38,6 +38,7 @@ async function fixture({ user = null, width = 1440, reducedMotion = 'no-preferen
     const read = { path: url.pathname, search: url.search, method: request.method(), resource: request.resourceType() };
     requests.push(read);
     if (url.origin === 'https://accounts.google.com') return route.fulfill({ contentType: 'application/javascript', body: `window.google={accounts:{id:{initialize(){},renderButton(host,options){const button=document.createElement('button');button.type='button';button.textContent='Continue with fixture Google';button.style.width=options.width+'px';host.append(button)},cancel(){},disableAutoSelect(){}}}};` });
+    if (url.origin === 'https://api.github.com' && url.pathname === '/repos/castlemilk/token-horizon/releases') return json(route, [{ tag_name: 'v0.3.20', published_at: '2026-10-07T00:00:00Z', draft: false, prerelease: false, assets: [] }]);
     if (url.origin !== origin) { unexpected.push(request.url()); return route.abort(); }
     const connectionListRead = url.pathname === '/oauth/connections' && request.method() === 'POST' && new URLSearchParams(request.postData()).get('action') === 'list';
     if (!['GET', 'HEAD'].includes(request.method()) && !connectionListRead) { mutations.push(url.pathname); return json(route, { ok: false, error: 'Navigation fixtures do not mutate data.' }, 405); }
