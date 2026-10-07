@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { resolveChromium } from './playwright.mjs';
 import { overviewHTML } from '../mcp/ui/overview.generated.mjs';
 const browser=await(await resolveChromium()).launch({channel:'chrome',headless:true});
-const metadata={mode:'local',source:'Local fixture metadata; not published',privacy:'Prompts and credentials excluded',pending:false,warnings:[],models:[{id:'openai/a',name:'Model A',provider:'OpenAI',inputPerM:2,outputPerM:8},{id:'local/b',name:'Unknown price',provider:'Local',priceKnown:false}],usage:{tokensToday:17},traces:[{model:'Model A',provider:'openai',durationMs:34,usage:{inputTokens:9,outputTokens:8},completionState:'complete',usageCoverage:'reported'}]};
+const metadata={mode:'local',source:'Local fixture metadata; not published',privacy:'Prompts and credentials excluded',pending:false,warnings:[],models:[{id:'openai/a',name:'Model A',provider:'OpenAI',inputPerM:2,outputPerM:8},{id:'local/b',name:'Unknown price',provider:'Local',priceKnown:false}],usage:{tokensToday:17,costToday:1234.567},traces:[{model:'Model A',provider:'openai',durationMs:34,usage:{inputTokens:9,outputTokens:8},completionState:'complete',usageCoverage:'reported'}]};
 try {
  for(const width of [1440,390]) {
   const context=await browser.newContext({viewport:{width,height:900}}),page=await context.newPage(),errors=[],requests=[];
@@ -25,6 +25,10 @@ try {
   await page.evaluate(()=>document.querySelector('iframe').contentWindow.postMessage({jsonrpc:'2.0',method:'ui/notifications/host-context-changed',params:{theme:'light','openai/deepLink':{url:'/usage'}}},'*'));
   await app.locator('[data-tab="usage"][aria-pressed="true"]').waitFor();
   assert.equal(await app.locator('html').getAttribute('data-theme'),'light');assert.match(await app.locator('#content').innerText(),/17/);
+  assert.match(await app.locator('#content').innerText(),/Estimated cost today/);
+  assert.match(await app.locator('#content').innerText(),/\$1,234\.57/);
+  assert.match(await app.locator('#content').innerText(),/not verified billing or invoices/);
+  assert(!/tokensToday|costToday|1234\.567/.test(await app.locator('#content').innerText()));
   await app.locator('[data-tab="models"]').click();
   await app.locator('#search').fill('Model A');assert.equal(await app.locator('tbody tr').count(),1);
   await app.locator('[data-tab="traces"]').click();assert.match(await app.locator('#content').innerText(),/complete \/ reported/);

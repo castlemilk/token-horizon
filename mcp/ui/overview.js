@@ -23,6 +23,26 @@ function table(headers, rows) {
   rows.forEach(cells => { const row = body.insertRow(); cells.forEach(value => { const cell = row.insertCell(); cell.textContent = value == null ? 'Not reported' : String(value); }); });
   return table;
 }
+function usageRows(usage) {
+  const fields = {
+    tokensToday: ['Tokens today'], todayTokens: ['Tokens today'],
+    tokensAll: ['Total tokens'], allTokens: ['Total tokens'], totalTokens: ['Published tokens'],
+    costToday: ['Estimated cost today', 'cost'], todayCost: ['Estimated cost today', 'cost'],
+    costAll: ['Estimated total cost', 'cost'], allCost: ['Estimated total cost', 'cost'], totalCost: ['Published cost estimate', 'cost'],
+    activeDevs: ['Active participants'], maxStreakDays: ['Longest streak (days)'],
+    totalRequests: ['Published requests'], avgTokensPerRequest: ['Average tokens per request'],
+    totalTokensDelta: ['Token change', 'percent'], totalCostDelta: ['Cost estimate change', 'percent'], activeDevsDelta: ['Participant change', 'percent'],
+    updatedAt: ['Updated at']
+  };
+  return Object.entries(usage || {}).filter(([key]) => fields[key]).map(([key, value]) => {
+    const [label, kind] = fields[key];
+    if (typeof value !== 'number') return [label, typeof value === 'string' ? value : null];
+    if (!Number.isFinite(value)) return [label, null];
+    return [label, kind === 'cost' ? new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(value)
+      : kind === 'percent' ? new Intl.NumberFormat('en-US', { maximumFractionDigits: 1, signDisplay: 'exceptZero' }).format(value) + '%'
+      : new Intl.NumberFormat('en-US', { maximumFractionDigits: 2 }).format(value)];
+  });
+}
 function render() {
   el('source').textContent = data.source;
   el('privacy').textContent = data.privacy;
@@ -42,7 +62,8 @@ function render() {
     if (!data.traces?.length) { const p = document.createElement('p'); p.textContent = 'No captured request metadata. Only traffic explicitly routed through the local gateway can appear here.'; host.append(p); }
   } else {
     const usage = data.mode === 'local' ? data.usage : data.community?.kpis;
-    host.append(table(['Measured field', 'Value'], Object.entries(usage || {}).filter(([, v]) => typeof v === 'number' || typeof v === 'string')));
+    host.append(table(['Reported usage', 'Value'], usageRows(usage)));
+    const note = document.createElement('p'); note.textContent = 'Costs are reported estimates in USD, not verified billing or invoices. Missing values remain unavailable.'; host.append(note);
     if (!usage || !Object.keys(usage).length) { const p = document.createElement('p'); p.textContent = 'Usage totals are unavailable in this connection. Local and published community data have separate scopes.'; host.append(p); }
   }
   el('context').disabled = false; el('ask').disabled = false;
@@ -71,7 +92,7 @@ el('context').onclick = async () => {
   if (!data || data.pending) return;
   // Context changes require a deliberate user action. No prompt/body fields
   // are present in this result, and scope is included in every attachment.
-  try { await app.updateModelContext({ content: [{ type: 'text', text: JSON.stringify({ source: data.source, view: tab, metadata: tab === 'traces' ? data.traces : tab === 'models' ? data.models : data.usage || data.community }) }] }); el('status').textContent = 'Selected metadata added to conversation context.'; }
+  try { await app.updateModelContext({ content: [{ type: 'text', text: JSON.stringify({ source: data.source, costProvenance: 'Reported estimates in USD; not verified billing or invoices.', view: tab, metadata: tab === 'traces' ? data.traces : tab === 'models' ? data.models : data.usage || data.community }) }] }); el('status').textContent = 'Selected metadata added to conversation context.'; }
   catch { el('status').textContent = 'This host does not support context attachments.'; }
 };
 el('ask').onclick = async () => {
