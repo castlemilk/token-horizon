@@ -45,6 +45,7 @@ async function fixture(width, theme, { charts = true } = {}) {
   await context.route('**/*', async route => {
     const req = route.request(), url = new URL(req.url());
     if (url.origin === 'https://accounts.google.com') return route.fulfill({ contentType: 'application/javascript', body: `window.google={accounts:{id:{initialize(){},renderButton(host,options){const b=document.createElement('button');b.type='button';b.textContent='Continue with fixture Google';b.style.width=options.width+'px';b.style.height='44px';host.append(b)},cancel(){},disableAutoSelect(){}}}};` });
+    if (url.origin === 'https://api.github.com' && url.pathname === '/repos/castlemilk/token-horizon/releases') return json(route, [{ tag_name: 'v0.3.20', published_at: '2026-10-07T00:00:00Z', draft: false, prerelease: false, assets: [] }]);
     if (url.origin !== ORIGIN) { unexpected.push(req.url()); return route.abort(); }
     requests.push({ path: url.pathname, method: req.method() });
     const connectionListRead = url.pathname === '/oauth/connections' && req.method() === 'POST' && new URLSearchParams(req.postData()).get('action') === 'list';
