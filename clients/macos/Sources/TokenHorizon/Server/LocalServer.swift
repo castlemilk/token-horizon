@@ -11,6 +11,7 @@ final class LocalServer {
     let limitsProvider: () -> [ProviderLimit]
     let processesProvider: () -> (all: [ProcSample], byCPU: [ProcSample], byMem: [ProcSample], byDisk: [ProcSample], byNet: [ProcSample])
     let heatmapProvider: ((Int) -> [[Int]])?
+    let leaderboardDataProvider: (() -> LeaderboardSyncLocalData)?
     /// Optional local-inference payload for GET /local — serves the MLX runner
     /// snapshot, history series, and Ollama telemetry summary to remote clients
     /// (the cross-platform shell) that can't read UIModel in-process.
@@ -26,6 +27,7 @@ final class LocalServer {
          limitsProvider: @escaping () -> [ProviderLimit],
          processesProvider: @escaping () -> (all: [ProcSample], byCPU: [ProcSample], byMem: [ProcSample], byDisk: [ProcSample], byNet: [ProcSample]),
          heatmapProvider: ((Int) -> [[Int]])? = nil,
+         leaderboardDataProvider: (() -> LeaderboardSyncLocalData)? = nil,
          onEvent: @escaping (ShellEvent) -> Void,
          onCacheReset: (() -> Void)? = nil) {
         self.statsProvider = statsProvider
@@ -35,8 +37,19 @@ final class LocalServer {
         self.limitsProvider = limitsProvider
         self.processesProvider = processesProvider
         self.heatmapProvider = heatmapProvider
+        self.leaderboardDataProvider = leaderboardDataProvider
         self.onEvent = onEvent
         self.onCacheReset = onCacheReset
+    }
+
+    /// Production supplies the engine's atomic export. The independent
+    /// providers remain a compatibility seam for lightweight server fixtures.
+    func leaderboardData() -> LeaderboardSyncLocalData {
+        if let leaderboardDataProvider { return leaderboardDataProvider() }
+        let snapshot = statsProvider()
+        let history = historyProvider(370)
+        return LeaderboardSyncLocalData(snapshot: snapshot, history: history.points,
+                                        streak: history.streak, heatmap: heatmapProvider?(28))
     }
 
     /// Called when :8765 cannot be served (bind refused or listener dies
@@ -608,9 +621,7 @@ final class LocalServer {
             }
 
             // Sync local entry
-            let snap = server.statsProvider()
-            let hist = server.historyProvider(30)
-            LeaderboardStore.shared.syncLocal(snapshot: snap, history: hist.points, streak: hist.streak)
+            LeaderboardStore.shared.syncLocal(server.leaderboardData())
 
             let ranked = LeaderboardStore.shared.rankings(for: period, teamFilter: teamParam)
             let localRanked = ranked.first(where: { $0.entry.isLocal })
@@ -646,9 +657,7 @@ final class LocalServer {
             return json(["error": "invalid leaderboard entry json"], status: 400)
 
         case ("POST", "/leaderboard/sync"):
-            let snap = server.statsProvider()
-            let hist = server.historyProvider(30)
-            LeaderboardStore.shared.syncLocal(snapshot: snap, history: hist.points, streak: hist.streak)
+            LeaderboardStore.shared.syncLocal(server.leaderboardData())
             let local = LeaderboardStore.shared.localEntry()
             let enc = JSONEncoder()
             enc.dateEncodingStrategy = .secondsSince1970
@@ -664,9 +673,7 @@ final class LocalServer {
             let entryId = queryItems.first(where: { $0.name == "id" })?.value
             let doCopy = queryItems.first(where: { $0.name == "copy" })?.value == "1" || queryItems.first(where: { $0.name == "copy" })?.value == "true"
 
-            let snap = server.statsProvider()
-            let hist = server.historyProvider(30)
-            LeaderboardStore.shared.syncLocal(snapshot: snap, history: hist.points, streak: hist.streak)
+            LeaderboardStore.shared.syncLocal(server.leaderboardData())
 
             if doCopy {
                 _ = LeaderboardStore.shared.copyShareCard(for: period, format: format, entryId: entryId)
@@ -676,9 +683,7 @@ final class LocalServer {
             return rawResponse(card, contentType: format.contentType)
 
         case ("POST", "/leaderboard/sheets/publish"), ("GET", "/leaderboard/sheets/publish"):
-            let snap = server.statsProvider()
-            let hist = server.historyProvider(30)
-            LeaderboardStore.shared.syncLocal(snapshot: snap, history: hist.points, streak: hist.streak)
+            LeaderboardStore.shared.syncLocal(server.leaderboardData())
 
             let sema = DispatchSemaphore(value: 0)
             var result: Result<String, Error>?
@@ -717,9 +722,7 @@ final class LocalServer {
 
         case ("POST", "/leaderboard/cloudflare/publish"), ("GET", "/leaderboard/cloudflare/publish"),
              ("POST", "/leaderboard/cloud/publish"), ("GET", "/leaderboard/cloud/publish"):
-            let snap = server.statsProvider()
-            let hist = server.historyProvider(30)
-            LeaderboardStore.shared.syncLocal(snapshot: snap, history: hist.points, streak: hist.streak)
+            LeaderboardStore.shared.syncLocal(server.leaderboardData())
 
             let sema = DispatchSemaphore(value: 0)
             var result: Result<String, Error>?

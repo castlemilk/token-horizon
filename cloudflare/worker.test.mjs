@@ -5,16 +5,19 @@ import { loadTeamLogoDataUri } from './src/team-invites.js';
 
 function mockR2Bucket(initialEntries = null) {
   let stored = initialEntries ? JSON.stringify(initialEntries) : null;
+  let version = stored === null ? 0 : 1;
   return {
     async get(key) {
       if (stored === null) return null;
-      return {
-        json: async () => JSON.parse(stored),
-        text: async () => stored
-      };
+      const value = stored;
+      return { json: async () => JSON.parse(value), text: async () => value, etag: String(version) };
     },
-    async put(key, value) {
+    async put(key, value, options) {
+      const condition = options?.onlyIf;
+      if (condition?.etagDoesNotMatch === '*' && stored !== null) return null;
+      if (condition?.etagMatches && condition.etagMatches !== String(version)) return null;
       stored = typeof value === 'string' ? value : JSON.stringify(value);
+      return { etag: String(++version) };
     }
   };
 }
@@ -572,11 +575,11 @@ describe('Cloudflare Worker API', () => {
   });
 
   it('GET /api/leaderboard aggregates stacked usage-by-model history', async () => {
-    const day = Math.floor(Date.now() / 1000 / 86400) - 1;
-    const pts = (a, b) => [{ day, dayLabel: 'D1', tokens: a }, { day: day + 1, dayLabel: 'D2', tokens: b }];
+    const day = (Math.floor(Date.now() / 1000 / 86400) - 1) * 86400;
+    const pts = (a, b) => [{ day, dayLabel: 'D1', tokens: a }, { day: day + 86400, dayLabel: 'D2', tokens: b }];
     const model = (provider, id) => ({ provider, model: id, tokensToday: 0, tokensAll: 100, costToday: 0, costAll: 0, sharePercent: 100 });
     const env = createMultiKeyEnv([
-      { handle: 'a', tokensAll: 100, breakdown: { models: [model('anthropic', 'm1')], tools: [], history: [], daily: [{ day, dayLabel: 'D1', tokens: 5, cost: 0 }], modelHistory: [{ model: 'm1', provider: 'anthropic', points: pts(10, 20) }] } },
+      { handle: 'a', tokensAll: 100, breakdown: { models: [model('anthropic', 'm1')], tools: [], history: [], daily: [{ day, dayLabel: 'D1', tokens: 10, cost: 0 }], modelHistory: [{ model: 'm1', provider: 'anthropic', points: pts(10, 20) }] } },
       { handle: 'b', tokensAll: 50, breakdown: { models: [model('anthropic', 'm1'), model('openai', 'm2')], tools: [], history: [], modelHistory: [
         { model: 'm1', provider: 'anthropic', points: pts(5, 7) },
         { model: 'm2', provider: 'openai', points: pts(3, 4) }
@@ -610,7 +613,7 @@ describe('Cloudflare Worker API', () => {
     assert.equal(long.usageHistory.series[0].values.length, 20);
   });
 
-  it('GET /api/providers uses exact modelHistory and falls back to snapshots for legacy entries', async () => {
+  it('GET /api/providers uses source buckets and never derives usage dates from cumulative snapshots', async () => {
     const end = Math.floor(Date.now() / 1000 / 86400);
     const d1 = end - 1, d2 = end;   // snapshot day indices
     const model = (provider, id) => ({ provider, model: id, tokensAll: 100, tokensToday: 0, costToday: 0, costAll: 0, sharePercent: 100 });
@@ -629,8 +632,8 @@ describe('Cloudflare Worker API', () => {
     const p1 = pts.find(p => p.day === d1), p2 = pts.find(p => p.day === d2);
     assert.equal(p1.values.anthropic, 10);   // exact values win, snapshots ignored
     assert.equal(p2.values.anthropic, 20);
-    assert.equal(p1.values.openai, 100);     // legacy baseline = first cumulative day
-    assert.equal(p2.values.openai, 50);      // diffed across the publish gap
+    assert.equal(p1.values.openai, undefined); // Legacy totals have no known usage dates.
+    assert.equal(p2.values.openai, undefined);
   });
 
   it('POST /api/leaderboard merges history monotonically (fresh window cannot truncate)', async () => {

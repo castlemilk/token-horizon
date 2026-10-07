@@ -13,6 +13,8 @@ import { buildOgModel, renderProfileOgSvg, renderRestrictedOgSvg, OG_CARD_VERSIO
 import { loadOgAvatar } from './og-avatar.js';
 import { renderTeamOgSvg, TEAM_OG_VERSION } from './og-team.js';
 import { boundedText } from './request-body.js';
+import { updateProfileEntries, ProfileStorageError } from './leaderboard-storage.js';
+import { mergeBreakdownHistory, reconcileBreakdownHistory, exactProviderHistory } from './usage-history.js';
 import { injectPageMetadata, routePageMetadata, SITE_ORIGIN, PRIVATE_ROBOTS } from './page-metadata.js';
 
 const CORS_HEADERS = {
@@ -227,6 +229,7 @@ function sanitizeEntry(entry, full = false) {
   if (copy.breakdown) {
     if (!full) {
       delete copy.breakdown.hourly;
+      delete copy.breakdown.hourlyHistory;
       delete copy.breakdown.sessions;
       delete copy.breakdown.modelHistory;
       delete copy.breakdown.daily;
@@ -237,50 +240,6 @@ function sanitizeEntry(entry, full = false) {
   delete copy.ownerId;
   delete copy.accountEmail;
   return copy;
-}
-
-/// Monotonic time-series merge for publishes: a fresh (or reset) client with a
-/// short local window must never truncate days already published by the same
-/// handle. Incoming days win; remote-only days are preserved. Other breakdown
-/// fields (models, sessions, projects, hourly) stay as published — privacy
-/// gating is applied while building the payload locally.
-function mergeBreakdownHistory(incoming, previous, maxDays = 130) {
-  // Local history points carry epoch-second `day` values.
-  const cutoff = (dayNumber() - maxDays) * 86400;
-  const dayOf = (p) => Number(p && p.day) || 0;
-  const trim = (points) => {
-    const byDay = new Map();
-    for (const p of points || []) { const d = dayOf(p); if (p && d >= cutoff) byDay.set(d, p); }
-    return [...byDay.values()].sort((a, b) => dayOf(a) - dayOf(b));
-  };
-  const out = { ...incoming };
-
-  const models = new Map();
-  for (const m of incoming.modelHistory || []) {
-    if (m && m.model) models.set(m.model, { model: m.model, provider: m.provider, points: trim(m.points) });
-  }
-  for (const m of previous.modelHistory || []) {
-    if (!m || !m.model) continue;
-    const cur = models.get(m.model);
-    const prevPoints = trim(m.points);
-    if (!cur) { models.set(m.model, { model: m.model, provider: m.provider, points: prevPoints }); continue; }
-    const seen = new Set(cur.points.map(dayOf));
-    for (const p of prevPoints) if (!seen.has(dayOf(p))) cur.points.push(p);
-    cur.points.sort((a, b) => dayOf(a) - dayOf(b));
-    if ((!cur.provider || cur.provider === "other") && m.provider) cur.provider = m.provider;
-  }
-  out.modelHistory = [...models.values()];
-
-  const daily = new Map();
-  for (const p of previous.daily || []) { const d = dayOf(p); if (p && d >= cutoff) daily.set(d, p); }
-  for (const p of incoming.daily || []) { const d = dayOf(p); if (p && d >= cutoff) daily.set(d, p); }
-  out.daily = [...daily.values()].sort((a, b) => dayOf(a) - dayOf(b));
-
-  const history = new Map();
-  for (const p of previous.history || []) history.set(dayOf(p), p);
-  for (const p of incoming.history || []) history.set(dayOf(p), p);
-  out.history = [...history.values()].sort((a, b) => dayOf(a) - dayOf(b)).slice(-10);
-  return out;
 }
 
 function computeMovers(entries) {
@@ -348,11 +307,10 @@ function aggregateUsageHistory(entries, days = 30) {
   const allDays = new Set();
   for (const e of entries) {
     for (const mh of (e.breakdown && e.breakdown.modelHistory) || []) {
-      const model = mh.model || "unknown";
-      if (!byModel.has(model)) {
-        byModel.set(model, { model, provider: normalizeProvider(mh.provider), days: new Map() });
-      }
-      const row = byModel.get(model);
+      const model = mh.model || "unknown", provider = normalizeProvider(mh.provider);
+      const key = JSON.stringify([provider, model]);
+      if (!byModel.has(key)) byModel.set(key, { model, provider, days: new Map() });
+      const row = byModel.get(key);
       for (const p of mh.points || []) {
         const day = Number(p.day) || 0;
         row.days.set(day, (row.days.get(day) || 0) + (Number(p.tokens) || 0));
@@ -490,88 +448,9 @@ function aggregateSessions(entries) {
   return sessions;
 }
 
-/// Per-provider daily token series.
-/// Modern publishes carry exact per-model daily history (`breakdown.modelHistory`),
-/// so those entries are aggregated directly. Snapshots remain the fallback for
-/// legacy entries (or days before a client started publishing modelHistory);
-/// their cumulative provider totals are diffed and spread across publish gaps.
+// Only source-dated usage buckets can populate the provider timeline.
 function providerHistory(entries, days = 30) {
-  const end = dayNumber();
-  const start = end - days + 1;
-  // Local publishes store modelHistory days as epoch seconds; snapshots use
-  // day numbers. Normalize both to the UTC day index used by `dayNumber()`.
-  const dayIndexOf = (value) => Math.floor((Number(value) || 0) / 86400);
-
-  // Exact daily totals from published modelHistory.
-  const exact = new Map();
-  const legacyEntries = [];
-  for (const e of entries) {
-    const modelHistory = (e.breakdown && e.breakdown.modelHistory) || [];
-    const hasExact = modelHistory.some(m => (m.points || []).some(p => {
-      const day = dayIndexOf(p.day);
-      return day >= start && day <= end;
-    }));
-    if (!hasExact) { legacyEntries.push(e); continue; }
-    for (const m of modelHistory) {
-      const p = normalizeProvider(m.provider);
-      for (const pt of m.points || []) {
-        const day = dayIndexOf(pt.day);
-        if (day < start || day > end) continue;
-        if (!exact.has(day)) exact.set(day, {});
-        const bucket = exact.get(day);
-        bucket[p] = (bucket[p] || 0) + (Number(pt.tokens) || 0);
-      }
-    }
-  }
-
-  // Legacy snapshot diffing (cumulative per-provider totals → daily usage).
-  const byDay = new Map();
-  for (const e of legacyEntries) {
-    for (const s of e.snapshots || []) {
-      const day = s.day || 0;
-      if (day < start || day > end) continue;
-      if (!byDay.has(day)) byDay.set(day, {});
-      const bucket = byDay.get(day);
-      for (const [p, tokens] of Object.entries(s.providers || {})) {
-        // Snapshots written before provider normalization carry raw ids
-        // (e.g. zai-coding-plan); fold them into the canonical key on read.
-        const key = normalizeProvider(p);
-        bucket[key] = (bucket[key] || 0) + (Number(tokens) || 0);
-      }
-    }
-  }
-  const legacyDaily = new Map();
-  const legacyDays = [...byDay.keys()].sort((a, b) => a - b);
-  for (let i = 0; i < legacyDays.length; i++) {
-    const day = legacyDays[i];
-    const prev = i > 0 ? byDay.get(legacyDays[i - 1]) : null;
-    const current = byDay.get(day);
-    const gap = prev ? Math.max(1, day - legacyDays[i - 1]) : 1;
-    const row = {};
-    for (const p of Object.keys(current)) {
-      const cumulative = current[p] || 0;
-      const baseline = prev ? (prev[p] || 0) : 0;
-      // Spread multi-day gaps across the missing days so sparse publishes
-      // don't show up as artificial spikes.
-      row[p] = Math.round(i === 0 ? cumulative : Math.max(0, (cumulative - baseline) / gap));
-    }
-    legacyDaily.set(day, row);
-  }
-
-  const dayKeys = [...new Set([...exact.keys(), ...legacyDaily.keys()])].sort((a, b) => a - b);
-  const providers = new Set();
-  for (const b of exact.values()) Object.keys(b).forEach(p => providers.add(p));
-  for (const b of legacyDaily.values()) Object.keys(b).forEach(p => providers.add(p));
-  const points = dayKeys.map(day => {
-    const row = { day, date: new Date(day * 86400 * 1000).toISOString().slice(0, 10), values: {}, total: 0 };
-    for (const p of providers) {
-      const v = ((exact.get(day) || {})[p] || 0) + ((legacyDaily.get(day) || {})[p] || 0);
-      row.values[p] = v;
-      row.total += v;
-    }
-    return row;
-  });
-  return { providers: [...providers].sort(), points };
+  return exactProviderHistory(entries, days, { normalizeProvider });
 }
 
 function aggregateTeams(entries) {
@@ -1210,19 +1089,17 @@ export default {
 
         const handleClean = desktopAuth?.handle || String(incoming.handle).replace(/^@/, "").trim();
         const incomingClaimToken = String(incoming.claimToken || request.headers.get("X-Claim-Token") || "").trim();
-        // Scoped native grants must recheck current ownership against real
-        // records. A transient read failure cannot substitute starter data.
-        const entries = desktopAuth
-          ? await getAccountProfileEntriesFromR2(env).catch(() => {
-            throw new DesktopAuthError(503, "auth_unavailable", "Could not verify current profile ownership. Try Sync again.");
-          })
-          : await getRawEntriesFromR2(env);
-
+        if (incoming.collectedAt !== undefined && (!Number.isFinite(incoming.collectedAt) || incoming.collectedAt <= 0 || incoming.collectedAt > Date.now() / 1000 + 300)) {
+          return jsonResponse({ ok: false, code: "invalid_snapshot", error: "Usage snapshot collection time is invalid. Refresh usage and sync again." }, 400);
+        }
+        // Every retry reloads real profiles and rechecks ownership. A storage
+        // failure must never turn public starter entries into writable data.
+        return await updateProfileEntries(env, async entries => {
         const numOr = (...vals) => {
           for (const v of vals) {
             if (v !== undefined && v !== null && v !== "") {
               const n = Number(v);
-              if (!isNaN(n)) return n;
+              if (Number.isFinite(n) && n >= 0) return n;
             }
           }
           return 0;
@@ -1249,7 +1126,7 @@ export default {
         const efficiency = numOr(incoming.efficiency);
         const achievements = Array.isArray(incoming.achievements) ? incoming.achievements : [];
 
-        let breakdown = incoming.breakdown || null;
+        let breakdown = incoming.breakdown && typeof incoming.breakdown === 'object' && !Array.isArray(incoming.breakdown) ? incoming.breakdown : null;
         if (!breakdown) {
           const prov = topModel.toLowerCase().includes("claude") ? "claude" : (topModel.toLowerCase().includes("gpt") ? "openai" : (topModel.toLowerCase().includes("gemini") ? "google" : "ai"));
           breakdown = {
@@ -1294,7 +1171,8 @@ export default {
           hardware,
           isLocal: false,
           updatedAt: Date.now() / 1000,
-          breakdown,
+          breakdown: reconcileBreakdownHistory(breakdown, { normalizeProvider }),
+          ...(Number.isFinite(incoming.collectedAt) && incoming.collectedAt > 0 && incoming.collectedAt <= Date.now() / 1000 + 300 ? { collectedAt: incoming.collectedAt } : {}),
           claimed: false,
           ownerId: null,
           googleEmail: null,
@@ -1375,26 +1253,23 @@ export default {
             }
           }
 
+          if (newEntry.collectedAt && prev.collectedAt && newEntry.collectedAt < prev.collectedAt) {
+            return jsonResponse({ ok: false, code: "stale_snapshot", error: "A newer usage snapshot is already published. Refresh usage and sync again." }, 409);
+          }
+          if (!newEntry.collectedAt && prev.collectedAt) newEntry.collectedAt = prev.collectedAt;
           if (!newEntry.team && prev.team) newEntry.team = prev.team;
           if (!newEntry.avatarUrl && prev.avatarUrl) newEntry.avatarUrl = prev.avatarUrl;
-          if (newEntry.tokensAll < prev.tokensAll && prev.tokensAll > 0) newEntry.tokensAll = prev.tokensAll;
-          if (newEntry.costAll < prev.costAll && prev.costAll > 0) newEntry.costAll = prev.costAll;
-          if (newEntry.tokens7d < prev.tokens7d && prev.tokens7d > 0) newEntry.tokens7d = prev.tokens7d;
-          if (newEntry.streakDays < prev.streakDays && prev.streakDays > 0) newEntry.streakDays = prev.streakDays;
-          if ((!newEntry.hardware || newEntry.hardware === "Apple Silicon") && prev.hardware && prev.hardware !== "Apple Silicon") {
-            newEntry.hardware = prev.hardware;
+          // Legacy sparse clients have no generation marker. Preserve their
+          // old scalar floors, while dated exports may correct prior totals.
+          if (!incoming.collectedAt) {
+            for (const field of ["tokensAll", "costAll", "tokens7d", "streakDays"]) {
+              if (newEntry[field] < prev[field] && prev[field] > 0) newEntry[field] = prev[field];
+            }
           }
-          if ((!newEntry.topModel || newEntry.topModel === "claude-3-7-sonnet") && prev.topModel && prev.topModel !== "claude-3-7-sonnet") {
-            newEntry.topModel = prev.topModel;
-          }
-          if ((!incoming.breakdown || !incoming.breakdown.models || incoming.breakdown.models.length <= 1) && prev.breakdown && prev.breakdown.models && prev.breakdown.models.length > 1) {
-            newEntry.breakdown = prev.breakdown;
-          }
-          // Monotonic history merge: never let a fresh/short local window
-          // truncate remote days already published for this handle.
-          if (newEntry.breakdown && prev.breakdown && newEntry.breakdown !== prev.breakdown) {
-            newEntry.breakdown = mergeBreakdownHistory(newEntry.breakdown, prev.breakdown);
-          }
+          if ((!newEntry.hardware || newEntry.hardware === "Apple Silicon") && prev.hardware && prev.hardware !== "Apple Silicon") newEntry.hardware = prev.hardware;
+          if ((!newEntry.topModel || newEntry.topModel === "claude-3-7-sonnet") && prev.topModel && prev.topModel !== "claude-3-7-sonnet") newEntry.topModel = prev.topModel;
+          if (!incoming.breakdown && prev.breakdown) newEntry.breakdown = prev.breakdown;
+          else newEntry.breakdown = mergeBreakdownHistory(breakdown, prev.breakdown, { normalizeProvider });
           // Monotonic floors for the analytics fields so a sparse update never
           // regresses published stats.
           if (!newEntry.mmr && prev.mmr) newEntry.mmr = prev.mmr;
@@ -1402,10 +1277,11 @@ export default {
           if (!newEntry.division && prev.division) newEntry.division = prev.division;
           if (!newEntry.efficiency && prev.efficiency) newEntry.efficiency = prev.efficiency;
           if (!newEntry.seasonId && prev.seasonId) newEntry.seasonId = prev.seasonId;
-          if (newEntry.seasonTokens < prev.seasonTokens && prev.seasonTokens > 0) newEntry.seasonTokens = prev.seasonTokens;
-          if (newEntry.inputTokensAll < prev.inputTokensAll && prev.inputTokensAll > 0) newEntry.inputTokensAll = prev.inputTokensAll;
-          if (newEntry.outputTokensAll < prev.outputTokensAll && prev.outputTokensAll > 0) newEntry.outputTokensAll = prev.outputTokensAll;
-          if (newEntry.requestsAll < prev.requestsAll && prev.requestsAll > 0) newEntry.requestsAll = prev.requestsAll;
+          if (!incoming.collectedAt) {
+            for (const field of ["seasonTokens", "inputTokensAll", "outputTokensAll", "requestsAll"]) {
+              if (newEntry[field] < prev[field] && prev[field] > 0) newEntry[field] = prev[field];
+            }
+          }
           if (newEntry.achievements.length === 0 && Array.isArray(prev.achievements)) newEntry.achievements = prev.achievements;
           newEntry.snapshots = Array.isArray(prev.snapshots) ? prev.snapshots : [];
           entries[existingIdx] = newEntry;
@@ -1440,9 +1316,7 @@ export default {
         if (!newEntry.mmr) newEntry.mmr = derived.mmr;
         appendSnapshot(entries, newEntry);
 
-        await saveEntriesToR2(env, entries);
-
-        return jsonResponse({
+        return { entries, response: jsonResponse({
           ok: true,
           action,
           handle: handleClean,
@@ -1452,8 +1326,10 @@ export default {
           claimed: newEntry.claimed,
           totalEntries: entries.length,
           timestamp: new Date().toISOString()
+        }) };
         });
       } catch (err) {
+        if (err instanceof ProfileStorageError) return jsonResponse({ ok: false, code: err.code, error: err.message }, err.status);
         if (err instanceof DesktopAuthError) return jsonResponse({ ok: false, code: err.code, error: err.message }, err.status);
         return jsonResponse({ ok: false, error: err.message }, 500);
       }
@@ -1473,7 +1349,7 @@ export default {
           return jsonResponse({ ok: false, error: "Sign in is required to claim a profile" }, 401);
         }
 
-        const entries = await getRawEntriesFromR2(env);
+        return await updateProfileEntries(env, async entries => {
         const idx = entries.findIndex(e => e.handle.toLowerCase() === handleClean.toLowerCase());
         if (idx === -1) {
           return jsonResponse({ ok: false, error: `Profile @${handleClean} not found to claim` }, 404);
@@ -1507,15 +1383,15 @@ export default {
         await applyTeamMemberships(env, [entry], { fresh: true });
         entries[idx] = entry;
 
-        await saveEntriesToR2(env, entries);
-
-        return jsonResponse({
+        return { entries, response: jsonResponse({
           ok: true,
           message: `Successfully claimed @${handleClean}!`,
           handle: handleClean,
           entry: sanitizeEntry(entry, true)
+        }) };
         });
       } catch (err) {
+        if (err instanceof ProfileStorageError) return jsonResponse({ ok: false, code: err.code, error: err.message }, err.status);
         return jsonResponse({ ok: false, error: err.message }, 500);
       }
     }
@@ -1604,9 +1480,13 @@ export default {
         const parsed = parseEntriesFromCSV(csvText);
         if (parsed.length === 0) throw new Error("No entries parsed from sheet CSV");
 
-        await saveEntriesToR2(env, parsed);
-        return jsonResponse({ ok: true, syncedCount: parsed.length });
+        return await updateProfileEntries(env, entries => {
+          const existing = new Set(entries.map(entry => entry.handle.toLowerCase()));
+          const additions = parsed.filter(entry => !existing.has(entry.handle.toLowerCase()) && existing.add(entry.handle.toLowerCase()));
+          return { entries: [...entries, ...additions], response: jsonResponse({ ok: true, syncedCount: additions.length, skippedCount: parsed.length - additions.length }) };
+        });
       } catch (err) {
+        if (err instanceof ProfileStorageError) return jsonResponse({ ok: false, code: err.code, error: err.message }, err.status);
         return jsonResponse({ ok: false, error: err.message }, 500);
       }
     }
@@ -1882,11 +1762,11 @@ export default {
         const body = await request.json().catch(() => ({}));
         const handleClean = String(body.handle || "").replace(/^@/, "").trim();
         if (!handleClean) return jsonResponse({ ok: false, error: "Missing handle" }, 400);
-        const entries = await getEntriesFromR2(env);
+        const googleAuth = await parseGoogleAuth(request, body, env);
+        return await updateProfileEntries(env, async entries => {
         const entry = entries.find(e => e.handle.toLowerCase() === handleClean.toLowerCase());
         if (!entry) return jsonResponse({ ok: false, error: `Profile @${handleClean} not found` }, 404);
 
-        const googleAuth = await parseGoogleAuth(request, body, env);
         const claimToken = String(body.claimToken || request.headers.get("X-Claim-Token") || "").trim();
         const secret = (request.headers.get("Authorization") || "").replace(/^Bearer\s+/i, "").trim() ||
           (request.headers.get("X-Leaderboard-Secret") || "").trim();
@@ -1922,9 +1802,10 @@ export default {
         entry.avatarUrl = avatarUrl;
         if (avatarUrl) delete entry.avatarStyle;
         entry.updatedAt = Date.now() / 1000;
-        await saveEntriesToR2(env, entries);
-        return jsonResponse({ ok: true, handle: entry.handle, avatarUrl: entry.avatarUrl, avatarStyle: entry.avatarStyle || "" });
+        return { entries, response: jsonResponse({ ok: true, handle: entry.handle, avatarUrl: entry.avatarUrl, avatarStyle: entry.avatarStyle || "" }) };
+        });
       } catch (err) {
+        if (err instanceof ProfileStorageError) return jsonResponse({ ok: false, code: err.code, error: err.message }, err.status);
         return jsonResponse({ ok: false, error: err.message }, 500);
       }
     }
@@ -2233,8 +2114,7 @@ async function getEntriesFromR2(env) {
   return await applyTeamMemberships(env, entries);
 }
 
-// Backfills persist the original exported entry data before membership is
-// overlaid. Joining a team never rewrites this shared usage-statistics object.
+// Read-time compatibility and repair never write the shared profile object.
 async function getRawEntriesFromR2(env) {
   if (!env.LEADERBOARD_BUCKET) {
     return JSON.parse(JSON.stringify(DEFAULT_STARTER_ENTRIES));
@@ -2243,7 +2123,7 @@ async function getRawEntriesFromR2(env) {
     const obj = await env.LEADERBOARD_BUCKET.get("leaderboard.json");
     let entries;
     if (!obj) {
-      // Seed starter entries on first launch (then fall through to backfill).
+      // Public demo fallback is read-only, never a mutation baseline.
       entries = JSON.parse(JSON.stringify(DEFAULT_STARTER_ENTRIES));
     } else {
       const text = await obj.text();
@@ -2251,15 +2131,15 @@ async function getRawEntriesFromR2(env) {
       entries = Array.isArray(data) ? data : JSON.parse(JSON.stringify(DEFAULT_STARTER_ENTRIES));
     }
 
-    let needsBackfill = !obj;
     for (const e of entries) {
       if (!e.breakdown || !Array.isArray(e.breakdown.models) || e.breakdown.models.length === 0) {
         const starterMatch = DEFAULT_STARTER_ENTRIES.find(s => s.handle.toLowerCase() === e.handle.toLowerCase());
-        if (starterMatch && starterMatch.breakdown) {
-          e.breakdown = starterMatch.breakdown;
+        if (!e.breakdown && starterMatch && starterMatch.breakdown) {
+          e.breakdown = JSON.parse(JSON.stringify(starterMatch.breakdown));
         } else {
           const prov = (e.topModel || "").toLowerCase().includes("claude") ? "claude" : ((e.topModel || "").toLowerCase().includes("gpt") ? "openai" : ((e.topModel || "").toLowerCase().includes("gemini") ? "google" : "ai"));
           e.breakdown = {
+            ...e.breakdown,
             models: [
               {
                 provider: prov,
@@ -2280,41 +2160,28 @@ async function getRawEntriesFromR2(env) {
                 costAll: e.costAll || 0
               }
             ],
-            history: [],
+            history: e.breakdown?.history || [],
             activeDays: e.streakDays || 1,
             totalSessions: 1
           };
         }
-        needsBackfill = true;
       }
       // Derive league/MMR for entries published before the analytics fields
       // existed (CSV imports, older clients). Efficiency is always computed
       // on read so zero-signal entries don't trigger rewrite loops.
+      const repaired = reconcileBreakdownHistory(e.breakdown, { normalizeProvider });
+      e.breakdown.modelHistory = repaired.modelHistory;
       const st = standingFor(e);
-      if (!e.league) { e.league = st.league; needsBackfill = true; }
-      if (!e.division) { e.division = st.division; needsBackfill = true; }
-      if (!e.mmr && (e.tokensAll || 0) > 0) { e.mmr = st.mmr; needsBackfill = true; }
+      if (!e.league) { e.league = st.league; }
+      if (!e.division) { e.division = st.division; }
+      if (!e.mmr && (e.tokensAll || 0) > 0) { e.mmr = st.mmr; }
     }
 
-    if (needsBackfill) {
-      await saveEntriesToR2(env, entries);
-    }
     return entries;
   } catch (err) {
     console.error("R2 get error:", err);
     return JSON.parse(JSON.stringify(DEFAULT_STARTER_ENTRIES));
   }
-}
-
-async function saveEntriesToR2(env, entries) {
-  if (!env.LEADERBOARD_BUCKET) return;
-  const jsonStr = JSON.stringify(entries, null, 2);
-  await env.LEADERBOARD_BUCKET.put("leaderboard.json", jsonStr, {
-    httpMetadata: {
-      contentType: "application/json",
-      cacheControl: "no-cache"
-    }
-  });
 }
 
 // --- Period & KPI Calculation Helpers ---

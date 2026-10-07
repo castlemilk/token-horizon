@@ -112,6 +112,7 @@ jobs:
           if [ -f scripts/test-dmg-signing.mjs ]; then node --test scripts/test-dmg-signing.mjs; fi
           npm ci --prefix cloudflare --ignore-scripts --no-audit --no-fund
           node --test cloudflare/worker.test.mjs cloudflare/browser-auth.test.mjs cloudflare/desktop-auth.test.mjs
+          node --test cloudflare/usage-history.test.mjs cloudflare/leaderboard-storage.test.mjs scripts/test-usage-history.mjs
       - name: Validate native app and gateway
         run: |
           (cd clients/macos && swift test)

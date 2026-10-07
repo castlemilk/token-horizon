@@ -226,14 +226,15 @@ test('Legacy owner mutations preserve private sharing namespaces without an impl
   const owner = await fetchSite(unpublished, '/api/auth/google', post({ credential: await googleToken({ email: 'ben@benebsworth.com' }) }));
   assert.equal(owner.status, 200);
   const bucketGet = unpublished.LEADERBOARD_BUCKET.get;
-  // Existing mutation reads can use a starter fallback on an outage. Claiming
-  // that already-claimed fallback must not introduce a stored ownership change.
+  // Mutations fail closed on an outage; a public starter fallback must never
+  // become a stored ownership change.
   unpublished.LEADERBOARD_BUCKET.get = async key => {
     if (key === 'leaderboard.json') throw new Error('leaderboard unavailable');
     return bucketGet(key);
   };
   const claim = await fetchSite(unpublished, '/api/claim', post({ handle: 'benebsworth' }, cookieHeader(owner)));
-  assert.equal(claim.status, 200);
+  assert.equal(claim.status, 503);
+  assert.equal((await claim.json()).code, 'auth_unavailable');
   assert.equal(unpublished.LEADERBOARD_BUCKET.values.has('leaderboard.json'), false, 'A fallback seed cannot become a migrated stored account');
 });
 

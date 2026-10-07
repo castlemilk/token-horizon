@@ -304,6 +304,13 @@ struct LeaderboardModelHistory: Codable, Identifiable, Equatable {
     }
 }
 
+/// Absolute UTC-hour buckets from the engine. Sync time is never usage time.
+struct LeaderboardHourlyPoint: Codable, Equatable {
+    var hour: Int
+    var tokens: Int
+    var cost: Double
+}
+
 struct LeaderboardUsageBreakdown: Codable, Equatable {
     var models: [LeaderboardModelBreakdown] = []
     var tools: [LeaderboardToolBreakdown] = []
@@ -319,12 +326,14 @@ struct LeaderboardUsageBreakdown: Codable, Equatable {
     var modelHistory: [LeaderboardModelHistory] = []
     /// Non-zero days over the trailing ~17 weeks for the GitHub-style calendar.
     var daily: [LeaderboardDailyPoint] = []
+    /// Non-zero absolute hours over the trailing 120 calendar days.
+    var hourlyHistory: [LeaderboardHourlyPoint] = []
 }
 
 extension LeaderboardUsageBreakdown {
     enum CodingKeys: String, CodingKey {
         case models, tools, history, activeDays, totalSessions, projects, hourly, sessions
-        case modelHistory, daily
+        case modelHistory, daily, hourlyHistory
     }
 
     init(from decoder: Decoder) throws {
@@ -339,6 +348,7 @@ extension LeaderboardUsageBreakdown {
         sessions = c.thDecode(.sessions, or: [])
         modelHistory = c.thDecode(.modelHistory, or: [])
         daily = c.thDecode(.daily, or: [])
+        hourlyHistory = c.thDecode(.hourlyHistory, or: [])
     }
 }
 
@@ -357,6 +367,8 @@ struct LeaderboardEntry: Codable, Identifiable, Equatable {
     var hardware: String
     var isLocal: Bool
     var updatedAt: Date
+    /// Engine collection generation; publication time carries no usage date.
+    var collectedAt: Date?
     var breakdown: LeaderboardUsageBreakdown? = nil
     var mmr: Int = 0
     var league: String = ""
@@ -430,7 +442,8 @@ struct LeaderboardEntry: Codable, Identifiable, Equatable {
         seasonId: String = "",
         seasonTokens: Int = 0,
         achievements: [LeaderboardAchievement] = [],
-        snapshots: [LeaderboardSnapshot] = []
+        snapshots: [LeaderboardSnapshot] = [],
+        collectedAt: Date? = nil
     ) {
         self.id = id
         self.handle = handle
@@ -446,6 +459,7 @@ struct LeaderboardEntry: Codable, Identifiable, Equatable {
         self.hardware = hardware
         self.isLocal = isLocal
         self.updatedAt = updatedAt
+        self.collectedAt = collectedAt
         self.breakdown = breakdown
         self.mmr = mmr
         self.league = league
@@ -496,7 +510,7 @@ extension LeaderboardEntry {
     enum CodingKeys: String, CodingKey {
         case id, handle, team, tokensToday, tokens7d, tokensAll
         case costToday, cost7d, costAll, streakDays, topModel, hardware
-        case isLocal, updatedAt, breakdown
+        case isLocal, updatedAt, collectedAt, breakdown
         case mmr, league, division, efficiency
         case inputTokensToday, outputTokensToday, inputTokensAll, outputTokensAll
         case requestsToday, requestsAll, seasonId, seasonTokens, achievements, snapshots
@@ -518,6 +532,7 @@ extension LeaderboardEntry {
         hardware = c.thDecode(.hardware, or: "")
         isLocal = c.thDecode(.isLocal, or: false)
         updatedAt = c.thDecode(.updatedAt, or: Date())
+        collectedAt = c.thDecode(.collectedAt, or: nil as Date?)
         breakdown = c.thDecode(.breakdown, or: nil as LeaderboardUsageBreakdown?)
         mmr = c.thDecode(.mmr, or: 0)
         league = c.thDecode(.league, or: "")
@@ -572,6 +587,7 @@ final class LeaderboardStore {
     private let lock = NSLock()
     private let path: String
     private var entries: [LeaderboardEntry] = []
+    private var lastLocalCollectedAt: Date?
 
     init(customPath: String? = nil) {
         if let customPath {
@@ -596,6 +612,7 @@ final class LeaderboardStore {
         decoder.dateDecodingStrategy = .secondsSince1970
         if let decoded = try? decoder.decode([LeaderboardEntry].self, from: data) {
             entries = decoded
+            lastLocalCollectedAt = decoded.first(where: { $0.isLocal })?.collectedAt
         } else {
             entries = []
         }
@@ -642,10 +659,21 @@ final class LeaderboardStore {
         saveLocked()
     }
 
+    func syncLocal(_ data: LeaderboardSyncLocalData) {
+        syncLocal(snapshot: data.snapshot, history: data.history, streak: data.streak,
+                  heatmap: data.heatmap, hourlyHistory: data.hourlyHistory)
+    }
+
     func syncLocal(snapshot: UsageSnapshot, history: [HistoryPoint], streak: Int,
-                   heatmap: [[Int]]? = nil) {
+                   heatmap: [[Int]]? = nil, hourlyHistory: [LeaderboardHourlyPoint]? = nil) {
         lock.lock()
         defer { lock.unlock() }
+        // A slow background task can finish staging after a newer manual
+        // export. Keep the newer engine generation, including its buckets.
+        let collectedAt = snapshot.updatedAt > .distantPast ? snapshot.updatedAt : nil
+        if let collectedAt, let lastLocalCollectedAt, collectedAt < lastLocalCollectedAt { return }
+        if let collectedAt { lastLocalCollectedAt = collectedAt }
+        let referenceDate = collectedAt ?? Date()
 
         let settings = SettingsStore.shared
         let handle = settings.leaderboardHandle.isEmpty ? NSUserName() : settings.leaderboardHandle
@@ -718,7 +746,7 @@ final class LeaderboardStore {
 
         // GitHub-style calendar: non-zero days over the trailing 17 weeks.
         let calendarCutoff = Int(Calendar.current.startOfDay(
-            for: Calendar.current.date(byAdding: .day, value: -118, to: Date()) ?? Date()
+            for: Calendar.current.date(byAdding: .day, value: -118, to: referenceDate) ?? referenceDate
         ).timeIntervalSince1970)
         let calendarDaily: [LeaderboardDailyPoint] = history
             .filter { $0.day >= calendarCutoff && $0.tokens > 0 }
@@ -781,7 +809,7 @@ final class LeaderboardStore {
         modelHistory.sort { $0.points.reduce(0) { $0 + $1.tokens } > $1.points.reduce(0) { $0 + $1.tokens } }
 
         // Season + MMR + efficiency + achievements (all pure/real signals).
-        let season = LeaderboardAnalytics.season()
+        let season = LeaderboardAnalytics.season(at: referenceDate)
         let seasonStart = Int(Calendar.current.startOfDay(for: season.start).timeIntervalSince1970)
         let seasonTokens = history.filter { $0.day >= seasonStart }.reduce(0) { $0 + $1.tokens }
         let activeDays = history.suffix(30).filter { $0.tokens > 0 }.count
@@ -830,6 +858,7 @@ final class LeaderboardStore {
         // engine grid (e.g. LocalServer-triggered syncs); AppDelegate passes
         // a fresh 4-week grid on every heavy tick.
         let previousHourly = entries.first(where: { $0.isLocal })?.breakdown?.hourly ?? []
+        let previousHistory = entries.first(where: { $0.isLocal })?.breakdown?.hourlyHistory ?? []
         let localBreakdown = LeaderboardUsageBreakdown(
             models: modelBreakdowns,
             tools: toolBreakdowns,
@@ -840,7 +869,10 @@ final class LeaderboardStore {
             hourly: heatmap ?? previousHourly,
             sessions: sessionEntries,
             modelHistory: modelHistory,
-            daily: calendarDaily
+            daily: calendarDaily,
+            hourlyHistory: (hourlyHistory ?? previousHistory).map {
+                LeaderboardHourlyPoint(hour: $0.hour, tokens: $0.tokens, cost: shareCost ? $0.cost : 0)
+            }
         )
 
         let local = LeaderboardEntry(
@@ -871,7 +903,8 @@ final class LeaderboardStore {
             requestsAll: snapshot.requestsAllTime,
             seasonId: season.id,
             seasonTokens: seasonTokens,
-            achievements: achievements
+            achievements: achievements,
+            collectedAt: collectedAt
         )
 
         // Clear prior local entries to keep exactly one primary local
@@ -1588,7 +1621,11 @@ final class LeaderboardStore {
                 hourly: hourly,
                 sessions: sessions,
                 modelHistory: modelHistory,
-                daily: daily
+                daily: daily,
+                hourlyHistory: (bd["hourlyHistory"] as? [[String: Any]] ?? []).compactMap { point in
+                    guard let hour = point["hour"] as? Int, let tokens = point["tokens"] as? Int else { return nil }
+                    return LeaderboardHourlyPoint(hour: hour, tokens: tokens, cost: point["cost"] as? Double ?? 0)
+                }
             )
         }
 
@@ -1647,7 +1684,8 @@ final class LeaderboardStore {
             seasonId: d["seasonId"] as? String ?? "",
             seasonTokens: d["seasonTokens"] as? Int ?? 0,
             achievements: achievements,
-            snapshots: snapshots
+            snapshots: snapshots,
+            collectedAt: (d["collectedAt"] as? Double).map(Date.init(timeIntervalSince1970:))
         )
     }
 

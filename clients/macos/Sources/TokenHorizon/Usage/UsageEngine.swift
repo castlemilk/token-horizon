@@ -6,6 +6,8 @@ final class UsageEngine {
     private let lock = NSLock()
     private let inputs: UsageEngineInputs?
     private let durableStore: DurableStore
+    /// Only set while the engine lock is held for an atomic sync export.
+    private var collectionDate: Date?
 
     private var claudeFiles: [String: AdditiveFileState] = [:]
     private var codexFiles: [String: CodexFileState] = [:]
@@ -428,26 +430,88 @@ final class UsageEngine {
         return lastSnapshot
     }
 
+    /// One collection and one lock for every value sent by a sync. Capture
+    /// independently changing telemetry/sqlite once too, so totals and their
+    /// original buckets always describe the same generation.
+    func leaderboardData(days: Int = 370, heatmapDays: Int = 28, now: Date? = nil) -> LeaderboardSyncLocalData {
+        lock.lock()
+        defer { lock.unlock() }
+        let now = now ?? Date()
+        collectionDate = now
+        defer { collectionDate = nil }
+        let started = Self.perfNow()
+        let localLLM = localLLMSummary()
+        let opencode = cachedOpencodeLocked()
+        let snapshot = collectLocked(localLLM: localLLM, opencode: opencode)
+        let merged = mergedHourlyLocked(localLLM: localLLM, opencode: opencode)
+        let history = historyLocked(merged: merged, days: days, now: now)
+        let heatmap = activityHeatmapLocked(merged: merged, days: heatmapDays, now: now)
+        let cutoff = Int(Calendar.current.startOfDay(for:
+            Calendar.current.date(byAdding: .day, value: -(Self.modelHistoryDays - 1), to: now) ?? now
+        ).timeIntervalSince1970)
+        let latestHour = Int(now.timeIntervalSince1970) / 3600 * 3600
+        let hourly = merged.keys.filter { $0 >= cutoff && $0 <= latestHour }.sorted().compactMap { hour -> LeaderboardHourlyPoint? in
+            let values = merged[hour]?.values
+            let tokens = values?.reduce(0) { $0 + $1.t } ?? 0
+            let cost = values?.reduce(0.0) { $0 + $1.c } ?? 0
+            guard tokens > 0 || cost > 0 else { return nil }
+            return LeaderboardHourlyPoint(hour: hour, tokens: tokens, cost: cost)
+        }
+        lastSnapshotLock.lock()
+        lastSnapshot = snapshot
+        lastSnapshotLock.unlock()
+        durableStore.saveSnapshot(snapshot)
+        durableStore.saveHistory(points: history.points, streak: history.streak)
+        TokenHorizonTelemetry.shared.recordEngineTick(op: "snapshot", durationSeconds:
+            Self.perfSpanMs(from: started, to: Self.perfNow()) / 1000, filesTracked: trackedFileCountLocked())
+        return LeaderboardSyncLocalData(snapshot: snapshot, history: history.points,
+                                        streak: history.streak, heatmap: heatmap, hourlyHistory: hourly)
+    }
+
     func history(days: Int) -> (points: [HistoryPoint], streak: Int) {
         lock.lock()
         defer { lock.unlock() }
         let t0 = Self.perfNow()
         _ = collectLocked()
         let merged = mergedHourlyLocked()
+        let result = historyLocked(merged: merged, days: days, now: Date())
+        let t1 = Self.perfNow()
+        durableStore.saveHistory(points: result.points, streak: result.streak)
+        TokenHorizonTelemetry.shared.recordEngineTick(op: "history", durationSeconds:
+            Self.perfSpanMs(from: t0, to: t1) / 1000, filesTracked: trackedFileCountLocked())
+        if Self.perfLogEnabled {
+            NSLog("[Perf] history(%dd) collect+aggregate=%.1fms save=%.1fms",
+                  days, Self.perfSpanMs(from: t0, to: t1), Self.perfSpanMs(from: t1, to: Self.perfNow()))
+        }
+        return result
+    }
 
+    private func historyLocked(merged: [Int: [String: (t: Int, c: Double)]],
+                               days: Int, now: Date) -> (points: [HistoryPoint], streak: Int) {
         let cal = Calendar.current
+        // Build each local day once. The atomic export runs on heavy refresh
+        // too; rescanning every hourly bucket for each of 370 days would make
+        // an otherwise idle refresh unnecessarily expensive.
+        var liveByDay: [Int: HistoryPoint] = [:]
+        for (hour, tools) in merged {
+            let day = dayStartLocked(forHour: hour)
+            var point = liveByDay[day] ?? HistoryPoint(day: day, tokens: 0, cost: 0, byTool: [:])
+            for (tool, value) in tools {
+                point.tokens += value.t
+                point.cost += value.c
+                point.byTool[tool, default: 0] += value.t
+            }
+            liveByDay[day] = point
+        }
         var points: [HistoryPoint] = []
-        for offset in (0..<days).reversed() {
-            guard let date = cal.date(byAdding: .day, value: -offset, to: Date()) else { continue }
+        for offset in (0..<max(0, days)).reversed() {
+            guard let date = cal.date(byAdding: .day, value: -offset, to: now) else { continue }
             let startDay = cal.startOfDay(for: date)
             let start = Int(startDay.timeIntervalSince1970)
-            // Calendar-day end (DST-safe): a fixed +86400 would drop or
-            // borrow an hour on 23/25-hour days.
-            let endDay = cal.date(byAdding: .day, value: 1, to: startDay) ?? startDay.addingTimeInterval(86_400)
-            points.append(aggregate(merged, from: start, to: Int(endDay.timeIntervalSince1970)))
+            points.append(liveByDay[start] ?? HistoryPoint(day: start, tokens: 0, cost: 0, byTool: [:]))
         }
 
-        let today = todayBucket()
+        let today = Int(cal.startOfDay(for: now).timeIntervalSince1970)
         // Durable overlay, shared by the points fill above and the streak
         // walk below: pruned-file days count in both, so the heatmap and
         // the streak can never disagree about the past.
@@ -464,22 +528,14 @@ final class UsageEngine {
             }
         }
 
-        let streak = Self.streakDays(today: today) { day in
-            let live = dayTokens(merged, day)
+        let streak = Self.streakDays(today: today, calendar: cal) { day in
+            let live = liveByDay[day]?.tokens ?? 0
             if day < today, live == 0, let cached = storedByDay[day], cached.tokens > 0 {
                 return cached.tokens
             }
             return live
         }
 
-        let t1 = Self.perfNow()
-        durableStore.saveHistory(points: points, streak: streak)
-        TokenHorizonTelemetry.shared.recordEngineTick(op: "history", durationSeconds: Self.perfSpanMs(from: t0, to: t1) / 1000, filesTracked: trackedFileCountLocked())
-        if Self.perfLogEnabled {
-            NSLog("[Perf] history(%dd) collect+aggregate=%.1fms save=%.1fms",
-                  days, Self.perfSpanMs(from: t0, to: t1),
-                  Self.perfSpanMs(from: t1, to: Self.perfNow()))
-        }
         return (points, streak)
     }
 
@@ -553,13 +609,18 @@ final class UsageEngine {
     /// Consecutive active days ending today (or yesterday when today is
     /// still empty — the grace rule). Pure for testability: `tokensOn` maps
     /// a day-start bucket to that day's tokens.
-    static func streakDays(today: Int, tokensOn: (Int) -> Int) -> Int {
+    static func streakDays(today: Int, calendar: Calendar = .current, tokensOn: (Int) -> Int) -> Int {
+        func previousDay(_ day: Int) -> Int {
+            let date = Date(timeIntervalSince1970: TimeInterval(day))
+            return calendar.date(byAdding: .day, value: -1, to: date)
+                .map { Int($0.timeIntervalSince1970) } ?? (day - 86_400)
+        }
         var streak = 0
         var cursor = today
-        if tokensOn(cursor) == 0 { cursor -= 86_400 }
+        if tokensOn(cursor) == 0 { cursor = previousDay(cursor) }
         while tokensOn(cursor) > 0 {
             streak += 1
-            cursor -= 86_400
+            cursor = previousDay(cursor)
         }
         return streak
     }
@@ -602,8 +663,13 @@ final class UsageEngine {
         defer { lock.unlock() }
         _ = collectLocked()
         let merged = mergedHourlyLocked()
+        return activityHeatmapLocked(merged: merged, days: days, now: Date())
+    }
+
+    private func activityHeatmapLocked(merged: [Int: [String: (t: Int, c: Double)]],
+                                       days: Int, now: Date) -> [[Int]] {
         let cal = Calendar.current
-        let start = cal.startOfDay(for: cal.date(byAdding: .day, value: -(max(1, days) - 1), to: Date()) ?? Date())
+        let start = cal.startOfDay(for: cal.date(byAdding: .day, value: -(max(1, days) - 1), to: now) ?? now)
         let startTs = Int(start.timeIntervalSince1970)
         var grid = Array(repeating: Array(repeating: 0, count: 24), count: 7)
         for (hour, tools) in merged where hour >= startTs {
@@ -620,7 +686,8 @@ final class UsageEngine {
         return grid
     }
 
-    private func mergedHourlyLocked() -> [Int: [String: (t: Int, c: Double)]] {
+    private func mergedHourlyLocked(localLLM: LocalLLMSummary? = nil,
+                                    opencode: OpencodeSnapshot? = nil) -> [Int: [String: (t: Int, c: Double)]] {
         var merged: [Int: [String: (t: Int, c: Double)]] = [:]
         func add(_ hour: Int, _ tool: String, _ tokens: Int, _ cost: Double) {
             guard tokens > 0 || cost > 0 else { return }
@@ -634,9 +701,9 @@ final class UsageEngine {
             for (h, b) in st.buckets { add(h, tool, b.tokens, b.cost) }
         }
         for (_, st) in codexFiles { for (h, b) in st.buckets { add(h, "codex", b.tokens, 0) } }
-        let localllm = localLLMSummary()
+        let localllm = localLLM ?? localLLMSummary()
         for (h, tokens) in localllm.hourlyBuckets { add(h, "ollama", tokens, 0) }
-        for (day, tokens, cost) in cachedOpencodeLocked().hourly { add(day, "opencode", tokens, cost) }
+        for (day, tokens, cost) in (opencode ?? cachedOpencodeLocked()).hourly { add(day, "opencode", tokens, cost) }
         return merged
     }
 
@@ -671,9 +738,9 @@ final class UsageEngine {
         sqlite3_finalize(stmt)
     }
 
-    private func collectLocked() -> UsageSnapshot {
+    private func collectLocked(localLLM: LocalLLMSummary? = nil, opencode: OpencodeSnapshot? = nil) -> UsageSnapshot {
         var snap = UsageSnapshot()
-        snap.updatedAt = Date()
+        snap.updatedAt = collectionDate ?? Date()
         var tools: [ToolUsage] = []
         var mergedModelDays: [String: [Int: Int]] = [:]
         var ph = PhaseTimer()
@@ -725,7 +792,7 @@ final class UsageEngine {
         if inputs?.watchesFiles ?? true { watcher.sync(roots: spec.map(\.root)) }
         func due(_ s: String) -> Bool { pending.contains("*") || pending.contains(s) }
 
-        let opencode = cachedOpencodeLocked()
+        let opencode = opencode ?? cachedOpencodeLocked()
         if let oc = opencode.sums {
             tools.append(ToolUsage(tool: "opencode",
                                    tokensToday: oc.todayTokens, tokensAllTime: oc.allTokens,
@@ -984,7 +1051,7 @@ final class UsageEngine {
         }
         ph.mark("devin")
 
-        let localllm = localLLMSummary()
+        let localllm = localLLM ?? localLLMSummary()
         if localllm.allTokens > 0 {
             var ollamaRequestsAll = 0
             for (_, v) in localllm.models { ollamaRequestsAll += v.messages }
@@ -1317,7 +1384,7 @@ final class UsageEngine {
     }
 
     private func todayBucket() -> Int {
-        Int(Calendar.current.startOfDay(for: Date()).timeIntervalSince1970)
+        Int(Calendar.current.startOfDay(for: collectionDate ?? Date()).timeIntervalSince1970)
     }
 
     /// Local day-start for an epoch-hour bucket, memoized. Buckets are
@@ -1366,7 +1433,7 @@ final class UsageEngine {
     }
 
     private func currentHour() -> Int {
-        Int(Date().timeIntervalSince1970 / 3600) * 3600
+        Int((collectionDate ?? Date()).timeIntervalSince1970 / 3600) * 3600
     }
 
     private func cachedFiles(in dir: String, suffix: String = ".jsonl", excluding: Set<String> = []) -> [String] {
@@ -2560,7 +2627,7 @@ final class UsageEngine {
     }
 
     private func localLLMSummary() -> LocalLLMSummary {
-        inputs?.localLLMSummary() ?? OllamaTelemetryStore.shared.summary()
+        inputs?.localLLMSummary() ?? OllamaTelemetryStore.shared.summary(now: collectionDate ?? Date())
     }
 
     private func opencodeFingerprint() -> String {
@@ -2580,9 +2647,19 @@ final class UsageEngine {
     }
 
     private func cachedOpencodeLocked() -> OpencodeSnapshot {
-        let fp = opencodeFingerprint()
+        let fp = "\(todayBucket())|\(opencodeFingerprint())"
         if let c = opencodeCache, c.fingerprint == fp { return c }
         var snap = OpencodeSnapshot(fingerprint: fp, sums: nil, models: [], hourly: [], projects: [])
+        guard let database = openDB() else {
+            opencodeCache = snap
+            return snap
+        }
+        // All aggregate queries must see the same SQLite read snapshot even
+        // while the provider writes its WAL between individual statements.
+        guard sqlite3_exec(database, "BEGIN DEFERRED TRANSACTION", nil, nil, nil) == SQLITE_OK else {
+            return opencodeCache ?? snap
+        }
+        defer { sqlite3_exec(database, "ROLLBACK", nil, nil, nil) }
         snap.models = modelUsageQuery()
         if var sums = opencodeUsageQuery() {
             sums.requestsAll = snap.models.reduce(0) { $0 + $1.requestsAll }

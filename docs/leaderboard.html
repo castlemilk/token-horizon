@@ -2312,17 +2312,20 @@ function rowHtml(r, local) {
   </tr>`;
 }
 function aggregateHistory(rows) {
-  const len = Math.max(0, ...rows.map(r => (r.entry.breakdown?.history || []).length));
-  const points = [];
-  for (let i = 0; i < len; i++) {
-    let tokens = 0, cost = 0, label = "";
-    for (const r of rows) {
-      const hst = r.entry.breakdown?.history || [];
-      if (hst[i]) { tokens += hst[i].tokens || 0; cost += hst[i].cost || 0; label = hst[i].dayLabel || label; }
+  const points = new Map();
+  for (const r of rows) {
+    for (const point of r.entry.breakdown?.history || []) {
+      const day = profileDay(point?.day);
+      if (!day) continue;
+      if (!points.has(day)) points.set(day, { day, value: 0, cost: 0 });
+      const total = points.get(day);
+      total.value += profileNumber(point.tokens);
+      total.cost += profileNumber(point.cost);
     }
-    points.push({ label: label || `D${i + 1}`, value: tokens, cost });
   }
-  return points;
+  return [...points.values()].sort((a, b) => a.day - b.day).map(point => ({ ...point,
+    label: new Date(point.day * 1000).toLocaleDateString(undefined, { month: "short", day: "numeric", timeZone: "UTC" })
+  }));
 }
 function aggregateModels(rows) {
   const map = new Map();

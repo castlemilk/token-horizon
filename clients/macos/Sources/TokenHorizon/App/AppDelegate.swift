@@ -77,6 +77,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                                   return (live.all, live.byCPU, live.byMem, live.byDisk, live.byNet)
                               },
                               heatmapProvider: { [engine] days in engine.activityHeatmap(days: days) },
+                              leaderboardDataProvider: { [engine] in engine.leaderboardData() },
                              onEvent: { [weak self] ev in
                                  EventStore.shared.add(ev)
                                  DispatchQueue.main.async {
@@ -119,15 +120,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         LeaderboardSyncController.shared.configureCollector { [weak self] completion in
             DispatchQueue.global(qos: .utility).async { [weak self] in
                 guard let self else { return }
-                let usage = self.engine.snapshot()
-                let history = self.engine.history(days: 370)
-                let heatmap = self.engine.activityHeatmap(days: 28)
-                completion(.success(LeaderboardSyncLocalData(snapshot: usage, history: history.points,
-                                                            streak: history.streak, heatmap: heatmap)))
+                let data = self.engine.leaderboardData()
+                completion(.success(data))
                 DispatchQueue.main.async {
-                    self.model.usage = usage
-                    self.model.historyPoints = history.points
-                    self.model.historyStreak = history.streak
+                    self.applyLeaderboardData(data)
                     self.publishWidget()
                 }
             }
@@ -503,19 +499,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     }
 
     private func performHeavyRefresh() {
-        let history = model.historyPoints
-        let streak = model.historyStreak
         KimiLimitsEngine.shared.refreshIfDue(maxAge: 30)
         PlanLimitsEngine.shared.refreshIfDue(maxAge: 30)
         refreshQueue.async { [weak self] in
             guard let self else { return }
-            let usage = self.engine.snapshot()
+            let data = self.engine.leaderboardData()
             let procs = SystemStats.processSamples()
             let containers = DockerObserver.sampleContainers()
-            LeaderboardStore.shared.syncLocal(snapshot: usage, history: history, streak: streak)
+            LeaderboardStore.shared.syncLocal(data)
             let rankings = LeaderboardStore.shared.rankings(for: .today)
             DispatchQueue.main.async {
-                self.model.usage = usage
+                self.applyLeaderboardData(data)
                 self.publishWidget()
                 self.model.storeProcesses(all: procs.all, byCPU: procs.byCPU, byMem: procs.byMem,
                                           byDisk: procs.byDisk, byNet: procs.byNet)
@@ -554,41 +548,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     }
 
     func refreshHistory() {
-        DispatchQueue.main.async { [weak self] in
-            guard let self else { return }
-            let usage = self.model.usage
-            self.refreshQueue.async {
-                let result = self.engine.history(days: 370)
-                let heatmap = self.engine.activityHeatmap(days: 28)
-                // A preceding collector may have finished while its main
-                // publication is queued. Prefer the engine's locked current
-                // value so a startup history refresh cannot restage old usage.
-                let currentUsage = self.engine.cachedSnapshot() ?? usage
-                LeaderboardStore.shared.syncLocal(snapshot: currentUsage, history: result.points,
-                                                  streak: result.streak, heatmap: heatmap)
-                let rankings = LeaderboardStore.shared.rankings(for: .today)
-                DispatchQueue.main.async {
-                    self.model.historyPoints = result.points
-                    self.model.historyStreak = result.streak
-                    self.model.leaderboardRankings = rankings
-                }
-            }
-        }
+        refreshLocalLeaderboard()
     }
 
-    /// Settings changes only restage the captured values; they do not scan
-    /// providers, processes, or Docker, and privacy filtering stays in store.
+    /// A background completion may reach main after a newer manual export.
+    private func applyLeaderboardData(_ data: LeaderboardSyncLocalData) {
+        guard data.snapshot.updatedAt >= model.usage.updatedAt else { return }
+        model.usage = data.snapshot
+        model.historyPoints = data.history
+        model.historyStreak = data.streak
+    }
+
+    /// Stage one coherent generation for profile/privacy changes too. A
+    /// scan is event-gated; never combine cached UI history with fresh totals.
     private func refreshLocalLeaderboard() {
-        let usage = model.usage
-        let history = model.historyPoints
-        let streak = model.historyStreak
         refreshQueue.async {
-            // A queued profile save must not replace a collector's newer
-            // usage totals. This locked cached read performs no provider scan.
-            let currentUsage = self.engine.cachedSnapshot() ?? usage
-            LeaderboardStore.shared.syncLocal(snapshot: currentUsage, history: history, streak: streak)
+            let data = self.engine.leaderboardData()
+            LeaderboardStore.shared.syncLocal(data)
             let rankings = LeaderboardStore.shared.rankings(for: .today)
-            DispatchQueue.main.async { self.model.leaderboardRankings = rankings }
+            DispatchQueue.main.async {
+                self.applyLeaderboardData(data)
+                self.model.leaderboardRankings = rankings
+            }
         }
     }
 

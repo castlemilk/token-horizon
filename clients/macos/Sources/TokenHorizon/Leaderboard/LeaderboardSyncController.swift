@@ -14,6 +14,7 @@ struct LeaderboardSyncLocalData {
     let history: [HistoryPoint]
     let streak: Int
     let heatmap: [[Int]]?
+    var hourlyHistory: [LeaderboardHourlyPoint]?
 }
 
 struct LeaderboardSyncOutcome {
@@ -68,8 +69,7 @@ final class LeaderboardSyncController: ObservableObject {
         collectLocal: Collector? = nil,
         stageLocal: @escaping Stager = { data, completion in
             DispatchQueue.global(qos: .utility).async {
-                LeaderboardStore.shared.syncLocal(snapshot: data.snapshot, history: data.history,
-                                                  streak: data.streak, heatmap: data.heatmap)
+                LeaderboardStore.shared.syncLocal(data)
                 completion(.success(()))
             }
         },

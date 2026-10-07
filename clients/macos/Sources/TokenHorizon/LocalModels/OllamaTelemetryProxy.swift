@@ -184,13 +184,13 @@ final class OllamaTelemetryStore {
         return (todayTokens, rec.totalTokens, rec.messages)
     }
 
-    func summary() -> LocalLLMSummary {
+    func summary(now: Date = Date()) -> LocalLLMSummary {
         lock.lock()
         ensureLoadedLocked()
         let records = usageRecords
         lock.unlock()
 
-        let todayStart = Int(Calendar.current.startOfDay(for: Date()).timeIntervalSince1970)
+        let todayStart = Int(Calendar.current.startOfDay(for: now).timeIntervalSince1970)
         var totalToday = 0
         var totalAll = 0
         var msgToday = 0

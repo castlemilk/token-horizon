@@ -6,6 +6,22 @@ final class WidgetSnapshotTests: XCTestCase {
         Int(Calendar.current.startOfDay(for: Date()).timeIntervalSince1970)
     }
 
+    private static func dayBefore(_ offset: Int, from today: Int, calendar: Calendar = .current) -> Int {
+        let start = Date(timeIntervalSince1970: TimeInterval(today))
+        guard let date = calendar.date(byAdding: .day, value: -offset, to: start) else {
+            XCTFail("Could not construct a calendar-day fixture")
+            return today
+        }
+        return Int(date.timeIntervalSince1970)
+    }
+
+    private func dstFixture() throws -> (calendar: Calendar, now: Date, today: Int) {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try XCTUnwrap(TimeZone(identifier: "Australia/Melbourne"))
+        let now = try XCTUnwrap(calendar.date(from: DateComponents(year: 2026, month: 10, day: 7, hour: 12)))
+        return (calendar, now, Int(calendar.startOfDay(for: now).timeIntervalSince1970))
+    }
+
     func testSnapshotRoundTripAndPrivacy() throws {
         var usage = UsageSnapshot()
         usage.tokensToday = 1234
@@ -66,7 +82,7 @@ final class WidgetSnapshotTests: XCTestCase {
     func testDailyStacksSplitPerProvider() {
         let today = Self.dayZero
         let history = [
-            HistoryPoint(day: today - 86_400, tokens: 100, cost: 0, byTool: ["claude": 70, "codex": 30]),
+            HistoryPoint(day: Self.dayBefore(1, from: today), tokens: 100, cost: 0, byTool: ["claude": 70, "codex": 30]),
             HistoryPoint(day: today, tokens: 50, cost: 0, byTool: ["claude": 50])
         ]
         let snapshot = WidgetBridge.makeSnapshot(usage: .empty, history: history, limits: [], preferences: WidgetPreferences())
@@ -90,12 +106,14 @@ final class WidgetSnapshotTests: XCTestCase {
         XCTAssertEqual(snapshot.hourly.last?.byProvider["codex"], 10)
     }
 
-    func testWeeklyBucketsAggregateSevenDays() {
-        let today = Self.dayZero
+    func testWeeklyBucketsAggregateSevenDays() throws {
+        let fixture = try dstFixture()
         let history = (0..<28).map { offset in
-            HistoryPoint(day: today - offset * 86_400, tokens: 10, cost: 0, byTool: ["claude": 10])
+            HistoryPoint(day: Self.dayBefore(offset, from: fixture.today, calendar: fixture.calendar),
+                         tokens: 10, cost: 0, byTool: ["claude": 10])
         }
-        let snapshot = WidgetBridge.makeSnapshot(usage: .empty, history: history, limits: [], preferences: WidgetPreferences())
+        let snapshot = WidgetBridge.makeSnapshot(usage: .empty, history: history, limits: [], preferences: WidgetPreferences(),
+                                                 now: fixture.now, calendar: fixture.calendar)
         XCTAssertEqual(snapshot.weeks.count, WidgetSnapshot.heatmapWeeks)
         let currentWeek = snapshot.weeks[WidgetSnapshot.heatmapWeeks - 1]
         XCTAssertEqual(currentWeek.tokens, 70)
@@ -116,13 +134,15 @@ final class WidgetSnapshotTests: XCTestCase {
         XCTAssertEqual(todayStack.values.reduce(0, +), byTool.values.reduce(0, +))
     }
 
-    func testHeatmapTrailingWeeksOldestFirst() {
-        let today = Self.dayZero
+    func testHeatmapTrailingWeeksOldestFirst() throws {
+        let fixture = try dstFixture()
         let history = [
-            HistoryPoint(day: today, tokens: 42, cost: 0, byTool: [:]),
-            HistoryPoint(day: today - 86_400 * (WidgetSnapshot.heatmapWeeks * 7 - 1), tokens: 7, cost: 0, byTool: [:])
+            HistoryPoint(day: fixture.today, tokens: 42, cost: 0, byTool: [:]),
+            HistoryPoint(day: Self.dayBefore(WidgetSnapshot.heatmapWeeks * 7 - 1, from: fixture.today, calendar: fixture.calendar),
+                         tokens: 7, cost: 0, byTool: [:])
         ]
-        let snapshot = WidgetBridge.makeSnapshot(usage: .empty, history: history, limits: [], preferences: WidgetPreferences())
+        let snapshot = WidgetBridge.makeSnapshot(usage: .empty, history: history, limits: [], preferences: WidgetPreferences(),
+                                                 now: fixture.now, calendar: fixture.calendar)
         XCTAssertEqual(snapshot.heatmap.count, WidgetSnapshot.heatmapWeeks * 7)
         XCTAssertEqual(snapshot.heatmap.last, 42)
         XCTAssertEqual(snapshot.heatmap.first, 7)
