@@ -2,6 +2,7 @@ import { resolveChromium } from './playwright.mjs';
 
 const chromium = await resolveChromium();
 import path from 'path';
+import assert from 'node:assert/strict';
 
 /**
  * Hermetic UI regression for the Token Horizon dashboard. All API calls are
@@ -296,6 +297,7 @@ async function verifyStartupResilience(browser, filePath) {
       if (view === 'models') {
         if (requests.includes('/api/leaderboard')) throw new Error('Model catalog still depends on leaderboard startup');
         await tab.fill('#mx-q', 'Opus');
+        await waitForModelSearch(tab, 'Opus');
         await tab.waitForFunction(() => [...document.querySelectorAll('#mx-rows .mx-name')].every(e => /Opus/.test(e.textContent)));
       }
       await tab.getByRole('button', { name: 'Sign in', exact: true }).click();
@@ -434,6 +436,16 @@ async function verifyStalledBodies(browser, filePath) {
       console.log('   ' + source + ' body: deadline abort and ' + (source === 'primary' ? 'snapshot fallback' : 'visible failure/retry') + ' passed');
     } finally { await ctx.close(); }
   }));
+}
+
+// The input value changes before the 90ms debounce commits mx.query. Waiting
+// for a smaller row count alone can also accept results from a previous query.
+async function waitForModelSearch(page, query, options = {}) {
+  await page.waitForFunction(query => {
+    const mx = state.mx;
+    return mx?.query === query
+      && document.querySelector('#mx-shown')?.textContent === `${mx.filtered.length.toLocaleString()} of ${mx.models.length.toLocaleString()} models`;
+  }, query, options);
 }
 
 async function run() {
@@ -883,11 +895,37 @@ async function run() {
   }));
   if (windowing.dom >= windowing.total) throw new Error(`List is not windowed: ${windowing.dom}/${windowing.total} rows in DOM`);
   if (windowing.spacer < windowing.total * 60) throw new Error('Spacer height does not cover the full list');
-  // Fuzzy search narrows via the vendored Fuse index.
+  // Hold the actual debounce callback so this regression does not depend on
+  // runner speed. The typed input must not count as a completed search.
+  await page.evaluate(() => {
+    const original = window.setTimeout;
+    window.setTimeout = (callback, delay, ...args) => {
+      if (delay === 90) {
+        window.setTimeout = original;
+        window.__releaseModelSearch = () => callback(...args);
+        return 0;
+      }
+      return original(callback, delay, ...args);
+    };
+  });
   await page.fill('#mx-q', 'deepseek test 3');
-  await page.waitForTimeout(250);
+  await page.waitForFunction(() => typeof window.__releaseModelSearch === 'function');
+  const pendingSearch = await page.evaluate(() => ({ query: state.mx.query, n: state.mx.filtered.length }));
+  assert.equal(pendingSearch.query, '');
+  assert.equal(pendingSearch.n, windowing.total, 'Debounce must still be pending');
+  try {
+    await assert.rejects(waitForModelSearch(page, 'deepseek test 3', { timeout: 100 }), { name: 'TimeoutError' });
+  } finally {
+    await page.evaluate(() => { window.__releaseModelSearch(); delete window.__releaseModelSearch; });
+  }
+  // Fuzzy search narrows via the vendored Fuse index after the commit.
+  await waitForModelSearch(page, 'deepseek test 3');
   const search = await page.evaluate(() => ({ n: state.mx.filtered.length, shown: `${state.mx.filtered.length} of ${state.mx.models.length}` }));
   if (search.n === 0 || search.n >= 72) throw new Error(`Search did not narrow: ${JSON.stringify(search)}`);
+  const searchModels = await page.evaluate(() => state.mx.filtered.map(m => ({ id: m.id, provider: m.provider })));
+  assert.equal(searchModels[0].id, 'deepseek/model-3', 'Exact model should lead fuzzy results');
+  assert.ok(searchModels.every(m => m.provider === 'deepseek'), 'Search must exclude unrelated providers');
+  console.log(`   delayed debounce: ${pendingSearch.n} pending → ${search.n} committed results`);
   // Scope chip filtering (reset the query first so only the scope applies).
   await page.click('#mx-clear');
   await page.waitForTimeout(120);
@@ -1050,7 +1088,7 @@ async function run() {
   await page.click('#mx-head .mx-head-cell[data-col="input"]');
   await page.waitForTimeout(200);
   await page.fill('#mx-q', 'claude opus');
-  await page.waitForTimeout(250);
+  await waitForModelSearch(page, 'claude opus');
   const flatSearch = await page.evaluate(() => state.mx.filtered.length);
   if (flatSearch === 0 || flatSearch > 10) throw new Error(`Flat search did not narrow: ${flatSearch}`);
   // Provider deep link filters the flat list straight from the URL.
@@ -1184,7 +1222,7 @@ async function run() {
   await page.locator('.mx-compare-check').nth(4).click();
   if (await page.locator('.mx-compare-check:checked').count() !== 4) throw new Error('Comparison exceeded four models');
   await page.fill('#mx-q','no-such-model-xxzz');
-  await page.waitForTimeout(180);
+  await waitForModelSearch(page, 'no-such-model-xxzz');
   if (await page.locator('[data-uncompare]').count() !== 4) throw new Error('Search cleared model selections');
   await page.click('#mx-compare-open');
   await page.waitForSelector('#mx-comparison[open]');
