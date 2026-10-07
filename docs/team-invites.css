@@ -234,3 +234,23 @@ body[data-surface="invite"] .ti-invite-content .ti-privacy-note { margin-top: 22
 .th-team-invites .ti-success-label{background:var(--th-selected,#edf6ed);color:var(--ti-green);border-color:var(--ti-rule)}
 .th-team-invites .ti-switch-note{border:1px solid var(--th-rule);border-radius:8px;padding:12px;color:var(--ti-ink);background:var(--th-surface-2,#f3f4ef)}
 @media(min-width:651px){.th-team-invites .ti-close{background:var(--th-surface-2,#f3f4ef);color:var(--ti-ink);border-color:var(--ti-rule);width:36px;height:36px}.th-team-invites .ti-close:hover{background:var(--th-hover,#e6ede3);color:var(--ti-ink)}}
+
+/* Owner controls remain readable when links and names are long. */
+@media(max-width:650px){
+  .th-team-invites .ti-manager-content{padding:22px 20px}
+  .th-team-invites .ti-manager-art{padding:22px 20px}
+  .ti-art-brand{padding-right:44px;letter-spacing:-.035em}
+  .th-team-invites .ti-manager-content h2{font-size:26px;letter-spacing:-.035em}
+  .th-team-invites .ti-manager-content header p,.th-team-invites .ti-manager-body>p,.th-team-invites .ti-member-note p{font-size:14px;line-height:1.6}
+  .th-team-invites .ti-manager-body form label{font-size:14px}
+  .th-team-invites :is(.ti-name-control input,.ti-link-control input){min-height:44px;font-size:16px}
+  .th-team-invites :is(.ti-field-help,.ti-no-links span,.ti-privacy-note,.ti-status,.ti-invite-meta,.ti-link-footer,.ti-team-details p){font-size:12px}
+  .th-team-invites .ti-text-button,.th-team-invites .ti-link-footer .ti-revoke{min-height:44px;font-size:13px!important}
+  .th-team-invites .ti-link-control .ti-copy-button{font-size:13px;padding-inline:12px}
+  .ti-invite-meta{flex-wrap:wrap;gap:6px 12px}
+  .ti-invite-meta time{white-space:normal}
+  .ti-team-details>div:last-child{min-width:0}
+  .ti-link-footer{align-items:center;gap:4px 12px}
+  .th-team-invites .ti-invite-content>p:not(.ti-join-help){font-size:14px;line-height:1.65}
+  .th-team-invites .ti-invite-content h1{letter-spacing:-.035em}
+}

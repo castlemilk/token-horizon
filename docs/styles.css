@@ -231,3 +231,44 @@ h1 em { font-style: normal; background: linear-gradient(92deg, var(--cyan), var(
   .docs-nav { position: static; flex-direction: row; flex-wrap: wrap; }
   .docs-nav .group { display: none; }
 }
+
+/* Read surfaces keep the article ahead of secondary navigation on a phone. */
+body.editorial.reading-page .reading-skip { position: fixed; top: 8px; left: 16px; z-index: 100; padding: 12px 16px; background: var(--th-accent); color: var(--th-accent-ink); transform: translateY(-160%); }
+body.editorial.reading-page .reading-skip:focus { transform: translateY(0); }
+body.editorial.reading-page .docs-contents { position: sticky; top: 102px; align-self: start; }
+body.editorial.reading-page .docs-contents > summary { display: none; }
+body.editorial.reading-page .docs-contents .docs-nav { position: static; }
+body.editorial.reading-page .nav-toggle { position: relative; width: 44px; height: 44px; min-width: 44px; min-height: 44px; font-size: 0; }
+body.editorial.reading-page .nav-toggle::before, body.editorial.reading-page .nav-toggle::after { content: ""; position: absolute; left: 12px; width: 18px; height: 1.5px; background: currentColor; }
+body.editorial.reading-page .nav-toggle::before { top: 17px; }
+body.editorial.reading-page .nav-toggle::after { top: 24px; }
+body.editorial.reading-page .nav-toggle[aria-expanded="true"]::before { top: 21px; transform: rotate(45deg); }
+body.editorial.reading-page .nav-toggle[aria-expanded="true"]::after { top: 21px; transform: rotate(-45deg); }
+body.editorial.reading-page .nav-links a[aria-current="page"] { color: var(--th-signal); text-decoration: underline; text-underline-offset: 5px; }
+body.editorial.reading-page :is(.docs-body, .prose) { overflow-wrap: anywhere; }
+body.editorial.reading-page :is(.docs-body, .prose) pre { min-width: 0; max-width: 100%; overflow-x: auto; }
+@media (max-width: 860px) {
+  body.editorial.reading-page .nav .brand { min-height: 44px; }
+  body.editorial.reading-page .nav-links a { display: flex; align-items: center; min-height: 44px; }
+  body.editorial.reading-page .docs-layout { padding-top: 24px; gap: 24px; }
+  body.editorial.reading-page .docs-contents { position: static; border-bottom: 1px solid var(--th-rule); }
+  body.editorial.reading-page .docs-contents > summary { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 44px; padding: 10px 0; list-style: none; font-size: 16px; cursor: pointer; }
+  body.editorial.reading-page .docs-contents > summary::-webkit-details-marker { display: none; }
+  body.editorial.reading-page .docs-contents > summary > svg { width: 20px; height: 20px; }
+  body.editorial.reading-page .docs-contents[open] > summary > svg { transform: rotate(180deg); }
+  body.editorial.reading-page .docs-contents .docs-nav { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 12px; padding: 0 0 18px; border: 0; }
+  body.editorial.reading-page .docs-contents .docs-nav .group { display: block; grid-column: 1 / -1; margin: 16px 0 4px; font: 13px var(--sans); letter-spacing: 0; text-transform: none; }
+  body.editorial.reading-page .docs-contents .docs-nav a { display: flex; align-items: center; min-width: 0; min-height: 44px; padding: 9px 0; border: 0; border-radius: 0; background: transparent; font-size: 14px; }
+  body.editorial.reading-page .docs-body p, body.editorial.reading-page .docs-body li { font-size: 16px; line-height: 1.75; }
+  body.editorial.reading-page :is(.page, .prose) { padding-top: 28px; }
+  body.editorial.reading-page .page h1 { margin-top: 0; font-size: 32px; }
+  body.editorial.reading-page .page .lede { margin-bottom: 28px; }
+  body.editorial.reading-page .post-card { padding-block: 24px; }
+  body.editorial.reading-page .post-card h2 { font-size: 24px; }
+  body.editorial.reading-page .post-card p { font-size: 16px; }
+  body.editorial.reading-page .prose .meta { margin-bottom: 24px; }
+  body.editorial.reading-page .footer { margin-top: 32px; padding: 24px 18px max(24px, env(safe-area-inset-bottom)); gap: 12px; }
+  body.editorial.reading-page .footer-links { gap: 4px 16px; flex-wrap: wrap; }
+  body.editorial.reading-page .footer-links a { display: inline-flex; align-items: center; min-height: 44px; font-size: 14px; }
+  body.editorial.reading-page :is(.docs-body, .prose) table { display: block; max-width: 100%; overflow-x: auto; }
+}

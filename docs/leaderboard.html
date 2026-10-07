@@ -36,6 +36,17 @@
 <script id="th-seo-schema" type="application/ld+json">{"@context":"https://schema.org","@graph":[{"@type":"Organization","@id":"https://token-horizon.dev/#organization","name":"Token Horizon","url":"https://token-horizon.dev/","logo":{"@type":"ImageObject","url":"https://token-horizon.dev/icon-512.png?v=20261001-2","width":512,"height":512},"sameAs":["https://github.com/castlemilk/token-horizon"]},{"@type":"WebSite","@id":"https://token-horizon.dev/#website","url":"https://token-horizon.dev/","name":"Token Horizon","inLanguage":"en","publisher":{"@id":"https://token-horizon.dev/#organization"}},{"@type":"CollectionPage","@id":"https://token-horizon.dev/leaderboard#webpage","url":"https://token-horizon.dev/leaderboard","name":"AI Usage Leaderboard & Leagues — Token Horizon","description":"Explore opt-in AI usage rankings, league shields, token heatmaps and provider breakdowns. Compare daily, weekly and all-time community activity.","inLanguage":"en","isPartOf":{"@id":"https://token-horizon.dev/#website"},"about":{"@type":"Thing","name":"Community AI token usage rankings"}},{"@type":"BreadcrumbList","@id":"https://token-horizon.dev/leaderboard#breadcrumbs","itemListElement":[{"@type":"ListItem","position":1,"name":"Token Horizon","item":"https://token-horizon.dev/"},{"@type":"ListItem","position":2,"name":"Leaderboard","item":"https://token-horizon.dev/leaderboard"}]}]}</script>
 <script>
 const CANONICAL_API = "https://token-horizon.dev";
+// Capture the effective asset directory before soft navigation changes the URL.
+const PUBLIC_SITE_BASE = new URL(".", document.baseURI);
+// Static mirrors need the same stable base as the Worker-served document, so
+// relative assets and native links survive a soft jump to /project/models/.
+if (!document.querySelector("base")) {
+  const base = document.createElement("base"); base.href = PUBLIC_SITE_BASE.href; document.head.prepend(base);
+}
+function publicSiteBase() { return PUBLIC_SITE_BASE; }
+function isPublicRoute(name) {
+  return location.pathname.replace(/\/$/, "") === new URL(name, PUBLIC_SITE_BASE).pathname.replace(/\/$/, "");
+}
 const API_BASE = (() => {
   const override = new URLSearchParams(location.search).get("api");
   if (override) return override.replace(/\/$/, "");
@@ -52,8 +63,8 @@ const API_BASE = (() => {
   // Request the route's public data before styles, fonts and optional vendors.
   // Fetch later consumes the browser preload; auth is never included here.
   const params = new URLSearchParams(location.search);
-  const modelRoute = /^\/models\/?$/.test(location.pathname) || params.get("flat") === "1" || params.get("view") === "models";
-  const view = /^\/t\/[a-f0-9]{32}\/?$/.test(location.pathname) ? "team" : /^\/login\/?$/.test(location.pathname) ? "login" : /^\/(?:invite|join)\//.test(location.pathname) || params.get("invite") ? "invite" : modelRoute ? "models" : params.get("view") || (params.get("user") || /^\/[us]\//.test(location.pathname) ? "profile" : "leaderboard");
+  const modelRoute = isPublicRoute("models") || params.get("flat") === "1" || params.get("view") === "models";
+  const view = isPublicRoute("teams") ? "teams" : /^\/t\/[a-f0-9]{32}\/?$/.test(location.pathname) ? "team" : /^\/login\/?$/.test(location.pathname) ? "login" : /^\/(?:invite|join)\//.test(location.pathname) || params.get("invite") ? "invite" : modelRoute ? "models" : params.get("view") || (params.get("user") || /^\/[us]\//.test(location.pathname) ? "profile" : "leaderboard");
   let path;
   if (view === "models" && params.get("tab") !== "providers") path = "/api/models/catalog";
   if (view === "profile" || view === "players") {
@@ -612,19 +623,21 @@ body.th-flat .mx-flat-score{display:none}
 .tier:hover,.tier.you{transform:none}
 }
 </style>
-<link rel="stylesheet" href="./discovery.css?v=20261001-3" data-ui-style />
-<link rel="stylesheet" href="./horizon-system.css?v=20261001-4" data-ui-style />
-<link rel="stylesheet" href="./profile.css?v=20261001-2" data-ui-style />
-<link rel="stylesheet" href="./auth.css?v=20261001-6" data-ui-style />
-<link rel="stylesheet" href="./workspace.css?v=20261001" data-ui-style />
+<link rel="stylesheet" href="./discovery.css?v=20261002-mobile-1" data-ui-style />
+<link rel="stylesheet" href="./horizon-system.css?v=20261002-nav-login-1" data-ui-style />
+<link rel="stylesheet" href="./profile.css?v=20261002-mobile-1" data-ui-style />
+<link rel="stylesheet" href="./auth.css?v=20261002-mobile-1" data-ui-style />
+<link rel="stylesheet" href="./workspace.css?v=20261002-purpose-1" data-ui-style />
 <script src="./ui-updates.js?v=20261001" defer></script>
-<link rel="stylesheet" href="./teams.css?v=20261001-5" data-ui-style /><link rel="stylesheet" href="./surfaces.css?v=20261001-4" data-ui-style /><link rel="stylesheet" href="./theme.css?v=20261001-4" data-ui-style /><script src="./theme.js?v=20261001-4" defer></script><link rel="stylesheet" href="./team-flow.css?v=20261001-5" data-ui-style /><link rel="stylesheet" href="./team-blackhole.css?v=20261001-5" data-ui-style />
+<link rel="stylesheet" href="./teams.css?v=20261002-icons-1" data-ui-style /><link rel="stylesheet" href="./surfaces.css?v=20261002-purpose-1" data-ui-style /><link rel="stylesheet" href="./theme.css?v=20261002-mobile-1" data-ui-style /><script src="./theme.js?v=20261001-4" defer></script><link rel="stylesheet" href="./team-flow.css?v=20261002-mobile-1" data-ui-style /><link rel="stylesheet" href="./team-blackhole.css?v=20261001-5" data-ui-style />
+<script src="./icon-actions.js?v=20261002-icons-1"></script>
+<link rel="stylesheet" href="./explore-nav.css?v=20261002-mobile-1" data-ui-style /><script src="./explore-nav.js?v=20261002-purpose-1" defer></script>
 </head>
 <body>
 <a class="discovery-skip" href="#view">Skip to content</a>
 <header class="discovery-header" id="discovery-header">
   <a class="discovery-brand" href="./">Token Horizon</a>
-  <nav id="discovery-navigation" aria-label="Main navigation"><a href="./models/" data-public-view="models">Models</a><a href="./leaderboard.html" data-public-view="leaderboard">Leaderboard</a><a href="?view=teams" data-public-view="teams">Teams</a><a href="?view=leagues" data-public-view="leagues">Leagues</a><a href="./docs/">Docs</a><a href="?view=dashboard" data-public-view="dashboard">Workspace</a><a href="https://github.com/castlemilk/token-horizon">GitHub ↗</a><a class="discovery-install" href="./#install" title="Install Token Horizon">Install app ↗</a></nav>
+  <nav id="discovery-navigation" aria-label="Main navigation"><a href="./models/" data-public-view="models">Models</a><a href="./leaderboard.html" data-public-view="leaderboard">Leaderboard</a><a href="./teams#tm-rankings-title" data-public-view="teams">Teams</a><a href="?view=leagues" data-public-view="leagues">Leagues</a><a href="./docs/">Docs</a><a href="?view=dashboard" data-public-view="dashboard">Workspace</a><a href="https://github.com/castlemilk/token-horizon">GitHub ↗</a><a class="discovery-install" href="./#install" title="Install Token Horizon">Install app ↗</a></nav>
   <div class="discovery-actions" id="discovery-actions"><span data-theme-control></span><button class="discovery-menu-toggle" id="discovery-menu-toggle" type="button" aria-label="Open navigation" aria-expanded="false" aria-controls="discovery-navigation" hidden><span aria-hidden="true"></span><span aria-hidden="true"></span></button></div>
 </header>
 <div class="app">
@@ -773,7 +786,6 @@ const state = {
   googleReady: false,
   googleUnavailable: false,
   chartHosts: [],
-  defaultRules: loadDefaultRules()
 };
 
 /* ---------- tiny DOM helpers ---------- */
@@ -1309,30 +1321,35 @@ function mountCharts() {
 /// Uses TanStack Charts when available, else the SVG stackedArea fallback.
 function stackedUsageChart(data, opts = {}) {
   const labels = data.labels || [];
-  const series = (data.series || []).filter(s => (s.values || []).some(v => v > 0));
+  const series = (data.series || []).filter(s => (s.values || []).some(v => opts.kind === "line" ? v != null && Number.isFinite(v) : v > 0));
   if (!labels.length || !series.length) return `<div class="empty">Collecting model history…</div>`;
   // Brand-aligned colors so every legend item matches its stacked bar.
   if (!opts.preserveColors) assignSeriesColors(series);
   if (!window.TanStackCharts) {
     const id = "fallback-" + (++chartSeq);
     chartFallbacks.set(id, { data, opts });
-    return `<div data-chart-fallback="${id}">${stackedArea(series.map(s => ({ name: s.name, color: s.color, values: s.values })), labels, { height: opts.height || 230 })}</div>`;
+    return `<div data-chart-fallback="${id}">${opts.kind === "line" ? lineUsageSvg(series, labels, opts.height || 230) : stackedArea(series.map(s => ({ name: s.name, color: s.color, values: s.values })), labels, { height: opts.height || 230 })}</div>`;
   }
   const TS = window.TanStackCharts;
   // Content key: identical data reuses both the definition and the mounted
   // host, so re-renders and view switches never rebuild an unchanged scene.
-  const cacheKey = opts.cacheKey || ("usage|" + (opts.height || 230) + "|" + (opts.ariaLabel || "") + "|" +
-    labels.join("\u0001") + "|" + series.map(s => s.name + ":" + (s.values || []).join(",")).join(";"));
+  const cacheKey = opts.cacheKey || ("usage|" + (opts.kind || "bar") + "|" + (opts.height || 230) + "|" + (opts.ariaLabel || "") + "|" +
+    labels.join("\u0001") + "|" + series.map(s => s.name + ":" + (s.values || []).map(value => value == null ? "?" : value).join(",") + ":" + s.color).join(";"));
   let definition = chartDefs.get(cacheKey);
   if (!definition) {
     const rows = [];
     labels.forEach((label, i) => {
-      series.forEach(s => rows.push({ x: label, model: s.name, value: s.values[i] || 0 }));
+      series.forEach((s, index) => rows.push({ x: label, model: String(index), value: opts.kind === "line" ? s.values[i] ?? null : s.values[i] || 0 }));
     });
-    const domain = series.map(s => s.name);
+    const domain = series.map((s, index) => String(index));
+    const seriesLabels = new Map(series.map((s, index) => [String(index), series.some((peer, peerIndex) => peerIndex !== index && peer.name === s.name) ? s.name + " · " + providerLabel(s.provider || "other") : s.name]));
     const range = series.map(s => s.color);
     definition = TS.defineChart({
-      marks: [
+      marks: opts.kind === "line" ? series.map((series, index) => TS.lineY(rows.filter(row => row.model === String(index)), {
+        id: "team-line-" + index, x: "x", y: "value", z: "model", color: "model", strokeWidth: 2.25,
+        strokeDasharray: series.isOther ? "5 4" : undefined,
+        points: labels.length <= 7 || series.values.some((value, i) => value != null && series.values[i - 1] == null && series.values[i + 1] == null)
+      })) : [
         TS.barY(rows, {
           x: "x",
           y: "value",
@@ -1345,9 +1362,10 @@ function stackedUsageChart(data, opts = {}) {
         })
       ],
       scales: {
-        x: { scale: () => TS.scaleBand().padding(0.03), axis: { label: opts.xLabel || "" } },
+        x: { scale: opts.kind === "line" ? TS.scalePoint : () => TS.scaleBand().padding(0.03), axis: { label: opts.xLabel || "" } },
         y: {
           scale: TS.scaleLinear,
+          ...(opts.kind === "line" ? { domain: [0, Math.max(1, ...series.flatMap(series => series.values).filter(value => value != null))] } : {}),
           nice: true,
           grid: true,
           axis: {
@@ -1376,11 +1394,11 @@ function stackedUsageChart(data, opts = {}) {
             title: String(points[0]?.xValue ?? ""),
             rows: [
               ...points.slice().sort((a, b) => Number(b.yValue) - Number(a.yValue)).map(p => ({
-                label: String(p.group ?? p.markId),
+                label: seriesLabels.get(String(p.group)) || String(p.group ?? p.markId),
                 value: fmtTokens(Number(p.yValue || 0)),
                 color: p.color
               })),
-              { label: "Total", value: fmtTokens(total), active: true }
+              { label: opts.kind === "line" ? "Reported total" : "Total", value: fmtTokens(total), active: true }
             ]
           };
         }
@@ -1589,7 +1607,7 @@ function setGoogleSession(s, { refreshShared = true } = {}) {
   const previousIdentity = sessionIdentity(state.googleSession), nextIdentity = sessionIdentity(s);
   if (previousIdentity !== nextIdentity && workspaceAutoHandle && state.currentHandle === workspaceAutoHandle) {
     state.currentHandle = null; workspaceAutoHandle = "";
-    if (state.view === "dashboard") { const url = new URL(location.href); url.searchParams.delete("user"); history.replaceState(history.state, "", url); }
+    if (["dashboard", "billing"].includes(state.view)) { const url = new URL(location.href); url.searchParams.delete("user"); history.replaceState(history.state, "", url); }
   }
   if (s?.serverSession || state.webSessions) authStorage("th_google_session", null);
   else authStorage("th_google_session", s);
@@ -1613,7 +1631,7 @@ function setGoogleSession(s, { refreshShared = true } = {}) {
     if (state.signInPending?.onSuccess) { ++renderVersion; $("#view").innerHTML = '<div class="card" role="status" aria-label="Loading shared report"><div class="skeleton" style="height:300px"></div></div>'; }
     else renderSharedReport(state.sharedReportId, { promptSignIn: false });
   }
-  if (previousIdentity !== nextIdentity && ["dashboard", "invite", "settings", "teams", "team"].includes(state.view)) render();
+  if (previousIdentity !== nextIdentity && ["dashboard", "billing", "invite", "settings", "teams", "team"].includes(state.view)) render();
   if (s?.serverSession && state.view === "players") {
     const identity = nextIdentity;
     loadWorkspaceAccount().then(() => { if (sessionIdentity(state.googleSession) === identity && state.view === "players") render(); });
@@ -1824,21 +1842,24 @@ async function signOut({ switchAccount = false } = {}) {
 }
 function renderAuthSlot() {
   const slot = $("#auth-slot"); if (!slot) return;
+  const hadFocus = slot.contains(document.activeElement);
   if (state.googleSession && state.googleConfig === "ready" && !state.webSessions && !isGoogleSessionValid()) { setGoogleSession(null); return; }
   const s = isGoogleSessionValid() ? state.googleSession : null;
   if (s) {
     slot.innerHTML = `<div class="auth-account"><button class="user-chip" id="user-chip" aria-label="${esc(s.name || s.login || s.email)} ${s.provider === "github" ? "GitHub" : "Google"} account" aria-expanded="false" aria-controls="account-menu" ${state.authBusy ? "disabled" : ""}>${avatar(s.name || s.email || s.login, s.picture, 28)}<span><strong>${esc(s.name || s.login || s.email)}</strong><small>${s.provider === "github" ? "GitHub" : "Google"} account</small></span><span aria-hidden="true">⌄</span></button><div class="auth-account-menu" id="account-menu" hidden><div class="auth-menu-identity">${esc(s.email || "@" + s.login)}</div><button data-account-workspace>Workspace</button><a href="/connect">Manage connections</a><button data-account-switch>Use another account</button><button data-account-signout>Sign out</button></div></div>`;
     const chip = $("#user-chip"), menu = $("#account-menu");
     chip.onclick = () => { menu.hidden = !menu.hidden; chip.setAttribute("aria-expanded", String(!menu.hidden)); if (!menu.hidden) menu.querySelector("button").focus(); };
-    menu.querySelector('[data-account-workspace]').onclick = () => navigate("dashboard");
+    menu.querySelector('[data-account-workspace]').onclick = () => navigate("dashboard", { resetWorkspace: true });
     menu.querySelector('[data-account-switch]').onclick = () => signOut({ switchAccount: true });
     menu.querySelector('[data-account-signout]').onclick = () => signOut();
     menu.onkeydown = e => { if (e.key === "Escape") { menu.hidden = true; chip.setAttribute("aria-expanded", "false"); chip.focus(); } };
+    if (hadFocus) chip.focus({ preventScroll: true });
     return;
   }
   const checking = state.webSessions && state.authStatus === "checking";
   slot.innerHTML = `<button class="pill primary" id="signin-btn">${checking ? '<span class="auth-mini-orbit" aria-hidden="true"></span>' : ""}Sign in</button>`;
   $("#signin-btn").onclick = () => openSignInModal();
+  if (hadFocus) $("#signin-btn").focus({ preventScroll: true });
 }
 document.addEventListener("click", e => { const menu = $("#account-menu"); if (menu && !menu.hidden && !e.target.closest(".auth-account")) { menu.hidden = true; $("#user-chip")?.setAttribute("aria-expanded", "false"); } });
 window.addEventListener("storage", e => {
@@ -1857,8 +1878,8 @@ const NAV = [
   { id: "players", label: "Players", icon: '<circle cx="9" cy="8" r="3.2" stroke="currentColor" stroke-width="1.6" fill="none"/><path d="M3.5 20c0-3.3 2.5-5.5 5.5-5.5s5.5 2.2 5.5 5.5" stroke="currentColor" stroke-width="1.6" fill="none"/><path d="M16 6.5a3 3 0 010 5.8M17.5 14.6c2 .6 3.5 2.3 3.5 4.6" stroke="currentColor" stroke-width="1.6" fill="none"/>' },
   { id: "teams", label: "Teams", icon: '<circle cx="7" cy="9" r="2.6" stroke="currentColor" stroke-width="1.6" fill="none"/><circle cx="17" cy="9" r="2.6" stroke="currentColor" stroke-width="1.6" fill="none"/><path d="M2.5 19c0-2.6 2-4.4 4.5-4.4S11.5 16.4 11.5 19M12.5 19c0-2.6 2-4.4 4.5-4.4s4.5 1.8 4.5 4.4" stroke="currentColor" stroke-width="1.6" fill="none"/>' },
   { id: "models", label: "Models", icon: '<ellipse cx="12" cy="6" rx="7" ry="3" stroke="currentColor" stroke-width="1.6" fill="none"/><path d="M5 6v6c0 1.7 3.1 3 7 3s7-1.3 7-3V6M5 12v6c0 1.7 3.1 3 7 3s7-1.3 7-3v-6" stroke="currentColor" stroke-width="1.6" fill="none"/>' },
-  { id: "billing", label: "Billing", icon: '<rect x="3" y="5" width="18" height="14" rx="2" stroke="currentColor" stroke-width="1.6" fill="none"/><path d="M3 10h18M7 15h4" stroke="currentColor" stroke-width="1.6"/>' },
-  { id: "settings", label: "Settings", icon: '<circle cx="12" cy="12" r="3" stroke="currentColor" stroke-width="1.6" fill="none"/><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M18.4 5.6l-2.1 2.1M7.7 16.3l-2.1 2.1" stroke="currentColor" stroke-width="1.5"/>' }
+  { id: "billing", label: "Model costs", icon: '<path d="M3 20h18M6 16v-4m6 4V5m6 11V8" stroke="currentColor" stroke-width="1.5" stroke-linecap="square"/>' },
+  { id: "settings", label: "Report sharing", icon: '<path d="M12 16V3m-4 4 4-4 4 4M4 13v7h16v-7" stroke="currentColor" stroke-width="1.5" stroke-linecap="square" stroke-linejoin="round"/>' }
 ];
 function renderNav() {
   const modelsNav = $("#models-nav");
@@ -1876,10 +1897,18 @@ function keyActivate(el, fn) {
   });
 }
 function navigate(view, opts = {}) {
+  const focusContent = $("#discovery-header")?.contains(document.activeElement) || $("#nav")?.contains(document.activeElement);
+  window.TokenHorizonExploreNav?.close();
   setDiscoveryNavigation(false, { restoreFocus: Boolean($("#discovery-navigation")?.contains(document.activeElement)) });
+  const previousView = state.view;
   state.view = view;
-  if (view === "dashboard") workspaceAutoHandle = "";
-  if (view === "dashboard" && !opts.handle) state.currentHandle = null;
+  if (view !== "models") { state.flatModels = false; document.body.classList.remove("th-flat"); }
+  const workspaceRoute = ["dashboard", "billing"].includes(view);
+  const retainWorkspace = workspaceRoute && ["dashboard", "billing"].includes(previousView) && !opts.resetWorkspace && !opts.handle;
+  if (workspaceRoute && !retainWorkspace) {
+    workspaceAutoHandle = "";
+    if (!opts.handle) state.currentHandle = null;
+  }
   if (opts.handle) state.currentHandle = opts.handle;
   if (opts.tab) state.profileTab = opts.tab;
   if (opts.teamId) state.teamId = opts.teamId;
@@ -1888,9 +1917,9 @@ function navigate(view, opts = {}) {
   const apiOverride = new URLSearchParams(location.search).get("api");
   if (apiOverride) params.set("api", apiOverride);
   if (state.period !== "today") params.set("period", state.period);
-  if (view !== "leaderboard") params.set("view", view);
+  if (!["leaderboard", "teams"].includes(view)) params.set("view", view);
   const handle = opts.handle || state.currentHandle;
-  if (handle && (view === "players" || view === "dashboard")) params.set("user", handle);
+  if (handle && ["players", "dashboard", "billing", "settings"].includes(view) && !(workspaceRoute && workspaceAutoHandle === handle)) params.set("user", handle);
   if (opts.share) params.set("share", opts.share);
   if (view === "models" && state.modelsTab && state.modelsTab !== "explorer") params.set("tab", state.modelsTab);
   if (view === "models" && mxState().planFilter) params.set("plan", mxState().planFilter);
@@ -1907,18 +1936,56 @@ function navigate(view, opts = {}) {
   const qs = params.toString();
   // /models is a path-routed view: keep it canonical, and leave it for other
   // views (a relative "?view=x" would otherwise stay on /models).
-  const onModelsPath = /^\/(?:login|models|(?:invite|join)\/[^/]+|t\/[^/]+|u\/[^/]+|s\/[^/]+)\/?$/.test(location.pathname);
-  const target = view === "team" && /^[a-f0-9]{32}$/.test(state.teamId || "") ? "/t/" + state.teamId : view === "login" ? "/login" : (view === "players" && handle && location.protocol !== "file:")
+  const onModelsPath = /^\/(?:teams|login|models|(?:invite|join)\/[^/]+|t\/[^/]+|u\/[^/]+|s\/[^/]+)\/?$/.test(location.pathname);
+  const target = view === "teams" ? new URL("teams", publicSiteBase()).pathname + (qs ? "?" + qs : "") : view === "team" && /^[a-f0-9]{32}$/.test(state.teamId || "") ? "/t/" + state.teamId : view === "login" ? "/login" : (view === "players" && handle && location.protocol !== "file:")
     ? "/u/" + encodeURIComponent(handle)  // clean permalink — unfurls with a
                                           // dynamic OG card server-side
+    : (isPublicRoute("teams") || isPublicRoute("models")) && publicSiteBase().pathname !== "/"
+      ? new URL("leaderboard.html", publicSiteBase()).pathname + (qs ? "?" + qs : "")
     : onModelsPath
       ? (view === "models" ? "/models" : "/leaderboard") + (qs ? "?" + qs : "")
       : (qs ? "?" + qs : location.pathname);
-  history.pushState({ view, handle }, "", target);
+  const anchor = ["tm-rankings-title", "tm-analytics"].includes(opts.anchor) ? "#" + opts.anchor : "";
+  history.pushState({ view, handle }, "", opts.publicUrl || target + anchor);
   renderNav();
   render();
+  if (focusContent) $("#view").focus({ preventScroll: true });
 }
+// The shared public navigation retains native hrefs for copying and modified
+// clicks. Handle ordinary clicks in this SPA without a document reload.
+document.addEventListener("tokenhorizon:explore-navigate", event => {
+  const { url, view, modelsTab, teamChart, teamDays, anchor } = event.detail || {};
+  if (!url || !["models", "leaderboard", "teams", "leagues", "players", "dashboard", "billing", "settings"].includes(view)) return;
+  const destination = new URL(url, location.href);
+  if (destination.origin !== location.origin) return;
+  event.preventDefault();
+  const period = ["today", "week", "all", "streak"].includes(destination.searchParams.get("period")) ? destination.searchParams.get("period") : "today";
+  if (period !== state.period) { state.period = period; state.data = null; state.dataSig = ""; }
+  const apiOverride = new URLSearchParams(location.search).get("api");
+  if (apiOverride && !destination.searchParams.has("api")) destination.searchParams.set("api", apiOverride);
+  mxClose({ preserveURL: true });
+  if (view === "teams") {
+    teamAnalyticsView.mode = teamChart === "history" ? "history" : "comparison";
+    teamAnalyticsView.historyDays = [7, 30, 119].includes(Number(teamDays)) ? Number(teamDays) : 30;
+    teamAnalyticsView.historyDay = null;
+  }
+  if (view === "models") {
+    const mx = mxState();
+    mx.planFilter = destination.searchParams.get("plan") || "";
+    mx.pendingProviderFilter = destination.searchParams.get("provider") || "";
+    mx.provider = mx.pendingProviderFilter || "all";
+    mx.pendingModel = destination.searchParams.get("model") || null;
+    mx.pendingProvider = "";
+    mx.query = ""; mx.scope = "all"; mx.sort = "featured"; mx.caps = new Set();
+    mx.tableSort = []; if (mx.table) mx.table.setOptions({ state: { sorting: [] } });
+    mx.mounted = false;
+    state.flatModels = true;
+    document.body.classList.add("th-flat");
+  }
+  navigate(view, { modelsTab: modelsTab || "explorer", anchor, publicUrl: destination.pathname + destination.search + destination.hash });
+});
 window.addEventListener("popstate", () => {
+  window.TokenHorizonExploreNav?.close();
   const p = new URLSearchParams(location.search);
   mxClose({preserveURL:true});
   const period = ["today","week","all","streak"].includes(p.get("period")) ? p.get("period") : "today";
@@ -1928,14 +1995,25 @@ window.addEventListener("popstate", () => {
   const invitePath = location.pathname.match(/^\/(?:invite|join)\/([^\/?#]+)\/?$/);
   const teamPath = location.pathname.match(/^\/t\/([a-f0-9]{32})\/?$/);
   state.teamId = teamPath?.[1] || null;
-  state.view = teamPath ? "team" : invitePath || p.get("invite") ? "invite" : p.get("view") || (/^\/login\/?$/.test(location.pathname) ? "login" : userPath ? "players" : /^\/models\/?$/.test(location.pathname) ? "models" : "leaderboard");
+  state.view = isPublicRoute("teams") ? "teams" : teamPath ? "team" : invitePath || p.get("invite") ? "invite" : p.get("view") || (/^\/login\/?$/.test(location.pathname) ? "login" : userPath ? "players" : isPublicRoute("models") ? "models" : "leaderboard");
   state.modelsTab = ["providers", "plans", "cheapest"].includes(p.get("tab")) ? p.get("tab") : "explorer";
+  state.flatModels = state.view === "models" && (isPublicRoute("models") || p.get("flat") === "1");
+  document.body.classList.toggle("th-flat", state.flatModels);
+  teamAnalyticsView.mode = p.get("teamChart") === "history" ? "history" : "comparison";
+  teamAnalyticsView.historyDays = [7, 30, 119].includes(Number(p.get("teamDays"))) ? Number(p.get("teamDays")) : 30;
+  teamAnalyticsView.historyDay = null;
   const u = p.get("user");
+  workspaceAutoHandle = "";
   state.currentHandle = u || null;
   if (userPath) state.currentHandle = decodeURIComponent(userPath[1]);
-  if (p.get("model")) mxState().pendingModel = p.get("model");
-  if (p.get("provider")) mxState().pendingProviderFilter = p.get("provider");
-  if (p.get("plan")) mxState().planFilter = p.get("plan");
+  if (state.view === "models") {
+    const mx = mxState();
+    mx.pendingModel = p.get("model") || null;
+    mx.pendingProviderFilter = p.get("provider") || "";
+    mx.provider = mx.pendingProviderFilter || "all";
+    mx.planFilter = p.get("plan") || "";
+    mx.mounted = false;
+  }
   renderNav();
   if (sharePath) { renderSharedReport(sharePath[1]); return; }
   render();
@@ -2033,7 +2111,7 @@ function profileLoadingHtml(handle = state.currentHandle) {
 function profileFailureHtml(outcome = state.profileLoad) {
   const missing = outcome?.status === "missing";
   const handle = outcome?.handle || state.currentHandle || "";
-  return `<section class="card pf-load-error" role="alert"><span class="discovery-eyebrow">PUBLIC PROFILE</span><h1>${missing ? "Profile not found." : "This profile couldn’t load."}</h1><p>${missing ? `${handle ? "@" + esc(handle) + " hasn’t published a profile here yet." : "Explore the community to find a builder."}` : "Your profile link is saved. Try again to load the published usage data."}</p>${!missing && outcome?.error ? `<p class="sub">${esc(outcome.error)}</p>` : ""}<div class="pf-load-actions"><button class="pill primary" id="pf-retry" type="button">Try again</button><button class="pill ghost" data-crumb="leaderboard" type="button">Explore builders ↗</button></div></section>`;
+  return `<section class="card pf-load-error" role="alert"><h1>${missing ? "Profile not found." : "This profile couldn’t load."}</h1><p>${missing ? `${handle ? "@" + esc(handle) + " hasn’t published a profile here yet." : "Explore the community to find a builder."}` : "Your profile link is saved. Try again to load the published usage data."}</p>${!missing && outcome?.error ? `<p class="sub">${esc(outcome.error)}</p>` : ""}<div class="pf-load-actions"><button class="pill primary" id="pf-retry" type="button">Try again</button><button class="pill ghost" data-crumb="leaderboard" type="button">Explore builders ↗</button></div></section>`;
 }
 function wireProfileRetry(outcome = state.profileLoad) {
   const retry = $("#pf-retry");
@@ -2147,7 +2225,7 @@ function pageHead(crumb, title, sub, quote) {
 
 function kpiCard(label, value, delta, icon, sub, accent = "#4F8CFF") {
   return `<div class="card kpi" style="--accent:${accent}"><div class="kpi-icon">${icon}</div><div style="min-width:0">
-    <div class="kpi-label">${esc(label)}</div><div class="kpi-value">${esc(value)}</div>
+    <div class="kpi-label">${esc(label)}</div><div class="kpi-value${label === "Top Cost Driver" ? " kpi-value-name" : ""}">${esc(value)}</div>
     <div class="kpi-delta">${delta || (sub ? `<span class="faint">${esc(sub)}</span>` : "")}</div>
   </div></div>`;
 }
@@ -2173,7 +2251,7 @@ function leaderboardTableHtml(d, local) {
   return `<div class="card community-table ${state.moreMetrics ? "more-metrics" : ""}" style="padding:0;overflow:hidden">
     <div class="card-head" style="padding:16px 16px 10px"><h3>Leaderboard <span class="sub">${d.total || 0} players</span></h3>
       <span class="sub">Click a row for the full profile</span></div>
-    <div style="overflow-x:auto"><table id="lb-table"><thead><tr>
+    <div class="table-scroll" role="region" aria-label="Builder rankings" tabindex="0"><table id="lb-table"><thead><tr>
       ${th("rank", "#")}${th("user", "Builder")} ${th("league", "League")}${th("tokens", "Tokens")}${th("input", "Input")}${th("output", "Output")}${th("cost", "Cost")}${th("requests", "Requests")}${th("avg", "Avg / Req", "Average tokens per request in the selected period")}<th>7-day activity</th>${th("efficiency", "Efficiency")}${th("streak", "Streak")}
     </tr></thead><tbody>
     ${sorted.length === 0 ? `<tr><td colspan="12"><div class="empty">No players match your filters.</div></td></tr>` : sorted.map(r => rowHtml(r, local)).join("")}
@@ -2191,7 +2269,7 @@ function communityTeamOptions(rows) {
 }
 function viewLeaderboard() {
   const d = state.data;
-  if (!d) return '<div class="discovery-title"><div><span class="discovery-eyebrow">THE COMMUNITY</span><h1>Community leaderboard</h1><p>See what the community is building with AI.</p></div></div>' + discoveryLoading("Loading community activity", "lb-loading");
+  if (!d) return '<div class="discovery-title"><div><h1>Community leaderboard</h1><p>See what the community is building with AI.</p></div></div>' + discoveryLoading("Loading community activity", "lb-loading");
   const k = d.kpis || {};
   const local = (d.leaderboard || []).find(r => r.entry.isLocal);
   const season = d.season;
@@ -2231,7 +2309,7 @@ function viewLeaderboard() {
   const join = `<section class="community-join"><img src="./assets/landing/community-orbits.webp" alt="" width="600" height="400"/><h2>Your work<br>belongs here.</h2><p>Share a profile when you choose.<br>Your prompts stay private by default.</p><a class="discovery-install" href="./docs/#leaderboard">Join the community ↗</a><button class="community-link" id="community-invite">Invite friends to your team ↗</button><button class="community-link" id="community-account">${state.googleSession ? "Open your workspace" : "Already publishing? Sign in"}</button></section>`;
   const periods = [["today","Today"],["week","7 days"],["all","All time"],["streak","Streak"]];
   const teams = communityTeamOptions(d.leaderboard || []);
-  return `<div class="discovery-title"><div><span class="discovery-eyebrow">BUILD TOGETHER</span><h1>Community leaderboard</h1><p>A shared view of what we are building with AI.</p></div><div class="community-periods" aria-label="Ranking period">${periods.map(([id,label])=>`<button data-period="${id}" aria-pressed="${state.period===id}" class="${state.period===id ? "active" : ""}">${label}</button>`).join("")}</div></div>
+  return `<div class="discovery-title"><div><h1>Community leaderboard</h1><p>A shared view of what we are building with AI.</p></div><div class="community-periods" aria-label="Ranking period">${periods.map(([id,label])=>`<button data-period="${id}" aria-pressed="${state.period===id}" class="${state.period===id ? "active" : ""}">${label}</button>`).join("")}</div></div>
     <div class="community-layout"><div class="community-main">${kpis}<div class="community-tools"><input id="community-search" type="search" aria-label="Find a builder" placeholder="Find a builder…" value="${esc(state.search)}"><select id="community-team" aria-label="Filter builders by team"><option value="all">All teams</option>${teams.map(t=>`<option ${state.teamFilter===t.id?'selected':''} value="${esc(t.id)}">${esc(t.label)}</option>`).join("")}</select><select id="community-league" aria-label="Filter builders by league"><option value="all">All leagues</option>${LEAGUES.map(l=>`<option ${state.leagueFilter===l.id?'selected':''} value="${l.id}">${l.title}</option>`).join("")}</select></div>${table}<div class="community-table-foot"><span>Published profiles · select a builder to explore</span><button class="community-link" id="community-metrics" aria-pressed="${Boolean(state.moreMetrics)}">${state.moreMetrics ? "Fewer" : "More"} metrics</button></div>${overTime}</div><aside class="community-aside">${ladder}${join}<details class="community-extra"><summary>Community highlights</summary>${moversCard}${improvedCard}${mix}</details></aside></div>`;
 
 }
@@ -2358,7 +2436,7 @@ function setDiscoveryNavigation(open, { focusFirst = false, restoreFocus = false
     const account = $("#account-menu");
     if (account) account.hidden = true;
     $("#user-chip")?.setAttribute("aria-expanded", "false");
-    if (focusFirst) nav.querySelector("a")?.focus();
+    if (focusFirst) nav.querySelector("a,button")?.focus();
   } else if (restoreFocus && compact) toggle.focus();
 }
 function initDiscoveryNavigation() {
@@ -2378,14 +2456,14 @@ function initDiscoveryNavigation() {
     if (!header.contains(e.target)) setDiscoveryNavigation(false, { restoreFocus: nav.contains(document.activeElement) });
   });
   document.addEventListener("keydown", e => {
-    if (e.key === "Escape" && header.classList.contains("nav-open")) {
+    if (e.key === "Escape" && !e.defaultPrevented && header.classList.contains("nav-open")) {
       e.preventDefault(); setDiscoveryNavigation(false, { restoreFocus: true });
     }
   });
   discoveryNavigationMedia.addEventListener("change", () => {
     const focused = document.activeElement;
     setDiscoveryNavigation(false, { restoreFocus: nav.contains(focused) });
-    if (!discoveryNavigationMedia.matches && focused === toggle) nav.querySelector("a")?.focus();
+    if (!discoveryNavigationMedia.matches && focused === toggle) nav.querySelector("a,button")?.focus();
   });
 }
 let discoveryMetadataKey = "";
@@ -2396,11 +2474,11 @@ function syncDiscoveryMetadata(profile = null) {
     models: ["AI Model Explorer — Models, Providers & Pricing", "Compare AI models, capabilities, context windows, provider listings and subscription plans in the Token Horizon model catalog.", "/models", "models"],
     login: ["Sign in", "Sign in to Token Horizon to manage your profile, team and shared usage reports.", "/login", "login"],
     invite: ["Join your crew", "Join a friend's team on Token Horizon and build alongside your crew.", "/leaderboard", "connect"],
-    dashboard: ["Your Workspace", "Your Token Horizon workspace for AI usage, observability and optimisation insights.", "/leaderboard?view=dashboard", "workspace"],
-    billing: ["Billing & Usage", "Review your published usage and cost breakdowns in Token Horizon.", "/leaderboard?view=billing", "workspace"],
-    settings: ["Settings", "Manage your Token Horizon profile, teams and sharing settings.", "/leaderboard?view=settings", "workspace"],
+    dashboard: ["Your Workspace", "Analyze published token usage, model cost estimates and activity for a profile.", "/leaderboard?view=dashboard", "workspace"],
+    billing: ["Model costs", "Review your published usage and cost breakdowns in Token Horizon.", "/leaderboard?view=billing", "workspace"],
+    settings: ["Report sharing", "Manage audiences and expiry dates for reports from your published profiles.", "/leaderboard?view=settings", "workspace"],
     shared: ["Shared usage report", "Open a shared Token Horizon usage report with its owner's chosen access controls.", location.pathname, "workspace"],
-    teams: ["Community teams", "Explore team activity in the Token Horizon community.", "/leaderboard?view=teams", "leaderboard"],
+    teams: ["Community teams", "Explore team activity in the Token Horizon community.", "/teams", "leaderboard"],
     leagues: ["AI Usage Leagues", "Explore the seven Token Horizon leagues and follow the community's progress.", "/leaderboard?view=leagues", "leaderboard"],
     players: ["Builder profiles", "Explore the Token Horizon community's published builder profiles.", "/leaderboard", "leaderboard"]
   };
@@ -2436,7 +2514,7 @@ function syncDiscoveryMetadata(profile = null) {
     const team = state.teamInviteMetadata?.token === teamInviteToken() ? state.teamInviteMetadata.team : null;
     const canonical = document.querySelector('link[rel="canonical"]')?.href;
     if (!team && canonical?.startsWith(origin + "/t/")) return;
-    path = team ? "/t/" + team.id : "/leaderboard?view=teams";
+    path = team ? "/t/" + team.id : "/teams";
     if (team) {
       title = "Join " + team.name;
       description = `Your crew is waiting. Join ${fmtNum(team.memberCount)} ${Number(team.memberCount) === 1 ? "member" : "members"} in ${team.name}. Sign in with Google or GitHub to accept the invite.`;
@@ -2469,7 +2547,7 @@ function syncDiscoveryMetadata(profile = null) {
   }
   if (["leaderboard", "models", "teams", "leagues"].includes(view)) schema = { "@context": "https://schema.org", "@type": "CollectionPage", name: title + " — Token Horizon", description, url: origin + path,
     isPartOf: { "@type": "WebSite", name: "Token Horizon", url: origin + "/" } };
-  if (new URLSearchParams(location.search).has("signin")) { noindex = true; schema = null; }
+  if (["signin", "claim"].some(key => new URLSearchParams(location.search).has(key))) { noindex = true; schema = null; }
   // A report's server preview already applies its access and anonymity
   // controls. Retain it only on that exact report's canonical route.
   if (view === "shared" && document.querySelector('link[rel="canonical"]')?.href === origin + path) {
@@ -2505,9 +2583,20 @@ function syncDiscoveryMetadata(profile = null) {
   if (schema) { const node = document.createElement("script"); node.type = "application/ld+json"; node.id = "th-seo-schema"; node.textContent = JSON.stringify(schema); document.head.append(node); }
 }
 function syncDiscoveryChrome() {
+  const skip = $(".discovery-skip");
+  if (skip) {
+    skip.href = location.pathname + location.search + "#view";
+    skip.onclick = event => {
+      if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button) return;
+      event.preventDefault(); const view = $("#view"); view.focus({ preventScroll: true }); view.scrollIntoView({ block: "start" });
+    };
+  }
   const visible = ["leaderboard", "models", "teams", "team", "leagues", "invite", "players", "login"].includes(state.view);
+  const mobileShell = !visible && matchMedia("(max-width: 760px)").matches;
+  const useHeader = visible || mobileShell;
+  document.body.classList.toggle("mobile-shell", mobileShell);
   document.body.classList.toggle("discovery", visible);
-  document.body.dataset.surface = state.view;
+  document.body.dataset.surface = state.view === "billing" ? "dashboard" : state.view;
   if (discoveryNavigationRoute !== state.view) {
     setDiscoveryNavigation(false, { restoreFocus: Boolean($("#discovery-navigation")?.contains(document.activeElement)) });
     discoveryNavigationRoute = state.view;
@@ -2515,17 +2604,19 @@ function syncDiscoveryChrome() {
   syncDiscoveryMetadata();
   $$("[data-public-view]").forEach(a => {
     a.setAttribute("aria-current", (a.dataset.publicView === state.view || a.dataset.publicView === "teams" && state.view === "team") ? "page" : "false");
-    a.onclick = e => { if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return; e.preventDefault(); mxClose(); navigate(a.dataset.publicView); };
+    a.onclick = e => { if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return; e.preventDefault(); mxClose(); navigate(a.dataset.publicView, a.dataset.publicView === "teams" ? { anchor: "tm-rankings-title" } : {}); };
   });
+  window.TokenHorizonExploreNav?.sync();
   const slot = $("#auth-slot");
-  const home = visible ? $("#discovery-actions") : $(".topbar");
+  const home = useHeader ? $("#discovery-actions") : $(".topbar");
   if (slot.parentElement !== home) {
-    if (visible) home.insertBefore(slot, $("#discovery-menu-toggle"));
+    if (useHeader) home.insertBefore(slot, $("#discovery-menu-toggle"));
     else home.append(slot);
   }
-  if (!visible && $("#discovery-header").contains(document.activeElement)) $("#view").focus({ preventScroll: true });
+  if (!useHeader && $("#discovery-header").contains(document.activeElement)) $("#view").focus({ preventScroll: true });
   if (state.view !== "models") $("#mx-compare-tray")?.remove();
 }
+matchMedia("(max-width: 760px)").addEventListener("change", () => syncDiscoveryChrome());
 let renderVersion = 0;
 async function render() {
   if (state.view === "shared" && state.sharedReportId) return renderSharedReport(state.sharedReportId, { promptSignIn: false });
@@ -2550,7 +2641,7 @@ async function render() {
     view.innerHTML = teamLandingLoadingHtml();
   } else if (route === "teams") {
     if (!state.providers) view.innerHTML = teamsLoadingHtml();
-  } else if (route === "dashboard" || route === "invite") {
+  } else if (["dashboard", "billing", "settings", "invite"].includes(route)) {
     view.innerHTML = '<section class="ws-boot" role="status" aria-label="Loading workspace"><div class="skeleton" style="height:32px;width:200px;margin-bottom:28px"></div><div class="skeleton" style="height:300px"></div></section>';
   } else if (route === "players") {
     if (!state.user || String(state.user.handle).toLowerCase() !== String(state.currentHandle || "").toLowerCase()) view.innerHTML = profileLoadingHtml();
@@ -2564,7 +2655,7 @@ async function render() {
       if (!current()) return;
       const handle = state.currentHandle || (state.data?.leaderboard || [])[0]?.entry.handle;
       profileOutcome = await loadUser(handle);
-    } else if (!["models", "teams", "team", "dashboard", "invite", "login"].includes(route)) await ensureData();
+    } else if (!["models", "teams", "team", "dashboard", "billing", "settings", "invite", "login"].includes(route)) await ensureData();
     if (!current()) return;
     chartRegistry.clear();
     chartFallbacks.clear();
@@ -2607,6 +2698,7 @@ async function render() {
   }
   wireCharts();
   mountCharts();
+  if (["teams", "team"].includes(route)) restoreTeamAnchor();
   $$("[data-view-leagues]").forEach(b => b.onclick = () => navigate("leagues"));
   perf.renderMs = performance.now() - t0;
   perf.renderMsTotal += perf.renderMs;
@@ -2925,11 +3017,19 @@ function profileRecent(p) {
   const rows = [...(p.entry.breakdown?.sessions || [])].sort((a, b) => (Number(b.at) || 0) - (Number(a.at) || 0)).slice(0, 5);
   return `<section class="card profile-recent"><div class="card-head"><h3>Recent activity</h3><span class="sub">Published sessions</span></div>${rows.length ? `<div class="profile-session-list">${rows.map(s => `<article><div><time>${s.at ? esc(profileDate(profileDay(s.at))) : "Date not published"}</time><p>${s.title ? esc(s.title) : '<span class="faint">Session title private</span>'}</p><div>${sessionModelChip(s.provider, s.model)}</div></div><strong>${fmtTokens(s.tokens)}<small>tokens</small></strong></article>`).join("")}</div>` : '<div class="empty">No recent sessions published. Session titles remain private unless the owner enables sharing.</div>'}</section>`;
 }
+function profileDayPicker(e) {
+  const anchor = profileAnchor(e);
+  if (!anchor || !profileDaily(e).length) return "";
+  const weekday = (new Date(anchor * 1000).getUTCDay() + 6) % 7;
+  const totals = new Map(profileDaily(e).map(point => [point.day, point.tokens]));
+  const dates = Array.from({ length: 16 * 7 + weekday + 1 }, (_, index) => anchor - index * 86400);
+  return `<label class="profile-day-picker" for="profile-day-select">Inspect a day<select id="profile-day-select" aria-label="Inspect a published activity day"><option value="">Choose a date · UTC</option>${dates.map(day => `<option value="${day}">${esc(profileDate(day))} · ${totals.has(day) ? fmtTokens(totals.get(day)) + " tokens" : "No published usage"}</option>`).join("")}</select></label>`;
+}
 function profileOverview(p) {
   const e = p.entry, days = Number(state.profileWindow) === 7 ? 7 : 30, chart = profileUsageData(e, days), anchor = profileAnchor(e);
   const calendar = calendarHeatmap(profileDaily(e), { utc: true, anchorDay: anchor, minDays: 0, palette: "mineral" });
   return `<section class="card profile-chart"><div class="card-head"><div><h3>Token usage</h3><p class="profile-section-sub">${chart ? fmtTokens(chart.total) + " tokens in this window" : "Published daily usage"}</p></div><div class="profile-window" role="group" aria-label="Usage chart window">${[7, 30].map(n => `<button data-profile-window="${n}" aria-pressed="${days === n}">${n} days</button>`).join("")}</div></div>${chart ? stackedUsageChart(chart, { height: 220, ariaLabel: "Daily token usage by provider", preserveColors: true, hideLegend: true, cacheKey: "profile|" + JSON.stringify([chart.labels, chart.series]) }) : '<div class="empty">Daily history has not been published yet.</div>'}${chart ? `<div class="profile-chart-legend">${chart.series.map(s => `<span><i style="background:${s.color}"></i>${esc(s.name)}</span>`).join("")}</div><div class="profile-chart-note">${chart.series.some(s => s.provider === "unattributed") ? "Gray bars are usage without a published provider breakdown." : "Provider colors follow the measured daily breakdown."} <span>UTC</span></div>` : ""}</section>
-    <section class="card profile-calendar"><div class="card-head"><div><h3>Activity heatmap</h3><p class="profile-section-sub">Select a day to explore its models and sessions</p></div><span class="sub">17 weeks · UTC</span></div>${calendar || '<div class="empty">Daily activity has not been published yet.</div>'}</section>
+    <section class="card profile-calendar"><div class="card-head"><div><h3>Activity heatmap</h3><p class="profile-section-sub">Select a day to explore its models and sessions</p></div><span class="sub">17 weeks · UTC</span></div>${calendar || '<div class="empty">Daily activity has not been published yet.</div>'}${profileDayPicker(e)}</section>
     ${state.profileTab === "usage" ? profileKpis(p) + profileInventory(p, true) : profileInventory(p) + profileRecent(p)}`;
 }
 function profileKpis(p, opts = {}) {
@@ -2962,8 +3062,8 @@ function profileContent(p) {
     for (const s of sessions) cats.set(categorize(s.title), (cats.get(categorize(s.title)) || 0) + (s.tokens || 0));
     const catRows = [...cats.entries()].map(([label, value]) => ({ label, value })).sort((a, b) => b.value - a.value);
     return `<div class="two-col"><div class="card"><div class="card-head"><h3>Top Prompts / Workloads</h3><span class="sub">recent sessions</span></div>
-      <div style="overflow-x:auto"><table><thead><tr><th>#</th><th>Prompt / Workflow</th><th>Model</th><th class="right">Tokens</th><th class="right">Cost</th><th class="right">Requests</th></tr></thead><tbody>
-      ${sessions.map((s, i) => `<tr><td class="faint">${i + 1}</td><td>${s.title ? esc(s.title) : '<span class="faint">title private</span> <span class="chip" style="font-size:9.5px;padding:2px 7px">🔒</span>'}</td><td>${sessionModelChip(s.provider, s.model)}</td><td class="num right">${fmtTokens(s.tokens)}</td><td class="num right">${profileCost(s.cost)}</td><td class="num right">${fmtNum(s.requests)}</td></tr>`).join("") || '<tr><td colspan="6"><div class="empty">Prompt history isn&#39;t published for this profile — owners can enable it in Token Horizon settings.</div></td></tr>'}
+      <div class="table-scroll" role="region" aria-label="Published prompt history" tabindex="0"><table><thead><tr><th>#</th><th>Prompt / Workflow</th><th>Model</th><th class="right">Tokens</th><th class="right">Cost</th><th class="right">Requests</th></tr></thead><tbody>
+      ${sessions.map((s, i) => `<tr><td class="faint">${i + 1}</td><td>${s.title ? esc(s.title) : '<span class="faint">title private</span> <span class="chip" aria-label="Private title">${ICONS.shield}</span>'}</td><td>${sessionModelChip(s.provider, s.model)}</td><td class="num right">${fmtTokens(s.tokens)}</td><td class="num right">${profileCost(s.cost)}</td><td class="num right">${fmtNum(s.requests)}</td></tr>`).join("") || '<tr><td colspan="6"><div class="empty">Prompt history isn&#39;t published for this profile — owners can enable it in Token Horizon settings.</div></td></tr>'}
       </tbody></table></div></div>
       <div class="card"><div class="card-head"><h3>Prompt Categories</h3><span class="sub">keyword-classified</span></div>${barList(catRows, { labelWidth: 130 }) || '<div class="empty">No sessions.</div>'}</div>
     </div>`;
@@ -2972,7 +3072,7 @@ function profileContent(p) {
     const projects = bd.projects || [];
     return `<div class="two-col"><div class="card"><div class="card-head"><h3>Usage by Project / Team</h3></div>${barList(projects.map(p => ({ label: p.project, value: p.tokens, percent: p.tokens / Math.max(1, e.tokensAll) * 100 })), { labelWidth: 140 })}</div>
       <div class="card"><div class="card-head"><h3>Project Detail</h3></div>
-      <div style="overflow-x:auto"><table><thead><tr><th>Project</th><th class="right">Tokens</th><th class="right">Sessions</th><th class="right">Cost</th></tr></thead><tbody>
+      <div class="table-scroll" role="region" aria-label="Published project usage" tabindex="0"><table><thead><tr><th>Project</th><th class="right">Tokens</th><th class="right">Sessions</th><th class="right">Cost</th></tr></thead><tbody>
       ${projects.map(p => `<tr><td>${esc(p.project)}</td><td class="num right">${fmtTokens(p.tokens)}</td><td class="num right">${fmtNum(p.sessions)}</td><td class="num right">${profileCost(p.cost)}</td></tr>`).join("") || '<tr><td colspan="4"><div class="empty">No project data.</div></td></tr>'}
       </tbody></table></div></div></div>`;
   }
@@ -2987,7 +3087,7 @@ function profileContent(p) {
         ${stat("Streak rank", p.ranks?.streak ? "#" + p.ranks.streak : "—", ICONS.fire)}
       </div></div>
       <div class="card"><div class="card-head"><h3>Builders with similar usage</h3><span class="sub">${state.demo ? "Community data unavailable" : "By all-time tokens"}</span></div>
-      <div style="overflow-x:auto"><table><thead><tr><th>${peerPeriod} rank</th><th>User</th><th>League</th><th class="right">Tokens</th><th class="right">Efficiency</th><th class="right">Streak</th></tr></thead><tbody>
+      <div class="table-scroll" role="region" aria-label="Peer comparisons" tabindex="0"><table><thead><tr><th>${peerPeriod} rank</th><th>User</th><th>League</th><th class="right">Tokens</th><th class="right">Efficiency</th><th class="right">Streak</th></tr></thead><tbody>
       ${peers.map(r => `<tr class="clickable" data-handle-link="${esc(r.entry.handle)}"><td class="faint">${r.rank}</td><td><div class="user-cell">${entryAvatar(r.entry, 26)}<span>${esc(r.entry.handle)}</span></div></td><td><span class="chip logo-chip" style="color:${leagueColor(r.league)}">${leagueIcon(r.league, 22)}${esc(leagueMeta(r.league).title)} ${roman(r.division || 3)}</span></td><td class="num right">${fmtTokens(r.entry.tokensAll)}</td><td class="num right">${Math.round(r.efficiency || 0)}</td><td class="num right">🔥 ${r.entry.streakDays || 0}</td></tr>`).join("")}
       </tbody></table></div>${state.profilePeersLoading ? '<p class="sub" role="status">Loading community comparison…</p>' : state.profilePeersError ? '<p class="sub">Community comparison could not load. <button class="profile-text-button" id="pf-peers-retry">Retry comparison</button></p>' : !peers.length ? '<div class="empty">No other builders available to compare.</div>' : ""}</div>`;
   }
@@ -3010,11 +3110,11 @@ function loadTeamModule() {
   if (teamModuleFlight) return teamModuleFlight;
   teamModuleFlight = new Promise((resolve, reject) => {
     const script = document.createElement("script");
-    script.src = "./team-invites.js?v=20261001-5";
+    script.src = "./team-invites.js?v=20261002-1";
     script.async = true;
     const style = document.createElement("link");
     style.rel = "stylesheet";
-    style.href = "./team-invites.css?v=20261001-5";
+    style.href = "./team-invites.css?v=20261002-mobile-1";
     const timer = setTimeout(() => finish(new Error("Invites took too long to load. Please retry.")), 5000);
     function finish(error) {
       clearTimeout(timer);
@@ -3166,7 +3266,7 @@ function loadWorkspaceModule() {
   if (workspaceModuleFlight) return workspaceModuleFlight;
   workspaceModuleFlight = new Promise((resolve, reject) => {
     const script = document.createElement("script");
-    script.src = "./workspace.js?v=20261001";
+    script.src = "./workspace.js?v=20261002-purpose-1";
     script.async = true;
     const timer = setTimeout(() => finish(new Error("Workspace took too long to load.")), 5000);
     function finish(error) {
@@ -3182,9 +3282,10 @@ function loadWorkspaceModule() {
   return workspaceModuleFlight;
 }
 async function loadWorkspaceAccount() {
-  if (state.googleConfig === "loading") await loadAuthConfig();
-  if (state.webSessions && ["idle", "checking"].includes(state.authStatus)) await hydrateAuthSession();
-  if (!isGoogleSessionValid()) return { profiles: [] };
+  if (state.googleConfig !== "ready") await loadAuthConfig({ force: state.googleConfig === "error" });
+  else if (state.webSessions && ["idle", "checking", "error"].includes(state.authStatus)) await hydrateAuthSession({ force: state.authStatus === "error" });
+  if (state.googleConfig === "error" || state.authStatus === "error") return { status: "auth-error", profiles: [], error: state.authError || "Sign-in is unavailable. Check your connection and try again." };
+  if (!isGoogleSessionValid()) return { status: "signed-out", profiles: [] };
   const key = sessionIdentity(state.googleSession);
   if (workspaceAccount?.key === key && Date.now() - workspaceAccount.at < 30000) return workspaceAccount;
   const revision = authIdentityRevision, flightKey = `${key}:${revision}`;
@@ -3192,34 +3293,34 @@ async function loadWorkspaceAccount() {
   const flight = (async () => {
     try {
       const result = await api("/api/account/profiles", { headers: googleHeaders(), cache: "no-store" });
-      const account = { key, at: Date.now(), profiles: result.profiles || [] };
+      if (!Array.isArray(result.profiles)) throw new Error("The account profile response was incomplete. Try again.");
+      const account = { status: "ready", key, at: Date.now(), profiles: result.profiles };
       if (revision === authIdentityRevision && key === sessionIdentity(state.googleSession)) workspaceAccount = account;
       return account;
-    } catch (error) { return { profiles: [], error: error.message }; }
+    } catch (error) { return { status: "error", profiles: [], error: error.message }; }
     finally { workspaceAccountFlights.delete(flightKey); }
   })();
   workspaceAccountFlights.set(flightKey, flight);
   return flight;
 }
-async function renderDashboard(current = () => true) {
+async function renderDashboard(current = () => true, initialTab = "overview") {
   const host = $("#view");
   let handle = state.currentHandle || "";
-  let entry = null;
-  let error = "";
-  let profiles = [];
+  let entry = null, error = "", profiles = [], accountError = "";
+  let accountStatus = isGoogleSessionValid() ? "profiles-loading" : "checking";
   const retry = () => { workspaceAccount = null; clearApiCache(); render(); };
   const select = value => {
     const next = String(value || "").trim().replace(/^@/, "");
     if (!next) return;
-    navigate("dashboard", { handle: next });
+    navigate(state.view === "billing" ? "billing" : "dashboard", { handle: next });
   };
   const readEntry = async selected => {
     try { return { value: await api("/api/user/" + encodeURIComponent(selected)) }; }
     catch (failure) { return { error: failure.message }; }
   };
-  // An explicit published profile can load while account discovery is pending.
+  // Explicit public previews load independently of private account discovery.
   const accountRead = loadWorkspaceAccount();
-  let entryRead = handle ? readEntry(handle) : null;
+  const entryRead = handle ? readEntry(handle) : null;
   let workspace;
   try { workspace = await loadWorkspaceModule(); }
   catch (failure) {
@@ -3230,12 +3331,12 @@ async function renderDashboard(current = () => true) {
   }
   const paint = loading => {
     if (!current()) return;
-    workspace.render({ host, entry, profiles, selectedHandle: handle, loading, error,
-      signedIn: isGoogleSessionValid(), onSelect: select,
-      onSignIn: () => openSignInModal({ action: "Open your workspace" }), onRetry: retry,
-      onInvite: openInviteFriends });
+    workspace.render({ host, entry, profiles, selectedHandle: handle, loading, error, accountStatus, accountError, initialTab,
+      signedIn: isGoogleSessionValid(), accountProvider: state.googleSession?.provider || "google", onSelect: select,
+      onHome: () => navigate(state.view === "billing" ? "billing" : "dashboard", { resetWorkspace: true }),
+      onSignIn: () => openSignInModal({ action: "Find your published profiles" }), onRetry: retry });
   };
-  paint(Boolean(handle || state.googleSession));
+  paint(true);
   if (entryRead) {
     const result = await entryRead;
     if (!current()) return;
@@ -3246,19 +3347,20 @@ async function renderDashboard(current = () => true) {
   const account = await accountRead;
   if (!current()) return;
   profiles = account.profiles;
-  if (!handle && profiles.length) {
+  accountStatus = account.status;
+  accountError = account.error || "";
+  // Only an unambiguous verified owner may open automatically. Keep that
+  // choice out of the public URL so reloads never preserve another account.
+  if (!handle && profiles.length === 1) {
     handle = profiles[0].handle;
     state.currentHandle = handle;
     workspaceAutoHandle = handle;
-    const url = new URL(location.href);
-    url.searchParams.set("user", handle);
-    history.replaceState(history.state, "", url);
     paint(true);
     const result = await readEntry(handle);
     if (!current()) return;
     entry = result.value || null;
     error = result.error || "";
-  } else if (!handle && account.error) error = account.error;
+  }
   paint(false);
 }
 function miniStat(icon, value, label) {
@@ -3288,7 +3390,14 @@ async function renderPlayers(current = () => true, outcome = state.profileLoad) 
       if (current() && revision === authIdentityRevision && identity === sessionIdentity(state.googleSession) && account.key === identity) render();
     });
   }
-  if (restoreTabFocus) $("#profile-tab-" + state.profileTab)?.focus({ preventScroll: true });
+  const selectedTab = $("#profile-tab-" + state.profileTab);
+  if (restoreTabFocus) selectedTab?.focus({ preventScroll: true });
+  if (selectedTab) {
+    const strip = selectedTab.parentElement;
+    const bounds = selectedTab.getBoundingClientRect(), viewport = strip.getBoundingClientRect();
+    if (bounds.left < viewport.left) strip.scrollLeft += bounds.left - viewport.left;
+    else if (bounds.right > viewport.right) strip.scrollLeft += bounds.right - viewport.right;
+  }
   if (restoreWindowFocus) $('[data-profile-window="' + restoreWindowFocus + '"]')?.focus({ preventScroll: true });
 }
 function wireProfile() {
@@ -3306,6 +3415,8 @@ function wireProfile() {
       if (target) { ev.preventDefault(); target.focus(); }
     };
   });
+  const dayPicker = $("#profile-day-select");
+  if (dayPicker) dayPicker.onchange = () => { const day = Number(dayPicker.value); if (day) { openDayDrilldown(day); dayPicker.value = ""; } };
   const peerRetry = $("#pf-peers-retry");
   if (peerRetry) peerRetry.onclick = () => { state.profilePeersError = ""; loadProfilePeers(); };
   $$("[data-profile-window]").forEach(button => button.onclick = () => { state.profileWindow = Number(button.dataset.profileWindow); render(); });
@@ -3397,7 +3508,7 @@ async function renderLeagues(current = () => true) {
     </div>`
     + `<div class="split top" style="margin-bottom:16px">
       <div class="card" style="padding:0;overflow:hidden"><div class="card-head" style="padding:16px 16px 8px"><h3>Current Standings</h3></div>
-        <div style="overflow-x:auto"><table><thead><tr><th>#</th><th>Player</th><th>League</th><th>Division</th><th class="right">MMR</th><th class="right">Tokens</th></tr></thead><tbody>
+        <div class="table-scroll" role="region" aria-label="Season standings" tabindex="0"><table><thead><tr><th>#</th><th>Player</th><th>League</th><th>Division</th><th class="right">MMR</th><th class="right">Tokens</th></tr></thead><tbody>
         ${standings.map((r, i) => `<tr class="clickable" data-handle-link="${esc(r.handle)}"><td class="faint">${i + 1}</td><td><div class="user-cell">${avatar(r.handle, r.avatarUrl, 26, r.avatarStyle)}<span>${esc(r.handle)}</span></div></td><td><span class="chip logo-chip" style="color:${r.leagueColor}">${leagueIcon(r.league, 16)}${esc(r.leagueTitle)}</span></td><td class="num">${roman(r.division)}</td><td class="num right">${fmtNum(r.mmr)}</td><td class="num right">${esc(r.tokensFormatted)}</td></tr>`).join("") || '<tr><td colspan="6"><div class="empty">No standings.</div></td></tr>'}
         </tbody></table></div></div>
       <div class="grid" style="align-content:start">
@@ -3445,7 +3556,7 @@ async function renderProvidersTab(current = () => true) {
       ${kpiCard("Avg Cost / 1k Tokens", fmtRate(avgCostPer1k), "", ICONS.bolt)}
     </div>`
     + `<div class="split" style="margin-bottom:16px">
-      <div class="card"><div class="card-head"><h3>Token Usage by Provider Over Time</h3><span class="chip">Stacked</span></div>${stackedUsageChart({ labels, series: series.map(s => ({ name: s.name, color: s.color, values: s.values })) }, { height: 250, ariaLabel: "Token usage by provider over time" })}
+      <div class="card"><div class="card-head"><h3>Provider usage over time</h3></div>${stackedUsageChart({ labels, series: series.map(s => ({ name: s.name, color: s.color, values: s.values })) }, { height: 250, ariaLabel: "Token usage by provider over time" })}
         </div>
       <div class="card"><div class="card-head"><h3>Provider Mix</h3><span class="sub">share across providers</span></div>
         <div class="donut-wrap">${donut(mix.slice(0, 5), 156, fmtTokens(totalTokens), "tokens")}
@@ -3453,20 +3564,20 @@ async function renderProvidersTab(current = () => true) {
     </div>`
     + `<div class="split" style="margin-bottom:16px">
       <div class="card" style="padding:0;overflow:hidden"><div class="card-head" style="padding:16px 16px 8px"><h3>Provider Comparison</h3></div>
-        <div style="overflow-x:auto"><table><thead><tr><th>#</th><th>Provider</th><th class="right">Tokens</th><th class="right">Input</th><th class="right">Output</th><th class="right">Cost</th><th class="right">Requests</th><th class="right">$/M</th><th class="right">Users</th><th class="right">Share</th></tr></thead><tbody>
+        <div class="table-scroll" role="region" aria-label="Provider usage" tabindex="0"><table><thead><tr><th>#</th><th>Provider</th><th class="right">Tokens</th><th class="right">Input</th><th class="right">Output</th><th class="right">Cost</th><th class="right">Requests</th><th class="right">$/M</th><th class="right">Users</th><th class="right">Share</th></tr></thead><tbody>
         ${rows.map((r, i) => `<tr><td class="faint">${i + 1}</td><td><span class="chip logo-chip">${providerLogo(r.provider, 15)}${providerLink(r.provider, providerLabel(r.provider))}</span></td><td class="num right">${esc(r.tokensFormatted)}</td><td class="num right">${r.inputTokens ? fmtTokens(r.inputTokens) : "—"}</td><td class="num right">${r.outputTokens ? fmtTokens(r.outputTokens) : "—"}</td><td class="num right">${esc(r.costFormatted)}</td><td class="num right">${fmtNum(r.requests)}</td><td class="num right">${fmtRate(r.avgCostPerM)}</td><td class="num right">${fmtNum(r.users)}</td><td style="width:110px"><div class="bar"><i style="width:${r.sharePercent}%;background:${providerColor(r.provider)}"></i></div><div class="mini right">${fmtPct(r.sharePercent, 1)}</div></td></tr>`).join("") || '<tr><td colspan="10"><div class="empty">No provider data published yet.</div></td></tr>'}
         </tbody></table></div></div>
       <div class="grid" style="align-content:start">
         <div class="card"><div class="card-head"><h3>Usage by Team</h3></div>
-          ${(p.teams || []).slice(0, 5).map(t => `<div style="margin-bottom:12px"><div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:5px"><span>${esc(t.team)}</span><span class="num muted">${esc(t.tokensFormatted)}</span></div>${Object.entries(t.providers || {}).length ? `<div style="display:flex;height:7px;border-radius:4px;overflow:hidden">${Object.entries(t.providers).sort((a, b) => b[1] - a[1]).map(([prov, val]) => `<span style="width:${(val / Math.max(1, t.tokens)) * 100}%;background:${providerColor(prov)}" title="${providerLabel(prov)}"></span>`).join("")}</div>` : ""}</div>`).join("") || '<div class="empty" style="padding:10px">No teams yet.</div>'}
+          ${(p.teams || []).slice(0, 5).map(t => `<div style="margin-bottom:12px"><div class="provider-team-summary"><span>${esc(t.team)}</span><span class="num muted">${esc(t.tokensFormatted || fmtTokens(t.tokens))}</span></div>${Object.entries(t.providers || {}).length ? `<div style="display:flex;height:7px;border-radius:4px;overflow:hidden">${Object.entries(t.providers).sort((a, b) => b[1] - a[1]).map(([prov, val]) => `<span style="width:${(val / Math.max(1, t.tokens)) * 100}%;background:${providerColor(prov)}" title="${providerLabel(prov)}"></span>`).join("")}</div>` : ""}</div>`).join("") || '<div class="empty" style="padding:10px">No teams yet.</div>'}
         </div>
       </div>
     </div>`
     + `<div class="grid kpis">
-      ${insightCard("Most Used Provider", insights.mostUsed ? providerLabel(insights.mostUsed.provider) : "—", insights.mostUsed ? fmtPct(insights.mostUsed.sharePercent, 1) + " of total tokens" : "", "🏆", insights.mostUsed?.provider)}
-      ${insightCard("Most Cost Efficient", insights.mostEfficient ? providerLabel(insights.mostEfficient.provider) : "—", insights.mostEfficient ? fmtRate(insights.mostEfficient.avgCostPerM, "per 1M tokens") : "", "💰", insights.mostEfficient?.provider)}
-      ${insightCard("Biggest Growth", insights.biggestGrowth ? insights.biggestGrowth.handle : "—", insights.biggestGrowth ? "+" + insights.biggestGrowth.percent.toFixed(0) + "% vs last period" : "", "📈")}
-      ${insightCard("Tracked Requests", fmtNum(p.providers?.reduce((s, r) => s + r.requests, 0) || 0), "across all providers", "⚡")}
+      ${insightCard("Most Used Provider", insights.mostUsed ? providerLabel(insights.mostUsed.provider) : "—", insights.mostUsed ? fmtPct(insights.mostUsed.sharePercent, 1) + " of total tokens" : "", ICONS.rank, insights.mostUsed?.provider)}
+      ${insightCard("Most Cost Efficient", insights.mostEfficient ? providerLabel(insights.mostEfficient.provider) : "—", insights.mostEfficient ? fmtRate(insights.mostEfficient.avgCostPerM, "per 1M tokens") : "", ICONS.cost, insights.mostEfficient?.provider)}
+      ${insightCard("Biggest Growth", insights.biggestGrowth ? insights.biggestGrowth.handle : "—", insights.biggestGrowth ? "+" + insights.biggestGrowth.percent.toFixed(0) + "% vs last period" : "", ICONS.activity)}
+      ${insightCard("Tracked Requests", fmtNum(p.providers?.reduce((s, r) => s + r.requests, 0) || 0), "across all providers", ICONS.bolt)}
     </div>`;
   mxWireTabs();
 }
@@ -3610,8 +3721,13 @@ function mxUsageFor(m) {
     || null;
 }
 function mxUsageTokens(m) { const u = mxUsageFor(m); return u ? Number(u.tokens) || 0 : 0; }
+function publicModelsHref(params = {}) {
+  const url = new URL("models", publicSiteBase());
+  url.search = new URLSearchParams(params).toString();
+  return url.pathname + url.search;
+}
 function mxModelHref(model) {
-  return "?view=models&model=" + encodeURIComponent(String(model || ""));
+  return publicModelsHref({ model: String(model || "") });
 }
 /// Anchor to the explorer's per-model view. Raw usage ids are resolved to a
 /// catalog listing when the drawer opens; the href keeps it a real link
@@ -3628,14 +3744,14 @@ function sessionModelChip(provider, model, logoSize = 14) {
   return `<span class="chip logo-chip">${providerLogo(provider, logoSize, model)}${esc(providerDisplay(provider, model))}</span>`;
 }
 function modelsAllLink(label = "All models →") {
-  return `<a class="model-all-link" href="?view=models" data-models-all>${esc(label)}</a>`;
+  return `<a class="model-all-link" href="${publicModelsHref()}" data-models-all>${esc(label)}</a>`;
 }
 /// Link from a provider row/legend into the explorer filtered to that provider.
 function providerLink(provider, label, opts = {}) {
   const normalized = providerKey(provider);
   const key = normalized === "other" ? providerId(provider) || "other" : normalized;
   const text = label == null ? providerLabel(provider) : label;
-  const href = /^\/t\//.test(location.pathname) ? "/models?provider=" + encodeURIComponent(key) : "?view=models&provider=" + encodeURIComponent(key);
+  const href = publicModelsHref({ provider: key });
   return `<a class="model-link provider-link" href="${href}" data-provider-link="${esc(key)}" title="${esc(opts.title || ("Browse models available via " + text))}">${esc(text)}</a>`;
 }
 function mxFindModel(raw, providerHint) {
@@ -3698,7 +3814,7 @@ function discoveryLoading(label, id) {
   </div>`;
 }
 function mxLoadingHtml(error = "") {
-  return `<div class="discovery-title"><div><span class="discovery-eyebrow">THE MODEL DIRECTORY</span><h1>Find your next model.</h1><p>Compare capabilities, pricing and providers in one place.</p></div></div>${mxTabBarHtml()}
+  return `<div class="discovery-title"><div><h1>Find your next model.</h1><p>Compare capabilities, pricing and providers in one place.</p></div></div>${mxTabBarHtml()}
     ${error ? `<div class="card" id="mx-load-error" role="alert"><h2>Catalog temporarily unavailable</h2><p class="sub">We couldn't load the model directory. Your filters are saved.</p><p class="sub">${esc(error)}</p><button class="pill primary" id="mx-retry" type="button">Retry catalog</button></div>`
       : discoveryLoading("Loading " + (state.modelsTab === "providers" ? "provider activity" : "model catalog"), "mx-loading")}`;
 }
@@ -4117,7 +4233,7 @@ function mxCapChipHtml(key, label) {
 function mxShellHtml() {
   const mx = mxState(), providers = mx.providers || [];
   const refreshed = mx.catalog?.generatedAt ? new Date(mx.catalog.generatedAt * 1000).toLocaleDateString(undefined, {month:"short",day:"numeric",year:"numeric"}) : "Unavailable";
-  return `<div class="discovery-title"><div><span class="discovery-eyebrow">THE MODEL DIRECTORY</span><h1>Find your next model.</h1><p>Compare capabilities, pricing and providers in one place.</p></div><span class="catalog-stamp">Catalog snapshot<br><strong>${esc(refreshed)}</strong></span></div>${mxTabBarHtml()}
+  return `<div class="discovery-title"><div><h1>Find your next model.</h1><p>Compare capabilities, pricing and providers in one place.</p></div><span class="catalog-stamp">Catalog snapshot · <strong>${esc(refreshed)}</strong></span></div>${mxTabBarHtml()}
     ${mx.error ? `<div class="notice err">Catalog unavailable (${esc(mx.error)}). <button class="pill" id="mx-retry">Retry</button></div>` : ""}
     <div class="mx-toolbar"><div class="mx-search"><input id="mx-q" type="search" placeholder="Search ${mx.models.length.toLocaleString()} models…" autocomplete="off" spellcheck="false" value="${esc(mx.query)}" aria-label="Search models"><span class="mx-kbd">/</span></div><select class="mx-select" id="mx-sort" aria-label="Sort models">${MX_SORTS.map(([k,l])=>`<option value="${k}" ${mx.sort===k?'selected':''}>${l}</option>`).join("")}</select></div>
     <div class="mx-workspace"><aside class="mx-filters"><div class="mx-filter-heading"><button type="button" id="mx-filter-toggle" aria-expanded="false" aria-controls="mx-filter-controls">Filters <span>⌄</span></button><button class="mx-clear" id="mx-clear" type="button">Reset</button></div>
@@ -4164,7 +4280,7 @@ function mxShowComparison(models) {
     ["Benchmark source",m=>esc(m.benchmarks?.source || "Not reported")],
     ["Subscription coverage",m=>(m.plans || (m.plan?[m.plan]:[])).map(id=>esc(mxPlanName(id))).join(", ") || "—"]
   ];
-  document.body.insertAdjacentHTML("beforeend",`<dialog id="mx-comparison" aria-labelledby="mx-comparison-title"><div class="mx-comparison-head"><div><span class="discovery-eyebrow">SIDE BY SIDE</span><h2 id="mx-comparison-title">A closer look.</h2><p>Published direct rates. Missing values are not estimates.</p></div><button id="mx-comparison-close" aria-label="Close comparison">×</button></div><div class="mx-comparison-scroll"><table><thead><tr><th>Compare models</th>${models.map(m=>`<th>${providerLogo(m.provider,22,m.id)}<br>${esc(m.name)}</th>`).join("")}</tr></thead><tbody>${rows.map(([label,read])=>`<tr><th>${label}</th>${models.map(m=>`<td>${read(m)}</td>`).join("")}</tr>`).join("")}</tbody></table></div></dialog>`);
+  document.body.insertAdjacentHTML("beforeend",`<dialog id="mx-comparison" aria-labelledby="mx-comparison-title"><div class="mx-comparison-head"><div><h2 id="mx-comparison-title">A closer look.</h2><p>Published direct rates. Missing values are not estimates.</p></div><button id="mx-comparison-close" aria-label="Close comparison">×</button></div><div class="mx-comparison-scroll" role="region" aria-label="Model comparison" tabindex="0"><table><thead><tr><th>Compare models</th>${models.map(m=>`<th>${providerLogo(m.provider,22,m.id)}<br>${esc(m.name)}</th>`).join("")}</tr></thead><tbody>${rows.map(([label,read])=>`<tr><th>${label}</th>${models.map(m=>`<td>${read(m)}</td>`).join("")}</tr>`).join("")}</tbody></table></div></dialog>`);
   const dialog=$("#mx-comparison");dialog.showModal();
   $("#mx-comparison-close").onclick=()=>dialog.close();
   dialog.addEventListener("close",()=>{$("#mx-compare-open")?.focus();dialog.remove();});
@@ -4185,7 +4301,7 @@ function mxRowHtml(m) {
     ? `Cheapest known listing: $${cheapest.in}/1M in, $${cheapest.out}/1M out via ${cheapest.provider}`
     : "Published provider rate";
   return `<div class="mx-row ${mx.openId===m.id?'active':''}" data-mx-id="${esc(m.id)}" tabindex="0" role="option" aria-selected="${mx.openId===m.id}" aria-label="${esc(m.name)}">
-    <input class="mx-compare-check" type="checkbox" data-compare="${esc(m.id)}" aria-label="Compare ${esc(m.name)}" ${mxCompared.has(m.id)?'checked':''}>
+    <label class="mx-compare-target"><input class="mx-compare-check" type="checkbox" data-compare="${esc(m.id)}" aria-label="Compare ${esc(m.name)}" ${mxCompared.has(m.id)?'checked':''}></label>
     <span class="mx-logo">${providerLogo(m.provider,26,m.id)}</span><span class="mx-main"><span class="mx-name">${esc(m.name)}</span><span class="mx-sub">${esc(m.providerName || providerLabel(m.provider))}</span><span class="mx-tags">${tags.join("")}</span></span>
     <span class="mx-stats"><span class="mx-stat mx-keep" title="${esc(priceTitle)}"><span class="v">${inText}</span></span><span class="mx-stat mx-keep" title="${esc(priceTitle)}"><span class="v">${outText}</span></span><span class="mx-stat"><span class="v">${mxCtx(m.contextK)}</span></span></span></div>`;
 }
@@ -4590,7 +4706,7 @@ async function renderCheapestTab(current = () => true) {
       <div class="mx-cheap-layout">
         <div class="card mx-cheap-card" style="padding:0;overflow:hidden">
           <div class="card-head" style="padding:16px 16px 8px"><h3>Best Price by Model</h3><span class="sub">click a header to sort · click a row for details</span></div>
-          <div style="overflow-x:auto;max-height:min(70vh,880px);overflow-y:auto">
+          <div class="table-scroll" role="region" aria-label="Lowest model prices" tabindex="0" style="max-height:min(70vh,880px);overflow-y:auto">
             <table class="mx-cheap-table">
               <thead id="mx-cheap-head"><tr>
                 ${mxCheapHeadCell("name", "Model", "")}
@@ -4848,7 +4964,7 @@ function mxWire() {
     mxRenderCompareTray();
   });
   scroller.addEventListener("click", (e) => {
-    if (e.target.closest("[data-compare], [data-plan-tag]")) return;
+    if (e.target.closest(".mx-compare-target, [data-compare], [data-plan-tag]")) return;
     const row = e.target.closest("[data-mx-id]");
     if (row) mxOpen(row.dataset.mxId);
     const reset = e.target.closest("#mx-reset");
@@ -4918,7 +5034,7 @@ document.addEventListener("click", (e) => {
     return;
   }
   const team = e.target.closest?.("[data-team-page]");
-  if (team && /^[a-f0-9]{32}$/.test(team.dataset.teamPage)) { e.preventDefault(); navigate("team", { teamId: team.dataset.teamPage }); return; }
+  if (team && /^[a-f0-9]{32}$/.test(team.dataset.teamPage)) { if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button) return; e.preventDefault(); navigate("team", { teamId: team.dataset.teamPage, anchor: team.hash === "#tm-analytics" ? "tm-analytics" : "" }); return; }
   const link = e.target.closest?.("[data-model-link]");
   if (link) {
     e.preventDefault();
@@ -4934,14 +5050,15 @@ document.addEventListener("click", (e) => {
    ============================================================ */
 /* Team visuals are optional; public reads and join actions never await WebGL. */
 let teamMotionFlight;
+let teamMotionEpoch = 0;
 const teamMotionHandles = new Set();
-function destroyTeamMotion() { for (const motion of teamMotionHandles) motion.destroy(); teamMotionHandles.clear(); }
+function destroyTeamMotion() { teamMotionEpoch++; for (const motion of teamMotionHandles) motion.destroy(); teamMotionHandles.clear(); }
 function loadTeamMotion() {
   if (window.TokenHorizonTeamMotion) return Promise.resolve(window.TokenHorizonTeamMotion);
   if (teamMotionFlight) return teamMotionFlight;
   teamMotionFlight = new Promise((resolve, reject) => {
     const script = document.createElement("script");
-    script.src = "./team-blackhole.js?v=20261001-5"; script.async = true;
+    script.src = "./team-blackhole.js?v=20261002-1"; script.async = true;
     const timer = setTimeout(() => done(new Error("Motion unavailable")), 6000);
     function done(error) {
       clearTimeout(timer); script.onload = script.onerror = null;
@@ -4956,33 +5073,43 @@ function loadTeamMotion() {
 }
 function mountTeamMotion(scope = $("#view")) {
   destroyTeamMotion();
-  const hosts = [...scope.querySelectorAll("[data-team-blackhole]")];
+  const epoch = teamMotionEpoch;
+  const hosts = [...scope.querySelectorAll("[data-team-blackhole]")].filter(host => !host.closest('[hidden]'));
   if (!hosts.length) return;
   loadTeamMotion().then(module => {
+    if (epoch !== teamMotionEpoch) return;
     for (const host of hosts) {
-      if (!host.isConnected) continue;
+      if (!host.isConnected || host.closest('[hidden]')) continue;
       const motion = module.mount(host); teamMotionHandles.add(motion);
       const toggle = host.closest("[data-team-hero]")?.querySelector("[data-team-motion-toggle]");
       if (!toggle) continue;
+      toggle.hidden = false; toggle.disabled = false;
       toggle.onclick = () => {
         const paused = toggle.getAttribute("aria-pressed") !== "true";
         paused ? motion.pause() : motion.resume();
         toggle.setAttribute("aria-pressed", String(paused));
         toggle.setAttribute("aria-label", paused ? "Play animation" : "Pause animation");
-        toggle.querySelector("span").textContent = paused ? "Play animation" : "Pause animation";
+        toggle.innerHTML = (paused ? TEAM_PLAY : TEAM_PAUSE) + `<span>${paused ? "Play animation" : "Pause animation"}</span>`;
       };
     }
-  }).catch(() => { /* The local CSS artwork is already visible. */ });
+  }).catch(() => { /* Static horizon geometry stays visible without the optional module. */ });
 }
 const TEAM_ARROW = '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 10h12m-5-5 5 5-5 5"/></svg>';
+const TEAM_PLAY = '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="m7 4 8 6-8 6Z"/></svg>';
 const TEAM_PAUSE = '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M7 5v10m6-10v10"/></svg>';
 const TEAM_SHARE = '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 13V3M6 7l4-4 4 4M4 10v7h12v-7"/></svg>';
 const TEAM_CHECK = '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="m4 10 4 4 8-8"/></svg>';
 function teamIdentity(team) { const id = team?.id || team?.teamId; return /^[a-f0-9]{32}$/.test(id || "") ? id : ""; }
+function teamMonogram(name) {
+  const words = String(name || "").match(/[\p{L}\p{N}]+/gu) || [];
+  const letters = words.length > 1 ? words.slice(0, 2).map(word => Array.from(word)[0]).join("") : Array.from(words[0] || "").slice(0, 2).join("");
+  const initials = letters.toUpperCase();
+  return /^[A-Z0-9À-ž]{1,2}$/.test(initials) ? initials : "TH";
+}
 function teamLogoHtml(team, className = "tm-team-icon") {
   const name = team?.name || team?.team || "Crew", logo = String(team?.logoUrl || "");
   const safe = /^\/api\/team\/[a-f0-9]{32}\/logo(?:\?[^\s]*)?$/.test(logo);
-  return `<span class="${className}" aria-hidden="true">${safe ? `<img src="${esc(API_BASE + logo)}" alt="" width="72" height="72"/>` : className === "tm-row-icon" ? '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="7"/><path d="M2 12h20"/></svg>' : `<span>${esc(Array.from(name.trim()).slice(0, 2).join("").toUpperCase())}</span>`}</span>`;
+  return `<span class="${className}" aria-hidden="true">${safe ? `<img src="${esc(API_BASE + logo)}" alt="" width="72" height="72"/>` : `<span>${esc(teamMonogram(name))}</span>`}</span>`;
 }
 function teamDisplayName(name) { return esc(name).replace(/([a-z0-9])(?=[A-Z])/g, "$1<wbr>"); }
 function teamNameHtml(team) {
@@ -4996,7 +5123,7 @@ function teamPublicShareHtml(team, stats = {}) {
   const id = teamIdentity(team);
   if (!id) return "";
   const url = CANONICAL_API + "/t/" + id;
-  return `<details class="tm-share-panel"><summary>${TEAM_SHARE}<span>Share team</span>${TEAM_ARROW}</summary><div class="tm-share-body"><h2>A little crew pride.</h2><p>Share your team name, ${fmtNum(team.memberCount)} ${Number(team.memberCount) === 1 ? "member" : "members"} and custom icon in one link.</p><img src="${esc(teamOgUrl(team, stats))}" width="1200" height="630" loading="lazy" alt="${esc(team.name || team.team)} team share preview with member count, team icon and published token usage"/><div class="tm-share-copy"><label class="tm-visually-hidden" for="tm-share-link">Public team profile link</label><input id="tm-share-link" readonly value="${esc(url)}"/><button type="button" data-team-copy-public>Copy team link</button></div>${typeof navigator.share === "function" ? '<button type="button" class="tm-text-action" data-team-native-share>Share with friends</button>' : ""}<p class="tm-share-status" role="status"></p><small>Invite links join people to the team. This profile link shows your crew’s public page.</small></div></details>`;
+  return `<details class="tm-share-panel tm-icon-share">${teamActionHtml("share", "Share team", "Show the public team link and its share preview. This link does not invite people to join.", { tag: "summary" })}<div class="tm-share-body"><h2>A little crew pride.</h2><p>Share your team name, ${fmtNum(team.memberCount)} ${Number(team.memberCount) === 1 ? "member" : "members"} and custom icon in one link.</p><img src="${esc(teamOgUrl(team, stats))}" width="1200" height="630" loading="lazy" alt="${esc(team.name || team.team)} team share preview with member count, team icon and published token usage"/><div class="tm-share-copy"><label class="tm-visually-hidden" for="tm-share-link">Public team profile link</label><input id="tm-share-link" readonly value="${esc(url)}"/><button type="button" data-team-copy-public>Copy team link</button></div>${typeof navigator.share === "function" ? '<button type="button" class="tm-text-action" data-team-native-share>Share with friends</button>' : ""}<p class="tm-share-status" role="status"></p><small>Invite links join people to the team. This profile link shows your crew’s public page.</small></div></details>`;
 }
 function wireTeamPublicShare(team) {
   const input = $("#tm-share-link");
@@ -5038,10 +5165,260 @@ async function normalizeTeamIcon(file) {
     throw error;
   } finally { URL.revokeObjectURL(url); }
 }
-function teamsHeroHtml() {
-  return `<section class="tm-orbit-hero" data-team-hero><div class="tm-orbit-copy"><h1>Build in<br/>good company.</h1><p>Claude, Codex, Gemini. Different models, shared momentum. Bring your friends into one orbit and see what your crew builds together.</p><div class="tm-hero-actions"><button type="button" class="tm-invite-button" data-team-hero-invite>Create your crew ${TEAM_ARROW}</button><a href="#tm-rankings-title">Explore team rankings ${TEAM_ARROW}</a></div><p class="tm-hero-note">One invite link. Your friends join after sign-in.</p></div><div class="tm-orbit-visual"><div data-team-blackhole aria-hidden="true"></div><button type="button" class="tm-motion-toggle" data-team-motion-toggle aria-pressed="false" aria-label="Pause animation">${TEAM_PAUSE}<span>Pause animation</span></button><span class="tm-orbit-caption">Every provider. One shared horizon.</span></div></section>`;
+function teamMotionVisualHtml() {
+  return `<div data-team-blackhole aria-hidden="true"><svg class="tm-hole-static" viewBox="0 0 400 300" focusable="false"><ellipse cx="200" cy="150" rx="156" ry="45" transform="rotate(-12 200 150)"/><circle cx="200" cy="150" r="70"/><path d="M18 150h105m154 0h105"/></svg></div><button type="button" class="tm-motion-toggle" data-team-motion-toggle hidden disabled aria-pressed="false" aria-label="Pause animation">${TEAM_PAUSE}<span>Pause animation</span></button>`;
 }
-function teamLandingLoadingHtml() { return `<article class="tm-page tm-team-page" aria-busy="true"><div class="tm-back"><a href="/leaderboard?view=teams">${TEAM_ARROW}All teams</a></div><p role="status" class="tm-loading-label">Getting the crew together…</p><div class="tm-loading-leader skeleton"></div></article>`; }
+function teamActionHtml(icon, label, description, options = {}) {
+  if (window.TokenHorizonActions) return TokenHorizonActions.render({ icon, label, description, ...options });
+  const tag = options.tag === "summary" ? "summary" : options.href ? "a" : "button";
+  const attributes = Object.entries(options.attributes || {}).map(([key, value]) => ` ${key}="${esc(value)}"`).join("");
+  return `<${tag} class="${esc(options.className || "")}"${tag === "button" ? ' type="button"' : tag === "a" ? ` href="${esc(options.href)}"` : ""} aria-label="${esc(label)}" title="${esc(description)}"${attributes}>${esc(label)}</${tag}>`;
+}
+function updateTeamAction(button, label, description, icon) {
+  if (button.matches("[data-icon-action]")) TokenHorizonActions.update(button, { icon, label, description });
+  else { button.setAttribute("aria-label", label); button.title = description; button.innerHTML = `${esc(label)} ${TEAM_ARROW}`; }
+}
+function teamsHeroHtml() {
+  return `<header class="tm-directory-head"><div><h1>Teams.</h1><p>Compare the usage your crew chooses to publish.</p></div><div class="tm-directory-actions" role="group" aria-label="Team actions">${teamActionHtml("rankings", "Rankings", "Compare all-time token totals from published team profiles.", { href: teamAnchorUrl('tm-rankings-title'), attributes: { "data-team-anchor": "tm-rankings-title" } })}${teamActionHtml("analytics", "Analytics", "Explore team comparisons, daily usage and the all-time provider mix.", { href: teamAnchorUrl('tm-analytics'), attributes: { "data-team-anchor": "tm-analytics" } })}${teamActionHtml("invite", "Create your crew", "Create a team and invite friends after signing in.", { className: "tm-invite-button", attributes: { "data-team-hero-invite": "" } })}${teamActionHtml("about", "About teams", "Learn how crews join together and choose what usage to publish.", { attributes: { "data-team-intro-toggle": "", "aria-expanded": teamIntroductionOpen, "aria-controls": "tm-introduction" } })}</div></header><section id="tm-introduction" class="tm-orbit-hero tm-introduction" data-team-hero aria-label="About teams"${teamIntroductionOpen ? "" : " hidden"}>${teamActionHtml("close", "Close team introduction", "Hide this introduction. Your preference is remembered on this device.", { className: "tm-intro-close", attributes: { "data-team-intro-close": "" } })}<div class="tm-orbit-copy"><h2>Build in<br/>good company.</h2><p>Claude, Codex, Gemini. Different models, shared momentum. Bring your friends into one orbit and see what your crew builds together.</p><div class="tm-hero-actions"><button type="button" class="tm-invite-button" data-team-hero-invite>Create your crew ${TEAM_ARROW}</button><a href="${esc(teamAnchorUrl('tm-rankings-title'))}" data-team-anchor="tm-rankings-title">Explore team rankings ${TEAM_ARROW}</a><a href="${esc(teamAnchorUrl('tm-analytics'))}" data-team-anchor="tm-analytics">Explore team analytics ${TEAM_ARROW}</a></div><p class="tm-hero-note">One invite link. Your friends join after sign-in.</p></div><div class="tm-orbit-visual">${teamMotionVisualHtml()}<span class="tm-orbit-caption">Every provider. One shared horizon.</span></div></section>`;
+}
+const TEAM_INTRO_STORAGE_KEY = "th-teams-introduction";
+let teamIntroductionOpen = false;
+try { teamIntroductionOpen = localStorage.getItem(TEAM_INTRO_STORAGE_KEY) === "open"; } catch (_) {}
+function wireTeamIntroduction() {
+  const toggle = $("[data-team-intro-toggle]"), introduction = $("#tm-introduction");
+  const setOpen = open => {
+    teamIntroductionOpen = open;
+    try { localStorage.setItem(TEAM_INTRO_STORAGE_KEY, open ? "open" : "closed"); } catch (_) {}
+    toggle.setAttribute("aria-expanded", String(open)); introduction.hidden = !open;
+    if (open) mountTeamMotion(introduction);
+    else { destroyTeamMotion(); toggle.focus({ preventScroll: true }); }
+  };
+  toggle.onclick = () => setOpen(!teamIntroductionOpen);
+  $("[data-team-intro-close]").onclick = () => setOpen(false);
+}
+// Fragment-only links resolve against the worker's injected <base href="/">.
+// Use the actual page URL so modified clicks and copied links keep the route.
+function teamAnchorUrl(id) { const url = new URL(location.href); url.hash = id; return url.pathname + url.search + url.hash; }
+function restoreTeamAnchor() {
+  if (!["#tm-rankings-title", "#tm-analytics"].includes(location.hash)) return;
+  const target = document.getElementById(location.hash.slice(1));
+  if (target) { target.focus({ preventScroll: true }); target.scrollIntoView({ block: "start" }); }
+}
+function wireTeamAnchors() {
+  $$("[data-team-anchor]").forEach(link => link.onclick = event => {
+    if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button) return;
+    event.preventDefault();
+    if (location.hash !== "#" + link.dataset.teamAnchor) history.pushState({ view: state.view }, "", link.getAttribute("href"));
+    restoreTeamAnchor();
+  });
+}
+const teamAnalyticsParams = new URLSearchParams(location.search);
+const teamAnalyticsView = { window: "all", metric: "total", days: 30, day: null,
+  mode: teamAnalyticsParams.get("teamChart") === "history" ? "history" : "comparison",
+  historyDays: [7, 30, 119].includes(Number(teamAnalyticsParams.get("teamDays"))) ? Number(teamAnalyticsParams.get("teamDays")) : 30, historyDay: null };
+const TEAM_USAGE_ICON = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 20h18M6 16v-4m6 4V5m6 11V8"/></svg>';
+function teamChoiceHtml(label, choices, selected, attribute) {
+  return `<div class="tm-segments" role="radiogroup" aria-label="${esc(label)}">${choices.map(([value, text]) => `<button type="button" role="radio" ${attribute}="${value}" aria-checked="${String(value) === String(selected)}" tabindex="${String(value) === String(selected) ? 0 : -1}">${text}</button>`).join("")}</div>`;
+}
+function wireTeamChoices(group, select) {
+  if (!group) return;
+  const buttons = [...group.querySelectorAll('[role="radio"]')];
+  const activate = button => {
+    const hadFocus = document.activeElement === button;
+    buttons.forEach(control => { const checked = control === button; control.setAttribute("aria-checked", String(checked)); control.tabIndex = checked ? 0 : -1; });
+    select(button);
+    // A history-window change replaces its panel, including this group.
+    // Keep keyboard users on the newly selected control after that replacement.
+    if (hadFocus && !button.isConnected) {
+      const replacement = [...document.querySelectorAll('[role="radiogroup"]')].find(candidate => candidate.getAttribute("aria-label") === group.getAttribute("aria-label"));
+      replacement?.querySelector('[role="radio"][aria-checked="true"]')?.focus({ preventScroll: true });
+    }
+  };
+  buttons.forEach((button, index) => {
+    button.onclick = () => activate(button);
+    button.onkeydown = event => {
+      if (!["ArrowRight", "ArrowDown", "ArrowLeft", "ArrowUp", "Home", "End"].includes(event.key)) return;
+      event.preventDefault();
+      const next = event.key === "Home" ? 0 : event.key === "End" ? buttons.length - 1 : (index + (event.key === "ArrowRight" || event.key === "ArrowDown" ? 1 : -1) + buttons.length) % buttons.length;
+      buttons[next].focus(); activate(buttons[next]);
+    };
+  });
+}
+const TEAM_WINDOWS = { today: { label: "Today", field: "tokensToday" }, week: { label: "Last 7 days", field: "tokens7d" }, all: { label: "All time", field: "tokens" } };
+function teamWindowTokens(team) {
+  const value = team[TEAM_WINDOWS[teamAnalyticsView.window].field];
+  return value == null || !Number.isFinite(Number(value)) || !teamWindowProfiles(team) ? null : Math.max(0, Number(value));
+}
+function teamWindowProfiles(team) {
+  const count = teamAnalyticsView.window === "all" ? team.members : team.recentWindowProfiles?.[teamAnalyticsView.window];
+  return count == null ? team.members : Math.min(team.members, Math.max(0, Number(count) || 0));
+}
+function teamComparisonHtml(teams) {
+  const perProfile = teamAnalyticsView.metric === "profile", scope = TEAM_WINDOWS[teamAnalyticsView.window].label;
+  const names = new Map(); teams.forEach(team => names.set(team.team, (names.get(team.team) || 0) + 1));
+  const rows = teams.map(team => {
+    const total = teamWindowTokens(team), profiles = teamWindowProfiles(team);
+    return { team, total, profiles, value: total == null || perProfile && !profiles ? null : perProfile ? total / profiles : total };
+  }).sort((a, b) => (b.value ?? -1) - (a.value ?? -1) || String(a.team.team).localeCompare(String(b.team.team)));
+  const peak = Math.max(1, ...rows.map(row => row.value || 0));
+  const total = rows.reduce((sum, row) => sum + (row.total || 0), 0), missing = rows.filter(row => row.total == null).length;
+  const partial = rows.filter(row => row.total != null && row.profiles < row.team.members).length;
+  return `<div class="tm-comparison-summary" aria-live="polite"><strong data-team-window-total>${missing === rows.length ? "—" : fmtTokens(total)}</strong><span>published tokens · ${scope.toLowerCase()}${missing ? ` · ${missing} team${missing === 1 ? "" : "s"} missing this window` : ""}${partial ? ` · ${partial} team${partial === 1 ? "" : "s"} with partial coverage` : ""}</span></div><ol class="tm-comparison" aria-label="${scope} team token comparison${perProfile ? ' per published profile' : ''}">${rows.map(({ team, value, profiles }) => `<li data-team-comparison data-team-key="${esc(teamKey(team))}"><div class="tm-comparison-label"><span class="tm-comparison-name">${teamLogoHtml(team, "tm-comparison-icon")}<span>${teamNameHtml(team)}${names.get(team.team) > 1 ? `<small>${team.teamId ? "Invite team" : "Published label"}</small>` : ""}${value != null && profiles < team.members ? `<small>${profiles} of ${fmtNum(team.members)} profiles shared this window</small>` : ""}</span></span><strong data-team-comparison-value>${value == null ? "Not published" : fmtTokens(value)}${perProfile && value != null ? '<small> / profile</small>' : ""}</strong></div><div class="tm-comparison-track" aria-hidden="true"><i style="width:${(value || 0) / peak * 100}%"></i></div></li>`).join("")}</ol><p class="tm-board-note">${perProfile ? "Tokens divided by profiles with published totals for this window. " : ""}Window totals reflect each profile’s last publish. Token volume describes activity, not productivity.</p>`;
+}
+function teamsAnalyticsHtml(teams) {
+  const providers = {};
+  teams.forEach(team => teamProviders(team).forEach(([provider, value]) => { providers[provider] = (providers[provider] || 0) + Number(value); }));
+  return `<section class="tm-analytics" aria-labelledby="tm-analytics"><div class="tm-analytics-head"><div><h2 id="tm-analytics" tabindex="-1">The team picture</h2><p>Compare shared usage, then explore the people and providers behind it.</p></div></div><div class="tm-analytics-grid"><div class="tm-comparison-panel"><div class="tm-panel-head tm-comparison-view-head"><h3>${TEAM_USAGE_ICON}Usage by team</h3>${teamChoiceHtml("Team analytics view", [["comparison", "Comparison"], ["history", "Over time"]], teamAnalyticsView.mode, "data-team-analytics-view")}</div><div class="tm-comparison-controls"${teamAnalyticsView.mode === "history" ? " hidden" : ""}>${teamChoiceHtml("Team comparison window", Object.entries(TEAM_WINDOWS).map(([key, window]) => [key, window.label]), teamAnalyticsView.window, "data-team-window")}${teamChoiceHtml("Team comparison metric", [["total", "Total tokens"], ["profile", "Per profile"]], teamAnalyticsView.metric, "data-team-metric")}</div><p class="tm-visually-hidden" role="status" data-team-community-status></p><div id="tm-comparison-body">${teamAnalyticsView.mode === "history" ? teamCommunityHistoryHtml(teams) : teamComparisonHtml(teams)}</div></div><aside class="tm-mix-panel"><div class="tm-provider-heading"><h3>Providers across teams</h3><span>All time</span></div><p>All published teams. Select a provider to inspect its all-time share.</p>${teamProviderInstrumentHtml({ providers })}</aside></div></section>`;
+}
+function updateTeamAnalyticsUrl() {
+  const url = new URL(location.href);
+  if (teamAnalyticsView.mode === "history") { url.searchParams.set("teamChart", "history"); url.searchParams.set("teamDays", teamAnalyticsView.historyDays); }
+  else { url.searchParams.delete("teamChart"); url.searchParams.delete("teamDays"); }
+  history.replaceState(history.state, "", url.pathname + url.search + url.hash);
+  $(".discovery-skip").href = url.pathname + url.search + "#view";
+  $$("[data-team-anchor]").forEach(link => link.href = teamAnchorUrl(link.dataset.teamAnchor));
+}
+function paintTeamAnalytics(teams, announce = false) {
+  $(".tm-comparison-controls").hidden = teamAnalyticsView.mode === "history";
+  chartRegistry.clear(); chartFallbacks.clear();
+  $("#tm-comparison-body").innerHTML = teamAnalyticsView.mode === "history" ? teamCommunityHistoryHtml(teams) : teamComparisonHtml(teams);
+  mountCharts(); wireProfile();
+  if (teamAnalyticsView.mode === "history") wireTeamCommunityHistory(teams);
+  if (announce) $("[data-team-community-status]").textContent = teamAnalyticsView.mode === "history" ? `Showing ${teamAnalyticsView.historyDays} days of published daily team usage in UTC. Coverage may be partial.` : "Showing team token comparisons.";
+}
+function wireTeamsAnalytics(teams) {
+  const paint = () => paintTeamAnalytics(teams);
+  wireTeamChoices($("[aria-label='Team comparison window']"), button => { teamAnalyticsView.window = button.dataset.teamWindow; paint(); });
+  wireTeamChoices($("[aria-label='Team comparison metric']"), button => { teamAnalyticsView.metric = button.dataset.teamMetric; paint(); });
+  wireTeamChoices($("[aria-label='Team analytics view']"), button => { teamAnalyticsView.mode = button.dataset.teamAnalyticsView; updateTeamAnalyticsUrl(); paintTeamAnalytics(teams, true); });
+  if (teamAnalyticsView.mode === "history") wireTeamCommunityHistory(teams);
+  wireTeamProviderInstruments();
+}
+// Lines preserve null publication gaps; this SVG also works without the optional runtime.
+function lineUsageSvg(series, labels, height) {
+  const width = 640, left = 54, right = 16, top = 16, bottom = 30;
+  const max = Math.max(1, ...series.flatMap(series => series.values).filter(value => value != null));
+  const x = index => left + index / Math.max(1, labels.length - 1) * (width - left - right);
+  const y = value => height - bottom - value / max * (height - top - bottom);
+  const grid = [0, .25, .5, .75, 1].map(fraction => `<line x1="${left}" x2="${width - right}" y1="${y(max * fraction)}" y2="${y(max * fraction)}" stroke="var(--th-rule)"/><text x="${left - 7}" y="${y(max * fraction) + 4}" text-anchor="end">${fmtTokens(max * fraction)}</text>`).join("");
+  const lines = series.map(series => {
+    let drawing = false;
+    const path = series.values.map((value, index) => {
+      if (value == null) { drawing = false; return ""; }
+      const part = `${drawing ? "L" : "M"}${x(index).toFixed(2)} ${y(value).toFixed(2)}`; drawing = true; return part;
+    }).join(" ");
+    const points = series.values.map((value, index) => value == null ? "" : `<circle cx="${x(index)}" cy="${y(value)}" r="2.5" fill="${series.color}"><title>${esc(series.name)} · ${esc(labels[index])} · ${fmtNum(value)} reported tokens</title></circle>`).join("");
+    return `<path d="${path}" stroke="${series.color}" stroke-width="2.25"${series.isOther ? ' stroke-dasharray="5 4"' : ""}/>${points}`;
+  }).join("");
+  const dates = labels.map((label, index) => index % Math.ceil(labels.length / 5) === 0 || index === labels.length - 1 ? `<text x="${x(index)}" y="${height - 9}" text-anchor="${index === 0 ? 'start' : index === labels.length - 1 ? 'end' : 'middle'}">${esc(label)}</text>` : "").join("");
+  return `<svg class="tm-line-fallback" viewBox="0 0 ${width} ${height}" width="100%" height="${height}" preserveAspectRatio="none" fill="none">${grid}${lines}${dates}</svg>`;
+}
+function teamCommunityHistoryData(teams) {
+  const days = teamAnalyticsView.historyDays, points = teamDailyWindow({}, days), names = new Map();
+  teams.forEach(team => names.set(team.team, (names.get(team.team) || 0) + 1));
+  const style = getComputedStyle(document.documentElement);
+  const colors = [style.getPropertyValue("--th-accent").trim(), "#2666f0", style.getPropertyValue("--th-warning").trim(), style.getPropertyValue("--th-plan").trim(), style.getPropertyValue("--th-muted").trim()];
+  const rows = teams.map(team => ({ team, values: teamDailyWindow(team, days).map(point => point.reported ? point.tokens : null), available: Array.isArray(team.daily) && team.daily.length > 0 }));
+  const series = rows.slice(0, 4).map((row, index) => ({
+    name: row.team.team + (names.get(row.team.team) > 1 ? row.team.teamId ? " · " + row.team.teamId.slice(0, 6) : " · published label" : ""),
+    team: row.team, color: colors[index], values: row.values
+  }));
+  const other = rows.slice(4);
+  if (other.length) series.push({ name: `Other (${other.length} team${other.length === 1 ? "" : "s"})`, color: colors[4], isOther: true, values: points.map((_, index) => other.some(row => row.values[index] != null) ? other.reduce((sum, row) => sum + (row.values[index] || 0), 0) : null) });
+  const totals = points.map((_, index) => rows.some(row => row.values[index] != null) ? rows.reduce((sum, row) => sum + (row.values[index] || 0), 0) : null);
+  return { points, series, totals, total: totals.reduce((sum, value) => sum + (value || 0), 0), available: rows.filter(row => row.available).length, hasReports: totals.some(value => value != null) };
+}
+function teamCommunityDayReading(data, index) {
+  const date = new Date(data.points[index].day * 1000).toISOString().slice(0, 10);
+  return `${date} UTC — ${data.totals[index] == null ? "No reported usage" : fmtNum(data.totals[index]) + " reported tokens"}`;
+}
+function teamCommunityDayValuesHtml(data, index) {
+  return `<dl class="tm-history-day-values">${data.series.map(series => `<div><dt><i style="border-color:${series.color}"${series.isOther ? ' class="is-other"' : ""}></i>${esc(series.name)}</dt><dd>${series.values[index] == null ? "Not reported" : fmtNum(series.values[index])}</dd></div>`).join("")}</dl>`;
+}
+function teamCommunityHistoryHtml(teams) {
+  const data = teamCommunityHistoryData(teams), days = teamAnalyticsView.historyDays;
+  let index = data.points.findIndex(point => point.day === teamAnalyticsView.historyDay);
+  if (index < 0) index = data.points.length - 1;
+  const chart = data.hasReports ? stackedUsageChart({ labels: data.points.map(point => teamDayLabel(point.day)), series: data.series }, { kind: "line", height: 270, hideLegend: true, preserveColors: true, ariaLabel: `Published daily team tokens over ${days} days in UTC. Gaps are unreported dates.` }) : `<div class="tm-history-empty"><h3>${data.available ? "No reported usage in this window." : "Daily team history hasn’t been published yet."}</h3><p>${data.available ? "Try a longer window to explore published daily usage." : "Use Comparison for published totals. Daily history appears when profiles share it."}</p></div>`;
+  const missing = teams.length - data.available;
+  return `<div data-team-community-history>${teamChoiceHtml("Team history window", [[7, "7 days"], [30, "30 days"], [119, "17 weeks"]], days, "data-team-community-days")}<p class="tm-history-scope">Daily reported tokens · UTC. Gaps mean no report; coverage can be partial.</p><div class="tm-comparison-summary"><strong data-team-community-total>${data.available ? fmtTokens(data.total) : "—"}</strong><span>published tokens over ${days} days${missing && data.available ? ` · partial history: ${data.available} of ${teams.length} teams published daily values` : ""}</span></div><div class="tm-community-chart">${chart}</div>${data.hasReports ? `<div class="tm-history-legend" aria-label="Team time series">${data.series.map(series => `<span title="${esc(series.name)}"><i style="border-color:${series.color}"${series.isOther ? ' class="is-other"' : ""}></i>${series.team && teamIdentity(series.team) ? `<a href="/t/${teamIdentity(series.team)}" data-team-page="${teamIdentity(series.team)}">${esc(series.name)}</a>` : esc(series.name)}</span>`).join("")}</div><div class="tm-day-inspector"><div class="tm-day-inspector-head"><label for="tm-community-day-inspector">Inspect a day</label><button type="button" data-team-community-peak>${TEAM_USAGE_ICON}Jump to peak day</button></div><output data-team-community-day-reading for="tm-community-day-inspector" aria-live="off">${teamCommunityDayReading(data, index)}</output><input id="tm-community-day-inspector" type="range" data-team-community-day-inspector min="0" max="${days - 1}" step="1" value="${index}" aria-valuetext="${teamCommunityDayReading(data, index)}"/><div class="tm-day-inspector-dates" aria-hidden="true"><span>${teamDayLabel(data.points[0].day)}</span><span>${teamDayLabel(data.points.at(-1).day)}</span></div><div data-team-community-day-values>${teamCommunityDayValuesHtml(data, index)}</div></div><details class="tm-daily-values"><summary>View daily values</summary><div role="region" aria-label="Daily team token values" tabindex="0"><table><caption class="tm-visually-hidden">Published daily team tokens in UTC; Not reported means publication coverage is unknown</caption><thead><tr><th scope="col">Date (UTC)</th>${data.series.map(series => `<th scope="col">${esc(series.name)}</th>`).join("")}<th scope="col">Reported Total</th></tr></thead><tbody>${data.points.map((point, index) => `<tr><th scope="row">${new Date(point.day * 1000).toISOString().slice(0, 10)}</th>${data.series.map(series => `<td>${series.values[index] == null ? "Not reported" : fmtNum(series.values[index])}</td>`).join("")}<td>${data.totals[index] == null ? "Not reported" : fmtNum(data.totals[index])}</td></tr>`).join("")}</tbody></table></div></details>` : ""}<p class="tm-board-note">Each line is daily published usage, not productivity. Other combines the remaining teams. The provider view stays all time across all published teams.</p></div>`;
+}
+function wireTeamCommunityHistory(teams) {
+  wireTeamChoices($("[aria-label='Team history window']"), button => { teamAnalyticsView.historyDays = Number(button.dataset.teamCommunityDays); updateTeamAnalyticsUrl(); paintTeamAnalytics(teams, true); });
+  const input = $("[data-team-community-day-inspector]");
+  if (!input) return;
+  const data = teamCommunityHistoryData(teams), reading = $("[data-team-community-day-reading]");
+  const select = announce => {
+    const index = Number(input.value);
+    teamAnalyticsView.historyDay = data.points[index].day;
+    reading.textContent = teamCommunityDayReading(data, index); input.setAttribute("aria-valuetext", reading.textContent);
+    $("[data-team-community-day-values]").innerHTML = teamCommunityDayValuesHtml(data, index);
+    if (announce) $("[data-team-community-status]").textContent = reading.textContent;
+  };
+  input.oninput = () => select(false); input.onchange = () => select(true);
+  $("[data-team-community-peak]").onclick = () => { input.value = String(data.totals.reduce((best, value, index) => (value || 0) > (data.totals[best] || 0) ? index : best, 0)); select(true); input.focus({ preventScroll: true }); };
+}
+
+function teamDailyWindow(stats, days = teamAnalyticsView.days) {
+  const end = Math.floor(Date.now() / 86400000), start = end - days + 1, published = new Map();
+  for (const point of stats.daily || []) {
+    const day = Math.floor(Number(point.day) / 86400), tokens = Number(point.tokens);
+    if (Number.isFinite(day) && Number.isFinite(tokens) && tokens >= 0 && day >= start && day <= end) published.set(day, (published.get(day) || 0) + tokens);
+  }
+  return Array.from({ length: days }, (_, i) => ({ day: (start + i) * 86400, tokens: published.get(start + i) || 0, reported: published.has(start + i) }));
+}
+function teamDayLabel(day) { return new Date(day * 1000).toLocaleDateString(undefined, { month: "short", day: "numeric", timeZone: "UTC" }); }
+function teamHistoryHtml(stats) {
+  const points = teamDailyWindow(stats), total = points.reduce((sum, point) => sum + point.tokens, 0), active = points.filter(point => point.tokens > 0).length;
+  const peak = points.reduce((best, point) => point.tokens > best.tokens ? point : best, points[0]);
+  const hasHistory = (stats.daily || []).length > 0;
+  const chart = total > 0 ? stackedUsageChart({ labels: points.map(point => teamDayLabel(point.day)), series: [{ name: "Team tokens", color: "#34885f", values: points.map(point => point.tokens) }] }, { height: 260, hideLegend: true, preserveColors: true, ariaLabel: `Daily team tokens over ${teamAnalyticsView.days} days` }) : `<div class="tm-history-empty"><h3>${hasHistory ? "No published activity in this window." : "Daily history hasn’t been published yet."}</h3><p>${hasHistory ? "Try a longer window to explore the crew’s shared activity." : "All-time totals and provider mix are available below. Daily activity appears when profiles share their history."}</p></div>`;
+  return `<dl class="tm-history-stats"><div><dt>Tokens in this window</dt><dd data-team-history-total>${hasHistory ? fmtTokens(total) : "—"}</dd></div><div><dt>Daily average</dt><dd>${hasHistory ? fmtTokens(total / points.length) : "—"}</dd></div><div><dt>Days with reported usage</dt><dd>${hasHistory ? active : "—"}<small> / ${points.length}</small></dd></div><div><dt>Peak day</dt><dd>${total ? fmtTokens(peak.tokens) : "—"}</dd>${total ? `<small>${teamDayLabel(peak.day)}</small>` : ""}</div></dl><div class="tm-history-chart"${total ? ` role="img" aria-label="Daily team tokens over ${points.length} days: ${fmtNum(total)} published tokens, ${active} days with reported usage. Coverage may be partial. Daily values are available below."` : ""}>${chart}</div>${total ? teamDayInspectorHtml(points, peak) : ""}<p class="tm-board-note">Published daily history in UTC. Profiles may cover different dates; this window can be a partial view of the team’s usage.</p>${total ? `<details class="tm-daily-values"><summary>View daily values</summary><div role="region" aria-label="Daily team token values" tabindex="0"><table><caption class="tm-visually-hidden">Published daily team tokens in UTC</caption><thead><tr><th scope="col">Date (UTC)</th><th scope="col">Tokens</th></tr></thead><tbody>${points.map(point => `<tr><th scope="row">${new Date(point.day * 1000).toISOString().slice(0, 10)}</th><td${!point.tokens ? ' aria-label="No reported usage; publication coverage may be incomplete"' : ""}>${fmtNum(point.tokens)}</td></tr>`).join("")}</tbody></table></div></details>` : ""}`;
+}
+function teamDetailAnalyticsHtml(stats) {
+  return `<section class="tm-analytics tm-detail-analytics" aria-labelledby="tm-analytics"><div class="tm-analytics-head"><div><h2 id="tm-analytics" tabindex="-1">The crew over time</h2><p>Published daily usage · UTC. Missing dates mean no reported usage; coverage can be partial.</p></div>${teamChoiceHtml("Team activity window", [[7, "7 days"], [30, "30 days"], [119, "17 weeks"]], teamAnalyticsView.days, "data-team-days")}</div><p class="tm-visually-hidden" data-team-history-status role="status"></p><div id="tm-history-body">${teamHistoryHtml(stats)}</div></section>`;
+}
+function teamDayReading(point) {
+  return `${new Date(point.day * 1000).toISOString().slice(0, 10)} UTC — ${point.tokens > 0 ? fmtNum(point.tokens) + " reported tokens" : "No reported usage"}`;
+}
+function teamDayInspectorHtml(points, peak) {
+  let index = points.findIndex(point => point.day === teamAnalyticsView.day);
+  if (index < 0) index = points.length - 1;
+  const selected = points[index];
+  return `<div class="tm-day-inspector"><div class="tm-day-inspector-head"><label for="tm-day-inspector">Inspect a day</label><button type="button" data-team-peak-day>${TEAM_USAGE_ICON}Jump to peak day</button></div><output for="tm-day-inspector" data-team-day-reading aria-live="off">${teamDayReading(selected)}</output><input id="tm-day-inspector" type="range" data-team-day-inspector min="0" max="${points.length - 1}" step="1" value="${index}" aria-valuetext="${teamDayReading(selected)}"/><div class="tm-day-inspector-dates" aria-hidden="true"><span>${teamDayLabel(points[0].day)}</span><span>${teamDayLabel(points.at(-1).day)}</span></div></div>`;
+}
+function wireTeamDayInspector(stats) {
+  const input = $("[data-team-day-inspector]");
+  if (!input) return;
+  const points = teamDailyWindow(stats), reading = $("[data-team-day-reading]");
+  const select = announce => {
+    const point = points[Number(input.value)];
+    teamAnalyticsView.day = point.day; reading.textContent = teamDayReading(point); input.setAttribute("aria-valuetext", reading.textContent);
+    if (announce) $("[data-team-history-status]").textContent = reading.textContent;
+  };
+  input.oninput = () => select(false); input.onchange = () => select(true);
+  $("[data-team-peak-day]").onclick = () => {
+    input.value = String(points.reduce((best, point, index) => point.tokens > points[best].tokens ? index : best, 0));
+    select(true); input.focus({ preventScroll: true });
+  };
+}
+function wireTeamHistory(stats) {
+  wireTeamDayInspector(stats);
+  wireTeamChoices($("[aria-label='Team activity window']"), button => {
+    teamAnalyticsView.days = Number(button.dataset.teamDays);
+    chartRegistry.clear(); chartFallbacks.clear();
+    $("#tm-history-body").innerHTML = teamHistoryHtml(stats);
+    mountCharts(); wireTeamDayInspector(stats);
+    const total = teamDailyWindow(stats).reduce((sum, point) => sum + point.tokens, 0);
+    $("[data-team-history-status]").textContent = `Showing ${teamAnalyticsView.days} days of published history: ${fmtNum(total)} reported tokens. Coverage can be partial.`;
+  });
+}
+function teamContributionsHtml(team) {
+  const users = (team.users || []).filter(user => Number(user.tokensAll) >= 0), total = Math.max(1, Number(team.tokens) || 0);
+  if (!users.length) return "";
+  return `<ol class="tm-contributions" aria-label="All-time published profile contributions">${users.map(user => `<li><button type="button" data-handle-link="${esc(user.handle)}" aria-label="View ${esc(user.handle)}’s profile">${avatar(user.handle, user.avatarUrl, 28, user.avatarStyle)}<span>${esc(user.handle)}</span></button><strong>${fmtTokens(Number(user.tokensAll))}</strong><div class="tm-comparison-track" aria-hidden="true"><i style="width:${Math.min(100, Number(user.tokensAll) / total * 100)}%"></i></div></li>`).join("")}</ol><p class="tm-profile-note">All-time tokens from ${users.length < team.members ? `the top ${users.length} of ${fmtNum(team.members)}` : fmtNum(team.members)} published profiles.</p>`;
+}
+function teamLandingLoadingHtml() { return `<article class="tm-page tm-team-page" aria-busy="true"><div class="tm-back"><a href="./teams#tm-rankings-title">${TEAM_ARROW}All teams</a></div><p role="status" class="tm-loading-label">Getting the crew together…</p><div class="tm-loading-leader skeleton"></div></article>`; }
 async function renderTeamLanding(current = () => true) {
   const id = state.teamId;
   try {
@@ -5051,8 +5428,8 @@ async function renderTeamLanding(current = () => true) {
     if (!team || team.id !== id) throw new Error("This team couldn’t be found.");
     state.teamDetail = detail;
     const row = { ...stats, teamId: id, team: team.name, members: Number(stats.publishedProfiles) || 0 };
-    $("#view").innerHTML = `<article class="tm-page tm-team-page"><div class="tm-back"><a href="/leaderboard?view=teams">${TEAM_ARROW}All teams</a><span>Public team profile</span></div><section class="tm-orbit-hero tm-public-hero" data-team-hero><div class="tm-orbit-copy">${teamLogoHtml(team)}<h1>${teamDisplayName(team.name)}</h1><p>${fmtNum(team.memberCount)} ${Number(team.memberCount) === 1 ? "member" : "members"}. Different models. Shared horizons.<br/>Every published profile brings something to the crew.</p><div class="tm-team-membership" data-team-membership><a href="/leaderboard?view=teams">Explore team standings ${TEAM_ARROW}</a></div>${teamPublicShareHtml(team, stats)}</div><div class="tm-orbit-visual"><div data-team-blackhole aria-hidden="true"></div><button type="button" class="tm-motion-toggle" data-team-motion-toggle aria-pressed="false" aria-label="Pause animation">${TEAM_PAUSE}<span>Pause animation</span></button><span class="tm-orbit-caption">Every provider. One shared horizon.</span></div></section><dl class="tm-public-stats"><div><dt>Members in the crew</dt><dd>${fmtNum(team.memberCount)}</dd></div><div><dt>Published profiles</dt><dd>${fmtNum(stats.publishedProfiles)}</dd></div><div><dt>All-time tokens</dt><dd>${fmtTokens(stats.tokens)}</dd></div><div><dt>Providers used</dt><dd>${teamProviders(stats).length}</dd></div></dl><section class="tm-team-insights"><div><h2>The crew’s model universe.</h2><p>Combined usage from profiles published to this team.</p>${teamProviderMixHtml(row)}</div><div><h2>Meet the builders.</h2><p>Explore the crew’s public profiles and their own horizons.</p>${teamProfilesHtml(row, true)}${!stats.publishedProfiles ? '<p class="tm-muted">Your first public profile will bring this page to life. Members can install the app and choose what to publish.</p><a class="tm-text-action" href="/#install">Get Token Horizon ' + TEAM_ARROW + '</a>' : `<button type="button" class="tm-text-action" data-team-profile-rankings>View all published profiles ${TEAM_ARROW}</button>`}</div></section><p class="tm-board-note">Membership is saved to each person’s account. Token totals reflect published profiles. Private prompts and local traces stay private.</p></article>`;
-    syncDiscoveryMetadata(); mountTeamMotion(); wireProfile(); wireTeamPublicShare(team);
+    $("#view").innerHTML = `<article class="tm-page tm-team-page"><div class="tm-back"><a href="./teams#tm-rankings-title">${TEAM_ARROW}All teams</a><span>Public team profile</span></div><section class="tm-orbit-hero tm-public-hero" data-team-hero><div class="tm-orbit-copy">${teamLogoHtml(team)}<h1>${teamDisplayName(team.name)}</h1><p>${fmtNum(team.memberCount)} ${Number(team.memberCount) === 1 ? "member" : "members"}. Different models. Shared horizons.<br/>Every published profile brings something to the crew.</p><div class="tm-team-quick-actions" role="group" aria-label="Team actions">${teamActionHtml("rankings", "Rankings", "Explore all published teams in the community standings.", { href: "./teams#tm-rankings-title" })}${teamActionHtml("analytics", "Analytics", "Explore this crew’s published daily usage in UTC.", { href: teamAnchorUrl('tm-analytics'), attributes: { "data-team-anchor": "tm-analytics" } })}${teamPublicShareHtml(team, stats)}<span data-team-manage-slot></span></div><div class="tm-team-membership" data-team-membership hidden></div></div><div class="tm-orbit-visual">${teamMotionVisualHtml()}<span class="tm-orbit-caption">Every provider. One shared horizon.</span></div></section><dl class="tm-public-stats"><div><dt>Members in the crew</dt><dd>${fmtNum(team.memberCount)}</dd></div><div><dt>Published profiles</dt><dd>${fmtNum(stats.publishedProfiles)}</dd></div><div><dt>All-time tokens</dt><dd>${fmtTokens(stats.tokens)}</dd></div><div><dt>Providers used</dt><dd>${teamProviders(stats).length}</dd></div></dl>${teamDetailAnalyticsHtml(stats)}<section class="tm-team-insights"><div><h2>Providers in the crew.</h2><p>All-time reported model usage from published profiles.</p>${teamProviderInstrumentHtml(row)}<p class="tm-reported-cost"><span>Shared cost estimate</span><strong>${fmtCost(stats.cost)}</strong></p><p class="tm-profile-note">Includes only cost estimates members chose to share.</p></div><div><h2>Meet the builders.</h2><p>All-time contributions from the crew’s published profiles.</p>${teamContributionsHtml(row) || teamProfilesHtml(row, true)}${!stats.publishedProfiles ? '<p class="tm-muted">Your first public profile will bring this page to life. Members can install the app and choose what to publish.</p><a class="tm-text-action" href="/#install">Get Token Horizon ' + TEAM_ARROW + '</a>' : `<button type="button" class="tm-text-action" data-team-profile-rankings>View all published profiles ${TEAM_ARROW}</button>`}</div></section><p class="tm-board-note">Membership is saved to each person’s account. Token totals reflect published profiles. Private prompts and local traces stay private.</p></article>`;
+    syncDiscoveryMetadata(); mountTeamMotion(); wireProfile(); wireTeamPublicShare(team); wireTeamAnchors(); wireTeamHistory(stats); wireTeamProviderInstruments();
     const ranking = $("[data-team-profile-rankings]");
     if (ranking) ranking.onclick = () => { state.teamFilter = id; state.leagueFilter = "all"; state.search = ""; if (state.period !== "all") { state.period = "all"; state.data = null; state.dataSig = ""; } navigate("leaderboard"); };
     if (isGoogleSessionValid()) {
@@ -5060,14 +5437,16 @@ async function renderTeamLanding(current = () => true) {
       api("/api/account/team", { headers: googleHeaders(), cache: "no-store" }).then(account => {
         if (!current() || state.googleSession !== session || account.team?.id !== id) return;
         const membership = $("[data-team-membership]");
-        membership.innerHTML = `<span>${TEAM_CHECK}You’re part of this crew.</span><button type="button" class="tm-text-action" data-team-manage>${account.team.role === "owner" ? "Invite friends & edit team icon" : "Your team"} ${TEAM_ARROW}</button>`;
+        membership.hidden = false;
+        membership.innerHTML = `<span>${TEAM_CHECK}You’re part of this crew.</span>`;
+        $("[data-team-manage-slot]").innerHTML = teamActionHtml("crew", "Your crew", account.team.role === "owner" ? "Invite friends, edit the team icon and manage your crew." : "View your membership and the people in your crew.", { attributes: { "data-team-manage": "" } });
         $("[data-team-manage]").onclick = openInviteFriends;
       }).catch(() => {});
     }
   } catch (error) {
     if (!current()) return;
     state.teamDetail = null;
-    $("#view").innerHTML = `<article class="tm-page"><section class="tm-error" role="alert"><div><h1>${error.status === 404 ? "This crew couldn’t be found." : "The team page couldn’t load."}</h1><p>${esc(error.message)}</p></div><button type="button" id="tm-retry">Try again</button></section><a href="/leaderboard?view=teams" class="tm-text-action">Explore teams ${TEAM_ARROW}</a></article>`;
+    $("#view").innerHTML = `<article class="tm-page"><section class="tm-error" role="alert"><div><h1>${error.status === 404 ? "This crew couldn’t be found." : "The team page couldn’t load."}</h1><p>${esc(error.message)}</p></div><button type="button" id="tm-retry">Try again</button></section><a href="./teams#tm-rankings-title" class="tm-text-action">Explore teams ${TEAM_ARROW}</a></article>`;
     $("#tm-retry").onclick = () => { clearApiCache(); render(); };
   }
 }
@@ -5088,6 +5467,40 @@ function teamProfilesHtml(team, featured = false) {
   if (!users.length) return '<p class="tm-muted">No public profiles available.</p>';
   return `<div class="tm-profiles${featured ? " tm-profiles-featured" : ""}">${users.map(user => `<button type="button" class="tm-profile" data-handle-link="${esc(user.handle)}" aria-label="View ${esc(user.handle)}’s profile">${avatar(user.handle, user.avatarUrl, featured ? 32 : 26, user.avatarStyle)}<span>${esc(user.handle)}</span></button>`).join("")}</div>${team.members > users.length ? `<p class="tm-profile-note">Top ${users.length} of ${fmtNum(team.members)} published profiles.</p>` : ""}`;
 }
+const teamProviderSelections = new Map();
+function teamProviderReadingHtml(provider, tokens, total) {
+  return `<span class="tm-provider-reading-name"><span aria-hidden="true">${providerLogo(provider, 22)}</span>${esc(providerLabel(provider))}</span><strong>${fmtTokens(tokens)}<small> tokens</small></strong><span>${Math.round(tokens / total * 100)}% of reported usage</span>`;
+}
+function teamProviderInstrumentHtml(team) {
+  const providers = teamProviders(team), total = providers.reduce((sum, [, value]) => sum + Number(value), 0);
+  if (!total) return '<p class="tm-muted">Provider breakdown hasn’t been published.</p>';
+  const key = teamIdentity(team) || "community", selected = providers.find(([provider]) => provider === teamProviderSelections.get(key)) || providers[0];
+  const polar = (angle, radius) => [120 + Math.cos(angle) * radius, 128 + Math.sin(angle) * radius].map(value => value.toFixed(3)).join(" ");
+  let angle = Math.PI;
+  const arcs = providers.map(([provider, value]) => {
+    const sweep = Number(value) / total * Math.PI, gap = Math.min(.012, sweep / 6), start = angle + gap, end = angle + sweep - gap;
+    angle += sweep;
+    const path = `M ${polar(start, 92)} A 92 92 0 0 1 ${polar(end, 92)}`;
+    return `<path class="tm-provider-arc-boundary" d="${path}"/><path data-team-provider-arc="${esc(provider)}" class="${selected[0] === provider ? 'is-selected' : ''}" d="${path}" style="stroke:${providerColor(provider)}"/>`;
+  }).join("");
+  const ticks = Array.from({ length: 11 }, (_, index) => `<path d="M ${polar(Math.PI + index * Math.PI / 10, 105)} L ${polar(Math.PI + index * Math.PI / 10, index % 5 ? 109 : 113)}"/>`).join("");
+  return `<div class="tm-provider-instrument" data-team-provider-instrument="${esc(key)}"><div class="tm-provider-dial"><svg viewBox="0 0 240 160" aria-hidden="true" focusable="false"><g class="tm-provider-arcs">${arcs}</g><g class="tm-provider-ticks">${ticks}</g><path class="tm-provider-seam" d="M8 135h99m26 0h99"/><text x="14" y="153">0%</text><text x="226" y="153" text-anchor="end">100%</text></svg><div class="tm-provider-reading" data-team-provider-reading aria-live="polite">${teamProviderReadingHtml(selected[0], Number(selected[1]), total)}</div></div><div class="tm-provider-selectors" role="radiogroup" aria-label="Provider reading">${providers.map(([provider, value]) => `<button type="button" role="radio" data-team-provider="${esc(provider)}" data-team-provider-tokens="${Number(value)}" aria-checked="${selected[0] === provider}" tabindex="${selected[0] === provider ? 0 : -1}"><span class="tm-provider-name"><span aria-hidden="true">${providerLogo(provider, 20)}</span>${esc(providerLabel(provider))}</span><span class="tm-provider-tokens">${fmtTokens(Number(value))}</span><span class="tm-provider-share">${Math.round(Number(value) / total * 100)}%</span></button>`).join("")}</div><div class="tm-provider-catalog" data-team-provider-catalog>${providerLink(selected[0], "Explore " + providerLabel(selected[0]) + " models")}${TEAM_ARROW}</div><p class="tm-profile-note">All-time share of reported model usage.</p></div>`;
+}
+function wireTeamProviderInstruments() {
+  $$("[data-team-provider-instrument]").forEach(instrument => {
+    const group = instrument.querySelector('[role="radiogroup"]'), buttons = [...group.querySelectorAll('[data-team-provider]')];
+    const total = buttons.reduce((sum, button) => sum + Number(button.dataset.teamProviderTokens), 0);
+    wireTeamChoices(group, button => {
+      const provider = button.dataset.teamProvider;
+      teamProviderSelections.set(instrument.dataset.teamProviderInstrument, provider);
+      if (teamProviderSelections.size > 20) teamProviderSelections.delete(teamProviderSelections.keys().next().value);
+      instrument.querySelector('[data-team-provider-reading]').innerHTML = teamProviderReadingHtml(provider, Number(button.dataset.teamProviderTokens), total);
+      instrument.querySelector('[data-team-provider-catalog]').innerHTML = providerLink(provider, "Explore " + providerLabel(provider) + " models") + TEAM_ARROW;
+      instrument.querySelectorAll('[data-team-provider-arc]').forEach(arc => arc.classList.toggle("is-selected", arc.dataset.teamProviderArc === provider));
+    });
+  });
+}
+
 function teamProviderMixHtml(team) {
   const providers = teamProviders(team), total = providers.reduce((sum, [, value]) => sum + Number(value), 0);
   if (!total) return '<p class="tm-muted">Provider breakdown hasn’t been published.</p>';
@@ -5102,7 +5515,7 @@ function teamsRowsHtml(teams) {
   return `<ol class="tm-ranking" aria-label="Team rankings">${rows.map(team => {
     const rank = ranking.get(teamKey(team)), id = "tm-details-" + rank, expanded = teamLeaderboardView.expanded.has(teamKey(team));
     const topProviders = teamProviders(team).slice(0, 3);
-    return `<li class="tm-row${rank === 1 ? " tm-row-leading" : ""}"><button type="button" class="tm-row-summary" data-team-expand="${esc(teamKey(team))}" aria-expanded="${expanded}" aria-controls="${id}"><span class="tm-rank"><span class="tm-visually-hidden">Rank </span>${String(rank).padStart(2, "0")}</span><span class="tm-team-name"><strong>${teamLogoHtml(team, "tm-row-icon")}${teamDisplayName(team.team)}</strong><span>${team.memberCount != null ? fmtNum(team.memberCount) + " members · " : ""}${fmtNum(team.members)} published profile${team.members === 1 ? "" : "s"}</span></span><span class="tm-row-providers" aria-hidden="true">${topProviders.map(([provider]) => `<span class="tm-provider-mark">${providerLogo(provider, 19)}</span>`).join("")}</span><span class="tm-row-tokens"><strong>${fmtTokens(team.tokens)}</strong><span>all-time tokens</span></span><svg class="tm-expand-icon" aria-hidden="true" viewBox="0 0 20 20"><path d="m5 8 5 5 5-5"/></svg></button><section class="tm-row-details" id="${id}" aria-label="${esc(team.team)} details"${expanded ? "" : " hidden"}><div><h3>Provider mix</h3>${teamProviderMixHtml(team)}</div><div><h3>Published profiles</h3>${teamProfilesHtml(team)}${teamIdentity(team) ? `<a class="tm-text-action" href="/t/${teamIdentity(team)}" data-team-page="${teamIdentity(team)}">Team page & share preview ${TEAM_ARROW}</a>` : ""}<p class="tm-reported-cost"><span>Reported cost</span><strong>${fmtCost(team.cost)}</strong></p><button type="button" class="tm-view-team" data-team-ranking="${esc(team.teamId || team.team)}">View individual rankings <svg aria-hidden="true" viewBox="0 0 20 20"><path d="M4 10h12M11 5l5 5-5 5"/></svg></button></div></section></li>`;
+    return `<li class="tm-row${rank === 1 ? " tm-row-leading" : ""}"><button type="button" class="tm-row-summary" data-team-expand="${esc(teamKey(team))}" aria-expanded="${expanded}" aria-controls="${id}"><span class="tm-rank"><span class="tm-visually-hidden">Rank </span>${String(rank).padStart(2, "0")}</span><span class="tm-team-name"><strong>${teamLogoHtml(team, "tm-row-icon")}${teamDisplayName(team.team)}</strong><span>${team.memberCount != null ? fmtNum(team.memberCount) + " members · " : ""}${fmtNum(team.members)} published profile${team.members === 1 ? "" : "s"}</span></span><span class="tm-row-providers" aria-hidden="true">${topProviders.map(([provider]) => `<span class="tm-provider-mark">${providerLogo(provider, 19)}</span>`).join("")}</span><span class="tm-row-tokens"><strong>${fmtTokens(team.tokens)}</strong><span>all-time tokens</span></span><svg class="tm-expand-icon" aria-hidden="true" viewBox="0 0 20 20"><path d="m5 8 5 5 5-5"/></svg></button><section class="tm-row-details" id="${id}" aria-label="${esc(team.team)} details"${expanded ? "" : " hidden"}><div><h3>Provider mix</h3>${teamProviderMixHtml(team)}</div><div><h3>Published profiles</h3>${teamProfilesHtml(team)}${teamIdentity(team) ? `<a class="tm-text-action" href="/t/${teamIdentity(team)}#tm-analytics" data-team-page="${teamIdentity(team)}">Open team analytics ${TEAM_ARROW}</a>` : ""}<p class="tm-reported-cost"><span>Shared cost estimate</span><strong>${fmtCost(team.cost)}</strong></p><button type="button" class="tm-view-team" data-team-ranking="${esc(team.teamId || team.team)}">View individual rankings <svg aria-hidden="true" viewBox="0 0 20 20"><path d="M4 10h12M11 5l5 5-5 5"/></svg></button></div></section></li>`;
   }).join("")}</ol>`;
 }
 async function renderTeams(current = () => true) {
@@ -5113,7 +5526,7 @@ async function renderTeams(current = () => true) {
   // Canonical team IDs remain distinct from legacy groups with identical names.
   const teams = (p.teams || []).filter(team => team.teamId || team.team !== "Unassigned").map(team => ({ ...team, tokens: Math.max(0, Number(team.tokens) || 0), cost: Math.max(0, Number(team.cost) || 0), members: Math.max(0, Number(team.members) || 0) })).sort((a, b) => b.tokens - a.tokens);
   const totalTokens = teams.reduce((sum, team) => sum + team.tokens, 0), totalProfiles = teams.reduce((sum, team) => sum + team.members, 0), leader = teams[0];
-  $("#view").innerHTML = `<article class="tm-page">${teamsHeroHtml()}<div class="team-invite-banner"><div><strong>Bring your friends into orbit.</strong><span>Share an invite link. Friends join your team after signing in.</span></div><button type="button" class="tm-invite-button" data-invite-friends>Invite friends <svg aria-hidden="true" viewBox="0 0 20 20"><path d="M10 4v12M4 10h12"/></svg></button></div>${state.providersError ? `<section class="tm-error" role="alert"><div><h2>Team data couldn’t load.</h2><p>${esc(state.providersError)}</p></div><button type="button" id="tm-retry">Try again</button></section>` : ""}${leader ? `<section class="tm-leader" aria-label="Leading team"><div class="tm-leader-rank"><span>Rank</span><strong>01</strong></div><div class="tm-leader-team"><div class="tm-leader-identity">${teamLogoHtml(leader)}<h2>${teamNameHtml(leader)}</h2></div><p>Leading the community with ${fmtNum(leader.members)} published profile${leader.members === 1 ? "" : "s"}.</p>${teamProfilesHtml(leader, true)}</div><div class="tm-leader-usage"><strong>${fmtTokens(leader.tokens)}</strong><span>all-time tokens</span><p>${totalTokens ? Math.round(leader.tokens / totalTokens * 100) : 0}% of published team usage</p></div></section>` : ""}${teams.length ? `<dl class="tm-community-stats"><div><dt>Published teams</dt><dd>${fmtNum(teams.length)}</dd></div><div><dt>Published profiles</dt><dd>${fmtNum(totalProfiles)}</dd></div><div><dt>Combined tokens</dt><dd>${fmtTokens(totalTokens)}</dd></div></dl><section class="tm-board" aria-labelledby="tm-rankings-title"><div class="tm-board-head"><div><h2 id="tm-rankings-title">The team standings</h2><p>All-time totals from public profiles. Expand a team to explore its usage.</p></div><div class="tm-controls"><label class="tm-search"><svg aria-hidden="true" viewBox="0 0 20 20"><circle cx="8.5" cy="8.5" r="5.5"/><path d="m13 13 4 4"/></svg><span class="tm-visually-hidden">Search teams or profiles</span><input type="search" id="tm-search" value="${esc(teamLeaderboardView.search)}" placeholder="Find a team or profile…" autocomplete="off"/></label><label class="tm-sort"><span class="tm-visually-hidden">Sort teams</span><select id="tm-sort"><option value="tokens"${teamLeaderboardView.sort === "tokens" ? " selected" : ""}>Total tokens</option><option value="profiles"${teamLeaderboardView.sort === "profiles" ? " selected" : ""}>Published profiles</option><option value="name"${teamLeaderboardView.sort === "name" ? " selected" : ""}>Team name</option></select></label></div></div><div id="tm-rows">${teamsRowsHtml(teams)}</div><p class="tm-board-note">Ranks use all-time token totals. Teams appear when members publish their profiles; unpublished members aren’t included.</p></section>` : !state.providersError ? `<section class="tm-empty"><svg aria-hidden="true" viewBox="0 0 48 48"><circle cx="24" cy="24" r="17"/><path d="M7 24h34M17 20a7 7 0 0 1 14 0m-18 13c3-7 19-7 22 0"/></svg><h2>Your crew could be first.</h2><p>Create a team, invite your friends, and publish your usage to start climbing together.</p><button type="button" class="tm-invite-button" data-team-empty-invite>Create your team</button></section>` : ""}</article>`;
+  $("#view").innerHTML = `<article class="tm-page">${teamsHeroHtml()}<div class="team-invite-banner" hidden><div><strong>Bring your friends into orbit.</strong><span>Share an invite link. Friends join your team after signing in.</span></div>${teamActionHtml("invite", "Invite friends", "Open your crew to manage membership and invitation links.", { className: "tm-invite-button", attributes: { "data-invite-friends": "" } })}</div>${state.providersError ? `<section class="tm-error" id="tm-analytics" tabindex="-1" role="alert"><div><h2 id="tm-rankings-title" tabindex="-1">Team data couldn’t load.</h2><p>${esc(state.providersError)}</p></div><button type="button" id="tm-retry">Try again</button></section>` : ""}${leader ? `<section class="tm-leader" aria-label="Leading team"><div class="tm-leader-rank"><span>Rank</span><strong>01</strong></div><div class="tm-leader-team"><div class="tm-leader-identity">${teamLogoHtml(leader)}<h2>${teamNameHtml(leader)}</h2></div><p>Leading the community with ${fmtNum(leader.members)} published profile${leader.members === 1 ? "" : "s"}.</p>${teamProfilesHtml(leader, true)}</div><div class="tm-leader-usage"><strong>${fmtTokens(leader.tokens)}</strong><span>all-time tokens</span><p>${totalTokens ? Math.round(leader.tokens / totalTokens * 100) : 0}% of published team usage</p></div></section>` : ""}${teams.length ? `<dl class="tm-community-stats"><div><dt>Published teams</dt><dd>${fmtNum(teams.length)}</dd></div><div><dt>Published profiles</dt><dd>${fmtNum(totalProfiles)}</dd></div><div><dt>Combined tokens</dt><dd>${fmtTokens(totalTokens)}</dd></div></dl><section class="tm-board" aria-labelledby="tm-rankings-title"><div class="tm-board-head"><div><h2 id="tm-rankings-title" tabindex="-1">The team standings</h2><p>All-time totals from public profiles. Expand a team to explore its usage.</p></div><div class="tm-controls"><label class="tm-search"><svg aria-hidden="true" viewBox="0 0 20 20"><circle cx="8.5" cy="8.5" r="5.5"/><path d="m13 13 4 4"/></svg><span class="tm-visually-hidden">Search teams or profiles</span><input type="search" id="tm-search" value="${esc(teamLeaderboardView.search)}" placeholder="Find a team or profile…" autocomplete="off"/></label><label class="tm-sort"><span class="tm-visually-hidden">Sort teams</span><select id="tm-sort"><option value="tokens"${teamLeaderboardView.sort === "tokens" ? " selected" : ""}>Total tokens</option><option value="profiles"${teamLeaderboardView.sort === "profiles" ? " selected" : ""}>Published profiles</option><option value="name"${teamLeaderboardView.sort === "name" ? " selected" : ""}>Team name</option></select></label></div></div><div id="tm-rows">${teamsRowsHtml(teams)}</div><p class="tm-board-note">Ranks use all-time token totals. Teams appear when members publish their profiles; unpublished members aren’t included.</p></section>${teamsAnalyticsHtml(teams)}` : !state.providersError ? `<section class="tm-empty" id="tm-analytics" tabindex="-1"><svg aria-hidden="true" viewBox="0 0 48 48"><circle cx="24" cy="24" r="17"/><path d="M7 24h34M17 20a7 7 0 0 1 14 0m-18 13c3-7 19-7 22 0"/></svg><h2 id="tm-rankings-title" tabindex="-1">Your crew could be first.</h2><p>Create a team, invite your friends, and publish your usage to start climbing together.</p><button type="button" class="tm-invite-button" data-team-empty-invite>Create your team</button></section>` : ""}</article>`;
   const paintRows = () => {
     $("#tm-rows").innerHTML = teamsRowsHtml(teams);
     wireRows();
@@ -5137,8 +5550,11 @@ async function renderTeams(current = () => true) {
     if (clear) clear.onclick = () => { teamLeaderboardView.search = ""; $("#tm-search").value = ""; paintRows(); $("#tm-search").focus(); };
   };
   wireRows();
+  wireTeamAnchors();
+  if (teams.length) wireTeamsAnalytics(teams);
+  wireTeamIntroduction();
   mountTeamMotion();
-  $("[data-team-hero-invite]").onclick = openInviteFriends;
+  $$("[data-team-hero-invite]").forEach(button => button.onclick = openInviteFriends);
   const search = $("#tm-search"), sort = $("#tm-sort");
   if (search) search.oninput = () => { teamLeaderboardView.search = search.value; paintRows(); };
   if (sort) sort.onchange = () => { teamLeaderboardView.sort = sort.value; paintRows(); };
@@ -5151,10 +5567,11 @@ async function renderTeams(current = () => true) {
     const session = state.googleSession;
     api("/api/account/team", { headers: googleHeaders(), cache: "no-store" }).then(account => {
       if (!current() || session !== state.googleSession || !account.team) return;
+      $(".team-invite-banner").hidden = false;
       $(".team-invite-banner strong").textContent = account.team.name;
-      $("[data-team-hero-invite]").innerHTML = `Your crew ${TEAM_ARROW}`;
+      $$("[data-team-hero-invite]").forEach(button => updateTeamAction(button, "Your crew", "Open your team and manage the membership your account belongs to.", "crew"));
       $(".team-invite-banner span").textContent = `${account.team.memberCount} members in your crew. Published profiles contribute to the rankings below.`;
-      $("[data-invite-friends]").innerHTML = `${account.team.role === "owner" ? "Invite friends" : "Your team"} <svg aria-hidden="true" viewBox="0 0 20 20"><path d="M10 4v12M4 10h12"/></svg>`;
+      updateTeamAction($("[data-invite-friends]"), account.team.role === "owner" ? "Invite friends" : "Your team", account.team.role === "owner" ? "Invite friends and manage the links for your crew." : "View your membership and the people in your crew.", account.team.role === "owner" ? "invite" : "crew");
     }).catch(() => {});
   }
 }
@@ -5163,63 +5580,23 @@ async function renderTeams(current = () => true) {
    VIEW: BILLING
    ============================================================ */
 async function renderBilling(current = () => true) {
-  const p = await loadProviders();
-  if (!current()) return;
-  const rows = p.providers || [];
-  const totalTokens = rows.reduce((s, r) => s + r.tokens, 0);
-  const totalCost = rows.reduce((s, r) => s + r.cost, 0);
-  const models = [];
-  for (const row of state.data?.leaderboard || []) {
-    for (const m of row.entry.breakdown?.models || []) models.push(m);
-  }
-  const byModel = new Map();
-  for (const m of models) {
-    const key = m.model || m.provider;
-    const cur = byModel.get(key) || { model: key, provider: m.provider, tokens: 0, cost: 0, requests: 0 };
-    cur.tokens += m.tokensAll || 0; cur.cost += m.costAll || 0; cur.requests += m.requests || 0;
-    byModel.set(key, cur);
-  }
-  const modelRows = [...byModel.values()].sort((a, b) => b.cost - a.cost).slice(0, 12);
-  const history = p.history || { points: [] };
-  const costPoints = history.points.map(pt => ({ label: fmtDay(new Date(pt.date + "T00:00:00Z").getTime() / 1000), value: Object.values(pt.values || {}).reduce((s, v) => s + v, 0) }));
-  $("#view").innerHTML = pageHead(["Analytics", "Billing"], "Cost & Billing Analytics", "Where the tokens go and what they cost across providers and models.", "Spend less. Learn more.")
-    + apiErrBanner(state.providersError)
-    + `<div class="grid kpis" style="margin-bottom:16px">
-      ${kpiCard("Total Cost", fmtCost(totalCost), "", ICONS.cost)}
-      ${kpiCard("Cost per 1M Tokens", fmtRate(totalTokens > 0 ? totalCost / totalTokens * 1e6 : 0), "", ICONS.bolt)}
-      ${kpiCard("Tracked Models", String(byModel.size), "", ICONS.tokens)}
-      ${kpiCard("Top Cost Driver", modelRows[0]?.model || "—", modelRows[0] ? fmtCost(modelRows[0].cost) : "", ICONS.rank)}
-    </div>
-    <div class="split" style="margin-bottom:16px">
-      <div class="card"><div class="card-head"><h3>Cost by Provider</h3></div>${barList(rows.map(r => ({ label: providerLabel(r.provider), value: r.cost, valueText: fmtCost(r.cost), color: providerColor(r.provider) })), { labelWidth: 110 })}</div>
-      <div class="card"><div class="card-head"><h3>Cost Share</h3></div><div class="donut-wrap">${donut(rows.map(r => ({ label: providerLabel(r.provider), value: r.cost, color: providerColor(r.provider) })).slice(0, 5), 156, fmtCost(totalCost), "total cost")}
-        <div class="legend">${rows.slice(0, 6).map(r => `<div class="legend-row">${providerLogo(r.provider, 15)}${esc(providerLabel(r.provider))}<span class="val">${esc(r.costFormatted)}</span></div>`).join("")}</div></div></div>
-    </div>
-    <div class="card" style="padding:0;overflow:hidden"><div class="card-head" style="padding:16px 16px 8px"><h3>Cost by Model</h3><span class="sub">${modelsAllLink()}</span></div>
-      <div style="overflow-x:auto"><table><thead><tr><th>#</th><th>Model</th><th>Provider</th><th class="right">Tokens</th><th class="right">Requests</th><th class="right">Cost</th><th class="right">$/1M</th></tr></thead><tbody>
-      ${modelRows.map((m, i) => `<tr><td class="faint">${i + 1}</td><td>${modelLink(m.provider, m.model)}</td><td><span class="chip logo-chip">${providerLogo(m.provider, 15, m.model)}${esc(providerDisplay(m.provider, m.model))}</span></td><td class="num right">${fmtTokens(m.tokens)}</td><td class="num right">${fmtNum(m.requests)}</td><td class="num right">${fmtCost(m.cost)}</td><td class="num right">${fmtRate(m.tokens > 0 ? m.cost / m.tokens * 1e6 : 0)}</td></tr>`).join("") || '<tr><td colspan="7"><div class="empty">No model cost data.</div></td></tr>'}
-      </tbody></table></div></div>`;
+  // Account navigation shows the selected profile's published estimates.
+  return renderDashboard(current, "models");
 }
 
 /* ============================================================
    VIEW: SETTINGS (Sharing & Access Control)
    ============================================================ */
-function loadDefaultRules() {
-  try {
-    return JSON.parse(localStorage.getItem("th_share_rules") || "null") || {
-      internalDefault: true, publicAllowed: true, linkExpiryRequired: true, externalApproval: false
-    };
-  } catch (_) {
-    return { internalDefault: true, publicAllowed: true, linkExpiryRequired: true, externalApproval: false };
-  }
-}
-function saveDefaultRules() { localStorage.setItem("th_share_rules", JSON.stringify(state.defaultRules)); }
-
 async function renderSettings(current = () => true) {
-  const handle = state.currentHandle || (state.data?.leaderboard || [])[0]?.entry.handle;
+  const account = await loadWorkspaceAccount();
+  if (!current()) return;
+  const profiles = account.profiles || [];
+  const requested = String(state.currentHandle || "").toLowerCase();
+  const owned = profiles.find(p => p.handle.toLowerCase() === requested);
+  const handle = owned?.handle || (profiles.length === 1 ? profiles[0].handle : "");
   const session = isGoogleSessionValid() ? state.googleSession : null;
   let shares = [], activity = [], groups = [], err = "";
-  if (session) {
+  if (session && handle) {
     try {
       const res = await api(`/api/share/list?handle=${encodeURIComponent(handle)}`, { headers: googleHeaders() });
       shares = res.shares || []; activity = res.activity || []; groups = res.groups || [];
@@ -5230,15 +5607,32 @@ async function renderSettings(current = () => true) {
   const active = shares.filter(s => !s.revoked && (s.expiresAt || 0) * 1000 > Date.now());
   const internal = active.filter(s => ["people", "group", "org"].includes(s.scope));
   const publicShares = active.filter(s => s.scope === "public" || s.publicLink);
-  const rules = state.defaultRules;
+  if (account.error) err = account.error;
+  const profileChoice = profiles.length > 1 ? `<label class="settings-profile-choice">Your published profile <select id="settings-profile" aria-label="Profile to manage sharing">${!handle ? '<option value="">Choose a profile</option>' : ""}${profiles.map(p => `<option value="${esc(p.handle)}"${p.handle === handle ? " selected" : ""}>@${esc(p.handle)}</option>`).join("")}</select></label>` : handle ? `<p class="sub">Sharing reports for @${esc(handle)}</p>` : "";
+  const sharingState = !session ? "Sign in to load your shared reports." : account.error ? "Your account profiles could not be checked. Try again before managing reports." : !profiles.length ? 'No published profiles are linked to this account. <a href="?view=dashboard" data-settings-workspace>Open your workspace for publishing steps</a>.' : !handle ? "Choose a profile to manage its shared reports." : err ? "Shared reports could not load. Try again." : "No shared reports yet.";
   const signInBanner = session ? "" : `<div class="signin-cta" style="margin:16px 0">
     <div style="display:flex;gap:13px;align-items:center;min-width:0">
       ${ICONS.shield}
       <div><div style="font-weight:700;font-size:13.5px">Sign in to unlock sharing</div>
-      <div class="mini">Create groups &amp; teams, share reports with access controls, and track every event.</div></div>
+      <div class="mini">Manage the audiences and expiry dates of reports from your published profiles.</div></div>
     </div>
-    <button class="pill primary" id="settings-signin">${GOOGLE_G} Sign in</button>
+    <button class="pill primary" id="settings-signin">Sign in</button>
   </div>`;
+
+  const head = '<header class="page-head"><div><h1>Report sharing</h1><p>Manage shared reports, their audiences and expiry dates for your published profiles.</p></div></header>';
+  const wireScope = () => {
+    $("#settings-profile")?.addEventListener("change", event => navigate("settings", { handle: event.target.value }));
+    $("#settings-retry")?.addEventListener("click", () => { workspaceAccount = null; clearApiCache(); render(); });
+    $("[data-settings-workspace]")?.addEventListener("click", event => { event.preventDefault(); navigate("dashboard", { resetWorkspace: true }); });
+    $("#settings-signin")?.addEventListener("click", () => openSignInModal());
+  };
+  if (!handle || err) {
+    const title = err ? "Report sharing couldn’t load." : !session ? "Published profiles come first." : !profiles.length ? "No linked profiles to share yet." : "Choose a profile to manage its reports.";
+    $("#view").innerHTML = head + profileChoice + signInBanner
+      + `<section class="settings-report-empty"${err ? ' role="alert"' : ''}><h2>${title}</h2><p>${err ? esc(err) : sharingState}</p>${err ? '<button class="pill" id="settings-retry">Try again</button>' : ''}</section>`;
+    wireScope();
+    return;
+  }
 
   const rowsHtml = shares.map(s => {
     const expired = s.expiresAt && s.expiresAt * 1000 < Date.now();
@@ -5246,7 +5640,7 @@ async function renderSettings(current = () => true) {
     const vis = s.scope === "public" ? "Global" : s.scope === "org" ? "Org" : s.scope === "group" ? "Group" : s.scope === "people" ? "Individual" : "Private";
     const visClass = s.scope === "public" ? "green" : s.scope === "org" ? "" : s.scope === "group" ? "orange" : "";
     return `<tr>
-      <td><div class="user-cell">${avatar(handle, "", 24)}<span>${esc(handle)} report</span></div></td>
+      <td><div class="user-cell">${avatar(s.handle || handle, "", 24)}<span>@${esc(s.handle || handle)} report</span></div></td>
       <td>${vis === "Global" ? "Public Link" : "Usage Report"}</td>
       <td><span class="chip">${esc(s.scope)}</span></td>
       <td>${(s.audience || []).length ? esc((s.audience || []).join(", ")) : (s.groups || []).length ? esc((s.groups || []).join(", ")) : "—"}</td>
@@ -5258,66 +5652,49 @@ async function renderSettings(current = () => true) {
     </tr>`;
   }).join("");
 
-  $("#view").innerHTML = pageHead(["Settings", "Sharing"], "Sharing & Access Control", "Manage visibility and permissions for reports, profiles, leaderboards, and dashboards.", "Control access. Unlock opportunity.")
+  $("#view").innerHTML = head
+    + profileChoice
     + signInBanner
-    + (err ? `<div class="notice err">${esc(err)}</div>` : "")
+    + (err ? `<div class="notice err" role="alert">${esc(err)} <button class="pill" id="settings-retry">Try again</button></div>` : "")
     + `<div class="grid kpis" style="margin:16px 0">
-      ${kpiCard("Active Shared Items", String(active.length), "", ICONS.shield)}
-      ${kpiCard("Internal Shares", String(internal.length), "", ICONS.users)}
-      ${kpiCard("Public Shares", String(publicShares.length), "", ICONS.tokens)}
-      ${kpiCard("Tracked Events", String(activity.length), "", ICONS.activity)}
+      ${kpiCard("Active Shared Items", session && handle && !err ? String(active.length) : "—", "", ICONS.shield)}
+      ${kpiCard("Internal Shares", session && handle && !err ? String(internal.length) : "—", "", ICONS.users)}
+      ${kpiCard("Public Shares", session && handle && !err ? String(publicShares.length) : "—", "", ICONS.tokens)}
+      ${kpiCard("Tracked Events", session && handle && !err ? String(activity.length) : "—", "", ICONS.activity)}
     </div>
     <div class="card" style="padding:0;overflow:hidden;margin-bottom:16px">
-      <div class="card-head" style="padding:16px 16px 8px"><h3>Shared Items</h3><div style="display:flex;gap:8px"><button class="pill" id="settings-share-new">Share New</button></div></div>
-      <div style="overflow-x:auto"><table><thead><tr><th>Item Name</th><th>Type</th><th>Scope</th><th>Shared With</th><th>Visibility</th><th>Permissions</th><th>Expiry</th><th>Created</th><th>Actions</th></tr></thead><tbody>
-      ${rowsHtml || `<tr><td colspan="9"><div class="empty">${session ? "No shared items yet — create one with Share New." : "Sign in to load your shared items."}</div></td></tr>`}
-      </tbody></table></div>
+      <div class="card-head" style="padding:16px 16px 8px"><h3>Shared Items</h3><div style="display:flex;gap:8px"><button class="pill" id="settings-share-new"${!handle ? " disabled" : ""}>Share report</button></div></div>
+      ${shares.length ? `<div class="table-scroll" role="region" aria-label="Shared items" tabindex="0"><table><thead><tr><th>Item Name</th><th>Type</th><th>Scope</th><th>Shared With</th><th>Visibility</th><th>Permissions</th><th>Expiry</th><th>Created</th><th>Actions</th></tr></thead><tbody>
+      ${rowsHtml}
+      </tbody></table></div>` : `<div class="empty">${sharingState}</div>`}
     </div>
-    <div class="three-col" style="margin-bottom:16px">
-      <div class="card"><div class="card-head"><h3>Default Sharing Rules</h3></div>
-        ${ruleRow("internalDefault", "Internal sharing by default", "Make items visible to your team by default")}
-        ${ruleRow("publicAllowed", "Public sharing allowed", "Allow anyone with a link to access")}
-        ${ruleRow("linkExpiryRequired", "Link expiry required", "Require an expiry date for public links")}
-        ${ruleRow("externalApproval", "External sharing approval", "Require admin approval for external users")}
-      </div>
-      <div class="card"><div class="card-head"><h3>Groups & Audiences</h3><button class="pill ghost" style="font-size:11px" id="new-group-btn">+ New Group</button></div>
-        ${groups.length ? groups.map(g => `<div class="mover"><div style="min-width:0"><div class="name">${esc(g.name)}</div><div class="faint" style="font-size:10.5px">${g.members.length} member${g.members.length === 1 ? "" : "s"}</div></div><div class="val" style="display:flex;gap:4px">${g.members.slice(0, 4).map(m => avatar(m.handle, m.avatarUrl, 22)).join("")}${g.members.length > 4 ? `<span class="chip">+${g.members.length - 4}</span>` : ""}</div></div>`).join("") : '<div class="empty" style="padding:10px">No groups yet.</div>'}
+    <div class="split" style="margin-bottom:16px">
+      <div class="card"><div class="card-head"><h3>Groups & Audiences</h3><button class="pill ghost" style="font-size:11px" id="new-group-btn"${!handle ? " disabled" : ""}>New group</button></div>
+        ${groups.length ? groups.map(g => `<div class="mover"><div style="min-width:0"><div class="name">${esc(g.name)}</div><div class="faint" style="font-size:10.5px">${g.members.length} member${g.members.length === 1 ? "" : "s"}</div></div><div class="val" style="display:flex;gap:4px">${g.members.slice(0, 4).map(m => avatar(m.handle, m.avatarUrl, 22)).join("")}${g.members.length > 4 ? `<span class="chip">+${g.members.length - 4}</span>` : ""}</div></div>`).join("") : `<div class="empty" style="padding:10px">${session && handle && !err ? 'No groups yet.' : 'Choose a linked profile to load its audiences.'}</div>`}
       </div>
       <div class="card"><div class="card-head"><h3>Recent Sharing Activity</h3></div>
-        ${activity.length ? activity.slice(0, 6).map(a => `<div class="mover"><div style="min-width:0"><div class="name" style="font-size:12px">${esc(a.handle)} ${a.action === "revoked" ? "revoked" : "shared"} ${a.scope} report</div><div class="faint" style="font-size:10.5px">${esc((a.audience || []).join(", ")) || "—"}</div></div><div class="val faint">${fmtDate(a.at)}</div></div>`).join("") : '<div class="empty" style="padding:10px">No sharing activity.</div>'}
+        ${activity.length ? activity.slice(0, 6).map(a => `<div class="mover"><div style="min-width:0"><div class="name" style="font-size:12px">${esc(a.handle)} ${a.action === "revoked" ? "revoked" : "shared"} ${a.scope} report</div><div class="faint" style="font-size:10.5px">${esc((a.audience || []).join(", ")) || "—"}</div></div><div class="val faint">${fmtDate(a.at)}</div></div>`).join("") : `<div class="empty" style="padding:10px">${session && handle && !err ? 'No sharing activity.' : 'Sharing activity will appear after a profile is loaded.'}</div>`}
       </div>
     </div>
-    <div class="card"><div class="card-head"><h3>Access Permissions Matrix</h3><span class="sub">understand what each permission allows</span></div>
-      <div style="overflow-x:auto"><table><thead><tr><th>Permission</th><th class="right">View</th><th class="right">Comment</th><th class="right">Edit</th><th class="right">Share</th></tr></thead><tbody>
-        ${[["View the item", 1, 1, 1, 1], ["Add comments and feedback", 0, 1, 1, 1], ["Edit content, settings, or configuration", 0, 0, 1, 1], ["Share with others", 0, 0, 0, 1]].map(([label, v, c, e, s]) => `<tr><td>${esc(label)}</td>${[v, c, e, s].map(x => `<td class="right">${x ? "✓" : "—"}</td>`).join("")}</tr>`).join("")}
-      </tbody></table></div></div>`;
+    `;
+  wireScope();
   $("#settings-share-new").onclick = () => {
+    if (!handle) return;
     if (!requireSignIn({ action: "Sharing usage reports", onSuccess: () => openShareModal(handle) })) return;
     openShareModal(handle);
   };
-  const settingsSignIn = $("#settings-signin");
-  if (settingsSignIn) settingsSignIn.onclick = () => openSignInModal();
   $$("[data-revoke]").forEach(b => b.onclick = async () => {
     try {
       await api("/api/share/revoke", { method: "POST", headers: googleHeaders(), body: JSON.stringify({ handle, id: b.dataset.revoke }) });
       render();
     } catch (e) { toast("Revoke failed: " + e.message, true); }
   });
-  $$("[data-rule]").forEach(el => {
-    const toggle = () => { state.defaultRules[el.dataset.rule] = !state.defaultRules[el.dataset.rule]; saveDefaultRules(); render(); };
-    el.onclick = toggle;
-    keyActivate(el, toggle);
-  });
   $("#new-group-btn").onclick = () => {
+    if (!handle) return;
     if (!requireSignIn({ action: "Creating groups & teams", onSuccess: () => openGroupModal(handle) })) return;
     openGroupModal(handle);
   };
 }
-function ruleRow(key, title, detail) {
-  const on = state.defaultRules[key];
-  return `<div class="opt" data-rule="${key}" style="margin-bottom:8px" tabindex="0" role="switch" aria-checked="${on}" aria-label="${esc(title)}"><div class="ico">${on ? "🔒" : "🔓"}</div><div style="flex:1"><div class="t">${esc(title)}</div><div class="d">${esc(detail)}</div></div><div class="switch ${on ? "on" : ""}"><i></i></div></div>`;
-}
-
 /* ============================================================
    SHARE MODAL
    ============================================================ */
@@ -5521,7 +5898,18 @@ function closeModal({ preservePending = false } = {}) {
 /// focus into newly opened modals, traps Tab inside them, and returns focus
 /// to the opener on close. Covers every present and future modal because all
 /// of them render into #modal-backdrop.
-let modalOpener = null, lastModalNode = null;
+let modalOpener = null, modalOpenerFromAuth = false, lastModalNode = null;
+function restoreModalFocus() {
+  // Hydration can replace the opener. Resolve its live equivalent, then the
+  // account control for an auth opener, with the main landmark as a fallback.
+  const targets = [modalOpener, modalOpener?.id && document.getElementById(modalOpener.id),
+    modalOpenerFromAuth && $("#auth-slot button:not(:disabled)"), $("#view")];
+  for (const target of targets) {
+    if (!target?.isConnected || target.disabled || target.closest("[inert]") || !target.getClientRects().length
+      || !target.matches("button, input, select, textarea, a[href], [tabindex]")) continue;
+    try { target.focus({ preventScroll: true }); if (document.activeElement === target) break; } catch (_) {}
+  }
+}
 function initModalManager() {
   const backdrop = $("#modal-backdrop");
   new MutationObserver(() => {
@@ -5529,13 +5917,16 @@ function initModalManager() {
     document.body.style.overflow = node ? "hidden" : "";
     if (node && node !== lastModalNode) {
       lastModalNode = node;
-      if (!modalOpener || !backdrop.contains(modalOpener)) modalOpener = document.activeElement;
+      if (!modalOpener || !backdrop.contains(modalOpener)) {
+        modalOpener = document.activeElement;
+        modalOpenerFromAuth = Boolean($("#auth-slot")?.contains(modalOpener));
+      }
       const target = backdrop.querySelector(".modal .x") || backdrop.querySelector(".modal-foot .pill.primary:not(:disabled), .modal button:not(:disabled), .modal input:not(:disabled), .modal [tabindex]");
       if (target) { try { target.focus({ preventScroll: true }); } catch (_) {} }
     } else if (!node) {
       lastModalNode = null;
-      if (modalOpener && modalOpener.isConnected) { try { modalOpener.focus({ preventScroll: true }); } catch (_) {} }
-      modalOpener = null;
+      if (modalOpener) restoreModalFocus();
+      modalOpener = null; modalOpenerFromAuth = false;
     }
     window.TokenHorizonUIUpdates?.mount();
   }).observe(backdrop, { childList: true, attributes: true, attributeFilter: ["class"] });
@@ -5789,7 +6180,8 @@ async function restoreAuthReturn() {
   const resume = saved.resume;
   if (!resume || !["share", "group", "claim", "invite", "team", "workspace", "shared"].includes(resume.type)) return;
   await render();
-  const handle = typeof resume.handle === "string" && /^[a-zA-Z0-9_.-]{1,80}$/.test(resume.handle) ? resume.handle : null;
+  const handle = resume.type === "claim" ? normalizedClaimHandle(resume.handle)
+    : typeof resume.handle === "string" && /^[a-zA-Z0-9_.-]{1,80}$/.test(resume.handle) ? resume.handle : null;
   if (resume.type === "share" && handle) openShareModal(handle);
   if (resume.type === "group") openGroupModal(handle);
   if (resume.type === "claim" && handle) openClaimModal(handle);
@@ -5806,7 +6198,7 @@ function completeSignIn() {
   const pendingAction = state.signInPending;
   state.signInPending = null;
   closeModal(); renderAuthSlot();
-  if (["settings", "dashboard", "invite"].includes(state.view)) render();
+  if (["settings", "dashboard", "billing", "invite"].includes(state.view)) render();
   if (state.view === "login") updateLoginIdentity();
   if (pendingAction?.onSuccess) setTimeout(() => pendingAction.onSuccess(), 60);
 }
@@ -5823,7 +6215,7 @@ function authArt(id, page = false) {
   return `<div class="signin-art${page ? " auth-page-art" : ""}"><div class="auth-art-top">${AUTH_MARK}<span>Token Horizon</span></div><div class="auth-orbit-stage"><pre class="bh-art" id="${id}" aria-hidden="true"></pre></div><div class="auth-art-bottom"><span>Your work.<br>In view.</span><button type="button" data-auth-motion aria-pressed="false" aria-label="Pause black hole animation">Pause animation</button></div></div>`;
 }
 function authPane({ page = false, action = "" } = {}) {
-  return `<div class="signin-pane"><div class="modal-head"><div>${page ? `<div class="auth-form-brand">${AUTH_MARK}<span>Token Horizon</span></div>` : ""}<${page ? "h1" : "h2"} id="signin-title">${action ? "Sign in to continue" : state.authHint ? "Welcome back." : "Welcome."}</${page ? "h1" : "h2"}><p>${action ? esc(action) : "Your workspace, team and shared reports."}</p></div>${page ? "" : '<button class="x" data-close aria-label="Close dialog">×</button>'}</div><div class="modal-body"><div class="signin-options" id="signin-gsi"></div><div id="signin-status" role="status" aria-live="polite"></div><div id="signin-remembered"></div>${authBenefits()}<p class="auth-privacy"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="6" y="10" width="12" height="11" rx="2" stroke="currentColor" stroke-width="1.5"/><path d="M8 10V6a4 4 0 0 1 8 0v4" stroke="currentColor" stroke-width="1.5"/></svg>Your local prompts and traces stay on your device.</p></div><div class="modal-foot">${page ? '<a class="auth-text-link" href="/leaderboard">Explore without signing in</a>' : '<span>Only what you choose to publish.</span><button class="auth-text-link" data-close>Not now</button>'}</div></div>`;
+  return `<div class="signin-pane"><div class="modal-head"><div>${page ? `<div class="auth-form-brand">${AUTH_MARK}<span>Token Horizon</span></div>` : ""}<${page ? "h1" : "h2"} id="signin-title">${action ? "Sign in to continue" : state.authHint ? "Welcome back." : "Welcome."}</${page ? "h1" : "h2"}><p>${action ? esc(action) : "Your workspace, team and shared reports."}</p></div>${page ? "" : '<button class="x" data-close aria-label="Close dialog">×</button>'}</div><div class="modal-body"><div class="signin-options" id="signin-gsi"></div><div id="signin-status" role="status" aria-live="polite"></div><div id="signin-remembered"></div>${authBenefits()}<p class="auth-privacy"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="6" y="10" width="12" height="11" rx="2" stroke="currentColor" stroke-width="1.5"/><path d="M8 10V6a4 4 0 0 1 8 0v4" stroke="currentColor" stroke-width="1.5"/></svg>Your local prompts and traces stay on your device.</p></div><div class="modal-foot">${page ? '<a class="auth-text-link" href="./leaderboard.html">Explore without signing in</a>' : '<span>Only what you choose to publish.</span><button class="auth-text-link" data-close>Not now</button>'}</div></div>`;
 }
 function wireAuthMotion(root, hole) {
   const button = $("[data-auth-motion]", root); if (!button) return;
@@ -6058,9 +6450,9 @@ function openDayDrilldown(day) {
     <div class="modal-body">
       ${models.length
         ? `<div class="card" style="background:var(--panel2)"><div class="card-head"><h3>Usage by model</h3><span class="sub">share of day</span></div>
-            ${models.map(m => `<div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">
+            ${models.map(m => `<div class="day-model-row">
               ${providerLogo(m.provider, 18, m.model)}
-              <span style="width:150px;font-size:12.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(m.model)}">${modelLink(m.provider, m.model)}</span>
+              <span class="day-model-name" title="${esc(m.model)}">${modelLink(m.provider, m.model)}</span>
               <span style="flex:1"><span class="bar"><i style="width:${(m.tokens / Math.max(1, total) * 100).toFixed(1)}%"></i></span></span>
               <span class="num" style="width:64px;text-align:right">${fmtTokens(m.tokens)}</span>
               <span class="num faint" style="width:44px;text-align:right">${(m.tokens / Math.max(1, total) * 100).toFixed(1)}%</span>
@@ -6161,15 +6553,38 @@ function openAvatarModal(handle) {
 /* ============================================================
    CLAIM & PUBLISH
    ============================================================ */
+function normalizedClaimHandle(value) {
+  if (typeof value !== "string") return null;
+  const handle = value.trim().replace(/^@/, "").trim();
+  return handle && handle.length <= 1000 && !/[\u0000-\u001f\u007f]/.test(handle) ? handle : null;
+}
+function claimHandleFromURL() {
+  const params = new URLSearchParams(location.search);
+  if (params.get("claim") !== "1") return null;
+  return normalizedClaimHandle(params.get("user") || state.currentHandle);
+}
+async function openInitialClaim(authReady) {
+  const handle = claimHandleFromURL();
+  if (!handle) return;
+  // Hydration may close account-specific dialogs. Restore OAuth continuation
+  // first, then open only if the visitor is still on the requested claim route.
+  await authReady;
+  if (claimHandleFromURL() !== handle || $("#claim-submit")) return;
+  openClaimModal(handle);
+}
 function openClaimModal(handle) {
-  if (!legacyGoogleAuthAllowed() && !isGoogleSessionValid()) { openSignInModal({ action: `Claiming @${handle}`, onSuccess: () => openClaimModal(handle) }); return; }
+  handle = normalizedClaimHandle(handle);
+  if (!handle) { toast("Choose a valid published handle to claim.", true); return; }
+  const signInOptions = { action: `Claiming @${handle}`, onSuccess: () => openClaimModal(handle), resume: { type: "claim", handle } };
+  if (!legacyGoogleAuthAllowed() && !isGoogleSessionValid()) { openSignInModal(signInOptions); return; }
   const backdrop = $("#modal-backdrop");
   backdrop.innerHTML = `<div class="modal" style="max-width:480px">
     <div class="modal-head"><div><h2>Claim @${esc(handle)}</h2><p>Connect this profile to your verified account.</p></div><button class="x" data-close aria-label="Close dialog">×</button></div>
     <div class="modal-body">
       <div class="notice">${legacyGoogleAuthAllowed() ? "Enter your email and the claim token issued when the profile first published." : "Use the claim token issued when this profile was first published, if one is required."}</div>
+      <p class="sub" style="margin:10px 0">Use Sync now in the desktop app before claiming a new handle. After claiming, desktop publishing requires an authorized app write token in Settings → Sharing &amp; teams → Advanced connection.</p>
       <div style="display:flex;flex-direction:column;gap:10px;margin-top:14px;align-items:flex-start">
-        <input id="claim-token" placeholder="Claim token (optional)" style="width:100%;background:var(--panel);border:1px solid var(--line);border-radius:9px;padding:10px 12px;color:var(--text)"/>
+        <input id="claim-token" type="password" autocomplete="off" placeholder="Claim token (optional)" style="width:100%;background:var(--panel);border:1px solid var(--line);border-radius:9px;padding:10px 12px;color:var(--text)"/>
         ${legacyGoogleAuthAllowed()
           ? `<input id="claim-email" placeholder="Email" value="${esc(state.googleSession?.email || "")}" style="width:100%;background:var(--panel);border:1px solid var(--line);border-radius:9px;padding:10px 12px;color:var(--text)"/>` : ""}
       </div>
@@ -6184,7 +6599,7 @@ function openClaimModal(handle) {
     const emailInput = $("#claim-email");
     const email = emailInput ? emailInput.value.trim() : (state.googleSession?.email || "");
     if (!legacyGoogleAuthAllowed() && !isGoogleSessionValid()) {
-      openSignInModal({ action: `Claiming @${handle}`, onSuccess: () => openClaimModal(handle) });
+      openSignInModal(signInOptions);
       return;
     }
     if (legacyGoogleAuthAllowed() && !email.includes("@")) { toast("Enter a valid email", true); return; }
@@ -6260,11 +6675,12 @@ async function init() {
   if (teamPath) { state.teamId = teamPath[1]; state.view = "team"; }
   // Dedicated /models route: the worker serves the SPA asset with an internal
   // ?view=models rewrite, so the browser URL has no query — derive it here.
-  if (/^\/models\/?$/.test(location.pathname)) state.view = "models";
+  if (isPublicRoute("teams")) state.view = "teams";
+  if (isPublicRoute("models")) state.view = "models";
   if (/^\/login\/?$/.test(location.pathname)) state.view = "login";
   state.modelsTab = ["providers", "plans", "cheapest"].includes(params.get("tab")) ? params.get("tab") : "explorer";
   // Flat catalog page: no dashboard chrome — just a searchable model list.
-  state.flatModels = /^\/models\/?$/.test(location.pathname) || params.get("flat") === "1";
+  state.flatModels = state.view === "models" && (isPublicRoute("models") || params.get("flat") === "1");
   if (state.flatModels) {
     state.view = "models";
     document.body.classList.add("th-flat");
@@ -6287,7 +6703,7 @@ async function init() {
     brandLogo.addEventListener("mouseleave", () => NAVHOLE.pause());
   }
   // Optional settings and visuals never sit on the content path.
-  loadAuthConfig();
+  const authReady = loadAuthConfig();
   CHARTS_READY.then(ready => { if (ready) enhanceOptionalVisuals(); });
   DICEBEAR_READY.then(ready => { if (ready) enhanceOptionalVisuals(); });
   FUSE_READY.then(ready => {
@@ -6308,7 +6724,8 @@ async function init() {
   const shareParam = params.get("share") || (sharePath ? sharePath[1] : null);
   if (shareParam) { renderSharedReport(shareParam); return; }
   render();
-  if (params.get("signin")) openSignInModal();
+  if (params.get("claim") === "1") openInitialClaim(authReady);
+  else if (params.get("signin")) openSignInModal();
   setInterval(async () => {
     // Idle tick: refresh in the background and only rebuild the view when the
     // payload fingerprint actually changed (no chart remounts on no-op ticks).
@@ -6321,7 +6738,10 @@ async function init() {
 }
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") closeModal();
-  if (e.key === "/" && !e.defaultPrevented && !["INPUT","TEXTAREA","SELECT"].includes(document.activeElement.tagName)) { e.preventDefault(); ($("#community-search") || $("#global-search")).focus(); }
+  if (e.key === "/" && !e.defaultPrevented && !["INPUT","TEXTAREA","SELECT"].includes(document.activeElement.tagName) && !document.activeElement.isContentEditable) {
+    const search = [$("#tm-search"), $("#community-search"), $("#global-search")].find(input => input?.getClientRects().length);
+    if (search) { e.preventDefault(); search.focus(); }
+  }
 });
 init();
 </script>

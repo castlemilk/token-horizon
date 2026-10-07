@@ -121,6 +121,13 @@ test('unresolved, unsupported or malformed custom logos use the crisp monogram f
   assert.doesNotMatch(baseline, /data-team-logo="custom"|<image|onload=/);
 });
 
+test('team monograms use two letters from one word or initials from two words', () => {
+  for (const [name, expected] of [['Aurora', 'AU'], ['Small hours', 'SH'], ['', 'TH'], ['🚀 Small-hours!', 'SH'], ['Étoile', 'ÉT'], ['宇宙探検隊', 'TH']]) {
+    const svg = renderTeamOgSvg({ ...team, name }, stats);
+    assert.match(svg, new RegExp(`data-team-logo="monogram"[^>]*>${expected}</text>`));
+  }
+});
+
 test('a resolved custom logo has square, centered contain bounds and never exposes a source URL', async () => {
   for (const source of [coral, 'data:image/jpeg;base64,' + (await readFile(new URL('./fixtures/og-avatar.jpg', import.meta.url))).toString('base64')]) {
     const svg = renderTeamOgSvg(team, stats, { logoDataUri: source });

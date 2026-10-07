@@ -94,3 +94,39 @@
 @media(max-width:700px){.tm-orbit-hero{grid-template-columns:minmax(0,1fr);margin-bottom:24px}.tm-orbit-copy{padding:28px}.tm-orbit-copy h1{font-size:44px;margin-bottom:18px}.tm-orbit-copy>p{font-size:14px;max-width:48ch}.tm-orbit-visual{padding:10px 8px 40px}.tm-orbit-visual [data-team-blackhole]{min-height:280px;max-height:330px;aspect-ratio:1.5}.tm-orbit-caption{bottom:17px;font-size:11px}.tm-hero-actions{flex-direction:row;align-items:center;gap:10px 18px}.tm-team-insights{grid-template-columns:minmax(0,1fr);gap:34px}.tm-public-stats{grid-template-columns:repeat(2,minmax(0,1fr));gap:26px 16px}.tm-public-stats>div:nth-child(2){border:0}.tm-public-stats dd{font-size:28px}.tm-public-hero .tm-team-icon{width:72px;height:72px;margin-bottom:20px}.tm-share-panel{max-width:none}.tm-leader-identity{gap:12px}.tm-leader-identity .tm-team-icon{width:40px;height:40px;font-size:16px;border-radius:9px}.tm-team-name>strong{gap:8px}.tm-row-icon{width:27px;height:27px;border-radius:7px}.tm-row-icon>svg{width:20px;height:20px}.ti-invite-uplift .ti-invite-card{grid-template-columns:minmax(0,1fr);max-width:520px}.ti-invite-uplift .ti-invite-art{min-height:0;height:auto;padding:0 8px 28px}.ti-invite-uplift [data-team-blackhole]{min-height:240px;aspect-ratio:1.6;max-height:280px}.ti-invite-uplift .ti-orbit-caption{padding:0 20px;width:auto}.ti-invite-uplift .ti-orbit-caption>span{font-size:27px;max-width:none;display:block}.ti-invite-uplift .ti-orbit-caption>p{display:block;font-size:12px;max-width:none;margin:10px 0 0}.ti-invite-uplift .ti-invite-content{padding:28px}.ti-invite-uplift .ti-invite-content>h1{font-size:36px}.ti-arrival-icon{width:60px;height:60px;margin-bottom:20px}.ti-invite-uplift .ti-invite-content>.ti-privacy-note{margin-top:24px}.tm-back>span{font-size:11px}}
 @media(max-width:380px){.tm-orbit-copy{padding:22px}.tm-orbit-copy h1{font-size:38px}.tm-hero-actions{flex-direction:column;align-items:start}.tm-share-copy{flex-direction:column}.tm-share-copy>button{width:100%}.tm-team-name>strong{display:block}.tm-row-icon{display:none}.tm-back>span{display:none}.ti-invite-uplift .ti-invite-content{padding:24px 20px}.ti-invite-uplift .ti-invite-content>h1{font-size:31px}.ti-logo-editor{gap:12px}.ti-logo-preview{width:48px;height:48px}.ti-logo-editor .ti-team-monogram{font-size:18px}}
 @media(prefers-reduced-motion:reduce){.tm-motion-toggle{display:none!important}}
+
+/* Arrival on a phone leads with the team and the action, then the scene. */
+@media(max-width:700px){
+  .tm-orbit-copy{padding:22px 20px}
+  .tm-orbit-copy h1{font-size:36px;margin-bottom:16px}
+  .tm-orbit-copy>p{margin-bottom:18px;font-size:15px;line-height:1.65}
+  .tm-introduction .tm-orbit-copy{padding-top:72px}
+  .tm-introduction .tm-orbit-copy h2{font-size:32px;margin-bottom:16px}
+  .tm-page .tm-orbit-copy>.tm-hero-note{font-size:13px;margin-top:14px}
+  .tm-orbit-visual{padding:6px 8px 38px}
+  .tm-orbit-visual [data-team-blackhole]{min-height:180px;max-height:220px;aspect-ratio:1.7}
+  .tm-orbit-caption{font-size:12px}
+  .tm-public-hero .tm-team-icon{width:56px;height:56px;margin-bottom:16px;font-size:22px;border-radius:12px}
+  .tm-public-stats{gap:20px 16px;padding-bottom:24px}
+  .tm-public-stats dt{margin-bottom:8px}
+  .tm-team-insights{gap:28px;padding-top:28px}
+  .tm-team-insights h2{font-size:22px}
+  .tm-team-insights>div>p:first-of-type{font-size:14px;margin-bottom:18px}
+  .tm-share-body{padding-top:16px}
+  .tm-share-body>p{font-size:14px}
+  .tm-page .tm-share-copy>input{font-size:16px}
+  .tm-page .tm-share-copy>button{font-size:13px}
+  .ti-invite-uplift .ti-invite-content{grid-row:1;padding:24px 20px}
+  .ti-invite-uplift .ti-invite-content>h1{font-size:32px;line-height:1.15;margin-bottom:16px}
+  .ti-arrival-icon{width:52px;height:52px;margin-bottom:16px;border-radius:12px}
+  .ti-invite-uplift .ti-invite-art{grid-row:2;padding:8px 8px 22px}
+  .ti-invite-uplift [data-team-blackhole]{min-height:160px;max-height:200px;aspect-ratio:1.7}
+  .ti-invite-uplift .ti-orbit-caption{padding-inline:12px}
+  .ti-invite-uplift .ti-orbit-caption>span{font-size:24px}
+  .ti-invite-uplift .ti-orbit-caption>p{font-size:13px}
+  .ti-logo-editor{gap:12px;padding:18px 0}
+  .ti-logo-editor>div:last-child{min-width:0}
+  .ti-logo-preview{width:52px;height:52px}
+  .ti-logo-editor p,.ti-team-share p{font-size:13px}
+  .ti-logo-editor small{font-size:12px}
+}

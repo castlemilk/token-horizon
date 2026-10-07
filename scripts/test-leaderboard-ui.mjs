@@ -2,6 +2,8 @@ import { resolveChromium } from './playwright.mjs';
 
 const chromium = await resolveChromium();
 import path from 'path';
+import fs from 'node:fs/promises';
+import assert from 'node:assert/strict';
 
 /**
  * Hermetic UI regression for the Token Horizon dashboard. All API calls are
@@ -296,6 +298,7 @@ async function verifyStartupResilience(browser, filePath) {
       if (view === 'models') {
         if (requests.includes('/api/leaderboard')) throw new Error('Model catalog still depends on leaderboard startup');
         await tab.fill('#mx-q', 'Opus');
+        await waitForModelSearch(tab, 'Opus');
         await tab.waitForFunction(() => [...document.querySelectorAll('#mx-rows .mx-name')].every(e => /Opus/.test(e.textContent)));
       }
       await tab.getByRole('button', { name: 'Sign in', exact: true }).click();
@@ -338,8 +341,8 @@ async function verifyStartupResilience(browser, filePath) {
 async function verifyRouteRaces(browser, filePath) {
   console.log('Async routes: late model/profile responses preserve the current view...');
   const cases = [
-    { name: 'catalog → leaderboard', query: '?view=models', held: '/api/models/catalog', next: '[data-public-view="leaderboard"]', visible: '#lb-table tbody tr', view: 'leaderboard', kind: 'catalog' },
-    { name: 'profile → models', query: '?view=players&user=benebsworth', held: '/api/user/benebsworth', next: '[data-public-view="models"]', visible: '#mx-rows .mx-row', view: 'models', kind: 'profile' },
+    { name: 'catalog → leaderboard', query: '?view=models', held: '/api/models/catalog', menu: 'community', next: '[data-explore-panel] [data-explore-link="rankings"]', visible: '#lb-table tbody tr', view: 'leaderboard', kind: 'catalog' },
+    { name: 'profile → models', query: '?view=players&user=benebsworth', held: '/api/user/benebsworth', menu: 'models', next: '[data-explore-panel] [data-explore-link="explorer"]', visible: '#mx-rows .mx-row', view: 'models', kind: 'profile' },
     { name: 'Plans → Providers', query: '?view=models&tab=plans', held: '/api/models/catalog', next: '[data-models-tab="providers"]', visible: '.prov-table', view: 'models', kind: 'catalog' }
   ];
   for (const scenario of cases) {
@@ -360,6 +363,7 @@ async function verifyRouteRaces(browser, filePath) {
     try {
       await tab.goto(filePath + scenario.query, { waitUntil: 'domcontentloaded' });
       await Promise.race([heldRequest, new Promise((_, reject) => setTimeout(() => reject(new Error('Expected request never started: ' + scenario.held)), 1500))]);
+      if (scenario.menu) await tab.locator(`[data-explore-trigger="${scenario.menu}"]`).click();
       await tab.locator(scenario.next).click();
       if (scenario.name === 'Plans → Providers') {
         await tab.waitForFunction(() => /Provider/.test(document.querySelector('#view h1')?.textContent || ''));
@@ -436,8 +440,41 @@ async function verifyStalledBodies(browser, filePath) {
   }));
 }
 
+// The input value changes before the 90ms debounce commits mx.query. Waiting
+// for a smaller row count alone can also accept results from a previous query.
+async function waitForModelSearch(page, query, options = {}) {
+  await page.waitForFunction(query => {
+    const mx = state.mx;
+    return mx?.query === query
+      && document.querySelector('#mx-shown')?.textContent === `${mx.filtered.length.toLocaleString()} of ${mx.models.length.toLocaleString()} models`;
+  }, query, options);
+}
+
 async function run() {
   const browser = await chromium.launch({ channel: 'chrome', headless: true });
+  // Serve the real asset tree under the production origin. file:// gives the
+  // document an opaque origin and rejects pushState after the shared base URL
+  // is established, so it cannot exercise the deployed routing behavior.
+  const createContext = browser.newContext.bind(browser);
+  browser.newContext = async options => {
+    const ctx = await createContext(options);
+    const root = path.resolve('docs');
+    const mime = { '.html': 'text/html', '.js': 'application/javascript', '.css': 'text/css', '.json': 'application/json', '.svg': 'image/svg+xml', '.png': 'image/png', '.webp': 'image/webp', '.woff2': 'font/woff2', '.ttf': 'font/ttf', '.ico': 'image/x-icon' };
+    await ctx.route('https://token-horizon.dev/**', async route => {
+      const url = new URL(route.request().url());
+      if (url.pathname.startsWith('/api/')) return route.fulfill({ status: 404, contentType: 'application/json', body: JSON.stringify({ ok: false, error: 'No fixture' }) });
+      const relative = /^\/(?:leaderboard(?:\.html)?|models|teams|login|[us]\/[^/]+)\/?$/.test(url.pathname) ? 'leaderboard.html' : url.pathname.slice(1);
+      const file = path.resolve(root, relative);
+      if (!file.startsWith(root + path.sep)) return route.fulfill({ status: 404, body: '' });
+      try {
+        let body = await fs.readFile(file);
+        if (relative === 'leaderboard.html') body = Buffer.from(body.toString().replace('<head>', '<head><base href="/">'));
+        return route.fulfill({ status: 200, contentType: mime[path.extname(file)] || 'application/octet-stream', body });
+      } catch { return route.fulfill({ status: 404, body: '' }); }
+    });
+    return ctx;
+  };
+
   const context = await browser.newContext({ viewport: { width: 1440, height: 1000 }, reducedMotion: 'no-preference' });
   const page = await context.newPage();
 
@@ -454,7 +491,7 @@ async function run() {
     return route.fulfill({ status: 404, contentType: 'application/json', body: JSON.stringify({ ok: false, error: 'not found' }) });
   });
 
-  const filePath = 'file://' + path.resolve('docs/leaderboard.html');
+  const filePath = 'https://token-horizon.dev/leaderboard';
   if (process.argv.includes('--startup-only')) {
     try {
       await verifyStartupResilience(browser, filePath);
@@ -565,7 +602,7 @@ async function run() {
   console.log('2. Opening player profile from a row...');
   await page.evaluate(async () => { state.view='leaderboard'; renderNav(); await render(); });
   await page.locator('#lb-table tbody tr').first().click();
-  await page.waitForSelector('.tabs .tab');
+  await page.waitForSelector('.profile-tabs [data-tab]');
   if (!(await page.locator('#view h1').first().textContent()).includes('benebsworth')) throw new Error('The selected player profile did not render');
   const stats = await page.$$('.stat');
   if (!(await page.locator('.profile-totals').textContent()).includes('23.84B')) throw new Error('Published all-time token total is missing');
@@ -573,7 +610,7 @@ async function run() {
   const chartBox = await page.locator('.profile-chart').boundingBox();
   const calendarBox = await page.locator('.profile-calendar').boundingBox();
   if (!chartBox || !calendarBox || calendarBox.y < chartBox.y + chartBox.height - 1) throw new Error('Profile chart and calendar must occupy two sequential rows');
-  if (!page.url().includes('user=')) throw new Error('URL missing ?user=');
+  if (!page.url().includes('user=') && !page.url().includes('/u/benebsworth')) throw new Error('URL missing selected profile');
   const calCells = await page.$$eval('.cal-grid .cal-cell', els => els.length);
   if (calCells === 0) throw new Error('GitHub-style calendar heatmap did not render');
   // Per-day drilldown: clicking a day opens the model breakdown modal.
@@ -587,14 +624,14 @@ async function run() {
 
   console.log('3. Switching profile tabs...');
   for (const tab of ['prompts', 'projects', 'comparisons', 'achievements', 'usage']) {
-    await page.click(`.tab[data-tab="${tab}"]`);
+    await page.click(`.profile-tabs [data-tab="${tab}"]`);
     await page.waitForTimeout(120);
   }
   console.log('   all tabs rendered');
 
   console.log('4. Deep link ?user=benebsworth...');
   await page.goto(filePath + '?user=benebsworth');
-  await page.waitForSelector('.tabs .tab');
+  await page.waitForSelector('.profile-tabs [data-tab]');
   const heroHandle = await page.locator('.profile-identity').textContent();
   if (!heroHandle.includes('benebsworth')) throw new Error('Deep link did not open benebsworth');
   console.log('   deep link ok');
@@ -667,13 +704,13 @@ async function run() {
   if (!(await page.$('#signin-dev'))) throw new Error('Dev sign-in fallback missing');
   await page.click('.signin-modal [data-close]');
   await page.waitForFunction(() => !document.querySelector('.bh-art'));
-  // Gated action: New Group while signed out must route into the sign-in modal.
-  await page.evaluate(() => navigate('settings'));
-  await page.waitForSelector('#new-group-btn');
-  await page.click('#new-group-btn');
+  // Signed-out profile report sharing is the public gated entry point.
+  await page.evaluate(() => navigate('players', { handle: 'benebsworth' }));
+  await page.waitForSelector('[data-share-user="benebsworth"]');
+  await page.click('[data-share-user="benebsworth"]');
   await page.waitForSelector('.signin-modal');
   const signInCopy = await page.locator('.signin-modal .modal-head p').textContent();
-  if (!signInCopy.includes('Creating groups & teams')) throw new Error(`Sign-in modal missing action context: ${signInCopy}`);
+  if (!signInCopy.includes("Sharing @benebsworth's report")) throw new Error(`Sign-in modal missing action context: ${signInCopy}`);
   await page.evaluate(() => closeModal());
   console.log(`   art ${artInfo.cols} cols (built ${artInfo.buildMs}ms), animated=${artAnimated}, benefits=${benefits}, gated copy ok`);
 
@@ -718,9 +755,10 @@ async function run() {
   });
   await gsiPage.goto(filePath);
   await gsiPage.waitForSelector('#signin-btn');
-  await gsiPage.evaluate(() => navigate('settings'));
-  await gsiPage.waitForSelector('#new-group-btn');
-  await gsiPage.click('#new-group-btn');
+  // Report sharing now requires an owned profile before exposing New Group.
+  // Exercise the same pending-action handler directly to keep group resume
+  // and credential forwarding covered without inventing an anonymous owner.
+  await gsiPage.evaluate(() => requireSignIn({ action: 'Creating groups & teams', onSuccess: () => openGroupModal('benebsworth') }));
   await gsiPage.waitForSelector('.signin-modal');
   await gsiPage.waitForFunction(() => window.__gsiRendered === true, null, { timeout: 10000 });
   const gsiCfg = await gsiPage.evaluate(() => window.__gsiInit);
@@ -777,7 +815,7 @@ async function run() {
   if (!kbRoles.nav) throw new Error('Nav items missing keyboard roles');
   // Profile Share/Claim entry points.
   await page.evaluate(() => navigate('players', { handle: 'benebsworth' }));
-  await page.waitForSelector('.tabs .tab');
+  await page.waitForSelector('.profile-tabs [data-tab]');
   if (!(await page.locator('[data-share-user]').count())) throw new Error('Profile Share button missing');
   if (!(await page.locator('[data-claim-user]').count())) throw new Error('Profile Claim button missing');
   // Modal focus trap + labelled close + scroll lock.
@@ -844,6 +882,10 @@ async function run() {
   // Sticky rank+user columns keep row identity while the list scrolls sideways.
   await narrow.evaluate(() => { state.view = 'leaderboard'; renderNav(); return render(); });
   await narrow.waitForSelector('#lb-table tbody tr');
+  // The live compact mobile list fits without scrolling; expand its metrics
+  // before checking that identity stays pinned during horizontal scrolling.
+  await narrow.locator('#community-metrics').click();
+  await narrow.waitForSelector('.community-table.more-metrics');
   await narrow.evaluate(() => document.querySelector('#lb-table-wrap .card > div:last-child').scrollTo({ left: 300 }));
   await narrow.waitForTimeout(150);
   const sticky = await narrow.evaluate(() => {
@@ -883,11 +925,37 @@ async function run() {
   }));
   if (windowing.dom >= windowing.total) throw new Error(`List is not windowed: ${windowing.dom}/${windowing.total} rows in DOM`);
   if (windowing.spacer < windowing.total * 60) throw new Error('Spacer height does not cover the full list');
-  // Fuzzy search narrows via the vendored Fuse index.
+  // Hold the actual debounce callback so this regression does not depend on
+  // runner speed. The typed input must not count as a completed search.
+  await page.evaluate(() => {
+    const original = window.setTimeout;
+    window.setTimeout = (callback, delay, ...args) => {
+      if (delay === 90) {
+        window.setTimeout = original;
+        window.__releaseModelSearch = () => callback(...args);
+        return 0;
+      }
+      return original(callback, delay, ...args);
+    };
+  });
   await page.fill('#mx-q', 'deepseek test 3');
-  await page.waitForTimeout(250);
+  await page.waitForFunction(() => typeof window.__releaseModelSearch === 'function');
+  const pendingSearch = await page.evaluate(() => ({ query: state.mx.query, n: state.mx.filtered.length }));
+  assert.equal(pendingSearch.query, '');
+  assert.equal(pendingSearch.n, windowing.total, 'Debounce must still be pending');
+  try {
+    await assert.rejects(waitForModelSearch(page, 'deepseek test 3', { timeout: 100 }), { name: 'TimeoutError' });
+  } finally {
+    await page.evaluate(() => { window.__releaseModelSearch(); delete window.__releaseModelSearch; });
+  }
+  // Fuzzy search narrows via the vendored Fuse index after the commit.
+  await waitForModelSearch(page, 'deepseek test 3');
   const search = await page.evaluate(() => ({ n: state.mx.filtered.length, shown: `${state.mx.filtered.length} of ${state.mx.models.length}` }));
   if (search.n === 0 || search.n >= 72) throw new Error(`Search did not narrow: ${JSON.stringify(search)}`);
+  const searchModels = await page.evaluate(() => state.mx.filtered.map(m => ({ id: m.id, provider: m.provider })));
+  assert.equal(searchModels[0].id, 'deepseek/model-3', 'Exact model should lead fuzzy results');
+  assert.ok(searchModels.every(m => m.provider === 'deepseek'), 'Search must exclude unrelated providers');
+  console.log(`   delayed debounce: ${pendingSearch.n} pending → ${search.n} committed results`);
   // Scope chip filtering (reset the query first so only the scope applies).
   await page.click('#mx-clear');
   await page.waitForTimeout(120);
@@ -944,7 +1012,7 @@ async function run() {
 
   console.log('14. Model cross-links + per-model provider view...');
   await page.evaluate(() => navigate('players', { handle: 'benebsworth' }));
-  await page.waitForSelector('.tabs .tab');
+  await page.waitForSelector('.profile-tabs [data-tab]');
   await page.waitForSelector('a[data-model-link][data-model="claude-opus-5"]', { timeout: 10000 });
   const inventoryLinks = await page.$$eval('td a[data-model-link]', els => els.length);
   const allLink = await page.$('[data-models-all]');
@@ -991,8 +1059,8 @@ async function run() {
   const legendLinks = await page.$$eval('.chart-legend [data-model-link]', els => els.map(e => e.dataset.model));
   if (!legendLinks.length) throw new Error('Chart legend model names are not linked');
   // Billing and shared reports use the same link contract.
-  await page.evaluate(() => navigate('billing'));
-  await page.waitForTimeout(300);
+  await page.evaluate(() => navigate('billing', { handle: 'benebsworth' }));
+  await page.waitForSelector('#view a[data-model-link]');
   const billingLinks = await page.$$eval('#view a[data-model-link]', els => els.length);
   if (!billingLinks) throw new Error('Billing Cost by Model rows are not linked');
   await page.goto(filePath + '?share=abc');
@@ -1050,7 +1118,7 @@ async function run() {
   await page.click('#mx-head .mx-head-cell[data-col="input"]');
   await page.waitForTimeout(200);
   await page.fill('#mx-q', 'claude opus');
-  await page.waitForTimeout(250);
+  await waitForModelSearch(page, 'claude opus');
   const flatSearch = await page.evaluate(() => state.mx.filtered.length);
   if (flatSearch === 0 || flatSearch > 10) throw new Error(`Flat search did not narrow: ${flatSearch}`);
   // Provider deep link filters the flat list straight from the URL.
@@ -1184,7 +1252,7 @@ async function run() {
   await page.locator('.mx-compare-check').nth(4).click();
   if (await page.locator('.mx-compare-check:checked').count() !== 4) throw new Error('Comparison exceeded four models');
   await page.fill('#mx-q','no-such-model-xxzz');
-  await page.waitForTimeout(180);
+  await waitForModelSearch(page, 'no-such-model-xxzz');
   if (await page.locator('[data-uncompare]').count() !== 4) throw new Error('Search cleared model selections');
   await page.click('#mx-compare-open');
   await page.waitForSelector('#mx-comparison[open]');

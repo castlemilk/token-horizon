@@ -121,7 +121,7 @@
     let destroyed = false, visible = false, userPaused = false, loading = false;
     let raf = 0, lastFrame = 0, previous = 0, elapsed = 0, frames = 0;
     let renderer, scene, camera, hole, tokens, canvas;
-    let width = 1, height = 1, dpr = 1;
+    let width = 1, height = 1, dpr = 1, logosAnchored = false;
     const geometries = [], materials = [];
     const reduced = matchMedia("(prefers-reduced-motion: reduce)");
     host.dataset.motionState = "static";
@@ -153,6 +153,10 @@
     host.append(fallback, providerLayer, edge);
 
     function renderLogos(time) {
+      if (!logosAnchored) {
+        [...providerNodes, ...glyphs].forEach(node => { node.style.left = "50%"; node.style.top = "50%"; });
+        logosAnchored = true;
+      }
       const aspect = width/height;
       providerNodes.forEach((node, i) => {
         const phase = (i/PROVIDERS.length + time*.036) % 1;
@@ -162,9 +166,10 @@
         const x = Math.cos(angle)*radius*Math.min(1,aspect*.86/1.56);
         const y = (Math.sin(angle)*radius*.77-x*.075)*.66;
         const scale = .90 - phase*.64;
-        node.style.left = ((.5 + x/aspect*.5)*100).toFixed(3) + "%";
-        node.style.top = ((.5 - y*.5)*100).toFixed(3) + "%";
-        node.style.transform = `translate(-50%,-50%) rotate(${(Math.sin(angle)*12+phase*24).toFixed(2)}deg) scale(${scale.toFixed(3)})`;
+        // Preserve the rounded orbit coordinates without changing layout each frame.
+        const offsetX = (Number(((.5 + x/aspect*.5)*100).toFixed(3))-50)*width/100;
+        const offsetY = (Number(((.5 - y*.5)*100).toFixed(3))-50)*height/100;
+        node.style.transform = `translate3d(${offsetX}px,${offsetY}px,0) translate(-50%,-50%) rotate(${(Math.sin(angle)*12+phase*24).toFixed(2)}deg) scale(${scale.toFixed(3)})`;
         const horizonFade = Math.max(0,Math.min(1,(Math.hypot(x,y)-.42)/.20));
         node.style.opacity = String(Math.min(.95, (1-Math.max(0,phase-.7)/.3)*.95)*horizonFade);
       });
@@ -173,10 +178,10 @@
         const radius = .46+Math.pow(1-phase,1.2)*1.52;
         const angle = i*2.39996+phase*phase*5.4;
         const x = Math.cos(angle)*radius, y = Math.sin(angle)*radius*.70-x*.075;
-        node.style.left = ((.5+x/aspect*.5)*100).toFixed(3)+"%";
-        node.style.top = ((.5-y*.5)*100).toFixed(3)+"%";
+        const offsetX = (Number(((.5+x/aspect*.5)*100).toFixed(3))-50)*width/100;
+        const offsetY = (Number(((.5-y*.5)*100).toFixed(3))-50)*height/100;
         node.style.opacity = String(Math.min(.60, phase*4, (1-phase)*4));
-        node.style.transform = `translate(-50%,-50%) rotate(${(-angle*9).toFixed(2)}deg)`;
+        node.style.transform = `translate3d(${offsetX}px,${offsetY}px,0) translate(-50%,-50%) rotate(${(-angle*9).toFixed(2)}deg)`;
       });
     }
     function resize() {
@@ -200,6 +205,7 @@
       if (reduced.matches) {
         providerNodes.forEach(node => { node.removeAttribute("style"); node.style.setProperty("--provider-bg",PROVIDERS[providerNodes.indexOf(node)].bg); });
         glyphs.forEach(node => { node.style.opacity="0"; });
+        logosAnchored = false;
       }
     }
     function frame(stamp) {
@@ -268,6 +274,7 @@
       userPaused=true; host.dataset.motionState="fallback";
       providerNodes.forEach(node => { node.removeAttribute("style"); node.style.setProperty("--provider-bg",PROVIDERS[providerNodes.indexOf(node)].bg); });
       glyphs.forEach(node => { node.style.opacity="0"; });
+      logosAnchored = false;
     }
     function releaseRenderer() {
       geometries.splice(0).forEach(resource=>resource.dispose());

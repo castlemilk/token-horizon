@@ -115,11 +115,14 @@
       screen.animate([{opacity: 0, transform: 'translateY(8px)'}, {opacity: 1, transform: 'translateY(0)'}], {duration: 500, easing: 'cubic-bezier(.16,1,.3,1)'});
     }
     description.textContent = scene.caption;
+    $('#tour-feature').value = key;
     $$('[data-scene]').forEach(button => button.setAttribute('aria-pressed', String(button.dataset.scene === key)));
     if (detailDialog.open) renderDetail();
     syncPlayback();
   }
   $$('[data-scene]').forEach(button => button.addEventListener('click', () => showScene(keys.indexOf(button.dataset.scene), true)));
+  $('#tour-feature').addEventListener('change', event => showScene(keys.indexOf(event.target.value), true));
+  $('.tour-feature-picker').hidden = false;
   play.hidden = false;
   play.addEventListener('click', () => {
     if (motion.matches) return showScene((current + 1) % keys.length, true);
@@ -178,10 +181,22 @@
 
   const menu = $('.menu-toggle');
   const nav = $('#main-nav');
-  function closeMenu() { nav.classList.remove('open'); menu.setAttribute('aria-expanded', 'false'); }
+  function closeMenu() {
+    nav.classList.remove('open'); menu.setAttribute('aria-expanded', 'false');
+    window.TokenHorizonExploreNav?.close({ immediate: true });
+  }
   menu.addEventListener('click', () => { const open = nav.classList.toggle('open'); menu.setAttribute('aria-expanded', String(open)); });
-  nav.querySelectorAll('a').forEach(link => link.addEventListener('click', closeMenu));
-  document.addEventListener('keydown', event => { if (event.key === 'Escape' && nav.classList.contains('open')) { closeMenu(); menu.focus(); } });
+  nav.addEventListener('click', event => { if (event.target.closest('a')) closeMenu(); });
+  document.addEventListener('keydown', event => {
+    if (event.key === 'Escape' && !event.defaultPrevented && nav.classList.contains('open')) { closeMenu(); menu.focus(); }
+  });
+  document.addEventListener('click', event => {
+    if (nav.classList.contains('open') && !menu.closest('header').contains(event.target)) {
+      const restore = nav.contains(document.activeElement);
+      closeMenu(); if (restore) menu.focus();
+    }
+  });
+  matchMedia('(max-width: 1200px)').addEventListener('change', () => closeMenu());
 
   $$('[data-copy]').forEach(button => button.addEventListener('click', async () => {
     const code = document.getElementById(button.dataset.copy);

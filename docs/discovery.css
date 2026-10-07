@@ -308,3 +308,45 @@ body.discovery.th-flat .mx-stats,body.discovery.th-flat .mx-head-row .mx-stats{g
 .discovery-skip:focus{transform:none}
 .discovery .mx-row:has(.mx-compare-check:checked){background:#e1f1dd}
 .discovery .mx-row.active{background:#d9efe0}
+
+/* Rankings share one compact reading area and full-sized mobile controls. */
+@media(max-width:650px){
+  .discovery-title{gap:16px;margin-bottom:24px}
+  .discovery-title p{font-size:15px}
+  .community-periods{width:100%;min-width:0}
+  .community-periods button{flex:1;min-height:44px;min-width:0;padding:8px 10px;font-size:13px}
+  .community-kpis{padding:18px 0;background:transparent;border:0;border-bottom:1px solid var(--line);border-radius:0}
+  .community-kpis>div{min-width:0;padding:0 12px}
+  .community-kpis>div:first-child{padding-left:0}
+  .community-kpis span{font-size:12px;line-height:1.5}
+  .community-kpis strong{font-size:26px;letter-spacing:-.035em}
+  .community-tools input,.community-tools select{min-height:44px;font-size:16px}
+  .community-link{display:inline-flex;align-items:center;min-height:44px;font-size:13px}
+  .community-table-foot{flex-wrap:wrap;font-size:12px;gap:8px 16px}
+  .community-aside{grid-template-columns:minmax(0,1fr);gap:20px}
+  .community-ladder{padding:20px}
+  .community-ladder .tier{min-height:44px}
+  .community-ladder .tier .name,.community-ladder>.sub:last-child{font-size:12px;line-height:1.5}
+  .community-join{padding:0 20px 20px}
+  .community-join img{width:calc(100% + 40px);height:132px;margin-inline:-20px}
+  .community-join h2{font-size:28px;letter-spacing:-.035em}
+  .community-join p{font-size:14px;line-height:1.65;margin-bottom:16px}
+  .community-join .community-link{display:flex}
+  .discovery #community-history{min-height:44px;font-size:13px}
+  html[data-theme] body.discovery .community-main>.community-kpis{background:transparent;border:0;border-bottom:1px solid var(--th-rule);border-radius:0;box-shadow:none}
+  html[data-theme] body.discovery .community-main>.card:not(.community-table){padding:24px 0 0;border:0;border-top:1px solid var(--th-rule);border-radius:0;background:transparent;box-shadow:none}
+  html[data-theme] body.discovery .community-main>.card:not(.community-table) .card-head{flex-wrap:wrap;gap:12px}
+  .community-table:not(.more-metrics) #lb-table{table-layout:fixed;width:100%;min-width:0}
+  .community-table:not(.more-metrics) #lb-table :is(th,td):not(:nth-child(1),:nth-child(2),:nth-child(4)){display:none}
+  .community-table:not(.more-metrics) #lb-table :is(th,td){padding:12px 6px}
+  .community-table:not(.more-metrics) #lb-table :is(th,td):nth-child(1){width:34px;min-width:0;padding-inline:4px;left:0;box-shadow:none}
+  .community-table:not(.more-metrics) #lb-table :is(th,td):nth-child(2){left:34px;min-width:0;box-shadow:none}
+  .community-table:not(.more-metrics) #lb-table :is(th,td):nth-child(4){width:70px;text-align:right}
+  .community-table:not(.more-metrics) .user-cell{min-width:0;gap:8px}
+  .community-table:not(.more-metrics) .builder-identity{flex:1;min-width:0}
+  .community-table:not(.more-metrics) .name{max-width:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .community-table:not(.more-metrics) .builder-meta{min-width:0;gap:3px 6px}
+  .community-table:not(.more-metrics) .builder-league{min-width:0;max-width:100%;font-size:11px}
+  .community-table:not(.more-metrics) .builder-league>span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .community-table:not(.more-metrics) .builder-team{flex-basis:100%;max-width:100%;font-size:11px;line-height:1.5;white-space:normal;overflow-wrap:anywhere}
+}
