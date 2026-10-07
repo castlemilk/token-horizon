@@ -20,7 +20,7 @@ export function routePageMetadata(url) {
   const p = url.searchParams;
   const queryView = p.get('view');
   const sensitiveView = ['dashboard', 'workspace', 'billing', 'settings', 'login', 'shared', 'invite'].includes(queryView);
-  const view = url.pathname === '/login' ? 'login' : sensitiveView ? queryView : url.pathname === '/models' ? 'models' : queryView || 'leaderboard';
+  const view = url.pathname === '/login' ? 'login' : sensitiveView ? queryView : url.pathname === '/models' ? 'models' : /^\/teams\/?$/.test(url.pathname) ? 'teams' : queryView || 'leaderboard';
   const metadata = {
     type: 'website', schemaType: 'CollectionPage',
     title: 'AI Usage Leaderboard · Token Horizon',
@@ -33,14 +33,14 @@ export function routePageMetadata(url) {
     url: `${SITE_ORIGIN}/leaderboard?view=shared`, image: asset('og-workspace.png'), alt: 'Token Horizon shared usage report.' };
   if (p.has('invite') || view === 'invite' || /^\/invite\//.test(url.pathname)) return { ...metadata, private: true, schemaType: null,
     title: 'Join your crew · Token Horizon', description: 'Sign in to join your friends’ team and explore your AI usage together.',
-    url: `${SITE_ORIGIN}/leaderboard?view=teams`, image: asset('og-leaderboard.png'), alt: 'Join your friends on Token Horizon.' };
+    url: `${SITE_ORIGIN}/teams`, image: asset('og-leaderboard.png'), alt: 'Join your friends on Token Horizon.' };
   if (view === 'login' || p.has('signin')) return { ...metadata, noindex: true, schemaType: null,
     title: 'Sign in · Token Horizon', description: 'Sign in with Google or GitHub to access your Token Horizon workspace, team and sharing controls.',
     url: `${SITE_ORIGIN}/login`, image: asset('og-login.png'), alt: 'Sign in to your Token Horizon account.' };
   if (['dashboard', 'workspace', 'billing', 'settings'].includes(view)) {
-    const title = { dashboard: 'Your workspace', workspace: 'Your workspace', billing: 'Usage and costs', settings: 'Account settings' }[view];
+    const title = { dashboard: 'Your workspace', workspace: 'Your workspace', billing: 'Model costs', settings: 'Report sharing' }[view];
     return { ...metadata, private: true, schemaType: null, title: `${title} · Token Horizon`,
-      description: 'Your Token Horizon account, published AI usage, team and sharing controls. Sign in to view your workspace.',
+      description: view === 'settings' ? 'Manage audiences and expiry dates for reports from your published profiles.' : 'Analyze published token usage, model cost estimates and activity for a profile. Sign in to find profiles linked to your account.',
       url: `${SITE_ORIGIN}/leaderboard?view=${view === 'workspace' ? 'dashboard' : view}`,
       image: asset('og-workspace.png'), alt: 'Your Token Horizon workspace.' };
   }
@@ -59,7 +59,7 @@ export function routePageMetadata(url) {
   }
   if (view === 'teams') return { ...metadata, title: 'AI Usage Teams · Token Horizon',
     description: 'Explore team AI usage and community rankings. Invite friends to your Token Horizon crew.',
-    url: `${SITE_ORIGIN}/leaderboard?view=teams` };
+    url: `${SITE_ORIGIN}/teams` };
   if (view === 'leagues') return { ...metadata, title: 'AI Usage Leagues · Token Horizon',
     description: 'Explore the seven Token Horizon leagues, learn how rankings work and follow the community’s progress.',
     url: `${SITE_ORIGIN}/leaderboard?view=leagues` };

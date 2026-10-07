@@ -161,3 +161,38 @@ body.demo-open{overflow:hidden}#demo-dialog{width:min(1040px,calc(100vw - 40px))
 .tool-mark[data-provider=kimi]{background:#000}
 .tool-mark[data-provider=kimi] img{width:95%;height:95%}
 @media(min-width:901px) and (max-width:1200px){.provider-strip{gap:16px;flex-wrap:wrap;justify-content:center}.provider-strip>span{width:100%;text-align:center}}
+
+/* A phone preview uses the same scenes through one native, labelled control. */
+.tour-feature-picker { display: none; }
+@media (max-width: 680px) {
+  body.landing .hero { padding-top: 28px; gap: 20px; }
+  body.landing .hero .hero-copy h1 { font-size: clamp(38px, 11vw, 46px); letter-spacing: -.035em; }
+  body.landing .hero .hero-description { margin-top: 18px; font-size: 17px; }
+  body.landing .hero .hero-actions { margin-top: 22px; gap: 12px 18px; }
+  body.landing .hero .hero-actions .text-link { min-height: 44px; }
+  body.landing .hero .hero-meta { margin-top: 14px; font-size: 12px; }
+  body.landing .product-tour .tour-controls { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: 12px; margin-top: 0; }
+  body.landing .product-tour .scene-select { display: none; }
+  body.landing .tour-feature-picker { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 12px; text-align: left; font-size: 13px; color: var(--th-muted); }
+  body.landing .tour-feature-picker select { width: 100%; min-width: 0; min-height: 44px; padding: 9px 30px 9px 12px; border: 1px solid var(--th-control); border-radius: 5px; background: var(--th-surface); color: var(--th-text); font: 16px var(--sans); }
+  body.landing .product-tour .tour-play { min-width: 56px; min-height: 44px; font-size: 13px; }
+  body.landing .tour-caption .expand-demo { min-height: 44px; padding: 10px 12px; font-size: 13px; }
+  body.landing .desktop-copy .widget-controls { gap: 16px; flex-wrap: wrap; }
+  body.landing .desktop-copy .widget-controls button { min-width: 44px; min-height: 44px; padding: 10px 4px; font-size: 14px; }
+  body.landing .desktop-layout .widget-stage { flex-wrap: wrap; min-height: 0; gap: 20px; }
+  body.landing .widget-stage .medium-widget { width: 100%; margin-top: 54px; }
+  body.landing .widget-stage .small-widget { width: 100%; margin-top: 0; padding: 18px 0; border: 0; border-top: 1px solid #526658; border-radius: 0; box-shadow: none; background: transparent; }
+  body.landing .widget-stage .small-widget > strong { font-size: 28px; }
+  body.landing .widget-stage .small-widget > p { font-size: 13px; }
+  body.landing .widget-stage .small-widget-footer { font-size: 12px; }
+  body.landing .widget-stage .desktop-widget .demo-head { font-size: 14px; }
+  body.landing .widget-stage .desktop-widget .demo-label { font-size: 13px; }
+  body.landing .widget-stage .desktop-widget .demo-legend { font-size: 12px; gap: 12px; flex-wrap: wrap; }
+  body.landing .widget-stage .widget-windows button { min-width: 44px; min-height: 44px; font-size: 13px; }
+  body.landing .install-options .copy-button { min-width: 44px; min-height: 44px; }
+  body.landing .site-header .menu-toggle { width: 44px; height: 44px; min-width: 44px; min-height: 44px; }
+  body.landing .site-footer nav { gap: 4px 14px; }
+  body.landing .site-footer nav a { display: inline-flex; align-items: center; min-height: 44px; font-size: 14px; }
+  body.landing .section-top .text-link { min-height: 44px; font-size: 12px; white-space: normal; }
+  body.landing .provider-strip > span { text-transform: none; letter-spacing: 0; font-size: 13px; }
+}

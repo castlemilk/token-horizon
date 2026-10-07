@@ -25,9 +25,23 @@ if (copyBtn) {
 const nav = document.getElementById('site-nav');
 const navToggle = document.getElementById('nav-toggle');
 if (nav && navToggle) {
-  navToggle.addEventListener('click', () => {
-    const open = nav.classList.toggle('open');
+  const setNavigation = (open, restoreFocus = false) => {
+    nav.classList.toggle('open', open);
     navToggle.setAttribute('aria-expanded', String(open));
-    navToggle.textContent = open ? '✕' : '☰';
+    navToggle.setAttribute('aria-label', open ? 'Close navigation' : 'Open navigation');
+    if (restoreFocus) navToggle.focus();
+  };
+  navToggle.addEventListener('click', () => setNavigation(!nav.classList.contains('open')));
+  nav.addEventListener('click', event => {
+    if (event.target.closest('.nav-links a')) setNavigation(false);
   });
+  document.addEventListener('keydown', event => {
+    if (event.key === 'Escape' && nav.classList.contains('open')) {
+      event.preventDefault(); setNavigation(false, nav.contains(document.activeElement));
+    }
+  });
+  document.addEventListener('click', event => {
+    if (!nav.contains(event.target) && nav.classList.contains('open')) setNavigation(false, nav.contains(document.activeElement));
+  });
+  matchMedia('(min-width: 1081px)').addEventListener('change', () => setNavigation(false));
 }

@@ -638,9 +638,9 @@ try {
   {
     const f = await fixture();
     try {
-      await f.page.goto(ORIGIN + '/leaderboard?view=settings', { waitUntil: 'domcontentloaded' });
-      await f.page.waitForSelector('#new-group-btn');
-      await f.page.locator('#new-group-btn').click();
+      await f.page.goto(ORIGIN + '/u/aurora', { waitUntil: 'domcontentloaded' });
+      await f.page.waitForSelector('[data-share-user="aurora"]');
+      await f.page.locator('[data-share-user="aurora"]').click();
       await f.page.waitForSelector('.signin-modal');
       await f.page.locator('#signin-github').click();
       await f.page.waitForSelector('#fixture-github-start');
@@ -651,7 +651,8 @@ try {
       assert.equal(new URL(returnTo, ORIGIN).origin, ORIGIN);
       assert(!returnTo.includes('signin=') && !returnTo.includes('auth='));
       const pending = await f.page.evaluate(() => JSON.parse(sessionStorage.getItem('th_auth_return') || 'null'));
-      assert.equal(pending?.resume?.type, 'group');
+      assert.equal(pending?.resume?.type, 'share');
+      assert.equal(pending.resume.handle, 'aurora');
       assert.equal(pending.path, returnTo);
       assert(Date.now() - pending.at < 10000);
       assert(!JSON.stringify(pending).includes(credential));

@@ -213,8 +213,8 @@ try {
   {
     const f = await fixture(); await openTeam(f);
     assert.equal(await f.page.locator('[data-handle-link]').count(), 3);
-    assert.equal(await f.page.locator('.tm-provider-breakdown li').count(), 2);
-    const provider = f.page.locator('.tm-provider-breakdown a').first();
+    assert.equal(await f.page.locator('[data-team-provider]').count(), 2);
+    const provider = f.page.locator('[data-team-provider-catalog] a');
     assert.match(await provider.getAttribute('href'), /provider=openai/);
     await f.page.locator('.tm-share-panel summary').click();
     assert.equal(await f.page.locator('#tm-share-link').inputValue(), TEAM.url);

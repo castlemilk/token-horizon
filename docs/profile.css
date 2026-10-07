@@ -149,3 +149,61 @@ body[data-surface="players"] .skeleton{background:#dfe6db;background-image:linea
 body[data-surface="players"] .sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
 .discovery .profile-main .card-head h3{font:600 18px/1.2 var(--th-display);letter-spacing:-.5px}
 @media(max-width:480px){.discovery .profile-main .card-head h3{font-size:17px}}
+
+/* Small screens keep the readings compact and give their controls room. */
+@media(max-width:760px){
+  .profile-person{width:100%;max-width:100%}
+  .profile-person>div{flex:1;min-width:0}
+  .profile-meta{min-width:0}
+  .profile-meta>span{min-width:0;max-width:100%;overflow-wrap:anywhere}
+  .profile-breadcrumb{align-items:center;min-height:44px;margin-bottom:18px;font-size:12px}
+  .profile-breadcrumb a{display:inline-flex;align-items:center;min-height:44px;flex:none}
+  .profile-person h1,.profile-totals strong{letter-spacing:-.035em}
+  .profile-actions .pill,.profile-text-button,.profile-actions>.profile-text-button{min-height:44px;font-size:13px}
+  .profile-share-hint{font-size:12px;max-width:none}
+  .discovery .profile-tabs .tab{min-height:44px;font-size:13px;padding:12px 0}
+  .profile-totals span{font-size:12px;line-height:1.4}
+  .profile-totals small{font-size:11px;line-height:1.6;max-width:none;overflow-wrap:anywhere}
+  .profile-main .card-head{align-items:start;flex-wrap:wrap;gap:14px}
+  .profile-window{max-width:100%;gap:2px;min-width:0}
+  .profile-window button{min-height:44px;min-width:44px;font-size:12px;padding:8px 12px}
+  .profile-section-sub,.profile-chart-note,.profile-chart-legend{font-size:12px}
+  .profile-chart-note{flex-wrap:wrap}
+  .profile-calendar .card-head>.sub{font-size:12px}
+  .profile-calendar .cal-days,.profile-calendar .cal-months,.profile-calendar .cal-legend{font-size:10px}
+  .profile-calendar .cal-legend{flex-wrap:wrap;row-gap:8px}
+  .profile-main .two-col>.card{padding:20px 0 0!important;border:0;border-top:1px solid var(--line);border-radius:0;background:transparent}
+  .profile-main .stat-grid{gap:16px 12px}
+  .profile-main .stat{padding:4px 12px}
+  .profile-main .stat .label{font-size:12px;line-height:1.5}
+  .profile-inventory th,.profile-inventory .num,.profile-model-provider,.profile-model-share{font-size:12px}
+  .profile-inventory td{font-size:13px}
+  .profile-table-footer{flex-wrap:wrap;font-size:12px;gap:8px 16px}
+  .profile-table-footer a{display:inline-flex;align-items:center;min-height:44px}
+  .profile-session-list article{align-items:start;flex-wrap:wrap;gap:8px 16px}
+  .profile-session-list article>div{flex:1 1 220px}
+  .profile-session-list p{font-size:14px}
+  .profile-session-list time,.profile-session-list .chip,.profile-session-list article>strong small{font-size:12px}
+  .profile-session-list article>strong{font-size:13px;text-align:left}
+  .profile-rail{padding:20px}
+  .profile-standing-rank,.profile-standing-rank>small,.profile-standing>p>span,.profile-standing>small{font-size:12px}
+  .profile-provider-panel>h3>small,.profile-provider-row>div:first-child,.profile-provider-row strong,.profile-facts dl,.profile-facts dd,.profile-published>small{font-size:12px}
+  .profile-published>span,.profile-published>time{font-size:12px}
+  .profile-share-link{min-height:44px;font-size:16px}
+  .profile-share-controls>.pill,.profile-share-modal .modal-foot>.pill{min-height:44px;font-size:13px}
+  .pf-load-actions{flex-wrap:wrap}
+}
+.profile-day-picker{display:flex;align-items:center;flex-wrap:wrap;gap:10px;margin-top:16px;font-size:13px;color:var(--muted)}
+.profile-day-picker select{min-width:0;min-height:44px;max-width:100%;padding:8px 12px;border:1px solid var(--line);border-radius:5px;background:var(--panel);color:var(--text);font-size:14px}
+@media(max-width:760px){.profile-day-picker{display:grid;gap:8px}.profile-day-picker select{width:100%;font-size:16px}}
+@media(max-width:480px){
+  .profile-meta{font-size:12px;line-height:1.6}
+  .profile-window{width:100%}
+  .profile-window button{flex:1;min-width:0;padding-inline:8px}
+  .profile-main .card-head>.profile-window{flex-basis:100%}
+  .profile-rail h3{margin-bottom:16px}
+  .profile-crest{margin:16px 0 12px}
+  .profile-crest .league-icon{width:88px!important;height:88px!important}
+  .profile-provider-panel,.profile-facts,.profile-published{margin-top:20px;padding-top:20px}
+  .profile-totals strong{letter-spacing:-.035em}
+}

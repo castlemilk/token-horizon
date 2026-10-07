@@ -34,25 +34,30 @@
 <meta data-th-seo name="twitter:image" content="https://token-horizon.dev/assets/og-docs.png?v=20261001-2" />
 <meta data-th-seo name="twitter:image:alt" content="Token Horizon documentation — get started with local AI observability, APIs and integrations." />
 <script id="th-seo-schema" type="application/ld+json">{"@context":"https://schema.org","@graph":[{"@type":"Organization","@id":"https://token-horizon.dev/#organization","name":"Token Horizon","url":"https://token-horizon.dev/","logo":{"@type":"ImageObject","url":"https://token-horizon.dev/icon-512.png?v=20261001-2","width":512,"height":512},"sameAs":["https://github.com/castlemilk/token-horizon"]},{"@type":"WebSite","@id":"https://token-horizon.dev/#website","url":"https://token-horizon.dev/","name":"Token Horizon","inLanguage":"en","publisher":{"@id":"https://token-horizon.dev/#organization"}},{"@type":"TechArticle","@id":"https://token-horizon.dev/docs/#webpage","url":"https://token-horizon.dev/docs/","name":"Documentation & Setup — Token Horizon","description":"Install Token Horizon and learn usage tracking, desktop widgets, model plans, provider limits, the local HTTP API, MCP connector and LLM gateway.","inLanguage":"en","isPartOf":{"@id":"https://token-horizon.dev/#website"},"headline":"Token Horizon documentation","author":{"@id":"https://token-horizon.dev/#organization"},"about":{"@type":"SoftwareApplication","@id":"https://token-horizon.dev/#app","name":"Token Horizon"}},{"@type":"BreadcrumbList","@id":"https://token-horizon.dev/docs/#breadcrumbs","itemListElement":[{"@type":"ListItem","position":1,"name":"Token Horizon","item":"https://token-horizon.dev/"},{"@type":"ListItem","position":2,"name":"Documentation","item":"https://token-horizon.dev/docs/"}]}]}</script>
-<link rel="stylesheet" href="../styles.css" />
-<link rel="stylesheet" href="../horizon-system.css?v=20261001-4" /><link rel="stylesheet" href="../surfaces.css?v=20261001-4" /><link rel="stylesheet" href="../theme.css?v=20261001-4" /><script src="../theme.js?v=20261001-4" defer></script>
+<link rel="stylesheet" href="../styles.css?v=20261002-2" />
+<link rel="stylesheet" href="../horizon-system.css?v=20261002-nav-login-1" /><link rel="stylesheet" href="../surfaces.css?v=20261001-4" /><link rel="stylesheet" href="../theme.css?v=20261001-4" /><script src="../theme.js?v=20261001-4" defer></script>
 <link rel="stylesheet" href="../platform-logos.css?v=20261003-2">
 </head>
-<body class="editorial">
+<body class="editorial reading-page">
+<a class="reading-skip" href="#reading-content">Skip to content</a>
 <nav class="nav" id="site-nav">
-  <a class="brand" href="../"><img src="../assets/icon.png" alt="" /><span>Token Horizon</span></a>
+  <a class="brand" href="../"><img src="../assets/icon.png" alt="" /><span class="th-nav-brand-name">Token Horizon</span></a>
   <span data-theme-control></span>
-  <button class="nav-toggle" id="nav-toggle" type="button" aria-label="Toggle navigation" aria-expanded="false" aria-controls="nav-links">☰</button>
+    <a class="th-nav-signin" data-nav-signin href="../login/"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="square" stroke-linejoin="round" aria-hidden="true"><path d="M14 4h6v16h-6M4 12h11m-4-4 4 4-4 4"/></svg><span data-nav-signin-label>Sign in</span></a>
+  <button class="nav-toggle" id="nav-toggle" type="button" aria-label="Toggle navigation" aria-expanded="false" aria-controls="nav-links"><span aria-hidden="true"></span></button>
   <div class="nav-links" id="nav-links">
     <a class="nav-primary" href="../leaderboard.html">Leaderboard</a>
+    <a class="nav-primary" href="../teams/#tm-rankings-title">Teams</a>
     <a class="nav-primary nav-models" href="../models/">Models</a>
-    <a href="./">Docs</a>
+    <a href="./" aria-current="page">Docs</a>
     <a href="../blog/">Blog</a>
     <a class="nav-cta" href="https://github.com/castlemilk/token-horizon">GitHub</a>
   </div>
 </nav>
 
 <div class="docs-layout">
+  <details class="docs-contents" id="docs-contents" open>
+    <summary>On this page <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="square" stroke-linejoin="round" aria-hidden="true"><path d="m7 10 5 5 5-5"/></svg></summary>
   <nav class="docs-nav" aria-label="Documentation">
     <span class="group">Getting started</span>
     <a href="#overview">Overview</a>
@@ -76,8 +81,9 @@
     <span class="group">Help</span>
     <a href="#troubleshooting">Troubleshooting</a>
   </nav>
+  </details>
 
-  <main class="docs-body">
+  <main class="docs-body" id="reading-content" tabindex="-1">
     <h1>Token Horizon documentation</h1>
     <p>Token Horizon tracks AI token usage, cost, plan limits and local model performance from provider-reported data. Use the native macOS app or the desktop dashboard for Windows and Linux. Local tracking works without a Token Horizon account; leaderboard and team sharing are optional.</p>
 
@@ -201,6 +207,9 @@ sudo apt install libfuse2t64</code></pre>
     <h2 id="leaderboard">Leaderboard &amp; privacy</h2>
     <p>Publishing is opt-in. The leaderboard ranks token volume across periods, with leagues/MMR, streaks, efficiency, per-model breakdowns and share cards. What's published: totals, model/tool breakdowns, projects, hardware, sessions with titles <em>only if you enable</em> <code>leaderboardSharePrompts</code> (default off — rows publish with empty titles so activity timelines still work). Prompt history itself never leaves the individual profile. Profile links (<code>/u/&lt;handle&gt;</code>) show a dynamic preview with token totals, a 17-week heatmap, streak and provider mix. Shared reports (<code>/s/&lt;id&gt;</code>) respect their audience, privacy options and expiry. Restricted links require sign-in and show a generic preview; enable the public-link option to let anyone with the link view the report.</p>
 
+    <p><strong>Open your usage on the web:</strong> in the desktop app, set your handle under Settings → Leaderboard (or Sharing &amp; teams in newer builds), save it, and use Publish or Sync now. Open that handle’s public profile on the web and use Claim to link it to your signed-in Google or GitHub account. Keep the original claim token if one was issued. Workspace discovers profiles linked to that exact account; signing in alone does not upload activity. A claimed profile’s later uploads require an authorized app write token.</p>
+    <p><a href="../leaderboard?view=dashboard">Workspace</a> analyzes one profile’s published token totals, model cost estimates and shared activity. Cost estimates are not provider invoices. Public previews expose only published fields; live traces, device telemetry and plan limits remain in the desktop app.</p>
+
     <h2 id="api">HTTP API</h2>
     <p>Local daemon on <code>127.0.0.1:8765</code> (CORS enabled for the dashboard):</p>
     <table>
@@ -285,7 +294,7 @@ th reset-cache     # clear and rebuild the durable cache</code></pre>
 </div>
 
 <footer class="footer">
-  <a class="brand" href="../"><img src="../assets/icon.png" alt="" /><span>Token Horizon</span></a>
+  <a class="brand" href="../"><img src="../assets/icon.png" alt="" /><span class="th-nav-brand-name">Token Horizon</span></a>
   <p>Native observability for the AI-powered Mac.</p>
   <div class="footer-links">
     <a href="../docs/">Docs</a>
@@ -294,6 +303,22 @@ th reset-cache     # clear and rebuild the durable cache</code></pre>
     <a href="https://github.com/castlemilk/token-horizon/releases">Releases</a>
   </div>
 </footer>
-<script src="../app.js"></script>
+<script src="../app.js?v=20261002-nav-login-1"></script>
+<script>
+(() => {
+  const contents = document.getElementById('docs-contents');
+  const compact = matchMedia('(max-width: 860px)');
+  const adaptContents = () => { contents.open = !compact.matches; };
+  adaptContents();
+  compact.addEventListener('change', adaptContents);
+  contents.addEventListener('click', event => {
+    const link = event.target.closest('.docs-nav a');
+    if (!compact.matches || !link) return;
+    contents.open = false;
+    const target = document.getElementById(link.hash.slice(1));
+    if (target) { target.tabIndex = -1; target.focus({ preventScroll: true }); }
+  });
+})();
+</script>
 </body>
 </html>

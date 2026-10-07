@@ -42,11 +42,16 @@
       return /^https?:$/.test(url.protocol) && value ? url.href : "";
     } catch (_) { return ""; }
   };
+  const teamMonogram = value => {
+    const words = String(value ?? "").match(/[\p{L}\p{N}]+/gu) || [];
+    const letters = (words.length > 1 ? words.slice(0, 2).map(word => Array.from(word)[0]).join("") : Array.from(words[0] || "").slice(0, 2).join("")).toUpperCase();
+    return /^[A-Z0-9À-ž]{1,2}$/.test(letters) ? letters : "TH";
+  };
   const teamIcon = team => {
     const path = String(team?.logoUrl || "");
     return /^\/api\/team\/[a-f0-9]{32}\/logo(?:\?[^\s]*)?$/.test(path)
       ? `<img src="${esc(path)}" alt="" width="72" height="72"/>`
-      : `<span class="ti-team-monogram">${esc(Array.from(String(team?.name || "Crew").trim()).slice(0, 2).join("").toUpperCase())}</span>`;
+      : `<span class="ti-team-monogram">${esc(teamMonogram(team?.name))}</span>`;
   };
   function brandingMarkup(team, owner, disabled) {
     const id = String(team?.id || "");
@@ -247,7 +252,7 @@
     const expired = !joined && dateOf(invite?.expiresAt)?.getTime() <= Date.now();
     let content;
     if (loading && !team) content = skeleton();
-    else if (!valid || expired) content = `<h1>${expired ? "This invite has expired." : "This invite couldn’t be opened."}</h1><p>Ask your friend for a fresh invite link. There’s always room for one more in the crew.</p>${alertMarkup(state, view.localError, false)}${!expired && view.options.onRetry ? `<button class="ti-button" type="button" data-ti-retry>${icon("retry")}Try this invite again</button>` : ""}<a class="ti-home-link" href="/leaderboard?view=teams">Explore teams ${icon("arrow")}</a>`;
+    else if (!valid || expired) content = `<h1>${expired ? "This invite has expired." : "This invite couldn’t be opened."}</h1><p>Ask your friend for a fresh invite link. There’s always room for one more in the crew.</p>${alertMarkup(state, view.localError, false)}${!expired && view.options.onRetry ? `<button class="ti-button" type="button" data-ti-retry>${icon("retry")}Try this invite again</button>` : ""}<a class="ti-home-link" href="./teams#tm-rankings-title">Explore teams ${icon("arrow")}</a>`;
     else if (joined) content = `<span class="ti-success-label">${icon("check")}You’re on the team</span><h1>Welcome to<br/>${displayName(team.name || "the crew")}.</h1><p>Your place in the crew is saved. Your published profiles follow this team automatically.</p><div class="ti-crew-line">${icon("people")}<span>${esc(memberLabel(team))} and counting</span></div><button type="button" class="ti-button ti-primary ti-wide" data-ti-continue>Meet your team ${icon("arrow")}</button><a class="ti-home-link" href="/leaderboard?view=dashboard">Open your workspace</a>`;
     else content = `<span class="ti-invite-label">You’ve been invited to join</span><h1>${displayName(team.name || "the crew")}.</h1><p>A friend saved you a seat. Compare your model usage, share a little friendly competition, and see what you can build together.</p><div class="ti-crew-line">${icon("people")}<span>${esc(memberLabel(team))}</span><time${dateOf(invite?.expiresAt) ? ` datetime="${esc(dateOf(invite.expiresAt).toISOString())}"` : ""}>${esc(expiry(invite?.expiresAt))}</time></div>${state.needsSwitch ? `<div class="ti-switch-note"><strong>You’re joining a new team.</strong><p>${state.currentTeam?.name ? `Joining will move your account from ${esc(state.currentTeam.name)} to ${esc(team.name)}.` : "Joining will move your account and its owned profiles to this team."}</p></div>` : ""}${alertMarkup(state, view.localError, false)}<button type="button" class="ti-button ti-primary ti-wide" data-ti-join${loading ? " disabled" : ""}>${loading ? '<span class="ti-button-spinner" aria-hidden="true"></span>Joining your crew…' : icon(state.signedIn ? "people" : "arrow") + (state.needsSwitch ? "Switch team & join" : state.signedIn ? "Join the team" : "Sign in & join the team")}</button><p class="ti-join-help">${state.signedIn ? "Your team membership is saved to your account." : "Sign in with Google or GitHub and you’ll automatically join. No published profile needed."}</p>`;
     return `<section class="th-team-invites ti-invite-page ti-invite-uplift${joined ? " ti-page-joined" : ""}"${loading ? ' aria-busy="true"' : ""}><a href="/" class="ti-page-brand"><span class="ti-brand-mark"></span>Token Horizon</a><div class="ti-invite-card"><aside class="ti-invite-art" data-team-hero><div data-team-blackhole aria-hidden="true"></div><div class="ti-orbit-caption"><span>${joined ? "Crew expanded." : "Good company.<br/>Greater horizons."}</span><p>${joined ? "Good things happen in good company." : "Different models. One crew. Bring all your tokens into the same orbit."}</p></div><button type="button" class="tm-motion-toggle" data-team-motion-toggle aria-pressed="false" aria-label="Pause animation">${icon("people")}<span>Pause animation</span></button></aside><div class="ti-invite-content">${valid && !expired ? `<div class="ti-arrival-icon">${teamIcon(team)}</div>` : ""}${content}<footer class="ti-privacy-note">${icon("shield")}Team membership appears on your published profiles. Private prompts and local traces stay private.</footer></div></div><p class="ti-page-footer">Better models. Shared horizons.</p></section>`;

@@ -69,3 +69,35 @@ body[data-surface=login] .filters,body[data-surface=login] .toolbar{display:none
 .auth-shell .signin-pane{justify-content:center}
 
 .ui-update-notice{position:fixed;right:22px;bottom:22px;display:flex;align-items:center;gap:12px;max-width:430px;padding:15px 16px;background:#F3F5EF;color:#18261C;border:1px solid #BFCFBC;border-radius:8px;box-shadow:0 10px 35px #0A160C1F;font:12px var(--sans,sans-serif);z-index:900}.ui-update-notice strong,.ui-update-notice span{display:block}.ui-update-notice span{color:#63745F;font-size:11px;line-height:1.5;margin-top:3px}.ui-update-notice button{flex:none;min-height:36px;padding:8px 12px;background:#235E43;color:#F3F5EF;border:1px solid #235E43;border-radius:6px;cursor:pointer;font:500 11px var(--sans,sans-serif)}.ui-update-notice .ui-update-dismiss{background:transparent;color:#536B58;border:0;font-size:19px;padding:5px;min-width:30px}.ui-update-notice :focus-visible{outline:2px solid #568762;outline-offset:3px}.modal .ui-update-notice{position:relative;right:auto;bottom:auto;max-width:none;margin:15px;box-shadow:none}@media(max-width:500px){.ui-update-notice{left:14px;right:14px;bottom:14px;gap:9px;padding:12px}.ui-update-notice button{padding:8px}.modal .ui-update-notice{left:auto;right:auto}}
+
+/* Authentication remains a short, readable task on narrow screens. */
+@media(max-width:650px){
+  .auth-shell .signin-pane,.signin-modal .signin-pane{grid-row:1;padding:24px 20px}
+  .auth-shell .signin-art,.signin-modal .signin-art{grid-row:2;height:144px;min-height:144px;padding:16px 20px}
+  .auth-shell .modal-head h1,.signin-modal .modal-head h2,.auth-success h1{letter-spacing:-.035em}
+  .signin-modal .modal-head h2{padding-right:52px}
+  .signin-modal .modal-head .x{width:44px;height:44px;right:0;top:0;display:grid;place-items:center}
+  .signin-modal .modal-head p,.auth-shell .modal-head p{font-size:15px;line-height:1.6;margin-bottom:20px}
+  .auth-art-bottom button{min-height:44px;min-width:44px;font-size:12px;padding:8px;background:#101710;border:1px solid #405c45;border-radius:5px;color:#d2f4cf}
+  .auth-text-link{display:inline-flex;align-items:center;min-height:44px;font-size:13px;line-height:1.5}
+  .auth-provider-note,.auth-privacy,#signin-status{font-size:13px;line-height:1.6}
+  .auth-remembered{display:grid;grid-template-columns:auto minmax(0,1fr);gap:8px 12px;padding:12px 0;border:0;border-top:1px solid var(--auth-line);border-bottom:1px solid var(--auth-line);border-radius:0;background:transparent}
+  .auth-remembered strong{font-size:14px}
+  .auth-remembered small{font-size:12px}
+  .auth-remembered .auth-text-link{grid-column:2;max-width:none;justify-self:start;text-align:left;font-size:13px;padding:8px 0}
+  .signin-modal .signin-benefits,.auth-shell .signin-benefits{grid-template-columns:minmax(0,1fr);gap:14px;margin:24px 0}
+  .signin-modal .signin-benefit,.auth-shell .signin-benefit{display:grid;grid-template-columns:24px minmax(0,1fr);align-items:start;gap:12px;padding:0;border:0}
+  .signin-modal .signin-benefit .ico,.auth-shell .signin-benefit .ico{margin:0}
+  .signin-modal .signin-pane .signin-benefit .t,.auth-shell .signin-pane .signin-benefit .t{font-size:14px;margin-bottom:3px}
+  .signin-modal .signin-pane .signin-benefit .d,.auth-shell .signin-pane .signin-benefit .d{font-size:13px;line-height:1.5}
+  .signin-modal .signin-pane .modal-foot,.auth-shell .signin-pane .modal-foot{font-size:12px;flex-wrap:wrap}
+  .auth-success .auth-privacy{margin-top:20px;font-size:13px}
+  .auth-account-menu{max-width:calc(100vw - 32px)}
+  .auth-account-menu button,.auth-account-menu a{min-height:44px;display:flex;align-items:center;font-size:14px}
+  .auth-menu-identity{font-size:12px}
+  .ui-update-notice{flex-wrap:wrap;font-size:13px}
+  .ui-update-notice>div{flex:1 1 160px;min-width:0}
+  .ui-update-notice span{font-size:12px}
+  .ui-update-notice button{min-height:44px;font-size:13px}
+  .ui-update-notice .ui-update-dismiss{min-width:44px;min-height:44px}
+}
