@@ -127,6 +127,18 @@ func TestInterruptedStreamReportsPartialUsage(t *testing.T) {
 	}
 }
 
+func TestDefaultStreamingResponseCannotAppearComplete(t *testing.T) {
+	_, proxy, store, _ := testSetup(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		io.WriteString(w, "{\"model\":\"local\",\"response\":\"private\",\"done\":false}\n")
+	}))
+	proxy.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("POST", "/api/generate", strings.NewReader(`{"model":"local"}`)))
+	tr := store.Recent(1, TraceFilter{})[0]
+	if !tr.Stream || tr.CompletionState != "partial" || tr.UsageCoverage != "partial" {
+		t.Fatalf("default stream laundered as complete: %+v", tr)
+	}
+}
+
 func TestAnthropicUsageSnapshotsAreNotDoubleCounted(t *testing.T) {
 	var observer streamMetadata
 	observer.write([]byte("data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg\",\"model\":\"claude\",\"usage\":{\"input_tokens\":11,\"output_tokens\":0}}}\n\n" +

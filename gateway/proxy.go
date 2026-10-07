@@ -174,6 +174,11 @@ func (h *ProxyHandler) modifyResponse(res *http.Response) error {
 		return nil
 	}
 	ctx.statusCode = res.StatusCode
+	contentType := strings.ToLower(res.Header.Get("Content-Type"))
+	// Some providers stream by default when the request omits its flag.
+	if strings.HasPrefix(contentType, "text/event-stream") || strings.HasPrefix(contentType, "application/x-ndjson") {
+		ctx.stream = true
+	}
 	for name := range res.Header {
 		lower := strings.ToLower(name)
 		if lower == "request-id" || lower == "x-request-id" || lower == "x-requestid" {
