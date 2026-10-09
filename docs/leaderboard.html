@@ -1842,6 +1842,7 @@ async function signOut({ switchAccount = false } = {}) {
 }
 function renderAuthSlot() {
   const slot = $("#auth-slot"); if (!slot) return;
+  const hadFocus = slot.contains(document.activeElement);
   if (state.googleSession && state.googleConfig === "ready" && !state.webSessions && !isGoogleSessionValid()) { setGoogleSession(null); return; }
   const s = isGoogleSessionValid() ? state.googleSession : null;
   if (s) {
@@ -1852,11 +1853,13 @@ function renderAuthSlot() {
     menu.querySelector('[data-account-switch]').onclick = () => signOut({ switchAccount: true });
     menu.querySelector('[data-account-signout]').onclick = () => signOut();
     menu.onkeydown = e => { if (e.key === "Escape") { menu.hidden = true; chip.setAttribute("aria-expanded", "false"); chip.focus(); } };
+    if (hadFocus) chip.focus({ preventScroll: true });
     return;
   }
   const checking = state.webSessions && state.authStatus === "checking";
   slot.innerHTML = `<button class="pill primary" id="signin-btn">${checking ? '<span class="auth-mini-orbit" aria-hidden="true"></span>' : ""}Sign in</button>`;
   $("#signin-btn").onclick = () => openSignInModal();
+  if (hadFocus) $("#signin-btn").focus({ preventScroll: true });
 }
 document.addEventListener("click", e => { const menu = $("#account-menu"); if (menu && !menu.hidden && !e.target.closest(".auth-account")) { menu.hidden = true; $("#user-chip")?.setAttribute("aria-expanded", "false"); } });
 window.addEventListener("storage", e => {
@@ -5911,7 +5914,18 @@ function closeModal({ preservePending = false } = {}) {
 /// focus into newly opened modals, traps Tab inside them, and returns focus
 /// to the opener on close. Covers every present and future modal because all
 /// of them render into #modal-backdrop.
-let modalOpener = null, lastModalNode = null;
+let modalOpener = null, modalOpenerFromAuth = false, lastModalNode = null;
+function restoreModalFocus() {
+  // Hydration can replace the opener. Resolve its live equivalent, then the
+  // account control for an auth opener, with the main landmark as a fallback.
+  const targets = [modalOpener, modalOpener?.id && document.getElementById(modalOpener.id),
+    modalOpenerFromAuth && $("#auth-slot button:not(:disabled)"), $("#view")];
+  for (const target of targets) {
+    if (!target?.isConnected || target.disabled || target.closest("[inert]") || !target.getClientRects().length
+      || !target.matches("button, input, select, textarea, a[href], [tabindex]")) continue;
+    try { target.focus({ preventScroll: true }); if (document.activeElement === target) break; } catch (_) {}
+  }
+}
 function initModalManager() {
   const backdrop = $("#modal-backdrop");
   new MutationObserver(() => {
@@ -5919,13 +5933,16 @@ function initModalManager() {
     document.body.style.overflow = node ? "hidden" : "";
     if (node && node !== lastModalNode) {
       lastModalNode = node;
-      if (!modalOpener || !backdrop.contains(modalOpener)) modalOpener = document.activeElement;
+      if (!modalOpener || !backdrop.contains(modalOpener)) {
+        modalOpener = document.activeElement;
+        modalOpenerFromAuth = Boolean($("#auth-slot")?.contains(modalOpener));
+      }
       const target = backdrop.querySelector(".modal .x") || backdrop.querySelector(".modal-foot .pill.primary:not(:disabled), .modal button:not(:disabled), .modal input:not(:disabled), .modal [tabindex]");
       if (target) { try { target.focus({ preventScroll: true }); } catch (_) {} }
     } else if (!node) {
       lastModalNode = null;
-      if (modalOpener && modalOpener.isConnected) { try { modalOpener.focus({ preventScroll: true }); } catch (_) {} }
-      modalOpener = null;
+      if (modalOpener) restoreModalFocus();
+      modalOpener = null; modalOpenerFromAuth = false;
     }
     window.TokenHorizonUIUpdates?.mount();
   }).observe(backdrop, { childList: true, attributes: true, attributeFilter: ["class"] });
