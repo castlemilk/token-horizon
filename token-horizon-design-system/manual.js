@@ -1,6 +1,7 @@
 "use strict";
 // Local, deterministic component specimens. No network, account or analytics calls.
 const icons = {
+  "sign-in": "<path d=\"M14 4h6v16h-6M4 12h11m-4-4 4 4-4 4\"/>",
   "usage": "<path d=\"M3 20h18M6 16v-4m6 4V5m6 11V8\"/>",
   "models": "<path d=\"m3 8 9-5 9 5-9 5-9-5Zm0 5 9 5 9-5M3 18l9 5 9-5\" transform=\"translate(0 -1)\"/>",
   "leaderboard": "<path d=\"M3 20V11h6v9m0 0V4h6v16m0 0v-6h6v6M2 20h20\"/>",
@@ -15,6 +16,9 @@ const icons = {
   "engine": "<rect x=\"5\" y=\"5\" width=\"14\" height=\"14\" rx=\"2\"/><path d=\"M9 2v3m6-3v3M9 19v3m6-3v3M2 9h3m-3 6h3m14-6h3m-3 6h3M8 12h8\"/><path d=\"M9 10a3 3 0 0 1 6 0m-6 4a3 3 0 0 0 6 0\"/>"
 };
 const iconGrid = document.querySelector("#icon-grid");
+for (const name of ["crew", "invite", "about", "share", "close"]) {
+  icons[name] = TokenHorizonActions.icon(name).replace(/^<svg[^>]*>|<\/svg>$/g, "");
+}
 for (const [name, paths] of Object.entries(icons)) {
   const link = document.createElement("a");
   link.href = "assets/icons/" + name + ".svg";
@@ -24,6 +28,18 @@ for (const [name, paths] of Object.entries(icons)) {
   link.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="square" stroke-linejoin="round" aria-hidden="true">' + paths + '</svg><span>' + name[0].toUpperCase() + name.slice(1) + '</span>';
   iconGrid.append(link);
 }
+const actionDemo = document.querySelector("#icon-action-demo");
+actionDemo.innerHTML = [
+  ["rankings", "Rankings", "Compare all-time token totals from published team profiles."],
+  ["analytics", "Analytics", "Explore team comparisons, daily usage and the all-time provider mix."],
+  ["crew", "Your crew", "Manage the membership your account belongs to. This is separate from public usage."],
+  ["invite", "Invite friends", "Create an invitation for people to join your crew after signing in."],
+  ["about", "About teams", "Learn how members choose what usage to publish."]
+].map(([icon, label, description]) => TokenHorizonActions.render({ icon, label, description })).join("");
+actionDemo.addEventListener("click", event => {
+  const action = event.target.closest("[data-icon-action]");
+  if (action) document.querySelector("#icon-action-status").textContent = action.getAttribute("aria-label") + " selected. This is a local component example.";
+});
 const themeButton = document.querySelector("#theme");
 themeButton.addEventListener("click", () => {
   const dark = document.body.dataset.theme !== "dark";

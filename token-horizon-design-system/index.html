@@ -8,8 +8,10 @@
   <title>Token Horizon — Design system</title>
   <link rel="icon" href="assets/mark-24.svg" type="image/svg+xml">
   <link rel="preload" href="fonts/HubotSansVF-Regular.ttf" as="font" type="font/ttf" crossorigin>
+  <link rel="stylesheet" href="components/icon-actions.css">
   <link rel="stylesheet" href="tokens.css">
   <link rel="stylesheet" href="manual.css">
+  <script src="components/icon-actions.js" defer></script>
   <script src="manual.js" defer></script>
 </head>
 <body data-th-system data-theme="light">
@@ -83,6 +85,7 @@
     </section>
     <section id="components" class="section">
       <div class="section-heading"><p class="th-label">03 / Components</p><h2 class="th-display">Useful detail. Clear decisions.</h2></div>
+      <div class="section-note"><div><h3>Purpose, scope and a real next step.</h3><p>Every view identifies its task and whose data is shown. Loading names the actual request; empty follows a successful check; errors offer recovery while preserving valid data. Personal account views never substitute a community profile or aggregate.</p><p>Workspace reviews published snapshots. Sign-in finds owned profiles; one opens directly and several require a choice. Public previews say whose profile they show. Model costs uses the selected profile; Report sharing requires verified ownership and supported actions. Feature promotion, invitations and controls that only pretend to change permissions do not belong in these views.</p></div><a href="DESIGN_SYSTEM.md#component-and-data-behavior">Read purpose and state guidance</a></div>
       <div class="component-grid">
         <article class="sample-card">
           <div class="card-heading"><h3>Usage overview</h3><span class="badge">Sample data</span></div>
@@ -104,6 +107,14 @@
           <div class="state-list"><p><span class="state-dot positive"></span><strong>Current</strong><span>Updated just now</span></p><p><span class="state-dot caution"></span><strong>Stale</strong><span>Last seen 12 min ago</span></p><p><span class="state-dot negative"></span><strong>Unavailable</strong><span>Reconnect to continue</span></p></div>
         </article>
       </div>
+      <section id="icon-actions" class="icon-action-specimen" aria-labelledby="icon-actions-title">
+        <h3 id="icon-actions-title">Actions without clutter.</h3>
+        <p>Hover or focus an icon to read its label and details. On touch, tap to act or hold to read the help. These examples stay in this manual.</p>
+        <div id="icon-action-demo" role="group" aria-label="Sample team actions"></div>
+        <p id="icon-action-status" role="status">Choose an action to preview its purpose.</p>
+        <a href="DESIGN_SYSTEM.md#shared-web-icon-actions">Read the interaction guidance</a>
+        <a href="components/icon-actions.js">Shared component source</a>
+      </section>
       <div class="section-note"><p>Six-pixel controls. Twelve-pixel panels. One-pixel separators. Reserve glass and elevated shadows for transient surfaces.</p><a href="tokens.json" download>Download JSON tokens ↗</a></div>
     </section>
     <section id="motion" class="section">

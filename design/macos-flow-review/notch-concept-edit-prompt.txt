@@ -1,0 +1,6 @@
+Use case: precise-object-edit
+Asset type: Token Horizon macOS UI concept board.
+Primary request: Remove only the grey two-line slogan "A smaller window for a bigger perspective." in the top-right corner of the board. Replace that text area with the same plain off-white board background.
+Input images: Image 1 is the edit target: an existing high fidelity Token Horizon notch concept board.
+Constraints: Keep every other pixel and all interface layouts, typography, labels, camera housing, controls, metrics, wallpaper, board title, subtitle, collapsed inset, Settings inset, and concept-only footer unchanged. Do not add new text or change any interface element. This is only the removal of the unrequested slogan outside the desktop mockup.
+Avoid: Any redesign, new copy, cropped image, new watermark, changed shadows or altered UI.

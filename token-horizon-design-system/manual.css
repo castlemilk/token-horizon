@@ -144,3 +144,12 @@ input[type="text"]{width:100%;min-height:44px;padding:10px 12px;border:1px solid
 @media(max-width:720px){.hero:before{background:linear-gradient(90deg,#070a08ed,#070a08b8)}.hero h1{font-size:clamp(48px,16vw,64px)}.type-sample{font-size:clamp(36px,12vw,48px)}}
 @media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}*,*::before,*::after{animation:none!important;transition:none!important}}
 @media(forced-colors:active){.bar i,.bar b,.notch-bars span,.state-dot,.key{background:CanvasText}.button.primary{border:1px solid ButtonText}.hero{background:Canvas;color:CanvasText}.hero-description,.hero-footer{color:CanvasText}.hero:before{display:none}}
+
+/* Bind the working web component to the kit's scoped semantic palette. */
+body[data-th-system]{--th-bg:var(--th-canvas);--th-text:var(--th-ink);--th-accent:var(--th-action);--th-accent-ink:var(--th-on-action);--th-rule-strong:var(--th-control-border);--th-hover:var(--th-selected);--th-shadow:#070a0826}
+.icon-action-specimen{padding-top:32px;margin-top:32px;border-top:1px solid var(--th-rule)}
+.icon-action-specimen>p{max-width:62ch;color:var(--th-muted);font-size:14px}
+#icon-action-demo{display:flex;flex-wrap:wrap;gap:8px;margin-block:18px}
+.icon-action-specimen>a{display:inline-block;margin:8px 20px 0 0;text-underline-offset:4px;font-size:14px}
+/* Keyboard focus reaches the specimen without racing a smooth page scroll. */
+html:focus-within{scroll-behavior:auto}

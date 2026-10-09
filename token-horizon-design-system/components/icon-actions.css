@@ -1,0 +1,28 @@
+/* Shared icon action pattern. Help is a transient surface; the action remains native. */
+.th-icon-action {
+  position:relative; display:inline-flex; align-items:center; justify-content:center;
+  flex:none; width:44px; height:44px; min-width:44px; min-height:44px; padding:0;
+  border:1px solid var(--th-rule-strong); border-radius:6px;
+  background:var(--th-surface); color:var(--th-text); cursor:pointer;
+  text-decoration:none; list-style:none; touch-action:manipulation;
+  transition:background .14s ease-out, color .14s ease-out, border-color .14s ease-out;
+}
+.th-icon-action::-webkit-details-marker { display:none; }
+.th-icon-action>svg { width:24px; height:24px; flex:none; }
+.th-icon-action:hover { background:var(--th-hover); border-color:var(--th-accent); }
+.th-icon-action[aria-expanded=true], details[open]>.th-icon-action { background:var(--th-selected); color:var(--th-accent); border-color:var(--th-accent); }
+.th-icon-action:focus-visible { outline:2px solid var(--th-accent); outline-offset:3px; }
+.th-action-name { position:absolute!important; width:1px!important; height:1px!important; padding:0!important; margin:-1px!important; overflow:hidden!important; clip:rect(0,0,0,0)!important; clip-path:inset(50%)!important; white-space:nowrap!important; border:0!important; }
+.th-action-tooltip[hidden] { display:none!important; }
+body>.th-action-tooltip {
+  position:fixed; z-index:2100; display:block; box-sizing:border-box;
+  width:max-content; max-width:min(272px,calc(100vw - 24px)); padding:12px 14px;
+  border:0; border-radius:8px; background:var(--th-text); color:var(--th-bg);
+  box-shadow:0 6px 22px var(--th-shadow); text-align:left; white-space:normal;
+  font:13px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+  overflow-wrap:anywhere; cursor:default;
+}
+body>.th-action-tooltip>strong { display:block; font-size:14px; font-weight:650; margin:0 0 3px; color:inherit; }
+body>.th-action-tooltip>span { display:block; color:inherit; }
+@media(prefers-reduced-motion:reduce) { .th-icon-action { transition:none; } }
+

@@ -1,6 +1,6 @@
 # Token Horizon — Quiet precision
 
-Version 1.0 · 27 September 2026
+Version 1.0 · 27 September 2026 · Web icon-action guidance reviewed 2 October 2026
 
 Token Horizon makes a complex AI workspace legible. Its identity should feel like a precise instrument: confident numbers, clear boundaries, a controlled light signal, and space to think. The event horizon gives this system its own visual signature.
 
@@ -102,13 +102,13 @@ Controls have a 44px minimum interaction area in this system, including icon-onl
 
 ## Iconography
 
-The kit includes twelve original SVGs: Usage, Models, Leaderboard, Limits, Traces, Sessions, Widgets, Notch, Connect, Privacy, Settings and Engine.
+The kit includes seventeen original SVGs: Usage, Models, Leaderboard, Limits, Traces, Sessions, Widgets, Notch, Connect, Privacy, Settings, Engine, Crew, Invite, About, Share and Close.
 
 - 24 × 24 viewBox; 1.5-unit stroke; square caps and softened joins.
 - Work within the 2–22 coordinate region, with small optical allowances.
 - Prefer one recognizable silhouette and at most two internal details.
 - At 16px, simplify detail instead of shrinking the full grid blindly.
-- Use an adjacent visible label when the meaning may be unfamiliar.
+- Use an adjacent visible label when the meaning may be unfamiliar. The compact Teams action row uses the shared named-and-described icon-action pattern below; mode, range and filter choices retain visible text.
 - In labeled controls, inline SVGs are decorative: `aria-hidden="true"`.
 - Icon-only buttons require a meaningful accessible name and focus state.
 - A selected icon uses the semantic action color and a separate selection indicator.
@@ -117,11 +117,43 @@ SVGs use `currentColor` and can be inlined or used through a sprite. An SVG load
 
 ## Component and data behavior
 
+**Purpose and scope:** every view states its task, whose data it shows and its supported next action. Distinguish verified-owned profiles, explicit public previews and community aggregates. Personal/account destinations never fall back to the first community row or community totals.
+
+**Meaningful states:** name the actual loading step and identify request failures. Declare empty only after a successful request; offer the relevant setup, publication or recovery action. Preserve valid snapshots during refresh failures. Unknown or pending values are unavailable, not zero or sample measurements. Controls must perform real supported actions; local UI preferences must not masquerade as server-enforced permissions.
+
+**Workspace and account views:** Workspace analyzes published snapshots, without reading live/private device telemetry. Signed-out visitors get Sign in; sign-in discovers verified-owned profiles without publishing or claiming them. A verified empty account gets publication/account-linking guidance; one profile opens directly and multiple profiles require intentional selection. Public previews identify their handle and scope. Remove promotional feature cards and invitations from Workspace analysis. Model costs opens its Models & costs section for the selected profile; Report sharing requires verified-owned choice before private reads. Do not render fake local Default Sharing Rules or unsupported Comment/Edit permission matrices.
+
 **Buttons:** a single dominant action per local task; an outlined or text secondary action; a visible focus outline; explicit disabled and pending states. Never make permission approval the only obvious way out.
 
 **Inputs:** persistent label above, helper text below, error tied to the field with `aria-describedby`. Error messages describe the recovery action. Do not use placeholder text as the sole label.
 
 **Navigation:** the active destination has both a shape/rule and color. Separate navigation destinations from filter controls. Preserve the actual route and information architecture of each product surface.
+
+**Sign-in entry:** landing, documentation and blog headers keep a persistent “Sign in” link outside collapsed menus, with a minimum 44px interaction height. Pair its visible text with the decorative original [Sign in SVG](assets/icons/sign-in.svg) following the 24-unit, 1.5-stroke, square-cap system. The Worker destination is canonical `/login`; static mirrors use a relative login alias that preserves their deployment base. The SPA's authenticated account menu remains authoritative. Connect and OAuth consent use a same-page link to the embedded authentication section instead, retaining the authorization request and consent flow.
+
+### Shared web icon actions
+
+Compact Teams destination and utility actions use `.th-icon-action` through the shared `TokenHorizonActions` renderer in [production icon-actions.js](../docs/icon-actions.js), styled by [production horizon-system.css](../docs/horizon-system.css). The reviewed [web guide](../DESIGN.md) and [Teams surface brief](../.impeccable/surfaces/docs-leaderboard-html.md) specify the surface application. Use a minimum 44×44px interaction area with a 24-unit, 1.5-stroke, square-cap, round-join SVG in `currentColor`; preserve a visible focus boundary and semantic theme roles.
+
+| Meaning | Original construction | Description must explain |
+| --- | --- | --- |
+| Rankings | [Leaderboard podium](assets/icons/leaderboard.svg) | All-time standings from published profiles. |
+| Analytics | [Usage bars](assets/icons/usage.svg) | Comparisons/daily history and the independent all-time provider scope. |
+| Your crew | Authored two-person silhouette | The current account's private crew controls, distinct from public standings and analytics. |
+| Create / Invite | Authored person-plus | The capability supported for the current account and any required sign-in. |
+| About | Authored circled information mark | The introduction's current show/hide action. |
+| Share | Authored export/share arrow | Public profile sharing, distinguished from a membership invitation. |
+| Close | Authored crossed strokes | The specific surface being closed. |
+
+SVGs are decorative. The native link or button owns a concise `aria-label` and an `aria-describedby` reference to persistent detailed text, available independently of the visual tooltip. Real destination links retain actual routes, anchors, query state, modified clicks and copying across Worker and static-mirror deployments. Operations remain buttons; disclosures carry `aria-expanded` and `aria-controls`. Tab visits each action normally. Radio/mode/filter controls retain their visible text and existing keyboard behavior.
+
+One shared, viewport-clamped tooltip portal shows the action name and detailed text on hover/focus. Use readable body type and an opaque semantic surface. Content stays visible while the trigger or tooltip is hovered/focused and can be dismissed with Escape without moving focus. Close on outside activation, navigation and trigger removal. Tooltip content is text-only; interactive content requires a different disclosure pattern.
+
+Touch taps perform the actual action immediately. A stationary 450ms press-and-hold reveals the same help and suppresses only that hold's activation; dragging or pointer cancellation cancels the hold while native scrolling remains available. The tooltip remains readable until outside activation or another dismissal, and the next normal tap acts immediately. Do not require a first tap to reveal help before an action can work. Under reduced motion, show and hide without movement. Native controls continue to work when tooltip JavaScript is unavailable.
+
+Verify focus, Escape, hover into content, viewport placement, first-tap activation, held-touch help, cancelled holds, dynamic account names/descriptions and native links. These are implementation acceptance criteria; an SVG or raster concept alone does not establish accessibility.
+
+### Data and feedback
 
 **Tables:** stable numeric columns; explicit units; sticky headings only when they help; sorting announced through semantic state. A missing value is an em dash with an explanation, never zero. Keep search, row actions and model deep links keyboard accessible.
 

@@ -1,0 +1,91 @@
+diff --git a/docs/leaderboard.html b/docs/leaderboard.html
+--- a/docs/leaderboard.html
++++ b/docs/leaderboard.html
+@@ -2436,7 +2436,7 @@
+   }
+   if (["leaderboard", "models", "teams", "leagues"].includes(view)) schema = { "@context": "https://schema.org", "@type": "CollectionPage", name: title + " — Token Horizon", description, url: origin + path,
+     isPartOf: { "@type": "WebSite", name: "Token Horizon", url: origin + "/" } };
+-  if (new URLSearchParams(location.search).has("signin")) { noindex = true; schema = null; }
++  if (["signin", "claim"].some(key => new URLSearchParams(location.search).has(key))) { noindex = true; schema = null; }
+   // A report's server preview already applies its access and anonymity
+   // controls. Retain it only on that exact report's canonical route.
+   if (view === "shared" && document.querySelector('link[rel="canonical"]')?.href === origin + path) {
+@@ -5584,7 +5584,8 @@
+   const resume = saved.resume;
+   if (!resume || !["share", "group", "claim", "invite", "team", "workspace", "shared"].includes(resume.type)) return;
+   await render();
+-  const handle = typeof resume.handle === "string" && /^[a-zA-Z0-9_.-]{1,80}$/.test(resume.handle) ? resume.handle : null;
++  const handle = resume.type === "claim" ? normalizedClaimHandle(resume.handle)
++    : typeof resume.handle === "string" && /^[a-zA-Z0-9_.-]{1,80}$/.test(resume.handle) ? resume.handle : null;
+   if (resume.type === "share" && handle) openShareModal(handle);
+   if (resume.type === "group") openGroupModal(handle);
+   if (resume.type === "claim" && handle) openClaimModal(handle);
+@@ -5956,15 +5957,38 @@
+ /* ============================================================
+    CLAIM & PUBLISH
+    ============================================================ */
++function normalizedClaimHandle(value) {
++  if (typeof value !== "string") return null;
++  const handle = value.trim().replace(/^@/, "").trim();
++  return handle && handle.length <= 1000 && !/[\u0000-\u001f\u007f]/.test(handle) ? handle : null;
++}
++function claimHandleFromURL() {
++  const params = new URLSearchParams(location.search);
++  if (params.get("claim") !== "1") return null;
++  return normalizedClaimHandle(params.get("user") || state.currentHandle);
++}
++async function openInitialClaim(authReady) {
++  const handle = claimHandleFromURL();
++  if (!handle) return;
++  // Hydration may close account-specific dialogs. Restore OAuth continuation
++  // first, then open only if the visitor is still on the requested claim route.
++  await authReady;
++  if (claimHandleFromURL() !== handle || $("#claim-submit")) return;
++  openClaimModal(handle);
++}
+ function openClaimModal(handle) {
+-  if (!legacyGoogleAuthAllowed() && !isGoogleSessionValid()) { openSignInModal({ action: `Claiming @${handle}`, onSuccess: () => openClaimModal(handle) }); return; }
++  handle = normalizedClaimHandle(handle);
++  if (!handle) { toast("Choose a valid published handle to claim.", true); return; }
++  const signInOptions = { action: `Claiming @${handle}`, onSuccess: () => openClaimModal(handle), resume: { type: "claim", handle } };
++  if (!legacyGoogleAuthAllowed() && !isGoogleSessionValid()) { openSignInModal(signInOptions); return; }
+   const backdrop = $("#modal-backdrop");
+   backdrop.innerHTML = `<div class="modal" style="max-width:480px">
+     <div class="modal-head"><div><h2>Claim @${esc(handle)}</h2><p>Connect this profile to your verified account.</p></div><button class="x" data-close aria-label="Close dialog">×</button></div>
+     <div class="modal-body">
+       <div class="notice">${legacyGoogleAuthAllowed() ? "Enter your email and the claim token issued when the profile first published." : "Use the claim token issued when this profile was first published, if one is required."}</div>
++      <p class="sub" style="margin:10px 0">Use Sync now in the desktop app before claiming a new handle. After claiming, desktop publishing requires an authorized app write token in Settings → Sharing &amp; teams → Advanced connection.</p>
+       <div style="display:flex;flex-direction:column;gap:10px;margin-top:14px;align-items:flex-start">
+-        <input id="claim-token" placeholder="Claim token (optional)" style="width:100%;background:var(--panel);border:1px solid var(--line);border-radius:9px;padding:10px 12px;color:var(--text)"/>
++        <input id="claim-token" type="password" autocomplete="off" placeholder="Claim token (optional)" style="width:100%;background:var(--panel);border:1px solid var(--line);border-radius:9px;padding:10px 12px;color:var(--text)"/>
+         ${legacyGoogleAuthAllowed()
+           ? `<input id="claim-email" placeholder="Email" value="${esc(state.googleSession?.email || "")}" style="width:100%;background:var(--panel);border:1px solid var(--line);border-radius:9px;padding:10px 12px;color:var(--text)"/>` : ""}
+       </div>
+@@ -5979,7 +6003,7 @@
+     const emailInput = $("#claim-email");
+     const email = emailInput ? emailInput.value.trim() : (state.googleSession?.email || "");
+     if (!legacyGoogleAuthAllowed() && !isGoogleSessionValid()) {
+-      openSignInModal({ action: `Claiming @${handle}`, onSuccess: () => openClaimModal(handle) });
++      openSignInModal(signInOptions);
+       return;
+     }
+     if (legacyGoogleAuthAllowed() && !email.includes("@")) { toast("Enter a valid email", true); return; }
+@@ -6080,7 +6104,7 @@
+     brandLogo.addEventListener("mouseleave", () => NAVHOLE.pause());
+   }
+   // Optional settings and visuals never sit on the content path.
+-  loadAuthConfig();
++  const authReady = loadAuthConfig();
+   CHARTS_READY.then(ready => { if (ready) enhanceOptionalVisuals(); });
+   DICEBEAR_READY.then(ready => { if (ready) enhanceOptionalVisuals(); });
+   FUSE_READY.then(ready => {
+@@ -6101,7 +6125,8 @@
+   const shareParam = params.get("share") || (sharePath ? sharePath[1] : null);
+   if (shareParam) { renderSharedReport(shareParam); return; }
+   render();
+-  if (params.get("signin")) openSignInModal();
++  if (params.get("claim") === "1") openInitialClaim(authReady);
++  else if (params.get("signin")) openSignInModal();
+   setInterval(async () => {
+     // Idle tick: refresh in the background and only rebuild the view when the
+     // payload fingerprint actually changed (no chart remounts on no-op ticks).

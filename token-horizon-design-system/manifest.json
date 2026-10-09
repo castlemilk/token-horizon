@@ -1,6 +1,6 @@
 {
-  "name": "Token Horizon — Quiet precision",
-  "version": "1.0.0",
+  "name": "Token Horizon \u2014 Quiet precision",
+  "version": "1.1.0",
   "date": "2026-09-27",
   "generationMode": "built-in imagegen",
   "images": [
@@ -63,7 +63,7 @@
   ],
   "vectors": {
     "authorship": "original code-authored SVGs, separate from raster concepts",
-    "icons": 12,
+    "icons": 18,
     "opticalMarks": 3
   },
   "fonts": {
@@ -82,13 +82,13 @@
   "files": [
     {
       "path": "DESIGN_SYSTEM.md",
-      "bytes": 16027,
-      "sha256": "266b0ac556ad6fd1eff39163096ec7a2ab35b31edf08067dd1302b3bf8404710"
+      "bytes": 21643,
+      "sha256": "46f200cd9b6ea7209362fb1d8312b37f3228c86bee35e6c6096779375752f43e"
     },
     {
       "path": "README.md",
-      "bytes": 3342,
-      "sha256": "17daeb660e92859c42b87000ca09aba07c8c0edfde1ca5a89a944480239bf207"
+      "bytes": 5141,
+      "sha256": "59dfc26f9a62a072f5fd82aec1e043d5aae30ca507ab52e84ab4beb15b7b5035"
     },
     {
       "path": "VERIFICATION.md",
@@ -101,14 +101,34 @@
       "sha256": "7e08bc7dd52bd59e99ff7e65ad8aed769017393bd5f15bf76e1859c07268b1c8"
     },
     {
+      "path": "assets/icons/about.svg",
+      "bytes": 269,
+      "sha256": "e856ad9403092d3d7ee7080a84e784ab1fe5a0c684e4015e2ccd7a4abe895f23"
+    },
+    {
+      "path": "assets/icons/close.svg",
+      "bytes": 243,
+      "sha256": "551ad6c2c0023cfcf857bdc468f8db0babfba0220d3323f9ebcc51f3350a7396"
+    },
+    {
       "path": "assets/icons/connect.svg",
       "bytes": 289,
       "sha256": "7b36f8209456532bdf0e0c80464048f4135dcfc5b45f657469087e796ccfff21"
     },
     {
+      "path": "assets/icons/crew.svg",
+      "bytes": 315,
+      "sha256": "7196a73c8ac7b6944fbb1d42f8f566d5f4046ecf509b6646d3f6fc301308f3c2"
+    },
+    {
       "path": "assets/icons/engine.svg",
       "bytes": 382,
       "sha256": "0f88e93195f959168b3b95d56a3a4f98274ceefc8e1319ce17461843cfec8cfe"
+    },
+    {
+      "path": "assets/icons/invite.svg",
+      "bytes": 292,
+      "sha256": "13169f8cd6eda26af6b508128a4e8416042102b417a79f32b4a27f05ed976fe3"
     },
     {
       "path": "assets/icons/leaderboard.svg",
@@ -146,6 +166,16 @@
       "sha256": "85bb70686711e1a98f3de849d3c4bd172a6733f377cbb9c5a23d1ed79a7436ec"
     },
     {
+      "path": "assets/icons/share.svg",
+      "bytes": 257,
+      "sha256": "46b8f739fcc91e29d720d0127e2e094eba85f5b0e62a33bc6ed7d88b5acb5b49"
+    },
+    {
+      "path": "assets/icons/sign-in.svg",
+      "bytes": 259,
+      "sha256": "281b0de21acfeb53346524a5b01b81e59a6aeda78231b836de5d396a6151049a"
+    },
+    {
       "path": "assets/icons/traces.svg",
       "bytes": 310,
       "sha256": "ee3e72f3d77b1e67f4a2aa5a9337a3edd562003eff8d630f95afe447bd1f0b01"
@@ -176,6 +206,16 @@
       "sha256": "b515daa8d75bd0fc7fcadce87ec7029a82ab94bc7696f92b661549be7f307d2a"
     },
     {
+      "path": "components/icon-actions.css",
+      "bytes": 2052,
+      "sha256": "eecac11c1e5e6de9150a3e2166abef33a198f9a1e078340d6c7c37c8e5024be5"
+    },
+    {
+      "path": "components/icon-actions.js",
+      "bytes": 8314,
+      "sha256": "c016e5ebdd7ec9b267cb582766dad913cacaf2fc41407da679a20acf3d436a36"
+    },
+    {
       "path": "concepts/01-direction.png",
       "bytes": 1667072,
       "sha256": "0b45924f5e05c4f4a4f761491fb46a8f9b7e197fd92afb888d09910fb9388c22"
@@ -194,6 +234,11 @@
       "path": "concepts/05-connection.png",
       "bytes": 2019653,
       "sha256": "88088098fa543af40e598c23d1c7916312ea043898c2c832b82f9a0e05c262b5"
+    },
+    {
+      "path": "concepts/06-workspace.png",
+      "bytes": 1304035,
+      "sha256": "ad29a20cee7808cf42bee83a41cbb9799f477c4d273f6699c221d9cbcb621acd"
     },
     {
       "path": "contrast.json",
@@ -222,18 +267,18 @@
     },
     {
       "path": "index.html",
-      "bytes": 13391,
-      "sha256": "05cce3dc86da7e08dacacb5a8e27e38682a655a794897314806c4346ab8a9cfd"
+      "bytes": 15022,
+      "sha256": "69751fbbfb51586c4622d835a836c7565f347af246ab082f4fcfc28593726928"
     },
     {
       "path": "manual.css",
-      "bytes": 14219,
-      "sha256": "bab025edf52b17fbc166978eb62ac27f65bf4a44836fe96f30d959973e1a328d"
+      "bytes": 14993,
+      "sha256": "3b4a5c4c65065ac8e97d6f6bf3b4721a8711edf23264abacfe1c1682ea35d55d"
     },
     {
       "path": "manual.js",
-      "bytes": 7216,
-      "sha256": "bdbc11b97ce7d49b94f4c52bb4418681274013fa1bf380868bd80761a8938320"
+      "bytes": 8388,
+      "sha256": "58f55c08677d3c725736588c130fbb1333230e557f2d6c023dff75603c97e402"
     },
     {
       "path": "previews/dark-motion.png",
@@ -281,6 +326,31 @@
       "sha256": "755140262cda59f9532f146ba206294797850018b1234aaf09df3749cf5ab6de"
     },
     {
+      "path": "prompts/06-workspace.txt",
+      "bytes": 2697,
+      "sha256": "6ceae3a49bfe77c019a8b58174dbdcf3d28d2430dd2fe42ebbb2a8ab47583548"
+    },
+    {
+      "path": "prompts/explorations/06-titanium-night.txt",
+      "bytes": 1958,
+      "sha256": "44c4259f2c9c321f794f568500b7346940f05e0db71aa840a88c136be5b75eff"
+    },
+    {
+      "path": "prompts/explorations/07-mineral-editorial.txt",
+      "bytes": 1874,
+      "sha256": "4910d9c24cedc1c30139064def41a03ae30d2a4f4bb81a4ab78d2af5edc333ba"
+    },
+    {
+      "path": "prompts/explorations/08-signal-grid.txt",
+      "bytes": 1878,
+      "sha256": "725bbf615a540edf96bb3f66814080e531ff5336502fa1b6cc37f00d83468f7f"
+    },
+    {
+      "path": "prompts/explorations/09-material-study.txt",
+      "bytes": 1674,
+      "sha256": "e578fc53cb9c1dff0bda3256f5fafb3fd56ba38751e60adc46a6e2bab06c99f9"
+    },
+    {
       "path": "tokens.css",
       "bytes": 3467,
       "sha256": "4781d46162dc8d60f7e0549370b02e5317f338f37ccab46294be9503f53f9f49"
@@ -289,16 +359,14 @@
       "path": "tokens.json",
       "bytes": 2694,
       "sha256": "f8c8533cfe0673773008b443fb5648e4e150c2125a7c6ae4cf0c596e29a3dffb"
-    },
-    {
-      "path": "concepts/06-workspace.png",
-      "bytes": 1304035,
-      "sha256": "ad29a20cee7808cf42bee83a41cbb9799f477c4d273f6699c221d9cbcb621acd"
-    },
-    {
-      "path": "prompts/06-workspace.txt",
-      "bytes": 2697,
-      "sha256": "6ceae3a49bfe77c019a8b58174dbdcf3d28d2430dd2fe42ebbb2a8ab47583548"
     }
-  ]
+  ],
+  "updatedAt": "2026-10-02",
+  "webComponents": {
+    "source": [
+      "docs/icon-actions.js",
+      "docs/horizon-system.css"
+    ],
+    "sync": "python3 scripts/package-design-system.py"
+  }
 }
