@@ -1,6 +1,7 @@
 import { boundedText } from './request-body.js';
-import { identityOwnerId } from './browser-auth.js';
+import { identityOwnerId, identityOwns } from './browser-auth.js';
 import { validatedRasterDataUri } from './og-avatar.js';
+import { updateProfileEntries } from './leaderboard-storage.js';
 
 // Membership belongs to an immutable provider subject, never to a public label or email.
 // Independent account keys make simultaneous friends joining a team additive.
@@ -270,6 +271,9 @@ export async function handleTeamRequest(request, env, { parseGoogleAuth, jsonRes
     }
     const auth = await parseGoogleAuth(request, body, env);
     if (!auth) throw new TeamError(401, 'auth_required', 'Sign in to join or manage your team.');
+    // Link placeholder-owned profiles (seeded with `google:<handle>`) before
+    // looking up membership — it is keyed by the verified subject, not the label.
+    await linkVerifiedOwners(env, auth);
     const key = await accountKey(identityOwnerId(auth));
     const { current, team } = await accountTeam(env, key);
     if (request.method === 'GET' && pathname === '/api/account/team') {
@@ -357,9 +361,60 @@ export async function handleTeamRequest(request, env, { parseGoogleAuth, jsonRes
   }
 }
 
+/// A seeded/legacy profile can carry an owner id (`google:<handle>`) that no
+/// real subject will ever equal, so membership — keyed by
+/// `accountKey(identityOwnerId(subject))` — can never attach. `ownerId` stays
+/// put: it namespaces private records (`groups/`, `activity/`, `share.ownerKey`)
+/// and must not move. Instead the verified subject is recorded alongside it and
+/// used *only* to key membership. Returns true when the profile was linked; the
+/// caller is responsible for persisting it.
+export async function linkVerifiedOwner(env, entry, identity) {
+  if (!env.LEADERBOARD_BUCKET || !entry?.claimed || !identity?.sub) return false;
+  const next = identityOwnerId(identity);
+  if (!/^(google|github):[^:]+$/.test(next) || entry.identityId === next) return false;
+  // An owner id that already *is* the subject needs no link — and claiming it
+  // must stay a byte-idempotent no-op.
+  if (entry.ownerId === next) return false;
+  const owned = identityOwns(entry, identity, { legacyEmail: true })
+    || (!entry.ownerId && Boolean(entry.googleEmail) && entry.googleEmail === identity.email);
+  if (!owned) return false;
+  entry.identityId = next;
+  return true;
+}
+
+/// Self-heal every profile this identity owns on an authenticated request, so
+/// one dashboard sign-in attaches team membership. Best effort: a repair
+/// failure must never take a team action offline.
+export async function linkVerifiedOwners(env, identity) {
+  if (!env.LEADERBOARD_BUCKET || !identity?.sub) return;
+  try {
+    await updateProfileEntries(env, async entries => {
+      let changed = false;
+      for (const entry of entries) {
+        if (await linkVerifiedOwner(env, entry, identity)) changed = true;
+      }
+      // Returning a bare Response aborts the write; the wrapper persists it.
+      if (!changed) return new Response(null, { status: 204 });
+      return { entries, response: new Response(null, { status: 204 }) };
+    });
+  } catch {
+    // Profile storage is contended or unavailable — leave the link for the
+    // next authenticated request rather than failing this one.
+  }
+}
+
+/// Membership is keyed by the verified subject when one has been recorded
+/// (see `linkVerifiedOwner`), falling back to the owner id — which for legacy
+/// profiles is a placeholder no identity will ever match.
+function membershipOwnerId(entry) {
+  if (entry?.claimed !== true) return null;
+  const subject = typeof entry.identityId === 'string' ? entry.identityId : entry.ownerId;
+  return typeof subject === 'string' && /^(google|github):/.test(subject) ? subject : null;
+}
+
 export async function applyTeamMemberships(env, entries, { fresh = false } = {}) {
   if (!env.LEADERBOARD_BUCKET) return entries;
-  const owners = [...new Set(entries.filter(entry => entry.claimed === true && typeof entry.ownerId === 'string' && /^(google|github):/.test(entry.ownerId)).map(entry => entry.ownerId))];
+  const owners = [...new Set(entries.map(membershipOwnerId).filter(owner => owner))];
   const byOwner = new Map();
   const teams = new Map();
   const unavailable = new Set();
@@ -384,10 +439,11 @@ export async function applyTeamMemberships(env, entries, { fresh = false } = {})
     }
   });
   for (const entry of entries) {
-    const team = entry.claimed === true ? byOwner.get(entry.ownerId) : null;
+    const owner = membershipOwnerId(entry);
+    const team = owner && entry.claimed === true ? byOwner.get(owner) : null;
     if (team) { entry.team = team.name; entry.teamId = team.id; }
     else {
-      if (entry.teamId && unavailable.has(entry.ownerId)) entry.team = '';
+      if (entry.teamId && owner && unavailable.has(owner)) entry.team = '';
       delete entry.teamId; // Never trust an unconfirmed canonical team ID.
     }
   }

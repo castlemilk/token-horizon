@@ -196,7 +196,12 @@ export async function handleDesktopAuth(request, env, ctx) {
         identity = await browserIdentity(request, env);
         if (!validIdentity(identity)) fail(401, 'auth_required', 'Sign in to connect Token Horizon.');
         const existing = (await profiles(env)).find(entry => String(entry.handle).toLowerCase() === handle);
-        if (existing?.claimed && !identityOwns(existing, identity)) fail(403, 'profile_owned', `@${handle} belongs to another account. Choose one of your profiles or a new handle.`);
+        // The verified email doubles as ownership (see linkVerifiedOwner): a
+        // claimed profile whose ownerId missed — the seeded `google:<handle>`
+        // placeholder — is still this account's profile when the verified
+        // email matches, so the desktop app can reconcile it without a
+        // dashboard sign-in. Canonical foreign subjects stay rejected.
+        if (existing?.claimed && !identityOwns(existing, identity, { legacyEmail: true })) fail(403, 'profile_owned', `@${handle} belongs to another account. Choose one of your profiles or a new handle.`);
         if (existing && !existing.claimed) {
           if (handle !== transaction.handle || !existing.claimTokenHash || !equal(existing.claimTokenHash, transaction.claimTokenHash)) fail(403, 'claim_required', `Open this connection from the app that created @${handle}, or choose a new handle.`);
           claimTokenHash = transaction.claimTokenHash;

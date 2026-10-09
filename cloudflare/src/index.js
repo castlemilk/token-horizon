@@ -6,7 +6,7 @@
  * (resvg-wasm), and static asset webhosting.
  */
 
-import { handleTeamRequest, applyTeamMemberships, getPublicTeam, getInviteTeam, enrichTeamAggregates, loadTeamLogoDataUri } from './team-invites.js';
+import { handleTeamRequest, applyTeamMemberships, getPublicTeam, getInviteTeam, enrichTeamAggregates, loadTeamLogoDataUri, linkVerifiedOwner } from './team-invites.js';
 import { handleBrowserAuth, browserIdentity, identityOwnerId, identityOwns, githubConfigured, sessionsConfigured } from './browser-auth.js';
 import { handleDesktopAuth, desktopPublishIdentity, DesktopAuthError } from './desktop-auth.js';
 import { buildOgModel, renderProfileOgSvg, renderRestrictedOgSvg, OG_CARD_VERSION } from './og-card.js';
@@ -238,6 +238,7 @@ function sanitizeEntry(entry, full = false) {
   if (!full) delete copy.snapshots;
   delete copy.claimTokenHash;
   delete copy.ownerId;
+  delete copy.identityId;
   delete copy.accountEmail;
   return copy;
 }
@@ -453,17 +454,47 @@ function providerHistory(entries, days = 30) {
   return exactProviderHistory(entries, days, { normalizeProvider });
 }
 
+function publishedUsageValue(value) {
+  if (typeof value !== 'number' && typeof value !== 'string') return null;
+  if (typeof value === 'string' && !value.trim()) return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function accumulateTeamDaily(daily, records, start, end) {
+  if (!Array.isArray(records)) return;
+  for (const point of records) {
+    if (!point || typeof point !== 'object' || Array.isArray(point)) continue;
+    const seconds = publishedUsageValue(point.day), tokens = publishedUsageValue(point.tokens);
+    if (seconds === null || tokens === null || tokens < 0) continue;
+    const day = Math.floor(seconds / 86400);
+    if (day < start || day > end) continue;
+    const total = (daily.get(day) || 0) + tokens;
+    if (Number.isFinite(total)) daily.set(day, total);
+  }
+}
+
 function aggregateTeams(entries) {
-  const map = new Map();
+  const map = new Map(), end = dayNumber(), start = end - 118;
   for (const e of entries) {
     const team = (e.team || "").trim() || "Unassigned";
     const key = e.teamId ? `id:${e.teamId}` : `legacy:${team}`;
-    if (!map.has(key)) map.set(key, { team, ...(e.teamId ? { teamId: e.teamId } : {}), tokens: 0, cost: 0, members: 0, providers: {}, users: [] });
+    if (!map.has(key)) map.set(key, { team, ...(e.teamId ? { teamId: e.teamId } : {}), tokens: 0, tokensToday: 0, tokens7d: 0, recentWindowProfiles: { today: 0, week: 0 }, cost: 0, members: 0, providers: {}, users: [], daily: new Map() });
     const row = map.get(key);
     row.tokens += e.tokensAll || 0;
+    // Window totals are the profiles' last published values. Provider mix and
+    // shared cost remain all-time; unpublished members contribute no usage.
+    const today = publishedUsageValue(e.tokensToday), week = publishedUsageValue(e.tokens7d);
+    row.tokensToday += today ?? 0;
+    row.tokens7d += week ?? 0;
+    if (today !== null) row.recentWindowProfiles.today += 1;
+    if (week !== null) row.recentWindowProfiles.week += 1;
     row.cost += e.costAll || 0;
     row.members += 1;
     row.users.push({ handle: e.handle, tokensAll: e.tokensAll || 0, avatarUrl: e.avatarUrl || "", avatarStyle: e.avatarStyle || "" });
+    // Only published records enter the bounded UTC history. Missing dates are
+    // not manufactured as zero activity, and an empty array stays unavailable.
+    accumulateTeamDaily(row.daily, e.breakdown?.daily, start, end);
     for (const m of (e.breakdown && e.breakdown.models) || []) {
       const p = normalizeProvider(m.provider);
       row.providers[p] = (row.providers[p] || 0) + (Number(m.tokensAll) || 0);
@@ -471,6 +502,7 @@ function aggregateTeams(entries) {
   }
   return [...map.values()].sort((a, b) => b.tokens - a.tokens).map(r => ({
     ...r,
+    daily: [...r.daily.entries()].sort((a, b) => a[0] - b[0]).map(([day, tokens]) => ({ day: day * 86400, tokens })),
     tokensFormatted: formatTokens(r.tokens),
     costFormatted: formatCurrency(r.cost),
     users: r.users.sort((a, b) => b.tokensAll - a.tokensAll).slice(0, 6)
@@ -479,21 +511,9 @@ function aggregateTeams(entries) {
 
 function teamUsageStats(team, entries) {
   const peers = entries.filter(entry => entry.teamId === team.id);
-  const row = aggregateTeams(peers)[0] || { team: team.name, teamId: team.id, tokens: 0, cost: 0, members: 0, providers: {}, users: [], tokensFormatted: '0', costFormatted: '$0' };
-  const daily = new Map();
-  const start = dayNumber() - 118, end = dayNumber();
-  for (const entry of peers) {
-    for (const point of entry.breakdown?.daily || []) {
-      const day = Math.floor((Number(point.day) || 0) / 86400);
-      const tokens = Number(point.tokens);
-      if (day >= start && day <= end && Number.isFinite(tokens) && tokens > 0) daily.set(day, (daily.get(day) || 0) + tokens);
-    }
-  }
+  const row = aggregateTeams(peers)[0] || { team: team.name, teamId: team.id, tokens: 0, tokensToday: 0, tokens7d: 0, recentWindowProfiles: { today: 0, week: 0 }, cost: 0, members: 0, providers: {}, users: [], daily: [], tokensFormatted: '0', costFormatted: '$0' };
   return {
     ...row, publishedProfiles: row.members, memberCount: team.memberCount,
-    tokensToday: peers.reduce((total, entry) => total + (Number(entry.tokensToday) || 0), 0),
-    tokens7d: peers.reduce((total, entry) => total + (Number(entry.tokens7d) || 0), 0),
-    daily: [...daily.entries()].sort((a, b) => a[0] - b[0]).map(([day, tokens]) => ({ day: day * 86400, tokens })),
     providerHistory: providerHistory(peers, 30)
   };
 }
@@ -1200,9 +1220,13 @@ export default {
         if (existingIdx !== -1) {
           const prev = entries[existingIdx];
 
-          // Check ownership if already claimed
+          // Check ownership if already claimed. Desktop grants carry a
+          // browser-verified identity too, so the legacy-email fallback
+          // applies there as well — a placeholder-owned profile reconciles
+          // (linkVerifiedOwner below) from the app's Sync without a
+          // dashboard sign-in.
           if (prev.claimed) {
-            const isOwner = identityOwns(prev, googleAuth, { legacyEmail: !desktopAuth });
+            const isOwner = identityOwns(prev, googleAuth, { legacyEmail: true });
             if (!isOwner && !hasWriteSecret) {
               return jsonResponse({
                 ok: false,
@@ -1215,6 +1239,10 @@ export default {
             if (prev.accountEmail) newEntry.accountEmail = prev.accountEmail;
             newEntry.avatarUrl = (googleAuth && googleAuth.picture) || prev.avatarUrl || "";
             newEntry.claimedAt = prev.claimedAt;
+            // The owner check already proved this identity owns the row; if it
+            // matched through the legacy email fallback, record the verified
+            // subject so membership can attach.
+            if (isOwner && googleAuth) await linkVerifiedOwner(env, newEntry, googleAuth);
           } else {
             // Profile is currently unclaimed
             if (desktopAuth && (!prev.claimTokenHash || prev.claimTokenHash !== desktopAuth.claimTokenHash)) {
@@ -1358,8 +1386,21 @@ export default {
         const entry = entries[idx];
         if (entry.claimed) {
           if (identityOwns(entry, googleAuth, { legacyEmail: true })) {
+            // A seeded profile can carry a placeholder owner id that no
+            // identity ever matches; linking records the verified subject so
+            // membership resolves. `ownerId` and its private namespaces stay put.
+            const linked = await linkVerifiedOwner(env, entry, googleAuth);
             await applyTeamMemberships(env, [entry], { fresh: true });
-            return jsonResponse({ ok: true, message: `Profile @${handleClean} is already claimed by your account`, entry: sanitizeEntry(entry, true) });
+            if (!linked) {
+              return jsonResponse({ ok: true, message: `Profile @${handleClean} is already claimed by your account`, entry: sanitizeEntry(entry, true) });
+            }
+            entries[idx] = entry;
+            return { entries, response: jsonResponse({
+              ok: true,
+              message: `Profile @${handleClean} is linked to your verified account`,
+              handle: handleClean,
+              entry: sanitizeEntry(entry, true)
+            }) };
           }
           return jsonResponse({ ok: false, error: `Profile @${handleClean} is already claimed by another verified user` }, 409);
         }
@@ -2009,6 +2050,25 @@ export default {
       return image;
     }
 
+    // Team discovery has a stable document route. API handlers above retain
+    // the legacy /leaderboard JSON contract; document redirects keep every
+    // remaining query parameter, and browsers inherit fragments on redirect.
+    if (["GET", "HEAD"].includes(request.method)
+        && ["/leaderboard", "/leaderboard.html"].includes(pathname)
+        && searchParams.get("view") === "teams") {
+      const canonical = new URL(request.url);
+      canonical.pathname = "/teams";
+      canonical.searchParams.delete("view");
+      return Response.redirect(canonical.toString(), 302);
+    }
+    if (pathname === "/teams/") {
+      if (!["GET", "HEAD"].includes(request.method)) return new Response(null, { status: 405,
+        headers: { Allow: "GET, HEAD", "Cache-Control": "no-store" } });
+      const canonical = new URL(request.url);
+      canonical.pathname = "/teams";
+      return Response.redirect(canonical.toString(), 301);
+    }
+
     // Canonicalize the model explorer: /leaderboard?view=models → /models
     // (the flat catalog route). The Providers analytics tab only exists in the
     // dashboard shell, so tab=providers keeps the leaderboard URL. Internal
@@ -2071,6 +2131,14 @@ export default {
       if (pathname.startsWith("/s/")) {
         const id = pathname.slice(3).replace(/[^a-zA-Z0-9]/g, "");
         return serveSharePage(env, request, id);
+      }
+      // Dedicated team discovery serves the same SPA asset. The browser
+      // derives its view from /teams; the internal query is for the asset only.
+      if (pathname === "/teams") {
+        const newUrl = new URL(request.url);
+        newUrl.pathname = "/leaderboard";
+        newUrl.searchParams.set("view", "teams");
+        return serveRoutePage(env, request, newUrl);
       }
       // Dedicated discovery route: token-horizon.dev/models renders the flat
       // catalog explorer (same SPA shell, deep-linkable).

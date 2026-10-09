@@ -171,7 +171,8 @@ export function renderTeamOgSvg(team = {}, stats = {}, { logoDataUri = '' } = {}
   const layout = nameLines(vm.name);
   const nameStart = layout.lines.length === 1 ? 172 : layout.lines.length === 2 ? 151 : 138;
   const name = layout.lines.map((line, index) => text(166, nameStart + index * (layout.size + 5), line, layout.size, C.white, 600, 'data-team-name="true"')).join('');
-  const letters = (vm.name.match(/[\p{L}\p{N}]+/gu) || []).slice(0, 2).map(word => Array.from(word)[0]).join('').toUpperCase();
+  const words = clean(team.name).match(/[\p{L}\p{N}]+/gu) || [];
+  const letters = (words.length > 1 ? words.slice(0, 2).map(word => Array.from(word)[0]).join('') : Array.from(words[0] || '').slice(0, 2).join('')).toUpperCase();
   const initials = /^[A-Z0-9À-ž]{1,2}$/.test(letters) ? letters : 'TH';
   const identity = `<rect x="48" y="111" width="96" height="96" rx="20" fill="${logo ? C.white : C.mint}"/>${logo ? `<image data-team-logo="custom" x="58" y="121" width="76" height="76" preserveAspectRatio="xMidYMid meet" href="${logo}"><title>Custom team logo</title></image>` : text(96, 174, initials, 36, C.forest, 600, 'text-anchor="middle" data-team-logo="monogram"')}`;
   const memberValue = vm.memberCountAvailable ? compact(vm.members) : '—';

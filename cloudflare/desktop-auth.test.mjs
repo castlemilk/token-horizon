@@ -120,11 +120,30 @@ test('a signed-out browser can cancel the ticket without granting account access
   assert.equal([...env.OAUTH_KV.values.keys()].filter(key => key.startsWith('desktop-grant:')).length, 0);
 });
 
-test('claimed profiles use canonical provider subjects; same email and forceClaim cannot take ownership', async () => {
-  const env = environment([{ handle: 'someone-else', claimed: true, ownerId: 'google:someone-else', googleEmail: identity.email }, { handle: 'github-owned', claimed: true, ownerId: 'github:native-owner', accountEmail: identity.email }]);
+test('a placeholder owner reconciles through the desktop app; canonical foreign subjects stay locked', async () => {
+  const env = environment([
+    { handle: 'seeded-profile', claimed: true, ownerId: 'google:seeded-profile', googleEmail: identity.email },
+    { handle: 'someone-else', claimed: true, ownerId: 'google:777001', googleEmail: 'someone.else@example.com' },
+    { handle: 'github-owned', claimed: true, ownerId: 'github:native-owner', accountEmail: identity.email }
+  ]);
+
+  // The seeded `google:<handle>` owner is a placeholder no subject can ever
+  // match, so the verified email proves ownership and the app's publish
+  // reconciles the profile to the real subject without a dashboard sign-in.
+  const seeded = await connect(env, 'seeded-profile');
+  assert.equal((await publish(env, seeded.accessToken, 'seeded-profile')).status, 200);
+  const reconciled = profile(env, 'seeded-profile');
+  assert.equal(reconciled.identityId, 'google:native-owner');
+  assert.equal(reconciled.ownerId, 'google:seeded-profile', 'ownerId is the private namespace and never migrates');
+  assert.equal(reconciled.googleEmail, identity.email);
+
+  // Canonical foreign subjects reject the connection even with forceClaim,
+  // and a grant never publishes outside its own handle; connecting under a
+  // fresh handle remains the escape hatch.
   for (const handle of ['someone-else', 'github-owned']) {
     const transaction = await start(env, handle), response = await approve(env, transaction, { forceClaim: true });
     assert.equal(response.status, 403); assert.equal((await response.json()).code, 'profile_owned');
+    assert.equal((await publish(env, seeded.accessToken, handle)).status, 403);
   }
   const transaction = await start(env, 'someone-else'), accepted = await approve(env, transaction, { handle: 'my-new-profile' });
   assert.equal(accepted.status, 200); assert.equal((await accepted.json()).handle, 'my-new-profile');

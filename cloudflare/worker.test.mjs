@@ -1,5 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
+import { runInNewContext } from 'node:vm';
 import worker from './src/index.js';
 import { loadTeamLogoDataUri } from './src/team-invites.js';
 
@@ -695,6 +697,187 @@ describe('Cloudflare Worker API', () => {
     assert.ok(Array.isArray(data.topPrompts));
   });
 
+  it('exposes published team window totals without changing all-time cost, provider mix or ordering', async () => {
+    const env = createMultiKeyEnv([
+      { handle: 'crew-a', team: 'Crew', tokensAll: 600, tokensToday: 12, tokens7d: 110, costAll: 1.25,
+        breakdown: { models: [{ provider: 'claude', model: 'a', tokensAll: 600, tokensToday: 999, costAll: 1.25 }] } },
+      { handle: 'crew-b', team: 'Crew', tokensAll: 400, tokensToday: 8, tokens7d: 90, costAll: 0,
+        breakdown: { models: [{ provider: 'openai', model: 'b', tokensAll: 400 }] } },
+      { handle: 'crew-old', team: 'Crew', tokensAll: 100, costAll: 0,
+        breakdown: { models: [{ provider: 'claude', model: 'a', tokensAll: 100 }] } },
+      { handle: 'other', team: 'Other', tokensAll: 900, tokensToday: 100, tokens7d: 500, costAll: 5,
+        breakdown: { models: [{ provider: 'openai', model: 'b', tokensAll: 900 }] } }
+    ]);
+    for (const path of ['/api/teams', '/api/providers']) {
+      const response = await worker.fetch(req(path), env);
+      assert.equal(response.status, 200);
+      const { teams } = await response.json();
+      assert.deepEqual(teams.map(team => team.team), ['Crew', 'Other'], path);
+      const crew = teams[0];
+      assert.equal(crew.tokens, 1100, path);
+      assert.equal(crew.tokensToday, 20, path);
+      assert.equal(crew.tokens7d, 200, path);
+      assert.deepEqual(crew.recentWindowProfiles, { today: 2, week: 2 }, path);
+      assert.equal(crew.cost, 1.25, path);
+      assert.equal(crew.members, 3, path);
+      assert.equal(crew.publishedProfiles, 3, path);
+      assert.deepEqual(crew.providers, { anthropic: 700, openai: 400 }, path);
+      assert.equal(teams[1].tokensToday, 100, path);
+      assert.equal(teams[1].tokens7d, 500, path);
+      assert.deepEqual(teams[1].recentWindowProfiles, { today: 1, week: 1 }, path);
+    }
+  });
+
+  it('distinguishes missing team windows from explicit zero and reports mixed profile coverage per window', async () => {
+    const profile = (handle, team, windows = {}) => ({ handle, team, tokensAll: 100,
+      breakdown: { models: [{ model: 'm', provider: 'openai', tokensAll: 100 }] }, ...windows });
+    const env = createMultiKeyEnv([
+      profile('old', 'No windows'),
+      profile('zero', 'Published zero', { tokensToday: 0, tokens7d: 0 }),
+      profile('today-only', 'Partial', { tokensToday: 8 }),
+      profile('week-only', 'Partial', { tokens7d: 20 }),
+      profile('both-zero', 'Partial', { tokensToday: 0, tokens7d: 0 }),
+      profile('invalid', 'Invalid windows', { tokensToday: null, tokens7d: 'unavailable' })
+    ]);
+    for (const path of ['/api/teams', '/api/providers']) {
+      const { teams } = await (await worker.fetch(req(path), env)).json();
+      const noWindows = teams.find(team => team.team === 'No windows');
+      const zero = teams.find(team => team.team === 'Published zero');
+      const partial = teams.find(team => team.team === 'Partial');
+      const invalid = teams.find(team => team.team === 'Invalid windows');
+      assert.deepEqual(noWindows.recentWindowProfiles, { today: 0, week: 0 }, path);
+      assert.deepEqual(zero.recentWindowProfiles, { today: 1, week: 1 }, path);
+      assert.equal(noWindows.tokensToday, 0, path);
+      assert.equal(zero.tokensToday, 0, path);
+      assert.equal(noWindows.tokens7d, 0, path);
+      assert.equal(zero.tokens7d, 0, path);
+      assert.equal(partial.publishedProfiles, 3, path);
+      assert.deepEqual(partial.recentWindowProfiles, { today: 2, week: 2 }, path);
+      assert.equal(partial.tokensToday, 8, path);
+      assert.equal(partial.tokens7d, 20, path);
+      assert.deepEqual(invalid.recentWindowProfiles, { today: 0, week: 0 }, path);
+      assert.equal(invalid.tokensToday, 0, path);
+      assert.equal(invalid.tokens7d, 0, path);
+    }
+  });
+
+  it('sums published team daily records into UTC buckets without changing ranking totals or filling missing dates', async t => {
+    const now = Date.parse('2026-10-02T00:30:00Z');
+    t.mock.timers.enable({ apis: ['Date'], now });
+    const end = Math.floor(now / 86400000) * 86400, start = end - 118 * 86400;
+    const env = createMultiKeyEnv([
+      { handle: 'daily-a', team: 'Daily Crew', tokensAll: 600, tokensToday: 12, tokens7d: 110, costAll: 1.25,
+        breakdown: { models: [{ provider: 'claude', model: 'a', tokensAll: 600 }], daily: [
+          { day: end + 86399, tokens: 10 }, { day: start + 1, tokens: 5 },
+          { day: end - 1, tokens: 20 }, { day: end - 2 * 86400, tokens: 0 },
+          { day: start - 1, tokens: 99999 }, { day: end + 86400, tokens: 99999 }
+        ] } },
+      { handle: 'daily-b', team: 'Daily Crew', tokensAll: 400, tokensToday: 8, tokens7d: 90, costAll: 0,
+        breakdown: { models: [{ provider: 'openai', model: 'b', tokensAll: 400 }], daily: [
+          { day: end - 86400, tokens: 30 }, { day: start + 3600, tokens: 7 }, { day: end + 7200, tokens: 15 }
+        ] } },
+      { handle: 'daily-old', team: 'Daily Crew', tokensAll: 100,
+        breakdown: { models: [{ provider: 'claude', model: 'a', tokensAll: 100 }], history: [{ day: end, tokens: 99999 }] } }
+    ]);
+    const expected = [{ day: start, tokens: 12 }, { day: end - 2 * 86400, tokens: 0 },
+      { day: end - 86400, tokens: 50 }, { day: end, tokens: 25 }];
+    for (const path of ['/api/teams', '/api/providers']) {
+      const response = await worker.fetch(req(path), env);
+      assert.equal(response.status, 200, path);
+      const { teams } = await response.json(), crew = teams[0];
+      assert.deepEqual(crew.daily, expected, path);
+      assert.equal(crew.daily.some(point => point.day === end - 3 * 86400), false, 'Unreported dates stay absent');
+      assert.equal(crew.tokens, 1100, path);
+      assert.equal(crew.tokensToday, 20, path);
+      assert.equal(crew.tokens7d, 200, path);
+      assert.deepEqual(crew.recentWindowProfiles, { today: 2, week: 2 }, path);
+      assert.equal(crew.cost, 1.25, path);
+      assert.equal(crew.members, 3, path);
+      assert.equal(crew.publishedProfiles, 3, path);
+      assert.deepEqual(crew.providers, { anthropic: 700, openai: 400 }, path);
+      assert.deepEqual(crew.users.map(user => user.handle), ['daily-a', 'daily-b', 'daily-old'], path);
+    }
+  });
+
+  it('bounds team daily history to 119 days and ignores malformed, negative and nonfinite records', async t => {
+    const now = Date.parse('2026-10-02T23:59:59Z');
+    t.mock.timers.enable({ apis: ['Date'], now });
+    const end = Math.floor(now / 86400000) * 86400;
+    const profile = (handle, team, daily) => ({ handle, team, tokensAll: 100,
+      breakdown: { models: [{ provider: 'openai', model: 'm', tokensAll: 100 }], ...(daily === undefined ? {} : { daily }) } });
+    const malformed = [null, false, 'record', [], {}, { day: end }, { tokens: 12 },
+      ...[null, true, [], {}, '', ' ', 'NaN', 'Infinity', '1e309', -1].map(tokens => ({ day: end, tokens })),
+      ...[null, true, [], {}, '', ' ', 'NaN', 'Infinity', '1e309', -1].map(day => ({ day, tokens: 99999 })),
+      { day: end - 119 * 86400, tokens: 99999 }, { day: end + 86400, tokens: 99999 },
+      { day: String(end + 1), tokens: '12' }];
+    const env = createMultiKeyEnv([
+      profile('bounded', 'Bounded', Array.from({ length: 130 }, (_, i) => ({ day: end - i * 86400 + 750, tokens: 1 }))),
+      profile('invalid', 'Invalid', malformed),
+      profile('missing', 'Unavailable'), profile('empty', 'Unavailable', []),
+      profile('object', 'Unavailable', { day: end, tokens: 10 }), profile('string', 'Unavailable', 'not an array'),
+      profile('zero', 'Explicit zero', [{ day: end, tokens: 0 }])
+    ]);
+    for (const path of ['/api/teams', '/api/providers']) {
+      const response = await worker.fetch(req(path), env);
+      assert.equal(response.status, 200, path);
+      const { teams } = await response.json();
+      const bounded = teams.find(team => team.team === 'Bounded');
+      assert.equal(bounded.daily.length, 119, path);
+      assert.deepEqual(bounded.daily[0], { day: end - 118 * 86400, tokens: 1 }, path);
+      assert.deepEqual(bounded.daily.at(-1), { day: end, tokens: 1 }, path);
+      assert.equal(bounded.daily.reduce((sum, point) => sum + point.tokens, 0), 119, path);
+      assert.deepEqual(teams.find(team => team.team === 'Invalid').daily, [{ day: end, tokens: 12 }], path);
+      assert.deepEqual(teams.find(team => team.team === 'Unavailable').daily, [], path);
+      assert.deepEqual(teams.find(team => team.team === 'Explicit zero').daily, [{ day: end, tokens: 0 }], path);
+      assert.equal(teams.every(team => team.tokensToday === 0 && team.tokens7d === 0), true, path);
+      assert.equal(teams.every(team => team.recentWindowProfiles.today === 0 && team.recentWindowProfiles.week === 0), true, path);
+    }
+  });
+
+  it('keeps canonical and same-name legacy daily histories separate and reuses them on public team pages', async t => {
+    const now = Date.parse('2026-10-02T12:00:00Z');
+    t.mock.timers.enable({ apis: ['Date'], now });
+    const end = Math.floor(now / 86400000) * 86400;
+    const { env, token, call } = await teamFixture();
+    const owner = await token('daily-owner'), other = await token('daily-other'), emptyOwner = await token('daily-empty');
+    const first = (await call('/api/team/invites', owner, { name: 'Same name' })).data.team;
+    const second = (await call('/api/team/invites', other, { name: 'Same name' })).data.team;
+    const empty = (await call('/api/team/invites', emptyOwner, { name: 'Empty daily' })).data.team;
+    const profile = (handle, ownerId, tokensAll, daily) => ({ handle, team: 'Same name', tokensAll,
+      ...(ownerId ? { claimed: true, ownerId: 'google:' + ownerId } : {}),
+      breakdown: { models: [{ provider: 'openai', model: 'm', tokensAll }], daily } });
+    await env.LEADERBOARD_BUCKET.put('leaderboard.json', JSON.stringify([
+      profile('canonical-a', 'daily-owner', 100, [{ day: end, tokens: 2 }, { day: end - 86400 + 500, tokens: 3 }]),
+      profile('canonical-b', 'daily-owner', 200, [{ day: end + 500, tokens: 5 }]),
+      profile('canonical-other', 'daily-other', 300, [{ day: end, tokens: 17 }]),
+      profile('legacy', '', 400, [{ day: end, tokens: 23 }])
+    ]));
+    const expected = [{ day: end - 86400, tokens: 3 }, { day: end, tokens: 7 }];
+    for (const path of ['/api/teams', '/api/providers']) {
+      const { teams } = (await call(path)).data;
+      assert.equal(teams.length, 3, path);
+      const canonical = teams.find(team => team.teamId === first.id);
+      assert.deepEqual(canonical.daily, expected, path);
+      assert.equal(canonical.tokens, 300, path);
+      assert.equal(canonical.publishedProfiles, 2, path);
+      assert.equal(canonical.memberCount, 1, path);
+      assert.deepEqual(teams.find(team => team.teamId === second.id).daily, [{ day: end, tokens: 17 }], path);
+      assert.deepEqual(teams.find(team => !team.teamId).daily, [{ day: end, tokens: 23 }], path);
+      assert.equal(teams.find(team => !team.teamId).tokens, 400, path);
+    }
+    const detail = await call(`/api/team/${first.id}`);
+    assert.equal(detail.status, 200);
+    assert.deepEqual(detail.data.stats.daily, expected);
+    assert.equal(detail.data.stats.tokens, 300);
+    assert.equal(detail.data.stats.publishedProfiles, 2);
+    const fallback = (await call(`/api/team/${empty.id}`)).data.stats;
+    assert.deepEqual(fallback.daily, []);
+    assert.equal(fallback.tokens, 0);
+    assert.equal(fallback.memberCount, 1);
+    assert.equal(fallback.publishedProfiles, 0);
+    assert.deepEqual(fallback.recentWindowProfiles, { today: 0, week: 0 });
+  });
+
   it('GET /api/providers keeps precision on tiny $/M rates', async () => {
     const env = createMultiKeyEnv([
       { handle: 'tiny', tokensAll: 19e9, breakdown: { models: [{ provider: 'anthropic', model: 'm1', tokensAll: 19e9, tokensToday: 0, costToday: 0, costAll: 300, sharePercent: 100 }], tools: [], history: [] } }
@@ -1273,6 +1456,124 @@ describe('Cloudflare Worker API', () => {
     assert.equal((await api.json()).period, 'week');
   });
 
+  it('serves canonical Teams through the SPA asset binding with Teams metadata and no usage reads', async () => {
+    const source = await readFile(new URL('../docs/leaderboard.html', import.meta.url), 'utf8');
+    const seen = [];
+    const env = {
+      ...createEnv(),
+      LEADERBOARD_BUCKET: { async get() { throw new Error('Teams documents must not load usage storage'); } },
+      ASSETS: { async fetch(request) {
+        seen.push(request);
+        const target = new URL(request.url);
+        if (target.pathname !== '/leaderboard') return new Response('Missing static document', { status: 404 });
+        assert.equal(request.method, 'GET', 'HEAD still fetches a complete document for metadata');
+        return new Response(source, { headers: { 'Content-Type': 'text/html', ETag: '"static-document"' } });
+      } }
+    };
+    for (const method of ['GET', 'HEAD']) {
+      for (const path of ['/teams', '/teams?teamChart=history&teamDays=119&utm_source=share']) {
+        const response = await worker.fetch(req(path, { method, headers: { Accept: 'text/html' } }), env);
+        assert.equal(response.status, 200, path);
+        assert.match(response.headers.get('Content-Type'), /text\/html/);
+        assert.equal(response.headers.get('Cache-Control'), 'public, max-age=0, s-maxage=300, must-revalidate');
+        assert.equal(response.headers.get('ETag'), null, 'Transformed HTML cannot validate against the raw asset');
+        const target = new URL(seen.at(-1).url);
+        assert.equal(target.pathname, '/leaderboard');
+        assert.equal(target.searchParams.get('view'), 'teams');
+        if (path.includes('?')) {
+          assert.equal(target.searchParams.get('teamChart'), 'history');
+          assert.equal(target.searchParams.get('teamDays'), '119');
+          assert.equal(target.searchParams.get('utm_source'), 'share');
+        }
+        const html = await response.text();
+        if (method === 'HEAD') { assert.equal(html, ''); continue; }
+        assert.match(html, /id="discovery-navigation"/, 'The binding serves the real SPA shell');
+        assert.match(html, /<title>AI Usage Teams · Token Horizon<\/title>/);
+        assert.match(html, /rel="canonical" href="https:\/\/token-horizon\.dev\/teams"/);
+        assert.match(html, /property="og:url" content="https:\/\/token-horizon\.dev\/teams"/);
+        assert.match(html, /<base href="\/">/);
+        const schema = JSON.parse(html.match(/<script id="th-seo-schema" type="application\/ld\+json">([\s\S]*?)<\/script>/)[1]);
+        assert.equal(schema['@type'], 'CollectionPage');
+        assert.equal(schema.url, 'https://token-horizon.dev/teams');
+        assert.equal(schema['@id'], 'https://token-horizon.dev/teams#page');
+      }
+    }
+    const fetches = seen.length;
+    for (const path of ['/teams', '/teams/']) {
+      const unsupported = await worker.fetch(req(path, { method: 'POST' }), env);
+      assert.equal(unsupported.status, 405);
+      assert.equal(unsupported.headers.get('Allow'), 'GET, HEAD');
+    }
+    assert.equal(seen.length, fetches, 'Unsupported document methods never reach the asset binding');
+  });
+
+  it('canonicalizes Teams aliases without dropping analytics, duplicate, empty or encoded query values', async () => {
+    const env = createEnv();
+    const remaining = 'teamChart=history&teamDays=7&team=R%26D&tag=one&tag=two&empty=&utm_source=share';
+    for (const method of ['GET', 'HEAD']) {
+      for (const path of ['/leaderboard', '/leaderboard.html']) {
+        const response = await worker.fetch(req(path + '?view=teams&' + remaining, { method, headers: { Accept: 'text/html' } }), env);
+        assert.equal(response.status, 302);
+        const canonical = new URL(response.headers.get('Location'));
+        assert.equal(canonical.pathname, '/teams');
+        assert.equal(canonical.search, '?' + remaining);
+        assert.equal(canonical.hash, '', 'The redirect provides no fragment so browsers inherit their original anchor');
+        assert.equal(await response.text(), '');
+      }
+      const slash = await worker.fetch(req('/teams/?' + remaining, { method }), env);
+      assert.equal(slash.status, 301);
+      assert.equal(slash.headers.get('Location'), 'https://token-horizon.dev/teams?' + remaining);
+    }
+    const legacyJson = await worker.fetch(req('/leaderboard?view=teams&period=week', { headers: { Accept: 'application/json' } }), env);
+    assert.equal(legacyJson.status, 200, 'Legacy JSON clients retain their API route');
+    assert.equal((await legacyJson.json()).period, 'week');
+    const api = await worker.fetch(req('/api/teams'), env);
+    assert.equal(api.status, 200);
+    assert.ok(Array.isArray((await api.json()).teams));
+  });
+
+  it('preserves privacy metadata on canonical Teams account and sharing query links', async () => {
+    const env = {
+      ...createEnv(),
+      ASSETS: { async fetch() { return new Response('<html><head><title>Static title</title></head><body>SPA</body></html>', { headers: { 'Content-Type': 'text/html' } }); } }
+    };
+    for (const path of ['/teams?view=billing', '/teams?share=private-report', '/teams?invite=private-invite']) {
+      const response = await worker.fetch(req(path), env), html = await response.text();
+      assert.equal(response.status, 200);
+      assert.equal(response.headers.get('Cache-Control'), 'private, no-store');
+      assert.match(response.headers.get('X-Robots-Tag'), /noindex/);
+      assert.doesNotMatch(html, /private-report|private-invite|id="th-seo-schema"/);
+    }
+  });
+
+  it('keeps the static Teams alias relative and replaces history while preserving query values and fragments', async () => {
+    const html = await readFile(new URL('../docs/teams/index.html', import.meta.url), 'utf8');
+    assert.match(html, /rel="canonical" href="https:\/\/token-horizon\.dev\/teams"/);
+    assert.match(html, /href="\.\.\/leaderboard\.html\?view=teams"/, 'A relative fallback link works without JavaScript');
+    const script = html.match(/<script>([\s\S]*?)<\/script>/)[1];
+    for (const [base, expectedPath] of [
+      ['https://token-horizon.dev/teams/', '/leaderboard.html'],
+      ['https://castlemilk.github.io/token-horizon/teams/', '/token-horizon/leaderboard.html'],
+      ['https://castlemilk.github.io/token-horizon/teams/index.html', '/token-horizon/leaderboard.html'],
+      ['file:///checkout/docs/teams/index.html', '/checkout/docs/leaderboard.html']
+    ]) {
+      const original = new URL(base + '?teamChart=history&teamDays=30&view=other&tag=one&tag=two&empty=#tm-rankings-title');
+      const replaced = [];
+      runInNewContext(script, { URL, location: {
+        href: original.href, search: original.search, hash: original.hash,
+        replace(value) { replaced.push(value); }
+      } });
+      assert.equal(replaced.length, 1, 'Alias uses one history replacement');
+      const target = new URL(replaced[0]);
+      assert.equal(target.origin, original.origin);
+      assert.equal(target.pathname, expectedPath);
+      assert.equal(target.hash, '#tm-rankings-title');
+      assert.deepEqual([...target.searchParams], [
+        ['teamChart', 'history'], ['teamDays', '30'], ['view', 'teams'], ['tag', 'one'], ['tag', 'two'], ['empty', '']
+      ]);
+    }
+  });
+
   it('GET /models rewrites to the dashboard models view', async () => {
     let target = null;
     const env = {
@@ -1734,15 +2035,20 @@ describe('Team identity, logo and public share cards', () => {
     const id = created.team.id, invite = created.invites[0].token;
     await call('/api/team/join', friend, { token: invite });
     await call('/api/team/join', unpublished, { token: invite });
-    await call('/api/leaderboard', owner, { handle: 'aster-work', tokensAll: 400 });
-    await call('/api/leaderboard', owner, { handle: 'aster-home', tokensAll: 100 });
-    await call('/api/leaderboard', friend, { handle: 'aster-friend', tokensAll: 300 });
-    await call('/api/leaderboard', undefined, { handle: 'aster-imposter', team: 'Aster Crew', teamId: id, tokensAll: 9999 });
+    const beforePublish = await call(`/api/team/${id}`);
+    assert.deepEqual(beforePublish.data.stats.recentWindowProfiles, { today: 0, week: 0 });
+    await call('/api/leaderboard', owner, { handle: 'aster-work', tokensAll: 400, tokensToday: 20, tokens7d: 180 });
+    await call('/api/leaderboard', owner, { handle: 'aster-home', tokensAll: 100, tokensToday: 5, tokens7d: 40 });
+    await call('/api/leaderboard', friend, { handle: 'aster-friend', tokensAll: 300, tokensToday: 10, tokens7d: 80 });
+    await call('/api/leaderboard', undefined, { handle: 'aster-imposter', team: 'Aster Crew', teamId: id, tokensAll: 9999, tokensToday: 9999, tokens7d: 9999 });
     const details = await call(`/api/team/${id}`);
     assert.equal(details.status, 200);
     assert.equal(details.data.team.memberCount, 3);
     assert.equal(details.data.stats.publishedProfiles, 3);
     assert.equal(details.data.stats.tokens, 800);
+    assert.equal(details.data.stats.tokensToday, 35);
+    assert.equal(details.data.stats.tokens7d, 300);
+    assert.deepEqual(details.data.stats.recentWindowProfiles, { today: 3, week: 3 });
     assert.equal(details.data.stats.members, 3);
     assert.equal(details.data.team.url, `https://token-horizon.dev/t/${id}`);
     assert.equal(details.data.team.ogImage, `https://token-horizon.dev/api/og/team/${id}.png`);
@@ -1752,6 +2058,9 @@ describe('Team identity, logo and public share cards', () => {
     const canonical = (await call('/api/providers')).data.teams.find(row => row.teamId === id);
     assert.equal(canonical.memberCount, 3);
     assert.equal(canonical.publishedProfiles, 3);
+    assert.equal(canonical.tokensToday, 35);
+    assert.equal(canonical.tokens7d, 300);
+    assert.deepEqual(canonical.recentWindowProfiles, { today: 3, week: 3 });
     const firstCount = canonical.memberCount;
     const fourth = await token('brand-fourth');
     await call('/api/team/join', fourth, { token: invite });
@@ -1760,6 +2069,9 @@ describe('Team identity, logo and public share cards', () => {
     assert.equal(next.members, 3);
     assert.equal(next.publishedProfiles, 3);
     assert.equal(next.tokens, 800);
+    assert.equal(next.tokensToday, 35);
+    assert.equal(next.tokens7d, 300);
+    assert.deepEqual(next.recentWindowProfiles, { today: 3, week: 3 });
     assert.equal((await call(`/api/team/${'f'.repeat(32)}`)).status, 404);
   });
 
@@ -1983,5 +2295,87 @@ describe('Team identity, logo and public share cards', () => {
       headers: { Cookie: `__Host-th-session=${browserToken}`, Origin: 'https://token-horizon.dev' }, body: { teamId: second.id, image: teamPng } }), env);
     assert.equal(deliberate.status, 200);
     assert.match((await deliberate.json()).team.logoUrl, new RegExp(`/api/team/${second.id}/logo`));
+  });
+});
+
+async function rekeyFixture(entries) {
+  const { keyPair, jwk } = await makeGoogleKeyPair();
+  const clientId = 'owner-rekey.apps.googleusercontent.com';
+  const env = { ...createMultiKeyEnv(entries), GOOGLE_CLIENT_ID: clientId, GOOGLE_JWKS: JSON.stringify({ keys: [jwk] }) };
+  const token = (extra = {}) => makeGoogleToken(keyPair, { clientId, sub: '999001', email: 'owner@example.com', ...extra });
+  const call = async (path, { method = 'GET', token: auth, body } = {}) => {
+    const response = await worker.fetch(req(path, { method, headers: auth ? { 'X-Google-Token': auth } : {}, body }), env);
+    return { response, status: response.status, data: await response.json() };
+  };
+  const storedEntries = async () => JSON.parse(await (await env.LEADERBOARD_BUCKET.get('leaderboard.json')).text());
+  return { env, token, call, storedEntries };
+}
+
+const placeholderEntry = (overrides = {}) => ({
+  handle: 'benebsworth', displayName: 'Ben', team: 'Castlemilk', claimed: true,
+  ownerId: 'google:benebsworth', googleEmail: 'owner@example.com', claimedAt: null,
+  tokensAll: 1000, updatedAt: 1, ...overrides
+});
+
+describe('Placeholder owner membership link', () => {
+  it('links a google:<handle> seeded profile to its verified subject without moving its owner namespace', async () => {
+    const { env, token, call, storedEntries } = await rekeyFixture([placeholderEntry()]);
+    const shareId = 'a'.repeat(32);
+    const activity = JSON.stringify([{ type: 'share-created', at: 1 }]);
+    const share = { id: shareId, handle: 'benebsworth', ownerKey: 'google:benebsworth', scope: 'group', createdAt: 1 };
+    await env.LEADERBOARD_BUCKET.put('activity/google:benebsworth.json', activity);
+    await env.LEADERBOARD_BUCKET.put('shares-index/benebsworth.json', JSON.stringify([shareId]));
+    await env.LEADERBOARD_BUCKET.put(`shares/${shareId}.json`, JSON.stringify(share));
+
+    const auth = await token();
+    const created = await call('/api/team/invites', { method: 'POST', token: auth, body: { name: 'maxxers' } });
+    assert.equal(created.status, 200);
+    const teamId = created.data.team.id;
+
+    const [linked] = await storedEntries();
+    assert.equal(linked.ownerId, 'google:benebsworth', 'ownerId is the private namespace and never migrates');
+    assert.equal(linked.identityId, 'google:999001', 'the verified subject keys membership');
+    assert.equal(linked.team, 'Castlemilk');
+
+    const profile = await call('/api/user/benebsworth');
+    assert.equal(profile.data.entry.teamId, teamId);
+    assert.equal(profile.data.entry.team, 'maxxers');
+    assert.equal('identityId' in profile.data.entry, false, 'the subject is never published');
+    assert.equal('ownerId' in profile.data.entry, false);
+    const teams = (await call('/api/teams')).data.teams;
+    assert.equal(teams.find(team => team.teamId === teamId).members, 1);
+
+    assert.equal(await env.LEADERBOARD_BUCKET.get('activity/google:999001.json'), null, 'no new owner namespace');
+    assert.equal(await (await env.LEADERBOARD_BUCKET.get('activity/google:benebsworth.json')).text(), activity);
+    assert.equal(await (await env.LEADERBOARD_BUCKET.get(`shares/${shareId}.json`)).text(), JSON.stringify(share));
+  });
+
+  it('links from POST /api/claim when the profile is already claimed by the same account', async () => {
+    const { env, token, call, storedEntries } = await rekeyFixture([placeholderEntry()]);
+    const claimed = await call('/api/claim', { method: 'POST', token: await token(), body: { handle: 'benebsworth' } });
+    assert.equal(claimed.status, 200);
+    assert.equal(claimed.data.message, 'Profile @benebsworth is linked to your verified account');
+    assert.equal('identityId' in claimed.data.entry, false);
+    const [linked] = await storedEntries();
+    assert.equal(linked.ownerId, 'google:benebsworth');
+    assert.equal(linked.identityId, 'google:999001');
+
+    const again = await call('/api/claim', { method: 'POST', token: await token(), body: { handle: '@benebsworth' } });
+    assert.equal(again.status, 200);
+    assert.match(again.data.message, /already claimed by your account/);
+    assert.equal((await storedEntries())[0].identityId, 'google:999001');
+  });
+
+  it('never links a profile a verified identity does not own', async () => {
+    const { env, token, call, storedEntries } = await rekeyFixture([placeholderEntry({ googleEmail: 'someone.else@example.com' })]);
+    const auth = await token();
+    const claimed = await call('/api/claim', { method: 'POST', token: auth, body: { handle: 'benebsworth' } });
+    assert.equal(claimed.status, 409);
+    const team = await call('/api/account/team', { token: auth });
+    assert.equal(team.status, 200);
+    const [entry] = await storedEntries();
+    assert.equal(entry.ownerId, 'google:benebsworth');
+    assert.equal('identityId' in entry, false);
+    assert.equal(await env.LEADERBOARD_BUCKET.get('activity/google:benebsworth.json'), null);
   });
 });
