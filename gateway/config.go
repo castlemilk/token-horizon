@@ -32,6 +32,9 @@ type Config struct {
 	THEngineBase  string
 	// Trace directory override (tests). Default ~/.config/token-horizon/traces.
 	TraceDir string
+	// Prompt/response persistence is an explicit opt-in. Metadata and usage
+	// extraction remain enabled independently of content storage.
+	CaptureBodies bool
 	// Best-effort POST target for Ollama telemetry samples so the Mac app's
 	// usage totals stay correct for gateway-routed local traffic. Empty
 	// disables. Default points at the app's :8765 ingest route.
@@ -76,6 +79,7 @@ func ConfigFromEnv() Config {
 		SplashBase:    envOr("TOKEN_HORIZON_SPLASH_UPSTREAM", "http://127.0.0.1:8000"),
 		THEngineBase:  envOr("TOKEN_HORIZON_TH_ENGINE_UPSTREAM", "http://127.0.0.1:8001"),
 		TraceDir:      traceDir,
+		CaptureBodies: os.Getenv("TOKEN_HORIZON_CAPTURE_BODIES") == "1",
 		IngestURL:     envOr("TOKEN_HORIZON_INGEST_URL", "http://127.0.0.1:8765/ingest/ollama"),
 	}
 }

@@ -150,7 +150,64 @@ async function assertNoOverflow(page, selector) {
   assert(dimensions.document <= dimensions.viewport + 1 && dimensions.content <= dimensions.width + 1, selector + ' overflows: ' + JSON.stringify(dimensions));
 }
 
+async function dismissModal(page, method, expectedFocus) {
+  if (method === 'Escape') await page.keyboard.press('Escape');
+  else await page.locator('.signin-modal [data-close]').first().click();
+  await page.waitForSelector('.signin-modal', { state: 'detached' });
+  await page.waitForFunction(id => document.activeElement?.id === id, expectedFocus, { timeout: 1500 });
+  assert.equal(await page.evaluate(() => document.activeElement?.id), expectedFocus, method + ' restores focus to a live control');
+  assert.equal(await page.evaluate(() => document.body.style.overflow), '');
+}
+
+async function verifyModalFocus() {
+  console.log('Modal focus: hydration replacement, interrupted hydration, repeat dismissal and accessible fallback...');
+  for (const method of ['Escape', 'close button']) {
+    for (const timing of ['while open', 'after dismissal', 'verified account']) {
+      const f = await fixture({ session: 'held', user: timing === 'verified account' ? googleUser : null });
+      try {
+        await openModal(f.page);
+        await f.page.waitForSelector('#signin-gsi-btn .fixture-google');
+        await f.page.waitForFunction(() => state.authStatus === 'checking');
+        await f.page.evaluate(() => { window.testSignInOpener = document.querySelector('#signin-btn'); });
+        if (timing === 'after dismissal') await dismissModal(f.page, method, 'signin-btn');
+        f.recover('session');
+        await f.page.waitForFunction(() => state.authStatus === 'ready' && !authConfigFlight);
+        assert.equal(await f.page.evaluate(() => window.testSignInOpener.isConnected), false, 'Hydration must exercise replacement of the original opener');
+        const target = timing === 'verified account' ? 'user-chip' : 'signin-btn';
+        if (timing === 'after dismissal') {
+          assert.equal(await f.page.evaluate(() => document.activeElement?.id), target, 'Late hydration preserves restored focus');
+          assert.equal(await f.page.locator('.signin-modal').count(), 0, 'Late hydration cannot reopen the dismissed chooser');
+        } else {
+          assert(await f.page.locator('.signin-modal').evaluate(node => node.contains(document.activeElement)), 'Hydration cannot take focus out of an open modal');
+          await dismissModal(f.page, method, target);
+        }
+        if (timing !== 'verified account') {
+          for (let repeat = 0; repeat < 2; repeat++) {
+            await f.page.locator('#signin-btn').click();
+            await f.page.waitForSelector('.signin-modal');
+            await dismissModal(f.page, method, 'signin-btn');
+          }
+        } else {
+          assert.match(await f.page.locator('#user-chip').getAttribute('aria-label'), /Aurora Builder.*Google account/);
+        }
+        assert.equal(f.requests.some(r => ['/api/auth/google', '/api/auth/logout', '/api/auth/github'].includes(r.path)), false, 'Dismissal and hydration cannot start a provider exchange or sign out');
+      } finally { await f.close(); }
+    }
+  }
+  const f = await fixture({ session: 'held' });
+  try {
+    await openModal(f.page);
+    await f.page.waitForFunction(() => state.authStatus === 'checking');
+    f.recover('session');
+    await f.page.waitForFunction(() => state.authStatus === 'ready' && !authConfigFlight);
+    await f.page.locator('#signin-btn').evaluate(node => { node.disabled = true; });
+    await dismissModal(f.page, 'Escape', 'view');
+    assert.equal(await f.page.locator('#view').getAttribute('role'), 'main', 'Unavailable controls fall back to the main content landmark');
+  } finally { await f.close(); }
+}
+
 try {
+  await verifyModalFocus();
   console.log('Login surfaces: shared providers, accessible modal focus, bounded black-hole animation and small screens...');
   for (const surface of ['page', 'modal']) {
     const f = await fixture();
@@ -581,9 +638,9 @@ try {
   {
     const f = await fixture();
     try {
-      await f.page.goto(ORIGIN + '/leaderboard?user=aurora', { waitUntil: 'domcontentloaded' });
-      await f.page.waitForSelector('[data-share-user]');
-      await f.page.locator('[data-share-user]').click();
+      await f.page.goto(ORIGIN + '/u/aurora', { waitUntil: 'domcontentloaded' });
+      await f.page.waitForSelector('[data-share-user="aurora"]');
+      await f.page.locator('[data-share-user="aurora"]').click();
       await f.page.waitForSelector('.signin-modal');
       await f.page.locator('#signin-github').click();
       await f.page.waitForSelector('#fixture-github-start');
@@ -595,6 +652,7 @@ try {
       assert(!returnTo.includes('signin=') && !returnTo.includes('auth='));
       const pending = await f.page.evaluate(() => JSON.parse(sessionStorage.getItem('th_auth_return') || 'null'));
       assert.equal(pending?.resume?.type, 'share');
+      assert.equal(pending.resume.handle, 'aurora');
       assert.equal(pending.path, returnTo);
       assert(Date.now() - pending.at < 10000);
       assert(!JSON.stringify(pending).includes(credential));

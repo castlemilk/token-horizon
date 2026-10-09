@@ -147,6 +147,7 @@ func TestUnknownPathRejected(t *testing.T) {
 func TestReadAPIAndMetrics(t *testing.T) {
 	sse := "data: {\"model\":\"m\",\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":5,\"total_tokens\":15}}\n\ndata: [DONE]\n"
 	api, proxy, store, _ := testSetup(t, stubSSE(t, sse))
+	proxy.cfg.CaptureBodies = true // Explicit consent for this content-mode fixture.
 	srv := httptest.NewServer(serveMux(api, proxy))
 	defer srv.Close()
 

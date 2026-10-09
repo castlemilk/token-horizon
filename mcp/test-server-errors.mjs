@@ -60,6 +60,10 @@ const responses = await runSession([
   call(2, "token_horizon_limits"),
   call(3, "token_horizon_definitely_not_a_tool"),
   call(4, "token_horizon_catalog", { query: "k3" }),
+  { jsonrpc: '2.0', id: 5, method: 'resources/list', params: {} },
+  { jsonrpc: '2.0', id: 6, method: 'resources/read', params: { uri: 'ui://token-horizon/usage-v1.html' } },
+  { jsonrpc: '2.0', id: 7, method: 'resources/read', params: { uri: 'file:///etc/passwd' } },
+  call(8, 'token_horizon_overview'),
 ]);
 const list = responses.get(1);
 const limits = responses.get(2);
@@ -67,6 +71,13 @@ const unknown = responses.get(3);
 const catalog = responses.get(4);
 
 const names = list.result.tools.map((t) => t.name);
+assert.ok(names.includes('token_horizon_app'));
+assert.equal(responses.get(5).result.resources[0].uri, 'ui://token-horizon/usage-v1.html');
+assert.match(responses.get(6).result.contents[0].text, /Usage observatory/);
+assert.equal(responses.get(7).error.code, -32602);
+const overview = responses.get(8).result.structuredContent;
+assert.equal(overview.mode, 'local');assert.equal(overview.usage, undefined);
+assert.equal(overview.warnings.length, 3, 'Each unavailable local data source remains explicit');
 assert.ok(names.includes("token_horizon_limits"), "limits advertised");
 assert.equal(new Set(names).size, names.length, "tool names are unique");
 for (const name of ["token_horizon_usage", "token_horizon_catalog", "token_horizon_plans", "token_horizon_leaderboard", "token_horizon_traces"]) assert.ok(names.includes(name), `${name} advertised`);
