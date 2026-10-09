@@ -4,7 +4,18 @@ final class ModelCatalog {
     static let shared = ModelCatalog()
     private let lock = NSLock()
     private var byId: [String: Entry] = [:]
+    /// Last **successful** remote (models.dev) fetch. Deliberately not updated
+    /// by the cache-reload / bundle-fallback paths: a failing upstream must not
+    /// consume the refresh budget, or a flaky network leaves the list pinned to
+    /// an arbitrarily old cache for 10 minutes at a time.
     private var lastFetch: Date = .distantPast
+    /// Last time a fetch cycle was *started*, success or not — drives the
+    /// failure retry backoff so retries are frequent but bounded.
+    private var lastRemoteAttempt: Date = .distantPast
+    private var lastAttemptSucceeded = false
+    /// One cycle at a time: `ensureLoaded` is called from the launch path, the
+    /// 60s tick, the MODELS tab, discovery and the SYNC button.
+    private var fetchInFlight = false
     private(set) var revision: Int = 1
 
     // Memoized canonical identity. Pure function of (provider, model), so
@@ -919,23 +930,40 @@ final class ModelCatalog {
         if due { DispatchQueue.global(qos: .utility).async { Self.fetchAndMerge() } }
     }
 
+    /// SYNC button: run a cycle now regardless of staleness. `lastFetch` is a
+    /// success stamp, so it is never cleared here — a failed manual sync must
+    /// not masquerade as a fresh one.
     func refreshRemote() {
-        lock.lock()
-        lastFetch = .distantPast
-        lock.unlock()
         DispatchQueue.global(qos: .utility).async { Self.fetchAndMerge() }
     }
 
-    /// Near-realtime catalog freshness: background ticks call this every ~60s.
-    /// Refresh when never fetched OR older than `remoteRefreshInterval` so new
-    /// models + pricing updates land within minutes, not hours.
+    /// Background cadence: called every ~60s from the app's heavy tick.
     static let remoteRefreshInterval: TimeInterval = 600 // 10 min
-    func ensureLoaded() {
+    /// Foreground cadence: opening the MODELS tab / the dashboard wants a
+    /// fresher list than the background tick would give it.
+    static let interactiveRefreshInterval: TimeInterval = 120
+    /// Retry pacing while the upstream fetch keeps failing.
+    static let failedRetryInterval: TimeInterval = 60
+
+    /// Pure staleness decision, factored out so the success/failure backoff is
+    /// unit-testable without touching the network.
+    ///
+    /// A **successful** cycle goes quiet for `maxAge`; a failed one retries
+    /// after `failedRetryInterval` so a flaky upstream is re-polled every
+    /// minute instead of being written off for a full refresh interval.
+    static func isStale(lastAttempt: Date, lastAttemptSucceeded: Bool, now: Date, maxAge: TimeInterval) -> Bool {
+        guard lastAttempt != .distantPast else { return true }
+        let interval = lastAttemptSucceeded ? maxAge : failedRetryInterval
+        return now.timeIntervalSince(lastAttempt) > interval
+    }
+
+    func ensureLoaded(maxAge: TimeInterval = ModelCatalog.remoteRefreshInterval) {
         lock.lock()
-        let last = lastFetch
+        let attempt = lastRemoteAttempt
+        let succeeded = lastAttemptSucceeded
         lock.unlock()
-        let stale = last == .distantPast || Date().timeIntervalSince(last) > Self.remoteRefreshInterval
-        if stale { DispatchQueue.global(qos: .utility).async { Self.fetchAndMerge() } }
+        guard Self.isStale(lastAttempt: attempt, lastAttemptSucceeded: succeeded, now: Date(), maxAge: maxAge) else { return }
+        DispatchQueue.global(qos: .utility).async { Self.fetchAndMerge() }
     }
 
     /// Compiled once: compiling this per call (inside formatModelDisplayName,
@@ -1278,10 +1306,54 @@ final class ModelCatalog {
         return URL(string: "https://models.dev")
     }
 
-    static func fetchAndMerge() {
+    /// Swaps in a new catalog map, bumping `revision` and posting
+    /// `.refreshModelExtras` only when the content actually changed — an
+    /// unchanged upstream must not force a pipeline recompute every cycle.
+    @discardableResult
+    private func replaceCatalog(_ newById: [String: Entry]) -> Bool {
+        lock.lock()
+        let changed = byId != newById
+        if changed {
+            byId = newById
+            revision += 1
+        }
+        lock.unlock()
+        if changed {
+            DispatchQueue.main.async {
+                NotificationCenter.default.post(name: .refreshModelExtras, object: nil)
+            }
+        }
+        return changed
+    }
+
+    /// One catalog fetch cycle. Returns false when a cycle is already running.
+    @discardableResult
+    static func fetchAndMerge() -> Bool {
         let cachePath = NSString(string: "~/.config/token-horizon/models-cache.json").expandingTildeInPath
         let bm = loadBenchmarks()
         let catalog = ModelCatalog.shared
+        catalog.lock.lock()
+        if catalog.fetchInFlight { catalog.lock.unlock(); return false }
+        catalog.fetchInFlight = true
+        catalog.lastRemoteAttempt = Date()
+        catalog.lock.unlock()
+        defer {
+            catalog.lock.lock()
+            catalog.fetchInFlight = false
+            catalog.lock.unlock()
+        }
+        func markSuccess() {
+            catalog.lock.lock()
+            catalog.lastAttemptSucceeded = true
+            catalog.lastFetch = Date()
+            catalog.lock.unlock()
+        }
+        func markFailure() {
+            catalog.lock.lock()
+            catalog.lastAttemptSucceeded = false
+            catalog.lock.unlock()
+        }
+
         // Try remote with a bounded timeout (was blocking Data(contentsOf:)
         // with no timeout — a stalled models.dev fetch could hang the utility
         // queue and delay pricing updates indefinitely).
@@ -1299,13 +1371,16 @@ final class ModelCatalog {
             if let enc = try? JSONEncoder().encode(map) {
                 try? enc.write(to: URL(fileURLWithPath: cachePath))
             }
-            catalog.lock.lock(); catalog.byId = map; catalog.revision += 1; catalog.lastFetch = Date(); catalog.lock.unlock()
-            DispatchQueue.main.async {
-                NotificationCenter.default.post(name: .refreshModelExtras, object: nil)
-            }
-            return
+            catalog.replaceCatalog(map)
+            markSuccess()
+            return true
         }
 
+        // models.dev failed. Reload the on-disk cache + live provider overlays
+        // so pricing keeps moving, but deliberately DO NOT stamp `lastFetch`:
+        // only a successful remote fetch counts as fresh, otherwise a flaky
+        // upstream consumes the whole refresh budget every cycle and the list
+        // sits on an arbitrarily old cache.
         if let data = try? Data(contentsOf: URL(fileURLWithPath: cachePath)),
            var decoded = try? JSONDecoder().decode([String: Entry].self, from: data) {
             injectDirectFlagships(into: &decoded, benchmarks: bm)
@@ -1316,14 +1391,16 @@ final class ModelCatalog {
             fetchLiveAnthropicModels(into: &decoded, benchmarks: bm)
             fetchLiveGeminiModels(into: &decoded, benchmarks: bm)
             fetchLiveOpenRouterModels(into: &decoded, benchmarks: bm)
-            catalog.lock.lock(); catalog.byId = decoded; catalog.revision += 1; catalog.lastFetch = Date(); catalog.lock.unlock()
-            DispatchQueue.main.async {
-                NotificationCenter.default.post(name: .refreshModelExtras, object: nil)
-            }
-            return
+            catalog.replaceCatalog(decoded)
+            markFailure()
+            return true
         }
 
-        // Bundle fallback directly from benchmarks.json
+        // Last resort: rebuild from the bundled benchmarks. This skeleton is
+        // only ever allowed to seed an EMPTY catalog — swapping it in over a
+        // populated one (both the remote fetch and the cache read failing,
+        // e.g. a transient disk error) would collapse the visible model list
+        // down to a handful of benchmark-only rows.
         var fallbackMap: [String: Entry] = [:]
         for (k, v) in bm {
             let p = inferProvider(from: k)
@@ -1339,11 +1416,26 @@ final class ModelCatalog {
         fetchLiveDeepSeekModels(into: &fallbackMap, benchmarks: bm)
         fetchLiveAnthropicModels(into: &fallbackMap, benchmarks: bm)
         fetchLiveGeminiModels(into: &fallbackMap, benchmarks: bm)
-            fetchLiveOpenRouterModels(into: &fallbackMap, benchmarks: bm)
-        catalog.lock.lock(); catalog.byId = fallbackMap; catalog.revision += 1; catalog.lastFetch = Date(); catalog.lock.unlock()
-        DispatchQueue.main.async {
-            NotificationCenter.default.post(name: .refreshModelExtras, object: nil)
-        }
+        fetchLiveOpenRouterModels(into: &fallbackMap, benchmarks: bm)
+        catalog.seedFromFallback(fallbackMap)
+        markFailure()
+        return true
+    }
+
+    /// Seeds the catalog from the benchmarks-only skeleton.
+    ///
+    /// Refuses to run against a non-empty catalog: the skeleton carries no
+    /// pricing and no provider coverage, so applying it over a populated one
+    /// (reachable when both the remote fetch and the cache read fail, e.g. a
+    /// transient disk error) collapses the visible model list down to a handful
+    /// of rows. Returns true only when the seed actually applied.
+    @discardableResult
+    func seedFromFallback(_ fallback: [String: Entry]) -> Bool {
+        lock.lock()
+        let empty = byId.isEmpty
+        lock.unlock()
+        guard empty else { return false }
+        return replaceCatalog(fallback)
     }
 
     /// Pure parse of a models.dev api.json document → catalog entries keyed by

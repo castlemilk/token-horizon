@@ -14,6 +14,8 @@ struct SelfUpdateRelease: Equatable {
     let archiveSize: Int64
     let checksumSize: Int64
     let archiveDigest: String?
+    let notes: String?
+    let url: String?
     var archiveName: String { archive.lastPathComponent }
 }
 
@@ -68,7 +70,25 @@ enum SelfUpdatePlan {
         let archive = try asset(archiveName, maximum: maximumArchiveSize)
         let checksum = try asset(checksumName, maximum: maximumChecksumSize)
         return SelfUpdateRelease(tag: tag, version: version, archive: archive.0, checksum: checksum.0,
-                                 archiveSize: archive.1, checksumSize: checksum.1, archiveDigest: archive.2)
+                                 archiveSize: archive.1, checksumSize: checksum.1, archiveDigest: archive.2,
+                                 notes: releaseNotes(object["body"] as? String), url: releaseURL(object["html_url"] as? String, tag: tag))
+    }
+
+    /// The curated markdown body is display-only metadata: an absent, empty or
+    /// oversized body never invalidates an otherwise complete release.
+    static let maximumReleaseNotesLength = 65_536
+    static func releaseNotes(_ body: String?) -> String? {
+        guard let body, !body.isEmpty else { return nil }
+        let trimmed = body.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        return String(trimmed.prefix(maximumReleaseNotesLength))
+    }
+
+    static func releaseURL(_ raw: String?, tag: String) -> String? {
+        guard let raw, let url = URL(string: raw), url.scheme == "https", url.host == "github.com",
+              url.user == nil, url.password == nil, url.port == nil, url.query == nil, url.fragment == nil,
+              url.path == "/\(repository)/releases/tag/\(tag)" else { return nil }
+        return raw
     }
 
     static func newestNativeRelease(_ objects: [[String: Any]]) -> SelfUpdateRelease? {

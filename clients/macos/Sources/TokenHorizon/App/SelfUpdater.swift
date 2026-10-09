@@ -16,6 +16,8 @@ final class SelfUpdater: ObservableObject {
     @Published private(set) var latestTag = ""
     @Published private(set) var statusDetail = ""
     @Published private(set) var lastChecked: Date?
+    @Published private(set) var releaseNotes: String?
+    @Published private(set) var releaseURL: String?
     private var timer: Timer?
     private var initialCheck: DispatchWorkItem?
     private var release: SelfUpdateRelease?
@@ -48,6 +50,7 @@ final class SelfUpdater: ObservableObject {
         guard ![Phase.checking, .downloading, .installing, .relaunching].contains(phase) else { return }
         let id = UUID()
         checkingID = id; release = nil; latestTag = ""
+        releaseNotes = nil; releaseURL = nil
         phase = .checking; statusDetail = "Checking for updates…"
         let base = "https://api.github.com/repos/\(SelfUpdatePlan.repository)/releases"
         fetchJSON(URL(string: base + "/latest")!) { [weak self] result in
@@ -89,6 +92,7 @@ final class SelfUpdater: ObservableObject {
             return
         }
         release = native; phase = .available
+        releaseNotes = native.notes; releaseURL = native.url
         statusDetail = "\(native.tag) available — you're on v\(BuildInfo.version)"
         if !SelfUpdatePlan.isCleanReleaseCommit(BuildInfo.commit) {
             statusDetail += ". Automatic installation is paused for this development build; use Update to install explicitly."

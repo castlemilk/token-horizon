@@ -125,6 +125,29 @@ final class LeaderboardTests: XCTestCase {
         XCTAssertEqual(streakRankings.first?.score, 16)
     }
 
+    // The local row is rebuilt on every refresh tick, so cloud-assigned
+    // membership has to survive it — otherwise a pull adopts the team and the
+    // next sync silently drops us back out of it.
+    func testSyncLocal_carriesCloudTeamIdAcrossRebuild() {
+        let tempPath = NSTemporaryDirectory() + "test-teamid-\(UUID().uuidString).json"
+        defer { try? FileManager.default.removeItem(atPath: tempPath) }
+        let store = LeaderboardStore(customPath: tempPath)
+
+        var snap = UsageSnapshot()
+        snap.tokensAllTime = 1_000
+        store.syncLocal(snapshot: snap, history: [], streak: 1)
+        guard var local = store.localEntry() else { return XCTFail("local entry missing after syncLocal") }
+
+        local.teamId = "6c68c1aa"
+        local.team = "maxxers"
+        store.addOrUpdateEntry(local)
+        XCTAssertEqual(store.localEntry()?.teamId, "6c68c1aa")
+
+        store.syncLocal(snapshot: snap, history: [], streak: 2)
+        XCTAssertEqual(store.localEntry()?.teamId, "6c68c1aa", "syncLocal must not drop cloud membership")
+        XCTAssertEqual(store.localEntry()?.streakDays, 2, "the rest of the row still rebuilds")
+    }
+
     func testSyncLocal_promptHistoryIsPrivateUntilEnabled() {
         let settings = SettingsStore.shared
         let origPrompts = settings.leaderboardSharePrompts

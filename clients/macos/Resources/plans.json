@@ -9,6 +9,7 @@
         "github-copilot"
       ],
       "name": "GitHub Copilot",
+      "short": "COPILOT",
       "docUrl": "https://docs.github.com/en/copilot/get-started/plans",
       "summary": "Monthly GitHub AI Credits per tier; model access and agents vary by plan.",
       "billing": "monthly",
@@ -96,6 +97,7 @@
         "kimi-for-coding"
       ],
       "name": "Kimi Code",
+      "short": "KIMI",
       "docUrl": "https://www.kimi.com/code/docs/en/kimi-code/membership.html",
       "summary": "Weekly quota shared across CLI, VS Code and third-party tools, plus a rolling 5-hour rate window. Model/context/speed access depends on membership tier.",
       "billing": "monthly membership (see provider pricing)",
@@ -130,6 +132,7 @@
         "minimax-cn-coding-plan"
       ],
       "name": "MiniMax Token Plan",
+      "short": "MINIMAX",
       "docUrl": "https://platform.minimax.io/docs/token-plan/intro",
       "summary": "Flat monthly subscription with a shared usage bar across MiniMax language, image and speech models; 5-hour rolling + weekly windows.",
       "billing": "monthly",
@@ -173,6 +176,7 @@
         "zhipuai-coding-plan"
       ],
       "name": "GLM Coding Plan",
+      "short": "GLM",
       "docUrl": "https://docs.z.ai/devpack/overview",
       "summary": "Subscription credits for GLM coding models across Claude Code, Cline, OpenCode and more; 5-hour and weekly credit windows. Off-peak usage is charged at 50%.",
       "billing": "monthly (from $18)",
@@ -213,6 +217,7 @@
         "opencode-go"
       ],
       "name": "OpenCode Zen",
+      "short": "ZEN",
       "docUrl": "https://opencode.ai/docs/zen",
       "summary": "Pay-as-you-go gateway sold at provider cost (plus card fees); a rotating set of free models is included for feedback.",
       "billing": "pay-as-you-go (auto-reload $20 below $5) & monthly team limits",
@@ -248,6 +253,7 @@
         "alibaba-coding-plan-cn"
       ],
       "name": "Alibaba Model Studio Token / Coding Plan",
+      "short": "ALIBABA",
       "docUrl": "https://www.alibabacloud.com/help/en/model-studio/token-plan-overview",
       "summary": "Subscription with included token quota for Qwen models in Model Studio; tier details at the provider docs.",
       "billing": "monthly",
@@ -259,6 +265,7 @@
         "volcengine-coding-plan"
       ],
       "name": "Volcengine Coding Plan",
+      "short": "VOLC",
       "docUrl": "https://www.volcengine.com/docs/82379/1928261",
       "summary": "Subscription coding plan for Doubao/Seed models; tier details at the provider docs.",
       "billing": "monthly",
@@ -271,6 +278,7 @@
         "tencent-token-plan"
       ],
       "name": "Tencent Cloud Coding / Token Plan",
+      "short": "TENCENT",
       "docUrl": "https://cloud.tencent.com/document/product/1772/128947",
       "summary": "Subscription coding/token plan for Hunyuan models; tier details at the provider docs.",
       "billing": "monthly",
@@ -284,6 +292,7 @@
         "xiaomi-token-plan-cn"
       ],
       "name": "Xiaomi MiMo Token Plan",
+      "short": "MIMO",
       "docUrl": "https://platform.xiaomimimo.com/#/docs",
       "summary": "Subscription token plan for MiMo models; tier details at the provider docs.",
       "billing": "monthly",
@@ -296,6 +305,7 @@
         "stepfun-ai-step-plan"
       ],
       "name": "StepFun Step Plan",
+      "short": "STEP",
       "docUrl": "https://platform.stepfun.com/docs/zh/step-plan/integrations/reasoning-a",
       "summary": "Subscription plan for Step models; tier details at the provider docs.",
       "billing": "monthly",
@@ -307,6 +317,7 @@
         "scnet-token-plan"
       ],
       "name": "SCNet Token Plan",
+      "short": "SCNET",
       "docUrl": "https://www.scnet.cn/ac/openapi/doc/2.0/moduleapi/plans/token-plan.htm",
       "summary": "Subscription token plan on SCNet; tier details at the provider docs.",
       "billing": "monthly",
@@ -318,6 +329,7 @@
         "umans-ai-coding-plan"
       ],
       "name": "Umans Coding Plan",
+      "short": "UMANS",
       "docUrl": "https://app.umans.ai/offers/code/docs",
       "summary": "Subscription coding plan; tier details at the provider docs.",
       "billing": "monthly",
@@ -329,6 +341,7 @@
         "kuae-cloud-coding-plan"
       ],
       "name": "KUAE Cloud Coding Plan",
+      "short": "KUAE",
       "docUrl": "https://docs.mthreads.com/kuaecloud/kuaecloud-doc-online/coding_plan/",
       "summary": "Subscription coding plan on Moore Threads KUAE Cloud; tier details at the provider docs.",
       "billing": "monthly",

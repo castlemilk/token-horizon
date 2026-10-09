@@ -73,6 +73,16 @@ final class LeaderboardSyncControllerTests: XCTestCase {
         XCTAssertEqual(LeaderboardSyncController.backend(cloudConfigured: false, sheetsURL: "", forced: true), .cloud)
     }
 
+    func testRequiresSignIn_reflectsTheInjectedAuthCheck() {
+        onMain {
+            let harness = Harness()
+            harness.needsSignIn = true
+            XCTAssertTrue(harness.controller.requiresSignIn)
+            harness.needsSignIn = false
+            XCTAssertFalse(harness.controller.requiresSignIn)
+        }
+    }
+
     func testManualSync_collectsAndStagesOnceThenPublishesBeforePull() {
         onMain {
             let harness = Harness()

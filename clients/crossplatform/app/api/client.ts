@@ -49,7 +49,10 @@ export const api = {
   resetCache: () => post<{ ok: boolean; message: string }>(endpoints.server, '/cache/reset'),
   local: () => get<LocalResponse>(endpoints.server, '/local'),
   models: (search: string, scope: string) =>
-    get<ModelsResponse>(endpoints.server, `/models?search=${encodeURIComponent(search)}&scope=${scope}`),
+    get<ModelsResponse>(
+      endpoints.server,
+      `/models?search=${encodeURIComponent(search)}&scope=${encodeURIComponent(scope)}`
+    ),
   topPicks: () => get<{ topPicks: TopPick[]; count: number }>(endpoints.server, '/top-picks'),
   discoveryStatus: () => get<DiscoveryStatus>(endpoints.server, '/discovery/status'),
   triggerScan: () => post<DiscoveryStatus>(endpoints.server, '/discovery/scan'),

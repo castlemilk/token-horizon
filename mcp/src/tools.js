@@ -394,8 +394,20 @@ function renderPlans(result) {
   return lines.join("\n");
 }
 
+/// Catalog source resolution. `fetchCatalog`'s default order is "local daemon
+/// first (fast, fresh), then the hosted edge", and it only settles on a source
+/// that actually carries the curated `plans` payload — an older daemon without
+/// plans keeps looking. Pinning TOKEN_HORIZON_API_BASE must keep working, but
+/// the daemon (`/models/catalog`) and the edge (`/api/models/catalog`) use
+/// different paths, so offer both and let fetchCatalog skip the 404s.
+async function loadCatalog() {
+  if (!process.env.TOKEN_HORIZON_API_BASE) return fetchCatalog();
+  const base = getApiBase();
+  return fetchCatalog({ urls: [`${base}/models/catalog`, `${base}/api/models/catalog`] });
+}
+
 export async function runSearchModels(args = {}) {
-  const catalog = await fetchCatalog({ urls: [`${DEFAULT_API_BASE}/api/models/catalog`] });
+  const catalog = await loadCatalog();
   const result = searchCatalog(catalog, args);
   return { text: renderModelRows(result), catalogTotal: result.catalog_total, count: result.count, total: result.total };
 }
@@ -404,7 +416,7 @@ export async function runSearchModels(args = {}) {
  * 8. get_plans — subscription plans + usage tiers
  */
 export async function runGetPlans(args = {}) {
-  const catalog = await fetchCatalog({ urls: [`${DEFAULT_API_BASE}/api/models/catalog`] });
+  const catalog = await loadCatalog();
   const result = planList(catalog, args);
   return { text: renderPlans(result), count: result.count, updatedAt: result.updated_at };
 }

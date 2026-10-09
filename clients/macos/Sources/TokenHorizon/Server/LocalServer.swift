@@ -185,6 +185,11 @@ final class LocalServer {
             let flat = grid.flatMap { $0 }
             return json(["days": days, "max": flat.max() ?? 0, "total": flat.reduce(0, +), "grid": grid], 200)
 
+        case ("GET", "/teams"):
+            let force = path.split(separator: "?").last?.split(separator: "&")
+                .contains(where: { $0 == "refresh=1" }) ?? false
+            return json(TeamStore.shared.endpointPayload(force: force), 200)
+
         case ("GET", "/local"), ("GET", "/local-models"), ("GET", "/mlx"):
             let payload = server.localModelsProvider?() ?? [:]
             return json(payload, 200)
@@ -880,13 +885,15 @@ final class LocalServer {
 
         case ("GET", "/models"):
             let search = queryItems.first(where: { $0.name == "search" || $0.name == "q" })?.value ?? ""
-            let scopeStr = queryItems.first(where: { $0.name == "scope" })?.value?.uppercased() ?? "ALL"
-            let scope = ModelFilterScope(rawValue: scopeStr) ?? .all
+            let scopeStr = queryItems.first(where: { $0.name == "scope" })?.value ?? "ALL"
+            let scope = ModelFilterScope(queryValue: scopeStr)
+            let planFilter = ModelPlanFilter(rawValue: queryItems.first(where: { $0.name == "plan" })?.value ?? "")
             let snap = server.statsProvider()
             let catalog = ModelCatalog.shared.allEntries()
             let result = ModelsPipeline.compute(
                 search: search,
                 scope: scope,
+                planFilter: planFilter,
                 sortColumn: .sweBench,
                 sortAscending: false,
                 catalog: catalog,
@@ -908,7 +915,8 @@ final class LocalServer {
                     "contextK": row.contextK,
                     "contextText": row.contextText,
                     "isLocal": row.isLocal,
-                    "isFree": row.isFree
+                    "isFree": row.isFree,
+                    "plans": row.planIds
                 ]
                 if let cp = row.cachePrice { dict["cachePrice"] = cp }
                 if let swe = row.sweScore { dict["sweScore"] = swe }
@@ -917,7 +925,14 @@ final class LocalServer {
                 if let lbl = row.discountLabel { dict["discountLabel"] = lbl }
                 return dict
             }
-            return json(["count": result.filtered.count, "scope": scope.rawValue, "models": rows])
+            return json([
+                "count": result.filtered.count,
+                "scope": scope.rawValue,
+                "plan": planFilter.rawValue,
+                "planCounts": result.planCounts,
+                "uncoveredCount": result.uncoveredCount,
+                "models": rows
+            ])
 
         case ("GET", "/discovery/status"), ("GET", "/models/discovery"):
             let st = ModelDiscoveryEngine.shared.status()

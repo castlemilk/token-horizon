@@ -137,6 +137,11 @@ final class LeaderboardSyncController: ObservableObject {
         onMain { self.requestSync(forced: false, completion: completion) }
     }
 
+    /// True when a cloud sync would need interactive sign-in. Background sync
+    /// never opens an authentication window (see requestSync), so surfaces use
+    /// this to explain a paused auto-sync instead of leaving it silently idle.
+    var requiresSignIn: Bool { authNeeded() }
+
     /// Explicit cloud configuration wins, then the legacy Sheets source.
     /// Manual sync keeps the app's existing canonical-cloud default; merely
     /// launching or viewing a surface never enables automatic publication.

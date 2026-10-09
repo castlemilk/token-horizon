@@ -40,7 +40,7 @@ struct NotchContentView: View {
 }
 
 enum DashboardTab: String, CaseIterable, Identifiable {
-    case activity = "ACTIVITY", mlx = "MLX", engine = "ENGINE", tokens = "TOKENS", traces = "TRACES", models = "MODELS", shells = "SHELLS", leaderboard = "LEADERBOARD", settings = "SETTINGS"
+    case activity = "ACTIVITY", mlx = "MLX", engine = "ENGINE", tokens = "TOKENS", traces = "TRACES", models = "MODELS", shells = "SHELLS", leaderboard = "LEADERBOARD", teams = "TEAMS", settings = "SETTINGS"
     var id: String { rawValue }
 
     /// The notch is a quick control surface; advanced tools remain in More.
@@ -66,6 +66,7 @@ enum DashboardTab: String, CaseIterable, Identifiable {
         case .models: return "cube"
         case .shells: return "terminal"
         case .leaderboard: return "trophy"
+        case .teams: return "person.2"
         case .settings: return "gearshape"
         }
     }

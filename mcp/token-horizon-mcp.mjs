@@ -36,6 +36,31 @@ const TOOLS = [
     },
   },
   {
+    name: "token_horizon_teams",
+    description:
+      "Aggregated team usage: tokens, cost, published members, provider mix, and per-member totals across teams. 'source' is 'cloud' when the Token Horizon cloud aggregated them, 'local' when they were grouped from the entries published on this machine. Pass period to pick the ranking window and team to filter by name.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        period: {
+          type: "string",
+          enum: ["today", "week", "all"],
+          default: "week",
+          description: "Window used to rank teams (today / 7 days / all-time)",
+        },
+        team: {
+          type: "string",
+          description: "Optional case-insensitive team name filter",
+        },
+        refresh: {
+          type: "boolean",
+          default: false,
+          description: "Force a fresh cloud fetch instead of using the cached rows",
+        },
+      },
+    },
+  },
+  {
     name: "token_horizon_claude_accounts",
     description:
       "Discovered Claude accounts, organization details, token usage, and live quota limits across all configured Claude Code profiles (e.g. ~/.claude, ~/.claude-1, ~/.claude-2).",
@@ -143,7 +168,8 @@ const TOOLS = [
       type: "object",
       properties: {
         search: { type: "string", description: "Filter by model name, provider, or capability" },
-        scope: { type: "string", enum: ["ALL", "CODING", "LOCAL", "FREE", "REASONING", "FLAGSHIP"], default: "ALL" },
+        scope: { type: "string", enum: ["ALL", "CLOUD", "LOCAL", "FREE / OPEN", "BENCHMARKED", "USED"], default: "ALL" },
+        plan: { type: "string", description: "Only models covered by this subscription plan id (see token_horizon_plans); use 'uncovered' for none" },
         top_picks: { type: "boolean", default: false, description: "If true, return top 10 ranked models by benchmark performance and net blended cost" },
       },
     },
@@ -422,6 +448,25 @@ async function callTool(name, args) {
           by_tool: byTool,
           models,
           claude_accounts: u.claudeAccounts || [],
+        };
+      }
+      case "token_horizon_teams": {
+        const period = ["today", "week", "all"].includes(args?.period) ? args.period : "week";
+        const d = await api(args?.refresh ? "/teams?refresh=1" : "/teams");
+        let teams = d.teams || [];
+        if (args?.team) {
+          const filter = String(args.team).toLowerCase();
+          teams = teams.filter((t) => String(t.team || "").toLowerCase().includes(filter));
+        }
+        const scoreKey = period === "today" ? "tokensToday" : period === "week" ? "tokens7d" : "tokens";
+        teams = [...teams].sort((a, b) => (b[scoreKey] || 0) - (a[scoreKey] || 0));
+        return {
+          count: teams.length,
+          source: d.source || "none",
+          period,
+          updated_at: d.updatedAt ? new Date(d.updatedAt * 1000).toISOString() : null,
+          error: d.error || null,
+          teams,
         };
       }
       case "token_horizon_claude_accounts": {
@@ -770,7 +815,8 @@ async function callTool(name, args) {
         }
         const search = encodeURIComponent(args?.search || "");
         const scope = encodeURIComponent(args?.scope || "ALL");
-        const d = await api(`/models?search=${search}&scope=${scope}`);
+        const plan = encodeURIComponent(args?.plan || "");
+        const d = await api(`/models?search=${search}&scope=${scope}&plan=${plan}`);
         return d;
       }
       case "token_horizon_catalog": {

@@ -17,6 +17,8 @@ final class SelfUpdatePlanTests: XCTestCase {
         let valid = try SelfUpdatePlan.release(release())
         XCTAssertEqual(valid.tag, "v0.3.15")
         XCTAssertEqual(valid.archiveName, "TokenHorizon-0.3.15.zip")
+        XCTAssertNil(valid.notes)
+        XCTAssertNil(valid.url)
         for suffix in ["arm64-mac.zip", "x64-mac.zip", "dmg"] {
             var object = release()
             var assets = try XCTUnwrap(object["assets"] as? [[String: Any]])
@@ -31,6 +33,37 @@ final class SelfUpdatePlanTests: XCTestCase {
         let duplicateAssets = try XCTUnwrap(duplicate["assets"] as? [[String: Any]])
         duplicate["assets"] = duplicateAssets + [try XCTUnwrap(duplicateAssets.first)]
         XCTAssertThrowsError(try SelfUpdatePlan.release(duplicate))
+    }
+
+    func testReleaseCarriesCuratedNotesAndValidatedReleaseURL() throws {
+        var object = release()
+        object["body"] = "## Token Horizon v0.3.15\n\n### ✨ Features\n- One-click auto-sync"
+        object["html_url"] = "https://github.com/castlemilk/token-horizon/releases/tag/v0.3.15"
+        let decorated = try SelfUpdatePlan.release(object)
+        XCTAssertEqual(decorated.notes, object["body"] as? String)
+        XCTAssertEqual(decorated.url, object["html_url"] as? String)
+
+        var oversized = release()
+        oversized["body"] = String(repeating: "x", count: SelfUpdatePlan.maximumReleaseNotesLength + 1)
+        XCTAssertEqual(try SelfUpdatePlan.release(oversized).notes?.count, SelfUpdatePlan.maximumReleaseNotesLength)
+
+        for body in ["", "   \n  ", nil] {
+            var blank = release()
+            if let body { blank["body"] = body }
+            XCTAssertNil(try SelfUpdatePlan.release(blank).notes)
+        }
+        for url in [
+            "http://github.com/castlemilk/token-horizon/releases/tag/v0.3.15",
+            "https://evil.example/castlemilk/token-horizon/releases/tag/v0.3.15",
+            "https://github.com/other/repo/releases/tag/v0.3.15",
+            "https://github.com/castlemilk/token-horizon/releases/tag/v0.3.14",
+            "https://github.com/castlemilk/token-horizon/releases/tag/v0.3.15?files=1",
+            "not a url"
+        ] {
+            var untrusted = release()
+            untrusted["html_url"] = url
+            XCTAssertNil(try SelfUpdatePlan.release(untrusted).url, url)
+        }
     }
 
     func testReleaseRejectsUnpublishedUntrustedAndOversizedAssets() throws {

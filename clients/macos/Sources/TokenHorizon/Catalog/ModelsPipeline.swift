@@ -22,14 +22,61 @@ enum ModelsPipeline {
         let base: [ModelRow]
         let filtered: [ModelRow]
         let scopeCounts: [ModelFilterScope: Int]
+        /// Faceted plan counts over `base` (same basis as `scopeCounts`): the
+        /// dropdown badge for a plan shows how many rows selecting it yields.
+        let planCounts: [String: Int]
+        let uncoveredCount: Int
         let localCount: Int
         let topPicks: [TopPickModel]
         var baseKey: String
     }
 
+    /// Cheap O(n) content fingerprint of the usage inputs.
+    ///
+    /// Catalog-side change detection only carries *counts* + `revision`, so
+    /// per-model token totals, spend and local tok/s (all refreshed every few
+    /// seconds) would never invalidate the MODELS tab's recompute key — the
+    /// USAGE column, footer `used`/`spend` stats, the `USED` scope count and
+    /// top picks would stay frozen until some unrelated count changed. Callers
+    /// fold this into their key instead.
+    static func usageContentFingerprint(usageModels: [ModelUsage], syntheticModels: [ModelUsage]) -> String {
+        var tokens = 0
+        var spend = 0
+        for m in usageModels {
+            tokens &+= m.tokensAll
+            spend &+= Int(m.cost * 1000.0)
+            spend &+= Int(m.estCost * 1000.0)
+        }
+        var speed = 0
+        for s in syntheticModels {
+            if let t = s.tokPerSec { speed &+= Int(t * 10.0) }
+            if let p = s.promptTokPerSec { speed &+= Int(p * 10.0) }
+        }
+        return "\(tokens)#\(spend)#\(speed)"
+    }
+
+    /// Full recompute key for the MODELS tab. Built only from cheap scalar
+    /// accessors so a key comparison never materializes the catalog (an O(n)
+    /// dedupe over ~9k entries).
+    static func baseKey(
+        catalogCount: Int,
+        revision: Int,
+        usageModels: [ModelUsage],
+        syntheticModels: [ModelUsage],
+        search: String,
+        scope: ModelFilterScope,
+        planFilter: ModelPlanFilter = .all,
+        sortColumn: ModelTableColumn,
+        sortAscending: Bool
+    ) -> String {
+        let fingerprint = usageContentFingerprint(usageModels: usageModels, syntheticModels: syntheticModels)
+        return "\(catalogCount)-\(revision)-\(usageModels.count)-\(syntheticModels.count)-\(fingerprint)-\(search)-\(scope.rawValue)-\(planFilter.rawValue)-\(sortColumn.rawValue)-\(sortAscending)"
+    }
+
     static func compute(
         search: String,
         scope: ModelFilterScope,
+        planFilter: ModelPlanFilter = .all,
         sortColumn: ModelTableColumn,
         sortAscending: Bool,
         catalog: [ModelCatalog.Entry],
@@ -57,9 +104,17 @@ enum ModelsPipeline {
         hostCounts.reserveCapacity(totalExpected)
         isPrimaryEntry.reserveCapacity(totalExpected)
 
+        // Raw source providers per canonical family. Plan coverage is declared
+        // against these ids (`opencode-go`, `zai-coding-plan`, …), which the
+        // canonical merge rewrites away — so they have to be gathered during
+        // the same pass we already run over the catalog (zero extra cost).
+        var familySources: [String: Set<String>] = [:]
+
         for cat in catalog {
             let canon = ModelCatalog.canonicalIdentity(provider: cat.provider, model: cat.id)
             let familyKey = canon.family
+            let rawProvider = cat.provider.lowercased()
+            if !rawProvider.isEmpty { familySources[familyKey, default: []].insert(rawProvider) }
             hostCounts[familyKey, default: 0] += 1
             let isPrimary = cat.provider.lowercased() == canon.providerId
             let existingIsPrimary = isPrimaryEntry[familyKey] ?? false
@@ -208,7 +263,25 @@ enum ModelsPipeline {
             }
         }
 
-        let base = Array(rowMap.values)
+        // Stamp plan coverage once here; rows then carry it through filtering,
+        // sorting and the UI without re-walking the catalog per body update.
+        let planDoc = ModelPlanIndex.plans()
+        var planIdsByFamily: [String: [String]] = [:]
+        if !planDoc.plans.isEmpty, !familySources.isEmpty {
+            planIdsByFamily.reserveCapacity(familySources.count)
+            for (family, sources) in familySources {
+                let ids = ModelPlanIndex.planIds(familySources: sources, plans: planDoc.plans)
+                if !ids.isEmpty { planIdsByFamily[family] = ids }
+            }
+        }
+
+        var base: [ModelRow] = []
+        base.reserveCapacity(rowMap.count)
+        for (family, row) in rowMap {
+            var stamped = row
+            if !planIdsByFamily.isEmpty { stamped.planIds = planIdsByFamily[family] ?? [] }
+            base.append(stamped)
+        }
 
         // Single combined scope+search pass (was two filter passes with an
         // intermediate array). Scope predicate first (cheap bool checks),
@@ -225,6 +298,13 @@ enum ModelsPipeline {
             case .active: return row.usage.tokensAll > 0 || row.usage.cost > 0
             }
         }
+        func passesPlan(_ row: ModelRow) -> Bool {
+            switch planFilter {
+            case .all: return true
+            case .uncovered: return row.planIds.isEmpty
+            case .plan(let id): return row.planIds.contains(id)
+            }
+        }
         func passesSearch(_ row: ModelRow) -> Bool {
             guard hasQuery else { return true }
             // Lowercased-contains is cheaper than repeated ICU
@@ -236,6 +316,9 @@ enum ModelsPipeline {
             if let d = row.catalog?.description, d.lowercased().contains(q) { return true }
             if let p = row.usage.paramSize, p.lowercased().contains(q) { return true }
             if let qt = row.usage.quant, qt.lowercased().contains(q) { return true }
+            if !row.planIds.isEmpty, planDoc.plans.contains(where: { plan in
+                row.planIds.contains(plan.id) && (plan.name.lowercased().contains(q) || plan.short.lowercased().contains(q))
+            }) { return true }
             return false
         }
         var list: [ModelRow] = []
@@ -243,6 +326,7 @@ enum ModelsPipeline {
         for row in base where passesScope(row) && passesSearch(row) {
             list.append(row)
         }
+        if planFilter != .all { list = list.filter(passesPlan) }
 
         list.sort { a, b in
             let asc = sortAscending
@@ -286,6 +370,8 @@ enum ModelsPipeline {
         var benchmarkedCount = 0
         var activeCount = 0
         var discountFingerprint = 0
+        var planCounts: [String: Int] = [:]
+        var uncoveredCount = 0
 
         for row in base {
             allCount += 1
@@ -304,6 +390,11 @@ enum ModelsPipeline {
                 activeCount += 1
             }
             if row.hasDiscount { discountFingerprint += (row.discountPercent ?? 1) }
+            if row.planIds.isEmpty {
+                uncoveredCount += 1
+            } else {
+                for id in row.planIds { planCounts[id, default: 0] += 1 }
+            }
         }
 
         var counts: [ModelFilterScope: Int] = [:]
@@ -317,11 +408,20 @@ enum ModelsPipeline {
         let topPicks = computeTopPicks(from: base)
 
         let elapsedMs = (clock.now - t0) / .milliseconds(1)
-        let baseKey = "\(catalog.count)-\(usageModels.count)-\(syntheticModels.count)-\(search)-\(scope.rawValue)-\(sortColumn.rawValue)-\(sortAscending)-\(discountFingerprint)"
+        let baseKey = "\(catalog.count)-\(usageModels.count)-\(syntheticModels.count)-\(search)-\(scope.rawValue)-\(planFilter.rawValue)-\(sortColumn.rawValue)-\(sortAscending)-\(discountFingerprint)"
 
-        NSLog("[ModelsPipeline] compute: \(String(format: "%.1f", elapsedMs))ms, base=\(base.count), filtered=\(list.count), picks=\(topPicks.count), input=\(catalog.count)")
+        NSLog("[ModelsPipeline] compute: \(String(format: "%.1f", elapsedMs))ms, base=\(base.count), filtered=\(list.count), picks=\(topPicks.count), plans=\(planDoc.plans.count), input=\(catalog.count)")
 
-        return Result(base: base, filtered: list, scopeCounts: counts, localCount: localCount, topPicks: topPicks, baseKey: baseKey)
+        return Result(
+            base: base,
+            filtered: list,
+            scopeCounts: counts,
+            planCounts: planCounts,
+            uncoveredCount: uncoveredCount,
+            localCount: localCount,
+            topPicks: topPicks,
+            baseKey: baseKey
+        )
     }
 
     /// Selects the top 10 models based on coding/reasoning performance and blended token cost.

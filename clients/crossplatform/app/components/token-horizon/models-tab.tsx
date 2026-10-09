@@ -12,7 +12,10 @@ import {
 } from '@tanstack/react-table'
 import type { CatalogModel } from '../../api/types'
 
-const SCOPES = ['ALL', 'CODING', 'LOCAL', 'FREE', 'VISION', 'TOOLING']
+/** Must match `ModelFilterScope` exactly — the server falls back to `ALL` for
+ * unknown raw values, so a scope the backend does not know silently shows the
+ * unfiltered list. */
+const SCOPES = ['ALL', 'CLOUD', 'LOCAL', 'FREE / OPEN', 'BENCHMARKED', 'USED']
 const col = createColumnHelper<CatalogModel>()
 
 /** Mirrors the Swift modelsTab: the full model catalog — search, scope filter,

@@ -4,6 +4,10 @@ struct ModelRow: Identifiable {
     let usage: ModelUsage
     let catalog: ModelCatalog.Entry?
     var hostCount: Int = 1
+    /// `plans.json` ids covering this family (resolved from the *raw* source
+    /// providers before canonical merge rewrites them to lab ids). Stamped by
+    /// `ModelsPipeline.compute`, so plan filtering never re-walks the catalog.
+    var planIds: [String] = []
     var id: String { "\(usage.provider)/\(usage.model)" }
 
     var displayName: String {
@@ -89,6 +93,16 @@ struct ModelRow: Identifiable {
 
     var discountDetail: String? {
         catalog?.discountDetail
+    }
+
+    /// Curated plan names covering this row, for the detail drawer.
+    var planNames: [String] {
+        ModelPlanIndex.covering(planIds: planIds).map(\.name)
+    }
+
+    /// Short plan pills for dense rows (`ZEN`, `GLM`, …), deduped, curated order.
+    var planBadges: [String] {
+        ModelPlanIndex.covering(planIds: planIds).map(\.short)
     }
 
     var originalInputPriceText: String? {
@@ -259,6 +273,22 @@ enum ModelFilterScope: String, CaseIterable, Identifiable {
     case benchmarked = "BENCHMARKED"
     case active = "USED"
     var id: String { rawValue }
+
+    /// Lenient query parsing for `/models?scope=`: accepts the raw display
+    /// values plus the shorter aliases MCP/cross-platform clients send
+    /// (`free`, `benchmarked`, `active`). Unknown values fall back to `.all`
+    /// rather than silently dropping every row.
+    init(queryValue: String) {
+        let key = queryValue.trimmingCharacters(in: .whitespaces).uppercased()
+        switch key {
+        case "CLOUD", "PAID": self = .cloud
+        case "LOCAL": self = .local
+        case "FREE", "FREE/OPEN", "FREE / OPEN", "OPEN": self = .freeOpen
+        case "BENCHMARKED", "BENCH", "BENCHMARK": self = .benchmarked
+        case "USED", "ACTIVE": self = .active
+        default: self = ModelFilterScope(rawValue: key) ?? .all
+        }
+    }
 }
 
 struct ModelRowView: View {
@@ -316,6 +346,15 @@ struct ModelRowView: View {
                                 .padding(.horizontal, 3).padding(.vertical, 0.5)
                                 .background(Capsule().fill(Color.white.opacity(0.12)))
                                 .foregroundStyle(Color.white.opacity(0.6))
+                        }
+                        // Plan coverage: "this family is inside a plan you
+                        // already pay for" (ZEN, GLM, COPILOT, …).
+                        ForEach(row.planBadges, id: \.self) { badge in
+                            Text(badge)
+                                .font(.system(size: 6.5, weight: .heavy, design: .monospaced))
+                                .padding(.horizontal, 3).padding(.vertical, 0.5)
+                                .background(Capsule().fill(Color.orange.opacity(0.22)))
+                                .foregroundStyle(Color.orange)
                         }
                     }
                 }
@@ -782,6 +821,43 @@ struct ModelDetailView: View {
                         .padding(8)
                         .background(RoundedRectangle(cornerRadius: 6).fill(Color.green.opacity(0.08)))
                         .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.green.opacity(0.2), lineWidth: 1))
+                    }
+                }
+                if !row.planIds.isEmpty {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Included in plans").font(.system(size: 9, weight: .heavy, design: .monospaced)).foregroundStyle(.tertiary).kerning(1)
+                        ForEach(ModelPlanIndex.covering(planIds: row.planIds), id: \.id) { plan in
+                            HStack(alignment: .top, spacing: 8) {
+                                Text(plan.short)
+                                    .font(.system(size: 8, weight: .heavy, design: .monospaced))
+                                    .padding(.horizontal, 5).padding(.vertical, 2)
+                                    .background(Capsule().fill(Color.orange.opacity(0.22)))
+                                    .foregroundStyle(.orange)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(plan.name)
+                                        .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                                        .foregroundStyle(.white)
+                                    if !plan.summary.isEmpty {
+                                        Text(plan.summary)
+                                            .font(.system(size: 8.5, design: .monospaced))
+                                            .foregroundStyle(.secondary)
+                                            .fixedSize(horizontal: false, vertical: true)
+                                    }
+                                }
+                                Spacer(minLength: 4)
+                                if let docUrl = plan.docUrl.flatMap({ URL(string: $0) }) {
+                                    Button { NSWorkspace.shared.open(docUrl) } label: {
+                                        Image(systemName: "arrow.up.right.square")
+                                            .font(.system(size: 10))
+                                    }
+                                    .buttonStyle(.borderless)
+                                    .help("Open \(plan.name) plan docs")
+                                }
+                            }
+                            .padding(8)
+                            .background(RoundedRectangle(cornerRadius: 6).fill(Color.orange.opacity(0.07)))
+                            .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.orange.opacity(0.18), lineWidth: 1))
+                        }
                     }
                 }
                 HStack(spacing: 14) {

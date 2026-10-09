@@ -28,14 +28,13 @@ enum ModelCatalogExport {
         let plansDoc = loadPlans()
         let plans = plansDoc.plans
         let listings = listingsByFamily(catalog)
-        var planCounts: [String: Int] = [:]
         let models = result.base.map { row -> [String: Any] in
             var dict = rowPayload(row, aux: aux, listings: listings[row.usage.model] ?? [])
-            let planIds = planIds(for: row, listings: listings, plans: plans)
-            if !planIds.isEmpty {
-                dict["plan"] = planIds[0]
-                dict["plans"] = planIds
-                for id in planIds { planCounts[id, default: 0] += 1 }
+            // Stamped by ModelsPipeline.compute from the same raw-source pass
+            // the app uses, so the artifact and the MODELS tab agree.
+            if !row.planIds.isEmpty {
+                dict["plan"] = row.planIds[0]
+                dict["plans"] = row.planIds
             }
             return dict
         }
@@ -53,7 +52,7 @@ enum ModelCatalogExport {
         }
         let plansPayload = plans.map { plan -> [String: Any] in
             var enriched = plan
-            enriched["modelCount"] = planCounts[plan["id"] as? String ?? ""] ?? 0
+            enriched["modelCount"] = result.planCounts[plan["id"] as? String ?? ""] ?? 0
             return enriched
         }
 
@@ -107,18 +106,40 @@ enum ModelCatalogExport {
 
     // MARK: - Curated subscription plans
 
-    /// Loads Resources/plans.json (bundle → user override → repo fallback).
+    /// Loads Resources/plans.json (bundle → user override → dev fallbacks).
     /// The file is curated by hand — plan tiers come from provider docs, not
     /// from the model feeds — so it is never generated.
+    ///
+    /// The fallbacks matter: `scripts/refresh-models.sh` cds to the repo root
+    /// before running a SwiftPM binary, so a bare `Resources/plans.json`
+    /// resolves to nothing and the exported artifact silently ships zero plans
+    /// (which is exactly what left the web Plans view and `token_horizon_plans`
+    /// empty). Candidates cover the installed .app, the dev binary's `.build`
+    /// layout, and both working directories.
     static func loadPlans() -> (plans: [[String: Any]], updatedAt: String) {
-        let bundled = Bundle.main.path(forResource: "plans", ofType: "json")
-        let userOverride = NSString(string: "~/.config/token-horizon/plans.json").expandingTildeInPath
-        let projectFallback = "Resources/plans.json"
-        let path = bundled ?? (FileManager.default.fileExists(atPath: userOverride) ? userOverride : projectFallback)
-        guard let data = FileManager.default.contents(atPath: path),
-              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let plans = obj["plans"] as? [[String: Any]] else { return ([], "") }
-        return (plans, obj["updatedAt"] as? String ?? "")
+        for path in planPathCandidates() {
+            guard let data = FileManager.default.contents(atPath: path),
+                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let plans = obj["plans"] as? [[String: Any]] else { continue }
+            return (plans, obj["updatedAt"] as? String ?? "")
+        }
+        return ([], "")
+    }
+
+    private static func planPathCandidates() -> [String] {
+        var paths: [String] = []
+        if let bundled = Bundle.main.path(forResource: "plans", ofType: "json") { paths.append(bundled) }
+        paths.append(NSString(string: "~/.config/token-horizon/plans.json").expandingTildeInPath)
+        // SwiftPM binary at clients/macos/.build/{debug,release}/TokenHorizon →
+        // walk up to clients/macos so Resources/ resolves for any CWD.
+        let bundleURL = Bundle.main.bundleURL
+        paths.append(bundleURL
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Resources/plans.json").path)
+        paths.append("Resources/plans.json")
+        paths.append("clients/macos/Resources/plans.json")
+        return paths
     }
 
     /// One provider listing of a family, with implausible cache prices dropped
@@ -168,13 +189,7 @@ enum ModelCatalogExport {
     }
 
     static func planIds(for row: ModelRow, listings: [String: [Listing]], plans: [[String: Any]]) -> [String] {
-        let familySources = Set((listings[row.usage.model] ?? []).map { $0.provider })
-        guard !familySources.isEmpty else { return [] }
-        return plans.compactMap { plan -> String? in
-            let providers = (plan["providers"] as? [String] ?? []).map { $0.lowercased() }
-            guard providers.contains(where: { familySources.contains($0) }) else { return nil }
-            return plan["id"] as? String
-        }
+        ModelPlanIndex.planIds(familySources: Set((listings[row.usage.model] ?? []).map { $0.provider }), plans: plans)
     }
 
     // MARK: - Name accuracy
@@ -221,13 +236,7 @@ enum ModelCatalogExport {
     // MARK: - Row serialization
 
     static func planIds(for row: ModelRow, sources: [String: Set<String>], plans: [[String: Any]]) -> [String] {
-        let familySources = sources[row.usage.model] ?? []
-        guard !familySources.isEmpty else { return [] }
-        return plans.compactMap { plan -> String? in
-            let providers = (plan["providers"] as? [String] ?? []).map { $0.lowercased() }
-            guard providers.contains(where: { familySources.contains($0) }) else { return nil }
-            return plan["id"] as? String
-        }
+        ModelPlanIndex.planIds(familySources: sources[row.usage.model] ?? [], plans: plans)
     }
 
     // MARK: - Row serialization

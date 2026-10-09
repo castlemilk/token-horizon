@@ -23,6 +23,7 @@ struct DashboardTabs: View {
     @State private var modelSortColumn: ModelTableColumn = .sweBench
     @State private var modelSortAscending: Bool = false
     @State private var modelFilterScope: ModelFilterScope = .all
+    @State private var modelPlanFilter: ModelPlanFilter = .all
     @State private var showUsageColumn: Bool = false
     @State private var procSearch: String = ""
     @State private var procSort: String = "cpu"
@@ -32,11 +33,6 @@ struct DashboardTabs: View {
     @State private var mlxWindow: MLXWindow = .h1
     @State private var planHoveredId: String?
     @State private var planViewportH: CGFloat = 600
-    @State private var leaderboardPeriod: LeaderboardPeriod = .today
-    @State private var leaderboardTeamFilter: String = ""
-    @State private var leaderboardShareFormat: ShareCardFormat = .markdown
-    @State private var leaderboardCopiedNotice: Bool = false
-    @State private var selectedLeaderboardEntry: LeaderboardRankedEntry? = nil
     @State private var leaderboardHandleDraft: String = SettingsStore.shared.leaderboardHandle
     @State private var leaderboardTeamDraft: String = SettingsStore.shared.leaderboardTeam
     @State private var leaderboardShareCostDraft: Bool = SettingsStore.shared.leaderboardShareCost
@@ -46,8 +42,7 @@ struct DashboardTabs: View {
     @State private var leaderboardCloudDraft: String = SettingsStore.shared.leaderboardCloudURL
     @State private var leaderboardCloudTokenDraft: String = SettingsStore.shared.leaderboardCloudToken
     @State private var leaderboardClaimTokenDraft: String = ""
-    @State private var leaderboardAutoSyncDraft: Bool = SettingsStore.shared.leaderboardAutoSync
-        && (SettingsStore.shared.leaderboardCloudConfigured || !SettingsStore.shared.leaderboardSheetsURL.isEmpty)
+    @State private var autoSyncOn = SettingsStore.shared.leaderboardAutoSync
     @State private var syncDestinationDraft: String = SettingsStore.shared.leaderboardCloudConfigured
         || SettingsStore.shared.leaderboardSheetsURL.isEmpty ? "cloud" : "sheets"
     @ObservedObject private var updater = SelfUpdater.shared
@@ -66,7 +61,8 @@ struct DashboardTabs: View {
                 case .traces: TracesTabView()
                 case .models: modelsTab
                 case .shells: shellsTab
-                case .leaderboard: leaderboardTab
+                case .leaderboard: LeaderboardTabView(model: model, onOpenSettings: { openSettings(.sharing) })
+                case .teams: TeamsTabView()
                 case .settings: settingsTab
                 }
             }
@@ -89,12 +85,30 @@ struct DashboardTabs: View {
                 settingsSection = section
             }
         }
+        // Catalog/discovery refresh notifications and the staleness poll live on
+        // the ROOT (not inside `modelsTab`), so rows stay warm while another tab
+        // is showing and changes made off-tab are picked up when you come back.
+        .onReceive(NotificationCenter.default.publisher(for: .refreshModelExtras)) { _ in
+            recomputeFilteredRows(force: true)
+        }
         .onAppear {
             if compact {
                 tab = model.compactDashboardTab
                 settingsSection = model.compactSettingsSection
             }
+            autoSyncOn = SettingsStore.shared.leaderboardAutoSync
+            ModelCatalog.shared.ensureLoaded(maxAge: ModelCatalog.interactiveRefreshInterval)
             NotificationCenter.default.post(name: .refreshTrends, object: nil)
+        }
+        .task {
+            recomputeFilteredRows()
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(2))
+                // The gate inside recomputeFilteredRows compares the full
+                // content key, so a bare call here is the cheap thing: it either
+                // early-exits or schedules one off-main pipeline run.
+                await MainActor.run { recomputeFilteredRows() }
+            }
         }
         .onChange(of: tab) { destination in
             if compact { model.compactDashboardTab = destination }
@@ -127,8 +141,29 @@ struct DashboardTabs: View {
                         (Text("Last completed ") + Text(syncedAt, style: .relative) + Text(" ago"))
                             .font(.system(size: 10)).foregroundStyle(.white.opacity(0.7))
                     }
+                    if autoSyncOn, syncController.requiresSignIn, !syncController.isSyncing,
+                       syncController.lastError == nil {
+                        Text("Auto-sync paused — click Sync now to reconnect")
+                            .font(.system(size: 10)).foregroundStyle(.orange)
+                    }
                 }
                 Spacer(minLength: 8)
+                Button { setAutoSync(!autoSyncOn) } label: {
+                    HStack(spacing: 5) {
+                        Circle().fill(autoSyncOn ? Color.green : Color.white.opacity(0.35)).frame(width: 6, height: 6)
+                        Text("AUTO")
+                            .font(.system(size: 10, weight: .heavy, design: .monospaced))
+                            .foregroundStyle(autoSyncOn ? Color.white : Color.white.opacity(0.55))
+                    }
+                    .padding(.horizontal, 10).padding(.vertical, 8)
+                    .background(RoundedRectangle(cornerRadius: 8).fill(autoSyncOn ? Color.white.opacity(0.16) : Color.white.opacity(0.06)))
+                    .contentShape(RoundedRectangle(cornerRadius: 8))
+                }
+                .buttonStyle(.plain)
+                .disabled(syncController.isSyncing)
+                .accessibilityLabel(autoSyncOn ? "Turn auto-sync off" : "Turn auto-sync on")
+                .help(autoSyncOn ? "Auto-sync is on — click to turn it off"
+                                 : "Auto-sync is off — click to connect this Mac and sync automatically")
                 Button { syncController.syncNow() } label: {
                     HStack(spacing: 6) {
                         if syncController.isSyncing {
@@ -208,7 +243,7 @@ struct DashboardTabs: View {
             }
             .menuStyle(.borderlessButton)
             .fixedSize()
-            .help("Local engines, traces, model inventory, shells, and leaderboard")
+            .help("Model inventory, traces, shells, team aggregates, and leaderboard")
             Spacer(minLength: 4)
             if compact {
                 Button {
@@ -249,7 +284,6 @@ struct DashboardTabs: View {
                 webShortcut("Leaderboard", icon: "trophy", destination: .leaderboard)
                 webShortcut("Models", icon: "cube", destination: .models)
                 webShortcut("My profile", icon: "person.crop.circle", destination: .profile)
-                webShortcut("Teams", icon: "person.2", destination: .teams)
             }
         }
     }
@@ -275,6 +309,21 @@ struct DashboardTabs: View {
     private func openSettings(_ section: AppSettingsSection = .general) {
         tab = .settings
         settingsSection = section
+    }
+
+    /// One switch for auto-sync on every surface: saving the preference also
+    /// defaults the cloud destination and, when switching on, runs the manual
+    /// sync immediately so the browser consent happens in the same click.
+    private func setAutoSync(_ enabled: Bool) {
+        autoSyncOn = enabled
+        SettingsStore.shared.leaderboardAutoSync = enabled
+        if enabled, !SettingsStore.shared.leaderboardCloudConfigured,
+           SettingsStore.shared.leaderboardSheetsURL.isEmpty {
+            SettingsStore.shared.leaderboardCloudURL = WebDestination.defaultBaseURL
+            leaderboardCloudDraft = WebDestination.defaultBaseURL
+            syncDestinationDraft = "cloud"
+        }
+        if enabled { syncController.syncNow() }
     }
 
     private var activityTab: some View {
@@ -1553,593 +1602,6 @@ struct DashboardTabs: View {
         }
     }
 
-    private var leaderboardTab: some View {
-        let rankings = LeaderboardStore.shared.rankings(for: leaderboardPeriod, teamFilter: leaderboardTeamFilter)
-        let localRanked = rankings.first(where: { $0.entry.isLocal })
-        let totalParticipants = rankings.count
-
-        return VStack(alignment: .leading, spacing: 10) {
-            // Header bar: Period selection + Action buttons
-            HStack(spacing: 6) {
-                ForEach(LeaderboardPeriod.allCases) { p in
-                    Button {
-                        withAnimation(.easeOut(duration: 0.15)) { leaderboardPeriod = p }
-                    } label: {
-                        Text(p.title.uppercased())
-                            .font(.system(size: 8.5, weight: .heavy, design: .monospaced))
-                            .foregroundStyle(leaderboardPeriod == p ? Color.black : Color.white.opacity(0.55))
-                            .padding(.horizontal, 8).padding(.vertical, 3)
-                            .background(Capsule().fill(leaderboardPeriod == p ? Color.white : Color.white.opacity(0.1)))
-                            .contentShape(Capsule())
-                    }
-                    .buttonStyle(.plain)
-                }
-
-                Spacer()
-
-                // Share Format Picker
-                HStack(spacing: 2) {
-                    ForEach(ShareCardFormat.allCases) { fmt in
-                        Button {
-                            leaderboardShareFormat = fmt
-                        } label: {
-                            Text(fmt.rawValue.uppercased())
-                                .font(.system(size: 7.5, weight: .bold, design: .monospaced))
-                                .foregroundStyle(leaderboardShareFormat == fmt ? Color.cyan : Color.white.opacity(0.4))
-                                .padding(.horizontal, 4).padding(.vertical, 2)
-                                .background(RoundedRectangle(cornerRadius: 3).fill(leaderboardShareFormat == fmt ? Color.cyan.opacity(0.15) : Color.clear))
-                                .contentShape(RoundedRectangle(cornerRadius: 3))
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-                .padding(2)
-                .background(RoundedRectangle(cornerRadius: 4).fill(Color.white.opacity(0.06)))
-
-                // Copy Share Card Button
-                Button {
-                    let ok = LeaderboardStore.shared.copyShareCard(for: leaderboardPeriod, format: leaderboardShareFormat)
-                    if ok {
-                        leaderboardCopiedNotice = true
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
-                            leaderboardCopiedNotice = false
-                        }
-                    }
-                } label: {
-                    HStack(spacing: 4) {
-                        Image(systemName: leaderboardCopiedNotice ? "checkmark" : "doc.on.doc")
-                            .font(.system(size: 8.5))
-                        Text(leaderboardCopiedNotice ? "Copied!" : "Share Card")
-                            .font(.system(size: 8.5, weight: .heavy, design: .monospaced))
-                    }
-                    .foregroundStyle(leaderboardCopiedNotice ? Color.green : Color.white.opacity(0.9))
-                    .padding(.horizontal, 7).padding(.vertical, 3.5)
-                    .background(RoundedRectangle(cornerRadius: 4).fill(Color.white.opacity(0.12)))
-                    .contentShape(RoundedRectangle(cornerRadius: 4))
-                }
-                .buttonStyle(.plain)
-
-            }
-
-            HStack(spacing: 10) {
-                TextField("Filter by team", text: $leaderboardTeamFilter)
-                    .textFieldStyle(.roundedBorder)
-                    .frame(maxWidth: 220)
-                Spacer()
-                Button("Sharing settings…") { openSettings(.sharing) }
-                    .buttonStyle(.plain).foregroundStyle(.cyan)
-                Button("Open web leaderboard ↗") { openWeb(.leaderboard) }
-                    .buttonStyle(.plain).foregroundStyle(.cyan)
-            }
-            .font(.system(size: 11))
-
-            // 4 Hero KPI Cards
-            HStack(spacing: 8) {
-                // Card 1: Your Rank
-                VStack(alignment: .leading, spacing: 2) {
-                    HStack {
-                        sectionLabel("YOUR RANK")
-                        Spacer()
-                        if localRanked != nil {
-                            Text("Details ↗")
-                                .font(.system(size: 7, weight: .bold, design: .monospaced))
-                                .foregroundStyle(Color.yellow.opacity(0.8))
-                        }
-                    }
-                    Text(localRanked?.badge ?? "#1 🥇")
-                        .font(.system(size: 13, weight: .heavy, design: .monospaced))
-                        .foregroundStyle(Color.yellow)
-                    Text("Top \(String(format: "%.0f%%", localRanked?.percentile ?? 100)) of \(totalParticipants)")
-                        .font(.system(size: 7.5, design: .monospaced))
-                        .foregroundStyle(.secondary)
-                }
-                .padding(6)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(RoundedRectangle(cornerRadius: 6).fill(selectedLeaderboardEntry?.id == localRanked?.id ? Color.yellow.opacity(0.12) : Color.white.opacity(0.04)))
-                .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color.yellow.opacity(0.25)))
-                .contentShape(Rectangle())
-                .onTapGesture {
-                    if let local = localRanked {
-                        withAnimation(.easeInOut(duration: 0.18)) {
-                            if selectedLeaderboardEntry?.id == local.id {
-                                selectedLeaderboardEntry = nil
-                            } else {
-                                selectedLeaderboardEntry = local
-                            }
-                        }
-                    }
-                }
-
-                // Card 2: Period Volume
-                VStack(alignment: .leading, spacing: 2) {
-                    sectionLabel(leaderboardPeriod.title.uppercased())
-                    Text(localRanked?.scoreFormatted ?? UsageSnapshot.tokens(model.usage.tokensToday))
-                        .font(.system(size: 13, weight: .heavy, design: .monospaced))
-                        .foregroundStyle(Color.cyan)
-                    Text(localRanked?.costFormatted ?? "$0.00")
-                        .font(.system(size: 7.5, design: .monospaced))
-                        .foregroundStyle(.secondary)
-                }
-                .padding(6)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(RoundedRectangle(cornerRadius: 6).fill(Color.white.opacity(0.04)))
-                .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color.cyan.opacity(0.25)))
-
-                // Card 3: Streak
-                VStack(alignment: .leading, spacing: 2) {
-                    sectionLabel("ACTIVE STREAK")
-                    Text("🔥 \(model.historyStreak) Days")
-                        .font(.system(size: 13, weight: .heavy, design: .monospaced))
-                        .foregroundStyle(Color.orange)
-                    Text("Consecutive days")
-                        .font(.system(size: 7.5, design: .monospaced))
-                        .foregroundStyle(.secondary)
-                }
-                .padding(6)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(RoundedRectangle(cornerRadius: 6).fill(Color.white.opacity(0.04)))
-                .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color.orange.opacity(0.25)))
-
-                // Card 4: Hardware & Model
-                VStack(alignment: .leading, spacing: 2) {
-                    sectionLabel("HARDWARE")
-                    Text(localRanked?.entry.hardware ?? SystemStats.cpuBrandString())
-                        .font(.system(size: 11, weight: .heavy, design: .monospaced))
-                        .foregroundStyle(Color.white.opacity(0.95))
-                        .lineLimit(1)
-                    Text(localRanked?.entry.topModel ?? "claude-3-7-sonnet")
-                        .font(.system(size: 7.5, design: .monospaced))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
-                .padding(6)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(RoundedRectangle(cornerRadius: 6).fill(Color.white.opacity(0.04)))
-                .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color.white.opacity(0.12)))
-            }
-
-            // Leaderboard Rankings Table
-            sectionLabel("PARTICIPANT RANKINGS · \(leaderboardPeriod.title.uppercased())")
-
-            VStack(spacing: 1) {
-                // Table header
-                HStack(spacing: 6) {
-                    Text("RANK").frame(width: 46, alignment: .leading)
-                    Text("PARTICIPANT").frame(minWidth: 100, alignment: .leading)
-                    Text("TEAM").frame(width: 70, alignment: .leading)
-                    Text("TOP MODEL").frame(width: 90, alignment: .leading)
-                    Text("VOLUME").frame(width: 65, alignment: .trailing)
-                    Text("SHARE").frame(width: 80, alignment: .leading)
-                    Text("STREAK").frame(width: 45, alignment: .trailing)
-                    Spacer().frame(width: 14)
-                }
-                .font(.system(size: 7.5, weight: .heavy, design: .monospaced))
-                .foregroundStyle(.tertiary)
-                .padding(.horizontal, 6)
-                .padding(.vertical, 3)
-
-                Divider().overlay(Color.white.opacity(0.1))
-
-                // Table rows
-                ForEach(rankings) { item in
-                    let isUser = item.entry.isLocal
-                    let isSelected = selectedLeaderboardEntry?.id == item.id
-
-                    VStack(spacing: 0) {
-                        HStack(spacing: 6) {
-                            // Rank & Badge
-                            Text(item.badge)
-                                .font(.system(size: 8.5, weight: .bold, design: .monospaced))
-                                .foregroundStyle(item.rank == 1 ? Color.yellow : item.rank == 2 ? Color.white : item.rank == 3 ? Color.orange : Color.secondary)
-                                .frame(width: 46, alignment: .leading)
-
-                            // Participant
-                            HStack(spacing: 4) {
-                                if isUser {
-                                    Circle().fill(Color.green).frame(width: 5, height: 5)
-                                }
-                                Text(item.entry.displayHandle)
-                                    .font(.system(size: 9, weight: isUser ? .heavy : .medium, design: .monospaced))
-                                    .foregroundStyle(isUser ? Color.white : Color.white.opacity(0.85))
-                                    .lineLimit(1)
-                                if isUser {
-                                    Text("YOU")
-                                        .font(.system(size: 6.5, weight: .heavy, design: .monospaced))
-                                        .foregroundStyle(Color.black)
-                                        .padding(.horizontal, 3).padding(.vertical, 1)
-                                        .background(Capsule().fill(Color.green))
-                                }
-                            }
-                            .frame(minWidth: 100, alignment: .leading)
-
-                            // Team
-                            Text(item.entry.team.isEmpty ? "—" : item.entry.team)
-                                .font(.system(size: 8, design: .monospaced))
-                                .foregroundStyle(.secondary)
-                                .frame(width: 70, alignment: .leading)
-                                .lineLimit(1)
-
-                            // Top Model
-                            Text(item.entry.topModel)
-                                .font(.system(size: 7.5, design: .monospaced))
-                                .foregroundStyle(.secondary)
-                                .padding(.horizontal, 4).padding(.vertical, 1.5)
-                                .background(RoundedRectangle(cornerRadius: 3).fill(Color.white.opacity(0.05)))
-                                .frame(width: 90, alignment: .leading)
-                                .lineLimit(1)
-
-                            // Volume / Score
-                            VStack(alignment: .trailing, spacing: 0) {
-                                Text(item.scoreFormatted)
-                                    .font(.system(size: 8.5, weight: .bold, design: .monospaced))
-                                    .foregroundStyle(Color.cyan)
-                                if item.costFormatted != "$0.00" {
-                                    Text(item.costFormatted)
-                                        .font(.system(size: 7, design: .monospaced))
-                                        .foregroundStyle(.secondary)
-                                }
-                            }
-                            .frame(width: 65, alignment: .trailing)
-
-                            // Share bar
-                            GeometryReader { barGeo in
-                                ZStack(alignment: .leading) {
-                                    RoundedRectangle(cornerRadius: 2)
-                                        .fill(Color.white.opacity(0.08))
-                                        .frame(height: 5)
-                                    RoundedRectangle(cornerRadius: 2)
-                                        .fill(isUser ? Color.green : Color.cyan.opacity(0.7))
-                                        .frame(width: max(2, barGeo.size.width * CGFloat(item.relativePercent / 100.0)), height: 5)
-                                }
-                                .frame(maxHeight: .infinity, alignment: .center)
-                            }
-                            .frame(width: 80, height: 16)
-
-                            // Streak
-                            Text("🔥\(item.entry.streakDays)d")
-                                .font(.system(size: 8, weight: .semibold, design: .monospaced))
-                                .foregroundStyle(item.entry.streakDays >= 7 ? Color.orange : Color.secondary)
-                                .frame(width: 45, alignment: .trailing)
-
-                            // Expand / Collapse Chevron
-                            Image(systemName: isSelected ? "chevron.up.circle.fill" : "chevron.right")
-                                .font(.system(size: 8.5, weight: .bold))
-                                .foregroundStyle(isSelected ? Color.cyan : Color.white.opacity(0.35))
-                                .frame(width: 14, alignment: .center)
-                        }
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 4)
-                        .background(RoundedRectangle(cornerRadius: 4).fill(isSelected ? Color.cyan.opacity(0.16) : (isUser ? Color.white.opacity(0.06) : Color.clear)))
-                        .contentShape(Rectangle())
-                        .onTapGesture {
-                            withAnimation(.easeInOut(duration: 0.18)) {
-                                if selectedLeaderboardEntry?.id == item.id {
-                                    selectedLeaderboardEntry = nil
-                                } else {
-                                    selectedLeaderboardEntry = item
-                                }
-                            }
-                        }
-
-                        // Expanded user full usage breakdown details drawer
-                        if isSelected {
-                            leaderboardUserDetailView(item: item)
-                                .padding(.horizontal, 4)
-                                .padding(.vertical, 6)
-                                .transition(.opacity.combined(with: .move(edge: .top)))
-                        }
-                    }
-                }
-            }
-            .padding(6)
-            .background(RoundedRectangle(cornerRadius: 6).fill(Color.white.opacity(0.03)))
-            .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color.white.opacity(0.08)))
-
-            // Share Card Live Preview Section
-            sectionLabel("SHARE CARD PREVIEW · \(leaderboardShareFormat.rawValue.uppercased())")
-            let cardText = LeaderboardStore.shared.generateShareCard(for: leaderboardPeriod, format: leaderboardShareFormat, entryId: selectedLeaderboardEntry?.id)
-
-            VStack(alignment: .leading, spacing: 4) {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    Text(cardText)
-                        .font(.system(size: 7.5, design: .monospaced))
-                        .foregroundStyle(Color.white.opacity(0.85))
-                        .textSelection(.enabled)
-                        .padding(8)
-                }
-                .background(RoundedRectangle(cornerRadius: 6).fill(Color.black.opacity(0.4)))
-                .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color.white.opacity(0.1)))
-            }
-        }
-    }
-
-    private func leaderboardUserDetailView(item: LeaderboardRankedEntry) -> some View {
-        let entry = item.entry
-        let bd = entry.resolvedBreakdown()
-        let isUser = entry.isLocal
-
-        return VStack(alignment: .leading, spacing: 8) {
-            // Header: Avatar badge, handle, meta pills, copy card, close
-            HStack(spacing: 8) {
-                ZStack {
-                    Circle()
-                        .fill(item.rank == 1 ? Color.yellow.opacity(0.2) : (item.rank == 2 ? Color.white.opacity(0.15) : (item.rank == 3 ? Color.orange.opacity(0.2) : Color.cyan.opacity(0.15))))
-                        .frame(width: 28, height: 28)
-                    Text(item.badge.components(separatedBy: " ").last ?? "👤")
-                        .font(.system(size: 13))
-                }
-
-                VStack(alignment: .leading, spacing: 2) {
-                    HStack(spacing: 5) {
-                        Text(entry.displayHandle)
-                            .font(.system(size: 11, weight: .heavy, design: .monospaced))
-                            .foregroundStyle(.white)
-
-                        if isUser {
-                            Text("YOU")
-                                .font(.system(size: 7, weight: .heavy, design: .monospaced))
-                                .foregroundStyle(Color.black)
-                                .padding(.horizontal, 4).padding(.vertical, 1)
-                                .background(Capsule().fill(Color.green))
-                        }
-
-                        Text("Rank #\(item.rank)")
-                            .font(.system(size: 8, weight: .bold, design: .monospaced))
-                            .foregroundStyle(Color.yellow)
-                            .padding(.horizontal, 4).padding(.vertical, 1)
-                            .background(RoundedRectangle(cornerRadius: 3).fill(Color.yellow.opacity(0.12)))
-
-                        if !entry.team.isEmpty {
-                            Text(entry.team)
-                                .font(.system(size: 8, weight: .medium, design: .monospaced))
-                                .foregroundStyle(.white.opacity(0.7))
-                                .padding(.horizontal, 4).padding(.vertical, 1)
-                                .background(RoundedRectangle(cornerRadius: 3).fill(Color.white.opacity(0.08)))
-                        }
-
-                        if !entry.hardware.isEmpty {
-                            Text(entry.hardware)
-                                .font(.system(size: 7.5, design: .monospaced))
-                                .foregroundStyle(.secondary)
-                                .padding(.horizontal, 4).padding(.vertical, 1)
-                                .background(RoundedRectangle(cornerRadius: 3).fill(Color.white.opacity(0.05)))
-                        }
-
-                        Text("🔥 \(entry.streakDays)d streak")
-                            .font(.system(size: 8, weight: .bold, design: .monospaced))
-                            .foregroundStyle(Color.orange)
-                            .padding(.horizontal, 4).padding(.vertical, 1)
-                            .background(RoundedRectangle(cornerRadius: 3).fill(Color.orange.opacity(0.12)))
-                    }
-
-                    Text("Updated \(DateFormatter.localizedString(from: entry.updatedAt, dateStyle: .short, timeStyle: .short))")
-                        .font(.system(size: 7.5, design: .monospaced))
-                        .foregroundStyle(.white.opacity(0.4))
-                }
-
-                Spacer()
-
-                // Copy share card for this participant
-                Button {
-                    let card = LeaderboardStore.shared.generateShareCard(for: leaderboardPeriod, format: leaderboardShareFormat, entryId: entry.id)
-                    #if canImport(AppKit)
-                    let pasteboard = NSPasteboard.general
-                    pasteboard.clearContents()
-                    pasteboard.setString(card, forType: .string)
-                    #endif
-                    leaderboardCopiedNotice = true
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
-                        leaderboardCopiedNotice = false
-                    }
-                } label: {
-                    HStack(spacing: 3) {
-                        Image(systemName: "doc.on.doc")
-                        Text("Share Card")
-                    }
-                    .font(.system(size: 8, weight: .bold, design: .monospaced))
-                    .foregroundStyle(Color.cyan)
-                    .padding(.horizontal, 6).padding(.vertical, 3)
-                    .background(RoundedRectangle(cornerRadius: 4).fill(Color.cyan.opacity(0.12)))
-                }
-                .buttonStyle(.plain)
-
-                // Close button
-                Button {
-                    withAnimation(.easeInOut(duration: 0.15)) {
-                        selectedLeaderboardEntry = nil
-                    }
-                } label: {
-                    Image(systemName: "xmark.circle.fill")
-                        .font(.system(size: 11))
-                        .foregroundStyle(.white.opacity(0.5))
-                }
-                .buttonStyle(.plain)
-            }
-
-            // 4 Mini KPIs for this user
-            HStack(spacing: 6) {
-                userMetricBox(title: "TODAY", value: UsageSnapshot.tokens(entry.tokensToday), sub: entry.costToday > 0 ? UsageSnapshot.cost(entry.costToday) : "—", color: .cyan)
-                userMetricBox(title: "7 DAYS", value: UsageSnapshot.tokens(entry.tokens7d), sub: entry.cost7d > 0 ? UsageSnapshot.cost(entry.cost7d) : "—", color: .blue)
-                userMetricBox(title: "ALL-TIME", value: UsageSnapshot.tokens(entry.tokensAll), sub: entry.costAll > 0 ? UsageSnapshot.cost(entry.costAll) : "—", color: .purple)
-                userMetricBox(title: "TOP MODEL", value: entry.topModel, sub: "Primary Driver", color: .green)
-            }
-
-            // 7-Day Activity Sparkline / Bars (if history is present)
-            if !bd.history.isEmpty {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("7-DAY TOKEN ACTIVITY")
-                        .font(.system(size: 7.5, weight: .heavy, design: .monospaced))
-                        .foregroundStyle(.secondary)
-
-                    let maxTok = Swift.max(bd.history.map { $0.tokens }.max() ?? 1, 1)
-                    HStack(alignment: .bottom, spacing: 6) {
-                        ForEach(bd.history) { pt in
-                            VStack(spacing: 2) {
-                                Text(UsageSnapshot.tokens(pt.tokens))
-                                    .font(.system(size: 6.5, weight: .bold, design: .monospaced))
-                                    .foregroundStyle(pt.tokens > 0 ? Color.cyan : Color.white.opacity(0.3))
-                                    .lineLimit(1)
-                                    .minimumScaleFactor(0.7)
-
-                                ZStack(alignment: .bottom) {
-                                    RoundedRectangle(cornerRadius: 2)
-                                        .fill(Color.white.opacity(0.06))
-                                        .frame(height: 32)
-
-                                    let h = maxTok > 0 ? CGFloat(Double(pt.tokens) / Double(maxTok)) * 32.0 : 0
-                                    RoundedRectangle(cornerRadius: 2)
-                                        .fill(LinearGradient(
-                                            gradient: Gradient(colors: [Color.cyan.opacity(0.9), Color.blue.opacity(0.7)]),
-                                            startPoint: .top,
-                                            endPoint: .bottom
-                                        ))
-                                        .frame(height: max(2, h))
-                                }
-                                .frame(maxWidth: .infinity)
-
-                                Text(pt.dayLabel)
-                                    .font(.system(size: 7, design: .monospaced))
-                                    .foregroundStyle(.white.opacity(0.5))
-                            }
-                        }
-                    }
-                    .padding(6)
-                    .background(RoundedRectangle(cornerRadius: 4).fill(Color.black.opacity(0.3)))
-                }
-            }
-
-            // Model Breakdown Table
-            if !bd.models.isEmpty {
-                VStack(alignment: .leading, spacing: 3) {
-                    HStack {
-                        Text("MODEL ALLOCATION (\(bd.models.count))")
-                            .font(.system(size: 7.5, weight: .heavy, design: .monospaced))
-                            .foregroundStyle(.secondary)
-                        Spacer()
-                        Text("TOKENS · COST · SHARE")
-                            .font(.system(size: 7, design: .monospaced))
-                            .foregroundStyle(.tertiary)
-                    }
-
-                    VStack(spacing: 2) {
-                        ForEach(bd.models.sorted(by: { $0.tokensAll > $1.tokensAll })) { m in
-                            HStack(spacing: 6) {
-                                ProviderLogoView(provider: m.provider, model: m.model, size: 13)
-
-                                Text(m.model)
-                                    .font(.system(size: 8.5, weight: .medium, design: .monospaced))
-                                    .foregroundStyle(.white.opacity(0.9))
-                                    .lineLimit(1)
-
-                                Spacer()
-
-                                VStack(alignment: .trailing, spacing: 0) {
-                                    Text(UsageSnapshot.tokens(m.tokensToday > 0 ? m.tokensToday : m.tokensAll))
-                                        .font(.system(size: 8, weight: .bold, design: .monospaced))
-                                        .foregroundStyle(Color.cyan)
-                                    if m.costToday > 0 || m.costAll > 0 {
-                                        Text(UsageSnapshot.cost(m.costToday > 0 ? m.costToday : m.costAll))
-                                            .font(.system(size: 6.5, design: .monospaced))
-                                            .foregroundStyle(.secondary)
-                                    }
-                                }
-                                .frame(width: 60, alignment: .trailing)
-
-                                // Share bar
-                                ZStack(alignment: .leading) {
-                                    RoundedRectangle(cornerRadius: 1.5)
-                                        .fill(Color.white.opacity(0.08))
-                                        .frame(height: 4)
-                                    RoundedRectangle(cornerRadius: 1.5)
-                                        .fill(Color.cyan)
-                                        .frame(width: max(2, 45.0 * CGFloat(Swift.min(m.sharePercent, 100.0) / 100.0)), height: 4)
-                                }
-                                .frame(width: 45)
-
-                                Text(String(format: "%.1f%%", m.sharePercent))
-                                    .font(.system(size: 7, design: .monospaced))
-                                    .foregroundStyle(.white.opacity(0.6))
-                                    .frame(width: 32, alignment: .trailing)
-                            }
-                            .padding(.horizontal, 6).padding(.vertical, 2.5)
-                            .background(RoundedRectangle(cornerRadius: 3).fill(Color.white.opacity(0.025)))
-                        }
-                    }
-                }
-            }
-
-            // Tools / Providers Breakdown Chips
-            if !bd.tools.isEmpty {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("TELEMETRY TOOLS & PROVIDERS")
-                        .font(.system(size: 7.5, weight: .heavy, design: .monospaced))
-                        .foregroundStyle(.secondary)
-
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(spacing: 4) {
-                            ForEach(bd.tools.sorted(by: { $0.tokensAll > $1.tokensAll })) { t in
-                                HStack(spacing: 4) {
-                                    Circle().fill(DashboardTabs.toolColor(t.tool)).frame(width: 4, height: 4)
-                                    Text(t.tool)
-                                        .font(.system(size: 7.5, weight: .bold, design: .monospaced))
-                                        .foregroundStyle(.white.opacity(0.9))
-                                    Text(UsageSnapshot.tokens(t.tokensToday > 0 ? t.tokensToday : t.tokensAll))
-                                        .font(.system(size: 7.5, design: .monospaced))
-                                        .foregroundStyle(Color.cyan)
-                                }
-                                .padding(.horizontal, 6).padding(.vertical, 2.5)
-                                .background(RoundedRectangle(cornerRadius: 4).fill(Color.white.opacity(0.06)))
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        .padding(8)
-        .background(RoundedRectangle(cornerRadius: 6).fill(Color.white.opacity(0.045)))
-        .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color.cyan.opacity(0.25), lineWidth: 1))
-    }
-
-    private func userMetricBox(title: String, value: String, sub: String, color: Color) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(title)
-                .font(.system(size: 6.5, weight: .heavy, design: .monospaced))
-                .foregroundStyle(.tertiary)
-            Text(value)
-                .font(.system(size: 10, weight: .heavy, design: .monospaced))
-                .foregroundStyle(color)
-                .lineLimit(1)
-                .minimumScaleFactor(0.7)
-            Text(sub)
-                .font(.system(size: 7, design: .monospaced))
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-        }
-        .padding(5)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 4).fill(Color.black.opacity(0.35)))
-    }
-
     private var settingsTab: some View {
         VStack(alignment: .leading, spacing: 16) {
             Picker("Settings section", selection: $settingsSection) {
@@ -2193,8 +1655,7 @@ struct DashboardTabs: View {
             leaderboardCloudTokenDraft = SettingsStore.shared.leaderboardCloudToken
             leaderboardClaimTokenDraft = ""
             leaderboardSheetsDraft = SettingsStore.shared.leaderboardSheetsURL
-            leaderboardAutoSyncDraft = SettingsStore.shared.leaderboardAutoSync
-                && (SettingsStore.shared.leaderboardCloudConfigured || !SettingsStore.shared.leaderboardSheetsURL.isEmpty)
+            autoSyncOn = SettingsStore.shared.leaderboardAutoSync
             syncDestinationDraft = SettingsStore.shared.leaderboardCloudConfigured
                 || SettingsStore.shared.leaderboardSheetsURL.isEmpty ? "cloud" : "sheets"
             if compact, let draft = model.compactSettingsDraft {
@@ -2299,6 +1760,33 @@ struct DashboardTabs: View {
                             .background(Capsule().fill(Color.white))
                     }
                     .buttonStyle(.plain)
+                }
+            }
+            if updater.phase == .available {
+                if let notes = updater.releaseNotes, !notes.isEmpty {
+                    ScrollView(.vertical) {
+                        Text(notes)
+                            .font(.system(size: 10, design: .monospaced))
+                            .foregroundStyle(Color.white.opacity(0.85))
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(8)
+                    }
+                    .frame(maxHeight: 220)
+                    .background(RoundedRectangle(cornerRadius: 6).fill(Color.black.opacity(0.35)))
+                    .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color.white.opacity(0.1)))
+                    .accessibilityLabel("Release notes for \(updater.latestTag)")
+                }
+                if let link = updater.releaseURL.flatMap(URL.init(string:)) {
+                    Button {
+                        NSWorkspace.shared.open(link)
+                    } label: {
+                        Text("View release on GitHub ↗")
+                            .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                            .foregroundStyle(.cyan)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Open the full release on GitHub")
                 }
             }
             if let checked = updater.lastChecked {
@@ -2691,17 +2179,8 @@ struct DashboardTabs: View {
                     .textSelection(.enabled)
             }
             Toggle("Sync automatically", isOn: Binding(
-                get: { leaderboardAutoSyncDraft },
-                set: {
-                    leaderboardAutoSyncDraft = $0
-                    if $0, !SettingsStore.shared.leaderboardCloudConfigured,
-                       SettingsStore.shared.leaderboardSheetsURL.isEmpty {
-                        SettingsStore.shared.leaderboardCloudURL = WebDestination.defaultBaseURL
-                        leaderboardCloudDraft = WebDestination.defaultBaseURL
-                        syncDestinationDraft = "cloud"
-                    }
-                    SettingsStore.shared.leaderboardAutoSync = $0
-                }
+                get: { autoSyncOn },
+                set: { setAutoSync($0) }
             ))
             .toggleStyle(.switch)
             Text("Local usage is collected automatically. Cloud sync uses the privacy choices above.")
@@ -2756,7 +2235,6 @@ struct DashboardTabs: View {
                             ? (cloudURL.isEmpty ? WebDestination.defaultBaseURL : cloudURL) : ""
                         SettingsStore.shared.leaderboardCloudToken = leaderboardCloudTokenDraft.trimmingCharacters(in: .whitespacesAndNewlines)
                         SettingsStore.shared.leaderboardSheetsURL = leaderboardSheetsDraft.trimmingCharacters(in: .whitespacesAndNewlines)
-                        SettingsStore.shared.leaderboardAutoSync = leaderboardAutoSyncDraft
                         if !restored.isEmpty,
                            let endpoint = CloudPublishCredentials.endpointURL(baseURL: SettingsStore.shared.leaderboardCloudURL) {
                             let handle = SettingsStore.shared.leaderboardHandle.isEmpty ? NSUserName() : SettingsStore.shared.leaderboardHandle
@@ -2792,6 +2270,8 @@ struct DashboardTabs: View {
     @State private var _baseRows: [ModelRow] = []
     @State private var _filteredRows: [ModelRow] = []
     @State private var _scopeCounts: [ModelFilterScope: Int] = [:]
+    @State private var _planCounts: [String: Int] = [:]
+    @State private var _uncoveredCount: Int = 0
     @State private var _localCount: Int = 0
     @State private var _lastBaseKey: String = ""
     @State private var _topPicks: [ModelsPipeline.TopPickModel] = []
@@ -2847,6 +2327,41 @@ struct DashboardTabs: View {
                     }
                     .buttonStyle(.plain)
                 }
+
+                // Subscription-plan coverage (curated plans.json): e.g. ZEN for
+                // every family opencode-go sells, GLM for the coding plan, etc.
+                // Counts are faceted over the same base as the scope chips.
+                Menu {
+                    Button { modelPlanFilter = .all } label: {
+                        Text("All plans  \(_scopeCounts[.all] ?? 0)")
+                    }
+                    Divider()
+                    ForEach(ModelPlanIndex.plans().plans, id: \.id) { plan in
+                        Button { modelPlanFilter = .plan(plan.id) } label: {
+                            Text("\(plan.name)  \(_planCounts[plan.id] ?? 0)")
+                        }
+                    }
+                    Divider()
+                    Button { modelPlanFilter = .uncovered } label: {
+                        Text("No plan  \(_uncoveredCount)")
+                    }
+                } label: {
+                    HStack(spacing: 3) {
+                        Image(systemName: "creditcard")
+                        Text(planFilterLabel)
+                        Image(systemName: "chevron.down")
+                            .font(.system(size: 6, weight: .bold))
+                            .foregroundStyle(modelPlanFilter == .all ? Color.white.opacity(0.5) : Color.black.opacity(0.55))
+                    }
+                    .font(.system(size: 8, weight: .heavy, design: .monospaced))
+                    .foregroundStyle(modelPlanFilter == .all ? Color.white.opacity(0.55) : Color.black)
+                    .padding(.horizontal, 7).padding(.vertical, 3)
+                    .background(Capsule().fill(modelPlanFilter == .all ? Color.white.opacity(0.08) : Color.white))
+                }
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .fixedSize()
+                .help("Filter the list by subscription-plan coverage")
 
                 Spacer()
 
@@ -2975,6 +2490,7 @@ struct DashboardTabs: View {
                     }
                     .onChange(of: modelSearch) { _ in displayedCount = 50; recomputeFilteredRows() }
                     .onChange(of: modelFilterScope) { _ in displayedCount = 50; recomputeFilteredRows() }
+                    .onChange(of: modelPlanFilter) { _ in displayedCount = 50; recomputeFilteredRows() }
                     .onChange(of: modelSortColumn) { _ in recomputeFilteredRows() }
                     .onChange(of: modelSortAscending) { _ in recomputeFilteredRows() }
                 }
@@ -3014,18 +2530,7 @@ struct DashboardTabs: View {
             .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.white.opacity(0.08), lineWidth: 1))
         }
         .onAppear {
-            ModelCatalog.shared.ensureLoaded()
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .refreshModelExtras)) { _ in
-            recomputeFilteredRows(force: true)
-        }
-        .task {
-            recomputeFilteredRows()
-            while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(3))
-                let curKey = "\(ModelCatalog.shared.allEntries().count)-\(ModelCatalog.shared.currentRevision())-\(model.usage.models.count)-\(model.syntheticModels.count)"
-                if curKey != _lastBaseKey { await MainActor.run { recomputeFilteredRows() } }
-            }
+            ModelCatalog.shared.ensureLoaded(maxAge: ModelCatalog.interactiveRefreshInterval)
         }
     }
 
@@ -3059,18 +2564,46 @@ struct DashboardTabs: View {
         .buttonStyle(.plain)
     }
 
+    /// Current plan pill text for the filter control.
+    private var planFilterLabel: String {
+        switch modelPlanFilter {
+        case .all: return "PLAN"
+        case .uncovered: return "NO PLAN"
+        case .plan(let id):
+            guard let plan = ModelPlanIndex.plans().plans.first(where: { $0.id == id }) else {
+                return id.uppercased()
+            }
+            return plan.short
+        }
+    }
+
     private func recomputeFilteredRows(force: Bool = false) {
-        let rev = ModelCatalog.shared.currentRevision()
-        let baseKey = "\(ModelCatalog.shared.allEntries().count)-\(rev)-\(model.usage.models.count)-\(model.syntheticModels.count)-\(modelSearch)-\(modelFilterScope.rawValue)-\(modelSortColumn.rawValue)-\(modelSortAscending)"
+        // Key from cheap accessors only: `count` and `currentRevision()` are
+        // lock-guarded scalar reads. It carries a *content* fingerprint of the
+        // usage inputs, so per-model token/spend/speed changes invalidate it
+        // too (catalog counts and revision alone never move for those).
+        let baseKey = ModelsPipeline.baseKey(
+            catalogCount: ModelCatalog.shared.count,
+            revision: ModelCatalog.shared.currentRevision(),
+            usageModels: model.usage.models,
+            syntheticModels: model.syntheticModels,
+            search: modelSearch,
+            scope: modelFilterScope,
+            planFilter: modelPlanFilter,
+            sortColumn: modelSortColumn,
+            sortAscending: modelSortAscending
+        )
         if !force && baseKey == _lastBaseKey && !_filteredRows.isEmpty { return }
         _lastBaseKey = baseKey
+        // Only pay for the catalog materialization once we know we will run.
         let catalog = ModelCatalog.shared.allEntries()
         let syntheticModels = model.syntheticModels
         let usageModels = model.usage.models
-        Task.detached(priority: .userInitiated) { [modelSearch, modelFilterScope, modelSortColumn, modelSortAscending] in
+        Task.detached(priority: .userInitiated) { [modelSearch, modelFilterScope, modelPlanFilter, modelSortColumn, modelSortAscending] in
             let result = ModelsPipeline.compute(
                 search: modelSearch,
                 scope: modelFilterScope,
+                planFilter: modelPlanFilter,
                 sortColumn: modelSortColumn,
                 sortAscending: modelSortAscending,
                 catalog: catalog,
@@ -3081,6 +2614,8 @@ struct DashboardTabs: View {
                 self._baseRows = result.base
                 self._filteredRows = result.filtered
                 self._scopeCounts = result.scopeCounts
+                self._planCounts = result.planCounts
+                self._uncoveredCount = result.uncoveredCount
                 self._localCount = result.localCount
                 self._topPicks = result.topPicks
             }

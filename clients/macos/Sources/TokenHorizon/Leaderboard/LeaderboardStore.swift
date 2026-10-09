@@ -356,6 +356,9 @@ struct LeaderboardEntry: Codable, Identifiable, Equatable {
     var id: String
     var handle: String
     var team: String
+    /// Cloud-assigned team id ("" until the profile is published to a team).
+    /// Used to group teams without splitting on a shared label.
+    var teamId: String = ""
     var tokensToday: Int
     var tokens7d: Int
     var tokensAll: Int
@@ -417,6 +420,7 @@ struct LeaderboardEntry: Codable, Identifiable, Equatable {
         id: String,
         handle: String,
         team: String,
+        teamId: String = "",
         tokensToday: Int,
         tokens7d: Int,
         tokensAll: Int,
@@ -448,6 +452,7 @@ struct LeaderboardEntry: Codable, Identifiable, Equatable {
         self.id = id
         self.handle = handle
         self.team = team
+        self.teamId = teamId
         self.tokensToday = tokensToday
         self.tokens7d = tokens7d
         self.tokensAll = tokensAll
@@ -508,7 +513,7 @@ struct LeaderboardEntry: Codable, Identifiable, Equatable {
 
 extension LeaderboardEntry {
     enum CodingKeys: String, CodingKey {
-        case id, handle, team, tokensToday, tokens7d, tokensAll
+        case id, handle, team, teamId, tokensToday, tokens7d, tokensAll
         case costToday, cost7d, costAll, streakDays, topModel, hardware
         case isLocal, updatedAt, collectedAt, breakdown
         case mmr, league, division, efficiency
@@ -521,6 +526,7 @@ extension LeaderboardEntry {
         id = c.thDecode(.id, or: UUID().uuidString)
         handle = c.thDecode(.handle, or: "unknown")
         team = c.thDecode(.team, or: "")
+        teamId = c.thDecode(.teamId, or: "")
         tokensToday = c.thDecode(.tokensToday, or: 0)
         tokens7d = c.thDecode(.tokens7d, or: 0)
         tokensAll = c.thDecode(.tokensAll, or: 0)
@@ -875,10 +881,16 @@ final class LeaderboardStore {
             }
         )
 
+        // Team membership (`teamId`) is cloud-assigned and must survive this
+        // rebuild: syncLocal runs on every refresh tick, so dropping it here
+        // would put us back outside our own team on the local fallback.
+        let carriedTeamId = entries.first(where: { $0.isLocal })?.teamId ?? ""
+
         let local = LeaderboardEntry(
             id: "local:\(handle)",
             handle: handle,
             team: team,
+            teamId: carriedTeamId,
             tokensToday: snapshot.tokensToday,
             tokens7d: max(tokens7d, snapshot.tokensToday),
             tokensAll: max(snapshot.tokensAllTime, snapshot.tokensToday),
@@ -1498,6 +1510,7 @@ final class LeaderboardStore {
         let d = (dict["entry"] as? [String: Any]) ?? dict
         guard let handle = d["handle"] as? String, !handle.isEmpty else { return nil }
         let team = d["team"] as? String ?? ""
+        let teamId = d["teamId"] as? String ?? ""
         let tokensToday = d["tokensToday"] as? Int ?? (d["today"] as? Int ?? 0)
         let tokens7d = d["tokens7d"] as? Int ?? (d["week"] as? Int ?? 0)
         let tokensAll = d["tokensAll"] as? Int ?? (d["all"] as? Int ?? 0)
@@ -1659,6 +1672,7 @@ final class LeaderboardStore {
             id: d["id"] as? String ?? "sheet:\(handle)",
             handle: handle,
             team: team,
+            teamId: teamId,
             tokensToday: tokensToday,
             tokens7d: tokens7d,
             tokensAll: tokensAll,
@@ -1837,13 +1851,32 @@ final class LeaderboardStore {
         return nil
     }
 
+    /// Copy the canonical team identity off a remote row of our own handle
+    /// onto the local entry. Usage stays local — only membership follows the
+    /// cloud. A `teamId` is adopted outright (together with the name the
+    /// worker resolved it to); a bare label only fills an empty one, so the
+    /// team the user configured to publish is never clobbered.
+    static func adoptTeamIdentity(into entry: inout LeaderboardEntry, from remote: LeaderboardEntry) {
+        if !remote.teamId.isEmpty {
+            entry.teamId = remote.teamId
+            if !remote.team.isEmpty && entry.team.isEmpty { entry.team = remote.team }
+        } else if entry.team.isEmpty && !remote.team.isEmpty {
+            entry.team = remote.team
+        }
+    }
+
     /// Pure remote merge shared by every pull path (tested): remote rows never
     /// overwrite the local host identity; matches by id, else
-    /// case-insensitive handle; anything else appends.
+    /// case-insensitive handle; anything else appends. The row for our own
+    /// handle is folded into the local entry rather than dropped, so team
+    /// membership — which only the cloud knows — reaches the local fallback.
     static func mergeRemoteEntries(current: [LeaderboardEntry], local: LeaderboardEntry?, remote: [LeaderboardEntry]) -> [LeaderboardEntry] {
         var out = current
         for var entry in remote {
             if let local, entry.handle.localizedCaseInsensitiveCompare(local.handle) == .orderedSame {
+                if let idx = out.firstIndex(where: { $0.handle.localizedCaseInsensitiveCompare(local.handle) == .orderedSame || $0.isLocal }) {
+                    adoptTeamIdentity(into: &out[idx], from: entry)
+                }
                 continue
             }
             entry.isLocal = false

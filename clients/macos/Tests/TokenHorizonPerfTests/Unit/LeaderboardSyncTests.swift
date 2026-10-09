@@ -9,8 +9,9 @@ import XCTest
 /// behavior that stops auto-sync from hammering the backend every tick.
 final class LeaderboardSyncTests: XCTestCase {
 
-    private func entry(_ id: String, handle: String, all: Int, local: Bool = false) -> LeaderboardEntry {
-        LeaderboardEntry(id: id, handle: handle, team: "acme",
+    private func entry(_ id: String, handle: String, all: Int, local: Bool = false,
+                       team: String = "acme", teamId: String = "") -> LeaderboardEntry {
+        LeaderboardEntry(id: id, handle: handle, team: team, teamId: teamId,
                          tokensToday: all / 10, tokens7d: all / 2, tokensAll: all,
                          costToday: 0, cost7d: 0, costAll: 0, streakDays: 3,
                          topModel: "m", hardware: "h", isLocal: local, updatedAt: Date())
@@ -75,6 +76,45 @@ final class LeaderboardSyncTests: XCTestCase {
         XCTAssertEqual(out.count, 1)
         XCTAssertEqual(out[0].tokensAll, 100, "remote row matching local handle is dropped")
         XCTAssertTrue(out[0].isLocal)
+    }
+
+    // Team membership only exists on the cloud row, so it has to be adopted
+    // rather than dropped — dropping it is what left the local fallback
+    // outside its own team.
+
+    func testMergeRemoteEntries_adoptsCloudTeamIdentityOntoLocalRow() {
+        let local = entry("local:me", handle: "me", all: 100, local: true, team: "", teamId: "")
+        let remote = [entry("cf:me", handle: "me", all: 9999, team: "maxxers", teamId: "6c68c1aa")]
+        let out = LeaderboardStore.mergeRemoteEntries(current: [local], local: local, remote: remote)
+        XCTAssertEqual(out.count, 1)
+        XCTAssertEqual(out[0].tokensAll, 100, "usage stays local")
+        XCTAssertTrue(out[0].isLocal)
+        XCTAssertEqual(out[0].teamId, "6c68c1aa")
+        XCTAssertEqual(out[0].team, "maxxers", "an empty local label takes the resolved name")
+    }
+
+    func testMergeRemoteEntries_keepsConfiguredTeamLabelOverCloudName() {
+        let local = entry("local:me", handle: "me", all: 100, local: true, team: "Castlemilk", teamId: "")
+        let remote = [entry("cf:me", handle: "me", all: 9999, team: "maxxers", teamId: "6c68c1aa")]
+        let out = LeaderboardStore.mergeRemoteEntries(current: [local], local: local, remote: remote)
+        XCTAssertEqual(out[0].teamId, "6c68c1aa", "membership still adopted")
+        XCTAssertEqual(out[0].team, "Castlemilk", "the published label is user configuration")
+    }
+
+    func testMergeRemoteEntries_adoptsCloudLabelWhenCloudHasNoMembership() {
+        let local = entry("local:me", handle: "me", all: 100, local: true, team: "", teamId: "")
+        let remote = [entry("cf:me", handle: "me", all: 9999, team: "Castlemilk", teamId: "")]
+        let out = LeaderboardStore.mergeRemoteEntries(current: [local], local: local, remote: remote)
+        XCTAssertEqual(out[0].team, "Castlemilk")
+        XCTAssertTrue(out[0].teamId.isEmpty)
+    }
+
+    func testMergeRemoteEntries_neverTakesTeamIdentityAway() {
+        let local = entry("local:me", handle: "me", all: 100, local: true, team: "Castlemilk", teamId: "6c68c1aa")
+        let remote = [entry("cf:me", handle: "me", all: 9999, team: "maxxers", teamId: "")]
+        let out = LeaderboardStore.mergeRemoteEntries(current: [local], local: local, remote: remote)
+        XCTAssertEqual(out[0].teamId, "6c68c1aa", "a label-only cloud row must not clear membership")
+        XCTAssertEqual(out[0].team, "Castlemilk")
     }
 
     func testMergeRemoteEntries_matchesByIdRegardlessOfHandle() {
