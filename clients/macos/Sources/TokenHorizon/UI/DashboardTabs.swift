@@ -46,6 +46,7 @@ struct DashboardTabs: View {
     @State private var syncDestinationDraft: String = SettingsStore.shared.leaderboardCloudConfigured
         || SettingsStore.shared.leaderboardSheetsURL.isEmpty ? "cloud" : "sheets"
     @ObservedObject private var updater = SelfUpdater.shared
+    @State private var buildCopied = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -1620,9 +1621,7 @@ struct DashboardTabs: View {
                 }
                 settingsCard("History & cache", icon: "externaldrive") { cacheSettings }
                 settingsCard("Updates", icon: "arrow.triangle.2.circlepath") { updateSettings }
-                settingsCard("App build", icon: "info.circle") {
-                    MonospacedText(text: "v\(BuildInfo.display)", color: .secondary, size: 11)
-                }
+                settingsCard("App build", icon: "info.circle") { buildIdentity }
             case .sharing:
                 settingsCard("Profile & privacy", icon: "person.crop.circle") { leaderboardProfileSettings }
                 settingsCard("Sync connection", icon: "arrow.triangle.2.circlepath") { leaderboardSyncSettings }
@@ -1816,6 +1815,82 @@ struct DashboardTabs: View {
             ? "\(updater.latestTag) available — you're on v\(BuildInfo.version)"
             : updater.statusDetail
         case .downloading, .installing, .relaunching, .failed: return updater.statusDetail
+        }
+    }
+
+    private var buildStatusColor: Color {
+        BuildInfo.isDevelopmentBuild ? .orange : .green
+    }
+
+    private var buildIdentity: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Text("v\(BuildInfo.version)")
+                    .font(.system(size: 17, weight: .heavy, design: .monospaced))
+                    .foregroundStyle(.white)
+                Text(BuildInfo.isDevelopmentBuild ? "DEV" : "RELEASE")
+                    .font(.system(size: 8, weight: .heavy, design: .monospaced))
+                    .kerning(1)
+                    .foregroundStyle(buildStatusColor)
+                    .padding(.horizontal, 6).padding(.vertical, 2)
+                    .background(Capsule().fill(buildStatusColor.opacity(0.15)))
+                    .overlay(Capsule().strokeBorder(buildStatusColor.opacity(0.4)))
+                Spacer()
+                Button {
+                    #if canImport(AppKit)
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(BuildInfo.display, forType: .string)
+                    #endif
+                    buildCopied = true
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { buildCopied = false }
+                } label: {
+                    HStack(spacing: 3) {
+                        Image(systemName: buildCopied ? "checkmark" : "doc.on.doc")
+                        Text(buildCopied ? "Copied" : "Copy")
+                    }
+                    .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                    .foregroundStyle(buildCopied ? Color.green : Color.white.opacity(0.7))
+                    .padding(.horizontal, 7).padding(.vertical, 3)
+                    .background(Capsule().fill(Color.white.opacity(0.08)))
+                    .contentShape(Capsule())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Copy build identity")
+                .help("Copy the full build identity")
+            }
+            if BuildInfo.isDevelopmentBuild {
+                Text("Development build — automatic update installs are paused; use Update to install explicitly.")
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            buildRow("Build", BuildInfo.build.isEmpty || BuildInfo.build == "0" ? "—" : BuildInfo.build)
+            buildRow("Commit", BuildInfo.commit)
+            buildRow("Built", BuildInfo.formattedBuiltAt(BuildInfo.builtAt))
+            Divider().overlay(Color.white.opacity(0.08))
+            HStack(spacing: 5) {
+                Circle().fill(updateStatusColor).frame(width: 6, height: 6)
+                Text(updateStatusText)
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    private func buildRow(_ label: String, _ value: String) -> some View {
+        HStack(spacing: 8) {
+            Text(label.uppercased())
+                .font(.system(size: 8, weight: .heavy, design: .monospaced))
+                .kerning(1)
+                .foregroundStyle(.tertiary)
+                .frame(width: 52, alignment: .leading)
+            MonospacedText(text: value, color: .secondary, size: 10)
+                .textSelection(.enabled)
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+            Spacer()
         }
     }
 

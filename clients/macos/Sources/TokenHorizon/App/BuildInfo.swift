@@ -30,6 +30,16 @@ enum BuildInfo {
 
     static var display: String { describe(version: version, build: build, commit: commit, builtAt: builtAt) }
 
+    /// Development builds (bare `swift run` or a make-app of a dirty tree)
+    /// pause automatic update installs; the Settings badge mirrors that.
+    static var isDevelopmentBuild: Bool { commit == "dev" || commit.hasSuffix("-dirty") }
+
+    /// `THBuiltAt` is UTC ISO-8601; unparseable input passes through untouched.
+    static func formattedBuiltAt(_ raw: String) -> String {
+        guard let date = ISO8601DateFormatter().date(from: raw) else { return raw }
+        return DateFormatter.localizedString(from: date, dateStyle: .medium, timeStyle: .short)
+    }
+
     static func describe(version: String, build: String = "", commit: String, builtAt: String) -> String {
         let vb = build.isEmpty || build == "0" ? version : "\(version) (\(build))"
         return "\(vb) · \(commit) · \(builtAt)"

@@ -32,6 +32,24 @@ final class BuildIdentityTests: XCTestCase {
         XCTAssertEqual(BuildInfo.commit, "dev")
         XCTAssertEqual(BuildInfo.builtAt, "unknown")
         XCTAssertTrue(BuildInfo.display.contains("dev"))
+        // The Settings channel badge mirrors the auto-update install policy:
+        // unstamped and dirty-tree builds never auto-install.
+        XCTAssertTrue(BuildInfo.isDevelopmentBuild)
+    }
+
+    func testDevelopmentBuildDetection() {
+        // Both development shapes: bare swift-run ("dev") and a make-app of a
+        // dirty tree (sha + "-dirty"). Release stamps are plain short shas.
+        XCTAssertTrue(BuildInfo.isDevelopmentBuild == (BuildInfo.commit == "dev" || BuildInfo.commit.hasSuffix("-dirty")))
+        XCTAssertFalse("a1b2c3d".hasSuffix("-dirty") || "a1b2c3d" == "dev")
+    }
+
+    func testFormattedBuiltAt_parsesStampAndPassesFallbackThrough() {
+        let formatted = BuildInfo.formattedBuiltAt("2026-10-09T02:16:24Z")
+        XCTAssertFalse(formatted.isEmpty)
+        XCTAssertNotEqual(formatted, "2026-10-09T02:16:24Z", "a valid stamp renders as a localized date")
+        XCTAssertEqual(BuildInfo.formattedBuiltAt("unknown"), "unknown", "unparseable stamps pass through")
+        XCTAssertEqual(BuildInfo.formattedBuiltAt(""), "")
     }
 
     func testDecide_freePortProceeds() {
