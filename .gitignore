@@ -45,3 +45,20 @@ daemons/go/token-horizon-daemon
 
 # UI build output (generated, never commit)
 ui/out/
+
+# Local update-swap artifact from SelfUpdater installs
+/TokenHorizon.backup.app/
+
+# Generated design-system archives (source lives in token-horizon-design-system/)
+/token-horizon-design-system.zip
+/token-horizon-ui-kit.zip
+/token-horizon-wireframes-images.zip
+
+# Local tool state
+/.claude/
+/.impeccable/
+
+# Large local media, excluded from deploys by docs/.assetsignore
+/docs/MTPLX/
+/docs/.agents/
+/docs/assets/landing/event-horizon.png
