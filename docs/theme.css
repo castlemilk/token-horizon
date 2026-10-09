@@ -250,14 +250,14 @@ html[data-theme] body .ui-update-notice .ui-update-dismiss { background: transpa
 /* Workspace's measured charts and statistics use the same semantic palette. */
 html[data-theme] body .th-workspace { --tw-ink: var(--th-text); --tw-muted: var(--th-muted); --tw-rule: var(--th-rule); --tw-green: var(--th-accent); color: var(--th-text); }
 html[data-theme] body[data-surface="dashboard"] .topbar { background: var(--th-bg); color: var(--th-text); border-color: var(--th-rule); }
-html[data-theme] body :is(.tw-summary, .tw-panel, .tw-welcome, .tw-skeleton-summary, .tw-profile select, .tw-sort select, .tw-button) { background: var(--th-surface); color: var(--th-text); border-color: var(--th-rule); }
+html[data-theme] body :is(.tw-summary, .tw-panel, .tw-skeleton-summary, .tw-profile select, .tw-sort select, .tw-button) { background: var(--th-surface); color: var(--th-text); border-color: var(--th-rule); }
 html[data-theme] body :is(.tw-period, .tw-token-classes, .tw-search, .tw-visibility, .tw-handle-form input, .tw-table th) { background: var(--th-surface-2); color: var(--th-text); border-color: var(--th-rule); }
 html[data-theme] body .tw-period button[aria-pressed="true"] { background: var(--th-surface); color: var(--th-text); }
 html[data-theme] body :is(.tw-table td, .tw-opportunity, .tw-opportunities .tw-panel-heading, .tw-method-note, .tw-table-foot, .tw-token-classes > div) { border-color: var(--th-rule); }
 html[data-theme] body .tw-table td { color: var(--th-text); }
 html[data-theme] body .tw-table tbody tr:hover { background: var(--th-hover); }
-html[data-theme] body :is(.tw-eyebrow, .tw-source small, .tw-summary > div > span, .tw-summary svg, .tw-summary small, .tw-summary strong.tw-unavailable, .tw-panel-heading > div > span, .tw-label, .tw-chart-legend b, .tw-token-classes span, .tw-token-classes small, .tw-opportunity p, .tw-evidence, .tw-table th, .tw-table .tw-cell-unavailable, .tw-model-name small, .tw-session-title svg, .tw-session-meta, .tw-method-note, .tw-sort, .tw-table-foot, .tw-data-note, .tw-empty-panel span, .tw-local-strip p, .tw-footnote, .tw-project small, .tw-sources > div > span:last-child, .tw-visibility p, .tw-welcome p, .tw-handle-form > label, .tw-welcome p.tw-welcome-note, .tw-feature-grid p, .tw-loading-detail, .tw-cost-note) { color: var(--th-muted); }
-html[data-theme] body :is(.tw-tabs button.active, .tw-panel-heading h2 > svg, .tw-token-classes strong, .tw-text-button, .tw-model-link, .tw-project span, .tw-feature-grid svg, .tw-loading-message) { color: var(--th-accent) !important; }
+html[data-theme] body :is(.tw-eyebrow, .tw-source small, .tw-summary > div > span, .tw-summary svg, .tw-summary small, .tw-summary strong.tw-unavailable, .tw-panel-heading > div > span, .tw-label, .tw-chart-legend b, .tw-token-classes span, .tw-token-classes small, .tw-opportunity p, .tw-evidence, .tw-table th, .tw-table .tw-cell-unavailable, .tw-model-name small, .tw-session-title svg, .tw-session-meta, .tw-method-note, .tw-sort, .tw-table-foot, .tw-data-note, .tw-empty-panel span, .tw-local-strip p, .tw-footnote, .tw-project small, .tw-sources > div > span:last-child, .tw-visibility p, .tw-handle-form > label, .tw-loading-detail, .tw-cost-note) { color: var(--th-muted); }
+html[data-theme] body :is(.tw-tabs button.active, .tw-panel-heading h2 > svg, .tw-token-classes strong, .tw-text-button, .tw-model-link, .tw-project span, .tw-loading-message) { color: var(--th-accent) !important; }
 html[data-theme] body .tw-tabs button { color: var(--th-muted); }
 html[data-theme] body .tw-tabs button.active { border-color: var(--th-accent); }
 html[data-theme] body .tw-tabs button:hover { color: var(--th-text); }
@@ -301,8 +301,7 @@ html[data-theme] body[data-mode] :is(#status, .grant button) { color: var(--th-w
   .th-theme-toggle *, .th-theme-toggle::before, .th-theme-toggle::after { transition: none !important; animation: none !important; }
 }
 @media (max-width: 480px) {
-  html[data-theme] :is(.site-header, .discovery-header, #site-nav) .th-theme-toggle { width: 40px; min-width: 40px; padding: 7px; }
-  html[data-theme] :is(.site-header, .discovery-header, #site-nav) .th-theme-toggle::after { content: ""; position: absolute; inset: 0 -2px; }
+  html[data-theme] :is(.site-header, .discovery-header, #site-nav) .th-theme-toggle { width: 44px; min-width: 44px; min-height: 44px; padding: 7px; }
 }
 @media (forced-colors: active) {
   .th-theme-toggle { background: ButtonFace; color: ButtonText; border-color: ButtonText; }

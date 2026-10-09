@@ -563,6 +563,23 @@ The CSP-protected connector runs the same `theme.js` synchronously in its head.
 `[data-theme-control]` mounts an accessible animated control; switching modes
 updates CSS only, preserving fetched data and pooled chart hosts.
 
+`/teams` is the canonical Teams directory. Document requests to
+`/leaderboard[.html]?view=teams` redirect there, preserving remaining query
+parameters; the JSON leaderboard API retains precedence. `/teams/` canonicalizes
+to `/teams`. The relative `docs/teams/index.html` mirror alias preserves project
+prefixes, query parameters and fragments with history replacement.
+
+Models and Community share an anchored exploration flyout with original SVG
+icons, native destinations, keyboard controls and inline groups on mobile.
+Teams is also a direct top-navigation link. Team analytics opens Over time and
+preserves an existing valid history window. SPA routing, browser history and
+model filters follow the destination URL.
+
+Teams opens with a compact heading and standings before analytics. The optional
+“About teams” introduction remembers both open and closed states in
+`th-teams-introduction` local storage. Collapsed introductions load no scene
+runtime; closing disposes the scene and cancels stale pending mounts.
+
 Teams and Leagues share public discovery navigation. Teams hydrate directly
 from the cached `/api/providers` aggregate without waiting for the individual
 leaderboard. Rankings use full published all-time token totals; provider mix
@@ -571,6 +588,34 @@ search and drilldown. Canonical team IDs stay separate from legacy name groups;
 the synthetic `Unassigned` bucket is excluded. Remembered-session verification
 updates personal team controls after public standings paint. Dense report tables
 scroll within their panels, and private mobile navigation uses a compact ribbon.
+
+The team analytics panel compares Today, Last 7 days and All time, using
+`tokensToday`, `tokens7d` and `tokens` from the same aggregate. Recent-window
+coverage distinguishes missing totals from published zeroes; per-profile
+comparisons divide by profiles reporting that window. Standings and provider
+mix remain explicitly all-time. Fragment links retain the actual dashboard URL
+despite the worker's `<base>` tag; old homepage `#tm-rankings-title` links recover
+to the Teams view and focus the heading after data loads.
+
+Comparison / Over time switches the same community panel to daily team lines.
+The aggregate publishes a bounded 119-day UTC `daily` history per canonical or
+legacy team, summing only valid published `breakdown.daily` records. Explicit
+zeroes survive; absent days are omitted. The chart shows the four leading teams
+by all-time usage plus a dashed Other aggregate, keeping series identities
+stable across 7-day, 30-day and 17-week windows. Null gaps never interpolate
+unreported activity. A native day inspector supplies exact per-series counts,
+a real peak-day jump and a UTC daily-values table; inspection reuses the chart
+host. `teamChart=history&teamDays=7|30|119` preserves the selected history view
+in shared links without additional API reads. Comparison settings are retained
+when returning to that mode. Window radio groups retain keyboard focus after
+panel replacement. The provider horizon remains explicitly all time.
+
+Team initials, uploaded logos and functional SVG icons follow the same identity
+rules across analytics, invitations and share cards. Provider arcs encode actual
+published proportions with a persistent keyboard-selectable reading. Decorative
+motion uses transform positioning and retains a static eclipse if its optional
+module fails to load. The composition concept and Gamma references are recorded
+in `.impeccable/concepts/README.md`; `DESIGN.md` points to the incumbent system.
 
 Theme and team regressions: `node scripts/test-theme-runtime.mjs`,
 `node scripts/test-themes-ui.mjs`, and `node scripts/test-teams-ui.mjs`.
@@ -586,6 +631,15 @@ Joined `memberCount` comes from verified account memberships; `publishedProfiles
 and token totals come only from public profiles. Unpublished members count toward
 the crew without exposing their identities. Legacy name-only usage groups remain
 separate from canonical teams.
+
+Public team analytics use the endpoint's exact `stats.daily` records for 7-day,
+30-day and 17-week charts, daily averages, days with reported usage and peak-day summaries.
+The chart reuses the vendored runtime and bounded host pool; a UTC daily-value
+table supplies a readable alternative. Sparse published history is labelled
+as potentially partial; missing history renders an unavailable state. These
+charts do not infer activity from cumulative snapshots. All-time contributions
+use the API's top-six public profile references, and shared cost estimates
+include only what members chose to publish.
 
 Team owners manage a custom icon in **Invite friends → Upload team icon**.
 The browser fits PNG/JPEG/WebP artwork onto a transparent square PNG without
