@@ -158,6 +158,132 @@ export function release(selection = 'patch', { root = DEFAULT_ROOT, dryRun = fal
   return resolved;
 }
 
+// --- Curated release notes -------------------------------------------------
+
+export const NOTE_SECTIONS = [
+  { key: 'features', icon: '✨', title: 'Features', prefixes: ['feat', 'add'] },
+  { key: 'fixes', icon: '🛠', title: 'Fixes', prefixes: ['fix'] },
+  { key: 'performance', icon: '⚡', title: 'Performance', prefixes: ['perf'] },
+  { key: 'catalog', icon: '📦', title: 'Model catalog', prefixes: ['catalog'], paths: ['docs/data/models.json', 'clients/macos/Resources/plans.json'] },
+  { key: 'mac', icon: '🖥', title: 'Mac app', paths: ['clients/macos/'] },
+  { key: 'engine', icon: '🧱', title: 'Local engine', paths: ['engine/'] },
+  { key: 'gateway', icon: '🕸', title: 'Gateway', paths: ['gateway/'] },
+  { key: 'web', icon: '🌐', title: 'Web dashboard', paths: ['cloudflare/', 'docs/'] },
+  { key: 'mcp', icon: '🔌', title: 'MCP & shell', paths: ['mcp/', 'shell/'] },
+  { key: 'clients', icon: '💻', title: 'Other clients', paths: ['clients/'] },
+  { key: 'tooling', icon: '🧰', title: 'Release & tooling', paths: ['scripts/', '.github/', 'packaging/', 'Taskfile.yml', 'video/'] }
+];
+const NOTE_NOISE = [/^release v/, /^release metadata:/, /\[skip ci\]/, /\[skip release\]/];
+const NOTE_SECTION_CAPACITY = 8, NOTE_HASHES_PER_GROUP = 3;
+const NOTE_PREFIX = /^([a-z][a-z0-9-]*)(?:\([^)]*\))?!?:\s+(.+)$/;
+
+function noteSection(subject, files = []) {
+  const prefix = NOTE_PREFIX.exec(subject);
+  if (prefix) {
+    const type = prefix[1], direct = NOTE_SECTIONS.find(section => section.prefixes?.includes(type));
+    if (direct) return direct;
+  }
+  const path = files.find(file => NOTE_SECTIONS.some(section => section.paths?.some(root => file === root || file.startsWith(root))));
+  if (path) {
+    return NOTE_SECTIONS.find(section => section.paths?.some(root => path === root || path.startsWith(root)));
+  }
+  if (prefix) return NOTE_SECTIONS.find(section => section.key === 'tooling');
+  return NOTE_SECTIONS.find(section => section.key === 'tooling');
+}
+
+function normalizeSubject(subject) {
+  let text = subject.replace(/\s*\(\d{4}-\d{2}-\d{2}\)$/, '').trim();
+  if (/^catalog: refresh model list$/i.test(text)) text = 'Weekly model list refresh';
+  return text;
+}
+
+function noteBullet(subject) {
+  let text = normalizeSubject(subject);
+  text = text.replace(NOTE_PREFIX, (_match, _type, rest) => rest);
+  text = text.charAt(0).toUpperCase() + text.slice(1);
+  return text.replace(/\.+$/, '');
+}
+
+/// Pure renderer: curated markdown from a parsed commit list. The workflow
+/// attaches this as the GitHub release body and the app renders the same
+/// body inside the update prompt, so sections stay short and factual.
+export function buildReleaseNotes({ version, tag, previous, commits, repository = REPOSITORY, generatedAt }) {
+  if (!tag || !/^v/.test(tag)) throw new Error('Release notes require the vX.Y.Z tag.');
+  parseVersion(tag.slice(1));
+  if (version && version !== tag.slice(1)) throw new Error(`Release notes version ${version} disagrees with tag ${tag}.`);
+  if (!Array.isArray(commits)) throw new Error('Release notes require a commit list.');
+  const sections = new Map(NOTE_SECTIONS.map(section => [section.key, []]));
+  let skipped = 0;
+  for (const commit of commits) {
+    const subject = String(commit.subject || '').trim();
+    if (!subject || NOTE_NOISE.some(pattern => pattern.test(subject))) { skipped++; continue; }
+    const section = noteSection(subject, Array.isArray(commit.files) ? commit.files : []);
+    const groups = sections.get(section.key);
+    const normalized = normalizeSubject(subject);
+    const group = groups.find(entry => entry.normalized === normalized);
+    if (group) {
+      group.count++;
+      if (group.hashes.length < NOTE_HASHES_PER_GROUP) group.hashes.push(commit.hash);
+    } else if (groups.length < NOTE_SECTION_CAPACITY) {
+      groups.push({ normalized, bullet: noteBullet(subject), hashes: [commit.hash].filter(Boolean), count: 1, overflow: 0 });
+    } else if (groups.at(-1)) {
+      groups.at(-1).overflow++;
+    }
+  }
+  const lines = [`## Token Horizon ${tag}`, ''];
+  const dated = generatedAt ? new Date(generatedAt) : null;
+  const described = [
+    dated && !Number.isNaN(dated.getTime()) ? `Released ${dated.toISOString().slice(0, 10)}` : null,
+    `${commits.length - skipped} commit${commits.length - skipped === 1 ? '' : 's'}`,
+    previous ? `since ${previous}` : null
+  ].filter(Boolean).join(' · ');
+  lines.push(`_${described}_`, '');
+  for (const section of NOTE_SECTIONS) {
+    const groups = sections.get(section.key);
+    if (!groups.length) continue;
+    lines.push(`### ${section.icon} ${section.title}`);
+    for (const group of groups) {
+      const refs = group.hashes.map(hash => `\`${hash}\``).join(' ');
+      const times = group.count > 1 ? ` (×${group.count})` : '';
+      const overflow = group.overflow ? ` …and ${group.overflow} more` : '';
+      lines.push(`- ${group.bullet}${times}${refs ? ` ${refs}` : ''}${overflow}`);
+    }
+    lines.push('');
+  }
+  if (lines.at(-1) === '') lines.pop();
+  if (previous) {
+    lines.push('', `**Full changelog**: https://github.com/${repository}/compare/${previous}...${tag}`);
+  }
+  return lines.join('\n').trimEnd() + '\n';
+}
+
+/// git log between two refs as the pure renderer's input. `--name-only`
+/// supplies the path fallback that routes unprefixed commits to a section.
+export function collectCommits(root, from, to) {
+  const range = from ? `${from}..${to}` : to;
+  const raw = git(root, ['log', '--no-merges', '--pretty=format:@@@%h@@@%s', '--name-only', range]);
+  const commits = [];
+  let current = null;
+  for (const line of raw.split('\n')) {
+    const match = /^@@@([0-9a-f]+)@@@(.*)$/.exec(line);
+    if (match) {
+      current = { hash: match[1], subject: match[2].trim(), files: [] };
+      commits.push(current);
+    } else if (current && line.trim()) {
+      current.files.push(line.trim());
+    }
+  }
+  return commits;
+}
+
+function previousStableTag(root, tag) {
+  const tags = stableTags(git(root, ['tag', '--list']).split('\n').filter(Boolean))
+    .reverse()
+    .find(candidate => candidate !== tag && compareVersions(tag.slice(1), candidate.slice(1)) > 0 && ancestor(root, candidate, tag));
+  return tags || null;
+}
+
+
 function parseArguments(args, flags, values = []) {
   const options = {}, positional = [];
   for (let index = 0; index < args.length; index++) {
@@ -203,7 +329,17 @@ export function main(args = process.argv.slice(2)) {
     const { options, positional } = parseArguments(args, ['--dry-run', '--ci']);
     if (positional.length > 1) throw new Error('Release requires at most one patch, minor, major or X.Y.Z selection.');
     console.log(JSON.stringify(release(positional[0] || 'patch', { dryRun: options['dry-run'], ci: options.ci })));
-  } else throw new Error('Usage: release.mjs resolve|check|set|compare|preflight|release [options].');
+  } else if (command === 'notes') {
+    const { options, positional } = parseArguments(args, [], ['--from', '--to', '--format']);
+    if (positional.length) throw new Error('Notes accepts named --from and --to ref options.');
+    const tag = options.to || stableTags(git(DEFAULT_ROOT, ['tag', '--list']).split('\n').filter(Boolean)).at(-1);
+    if (!/^v/.test(tag || '') || !STABLE.test((tag || '').slice(1))) throw new Error('--to must be a stable vX.Y.Z release tag.');
+    const from = options.from || previousStableTag(DEFAULT_ROOT, tag);
+    const commits = collectCommits(DEFAULT_ROOT, from, tag);
+    const markdown = buildReleaseNotes({ tag, previous: from, commits, generatedAt: Date.now() });
+    if (options.format === 'json') console.log(JSON.stringify({ from, to: tag, commits: commits.length, markdown }));
+    else console.log(markdown);
+  } else throw new Error('Usage: release.mjs resolve|check|set|compare|preflight|release|notes [options].');
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) {

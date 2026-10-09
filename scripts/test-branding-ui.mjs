@@ -215,7 +215,7 @@ try {
       for (const width of [1440, 390]) {
         await f.page.setViewportSize({ width, height: 1100 }); await settled(f.page);
         const crest = f.page.locator('.profile-crest .league-icon'); await assertImage(crest.locator('img'), 'grandmaster.png');
-        assert.deepEqual(await footprint(crest), { width: 124, height: 124 });
+        assert.deepEqual(await footprint(crest), width <= 480 ? { width: 88, height: 88 } : { width: 124, height: 124 });
         for (const [key, asset] of [['openrouter', 'openrouter.svg'], ['opencode', 'opencode.svg'], ['ollama', 'ollama.svg']]) {
           const image = f.page.locator('.profile-inventory .profile-model-provider .prov-logo[data-provider="' + key + '"] img');
           await assertImage(image, asset);
@@ -237,6 +237,12 @@ try {
     };
     try {
       await f.page.goto(origin + '/'); await f.page.waitForSelector('#tour-screen[data-scene="notch"]');
+      // Phone widths swap the scene buttons for one native <select> control.
+      const pickScene = async scene => {
+        if (await f.page.locator('.scene-select').isVisible()) await f.page.locator('button[data-scene="' + scene + '"]').click();
+        else await f.page.locator('#tour-feature').selectOption(scene);
+        await f.page.waitForSelector('#tour-screen[data-scene="' + scene + '"]'); await settled(f.page);
+      };
       for (const width of [320, 390, 768, 1142, 1440]) {
         await f.page.setViewportSize({ width, height: 1100 }); await settled(f.page);
         const strip = f.page.locator('.provider-strip');
@@ -250,8 +256,7 @@ try {
         }
         await noOverflow(f.page, width, 'The supported tools strip');
         for (const scene of ['notch', 'widgets', 'dashboard', 'limits', 'local', 'traces', 'models']) {
-          await f.page.locator('button[data-scene="' + scene + '"]').click();
-          await f.page.waitForSelector('#tour-screen[data-scene="' + scene + '"]'); await settled(f.page);
+          await pickScene(scene);
           const brands = f.page.locator('#tour-screen .product-brand');
           for (let index = 0; index < await brands.count(); index++) {
             const brand = brands.nth(index), label = (await brand.innerText()).trim();
@@ -261,7 +266,7 @@ try {
           await noOverflow(f.page, width, 'The ' + scene + ' feature tour');
         }
         if ([390, 1440].includes(width)) {
-          await f.page.locator('button[data-scene="notch"]').click(); await settled(f.page);
+          await pickScene('notch');
           await f.page.evaluate(() => window.scrollTo(0, 0));
           await f.page.screenshot({ path: width === 390 ? '/tmp/token-horizon-branding-landing-mobile.png' : '/tmp/token-horizon-branding-landing-desktop.png', animations: 'disabled' });
         }

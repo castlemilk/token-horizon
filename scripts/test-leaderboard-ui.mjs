@@ -338,8 +338,8 @@ async function verifyStartupResilience(browser, filePath) {
 async function verifyRouteRaces(browser, filePath) {
   console.log('Async routes: late model/profile responses preserve the current view...');
   const cases = [
-    { name: 'catalog → leaderboard', query: '?view=models', held: '/api/models/catalog', next: '[data-public-view="leaderboard"]', visible: '#lb-table tbody tr', view: 'leaderboard', kind: 'catalog' },
-    { name: 'profile → models', query: '?view=players&user=benebsworth', held: '/api/user/benebsworth', next: '[data-public-view="models"]', visible: '#mx-rows .mx-row', view: 'models', kind: 'profile' },
+    { name: 'catalog → leaderboard', query: '?view=models', held: '/api/models/catalog', trigger: '[data-explore-trigger="community"]', next: '.explore-panel [data-explore-link="rankings"]', visible: '#lb-table tbody tr', view: 'leaderboard', kind: 'catalog' },
+    { name: 'profile → models', query: '?view=players&user=benebsworth', held: '/api/user/benebsworth', trigger: '[data-explore-trigger="models"]', next: '.explore-panel [data-explore-link="explorer"]', visible: '#mx-rows .mx-row', view: 'models', kind: 'profile' },
     { name: 'Plans → Providers', query: '?view=models&tab=plans', held: '/api/models/catalog', next: '[data-models-tab="providers"]', visible: '.prov-table', view: 'models', kind: 'catalog' }
   ];
   for (const scenario of cases) {
@@ -360,6 +360,10 @@ async function verifyRouteRaces(browser, filePath) {
     try {
       await tab.goto(filePath + scenario.query, { waitUntil: 'domcontentloaded' });
       await Promise.race([heldRequest, new Promise((_, reject) => setTimeout(() => reject(new Error('Expected request never started: ' + scenario.held)), 1500))]);
+      if (scenario.trigger) {
+        await tab.locator(scenario.trigger).click();
+        await tab.waitForSelector(scenario.next, { state: 'visible', timeout: 3000 });
+      }
       await tab.locator(scenario.next).click();
       if (scenario.name === 'Plans → Providers') {
         await tab.waitForFunction(() => /Provider/.test(document.querySelector('#view h1')?.textContent || ''));
@@ -667,13 +671,21 @@ async function run() {
   if (!(await page.$('#signin-dev'))) throw new Error('Dev sign-in fallback missing');
   await page.click('.signin-modal [data-close]');
   await page.waitForFunction(() => !document.querySelector('.bh-art'));
-  // Gated action: New Group while signed out must route into the sign-in modal.
+  // Signed-out Settings is a sharing empty state: no Groups card until a profile is linked.
   await page.evaluate(() => navigate('settings'));
-  await page.waitForSelector('#new-group-btn');
-  await page.click('#new-group-btn');
+  await page.waitForSelector('#settings-signin');
+  if (await page.$('#new-group-btn')) throw new Error('Signed-out settings must not offer group creation before a profile is linked');
+  await page.click('#settings-signin');
+  await page.waitForSelector('.signin-modal');
+  await page.click('.signin-modal [data-close]');
+  await page.waitForFunction(() => !document.querySelector('.bh-art'));
+  // Gated action: sharing another player's report while signed out routes into the sign-in modal with context.
+  await page.evaluate(() => navigate('players', { handle: 'benebsworth' }));
+  await page.waitForSelector('[data-share-user]');
+  await page.click('[data-share-user]');
   await page.waitForSelector('.signin-modal');
   const signInCopy = await page.locator('.signin-modal .modal-head p').textContent();
-  if (!signInCopy.includes('Creating groups & teams')) throw new Error(`Sign-in modal missing action context: ${signInCopy}`);
+  if (!signInCopy.includes('Sharing @benebsworth\'s report')) throw new Error(`Sign-in modal missing action context: ${signInCopy}`);
   await page.evaluate(() => closeModal());
   console.log(`   art ${artInfo.cols} cols (built ${artInfo.buildMs}ms), animated=${artAnimated}, benefits=${benefits}, gated copy ok`);
 
@@ -714,13 +726,23 @@ async function run() {
       groupToken = route.request().headers()['x-google-token'] || '';
       return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true, group: groupBody.group }) });
     }
+    if (url.pathname === '/api/account/profiles') {
+      return route.fulfill({
+        status: 200, contentType: 'application/json',
+        body: JSON.stringify({ ok: true, profiles: [{ handle: 'benebsworth', displayName: 'Dev User' }] })
+      });
+    }
+    if (FIXTURES[url.pathname]) {
+      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(FIXTURES[url.pathname]) });
+    }
     return route.fulfill({ status: 404, contentType: 'application/json', body: '{}' });
   });
   await gsiPage.goto(filePath);
   await gsiPage.waitForSelector('#signin-btn');
-  await gsiPage.evaluate(() => navigate('settings'));
-  await gsiPage.waitForSelector('#new-group-btn');
-  await gsiPage.click('#new-group-btn');
+  // Signed out: gate a real action (sharing a profile's report) before authenticating.
+  await gsiPage.evaluate(() => navigate('players', { handle: 'benebsworth' }));
+  await gsiPage.waitForSelector('[data-share-user]');
+  await gsiPage.click('[data-share-user]');
   await gsiPage.waitForSelector('.signin-modal');
   await gsiPage.waitForFunction(() => window.__gsiRendered === true, null, { timeout: 10000 });
   const gsiCfg = await gsiPage.evaluate(() => window.__gsiInit);
@@ -731,12 +753,20 @@ async function run() {
     throw new Error('GSI button did not render inside the sign-in modal');
   }
   // Complete auth exactly the way the real GSI callback would, and assert the
-  // pending New Group action resumes with the session attached.
+  // pending share action resumes with the session attached.
   await gsiPage.evaluate(() => {
     const payload = btoa(JSON.stringify({ email: 'dev@example.com', name: 'Dev User', sub: 'u-1', exp: Math.floor(Date.now() / 1000) + 3600 }))
       .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
     handleGoogleCredential({ credential: 'x.' + payload + '.y' });
   });
+  await gsiPage.waitForSelector('#share-modal', { timeout: 10000 });
+  const resumedScopes = await gsiPage.$$eval('#share-modal [data-scope]', els => els.length);
+  if (resumedScopes !== 5) throw new Error(`Sign-in did not resume the pending share action (scopes=${resumedScopes})`);
+  await gsiPage.evaluate(() => closeModal());
+  // Signed in with a linked profile: group creation is available from Settings.
+  await gsiPage.evaluate(() => navigate('settings'));
+  await gsiPage.waitForSelector('#new-group-btn');
+  await gsiPage.click('#new-group-btn');
   await gsiPage.waitForSelector('#group-name', { timeout: 10000 });
   await gsiPage.fill('#group-name', 'Platform Team');
   await gsiPage.fill('#group-member-input', 'samrivera');
@@ -749,7 +779,7 @@ async function run() {
   if (!groupToken) throw new Error('Group create was not sent with the Google credential');
   const chip = await gsiPage.locator('.user-chip').textContent();
   if (!chip.includes('Dev User')) throw new Error('Signed-in chip did not appear');
-  console.log(`   GSI init + ASCII modal + resumed New Group (${groupBody.group.name}: ${groupBody.group.members.join(', ')})`);
+  console.log(`   GSI init + ASCII modal + resumed share, then New Group (${groupBody.group.name}: ${groupBody.group.members.join(', ')})`);
   await gsiPage.close();
 
   console.log('10. Avatar picker modal...');
@@ -841,18 +871,21 @@ async function run() {
     const sw = await narrow.evaluate(() => document.documentElement.scrollWidth);
     if (sw > 391) throw new Error(`View ${view} overflows at 390px: scrollWidth=${sw}`);
   }
-  // Sticky rank+user columns keep row identity while the list scrolls sideways.
+  // Sticky rank+user columns keep row identity while the list scrolls sideways
+  // (mobile drops columns instead of scrolling; both layouts must pin col 1).
   await narrow.evaluate(() => { state.view = 'leaderboard'; renderNav(); return render(); });
   await narrow.waitForSelector('#lb-table tbody tr');
-  await narrow.evaluate(() => document.querySelector('#lb-table-wrap .card > div:last-child').scrollTo({ left: 300 }));
-  await narrow.waitForTimeout(150);
   const sticky = await narrow.evaluate(() => {
+    const scroller = document.querySelector('#lb-table-wrap .table-scroll');
+    scroller.scrollTo({ left: scroller.scrollWidth });
     const wrap = document.querySelector('#lb-table-wrap .card').getBoundingClientRect();
     const c1 = document.querySelector('#lb-table thead th:nth-child(1)').getBoundingClientRect();
     const c2 = document.querySelector('#lb-table thead th:nth-child(2)').getBoundingClientRect();
     const pos = getComputedStyle(document.querySelector('#lb-table tbody td')).position;
-    return { pinned: Math.abs(c1.x - wrap.x) < 2 && Math.abs(c2.x - (wrap.x + 54)) < 3, pos };
+    return { pinned: Math.abs(c1.x - wrap.x) < 2 && Math.abs(c2.x - (c1.x + c1.width)) < 3, pos,
+      scrollLeft: scroller.scrollLeft, scrollWidth: scroller.scrollWidth, clientWidth: scroller.clientWidth };
   });
+  await narrow.waitForTimeout(150);
   if (!sticky.pinned || sticky.pos !== 'sticky') throw new Error(`Sticky list columns broken: ${JSON.stringify(sticky)}`);
   // Charts follow container width on window resize without remounting.
   const mountsBefore = await narrow.evaluate(() => window.__thPerf.chartMounts);
@@ -991,10 +1024,17 @@ async function run() {
   const legendLinks = await page.$$eval('.chart-legend [data-model-link]', els => els.map(e => e.dataset.model));
   if (!legendLinks.length) throw new Error('Chart legend model names are not linked');
   // Billing and shared reports use the same link contract.
+  // Billing now routes into the workspace models tab (the standalone Cost by
+  // Model card is gone); profile inventory, chart legends and shared reports
+  // carry the model-link contract.
   await page.evaluate(() => navigate('billing'));
   await page.waitForTimeout(300);
-  const billingLinks = await page.$$eval('#view a[data-model-link]', els => els.length);
-  if (!billingLinks) throw new Error('Billing Cost by Model rows are not linked');
+  const billing = await page.evaluate(() => ({
+    heading: document.querySelector('#view h1')?.textContent || '',
+    links: document.querySelectorAll('#view a[data-model-link]').length
+  }));
+  if (!/workspace/i.test(billing.heading)) throw new Error(`Billing must open the workspace: ${JSON.stringify(billing)}`);
+  const billingLinks = billing.links;
   await page.goto(filePath + '?share=abc');
   await page.waitForSelector('#view a[data-model-link]', { timeout: 15000 });
   const shareLinks = await page.$$eval('#view a[data-model-link]', els => els.length);

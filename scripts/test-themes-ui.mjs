@@ -84,6 +84,54 @@ const routes = [
   ['/connect', '.connection']
 ];
 const settle = page => page.evaluate(async () => { await document.fonts.ready; await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))); });
+async function assertHeaderSignIn(page, route) {
+  const header = await page.evaluate(() => {
+    const visible = element => Boolean(element?.getClientRects().length) && getComputedStyle(element).visibility !== 'hidden';
+    const publicHeader = document.body.matches('.landing, .reading-page') || location.pathname === '/connect';
+    return {
+      publicHeader, reading: document.body.matches('.reading-page'), connect: location.pathname === '/connect',
+      width: innerWidth, height: innerHeight,
+      signedIn: document.querySelector('#identity')?.hidden === false,
+      accountSection: Boolean(document.querySelector('#connection-account #auth-options') && document.querySelector('#connection-account #identity')),
+      authSlots: document.querySelectorAll('#auth-slot').length,
+      authControls: [...document.querySelectorAll('#auth-slot #signin-btn, #auth-slot #user-chip')].map(element => element.tagName),
+      menuStates: [...document.querySelectorAll('.menu-toggle, #nav-toggle')].filter(visible).map(element => element.getAttribute('aria-expanded')),
+      actions: [...document.querySelectorAll('[data-nav-signin]')].map(element => {
+        const rect = element.getBoundingClientRect(), labels = [...element.querySelectorAll('span[data-nav-signin-label]')];
+        const hit = document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2);
+        return {
+          tag: element.tagName, className: element.classList.contains('th-nav-signin'), href: element.getAttribute('href'),
+          inHeader: Boolean(element.closest('header, #site-nav')), inCollapsedNav: Boolean(element.closest('#main-nav, #nav-links')),
+          visible: visible(element), labels: labels.map(label => ({ text: label.textContent.trim(), visible: visible(label) })),
+          icons: [...element.querySelectorAll('svg')].map(icon => ({ hidden: icon.getAttribute('aria-hidden'), focusable: icon.getAttribute('focusable'), tabIndex: icon.tabIndex })),
+          rect: { x: rect.x, y: rect.y, right: rect.right, bottom: rect.bottom, width: rect.width, height: rect.height },
+          centerClickable: hit === element || element.contains(hit)
+        };
+      })
+    };
+  });
+  if (!header.publicHeader) {
+    assert.equal(header.actions.length, 0, route + ': SPA keeps its existing account control');
+    assert.equal(header.authSlots, 1, route + ': exactly one SPA auth slot');
+    assert.deepEqual(header.authControls, ['BUTTON'], route + ': auth slot retains its native Sign in or account button');
+    return;
+  }
+  assert.equal(header.actions.length, 1, route + ': exactly one header Sign in action');
+  const action = header.actions[0];
+  assert.equal(action.tag, 'A', route + ': header Sign in uses native link semantics');
+  assert(action.className && action.inHeader && !action.inCollapsedNav, route + ': Sign in remains outside collapsed navigation');
+  assert(action.visible, route + ': header Sign in remains visible');
+  assert.deepEqual(action.labels, [{ text: header.connect && header.signedIn ? 'Your account' : 'Sign in', visible: true }], route + ': Sign in has one visible text label');
+  assert.equal(await page.getByRole('link', { name: action.labels[0].text, exact: true }).evaluateAll(links => links.filter(link => link.matches('a.th-nav-signin[data-nav-signin]')).length), 1, route + ': visible Sign in label is the accessible name');
+  assert.equal(action.icons.length, 1, route + ': Sign in has one decorative SVG');
+  assert(action.icons[0].hidden === 'true' && [null, 'false'].includes(action.icons[0].focusable) && action.icons[0].tabIndex < 0, route + ': Sign in SVG is decorative and excluded from tab order');
+  assert.equal(action.href, header.connect ? '#connection-account' : header.reading ? '../login/' : './login/', route + ': Sign in points to the account destination');
+  if (header.connect) assert(header.accountSection, route + ': Connect account anchor contains sign-in options and identity');
+  assert(action.rect.width >= 44 && action.rect.height >= 44, route + ': Sign in has a 44px touch target');
+  assert(action.rect.x >= 0 && action.rect.y >= 0 && action.rect.right <= header.width && action.rect.bottom <= header.height, route + ': Sign in stays inside the viewport');
+  assert(action.centerClickable, route + ': Sign in center receives pointer input');
+  assert(header.menuStates.every(state => state === 'false'), route + ': Sign in is reachable with the header menu closed');
+}
 async function assertPage(page, expected, route) {
   const ui = await page.evaluate(() => {
     const html = document.documentElement;
@@ -98,11 +146,16 @@ async function assertPage(page, expected, route) {
   assert(ui.width <= ui.viewport + 1, route + ': overflow ' + JSON.stringify(ui));
   assert.equal(ui.buttons.length, 1, route + ': exactly one visible theme control');
   assert.equal(ui.buttons[0].label, expected === 'light' ? 'Switch to dark mode' : 'Switch to light mode');
-  assert(ui.buttons[0].rect.width >= 40 && ui.buttons[0].rect.height >= 40, 'Theme touch target');
+  assert(ui.buttons[0].rect.width >= 44 && ui.buttons[0].rect.height >= 44, 'Theme touch target');
   assert(ui.buttons[0].rect.x >= 0 && ui.buttons[0].rect.right <= ui.viewport, route + ': reachable toggle');
   assert.notEqual(ui.bodyBackground, ui.bodyColor, route + ': content visible');
+  await assertHeaderSignIn(page, route);
   if (ui.viewport <= 560 && ['dashboard', 'billing', 'settings', 'shared'].includes(await page.evaluate(() => document.body.dataset.surface))) {
-    assert((await page.locator('.sidebar').boundingBox()).height <= 80, route + ': private navigation remains a compact scrollable ribbon');
+    assert(await page.locator('body.mobile-shell').count(), route + ': account surface uses mobile navigation');
+    assert(await page.locator('.sidebar').isHidden(), route + ': desktop sidebar yields to mobile navigation');
+    assert(await page.locator('#discovery-menu-toggle').isVisible(), route + ': account navigation remains reachable');
+    const header = await page.locator('#discovery-header').boundingBox();
+    assert(header && header.height <= 120, route + ': closed account header leaves room for content');
   }
 }
 try {

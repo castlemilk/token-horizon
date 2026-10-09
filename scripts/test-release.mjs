@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join, delimiter } from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { parseVersion, compareVersions, resolveVersion, checkPins, readPins, setPins } from './release.mjs';
+import { parseVersion, compareVersions, resolveVersion, checkPins, readPins, setPins, buildReleaseNotes, collectCommits } from './release.mjs';
 
 const tool = fileURLToPath(new URL('./release.mjs', import.meta.url));
 const nativePins = version => [
@@ -210,4 +210,51 @@ test('Task argument transport does not execute shell syntax', t => {
   result = spawnSync(process.execPath, [join(root, 'scripts/release.mjs'), 'release', '--args-env'], { cwd: root, env: { ...env, TH_RELEASE_ARGS: `patch; touch ${target}` }, encoding: 'utf8' });
   assert.notEqual(result.status, 0); assert.match(result.stderr, /at most one/);
   assert.equal(command(root, ['status', '--porcelain']), '');
+});
+
+test('curated release notes categorize, dedupe and cap commit sections', () => {
+  const commits = [
+    { hash: 'a000001', subject: 'feat: add one-click auto-sync to the dashboard header', files: ['clients/macos/Sources/TokenHorizon/UI/DashboardTabs.swift'] },
+    { hash: 'a000002', subject: 'fix(gateway): never follow redirects with client credentials', files: ['gateway/infer.go'] },
+    { hash: 'a000003', subject: 'perf: fragment-direct decode kernel for qwen3_5', files: ['engine/src/qwen35.rs'] },
+    { hash: 'a000004', subject: 'catalog: refresh model list (2026-10-07)', files: ['docs/data/models.json'] },
+    { hash: 'a000005', subject: 'catalog: refresh model list (2026-09-30)', files: ['docs/data/models.json'] },
+    { hash: 'a000006', subject: 'release v0.3.21' },
+    { hash: 'a000007', subject: 'release metadata: v0.3.20 (cask checksum) [skip ci]' },
+    { hash: 'a000008', subject: 'Polish the leaderboard row layout', files: ['clients/macos/Sources/TokenHorizon/UI/LeaderboardViews.swift'] },
+    { hash: 'a000009', subject: 'wire notes into the draft release', files: ['.github/workflows/release.yml'] }
+  ];
+  const notes = buildReleaseNotes({ tag: 'v0.3.21', previous: 'v0.3.20', commits, generatedAt: Date.UTC(2026, 9, 9) });
+  assert.match(notes, /^## Token Horizon v0\.3\.21\n/);
+  assert.match(notes, /_Released 2026-10-09 · 7 commits · since v0\.3\.20_/);
+  assert.match(notes, /### ✨ Features\n- Add one-click auto-sync to the dashboard header `a000001`/);
+  assert.match(notes, /### 🛠 Fixes\n- Never follow redirects with client credentials `a000002`/);
+  assert.match(notes, /### ⚡ Performance\n- Fragment-direct decode kernel for qwen3_5 `a000003`/);
+  assert.match(notes, /### 📦 Model catalog\n- Weekly model list refresh \(×2\) `a000004` `a000005`/);
+  assert.match(notes, /### 🖥 Mac app\n- Polish the leaderboard row layout `a000008`/);
+  assert.match(notes, /### 🧰 Release & tooling\n- Wire notes into the draft release `a000009`/);
+  assert.match(notes, /Full changelog\*\*: https:\/\/github\.com\/castlemilk\/token-horizon\/compare\/v0\.3\.20\.\.\.v0\.3\.21/);
+  assert.ok(!/release v0\.3\.21|cask checksum/.test(notes), 'release noise commits are filtered');
+});
+
+test('curated release notes cap a section and reject malformed tags', () => {
+  const commits = Array.from({ length: 12 }, (_v, index) => ({
+    hash: `b${String(index).padStart(6, '0')}`, subject: `fix: repair issue number ${index}`, files: ['gateway/x.go']
+  }));
+  const notes = buildReleaseNotes({ tag: 'v1.0.0', commits });
+  assert.match(notes, /…and 4 more/);
+  assert.equal([...notes.matchAll(/`b\d{6}`/g)].length, 8, 'capped groups keep exactly one hash each; overflow commits stay anonymous');
+  assert.throws(() => buildReleaseNotes({ tag: 'not-a-tag', commits }), /vX\.Y\.Z/);
+  assert.doesNotMatch(buildReleaseNotes({ tag: 'v1.0.0', commits: [] }), /###/, 'empty history renders a header-only body');
+});
+
+test('collectCommits pairs subjects with their changed files', t => {
+  const { root } = fixture(t);
+  command(root, ['commit', '--allow-empty', '-m', 'feat: seeded fixture subject']);
+  command(root, ['commit', '--allow-empty', '-m', 'release v9.9.9']);
+  const commits = collectCommits(root, 'v0.3.14', 'HEAD');
+  assert.deepEqual(commits.map(commit => commit.subject), ['release v9.9.9', 'feat: seeded fixture subject']);
+  const notes = buildReleaseNotes({ tag: 'v0.3.15', previous: 'v0.3.14', commits });
+  assert.ok(notes.match(/### ✨ Features\n- Seeded fixture subject `\w+`/), 'prefix-routed section renders the subject');
+  assert.ok(!/release v9\.9\.9/.test(notes));
 });

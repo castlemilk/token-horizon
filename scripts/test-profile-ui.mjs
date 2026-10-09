@@ -53,7 +53,7 @@ const catalog = {
 const mime = { '.html': 'text/html', '.js': 'application/javascript', '.css': 'text/css', '.json': 'application/json', '.png': 'image/png', '.webp': 'image/webp', '.svg': 'image/svg+xml', '.woff2': 'font/woff2', '.ttf': 'font/ttf' };
 const browser = await (await resolveChromium()).launch({ channel: 'chrome', headless: true });
 
-async function setup({ user = 'ready', standings = 'ready', width = 1440, reducedMotion = 'no-preference', publishedProfile = profile, preview = 'ready', clipboard = 'ready', nativeShare = false } = {}) {
+async function setup({ user = 'ready', standings = 'ready', width = 1440, reducedMotion = 'no-preference', publishedProfile = profile, preview = 'ready', clipboard = 'ready', nativeShare = false, auth = 'legacy', oauthReturn = null } = {}) {
   const context = await browser.newContext({ viewport: { width, height: 1000 }, timezoneId: 'UTC', reducedMotion });
   await context.addInitScript(({ clipboard, nativeShare }) => {
     Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async value => {
@@ -65,6 +65,9 @@ async function setup({ user = 'ready', standings = 'ready', width = 1440, reduce
       throw new DOMException('Share sheet cancelled', 'AbortError');
     } : undefined });
   }, { clipboard, nativeShare });
+  if (oauthReturn) await context.addInitScript(saved => {
+    sessionStorage.setItem('th_auth_return', JSON.stringify({ ...saved, at: Date.now() }));
+  }, oauthReturn);
   if (user === 'body') await context.addInitScript(() => {
     const nativeFetch = window.fetch.bind(window);
     window.testProfileRead = { retry: false, headers: 0, aborts: 0 };
@@ -85,7 +88,10 @@ async function setup({ user = 'ready', standings = 'ready', width = 1440, reduce
     };
   });
   const page = await context.newPage();
-  const errors = [], requests = [];
+  const errors = [], requests = [], submittedClaims = [];
+  const modernAuth = auth !== 'legacy';
+  const authIdentity = { provider: auth === 'github' ? 'github' : 'google', sub: 'fixture-account', email: 'fixture@example.test', name: 'Fixture Builder', login: 'fixture' };
+  const session = authenticated => ({ ok: true, authenticated, expiresAt: Date.now() + 3600000, user: authenticated ? authIdentity : null });
   let userState = user, releaseUser, releaseStandings;
   const userWait = new Promise(resolve => { releaseUser = resolve; });
   const standingsWait = new Promise(resolve => { releaseStandings = resolve; });
@@ -95,7 +101,16 @@ async function setup({ user = 'ready', standings = 'ready', width = 1440, reduce
   await page.route(ORIGIN + '/**', async route => {
     const url = new URL(route.request().url());
     requests.push(url.pathname);
-    if (url.pathname === '/api/config') return json(route, { ok: true, googleClientId: '', googleAuth: false, canonicalUrl: ORIGIN });
+    if (url.pathname === '/api/config') return json(route, { ok: true, googleClientId: modernAuth ? 'fixture-client' : '', googleAuth: modernAuth, webSessions: modernAuth, githubAuth: modernAuth, canonicalUrl: ORIGIN });
+    if (url.pathname === '/api/auth/session') return json(route, session(auth === 'remembered' || auth === 'github'));
+    if (url.pathname === '/api/auth/google') return json(route, session(true));
+    if (url.pathname === '/api/account/profiles') return json(route, { ok: true, profiles: [] });
+    if (url.pathname === '/api/claim') {
+      const claim = route.request().postDataJSON();
+      submittedClaims.push(claim);
+      if (userState === 'missing') return json(route, { ok: false, error: `Profile @${claim.handle} not found to claim` }, 404);
+      return json(route, { ok: true, handle: claim.handle, entry: { ...entry, handle: claim.handle, claimed: true } });
+    }
     if (url.pathname === '/api/user/aurora') {
       if (userState === 'held') await userWait;
       if (userState === 'missing') return json(route, { ok: false, error: 'Profile not found' }, 404);
@@ -126,7 +141,7 @@ async function setup({ user = 'ready', standings = 'ready', width = 1440, reduce
   });
   await page.route(/https?:\/\/(?!token-horizon\.dev\/|accounts\.google\.com\/).*/, route => route.abort());
   return {
-    page, context, errors, requests,
+    page, context, errors, requests, submittedClaims,
     recover: () => { userState = 'ready'; releaseUser(); },
     close: async () => { releaseUser(); releaseStandings(); await context.close(); assert.deepEqual(errors, [], 'Profile route must not throw browser errors'); }
   };
@@ -271,7 +286,8 @@ try {
       assert.match(await page.locator('meta[property="og:image"]').getAttribute('content'), /\/api\/og\/profile\/aurora\.png/);
       assert.doesNotMatch(await page.locator('meta[name="robots"]').getAttribute('content'), /noindex/);
       assert.equal(JSON.parse(await page.locator('#th-seo-schema').textContent()).mainEntity.name, '@aurora');
-      await page.locator('[data-public-view="models"]').click();
+      await page.locator('[data-explore-trigger="models"]').click();
+  await page.locator('[data-explore-panel] [data-explore-link="explorer"]').click();
       await page.waitForSelector('#mx-q');
       assert.equal(await page.locator('link[rel="canonical"]').getAttribute('href'), ORIGIN + '/models');
       assert.match(await page.locator('meta[property="og:image"]').getAttribute('content'), /\/assets\/og-models\.png/);
@@ -291,6 +307,61 @@ try {
       assert.equal(await page.locator('link[rel="canonical"]').getAttribute('href'), ORIGIN + '/leaderboard');
       assert.equal(await page.locator('meta[property="og:image"]').count(), 1);
       assert.equal(await page.locator('meta[name="twitter:image"]').count(), 1);
+    } finally { await fixture.close(); }
+  }
+
+  console.log('Desktop claim links: sign-in resumes the saved handle and waits for manual confirmation...');
+  {
+    const fixture = await setup({ auth: 'signed-out' });
+    const { page } = fixture;
+    try {
+      await page.goto(ORIGIN + '/leaderboard?view=players&user=aurora&claim=1', { waitUntil: 'domcontentloaded' });
+      await page.waitForSelector('.signin-modal');
+      assert.match(await page.locator('.signin-modal').innerText(), /Claiming @aurora/);
+      assert.deepEqual(fixture.submittedClaims, [], 'Opening a claim link must not claim automatically');
+      await page.evaluate(() => handleGoogleCredential({ credential: 'fixture.' + btoa(JSON.stringify({ email: 'fixture@example.test', sub: 'fixture-account', exp: Math.floor(Date.now() / 1000) + 3600 })) + '.signature' }));
+      await page.waitForSelector('#claim-submit');
+      assert.equal(await page.locator('.signin-modal').count(), 0);
+      assert.match(await page.locator('#modal-backdrop h2').innerText(), /Claim @aurora/);
+      assert.match(await page.locator('#modal-backdrop').innerText(), /After claiming, desktop publishing requires an authorized app write token/);
+      assert.equal(await page.locator('#claim-token').getAttribute('type'), 'password');
+      assert.equal(await page.locator('#claim-token').inputValue(), '', 'The native credential must not be transferred through a browser URL');
+      assert.match(await page.locator('meta[name="robots"]').getAttribute('content'), /noindex/);
+      assert.deepEqual(fixture.submittedClaims, [], 'Sign-in must not claim automatically');
+      await page.locator('#claim-submit').click();
+      await page.waitForSelector('#claim-submit', { state: 'detached' });
+      assert.deepEqual(fixture.submittedClaims, [{ handle: 'aurora' }], 'Manual confirmation sends the exact handle and no saved token');
+      assert.doesNotMatch(page.url(), /claimToken|fixture-account/);
+    } finally { await fixture.close(); }
+  }
+  {
+    const fixture = await setup({ auth: 'remembered', user: 'missing' });
+    try {
+      await fixture.page.goto(ORIGIN + '/leaderboard?view=players&user=aurora&claim=1', { waitUntil: 'domcontentloaded' });
+      await fixture.page.waitForSelector('#claim-submit');
+      assert.equal(await fixture.page.locator('.signin-modal').count(), 0, 'Remembered browser identity goes straight to the manual dialog');
+      assert.match(await fixture.page.locator('#modal-backdrop').innerText(), /Use Sync now.*before claiming a new handle/);
+      assert.deepEqual(fixture.submittedClaims, []);
+      await fixture.page.locator('#claim-submit').click();
+      await fixture.page.getByText('Profile @aurora not found to claim', { exact: true }).waitFor();
+      assert.equal(await fixture.page.locator('#claim-submit').count(), 1, 'A not-yet-published handle keeps the dialog open for recovery');
+    } finally { await fixture.close(); }
+  }
+  {
+    const handle = '名字/<img>&signin=1#part';
+    const claimPath = '/leaderboard?' + new URLSearchParams({ view: 'players', user: handle, claim: '1' });
+    const fixture = await setup({ auth: 'github', oauthReturn: { path: claimPath, resume: { type: 'claim', handle } } });
+    try {
+      await fixture.page.goto(ORIGIN + claimPath + '&auth=success', { waitUntil: 'domcontentloaded' });
+      await fixture.page.waitForSelector('#claim-submit');
+      assert.equal(await fixture.page.locator('#modal-backdrop h2').innerText(), 'Claim @' + handle);
+      assert.equal(await fixture.page.locator('#modal-backdrop img').count(), 0, 'A handle is escaped as text');
+      assert.doesNotMatch(fixture.page.url(), /auth=success/);
+      assert.equal(await fixture.page.evaluate(() => sessionStorage.getItem('th_auth_return')), null, 'OAuth continuation is consumed once');
+      assert.deepEqual(fixture.submittedClaims, [], 'GitHub return only opens confirmation');
+      await fixture.page.locator('#claim-submit').click();
+      await fixture.page.waitForSelector('#claim-submit', { state: 'detached' });
+      assert.deepEqual(fixture.submittedClaims, [{ handle }], 'OAuth resumes the full handle rather than an ASCII prefix');
     } finally { await fixture.close(); }
   }
 

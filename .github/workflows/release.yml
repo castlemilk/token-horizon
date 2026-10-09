@@ -245,6 +245,13 @@ jobs:
             dist/TokenHorizon-${{ steps.ver.outputs.version }}.sha256
           retention-days: 7
           if-no-files-found: error
+      - name: Curate release notes from the tagged history
+        env:
+          RELEASE_TAG: ${{ steps.ver.outputs.tag }}
+        run: |
+          node scripts/release.mjs notes --to "$RELEASE_TAG" --format md | tee "$RUNNER_TEMP/release-notes.md"
+          test -s "$RUNNER_TEMP/release-notes.md"
+          grep -q "^## Token Horizon $RELEASE_TAG$" "$RUNNER_TEMP/release-notes.md"
       - name: Stage validated native assets in a draft
         id: draft
         uses: softprops/action-gh-release@v2.6.2
@@ -253,6 +260,7 @@ jobs:
           # its historical commit can require workflow authorization unavailable
           # to GITHUB_TOKEN; the existing tag determines the release source.
           tag_name: ${{ steps.ver.outputs.tag }}
+          body_path: ${{ runner.temp }}/release-notes.md
           files: ${{ steps.assets.outputs.files }}
           fail_on_unmatched_files: true
           overwrite_files: false
@@ -276,6 +284,8 @@ jobs:
           const release = api(`repos/${repo}/releases/${id}`);
           assert.equal(release.tag_name, process.env.RELEASE_TAG);
           assert.equal(release.draft, true); assert.equal(release.prerelease, false);
+          assert.match(release.body || '', new RegExp(`^## Token Horizon v${version}`, 'm'), 'Curated release notes must lead the body');
+          assert.ok((release.body || '').includes(`/compare/`), 'Release notes must link the full changelog');
           const assets = api(`repos/${repo}/releases/${id}/assets?per_page=100`);
           for (const suffix of ['zip','dmg','sha256']) {
             const name = `TokenHorizon-${version}.${suffix}`, matches = assets.filter(asset => asset.name === name);

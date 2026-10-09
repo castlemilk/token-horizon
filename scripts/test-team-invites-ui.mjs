@@ -122,8 +122,7 @@ try {
     await page.locator('[data-ti-continue]').click();
     await page.waitForSelector('[data-invite-friends]');
     await page.waitForFunction(() => document.querySelector('.team-invite-banner strong')?.textContent === 'Moonshot Club');
-    assert.match(page.url(), /\/leaderboard\?view=teams/);
-    assert.equal(new URL(page.url()).pathname, '/leaderboard', 'continuing kept the invite URL');
+    assert.equal(new URL(page.url()).pathname, '/teams', 'continuing landed on the public team page');
     await page.reload();
     await page.waitForSelector('[data-invite-friends]');
     assert.equal(await page.locator('[data-ti-join]').count(), 0);
@@ -150,9 +149,9 @@ try {
   console.log('Invites: owners create, copy and retire a team link without publishing a profile...');
   {
     const { page, context, uiState } = await setup({ signedIn: 'alice' });
-    await page.goto(`${ORIGIN}/leaderboard?view=dashboard`);
-    await page.waitForSelector('[data-tw-invite]');
-    await page.locator('[data-tw-invite]').click();
+    await page.goto(`${ORIGIN}/leaderboard?view=teams`);
+    await page.waitForSelector('[data-team-empty-invite]');
+    await page.locator('[data-team-empty-invite]').click();
     await page.waitForSelector('[name="teamName"]');
     await page.locator('[name="teamName"]').fill('Moonshot Club');
     await page.locator('[data-ti-create] button[type="submit"]').click();

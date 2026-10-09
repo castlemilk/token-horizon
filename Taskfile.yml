@@ -75,6 +75,7 @@ tasks:
       - node scripts/test-workspace-ui.mjs
       - node scripts/test-team-invites-ui.mjs
       - node scripts/test-team-flow-ui.mjs
+      - node scripts/test-teams-ui.mjs
       - node scripts/test-team-motion-ui.mjs
       - node scripts/test-share-preview-ui.mjs
       - node scripts/test-profile-ui.mjs
