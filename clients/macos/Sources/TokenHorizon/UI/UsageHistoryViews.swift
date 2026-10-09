@@ -98,7 +98,7 @@ struct UsageHistorySection: View {
                 }
                 .buttonStyle(.plain)
             }
-            HeatmapGrid(points: points, maxTokens: peak, cellSize: cell)
+            HeatmapGrid(points: points, cellSize: cell)
             HeatmapKPIs(points: points, horizontal: true)
         }
         .frame(width: width, alignment: .leading)

@@ -640,7 +640,7 @@ struct WidgetCard: View {
     }
 
     private func heatmapGrid(_ columns: [[Int]], caption: String, compact: Bool = false) -> some View {
-        let maxTokens = max(1, columns.flatMap { $0 }.max() ?? 1)
+        let anchor = HeatmapScale.anchor(columns.flatMap { $0 })
         let rows = max(1, columns.map(\.count).max() ?? 1)
         let spacing: CGFloat = 3
         return VStack(alignment: .leading, spacing: 4) {
@@ -656,10 +656,16 @@ struct WidgetCard: View {
                     ForEach(Array(columns.enumerated()), id: \.offset) { _, column in
                         VStack(spacing: spacing) {
                             ForEach(Array(column.enumerated()), id: \.offset) { _, tokens in
-                                RoundedRectangle(cornerRadius: min(2.5, cell * 0.3))
-                                    .fill(heatColor(tokens: tokens, maxTokens: maxTokens))
-                                    .frame(width: cell, height: cell)
-                                    .accessibilityLabel("\(tokens) tokens")
+                                ZStack {
+                                    RoundedRectangle(cornerRadius: min(2.5, cell * 0.3))
+                                        .fill(heatColor(tokens: tokens, anchor: anchor))
+                                    if anchor > 0, tokens >= anchor {
+                                        RoundedRectangle(cornerRadius: min(2.5, cell * 0.3))
+                                            .fill(Color.white.opacity(0.15 + 0.35 * HeatmapScale.spikeIntensity(tokens, anchor: anchor)))
+                                    }
+                                }
+                                .frame(width: cell, height: cell)
+                                .accessibilityLabel("\(tokens) tokens")
                             }
                         }
                     }
@@ -671,6 +677,8 @@ struct WidgetCard: View {
                 Text(caption).lineLimit(1).minimumScaleFactor(0.7)
                 if !compact {
                     HStack(spacing: 4) {
+                        Text(anchor > 0 ? "busy ≈ \(WidgetSnapshot.number(anchor))" : "")
+                            .minimumScaleFactor(0.7)
                         Spacer(minLength: 0)
                         Text("Less")
                         ForEach([0.0, 0.25, 0.5, 0.75, 1.0], id: \.self) { level in
@@ -678,7 +686,7 @@ struct WidgetCard: View {
                                 .fill(level == 0 ? Color.white.opacity(0.08) : accent.opacity(0.25 + 0.75 * level))
                                 .frame(width: 8, height: 8)
                         }
-                        Text("More")
+                        Text("Spike")
                     }
                 }
             }
@@ -686,14 +694,8 @@ struct WidgetCard: View {
         }
     }
 
-    private func heatColor(tokens: Int, maxTokens: Int) -> Color {
+    private func heatColor(tokens: Int, anchor: Int) -> Color {
         guard tokens > 0 else { return Color.white.opacity(0.08) }
-        let level = Double(tokens) / Double(maxTokens)
-        switch level {
-        case ..<0.25: return accent.opacity(0.35)
-        case ..<0.5: return accent.opacity(0.55)
-        case ..<0.75: return accent.opacity(0.8)
-        default: return accent
-        }
+        return accent.opacity(0.25 + 0.75 * HeatmapScale.level(tokens, anchor: anchor))
     }
 }

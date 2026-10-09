@@ -87,6 +87,35 @@ struct WidgetPreferences: Codable, Equatable {
     }
 }
 
+/// Relative heatmap scaling. The color anchor is the 90th percentile of the
+/// visible window's nonzero days, so a historic mega-spike no longer flattens
+/// recent months: a typical busy day renders near-full and rarer spikes
+/// overdrive into a hotter tint. Windows with very few active days fall back
+/// to their maximum so small samples keep absolute meaning.
+enum HeatmapScale {
+    static let smallSampleThreshold = 10
+
+    static func anchor(_ values: [Int]) -> Int {
+        let active = values.filter { $0 > 0 }.sorted()
+        guard !active.isEmpty else { return 0 }
+        guard active.count >= smallSampleThreshold else { return active[active.count - 1] }
+        let index = min(active.count - 1, max(0, Int((Double(active.count) * 0.9).rounded(.up)) - 1))
+        return active[index]
+    }
+
+    /// sqrt curve below the anchor: anchor → 1.0, anchor/2 ≈ 0.73, anchor/5 ≈ 0.49.
+    static func level(_ tokens: Int, anchor: Int) -> Double {
+        guard tokens > 0, anchor > 0 else { return 0 }
+        return pow(min(Double(tokens) / Double(anchor), 1.0), 0.45)
+    }
+
+    /// 0 at the anchor, growing with overshoot magnitude and clamped at 3×.
+    static func spikeIntensity(_ tokens: Int, anchor: Int) -> Double {
+        guard tokens > 0, anchor > 0 else { return 0 }
+        return min(1, max(0, (Double(tokens) / Double(anchor) - 1) / 3))
+    }
+}
+
 struct WidgetSnapshot: Codable {
     static let kind = "TokenHorizonUsage"
     static let schemaVersion = 5

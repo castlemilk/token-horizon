@@ -58,7 +58,6 @@ struct ProcessMetric: View {
 
 struct HeatmapGrid: View {
     let points: [HistoryPoint]
-    let maxTokens: Int
     var cellSize: CGFloat = 7
     @State private var hovered: (point: HistoryPoint, column: Int)?
     private let gap: CGFloat = 1.5
@@ -67,6 +66,7 @@ struct HeatmapGrid: View {
 
     var body: some View {
         let columns = Self.weekColumns(points)
+        let anchor = HeatmapScale.anchor(points.map(\.tokens))
         let width = CGFloat(columns.count) * (cellSize + gap) + weekdayWidth
         let labels = positionedMonthLabels(columns, width: width)
         return VStack(alignment: .leading, spacing: 5) {
@@ -95,7 +95,7 @@ struct HeatmapGrid: View {
                                 if let point = week[row] {
                                     let description = tooltipDescription(point)
                                     RoundedRectangle(cornerRadius: 2)
-                                        .fill(cellColor(point.tokens))
+                                        .fill(Self.cellColor(point.tokens, anchor: anchor))
                                         .frame(width: cellSize, height: cellSize)
                                         .help(description)
                                         .accessibilityLabel(description)
@@ -112,14 +112,20 @@ struct HeatmapGrid: View {
                 }
             }
             HStack(spacing: 4) {
+                Text(anchor > 0 ? "busy ≈ \(UsageSnapshot.tokens(anchor))/day" : "no usage yet")
+                    .font(.system(size: 8, design: .monospaced))
+                    .foregroundStyle(.white.opacity(0.5))
                 Spacer(minLength: 0)
                 Text("Less")
                 ForEach(0..<6, id: \.self) { level in
                     RoundedRectangle(cornerRadius: 1.5)
-                        .fill(heatColor(level: Double(level) / 5.0))
+                        .fill(Self.heatColor(level: Double(level) / 5.0))
                         .frame(width: 7, height: 7)
                 }
-                Text("More")
+                RoundedRectangle(cornerRadius: 1.5)
+                    .fill(Self.spikeColor(1))
+                    .frame(width: 7, height: 7)
+                Text("Spike")
             }
             .font(.system(size: 8))
             .foregroundStyle(.white.opacity(0.6))
@@ -194,14 +200,22 @@ struct HeatmapGrid: View {
         return Array(labels.reversed())
     }
 
-    func heatColor(level: Double) -> Color {
+    static func heatColor(level: Double) -> Color {
         Color.green.opacity(0.22 + 0.78 * level)
     }
 
-    func cellColor(_ tokens: Int) -> Color {
+    /// Spike days overdrive the top of the ramp toward a hot mint so they read
+    /// as categorically hotter than a merely busy day.
+    static func spikeColor(_ intensity: Double) -> Color {
+        Color(red: 0.2 + 0.8 * intensity, green: 1.0, blue: 0.2 + 0.8 * intensity)
+    }
+
+    static func cellColor(_ tokens: Int, anchor: Int) -> Color {
         guard tokens > 0 else { return Color.white.opacity(0.06) }
-        let ratio = log(Double(tokens) + 1) / log(Double(max(maxTokens, 1)) + 1)
-        return heatColor(level: Swift.min(ratio * 1.4, 1))
+        if anchor > 0, tokens >= anchor {
+            return spikeColor(HeatmapScale.spikeIntensity(tokens, anchor: anchor))
+        }
+        return heatColor(level: HeatmapScale.level(tokens, anchor: anchor))
     }
 
     private static let tooltipDateFormatter: DateFormatter = {
