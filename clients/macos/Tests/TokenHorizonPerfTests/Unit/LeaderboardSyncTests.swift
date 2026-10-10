@@ -93,12 +93,13 @@ final class LeaderboardSyncTests: XCTestCase {
         XCTAssertEqual(out[0].team, "maxxers", "an empty local label takes the resolved name")
     }
 
-    func testMergeRemoteEntries_keepsConfiguredTeamLabelOverCloudName() {
+    func testMergeRemoteEntries_resolvedCloudTeamNameReplacesStaleConfiguredLabel() {
         let local = entry("local:me", handle: "me", all: 100, local: true, team: "Castlemilk", teamId: "")
         let remote = [entry("cf:me", handle: "me", all: 9999, team: "maxxers", teamId: "6c68c1aa")]
         let out = LeaderboardStore.mergeRemoteEntries(current: [local], local: local, remote: remote)
         XCTAssertEqual(out[0].teamId, "6c68c1aa", "membership still adopted")
-        XCTAssertEqual(out[0].team, "Castlemilk", "the published label is user configuration")
+        XCTAssertEqual(out[0].team, "maxxers", "the resolved name belongs to the canonical membership")
+        XCTAssertEqual(out[0].tokensAll, 100, "usage stays local")
     }
 
     func testMergeRemoteEntries_adoptsCloudLabelWhenCloudHasNoMembership() {
@@ -115,6 +116,60 @@ final class LeaderboardSyncTests: XCTestCase {
         let out = LeaderboardStore.mergeRemoteEntries(current: [local], local: local, remote: remote)
         XCTAssertEqual(out[0].teamId, "6c68c1aa", "a label-only cloud row must not clear membership")
         XCTAssertEqual(out[0].team, "Castlemilk")
+    }
+
+    func testLocalTeamIdentity_preservesResolvedCloudTeamAcrossRefreshesAndReload() throws {
+        for configuredTeam in ["", "Castlemilk"] {
+            let path = NSTemporaryDirectory() + "test-team-sync-\(UUID().uuidString).json"
+            defer { try? FileManager.default.removeItem(atPath: path) }
+            let board = LeaderboardStore(customPath: path)
+            let local = entry("local:me", handle: "me", all: 100, local: true, team: configuredTeam)
+            let cloud = entry("cf:me", handle: "me", all: 9999,
+                              team: "maxxers", teamId: "6c68c1aa")
+            let merged = LeaderboardStore.mergeRemoteEntries(current: [local], local: local, remote: [cloud])
+            board.addOrUpdateEntry(try XCTUnwrap(merged.first))
+
+            for tokens in [200, 300] {
+                let identity = LeaderboardStore.localTeamIdentity(configuredTeam: configuredTeam,
+                                                                 previousLocal: board.localEntry())
+                let refreshed = entry("local:me", handle: "me", all: tokens, local: true,
+                                      team: identity.team, teamId: identity.teamId)
+                board.addOrUpdateEntry(refreshed)
+                XCTAssertEqual(board.localEntry()?.teamId, "6c68c1aa", configuredTeam)
+                XCTAssertEqual(board.localEntry()?.team, "maxxers", configuredTeam)
+                XCTAssertEqual(board.localEntry()?.tokensAll, tokens)
+            }
+
+            let reloaded = LeaderboardStore(customPath: path)
+            let identity = LeaderboardStore.localTeamIdentity(configuredTeam: configuredTeam,
+                                                             previousLocal: reloaded.localEntry())
+            reloaded.addOrUpdateEntry(entry("local:me", handle: "me", all: 400, local: true,
+                                           team: identity.team, teamId: identity.teamId))
+            XCTAssertEqual(reloaded.localEntry()?.teamId, "6c68c1aa", configuredTeam)
+            XCTAssertEqual(reloaded.localEntry()?.team, "maxxers", configuredTeam)
+            XCTAssertEqual(reloaded.localEntry()?.tokensAll, 400)
+        }
+    }
+
+    func testLocalTeamIdentity_unlinkedProfilesUseConfiguredTeamLabel() {
+        let unlinked = entry("local:me", handle: "me", all: 100, local: true, team: "Castlemilk")
+        let previousLocals: [LeaderboardEntry?] = [nil, unlinked]
+        for configuredTeam in ["", "New team"] {
+            for previousLocal in previousLocals {
+                let identity = LeaderboardStore.localTeamIdentity(configuredTeam: configuredTeam,
+                                                                 previousLocal: previousLocal)
+                XCTAssertEqual(identity.team, configuredTeam)
+                XCTAssertEqual(identity.teamId, "")
+            }
+        }
+    }
+
+    func testLocalTeamIdentity_unnamedMembershipUsesConfiguredLabel() {
+        let local = entry("local:me", handle: "me", all: 100, local: true,
+                          team: "", teamId: "6c68c1aa")
+        let identity = LeaderboardStore.localTeamIdentity(configuredTeam: "maxxers", previousLocal: local)
+        XCTAssertEqual(identity.team, "maxxers")
+        XCTAssertEqual(identity.teamId, "6c68c1aa")
     }
 
     func testMergeRemoteEntries_matchesByIdRegardlessOfHandle() {

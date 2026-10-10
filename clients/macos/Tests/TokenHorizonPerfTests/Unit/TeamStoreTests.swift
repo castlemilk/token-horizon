@@ -175,6 +175,46 @@ final class TeamStoreTests: XCTestCase {
         XCTAssertNil(TeamStore.teamsURL(baseURL: "file:///tmp/x"))
     }
 
+    // MARK: - Cloud cache revalidation
+
+    func test_forcedTeamRefreshBypassesTheHTTPResponseCache() {
+        let request = TeamStore.teamsRequest(url: URL(string: "https://host.example/api/teams")!,
+                                            force: true, source: .cloud, etag: "old-team-payload")
+        XCTAssertEqual(request.cachePolicy, .reloadIgnoringLocalCacheData,
+                       "refreshing after a publish must not replay a fresh URLSession cache entry")
+        XCTAssertNil(request.value(forHTTPHeaderField: "If-None-Match"))
+    }
+
+    func test_localFallbackCannotRevalidateAnOldCloudPayload() {
+        let oldTag = "cloud-before-outage"
+        let tag = TeamStore.updatedETag(source: .local, previous: oldTag, received: nil,
+                                       replacingPayload: false)
+        XCTAssertNil(tag, "a cloud validator no longer describes the local fallback rows")
+        let request = TeamStore.teamsRequest(url: URL(string: "https://host.example/api/teams")!,
+                                            force: false, source: .local, etag: oldTag)
+        XCTAssertNil(request.value(forHTTPHeaderField: "If-None-Match"),
+                     "a 304 must never promote local rows into a cloud result")
+    }
+
+    func test_cloudRevalidationRetainsTheValidatorForUnchangedRows() {
+        let tag = TeamStore.updatedETag(source: .cloud, previous: "same-rows", received: nil,
+                                       replacingPayload: false)
+        let request = TeamStore.teamsRequest(url: URL(string: "https://host.example/api/teams")!,
+                                            force: false, source: .cloud, etag: tag)
+        XCTAssertEqual(request.value(forHTTPHeaderField: "If-None-Match"), "same-rows")
+    }
+
+    func test_newCloudPayloadReplacesOrClearsThePreviousValidator() {
+        let cases: [(String?, String?)] = [("new-rows", "new-rows"), (nil, nil)]
+        for (received, expected) in cases {
+            XCTAssertEqual(TeamStore.updatedETag(source: .cloud, previous: "old-rows",
+                                                received: received, replacingPayload: true), expected,
+                           "a new 200 response must never retain the validator of older rows")
+        }
+        XCTAssertNil(TeamStore.updatedETag(source: .none, previous: "old-rows", received: nil,
+                                          replacingPayload: false))
+    }
+
     // MARK: - Cloud row parsing
 
     func test_cloudRow_decodesTheAggregateShape() {

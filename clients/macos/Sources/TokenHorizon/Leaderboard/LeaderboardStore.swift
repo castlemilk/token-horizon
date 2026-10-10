@@ -665,6 +665,15 @@ final class LeaderboardStore {
         saveLocked()
     }
 
+    /// Pure team identity carry for local rebuilds. A cloud membership keeps
+    /// its resolved name; unlinked profiles use the configured label.
+    static func localTeamIdentity(configuredTeam: String, previousLocal: LeaderboardEntry?) -> (team: String, teamId: String) {
+        guard let previousLocal else { return (configuredTeam, "") }
+        let team = !previousLocal.teamId.isEmpty && !previousLocal.team.isEmpty
+            ? previousLocal.team : configuredTeam
+        return (team, previousLocal.teamId)
+    }
+
     func syncLocal(_ data: LeaderboardSyncLocalData) {
         syncLocal(snapshot: data.snapshot, history: data.history, streak: data.streak,
                   heatmap: data.heatmap, hourlyHistory: data.hourlyHistory)
@@ -881,16 +890,16 @@ final class LeaderboardStore {
             }
         )
 
-        // Team membership (`teamId`) is cloud-assigned and must survive this
-        // rebuild: syncLocal runs on every refresh tick, so dropping it here
-        // would put us back outside our own team on the local fallback.
-        let carriedTeamId = entries.first(where: { $0.isLocal })?.teamId ?? ""
+        // Keep the cloud-assigned team id and resolved name together across
+        // refreshes. The configured label can predate joining a cloud team.
+        let teamIdentity = Self.localTeamIdentity(configuredTeam: team,
+                                                 previousLocal: entries.first(where: { $0.isLocal }))
 
         let local = LeaderboardEntry(
             id: "local:\(handle)",
             handle: handle,
-            team: team,
-            teamId: carriedTeamId,
+            team: teamIdentity.team,
+            teamId: teamIdentity.teamId,
             tokensToday: snapshot.tokensToday,
             tokens7d: max(tokens7d, snapshot.tokensToday),
             tokensAll: max(snapshot.tokensAllTime, snapshot.tokensToday),
@@ -1854,12 +1863,11 @@ final class LeaderboardStore {
     /// Copy the canonical team identity off a remote row of our own handle
     /// onto the local entry. Usage stays local — only membership follows the
     /// cloud. A `teamId` is adopted outright (together with the name the
-    /// worker resolved it to); a bare label only fills an empty one, so the
-    /// team the user configured to publish is never clobbered.
+    /// worker resolved it to); a bare label only fills an empty one.
     static func adoptTeamIdentity(into entry: inout LeaderboardEntry, from remote: LeaderboardEntry) {
         if !remote.teamId.isEmpty {
             entry.teamId = remote.teamId
-            if !remote.team.isEmpty && entry.team.isEmpty { entry.team = remote.team }
+            if !remote.team.isEmpty { entry.team = remote.team }
         } else if entry.team.isEmpty && !remote.team.isEmpty {
             entry.team = remote.team
         }
@@ -1915,7 +1923,7 @@ final class LeaderboardStore {
             return
         }
 
-        var req = URLRequest(url: url)
+        var req = URLRequest(url: url, cachePolicy: forced ? .reloadIgnoringLocalCacheData : .useProtocolCachePolicy)
         req.httpMethod = "GET"
         req.timeoutInterval = 8.0
         req.setValue("application/json", forHTTPHeaderField: "Accept")
@@ -1960,6 +1968,7 @@ final class LeaderboardStore {
             let count = self.entries.count
             self.saveLocked()
             self.lock.unlock()
+            DispatchQueue.main.async { TeamStore.shared.refresh(force: true) }
             completion(.success(count))
         }.resume()
     }
@@ -2044,6 +2053,7 @@ final class LeaderboardStore {
             self.lastPublishAt["cloud"] = Date()
             self.lastPublishedTokens["cloud"] = local.tokensAll
             self.lock.unlock()
+            DispatchQueue.main.async { TeamStore.shared.refresh(force: true) }
             completion(.success("Published @\(local.handle) to cloud."))
         }.resume()
     }

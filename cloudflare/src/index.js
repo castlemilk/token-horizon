@@ -1235,6 +1235,10 @@ export default {
             }
             newEntry.claimed = true;
             newEntry.ownerId = prev.ownerId;
+            // Credential-only syncs carry no verified identity to recreate
+            // this server-owned link. Keep it so seeded profiles stay grouped
+            // with their account's team on every subsequent publish.
+            if (prev.identityId) newEntry.identityId = prev.identityId;
             newEntry.googleEmail = prev.googleEmail;
             if (prev.accountEmail) newEntry.accountEmail = prev.accountEmail;
             newEntry.avatarUrl = (googleAuth && googleAuth.picture) || prev.avatarUrl || "";

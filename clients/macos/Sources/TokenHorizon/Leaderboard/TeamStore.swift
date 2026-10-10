@@ -167,6 +167,7 @@ final class TeamStore: ObservableObject {
     private var cachedError: String?
     private var etag: String?
     private var inFlight = false
+    private var pendingForcedRefresh = false
 
     private init() {
         // Seed from the entries on disk so the tab is never blank while the
@@ -222,8 +223,10 @@ final class TeamStore: ObservableObject {
         let last = cachedAt
         let busy = inFlight
         let due = force || last == nil || Date().timeIntervalSince(last!) > Self.staleAfter
+        if force && busy { pendingForcedRefresh = true }
         if due && !busy { inFlight = true }
         let etag = self.etag
+        let source = cachedSource
         lock.unlock()
 
         guard due, !busy else {
@@ -238,11 +241,7 @@ final class TeamStore: ObservableObject {
             return snapshot()
         }
 
-        var req = URLRequest(url: url)
-        req.httpMethod = "GET"
-        req.timeoutInterval = 8.0
-        req.setValue("application/json", forHTTPHeaderField: "Accept")
-        if let etag, !force { req.setValue(etag, forHTTPHeaderField: "If-None-Match") }
+        let req = Self.teamsRequest(url: url, force: force, source: source, etag: etag)
 
         URLSession.shared.dataTask(with: req) { [weak self] data, resp, err in
             guard let self else { return }
@@ -256,6 +255,11 @@ final class TeamStore: ObservableObject {
                 return
             }
             if http.statusCode == 304 {
+                guard req.value(forHTTPHeaderField: "If-None-Match") != nil else {
+                    self.finish(with: self.fallbackSnapshot(error: "Teams endpoint returned a cache response without a matching cloud payload."),
+                                completion: completion)
+                    return
+                }
                 self.finish(with: self.revalidatedSnapshot(), completion: completion)
                 return
             }
@@ -272,7 +276,8 @@ final class TeamStore: ObservableObject {
             let rows = (obj["teams"] as? [[String: Any]] ?? []).compactMap(LeaderboardTeam.init(dict:))
             self.finish(with: .init(teams: rows, source: .cloud, lastFetchAt: Date(),
                                     lastError: rows.isEmpty ? "No teams published yet." : nil),
-                        etag: Self.headerValue(http, "etag"), completion: completion)
+                        etag: Self.headerValue(http, "etag"), replacingPayload: true,
+                        completion: completion)
         }.resume()
 
         return snapshot()
@@ -305,18 +310,25 @@ final class TeamStore: ObservableObject {
         return Snapshot(teams: teams, source: .cloud, lastFetchAt: Date(), lastError: nil)
     }
 
-    private func finish(with snap: Snapshot, etag: String? = nil, completion: ((Snapshot) -> Void)?) {
+    private func finish(with snap: Snapshot, etag: String? = nil, replacingPayload: Bool = false,
+                        completion: ((Snapshot) -> Void)?) {
         lock.lock()
         cachedTeams = snap.teams
         cachedSource = snap.source
         cachedAt = snap.lastFetchAt
         cachedError = snap.lastError
-        if let etag { self.etag = etag }
+        self.etag = Self.updatedETag(source: snap.source, previous: self.etag,
+                                    received: etag, replacingPayload: replacingPayload)
         inFlight = false
+        let refreshAgain = pendingForcedRefresh
+        pendingForcedRefresh = false
         lock.unlock()
         DispatchQueue.main.async { [weak self] in
             self?.publish()
             completion?(snap)
+            // A publish can finish while an older fetch is still running.
+            // Coalesce those forced requests into one fetch of the new rows.
+            if refreshAgain { self?.refresh(force: true) }
         }
     }
 
@@ -333,6 +345,27 @@ final class TeamStore: ObservableObject {
             if let k = key as? String, k.lowercased() == name { return value as? String }
         }
         return nil
+    }
+
+    /// A forced refresh must reach the network even while URLSession's copy
+    /// is fresh. A validator belongs only to the cloud rows it arrived with.
+    static func teamsRequest(url: URL, force: Bool, source: TeamSource, etag: String?) -> URLRequest {
+        var request = URLRequest(url: url, cachePolicy: force ? .reloadIgnoringLocalCacheData : .useProtocolCachePolicy)
+        request.httpMethod = "GET"
+        request.timeoutInterval = 8.0
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        if source == .cloud, let etag, !force {
+            request.setValue(etag, forHTTPHeaderField: "If-None-Match")
+        }
+        return request
+    }
+
+    /// Revalidation and a failed fetch retaining cloud rows keep their tag.
+    /// Replacing rows drops the old validator, including a 200 without one.
+    static func updatedETag(source: TeamSource, previous: String?, received: String?,
+                            replacingPayload: Bool) -> String? {
+        guard source == .cloud else { return nil }
+        return replacingPayload ? received : previous
     }
 
     /// `{cloudBase}/api/teams`, derived from the same base normalization the

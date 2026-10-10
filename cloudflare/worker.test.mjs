@@ -2318,6 +2318,54 @@ const placeholderEntry = (overrides = {}) => ({
 });
 
 describe('Placeholder owner membership link', () => {
+  it('retains the verified membership link across credential-only syncs without trusting publisher identity fields', async () => {
+    const { env, token, call, storedEntries } = await rekeyFixture([placeholderEntry()]);
+    env.LEADERBOARD_SECRET = 'test-sync-write-secret';
+    const owner = await token(), friend = await token({ sub: '999002', email: 'akshay@example.com' });
+    const created = await call('/api/team/invites', { method: 'POST', token: owner, body: { name: 'maxxers' } });
+    assert.equal(created.status, 200);
+    const teamId = created.data.team.id;
+    assert.equal((await call('/api/team/join', { method: 'POST', token: friend, body: { token: created.data.invites[0].token } })).status, 200);
+    assert.equal((await call('/api/leaderboard', { method: 'POST', token: friend, body: { handle: 'akshay', tokensAll: 500 } })).status, 200);
+
+    for (const tokensAll of [1100, 1200]) {
+      const response = await worker.fetch(req('/api/leaderboard', {
+        method: 'POST', headers: { 'X-Leaderboard-Secret': env.LEADERBOARD_SECRET },
+        body: { handle: 'benebsworth', team: 'Local stale team', tokensAll, identityId: 'google:attacker', ownerId: 'google:attacker', claimed: false }
+      }), env);
+      assert.equal(response.status, 200);
+      const published = await response.json();
+      assert.equal(published.entry.teamId, teamId);
+      assert.equal(published.entry.team, 'maxxers');
+      assert.equal('identityId' in published.entry, false, 'the verified subject stays private');
+      const stored = (await storedEntries()).find(entry => entry.handle === 'benebsworth');
+      assert.equal(stored.identityId, 'google:999001', 'sync keeps the verified subject from server storage');
+      assert.equal(stored.ownerId, 'google:benebsworth', 'sync keeps the original private namespace');
+      assert.equal(stored.claimed, true);
+      const teams = (await call('/api/teams')).data.teams;
+      const canonical = teams.find(team => team.teamId === teamId);
+      assert.equal(canonical.members, 2);
+      assert.equal(canonical.memberCount, 2);
+      assert.equal(canonical.tokens, tokensAll + 500);
+      assert.deepEqual(canonical.users.map(user => user.handle).sort(), ['akshay', 'benebsworth']);
+      assert.equal(teams.filter(team => team.team === 'maxxers').length, 1);
+      const profile = (await call('/api/user/benebsworth')).data;
+      assert.equal(profile.teamTotal, 2);
+      assert.equal(profile.teamRank, 1);
+    }
+
+    const before = await storedEntries();
+    const rejected = await call('/api/leaderboard', { method: 'POST', token: friend, body: { handle: 'benebsworth', tokensAll: 9999, identityId: 'google:999001' } });
+    assert.equal(rejected.status, 403, 'a published identity field cannot prove profile ownership');
+    assert.deepEqual(await storedEntries(), before);
+
+    const forged = await call('/api/leaderboard', { method: 'POST', token: friend, body: { handle: 'friend-second-profile', tokensAll: 10, identityId: 'google:999001' } });
+    assert.equal(forged.status, 200);
+    const storedForged = (await storedEntries()).find(entry => entry.handle === 'friend-second-profile');
+    assert.equal(storedForged.ownerId, 'google:999002');
+    assert.equal(storedForged.identityId, undefined, 'new profiles ignore publisher-provided membership subjects');
+  });
+
   it('links a google:<handle> seeded profile to its verified subject without moving its owner namespace', async () => {
     const { env, token, call, storedEntries } = await rekeyFixture([placeholderEntry()]);
     const shareId = 'a'.repeat(32);
