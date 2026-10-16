@@ -318,12 +318,22 @@ enum ModelCatalogExport {
         if let swe = row.sweScore { dict["swe"] = swe }
         if let lcb = row.lcbScore { dict["lcb"] = lcb }
         if let source = row.catalog?.benchmarks?.source, !source.isEmpty { dict["source"] = source }
+        // Provenance travels WITH the score, not only with an aux match: a
+        // vendor estimate, or a score inherited from the same weights on a
+        // free-tier/aggregator route, must read as approximate whether or not
+        // it also carries AIME/GPQA numbers. (50 of the curated table's 94
+        // entries are estimates; silently presenting them as measured is how a
+        // free route with a hand-written 62 ends up looking like a benchmark.)
+        if let bench = row.catalog?.benchmarks, bench.approx { dict["approx"] = true }
         if let extra = aux[normalized(row.usage.model)] ?? aux[normalized(row.displayName)] ?? aux[normalized(row.id)] {
             if let aime = extra.aime { dict["aime"] = aime }
             if let gpqa = extra.gpqa { dict["gpqa"] = gpqa }
             if extra.approx { dict["approx"] = true }
         }
-        return dict.isEmpty ? nil : dict
+        // No scores at all is not a score row: an empty object made a model look
+        // scored in the explorer's "has benchmark" checks.
+        guard dict["swe"] != nil || dict["lcb"] != nil else { return nil }
+        return dict
     }
 
     /// Weighted coding/reasoning score mirroring ModelsPipeline.computeTopPicks.

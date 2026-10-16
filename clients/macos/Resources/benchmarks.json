@@ -940,6 +940,36 @@
       "gpqa": 44.0,
       "approx": true,
       "source": "Perplexity"
+    },
+    {
+      "match": "deepseek-v4.1-flash",
+      "name": "DeepSeek V4.1 Flash",
+      "swe": 78.0,
+      "lcb": 74.0,
+      "aime": 82.0,
+      "gpqa": 78.0,
+      "approx": true,
+      "source": "DeepSeek"
+    },
+    {
+      "match": "deepseek-v4-flash",
+      "name": "DeepSeek V4 Flash",
+      "swe": 78.0,
+      "lcb": 74.0,
+      "aime": 82.0,
+      "gpqa": 78.0,
+      "approx": true,
+      "source": "DeepSeek"
+    },
+    {
+      "match": "deepseek-v4-flash-vision-exp",
+      "name": "DeepSeek V4 Flash (vision exp)",
+      "swe": 78.0,
+      "lcb": 74.0,
+      "aime": 82.0,
+      "gpqa": 78.0,
+      "approx": true,
+      "source": "DeepSeek"
     }
   ]
 }

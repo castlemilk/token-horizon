@@ -75,7 +75,59 @@ final class ModelCatalog {
         var swe: Double?
         var lcb: Double?
         var source: String
+        /// True when the numbers are an estimate, or were inherited from the
+        /// same weights served on a different route (a free-tier or aggregator
+        /// id standing in for the canonical model). Readers must not mistake an
+        /// inherited or vendor-estimate score for a measured one.
+        var approx: Bool
+
+        init(swe: Double?, lcb: Double?, source: String, approx: Bool = false) {
+            self.swe = swe
+            self.lcb = lcb
+            self.source = source
+            self.approx = approx
+        }
+
+        // Hand-written rather than synthesized: a synthesized decoder demands
+        // the `approx` key, and this shape is persisted in models-cache.json and
+        // embedded in the catalog fixture — older payloads carry no such key,
+        // and failing to decode one entry silently empties the whole catalog.
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            swe = try container.decodeIfPresent(Double.self, forKey: .swe)
+            lcb = try container.decodeIfPresent(Double.self, forKey: .lcb)
+            source = try container.decodeIfPresent(String.self, forKey: .source) ?? ""
+            approx = try container.decodeIfPresent(Bool.self, forKey: .approx) ?? false
+        }
+
+        func encode(to encoder: Encoder) throws {
+            var container = encoder.container(keyedBy: CodingKeys.self)
+            try container.encodeIfPresent(swe, forKey: .swe)
+            try container.encodeIfPresent(lcb, forKey: .lcb)
+            try container.encode(source, forKey: .source)
+            try container.encode(approx, forKey: .approx)
+        }
+
+        private enum CodingKeys: String, CodingKey {
+            case swe, lcb, source, approx
+        }
     }
+
+    /// One row of the curated benchmark table (`Resources/benchmarks.json`),
+    /// keyed in the loaded table by its `match` string.
+    struct BenchmarkScore: Equatable {
+        let name: String
+        let swe: Double?
+        let lcb: Double?
+        let source: String
+        /// Curated as an estimate rather than a vendor measurement.
+        let approx: Bool
+        /// A row with neither score is a name alias, not a measurement.
+        var isMeasured: Bool { swe != nil || lcb != nil }
+    }
+
+    /// The curated table, as loaded: model key → its one score row.
+    typealias BenchmarkTable = [String: BenchmarkScore]
 
     func lookup(id: String) -> Entry? {
         lock.lock(); defer { lock.unlock() }
@@ -1406,7 +1458,7 @@ final class ModelCatalog {
             let p = inferProvider(from: k)
             fallbackMap[k] = Entry(id: k, name: v.name, provider: p.id, providerName: p.name,
                                    inputPerM: 0, outputPerM: 0, contextK: 128,
-                                   benchmarks: Benchmarks(swe: v.swe, lcb: v.lcb, source: v.source),
+                                   benchmarks: Benchmarks(swe: v.swe, lcb: v.lcb, source: v.source, approx: v.approx),
                                    docUrl: nil, description: nil)
         }
         injectDirectFlagships(into: &fallbackMap, benchmarks: bm)
@@ -1441,7 +1493,7 @@ final class ModelCatalog {
     /// Pure parse of a models.dev api.json document → catalog entries keyed by
     /// "provider/model". Factored out of fetchAndMerge so ingestion is
     /// hermetically testable with fixtures (no network). Separated for testing.
-    static func parseModelsDev(api obj: [String: Any], benchmarks bm: [String: (name: String, swe: Double?, lcb: Double?, source: String)]) -> [String: Entry] {
+    static func parseModelsDev(api obj: [String: Any], benchmarks bm: BenchmarkTable) -> [String: Entry] {
         var map: [String: Entry] = [:]
         for (providerId, provAny) in obj {
             guard let prov = provAny as? [String: Any] else { continue }
@@ -1454,7 +1506,9 @@ final class ModelCatalog {
                 let limit = m["limit"] as? [String: Any] ?? [:]
                 let key = "\(providerId)/\(modelId)".lowercased()
                 let norm = modelId.lowercased().replacingOccurrences(of: "_", with: "-")
-                let bench = bm[norm] ?? bm[key] ?? bm[modelId.lowercased()]
+                // Route-aware: a free-tier or preview id of already-scored
+                // weights inherits that score, marked approximate.
+                let bench = benchmarkLookup(norm: norm, fullKey: key, table: bm)
                 let doc = (m["doc"] as? String) ?? provDoc
                 let cacheRead = (cost["cache_read"] as? NSNumber)?.doubleValue
                 let reasoning = m["reasoning"] as? Bool
@@ -1471,7 +1525,7 @@ final class ModelCatalog {
                                  outputPerM: (cost["output"] as? NSNumber)?.doubleValue ?? 0,
                                  cacheReadPerM: cacheRead,
                                  contextK: ((limit["context"] as? NSNumber)?.intValue ?? 0) / 1000,
-                                 benchmarks: bench.map { Benchmarks(swe: $0.swe, lcb: $0.lcb, source: $0.source) },
+                                 benchmarks: bench.map { Benchmarks(swe: $0.swe, lcb: $0.lcb, source: $0.source, approx: $0.approx) },
                                  docUrl: doc,
                                  description: desc,
                                  reasoning: reasoning,
@@ -1517,121 +1571,121 @@ final class ModelCatalog {
         return result
     }
 
-    static func injectDirectFlagships(into map: inout [String: Entry], benchmarks: [String: (name: String, swe: Double?, lcb: Double?, source: String)]) {
+    static func injectDirectFlagships(into map: inout [String: Entry], benchmarks: BenchmarkTable) {
         let flagships: [Entry] = [
             Entry(id: "gpt-6-astra", name: "GPT-6 Astra", provider: "openai", providerName: "OpenAI",
                   inputPerM: 10.00, outputPerM: 50.00, cacheReadPerM: 1.00, contextK: 872,
-                  benchmarks: benchmarks["gpt-6-astra"].map { Benchmarks(swe: $0.swe, lcb: $0.lcb, source: $0.source) } ?? Benchmarks(swe: 85.2, lcb: 81.0, source: "OpenAI"),
+                  benchmarks: benchmarks["gpt-6-astra"].map { Benchmarks(swe: $0.swe, lcb: $0.lcb, source: $0.source, approx: $0.approx) } ?? Benchmarks(swe: 85.2, lcb: 81.0, source: "OpenAI"),
                   docUrl: "https://platform.openai.com/docs/models", description: "OpenAI premier frontier flagship model for complex coding, computer use & autonomous agents (90% prompt cache savings)",
                   reasoning: true, toolCall: true, vision: true, openWeights: false,
                   discountPercent: 90, discountLabel: "-90% CACHED", discountDetail: "90% prompt cache savings ($10.00 → $1.00 / 1M cache read)"),
             Entry(id: "gpt-5.6-sol", name: "GPT-5.6 Sol", provider: "openai", providerName: "OpenAI",
                   inputPerM: 2.50, outputPerM: 10.00, cacheReadPerM: 0.50, contextK: 1050,
-                  benchmarks: benchmarks["gpt-5.6-sol"].map { Benchmarks(swe: $0.swe, lcb: $0.lcb, source: $0.source) } ?? Benchmarks(swe: 83.0, lcb: 80.0, source: "OpenAI"),
+                  benchmarks: benchmarks["gpt-5.6-sol"].map { Benchmarks(swe: $0.swe, lcb: $0.lcb, source: $0.source, approx: $0.approx) } ?? Benchmarks(swe: 83.0, lcb: 80.0, source: "OpenAI"),
                   docUrl: "https://platform.openai.com/docs/models", description: "OpenAI premier flagship tier for complex reasoning & multi-step coding agents (50% promo reduction)",
                   reasoning: true, toolCall: true, vision: true, openWeights: false,
                   discountPercent: 50, discountLabel: "-50% PROMO", discountDetail: "50% promotional reduction ($5.00 → $2.50 / 1M input, $20.00 → $10.00 / 1M output)",
                   originalInputPerM: 5.00, originalOutputPerM: 20.00),
             Entry(id: "gpt-5-sol", name: "GPT-5 Sol", provider: "openai", providerName: "OpenAI",
                   inputPerM: 2.50, outputPerM: 10.00, cacheReadPerM: 0.50, contextK: 256,
-                  benchmarks: benchmarks["gpt-5-sol"].map { Benchmarks(swe: $0.swe, lcb: $0.lcb, source: $0.source) } ?? Benchmarks(swe: 81.5, lcb: 78.0, source: "OpenAI"),
+                  benchmarks: benchmarks["gpt-5-sol"].map { Benchmarks(swe: $0.swe, lcb: $0.lcb, source: $0.source, approx: $0.approx) } ?? Benchmarks(swe: 81.5, lcb: 78.0, source: "OpenAI"),
                   docUrl: "https://platform.openai.com/docs/models", description: "OpenAI premier flagship tier for complex reasoning & multi-step coding agents (50% promo reduction)",
                   reasoning: true, toolCall: true, vision: true, openWeights: false,
                   discountPercent: 50, discountLabel: "-50% PROMO", discountDetail: "50% promotional reduction ($5.00 → $2.50 / 1M input, $20.00 → $10.00 / 1M output)",
                   originalInputPerM: 5.00, originalOutputPerM: 20.00),
             Entry(id: "gpt-5.6-terra", name: "GPT-5.6 Terra", provider: "openai", providerName: "OpenAI",
                   inputPerM: 1.20, outputPerM: 4.80, cacheReadPerM: 0.15, contextK: 1050,
-                  benchmarks: benchmarks["gpt-5.6-terra"].map { Benchmarks(swe: $0.swe, lcb: $0.lcb, source: $0.source) } ?? Benchmarks(swe: 74.0, lcb: 70.0, source: "OpenAI"),
+                  benchmarks: benchmarks["gpt-5.6-terra"].map { Benchmarks(swe: $0.swe, lcb: $0.lcb, source: $0.source, approx: $0.approx) } ?? Benchmarks(swe: 74.0, lcb: 70.0, source: "OpenAI"),
                   docUrl: "https://platform.openai.com/docs/models", description: "OpenAI balanced all-rounder tier for daily professional workflows (20% promo reduction)",
                   reasoning: true, toolCall: true, vision: true, openWeights: false,
                   discountPercent: 20, discountLabel: "-20% PROMO", discountDetail: "20% promotional reduction ($1.50 → $1.20 / 1M input, $6.00 → $4.80 / 1M output)",
                   originalInputPerM: 1.50, originalOutputPerM: 6.00),
             Entry(id: "gpt-5-terra", name: "GPT-5 Terra", provider: "openai", providerName: "OpenAI",
                   inputPerM: 1.20, outputPerM: 4.80, cacheReadPerM: 0.15, contextK: 256,
-                  benchmarks: benchmarks["gpt-5-terra"].map { Benchmarks(swe: $0.swe, lcb: $0.lcb, source: $0.source) } ?? Benchmarks(swe: 72.0, lcb: 68.5, source: "OpenAI"),
+                  benchmarks: benchmarks["gpt-5-terra"].map { Benchmarks(swe: $0.swe, lcb: $0.lcb, source: $0.source, approx: $0.approx) } ?? Benchmarks(swe: 72.0, lcb: 68.5, source: "OpenAI"),
                   docUrl: "https://platform.openai.com/docs/models", description: "OpenAI balanced all-rounder tier for daily professional workflows (20% promo reduction)",
                   reasoning: true, toolCall: true, vision: true, openWeights: false,
                   discountPercent: 20, discountLabel: "-20% PROMO", discountDetail: "20% promotional reduction ($1.50 → $1.20 / 1M input, $6.00 → $4.80 / 1M output)",
                   originalInputPerM: 1.50, originalOutputPerM: 6.00),
             Entry(id: "gpt-5.6-luna", name: "GPT-5.6 Luna", provider: "openai", providerName: "OpenAI",
                   inputPerM: 0.10, outputPerM: 0.40, cacheReadPerM: 0.025, contextK: 1050,
-                  benchmarks: benchmarks["gpt-5.6-luna"].map { Benchmarks(swe: $0.swe, lcb: $0.lcb, source: $0.source) } ?? Benchmarks(swe: 54.0, lcb: 52.0, source: "OpenAI"),
+                  benchmarks: benchmarks["gpt-5.6-luna"].map { Benchmarks(swe: $0.swe, lcb: $0.lcb, source: $0.source, approx: $0.approx) } ?? Benchmarks(swe: 54.0, lcb: 52.0, source: "OpenAI"),
                   docUrl: "https://platform.openai.com/docs/models", description: "OpenAI high-speed lightweight tier for fast summaries & cost-sensitive tasks",
                   reasoning: true, toolCall: true, vision: true, openWeights: false),
             Entry(id: "gpt-5-luna", name: "GPT-5 Luna", provider: "openai", providerName: "OpenAI",
                   inputPerM: 0.10, outputPerM: 0.40, cacheReadPerM: 0.025, contextK: 128,
-                  benchmarks: benchmarks["gpt-5-luna"].map { Benchmarks(swe: $0.swe, lcb: $0.lcb, source: $0.source) } ?? Benchmarks(swe: 52.0, lcb: 50.0, source: "OpenAI"),
+                  benchmarks: benchmarks["gpt-5-luna"].map { Benchmarks(swe: $0.swe, lcb: $0.lcb, source: $0.source, approx: $0.approx) } ?? Benchmarks(swe: 52.0, lcb: 50.0, source: "OpenAI"),
                   docUrl: "https://platform.openai.com/docs/models", description: "OpenAI high-speed lightweight tier for fast summaries & cost-sensitive tasks",
                   reasoning: true, toolCall: true, vision: true, openWeights: false),
             Entry(id: "gemini-3.7-flash", name: "Gemini 3.7 Flash", provider: "google", providerName: "Google",
                   inputPerM: 0.15, outputPerM: 0.60, cacheReadPerM: 0.038, contextK: 1000,
-                  benchmarks: benchmarks["gemini-3.7-flash"].map { Benchmarks(swe: $0.swe, lcb: $0.lcb, source: $0.source) } ?? Benchmarks(swe: 67.0, lcb: 65.0, source: "Google"),
+                  benchmarks: benchmarks["gemini-3.7-flash"].map { Benchmarks(swe: $0.swe, lcb: $0.lcb, source: $0.source, approx: $0.approx) } ?? Benchmarks(swe: 67.0, lcb: 65.0, source: "Google"),
                   docUrl: "https://ai.google.dev/pricing", description: "Google next-gen hybrid reasoning & coding flash model (75% context caching savings)",
                   reasoning: true, toolCall: true, vision: true, openWeights: false,
                   discountPercent: 75, discountLabel: "-75% CACHED", discountDetail: "75% context caching discount ($0.15 → $0.038 / 1M cache read)"),
             Entry(id: "gemini-3.5-flash", name: "Gemini 3.5 Flash", provider: "google", providerName: "Google",
                   inputPerM: 0.15, outputPerM: 0.60, cacheReadPerM: 0.038, contextK: 1000,
-                  benchmarks: benchmarks["gemini-3.5-flash"].map { Benchmarks(swe: $0.swe, lcb: $0.lcb, source: $0.source) } ?? Benchmarks(swe: 65.0, lcb: 62.0, source: "Google"),
+                  benchmarks: benchmarks["gemini-3.5-flash"].map { Benchmarks(swe: $0.swe, lcb: $0.lcb, source: $0.source, approx: $0.approx) } ?? Benchmarks(swe: 65.0, lcb: 62.0, source: "Google"),
                   docUrl: "https://ai.google.dev/pricing", description: "Google high-speed multimodal reasoning model",
                   reasoning: true, toolCall: true, vision: true, openWeights: false),
             Entry(id: "gemini-2.5-pro", name: "Gemini 2.5 Pro", provider: "google", providerName: "Google",
                   inputPerM: 1.25, outputPerM: 5.00, cacheReadPerM: 0.31, contextK: 2000,
-                  benchmarks: benchmarks["gemini-2.5-pro"].map { Benchmarks(swe: $0.swe, lcb: $0.lcb, source: $0.source) } ?? Benchmarks(swe: 63.8, lcb: 60.5, source: "Google"),
+                  benchmarks: benchmarks["gemini-2.5-pro"].map { Benchmarks(swe: $0.swe, lcb: $0.lcb, source: $0.source, approx: $0.approx) } ?? Benchmarks(swe: 63.8, lcb: 60.5, source: "Google"),
                   docUrl: "https://ai.google.dev/pricing", description: "Google premier frontier multimodal reasoning model",
                   reasoning: true, toolCall: true, vision: true, openWeights: false),
             Entry(id: "gemini-2.5-flash", name: "Gemini 2.5 Flash", provider: "google", providerName: "Google",
                   inputPerM: 0.15, outputPerM: 0.60, cacheReadPerM: 0.038, contextK: 1000,
-                  benchmarks: benchmarks["gemini-2.5-flash"].map { Benchmarks(swe: $0.swe, lcb: $0.lcb, source: $0.source) } ?? Benchmarks(swe: 55.0, lcb: 54.0, source: "Google"),
+                  benchmarks: benchmarks["gemini-2.5-flash"].map { Benchmarks(swe: $0.swe, lcb: $0.lcb, source: $0.source, approx: $0.approx) } ?? Benchmarks(swe: 55.0, lcb: 54.0, source: "Google"),
                   docUrl: "https://ai.google.dev/pricing", description: "Google high-performance multimodal flash model",
                   reasoning: true, toolCall: true, vision: true, openWeights: false),
             Entry(id: "deepseek-v4.1-flash", name: "DeepSeek V4.1 Flash", provider: "deepseek", providerName: "DeepSeek",
                   inputPerM: 0.15, outputPerM: 0.60, cacheReadPerM: 0.003, contextK: 1000,
-                  benchmarks: benchmarks["deepseek-v4.1-flash"].map { Benchmarks(swe: $0.swe, lcb: $0.lcb, source: $0.source) } ?? Benchmarks(swe: 78.0, lcb: 74.0, source: "DeepSeek"),
+                  benchmarks: benchmarks["deepseek-v4.1-flash"].map { Benchmarks(swe: $0.swe, lcb: $0.lcb, source: $0.source, approx: $0.approx) } ?? Benchmarks(swe: 78.0, lcb: 74.0, source: "DeepSeek"),
                   docUrl: "https://api-docs.deepseek.com/quick_start/pricing", description: "DeepSeek current flagship (off-peak shown; peak 2x; surpasses V4 Pro, faster + cheaper)",
                   reasoning: true, toolCall: true, vision: true, openWeights: true),
             Entry(id: "deepseek-v4-pro-0813", name: "DeepSeek V4 Pro", provider: "deepseek", providerName: "DeepSeek",
                   inputPerM: 0.66, outputPerM: 1.98, cacheReadPerM: 0.022, contextK: 1000,
-                  benchmarks: benchmarks["deepseek-v4-pro-0813"].map { Benchmarks(swe: $0.swe, lcb: $0.lcb, source: $0.source) } ?? benchmarks["deepseek-v4-pro"].map { Benchmarks(swe: $0.swe, lcb: $0.lcb, source: $0.source) } ?? Benchmarks(swe: 72.0, lcb: 68.0, source: "DeepSeek"),
+                  benchmarks: benchmarks["deepseek-v4-pro-0813"].map { Benchmarks(swe: $0.swe, lcb: $0.lcb, source: $0.source, approx: $0.approx) } ?? benchmarks["deepseek-v4-pro"].map { Benchmarks(swe: $0.swe, lcb: $0.lcb, source: $0.source, approx: $0.approx) } ?? Benchmarks(swe: 72.0, lcb: 68.0, source: "DeepSeek"),
                   docUrl: "https://api-docs.deepseek.com/quick_start/pricing", description: "DeepSeek V4 Pro 0813 (off-peak shown; peak 2x; routes to V4.1 Flash from 2026-09-14 billed at Flash)",
                   reasoning: true, toolCall: true, vision: false, openWeights: true),
             Entry(id: "claude-fable-5-1", name: "Claude Fable 5.1", provider: "anthropic", providerName: "Anthropic",
                   inputPerM: 10.00, outputPerM: 50.00, cacheReadPerM: 0.25, contextK: 1000,
-                  benchmarks: benchmarks["claude-fable-5-1"].map { Benchmarks(swe: $0.swe, lcb: $0.lcb, source: $0.source) } ?? Benchmarks(swe: 84.0, lcb: 80.5, source: "Anthropic"),
+                  benchmarks: benchmarks["claude-fable-5-1"].map { Benchmarks(swe: $0.swe, lcb: $0.lcb, source: $0.source, approx: $0.approx) } ?? Benchmarks(swe: 84.0, lcb: 80.5, source: "Anthropic"),
                   docUrl: "https://docs.anthropic.com/en/docs/about-claude/models", description: "Anthropic frontier reasoning & software engineering model (97.5% prompt cache savings)",
                   reasoning: true, toolCall: true, vision: true, openWeights: false,
                   discountPercent: 90, discountLabel: "-90% CACHED", discountDetail: "97.5% prompt cache read discount ($10.00 → $0.25 / 1M)"),
             Entry(id: "claude-opus-5", name: "Claude Opus 5", provider: "anthropic", providerName: "Anthropic",
                   inputPerM: 5.00, outputPerM: 25.00, cacheReadPerM: 0.50, contextK: 1000,
-                  benchmarks: benchmarks["claude-opus-5"].map { Benchmarks(swe: $0.swe, lcb: $0.lcb, source: $0.source) } ?? Benchmarks(swe: 82.0, lcb: 79.0, source: "Anthropic"),
+                  benchmarks: benchmarks["claude-opus-5"].map { Benchmarks(swe: $0.swe, lcb: $0.lcb, source: $0.source, approx: $0.approx) } ?? Benchmarks(swe: 82.0, lcb: 79.0, source: "Anthropic"),
                   docUrl: "https://docs.anthropic.com/en/docs/about-claude/models", description: "Anthropic premier flagship for autonomous coding & deep architecture (90% prompt cache savings)",
                   reasoning: true, toolCall: true, vision: true, openWeights: false,
                   discountPercent: 90, discountLabel: "-90% CACHED", discountDetail: "90% prompt cache read discount ($5.00 → $0.50 / 1M)"),
             Entry(id: "claude-opus-4-6", name: "Claude Opus 4.6", provider: "anthropic", providerName: "Anthropic",
                   inputPerM: 5.00, outputPerM: 25.00, cacheReadPerM: 0.50, contextK: 1000,
-                  benchmarks: benchmarks["claude-opus-4-6"].map { Benchmarks(swe: $0.swe, lcb: $0.lcb, source: $0.source) } ?? Benchmarks(swe: 76.5, lcb: 74.0, source: "Anthropic"),
+                  benchmarks: benchmarks["claude-opus-4-6"].map { Benchmarks(swe: $0.swe, lcb: $0.lcb, source: $0.source, approx: $0.approx) } ?? Benchmarks(swe: 76.5, lcb: 74.0, source: "Anthropic"),
                   docUrl: "https://docs.anthropic.com/en/docs/about-claude/models", description: "Anthropic flagship model for complex coding & architecture (90% prompt cache savings)",
                   reasoning: true, toolCall: true, vision: true, openWeights: false,
                   discountPercent: 90, discountLabel: "-90% CACHED", discountDetail: "90% prompt cache read discount ($5.00 → $0.50 / 1M)"),
             Entry(id: "claude-3.7-sonnet", name: "Claude 3.7 Sonnet", provider: "anthropic", providerName: "Anthropic",
                   inputPerM: 3.00, outputPerM: 15.00, cacheReadPerM: 0.30, contextK: 200,
-                  benchmarks: benchmarks["claude-3.7-sonnet"].map { Benchmarks(swe: $0.swe, lcb: $0.lcb, source: $0.source) } ?? Benchmarks(swe: 70.3, lcb: 71.0, source: "Anthropic"),
+                  benchmarks: benchmarks["claude-3.7-sonnet"].map { Benchmarks(swe: $0.swe, lcb: $0.lcb, source: $0.source, approx: $0.approx) } ?? Benchmarks(swe: 70.3, lcb: 71.0, source: "Anthropic"),
                   docUrl: "https://docs.anthropic.com/en/docs/about-claude/models", description: "Anthropic premier industry benchmark model for coding & agentic workflows (90% prompt cache savings)",
                   reasoning: true, toolCall: true, vision: true, openWeights: false,
                   discountPercent: 90, discountLabel: "-90% CACHED", discountDetail: "90% prompt cache read discount ($3.00 → $0.30 / 1M)"),
             Entry(id: "claude-3.5-sonnet", name: "Claude 3.5 Sonnet", provider: "anthropic", providerName: "Anthropic",
                   inputPerM: 3.00, outputPerM: 15.00, cacheReadPerM: 0.30, contextK: 200,
-                  benchmarks: benchmarks["claude-3.5-sonnet"].map { Benchmarks(swe: $0.swe, lcb: $0.lcb, source: $0.source) } ?? Benchmarks(swe: 65.0, lcb: 67.0, source: "Anthropic"),
+                  benchmarks: benchmarks["claude-3.5-sonnet"].map { Benchmarks(swe: $0.swe, lcb: $0.lcb, source: $0.source, approx: $0.approx) } ?? Benchmarks(swe: 65.0, lcb: 67.0, source: "Anthropic"),
                   docUrl: "https://docs.anthropic.com/en/docs/about-claude/models", description: "Anthropic premier all-rounder model for coding & agents (90% prompt cache savings)",
                   reasoning: false, toolCall: true, vision: true, openWeights: false,
                   discountPercent: 90, discountLabel: "-90% CACHED", discountDetail: "90% prompt cache read discount ($3.00 → $0.30 / 1M)"),
             Entry(id: "claude-haiku-4-5", name: "Claude Haiku 4.5", provider: "anthropic", providerName: "Anthropic",
                   inputPerM: 1.00, outputPerM: 5.00, cacheReadPerM: 0.10, contextK: 200,
-                  benchmarks: benchmarks["claude-haiku-4-5"].map { Benchmarks(swe: $0.swe, lcb: $0.lcb, source: $0.source) } ?? Benchmarks(swe: 40.6, lcb: 43.1, source: "Anthropic"),
+                  benchmarks: benchmarks["claude-haiku-4-5"].map { Benchmarks(swe: $0.swe, lcb: $0.lcb, source: $0.source, approx: $0.approx) } ?? Benchmarks(swe: 40.6, lcb: 43.1, source: "Anthropic"),
                   docUrl: "https://docs.anthropic.com/en/docs/about-claude/models", description: "Anthropic high-speed lightweight model for quick tasks & summaries",
                   reasoning: false, toolCall: true, vision: true, openWeights: false),
             Entry(id: "claude-3.5-haiku", name: "Claude 3.5 Haiku", provider: "anthropic", providerName: "Anthropic",
                   inputPerM: 0.80, outputPerM: 4.00, cacheReadPerM: 0.08, contextK: 200,
-                  benchmarks: benchmarks["claude-3.5-haiku"].map { Benchmarks(swe: $0.swe, lcb: $0.lcb, source: $0.source) } ?? Benchmarks(swe: 40.6, lcb: 43.1, source: "Anthropic"),
+                  benchmarks: benchmarks["claude-3.5-haiku"].map { Benchmarks(swe: $0.swe, lcb: $0.lcb, source: $0.source, approx: $0.approx) } ?? Benchmarks(swe: 40.6, lcb: 43.1, source: "Anthropic"),
                   docUrl: "https://docs.anthropic.com/en/docs/about-claude/models", description: "Anthropic high-speed lightweight model for cost-sensitive tasks",
                   reasoning: false, toolCall: true, vision: true, openWeights: false)
         ]
@@ -1647,9 +1701,9 @@ final class ModelCatalog {
     /// lack V4.1) with authoritative https://api-docs.deepseek.com/quick_start/pricing
     /// values (off-peak base; peak 2x). Runs inside injectDirectFlagships so every
     /// load path — fast-local, cache, remote, fallback — gets correct pricing.
-    static func applyDeepSeekAuthoritativeOverlay(into map: inout [String: Entry], benchmarks: [String: (name: String, swe: Double?, lcb: Double?, source: String)]) {
-        let flashBench = benchmarks["deepseek-v4.1-flash"].map { Benchmarks(swe: $0.swe, lcb: $0.lcb, source: $0.source) } ?? Benchmarks(swe: 78.0, lcb: 74.0, source: "DeepSeek")
-        let proBench = benchmarks["deepseek-v4-pro-0813"].map { Benchmarks(swe: $0.swe, lcb: $0.lcb, source: $0.source) } ?? benchmarks["deepseek-v4-pro"].map { Benchmarks(swe: $0.swe, lcb: $0.lcb, source: $0.source) } ?? Benchmarks(swe: 72.0, lcb: 68.0, source: "DeepSeek")
+    static func applyDeepSeekAuthoritativeOverlay(into map: inout [String: Entry], benchmarks: BenchmarkTable) {
+        let flashBench = benchmarks["deepseek-v4.1-flash"].map { Benchmarks(swe: $0.swe, lcb: $0.lcb, source: $0.source, approx: $0.approx) } ?? Benchmarks(swe: 78.0, lcb: 74.0, source: "DeepSeek")
+        let proBench = benchmarks["deepseek-v4-pro-0813"].map { Benchmarks(swe: $0.swe, lcb: $0.lcb, source: $0.source, approx: $0.approx) } ?? benchmarks["deepseek-v4-pro"].map { Benchmarks(swe: $0.swe, lcb: $0.lcb, source: $0.source, approx: $0.approx) } ?? Benchmarks(swe: 72.0, lcb: 68.0, source: "DeepSeek")
         func flashEntry(id: String, name: String) -> Entry {
             Entry(id: id, name: name, provider: "deepseek", providerName: "DeepSeek",
                   inputPerM: 0.15, outputPerM: 0.60, cacheReadPerM: 0.003, contextK: 1000,
@@ -1677,7 +1731,7 @@ final class ModelCatalog {
         }
     }
 
-    static func fetchLiveZaiModels(into map: inout [String: Entry], benchmarks: [String: (name: String, swe: Double?, lcb: Double?, source: String)]) {
+    static func fetchLiveZaiModels(into map: inout [String: Entry], benchmarks: BenchmarkTable) {
         let keys = PlanLimitsEngine.authKeys()
         guard let key = keys["zai-coding-plan"] ?? keys["zai"], !key.isEmpty else { return }
         guard let u = URL(string: "https://open.bigmodel.cn/api/paas/v4/models") else { return }
@@ -1727,7 +1781,7 @@ final class ModelCatalog {
                     outputPerM: outCost,
                     cacheReadPerM: cacheCost,
                     contextK: 128,
-                    benchmarks: bench.map { Benchmarks(swe: $0.swe, lcb: $0.lcb, source: $0.source) },
+                    benchmarks: bench.map { Benchmarks(swe: $0.swe, lcb: $0.lcb, source: $0.source, approx: $0.approx) },
                     docUrl: "https://open.bigmodel.cn/dev/api",
                     description: "Discovered via live Zhipu GLM API",
                     reasoning: modelId.contains("5") || modelId.contains("reasoner"),
@@ -1740,7 +1794,7 @@ final class ModelCatalog {
 
     /// Dynamically ingests newly released models and context windows from Codex CLI cache (~/.codex/models_cache.json).
     /// Discovers cutting-edge OpenAI models like GPT-6 Astra, Daybreak, GPT-5.6 Sol/Terra/Luna with live net pricing.
-    static func fetchCodexCachedModels(into map: inout [String: Entry], benchmarks: [String: (name: String, swe: Double?, lcb: Double?, source: String)]) {
+    static func fetchCodexCachedModels(into map: inout [String: Entry], benchmarks: BenchmarkTable) {
         let candidates = [
             NSString("~/.codex/models_cache.json").expandingTildeInPath,
             NSString("~/.config/codex/models_cache.json").expandingTildeInPath,
@@ -1834,7 +1888,7 @@ final class ModelCatalog {
                     outputPerM: outCost,
                     cacheReadPerM: cacheCost,
                     contextK: contextK,
-                    benchmarks: bench.map { Benchmarks(swe: $0.swe, lcb: $0.lcb, source: $0.source) },
+                    benchmarks: bench.map { Benchmarks(swe: $0.swe, lcb: $0.lcb, source: $0.source, approx: $0.approx) },
                     docUrl: "https://platform.openai.com/docs/models",
                     description: "Dynamically discovered OpenAI model from live Codex runtime (\(dispName ?? slug))",
                     reasoning: true,
@@ -1858,7 +1912,7 @@ final class ModelCatalog {
     }
 
     /// Dynamically queries OpenAI API models endpoint if credentials are present.
-    static func fetchLiveOpenAIModels(into map: inout [String: Entry], benchmarks: [String: (name: String, swe: Double?, lcb: Double?, source: String)]) {
+    static func fetchLiveOpenAIModels(into map: inout [String: Entry], benchmarks: BenchmarkTable) {
         let keys = PlanLimitsEngine.authKeys()
         let envKey = ProcessInfo.processInfo.environment["OPENAI_API_KEY"]
         var token = envKey ?? keys["openai"]
@@ -1908,7 +1962,7 @@ final class ModelCatalog {
                     outputPerM: outCost,
                     cacheReadPerM: cacheCost,
                     contextK: lower.contains("astra") ? 872 : 256,
-                    benchmarks: bench.map { Benchmarks(swe: $0.swe, lcb: $0.lcb, source: $0.source) },
+                    benchmarks: bench.map { Benchmarks(swe: $0.swe, lcb: $0.lcb, source: $0.source, approx: $0.approx) },
                     docUrl: "https://platform.openai.com/docs/models",
                     description: "Discovered via live OpenAI API (\(modelId))",
                     reasoning: true,
@@ -1932,7 +1986,7 @@ final class ModelCatalog {
     /// 2. If DEEPSEEK_API_KEY (or opencode `deepseek` key) exists, list
     ///    https://api.deepseek.com/models so brand-new ids appear immediately
     ///    with tier-estimated pricing until docs/models.dev confirm.
-    static func fetchLiveDeepSeekModels(into map: inout [String: Entry], benchmarks: [String: (name: String, swe: Double?, lcb: Double?, source: String)]) {
+    static func fetchLiveDeepSeekModels(into map: inout [String: Entry], benchmarks: BenchmarkTable) {
         if let pricing = Self.scrapeDeepSeekPricing() {
             Self.applyDeepSeekScrapedPricing(into: &map, pricing: pricing, benchmarks: benchmarks)
         }
@@ -1968,7 +2022,7 @@ final class ModelCatalog {
                 outputPerM: isPro ? 1.98 : 0.60,
                 cacheReadPerM: isPro ? 0.022 : 0.003,
                 contextK: 1000,
-                benchmarks: bench.map { Benchmarks(swe: $0.swe, lcb: $0.lcb, source: $0.source) },
+                benchmarks: bench.map { Benchmarks(swe: $0.swe, lcb: $0.lcb, source: $0.source, approx: $0.approx) },
                 docUrl: "https://api-docs.deepseek.com/quick_start/pricing",
                 description: "Discovered via live DeepSeek API (\(modelId); off-peak shown, peak 2x)",
                 reasoning: true,
@@ -2042,7 +2096,7 @@ final class ModelCatalog {
         )
     }
 
-    static func applyDeepSeekScrapedPricing(into map: inout [String: Entry], pricing: DeepSeekScrapedPricing, benchmarks: [String: (name: String, swe: Double?, lcb: Double?, source: String)]) {
+    static func applyDeepSeekScrapedPricing(into map: inout [String: Entry], pricing: DeepSeekScrapedPricing, benchmarks: BenchmarkTable) {
         // Only touch entries whose pricing actually changed (keeps revision
         // bumps meaningful and avoids churning models-cache.json every poll).
         func withPricing(_ e: Entry, input: Double, output: Double, cache: Double, desc: String) -> Entry {
@@ -2079,7 +2133,7 @@ final class ModelCatalog {
     /// Anthropic: enumerate live model ids when a key is available so new
     /// Claude releases appear before models.dev updates. Pricing stays with
     /// models.dev / synthesis (the list endpoint carries no pricing).
-    static func fetchLiveAnthropicModels(into map: inout [String: Entry], benchmarks: [String: (name: String, swe: Double?, lcb: Double?, source: String)]) {
+    static func fetchLiveAnthropicModels(into map: inout [String: Entry], benchmarks: BenchmarkTable) {
         let env = ProcessInfo.processInfo.environment
         let keys = PlanLimitsEngine.authKeys()
         guard let token = env["ANTHROPIC_API_KEY"] ?? keys["anthropic"] ?? keys["claude"], !token.isEmpty,
@@ -2113,7 +2167,7 @@ final class ModelCatalog {
                 outputPerM: synth?.outputPerM ?? 15.00,
                 cacheReadPerM: synth?.cacheReadPerM ?? 0.30,
                 contextK: 200,
-                benchmarks: bench.map { Benchmarks(swe: $0.swe, lcb: $0.lcb, source: $0.source) },
+                benchmarks: bench.map { Benchmarks(swe: $0.swe, lcb: $0.lcb, source: $0.source, approx: $0.approx) },
                 docUrl: "https://docs.anthropic.com/en/docs/about-claude/models",
                 description: "Discovered via live Anthropic API (\(modelId); pricing pending models.dev)",
                 reasoning: true, toolCall: true, vision: true, openWeights: false
@@ -2125,7 +2179,7 @@ final class ModelCatalog {
     /// Gemini: enumerate live model ids when a key is available so new Gemini
     /// releases appear before models.dev updates. Pricing stays with
     /// models.dev / synthesis (the list endpoint carries no pricing).
-    static func fetchLiveGeminiModels(into map: inout [String: Entry], benchmarks: [String: (name: String, swe: Double?, lcb: Double?, source: String)]) {
+    static func fetchLiveGeminiModels(into map: inout [String: Entry], benchmarks: BenchmarkTable) {
         let env = ProcessInfo.processInfo.environment
         let keys = PlanLimitsEngine.authKeys()
         guard let token = env["GEMINI_API_KEY"] ?? env["GOOGLE_API_KEY"] ?? keys["gemini"] ?? keys["google"], !token.isEmpty,
@@ -2151,7 +2205,7 @@ final class ModelCatalog {
                 outputPerM: synth?.outputPerM ?? 0.60,
                 cacheReadPerM: synth?.cacheReadPerM,
                 contextK: 1000,
-                benchmarks: bench.map { Benchmarks(swe: $0.swe, lcb: $0.lcb, source: $0.source) },
+                benchmarks: bench.map { Benchmarks(swe: $0.swe, lcb: $0.lcb, source: $0.source, approx: $0.approx) },
                 docUrl: "https://ai.google.dev/pricing",
                 description: "Discovered via live Gemini API (\(modelId); pricing pending models.dev)",
                 reasoning: true, toolCall: true, vision: true, openWeights: false
@@ -2166,7 +2220,7 @@ final class ModelCatalog {
     /// no API key needed. Strictly additive — never overwrites positive
     /// pricing (authoritative direct/overlay pricing always wins); only adds
     /// missing ids and backfills zero-priced rows.
-    static func fetchLiveOpenRouterModels(into map: inout [String: Entry], benchmarks: [String: (name: String, swe: Double?, lcb: Double?, source: String)]) {
+    static func fetchLiveOpenRouterModels(into map: inout [String: Entry], benchmarks: BenchmarkTable) {
         guard let u = URL(string: "https://openrouter.ai/api/v1/models"),
               let obj = fetchJSON(url: u, timeout: 12) as? [String: Any],
               let list = obj["data"] as? [[String: Any]] else { return }
@@ -2201,7 +2255,7 @@ final class ModelCatalog {
 
     /// Pure parse of OpenRouter /api/v1/models rows → catalog entries keyed by
     /// "provider/model". Per-token price strings ×1M. Separated for testing.
-    static func parseOpenRouterModels(list: [[String: Any]], benchmarks: [String: (name: String, swe: Double?, lcb: Double?, source: String)]) -> [String: Entry] {
+    static func parseOpenRouterModels(list: [[String: Any]], benchmarks: BenchmarkTable) -> [String: Entry] {
         var out: [String: Entry] = [:]
         func perM(_ v: Any?) -> Double {
             if let n = v as? NSNumber { return n.doubleValue * 1_000_000 }
@@ -2242,7 +2296,7 @@ final class ModelCatalog {
                 outputPerM: outp,
                 cacheReadPerM: cache > 0 ? cache : nil,
                 contextK: max(0, ctx / 1000),
-                benchmarks: bench.map { Benchmarks(swe: $0.swe, lcb: $0.lcb, source: $0.source) },
+                benchmarks: bench.map { Benchmarks(swe: $0.swe, lcb: $0.lcb, source: $0.source, approx: $0.approx) },
                 docUrl: "https://openrouter.ai/models?q=\(rawId)",
                 description: isFree
                     ? "Free tier via OpenRouter (\(rawId))"
@@ -2296,21 +2350,73 @@ final class ModelCatalog {
         return ("other", "Other")
     }
 
-    static func loadBenchmarks() -> [String: (name: String, swe: Double?, lcb: Double?, source: String)] {
+    static func loadBenchmarks() -> BenchmarkTable {
         guard let path = resourceJSONPath("benchmarks"),
               let data = FileManager.default.contents(atPath: path),
               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let entries = obj["entries"] as? [[String: Any]] else { return [:] }
-        var out: [String: (String, Double?, Double?, String)] = [:]
-        for e in entries {
-            guard let match = e["match"] as? String else { continue }
-            let name = e["name"] as? String ?? match
-            let swe = (e["swe"] as? NSNumber)?.doubleValue
-            let lcb = (e["lcb"] as? NSNumber)?.doubleValue
-            let src = e["source"] as? String ?? ""
-            out[match.lowercased()] = (name, swe, lcb, src)
+        var out = BenchmarkTable()
+        for entry in entries {
+            guard let match = entry["match"] as? String else { continue }
+            let row = BenchmarkScore(
+                name: entry["name"] as? String ?? match,
+                swe: (entry["swe"] as? NSNumber)?.doubleValue,
+                lcb: (entry["lcb"] as? NSNumber)?.doubleValue,
+                source: entry["source"] as? String ?? "",
+                approx: (entry["approx"] as? Bool) ?? false
+            )
+            // A match key with no scores is a name alias, not a measurement:
+            // keeping it would stamp an empty `benchmarks` object on every row
+            // that matches the name (a local Ollama model, say) and make the
+            // model look scored when nothing was measured.
+            guard row.isMeasured else { continue }
+            out[match.lowercased()] = row
         }
         return out
+    }
+
+    /// Strip a route suffix to the canonical weights a score belongs to.
+    ///
+    /// The same model reaches the catalog under many ids: a `-free` plan tier,
+    /// a provider or vendor prefix, a date or preview stamp. `opencode/
+    /// deepseek-v4.1-flash-free` is DeepSeek V4.1 Flash on a Zen plan — the
+    /// intelligence of those weights is one measurement, not a per-route one,
+    /// so a route inherits its base model's score and says it is approximate.
+    static func baseWeightsKey(_ modelKey: String) -> String? {
+        var base = modelKey.lowercased()
+        var stripped = false
+        // Only the last path segment: the provider prefix is not part of the name.
+        if let slash = base.lastIndex(of: "/") {
+            base = String(base[base.index(after: slash)...])
+        }
+        for suffix in ["-free", "-contributor", "-preview", "-preview-free", "-latest", "-exp"] {
+            if base.hasSuffix(suffix) {
+                base = String(base.dropLast(suffix.count))
+                stripped = true
+            }
+        }
+        // Vendor prefixes on the model name itself (vercel-cat-jam, …) only
+        // matter once the bare name is still unmatched; see the lookup order.
+        return stripped && !base.isEmpty ? base : nil
+    }
+
+    /// Resolve the benchmark record for one route id.
+    ///
+    /// Exact match first (the table may score a route directly, e.g. the two
+    /// free Zen routes with their own estimates), then the same lookup forms
+    /// `parseModelsDev` uses, then the base-weights fallback for a route of
+    /// already-scored weights. The fallback marks the score approximate.
+    static func benchmarkLookup(norm: String, fullKey: String, table: BenchmarkTable) -> BenchmarkScore? {
+        // A row without numbers is a name alias, never a measurement — dropping
+        // it here keeps "scored" meaning the same thing for every caller.
+        if let exact = table[norm] ?? table[fullKey] ?? table[norm.lowercased()], exact.isMeasured {
+            return exact
+        }
+        guard let base = baseWeightsKey(norm) ?? baseWeightsKey(fullKey),
+              let hit = table[base], hit.isMeasured else { return nil }
+        // Inherited from the same weights on another route: same intelligence,
+        // but the reader must see it is not a route-specific measurement.
+        return BenchmarkScore(name: hit.name, swe: hit.swe, lcb: hit.lcb, source: hit.source, approx: true)
     }
 
     /// Candidate paths for a bundled JSON resource, in precedence order.

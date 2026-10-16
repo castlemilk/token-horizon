@@ -11,6 +11,15 @@ import XCTest
 /// anywhere (including CI without credentials).
 final class CatalogIngestionTests: XCTestCase {
 
+    private typealias Score = ModelCatalog.BenchmarkScore
+    private typealias BenchmarkTable = ModelCatalog.BenchmarkTable
+
+    /// Look a model up in a table, failing with the id when it resolves to
+    /// nothing, so each assertion reads as the row it expects.
+    private func score(_ id: String, in table: BenchmarkTable) throws -> Score {
+        try XCTUnwrap(ModelCatalog.benchmarkLookup(norm: id, fullKey: id, table: table), id)
+    }
+
     private func jsonFixture(_ name: String) -> Any {
         let url = Bundle.module.url(forResource: name, withExtension: "json", subdirectory: "Fixtures")
             ?? Bundle.module.url(forResource: name, withExtension: "json")
@@ -21,6 +30,93 @@ final class CatalogIngestionTests: XCTestCase {
             return [:]
         }
         return obj
+    }
+
+    /// Intelligence is a property of the weights, not of the route that serves
+    /// them: a free-tier, preview or plan id of an already-scored model
+    /// inherits that score and says it is approximate. Without this a free route
+    /// — the thing a routing decision actually reads — scores blank.
+    func testFreeRouteInheritsBaseWeightsScore() throws {
+        var table = BenchmarkTable()
+        table["deepseek-v4.1-flash"] = Score(name: "DeepSeek V4.1 Flash", swe: 78.0, lcb: 74.0,
+                                             source: "DeepSeek", approx: false)
+
+        let canonical = try score("deepseek-v4.1-flash", in: table)
+        XCTAssertEqual(canonical.swe, 78.0)
+        XCTAssertEqual(canonical.approx, false)
+
+        // The Zen free route of the same weights: inherits, marked approximate.
+        let free = try score("deepseek-v4.1-flash-free", in: table)
+        XCTAssertEqual(free.swe, 78.0)
+        XCTAssertEqual(free.lcb, 74.0)
+        XCTAssertEqual(free.source, "DeepSeek")
+        XCTAssertEqual(free.approx, true)
+
+        // An unscored base weights: still nothing to inherit.
+        XCTAssertNil(ModelCatalog.benchmarkLookup(norm: "space-bunny-free",
+                                                  fullKey: "opencode/space-bunny-free",
+                                                  table: table))
+    }
+
+    /// A route the table scores directly keeps ITS OWN numbers, even when the
+    /// base weights are also scored — a direct measurement outranks inheritance.
+    func testDirectlyScoredRouteWinsOverInheritance() throws {
+        var table = BenchmarkTable()
+        table["nemotron-3.5-lightning-free"] = Score(name: "Nemotron 3.5 Lightning Free", swe: 62.0, lcb: 58.5,
+                                                     source: "OpenCode", approx: true)
+        table["nemotron-3.5-lightning"] = Score(name: "Nemotron 3.5 Lightning", swe: 70.0, lcb: 66.0,
+                                                source: "NVIDIA", approx: false)
+        let hit = try score("nemotron-3.5-lightning-free", in: table)
+        XCTAssertEqual(hit.swe, 62.0)
+        XCTAssertEqual(hit.source, "OpenCode")
+    }
+
+    /// A table row with no numbers is a name alias, not a measurement. Keeping
+    /// it stamped an empty `benchmarks: {}` on every matching row (a local
+    /// Ollama model matched `ornith`), making unscored models look scored.
+    func testAliasOnlyEntriesProduceNoScore() {
+        var table = BenchmarkTable()
+        table["gpt-6-astra"] = Score(name: "GPT-6 Astra", swe: nil, lcb: nil, source: "OpenAI", approx: false)
+        XCTAssertNil(ModelCatalog.benchmarkLookup(norm: "gpt-6-astra", fullKey: "openai/gpt-6-astra",
+                                                  table: table))
+    }
+
+    /// `approx` reaches the exported payload from the score itself, not only
+    /// when the row also carries AIME/GPQA aux numbers.
+    func testExportedScoreCarriesProvenance() throws {
+        let payload = ModelCatalogExport.data()
+        let obj = try JSONSerialization.jsonObject(with: payload) as? [String: Any]
+        let models = try XCTUnwrap(obj?["models"] as? [[String: Any]])
+        XCTAssertFalse(models.isEmpty)
+
+        var sawApprox = false
+        for model in models {
+            guard let bench = model["benchmarks"] as? [String: Any] else { continue }
+            // No score row without a number, ever.
+            XCTAssertTrue(bench["swe"] != nil || bench["lcb"] != nil,
+                          "\(model["id"] as? String ?? "?") has an empty benchmarks object")
+            if bench["approx"] as? Bool == true { sawApprox = true }
+        }
+        XCTAssertTrue(sawApprox, "no approximate score reached the export; provenance is lost")
+    }
+
+    /// `benchmarks` gained an `approx` flag, but the shape is persisted
+    /// (models-cache.json) and embedded in the catalog fixture without it.
+    /// A synthesized decoder would reject those payloads and empty the whole
+    /// catalog; this is the regression that made every sort column return 0 rows.
+    func testBenchmarksDecodePayloadsWrittenBeforeApproxExisted() throws {
+        let legacy = #"{"swe": 78.0, "lcb": 74.0, "source": "DeepSeek"}"#.data(using: .utf8)!
+        let decoded = try JSONDecoder().decode(ModelCatalog.Benchmarks.self, from: legacy)
+        XCTAssertEqual(decoded.swe, 78.0)
+        XCTAssertEqual(decoded.lcb, 74.0)
+        XCTAssertEqual(decoded.source, "DeepSeek")
+        XCTAssertFalse(decoded.approx, "a payload with no approx flag is a measured score")
+
+        // And a whole catalog of them still loads.
+        let entries = #"{"a/b":{"id":"b","name":"B","provider":"a","providerName":"A","inputPerM":0,"outputPerM":0,"contextK":128,"benchmarks":{"swe":50.0,"lcb":40.0,"source":"A"}}}"#.data(using: .utf8)!
+        let map = try JSONDecoder().decode([String: ModelCatalog.Entry].self, from: entries)
+        XCTAssertEqual(map["a/b"]?.benchmarks?.swe, 50.0)
+        XCTAssertEqual(map["a/b"]?.benchmarks?.approx, false)
     }
 
     /// The official pricing table reprices DeepSeek's own listings, and only
