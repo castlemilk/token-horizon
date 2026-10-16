@@ -2059,6 +2059,12 @@ final class ModelCatalog {
         let proDesc = "DeepSeek V4 Pro live pricing (off-peak $\(pricing.proInput)/$\(pricing.proOutput) per 1M; peak 2x; routes to Flash from 2026-09-14)"
         for (key, entry) in map {
             let lower = key.lowercased()
+            // A free listing is a different OFFER of the same weights — a plan
+            // or free-tier route such as `opencode/deepseek-v4.1-flash-free`,
+            // which bills $0 and models.dev says so — not a stale price.
+            // Stamping official direct-API pricing on it is how the Zen free
+            // route ended up quoting $0.15/$0.60 in the exported catalog.
+            if lower.contains("-free") || (entry.inputPerM == 0 && entry.outputPerM == 0) { continue }
             let isFlashKey = lower.contains("v4.1") && lower.contains("flash") || lower.hasSuffix("deepseek-flash") || lower.contains("deepseek-v4-flash")
             let isProKey = lower.contains("v4-pro")
             if isFlashKey, entry.inputPerM != pricing.flashInput || entry.outputPerM != pricing.flashOutput {
@@ -2291,11 +2297,8 @@ final class ModelCatalog {
     }
 
     static func loadBenchmarks() -> [String: (name: String, swe: Double?, lcb: Double?, source: String)] {
-        let bundled = Bundle.main.path(forResource: "benchmarks", ofType: "json")
-        let fallback = NSString(string: "~/.config/token-horizon/benchmarks.json").expandingTildeInPath
-        let projectFallback = "Resources/benchmarks.json"
-        let path = bundled ?? (FileManager.default.fileExists(atPath: fallback) ? fallback : projectFallback)
-        guard let data = FileManager.default.contents(atPath: path),
+        guard let path = resourceJSONPath("benchmarks"),
+              let data = FileManager.default.contents(atPath: path),
               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let entries = obj["entries"] as? [[String: Any]] else { return [:] }
         var out: [String: (String, Double?, Double?, String)] = [:]
@@ -2308,5 +2311,36 @@ final class ModelCatalog {
             out[match.lowercased()] = (name, swe, lcb, src)
         }
         return out
+    }
+
+    /// Candidate paths for a bundled JSON resource, in precedence order.
+    ///
+    /// The installed `.app` resolves through `Bundle.main`; the SwiftPM binary
+    /// (`clients/macos/.build/{debug,release}/TokenHorizon`) does not, so walk
+    /// up to `clients/macos` for `Resources/`; and headless callers — the
+    /// weekly refresh job runs `--export-model-catalog` from the repo root, a
+    /// developer runs it from anywhere — get the relative fallbacks. A user file
+    /// in `~/.config/token-horizon/` overrides the bundled copy.
+    ///
+    /// Shared by plans, benchmarks and the export's auxiliary benchmarks: the
+    /// three loaders that otherwise silently degrade to empty (and ship an
+    /// unscored catalog) whenever one path misses.
+    static func resourceJSONCandidates(_ name: String) -> [String] {
+        var paths: [String] = []
+        if let bundled = Bundle.main.path(forResource: name, ofType: "json") { paths.append(bundled) }
+        paths.append(NSString(string: "~/.config/token-horizon/\(name).json").expandingTildeInPath)
+        let bundleURL = Bundle.main.bundleURL
+        paths.append(bundleURL
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Resources/\(name).json").path)
+        paths.append("Resources/\(name).json")
+        paths.append("clients/macos/Resources/\(name).json")
+        return paths
+    }
+
+    /// First existing candidate for a bundled JSON resource, or nil.
+    static func resourceJSONPath(_ name: String) -> String? {
+        resourceJSONCandidates(name).first { FileManager.default.fileExists(atPath: $0) }
     }
 }

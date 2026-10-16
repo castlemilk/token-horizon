@@ -127,19 +127,11 @@ enum ModelCatalogExport {
     }
 
     private static func planPathCandidates() -> [String] {
-        var paths: [String] = []
-        if let bundled = Bundle.main.path(forResource: "plans", ofType: "json") { paths.append(bundled) }
-        paths.append(NSString(string: "~/.config/token-horizon/plans.json").expandingTildeInPath)
-        // SwiftPM binary at clients/macos/.build/{debug,release}/TokenHorizon →
-        // walk up to clients/macos so Resources/ resolves for any CWD.
-        let bundleURL = Bundle.main.bundleURL
-        paths.append(bundleURL
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .appendingPathComponent("Resources/plans.json").path)
-        paths.append("Resources/plans.json")
-        paths.append("clients/macos/Resources/plans.json")
-        return paths
+        // One resolver for every bundled JSON table (plans, benchmarks, the
+        // export's aux scores): see ModelCatalog.resourceJSONCandidates for why
+        // each fallback path exists. This list previously lived here and only
+        // plans used it, so benchmarks silently missed the headless paths.
+        ModelCatalog.resourceJSONCandidates("plans")
     }
 
     /// One provider listing of a family, with implausible cache prices dropped
@@ -398,11 +390,8 @@ enum ModelCatalogExport {
     }
 
     static func auxiliaryBenchmarks() -> [String: AuxBenchmarks] {
-        let bundled = Bundle.main.path(forResource: "benchmarks", ofType: "json")
-        let fallback = NSString(string: "~/.config/token-horizon/benchmarks.json").expandingTildeInPath
-        let projectFallback = "Resources/benchmarks.json"
-        let path = bundled ?? (FileManager.default.fileExists(atPath: fallback) ? fallback : projectFallback)
-        guard let data = FileManager.default.contents(atPath: path),
+        guard let path = ModelCatalog.resourceJSONPath("benchmarks"),
+              let data = FileManager.default.contents(atPath: path),
               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let entries = obj["entries"] as? [[String: Any]] else { return [:] }
         var out: [String: AuxBenchmarks] = [:]

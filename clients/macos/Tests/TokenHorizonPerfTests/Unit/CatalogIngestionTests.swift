@@ -23,6 +23,67 @@ final class CatalogIngestionTests: XCTestCase {
         return obj
     }
 
+    /// The official pricing table reprices DeepSeek's own listings, and only
+    /// those. A free-tier or plan route of the same weights (`-free` on the
+    /// opencode plan bills $0) is a different offer: stamping the direct-API
+    /// price on it is how the Zen free route ended up quoting $0.15/$0.60.
+    func testDeepSeekPricingOverlay_skipsFreeRoutes() {
+        struct Listing {
+            let id, provider, providerName: String
+            let input, output: Double
+            let contextK: Int
+        }
+        func entry(_ listing: Listing) -> ModelCatalog.Entry {
+            ModelCatalog.Entry(id: listing.id, name: listing.id, provider: listing.provider,
+                               providerName: listing.providerName,
+                               inputPerM: listing.input, outputPerM: listing.output, cacheReadPerM: nil,
+                               contextK: listing.contextK, benchmarks: nil, docUrl: nil, description: nil,
+                               reasoning: true, toolCall: true, vision: false, openWeights: false,
+                               discountPercent: nil, discountLabel: nil, discountDetail: nil,
+                               originalInputPerM: nil, originalOutputPerM: nil)
+        }
+        var map: [String: ModelCatalog.Entry] = [
+            "deepseek/deepseek-v4.1-flash": entry(Listing(
+                id: "deepseek-v4.1-flash", provider: "deepseek", providerName: "DeepSeek",
+                input: 0.10, output: 0.20, contextK: 1000)),
+            "opencode/deepseek-v4.1-flash-free": entry(Listing(
+                id: "deepseek-v4.1-flash-free", provider: "opencode", providerName: "OpenCode",
+                input: 0, output: 0, contextK: 1000)),
+            "opencode/space-bunny-free": entry(Listing(
+                id: "space-bunny-free", provider: "opencode", providerName: "OpenCode",
+                input: 0, output: 0, contextK: 128)),
+            "deepseek/deepseek-v4-pro": entry(Listing(
+                id: "deepseek-v4-pro", provider: "deepseek", providerName: "DeepSeek",
+                input: 0.50, output: 1.00, contextK: 1000))
+        ]
+        let pricing = ModelCatalog.DeepSeekScrapedPricing(
+            flashInput: 0.15, flashOutput: 0.60, flashCache: 0.003,
+            proInput: 0.66, proOutput: 1.98, proCache: 0.022)
+
+        ModelCatalog.applyDeepSeekScrapedPricing(into: &map, pricing: pricing, benchmarks: [:])
+
+        // Stale direct listings take the official price.
+        XCTAssertEqual(map["deepseek/deepseek-v4.1-flash"]?.inputPerM, 0.15)
+        XCTAssertEqual(map["deepseek/deepseek-v4.1-flash"]?.outputPerM, 0.60)
+        XCTAssertEqual(map["deepseek/deepseek-v4-pro"]?.inputPerM, 0.66)
+        // The free route of the same weights stays free.
+        XCTAssertEqual(map["opencode/deepseek-v4.1-flash-free"]?.inputPerM, 0)
+        XCTAssertEqual(map["opencode/deepseek-v4.1-flash-free"]?.outputPerM, 0)
+        XCTAssertEqual(map["opencode/space-bunny-free"]?.inputPerM, 0)
+    }
+
+    /// The bundled benchmark table must resolve headlessly, not just inside the
+    /// installed `.app`: `--export-model-catalog` runs from the SwiftPM binary
+    /// with any working directory, and an unresolved table silently exports a
+    /// catalog with no scores at all (4 of 26 scored models vanished from the
+    /// committed artifact this way).
+    func testBundledBenchmarksResolveOutsideTheAppBundle() {
+        XCTAssertNotNil(ModelCatalog.resourceJSONPath("benchmarks"))
+        XCTAssertNotNil(ModelCatalog.resourceJSONPath("plans"))
+        XCTAssertFalse(ModelCatalog.loadBenchmarks().isEmpty)
+        XCTAssertFalse(ModelCatalogExport.auxiliaryBenchmarks().isEmpty)
+    }
+
     /// models.dev shape → entries, with vision/tool/open-weights carried over.
     func testModelsDevFixture_parsesShape() {
         guard let api = jsonFixture("models-dev-sample") as? [String: Any] else { return }
