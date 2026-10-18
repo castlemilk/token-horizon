@@ -350,8 +350,15 @@ async function api(path, timeoutMs = 6000) {
 }
 
 async function engineApi(path, options = {}) {
+  // The engine is optional: Token Horizon runs without it, and its port is often
+  // closed rather than refusing. A 15s wait (or a hang against a dead port) put
+  // the whole MCP handshake past opencode's startup window, so every opencode
+  // spawn — and the harness loop spawns one per iteration — timed out on a server
+  // it never called. Health checks want a fast answer: come back absent, not
+  // after a timeout.
+  const timeoutMs = options.timeoutMs ?? 2000;
   const res = await fetch(`${ENGINE_BASE}${path}`, {
-    signal: AbortSignal.timeout(15000),
+    signal: AbortSignal.timeout(timeoutMs),
     ...options,
   });
   if (!res.ok) {
