@@ -28,7 +28,7 @@ async function assetResponse(request) {
   catch { return new Response('', { status: 404 }); }
 }
 
-async function setup({ signedIn = '', conflict = false, rejectedInvite = false, stallConfig = false, holdJoin = false } = {}) {
+async function setup({ signedIn = '', existingTeams = [], rejectedInvite = false, stallConfig = false, holdJoin = false } = {}) {
   const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
   await context.addInitScript(saved => {
     if (saved) localStorage.setItem('th_google_session', JSON.stringify(saved));
@@ -38,7 +38,7 @@ async function setup({ signedIn = '', conflict = false, rejectedInvite = false, 
   const page = await context.newPage();
   page.on('pageerror', error => errors.push(error.message));
   const requests = [];
-  const uiState = { team: null, invites: [], joins: [], pendingJoin: null };
+  const uiState = { team: existingTeams[0] || null, teams: [...existingTeams], invites: [], joins: [], pendingJoin: null };
   const fulfill = (route, value, status = 200) => route.fulfill({ status, contentType: 'application/json', headers: { 'Cache-Control': 'no-store' }, body: JSON.stringify(value) });
   await page.route('https://accounts.google.com/**', route => route.fulfill({ status: 200, contentType: 'application/javascript', body: `window.google={accounts:{id:{initialize(options){window.testGoogleCallback=options.callback},renderButton(host){const button=document.createElement('button');button.textContent='Continue with test Google';button.onclick=()=>window.testGoogleCallback({credential:${JSON.stringify(credential('friend'))}});host.append(button)},prompt(){},disableAutoSelect(){}}}};` }));
   await page.route(`${ORIGIN}/**`, async route => {
@@ -49,9 +49,13 @@ async function setup({ signedIn = '', conflict = false, rejectedInvite = false, 
     if (url.pathname === `/api/team/invites/${TOKEN}`) return rejectedInvite
       ? fulfill(route, { error: 'This invite has been retired. Ask your friend for a fresh link.', code: 'invite_revoked' }, 410)
       : fulfill(route, { ok: true, team: TEAM, expiresAt: invite.expiresAt });
-    if (url.pathname === '/api/account/team') return fulfill(route, { ok: true, team: uiState.team, invites: uiState.invites });
+    if (url.pathname === '/api/account/team') {
+      const team = uiState.teams.find(team => team.id === url.searchParams.get('teamId')) || uiState.team;
+      return fulfill(route, { ok: true, teams: uiState.teams, team, invites: team?.role === 'owner' ? uiState.invites : [] });
+    }
     if (url.pathname === '/api/team/invites' && req.method() === 'POST') {
-      uiState.team = { ...TEAM, name: item.body.name || TEAM.name, role: 'owner', memberCount: 1 };
+      uiState.team = { ...TEAM, id: uiState.teams.length ? 'c'.repeat(32) : TEAM.id, name: item.body.name || TEAM.name, role: 'owner', memberCount: 1 };
+      uiState.teams.push(uiState.team);
       uiState.invites = [{ ...invite }];
       return fulfill(route, { ok: true, team: uiState.team, invites: uiState.invites });
     }
@@ -59,11 +63,17 @@ async function setup({ signedIn = '', conflict = false, rejectedInvite = false, 
       uiState.invites = uiState.invites.map(row => ({ ...row, revoked: true }));
       return fulfill(route, { ok: true, team: uiState.team, invites: uiState.invites });
     }
+    if (url.pathname === '/api/team/leave') {
+      uiState.teams = uiState.teams.filter(team => team.id !== item.body.teamId);
+      uiState.team = uiState.teams[0] || null;
+      return fulfill(route, { ok: true, teams: uiState.teams, team: uiState.team, invites: [] });
+    }
     if (url.pathname === '/api/team/join') {
       uiState.joins.push(item);
       if (holdJoin) { uiState.pendingJoin = route; return; }
-      if (conflict && item.body.confirmSwitch !== true) return fulfill(route, { code: 'team_switch_required', error: 'Joining Moonshot Club will move you from Earth Crew.' }, 409);
+
       uiState.team = { ...TEAM };
+      if (!uiState.teams.some(team => team.id === TEAM.id)) uiState.teams.push(uiState.team);
       return fulfill(route, { ok: true, team: uiState.team, invites: [], alreadyMember: false });
     }
     if (url.pathname === '/api/account/profiles') return fulfill(route, { profiles: [] });
@@ -166,19 +176,45 @@ try {
     await context.close();
   }
 
-  console.log('Invites: moving teams requires an explicit second confirmation...');
+  console.log('Invites: joining multiple teams preserves memberships; the manager selects, leaves and creates teams...');
   {
-    const { page, context, uiState } = await setup({ signedIn: 'friend', conflict: true });
+    const earth = { id: 'e'.repeat(32), name: 'Earth Crew', memberCount: 2, role: 'owner' };
+    const { page, context, uiState, requests } = await setup({ signedIn: 'friend', existingTeams: [earth] });
     await openInvite(page);
+    assert.match(await page.locator('#view').innerText(), /Joining keeps your existing memberships/);
     await page.locator('[data-ti-join]').click();
-    await page.getByRole('button', { name: 'Switch team & join', exact: true }).waitFor();
-    assert.equal(uiState.joins.length, 1);
-    assert.equal(uiState.joins[0].body.confirmSwitch, false);
-    assert.match(await page.locator('#view').innerText(), /Earth Crew/);
-    await page.getByRole('button', { name: 'Switch team & join', exact: true }).click();
     await page.waitForSelector('[data-ti-continue]');
-    assert.equal(uiState.joins.length, 2);
-    assert.equal(uiState.joins[1].body.confirmSwitch, true);
+    assert.equal(uiState.joins.length, 1);
+    assert.equal('confirmSwitch' in uiState.joins[0].body, false);
+    assert.deepEqual(uiState.teams.map(team => team.name), ['Earth Crew', 'Moonshot Club']);
+    await page.locator('[data-ti-continue]').click();
+    await page.waitForFunction(() => document.querySelector('.team-invite-banner strong')?.textContent === '2 teams');
+    await page.locator('[data-invite-friends]').click();
+    await page.waitForSelector('[data-ti-select]');
+    await page.locator('[data-ti-select]').selectOption(earth.id);
+    await page.waitForFunction(() => document.querySelector('.ti-team-details h3')?.textContent === 'Earth Crew');
+    assert.equal(await page.locator('[data-ti-leave]').count(), 0, 'owner can leave an owned team');
+    await page.locator('[data-ti-select]').selectOption(TEAM.id);
+    await page.waitForSelector('[data-ti-leave]');
+    if (process.env.TEAM_INVITE_SCREENSHOTS === '1') {
+      for (const [width, scheme] of [[1440, 'light'], [390, 'dark']]) {
+        await page.setViewportSize({ width, height: width < 600 ? 844 : 1000 });
+        await page.emulateMedia({ colorScheme: scheme });
+        await page.screenshot({ path: `/tmp/th-multi-team-manager-${width}-${scheme}.png` });
+        assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1));
+      }
+    }
+    await page.locator('[data-ti-leave]').click();
+    await page.locator('[data-ti-confirm-leave]').click();
+    await page.waitForFunction(() => document.querySelector('.ti-team-details h3')?.textContent === 'Earth Crew');
+    assert.deepEqual(uiState.teams.map(team => team.id), [earth.id]);
+    assert.equal(requests.find(row => row.path === '/api/team/leave').body.teamId, TEAM.id);
+    await page.locator('[data-ti-add-team]').click();
+    await page.locator('[name="teamName"]').fill('New orbit');
+    await page.locator('[data-ti-create] button[type="submit"]').click();
+    await page.waitForFunction(() => document.querySelector('.ti-team-details h3')?.textContent === 'New orbit');
+    assert.equal(uiState.teams.length, 2);
+    assert.equal(requests.filter(row => row.path === '/api/team/invites' && row.method === 'POST').at(-1).body.create, true);
     await context.close();
   }
 

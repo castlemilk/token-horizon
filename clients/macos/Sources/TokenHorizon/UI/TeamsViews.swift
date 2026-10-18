@@ -145,19 +145,20 @@ struct TeamsTabView: View {
     private var kpiStrip: some View {
         let members = store.teams.reduce(0) { $0 + $1.members }
         let totalTokens = store.teams.reduce(0) { $0 + $1.score(for: period) }
-        let mine = store.teams.first { team in
-            team.users.contains { $0.handle.lowercased() == localHandle.lowercased() }
+        let memberships = Set(LeaderboardStore.shared.localEntry()?.resolvedTeams.map(\.id) ?? [])
+        let mine = store.teams.filter { team in
+            memberships.contains(team.teamId) || team.users.contains { $0.handle.lowercased() == localHandle.lowercased() }
         }
 
         return HStack(spacing: 8) {
             kpi("TEAMS", String(store.teams.count), .cyan,
-                mine.map { "your team: \($0.team)" } ?? "no team joined")
-            kpi("PUBLISHED PROFILES", String(members), .green,
-                "members reporting usage")
-            kpi(period.title.uppercased() + " TOKENS", UsageSnapshot.tokens(totalTokens), .yellow,
+                mine.isEmpty ? "no published team" : "\(mine.count) teams with your profile")
+            kpi("PROFILE MEMBERSHIPS", String(members), .green,
+                "profiles may appear in several teams")
+            kpi(period.title.uppercased() + " CONTRIBUTIONS", UsageSnapshot.tokens(totalTokens), .yellow,
                 store.teams.first.map { "\($0.scoreFormatted(for: period)) leads" } ?? "")
-            kpi("YOUR TEAM", mine?.team ?? "—", .orange,
-                mine.map { "\($0.members) published · \($0.costFormatted)" } ?? "join or publish a team")
+            kpi("YOUR TEAMS", mine.isEmpty ? "—" : mine.map(\.team).joined(separator: ", "), .orange,
+                "published usage contributes to each team")
         }
     }
 

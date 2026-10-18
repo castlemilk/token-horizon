@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { runInNewContext } from 'node:vm';
 import worker from './src/index.js';
-import { loadTeamLogoDataUri } from './src/team-invites.js';
+import { loadTeamLogoDataUri, applyTeamMemberships } from './src/team-invites.js';
 
 function mockR2Bucket(initialEntries = null) {
   let stored = initialEntries ? JSON.stringify(initialEntries) : null;
@@ -184,7 +184,7 @@ describe('Account team invites', () => {
         assert.equal(result.response.headers.get('Cache-Control'), 'private, no-store');
       }
     }
-    assert.deepEqual((await call('/api/account/team', owner)).data, { ok: true, team: null, invites: [] });
+    assert.deepEqual((await call('/api/account/team', owner)).data, { ok: true, teams: [], team: null, invites: [] });
     const created = await call('/api/team/invites', owner, { name: 'Orbit Club' });
     assert.equal(created.status, 200);
     assert.equal(created.data.team.role, 'owner');
@@ -221,12 +221,13 @@ describe('Account team invites', () => {
     const teamId = created.data.team.id, inviteToken = created.data.invites[0].token;
     assert.equal((await call('/api/user/captain')).data.entry.teamId, teamId);
     await call('/api/team/join', friend, { token: inviteToken });
-    const firstPublish = await call('/api/leaderboard', friend, { handle: 'navigator', team: 'Local stale label', teamId: 'f'.repeat(32), tokensAll: 500 });
+    const firstPublish = await call('/api/leaderboard', friend, { handle: 'navigator', team: 'Local stale label', teamId: 'f'.repeat(32), teams: [{ id: 'f'.repeat(32), name: 'Forged' }], tokensAll: 500 });
     assert.equal(firstPublish.data.entry.teamId, teamId);
     assert.equal(firstPublish.data.entry.team, 'Star Friends');
+    assert.deepEqual(firstPublish.data.entry.teams, [{ id: teamId, name: 'Star Friends' }]);
     const nextPublish = await call('/api/leaderboard', friend, { handle: 'navigator', team: 'Another stale label', tokensAll: 600 });
     assert.equal(nextPublish.data.entry.teamId, teamId);
-    await call('/api/leaderboard', undefined, { handle: 'label-spoofer', team: 'Star Friends', teamId, tokensAll: 2000 });
+    await call('/api/leaderboard', undefined, { handle: 'label-spoofer', team: 'Star Friends', teamId, teams: [{ id: teamId, name: 'Star Friends' }], tokensAll: 2000 });
     const teams = (await call('/api/teams')).data.teams;
     const canonical = teams.find(team => team.teamId === teamId);
     assert.equal(canonical.members, 2);
@@ -294,28 +295,123 @@ describe('Account team invites', () => {
     assert.equal((await call('/api/account/team', friend)).data.team.memberCount, 2);
   });
 
-  it('requires confirmation for members switching teams and keeps owners with their own team', async () => {
+  it('joins several teams additively, including owners, with independent management', async () => {
     const { token, call } = await teamFixture();
-    const firstOwner = await token('first-owner'), secondOwner = await token('second-owner'), friend = await token('switch-friend');
+    const firstOwner = await token('first-owner'), secondOwner = await token('second-owner'), friend = await token('multi-friend');
     const first = (await call('/api/team/invites', firstOwner, { name: 'Same Name' })).data;
     const second = (await call('/api/team/invites', secondOwner, { name: 'Same Name' })).data;
     assert.notEqual(first.team.id, second.team.id);
     await call('/api/team/join', friend, { token: first.invites[0].token });
-    const pending = await call('/api/team/join', friend, { token: second.invites[0].token });
-    assert.equal(pending.status, 409);
-    assert.equal(pending.data.code, 'team_switch_required');
-    assert.equal((await call('/api/account/team', friend)).data.team.id, first.team.id);
-    const switched = await call('/api/team/join', friend, { token: second.invites[0].token, confirmSwitch: true });
-    assert.equal(switched.data.team.id, second.team.id);
-    assert.equal((await call('/api/account/team', firstOwner)).data.team.memberCount, 1);
-    assert.equal((await call('/api/account/team', secondOwner)).data.team.memberCount, 2);
-    const ownerCannotMove = await call('/api/team/join', firstOwner, { token: second.invites[0].token, confirmSwitch: true });
-    assert.equal(ownerCannotMove.status, 409);
-    assert.equal(ownerCannotMove.data.code, 'team_owner');
-    assert.equal((await call('/api/account/team', firstOwner)).data.team.id, first.team.id);
+    const joined = await call('/api/team/join', friend, { token: second.invites[0].token });
+    assert.equal(joined.status, 200);
+    assert.deepEqual(joined.data.teams.map(team => team.id), [first.team.id, second.team.id]);
+    assert.equal(joined.data.team.id, second.team.id);
+    assert.deepEqual(joined.data.invites, []);
+    const ownerJoined = await call('/api/team/join', firstOwner, { token: second.invites[0].token });
+    assert.equal(ownerJoined.status, 200);
+    assert.equal(ownerJoined.data.teams.find(team => team.id === first.team.id).role, 'owner');
+    assert.equal(ownerJoined.data.team.role, 'member');
+    assert.deepEqual(ownerJoined.data.invites, []);
+    assert.equal((await call('/api/team/invites/revoke', firstOwner, { teamId: second.team.id, token: second.invites[0].token })).status, 403);
+    const selected = await call('/api/account/team?teamId=' + first.team.id, firstOwner);
+    assert.equal(selected.data.invites[0].token, first.invites[0].token);
+    const third = await call('/api/team/invites', firstOwner, { name: 'Another crew', create: true });
+    assert.equal(third.status, 200);
+    assert.equal(third.data.teams.length, 3);
+    assert.equal((await call('/api/team/invites', firstOwner, {})).data.code, 'team_required');
+    assert.equal((await call('/api/team/leave', firstOwner, { teamId: first.team.id })).data.code, 'team_owner');
+    const left = await call('/api/team/leave', friend, { teamId: first.team.id });
+    assert.deepEqual(left.data.teams.map(team => team.id), [second.team.id]);
+    assert.equal((await call('/api/team/' + first.team.id)).data.team.memberCount, 1);
+    assert.equal((await call('/api/team/' + second.team.id)).data.team.memberCount, 3);
+    assert.equal((await call('/api/account/team?teamId=' + first.team.id, friend)).status, 404);
+    assert.equal((await call('/api/team/leave', friend, { teamId: second.team.id })).data.teams.length, 0);
+    assert.equal((await call('/api/team/' + second.team.id)).data.team.memberCount, 2);
   });
 
-  it('keeps simultaneous friends additive and conditionally prevents the same account joining two teams', async () => {
+  it('reuses an explicit team creation after a partial storage failure', async () => {
+    const { env, token, call } = await teamFixture();
+    const owner = await token('idempotent-owner');
+    await call('/api/team/invites', owner, { name: 'Original crew' });
+    const put = env.LEADERBOARD_BUCKET.put.bind(env.LEADERBOARD_BUCKET);
+    let interrupt = true;
+    env.LEADERBOARD_BUCKET.put = async (key, ...args) => {
+      if (interrupt && key.startsWith('team-membership/members/')) {
+        interrupt = false;
+        throw new Error('Interrupted secondary membership index');
+      }
+      return await put(key, ...args);
+    };
+    const body = { name: 'Another crew', create: true, creationId: 'a'.repeat(32) };
+    assert.equal((await call('/api/team/invites', owner, body)).status, 503);
+    const retry = await call('/api/team/invites', owner, body);
+    assert.equal(retry.status, 200);
+    assert.equal(retry.data.teams.length, 2);
+    assert.equal((await call('/api/team/invites', owner, body)).data.team.id, retry.data.team.id);
+    assert.equal((await call('/api/account/team', owner)).data.teams.length, 2);
+  });
+
+  it('migrates legacy account membership without losing it and does not restore it after leave', async () => {
+    const { env, token, call } = await teamFixture();
+    const owner = await token('legacy-owner'), friend = await token('legacy-friend');
+    const first = (await call('/api/team/invites', owner, { name: 'Legacy team' })).data;
+    const second = (await call('/api/team/invites', owner, { name: 'New team', create: true })).data;
+    const key = Buffer.from(await crypto.subtle.digest('SHA-256', new TextEncoder().encode('google:legacy-friend'))).toString('hex');
+    await env.LEADERBOARD_BUCKET.put(`team-membership/accounts/${key}.json`, JSON.stringify({ teamId: first.team.id, joinedAt: 1 }));
+    assert.equal((await call('/api/account/team', friend)).data.teams[0].id, first.team.id);
+    const joined = await call('/api/team/join', friend, { token: second.invites[0].token });
+    assert.deepEqual(joined.data.teams.map(team => team.id), [first.team.id, second.team.id]);
+    await call('/api/team/leave', friend, { teamId: first.team.id });
+    await call('/api/team/leave', friend, { teamId: second.team.id });
+    const entries = [{ claimed: true, ownerId: 'google:legacy-friend', team: 'Legacy team', teamId: first.team.id }];
+    await applyTeamMemberships(env, entries, { fresh: true });
+    assert.deepEqual(entries[0].teams, []);
+    assert.equal(entries[0].teamId, undefined);
+    assert.equal(entries[0].team, '');
+    assert.equal((await call('/api/account/team', friend)).data.team, null);
+    const published = await call('/api/leaderboard', friend, { handle: 'former-member', team: 'Legacy team', tokensAll: 10, teams: [{ id: first.team.id, name: 'Legacy team' }] });
+    assert.equal(published.data.entry.teamId, undefined);
+    assert.deepEqual(published.data.entry.teams, []);
+    assert.equal(published.data.entry.team, '');
+  });
+
+  it('counts a published profile in each joined team and only once globally, with secondary-team filters and ranks', async () => {
+    const { token, call } = await teamFixture();
+    const owner = await token('totals-owner'), friend = await token('totals-friend'), outsider = await token('totals-outsider');
+    const first = (await call('/api/team/invites', owner, { name: 'First' })).data;
+    const second = (await call('/api/team/invites', owner, { name: 'Second', create: true })).data;
+    for (const team of [first, second]) await call('/api/team/join', friend, { token: team.invites[0].token });
+    const published = await call('/api/leaderboard', friend, { handle: 'multi-pilot', tokensAll: 100, tokensToday: 10, tokens7d: 40, breakdown: { models: [{ provider: 'openai', model: 'gpt-test', tokensAll: 100 }] } });
+    assert.equal(published.status, 200);
+    assert.equal(published.data.entry.teams.length, 2);
+    const global = (await call('/api/leaderboard?period=all')).data;
+    assert.equal(global.total, 1);
+    assert.equal(global.kpis.totalTokens, 100);
+    const teams = (await call('/api/teams')).data.teams;
+    for (const team of teams) {
+      assert.equal(team.tokens, 100);
+      assert.equal(team.members, 1);
+      const publicTeam = (await call('/api/team/' + team.teamId)).data;
+      assert.equal(publicTeam.stats.tokens, 100);
+      assert.equal(publicTeam.stats.publishedProfiles, 1);
+      assert.equal((await call('/api/leaderboard?team=' + team.teamId)).data.total, 1);
+    }
+    const profile = (await call('/api/user/multi-pilot')).data;
+    assert.deepEqual(profile.teamRanks.map(team => team.rank), [1, 1]);
+    const report = (await call('/api/share/create', friend, { handle: 'multi-pilot', scope: 'org' })).data.share;
+    const reader = await token('secondary-reader');
+    await call('/api/team/join', reader, { token: second.invites[0].token });
+    assert.equal((await call('/api/shared/' + report.id, reader)).status, 200);
+    assert.equal((await call('/api/shared/' + report.id, outsider)).status, 403);
+    await call('/api/team/leave', reader, { teamId: second.team.id });
+    assert.equal((await call('/api/shared/' + report.id, reader)).status, 403);
+    await call('/api/team/leave', friend, { teamId: first.team.id });
+    assert.equal((await call('/api/team/' + first.team.id)).data.stats.tokens, 0);
+    assert.equal((await call('/api/team/' + second.team.id)).data.stats.tokens, 100);
+    assert.equal((await call('/api/leaderboard?period=all')).data.kpis.totalTokens, 100);
+  });
+
+  it('keeps simultaneous friends and simultaneous joins by the same account additive', async () => {
     const { token, call } = await teamFixture();
     const owner = await token('parallel-owner'), otherOwner = await token('parallel-other');
     const first = (await call('/api/team/invites', owner, { name: 'Parallel Crew' })).data;
@@ -326,11 +422,11 @@ describe('Account team invites', () => {
     assert.equal((await call('/api/account/team', owner)).data.team.memberCount, 13);
     const racing = await token('racing-account');
     const race = await Promise.all([first, second].map(team => call('/api/team/join', racing, { token: team.invites[0].token })));
-    assert.deepEqual(race.map(result => result.status).sort(), [200, 409]);
-    const current = (await call('/api/account/team', racing)).data.team.id;
-    assert.ok(current === first.team.id || current === second.team.id);
+    assert.deepEqual(race.map(result => result.status).sort(), [200, 200]);
+    const current = (await call('/api/account/team', racing)).data.teams.map(team => team.id);
+    assert.deepEqual(new Set(current), new Set([first.team.id, second.team.id]));
     const total = (await call('/api/account/team', owner)).data.team.memberCount + (await call('/api/account/team', otherOwner)).data.team.memberCount;
-    assert.equal(total, 15);
+    assert.equal(total, 16);
   });
 
   it('bounds request bodies and serves nested invite URLs with working relative assets and private referrers', async () => {

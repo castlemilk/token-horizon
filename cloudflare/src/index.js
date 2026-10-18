@@ -6,7 +6,7 @@
  * (resvg-wasm), and static asset webhosting.
  */
 
-import { handleTeamRequest, applyTeamMemberships, getPublicTeam, getInviteTeam, enrichTeamAggregates, loadTeamLogoDataUri, linkVerifiedOwner } from './team-invites.js';
+import { handleTeamRequest, entryTeams, entryInTeam, applyTeamMemberships, getPublicTeam, getInviteTeam, enrichTeamAggregates, loadTeamLogoDataUri, linkVerifiedOwner } from './team-invites.js';
 import { handleBrowserAuth, browserIdentity, identityOwnerId, identityOwns, githubConfigured, sessionsConfigured } from './browser-auth.js';
 import { handleDesktopAuth, desktopPublishIdentity, DesktopAuthError } from './desktop-auth.js';
 import { buildOgModel, renderProfileOgSvg, renderRestrictedOgSvg, OG_CARD_VERSION } from './og-card.js';
@@ -476,10 +476,11 @@ function accumulateTeamDaily(daily, records, start, end) {
 
 function aggregateTeams(entries) {
   const map = new Map(), end = dayNumber(), start = end - 118;
-  for (const e of entries) {
-    const team = (e.team || "").trim() || "Unassigned";
-    const key = e.teamId ? `id:${e.teamId}` : `legacy:${team}`;
-    if (!map.has(key)) map.set(key, { team, ...(e.teamId ? { teamId: e.teamId } : {}), tokens: 0, tokensToday: 0, tokens7d: 0, recentWindowProfiles: { today: 0, week: 0 }, cost: 0, members: 0, providers: {}, users: [], daily: new Map() });
+  for (const e of entries) for (const membership of entryTeams(e).length ? entryTeams(e) : [null]) {
+    const team = membership?.name || (e.team || "").trim() || "Unassigned";
+    const teamId = membership?.id || e.teamId;
+    const key = teamId ? `id:${teamId}` : `legacy:${team}`;
+    if (!map.has(key)) map.set(key, { team, ...(teamId ? { teamId } : {}), tokens: 0, tokensToday: 0, tokens7d: 0, recentWindowProfiles: { today: 0, week: 0 }, cost: 0, members: 0, providers: {}, users: [], daily: new Map() });
     const row = map.get(key);
     row.tokens += e.tokensAll || 0;
     // Window totals are the profiles' last published values. Provider mix and
@@ -510,8 +511,8 @@ function aggregateTeams(entries) {
 }
 
 function teamUsageStats(team, entries) {
-  const peers = entries.filter(entry => entry.teamId === team.id);
-  const row = aggregateTeams(peers)[0] || { team: team.name, teamId: team.id, tokens: 0, tokensToday: 0, tokens7d: 0, recentWindowProfiles: { today: 0, week: 0 }, cost: 0, members: 0, providers: {}, users: [], daily: [], tokensFormatted: '0', costFormatted: '$0' };
+  const peers = entries.filter(entry => entryInTeam(entry, team.id));
+  const row = aggregateTeams(peers).find(row => row.teamId === team.id) || { team: team.name, teamId: team.id, tokens: 0, tokensToday: 0, tokens7d: 0, recentWindowProfiles: { today: 0, week: 0 }, cost: 0, members: 0, providers: {}, users: [], daily: [], tokensFormatted: '0', costFormatted: '$0' };
   return {
     ...row, publishedProfiles: row.members, memberCount: team.memberCount,
     providerHistory: providerHistory(peers, 30)
@@ -877,8 +878,8 @@ export default {
       let filtered = entries;
 
       if (teamFilter) {
-        filtered = filtered.filter(e => e.teamId
-          ? e.teamId === teamFilter
+        filtered = filtered.filter(e => entryTeams(e).length
+          ? entryInTeam(e, teamFilter)
           : e.team && e.team.toLowerCase().includes(teamFilter.toLowerCase()));
       }
       if (leagueFilter) {
@@ -1039,13 +1040,17 @@ export default {
       let teamTotal = 0;
       if (entry.team) {
         const teamPeers = entries
-          .filter(e => entry.teamId ? e.teamId === entry.teamId : !e.teamId && (e.team || "").toLowerCase() === entry.team.toLowerCase())
+          .filter(e => entry.teamId ? entryInTeam(e, entry.teamId) : !e.teamId && (e.team || "").toLowerCase() === entry.team.toLowerCase())
           .sort((a, b) => (b.tokensAll || 0) - (a.tokensAll || 0));
         teamTotal = teamPeers.length;
         const idx = teamPeers.findIndex(e => e.handle.toLowerCase() === clean);
         teamRank = idx !== -1 ? idx + 1 : null;
       }
 
+      const teamRanks = entryTeams(entry).map(team => {
+        const peers = entries.filter(peer => entryInTeam(peer, team.id)).sort((a, b) => (b.tokensAll || 0) - (a.tokensAll || 0));
+        return { ...team, rank: peers.findIndex(peer => peer.handle.toLowerCase() === clean) + 1, total: peers.length };
+      });
       const models = (entry.breakdown && entry.breakdown.models) || [];
       const rankDeltaHistory = (entry.snapshots || [])
         .filter(s => s.rank > 0)
@@ -1074,6 +1079,7 @@ export default {
         mmrToNext: st.mmrToNext,
         efficiency: efficiencyFor(entry),
         rankDelta7d,
+        teamRanks,
         teamRank,
         teamTotal,
         requestsAll: entry.requestsAll || models.reduce((s, m) => s + (Number(m.requests) || 0), 0),
@@ -2570,7 +2576,7 @@ async function canReadSharedReport(env, request, share, entry, entries) {
     // Fresh authoritative records also admit teammates before they publish.
     const recipient = { handle: "_recipient", claimed: true, ownerId: identityOwnerId(google) };
     await applyTeamMemberships(env, [entry, recipient], { fresh: true });
-    if (entry.teamId && entry.teamId === recipient.teamId) return { ok: true };
+    if (entryTeams(entry).some(team => entryInTeam(recipient, team.id))) return { ok: true };
   }
   return { ok: false, status: 403, code: "share_access_denied", error: "This report is shared with a different audience." };
 }

@@ -183,6 +183,8 @@ Web identity and reusable components follow the [Quiet precision web guide](DESI
 
 Invite friends from **Workspace → Invite friends**, the leaderboard, or Teams. Create a named team and copy its invite link. Friends choose **Sign in & join** and automatically join after Google sign-in; they can join before publishing a profile. Membership follows the account and applies to its owned profiles on future syncs. Links last 30 days, can be retired by the owner, and never expose private prompts or device traces. Sharing audiences in Settings remain separate from team membership.
 
+Accounts can belong to several teams, including teams they own. Joining keeps existing memberships. In **Your teams**, choose a team to manage its invitations and icon, create another team, or leave a team you joined; owners stay in their owned teams. Every owned published profile contributes its full published usage (including historical totals) to each joined team. Global user rankings count each profile once; combined team totals count contributions per membership. Team-shared reports are readable by verified members of any team shared with the report owner.
+
 Deploy a private or team leaderboard edge API and web dashboard in seconds:
 
 1. **Deploy with 1 Command**:

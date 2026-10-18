@@ -352,6 +352,11 @@ extension LeaderboardUsageBreakdown {
     }
 }
 
+struct LeaderboardTeamIdentity: Codable, Equatable {
+    var id: String
+    var name: String
+}
+
 struct LeaderboardEntry: Codable, Identifiable, Equatable {
     var id: String
     var handle: String
@@ -359,6 +364,13 @@ struct LeaderboardEntry: Codable, Identifiable, Equatable {
     /// Cloud-assigned team id ("" until the profile is published to a team).
     /// Used to group teams without splitting on a shared label.
     var teamId: String = ""
+    /// nil = legacy payload; [] = confirmed absence of cloud memberships.
+    var teams: [LeaderboardTeamIdentity]? = nil
+    var resolvedTeams: [LeaderboardTeamIdentity] {
+        var seen = Set<String>()
+        return (teams ?? (teamId.isEmpty ? [] : [LeaderboardTeamIdentity(id: teamId, name: team)]))
+            .filter { !$0.id.isEmpty && seen.insert($0.id).inserted }
+    }
     var tokensToday: Int
     var tokens7d: Int
     var tokensAll: Int
@@ -387,6 +399,10 @@ struct LeaderboardEntry: Codable, Identifiable, Equatable {
     var seasonTokens: Int = 0
     var achievements: [LeaderboardAchievement] = []
     var snapshots: [LeaderboardSnapshot] = []
+
+    var teamDisplayName: String {
+        resolvedTeams.isEmpty ? team : resolvedTeams.map(\.name).joined(separator: ", ")
+    }
 
     var displayHandle: String {
         handle.hasPrefix("@") ? handle : "@\(handle)"
@@ -421,6 +437,7 @@ struct LeaderboardEntry: Codable, Identifiable, Equatable {
         handle: String,
         team: String,
         teamId: String = "",
+        teams: [LeaderboardTeamIdentity]? = nil,
         tokensToday: Int,
         tokens7d: Int,
         tokensAll: Int,
@@ -453,6 +470,7 @@ struct LeaderboardEntry: Codable, Identifiable, Equatable {
         self.handle = handle
         self.team = team
         self.teamId = teamId
+        self.teams = teams
         self.tokensToday = tokensToday
         self.tokens7d = tokens7d
         self.tokensAll = tokensAll
@@ -513,7 +531,7 @@ struct LeaderboardEntry: Codable, Identifiable, Equatable {
 
 extension LeaderboardEntry {
     enum CodingKeys: String, CodingKey {
-        case id, handle, team, teamId, tokensToday, tokens7d, tokensAll
+        case id, handle, team, teamId, teams, tokensToday, tokens7d, tokensAll
         case costToday, cost7d, costAll, streakDays, topModel, hardware
         case isLocal, updatedAt, collectedAt, breakdown
         case mmr, league, division, efficiency
@@ -527,6 +545,7 @@ extension LeaderboardEntry {
         handle = c.thDecode(.handle, or: "unknown")
         team = c.thDecode(.team, or: "")
         teamId = c.thDecode(.teamId, or: "")
+        teams = c.thDecode(.teams, or: nil as [LeaderboardTeamIdentity]?)
         tokensToday = c.thDecode(.tokensToday, or: 0)
         tokens7d = c.thDecode(.tokens7d, or: 0)
         tokensAll = c.thDecode(.tokensAll, or: 0)
@@ -669,6 +688,9 @@ final class LeaderboardStore {
     /// its resolved name; unlinked profiles use the configured label.
     static func localTeamIdentity(configuredTeam: String, previousLocal: LeaderboardEntry?) -> (team: String, teamId: String) {
         guard let previousLocal else { return (configuredTeam, "") }
+        if previousLocal.teams != nil && (!previousLocal.resolvedTeams.isEmpty || previousLocal.team.isEmpty) {
+            return (previousLocal.team, previousLocal.teamId)
+        }
         let team = !previousLocal.teamId.isEmpty && !previousLocal.team.isEmpty
             ? previousLocal.team : configuredTeam
         return (team, previousLocal.teamId)
@@ -900,6 +922,7 @@ final class LeaderboardStore {
             handle: handle,
             team: teamIdentity.team,
             teamId: teamIdentity.teamId,
+            teams: entries.first(where: { $0.isLocal })?.teams,
             tokensToday: snapshot.tokensToday,
             tokens7d: max(tokens7d, snapshot.tokensToday),
             tokensAll: max(snapshot.tokensAllTime, snapshot.tokensToday),
@@ -975,7 +998,7 @@ final class LeaderboardStore {
         lock.unlock()
 
         if let t = teamFilter?.trimmingCharacters(in: .whitespacesAndNewlines), !t.isEmpty {
-            list = list.filter { $0.team.localizedCaseInsensitiveContains(t) }
+            list = list.filter { $0.resolvedTeams.contains { $0.id == t || $0.name.localizedCaseInsensitiveContains(t) } || ($0.resolvedTeams.isEmpty && $0.team.localizedCaseInsensitiveContains(t)) }
         }
 
         // Sort based on period metric
@@ -1145,7 +1168,7 @@ final class LeaderboardStore {
     private func generateTextCard(target: LeaderboardRankedEntry, period: LeaderboardPeriod) -> String {
         let e = target.entry
         let handle = e.displayHandle
-        let teamPart = e.team.isEmpty ? "" : "  Team: \(e.team)"
+        let teamPart = e.teamDisplayName.isEmpty ? "" : "  Teams: \(e.teamDisplayName)"
         let hw = e.hardware.isEmpty ? "Apple Silicon" : e.hardware
         let costTodayStr = e.costToday > 0 ? UsageSnapshot.cost(e.costToday) : "$0.00"
 
@@ -1166,7 +1189,7 @@ final class LeaderboardStore {
     private func generateMarkdownCard(target: LeaderboardRankedEntry, period: LeaderboardPeriod) -> String {
         let e = target.entry
         let handle = e.displayHandle
-        let teamBadge = e.team.isEmpty ? "" : " · `\(e.team)`"
+        let teamBadge = e.teamDisplayName.isEmpty ? "" : " · `\(e.teamDisplayName)`"
         let hw = e.hardware.isEmpty ? "Apple Silicon" : e.hardware
         let costTodayStr = e.costToday > 0 ? UsageSnapshot.cost(e.costToday) : "$0.00"
         let cost7dStr = e.cost7d > 0 ? UsageSnapshot.cost(e.cost7d) : "$0.00"
@@ -1196,6 +1219,7 @@ final class LeaderboardStore {
         let dict: [String: Any] = [
             "handle": e.displayHandle,
             "team": e.team,
+            "teams": e.resolvedTeams.map { ["id": $0.id, "name": $0.name] },
             "hardware": e.hardware,
             "period": period.rawValue,
             "periodTitle": period.title,
@@ -1520,6 +1544,10 @@ final class LeaderboardStore {
         guard let handle = d["handle"] as? String, !handle.isEmpty else { return nil }
         let team = d["team"] as? String ?? ""
         let teamId = d["teamId"] as? String ?? ""
+        let teams = (d["teams"] as? [[String: Any]])?.compactMap { row -> LeaderboardTeamIdentity? in
+            guard let id = row["id"] as? String, !id.isEmpty, let name = row["name"] as? String else { return nil }
+            return LeaderboardTeamIdentity(id: id, name: name)
+        }
         let tokensToday = d["tokensToday"] as? Int ?? (d["today"] as? Int ?? 0)
         let tokens7d = d["tokens7d"] as? Int ?? (d["week"] as? Int ?? 0)
         let tokensAll = d["tokensAll"] as? Int ?? (d["all"] as? Int ?? 0)
@@ -1682,6 +1710,7 @@ final class LeaderboardStore {
             handle: handle,
             team: team,
             teamId: teamId,
+            teams: teams,
             tokensToday: tokensToday,
             tokens7d: tokens7d,
             tokensAll: tokensAll,
@@ -1865,7 +1894,11 @@ final class LeaderboardStore {
     /// cloud. A `teamId` is adopted outright (together with the name the
     /// worker resolved it to); a bare label only fills an empty one.
     static func adoptTeamIdentity(into entry: inout LeaderboardEntry, from remote: LeaderboardEntry) {
-        if !remote.teamId.isEmpty {
+        if let teams = remote.teams {
+            entry.teams = teams
+            entry.teamId = remote.resolvedTeams.first?.id ?? ""
+            entry.team = remote.resolvedTeams.first?.name ?? remote.team
+        } else if !remote.teamId.isEmpty {
             entry.teamId = remote.teamId
             if !remote.team.isEmpty { entry.team = remote.team }
         } else if entry.team.isEmpty && !remote.team.isEmpty {

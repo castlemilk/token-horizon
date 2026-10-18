@@ -396,6 +396,16 @@ final class TeamStore: ObservableObject {
     /// label. Entries carrying a label that resolves to a known id join that
     /// id's row instead of splitting the team in two.
     static func localTeams(from entries: [LeaderboardEntry]) -> [LeaderboardTeam] {
+        // Contribute a profile once per confirmed team, retaining the original
+        // single profile in the global leaderboard and local usage totals.
+        let entries = entries.flatMap { entry -> [LeaderboardEntry] in
+            guard !entry.resolvedTeams.isEmpty else { return [entry] }
+            return entry.resolvedTeams.map { team in
+                var member = entry
+                member.teamId = team.id; member.team = team.name
+                return member
+            }
+        }
         var idByLabel: [String: String] = [:]
         for entry in entries where !entry.teamId.isEmpty && !entry.team.isEmpty {
             idByLabel[entry.team.lowercased()] = entry.teamId
