@@ -137,9 +137,17 @@ func TestTraceRetentionAndRowCap(t *testing.T) {
 		t.Fatalf("ancient row must prune under retention, count=%d", n)
 	}
 	// Row cap: overfill, prune, expect FIFO survival of the newest.
+	// Timestamps must stay near "now": RecordTrace runs an internal
+	// throttled prune (every tracePruneEvery inserts) using retentionCutoff,
+	// which is still live from the Setenv above. Backdated rows eventually
+	// age past that 30-day window as wall-clock time advances, so the
+	// throttled prune eats them mid-loop and this measures age pruning
+	// instead of the cap. A fixed epoch constant is a time bomb here —
+	// keep the fixtures inside the retention window.
+	now := time.Now().Unix()
 	for i := range traceCapRows + 10 {
 		tr := sampleTrace(fmt.Sprintf("R%06d", i), "openai", "gpt", 200, "none")
-		tr.Timestamp = int64(1_789_700_000 + i)
+		tr.Timestamp = now - int64(i)
 		if err := s.RecordTrace(tr); err != nil {
 			t.Fatal(err)
 		}
