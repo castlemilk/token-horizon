@@ -3,12 +3,20 @@ import CryptoKit
 import Darwin
 
 final class ClaudeDiscovery {
-    static let shared = ClaudeDiscovery()
+    static let shared = ClaudeDiscovery(cachedAccounts: DurableStore.shared.loadSnapshot()?.claudeAccounts ?? [])
     private let lock = NSLock()
+    private let fetchLock = NSLock()
     private var cachedAccounts: [ClaudeAccount] = []
     private var cachedLimitsMap: [String: [ProviderLimit]] = [:]
     private var lastSuccessfulLiveLimits: [String: [ProviderLimit]] = [:]
     private var lastFetch = Date.distantPast
+    private var metadataByDir: [String: ClaudeAccount]
+    private var verifiedProfiles: [String: (fingerprint: String, account: ClaudeAccount)] = [:]
+    private var quotaIdentityByDir: [String: String] = [:]
+    private let directories: () -> [String]
+    private let tokenReader: ((String) -> String?)?
+    private let profileFetcher: ((String) -> [String: Any]?)?
+    private let usageFetcher: ((String) -> LiveUsageResult)?
 
     /// Per-account throttle state: configDir → earliest next live attempt.
     /// A 429 backs one account off without pausing the others, and stops the
@@ -33,7 +41,19 @@ final class ClaudeDiscovery {
         var retryAfter: TimeInterval?
     }
 
-    private init() {}
+    /// Injectable readers keep account-switch regressions independent of the
+    /// host's credentials. Only non-secret profile metadata is hydrated.
+    init(cachedAccounts: [ClaudeAccount] = [],
+         directories: @escaping () -> [String] = { ClaudeDiscovery.discoverDirectories() },
+         tokenReader: ((String) -> String?)? = nil,
+         profileFetcher: ((String) -> [String: Any]?)? = nil,
+         usageFetcher: ((String) -> LiveUsageResult)? = nil) {
+        self.metadataByDir = cachedAccounts.reduce(into: [:]) { $0[$1.configDir] = $1 }
+        self.directories = directories
+        self.tokenReader = tokenReader
+        self.profileFetcher = profileFetcher
+        self.usageFetcher = usageFetcher
+    }
 
     static func sha256Prefix8(_ str: String) -> String {
         let hash = SHA256.hash(data: Data(str.utf8))
@@ -44,12 +64,19 @@ final class ClaudeDiscovery {
     /// auto-discovered `~/.claude*` variants → `~/.config/claude`.
     /// Shared glob lives in `HomeDiscovery` (cached `$HOME` listing).
     static func discoverDirectories(home: String? = nil) -> [String] {
-        HomeDiscovery.variantDirs(
+        var directories = HomeDiscovery.variantDirs(
             prefixes: [".claude"],
             envVars: ["CLAUDE_CONFIG_DIR"],
             defaultPaths: ["~/.claude"],
             configNames: ["claude"],
             home: home)
+        if home == nil {
+            for path in ManagedCLIProfileStore.shared.profilePaths(for: .claude)
+                where HomeDiscovery.isDirectory(path) && !directories.contains(path) {
+                directories.append(path)
+            }
+        }
+        return directories
     }
 
     static func deriveLabel(dir: String, email: String) -> String {
@@ -71,18 +98,7 @@ final class ClaudeDiscovery {
     }
 
     private func readClaudeJson(for dir: String) -> (oauth: [String: Any]?, cachedUsage: [String: Any]?) {
-        let defaultClaude = NSString(string: "~/.claude").expandingTildeInPath
-        let homeClaudeJson = NSString(string: "~/.claude.json").expandingTildeInPath
-        let dirClaudeJson = "\(dir)/.claude.json"
-
-        let candidatePaths: [String]
-        if dir == defaultClaude {
-            candidatePaths = [homeClaudeJson, dirClaudeJson]
-        } else {
-            candidatePaths = [dirClaudeJson, homeClaudeJson]
-        }
-
-        for path in candidatePaths {
+        for path in ClaudeProfileIdentity.metadataPaths(for: dir) {
             guard let data = FileManager.default.contents(atPath: path),
                   let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { continue }
             let oauth = obj["oauthAccount"] as? [String: Any]
@@ -109,37 +125,119 @@ final class ClaudeDiscovery {
         var oauth: [String: Any]
     }
 
-    /// Full OAuth material for a profile dir: `.credentials.json` first,
-    /// then the macOS Keychain services Claude Code uses. Returns the whole
+    /// Full OAuth material for a profile dir, newest expiry first across its
+    /// file and Keychain stores. Explicit CLAUDE_CONFIG_DIR=~/.claude uses the
+    /// hashed service even for the default home; an older unscoped login must
+    /// not hide that sign-in. Returns the whole
     /// `claudeAiOauth`-style blob (not just the token) so refresh write-back
     /// can preserve sibling fields like `refreshTokenExpiresAt`/`scopes`.
     func readCredentials(for dir: String) -> ClaudeCredentials? {
+        var candidates: [ClaudeCredentials] = []
         let credFile = "\(dir)/.credentials.json"
         if let data = FileManager.default.contents(atPath: credFile),
            let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
            let (key, oauth) = Self.extractOAuth(from: obj) {
-            return Self.makeCredentials(oauth: oauth, source: .credentialsFile(path: credFile, oauthKey: key))
+            if let credentials = Self.makeCredentials(oauth: oauth, source: .credentialsFile(path: credFile, oauthKey: key)) {
+                candidates.append(credentials)
+            }
         }
 
-        let hash = Self.sha256Prefix8(dir)
-        let defaultClaude = NSString(string: "~/.claude").expandingTildeInPath
-        let services: [String]
-        if dir == defaultClaude {
-            services = ["Claude Code-credentials", "Claude Code-credentials-\(hash)"]
-        } else {
-            services = ["Claude Code-credentials-\(hash)", "Claude Code-credentials"]
-        }
-
-        for svc in services {
+        for svc in ClaudeProfileIdentity.keychainServices(for: dir) {
             if let text = runSecurityFindGenericPassword(service: svc),
                let data = text.data(using: .utf8),
                let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                let (key, oauth) = Self.extractOAuth(from: obj) {
                 let account = Self.parseKeychainAccount(runSecurityItemAttributes(service: svc)) ?? NSUserName()
-                return Self.makeCredentials(oauth: oauth, source: .keychain(service: svc, account: account, oauthKey: key))
+                if let credentials = Self.makeCredentials(oauth: oauth, source: .keychain(service: svc, account: account, oauthKey: key)) {
+                    candidates.append(credentials)
+                }
             }
         }
-        return nil
+        return Self.preferredCredentials(candidates)
+    }
+
+    /// Equal/unknown expiries preserve discovery order. Comparing only a
+    /// profile's allowed stores keeps freshness from crossing account homes.
+    static func preferredCredentials(_ candidates: [ClaudeCredentials]) -> ClaudeCredentials? {
+        candidates.reduce(nil) { current, candidate in
+            guard let current else { return candidate }
+            return candidate.expiresAtMs > current.expiresAtMs ? candidate : current
+        }
+    }
+
+    /// The canonical folder can have two independent Keychain sign-ins. Match
+    /// the exact store quota discovery selected, without exposing any tokens or
+    /// changing credentials. Custom folders always keep their explicit scope.
+    func usesDefaultEnvironmentForLaunch(for dir: String) -> Bool {
+        guard ClaudeProfileIdentity.keychainServices(for: dir).first == "Claude Code-credentials" else {
+            return false
+        }
+        return Self.usesDefaultEnvironmentForLaunch(for: dir, source: readCredentials(for: dir)?.source)
+    }
+
+    enum AgentLaunchIdentityError: LocalizedError, Equatable {
+        case changedSignIn, unverifiedSignIn, missingSignIn
+
+        var errorDescription: String? {
+            switch self {
+            case .changedSignIn:
+                return "The Claude sign-in changed since the account list refreshed. Refresh accounts before opening this profile."
+            case .unverifiedSignIn:
+                return "This Claude sign-in could not be verified. Refresh accounts or use Manage → Sign in / reconnect… before opening it."
+            case .missingSignIn:
+                return "This Claude profile is signed out. Use Manage → Sign in / reconnect… before opening it."
+            }
+        }
+    }
+
+    /// Verify the exact current credential selection before an agent starts.
+    /// Reading source separately after checking cached metadata can otherwise
+    /// launch a different account when the CLI changes logins between polls.
+    func verifiedDefaultEnvironmentForAgentLaunch(for dir: String, matchingEmail: String) throws -> Bool {
+        guard ClaudeProfileIdentity.keychainServices(for: dir).first == "Claude Code-credentials" else {
+            return false
+        }
+        fetchLock.lock(); defer { fetchLock.unlock() }
+        // Launch may precede the first quota poll after restart. Reuse normal
+        // refresh/write-back before verifying, then select the stored token
+        // and its source together (a concurrent CLI refresh may replace both).
+        _ = findAccessToken(for: dir)
+        let selected = readCredentials(for: dir)
+        return try verifiedDefaultEnvironmentForAgentLaunch(for: dir, matchingEmail: matchingEmail,
+                                                           credentials: selected, home: NSHomeDirectory())
+    }
+
+    /// Hermetic seam: only synthetic selected credentials are needed to verify
+    /// that identity checking and launch scoping use one selection. No tokens
+    /// leave this method and it never refreshes or writes credential stores.
+    func verifiedDefaultEnvironmentForAgentLaunch(for dir: String, matchingEmail: String,
+                                                  credentials: ClaudeCredentials?, home: String) throws -> Bool {
+        guard ClaudeProfileIdentity.keychainServices(for: dir, home: home).first == "Claude Code-credentials" else {
+            return false
+        }
+        guard let credentials else {
+            prepareQuotaCache(for: ClaudeAccount(configDir: dir), authenticated: false)
+            throw AgentLaunchIdentityError.missingSignIn
+        }
+        guard let account = verifiedAccount(for: dir, token: credentials.accessToken) else {
+            prepareQuotaCache(for: ClaudeAccount(configDir: dir), authenticated: false)
+            throw AgentLaunchIdentityError.unverifiedSignIn
+        }
+        prepareQuotaCache(for: account, authenticated: true)
+        guard matchingEmail.isEmpty || account.email.caseInsensitiveCompare(matchingEmail) == .orderedSame else {
+            throw AgentLaunchIdentityError.changedSignIn
+        }
+        return Self.usesDefaultEnvironmentForLaunch(for: dir, source: credentials.source, home: home)
+    }
+
+    /// Pure credential-source decision for tests and callers that already read
+    /// the selected credentials. A file is shared by both canonical launch modes;
+    /// absent credentials deliberately keep new sign-ins explicitly scoped.
+    static func usesDefaultEnvironmentForLaunch(for dir: String, source: CredentialSource?,
+                                               home: String = NSHomeDirectory()) -> Bool {
+        guard ClaudeProfileIdentity.keychainServices(for: dir, home: home).first == "Claude Code-credentials", let source,
+              case .keychain(let service, _, _) = source else { return false }
+        return service == "Claude Code-credentials"
     }
 
     private static func makeCredentials(oauth: [String: Any], source: CredentialSource) -> ClaudeCredentials? {
@@ -276,7 +374,11 @@ final class ClaudeDiscovery {
     }
 
     func fetchUsageAPI(token: String, timeout: TimeInterval = 8) -> LiveUsageResult {
-        guard let url = URL(string: "https://api.anthropic.com/api/oauth/usage") else {
+        fetchAPI(path: "usage", token: token, timeout: timeout)
+    }
+
+    private func fetchAPI(path: String, token: String, timeout: TimeInterval = 8) -> LiveUsageResult {
+        guard let url = URL(string: "https://api.anthropic.com/api/oauth/\(path)") else {
             return LiveUsageResult(payload: nil, statusCode: -1, retryAfter: nil)
         }
         var req = URLRequest(url: url, timeoutInterval: timeout)
@@ -327,13 +429,28 @@ final class ClaudeDiscovery {
 
     func accountMetadata(for dir: String) -> ClaudeAccount {
         let (oauth, _) = readClaudeJson(for: dir)
+        lock.lock(); defer { lock.unlock() }
+        // Live identity belongs to the token, even when a CLI leaves stale
+        // oauthAccount metadata behind after switching sign-ins.
+        if let verified = verifiedProfiles[dir] { return verified.account }
+        // An unauthenticated/copied config is not evidence of an account
+        // switch. Keep a known profile identity until its own token verifies
+        // the replacement, including across logout and app restarts.
+        if var previous = metadataByDir[dir], !previous.email.isEmpty || !previous.accountUuid.isEmpty {
+            previous.id = ClaudeProfileIdentity.profileID(for: dir)
+            return previous
+        }
+        let account = Self.accountMetadata(dir: dir, oauth: oauth)
+        metadataByDir[dir] = account
+        return account
+    }
+
+    private static func accountMetadata(dir: String, oauth: [String: Any]?) -> ClaudeAccount {
         let email = oauth?["emailAddress"] as? String ?? ""
         let label = Self.deriveLabel(dir: dir, email: email)
-        let base = (dir as NSString).lastPathComponent
-        let id = base.hasPrefix(".") ? String(base.dropFirst()) : base
 
         return ClaudeAccount(
-            id: id,
+            id: ClaudeProfileIdentity.profileID(for: dir),
             label: label,
             configDir: dir,
             accountUuid: oauth?["accountUuid"] as? String ?? "",
@@ -345,6 +462,62 @@ final class ClaudeDiscovery {
             rateLimitTier: oauth?["organizationRateLimitTier"] as? String ?? "",
             hasExtraUsageEnabled: oauth?["hasExtraUsageEnabled"] as? Bool ?? false
         )
+    }
+
+    /// Profile metadata from the same OAuth token used for quota queries.
+    /// Never trust a directory's cached email over the authenticated account.
+    static func parseProfilePayload(_ obj: [String: Any], dir: String) -> ClaudeAccount? {
+        guard let account = obj["account"] as? [String: Any],
+              let uuid = account["uuid"] as? String, !uuid.isEmpty,
+              let email = (account["email"] ?? account["email_address"]) as? String,
+              !email.isEmpty else { return nil }
+        let org = obj["organization"] as? [String: Any] ?? [:]
+        return accountMetadata(dir: dir, oauth: [
+            "accountUuid": uuid, "emailAddress": email,
+            "displayName": account["display_name"] ?? account["full_name"] ?? "",
+            "organizationUuid": org["uuid"] ?? "",
+            "organizationName": org["name"] ?? "",
+            "organizationType": org["organization_type"] ?? "",
+            "organizationRateLimitTier": org["rate_limit_tier"] ?? "",
+            "hasExtraUsageEnabled": org["has_extra_usage_enabled"] ?? false
+        ])
+    }
+
+    private func verifiedAccount(for dir: String, token: String) -> ClaudeAccount? {
+        let fingerprint = SHA256.hash(data: Data(token.utf8)).map { String(format: "%02x", $0) }.joined()
+        lock.lock()
+        let previous = verifiedProfiles[dir]
+        lock.unlock()
+        if let previous, previous.fingerprint == fingerprint { return previous.account }
+        let payload: [String: Any]?
+        if let profileFetcher {
+            payload = profileFetcher(token)
+        } else {
+            payload = fetchAPI(path: "profile", token: token).payload
+        }
+        guard let payload, let account = Self.parseProfilePayload(payload, dir: dir) else {
+            lock.lock()
+            verifiedProfiles.removeValue(forKey: dir)
+            lock.unlock()
+            return nil
+        }
+        lock.lock()
+        verifiedProfiles[dir] = (fingerprint, account)
+        metadataByDir[dir] = account
+        lock.unlock()
+        return account
+    }
+
+    private func prepareQuotaCache(for account: ClaudeAccount, authenticated: Bool) {
+        let dir = account.configDir
+        let identity = "\(account.accountUuid)|\(account.organizationUuid)|\(account.email)"
+        lock.lock(); defer { lock.unlock() }
+        if !authenticated || quotaIdentityByDir[dir] != identity {
+            cachedLimitsMap.removeValue(forKey: dir)
+            lastSuccessfulLiveLimits.removeValue(forKey: dir)
+            backoffUntil.removeValue(forKey: dir)
+        }
+        quotaIdentityByDir[dir] = authenticated ? identity : nil
     }
 
     /// Disk fallback for `cachedUsageUtilization`. Returns parsed rows plus
@@ -380,108 +553,146 @@ final class ClaudeDiscovery {
         }
     }
 
-    func fetchAllLimits() -> [ProviderLimit] {
+    func fetchAllLimits(force: Bool = false) -> [ProviderLimit] {
+        fetchLock.lock(); defer { fetchLock.unlock() }
         lock.lock()
-        if Date().timeIntervalSince(lastFetch) < 90 && !cachedLimitsMap.isEmpty {
+        if !force && Date().timeIntervalSince(lastFetch) < 90 && !cachedLimitsMap.isEmpty {
             let res = Array(cachedLimitsMap.values.joined())
             lock.unlock()
             return res
         }
         lock.unlock()
 
-        let dirs = Self.discoverDirectories()
-        guard !dirs.isEmpty else { return [] }
-
+        let dirs = directories()
         var accounts: [ClaudeAccount] = []
+        var tokensByDir: [String: String] = [:]
         for dir in dirs {
-            accounts.append(accountMetadata(for: dir))
+            var account = accountMetadata(for: dir)
+            let token: String?
+            if let tokenReader {
+                token = tokenReader(dir)
+            } else {
+                token = findAccessToken(for: dir)
+            }
+            if let token {
+                if let verified = verifiedAccount(for: dir, token: token) {
+                    account = verified
+                    account.quotaStatus = nil
+                    tokensByDir[dir] = token
+                } else {
+                    account.quotaStatus = "Could not verify this Claude sign-in. Quota will retry."
+                }
+            } else {
+                account.quotaStatus = "Sign in to this Claude profile to restore quota tracking."
+                lock.lock()
+                verifiedProfiles.removeValue(forKey: dir)
+                lock.unlock()
+            }
+            prepareQuotaCache(for: account, authenticated: tokensByDir[dir] != nil)
+            accounts.append(account)
         }
 
-        let isMultiAccount = accounts.count > 1
+        let providerNames = ClaudeProfileIdentity.providerNames(for: accounts)
         var allLimits: [ProviderLimit] = []
         var limitsByDir: [String: [ProviderLimit]] = [:]
 
-        for (index, acct) in accounts.enumerated() {
+        for index in accounts.indices {
             if index > 0 {
-                // Short pause to avoid triggering Cloudflare / Anthropic 429 rate limit bursts
+                // Keep quota queries sequential to avoid Anthropic 429 bursts.
                 Thread.sleep(forTimeInterval: 0.1)
             }
-
-            let providerName = isMultiAccount ? "claude (\(acct.label))" : "claude"
+            let acct = accounts[index]
+            let providerName = providerNames[acct.configDir] ?? "claude"
             let detail = "\(acct.email.isEmpty ? acct.id : acct.email)\(acct.organizationType.isEmpty ? "" : " · \(acct.organizationType)")"
+            // Missing/unverified profile credentials must never borrow another
+            // account's live quota or a potentially mismatched disk cache.
+            guard let token = tokensByDir[acct.configDir] else {
+                limitsByDir[acct.configDir] = []
+                continue
+            }
 
             var limits: [ProviderLimit] = []
             var liveThrottled = false
-            var liveAttempted = false
-            self.lock.lock()
-            let backedOff = (self.backoffUntil[acct.configDir] ?? .distantPast) > Date()
-            self.lock.unlock()
+            var authenticationRejected = false
+            lock.lock()
+            let backedOff = (backoffUntil[acct.configDir] ?? .distantPast) > Date()
+            lock.unlock()
             if backedOff {
-                // Still inside a server backoff window: don't spend a request
-                // that would only renew the throttle. Fall through to memory
-                // + disk below so the account stays visible.
                 liveThrottled = true
-            } else if let token = self.findAccessToken(for: acct.configDir) {
-                liveAttempted = true
-                let res = self.fetchUsageAPI(token: token)
+            } else {
+                let res = usageFetcher?(token) ?? fetchUsageAPI(token: token)
                 if let obj = res.payload {
                     limits = PlanLimitsEngine.parseClaudePayload(obj, provider: providerName, detail: detail)
                     if !limits.isEmpty {
-                        self.lock.lock()
-                        self.lastSuccessfulLiveLimits[acct.configDir] = limits
-                        self.backoffUntil.removeValue(forKey: acct.configDir)
-                        self.lock.unlock()
+                        lock.lock()
+                        lastSuccessfulLiveLimits[acct.configDir] = limits
+                        backoffUntil.removeValue(forKey: acct.configDir)
+                        lock.unlock()
                     }
                 } else if res.statusCode == 429 {
                     liveThrottled = true
                     let wait = Self.throttleBackoffDelay(retryAfter: res.retryAfter)
-                    self.lock.lock()
-                    self.backoffUntil[acct.configDir] = Date().addingTimeInterval(wait)
-                    self.lock.unlock()
+                    lock.lock()
+                    backoffUntil[acct.configDir] = Date().addingTimeInterval(wait)
+                    lock.unlock()
                     NSLog("[ClaudeDiscovery] %@: usage API throttled (429), backing off %.0fs", acct.id, wait)
+                } else if res.statusCode == 401 || res.statusCode == 403 {
+                    authenticationRejected = true
+                    accounts[index].quotaStatus = "Claude sign-in expired. Sign in to this profile again."
+                    prepareQuotaCache(for: acct, authenticated: false)
                 }
             }
 
-            if limits.isEmpty {
-                // 1. Prefer last successful live limits so 429 doesn't downgrade valid data
-                self.lock.lock()
-                let prevLive = self.lastSuccessfulLiveLimits[acct.configDir] ?? []
-                let prevMem = self.cachedLimitsMap[acct.configDir] ?? []
-                self.lock.unlock()
-
-                if !prevLive.isEmpty {
-                    limits = prevLive
-                } else if !prevMem.isEmpty {
-                    limits = prevMem
+            if limits.isEmpty && !authenticationRejected {
+                lock.lock()
+                let prevLive = lastSuccessfulLiveLimits[acct.configDir] ?? []
+                let prevMem = cachedLimitsMap[acct.configDir] ?? []
+                lock.unlock()
+                // Relabel remembered rows after a directory/label collision
+                // changes; their account identity was checked above.
+                let previous = prevLive.isEmpty ? prevMem : prevLive
+                if !previous.isEmpty {
+                    limits = Self.markStale(previous.map { row in
+                        var row = row
+                        row.provider = providerName
+                        row.detail = detail
+                        return row
+                    }, throttled: liveThrottled)
                 } else {
-                    // 2. Fresh disk cache (< 2h) as before; plus a stale tier:
-                    // when live was attempted but refused (429/backoff) or
-                    // errored, an old row marked stale beats a vanished
-                    // account. Token-missing (logged out) keeps fresh-only.
-                    let (_, cachedUsage) = self.readClaudeJson(for: acct.configDir)
-                    let fb = Self.diskFallbackLimits(
-                        cachedUsage: cachedUsage, provider: providerName, detail: detail)
-                    if !fb.limits.isEmpty && (!fb.isStale || liveThrottled || liveAttempted) {
-                        limits = fb.isStale
-                            ? Self.markStale(fb.limits, throttled: liveThrottled)
-                            : fb.limits
+                    let (oauth, cachedUsage) = readClaudeJson(for: acct.configDir)
+                    // A CLI may leave cached utilization belonging to its old
+                    // login. Only use it when both account and org still match.
+                    let diskIdentity = Self.accountMetadata(dir: acct.configDir, oauth: oauth)
+                    if diskIdentity.accountUuid == acct.accountUuid &&
+                        diskIdentity.organizationUuid == acct.organizationUuid {
+                        let fb = Self.diskFallbackLimits(
+                            cachedUsage: cachedUsage, provider: providerName, detail: detail)
+                        limits = Self.markStale(fb.limits, throttled: liveThrottled)
                     }
                 }
+                if limits.isEmpty {
+                    accounts[index].quotaStatus = liveThrottled
+                        ? "Quota refresh is rate-limited. It will retry automatically."
+                        : "Quota is temporarily unavailable. It will retry automatically."
+                }
             }
-
             limitsByDir[acct.configDir] = limits
             allLimits.append(contentsOf: limits)
         }
 
         lock.lock()
-        self.cachedLimitsMap = limitsByDir
-        for i in 0..<accounts.count {
-            accounts[i].limits = limitsByDir[accounts[i].configDir] ?? []
+        cachedLimitsMap = limitsByDir
+        for index in accounts.indices {
+            let dir = accounts[index].configDir
+            accounts[index].limits = limitsByDir[dir] ?? []
+            metadataByDir[dir] = accounts[index]
+            if verifiedProfiles[dir] != nil {
+                verifiedProfiles[dir]?.account = accounts[index]
+            }
         }
-        self.cachedAccounts = accounts
-        self.lastFetch = Date()
+        cachedAccounts = accounts
+        lastFetch = Date()
         lock.unlock()
-
         return allLimits
     }
 

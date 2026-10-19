@@ -291,11 +291,15 @@ func (c OpenCodeConsolidator) Consolidate(store annotStore) (int, error) {
 		return 0, nil
 	}
 	defer db.Close()
-	rows, err := db.Query(`SELECT COALESCE(json_extract(data,'$.responseID'),
-			json_extract(data,'$.responseId'),
-			json_extract(data,'$.provider.responseId'), ''),
+	schema := detectOpencodeSchema(db)
+	// The LIKE pre-filter keeps this a byte scan: assistant rows carry whole
+	// conversation blobs, and json_extract over every one of them on the 60s
+	// loop is the expensive half. It only prunes rows that cannot resolve to
+	// an id — a false positive falls through to the `rid == ""` skip below.
+	rows, err := db.Query(`SELECT ` + schema.responseIDExpr + `,
 		time_created, COALESCE(json_extract(data,'$.cost'),0)
-		FROM message WHERE json_extract(data,'$.role')='assistant'`)
+		FROM ` + schema.messageTable + ` WHERE ` + schema.assistantWhere + `
+		AND (data LIKE '%"responseID"%' OR data LIKE '%"responseId"%')`)
 	if err != nil {
 		return 0, nil
 	}

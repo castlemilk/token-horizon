@@ -196,6 +196,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     </dict></array>
     <key>LSUIElement</key><true/>
     <key>NSHighResolutionCapable</key><true/>
+    <key>NSAppleEventsUsageDescription</key><string>Token Horizon opens account-specific Ghostty windows and focuses the terminals you select.</string>
     <key>THGitSHA</key><string>${GIT_SHA}</string>
     <key>THBuiltAt</key><string>${BUILT_AT}</string>
 </dict>
@@ -214,12 +215,12 @@ if [ -n "$SIGN_IDENTITY" ]; then
     if [ -f "$APP/Contents/Resources/th-engine" ]; then
         codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$APP/Contents/Resources/th-engine"
     fi
-    codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$APP/Contents/MacOS/TokenHorizon"
-    codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$APP"
+    codesign --force --options runtime --timestamp --entitlements "$MACOS/Resources/TokenHorizon.entitlements" --sign "$SIGN_IDENTITY" "$APP/Contents/MacOS/TokenHorizon"
+    codesign --force --options runtime --timestamp --entitlements "$MACOS/Resources/TokenHorizon.entitlements" --sign "$SIGN_IDENTITY" "$APP"
     codesign --verify --deep --strict --verbose=2 "$APP"
     echo "signed with ${SIGN_IDENTITY}"
 else
-    codesign --force --sign - "$APP"
+    codesign --force --entitlements "$MACOS/Resources/TokenHorizon.entitlements" --sign - "$APP"
 fi
 fi
 

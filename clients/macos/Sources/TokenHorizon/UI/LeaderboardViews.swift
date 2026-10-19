@@ -376,7 +376,7 @@ struct LeaderboardTabView: View {
                 participantColumn(item, isUser: isUser)
                     .frame(minWidth: 96, alignment: .leading)
 
-                Text(item.entry.team.isEmpty ? "—" : item.entry.team)
+                Text(item.entry.teamDisplayName.isEmpty ? "—" : item.entry.teamDisplayName)
                     .font(.system(size: 8, design: .monospaced))
                     .foregroundStyle(.secondary)
                     .frame(width: 56, alignment: .leading)
@@ -560,8 +560,8 @@ struct LeaderboardTabView: View {
                                 .background(RoundedRectangle(cornerRadius: 3).fill((delta > 0 ? Color.green : Color.red).opacity(0.12)))
                         }
 
-                        if !entry.team.isEmpty {
-                            Text(entry.team)
+                        if !entry.teamDisplayName.isEmpty {
+                            Text(entry.teamDisplayName)
                                 .font(.system(size: 8, weight: .medium, design: .monospaced))
                                 .foregroundStyle(.white.opacity(0.7))
                                 .padding(.horizontal, 4).padding(.vertical, 1)

@@ -77,7 +77,8 @@
 
   function managerMarkup(view) {
     const state = getState(view.options);
-    const team = state.team;
+    const team = view.creating ? null : state.team;
+    const teams = state.teams || (state.team ? [state.team] : []);
     const owner = team?.role === "owner";
     const busy = !!state.loading || view.busy;
     const disabled = busy ? " disabled" : "";
@@ -96,7 +97,9 @@
     else if (!team) content = `<form data-ti-create><label for="ti-team-name-${view.id}">What’s your team called?</label><div class="ti-name-control"><input id="ti-team-name-${view.id}" name="teamName" type="text" placeholder="The orbital crew" maxlength="64" minlength="2" autocomplete="off" required value="${esc(view.draft)}"${disabled}/></div><p class="ti-field-help">Pick a name your friends will recognize. You can invite them as soon as it’s created.</p><button type="submit" class="ti-button ti-primary ti-wide"${disabled}>${busy ? '<span class="ti-button-spinner" aria-hidden="true"></span>Creating your crew…' : icon("plus") + "Create team & invite friends"}</button></form>`;
     else content = `<div class="ti-team-details"><div class="ti-team-badge">${teamIcon(team)}</div><div><h3>${displayName(team.name || "Your team")}</h3><p>${esc(memberLabel(team))} <span>${owner ? "You’re the team owner" : "You’re on the team"}</span></p></div></div>${owner ? `<div class="ti-invite-list">${rows || '<div class="ti-no-links"><p>Make room for your friends.</p><span>Create a link, send it to your people, and watch the crew grow.</span></div>'}</div>${hasActiveInvite ? '' : `<button type="button" class="ti-button${rows ? "" : " ti-primary"} ti-wide" data-ti-new-link${disabled}>${busy ? '<span class="ti-button-spinner" aria-hidden="true"></span>Getting your link ready…' : icon("plus") + (rows ? "Create fresh invite link" : "Create invite link")}</button>`}` : '<div class="ti-member-note">' + icon("shield") + '<p>You’re part of the crew. Ask the team owner for an invite link to bring your friends along.</p></div>'}`;
 
-    return `<div class="ti-manager-shell"><button type="button" class="ti-close" data-ti-close aria-label="Close team invitations">${icon("close")}</button><aside class="ti-manager-art"><div class="ti-art-brand"><span class="ti-brand-mark"></span>Token Horizon</div>${orbitArt(false, true)}<div class="ti-art-copy"><span>Good company.<br/>Greater horizons.</span><p>One link brings your crew into the same orbit.</p></div><div class="ti-art-foot"><span></span>Better together</div></aside><section class="ti-manager-content"><header><h2 id="ti-manager-title-${view.id}">${heading}</h2><p>${team ? owner ? "Bring friends into your Token Horizon team." : "Good company for your next horizon." : "A little friendly competition starts here."}</p></header>${alertMarkup(state, view.localError, !!view.options.onRetry)}<div class="ti-manager-body"${busy ? ' aria-busy="true"' : ""}>${content}${team ? brandingMarkup(team, owner, disabled) : ""}</div><p class="ti-status" role="status" aria-live="polite">${esc(view.status)}</p><footer class="ti-privacy-note">${icon("shield")}Joining a team doesn’t share private prompts or local traces.</footer></section></div>`;
+    const chooser = state.signedIn && teams.length ? `<div class="ti-team-picker"><label for="ti-team-select-${view.id}">Your teams</label><select id="ti-team-select-${view.id}" data-ti-select${disabled}>${teams.map(row => `<option value="${esc(row.id)}"${!view.creating && row.id === state.team?.id ? " selected" : ""}>${esc(row.name)}${row.role === "owner" ? " · Owner" : ""}</option>`).join("")}</select><button type="button" class="ti-text-button" data-ti-add-team${disabled}>${icon("plus")}Create another team</button>${view.creating ? '<button type="button" class="ti-text-button" data-ti-cancel-create>Back to your teams</button>' : ""}</div>` : "";
+    const leave = team && !owner ? `<div class="ti-leave-team">${view.confirmLeave ? `<p>Leave ${esc(team.name)}? Your profiles will stop contributing to this team. Your other memberships stay active.</p><button type="button" class="ti-button" data-ti-confirm-leave${disabled}>Leave team</button><button type="button" class="ti-text-button" data-ti-cancel-leave${disabled}>Keep membership</button>` : `<button type="button" class="ti-text-button" data-ti-leave${disabled}>Leave this team</button>`}</div>` : "";
+    return `<div class="ti-manager-shell"><button type="button" class="ti-close" data-ti-close aria-label="Close team invitations">${icon("close")}</button><aside class="ti-manager-art"><div class="ti-art-brand"><span class="ti-brand-mark"></span>Token Horizon</div>${orbitArt(false, true)}<div class="ti-art-copy"><span>Good company.<br/>Greater horizons.</span><p>One link brings your crew into the same orbit.</p></div><div class="ti-art-foot"><span></span>Better together</div></aside><section class="ti-manager-content"><header><h2 id="ti-manager-title-${view.id}">${heading}</h2><p>${team ? owner ? "Bring friends into your Token Horizon team." : "Good company for your next horizon." : "A little friendly competition starts here."}</p></header>${alertMarkup(state, view.localError, !!view.options.onRetry)}<div class="ti-manager-body"${busy ? ' aria-busy="true"' : ""}>${chooser}${content}${team ? brandingMarkup(team, owner, disabled) : ""}${leave}</div><p class="ti-status" role="status" aria-live="polite">${esc(view.status)}</p><footer class="ti-privacy-note">${icon("shield")}Your published usage contributes to every team you join. Private prompts and local traces stay private.</footer></section></div>`;
   }
 
   function runAction(view, callback, args) {
@@ -134,13 +137,25 @@
         return;
       }
       view.draft = value;
-      runAction(view, view.options.onCreate, [value]);
+      runAction(view, async () => {
+        await view.options.onCreate?.(value, view.creationId);
+        if (!getState(view.options).error) view.creating = false;
+      });
     });
     host.querySelector('[name="teamName"]')?.addEventListener("input", event => {
       view.draft = event.target.value;
       event.target.setCustomValidity("");
     });
-    host.querySelector("[data-ti-new-link]")?.addEventListener("click", () => runAction(view, view.options.onCreate, [getState(view.options).team?.name || ""]));
+    host.querySelector("[data-ti-new-link]")?.addEventListener("click", () => runAction(view, view.options.onInvite || view.options.onCreate, [getState(view.options).team?.name || ""]));
+    host.querySelector("[data-ti-select]")?.addEventListener("change", event => {
+      view.creating = false; view.confirmLeave = false;
+      runAction(view, view.options.onSelect, [event.target.value]);
+    });
+    host.querySelector("[data-ti-add-team]")?.addEventListener("click", () => { view.creating = true; view.draft = ""; view.creationId = crypto.randomUUID().replaceAll("-", ""); view.confirmLeave = false; view.paint(); host.querySelector('[name="teamName"]')?.focus(); });
+    host.querySelector("[data-ti-cancel-create]")?.addEventListener("click", () => { view.creating = false; view.paint(); host.querySelector('[data-ti-select]')?.focus(); });
+    host.querySelector("[data-ti-leave]")?.addEventListener("click", () => { view.confirmLeave = true; view.paint(); host.querySelector('[data-ti-confirm-leave]')?.focus(); });
+    host.querySelector("[data-ti-cancel-leave]")?.addEventListener("click", () => { view.confirmLeave = false; view.paint(); host.querySelector('[data-ti-leave]')?.focus(); });
+    host.querySelector("[data-ti-confirm-leave]")?.addEventListener("click", () => runAction(view, async () => { await view.options.onLeave?.(); view.confirmLeave = false; }));
     host.querySelector("[data-ti-logo]")?.addEventListener("change", event => {
       const file = event.target.files?.[0];
       if (file) runAction(view, view.options.onLogo, [file]);
@@ -201,7 +216,7 @@
     currentManager?.close();
     const opener = document.activeElement;
     const dialog = document.createElement("dialog");
-    const view = { options: options || {}, dialog, id: ++sequence, draft: "", localError: "", status: "", busy: false, live: true };
+    const view = { options: options || {}, dialog, id: ++sequence, creationId: crypto.randomUUID().replaceAll("-", ""), draft: "", localError: "", status: "", busy: false, live: true };
     dialog.className = "th-team-invites ti-manager";
     dialog.setAttribute("aria-labelledby", `ti-manager-title-${view.id}`);
     view.paint = () => {
@@ -253,8 +268,8 @@
     let content;
     if (loading && !team) content = skeleton();
     else if (!valid || expired) content = `<h1>${expired ? "This invite has expired." : "This invite couldn’t be opened."}</h1><p>Ask your friend for a fresh invite link. There’s always room for one more in the crew.</p>${alertMarkup(state, view.localError, false)}${!expired && view.options.onRetry ? `<button class="ti-button" type="button" data-ti-retry>${icon("retry")}Try this invite again</button>` : ""}<a class="ti-home-link" href="./teams#tm-rankings-title">Explore teams ${icon("arrow")}</a>`;
-    else if (joined) content = `<span class="ti-success-label">${icon("check")}You’re on the team</span><h1>Welcome to<br/>${displayName(team.name || "the crew")}.</h1><p>Your place in the crew is saved. Your published profiles follow this team automatically.</p><div class="ti-crew-line">${icon("people")}<span>${esc(memberLabel(team))} and counting</span></div><button type="button" class="ti-button ti-primary ti-wide" data-ti-continue>Meet your team ${icon("arrow")}</button><a class="ti-home-link" href="/leaderboard?view=dashboard">Open your workspace</a>`;
-    else content = `<span class="ti-invite-label">You’ve been invited to join</span><h1>${displayName(team.name || "the crew")}.</h1><p>A friend saved you a seat. Compare your model usage, share a little friendly competition, and see what you can build together.</p><div class="ti-crew-line">${icon("people")}<span>${esc(memberLabel(team))}</span><time${dateOf(invite?.expiresAt) ? ` datetime="${esc(dateOf(invite.expiresAt).toISOString())}"` : ""}>${esc(expiry(invite?.expiresAt))}</time></div>${state.needsSwitch ? `<div class="ti-switch-note"><strong>You’re joining a new team.</strong><p>${state.currentTeam?.name ? `Joining will move your account from ${esc(state.currentTeam.name)} to ${esc(team.name)}.` : "Joining will move your account and its owned profiles to this team."}</p></div>` : ""}${alertMarkup(state, view.localError, false)}<button type="button" class="ti-button ti-primary ti-wide" data-ti-join${loading ? " disabled" : ""}>${loading ? '<span class="ti-button-spinner" aria-hidden="true"></span>Joining your crew…' : icon(state.signedIn ? "people" : "arrow") + (state.needsSwitch ? "Switch team & join" : state.signedIn ? "Join the team" : "Sign in & join the team")}</button><p class="ti-join-help">${state.signedIn ? "Your team membership is saved to your account." : "Sign in with Google or GitHub and you’ll automatically join. No published profile needed."}</p>`;
+    else if (joined) content = `<span class="ti-success-label">${icon("check")}You’re on the team</span><h1>Welcome to<br/>${displayName(team.name || "the crew")}.</h1><p>Your place in the crew is saved. Your published profiles contribute to this team alongside your other teams.</p><div class="ti-crew-line">${icon("people")}<span>${esc(memberLabel(team))} and counting</span></div><button type="button" class="ti-button ti-primary ti-wide" data-ti-continue>Meet your team ${icon("arrow")}</button><a class="ti-home-link" href="/leaderboard?view=dashboard">Open your workspace</a>`;
+    else content = `<span class="ti-invite-label">You’ve been invited to join</span><h1>${displayName(team.name || "the crew")}.</h1><p>A friend saved you a seat. Compare your model usage, share a little friendly competition, and see what you can build together.</p><div class="ti-crew-line">${icon("people")}<span>${esc(memberLabel(team))}</span><time${dateOf(invite?.expiresAt) ? ` datetime="${esc(dateOf(invite.expiresAt).toISOString())}"` : ""}>${esc(expiry(invite?.expiresAt))}</time></div><p class="ti-join-help">You can belong to several teams. Joining keeps your existing memberships and contributes your published usage to this team.</p>${alertMarkup(state, view.localError, false)}<button type="button" class="ti-button ti-primary ti-wide" data-ti-join${loading ? " disabled" : ""}>${loading ? '<span class="ti-button-spinner" aria-hidden="true"></span>Joining your crew…' : icon(state.signedIn ? "people" : "arrow") + (state.signedIn ? "Join the team" : "Sign in & join the team")}</button><p class="ti-join-help">${state.signedIn ? "Your team membership is saved to your account." : "Sign in with Google or GitHub and you’ll automatically join. No published profile needed."}</p>`;
     return `<section class="th-team-invites ti-invite-page ti-invite-uplift${joined ? " ti-page-joined" : ""}"${loading ? ' aria-busy="true"' : ""}><a href="/" class="ti-page-brand"><span class="ti-brand-mark"></span>Token Horizon</a><div class="ti-invite-card"><aside class="ti-invite-art" data-team-hero><div data-team-blackhole aria-hidden="true"></div><div class="ti-orbit-caption"><span>${joined ? "Crew expanded." : "Good company.<br/>Greater horizons."}</span><p>${joined ? "Good things happen in good company." : "Different models. One crew. Bring all your tokens into the same orbit."}</p></div><button type="button" class="tm-motion-toggle" data-team-motion-toggle aria-pressed="false" aria-label="Pause animation">${icon("people")}<span>Pause animation</span></button></aside><div class="ti-invite-content">${valid && !expired ? `<div class="ti-arrival-icon">${teamIcon(team)}</div>` : ""}${content}<footer class="ti-privacy-note">${icon("shield")}Team membership appears on your published profiles. Private prompts and local traces stay private.</footer></div></div><p class="ti-page-footer">Better models. Shared horizons.</p></section>`;
   }
 
@@ -274,7 +289,7 @@
       const focusAction = host.contains(document.activeElement) ? Array.from(document.activeElement.attributes).find(attribute => attribute.name.startsWith("data-ti-"))?.name : null;
       host.innerHTML = inviteMarkup(view);
       host.querySelectorAll("[data-ti-retry]").forEach(button => button.addEventListener("click", () => runAction(view, view.options.onRetry)));
-      host.querySelector("[data-ti-join]")?.addEventListener("click", () => runAction(view, view.options.onJoin, [!!getState(view.options).needsSwitch]));
+      host.querySelector("[data-ti-join]")?.addEventListener("click", () => runAction(view, view.options.onJoin, []));
       host.querySelector("[data-ti-continue]")?.addEventListener("click", () => view.options.onContinue?.());
       view.options.onPaint?.(host);
       if (focusAction) {

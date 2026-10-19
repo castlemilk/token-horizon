@@ -382,25 +382,39 @@ function formatRelativeCountdown(epochSec) {
   return `${minutes}m`;
 }
 
+// opencode moved `session` → `session_v2` (and `message` → `session_message`)
+// and froze the v1 tables at the cutover, so reading them reports usage as it
+// stood on the day opencode upgraded and nothing since. v2 is a strict
+// superset of v1, so read exactly one generation — never the union.
+async function opencodeSessionTable() {
+  const name = await sh("sqlite3", [
+    DB,
+    "SELECT name FROM sqlite_master WHERE type='table' AND name='session_v2'",
+  ]);
+  return name === "session_v2" ? "session_v2" : "session";
+}
+
 async function usageFallback() {
   if (!existsSync(DB)) throw new Error("opencode.db not found");
+  const table = await opencodeSessionTable();
   const midnightMs =
     new Date(new Date().setHours(0, 0, 0, 0)).getTime();
   const q = async (sql) =>
     (await sh("sqlite3", [DB, sql])).split("|").map(Number);
   const [allTok, allCost] = await q(
-    "SELECT COALESCE(SUM(tokens_input+tokens_output+tokens_reasoning+tokens_cache_read+tokens_cache_write),0)||'|'||printf('%.2f',SUM(cost)) FROM session"
+    `SELECT COALESCE(SUM(tokens_input+tokens_output+tokens_reasoning+tokens_cache_read+tokens_cache_write),0)||'|'||printf('%.2f',SUM(cost)) FROM ${table}`
   );
   const [todayTok, todayCost] = await q(
-    `SELECT COALESCE(SUM(tokens_input+tokens_output+tokens_reasoning+tokens_cache_read+tokens_cache_write),0)||'|'||printf('%.2f',SUM(cost)) FROM session WHERE time_created > ${midnightMs}`
+    `SELECT COALESCE(SUM(tokens_input+tokens_output+tokens_reasoning+tokens_cache_read+tokens_cache_write),0)||'|'||printf('%.2f',SUM(cost)) FROM ${table} WHERE time_created > ${midnightMs}`
   );
   return { tokens_today: todayTok, cost_today: todayCost, tokens_all_time: allTok, cost_all_time: allCost, sources: ["opencode"], note: "direct sqlite fallback (app not running)" };
 }
 
 async function sessionsFallback(limit) {
+  const table = await opencodeSessionTable();
   const rows = await sh("sqlite3", [
     DB,
-    "SELECT id,title,cost,tokens_input+tokens_output+tokens_reasoning+tokens_cache_read+tokens_cache_write,directory,time_created FROM session ORDER BY time_updated DESC LIMIT " +
+    `SELECT id,COALESCE(title,''),cost,tokens_input+tokens_output+tokens_reasoning+tokens_cache_read+tokens_cache_write,directory,time_created FROM ${table} ORDER BY time_updated DESC LIMIT ` +
       limit,
   ]);
   return rows.split("\n").filter(Boolean).map((r) => {

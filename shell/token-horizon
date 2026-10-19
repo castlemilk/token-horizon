@@ -1,0 +1,5 @@
+#!/bin/zsh -f
+# Standalone client: use the shared commands without loading shell startup files
+# or registering interactive command-activity hooks.
+source "${0:A:h}/token-horizon.zsh" || exit 1
+th "$@"

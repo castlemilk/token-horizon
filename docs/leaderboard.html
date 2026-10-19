@@ -2273,10 +2273,13 @@ function leaderboardTableHtml(d, local) {
     ${sorted.length === 0 ? `<tr><td colspan="12"><div class="empty">No players match your filters.</div></td></tr>` : sorted.map(r => rowHtml(r, local)).join("")}
     </tbody></table></div></div>`;
 }
+function profileTeams(entry) {
+  return entry.teams?.length ? entry.teams.map(team => ({ ...team, canonical: true })) : entry.team ? [{ id: entry.teamId || entry.team, name: entry.team, canonical: Boolean(entry.teamId) }] : [];
+}
 function communityTeamOptions(rows) {
   const teams = new Map();
   for (const { entry } of rows) {
-    if (entry.team) teams.set(entry.teamId || entry.team, { id: entry.teamId || entry.team, label: entry.team, canonical: Boolean(entry.teamId) });
+    for (const team of profileTeams(entry)) teams.set(team.id, { id: team.id, label: team.name, canonical: team.canonical });
   }
   const names = new Map();
   for (const team of teams.values()) names.set(team.label, (names.get(team.label) || 0) + 1);
@@ -2336,10 +2339,10 @@ function th(key, label, title = "") {
   return `<th data-sort="${key}" class="${active ? "faint" : ""}" tabindex="0" role="button"${title ? ` title="${esc(title)}"` : ""}>${label}${active ? (state.sortDir > 0 ? " ↑" : " ↓") : ""}</th>`;
 }
 function filterRows(rows) {
-  let out = rows.filter(r => (state.leagueFilter === "all" || r.league === state.leagueFilter) && (state.teamFilter === "all" || (r.entry.teamId || r.entry.team) === state.teamFilter));
+  let out = rows.filter(r => (state.leagueFilter === "all" || r.league === state.leagueFilter) && (state.teamFilter === "all" || profileTeams(r.entry).some(team => team.id === state.teamFilter)));
   if (state.search) {
     const q = state.search;
-    out = out.filter(r => r.entry.handle.toLowerCase().includes(q) || (r.entry.team || "").toLowerCase().includes(q) || (r.entry.topModel || "").toLowerCase().includes(q));
+    out = out.filter(r => r.entry.handle.toLowerCase().includes(q) || profileTeams(r.entry).some(team => team.name.toLowerCase().includes(q)) || (r.entry.topModel || "").toLowerCase().includes(q));
   }
   return out;
 }
@@ -2392,7 +2395,7 @@ function rowHtml(r, local) {
   const leagueLabel = league ? `${league.title} ${roman(r.division || e.division || 3)}` : "League not published";
   return `<tr class="clickable ${isYou ? "you" : ""} ${r.rank <= 3 ? `r${r.rank}` : ""}" data-handle="${esc(e.handle)}">
     <td><span class="rank-badge ${rankClass}">${medal || r.rank}</span></td>
-    <td><div class="user-cell">${entryAvatar(e, 30)}<div class="builder-identity"><div class="name">${esc(e.handle)} ${isYou ? '<span class="chip you">YOU</span>' : ""}</div><div class="builder-meta"><span class="builder-league" title="${esc(leagueLabel)}">${leagueIcon(leagueId, 26)}<span>${esc(leagueLabel)}</span></span>${e.team || e.hardware ? `<span class="builder-team sub" title="${esc(e.team || e.hardware)}">${esc(e.team || e.hardware)}</span>` : ""}</div></div></div></td>
+    <td><div class="user-cell">${entryAvatar(e, 30)}<div class="builder-identity"><div class="name">${esc(e.handle)} ${isYou ? '<span class="chip you">YOU</span>' : ""}</div><div class="builder-meta"><span class="builder-league" title="${esc(leagueLabel)}">${leagueIcon(leagueId, 26)}<span>${esc(leagueLabel)}</span></span>${e.team || e.hardware ? `<span class="builder-team sub" title="${esc(profileTeams(e).map(team => team.name).join(", ") || e.hardware)}">${esc(profileTeams(e).map(team => team.name).join(", ") || e.hardware)}</span>` : ""}</div></div></div></td>
     <td><span class="chip league"${league ? ` style="color:${league.color};border-color:${league.color}55;background:${league.color}14"` : ""}>${leagueIcon(leagueId, 17)}${esc(leagueLabel)}</span></td>
     <td><div class="num score">${esc(r.scoreFormatted)}</div><div class="bar" style="margin-top:4px"><i style="width:${r.relativePercent}%"></i></div></td>
     <td class="num">${esc(r.inputFormatted || "—")}</td>
@@ -3002,7 +3005,7 @@ function profileHero(p) {
   const e = p.entry, handle = String(e.handle || "").replace(/^@/, "");
   const ownedByViewer = sessionOwnsEntry(e);
   return `<header class="profile-identity">
-    <div class="profile-person">${entryAvatar(e, 80)}<div><h1>@${esc(handle)}</h1><div class="profile-meta">${e.team ? `<span>${esc(e.team)}</span>` : '<span>Independent builder</span>'}${e.hardware ? `<span>${esc(e.hardware)}</span>` : ""}${e.isLocal ? '<span class="chip you">You</span>' : ""}</div></div></div>
+    <div class="profile-person">${entryAvatar(e, 80)}<div><h1>@${esc(handle)}</h1><div class="profile-meta">${e.team ? `<span>${profileTeams(e).map(team => team.canonical ? `<a href="/t/${esc(team.id)}" data-team-page="${esc(team.id)}">${esc(team.name)}</a>` : esc(team.name)).join(" · ")}</span>` : '<span>Independent builder</span>'}${e.hardware ? `<span>${esc(e.hardware)}</span>` : ""}${e.isLocal ? '<span class="chip you">You</span>' : ""}</div></div></div>
     <div class="profile-actions"><button class="pill primary" data-share-profile="${esc(handle)}" aria-describedby="profile-share-hint"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m8 11 8-5M8 13l8 5" stroke="currentColor" stroke-width="1.5"/><circle cx="5" cy="12" r="3" stroke="currentColor" stroke-width="1.5"/><circle cx="19" cy="4" r="3" stroke="currentColor" stroke-width="1.5"/><circle cx="19" cy="20" r="3" stroke="currentColor" stroke-width="1.5"/></svg> Share profile</button><button class="pill ghost" data-share-user="${esc(handle)}" title="Create a report with audience and expiry controls">Share report</button>${canEditAvatar(e) ? `<button class="pill ghost" data-edit-avatar="${esc(handle)}">Edit photo</button>` : ""}${ownedByViewer ? "" : `<button class="profile-text-button" data-claim-user="${esc(handle)}">Claim profile</button>`}<span class="profile-share-hint" id="profile-share-hint">A link with a usage chart, heatmap and league preview.</span></div>
   </header>`;
 }
@@ -3098,7 +3101,7 @@ function profileContent(p) {
     return profileProgression(p) + `<div class="card" style="margin-bottom:16px"><div class="card-head"><h3>Peer Comparison</h3></div>
       <div class="stat-grid">
         ${stat("Global percentile", p.percentile != null ? "Top " + topPercent(p.percentile) + "%" : "—", ICONS.rank)}
-        ${stat("Team Rank", p.teamRank ? "#" + p.teamRank : "—", ICONS.users)}
+        ${stat("Team Rank", p.teamRanks?.length > 1 ? p.teamRanks.map(team => team.name + " #" + team.rank).join(" · ") : p.teamRank ? "#" + p.teamRank : "—", ICONS.users)}
         ${stat("All-time rank", p.ranks?.all ? "#" + p.ranks.all : "—", ICONS.shield)}
         ${stat("Streak rank", p.ranks?.streak ? "#" + p.ranks.streak : "—", ICONS.fire)}
       </div></div>
@@ -3126,11 +3129,11 @@ function loadTeamModule() {
   if (teamModuleFlight) return teamModuleFlight;
   teamModuleFlight = new Promise((resolve, reject) => {
     const script = document.createElement("script");
-    script.src = "./team-invites.js?v=20261002-1";
+    script.src = "./team-invites.js?v=20261018-multi-team-1";
     script.async = true;
     const style = document.createElement("link");
     style.rel = "stylesheet";
-    style.href = "./team-invites.css?v=20261002-mobile-1";
+    style.href = "./team-invites.css?v=20261018-multi-team-1";
     const timer = setTimeout(() => finish(new Error("Invites took too long to load. Please retry.")), 5000);
     function finish(error) {
       clearTimeout(timer);
@@ -3156,7 +3159,8 @@ function invalidateTeamData() {
   state.providers = null;
   workspaceAccount = null;
 }
-async function openInviteFriends() {
+async function openInviteFriends(selectedTeamId) {
+  selectedTeamId = typeof selectedTeamId === "string" ? selectedTeamId : state.view === "team" ? state.teamId : "";
   if (state.googleConfig === "loading") await loadAuthConfig();
   if (!requireSignIn({ action: "Invite friends to your team", onSuccess: openInviteFriends })) return;
   const identity = sessionIdentity(state.googleSession), identityRevision = authIdentityRevision;
@@ -3167,15 +3171,16 @@ async function openInviteFriends() {
   teamManager?.close();
   let manager;
   let changed = false;
-  let managerState = { signedIn: true, loading: true, team: null, invites: [] };
+  let managerState = { signedIn: true, loading: true, team: null, teams: [], invites: [] };
   const current = () => identity === sessionIdentity(state.googleSession) && identityRevision === authIdentityRevision && manager === teamManager;
   const paint = values => { managerState = { ...managerState, ...values }; if (current()) manager.update({ state: managerState }); };
-  const refresh = async () => {
+  const refresh = async (teamId = selectedTeamId) => {
     if (!current()) return;
     paint({ loading: true, error: "" });
     try {
-      const account = await api("/api/account/team", { headers: googleHeaders(), cache: "no-store" });
-      paint({ team: account.team, invites: account.invites || [], loading: false });
+      const account = await api("/api/account/team" + (teamId ? "?teamId=" + encodeURIComponent(teamId) : ""), { headers: googleHeaders(), cache: "no-store" });
+      selectedTeamId = account.team?.id || "";
+      paint({ team: account.team, teams: account.teams || (account.team ? [account.team] : []), invites: account.invites || [], loading: false });
     } catch (error) { paint({ loading: false, error: error.message }); }
   };
   const mutate = async (path, body) => {
@@ -3183,16 +3188,20 @@ async function openInviteFriends() {
     if (!isGoogleSessionValid()) { paint({ loading: false, error: "Your sign-in has expired. Close this dialog and sign in again." }); return; }
     paint({ loading: true, error: "" });
     try {
-      await api(path, { method: "POST", headers: googleHeaders(), body: JSON.stringify(body), timeoutMs: 12000 });
+      const account = await api(path, { method: "POST", headers: googleHeaders(), body: JSON.stringify(body), timeoutMs: 12000 });
       if (!current()) return;
+      selectedTeamId = account.team?.id || "";
       changed = true;
       invalidateTeamData();
       await refresh();
     } catch (error) { paint({ loading: false, error: error.message }); }
   };
   manager = module.openManager({ state: managerState,
-    onCreate: name => mutate("/api/team/invites", { name }),
-    onRevoke: token => mutate("/api/team/invites/revoke", { token }),
+    onCreate: (name, creationId) => mutate("/api/team/invites", { name, create: true, creationId }),
+    onInvite: () => mutate("/api/team/invites", { teamId: managerState.team.id }),
+    onSelect: teamId => refresh(teamId),
+    onLeave: () => mutate("/api/team/leave", { teamId: managerState.team.id }),
+    onRevoke: token => mutate("/api/team/invites/revoke", { token, teamId: managerState.team.id }),
     onLogo: async file => {
       const image = file ? await normalizeTeamIcon(file) : null;
       if (!current()) return;
@@ -3230,24 +3239,24 @@ async function renderTeamInvite(current = () => true) {
   let inviteState = { loading: true, signedIn: isGoogleSessionValid(), invite: null };
   let view;
   const paint = values => { inviteState = { ...inviteState, ...values }; if (current()) view.update({ state: inviteState }); };
-  const join = async (confirmSwitch = false) => {
+  const join = async () => {
     if (!current()) return;
     if (state.googleConfig === "loading") await loadAuthConfig();
     if (state.view !== "invite" || teamInviteToken() !== token) return;
     if (!requireSignIn({ action: `Join ${inviteState.invite?.team?.name || "your friends’ team"}`,
       onSuccess: () => { if (state.view === "invite" && teamInviteToken() === token) joinTeamAfterSignIn(token); } })) return;
     const joinIdentity = identity(), joinRevision = authIdentityRevision;
-    paint({ loading: true, error: "", needsSwitch: false, signedIn: true });
+    paint({ loading: true, error: "", signedIn: true });
     try {
       const result = await api("/api/team/join", { method: "POST", headers: googleHeaders(),
-        body: JSON.stringify({ token, confirmSwitch }), timeoutMs: 12000 });
+        body: JSON.stringify({ token }), timeoutMs: 12000 });
       if (!current() || joinIdentity !== identity() || joinRevision !== authIdentityRevision || teamInviteToken() !== token) return;
       teamInviteResult = { token, identity: identity(), team: result.team };
       invalidateTeamData();
       paint({ loading: false, joined: true, signedIn: true, team: result.team });
     } catch (error) {
       if (!current() || joinIdentity !== identity() || joinRevision !== authIdentityRevision) return;
-      paint({ loading: false, error: error.message, needsSwitch: error.code === "team_switch_required",
+      paint({ loading: false, error: error.message,
         invalid: error.status === 404 || error.status === 410 });
     }
   };
@@ -5279,7 +5288,7 @@ function teamComparisonHtml(teams) {
   const peak = Math.max(1, ...rows.map(row => row.value || 0));
   const total = rows.reduce((sum, row) => sum + (row.total || 0), 0), missing = rows.filter(row => row.total == null).length;
   const partial = rows.filter(row => row.total != null && row.profiles < row.team.members).length;
-  return `<div class="tm-comparison-summary" aria-live="polite"><strong data-team-window-total>${missing === rows.length ? "—" : fmtTokens(total)}</strong><span>published tokens · ${scope.toLowerCase()}${missing ? ` · ${missing} team${missing === 1 ? "" : "s"} missing this window` : ""}${partial ? ` · ${partial} team${partial === 1 ? "" : "s"} with partial coverage` : ""}</span></div><ol class="tm-comparison" aria-label="${scope} team token comparison${perProfile ? ' per published profile' : ''}">${rows.map(({ team, value, profiles }) => `<li data-team-comparison data-team-key="${esc(teamKey(team))}"><div class="tm-comparison-label"><span class="tm-comparison-name">${teamLogoHtml(team, "tm-comparison-icon")}<span>${teamNameHtml(team)}${names.get(team.team) > 1 ? `<small>${team.teamId ? "Invite team" : "Published label"}</small>` : ""}${value != null && profiles < team.members ? `<small>${profiles} of ${fmtNum(team.members)} profiles shared this window</small>` : ""}</span></span><strong data-team-comparison-value>${value == null ? "Not published" : fmtTokens(value)}${perProfile && value != null ? '<small> / profile</small>' : ""}</strong></div><div class="tm-comparison-track" aria-hidden="true"><i style="width:${(value || 0) / peak * 100}%"></i></div></li>`).join("")}</ol><p class="tm-board-note">${perProfile ? "Tokens divided by profiles with published totals for this window. " : ""}Window totals reflect each profile’s last publish. Token volume describes activity, not productivity.</p>`;
+  return `<div class="tm-comparison-summary" aria-live="polite"><strong data-team-window-total>${missing === rows.length ? "—" : fmtTokens(total)}</strong><span>published tokens · ${scope.toLowerCase()}${missing ? ` · ${missing} team${missing === 1 ? "" : "s"} missing this window` : ""}${partial ? ` · ${partial} team${partial === 1 ? "" : "s"} with partial coverage` : ""}</span></div><ol class="tm-comparison" aria-label="${scope} team token comparison${perProfile ? ' per published profile' : ''}">${rows.map(({ team, value, profiles }) => `<li data-team-comparison data-team-key="${esc(teamKey(team))}"><div class="tm-comparison-label"><span class="tm-comparison-name">${teamLogoHtml(team, "tm-comparison-icon")}<span>${teamNameHtml(team)}${names.get(team.team) > 1 ? `<small>${team.teamId ? "Invite team" : "Published label"}</small>` : ""}${value != null && profiles < team.members ? `<small>${profiles} of ${fmtNum(team.members)} profiles shared this window</small>` : ""}</span></span><strong data-team-comparison-value>${value == null ? "Not published" : fmtTokens(value)}${perProfile && value != null ? '<small> / profile</small>' : ""}</strong></div><div class="tm-comparison-track" aria-hidden="true"><i style="width:${(value || 0) / peak * 100}%"></i></div></li>`).join("")}</ol><p class="tm-board-note">${perProfile ? "Tokens divided by profiles with published totals for this window. " : ""}Profiles in several teams contribute to each team. Window totals reflect each profile’s last publish. Token volume describes activity, not productivity.</p>`;
 }
 function teamsAnalyticsHtml(teams) {
   const providers = {};
@@ -5357,7 +5366,7 @@ function teamCommunityHistoryHtml(teams) {
   if (index < 0) index = data.points.length - 1;
   const chart = data.hasReports ? stackedUsageChart({ labels: data.points.map(point => teamDayLabel(point.day)), series: data.series }, { kind: "line", height: 270, hideLegend: true, preserveColors: true, ariaLabel: `Published daily team tokens over ${days} days in UTC. Gaps are unreported dates.` }) : `<div class="tm-history-empty"><h3>${data.available ? "No reported usage in this window." : "Daily team history hasn’t been published yet."}</h3><p>${data.available ? "Try a longer window to explore published daily usage." : "Use Comparison for published totals. Daily history appears when profiles share it."}</p></div>`;
   const missing = teams.length - data.available;
-  return `<div data-team-community-history>${teamChoiceHtml("Team history window", [[7, "7 days"], [30, "30 days"], [119, "17 weeks"]], days, "data-team-community-days")}<p class="tm-history-scope">Daily reported tokens · UTC. Gaps mean no report; coverage can be partial.</p><div class="tm-comparison-summary"><strong data-team-community-total>${data.available ? fmtTokens(data.total) : "—"}</strong><span>published tokens over ${days} days${missing && data.available ? ` · partial history: ${data.available} of ${teams.length} teams published daily values` : ""}</span></div><div class="tm-community-chart">${chart}</div>${data.hasReports ? `<div class="tm-history-legend" aria-label="Team time series">${data.series.map(series => `<span title="${esc(series.name)}"><i style="border-color:${series.color}"${series.isOther ? ' class="is-other"' : ""}></i>${series.team && teamIdentity(series.team) ? `<a href="/t/${teamIdentity(series.team)}" data-team-page="${teamIdentity(series.team)}">${esc(series.name)}</a>` : esc(series.name)}</span>`).join("")}</div><div class="tm-day-inspector"><div class="tm-day-inspector-head"><label for="tm-community-day-inspector">Inspect a day</label><button type="button" data-team-community-peak>${TEAM_USAGE_ICON}Jump to peak day</button></div><output data-team-community-day-reading for="tm-community-day-inspector" aria-live="off">${teamCommunityDayReading(data, index)}</output><input id="tm-community-day-inspector" type="range" data-team-community-day-inspector min="0" max="${days - 1}" step="1" value="${index}" aria-valuetext="${teamCommunityDayReading(data, index)}"/><div class="tm-day-inspector-dates" aria-hidden="true"><span>${teamDayLabel(data.points[0].day)}</span><span>${teamDayLabel(data.points.at(-1).day)}</span></div><div data-team-community-day-values>${teamCommunityDayValuesHtml(data, index)}</div></div><details class="tm-daily-values"><summary>View daily values</summary><div role="region" aria-label="Daily team token values" tabindex="0"><table><caption class="tm-visually-hidden">Published daily team tokens in UTC; Not reported means publication coverage is unknown</caption><thead><tr><th scope="col">Date (UTC)</th>${data.series.map(series => `<th scope="col">${esc(series.name)}</th>`).join("")}<th scope="col">Reported Total</th></tr></thead><tbody>${data.points.map((point, index) => `<tr><th scope="row">${new Date(point.day * 1000).toISOString().slice(0, 10)}</th>${data.series.map(series => `<td>${series.values[index] == null ? "Not reported" : fmtNum(series.values[index])}</td>`).join("")}<td>${data.totals[index] == null ? "Not reported" : fmtNum(data.totals[index])}</td></tr>`).join("")}</tbody></table></div></details>` : ""}<p class="tm-board-note">Each line is daily published usage, not productivity. Other combines the remaining teams. The provider view stays all time across all published teams.</p></div>`;
+  return `<div data-team-community-history>${teamChoiceHtml("Team history window", [[7, "7 days"], [30, "30 days"], [119, "17 weeks"]], days, "data-team-community-days")}<p class="tm-history-scope">Daily reported tokens · UTC. Gaps mean no report; coverage can be partial.</p><div class="tm-comparison-summary"><strong data-team-community-total>${data.available ? fmtTokens(data.total) : "—"}</strong><span>published tokens over ${days} days${missing && data.available ? ` · partial history: ${data.available} of ${teams.length} teams published daily values` : ""}</span></div><div class="tm-community-chart">${chart}</div>${data.hasReports ? `<div class="tm-history-legend" aria-label="Team time series">${data.series.map(series => `<span title="${esc(series.name)}"><i style="border-color:${series.color}"${series.isOther ? ' class="is-other"' : ""}></i>${series.team && teamIdentity(series.team) ? `<a href="/t/${teamIdentity(series.team)}" data-team-page="${teamIdentity(series.team)}">${esc(series.name)}</a>` : esc(series.name)}</span>`).join("")}</div><div class="tm-day-inspector"><div class="tm-day-inspector-head"><label for="tm-community-day-inspector">Inspect a day</label><button type="button" data-team-community-peak>${TEAM_USAGE_ICON}Jump to peak day</button></div><output data-team-community-day-reading for="tm-community-day-inspector" aria-live="off">${teamCommunityDayReading(data, index)}</output><input id="tm-community-day-inspector" type="range" data-team-community-day-inspector min="0" max="${days - 1}" step="1" value="${index}" aria-valuetext="${teamCommunityDayReading(data, index)}"/><div class="tm-day-inspector-dates" aria-hidden="true"><span>${teamDayLabel(data.points[0].day)}</span><span>${teamDayLabel(data.points.at(-1).day)}</span></div><div data-team-community-day-values>${teamCommunityDayValuesHtml(data, index)}</div></div><details class="tm-daily-values"><summary>View daily values</summary><div role="region" aria-label="Daily team token values" tabindex="0"><table><caption class="tm-visually-hidden">Published daily team tokens in UTC; Not reported means publication coverage is unknown</caption><thead><tr><th scope="col">Date (UTC)</th>${data.series.map(series => `<th scope="col">${esc(series.name)}</th>`).join("")}<th scope="col">Reported Total</th></tr></thead><tbody>${data.points.map((point, index) => `<tr><th scope="row">${new Date(point.day * 1000).toISOString().slice(0, 10)}</th>${data.series.map(series => `<td>${series.values[index] == null ? "Not reported" : fmtNum(series.values[index])}</td>`).join("")}<td>${data.totals[index] == null ? "Not reported" : fmtNum(data.totals[index])}</td></tr>`).join("")}</tbody></table></div></details>` : ""}<p class="tm-board-note">Each line is daily published usage, not productivity. Profiles in several teams contribute to each line. Other combines the remaining teams. The provider view stays all time across all published teams.</p></div>`;
 }
 function wireTeamCommunityHistory(teams) {
   wireTeamChoices($("[aria-label='Team history window']"), button => { teamAnalyticsView.historyDays = Number(button.dataset.teamCommunityDays); updateTeamAnalyticsUrl(); paintTeamAnalytics(teams, true); });
@@ -5451,12 +5460,12 @@ async function renderTeamLanding(current = () => true) {
     if (isGoogleSessionValid()) {
       const session = state.googleSession;
       api("/api/account/team", { headers: googleHeaders(), cache: "no-store" }).then(account => {
-        if (!current() || state.googleSession !== session || account.team?.id !== id) return;
+        if (!current() || state.googleSession !== session || !(account.teams || [account.team]).some(team => team?.id === id)) return;
         const membership = $("[data-team-membership]");
         membership.hidden = false;
         membership.innerHTML = `<span>${TEAM_CHECK}You’re part of this crew.</span>`;
-        $("[data-team-manage-slot]").innerHTML = teamActionHtml("crew", "Your crew", account.team.role === "owner" ? "Invite friends, edit the team icon and manage your crew." : "View your membership and the people in your crew.", { attributes: { "data-team-manage": "" } });
-        $("[data-team-manage]").onclick = openInviteFriends;
+        $("[data-team-manage-slot]").innerHTML = teamActionHtml("crew", "Your crew", (account.teams || [account.team]).find(team => team?.id === id)?.role === "owner" ? "Invite friends, edit the team icon and manage your crew." : "View your membership and the people in your crew.", { attributes: { "data-team-manage": "" } });
+        $("[data-team-manage]").onclick = () => openInviteFriends(id);
       }).catch(() => {});
     }
   } catch (error) {
@@ -5542,7 +5551,7 @@ async function renderTeams(current = () => true) {
   // Canonical team IDs remain distinct from legacy groups with identical names.
   const teams = (p.teams || []).filter(team => team.teamId || team.team !== "Unassigned").map(team => ({ ...team, tokens: Math.max(0, Number(team.tokens) || 0), cost: Math.max(0, Number(team.cost) || 0), members: Math.max(0, Number(team.members) || 0) })).sort((a, b) => b.tokens - a.tokens);
   const totalTokens = teams.reduce((sum, team) => sum + team.tokens, 0), totalProfiles = teams.reduce((sum, team) => sum + team.members, 0), leader = teams[0];
-  $("#view").innerHTML = `<article class="tm-page">${teamsHeroHtml()}<div class="team-invite-banner" hidden><div><strong>Bring your friends into orbit.</strong><span>Share an invite link. Friends join your team after signing in.</span></div>${teamActionHtml("invite", "Invite friends", "Open your crew to manage membership and invitation links.", { className: "tm-invite-button", attributes: { "data-invite-friends": "" } })}</div>${state.providersError ? `<section class="tm-error" id="tm-analytics" tabindex="-1" role="alert"><div><h2 id="tm-rankings-title" tabindex="-1">Team data couldn’t load.</h2><p>${esc(state.providersError)}</p></div><button type="button" id="tm-retry">Try again</button></section>` : ""}${leader ? `<section class="tm-leader" aria-label="Leading team"><div class="tm-leader-rank"><span>Rank</span><strong>01</strong></div><div class="tm-leader-team"><div class="tm-leader-identity">${teamLogoHtml(leader)}<h2>${teamNameHtml(leader)}</h2></div><p>Leading the community with ${fmtNum(leader.members)} published profile${leader.members === 1 ? "" : "s"}.</p>${teamProfilesHtml(leader, true)}</div><div class="tm-leader-usage"><strong>${fmtTokens(leader.tokens)}</strong><span>all-time tokens</span><p>${totalTokens ? Math.round(leader.tokens / totalTokens * 100) : 0}% of published team usage</p></div></section>` : ""}${teams.length ? `<dl class="tm-community-stats"><div><dt>Published teams</dt><dd>${fmtNum(teams.length)}</dd></div><div><dt>Published profiles</dt><dd>${fmtNum(totalProfiles)}</dd></div><div><dt>Combined tokens</dt><dd>${fmtTokens(totalTokens)}</dd></div></dl><section class="tm-board" aria-labelledby="tm-rankings-title"><div class="tm-board-head"><div><h2 id="tm-rankings-title" tabindex="-1">The team standings</h2><p>All-time totals from public profiles. Expand a team to explore its usage.</p></div><div class="tm-controls"><label class="tm-search"><svg aria-hidden="true" viewBox="0 0 20 20"><circle cx="8.5" cy="8.5" r="5.5"/><path d="m13 13 4 4"/></svg><span class="tm-visually-hidden">Search teams or profiles</span><input type="search" id="tm-search" value="${esc(teamLeaderboardView.search)}" placeholder="Find a team or profile…" autocomplete="off"/></label><label class="tm-sort"><span class="tm-visually-hidden">Sort teams</span><select id="tm-sort"><option value="tokens"${teamLeaderboardView.sort === "tokens" ? " selected" : ""}>Total tokens</option><option value="profiles"${teamLeaderboardView.sort === "profiles" ? " selected" : ""}>Published profiles</option><option value="name"${teamLeaderboardView.sort === "name" ? " selected" : ""}>Team name</option></select></label></div></div><div id="tm-rows">${teamsRowsHtml(teams)}</div><p class="tm-board-note">Ranks use all-time token totals. Teams appear when members publish their profiles; unpublished members aren’t included.</p></section>${teamsAnalyticsHtml(teams)}` : !state.providersError ? `<section class="tm-empty" id="tm-analytics" tabindex="-1"><svg aria-hidden="true" viewBox="0 0 48 48"><circle cx="24" cy="24" r="17"/><path d="M7 24h34M17 20a7 7 0 0 1 14 0m-18 13c3-7 19-7 22 0"/></svg><h2 id="tm-rankings-title" tabindex="-1">Your crew could be first.</h2><p>Create a team, invite your friends, and publish your usage to start climbing together.</p><button type="button" class="tm-invite-button" data-team-empty-invite>Create your team</button></section>` : ""}</article>`;
+  $("#view").innerHTML = `<article class="tm-page">${teamsHeroHtml()}<div class="team-invite-banner" hidden><div><strong>Bring your friends into orbit.</strong><span>Share an invite link. Friends join your team after signing in.</span></div>${teamActionHtml("invite", "Invite friends", "Open your crew to manage membership and invitation links.", { className: "tm-invite-button", attributes: { "data-invite-friends": "" } })}</div>${state.providersError ? `<section class="tm-error" id="tm-analytics" tabindex="-1" role="alert"><div><h2 id="tm-rankings-title" tabindex="-1">Team data couldn’t load.</h2><p>${esc(state.providersError)}</p></div><button type="button" id="tm-retry">Try again</button></section>` : ""}${leader ? `<section class="tm-leader" aria-label="Leading team"><div class="tm-leader-rank"><span>Rank</span><strong>01</strong></div><div class="tm-leader-team"><div class="tm-leader-identity">${teamLogoHtml(leader)}<h2>${teamNameHtml(leader)}</h2></div><p>Leading the community with ${fmtNum(leader.members)} published profile${leader.members === 1 ? "" : "s"}.</p>${teamProfilesHtml(leader, true)}</div><div class="tm-leader-usage"><strong>${fmtTokens(leader.tokens)}</strong><span>all-time tokens</span><p>${totalTokens ? Math.round(leader.tokens / totalTokens * 100) : 0}% of published team usage</p></div></section>` : ""}${teams.length ? `<dl class="tm-community-stats"><div><dt>Published teams</dt><dd>${fmtNum(teams.length)}</dd></div><div><dt>Profile memberships</dt><dd>${fmtNum(totalProfiles)}</dd></div><div><dt>Team token contributions</dt><dd>${fmtTokens(totalTokens)}</dd></div></dl><section class="tm-board" aria-labelledby="tm-rankings-title"><div class="tm-board-head"><div><h2 id="tm-rankings-title" tabindex="-1">The team standings</h2><p>All-time totals from public profiles. Expand a team to explore its usage.</p></div><div class="tm-controls"><label class="tm-search"><svg aria-hidden="true" viewBox="0 0 20 20"><circle cx="8.5" cy="8.5" r="5.5"/><path d="m13 13 4 4"/></svg><span class="tm-visually-hidden">Search teams or profiles</span><input type="search" id="tm-search" value="${esc(teamLeaderboardView.search)}" placeholder="Find a team or profile…" autocomplete="off"/></label><label class="tm-sort"><span class="tm-visually-hidden">Sort teams</span><select id="tm-sort"><option value="tokens"${teamLeaderboardView.sort === "tokens" ? " selected" : ""}>Total tokens</option><option value="profiles"${teamLeaderboardView.sort === "profiles" ? " selected" : ""}>Published profiles</option><option value="name"${teamLeaderboardView.sort === "name" ? " selected" : ""}>Team name</option></select></label></div></div><div id="tm-rows">${teamsRowsHtml(teams)}</div><p class="tm-board-note">Ranks use all-time token totals. Profiles can belong to several teams; combined team totals include their usage in each team. Unpublished members contribute no usage.</p></section>${teamsAnalyticsHtml(teams)}` : !state.providersError ? `<section class="tm-empty" id="tm-analytics" tabindex="-1"><svg aria-hidden="true" viewBox="0 0 48 48"><circle cx="24" cy="24" r="17"/><path d="M7 24h34M17 20a7 7 0 0 1 14 0m-18 13c3-7 19-7 22 0"/></svg><h2 id="tm-rankings-title" tabindex="-1">Your crew could be first.</h2><p>Create a team, invite your friends, and publish your usage to start climbing together.</p><button type="button" class="tm-invite-button" data-team-empty-invite>Create your team</button></section>` : ""}</article>`;
   const paintRows = () => {
     $("#tm-rows").innerHTML = teamsRowsHtml(teams);
     wireRows();
@@ -5584,10 +5593,11 @@ async function renderTeams(current = () => true) {
     api("/api/account/team", { headers: googleHeaders(), cache: "no-store" }).then(account => {
       if (!current() || session !== state.googleSession || !account.team) return;
       $(".team-invite-banner").hidden = false;
-      $(".team-invite-banner strong").textContent = account.team.name;
-      $$("[data-team-hero-invite]").forEach(button => updateTeamAction(button, "Your crew", "Open your team and manage the membership your account belongs to.", "crew"));
-      $(".team-invite-banner span").textContent = `${account.team.memberCount} members in your crew. Published profiles contribute to the rankings below.`;
-      updateTeamAction($("[data-invite-friends]"), account.team.role === "owner" ? "Invite friends" : "Your team", account.team.role === "owner" ? "Invite friends and manage the links for your crew." : "View your membership and the people in your crew.", account.team.role === "owner" ? "invite" : "crew");
+      const teams = account.teams || [account.team];
+      $(".team-invite-banner strong").textContent = teams.length > 1 ? `${teams.length} teams` : account.team.name;
+      $$("[data-team-hero-invite]").forEach(button => updateTeamAction(button, "Your crew", "Choose a team to manage your membership and invites, or create another team.", "crew"));
+      $(".team-invite-banner span").textContent = teams.length > 1 ? teams.map(team => team.name).join(" · ") : `${account.team.memberCount} members in your crew. Published profiles contribute to the rankings below.`;
+      updateTeamAction($("[data-invite-friends]"), teams.length > 1 ? "Your teams" : account.team.role === "owner" ? "Invite friends" : "Your team", account.team.role === "owner" ? "Invite friends and manage the links for your crew." : "View your membership and the people in your crew.", account.team.role === "owner" ? "invite" : "crew");
     }).catch(() => {});
   }
 }
@@ -5765,14 +5775,14 @@ function openShareModal(handle) {
   const previewUrl = created ? API_BASE + "/api/og/share/" + encodeURIComponent(created.id) + ".png" : "";
   const previewName = state.shareOptions.anonymizeNames ? "Anonymous" : "@" + target;
   const audiencePlaceholder = state.shareScope === "people" ? "@handle of a claimed profile" : state.shareScope === "group"
-    ? "Saved group name or ID" : state.shareScope === "org" ? "Members of your joined team" : "No recipients needed";
+    ? "Saved group name or ID" : state.shareScope === "org" ? "Members of any team you belong to" : "No recipients needed";
   const accessDetail = publicAccess ? "Anyone with the link can view this report." : state.shareScope === "private"
     ? "Only your signed-in account can view this report." : "Only signed-in people you grant access to can view this report.";
   const scopeCards = [
     ["private", "🔒", "Only me", "Keep this private"],
     ["people", "👤", "Specific people", "Share with selected users"],
     ["group", "👥", "Saved group", "Choose a group you created"],
-    ["org", "🏢", "My team", "Members of your joined team"],
+    ["org", "🏢", "My teams", "Members of any team you belong to"],
     ["public", "🌐", "Global / public", "Anyone with the link can view"]
   ];
   const tabs = [["group", "👥 Groups"], ["people", "👤 Individual"], ["public", "🌐 Global"]];
@@ -5818,7 +5828,7 @@ function openShareModal(handle) {
             <div class="share-preview-label"><i aria-hidden="true"></i><span>${publicAccess ? "Live usage preview for messaging and social apps." : "Private links show a discreet preview. Your usage stays behind sign-in."}</span></div>
           </div>
           <div class="card" style="margin-top:12px"><div class="card-head"><h3>Who will have access</h3></div>
-            ${publicAccess ? '<div class="empty" style="padding:8px">Anyone with this link</div>' : state.shareAudience.length && ["people", "group"].includes(state.shareScope) ? state.shareAudience.map(a => `<div class="mover">${avatar(a, "", 26)}<div><div class="name">${esc(a)}</div><div class="faint" style="font-size:10.5px">Can view after sign-in</div></div></div>`).join("") : `<div class="empty" style="padding:8px">${state.shareScope === "org" ? "Your account and members of your joined team" : state.shareScope === "group" ? "Only you until you add a saved group" : state.shareScope === "people" ? "Only you until you add a person" : "Only you"}</div>`}
+            ${publicAccess ? '<div class="empty" style="padding:8px">Anyone with this link</div>' : state.shareAudience.length && ["people", "group"].includes(state.shareScope) ? state.shareAudience.map(a => `<div class="mover">${avatar(a, "", 26)}<div><div class="name">${esc(a)}</div><div class="faint" style="font-size:10.5px">Can view after sign-in</div></div></div>`).join("") : `<div class="empty" style="padding:8px">${state.shareScope === "org" ? "Your account and members of any team you belong to" : state.shareScope === "group" ? "Only you until you add a saved group" : state.shareScope === "people" ? "Only you until you add a person" : "Only you"}</div>`}
           </div>
           <div class="card" style="margin-top:12px"><div class="card-head"><h3>Share settings</h3></div>
             ${[["Full token counts", state.shareOptions.fullTokenCounts], ["Anonymize names", state.shareOptions.anonymizeNames], ["Include provider breakdown", state.shareOptions.providerBreakdown], ["Include league rank", state.shareOptions.includeLeagueRank], ["Allow download", state.shareOptions.allowDownload], ["Hide cost", state.shareOptions.hideCost]].map(([l, v]) => `<div style="display:flex;justify-content:space-between;font-size:12px;padding:5px 0"><span class="muted">${esc(l)}</span><span class="${v ? "up" : "faint"}">${v ? "Yes" : "No"}</span></div>`).join("")}

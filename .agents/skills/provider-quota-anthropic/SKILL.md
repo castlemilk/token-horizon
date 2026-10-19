@@ -22,19 +22,22 @@ Token Horizon automatically discovers all Claude profiles configured on the host
 For each discovered profile directory:
 1. **Metadata Discovery**:
    - Reads `.claude.json` from `<dir>/.claude.json` (or `~/.claude.json` for `~/.claude`).
+   - Custom profiles never fall back to the default profile's metadata. Last known metadata is hydrated from the durable usage snapshot and retained through temporary file gaps.
    - Extracts `oauthAccount`: `emailAddress`, `displayName`, `organizationName`, `organizationType`, `organizationRateLimitTier`, `hasExtraUsageEnabled`.
-   - Reads `cachedUsageUtilization` as fallback when offline or unauthenticated.
+   - Verifies identity through `GET /api/oauth/profile` using the same token as the usage request; copied or stale `oauthAccount` fields cannot override the authenticated identity. Verification is cached for the current token.
+   - Reads `cachedUsageUtilization` only when its account UUID and organization UUID match the verified identity. Missing or rejected credentials leave the profile visible with a sign-in status and no borrowed quota.
 2. **Access Token Resolution**:
-   - Checks `<dir>/.credentials.json` on disk.
+   - Reads `<dir>/.credentials.json` on disk and the profile's allowed Keychain services; the credential with the newest `expiresAt` wins (ties preserve discovery order). Setting `CLAUDE_CONFIG_DIR=~/.claude` explicitly uses the hashed default service, so an older unscoped login must not hide its fresher sign-in.
    - Computes 8-character SHA-256 hash of the expanded path: `SHA256(expandedPath).prefix(8)`
    - Queries macOS Keychain:
      - For default `~/.claude`: service `"Claude Code-credentials"` (fallback: `"Claude Code-credentials-\(hash)"`)
-     - For other profiles: service `"Claude Code-credentials-\(hash)"` (fallback: `"Claude Code-credentials"`)
+     - For other profiles: service `"Claude Code-credentials-\(hash)"` only. Never use the unscoped default credential for a different profile.
    - Decodes JSON payload to extract `claudeAiOauth.accessToken` (or `oauth.accessToken`, `claudeOAuth.accessToken`).
 3. **Access Token Auto-Refresh** (`findAccessToken` → `OAuthRefresh`): access tokens live ~8h (`expires_in: 28800`); Claude Code normally only refreshes them on launch. When the stored `expiresAt` is inside a 5-minute window and a `refreshToken` exists, the engine POSTs JSON `{grant_type: "refresh_token", refresh_token, client_id: "9d1c250a-e61b-44d9-88ed-5944d1962f5e"}` to `https://platform.claude.com/v1/oauth/token` (fallback `https://console.anthropic.com/v1/oauth/token`) and writes the rotated credentials back into the same store — `security add-generic-password -U` for Keychain items (account = the item's `acct` attribute), atomic JSON write for `.credentials.json` (0600 preserved). The store is re-read before writing: a changed refresh token means the CLI rotated first, and its newer access token is adopted. Rejected refreshes (invalid_grant) throttle per config dir for 10 minutes.
 4. **Usage Tracking**:
    - Automatically scans `projects/` and `transcripts/` across all discovered profile directories.
    - Computes per-account token consumption and cost alongside overall combined totals.
+   - Usage remains profile-path scoped. Profile IDs and quota provider names distinguish nested homes and duplicate email/domain labels; changing the authenticated account invalidates that profile's old quota cache.
 
 ---
 

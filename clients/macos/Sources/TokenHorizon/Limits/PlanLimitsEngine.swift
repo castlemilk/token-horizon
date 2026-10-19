@@ -919,10 +919,7 @@ final class PlanLimitsEngine {
     }
 
     private static func openai() -> [ProviderLimit] {
-        guard let stored = openaiAuth() else { return [] }
-        let auth = ensureFreshOpenAIAuth(stored)
-        let accountId = auth.accountId.isEmpty ? chatgptAccountID(fromJWT: auth.accessToken) : auth.accountId
-        return fetchWhamUsage(access: auth.accessToken, accountId: accountId)
+        CodexAccountDiscovery.shared.fetchAllLimits()
     }
 
     /// GET the wham/usage payload; `baseURL` is injectable for loopback tests.

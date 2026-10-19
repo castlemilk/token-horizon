@@ -49,6 +49,31 @@ profile`; the Taskfile delegates to it so there is one implementation per comman
   `tools/list` round-trip. First failure mode is always "stale binary":
   rebuild, don't debug data.
 
+## Focused regression checks
+
+Navigation and team refresh regressions are part of the normal `swift test`
+gate. For focused iteration, run:
+
+```bash
+swift test --package-path clients/macos --filter 'DashboardNavigationPreferencesTests|SettingsNavigationPreferencesTests|TeamStoreRefreshTests|TeamStoreTests|LeaderboardSyncTests'
+node --test cloudflare/worker.test.mjs
+```
+
+Claude/Codex profile discovery, quota identity, isolated launch plans, and
+Ghostty window associations have hermetic regressions (no real login or terminal
+actions):
+
+```bash
+swift test --package-path clients/macos --filter 'ManagedCLIProfileTests|ManagedTerminalSessionTests|CLIProfileLaunchTests|GhosttyAutomationTests|CLIAccountManagerTests|CodexAccountDiscoveryTests|CLIAccountRenderingTests|ClaudeAccountTrackingTests|ClaudeProfileIdentityTests'
+```
+
+Navigation persistence tests use temporary settings directories and check that
+pin changes preserve sharing preferences and cloud credentials. Team refresh
+integration tests use isolated URLSession transports to hold an old response,
+queue forced refreshes, and verify fresh membership, ETag revalidation and
+offline recovery. The worker suite checks that repeated authorized machine
+publishes preserve the server-owned identity and joined team.
+
 ## Concurrency rules for the stack itself
 
 - Never overlap two `swift build` / `swift test` invocations (shared

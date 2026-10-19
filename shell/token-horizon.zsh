@@ -23,15 +23,46 @@ _tokenhorizon_precmd() {
     ) >/dev/null 2>&1 &!
 }
 
-autoload -Uz add-zsh-hook
-add-zsh-hook preexec _tokenhorizon_preexec
-add-zsh-hook precmd _tokenhorizon_precmd
+if [[ -o interactive ]]; then
+    autoload -Uz add-zsh-hook
+    add-zsh-hook preexec _tokenhorizon_preexec
+    add-zsh-hook precmd _tokenhorizon_precmd
+fi
 
 # quick CLI: th, th stats, th limits, th history, th cache, th reset-cache, th leaderboard, th share
 th() {
+    setopt local_options pipe_fail
     local cmd="${1:-health}"
     shift 2>/dev/null || true
-    if [[ "$cmd" == "reset-cache" ]]; then cmd="cache/reset"; fi
+    cmd="${cmd#/}"
+    if [[ "$cmd" == "help" || "$cmd" == "--help" || "$cmd" == "-h" ]]; then
+        cat <<'HELP'
+Usage: token-horizon [command] [arguments]
+       th [command] [arguments]
+
+  health                 App status and build (default)
+  stats                  Token usage and system snapshot
+  limits                 Provider quota windows and resets
+  history                Usage history
+  cache                  Cache status
+  reset-cache            Clear and rebuild the usage cache
+  leaderboard [period]   Rankings: today, week, all, streak
+  leaderboard web        Open the leaderboard in your browser
+  leaderboard publish [--cf|--sheets]
+  leaderboard pull [--cf|--sheets]
+  leaderboard config [cf|sheets] [url]
+  share [text|markdown|json|svg] [period] [--copy]
+  help                   Show this help without connecting
+
+API paths such as /stats or models/catalog are also accepted.
+Connects to TOKEN_HORIZON_URL (default http://127.0.0.1:8765).
+HELP
+        return 0
+    fi
+    if [[ "$cmd" == "reset-cache" ]]; then
+        curl -fsS -m 10 -X POST "${TOKEN_HORIZON_URL%/}/cache/reset" | python3 -m json.tool
+        return $?
+    fi
     if [[ "$cmd" == "leaderboard" || "$cmd" == "lb" ]]; then
         local sub="${1:-today}"
         if [[ "$sub" == "publish" || "$sub" == "push" ]]; then
@@ -108,5 +139,8 @@ th() {
         fi
         return 0
     fi
-    curl -s -m 2 "${TOKEN_HORIZON_URL%/}/$cmd" | python3 -m json.tool 2>/dev/null || echo "token horizon not running"
+    if ! curl -fsS -m 10 "${TOKEN_HORIZON_URL%/}/$cmd" | python3 -m json.tool 2>/dev/null; then
+        print -u2 "Token Horizon could not be reached at ${TOKEN_HORIZON_URL%/}."
+        return 1
+    fi
 }

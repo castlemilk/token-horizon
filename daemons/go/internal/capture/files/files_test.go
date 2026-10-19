@@ -211,6 +211,65 @@ func TestOpenCodeBackfillAndAnnotation(t *testing.T) {
 	}
 }
 
+// makeOpenCodeV2DB: a database carrying BOTH generations — a frozen v1
+// pair (what opencode leaves behind at the cutover) and the live v2 pair —
+// with deliberately different numbers so reading the wrong one is loud.
+func makeOpenCodeV2DB(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "opencode.db")
+	db, err := sql.Open("sqlite", "file:"+path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	// Frozen v1.
+	db.Exec(`CREATE TABLE session (time_created REAL, tokens_input INTEGER, tokens_output INTEGER,
+		tokens_reasoning INTEGER, tokens_cache_read INTEGER, tokens_cache_write INTEGER, cost REAL)`)
+	db.Exec(`CREATE TABLE message (data TEXT, time_created REAL)`)
+	db.Exec(`INSERT INTO session VALUES (1789700100000.0, 900000, 0, 0, 0, 0, 9.0)`)
+	db.Exec(`INSERT INTO message VALUES ('{"role":"assistant","responseID":"resp_legacy","cost":9.0}', 1789700100000.0)`)
+	// Live v2: role is the `type` column, model block lives under data.$.model.
+	db.Exec(`CREATE TABLE session_v2 (time_created REAL, tokens_input INTEGER, tokens_output INTEGER,
+		tokens_reasoning INTEGER, tokens_cache_read INTEGER, tokens_cache_write INTEGER, cost REAL)`)
+	db.Exec(`CREATE TABLE session_message (id TEXT, session_id TEXT, type TEXT, time_created REAL, data TEXT)`)
+	db.Exec(`INSERT INTO session_v2 VALUES (1789703700000.0, 1500, 100, 50, 400, 0, 0.5)`)
+	db.Exec(`INSERT INTO session_message VALUES ('m1','s1','assistant',1789703700000.0,'{"responseID":"resp_v2","cost":0.5}')`)
+	db.Exec(`INSERT INTO session_message VALUES ('m2','s1','user',1789703700000.0,'{"role":"assistant","responseID":"resp_user"}')`)
+	return path
+}
+
+func TestOpenCodeV2SchemaSupersedesFrozenLegacyTables(t *testing.T) {
+	e := testHome(t)
+	e.OpenCodeDB = makeOpenCodeV2DB(t)
+
+	buckets := e.opencodePerBucket()
+	if len(buckets) != 1 {
+		t.Fatalf("buckets must come from session_v2 only: %v", buckets)
+	}
+	want := bucketStart(1789703700)
+	for got, b := range buckets {
+		if got != want {
+			t.Fatalf("bucket %d, want %d (frozen v1 row read)", got, want)
+		}
+		if b.Breakdown.Input != 1500 || b.Breakdown.Output != 100 ||
+			b.Breakdown.Reasoning != 50 || b.Breakdown.CacheRead != 400 || b.Cost != 0.5 {
+			t.Fatalf("v2 bucket: %+v", b)
+		}
+	}
+
+	// Assistant rows only, from session_message: resp_v2 wins, the frozen
+	// v1 row and the v2 `user` row (which still carries data.$.role) do not.
+	store := newMemStore()
+	n, err := OpenCodeConsolidator{Engine: e}.Consolidate(store)
+	if err != nil || n != 1 {
+		t.Fatalf("annotate n=%d err=%v", n, err)
+	}
+	a := store.annotations[0]
+	if a.RequestID != "resp_v2" || a.Cost == nil || *a.Cost != 0.5 {
+		t.Fatalf("annotation: %+v", a)
+	}
+}
+
 func TestClaudeConsolidator(t *testing.T) {
 	e := testHome(t)
 	dir := filepath.Join(e.Home, ".claude/projects/p1")

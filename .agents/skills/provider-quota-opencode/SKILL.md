@@ -37,11 +37,23 @@ This skill covers OpenCode Go Zen subscription quotas and OpenCode free-tier mod
 OpenCode provides free zero-cost models (such as `big-pickle`, `x-preview-f-free`, `muse-spark-1.2-contributor-free`, and `ox-alpha-free`) recorded directly in the local OpenCode SQLite database.
 
 * **Database Path**: `~/.local/share/opencode/opencode.db`
-* **SQLite Table**: `message` where `json_extract(data, '$.role') = 'assistant'`
+* **SQLite Table**: whichever generation the db has — probe `sqlite_master` for
+  `session_message` first, fall back to `message`:
+  * **live**: `session_message` where `type = 'assistant'` (opencode migrated
+    `session`/`message` → `session_v2`/`session_message` and **froze the v1
+    tables at the cutover** — a `message`-only query reports usage as it stood
+    on the day opencode upgraded and nothing since)
+  * **legacy** (un-migrated installs): `message` where
+    `json_extract(data, '$.role') = 'assistant'`
+  * v2 is a strict **superset** of v1 (same ids, higher running totals), so
+    read one generation only — never the union, or totals double-count
+  * v2 also moved the model block: `data.$.model.providerID` / `data.$.model.id`
+    (v1 kept them top-level as `data.$.providerID` / `data.$.modelID`), and it
+    dropped `data.$.tokens.total`
 * **Complete Token Sum Expression**:
   ```sql
   COALESCE(
-    json_extract(data, '$.tokens.total'),
+    json_extract(data, '$.tokens.total'),        -- legacy rows only
     COALESCE(json_extract(data, '$.tokens.input'), 0) +
     COALESCE(json_extract(data, '$.tokens.output'), 0) +
     COALESCE(json_extract(data, '$.tokens.reasoning'), 0) +

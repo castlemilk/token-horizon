@@ -27,6 +27,8 @@ This installs the latest release to `/Applications`, enables crash auto-recovery
 
 **2. Glance at your notch** (menu bar if you have no notch): the CPU/MEM rings are live. Hover to open the panel and flip through the tabs — **TOKENS** (usage, costs, plan limits), **ACTIVITY** (Mac performance), **MLX** (local models), **LEADERBOARD**, **SHELLS**, **⚙ SETTINGS**. The ⤢ button pops everything out into a resizable dashboard window.
 
+Choose your shortcuts in **More → Customize tabs…** or **Settings → Navigation**. Pin any tab, reorder pins with the arrows, or reset to the defaults. Changes save automatically and apply to the notch, menu-bar popover and dashboard. Other tabs remain in **More**; right-click a pinned tab to unpin it.
+
 **3. Confirm it's tracking you:**
 
 ```bash
@@ -55,6 +57,12 @@ Tabs: **ACTIVITY** (CPU, memory, disk I/O, and network sparklines; top processes
 TH Engine stays stopped until you press **Serve** in the ENGINE tab or call `POST /engine/serve` with `backend: "thengine"`. It exits and releases model memory after five minutes without inference. Active and queued requests, including streaming responses, keep it running; status and metrics polling do not. It stays stopped after an idle exit until explicitly activated again.
 
 Select **Keep model loaded until stopped** before serving to keep it available for that run, or pass `keep_loaded: true` to the serve API. Direct CLI launches use the same default (`th-engine serve --model … --idle-timeout-secs 300`); `--idle-timeout-secs 0` opts into staying loaded. Engines launched outside Token Horizon remain under their launcher's control.
+
+### Accounts and terminals
+
+Open **Terminals → Accounts & terminals** to create or import separate Claude Code and Codex profiles, choose a project, and open the selected account in a new Ghostty window. **Manage** provides sign-in/reconnect, a profile shell, a default for new sessions, editing, hiding, and sign-out. The account list shows the authenticated email, quota windows, and any mismatch with the expected email. **Connect Ghostty** lists existing terminals; **Focus** switches directly to one. Ghostty 1.3 or later, its `macos-applescript` setting, and macOS Automation permission are required for terminal control.
+
+Each new window receives its profile's `CLAUDE_CONFIG_DIR` or `CODEX_HOME`; the standard Claude home clears `CLAUDE_CONFIG_DIR` when quota discovery selects its unscoped Keychain login. Changing the selected default leaves running sessions on their existing accounts. Tokens stay in the CLI's own credential store; Token Horizon saves profile names, paths, defaults, and terminal labels. New Codex profiles use a private `auth.json` with file-based storage. Imported profiles keep their existing storage settings; profiles using only the system credential store show an explicit quota status. Quota tracking groups duplicate Codex sign-ins by ChatGPT workspace ID while keeping their profile folders available for launching.
 
 ### Desktop widget
 
@@ -115,7 +123,14 @@ Regression coverage is in `clients/macos/Tests/TokenHorizonPerfTests/SystemHisto
 ```bash
 cd ~/projects/token-horizon
 ./scripts/make-app.sh          # swift build -c release + TokenHorizon.app bundle + relaunch
+./scripts/install-cli.sh       # install token-horizon and th in ~/.local/bin
 ```
+
+The standalone CLI works from any shell or script: `token-horizon --help`,
+`token-horizon health`, `token-horizon limits`, or the short `th` command.
+It uses the running app's local API and does not start another app instance.
+The installer copies the client to `~/.config/token-horizon/shell` and leaves
+shell startup files unchanged; keep `~/.local/bin` on your `PATH`.
 
 `make-app.sh` launches the bundled executable directly so
 `TOKEN_HORIZON_OLLAMA_UPSTREAM` and `TOKEN_HORIZON_OLLAMA_PROXY_PORT` are
@@ -182,6 +197,8 @@ Web identity and reusable components follow the [Quiet precision web guide](DESI
 ### Cloudflare Edge Webhosting & R2 Backend (Ultra-Fast)
 
 Invite friends from **Workspace → Invite friends**, the leaderboard, or Teams. Create a named team and copy its invite link. Friends choose **Sign in & join** and automatically join after Google sign-in; they can join before publishing a profile. Membership follows the account and applies to its owned profiles on future syncs. Links last 30 days, can be retired by the owner, and never expose private prompts or device traces. Sharing audiences in Settings remain separate from team membership.
+
+Accounts can belong to several teams, including teams they own. Joining keeps existing memberships. In **Your teams**, choose a team to manage its invitations and icon, create another team, or leave a team you joined; owners stay in their owned teams. Every owned published profile contributes its full published usage (including historical totals) to each joined team. Global user rankings count each profile once; combined team totals count contributions per membership. Team-shared reports are readable by verified members of any team shared with the report owner.
 
 Deploy a private or team leaderboard edge API and web dashboard in seconds:
 
@@ -272,9 +289,9 @@ th share svg > usage-card.svg # export SVG share card
 
 | Provider | Token usage source | Limits/quotas | Requirements |
 |---|---|---|---|
-| **opencode** | `~/.local/share/opencode/opencode.db` (sqlite ro; sessions + per-model via `message.data` JSON) | — | opencode installed/used |
+| **opencode** | `~/.local/share/opencode/opencode.db` (sqlite ro; live generation `session_v2` + `session_message` — `session`/`message` are frozen at opencode's migration — sessions + per-model via `session_message.data` JSON) | — | opencode installed/used |
 | **claude** | `~/.claude/projects/**/*.jsonl` (+ `transcripts/`), additive `message.usage` + `costUSD` | `api.anthropic.com/api/oauth/usage` (`anthropic-beta: oauth-2025-04-20`); windows `five_hour`/`seven_day`/`seven_day_oauth_apps` + `limits[] weekly_scoped` | Claude Code OAuth login: `~/.claude/.credentials.json` (`claudeAiOauth.accessToken`) or macOS Keychain `Claude Code-credentials` |
-| **codex** | `~/.codex/sessions/` + `archived_sessions/` JSONL — see watermark protocol below | `rate_limits.primary` embedded in the same files (`used_percent`, `window_minutes`, `resets_at`) — offline, no auth | Codex CLI/Desktop used |
+| **codex** | `sessions/` + `archived_sessions/` across `~/.codex*`, `CODEX_HOME`, and managed profiles — see watermark protocol below | Per-account live ChatGPT rolling windows; session-file `rate_limits.primary` is the offline fallback | ChatGPT OAuth in each profile's `auth.json`, or opencode's OpenAI OAuth entry; keyring-only profiles show a quota status |
 | **kimi** | `~/.kimi*/sessions/**/wire.jsonl` (`StatusUpdate.payload.token_usage`; snake `input_other` + camel `inputOther` aliases) | `api.kimi.com/coding/v1/usages` (Bearer); `usage.limit`+`used`, `limits[].window.timeUnit` | OAuth creds `~/.kimi-code/credentials/kimi-code.json` (or `~/.kimi/credentials/`, `KIMI_HOME`/`KIMI_CODE_HOME` override); auto token refresh via `auth.kimi.com` (client_id `17e5f671-d194-4dfb-9706-5516cb48c098`) |
 | **glm** | `~/.zcode/projects/**/*.jsonl` (generic scanner) | `api.z.ai/api/monitor/usage/quota/limit` → `data.limits[].percentage` | `zai-coding-plan` (or `zai`) API key in opencode `auth.json` |
 | **minimax** | — (no local files; API-only) | `minimax.io/v1/token_plan/remains` → `model_remains[0]` interval/weekly remaining % | `minimax-coding-plan` key in opencode `auth.json` (or `MINIMAX_TOKEN_PLAN_*` env) |
@@ -282,6 +299,8 @@ th share svg > usage-card.svg # export SVG share card
 | **alibaba** | — | Bailian OneConsole rolling-window API — see protocol below | **Browser cookie** for `bailian-singapore-cs.alibabacloud.com` (⚙ SETTINGS tab, or `settings.json alibabaCookie`, or `ALIBABA_TOKEN_PLAN_COOKIE`); `sec_token` auto-scraped from ModelStudio dashboard |
 | **gemini** | `~/.gemini/` (stubbed) | `cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota` | Gemini CLI login (`~/.gemini/oauth_creds.json`) — activates automatically |
 | **qwen / grok / deepseek** | generic additive scanner on `~/.qwen/projects`, `~/.grok/sessions`, `~/.dsh/sessions` | — | auto-activate when dirs appear |
+
+Claude profiles (`~/.claude`, `~/.claude-1`, `~/.claude-2`, or `CLAUDE_CONFIG_DIR`) keep separate credentials and quota identities. Quotas are labelled from the authenticated account, and Settings shows when a profile needs to sign in again. Reconnect a missing account in its original directory with `CLAUDE_CONFIG_DIR="$HOME/.claude-2" claude auth login` (substitute that account's directory). Existing usage history remains attached to its profile directory.
 
 ## Protocols & gotchas (learned the hard way)
 

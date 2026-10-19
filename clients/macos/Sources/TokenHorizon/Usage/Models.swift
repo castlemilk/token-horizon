@@ -17,6 +17,8 @@ struct UsageSnapshot: Codable {
     var models: [ModelUsage] = []
     var limits: [ProviderLimit] = []
     var claudeAccounts: [ClaudeAccount] = []
+    /// Optional so snapshots written before multi-account Codex still hydrate.
+    var codexAccounts: [CodexAccount]?
     var recentSessions: [SessionSummary] = []
     var sources: [String] = []
     var updatedAt: Date = .distantPast
@@ -36,7 +38,7 @@ struct UsageSnapshot: Codable {
 
     enum CodingKeys: String, CodingKey {
         case tokensToday, tokensAllTime, costToday, costAllTime, perTool, models
-        case limits, claudeAccounts, recentSessions, sources, updatedAt, projects
+        case limits, claudeAccounts, codexAccounts, recentSessions, sources, updatedAt, projects
         case inputTokensToday, outputTokensToday, inputTokensAllTime, outputTokensAllTime
         case requestsToday, requestsAllTime, modelDaily, parserHealth
     }
@@ -51,6 +53,7 @@ struct UsageSnapshot: Codable {
         models = c.thDecode(.models, or: [])
         limits = c.thDecode(.limits, or: [])
         claudeAccounts = c.thDecode(.claudeAccounts, or: [])
+        codexAccounts = try? c.decodeIfPresent([CodexAccount].self, forKey: .codexAccounts)
         recentSessions = c.thDecode(.recentSessions, or: [])
         sources = c.thDecode(.sources, or: [])
         updatedAt = c.thDecode(.updatedAt, or: .distantPast)
@@ -496,6 +499,8 @@ struct ClaudeAccount: Codable, Identifiable {
     var costToday: Double = 0
     var costAllTime: Double = 0
     var limits: [ProviderLimit] = []
+    /// A missing sign-in stays visible instead of borrowing another profile.
+    var quotaStatus: String?
     var updatedAt: Date = Date()
 
     var tokensTodayText: String { UsageSnapshot.tokens(tokensToday) }

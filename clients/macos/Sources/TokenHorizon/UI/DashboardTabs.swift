@@ -5,6 +5,7 @@ struct DashboardTabs: View {
     var compact: Bool = true
     @State private var tab: DashboardTab = .tokens
     @State private var settingsSection: AppSettingsSection = .general
+    @State private var navigationPreferences = SettingsStore.shared.navigationPreferences
     @State private var profileSaveNotice: String?
     @State private var connectionSaveNotice: String?
     @ObservedObject private var syncController = LeaderboardSyncController.shared
@@ -93,6 +94,7 @@ struct DashboardTabs: View {
             recomputeFilteredRows(force: true)
         }
         .onAppear {
+            navigationPreferences = SettingsStore.shared.navigationPreferences
             if compact {
                 tab = model.compactDashboardTab
                 settingsSection = model.compactSettingsSection
@@ -116,6 +118,15 @@ struct DashboardTabs: View {
         }
         .onChange(of: settingsSection) { section in
             if compact { model.compactSettingsSection = section }
+        }
+        .onChange(of: navigationPreferences) { preferences in
+            if SettingsStore.shared.navigationPreferences != preferences {
+                SettingsStore.shared.navigationPreferences = preferences
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .tokenHorizonNavigationDidChange)
+            .receive(on: RunLoop.main)) { _ in
+            navigationPreferences = SettingsStore.shared.navigationPreferences
         }
         .sheet(item: $selectedMLXProcess) { process in
             MLXRunnerDetailView(process: process)
@@ -221,14 +232,44 @@ struct DashboardTabs: View {
 
     private var tabBar: some View {
         HStack(spacing: 6) {
-            ForEach(DashboardTab.quickTabs) { destination in
-                tabButton(destination)
+            if !navigationPreferences.pinnedTabs.isEmpty {
+                ScrollViewReader { proxy in
+                    ScrollView(.horizontal, showsIndicators: true) {
+                        HStack(spacing: 6) {
+                            ForEach(navigationPreferences.pinnedTabs) { destination in
+                                tabButton(destination).id(destination)
+                            }
+                        }
+                    }
+                    // Leave room for a non-overlay scrollbar when macOS is
+                    // configured to always show scroll bars.
+                    .frame(height: 48)
+                    .onAppear { proxy.scrollTo(tab, anchor: .center) }
+                    .onChange(of: tab) { destination in
+                        proxy.scrollTo(destination, anchor: .center)
+                    }
+                    .onChange(of: navigationPreferences.pinnedTabs) { _ in
+                        proxy.scrollTo(tab, anchor: .center)
+                    }
+                }
+                .accessibilityLabel("Pinned tabs")
             }
             Menu {
-                ForEach(DashboardTab.allCases.filter { !DashboardTab.quickTabs.contains($0) && $0 != .settings }) { destination in
+                ForEach(navigationPreferences.unpinnedTabs.filter { $0 != .settings }) { destination in
                     Button { tab = destination } label: {
                         Label(destination.title, systemImage: destination.icon)
                     }
+                }
+                Divider()
+                Menu("Pin tabs") {
+                    ForEach(DashboardTab.allCases) { destination in
+                        Toggle(destination.title, isOn: Binding(
+                            get: { navigationPreferences.isPinned(destination) },
+                            set: { navigationPreferences.setPinned(destination, pinned: $0) }))
+                    }
+                }
+                Button { openSettings(.navigation) } label: {
+                    Label("Customize tabs…", systemImage: "pin")
                 }
                 Divider()
                 Button { openSettings() } label: { Label("Settings…", systemImage: "gearshape") }
@@ -238,13 +279,13 @@ struct DashboardTabs: View {
                 Button("Quit Token Horizon") { NSApp.terminate(nil) }
                     .keyboardShortcut("q", modifiers: .command)
             } label: {
-                Label(DashboardTab.quickTabs.contains(tab) ? "More" : tab.title, systemImage: "ellipsis.circle")
+                Label(navigationPreferences.isPinned(tab) ? "More" : tab.title, systemImage: "ellipsis.circle")
                     .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(DashboardTab.quickTabs.contains(tab) ? Color.white.opacity(0.75) : Color.cyan)
+                    .foregroundStyle(navigationPreferences.isPinned(tab) ? Color.white.opacity(0.75) : Color.cyan)
             }
             .menuStyle(.borderlessButton)
             .fixedSize()
-            .help("Model inventory, traces, shells, team aggregates, and leaderboard")
+            .help("All tabs and navigation settings")
             Spacer(minLength: 4)
             if compact {
                 Button {
@@ -274,6 +315,14 @@ struct DashboardTabs: View {
         }
         .buttonStyle(.plain)
         .accessibilityAddTraits(tab == destination ? .isSelected : [])
+        .contextMenu {
+            Button { navigationPreferences.setPinned(destination, pinned: false) } label: {
+                Label("Unpin \(destination.title)", systemImage: "pin.slash")
+            }
+            Button { openSettings(.navigation) } label: {
+                Label("Customize tabs…", systemImage: "pin")
+            }
+        }
     }
 
     private var webShortcuts: some View {
@@ -1590,7 +1639,9 @@ struct DashboardTabs: View {
     }
 
     private var shellsTab: some View {
-        VStack(alignment: .leading, spacing: 5) {
+        VStack(alignment: .leading, spacing: 18) {
+            AccountsTerminalsView()
+            Divider().overlay(Color.white.opacity(0.1))
             sectionLabel("RECENT SHELL COMMANDS")
             if model.shellEvents.isEmpty { MonospacedText(text: "no events yet — run a command in zsh", color: .secondary, size: 10) }
             ForEach(Array(model.shellEvents.prefix(9).enumerated()), id: \.element.id) { _, ev in
@@ -1622,10 +1673,20 @@ struct DashboardTabs: View {
                 settingsCard("History & cache", icon: "externaldrive") { cacheSettings }
                 settingsCard("Updates", icon: "arrow.triangle.2.circlepath") { updateSettings }
                 settingsCard("App build", icon: "info.circle") { buildIdentity }
+            case .navigation:
+                settingsCard("Pinned tabs", icon: "pin") {
+                    NavigationSettingsView(preferences: $navigationPreferences)
+                }
             case .sharing:
                 settingsCard("Profile & privacy", icon: "person.crop.circle") { leaderboardProfileSettings }
                 settingsCard("Sync connection", icon: "arrow.triangle.2.circlepath") { leaderboardSyncSettings }
             case .providers:
+                settingsCard("Claude & Codex accounts", icon: "person.crop.circle.badge.checkmark") {
+                    Text("Manage separate sign-ins and open account-specific Ghostty windows.")
+                        .font(.system(size: 12)).foregroundStyle(.secondary)
+                    Button("Manage accounts & terminals") { tab = .shells }
+                        .controlSize(.small)
+                }
                 settingsCard("Provider credentials", icon: "key") {
                     DisclosureGroup("Alibaba token plan cookie") { cookieSettings.padding(.top, 10) }
                     Divider().overlay(Color.white.opacity(0.08))
@@ -2100,6 +2161,12 @@ struct DashboardTabs: View {
                                     .foregroundStyle(.secondary)
                                     .lineLimit(2)
                                     .fixedSize(horizontal: false, vertical: true)
+                                if let status = acct.quotaStatus {
+                                    Text(status)
+                                        .font(.system(size: 11))
+                                        .foregroundStyle(.orange)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                }
                                 if !acct.organizationName.isEmpty && acct.organizationName != acct.email {
                                     Text("· \(acct.organizationName)")
                                         .font(.system(size: 11))
@@ -2733,7 +2800,11 @@ struct DashboardTabs: View {
         return label
     }
 
-    static func providerNameDisplay(_ p: String) -> String {        let lower = p.lowercased()
+    static func providerNameDisplay(_ p: String) -> String {
+        let lower = p.lowercased()
+        if lower.hasPrefix("codex (") {
+            return "Codex" + String(p.dropFirst(5))
+        }
         if lower.hasPrefix("claude") {
             if let start = p.firstIndex(of: "("), let end = p.firstIndex(of: ")") {
                 let tag = String(p[p.index(after: start)..<end])
@@ -2817,7 +2888,7 @@ struct DashboardTabs: View {
     /// Prefer live `planLimits` codex rows over the file-derived `usageLimits`
     /// ones when both exist. Extracted for testability; used by tokensTab.
     static func assembleLimitRows(usageLimits: [ProviderLimit], planLimits: [ProviderLimit], kimiLimits: [ProviderLimit]) -> [ProviderLimit] {
-        let base = planLimits.contains(where: { $0.provider == "codex" })
+        let base = planLimits.contains(where: { $0.provider == "codex" || $0.provider.hasPrefix("codex (") })
             ? usageLimits.filter { $0.provider != "codex" }
             : usageLimits
         return base + kimiLimits + planLimits
@@ -2915,7 +2986,7 @@ struct DashboardTabs: View {
                 sub = extra.map { $0.isWeekly ? "opencode-go zen" : "extra: \($0.label)" } ?? "opencode-go zen"
             } else if provider == "glm" {
                 sub = extra != nil ? "search: \(extra!.detail)" : "zai-coding-plan"
-            } else if provider == "codex" {
+            } else if provider == "codex" || provider.hasPrefix("codex (") {
                 sub = "openai oauth"
             } else if provider == "alibaba" {
                 sub = "bailian token plan"

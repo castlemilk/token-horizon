@@ -80,10 +80,21 @@ async function keys(env, prefix) {
   } while (cursor);
   return found;
 }
-async function membership(env, key) {
-  const result = await record(env, `${PREFIX}accounts/${key}.json`);
-  return validId(result?.value?.teamId) ? result : null;
+function membershipIds(current) {
+  const value = current?.value;
+  return [...new Set((Array.isArray(value?.teamIds) ? value.teamIds : [value?.teamId]).filter(validId))];
 }
+async function membership(env, key) {
+  return await record(env, `${PREFIX}accounts/${key}.json`);
+}
+
+// Public profile membership is always resolved from account records. The
+// singular fields remain the first team for clients predating multi-team support.
+export function entryTeams(entry) {
+  const teams = Array.isArray(entry?.teams) ? entry.teams : entry?.teamId ? [{ id: entry.teamId, name: entry.team }] : [];
+  return [...new Map(teams.filter(team => validId(team?.id)).map(team => [team.id, team])).values()];
+}
+export function entryInTeam(entry, id) { return entryTeams(entry).some(team => team.id === id); }
 async function teamRecord(env, id) {
   if (!validId(id)) return null;
   const result = await record(env, `${PREFIX}teams/${id}.json`);
@@ -95,12 +106,12 @@ async function cachedTeamRecord(env, id) {
 async function memberCount(env, teamId) {
   const memberKeys = await keys(env, `${PREFIX}members/${teamId}/`);
   // The account mapping is authoritative. This also excludes stale secondary
-  // records when two tabs switch the same account in quick succession.
+  // records when membership changes race in separate tabs.
   const active = await mapConcurrent(memberKeys, async key => {
     const member = await record(env, key);
     const account = member?.value?.account;
     if (typeof account !== 'string' || !/^[a-f0-9]{64}$/.test(account)) return false;
-    return (await membership(env, account))?.value?.teamId === teamId;
+    return membershipIds(await membership(env, account)).includes(teamId);
   });
   return active.filter(Boolean).length;
 }
@@ -173,11 +184,13 @@ function uploadedLogo(image) {
   if (!validatedRasterDataUri(bytes, match[1])) throw new TeamError(400, 'invalid_logo', 'Choose a valid PNG or JPEG no larger than 2048 pixels per side.');
   return { bytes, contentType: match[1] };
 }
-async function accountTeam(env, key) {
+async function accountTeam(env, key, selectedId, strict = true) {
   const current = await membership(env, key);
-  const team = current ? await teamRecord(env, current.value.teamId) : null;
-  if (!team) return { current, team: null };
-  return { current, team };
+  const teams = (await mapConcurrent(membershipIds(current), id => teamRecord(env, id))).filter(Boolean);
+  if (strict && selectedId && !teams.some(team => team.id === selectedId)) {
+    throw new TeamError(404, 'team_not_found', 'You are not a member of this team. Refresh your teams and try again.');
+  }
+  return { current, teams, team: teams.find(team => team.id === selectedId) || teams[0] || null };
 }
 async function invitesFor(env, team) {
   const found = await keys(env, `${PREFIX}invites/${team.id}/`);
@@ -187,17 +200,21 @@ async function invitesFor(env, team) {
     createdAt: row.createdAt, expiresAt: row.expiresAt, revoked: Boolean(row.revoked)
   }));
 }
-async function summary(env, key, team) {
-  if (!team) return { ok: true, team: null, invites: [] };
-  // Recover if the account commit succeeded but its secondary index write
-  // failed. A retry must not leave a real member missing from the team count.
-  const memberKey = `${PREFIX}members/${team.id}/${key}.json`;
-  if (!(await record(env, memberKey))) { await put(env, memberKey, { account: key }); invalidateTeams(env); }
-  const owner = team.owner === key;
+async function summary(env, key, selected) {
+  const { teams } = await accountTeam(env, key);
+  // Repair secondary indexes after partial storage failures. Account records
+  // remain authoritative for counts and access, including after leaving.
+  for (const team of teams) {
+    const memberKey = `${PREFIX}members/${team.id}/${key}.json`;
+    if (!(await record(env, memberKey))) { await put(env, memberKey, { account: key }); invalidateTeams(env); }
+  }
+  const rows = await mapConcurrent(teams, async team => ({
+    ...(await publicTeam(env, team)), role: team.owner === key ? 'owner' : 'member', createdAt: team.createdAt
+  }));
+  const team = rows.find(team => team.id === selected?.id) || rows[0] || null;
   return {
-    ok: true,
-    team: { ...(await publicTeam(env, team)), role: owner ? 'owner' : 'member', createdAt: team.createdAt },
-    invites: owner ? await invitesFor(env, team) : []
+    ok: true, teams: rows, team,
+    invites: team?.role === 'owner' ? await invitesFor(env, teams.find(row => row.id === team.id)) : []
   };
 }
 async function lookupInvite(env, token) {
@@ -213,19 +230,25 @@ async function lookupInvite(env, token) {
   if (!team) throw new TeamError(404, 'invite_not_found', 'This team could not be found.');
   return { invite, team, digest };
 }
-async function setMembership(env, key, teamId, current) {
-  const result = await put(env, `${PREFIX}accounts/${key}.json`, { teamId, joinedAt: Date.now() },
-    current?.etag ? { etagMatches: current.etag } : { etagDoesNotMatch: '*' });
-  if (result === null) throw new TeamError(409, 'membership_changed', 'Your team changed in another tab. Refresh and try again.');
-  invalidateTeams(env);
-  await put(env, `${PREFIX}members/${teamId}/${key}.json`, { account: key });
-  // This is only an index cleanup; authoritative membership remains per account.
-  if (current?.value?.teamId && current.value.teamId !== teamId && env.LEADERBOARD_BUCKET.delete) {
-    await env.LEADERBOARD_BUCKET.delete(`${PREFIX}members/${current.value.teamId}/${key}.json`);
+async function changeMembership(env, key, teamId, join) {
+  // Retry the read/merge/CAS so simultaneous joins keep both teams. An empty
+  // v2 record is a tombstone: never fall back to a removed legacy membership.
+  for (let attempt = 0; attempt < 8; attempt++) {
+    const current = await membership(env, key);
+    const ids = membershipIds(current);
+    const next = join ? [...new Set([...ids, teamId])] : ids.filter(id => id !== teamId);
+    const result = await put(env, `${PREFIX}accounts/${key}.json`, {
+      version: 2, teamIds: next, teamId: next[0] || '', updatedAt: Date.now()
+    }, current?.etag ? { etagMatches: current.etag } : { etagDoesNotMatch: '*' });
+    if (result === null) continue;
+    invalidateTeams(env);
+    if (join) await put(env, `${PREFIX}members/${teamId}/${key}.json`, { account: key });
+    // Retain stale indexes after leave: a concurrent rejoin may already have
+    // written one. Counts verify the account record and never trust the index.
+    invalidateTeams(env);
+    return;
   }
-  // An anonymous read may have landed between the authoritative account
-  // commit and secondary-index write; retire that incomplete roster result.
-  invalidateTeams(env);
+  throw new TeamError(409, 'membership_changed', 'Your teams changed in another tab. Refresh and try again.');
 }
 
 export async function handleTeamRequest(request, env, { parseGoogleAuth, jsonResponse, getTeamStats }) {
@@ -275,7 +298,8 @@ export async function handleTeamRequest(request, env, { parseGoogleAuth, jsonRes
     // looking up membership — it is keyed by the verified subject, not the label.
     await linkVerifiedOwners(env, auth);
     const key = await accountKey(identityOwnerId(auth));
-    const { current, team } = await accountTeam(env, key);
+    const selectedId = body.teamId || new URL(request.url).searchParams.get('teamId');
+    const { teams, team } = await accountTeam(env, key, selectedId, pathname !== '/api/team/logo');
     if (request.method === 'GET' && pathname === '/api/account/team') {
       return jsonResponse(await summary(env, key, team), 200, NO_STORE);
     }
@@ -315,14 +339,23 @@ export async function handleTeamRequest(request, env, { parseGoogleAuth, jsonRes
       return jsonResponse(await summary(env, key, next), 200, NO_STORE);
     }
     if (request.method === 'POST' && pathname === '/api/team/invites') {
-      let target = team;
+      let target = body.create === true ? null : team;
+      if (teams.length > 1 && !body.teamId && body.create !== true) throw new TeamError(400, 'team_required', 'Choose the team whose invite links you want to manage.');
       if (target && target.owner !== key) throw new TeamError(403, 'team_owner_required', 'Only your team owner can create invite links.');
       if (!target) {
         const name = typeof body.name === 'string' ? body.name.trim() : '';
         if (!name || name.length > 64 || /[\u0000-\u001f\u007f]/.test(name)) throw new TeamError(400, 'invalid_team_name', 'Give your team a name between 1 and 64 characters.');
-        target = { id: randomHex(16), name, owner: key, createdAt: Date.now() };
-        await put(env, `${PREFIX}teams/${target.id}.json`, target);
-        await setMembership(env, key, target.id, current);
+        if (body.creationId !== undefined && !validId(body.creationId)) throw new TeamError(400, 'invalid_request', 'Refresh the team form and try again.');
+        const id = body.creationId ? (await hash(`${key}:${body.creationId}`)).slice(0, 32) : randomHex(16);
+        target = await teamRecord(env, id);
+        if (target && target.owner !== key) throw new TeamError(409, 'team_changed', 'Refresh the team form and try again.');
+        if (!target) {
+          target = { id, name, owner: key, createdAt: Date.now() };
+          await put(env, `${PREFIX}teams/${target.id}.json`, target, { etagDoesNotMatch: '*' });
+          target = await teamRecord(env, id);
+          if (!target || target.owner !== key) throw new TeamError(409, 'team_changed', 'Refresh the team form and try again.');
+        }
+        await changeMembership(env, key, target.id, true);
       }
       const existing = await invitesFor(env, target);
       const active = existing.find(invite => !invite.revoked && invite.expiresAt > Date.now());
@@ -339,6 +372,7 @@ export async function handleTeamRequest(request, env, { parseGoogleAuth, jsonRes
       return jsonResponse(await summary(env, key, target), 200, NO_STORE);
     }
     if (request.method === 'POST' && pathname === '/api/team/invites/revoke') {
+      if (teams.length > 1 && !body.teamId) throw new TeamError(400, 'team_required', 'Choose the team whose invite link you want to retire.');
       if (!team || team.owner !== key) throw new TeamError(403, 'team_owner_required', 'Only your team owner can retire invite links.');
       if (!validToken(body.token)) throw new TeamError(404, 'invite_not_found', 'This invite could not be found.');
       const digest = await hash(body.token), inviteKey = `${PREFIX}invites/${team.id}/${digest}.json`;
@@ -349,11 +383,15 @@ export async function handleTeamRequest(request, env, { parseGoogleAuth, jsonRes
     }
     if (request.method === 'POST' && pathname === '/api/team/join') {
       const target = await lookupInvite(env, body.token);
-      if (team?.id === target.team.id) return jsonResponse({ ...(await summary(env, key, team)), alreadyMember: true }, 200, NO_STORE);
-      if (team?.owner === key) throw new TeamError(409, 'team_owner', 'You own your current team. Keep that team or join with another account.');
-      if (team && body.confirmSwitch !== true) throw new TeamError(409, 'team_switch_required', `Joining ${target.team.name} will move you from ${team.name}.`);
-      await setMembership(env, key, target.team.id, current);
+      if (teams.some(team => team.id === target.team.id)) return jsonResponse({ ...(await summary(env, key, target.team)), alreadyMember: true }, 200, NO_STORE);
+      await changeMembership(env, key, target.team.id, true);
       return jsonResponse({ ...(await summary(env, key, target.team)), alreadyMember: false }, 200, NO_STORE);
+    }
+    if (request.method === 'POST' && pathname === '/api/team/leave') {
+      if (!validId(body.teamId) || !team || team.id !== body.teamId) throw new TeamError(400, 'team_required', 'Choose the team you want to leave.');
+      if (team.owner === key) throw new TeamError(409, 'team_owner', 'Team owners must stay in their team. You can still create or join other teams.');
+      await changeMembership(env, key, team.id, false);
+      return jsonResponse(await summary(env, key, null), 200, NO_STORE);
     }
     throw new TeamError(404, 'not_found', 'Team endpoint not found.');
   } catch (error) {
@@ -423,13 +461,14 @@ export async function applyTeamMemberships(env, entries, { fresh = false } = {})
       const key = await accountKey(owner);
       const current = await membership(env, key);
       if (!current) return null;
-      const id = current.value.teamId;
-      if (!teams.has(id)) teams.set(id, fresh ? teamRecord(env, id) : cachedTeamRecord(env, id));
-      return await teams.get(id);
+      return (await mapConcurrent(membershipIds(current), async id => {
+        if (!teams.has(id)) teams.set(id, fresh ? teamRecord(env, id) : cachedTeamRecord(env, id));
+        return await teams.get(id);
+      })).filter(Boolean);
     };
     try {
       const team = fresh ? await load() : await cachedPublicTeam(env, owner, load);
-      if (team) byOwner.set(owner, team);
+      byOwner.set(owner, team);
     } catch (error) {
       // Team enrichment must not take published usage offline. Ownership and
       // writes always use fresh, fail-closed reads; public rows keep totals but
@@ -440,11 +479,14 @@ export async function applyTeamMemberships(env, entries, { fresh = false } = {})
   });
   for (const entry of entries) {
     const owner = membershipOwnerId(entry);
-    const team = owner && entry.claimed === true ? byOwner.get(owner) : null;
-    if (team) { entry.team = team.name; entry.teamId = team.id; }
-    else {
-      if (entry.teamId && owner && unavailable.has(owner)) entry.team = '';
-      delete entry.teamId; // Never trust an unconfirmed canonical team ID.
+    const memberships = owner && entry.claimed === true ? byOwner.get(owner) || [] : [];
+    if (memberships.length) {
+      entry.teams = memberships.map(team => ({ id: team.id, name: team.name }));
+      entry.team = memberships[0].name; entry.teamId = memberships[0].id;
+    } else {
+      if (entry.teamId || entry.teams?.length || owner && (unavailable.has(owner) || byOwner.get(owner)?.length === 0)) entry.team = '';
+      entry.teams = [];
+      delete entry.teamId; // Never trust client-supplied canonical membership.
     }
   }
   return entries;

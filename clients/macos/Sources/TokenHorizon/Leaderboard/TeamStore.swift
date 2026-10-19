@@ -168,11 +168,24 @@ final class TeamStore: ObservableObject {
     private var etag: String?
     private var inFlight = false
     private var pendingForcedRefresh = false
+    private let session: URLSession
+    private let localEntries: () -> [LeaderboardEntry]
+    private let cloudBaseURL: () -> String?
+    private let now: () -> Date
 
-    private init() {
+    /// Defaults use the app's shared sources; injection keeps refresh tests
+    /// independent of the user's leaderboard, preferences and cloud account.
+    init(session: URLSession = .shared,
+         localEntries: @escaping () -> [LeaderboardEntry] = { LeaderboardStore.shared.allEntries() },
+         cloudBaseURL: @escaping () -> String? = { LeaderboardStore.shared.cloudBaseURL() },
+         now: @escaping () -> Date = Date.init) {
+        self.session = session
+        self.localEntries = localEntries
+        self.cloudBaseURL = cloudBaseURL
+        self.now = now
         // Seed from the entries on disk so the tab is never blank while the
         // first cloud fetch is still in flight.
-        let seeded = Self.localTeams(from: LeaderboardStore.shared.allEntries())
+        let seeded = Self.localTeams(from: localEntries())
         lock.lock()
         cachedTeams = seeded
         cachedSource = seeded.isEmpty ? .none : .local
@@ -185,9 +198,11 @@ final class TeamStore: ObservableObject {
         var source: TeamSource
         var lastFetchAt: Date?
         var lastError: String?
-        var stale: Bool {
+        var stale: Bool { isStale(at: Date()) }
+
+        func isStale(at now: Date) -> Bool {
             guard let lastFetchAt else { return true }
-            return Date().timeIntervalSince(lastFetchAt) > TeamStore.staleAfter
+            return now.timeIntervalSince(lastFetchAt) > TeamStore.staleAfter
         }
     }
 
@@ -197,7 +212,7 @@ final class TeamStore: ObservableObject {
         return Snapshot(teams: cachedTeams, source: cachedSource, lastFetchAt: cachedAt, lastError: cachedError)
     }
 
-    func isStale() -> Bool { snapshot().stale }
+    func isStale() -> Bool { snapshot().isStale(at: now()) }
 
     /// `GET /teams` payload for the loopback server. Cloud `GET /api/teams`
     /// when reachable, otherwise the same grouping computed from the entries
@@ -222,7 +237,7 @@ final class TeamStore: ObservableObject {
         lock.lock()
         let last = cachedAt
         let busy = inFlight
-        let due = force || last == nil || Date().timeIntervalSince(last!) > Self.staleAfter
+        let due = force || last == nil || now().timeIntervalSince(last!) > Self.staleAfter
         if force && busy { pendingForcedRefresh = true }
         if due && !busy { inFlight = true }
         let etag = self.etag
@@ -235,7 +250,7 @@ final class TeamStore: ObservableObject {
             return snap
         }
 
-        guard let url = Self.teamsURL(baseURL: LeaderboardStore.shared.cloudBaseURL() ?? "") else {
+        guard let url = Self.teamsURL(baseURL: cloudBaseURL() ?? "") else {
             // No cloud configured: the local grouping is the whole truth.
             finish(with: localSnapshot(), completion: completion)
             return snapshot()
@@ -243,7 +258,7 @@ final class TeamStore: ObservableObject {
 
         let req = Self.teamsRequest(url: url, force: force, source: source, etag: etag)
 
-        URLSession.shared.dataTask(with: req) { [weak self] data, resp, err in
+        session.dataTask(with: req) { [weak self] data, resp, err in
             guard let self else { return }
             if let err {
                 self.finish(with: self.fallbackSnapshot(error: err.localizedDescription), completion: completion)
@@ -274,7 +289,7 @@ final class TeamStore: ObservableObject {
                 return
             }
             let rows = (obj["teams"] as? [[String: Any]] ?? []).compactMap(LeaderboardTeam.init(dict:))
-            self.finish(with: .init(teams: rows, source: .cloud, lastFetchAt: Date(),
+            self.finish(with: .init(teams: rows, source: .cloud, lastFetchAt: self.now(),
                                     lastError: rows.isEmpty ? "No teams published yet." : nil),
                         etag: Self.headerValue(http, "etag"), replacingPayload: true,
                         completion: completion)
@@ -291,23 +306,23 @@ final class TeamStore: ObservableObject {
         let currentSource = cachedSource
         let fetchedAt = cachedAt
         lock.unlock()
-        if !rows.isEmpty, currentSource == .cloud, let fetchedAt, Date().timeIntervalSince(fetchedAt) < 3600 {
+        if !rows.isEmpty, currentSource == .cloud, let fetchedAt, now().timeIntervalSince(fetchedAt) < 3600 {
             return Snapshot(teams: rows, source: .cloud, lastFetchAt: fetchedAt, lastError: error)
         }
-        return Snapshot(teams: Self.localTeams(from: LeaderboardStore.shared.allEntries()),
-                        source: .local, lastFetchAt: Date(), lastError: error)
+        return Snapshot(teams: Self.localTeams(from: localEntries()),
+                        source: .local, lastFetchAt: now(), lastError: error)
     }
 
     private func localSnapshot() -> Snapshot {
-        Snapshot(teams: Self.localTeams(from: LeaderboardStore.shared.allEntries()),
-                 source: .local, lastFetchAt: Date(), lastError: nil)
+        Snapshot(teams: Self.localTeams(from: localEntries()),
+                 source: .local, lastFetchAt: now(), lastError: nil)
     }
 
     private func revalidatedSnapshot() -> Snapshot {
         lock.lock()
         let teams = cachedTeams
         lock.unlock()
-        return Snapshot(teams: teams, source: .cloud, lastFetchAt: Date(), lastError: nil)
+        return Snapshot(teams: teams, source: .cloud, lastFetchAt: now(), lastError: nil)
     }
 
     private func finish(with snap: Snapshot, etag: String? = nil, replacingPayload: Bool = false,
@@ -396,6 +411,16 @@ final class TeamStore: ObservableObject {
     /// label. Entries carrying a label that resolves to a known id join that
     /// id's row instead of splitting the team in two.
     static func localTeams(from entries: [LeaderboardEntry]) -> [LeaderboardTeam] {
+        // Contribute a profile once per confirmed team, retaining the original
+        // single profile in the global leaderboard and local usage totals.
+        let entries = entries.flatMap { entry -> [LeaderboardEntry] in
+            guard !entry.resolvedTeams.isEmpty else { return [entry] }
+            return entry.resolvedTeams.map { team in
+                var member = entry
+                member.teamId = team.id; member.team = team.name
+                return member
+            }
+        }
         var idByLabel: [String: String] = [:]
         for entry in entries where !entry.teamId.isEmpty && !entry.team.isEmpty {
             idByLabel[entry.team.lowercased()] = entry.teamId

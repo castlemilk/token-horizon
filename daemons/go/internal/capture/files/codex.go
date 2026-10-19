@@ -248,6 +248,65 @@ func fileExists(path string) bool {
 	return err == nil
 }
 
+// opencodeSchema: which storage generation an opencode.db carries.
+//
+// opencode migrated `session`/`message` → `session_v2`/`session_message`
+// (migration `20260622170816_reset_v2_session_state`) and froze the v1
+// tables at the cutover, so reading them reports usage as it stood on the
+// day opencode upgraded and nothing later. The projection also moved the
+// role off `data.$.role` onto the `type` column, and the model block off
+// `data.$.providerID`/`data.$.modelID` onto `data.$.model.providerID`/
+// `data.$.model.id`. v2 is a strict superset of v1 here (same ids, higher
+// running totals), so exactly one generation is read — never the union.
+type opencodeSchema struct {
+	sessionTable   string
+	messageTable   string
+	assistantWhere string
+	responseIDExpr string
+}
+
+var (
+	opencodeSchemaV1 = opencodeSchema{
+		sessionTable:   "session",
+		messageTable:   "message",
+		assistantWhere: `json_extract(data,'$.role')='assistant'`,
+		responseIDExpr: `COALESCE(json_extract(data,'$.responseID'),
+			json_extract(data,'$.responseId'),
+			json_extract(data,'$.provider.responseId'), '')`,
+	}
+	opencodeSchemaV2 = opencodeSchema{
+		sessionTable:   "session_v2",
+		messageTable:   "session_message",
+		assistantWhere: "type='assistant'",
+		// Today's v2 assistant rows carry only time/model/content/agent/
+		// finish/snapshot/tokens/cost/rawFinish/error — no upstream response
+		// id — so this resolves to '' and annotates nothing. The keys are
+		// still probed so the day opencode writes one again the annotation
+		// resumes without a code change.
+		responseIDExpr: opencodeSchemaV1.responseIDExpr,
+	}
+)
+
+// detectOpencodeSchema: one sqlite_master probe per open handle. The table
+// generations are detected independently so a half-migrated database still
+// reads whichever side exists.
+func detectOpencodeSchema(db *sql.DB) opencodeSchema {
+	table := func(name string) bool {
+		var n int
+		return db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?`, name).Scan(&n) == nil && n > 0
+	}
+	s := opencodeSchemaV1
+	if table(opencodeSchemaV2.sessionTable) {
+		s.sessionTable = opencodeSchemaV2.sessionTable
+	}
+	if table(opencodeSchemaV2.messageTable) {
+		s.messageTable = opencodeSchemaV2.messageTable
+		s.assistantWhere = opencodeSchemaV2.assistantWhere
+		s.responseIDExpr = opencodeSchemaV2.responseIDExpr
+	}
+	return s
+}
+
 // opencodePerBucket: UsageEngine.opencodePerBucket port — session-table
 // rows into 5-min buckets.
 func (e *Engine) opencodePerBucket() map[int64]*BucketEntry {
@@ -261,10 +320,11 @@ func (e *Engine) opencodePerBucket() map[int64]*BucketEntry {
 		return merged
 	}
 	defer db.Close()
+	schema := detectOpencodeSchema(db)
 	rows, err := db.Query(`SELECT time_created,
 		COALESCE(tokens_input,0), COALESCE(tokens_output,0),
 		COALESCE(tokens_reasoning,0), COALESCE(tokens_cache_read,0),
-		COALESCE(tokens_cache_write,0), COALESCE(cost,0) FROM session`)
+		COALESCE(tokens_cache_write,0), COALESCE(cost,0) FROM ` + schema.sessionTable)
 	if err != nil {
 		return merged
 	}

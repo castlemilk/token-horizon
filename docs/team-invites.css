@@ -139,9 +139,6 @@ body[data-surface="invite"] .ti-invite-content { padding-top: 34px; padding-bott
 body[data-surface="invite"] .ti-invite-content .ti-privacy-note { margin-top: 22px; }
 .ti-success-label { display: inline-flex; align-items: center; gap: 6px; padding: 6px 9px; border: 1px solid #c8dfc9; border-radius: 5px; background: #edf6ed; color: #235e43; font-size: 10px; }
 .ti-success-label svg { width: 13px; height: 13px; }
-.ti-switch-note { border-left: 2px solid #c9a15f; padding: 7px 0 7px 11px; margin-bottom: 20px; color: #71592f; }
-.ti-switch-note strong { font-size: 11px; font-weight: 600; }
-.ti-switch-note p { margin-top: 5px; font-size: 11px; line-height: 1.7; }
 .ti-button-spinner { width: 14px; height: 14px; border-radius: 50%; border: 1px solid currentColor; border-right-color: transparent; animation: ti-spin .8s linear infinite; }
 .ti-loading { display: flex; align-items: center; gap: 7px; font-size: 11px; color: #56635a; margin-top: 18px !important; }
 .ti-loading-dot { width: 7px; height: 7px; border-radius: 50%; background: #235e43; animation: ti-pulse 1.5s ease-in-out infinite; }
@@ -232,7 +229,6 @@ body[data-surface="invite"] .ti-invite-content .ti-privacy-note { margin-top: 22
 .th-team-invites .ti-error{background:var(--th-danger-bg,#fff8ec);color:var(--th-danger,#735629);border-color:var(--th-rule-strong,#e8d8b6)}
 .th-team-invites .ti-error .ti-text-button{color:inherit}
 .th-team-invites .ti-success-label{background:var(--th-selected,#edf6ed);color:var(--ti-green);border-color:var(--ti-rule)}
-.th-team-invites .ti-switch-note{border:1px solid var(--th-rule);border-radius:8px;padding:12px;color:var(--ti-ink);background:var(--th-surface-2,#f3f4ef)}
 @media(min-width:651px){.th-team-invites .ti-close{background:var(--th-surface-2,#f3f4ef);color:var(--ti-ink);border-color:var(--ti-rule);width:36px;height:36px}.th-team-invites .ti-close:hover{background:var(--th-hover,#e6ede3);color:var(--ti-ink)}}
 
 /* Owner controls remain readable when links and names are long. */
@@ -254,3 +250,13 @@ body[data-surface="invite"] .ti-invite-content .ti-privacy-note { margin-top: 22
   .th-team-invites .ti-invite-content>p:not(.ti-join-help){font-size:14px;line-height:1.65}
   .th-team-invites .ti-invite-content h1{letter-spacing:-.035em}
 }
+
+/* Membership selection stays beside the actions it scopes. */
+.th-team-invites .ti-team-picker{display:flex;flex-direction:column;align-items:flex-start;gap:10px;margin-bottom:24px}
+.th-team-invites .ti-team-picker label{font-size:14px;font-weight:600}
+.th-team-invites .ti-team-picker select{box-sizing:border-box;width:100%;min-height:44px;padding:10px 12px;border:1px solid var(--ti-rule);border-radius:8px;background:var(--th-surface);color:var(--ti-ink);font:inherit}
+.th-team-invites .ti-leave-team{margin-top:24px;padding-top:16px;border-top:1px solid var(--ti-rule)}
+.th-team-invites .ti-leave-team p{font-size:14px;line-height:1.6}
+
+.th-team-invites select:focus-visible{outline:2px solid var(--ti-green);outline-offset:4px}
+.th-team-invites .ti-team-picker .ti-text-button,.th-team-invites .ti-leave-team .ti-text-button{min-height:44px}

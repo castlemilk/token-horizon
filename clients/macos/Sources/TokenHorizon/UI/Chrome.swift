@@ -51,6 +51,7 @@ enum DashboardTab: String, CaseIterable, Identifiable {
         case .activity: return "Overview"
         case .mlx: return "Local"
         case .tokens: return "Usage"
+        case .shells: return "Terminals"
         default: return rawValue.capitalized
         }
     }
@@ -73,7 +74,7 @@ enum DashboardTab: String, CaseIterable, Identifiable {
 }
 
 enum AppSettingsSection: String, CaseIterable, Identifiable {
-    case general = "General", sharing = "Sharing & teams", providers = "Providers", widget = "Widget"
+    case general = "General", navigation = "Navigation", sharing = "Sharing & teams", providers = "Providers", widget = "Widget"
     var id: String { rawValue }
 }
 

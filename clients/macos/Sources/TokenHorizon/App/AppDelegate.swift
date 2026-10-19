@@ -61,7 +61,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                                   // Cached (non-blocking): a cold-start scan
                                   // must not stall /limits for minutes.
                                   var all = engine.cachedSnapshot()?.limits ?? []
-                                  if plan.contains(where: { $0.provider == "codex" }) {
+                                  if plan.contains(where: { $0.provider == "codex" || $0.provider.hasPrefix("codex (") }) {
                                       all.removeAll(where: { $0.provider == "codex" })
                                   }
                                   all.append(contentsOf: kimi)
@@ -427,7 +427,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         let history = model.historyPoints
         let hourly = model.hourTrendPoints
         var limits = usage.limits
-        if model.planLimits.contains(where: { $0.provider == "codex" }) {
+        if model.planLimits.contains(where: { $0.provider == "codex" || $0.provider.hasPrefix("codex (") }) {
             limits.removeAll { $0.provider == "codex" }
         }
         limits += model.planLimits + model.kimiLimits

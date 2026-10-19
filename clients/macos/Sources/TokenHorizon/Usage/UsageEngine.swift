@@ -296,8 +296,7 @@ final class UsageEngine {
     /// scan, so added/removed variants converge without a reset.
     static var codexScanDirs: [String] {
         var out = ["~/.codex/sessions", "~/.codex/archived_sessions"].map(HomeDiscovery.expand)
-        let variants = HomeDiscovery.variantDirs(
-            prefixes: [".codex"], envVars: ["CODEX_HOME"], defaultPaths: ["~/.codex"])
+        let variants = CodexAccountDiscovery.discoverDirectories()
         for extra in HomeDiscovery.scanDirs(variants, subpaths: ["sessions", "archived_sessions"]) {
             if !out.contains(extra) { out.append(extra) }
         }
@@ -350,6 +349,7 @@ final class UsageEngine {
         listingCache.removeAll()
         hourDayCache.removeAll()
         opencodeCache = nil
+        opencodeSchemaCache = nil
         devinSessionsCache = nil
         devinMtimes.removeAll()
         scanVersions.removeAll()
@@ -721,11 +721,12 @@ final class UsageEngine {
     }
 
     private func opencodePerDayQuery(_ db: OpaquePointer, _ handler: (Int, Int, Double) -> Void) {
+        let table = opencodeSchema(for: db).sessionTable
         let sql = """
         SELECT CAST(time_created / 1000 / 3600 AS INT) * 3600,
                SUM(COALESCE(tokens_input+tokens_output+tokens_reasoning+tokens_cache_read+tokens_cache_write,0)),
                SUM(COALESCE(cost,0))
-        FROM session
+        FROM \(table)
         GROUP BY 1
         """
         guard let stmt = prepare(db, sql) else { return }
@@ -871,6 +872,7 @@ final class UsageEngine {
             claudeAccounts.append(acct)
         }
         snap.claudeAccounts = claudeAccounts
+        snap.codexAccounts = CodexAccountDiscovery.shared.accounts()
         ph.mark("accts")
 
         let codexToday = scanCodex(dirs: codexDirs, scan: due("codex"))
@@ -2646,9 +2648,80 @@ final class UsageEngine {
         return parts.joined(separator: "|")
     }
 
+    /// opencode's storage generation, probed once per db fingerprint.
+    ///
+    /// opencode migrated `session`/`message` → `session_v2`/`session_message`
+    /// (migration `20260622170816_reset_v2_session_state`) and left the v1
+    /// tables frozen at the cutover — reading them reports usage as it stood
+    /// on the day opencode upgraded, so every later session is invisible.
+    /// The two generations also moved the columns we read: the role left
+    /// `data.$.role` for the `type` column, and the model block left
+    /// `data.$.providerID`/`data.$.modelID` for `data.$.model.providerID`/
+    /// `data.$.model.id`.
+    ///
+    /// v2 is a strict superset of v1 here (the same session and message ids
+    /// with higher running totals), so we read exactly one generation —
+    /// never the union — and fall back to v1 for opencode installs that
+    /// have not migrated yet.
+    private struct OpencodeSchema {
+        let sessionTable: String
+        let messageTable: String
+        /// SQL predicate selecting assistant rows in `messageTable`.
+        let assistantPredicate: String
+        /// `providerID` / `modelID` extraction from `messageTable.data`.
+        let providerExpr: String
+        let modelExpr: String
+
+        static let legacy = OpencodeSchema(
+            sessionTable: "session",
+            messageTable: "message",
+            assistantPredicate: "json_extract(data,'$.role')='assistant'",
+            providerExpr: "COALESCE(json_extract(data,'$.providerID'),'?')",
+            modelExpr: "COALESCE(json_extract(data,'$.modelID'),'?')")
+
+        static let v2 = OpencodeSchema(
+            sessionTable: "session_v2",
+            messageTable: "session_message",
+            assistantPredicate: "type='assistant'",
+            providerExpr: "COALESCE(json_extract(data,'$.model.providerID'),'?')",
+            modelExpr: "COALESCE(json_extract(data,'$.model.id'),'?')")
+
+        static func detect(_ db: OpaquePointer) -> OpencodeSchema {
+            // Table names are compile-time constants, never user input.
+            func exists(_ name: String) -> Bool {
+                let sql = "SELECT 1 FROM sqlite_master WHERE type='table' AND name='\(name)'"
+                var stmt: OpaquePointer?
+                defer { if let stmt { sqlite3_finalize(stmt) } }
+                guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK, let stmt else { return false }
+                return sqlite3_step(stmt) == SQLITE_ROW
+            }
+            let sessionsV2 = exists(v2.sessionTable)
+            let messagesV2 = exists(v2.messageTable)
+            guard sessionsV2 || messagesV2 else { return .legacy }
+            let source = messagesV2 ? v2 : legacy
+            return OpencodeSchema(sessionTable: sessionsV2 ? v2.sessionTable : legacy.sessionTable,
+                                  messageTable: source.messageTable,
+                                  assistantPredicate: source.assistantPredicate,
+                                  providerExpr: source.providerExpr,
+                                  modelExpr: source.modelExpr)
+        }
+    }
+    private var opencodeSchemaCache: OpencodeSchema?
+
+    /// Cached schema probe — one `sqlite_master` read per fingerprint.
+    private func opencodeSchema(for db: OpaquePointer) -> OpencodeSchema {
+        if let c = opencodeSchemaCache { return c }
+        let schema = OpencodeSchema.detect(db)
+        opencodeSchemaCache = schema
+        return schema
+    }
+
     private func cachedOpencodeLocked() -> OpencodeSnapshot {
         let fp = "\(todayBucket())|\(opencodeFingerprint())"
         if let c = opencodeCache, c.fingerprint == fp { return c }
+        // The file changed under us — an opencode upgrade can migrate the
+        // schema in place, so re-probe which generation we should read.
+        opencodeSchemaCache = nil
         var snap = OpencodeSnapshot(fingerprint: fp, sums: nil, models: [], hourly: [], projects: [])
         guard let database = openDB() else {
             opencodeCache = snap
@@ -2676,6 +2749,7 @@ final class UsageEngine {
 
     private func opencodeUsageQuery() -> OCSums? {
         guard let db = openDB() else { return nil }
+        let schema = opencodeSchema(for: db)
         var out = OCSums()
 
         let tokenExpr = "COALESCE(SUM(tokens_input+tokens_output+tokens_reasoning+tokens_cache_read+tokens_cache_write),0)"
@@ -2685,7 +2759,7 @@ final class UsageEngine {
         SELECT \(tokenExpr), COALESCE(SUM(cost),0),
                COALESCE(SUM(tokens_cache_read),0), COALESCE(SUM(tokens_cache_write),0),
                COALESCE(SUM(tokens_input),0), COALESCE(SUM(tokens_output),0)
-        FROM session
+        FROM \(schema.sessionTable)
         """
         if let stmt = prepare(db, sql), sqlite3_step(stmt) == SQLITE_ROW {
             out.allTokens = Int(sqlite3_column_int64(stmt, 0))
@@ -2699,7 +2773,7 @@ final class UsageEngine {
         sql = """
         SELECT \(tokenExpr), COALESCE(SUM(cost),0),
                COALESCE(SUM(tokens_input),0), COALESCE(SUM(tokens_output),0)
-        FROM session WHERE time_created > \(midnightMs)
+        FROM \(schema.sessionTable) WHERE time_created > \(midnightMs)
         """
         if let stmt = prepare(db, sql), sqlite3_step(stmt) == SQLITE_ROW {
             out.todayTokens = Int(sqlite3_column_int64(stmt, 0))
@@ -2712,8 +2786,8 @@ final class UsageEngine {
         SELECT s.id, s.title, s.cost,
                COALESCE(s.tokens_input+s.tokens_output+s.tokens_reasoning+s.tokens_cache_read+s.tokens_cache_write,0),
                s.directory, s.time_created, s.tokens_input, s.tokens_output, s.model,
-               (SELECT COUNT(*) FROM message m WHERE m.session_id = s.id AND json_extract(m.data,'$.role')='assistant')
-        FROM session s ORDER BY s.time_updated DESC LIMIT 12
+               (SELECT COUNT(*) FROM \(schema.messageTable) m WHERE m.session_id = s.id AND \(schema.assistantPredicate))
+        FROM \(schema.sessionTable) s ORDER BY s.time_updated DESC LIMIT 12
         """
         if let stmt = prepare(db, sql) {
             while sqlite3_step(stmt) == SQLITE_ROW {
@@ -2745,12 +2819,13 @@ final class UsageEngine {
     }
 
     private func opencodeProjectsQuery(_ db: OpaquePointer) -> [ProjectUsage] {
+        let table = opencodeSchema(for: db).sessionTable
         let sql = """
         SELECT directory,
                COALESCE(SUM(tokens_input+tokens_output+tokens_reasoning+tokens_cache_read+tokens_cache_write),0),
                COALESCE(SUM(cost),0), COUNT(*),
                COALESCE(SUM(tokens_input),0), COALESCE(SUM(tokens_output),0)
-        FROM session WHERE directory != ''
+        FROM \(table) WHERE directory != ''
         GROUP BY directory ORDER BY 2 DESC LIMIT 12
         """
         var out: [ProjectUsage] = []
@@ -2769,15 +2844,18 @@ final class UsageEngine {
 
     private func modelUsageQuery() -> [ModelUsage] {
         guard let db = openDB() else { return [] }
+        let schema = opencodeSchema(for: db)
         let midnightMs = localMidnightUTC() * 1000
         // MATERIALIZED: tokensExpr is evaluated once per row instead of twice
         // (total + today-conditional SUMs). ~25% faster on large message
         // tables; verified byte-identical output vs the flat form.
+        // v1 records `tokens.total`; the v2 projection drops it, so the
+        // additive branch is what actually runs there.
         let tokensExpr = "COALESCE(json_extract(data,'$.tokens.total'), COALESCE(json_extract(data,'$.tokens.input'),0) + COALESCE(json_extract(data,'$.tokens.output'),0) + COALESCE(json_extract(data,'$.tokens.reasoning'),0) + COALESCE(json_extract(data,'$.tokens.cache.read'),0) + COALESCE(json_extract(data,'$.tokens.cache.write'),0), 0)"
         let sql = """
         WITH m AS MATERIALIZED (
-            SELECT COALESCE(json_extract(data,'$.providerID'),'?') AS p,
-                   COALESCE(json_extract(data,'$.modelID'),'?') AS mo,
+            SELECT \(schema.providerExpr) AS p,
+                   \(schema.modelExpr) AS mo,
                    \(tokensExpr) AS t,
                    time_created AS tc,
                    COALESCE(json_extract(data,'$.cost'),0) AS c,
@@ -2785,7 +2863,7 @@ final class UsageEngine {
                    COALESCE(json_extract(data,'$.tokens.output'),0) AS o,
                    COALESCE(json_extract(data,'$.tokens.cache.read'),0) AS cr,
                    COALESCE(json_extract(data,'$.tokens.cache.write'),0) AS cw
-            FROM message WHERE json_extract(data,'$.role')='assistant')
+            FROM \(schema.messageTable) WHERE \(schema.assistantPredicate))
         SELECT p, mo, SUM(t),
                SUM(CASE WHEN tc > \(midnightMs) THEN t ELSE 0 END),
                SUM(c), COUNT(*),

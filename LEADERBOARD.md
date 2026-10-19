@@ -657,3 +657,33 @@ membership, usage and logo revisions.
 
 Team branding/card/arrival regressions: `cloudflare/og-team.test.mjs`,
 `scripts/test-team-flow-ui.mjs`, and `scripts/test-team-motion-ui.mjs`.
+
+
+### Multiple team memberships
+
+Membership records at `team-membership/accounts/<account hash>.json` use v2
+`teamIds[]`. Reads accept legacy `teamId` records; the next mutation preserves
+that team while adding another. Conditional writes retry a fresh read/merge so
+concurrent joins retain both memberships. Empty v2 lists are authoritative.
+Roster indexes are repaired on account reads and verified against account records.
+
+`GET /api/account/team[?teamId=…]` returns `teams[]` (identity, role and member
+count), plus the selected `team` and its owner-only `invites`. The first team
+remains the singular fallback for older clients. `POST /api/team/join` is
+additive and idempotent; `confirmSwitch` no longer removes a membership.
+`POST /api/team/invites {create:true,name,creationId?}` creates another team;
+a stable 32-hex `creationId` makes form retries reuse that creation. Invite
+creation/revocation and logo changes target a `teamId`. `POST /api/team/leave {teamId}` removes only that membership; owners must remain in their owned teams.
+
+Published profiles carry authoritative `teams:[{id,name}]`, retaining first-team
+`team`/`teamId` for older clients. Each profile contributes its full published
+history to every joined team, once per team; global rankings and usage remain
+one row per profile. Filtering and per-team ranks include secondary teams.
+Combined team figures are contributions, not unique people or unique tokens.
+Native persistence, cloud merges and offline team aggregation retain the full
+membership list, including an explicit empty list after the final leave.
+
+Team-scoped reports admit a verified recipient when the owner and recipient
+currently share any authoritative team, including recipients without published
+profiles. Access checks read fresh membership and deny former members; labels
+and email domains never grant access. Prompts and traces keep existing privacy.

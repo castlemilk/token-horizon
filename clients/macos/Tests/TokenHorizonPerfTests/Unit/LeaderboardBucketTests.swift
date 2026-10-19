@@ -179,6 +179,72 @@ final class LeaderboardBucketTests: XCTestCase {
         XCTAssertEqual(correction.history.reduce(0) { $0 + $1.tokens }, 70, "Newer lower corrections retain the same original dates")
     }
 
+    /// opencode migrated `session`/`message` → `session_v2`/`session_message`
+    /// and left the v1 tables frozen at the cutover (one stale row, nothing
+    /// since). The engine must read the live generation, must NOT union in the
+    /// frozen one, and must re-probe when the upgrade lands mid-run — a cached
+    /// generation is what turns every later session invisible.
+    func testOpencodeSchemaProbeTracksTheV1ToV2Migration() throws {
+        let directory = try temporaryDirectory()
+        let path = directory.appendingPathComponent("opencode.db").path
+        var connection: OpaquePointer?
+        XCTAssertEqual(sqlite3_open_v2(path, &connection, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, nil), SQLITE_OK)
+        let database = try XCTUnwrap(connection)
+        defer { sqlite3_close(database) }
+        func execute(_ sql: String) {
+            XCTAssertEqual(sqlite3_exec(database, sql, nil, nil, nil), SQLITE_OK, String(cString: sqlite3_errmsg(database)))
+        }
+        execute("PRAGMA journal_mode=WAL")
+
+        // Generation 1 — the only tables an un-migrated opencode has.
+        execute("CREATE TABLE session (id TEXT, title TEXT, directory TEXT, model TEXT, time_created INTEGER, time_updated INTEGER, "
+                + "tokens_input INTEGER, tokens_output INTEGER, tokens_reasoning INTEGER, tokens_cache_read INTEGER, tokens_cache_write INTEGER, cost REAL)")
+        execute("CREATE TABLE message (id TEXT, session_id TEXT, time_created INTEGER, data TEXT)")
+        let now = Date()
+        let currentHour = Int(now.timeIntervalSince1970) / 3600 * 3600
+        let millis = currentHour * 1000 + 1
+        execute("INSERT INTO session VALUES ('legacy','fixture','/fixture','{\"id\":\"legacy-model\",\"providerID\":\"legacy-provider\"}',"
+                + "\(millis),\(millis),700,0,0,0,0,0)")
+        execute("INSERT INTO message VALUES ('legacy','legacy',\(millis),"
+                + "'{\"role\":\"assistant\",\"modelID\":\"legacy-model\",\"providerID\":\"legacy-provider\","
+                + "\"tokens\":{\"input\":700,\"output\":0,\"total\":700}}')")
+
+        var inputs = UsageEngineInputs()
+        inputs.opencodeDatabasePaths = [path]
+        let store = DurableStore(cacheDirectory: directory.appendingPathComponent("cache"), notificationCenter: NotificationCenter())
+        let engine = UsageEngine(inputs: inputs, durableStore: store)
+
+        let legacy = engine.leaderboardData(days: 7, now: now)
+        XCTAssertEqual(legacy.snapshot.tokensAllTime, 700, "Un-migrated installs must keep reading v1")
+        XCTAssertEqual(legacy.snapshot.models.map(\.provider), ["legacy-provider"])
+
+        // Generation 2 lands while we are running: role moved to the `type`
+        // column, model block moved under `data.$.model`, `tokens.total` is
+        // gone, and the v1 rows stay behind untouched.
+        execute("CREATE TABLE session_v2 (id TEXT, title TEXT, directory TEXT, model TEXT, time_created INTEGER, time_updated INTEGER, "
+                + "tokens_input INTEGER, tokens_output INTEGER, tokens_reasoning INTEGER, tokens_cache_read INTEGER, tokens_cache_write INTEGER, cost REAL)")
+        execute("CREATE TABLE session_message (id TEXT, session_id TEXT, type TEXT, time_created INTEGER, time_updated INTEGER, data TEXT)")
+        execute("INSERT INTO session_v2 VALUES ('modern','fixture','/fixture','{\"id\":\"glm-5\",\"providerID\":\"zai-coding-plan\"}',"
+                + "\(millis),\(millis),50,0,0,0,0,0)")
+        execute("INSERT INTO session_message VALUES ('modern','modern','assistant',\(millis),\(millis),"
+                + "'{\"model\":{\"id\":\"glm-5\",\"providerID\":\"zai-coding-plan\"},"
+                + "\"tokens\":{\"input\":50,\"output\":0,\"cache\":{\"read\":0,\"write\":0}}}')")
+
+        let migrated = engine.leaderboardData(days: 7, now: now.addingTimeInterval(2))
+        XCTAssertEqual(migrated.snapshot.tokensAllTime, 50, "The frozen v1 row must not be unioned into the live generation")
+        XCTAssertEqual(migrated.snapshot.tokensToday, 50)
+        XCTAssertEqual(migrated.snapshot.models.map(\.provider), ["zai-coding-plan"])
+        XCTAssertEqual(migrated.snapshot.models.map(\.model), ["glm-5"])
+        XCTAssertEqual(migrated.snapshot.projects.map(\.directory), ["/fixture"])
+        XCTAssertEqual(migrated.snapshot.projects.map(\.tokens), [50])
+        let opencode = try XCTUnwrap(migrated.snapshot.perTool.first { $0.tool == "opencode" })
+        XCTAssertEqual(opencode.tokensAllTime, 50)
+        XCTAssertEqual(opencode.requestsAllTime, 1, "Requests come from assistant rows in session_message")
+        XCTAssertEqual(migrated.snapshot.recentSessions.map(\.provider), ["zai-coding-plan"])
+        XCTAssertEqual(migrated.hourlyHistory?.map(\.hour), [currentHour])
+        XCTAssertEqual(migrated.hourlyHistory?.map(\.tokens), [50])
+    }
+
     func testStaleBackgroundStageCannotReplaceNewerManualBucketsIncludingAfterReload() throws {
         let path = try temporaryDirectory().appendingPathComponent("leaderboard.json").path
         let hour = Int(Date().timeIntervalSince1970) / 3600 * 3600 - 86_400

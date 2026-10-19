@@ -7,6 +7,7 @@ private let settingsLog = Logger(subsystem: "com.tokenhorizon.app", category: "s
 extension Notification.Name {
     static let tokenHorizonWidgetDidChange = Notification.Name("tokenHorizonWidgetDidChange")
     static let tokenHorizonSurfaceDidChange = Notification.Name("tokenHorizonSurfaceDidChange")
+    static let tokenHorizonNavigationDidChange = Notification.Name("tokenHorizonNavigationDidChange")
 }
 
 /// Which desktop surface Token Horizon shows.
@@ -54,6 +55,20 @@ final class SettingsStore {
     private var _showTrayIcon: Bool = false
     private var _autoUpdateEnabled: Bool = true
     private var _widgetPreferences = WidgetPreferences()
+    private var _navigationPreferences = DashboardNavigationPreferences()
+
+    var navigationPreferences: DashboardNavigationPreferences {
+        get { lock.lock(); defer { lock.unlock() }; return _navigationPreferences }
+        set {
+            let preferences = newValue.normalized
+            lock.lock()
+            guard preferences != _navigationPreferences else { lock.unlock(); return }
+            _navigationPreferences = preferences
+            saveLocked()
+            lock.unlock()
+            NotificationCenter.default.post(name: .tokenHorizonNavigationDidChange, object: self)
+        }
+    }
 
     var widgetPreferences: WidgetPreferences {
         get { lock.lock(); defer { lock.unlock() }; return _widgetPreferences }
@@ -336,6 +351,9 @@ final class SettingsStore {
             "surfaceMode": _surfaceMode,
             "showTrayIcon": _showTrayIcon,
             "autoUpdateEnabled": _autoUpdateEnabled,
+            "navigationPreferences": (try? JSONEncoder().encode(_navigationPreferences)).flatMap {
+                try? JSONSerialization.jsonObject(with: $0)
+            } ?? [:],
             "widgetPreferences": (try? JSONEncoder().encode(_widgetPreferences)).flatMap {
                 try? JSONSerialization.jsonObject(with: $0)
             } ?? [:]
@@ -350,10 +368,17 @@ final class SettingsStore {
         }
     }
 
-    private init() {
-        let dir = NSString(string: "~/.config/token-horizon").expandingTildeInPath
-        try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
-        path = dir + "/settings.json"
+    private convenience init() {
+        let directory = URL(fileURLWithPath: NSString(string: "~/.config/token-horizon").expandingTildeInPath)
+        self.init(directory: directory, restoreLaunchAtLogin: true)
+    }
+
+    /// An explicit directory keeps settings round-trip tests isolated from the
+    /// user's credentials and launchd registration. Shared production settings
+    /// restore launch-at-login through the private convenience initializer.
+    init(directory: URL, restoreLaunchAtLogin: Bool = false) {
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        path = directory.appendingPathComponent("settings.json").path
         var c = ""
         var notify = true
         var launch = false
@@ -374,6 +399,12 @@ final class SettingsStore {
 
         if let data = FileManager.default.contents(atPath: path),
            let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            if let navigation = obj["navigationPreferences"],
+               JSONSerialization.isValidJSONObject(navigation),
+               let data = try? JSONSerialization.data(withJSONObject: navigation),
+               let preferences = try? JSONDecoder().decode(DashboardNavigationPreferences.self, from: data) {
+                _navigationPreferences = preferences.normalized
+            }
             if let widget = obj["widgetPreferences"],
                let data = try? JSONSerialization.data(withJSONObject: widget),
                let preferences = try? JSONDecoder().decode(WidgetPreferences.self, from: data) {
@@ -435,7 +466,7 @@ final class SettingsStore {
             }
         }
         if c.isEmpty {
-            let fb = NSString(string: "~/.config/token-horizon/alibaba-cookie.txt").expandingTildeInPath
+            let fb = directory.appendingPathComponent("alibaba-cookie.txt").path
             c = (try? String(contentsOfFile: fb, encoding: .utf8)) ?? ""
         }
         _alibabaCookie = c.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -465,8 +496,10 @@ final class SettingsStore {
         _showTrayIcon = showTrayIcon
         _autoUpdateEnabled = autoUpdate
 
-        DispatchQueue.global(qos: .utility).async { [self] in
-            if launch { applyLaunchAtLogin(true) }
+        if restoreLaunchAtLogin {
+            DispatchQueue.global(qos: .utility).async { [self] in
+                if launch { applyLaunchAtLogin(true) }
+            }
         }
     }
 
