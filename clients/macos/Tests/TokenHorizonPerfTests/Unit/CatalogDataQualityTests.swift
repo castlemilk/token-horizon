@@ -206,4 +206,35 @@ final class CatalogDataQualityTests: XCTestCase {
         XCTAssertLessThanOrEqual(byName["gpt-5"] ?? 0, 2, "gpt-5 must not be listed once per seller")
         XCTAssertLessThanOrEqual(byName["claude-opus-4.6"] ?? 0, 2, "claude-opus-4.6 must not be listed once per seller")
     }
+
+    /// A service tier is a different model with a different price: "gpt-5-batch"
+    /// costs half of "gpt-5". Folding the tier into the base model gave the
+    /// base model a batch price — and the tier no row of its own.
+    func testServiceTier_keepsItsOwnFamilyAndPrice() {
+        XCTAssertEqual(ModelCatalog.canonicalIdentity(provider: "openai", model: "gpt-6.1-sol").family, "gpt-6.1-sol")
+        XCTAssertEqual(ModelCatalog.canonicalIdentity(provider: "openai", model: "gpt-6.1-sol:batch").family, "gpt-6.1-sol-batch")
+        XCTAssertEqual(ModelCatalog.canonicalIdentity(provider: "openai", model: "gpt-6.1-sol-pro").family, "gpt-6.1-sol-pro")
+        XCTAssertEqual(ModelCatalog.canonicalIdentity(provider: "openai", model: "gpt-5-sol-fast").family, "gpt-5-sol-fast")
+    }
+
+    /// The row that represents a model carries the LAB's price and context —
+    /// not a reseller's, and not a service tier's.
+    func testRepresentativeRoute_carriesTheLabsPriceAndContext() {
+        let lab = ModelCatalog.Entry(
+            id: "gpt-6.1-sol", name: "GPT 6.1 Sol",
+            provider: "openai", providerName: "OpenAI",
+            inputPerM: 2.5, outputPerM: 10, contextK: 872
+        )
+        let reseller = ModelCatalog.Entry(
+            id: "openai/gpt-6.1-sol", name: "GPT 6.1 Sol",
+            provider: "merge-gateway", providerName: "Merge Gateway",
+            inputPerM: 2, outputPerM: 8, contextK: 1050
+        )
+        let result = ModelsPipeline.compute(search: "", scope: .all, sortColumn: .sweBench, sortAscending: false,
+                                             catalog: [reseller, lab], syntheticModels: [], usageModels: [])
+        let row = result.base.first { $0.usage.model == "gpt-6.1-sol" }
+        XCTAssertEqual(row?.catalog?.inputPerM, 2.5, "the lab's price represents the model")
+        XCTAssertEqual(row?.contextK, 872, "the lab's context window represents the model")
+        XCTAssertEqual(row?.usage.provider, "openai", "the row is labelled with the lab")
+    }
 }

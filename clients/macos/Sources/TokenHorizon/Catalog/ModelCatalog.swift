@@ -1388,47 +1388,60 @@ final class ModelCatalog {
             let family = clean
                 .replacingOccurrences(of: "-latest", with: "")
                 .replacingOccurrences(of: "-preview", with: "")
-            if family.contains("astra") {
-                return ("gpt-6-astra", "GPT-6 Astra", "openai", "OpenAI")
+            // A service tier is its own model with its own price: "gpt-5-batch"
+            // costs half of "gpt-5", "gpt-6.1-sol-pro" is a different tier
+            // again. It matches the base model — so the base model's name
+            // applies — but it keeps its own family, and the base model keeps
+            // its own price.
+            var tier = ""
+            var base = family
+            for suffix in ["-batch", "-pro", "-fast", "-expert", "-high", "-mini", "-lite"] where base.hasSuffix(suffix) {
+                tier = suffix
+                base = String(base.dropLast(suffix.count))
+                break
             }
-            if family.contains("daybreak") {
-                return ("gpt-daybreak", "GPT Daybreak Blue", "openai", "OpenAI")
+            let tierLabel = tier.isEmpty ? "" : " " + tier.dropFirst().uppercased()
+            if base.contains("astra") {
+                return ("gpt-6-astra" + tier, "GPT-6 Astra" + tierLabel, "openai", "OpenAI")
             }
-            if family.contains("reserve") {
-                return ("gpt-reserve", "GPT Reserve", "openai", "OpenAI")
+            if base.contains("daybreak") {
+                return ("gpt-daybreak" + tier, "GPT Daybreak Blue" + tierLabel, "openai", "OpenAI")
             }
-            if family.contains("5.6-sol") || family.contains("5-6-sol") || family.contains("56-sol") {
-                return ("gpt-5.6-sol", "GPT-5.6 Sol", "openai", "OpenAI")
+            if base.contains("reserve") {
+                return ("gpt-reserve" + tier, "GPT Reserve" + tierLabel, "openai", "OpenAI")
+            }
+            if base.contains("5.6-sol") || base.contains("5-6-sol") || base.contains("56-sol") {
+                return ("gpt-5.6-sol" + tier, "GPT-5.6 Sol" + tierLabel, "openai", "OpenAI")
             }
             // GPT-6 codex workhorse tiers: the generic "-sol"/"luna" rules below
             // would otherwise collapse gpt-6.1-sol/gpt-6-sol into gpt-5-sol and
             // gpt-6-luna into gpt-5-luna, losing their identity (and pricing).
-            if family.contains("6.1-sol") || family.contains("6-1-sol") {
-                return ("gpt-6.1-sol", "GPT-6.1 Sol", "openai", "OpenAI")
+            if base.contains("6.1-sol") || base.contains("6-1-sol") {
+                return ("gpt-6.1-sol" + tier, "GPT-6.1 Sol" + tierLabel, "openai", "OpenAI")
             }
-            if family.contains("6-sol") {
-                return ("gpt-6-sol", "GPT-6 Sol", "openai", "OpenAI")
+            if base.contains("6-sol") {
+                return ("gpt-6-sol" + tier, "GPT-6 Sol" + tierLabel, "openai", "OpenAI")
             }
-            if (family.contains("gpt-5-sol") || family.contains("gpt-sol") || family.contains("-sol") || family == "sol") && !family.contains("solar") {
-                return ("gpt-5-sol", "GPT-5 Sol", "openai", "OpenAI")
+            if (base.contains("gpt-5-sol") || base.contains("gpt-sol") || base.contains("-sol") || base == "sol") && !base.contains("solar") {
+                return ("gpt-5-sol" + tier, "GPT-5 Sol" + tierLabel, "openai", "OpenAI")
             }
-            if family.contains("5.6-terra") || family.contains("5-6-terra") || family.contains("56-terra") {
-                return ("gpt-5.6-terra", "GPT-5.6 Terra", "openai", "OpenAI")
+            if base.contains("5.6-terra") || base.contains("5-6-terra") || base.contains("56-terra") {
+                return ("gpt-5.6-terra" + tier, "GPT-5.6 Terra" + tierLabel, "openai", "OpenAI")
             }
-            if family.contains("terra") {
-                return ("gpt-5-terra", "GPT-5 Terra", "openai", "OpenAI")
+            if base.contains("terra") {
+                return ("gpt-5-terra" + tier, "GPT-5 Terra" + tierLabel, "openai", "OpenAI")
             }
-            if family.contains("5.6-luna") || family.contains("5-6-luna") || family.contains("56-luna") {
-                return ("gpt-5.6-luna", "GPT-5.6 Luna", "openai", "OpenAI")
+            if base.contains("5.6-luna") || base.contains("5-6-luna") || base.contains("56-luna") {
+                return ("gpt-5.6-luna" + tier, "GPT-5.6 Luna" + tierLabel, "openai", "OpenAI")
             }
-            if family.contains("6-luna") {
-                return ("gpt-6-luna", "GPT-6 Luna", "openai", "OpenAI")
+            if base.contains("6-luna") {
+                return ("gpt-6-luna" + tier, "GPT-6 Luna" + tierLabel, "openai", "OpenAI")
             }
-            if family.contains("luna") && !family.contains("lunaris") {
-                return ("gpt-5-luna", "GPT-5 Luna", "openai", "OpenAI")
+            if base.contains("luna") && !base.contains("lunaris") {
+                return ("gpt-5-luna" + tier, "GPT-5 Luna" + tierLabel, "openai", "OpenAI")
             }
-            if family.contains("auto-review") {
-                return ("codex-auto-review", "Codex Auto Review", "openai", "OpenAI")
+            if base.contains("auto-review") {
+                return ("codex-auto-review" + tier, "Codex Auto Review" + tierLabel, "openai", "OpenAI")
             }
             let name = formatModelDisplayName(family)
             return (family, name, "openai", "OpenAI")

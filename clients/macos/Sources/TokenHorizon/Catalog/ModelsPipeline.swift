@@ -92,6 +92,14 @@ enum ModelsPipeline {
         /// lab's own route first, then a plan, then a reseller (see
         /// `ModelCatalog.pricingAuthority`).
         var entryRank: [String: (direct: Int, tier: Int)] = [:]
+        /// The route that speaks for a family: its identity and its context
+        /// window. The row carries THIS route's name, price and window, not
+        /// those of whichever route happened to be merged last.
+        struct FamilyRepresentative {
+            let canon: (family: String, displayName: String, providerId: String, providerName: String)
+            let contextK: Int
+        }
+        var familyRep: [String: FamilyRepresentative] = [:]
         // Memoize catalog lookups: the same model id can appear in many
         // synthetic/usage rows, and a miss costs an O(n) suffix scan in
         // ModelCatalog.lookup. One dict lookup per row instead.
@@ -129,6 +137,8 @@ enum ModelsPipeline {
             let existingRank = entryRank[familyKey] ?? (direct: 1, tier: Int.max)
             if let existing = rowMap[familyKey] {
                 var mergedCat = existing.catalog ?? cat
+                var rep = familyRep[familyKey]
+                    ?? FamilyRepresentative(canon: canon, contextK: cat.contextK)
                 if rank < existingRank {
                     // A more authoritative route: it represents the model now.
                     mergedCat = cat
@@ -140,8 +150,8 @@ enum ModelsPipeline {
                         mergedCat.outputPerM = old.outputPerM
                         mergedCat.cacheReadPerM = old.cacheReadPerM
                     }
-                    mergedCat.name = canon.displayName
-                    mergedCat.providerName = canon.providerName
+                    rep = FamilyRepresentative(canon: canon, contextK: cat.contextK)
+                    familyRep[familyKey] = rep
                     entryRank[familyKey] = rank
                 } else if rank == existingRank {
                     if mergedCat.inputPerM == 0 && cat.inputPerM > 0 { mergedCat.inputPerM = cat.inputPerM }
@@ -171,16 +181,24 @@ enum ModelsPipeline {
                     if mergedCat.docUrl == nil && cat.docUrl != nil { mergedCat.docUrl = cat.docUrl }
                     if mergedCat.description == nil && cat.description != nil { mergedCat.description = cat.description }
                 }
-                mergedCat.provider = canon.providerId
-                mergedCat.providerName = canon.providerName
-                mergedCat.name = canon.displayName
+                // The row carries the representative's identity: the route
+                // that speaks for the model, not whichever route was merged
+                // last (a Bedrock route must not label an OpenAI model).
+                mergedCat.provider = rep.canon.providerId
+                mergedCat.providerName = rep.canon.providerName
+                mergedCat.name = rep.canon.displayName
                 var u = existing.usage
-                u.provider = canon.providerId
+                u.provider = rep.canon.providerId
                 u.model = canon.family
-                if u.contextK == 0 && cat.contextK > 0 { u.contextK = cat.contextK }
+                if rep.contextK > 0 {
+                    u.contextK = rep.contextK
+                } else if u.contextK == 0 && cat.contextK > 0 {
+                    u.contextK = cat.contextK
+                }
                 rowMap[familyKey] = ModelRow(usage: u, catalog: mergedCat, hostCount: hostCounts[familyKey] ?? 1)
             } else {
                 entryRank[familyKey] = rank
+                familyRep[familyKey] = FamilyRepresentative(canon: canon, contextK: cat.contextK)
                 var updatedCat = cat
                 updatedCat.name = canon.displayName
                 updatedCat.provider = canon.providerId
