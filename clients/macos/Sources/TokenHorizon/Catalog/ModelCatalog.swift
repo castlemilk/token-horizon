@@ -910,12 +910,30 @@ final class ModelCatalog {
     }
 
     @discardableResult
+    /// Post-merge hygiene for catalog entries: repairs float-precision price
+    /// corruption (0.09999999999999999 -> 0.1), clamps negative prices to 0,
+    /// and resets junk context windows (media/router placeholders ship 99999;
+    /// anything above 10M tokens is not a real context). Applied on initial
+    /// hydration and on every incremental merge.
+    static func normalized(_ e: Entry) -> Entry {
+        var e = e
+        func clean(_ v: Double) -> Double { max(0, (v * 1_000_000).rounded() / 1_000_000) }
+        e.inputPerM = clean(e.inputPerM)
+        e.outputPerM = clean(e.outputPerM)
+        if let c = e.cacheReadPerM { e.cacheReadPerM = clean(c) }
+        if let o = e.originalInputPerM { e.originalInputPerM = clean(o) }
+        if let o = e.originalOutputPerM { e.originalOutputPerM = clean(o) }
+        if e.contextK > 10_000 { e.contextK = 0 }
+        return e
+    }
+
     func mergeDiscoveredEntries(_ newEntries: [String: Entry]) -> (added: Int, updated: Int, addedIds: [String]) {
         lock.lock()
         var added = 0
         var updated = 0
         var addedIds: [String] = []
-        for (k, v) in newEntries {
+        for (k, rawV) in newEntries {
+            let v = Self.normalized(rawV)
             let cleanKey = k.lowercased()
             if let existing = byId[cleanKey] {
                 if existing != v {
@@ -957,7 +975,7 @@ final class ModelCatalog {
         }
         Self.injectDirectFlagships(into: &map, benchmarks: bm)
         Self.fetchCodexCachedModels(into: &map, benchmarks: bm)
-        self.byId = map
+        self.byId = map.mapValues { Self.normalized($0) }
         self.revision += 1
     }
 
@@ -1086,6 +1104,34 @@ final class ModelCatalog {
         return words.joined(separator: " ")
     }
 
+    /// Regional/channel prefixes ("us.", "eu.", "jp.", "global.") and date
+    /// stamps ("@20251001", "-20251001") are transport metadata, not model
+    /// identity — every copy names the same underlying model. Stripping them
+    /// stops one Claude model from fragmenting into ~10 family rows.
+    private static func stripRegionalAndDateAffixes(_ s: String) -> String {
+        var out = s
+        // Trailing date stamps: "@20251001" or "-20251001" (exactly 8 digits).
+        out = out.replacingOccurrences(of: #"[@-]\d{8}$"#, with: "", options: .regularExpression)
+        let regional = ["us.", "eu.", "jp.", "global.", "au.", "ap.", "amazon.", "vertex.", "bedrock."]
+        var changed = true
+        while changed {
+            changed = false
+            for r in regional where out.lowercased().hasPrefix(r) {
+                out = String(out.dropFirst(r.count))
+                changed = true
+            }
+        }
+        return out
+    }
+
+    /// Folds hyphenated minor versions into dots so "claude-opus-5-5" and
+    /// "claude-opus-5.5" resolve to one family (also covers legacy 3-7 / 3-5,
+    /// which were previously the only two folded). Does not touch trailing
+    /// standalone digits like "claude-haiku-4-5" beyond the major-minor pair.
+    private static func normalizedVersionDots(_ s: String) -> String {
+        s.replacingOccurrences(of: #"-(\d)-(\d)(?!\d)"#, with: "-$1.$2", options: .regularExpression)
+    }
+
     private static func canonicalIdentityUncached(provider: String, model: String) -> (family: String, displayName: String, providerId: String, providerName: String) {
         let p = provider.lowercased()
         let m = model.lowercased()
@@ -1094,7 +1140,10 @@ final class ModelCatalog {
             .replacingOccurrences(of: ":", with: "-")
 
         // 1. Google Gemini, Gemma, Imagen & Veo (dynamic auto-discovery for all 3.x, 2.x, 1.x releases)
-        if p.contains("google") || p.contains("vertex") || m.contains("gemini") || m.contains("gemma") || m.contains("imagen") || m.contains("veo") {
+        // Excludes Claude/Anthropic models that happen to be hosted on Google/Vertex
+        // ("google/claude-opus-5-5@default") — those must reach the Anthropic branch,
+        // not be mangled into a Gemini family.
+        if (p.contains("google") || p.contains("vertex") || m.contains("gemini") || m.contains("gemma") || m.contains("imagen") || m.contains("veo")) && !(m.contains("claude") || m.contains("anthropic")) {
             let clean = m.split(separator: "/").last.map(String.init) ?? m
             var family = clean
                 .replacingOccurrences(of: "-latest", with: "")
@@ -1123,15 +1172,27 @@ final class ModelCatalog {
             return (family, name, "glm", "Zhipu AI")
         }
 
-        // 3. Anthropic Claude Models (dynamic for all Claude 3.7, 3.5, 4.x, Sonnet, Opus, Haiku)
+        // 3. Anthropic Claude Models (dynamic for all Claude 3.5/3.7/4.x/5.x, Sonnet, Opus, Haiku)
         if p.contains("anthropic") || p.contains("claude") || m.contains("claude") {
-            let clean = m.split(separator: "/").last.map(String.init) ?? m
+            var clean = m.split(separator: "/").last.map(String.init) ?? m
+            // Drop regional/channel + date affixes: "us.anthropic.claude-sonnet-5"
+            // and "claude-haiku-4-5@20251001" name the same models as their bases.
+            clean = stripRegionalAndDateAffixes(clean)
+            // Drop redundant brand double-prefixes ("anthropic.claude-opus-5-5",
+            // "anthropic-claude-opus-5-5") but never a model's own "claude-" stem.
+            for prefix in ["anthropic.", "anthropic-"] {
+                while clean.lowercased().hasPrefix(prefix) && clean.count > prefix.count {
+                    clean = String(clean.dropFirst(prefix.count))
+                }
+            }
+            if clean.lowercased().hasPrefix("claude.") {
+                clean = "claude-" + clean.dropFirst("claude.".count)
+            }
             var family = clean
                 .replacingOccurrences(of: "-latest", with: "")
                 .replacingOccurrences(of: "-preview", with: "")
-            family = family
-                .replacingOccurrences(of: "claude-3-7-", with: "claude-3.7-")
-                .replacingOccurrences(of: "claude-3-5-", with: "claude-3.5-")
+            // Fold version hyphenation to dots so "-5-5" == "-5.5".
+            family = normalizedVersionDots(family)
             let name = formatModelDisplayName(family)
             return (family, name, "anthropic", "Anthropic")
         }
@@ -1166,6 +1227,15 @@ final class ModelCatalog {
             if family.contains("5.6-sol") || family.contains("5-6-sol") || family.contains("56-sol") {
                 return ("gpt-5.6-sol", "GPT-5.6 Sol", "openai", "OpenAI")
             }
+            // GPT-6 codex workhorse tiers: the generic "-sol"/"luna" rules below
+            // would otherwise collapse gpt-6.1-sol/gpt-6-sol into gpt-5-sol and
+            // gpt-6-luna into gpt-5-luna, losing their identity (and pricing).
+            if family.contains("6.1-sol") || family.contains("6-1-sol") {
+                return ("gpt-6.1-sol", "GPT-6.1 Sol", "openai", "OpenAI")
+            }
+            if family.contains("6-sol") {
+                return ("gpt-6-sol", "GPT-6 Sol", "openai", "OpenAI")
+            }
             if (family.contains("gpt-5-sol") || family.contains("gpt-sol") || family.contains("-sol") || family == "sol") && !family.contains("solar") {
                 return ("gpt-5-sol", "GPT-5 Sol", "openai", "OpenAI")
             }
@@ -1177,6 +1247,9 @@ final class ModelCatalog {
             }
             if family.contains("5.6-luna") || family.contains("5-6-luna") || family.contains("56-luna") {
                 return ("gpt-5.6-luna", "GPT-5.6 Luna", "openai", "OpenAI")
+            }
+            if family.contains("6-luna") {
+                return ("gpt-6-luna", "GPT-6 Luna", "openai", "OpenAI")
             }
             if family.contains("luna") && !family.contains("lunaris") {
                 return ("gpt-5-luna", "GPT-5 Luna", "openai", "OpenAI")
@@ -1579,6 +1652,26 @@ final class ModelCatalog {
                   docUrl: "https://platform.openai.com/docs/models", description: "OpenAI premier frontier flagship model for complex coding, computer use & autonomous agents (90% prompt cache savings)",
                   reasoning: true, toolCall: true, vision: true, openWeights: false,
                   discountPercent: 90, discountLabel: "-90% CACHED", discountDetail: "90% prompt cache savings ($10.00 → $1.00 / 1M cache read)"),
+            // Codex-plan workhorse tiers. CI has no ~/.codex/models_cache.json, so
+            // fetchCodexCachedModels injects these only locally — pinning them here
+            // keeps them in the published catalog (gpt-6.1-sol is the single most
+            // used model on this machine). Context + descriptions mirror the codex
+            // cache (max_context_window 872000); no benchmark is fabricated here.
+            Entry(id: "gpt-6.1-sol", name: "GPT-6.1 Sol", provider: "openai", providerName: "OpenAI",
+                  inputPerM: 2.50, outputPerM: 10.00, cacheReadPerM: 0.50, contextK: 872,
+                  benchmarks: benchmarks["gpt-6.1-sol"].map { Benchmarks(swe: $0.swe, lcb: $0.lcb, source: $0.source, approx: $0.approx) },
+                  docUrl: "https://platform.openai.com/docs/models", description: "Codex latest workhorse model for coding and everyday work",
+                  reasoning: true, toolCall: true, vision: nil, openWeights: false),
+            Entry(id: "gpt-6-sol", name: "GPT-6 Sol", provider: "openai", providerName: "OpenAI",
+                  inputPerM: 2.50, outputPerM: 10.00, cacheReadPerM: 0.50, contextK: 872,
+                  benchmarks: benchmarks["gpt-6-sol"].map { Benchmarks(swe: $0.swe, lcb: $0.lcb, source: $0.source, approx: $0.approx) },
+                  docUrl: "https://platform.openai.com/docs/models", description: "Codex previous generation workhorse model",
+                  reasoning: true, toolCall: true, vision: nil, openWeights: false),
+            Entry(id: "gpt-6-luna", name: "GPT-6 Luna", provider: "openai", providerName: "OpenAI",
+                  inputPerM: 0.10, outputPerM: 0.40, cacheReadPerM: 0.025, contextK: 872,
+                  benchmarks: benchmarks["gpt-6-luna"].map { Benchmarks(swe: $0.swe, lcb: $0.lcb, source: $0.source, approx: $0.approx) },
+                  docUrl: "https://platform.openai.com/docs/models", description: "Codex fast and affordable model for easier tasks",
+                  reasoning: true, toolCall: true, vision: nil, openWeights: false),
             Entry(id: "gpt-5.6-sol", name: "GPT-5.6 Sol", provider: "openai", providerName: "OpenAI",
                   inputPerM: 2.50, outputPerM: 10.00, cacheReadPerM: 0.50, contextK: 1050,
                   benchmarks: benchmarks["gpt-5.6-sol"].map { Benchmarks(swe: $0.swe, lcb: $0.lcb, source: $0.source, approx: $0.approx) } ?? Benchmarks(swe: 83.0, lcb: 80.0, source: "OpenAI"),
