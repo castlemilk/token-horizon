@@ -161,7 +161,7 @@ final class ModelCatalog {
                 outputPerM: 50.00,
                 cacheReadPerM: 1.00,
                 contextK: 872,
-                benchmarks: Benchmarks(swe: 85.2, lcb: 81.0, source: "OpenAI"),
+                benchmarks: Self.curatedBenchmark("gpt-6-astra", or: Benchmarks(swe: 85.2, lcb: 81.0, source: "OpenAI")),
                 docUrl: "https://platform.openai.com/docs/models",
                 description: "OpenAI premier frontier flagship model for complex coding, computer use & autonomous agents (90% prompt cache savings)",
                 reasoning: true,
@@ -184,7 +184,7 @@ final class ModelCatalog {
                 outputPerM: 10.00,
                 cacheReadPerM: 0.50,
                 contextK: 1050,
-                benchmarks: Benchmarks(swe: 83.0, lcb: 80.0, source: "OpenAI"),
+                benchmarks: Self.curatedBenchmark("gpt-5.6-sol", or: Benchmarks(swe: 81.5, lcb: 78.0, source: "OpenAI", approx: true)),
                 docUrl: "https://platform.openai.com/docs/models",
                 description: "OpenAI premier flagship tier for complex reasoning, architectural design & multi-step coding agents (50% promotional discount active)",
                 reasoning: true,
@@ -209,7 +209,7 @@ final class ModelCatalog {
                 outputPerM: 10.00,
                 cacheReadPerM: 0.50,
                 contextK: 256,
-                benchmarks: Benchmarks(swe: 81.5, lcb: 78.0, source: "OpenAI"),
+                benchmarks: Self.curatedBenchmark("gpt-5-sol", or: Benchmarks(swe: 81.5, lcb: 78.0, source: "OpenAI", approx: true)),
                 docUrl: "https://platform.openai.com/docs/models",
                 description: "OpenAI premier flagship tier for complex reasoning, architectural design & multi-step coding agents (50% promotional discount active)",
                 reasoning: true,
@@ -234,7 +234,7 @@ final class ModelCatalog {
                 outputPerM: 4.80,
                 cacheReadPerM: 0.15,
                 contextK: 1050,
-                benchmarks: Benchmarks(swe: 74.0, lcb: 70.0, source: "OpenAI"),
+                benchmarks: Self.curatedBenchmark("gpt-5.6-terra", or: Benchmarks(swe: 72.0, lcb: 68.5, source: "OpenAI", approx: true)),
                 docUrl: "https://platform.openai.com/docs/models",
                 description: "OpenAI balanced all-rounder tier for daily professional coding & multi-modal workflows (20% promo reduction)",
                 reasoning: true,
@@ -258,7 +258,7 @@ final class ModelCatalog {
                 outputPerM: 4.80,
                 cacheReadPerM: 0.15,
                 contextK: 256,
-                benchmarks: Benchmarks(swe: 72.0, lcb: 68.5, source: "OpenAI"),
+                benchmarks: Self.curatedBenchmark("gpt-5-terra", or: Benchmarks(swe: 72.0, lcb: 68.5, source: "OpenAI", approx: true)),
                 docUrl: "https://platform.openai.com/docs/models",
                 description: "OpenAI balanced all-rounder tier for daily professional coding & multi-modal workflows (20% promo reduction)",
                 reasoning: true,
@@ -283,7 +283,7 @@ final class ModelCatalog {
                 outputPerM: 0.40,
                 cacheReadPerM: 0.025,
                 contextK: 1050,
-                benchmarks: Benchmarks(swe: 54.0, lcb: 52.0, source: "OpenAI"),
+                benchmarks: Self.curatedBenchmark("gpt-5.6-luna", or: Benchmarks(swe: 52.0, lcb: 50.0, source: "OpenAI", approx: true)),
                 docUrl: "https://platform.openai.com/docs/models",
                 description: "OpenAI high-speed lightweight tier for fast summaries, classification & cost-sensitive tasks",
                 reasoning: true,
@@ -302,7 +302,7 @@ final class ModelCatalog {
                 outputPerM: 0.40,
                 cacheReadPerM: 0.025,
                 contextK: 128,
-                benchmarks: Benchmarks(swe: 52.0, lcb: 50.0, source: "OpenAI"),
+                benchmarks: Self.curatedBenchmark("gpt-5-luna", or: Benchmarks(swe: 52.0, lcb: 50.0, source: "OpenAI", approx: true)),
                 docUrl: "https://platform.openai.com/docs/models",
                 description: "OpenAI high-speed lightweight tier for fast summaries, classification & cost-sensitive tasks",
                 reasoning: true,
@@ -326,7 +326,7 @@ final class ModelCatalog {
                 outputPerM: 0.60,
                 cacheReadPerM: 0.003,
                 contextK: 1000,
-                benchmarks: Benchmarks(swe: 78.0, lcb: 74.0, source: "DeepSeek"),
+                benchmarks: Self.curatedBenchmark("deepseek-v4.1-flash", or: Benchmarks(swe: 78.0, lcb: 74.0, source: "DeepSeek", approx: true)),
                 docUrl: "https://api-docs.deepseek.com/quick_start/pricing",
                 description: "DeepSeek current flagship (off-peak shown; peak 2x; surpasses V4 Pro, faster + cheaper)",
                 reasoning: true,
@@ -346,7 +346,7 @@ final class ModelCatalog {
                 outputPerM: 1.98,
                 cacheReadPerM: 0.022,
                 contextK: 1000,
-                benchmarks: Benchmarks(swe: 72.0, lcb: 68.0, source: "DeepSeek"),
+                benchmarks: Self.curatedBenchmark("deepseek-v4-pro", or: Benchmarks(swe: 72.0, lcb: 68.0, source: "DeepSeek", approx: true)),
                 docUrl: "https://api-docs.deepseek.com/quick_start/pricing",
                 description: "DeepSeek V4 Pro 0813 (off-peak shown; peak 2x; routes to V4.1 Flash from 2026-09-14 billed at Flash)",
                 reasoning: true,
@@ -365,7 +365,7 @@ final class ModelCatalog {
                 outputPerM: 50.00,
                 cacheReadPerM: 0.25,
                 contextK: 1000,
-                benchmarks: Benchmarks(swe: 84.0, lcb: 80.5, source: "Anthropic"),
+                benchmarks: Self.curatedBenchmark("claude-fable-5-1", or: Benchmarks(swe: 84.0, lcb: 80.5, source: "Anthropic", approx: true)),
                 docUrl: "https://docs.anthropic.com/en/docs/about-claude/models",
                 description: "Anthropic frontier reasoning & software engineering model (97.5% prompt cache savings)",
                 reasoning: true,
@@ -413,7 +413,9 @@ final class ModelCatalog {
                 outputPerM: isLegacy ? 75.00 : 25.00,
                 cacheReadPerM: isLegacy ? 1.50 : 0.50,
                 contextK: 1000,
-                benchmarks: Benchmarks(swe: clean.contains("opus-5") ? 82.0 : 76.5, lcb: clean.contains("opus-5") ? 79.0 : 74.0, source: "Anthropic"),
+                benchmarks: clean.contains("opus-5")
+                    ? Self.curatedBenchmark("claude-opus-5", or: Benchmarks(swe: 82.0, lcb: 79.0, source: "Anthropic", approx: true))
+                    : Self.curatedBenchmark("claude-opus-4-6", or: Benchmarks(swe: 76.5, lcb: 74.0, source: "Anthropic", approx: true)),
                 docUrl: "https://docs.anthropic.com/en/docs/about-claude/models",
                 description: "Anthropic flagship model for complex coding & architecture (90% prompt cache savings)",
                 reasoning: true,
@@ -436,7 +438,9 @@ final class ModelCatalog {
                 outputPerM: 15.00,
                 cacheReadPerM: 0.30,
                 contextK: 200,
-                benchmarks: Benchmarks(swe: is37 ? 70.3 : 65.0, lcb: is37 ? 71.0 : 67.0, source: "Anthropic"),
+                benchmarks: is37
+                    ? Self.curatedBenchmark("claude-3.7-sonnet", or: Benchmarks(swe: 77.6, lcb: 70.3, source: "Anthropic"))
+                    : Self.curatedBenchmark("claude-3.5-sonnet", or: Benchmarks(swe: 74.5, lcb: 67.2, source: "Anthropic")),
                 docUrl: "https://docs.anthropic.com/en/docs/about-claude/models",
                 description: "Anthropic premier industry benchmark model for coding & agentic workflows (90% prompt cache savings)",
                 reasoning: is37,
@@ -459,7 +463,9 @@ final class ModelCatalog {
                 outputPerM: is45 ? 5.00 : 4.00,
                 cacheReadPerM: is45 ? 0.10 : 0.08,
                 contextK: 200,
-                benchmarks: Benchmarks(swe: 40.6, lcb: 43.1, source: "Anthropic"),
+                benchmarks: is45
+                    ? Self.curatedBenchmark("claude-haiku-4-5", or: Benchmarks(swe: 40.6, lcb: 43.1, source: "Anthropic", approx: true))
+                    : Self.curatedBenchmark("claude-3.5-haiku", or: Benchmarks(swe: 40.6, lcb: 43.1, source: "Anthropic")),
                 docUrl: "https://docs.anthropic.com/en/docs/about-claude/models",
                 description: "Anthropic high-speed lightweight model for quick tasks & summaries",
                 reasoning: false,
@@ -478,7 +484,7 @@ final class ModelCatalog {
                 outputPerM: 0.60,
                 cacheReadPerM: 0.038,
                 contextK: 1000,
-                benchmarks: Benchmarks(swe: 67.0, lcb: 65.0, source: "Google"),
+                benchmarks: Self.curatedBenchmark("gemini-3.7-flash", or: Benchmarks(swe: 67.0, lcb: 65.0, source: "Google", approx: true)),
                 docUrl: "https://ai.google.dev/pricing",
                 description: "Google next-generation hybrid reasoning & coding flash model (75% context caching savings)",
                 reasoning: true,
@@ -500,7 +506,7 @@ final class ModelCatalog {
                 outputPerM: 0.60,
                 cacheReadPerM: 0.038,
                 contextK: 1000,
-                benchmarks: Benchmarks(swe: 65.0, lcb: 62.0, source: "Google"),
+                benchmarks: Self.curatedBenchmark("gemini-3.5-flash", or: Benchmarks(swe: 65.0, lcb: 62.0, source: "Google", approx: true)),
                 docUrl: "https://ai.google.dev/pricing",
                 description: "Google next-generation speed & multimodal reasoning model",
                 reasoning: true,
@@ -519,7 +525,7 @@ final class ModelCatalog {
                 outputPerM: 5.00,
                 cacheReadPerM: 0.31,
                 contextK: 2000,
-                benchmarks: Benchmarks(swe: 63.8, lcb: 60.5, source: "Google"),
+                benchmarks: Self.curatedBenchmark("gemini-2.5-pro", or: Benchmarks(swe: 63.8, lcb: 60.5, source: "Google")),
                 docUrl: "https://ai.google.dev/pricing",
                 description: "Google frontier multimodal reasoning & coding model",
                 reasoning: true,
@@ -538,7 +544,7 @@ final class ModelCatalog {
                 outputPerM: 0.60,
                 cacheReadPerM: 0.038,
                 contextK: 1000,
-                benchmarks: Benchmarks(swe: 55.0, lcb: 54.0, source: "Google"),
+                benchmarks: Self.curatedBenchmark("gemini-2.5-flash", or: Benchmarks(swe: 55.0, lcb: 54.0, source: "Google", approx: true)),
                 docUrl: "https://ai.google.dev/pricing",
                 description: "Google high-performance multimodal flash model",
                 reasoning: true,
@@ -557,7 +563,7 @@ final class ModelCatalog {
                 outputPerM: 0.01,
                 cacheReadPerM: 0.005,
                 contextK: 128,
-                benchmarks: Benchmarks(swe: 58.0, lcb: 55.0, source: "Zhipu"),
+                benchmarks: Self.curatedBenchmark("glm-5.3-flash", or: Benchmarks(swe: 64.0, lcb: 60.0, source: "Zhipu", approx: true)),
                 docUrl: "https://open.bigmodel.cn/dev/api",
                 description: "Zhipu high-speed lightweight reasoning & coding model",
                 reasoning: true,
@@ -576,7 +582,7 @@ final class ModelCatalog {
                 outputPerM: 0.70,
                 cacheReadPerM: 0.14,
                 contextK: 128,
-                benchmarks: Benchmarks(swe: 68.0, lcb: 63.0, source: "Zhipu"),
+                benchmarks: Self.curatedBenchmark("glm-5.3", or: Benchmarks(swe: 68.0, lcb: 63.0, source: "Zhipu", approx: true)),
                 docUrl: "https://open.bigmodel.cn/dev/api",
                 description: "Zhipu flagship frontier coding & reasoning model",
                 reasoning: true,
@@ -1674,40 +1680,40 @@ final class ModelCatalog {
                   reasoning: true, toolCall: true, vision: nil, openWeights: false),
             Entry(id: "gpt-5.6-sol", name: "GPT-5.6 Sol", provider: "openai", providerName: "OpenAI",
                   inputPerM: 2.50, outputPerM: 10.00, cacheReadPerM: 0.50, contextK: 1050,
-                  benchmarks: benchmarks["gpt-5.6-sol"].map { Benchmarks(swe: $0.swe, lcb: $0.lcb, source: $0.source, approx: $0.approx) } ?? Benchmarks(swe: 83.0, lcb: 80.0, source: "OpenAI"),
+                  benchmarks: benchmarks["gpt-5.6-sol"].map { Benchmarks(swe: $0.swe, lcb: $0.lcb, source: $0.source, approx: $0.approx) } ?? Benchmarks(swe: 81.5, lcb: 78.0, source: "OpenAI", approx: true),
                   docUrl: "https://platform.openai.com/docs/models", description: "OpenAI premier flagship tier for complex reasoning & multi-step coding agents (50% promo reduction)",
                   reasoning: true, toolCall: true, vision: true, openWeights: false,
                   discountPercent: 50, discountLabel: "-50% PROMO", discountDetail: "50% promotional reduction ($5.00 → $2.50 / 1M input, $20.00 → $10.00 / 1M output)",
                   originalInputPerM: 5.00, originalOutputPerM: 20.00),
             Entry(id: "gpt-5-sol", name: "GPT-5 Sol", provider: "openai", providerName: "OpenAI",
                   inputPerM: 2.50, outputPerM: 10.00, cacheReadPerM: 0.50, contextK: 256,
-                  benchmarks: benchmarks["gpt-5-sol"].map { Benchmarks(swe: $0.swe, lcb: $0.lcb, source: $0.source, approx: $0.approx) } ?? Benchmarks(swe: 81.5, lcb: 78.0, source: "OpenAI"),
+                  benchmarks: benchmarks["gpt-5-sol"].map { Benchmarks(swe: $0.swe, lcb: $0.lcb, source: $0.source, approx: $0.approx) } ?? Benchmarks(swe: 81.5, lcb: 78.0, source: "OpenAI", approx: true),
                   docUrl: "https://platform.openai.com/docs/models", description: "OpenAI premier flagship tier for complex reasoning & multi-step coding agents (50% promo reduction)",
                   reasoning: true, toolCall: true, vision: true, openWeights: false,
                   discountPercent: 50, discountLabel: "-50% PROMO", discountDetail: "50% promotional reduction ($5.00 → $2.50 / 1M input, $20.00 → $10.00 / 1M output)",
                   originalInputPerM: 5.00, originalOutputPerM: 20.00),
             Entry(id: "gpt-5.6-terra", name: "GPT-5.6 Terra", provider: "openai", providerName: "OpenAI",
                   inputPerM: 1.20, outputPerM: 4.80, cacheReadPerM: 0.15, contextK: 1050,
-                  benchmarks: benchmarks["gpt-5.6-terra"].map { Benchmarks(swe: $0.swe, lcb: $0.lcb, source: $0.source, approx: $0.approx) } ?? Benchmarks(swe: 74.0, lcb: 70.0, source: "OpenAI"),
+                  benchmarks: benchmarks["gpt-5.6-terra"].map { Benchmarks(swe: $0.swe, lcb: $0.lcb, source: $0.source, approx: $0.approx) } ?? Benchmarks(swe: 72.0, lcb: 68.5, source: "OpenAI", approx: true),
                   docUrl: "https://platform.openai.com/docs/models", description: "OpenAI balanced all-rounder tier for daily professional workflows (20% promo reduction)",
                   reasoning: true, toolCall: true, vision: true, openWeights: false,
                   discountPercent: 20, discountLabel: "-20% PROMO", discountDetail: "20% promotional reduction ($1.50 → $1.20 / 1M input, $6.00 → $4.80 / 1M output)",
                   originalInputPerM: 1.50, originalOutputPerM: 6.00),
             Entry(id: "gpt-5-terra", name: "GPT-5 Terra", provider: "openai", providerName: "OpenAI",
                   inputPerM: 1.20, outputPerM: 4.80, cacheReadPerM: 0.15, contextK: 256,
-                  benchmarks: benchmarks["gpt-5-terra"].map { Benchmarks(swe: $0.swe, lcb: $0.lcb, source: $0.source, approx: $0.approx) } ?? Benchmarks(swe: 72.0, lcb: 68.5, source: "OpenAI"),
+                  benchmarks: benchmarks["gpt-5-terra"].map { Benchmarks(swe: $0.swe, lcb: $0.lcb, source: $0.source, approx: $0.approx) } ?? Benchmarks(swe: 72.0, lcb: 68.5, source: "OpenAI", approx: true),
                   docUrl: "https://platform.openai.com/docs/models", description: "OpenAI balanced all-rounder tier for daily professional workflows (20% promo reduction)",
                   reasoning: true, toolCall: true, vision: true, openWeights: false,
                   discountPercent: 20, discountLabel: "-20% PROMO", discountDetail: "20% promotional reduction ($1.50 → $1.20 / 1M input, $6.00 → $4.80 / 1M output)",
                   originalInputPerM: 1.50, originalOutputPerM: 6.00),
             Entry(id: "gpt-5.6-luna", name: "GPT-5.6 Luna", provider: "openai", providerName: "OpenAI",
                   inputPerM: 0.10, outputPerM: 0.40, cacheReadPerM: 0.025, contextK: 1050,
-                  benchmarks: benchmarks["gpt-5.6-luna"].map { Benchmarks(swe: $0.swe, lcb: $0.lcb, source: $0.source, approx: $0.approx) } ?? Benchmarks(swe: 54.0, lcb: 52.0, source: "OpenAI"),
+                  benchmarks: benchmarks["gpt-5.6-luna"].map { Benchmarks(swe: $0.swe, lcb: $0.lcb, source: $0.source, approx: $0.approx) } ?? Benchmarks(swe: 52.0, lcb: 50.0, source: "OpenAI", approx: true),
                   docUrl: "https://platform.openai.com/docs/models", description: "OpenAI high-speed lightweight tier for fast summaries & cost-sensitive tasks",
                   reasoning: true, toolCall: true, vision: true, openWeights: false),
             Entry(id: "gpt-5-luna", name: "GPT-5 Luna", provider: "openai", providerName: "OpenAI",
                   inputPerM: 0.10, outputPerM: 0.40, cacheReadPerM: 0.025, contextK: 128,
-                  benchmarks: benchmarks["gpt-5-luna"].map { Benchmarks(swe: $0.swe, lcb: $0.lcb, source: $0.source, approx: $0.approx) } ?? Benchmarks(swe: 52.0, lcb: 50.0, source: "OpenAI"),
+                  benchmarks: benchmarks["gpt-5-luna"].map { Benchmarks(swe: $0.swe, lcb: $0.lcb, source: $0.source, approx: $0.approx) } ?? Benchmarks(swe: 52.0, lcb: 50.0, source: "OpenAI", approx: true),
                   docUrl: "https://platform.openai.com/docs/models", description: "OpenAI high-speed lightweight tier for fast summaries & cost-sensitive tasks",
                   reasoning: true, toolCall: true, vision: true, openWeights: false),
             Entry(id: "gemini-3.7-flash", name: "Gemini 3.7 Flash", provider: "google", providerName: "Google",
@@ -1761,13 +1767,13 @@ final class ModelCatalog {
                   discountPercent: 90, discountLabel: "-90% CACHED", discountDetail: "90% prompt cache read discount ($5.00 → $0.50 / 1M)"),
             Entry(id: "claude-3.7-sonnet", name: "Claude 3.7 Sonnet", provider: "anthropic", providerName: "Anthropic",
                   inputPerM: 3.00, outputPerM: 15.00, cacheReadPerM: 0.30, contextK: 200,
-                  benchmarks: benchmarks["claude-3.7-sonnet"].map { Benchmarks(swe: $0.swe, lcb: $0.lcb, source: $0.source, approx: $0.approx) } ?? Benchmarks(swe: 70.3, lcb: 71.0, source: "Anthropic"),
+                  benchmarks: benchmarks["claude-3.7-sonnet"].map { Benchmarks(swe: $0.swe, lcb: $0.lcb, source: $0.source, approx: $0.approx) } ?? Benchmarks(swe: 77.6, lcb: 70.3, source: "Anthropic"),
                   docUrl: "https://docs.anthropic.com/en/docs/about-claude/models", description: "Anthropic premier industry benchmark model for coding & agentic workflows (90% prompt cache savings)",
                   reasoning: true, toolCall: true, vision: true, openWeights: false,
                   discountPercent: 90, discountLabel: "-90% CACHED", discountDetail: "90% prompt cache read discount ($3.00 → $0.30 / 1M)"),
             Entry(id: "claude-3.5-sonnet", name: "Claude 3.5 Sonnet", provider: "anthropic", providerName: "Anthropic",
                   inputPerM: 3.00, outputPerM: 15.00, cacheReadPerM: 0.30, contextK: 200,
-                  benchmarks: benchmarks["claude-3.5-sonnet"].map { Benchmarks(swe: $0.swe, lcb: $0.lcb, source: $0.source, approx: $0.approx) } ?? Benchmarks(swe: 65.0, lcb: 67.0, source: "Anthropic"),
+                  benchmarks: benchmarks["claude-3.5-sonnet"].map { Benchmarks(swe: $0.swe, lcb: $0.lcb, source: $0.source, approx: $0.approx) } ?? Benchmarks(swe: 74.5, lcb: 67.2, source: "Anthropic"),
                   docUrl: "https://docs.anthropic.com/en/docs/about-claude/models", description: "Anthropic premier all-rounder model for coding & agents (90% prompt cache savings)",
                   reasoning: false, toolCall: true, vision: true, openWeights: false,
                   discountPercent: 90, discountLabel: "-90% CACHED", discountDetail: "90% prompt cache read discount ($3.00 → $0.30 / 1M)"),
@@ -2463,9 +2469,48 @@ final class ModelCatalog {
             // that matches the name (a local Ollama model, say) and make the
             // model look scored when nothing was measured.
             guard row.isMeasured else { continue }
-            out[match.lowercased()] = row
+            let key = match.lowercased()
+            out[key] = row
+            // Version separators disagree across sources: model ids, gateways
+            // and the flagships spell generations with dots ("claude-3.7-
+            // sonnet") while older curated keys use hyphens ("claude-3-7-
+            // sonnet"). Index both spellings so a curated score is never
+            // silently shadowed by a hardcoded fallback over a separator.
+            //
+            // The folds mirror `normalizedVersionDots` exactly, so an alias
+            // only ever joins two spellings that already resolve to the same
+            // family — an alias can never point a model at another model's
+            // score. Aliases fill empty slots only: a raw key written later
+            // (in either order) overwrites its alias.
+            let dotted = key.replacingOccurrences(of: #"-(\d)-(\d)(?!\d)"#, with: "-$1.$2", options: .regularExpression)
+            if dotted != key, out[dotted] == nil { out[dotted] = row }
+            let hyphenated = key.replacingOccurrences(of: #"(\d)\.(\d)(?!\d)"#, with: "$1-$2", options: .regularExpression)
+            if hyphenated != key, out[hyphenated] == nil { out[hyphenated] = row }
         }
         return out
+    }
+
+    /// The curated table, loaded once, for the fallback construction path.
+    ///
+    /// `lookup(id:)` synthesizes an entry on every id the catalog does not
+    /// know, so re-reading the bundled JSON per miss would tax exactly the
+    /// path the id memo exists to protect. The primary loaders still call
+    /// `loadBenchmarks()` fresh — this copy only feeds `curatedBenchmark`.
+    private static let fallbackBenchmarks: BenchmarkTable = loadBenchmarks()
+
+    /// Table-first benchmark for hand-authored fallback entries.
+    ///
+    /// `benchmarks.json` is the single source of truth for scores: whenever it
+    /// carries the key, its numbers win, and the caller's literal survives only
+    /// a missing table (a broken install). The inline literals used to drift
+    /// from the curated table — claude-3.7-sonnet shipped 70.3/71 while the
+    /// table said 77.6/70.3, and claude-3.5-sonnet 65/67 against 74.5/67.2 —
+    /// so the literal is now documentation of last resort, not data.
+    static func curatedBenchmark(_ key: String, or fallback: Benchmarks) -> Benchmarks {
+        if let hit = fallbackBenchmarks[key.lowercased()], hit.isMeasured {
+            return Benchmarks(swe: hit.swe, lcb: hit.lcb, source: hit.source, approx: hit.approx)
+        }
+        return fallback
     }
 
     /// Strip a route suffix to the canonical weights a score belongs to.
@@ -2481,6 +2526,13 @@ final class ModelCatalog {
         // Only the last path segment: the provider prefix is not part of the name.
         if let slash = base.lastIndex(of: "/") {
             base = String(base[base.index(after: slash)...])
+        }
+        // Trailing date stamps ("claude-3-5-sonnet-20241022", "@20251001"):
+        // a frozen snapshot of these weights, not a different model — the same
+        // rule as the date affixes stripped from family names.
+        if let stamp = base.range(of: #"[@-]\d{8}$"#, options: .regularExpression) {
+            base = String(base[..<stamp.lowerBound])
+            stripped = true
         }
         for suffix in ["-free", "-contributor", "-preview", "-preview-free", "-latest", "-exp"] {
             if base.hasSuffix(suffix) {
