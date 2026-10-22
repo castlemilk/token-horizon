@@ -88,7 +88,10 @@ enum ModelsPipeline {
 
         var rowMap: [String: ModelRow] = [:]
         var hostCounts: [String: Int] = [:]
-        var isPrimaryEntry: [String: Bool] = [:]
+        /// The rank of the route that currently represents each family: the
+        /// lab's own route first, then a plan, then a reseller (see
+        /// `ModelCatalog.pricingAuthority`).
+        var entryRank: [String: (direct: Int, tier: Int)] = [:]
         // Memoize catalog lookups: the same model id can appear in many
         // synthetic/usage rows, and a miss costs an O(n) suffix scan in
         // ModelCatalog.lookup. One dict lookup per row instead.
@@ -102,7 +105,6 @@ enum ModelsPipeline {
         let totalExpected = catalog.count + syntheticModels.count + usageModels.count
         rowMap.reserveCapacity(totalExpected)
         hostCounts.reserveCapacity(totalExpected)
-        isPrimaryEntry.reserveCapacity(totalExpected)
 
         // Raw source providers per canonical family. Plan coverage is declared
         // against these ids (`opencode-go`, `zai-coding-plan`, …), which the
@@ -117,21 +119,31 @@ enum ModelsPipeline {
             if !rawProvider.isEmpty { familySources[familyKey, default: []].insert(rawProvider) }
             hostCounts[familyKey, default: 0] += 1
             let isPrimary = cat.provider.lowercased() == canon.providerId
-            let existingIsPrimary = isPrimaryEntry[familyKey] ?? false
+            // Which route's pricing represents the model: the lab's own route
+            // first, then a plan that passes the list price through, then a
+            // reseller (whose price is its own). Without this the row took
+            // whichever route the catalog happened to list first — a
+            // regional or discounted route could speak for the model.
+            let rank = (direct: isPrimary ? 0 : 1,
+                        tier: ModelCatalog.pricingAuthority(provider: cat.provider))
+            let existingRank = entryRank[familyKey] ?? (direct: 1, tier: Int.max)
             if let existing = rowMap[familyKey] {
                 var mergedCat = existing.catalog ?? cat
-                if isPrimary && !existingIsPrimary {
+                if rank < existingRank {
+                    // A more authoritative route: it represents the model now.
                     mergedCat = cat
+                    // …unless it carries no price of its own (a preview id, a
+                    // plan tier): the model still has a price, and the list
+                    // never shows $0 for a model other routes sell.
+                    if mergedCat.inputPerM == 0, let old = existing.catalog, old.inputPerM > 0 {
+                        mergedCat.inputPerM = old.inputPerM
+                        mergedCat.outputPerM = old.outputPerM
+                        mergedCat.cacheReadPerM = old.cacheReadPerM
+                    }
                     mergedCat.name = canon.displayName
                     mergedCat.providerName = canon.providerName
-                    isPrimaryEntry[familyKey] = true
-                } else if !isPrimary && existingIsPrimary {
-                    // Authoritative provider entry is already set. Do not allow aggregator pricing to corrupt it.
-                    if mergedCat.benchmarks == nil && cat.benchmarks != nil { mergedCat.benchmarks = cat.benchmarks }
-                    if mergedCat.docUrl == nil && cat.docUrl != nil { mergedCat.docUrl = cat.docUrl }
-                    if mergedCat.description == nil && cat.description != nil { mergedCat.description = cat.description }
-                } else {
-                    if isPrimary { isPrimaryEntry[familyKey] = true }
+                    entryRank[familyKey] = rank
+                } else if rank == existingRank {
                     if mergedCat.inputPerM == 0 && cat.inputPerM > 0 { mergedCat.inputPerM = cat.inputPerM }
                     if mergedCat.outputPerM == 0 && cat.outputPerM > 0 { mergedCat.outputPerM = cat.outputPerM }
                     if mergedCat.cacheReadPerM == nil && cat.cacheReadPerM != nil { mergedCat.cacheReadPerM = cat.cacheReadPerM }
@@ -145,6 +157,19 @@ enum ModelsPipeline {
                     if mergedCat.discountDetail == nil && cat.discountDetail != nil { mergedCat.discountDetail = cat.discountDetail }
                     if mergedCat.originalInputPerM == nil && cat.originalInputPerM != nil { mergedCat.originalInputPerM = cat.originalInputPerM }
                     if mergedCat.originalOutputPerM == nil && cat.originalOutputPerM != nil { mergedCat.originalOutputPerM = cat.originalOutputPerM }
+                } else {
+                    // A less authoritative route. Do not let reseller pricing
+                    // corrupt the model's own price — but do not leave the
+                    // model priceless either: a route that does quote a price
+                    // fills an empty one.
+                    if mergedCat.inputPerM == 0 && cat.inputPerM > 0 {
+                        mergedCat.inputPerM = cat.inputPerM
+                        mergedCat.outputPerM = cat.outputPerM
+                        mergedCat.cacheReadPerM = cat.cacheReadPerM
+                    }
+                    if mergedCat.benchmarks == nil && cat.benchmarks != nil { mergedCat.benchmarks = cat.benchmarks }
+                    if mergedCat.docUrl == nil && cat.docUrl != nil { mergedCat.docUrl = cat.docUrl }
+                    if mergedCat.description == nil && cat.description != nil { mergedCat.description = cat.description }
                 }
                 mergedCat.provider = canon.providerId
                 mergedCat.providerName = canon.providerName
@@ -155,7 +180,7 @@ enum ModelsPipeline {
                 if u.contextK == 0 && cat.contextK > 0 { u.contextK = cat.contextK }
                 rowMap[familyKey] = ModelRow(usage: u, catalog: mergedCat, hostCount: hostCounts[familyKey] ?? 1)
             } else {
-                isPrimaryEntry[familyKey] = isPrimary
+                entryRank[familyKey] = rank
                 var updatedCat = cat
                 updatedCat.name = canon.displayName
                 updatedCat.provider = canon.providerId

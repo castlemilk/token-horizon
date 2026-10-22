@@ -1134,11 +1134,168 @@ final class ModelCatalog {
     /// "claude-opus-5.5" resolve to one family (also covers legacy 3-7 / 3-5,
     /// which were previously the only two folded). Does not touch trailing
     /// standalone digits like "claude-haiku-4-5" beyond the major-minor pair.
+    ///
+    /// A param count is not a version: "ministral-3-8b" is Llama-style
+    /// sizing, not version 3.8, so a folded digit followed by "b" is left
+    /// alone — the same rule keeps "gemma-4-31b" intact. A dotted number
+    /// ("hy-mt2-1.8b") is a size of its own, not a version either.
     private static func normalizedVersionDots(_ s: String) -> String {
-        s.replacingOccurrences(of: #"-(\d)-(\d)(?!\d)"#, with: "-$1.$2", options: .regularExpression)
+        s.replacingOccurrences(of: #"(?<![.\d])(\d)-(\d)(?![0-9.bB])"#, with: "$1.$2", options: .regularExpression)
+    }
+
+    /// Prefixes that name the SELLER, not the model: a regional or channel
+    /// marker ("us.", "eu.", "global.") or a brand double-prefix
+    /// ("xai.grok-4.6", "openai.gpt-5.5", "zai.glm-4.7"). Stripping them
+    /// leaves the model itself.
+    static let familyAffixPrefixes: [String] = [
+        "us.", "eu.", "jp.", "global.", "au.", "ap.",
+        "openai.", "anthropic.", "google.", "meta.", "mistral.", "deepseek.",
+        "xai.", "zhipu.", "zai.", "alibaba.", "moonshot.", "minimax.", "nvidia.",
+        "cohere.", "amazon.", "microsoft.", "azure.", "bedrock.", "vertex.",
+        "ibm.", "tencent.", "baidu.", "bytedance.", "xiaomi.", "stepfun.",
+        "perplexity.", "upstage.", "ai21.", "sakana.", "inception.", "liquid.",
+        "nebius.", "groq.", "cerebras.", "sambanova.", "databricks.", "ollama.",
+        "huggingface.",
+    ]
+
+    /// Fold the spellings of one model id onto one family: brand and regional
+    /// prefixes, date stamps, underscore separators and hyphenated versions
+    /// ("gpt-5-2" → "gpt-5.2", "flux_2-klein-4b" → "flux-2-klein-4b"). Every
+    /// branch's family passes through here, so a model has one family no
+    /// matter which spelling a provider used.
+    static func normalizedFamilyName(_ s: String) -> String {
+        var out = stripRegionalAndDateAffixes(s.lowercased().replacingOccurrences(of: "_", with: "-"))
+        // A dot between a name and its version is a separator, not a version
+        // point ("flux.2-klein-4b" → "flux-2-klein-4b"). A dot between two
+        // digits stays: that is the version itself ("gpt-5.2").
+        out = out.replacingOccurrences(of: #"(?<=[a-z])\.(?=\d)"#, with: "-", options: .regularExpression)
+        // Collapse repeated separators and trim stray ones: a peeled prefix
+        // can leave a double dash behind ("anthropic--claude-3.7-sonnet" →
+        // "-claude-3.7-sonnet").
+        while out.contains("--") { out = out.replacingOccurrences(of: "--", with: "-") }
+        out = out.trimmingCharacters(in: CharacterSet(charactersIn: "-"))
+        var changed = true
+        while changed {
+            changed = false
+            for prefix in familyAffixPrefixes where out.hasPrefix(prefix) && out.count > prefix.count {
+                out = String(out.dropFirst(prefix.count))
+                changed = true
+                break
+            }
+        }
+        return normalizedVersionDots(out)
     }
 
     private static func canonicalIdentityUncached(provider: String, model: String) -> (family: String, displayName: String, providerId: String, providerName: String) {
+        // A model reaches the catalog under a namespaced id: the lab's own
+        // spelling ("openai/o3"), a gateway that repeats the seller or the lab
+        // ("kilo-o3", "digitalocean/openai-o3", "vercel-muse-wonder-1.0"). The
+        // namespace is transport metadata, so try the meaningful spellings and
+        // take the first one the catalog recognizes as a model family. An id
+        // nothing recognizes keeps its full name — "nano-gpt-help" must not
+        // collapse into a family called "help".
+        let spellings = identitySpellings(provider: provider, model: model)
+        for candidate in spellings.candidates {
+            if let hit = resolveIdentity(provider: provider, model: candidate) {
+                return normalizedIdentity(hit)
+            }
+        }
+        return normalizedIdentity(defaultIdentity(provider: provider, model: spellings.modelName))
+    }
+
+    /// One family per model: fold the spelling variants a provider used onto
+    /// the same family, and re-derive the display name when the fold moved it.
+    private static func normalizedIdentity(_ hit: (family: String, displayName: String, providerId: String, providerName: String)) -> (family: String, displayName: String, providerId: String, providerName: String) {
+        let family = normalizedFamilyName(hit.family)
+        guard family != hit.family else { return hit }
+        return (family, formatModelDisplayName(family), hit.providerId, hit.providerName)
+    }
+
+    /// How authoritative a route's pricing is. The lab's own route carries the
+    /// list price; a coding plan passes it through; every other seller
+    /// (aggregator, gateway, reseller) sets its own price. A local model is
+    /// free and must never stand in for a priced one. The catalog shows the
+    /// most authoritative price a model has, not whichever route happened to
+    /// be seen first.
+    static func pricingAuthority(provider: String) -> Int {
+        let p = provider.lowercased()
+        if p.contains("ollama") { return 3 }
+        if modelVendorTokens.contains(where: { p.contains($0) }) { return 0 }
+        if p.contains("opencode") || p.contains("plan") || p.contains("coding") { return 1 }
+        return 2
+    }
+
+    /// The spellings of a model id worth trying, most meaningful first, plus
+    /// the model name to fall back on when no lab recognizes the id.
+    static func identitySpellings(provider: String, model: String) -> (candidates: [String], modelName: String) {
+        let p = provider.lowercased()
+        let raw = model.lowercased()
+        let leaf = raw.split(separator: "/").last.map(String.init) ?? raw
+        var candidates: [String] = []
+        var modelName = leaf
+        func add(_ s: String) {
+            let t = s.trimmingCharacters(in: .whitespaces)
+            if !t.isEmpty && !candidates.contains(t) { candidates.append(t) }
+        }
+        for base in [leaf, raw] {
+            // Peel redundant prefixes: the seller's own name ("nano-gpt-o3",
+            // "kilo-o3"), a lab name in front of the lab's model
+            // ("meta-llama-3.1-8b-instruct"), or a chain of them
+            // ("digitalocean-openai-o3"). The most peeled spelling is tried
+            // first — the raw id still carries the prefix and would otherwise
+            // look like a recognized model.
+            var peeled: [String] = []
+            var rest = base
+            var peeling = true
+            while peeling {
+                peeling = false
+                // The longest matching prefix wins: a seller's name can be
+                // several words ("nano-gpt", "merge-gateway").
+                var match: (prefix: String, tail: String)?
+                for prefix in [p] + modelVendorTokens.sorted(by: { $0.count > $1.count }) {
+                    guard !prefix.isEmpty, rest.hasPrefix(prefix + "-") else { continue }
+                    let tail = String(rest.dropFirst(prefix.count + 1))
+                    if match == nil || prefix.count > match!.prefix.count {
+                        match = (prefix, tail)
+                    }
+                }
+                guard let match, !match.tail.isEmpty else { break }
+                let tail = match.tail
+                // A lab names its models after itself ("glm-4.6", "kimi-k2"),
+                // so a lab prefix is only redundant when the rest is one of
+                // its models ("meta-llama-3.1-8b-instruct" → "llama-3.1-8b-
+                // instruct"), never a bare version fragment ("glm-4.6" →
+                // "4.6"). A reseller's own prefix ("kilo-o3") is always
+                // redundant.
+                let vendorPrefixed = match.prefix == p
+                    ? modelVendorTokens.contains { p.contains($0) }
+                    : true
+                if vendorPrefixed, !modelFamilyTokens.contains(where: { tail.hasPrefix($0) }) { break }
+                // What is left must still look like a model, not a word.
+                guard isModelName(tail) else { break }
+                peeled.append(tail)
+                rest = tail
+                peeling = true
+            }
+            for spelling in peeled.reversed() { add(spelling) }
+            add(base)
+            if base == leaf, let most = peeled.last { modelName = most }
+        }
+        return (candidates, modelName)
+    }
+
+    /// A model name carries a version, a size or a family token — "mimo-v2.5",
+    /// "hy3", "inkling". A bare word ("help") is not a model name and must
+    /// not become a family.
+    static func isModelName(_ s: String) -> Bool {
+        if s.contains(where: { $0.isNumber }) { return true }
+        if s.contains("-") { return true }
+        return modelFamilyTokens.contains { s.hasPrefix($0) }
+    }
+
+    /// The identity of a model one of the lab branches recognizes, or nil
+    /// when no branch claims it (the caller then falls back to the model name).
+    private static func resolveIdentity(provider: String, model: String) -> (family: String, displayName: String, providerId: String, providerName: String)? {
         let p = provider.lowercased()
         let m = model.lowercased()
             .replacingOccurrences(of: "_", with: "-")
@@ -1215,7 +1372,11 @@ final class ModelCatalog {
         }
 
         // 5. OpenAI Models (dynamic for GPT-6 Astra, GPT Daybreak, GPT Reserve, GPT-5.6 Sol, Terra, Luna, GPT-5, GPT-4o, GPT-4.5, o1, o3, o4)
-        let isOpenAI = p.contains("openai") || p.contains("codex") || m.contains("gpt") || m.contains("chatgpt") || m.contains("astra") || m.contains("daybreak") || m.contains("reserve") || m.hasPrefix("o1") || m.hasPrefix("o3") || m.hasPrefix("o4") || ((m.contains("sol") || m.contains("terra") || m.contains("luna")) && (p.contains("openai") || p.contains("codex") || m.contains("gpt")))
+        // The id must START with an OpenAI model token: a seller's name can
+        // contain one ("nano-gpt-inkling" is not an OpenAI model).
+        let gptFamily = m.hasPrefix("gpt") || m.hasPrefix("chatgpt")
+            || m.hasPrefix("o1") || m.hasPrefix("o3") || m.hasPrefix("o4")
+        let isOpenAI = p.contains("openai") || p.contains("codex") || gptFamily || m.contains("astra") || m.contains("daybreak") || m.contains("reserve") || ((m.contains("sol") || m.contains("terra") || m.contains("luna")) && (p.contains("openai") || p.contains("codex") || gptFamily))
         if isOpenAI {
             let clean = m.split(separator: "/").last.map(String.init) ?? m
             let family = clean
@@ -1383,12 +1544,70 @@ final class ModelCatalog {
         // 16. Local custom models (e.g. ornith-1.5:35b)
         if m.contains("ornith") { return ("ornith-1.5-35b", "Ornith 1.5 35B", "ollama", "Ollama (Local)") }
 
-        // Default: clean ID and provider
-        let lastPart = model.split(separator: "/").last.map(String.init) ?? model
-        let clean = lastPart.replacingOccurrences(of: ":", with: "-")
-        return ("\(p)-\(clean.lowercased())", lastPart, p, provider)
+        // No lab claims this id: the caller falls back to the model name.
+        return nil
     }
 
+    /// The identity of a model no lab branch recognizes: the model name
+    /// itself, without the seller's prefix and without the seller's name in
+    /// front of it. One model sold by many providers is ONE model — the
+    /// prices differ per route, not the model — so the family must not carry
+    /// the seller ("vercel-inkling", "kilo-inkling", "nano-gpt-inkling" are
+    /// one model on three routes). Local models keep their provider: a local
+    /// "foo" and a cloud route called "foo" are different things to the user.
+    private static func defaultIdentity(provider: String, model: String) -> (family: String, displayName: String, providerId: String, providerName: String) {
+        let p = provider.lowercased()
+        let lastPart = model.split(separator: "/").last.map(String.init) ?? model
+        let clean = lastPart.replacingOccurrences(of: ":", with: "-").lowercased()
+        let isLocal = p.contains("ollama")
+        return (isLocal ? "\(p)-\(clean)" : clean, lastPart, p, provider)
+    }
+
+    /// Provider tokens that name a model VENDOR — the lab that builds the
+    /// weights and names its models after itself ("glm-4.6", "kimi-k2",
+    /// "deepseek-v4.1-flash"). A router or aggregator id that only repeats
+    /// the seller's name ("kilo-o3", "vercel-gpt-5") is redundant and must be
+    /// dropped, or one model becomes one family per seller and shows up in the
+    /// catalog once per route.
+    static let modelVendorTokens: Set<String> = [
+        "openai", "codex", "anthropic", "claude", "google", "vertex", "deepseek",
+        "alibaba", "qwen", "bailian", "moonshot", "kimi", "minimax", "xai",
+        "mistral", "codestral", "pixtral", "meta", "cohere", "amazon", "bedrock",
+        "perplexity", "upstage", "nvidia", "zhipu", "zai", "glm", "tencent",
+        "baidu", "bytedance", "xiaomi", "stepfun", "ibm", "sakana", "inception",
+        "liquid", "nebius", "groq", "cerebras", "sambanova", "databricks",
+        "ai21", "ollama", "huggingface", "azure", "microsoft",
+    ]
+
+    /// Model-family tokens: a lab id that repeats the lab's own name is only
+    /// redundant when the remainder is one of that lab's models
+    /// ("meta-llama-3.1-8b-instruct" → "llama-3.1-8b-instruct"). A version
+    /// fragment ("glm-4.6" → "4.6") is not, and must stay.
+    static let modelFamilyTokens: Set<String> = [
+        "gpt", "o1", "o3", "o4", "chatgpt", "claude", "gemini", "gemma", "llama",
+        "mistral", "mixtral", "codestral", "devstral", "deepseek", "qwen", "glm",
+        "chatglm", "kimi", "grok", "nova", "titan", "nemotron", "command", "sonar",
+        "solar", "hunyuan", "ernie", "doubao", "step", "mimo", "jamba", "granite",
+        "phi", "muse", "inkling", "lfm", "fugu", "mercury", "minimax", "exao",
+    ]
+
+    /// The family the default branch produces for an id: the provider in
+    /// front of the model id. Used to tell a recognized model family ("o3",
+    /// "gpt-5") from an unrecognized id that merely got a provider prefix.
+    /// Idempotent: an id that already carries the provider's name
+    /// ("vercel-muse-wonder-1.0") is not prefixed twice.
+    static func defaultFamilyForm(provider: String, model: String) -> String {
+        let p = provider.lowercased()
+        let lastPart = model.split(separator: "/").last.map(String.init) ?? model
+        let clean = lastPart.replacingOccurrences(of: ":", with: "-").lowercased()
+        return clean.hasPrefix(p + "-") ? clean : "\(p)-\(clean)"
+    }
+
+    /// The model id a router/aggregator route carries once the seller's own
+    /// name is removed: "kilo/kilo-o3" → "o3", "vercel/vercel-gpt-5" →
+    /// "gpt-5". Vendors are left alone — "glm-4.6" is the model's name, not
+    /// a prefix — except where the remainder is one of the vendor's own
+    /// model families ("meta-llama-3.1-8b-instruct").
     static func docUrl(for provider: String, model: String, catalogEntry: Entry? = nil) -> URL? {
         if let direct = catalogEntry?.docUrl, let u = URL(string: direct), !direct.isEmpty {
             return u

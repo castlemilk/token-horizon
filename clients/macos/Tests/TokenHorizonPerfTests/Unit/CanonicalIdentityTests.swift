@@ -154,19 +154,71 @@ final class CanonicalIdentityTests: XCTestCase {
         XCTAssertEqual(r.providerName, "Moonshot Kimi")
     }
 
-    // Default fallback: family = "{provider}-{model}"
-    // (provider prepended, lowercased, colon→dash on the last segment)
+    // Default fallback: family = the model name itself, lowercased, with
+    // colon→dash on the last segment. The seller's name is NOT part of it:
+    // one model sold by many providers is one model, so "kilo-inkling",
+    // "vercel-inkling" and "nano-gpt-inkling" must share one family.
 
-    func testCanonical_default_prependsProvider() {
+    func testCanonical_default_dropsSellerPrefix() {
         let r = ModelCatalog.canonicalIdentity(provider: "mixtral-provider", model: "mixtral-7b")
-        XCTAssertEqual(r.family, "mixtral-provider-mixtral-7b")
+        XCTAssertEqual(r.family, "mixtral-7b")
         XCTAssertEqual(r.providerId, "mixtral-provider")
     }
 
     func testCanonical_default_colonBecomesDash() {
         // "model:v1" → "model-v1" in the default path
         let r = ModelCatalog.canonicalIdentity(provider: "myco", model: "custommodel:v1")
-        XCTAssertEqual(r.family, "myco-custommodel-v1")
+        XCTAssertEqual(r.family, "custommodel-v1")
+    }
+
+    func testCanonical_default_localKeepsItsProvider() {
+        // A local model and a cloud route with the same name are different
+        // things to the user, so the local one keeps its provider.
+        let r = ModelCatalog.canonicalIdentity(provider: "ollama", model: "my-local-model")
+        XCTAssertEqual(r.family, "ollama-my-local-model")
+    }
+
+    // A route's id often carries the lab's namespace ("kilo/openai/o3") or
+    // the seller's name ("kilo-o3"). Both name one model, so every route of
+    // a model must land in the lab's family — otherwise the catalog lists
+    // the same model once per seller, each with its own price.
+
+    func testCanonical_gatewayNamespaceResolvesToTheLabFamily() {
+        let gateway = ModelCatalog.canonicalIdentity(provider: "kilo", model: "openai/o3")
+        let lab = ModelCatalog.canonicalIdentity(provider: "openai", model: "o3")
+        XCTAssertEqual(gateway.family, "o3")
+        XCTAssertEqual(gateway.family, lab.family)
+    }
+
+    func testCanonical_sellerPrefixResolvesToTheModelName() {
+        XCTAssertEqual(ModelCatalog.canonicalIdentity(provider: "kilo", model: "kilo-o3").family, "o3")
+        XCTAssertEqual(ModelCatalog.canonicalIdentity(provider: "vercel", model: "vercel-o3").family, "o3")
+        XCTAssertEqual(ModelCatalog.canonicalIdentity(provider: "nano-gpt", model: "nano-gpt-inkling").family, "inkling")
+    }
+
+    func testCanonical_labNamesKeepTheirOwnPrefix() {
+        // A lab names its models after itself — that prefix IS the model.
+        XCTAssertEqual(ModelCatalog.canonicalIdentity(provider: "glm", model: "glm-4.6").family, "glm-4.6")
+        XCTAssertEqual(ModelCatalog.canonicalIdentity(provider: "kimi", model: "kimi-k2").family, "kimi-k2")
+        XCTAssertEqual(ModelCatalog.canonicalIdentity(provider: "mistral", model: "mistral-large").family, "mistral-large")
+        XCTAssertEqual(ModelCatalog.canonicalIdentity(provider: "deepseek", model: "deepseek-v4.1-flash").family, "deepseek-v4.1-flash")
+    }
+
+    func testCanonical_unknownWordIsNotAFamily() {
+        // "nano-gpt-help" must not collapse into a family called "help".
+        XCTAssertEqual(ModelCatalog.canonicalIdentity(provider: "nano-gpt", model: "nano-gpt-help").family, "nano-gpt-help")
+    }
+
+    func testCanonical_versionFoldsButSizesDoNot() {
+        XCTAssertEqual(ModelCatalog.canonicalIdentity(provider: "openai", model: "gpt-5-2").family, "gpt-5.2")
+        XCTAssertEqual(ModelCatalog.canonicalIdentity(provider: "minimax", model: "minimax-m2-7").family, "minimax-m2.7")
+        // A param count is not a version: "ministral-3-8b" is 3 × 8B.
+        XCTAssertEqual(ModelCatalog.canonicalIdentity(provider: "mistral", model: "ministral-3-8b-instruct").family, "ministral-3-8b-instruct")
+    }
+
+    func testCanonical_brandDotPrefixIsStripped() {
+        XCTAssertEqual(ModelCatalog.canonicalIdentity(provider: "xai", model: "xai.grok-4.6").family, "grok-4.6")
+        XCTAssertEqual(ModelCatalog.canonicalIdentity(provider: "zai", model: "zai.glm-4.7").family, "glm-4.7")
     }
 
     // Dedup contract: two catalog entries that the user thinks are "the same model"

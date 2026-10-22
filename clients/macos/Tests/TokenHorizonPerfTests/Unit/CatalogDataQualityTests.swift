@@ -187,4 +187,23 @@ final class CatalogDataQualityTests: XCTestCase {
         // A model whose trailing digits are a size, not a date, keeps its id.
         XCTAssertNil(ModelCatalog.baseWeightsKey("gemma-4-31b"))
     }
+
+    // MARK: 5. One model, one row
+
+    /// The routes a model is sold on are listings of that model, not separate
+    /// rows. "o3" reached 14 sellers and was listed 14 times, each with its
+    /// own price — so the explorer could not compare them.
+    func testCatalog_listsAModelOnceAcrossItsRoutes() throws {
+        let payload = ModelCatalogExport.payload()
+        let models = try XCTUnwrap(payload["models"] as? [[String: Any]])
+        var byName: [String: Int] = [:]
+        for m in models {
+            let name = (m["name"] as? String ?? "").lowercased()
+            guard !name.isEmpty else { continue }
+            byName[name, default: 0] += 1
+        }
+        XCTAssertLessThanOrEqual(byName["o3"] ?? 0, 2, "o3 must not be listed once per seller")
+        XCTAssertLessThanOrEqual(byName["gpt-5"] ?? 0, 2, "gpt-5 must not be listed once per seller")
+        XCTAssertLessThanOrEqual(byName["claude-opus-4.6"] ?? 0, 2, "claude-opus-4.6 must not be listed once per seller")
+    }
 }
