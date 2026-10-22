@@ -1250,9 +1250,15 @@ final class ModelCatalog {
             while peeling {
                 peeling = false
                 // The longest matching prefix wins: a seller's name can be
-                // several words ("nano-gpt", "merge-gateway").
+                // several words ("nano-gpt", "merge-gateway") and the id may
+                // use a shorter form of it ("umans-ai" → "umans-").
                 var match: (prefix: String, tail: String)?
-                for prefix in [p] + modelVendorTokens.sorted(by: { $0.count > $1.count }) {
+                var prefixes = [p]
+                if let firstWord = p.split(separator: "-").first, firstWord.count > 2 {
+                    prefixes.append(String(firstWord))
+                }
+                prefixes += modelVendorTokens.sorted(by: { $0.count > $1.count })
+                for prefix in prefixes {
                     guard !prefix.isEmpty, rest.hasPrefix(prefix + "-") else { continue }
                     let tail = String(rest.dropFirst(prefix.count + 1))
                     if match == nil || prefix.count > match!.prefix.count {
