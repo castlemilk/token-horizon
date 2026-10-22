@@ -1916,9 +1916,18 @@ final class ModelCatalog {
     /// context window and its card come from the catalog's own source.
     static func completedFromSource(_ source: [String: Entry], _ map: [String: Entry]) -> [String: Entry] {
         guard !source.isEmpty else { return map }
+        // The source keys a model by its provider ("openai/gpt-6.1-sol"); a
+        // pinned flagship keys it by the model ("gpt-6.1-sol"). Same model,
+        // same card — so the source is indexed by family too.
+        var byFamily: [String: Entry] = [:]
+        for entry in source.values {
+            let family = canonicalIdentity(provider: entry.provider, model: entry.id).family
+            if byFamily[family] == nil { byFamily[family] = entry }
+        }
         var out = map
         for (key, entry) in map {
-            guard let src = source[key] else { continue }
+            let family = canonicalIdentity(provider: entry.provider, model: entry.id).family
+            guard let src = source[key] ?? byFamily[family] else { continue }
             var e = entry
             if e.toolCall == nil { e.toolCall = src.toolCall }
             if e.reasoning == nil { e.reasoning = src.reasoning }

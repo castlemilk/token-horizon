@@ -162,6 +162,9 @@ fi
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/TokenHorizon"; cp "$MACOS/Resources/benchmarks.json" "$APP/Contents/Resources/" 2>/dev/null
+# The sourced benchmark table (public evaluation boards) rides along with the
+# curated one — without it the app serves the curated scores only.
+cp "$MACOS/Resources/benchmarks-sourced.json" "$APP/Contents/Resources/" 2>/dev/null
 cp "$MACOS/Resources/plans.json" "$APP/Contents/Resources/" 2>/dev/null
 if [ -f gateway/token-horizon-gateway ]; then
     cp gateway/token-horizon-gateway "$APP/Contents/Resources/"
