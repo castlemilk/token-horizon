@@ -298,6 +298,20 @@ enum ModelCatalogExport {
             if let d = row.discountDetail { discount["detail"] = d }
             if !discount.isEmpty { dict["discount"] = discount }
         }
+        // The lab's own card for the model: when it shipped, what it knows up
+        // to, whether it is deprecated, and which knobs it has. Absent when
+        // the source does not say.
+        if let cat = row.catalog {
+            if let d = cat.releaseDate { dict["releaseDate"] = d }
+            if let k = cat.knowledgeCutoff { dict["knowledgeCutoff"] = k }
+            if let st = cat.status, !st.isEmpty { dict["status"] = st }
+            if let so = cat.structuredOutput { dict["structuredOutput"] = so }
+            if let t = cat.temperature { dict["temperature"] = t }
+            if let opts = cat.reasoningOptions, !opts.isEmpty { dict["reasoningOptions"] = opts }
+            if let om = cat.outputModalities, !om.isEmpty { dict["outputModalities"] = om }
+            if let ol = cat.outputLimitK, ol > 0 { dict["outputLimitK"] = ol }
+            if let cm = cat.canonicalModelId { dict["canonicalModelId"] = cm }
+        }
 
         var capabilities: [String: Any] = [:]
         if let r = row.catalog?.reasoning { capabilities["reasoning"] = r }

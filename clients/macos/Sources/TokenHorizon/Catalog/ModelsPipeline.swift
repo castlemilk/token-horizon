@@ -535,7 +535,20 @@ enum ModelsPipeline {
 
         candidates.sort { $0.rawScore > $1.rawScore }
 
-        let top10 = Array(candidates.prefix(10))
+        // One pick per model: a free tier, a plan route and the paid route of
+        // the same weights are one model, and listing them side by side spent
+        // half the picks on one deepseek release.
+        var seenWeights: Set<String> = []
+        var distinct: [(row: ModelRow, perf: Double, cost: Double, rawScore: Double)] = []
+        for item in candidates {
+            let weights = ModelCatalog.baseWeightsKey(item.row.usage.model)
+                ?? ModelCatalog.baseWeightsKey(item.row.id)
+                ?? item.row.usage.model
+            guard seenWeights.insert(weights).inserted else { continue }
+            distinct.append(item)
+            if distinct.count >= 10 { break }
+        }
+        let top10 = Array(distinct.prefix(10))
         guard let maxScore = top10.first?.rawScore, maxScore > 0 else { return [] }
 
         return top10.enumerated().map { index, item in

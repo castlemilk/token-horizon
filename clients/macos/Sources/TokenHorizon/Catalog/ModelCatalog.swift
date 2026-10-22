@@ -69,6 +69,23 @@ final class ModelCatalog {
         var discountDetail: String?
         var originalInputPerM: Double?
         var originalOutputPerM: Double?
+        /// The lab's own card for the model (models.dev): when it shipped, what
+        /// it knows up to, whether it is deprecated, and which knobs it has.
+        /// Absent when the source does not say — never guessed.
+        var releaseDate: String?
+        var knowledgeCutoff: String?
+        var status: String?
+        var structuredOutput: Bool?
+        var temperature: Bool?
+        /// The reasoning effort levels the model accepts ("none", "low", …).
+        var reasoningOptions: [String]?
+        /// What the model can answer with ("text", "image", "audio").
+        var outputModalities: [String]?
+        /// The largest answer the model gives, in thousands of tokens.
+        var outputLimitK: Int?
+        /// The lab's canonical id for these weights ("openai/gpt-5.2"). A
+        /// route id is one spelling of it ("kilo/openai/gpt-5.2").
+        var canonicalModelId: String?
     }
 
     struct Benchmarks: Codable, Equatable {
@@ -1114,10 +1131,26 @@ final class ModelCatalog {
     /// stamps ("@20251001", "-20251001") are transport metadata, not model
     /// identity — every copy names the same underlying model. Stripping them
     /// stops one Claude model from fragmenting into ~10 family rows.
+    /// A date stamp at the end of a model id names a snapshot of a model, not
+    /// a model of its own. Providers spell them four ways: compact
+    /// ("-20250219"), ISO ("-2025-02-19"), month-day ("-0219"), month-year
+    /// ("-02-2025") and a bare year ("-2025"). All name the same weights as
+    /// the model without the stamp.
+    static func strippingDateStamps(_ s: String) -> String {
+        var out = s
+        for pattern in [#"-(\d{4})-(\d{2})-(\d{2})$"#, #"-(\d{2})-(\d{4})$"#, #"-(\d{2})-(\d{2})$"#, #"-(\d{4})$"#] {
+            out = out.replacingOccurrences(of: pattern, with: "", options: .regularExpression)
+        }
+        return out
+    }
+
     private static func stripRegionalAndDateAffixes(_ s: String) -> String {
         var out = s
-        // Trailing date stamps: "@20251001" or "-20251001" (exactly 8 digits).
+        // Trailing date stamps: "@20251001", "-20251001" (exactly 8 digits)
+        // and the ISO form "-2024-12-17". All name a snapshot of a model, not
+        // a model of their own.
         out = out.replacingOccurrences(of: #"[@-]\d{8}$"#, with: "", options: .regularExpression)
+        out = out.replacingOccurrences(of: #"[@-]\d{4}-\d{2}-\d{2}$"#, with: "", options: .regularExpression)
         let regional = ["us.", "eu.", "jp.", "global.", "au.", "ap.", "amazon.", "vertex.", "bedrock."]
         var changed = true
         while changed {
@@ -1165,6 +1198,8 @@ final class ModelCatalog {
     /// matter which spelling a provider used.
     static func normalizedFamilyName(_ s: String) -> String {
         var out = stripRegionalAndDateAffixes(s.lowercased().replacingOccurrences(of: "_", with: "-"))
+        // A date stamp names a snapshot of a model, not a model of its own.
+        out = strippingDateStamps(out)
         // A dot between a name and its version is a separator, not a version
         // point ("flux.2-klein-4b" → "flux-2-klein-4b"). A dot between two
         // digits stays: that is the version itself ("gpt-5.2").
@@ -1318,6 +1353,7 @@ final class ModelCatalog {
                 .replacingOccurrences(of: "-latest", with: "")
                 .replacingOccurrences(of: "-preview", with: "")
                 .replacingOccurrences(of: "-thinking", with: "")
+            family = strippingDateStamps(family)
                 .replacingOccurrences(of: "-exp", with: "")
                 .replacingOccurrences(of: "-customtools", with: "")
             family = family
@@ -1729,6 +1765,10 @@ final class ModelCatalog {
         if let url = URL(string: "https://models.dev/api.json"),
            let obj = Self.fetchJSON(url: url, timeout: 15) as? [String: Any] {
             var map = Self.parseModelsDev(api: obj, benchmarks: bm)
+            // The live provider feeds build their own entries and know only
+            // pricing; the model's capabilities and its card come from the
+            // catalog's own source.
+            let source = map
             injectDirectFlagships(into: &map, benchmarks: bm)
             fetchCodexCachedModels(into: &map, benchmarks: bm)
             fetchLiveZaiModels(into: &map, benchmarks: bm)
@@ -1737,6 +1777,7 @@ final class ModelCatalog {
             fetchLiveAnthropicModels(into: &map, benchmarks: bm)
             fetchLiveGeminiModels(into: &map, benchmarks: bm)
             fetchLiveOpenRouterModels(into: &map, benchmarks: bm)
+            map = Self.completedFromSource(source, map)
             if let enc = try? JSONEncoder().encode(map) {
                 try? enc.write(to: URL(fileURLWithPath: cachePath))
             }
@@ -1834,6 +1875,12 @@ final class ModelCatalog {
                 let openWeights = m["open_weights"] as? Bool
                 let modalities = (m["modalities"] as? [String: Any])?["input"] as? [String] ?? []
                 let vision = modalities.contains("image") || modalities.contains("vision")
+                let outputModalities = (m["modalities"] as? [String: Any])?["output"] as? [String]
+                let reasoningOptions: [String]? = {
+                    guard let opts = m["reasoning_options"] as? [[String: Any]] else { return nil }
+                    let values = opts.compactMap { $0["values"] as? [String] }.flatMap { $0 }
+                    return values.isEmpty ? nil : values
+                }()
                 map[key] = Entry(id: modelId,
                                  name: bench?.name ?? (m["name"] as? String) ?? modelId,
                                  provider: providerId,
@@ -1848,10 +1895,110 @@ final class ModelCatalog {
                                  reasoning: reasoning,
                                  toolCall: toolCall,
                                  vision: vision,
-                                 openWeights: openWeights)
+                                 openWeights: openWeights,
+                                 releaseDate: m["release_date"] as? String,
+                                 knowledgeCutoff: m["knowledge"] as? String,
+                                 status: m["status"] as? String,
+                                 structuredOutput: m["structured_output"] as? Bool,
+                                 temperature: m["temperature"] as? Bool,
+                                 reasoningOptions: reasoningOptions,
+                                 outputModalities: outputModalities,
+                                 outputLimitK: ((limit["output"] as? NSNumber)?.intValue ?? 0) / 1000,
+                                 canonicalModelId: m["canonical_model_id"] as? String)
             }
         }
-        return map
+        return completedFromCanonicalModels(map)
+    }
+
+    /// Fill what an entry does not say from the models.dev entry with the same
+    /// key. The live provider feeds (OpenRouter, the vendor APIs) build their
+    /// own entries and know only pricing, so the model's capabilities, its
+    /// context window and its card come from the catalog's own source.
+    static func completedFromSource(_ source: [String: Entry], _ map: [String: Entry]) -> [String: Entry] {
+        guard !source.isEmpty else { return map }
+        var out = map
+        for (key, entry) in map {
+            guard let src = source[key] else { continue }
+            var e = entry
+            if e.toolCall == nil { e.toolCall = src.toolCall }
+            if e.reasoning == nil { e.reasoning = src.reasoning }
+            if e.vision == nil { e.vision = src.vision }
+            if e.openWeights == nil { e.openWeights = src.openWeights }
+            if e.structuredOutput == nil { e.structuredOutput = src.structuredOutput }
+            if e.temperature == nil { e.temperature = src.temperature }
+            if e.contextK == 0 { e.contextK = src.contextK }
+            if e.outputLimitK == 0 { e.outputLimitK = src.outputLimitK }
+            if e.reasoningOptions == nil { e.reasoningOptions = src.reasoningOptions }
+            if e.outputModalities == nil { e.outputModalities = src.outputModalities }
+            if e.releaseDate == nil { e.releaseDate = src.releaseDate }
+            if e.knowledgeCutoff == nil { e.knowledgeCutoff = src.knowledgeCutoff }
+            if e.status == nil { e.status = src.status }
+            if e.canonicalModelId == nil { e.canonicalModelId = src.canonicalModelId }
+            if (e.description ?? "").isEmpty { e.description = src.description }
+            if e.docUrl == nil { e.docUrl = src.docUrl }
+            if e.inputPerM == 0 && src.inputPerM > 0 {
+                e.inputPerM = src.inputPerM
+                e.outputPerM = src.outputPerM
+                e.cacheReadPerM = src.cacheReadPerM
+            }
+            out[key] = e
+        }
+        return out
+    }
+
+    /// A route id is one spelling of the lab's canonical model: "kilo/openai/
+    /// gpt-5.2" serves the weights of "openai/gpt-5.2". What the route does
+    /// not say about those weights, the canonical entry says — the same
+    /// weights, so it is a fact about the model, not an estimate.
+    static func completedFromCanonicalModels(_ map: [String: Entry]) -> [String: Entry] {
+        // The canonical model is the entry under its own key.
+        var canonical: [String: Entry] = [:]
+        for (key, entry) in map { canonical[key] = entry }
+        var out = map
+        // A route that points at the canonical model carries the model's flags,
+        // and the canonical entry itself may omit them — models.dev does not
+        // always say. The routes agree, so one of them fills the gap.
+        var fromRoutes: [String: Entry] = [:]
+        for (key, entry) in map {
+            guard let id = entry.canonicalModelId, id != key, canonical[id] != nil else { continue }
+            var acc = fromRoutes[id] ?? entry
+            if acc.toolCall == nil { acc.toolCall = entry.toolCall }
+            if acc.reasoning == nil { acc.reasoning = entry.reasoning }
+            if acc.vision == nil { acc.vision = entry.vision }
+            if acc.openWeights == nil { acc.openWeights = entry.openWeights }
+            if acc.contextK == 0 { acc.contextK = entry.contextK }
+            fromRoutes[id] = acc
+        }
+        for (id, c) in canonical {
+            guard let r = fromRoutes[id] else { continue }
+            var e = c
+            if e.toolCall == nil { e.toolCall = r.toolCall }
+            if e.reasoning == nil { e.reasoning = r.reasoning }
+            if e.vision == nil { e.vision = r.vision }
+            if e.openWeights == nil { e.openWeights = r.openWeights }
+            if e.contextK == 0 { e.contextK = r.contextK }
+            out[id] = e
+        }
+        for (key, entry) in map {
+            guard let id = entry.canonicalModelId, id != key, let source = canonical[id] else { continue }
+            var e = entry
+            if e.toolCall == nil { e.toolCall = source.toolCall }
+            if e.reasoning == nil { e.reasoning = source.reasoning }
+            if e.vision == nil { e.vision = source.vision }
+            if e.openWeights == nil { e.openWeights = source.openWeights }
+            if e.structuredOutput == nil { e.structuredOutput = source.structuredOutput }
+            if e.temperature == nil { e.temperature = source.temperature }
+            if e.contextK == 0 { e.contextK = source.contextK }
+            if e.outputLimitK == 0 { e.outputLimitK = source.outputLimitK }
+            if e.reasoningOptions == nil { e.reasoningOptions = source.reasoningOptions }
+            if e.outputModalities == nil { e.outputModalities = source.outputModalities }
+            if e.releaseDate == nil { e.releaseDate = source.releaseDate }
+            if e.knowledgeCutoff == nil { e.knowledgeCutoff = source.knowledgeCutoff }
+            if e.status == nil { e.status = source.status }
+            if (e.description ?? "").isEmpty { e.description = source.description }
+            out[key] = e
+        }
+        return out
     }
 
     /// Bounded synchronous JSON GET for background catalog refresh. Returns the
@@ -2688,43 +2835,69 @@ final class ModelCatalog {
     }
 
     static func loadBenchmarks() -> BenchmarkTable {
-        guard let path = resourceJSONPath("benchmarks"),
-              let data = FileManager.default.contents(atPath: path),
-              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let entries = obj["entries"] as? [[String: Any]] else { return [:] }
+        // Two tables: the curated one (a person transcribed the vendor's own
+        // numbers) and the sourced one (public evaluation boards, refreshed by
+        // scripts/refresh-sourced-benchmarks.py). The curated table wins for a
+        // model — a vendor-reported score and an independent harness run are
+        // different measurements, and the curated one is the number the
+        // ecosystem quotes. The sourced table fills the gaps.
         var out = BenchmarkTable()
-        for entry in entries {
-            guard let match = entry["match"] as? String else { continue }
-            let row = BenchmarkScore(
-                name: entry["name"] as? String ?? match,
-                swe: (entry["swe"] as? NSNumber)?.doubleValue,
-                lcb: (entry["lcb"] as? NSNumber)?.doubleValue,
-                source: entry["source"] as? String ?? "",
-                approx: (entry["approx"] as? Bool) ?? false
-            )
-            // A match key with no scores is a name alias, not a measurement:
-            // keeping it would stamp an empty `benchmarks` object on every row
-            // that matches the name (a local Ollama model, say) and make the
-            // model look scored when nothing was measured.
-            guard row.isMeasured else { continue }
-            let key = match.lowercased()
-            out[key] = row
-            // Version separators disagree across sources: model ids, gateways
-            // and the flagships spell generations with dots ("claude-3.7-
-            // sonnet") while older curated keys use hyphens ("claude-3-7-
-            // sonnet"). Index both spellings so a curated score is never
-            // silently shadowed by a hardcoded fallback over a separator.
-            //
-            // The folds mirror `normalizedVersionDots` exactly, so an alias
-            // only ever joins two spellings that already resolve to the same
-            // family — an alias can never point a model at another model's
-            // score. Aliases fill empty slots only: a raw key written later
-            // (in either order) overwrites its alias.
-            let dotted = key.replacingOccurrences(of: #"-(\d)-(\d)(?!\d)"#, with: "-$1.$2", options: .regularExpression)
-            if dotted != key, out[dotted] == nil { out[dotted] = row }
-            let hyphenated = key.replacingOccurrences(of: #"(\d)\.(\d)(?!\d)"#, with: "$1-$2", options: .regularExpression)
-            if hyphenated != key, out[hyphenated] == nil { out[hyphenated] = row }
+        var curatedKeys: Set<String> = []
+        for name in ["benchmarks", "benchmarks-sourced"] {
+            guard let path = resourceJSONPath(name),
+                  let data = FileManager.default.contents(atPath: path),
+                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let entries = obj["entries"] as? [[String: Any]] else { continue }
+            let isCurated = name == "benchmarks"
+            for entry in entries {
+                guard let match = entry["match"] as? String else { continue }
+                let row = BenchmarkScore(
+                    name: entry["name"] as? String ?? match,
+                    swe: (entry["swe"] as? NSNumber)?.doubleValue,
+                    lcb: (entry["lcb"] as? NSNumber)?.doubleValue,
+                    source: entry["source"] as? String ?? "",
+                    approx: (entry["approx"] as? Bool) ?? false
+                )
+                // A match key with no scores is a name alias, not a measurement:
+                // keeping it would stamp an empty `benchmarks` object on every row
+                // that matches the name (a local Ollama model, say) and make the
+                // model look scored when nothing was measured.
+                guard row.isMeasured else { continue }
+                let key = match.lowercased()
+                let variants = benchmarkKeyVariants(key)
+                if isCurated {
+                    curatedKeys.formUnion(variants)
+                } else {
+                    // The curated table already speaks for this model.
+                    if variants.contains(where: { curatedKeys.contains($0) }) { continue }
+                }
+                for variant in variants where out[variant] == nil || isCurated {
+                    out[variant] = row
+                }
+            }
         }
+        return out
+    }
+
+    /// The spellings of a benchmark key that name the same model: the key
+    /// itself, and the version-separator variants ("claude-3.7-sonnet" /
+    /// "claude-3-7-sonnet"). Model ids, gateways and the flagships spell
+    /// generations with dots while older curated keys use hyphens, so a curated
+    /// score must not be shadowed by a hardcoded fallback over a separator.
+    ///
+    /// The folds mirror `normalizedVersionDots` exactly, so a variant only
+    /// ever joins two spellings that already resolve to the same family — it
+    /// can never point a model at another model's score.
+    static func benchmarkKeyVariants(_ key: String) -> [String] {
+        var out = [key]
+        let dotted = key.replacingOccurrences(of: #"-(\d)-(\d)(?!\d)"#, with: "-$1.$2", options: .regularExpression)
+        if dotted != key { out.append(dotted) }
+        let hyphenated = key.replacingOccurrences(of: #"(\d)\.(\d)(?!\d)"#, with: "$1-$2", options: .regularExpression)
+        if hyphenated != key { out.append(hyphenated) }
+        // A curated key may carry the date stamp of the snapshot it scored
+        // ("deepseek-v4-pro-0813") while the family is the model without it.
+        let undated = strippingDateStamps(key)
+        if undated != key { out.append(undated) }
         return out
     }
 
@@ -2765,11 +2938,17 @@ final class ModelCatalog {
         if let slash = base.lastIndex(of: "/") {
             base = String(base[base.index(after: slash)...])
         }
-        // Trailing date stamps ("claude-3-5-sonnet-20241022", "@20251001"):
-        // a frozen snapshot of these weights, not a different model — the same
-        // rule as the date affixes stripped from family names.
-        if let stamp = base.range(of: #"[@-]\d{8}$"#, options: .regularExpression) {
+        // Trailing date stamps ("claude-3-5-sonnet-20241022", "gpt-4o-2024-08-06",
+        // "@20251001"): a frozen snapshot of these weights, not a different
+        // model — the same rule as the date affixes stripped from family names.
+        if let stamp = base.range(of: #"[@-]\d{8}$"#, options: .regularExpression)
+            ?? base.range(of: #"[@-]\d{4}-\d{2}-\d{2}$"#, options: .regularExpression) {
             base = String(base[..<stamp.lowerBound])
+            stripped = true
+        }
+        let undated = strippingDateStamps(base)
+        if undated != base {
+            base = undated
             stripped = true
         }
         for suffix in ["-free", "-contributor", "-preview", "-preview-free", "-latest", "-exp"] {

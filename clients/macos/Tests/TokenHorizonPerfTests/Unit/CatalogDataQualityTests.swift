@@ -237,4 +237,75 @@ final class CatalogDataQualityTests: XCTestCase {
         XCTAssertEqual(row?.contextK, 872, "the lab's context window represents the model")
         XCTAssertEqual(row?.usage.provider, "openai", "the row is labelled with the lab")
     }
+
+    // MARK: 6. The model card, resolved for every model
+
+    /// A route id is one spelling of the lab's canonical model: what the route
+    /// does not say about those weights, the canonical entry says.
+    func testRouteTakesTheCapabilitiesOfItsCanonicalModel() throws {
+        let json = """
+        {"openai": {"name": "OpenAI", "models": {
+          "gpt-5.2": {"id": "gpt-5.2", "cost": {"input": 1.25, "output": 10},
+                      "limit": {"context": 400000}, "reasoning": true, "tool_call": true,
+                      "open_weights": false, "release_date": "2025-11-01", "knowledge": "2025-06-01"},
+          "gpt-5.2-preview": {"id": "gpt-5.2-preview", "cost": {"input": 1.25, "output": 10},
+                      "canonical_model_id": "openai/gpt-5.2"}}}}
+        """
+        let api = try XCTUnwrap(try JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any])
+        let map = ModelCatalog.parseModelsDev(api: api, benchmarks: [:])
+        let canonical = try XCTUnwrap(map["openai/gpt-5.2"])
+        let route = try XCTUnwrap(map["openai/gpt-5.2-preview"])
+        XCTAssertEqual(canonical.contextK, 400)
+        XCTAssertEqual(route.reasoning, true, "the route takes the canonical model's reasoning flag")
+        XCTAssertEqual(route.toolCall, true, "the route takes the canonical model's tool flag")
+        XCTAssertEqual(route.openWeights, false, "the route takes the canonical model's open-weights flag")
+        XCTAssertEqual(route.contextK, 400, "the route takes the canonical model's context window")
+        XCTAssertEqual(route.releaseDate, "2025-11-01", "the route takes the canonical model's release date")
+    }
+
+    /// The card carries what the source says about the model — and only that:
+    /// a field the source does not state stays unknown rather than guessed.
+    func testModelCard_keepsUnknownsUnknown() throws {
+        let json = """
+        {"acme": {"name": "Acme", "models": {
+          "widget-1": {"id": "widget-1", "cost": {"input": 1, "output": 2}, "limit": {"context": 32000}}}}}
+        """
+        let api = try XCTUnwrap(try JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any])
+        let map = ModelCatalog.parseModelsDev(api: api, benchmarks: [:])
+        let entry = try XCTUnwrap(map["acme/widget-1"])
+        XCTAssertEqual(entry.contextK, 32)
+        XCTAssertNil(entry.reasoning, "an unstated capability stays unknown")
+        XCTAssertNil(entry.openWeights)
+        XCTAssertNil(entry.releaseDate)
+    }
+
+    /// The curated table (a person transcribed the vendor's numbers) wins over
+    /// the sourced one (public evaluation boards); the sourced table fills the
+    /// gaps. Both live in the loaded table.
+    func testBenchmarkTable_mergesTheSourcedScoresUnderTheCuratedOnes() {
+        let table = ModelCatalog.loadBenchmarks()
+        XCTAssertFalse(table.isEmpty)
+        // A curated key keeps the curated number and its source.
+        let curated = table["claude-3-7-sonnet"]
+        XCTAssertEqual(curated?.swe, 77.6, "the curated score wins")
+        XCTAssertEqual(curated?.source, "Anthropic")
+        // The sourced table contributes models the curated one does not cover.
+        let sourced = table.values.first { $0.source.hasPrefix("SWE-bench Verified") }
+        XCTAssertNotNil(sourced, "the sourced table must reach the catalog")
+    }
+
+    /// The picks are models, not routes: a free tier and the paid route of
+    /// the same weights are one model, and listing both spent half the picks
+    /// on a single release.
+    func testTopPicks_areOnePerModel() {
+        let catalog = ModelCatalog.shared.allEntries()
+        let result = ModelsPipeline.compute(search: "", scope: .all, sortColumn: .sweBench, sortAscending: false,
+                                             catalog: catalog, syntheticModels: [], usageModels: [])
+        XCTAssertFalse(result.topPicks.isEmpty)
+        var seen: Set<String> = []
+        for pick in result.topPicks {
+            let weights = ModelCatalog.baseWeightsKey(pick.id) ?? pick.id
+            XCTAssertTrue(seen.insert(weights).inserted, "\(pick.id) repeats a model already in the picks")
+        }
+    }
 }
