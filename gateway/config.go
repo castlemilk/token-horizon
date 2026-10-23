@@ -30,6 +30,7 @@ type Config struct {
 	OpenCodeBase  string
 	SplashBase    string
 	THEngineBase  string
+	MLXBase       string
 	// Trace directory override (tests). Default ~/.config/token-horizon/traces.
 	TraceDir string
 	// Prompt/response persistence is an explicit opt-in. Metadata and usage
@@ -78,6 +79,7 @@ func ConfigFromEnv() Config {
 		OpenCodeBase:  envOr("TOKEN_HORIZON_OPENCODE_UPSTREAM", "https://opencode.ai/zen"),
 		SplashBase:    envOr("TOKEN_HORIZON_SPLASH_UPSTREAM", "http://127.0.0.1:8000"),
 		THEngineBase:  envOr("TOKEN_HORIZON_TH_ENGINE_UPSTREAM", "http://127.0.0.1:8001"),
+		MLXBase:       envOr("TOKEN_HORIZON_MLX_UPSTREAM", "http://127.0.0.1:8002"),
 		TraceDir:      traceDir,
 		CaptureBodies: os.Getenv("TOKEN_HORIZON_CAPTURE_BODIES") == "1",
 		IngestURL:     envOr("TOKEN_HORIZON_INGEST_URL", "http://127.0.0.1:8765/ingest/ollama"),
@@ -120,6 +122,8 @@ func (c Config) baseFor(provider Provider) string {
 		return c.SplashBase
 	case ProviderTHEngine:
 		return c.THEngineBase
+	case ProviderMLX:
+		return c.MLXBase
 	}
 	return ""
 }

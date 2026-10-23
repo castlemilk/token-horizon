@@ -17,21 +17,49 @@ private let engineLog = Logger(subsystem: "com.tokenhorizon.app", category: "eng
 //                 docs/splash. Closed SPLH protocol; we tune via CLI flags.
 //   - thengine  (:8001) — our Rust/candle engine (engine/); the TH-owned
 //                 surface with live config + introspection hooks.
+//   - mlx       (:8002) — Apple's mlx-lm server, the canonical Mac engine.
+//                 Spawned as `python3 -m mlx_lm.server`; any mlx-community
+//                 checkpoint runs, so the catalogue is not limited to a list.
 //
-// Both answer /status with an `instance` object, so the probe is uniform.
+// Splash and TH Engine answer /status with an `instance` object; mlx-lm has no
+// /status, so its probe reads /v1/models. Both shapes yield the served model.
 
 /// Static description of one supervised engine backend.
 struct EngineBackend {
-    let id: String              // "splash" | "thengine"
+    let id: String              // "splash" | "thengine" | "mlx"
     let displayName: String
     let port: UInt16
     let binaryEnvVar: String
     let binarySearchPaths: [String]
+    /// Module-style launches (`python3 -m mlx_lm.server`) put the module in
+    /// front of the args; plain binaries leave this empty.
+    var argPrefix: [String] = []
     /// Extra env for the spawned child.
-    var spawnEnv: [String: String] { [:] }
+    var spawnEnv: [String: String] = [:]
+    /// Python module the interpreter must import for the backend to be usable
+    /// (mlx-lm); nil for plain binaries.
+    var moduleName: String? = nil
+    /// Path that proves the server is up, and where the served model is named.
+    var probePath: String = "/status"
+
+    /// Extract the served model id from a probe response, reading only the
+    /// shape this backend's own probe path serves. Anything else on the port
+    /// (a foreign server, a different engine) yields nil and is never adopted.
+    func probeModel(_ json: [String: Any]) -> String? {
+        switch probePath {
+        case "/v1/models":
+            // mlx-lm: {"object":"list","data":[{"id":"repo",…}]}
+            guard let data = json["data"] as? [[String: Any]] else { return nil }
+            return data.first?["id"] as? String
+        default:
+            // splash / th-engine: {"instance":{"model":…,"pid":…}}
+            guard let instance = json["instance"] as? [String: Any] else { return nil }
+            return instance["model"] as? String
+        }
+    }
 
     /// CLI args for a serve. `model` is the backend's model spec
-    /// (HF repo id for splash; repo/path or repo:file for thengine).
+    /// (HF repo id for splash/mlx; repo/path or repo:file for thengine).
     /// `tokenizer` is only meaningful for thengine (GGUF repos ship no
     /// tokenizer.json — the catalog carries the sibling base repo).
     func spawnArgs(model: String, tokenizer: String?,
@@ -42,6 +70,10 @@ struct EngineBackend {
             if let m = maxMemoryGB { args += ["--max-memory", "\(m)G"] }
             if let c = maxContextK { args += ["--max-context", "\(c)K"] }
             return args
+        case "mlx":
+            // mlx-lm sizes itself from the model and the machine; it exposes no
+            // memory or context ceiling, so those ceilings stay advisory here.
+            return argPrefix + ["--model", model, "--host", "127.0.0.1", "--port", "\(port)"]
         default: // thengine
             var args = ["serve", "--model", model, "--port", "\(port)",
                         "--idle-timeout-secs", keepLoaded ? "0" : "300"]
@@ -103,7 +135,22 @@ extension EngineBackend {
             "/opt/homebrew/bin/th-engine",
         ])
 
-    static let all: [EngineBackend] = [.splash, .thengine]
+    /// mlx-lm is a python module, not a binary: the "executable" is the
+    /// interpreter, and the module is prepended to its args.
+    static let mlx = EngineBackend(
+        id: "mlx", displayName: "MLX",
+        port: 8002,
+        binaryEnvVar: "TOKEN_HORIZON_MLX_PYTHON",
+        binarySearchPaths: [
+            "/opt/homebrew/bin/python3",
+            "/usr/local/bin/python3",
+            "/usr/bin/python3",
+        ],
+        argPrefix: ["-m", "mlx_lm.server"],
+        moduleName: "mlx_lm",
+        probePath: "/v1/models")
+
+    static let all: [EngineBackend] = [.splash, .thengine, .mlx]
 }
 
 // MARK: - Per-backend supervisor
@@ -125,6 +172,14 @@ final class BackendSupervisor: ObservableObject {
             if case .starting = self { return true }
             return false
         }
+        /// The model the state names, whatever the phase ("gpt-5.2-preview").
+        var currentModel: String? {
+            switch self {
+            case .starting(let model): return model
+            case .serving(let model, _, _): return model
+            case .stopped, .failed: return nil
+            }
+        }
     }
 
     @Published private(set) var state: State = .stopped
@@ -136,6 +191,8 @@ final class BackendSupervisor: ObservableObject {
     private var process: Process?
     private var activationID: UUID?
     private var pollTimer: Timer?
+    private var cachedBinary: URL?
+    private var cachedModuleCheck: (String, Bool)?
 
     init(backend: EngineBackend) {
         self.backend = backend
@@ -157,7 +214,68 @@ final class BackendSupervisor: ObservableObject {
         return nil
     }
 
-    var engineAvailable: Bool { binaryURL() != nil }
+    /// Interpreter resolved once — every availability check and spawn reuses
+    /// it, so a python module backend is probed once, not per render.
+    private var resolvedBinary: URL? {
+        lock.lock()
+        if let cachedBinary { lock.unlock(); return cachedBinary }
+        lock.unlock()
+        let url = binaryURL()
+        lock.lock()
+        cachedBinary = url
+        lock.unlock()
+        return url
+    }
+
+    /// Module backends (mlx-lm) must also import: an interpreter without the
+    /// module cannot serve, and saying so up-front beats a failed spawn.
+    private func moduleImportable(_ module: String) -> Bool {
+        lock.lock()
+        if let cachedModuleCheck, cachedModuleCheck.0 == module {
+            let value = cachedModuleCheck.1
+            lock.unlock()
+            return value
+        }
+        lock.unlock()
+        guard let bin = binaryURL() else { return false }
+        let proc = Process()
+        proc.executableURL = bin
+        proc.arguments = ["-c", "import \(module)"]
+        proc.standardOutput = FileHandle.nullDevice
+        proc.standardError = FileHandle.nullDevice
+        var ok = false
+        do {
+            try proc.run()
+            proc.waitUntilExit()
+            ok = proc.terminationStatus == 0
+        } catch {
+            ok = false
+        }
+        lock.lock()
+        cachedModuleCheck = (module, ok)
+        lock.unlock()
+        return ok
+    }
+
+    var engineAvailable: Bool {
+        guard resolvedBinary != nil else { return false }
+        if let module = backend.moduleName { return moduleImportable(module) }
+        return true
+    }
+
+    /// How to make the backend available, for the UI's hint line.
+    var installHint: String? {
+        switch backend.id {
+        case "splash": return "splash not installed — run: brew install incoai/tap/splash"
+        case "thengine": return "th-engine not built — run: cargo build --release -p th-engine (engine/)"
+        case "mlx":
+            guard resolvedBinary != nil else {
+                return "python3 not found — MLX needs python3 with mlx-lm"
+            }
+            return "mlx-lm not installed — run: pip install mlx-lm"
+        default: return nil
+        }
+    }
 
     // MARK: Lifecycle
 
@@ -255,22 +373,27 @@ final class BackendSupervisor: ObservableObject {
 
     // MARK: Internals
 
-    /// GET /status on the backend port. Returns the payload when a server
+    /// GET the backend's probe path. Returns the payload when its own server
     /// answers and publishes .serving/.stopped accordingly.
     @discardableResult
     private func probeAndUpdate() -> [String: Any]? {
-        guard let url = URL(string: "http://127.0.0.1:\(backend.port)/status") else { return nil }
+        guard let url = URL(string: "http://127.0.0.1:\(backend.port)\(backend.probePath)") else { return nil }
         var req = URLRequest(url: url, timeoutInterval: 0.6)
         req.httpMethod = "GET"
         var payload: [String: Any]?
+        var servedModel: String?
         let sema = DispatchSemaphore(value: 0)
         URLSession.shared.dataTask(with: req) { data, resp, _ in
             defer { sema.signal() }
             guard let data,
                   let code = (resp as? HTTPURLResponse)?.statusCode, code == 200,
-                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  obj["instance"] != nil else { return }
+                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
+            // The backend's own shape decides: /status names `instance.model`,
+            // mlx-lm's /v1/models names `data[0].id`. Anything else on the port
+            // is not ours.
+            guard let model = self.backend.probeModel(obj) else { return }
             payload = obj
+            servedModel = model
         }.resume()
         _ = sema.wait(timeout: .now() + 1.0)
 
@@ -279,10 +402,9 @@ final class BackendSupervisor: ObservableObject {
             return (process?.isRunning == true) ? Int(process!.processIdentifier) : nil
         }()
         DispatchQueue.main.async {
-            if let payload {
+            if let payload, let model = servedModel {
                 self.status = payload
                 let inst = payload["instance"] as? [String: Any] ?? [:]
-                let model = inst["model"] as? String ?? "?"
                 let pid = inst["pid"] as? Int ?? spawnedPID ?? 0
                 self.state = .serving(model: model, pid: pid, attached: spawnedPID == nil)
             } else {
@@ -296,11 +418,11 @@ final class BackendSupervisor: ObservableObject {
     private func spawnServe(model: String, tokenizer: String?,
                             maxMemoryGB: Int?, maxContextK: Int?,
                             keepLoaded: Bool, activation: UUID) {
-        guard let bin = binaryURL() else {
+        guard let bin = resolvedBinary else {
             lock.lock()
             if activationID == activation { activationID = nil }
             lock.unlock()
-            publishFail("\(backend.id) not installed")
+            publishFail(installHint ?? "\(backend.id) not installed")
             return
         }
         let args = backend.spawnArgs(model: model, tokenizer: tokenizer,
@@ -418,6 +540,7 @@ final class EngineManager: ObservableObject {
 
     let splash = BackendSupervisor(backend: .splash)
     let thengine = BackendSupervisor(backend: .thengine)
+    let mlx = BackendSupervisor(backend: .mlx)
 
     /// Latest side-by-side bench results (scripts/bench-engines.sh writes
     /// ~/.config/token-horizon/engine-bench.json). Loaded lazily; refreshed
@@ -445,12 +568,16 @@ final class EngineManager: ObservableObject {
         thengine.objectWillChange.sink { [weak self] _ in
             self?.objectWillChange.send()
         }.store(in: &observers)
+        mlx.objectWillChange.sink { [weak self] _ in
+            self?.objectWillChange.send()
+        }.store(in: &observers)
     }
 
     func supervisor(for id: String) -> BackendSupervisor? {
         switch id {
         case "splash": return splash
         case "thengine", "th", "th-engine": return thengine
+        case "mlx", "mlx-lm", "mlx_lm": return mlx
         default: return nil
         }
     }
@@ -458,6 +585,7 @@ final class EngineManager: ObservableObject {
     func startPolling() {
         splash.startPolling()
         thengine.startPolling()
+        mlx.startPolling()
         reloadBench()
         Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in
             self?.reloadBench()
@@ -467,6 +595,7 @@ final class EngineManager: ObservableObject {
     func shutdown() {
         splash.shutdown()
         thengine.shutdown()
+        mlx.shutdown()
     }
 
     /// Combined GET /engine payload.
@@ -490,7 +619,22 @@ final class EngineManager: ObservableObject {
             "backends": [
                 "splash": splash.payload(),
                 "thengine": thengine.payload(),
+                "mlx": mlx.payload(),
             ],
+            "local_catalog": LocalModelCatalog.models().map { m in
+                [
+                    "id": m.id, "name": m.name, "engine": m.engine,
+                    "params_b": m.paramsB, "quant": m.quant,
+                    "download_gb": m.sizeGB, "resident_gb": m.residentGB,
+                    "context_k": m.contextK, "capabilities": m.capabilities,
+                    "min_ram_gb": m.minRAMGB, "recommended_ram_gb": m.recommendedRAMGB,
+                    "license": m.license, "file": m.file ?? NSNull(),
+                    "tokenizer": m.tokenizer ?? NSNull(),
+                ]
+            },
+            // The catalogue reconciled for THIS machine, per engine — what a
+            // client should actually offer to run, with fit and throughput.
+            "recommendations": recommendationPayload(machine: machine),
             "hardware": [
                 "chip": machine.chipName,
                 "memory_gb": machine.physicalMemoryGB,
@@ -501,5 +645,33 @@ final class EngineManager: ObservableObject {
             "models": models,
             "thengine_models": THEngineModel.catalogPayload(),
         ]
+    }
+
+    /// Per-engine "run this here" lists for `/engine`: the catalogue
+    /// reconciled against the probed hardware, best first.
+    private func recommendationPayload(machine: HardwareProfile.Machine) -> [String: Any] {
+        let map = HardwareMap.load()
+        var out: [String: Any] = [:]
+        for engine in LocalModelCatalog.engines() {
+            out[engine] = LocalModelCatalog.runnable(for: machine, engine: engine, map: map).map { rec in
+                [
+                    "id": rec.model.id,
+                    "name": rec.model.name,
+                    "model_spec": rec.model.modelSpec,
+                    "engine": rec.model.engine,
+                    "quant": rec.model.quant,
+                    "download_gb": rec.model.sizeGB,
+                    "context_k": rec.model.contextK,
+                    "fit": rec.fit.rawValue,
+                    "fit_label": rec.fit.badge,
+                    "tok_per_sec": rec.tokPerSec,
+                    "tok_per_sec_measured": rec.tokPerSecMeasured,
+                    "suggested_max_memory_gb": rec.maxMemoryGB,
+                    "suggested_max_context_k": rec.maxContextK,
+                    "installed": HFModelStore.isInstalled(rec.model.id),
+                ] as [String: Any]
+            }
+        }
+        return out
     }
 }

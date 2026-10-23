@@ -69,6 +69,23 @@ final class ModelCatalog {
         var discountDetail: String?
         var originalInputPerM: Double?
         var originalOutputPerM: Double?
+        /// The lab's own card for the model (models.dev): when it shipped, what
+        /// it knows up to, whether it is deprecated, and which knobs it has.
+        /// Absent when the source does not say — never guessed.
+        var releaseDate: String?
+        var knowledgeCutoff: String?
+        var status: String?
+        var structuredOutput: Bool?
+        var temperature: Bool?
+        /// The reasoning effort levels the model accepts ("none", "low", …).
+        var reasoningOptions: [String]?
+        /// What the model can answer with ("text", "image", "audio").
+        var outputModalities: [String]?
+        /// The largest answer the model gives, in thousands of tokens.
+        var outputLimitK: Int?
+        /// The lab's canonical id for these weights ("openai/gpt-5.2"). A
+        /// route id is one spelling of it ("kilo/openai/gpt-5.2").
+        var canonicalModelId: String?
     }
 
     struct Benchmarks: Codable, Equatable {
@@ -161,7 +178,7 @@ final class ModelCatalog {
                 outputPerM: 50.00,
                 cacheReadPerM: 1.00,
                 contextK: 872,
-                benchmarks: Benchmarks(swe: 85.2, lcb: 81.0, source: "OpenAI"),
+                benchmarks: Self.curatedBenchmark("gpt-6-astra", or: Benchmarks(swe: 85.2, lcb: 81.0, source: "OpenAI")),
                 docUrl: "https://platform.openai.com/docs/models",
                 description: "OpenAI premier frontier flagship model for complex coding, computer use & autonomous agents (90% prompt cache savings)",
                 reasoning: true,
@@ -184,7 +201,7 @@ final class ModelCatalog {
                 outputPerM: 10.00,
                 cacheReadPerM: 0.50,
                 contextK: 1050,
-                benchmarks: Benchmarks(swe: 83.0, lcb: 80.0, source: "OpenAI"),
+                benchmarks: Self.curatedBenchmark("gpt-5.6-sol", or: Benchmarks(swe: 81.5, lcb: 78.0, source: "OpenAI", approx: true)),
                 docUrl: "https://platform.openai.com/docs/models",
                 description: "OpenAI premier flagship tier for complex reasoning, architectural design & multi-step coding agents (50% promotional discount active)",
                 reasoning: true,
@@ -209,7 +226,7 @@ final class ModelCatalog {
                 outputPerM: 10.00,
                 cacheReadPerM: 0.50,
                 contextK: 256,
-                benchmarks: Benchmarks(swe: 81.5, lcb: 78.0, source: "OpenAI"),
+                benchmarks: Self.curatedBenchmark("gpt-5-sol", or: Benchmarks(swe: 81.5, lcb: 78.0, source: "OpenAI", approx: true)),
                 docUrl: "https://platform.openai.com/docs/models",
                 description: "OpenAI premier flagship tier for complex reasoning, architectural design & multi-step coding agents (50% promotional discount active)",
                 reasoning: true,
@@ -234,7 +251,7 @@ final class ModelCatalog {
                 outputPerM: 4.80,
                 cacheReadPerM: 0.15,
                 contextK: 1050,
-                benchmarks: Benchmarks(swe: 74.0, lcb: 70.0, source: "OpenAI"),
+                benchmarks: Self.curatedBenchmark("gpt-5.6-terra", or: Benchmarks(swe: 72.0, lcb: 68.5, source: "OpenAI", approx: true)),
                 docUrl: "https://platform.openai.com/docs/models",
                 description: "OpenAI balanced all-rounder tier for daily professional coding & multi-modal workflows (20% promo reduction)",
                 reasoning: true,
@@ -258,7 +275,7 @@ final class ModelCatalog {
                 outputPerM: 4.80,
                 cacheReadPerM: 0.15,
                 contextK: 256,
-                benchmarks: Benchmarks(swe: 72.0, lcb: 68.5, source: "OpenAI"),
+                benchmarks: Self.curatedBenchmark("gpt-5-terra", or: Benchmarks(swe: 72.0, lcb: 68.5, source: "OpenAI", approx: true)),
                 docUrl: "https://platform.openai.com/docs/models",
                 description: "OpenAI balanced all-rounder tier for daily professional coding & multi-modal workflows (20% promo reduction)",
                 reasoning: true,
@@ -283,7 +300,7 @@ final class ModelCatalog {
                 outputPerM: 0.40,
                 cacheReadPerM: 0.025,
                 contextK: 1050,
-                benchmarks: Benchmarks(swe: 54.0, lcb: 52.0, source: "OpenAI"),
+                benchmarks: Self.curatedBenchmark("gpt-5.6-luna", or: Benchmarks(swe: 52.0, lcb: 50.0, source: "OpenAI", approx: true)),
                 docUrl: "https://platform.openai.com/docs/models",
                 description: "OpenAI high-speed lightweight tier for fast summaries, classification & cost-sensitive tasks",
                 reasoning: true,
@@ -302,7 +319,7 @@ final class ModelCatalog {
                 outputPerM: 0.40,
                 cacheReadPerM: 0.025,
                 contextK: 128,
-                benchmarks: Benchmarks(swe: 52.0, lcb: 50.0, source: "OpenAI"),
+                benchmarks: Self.curatedBenchmark("gpt-5-luna", or: Benchmarks(swe: 52.0, lcb: 50.0, source: "OpenAI", approx: true)),
                 docUrl: "https://platform.openai.com/docs/models",
                 description: "OpenAI high-speed lightweight tier for fast summaries, classification & cost-sensitive tasks",
                 reasoning: true,
@@ -326,7 +343,7 @@ final class ModelCatalog {
                 outputPerM: 0.60,
                 cacheReadPerM: 0.003,
                 contextK: 1000,
-                benchmarks: Benchmarks(swe: 78.0, lcb: 74.0, source: "DeepSeek"),
+                benchmarks: Self.curatedBenchmark("deepseek-v4.1-flash", or: Benchmarks(swe: 78.0, lcb: 74.0, source: "DeepSeek", approx: true)),
                 docUrl: "https://api-docs.deepseek.com/quick_start/pricing",
                 description: "DeepSeek current flagship (off-peak shown; peak 2x; surpasses V4 Pro, faster + cheaper)",
                 reasoning: true,
@@ -346,7 +363,7 @@ final class ModelCatalog {
                 outputPerM: 1.98,
                 cacheReadPerM: 0.022,
                 contextK: 1000,
-                benchmarks: Benchmarks(swe: 72.0, lcb: 68.0, source: "DeepSeek"),
+                benchmarks: Self.curatedBenchmark("deepseek-v4-pro", or: Benchmarks(swe: 72.0, lcb: 68.0, source: "DeepSeek", approx: true)),
                 docUrl: "https://api-docs.deepseek.com/quick_start/pricing",
                 description: "DeepSeek V4 Pro 0813 (off-peak shown; peak 2x; routes to V4.1 Flash from 2026-09-14 billed at Flash)",
                 reasoning: true,
@@ -365,7 +382,7 @@ final class ModelCatalog {
                 outputPerM: 50.00,
                 cacheReadPerM: 0.25,
                 contextK: 1000,
-                benchmarks: Benchmarks(swe: 84.0, lcb: 80.5, source: "Anthropic"),
+                benchmarks: Self.curatedBenchmark("claude-fable-5-1", or: Benchmarks(swe: 84.0, lcb: 80.5, source: "Anthropic", approx: true)),
                 docUrl: "https://docs.anthropic.com/en/docs/about-claude/models",
                 description: "Anthropic frontier reasoning & software engineering model (97.5% prompt cache savings)",
                 reasoning: true,
@@ -413,7 +430,9 @@ final class ModelCatalog {
                 outputPerM: isLegacy ? 75.00 : 25.00,
                 cacheReadPerM: isLegacy ? 1.50 : 0.50,
                 contextK: 1000,
-                benchmarks: Benchmarks(swe: clean.contains("opus-5") ? 82.0 : 76.5, lcb: clean.contains("opus-5") ? 79.0 : 74.0, source: "Anthropic"),
+                benchmarks: clean.contains("opus-5")
+                    ? Self.curatedBenchmark("claude-opus-5", or: Benchmarks(swe: 82.0, lcb: 79.0, source: "Anthropic", approx: true))
+                    : Self.curatedBenchmark("claude-opus-4-6", or: Benchmarks(swe: 76.5, lcb: 74.0, source: "Anthropic", approx: true)),
                 docUrl: "https://docs.anthropic.com/en/docs/about-claude/models",
                 description: "Anthropic flagship model for complex coding & architecture (90% prompt cache savings)",
                 reasoning: true,
@@ -436,7 +455,9 @@ final class ModelCatalog {
                 outputPerM: 15.00,
                 cacheReadPerM: 0.30,
                 contextK: 200,
-                benchmarks: Benchmarks(swe: is37 ? 70.3 : 65.0, lcb: is37 ? 71.0 : 67.0, source: "Anthropic"),
+                benchmarks: is37
+                    ? Self.curatedBenchmark("claude-3.7-sonnet", or: Benchmarks(swe: 77.6, lcb: 70.3, source: "Anthropic"))
+                    : Self.curatedBenchmark("claude-3.5-sonnet", or: Benchmarks(swe: 74.5, lcb: 67.2, source: "Anthropic")),
                 docUrl: "https://docs.anthropic.com/en/docs/about-claude/models",
                 description: "Anthropic premier industry benchmark model for coding & agentic workflows (90% prompt cache savings)",
                 reasoning: is37,
@@ -459,7 +480,9 @@ final class ModelCatalog {
                 outputPerM: is45 ? 5.00 : 4.00,
                 cacheReadPerM: is45 ? 0.10 : 0.08,
                 contextK: 200,
-                benchmarks: Benchmarks(swe: 40.6, lcb: 43.1, source: "Anthropic"),
+                benchmarks: is45
+                    ? Self.curatedBenchmark("claude-haiku-4-5", or: Benchmarks(swe: 40.6, lcb: 43.1, source: "Anthropic", approx: true))
+                    : Self.curatedBenchmark("claude-3.5-haiku", or: Benchmarks(swe: 40.6, lcb: 43.1, source: "Anthropic")),
                 docUrl: "https://docs.anthropic.com/en/docs/about-claude/models",
                 description: "Anthropic high-speed lightweight model for quick tasks & summaries",
                 reasoning: false,
@@ -478,7 +501,7 @@ final class ModelCatalog {
                 outputPerM: 0.60,
                 cacheReadPerM: 0.038,
                 contextK: 1000,
-                benchmarks: Benchmarks(swe: 67.0, lcb: 65.0, source: "Google"),
+                benchmarks: Self.curatedBenchmark("gemini-3.7-flash", or: Benchmarks(swe: 67.0, lcb: 65.0, source: "Google", approx: true)),
                 docUrl: "https://ai.google.dev/pricing",
                 description: "Google next-generation hybrid reasoning & coding flash model (75% context caching savings)",
                 reasoning: true,
@@ -500,7 +523,7 @@ final class ModelCatalog {
                 outputPerM: 0.60,
                 cacheReadPerM: 0.038,
                 contextK: 1000,
-                benchmarks: Benchmarks(swe: 65.0, lcb: 62.0, source: "Google"),
+                benchmarks: Self.curatedBenchmark("gemini-3.5-flash", or: Benchmarks(swe: 65.0, lcb: 62.0, source: "Google", approx: true)),
                 docUrl: "https://ai.google.dev/pricing",
                 description: "Google next-generation speed & multimodal reasoning model",
                 reasoning: true,
@@ -519,7 +542,7 @@ final class ModelCatalog {
                 outputPerM: 5.00,
                 cacheReadPerM: 0.31,
                 contextK: 2000,
-                benchmarks: Benchmarks(swe: 63.8, lcb: 60.5, source: "Google"),
+                benchmarks: Self.curatedBenchmark("gemini-2.5-pro", or: Benchmarks(swe: 63.8, lcb: 60.5, source: "Google")),
                 docUrl: "https://ai.google.dev/pricing",
                 description: "Google frontier multimodal reasoning & coding model",
                 reasoning: true,
@@ -538,7 +561,7 @@ final class ModelCatalog {
                 outputPerM: 0.60,
                 cacheReadPerM: 0.038,
                 contextK: 1000,
-                benchmarks: Benchmarks(swe: 55.0, lcb: 54.0, source: "Google"),
+                benchmarks: Self.curatedBenchmark("gemini-2.5-flash", or: Benchmarks(swe: 55.0, lcb: 54.0, source: "Google", approx: true)),
                 docUrl: "https://ai.google.dev/pricing",
                 description: "Google high-performance multimodal flash model",
                 reasoning: true,
@@ -557,7 +580,7 @@ final class ModelCatalog {
                 outputPerM: 0.01,
                 cacheReadPerM: 0.005,
                 contextK: 128,
-                benchmarks: Benchmarks(swe: 58.0, lcb: 55.0, source: "Zhipu"),
+                benchmarks: Self.curatedBenchmark("glm-5.3-flash", or: Benchmarks(swe: 64.0, lcb: 60.0, source: "Zhipu", approx: true)),
                 docUrl: "https://open.bigmodel.cn/dev/api",
                 description: "Zhipu high-speed lightweight reasoning & coding model",
                 reasoning: true,
@@ -576,7 +599,7 @@ final class ModelCatalog {
                 outputPerM: 0.70,
                 cacheReadPerM: 0.14,
                 contextK: 128,
-                benchmarks: Benchmarks(swe: 68.0, lcb: 63.0, source: "Zhipu"),
+                benchmarks: Self.curatedBenchmark("glm-5.3", or: Benchmarks(swe: 68.0, lcb: 63.0, source: "Zhipu", approx: true)),
                 docUrl: "https://open.bigmodel.cn/dev/api",
                 description: "Zhipu flagship frontier coding & reasoning model",
                 reasoning: true,
@@ -910,12 +933,30 @@ final class ModelCatalog {
     }
 
     @discardableResult
+    /// Post-merge hygiene for catalog entries: repairs float-precision price
+    /// corruption (0.09999999999999999 -> 0.1), clamps negative prices to 0,
+    /// and resets junk context windows (media/router placeholders ship 99999;
+    /// anything above 10M tokens is not a real context). Applied on initial
+    /// hydration and on every incremental merge.
+    static func normalized(_ e: Entry) -> Entry {
+        var e = e
+        func clean(_ v: Double) -> Double { max(0, (v * 1_000_000).rounded() / 1_000_000) }
+        e.inputPerM = clean(e.inputPerM)
+        e.outputPerM = clean(e.outputPerM)
+        if let c = e.cacheReadPerM { e.cacheReadPerM = clean(c) }
+        if let o = e.originalInputPerM { e.originalInputPerM = clean(o) }
+        if let o = e.originalOutputPerM { e.originalOutputPerM = clean(o) }
+        if e.contextK > 10_000 { e.contextK = 0 }
+        return e
+    }
+
     func mergeDiscoveredEntries(_ newEntries: [String: Entry]) -> (added: Int, updated: Int, addedIds: [String]) {
         lock.lock()
         var added = 0
         var updated = 0
         var addedIds: [String] = []
-        for (k, v) in newEntries {
+        for (k, rawV) in newEntries {
+            let v = Self.normalized(rawV)
             let cleanKey = k.lowercased()
             if let existing = byId[cleanKey] {
                 if existing != v {
@@ -957,7 +998,7 @@ final class ModelCatalog {
         }
         Self.injectDirectFlagships(into: &map, benchmarks: bm)
         Self.fetchCodexCachedModels(into: &map, benchmarks: bm)
-        self.byId = map
+        self.byId = map.mapValues { Self.normalized($0) }
         self.revision += 1
     }
 
@@ -1086,7 +1127,216 @@ final class ModelCatalog {
         return words.joined(separator: " ")
     }
 
+    /// Regional/channel prefixes ("us.", "eu.", "jp.", "global.") and date
+    /// stamps ("@20251001", "-20251001") are transport metadata, not model
+    /// identity — every copy names the same underlying model. Stripping them
+    /// stops one Claude model from fragmenting into ~10 family rows.
+    /// A date stamp at the end of a model id names a snapshot of a model, not
+    /// a model of its own. Providers spell them four ways: compact
+    /// ("-20250219"), ISO ("-2025-02-19"), month-day ("-0219"), month-year
+    /// ("-02-2025") and a bare year ("-2025"). All name the same weights as
+    /// the model without the stamp.
+    static func strippingDateStamps(_ s: String) -> String {
+        var out = s
+        for pattern in [#"-(\d{4})-(\d{2})-(\d{2})$"#, #"-(\d{2})-(\d{4})$"#, #"-(\d{2})-(\d{2})$"#, #"-(\d{4})$"#] {
+            out = out.replacingOccurrences(of: pattern, with: "", options: .regularExpression)
+        }
+        return out
+    }
+
+    private static func stripRegionalAndDateAffixes(_ s: String) -> String {
+        var out = s
+        // Trailing date stamps: "@20251001", "-20251001" (exactly 8 digits)
+        // and the ISO form "-2024-12-17". All name a snapshot of a model, not
+        // a model of their own.
+        out = out.replacingOccurrences(of: #"[@-]\d{8}$"#, with: "", options: .regularExpression)
+        out = out.replacingOccurrences(of: #"[@-]\d{4}-\d{2}-\d{2}$"#, with: "", options: .regularExpression)
+        let regional = ["us.", "eu.", "jp.", "global.", "au.", "ap.", "amazon.", "vertex.", "bedrock."]
+        var changed = true
+        while changed {
+            changed = false
+            for r in regional where out.lowercased().hasPrefix(r) {
+                out = String(out.dropFirst(r.count))
+                changed = true
+            }
+        }
+        return out
+    }
+
+    /// Folds hyphenated minor versions into dots so "claude-opus-5-5" and
+    /// "claude-opus-5.5" resolve to one family (also covers legacy 3-7 / 3-5,
+    /// which were previously the only two folded). Does not touch trailing
+    /// standalone digits like "claude-haiku-4-5" beyond the major-minor pair.
+    ///
+    /// A param count is not a version: "ministral-3-8b" is Llama-style
+    /// sizing, not version 3.8, so a folded digit followed by "b" is left
+    /// alone — the same rule keeps "gemma-4-31b" intact. A dotted number
+    /// ("hy-mt2-1.8b") is a size of its own, not a version either.
+    private static func normalizedVersionDots(_ s: String) -> String {
+        s.replacingOccurrences(of: #"(?<![.\d])(\d)-(\d)(?![0-9.bB])"#, with: "$1.$2", options: .regularExpression)
+    }
+
+    /// Prefixes that name the SELLER, not the model: a regional or channel
+    /// marker ("us.", "eu.", "global.") or a brand double-prefix
+    /// ("xai.grok-4.6", "openai.gpt-5.5", "zai.glm-4.7"). Stripping them
+    /// leaves the model itself.
+    static let familyAffixPrefixes: [String] = [
+        "us.", "eu.", "jp.", "global.", "au.", "ap.",
+        "openai.", "anthropic.", "google.", "meta.", "mistral.", "deepseek.",
+        "xai.", "zhipu.", "zai.", "alibaba.", "moonshot.", "minimax.", "nvidia.",
+        "cohere.", "amazon.", "microsoft.", "azure.", "bedrock.", "vertex.",
+        "ibm.", "tencent.", "baidu.", "bytedance.", "xiaomi.", "stepfun.",
+        "perplexity.", "upstage.", "ai21.", "sakana.", "inception.", "liquid.",
+        "nebius.", "groq.", "cerebras.", "sambanova.", "databricks.", "ollama.",
+        "huggingface.",
+    ]
+
+    /// Fold the spellings of one model id onto one family: brand and regional
+    /// prefixes, date stamps, underscore separators and hyphenated versions
+    /// ("gpt-5-2" → "gpt-5.2", "flux_2-klein-4b" → "flux-2-klein-4b"). Every
+    /// branch's family passes through here, so a model has one family no
+    /// matter which spelling a provider used.
+    static func normalizedFamilyName(_ s: String) -> String {
+        var out = stripRegionalAndDateAffixes(s.lowercased().replacingOccurrences(of: "_", with: "-"))
+        // A date stamp names a snapshot of a model, not a model of its own.
+        out = strippingDateStamps(out)
+        // A dot between a name and its version is a separator, not a version
+        // point ("flux.2-klein-4b" → "flux-2-klein-4b"). A dot between two
+        // digits stays: that is the version itself ("gpt-5.2").
+        out = out.replacingOccurrences(of: #"(?<=[a-z])\.(?=\d)"#, with: "-", options: .regularExpression)
+        // Collapse repeated separators and trim stray ones: a peeled prefix
+        // can leave a double dash behind ("anthropic--claude-3.7-sonnet" →
+        // "-claude-3.7-sonnet").
+        while out.contains("--") { out = out.replacingOccurrences(of: "--", with: "-") }
+        out = out.trimmingCharacters(in: CharacterSet(charactersIn: "-"))
+        var changed = true
+        while changed {
+            changed = false
+            for prefix in familyAffixPrefixes where out.hasPrefix(prefix) && out.count > prefix.count {
+                out = String(out.dropFirst(prefix.count))
+                changed = true
+                break
+            }
+        }
+        return normalizedVersionDots(out)
+    }
+
     private static func canonicalIdentityUncached(provider: String, model: String) -> (family: String, displayName: String, providerId: String, providerName: String) {
+        // A model reaches the catalog under a namespaced id: the lab's own
+        // spelling ("openai/o3"), a gateway that repeats the seller or the lab
+        // ("kilo-o3", "digitalocean/openai-o3", "vercel-muse-wonder-1.0"). The
+        // namespace is transport metadata, so try the meaningful spellings and
+        // take the first one the catalog recognizes as a model family. An id
+        // nothing recognizes keeps its full name — "nano-gpt-help" must not
+        // collapse into a family called "help".
+        let spellings = identitySpellings(provider: provider, model: model)
+        for candidate in spellings.candidates {
+            if let hit = resolveIdentity(provider: provider, model: candidate) {
+                return normalizedIdentity(hit)
+            }
+        }
+        return normalizedIdentity(defaultIdentity(provider: provider, model: spellings.modelName))
+    }
+
+    /// One family per model: fold the spelling variants a provider used onto
+    /// the same family, and re-derive the display name when the fold moved it.
+    private static func normalizedIdentity(_ hit: (family: String, displayName: String, providerId: String, providerName: String)) -> (family: String, displayName: String, providerId: String, providerName: String) {
+        let family = normalizedFamilyName(hit.family)
+        guard family != hit.family else { return hit }
+        return (family, formatModelDisplayName(family), hit.providerId, hit.providerName)
+    }
+
+    /// How authoritative a route's pricing is. The lab's own route carries the
+    /// list price; a coding plan passes it through; every other seller
+    /// (aggregator, gateway, reseller) sets its own price. A local model is
+    /// free and must never stand in for a priced one. The catalog shows the
+    /// most authoritative price a model has, not whichever route happened to
+    /// be seen first.
+    static func pricingAuthority(provider: String) -> Int {
+        let p = provider.lowercased()
+        if p.contains("ollama") { return 3 }
+        if modelVendorTokens.contains(where: { p.contains($0) }) { return 0 }
+        if p.contains("opencode") || p.contains("plan") || p.contains("coding") { return 1 }
+        return 2
+    }
+
+    /// The spellings of a model id worth trying, most meaningful first, plus
+    /// the model name to fall back on when no lab recognizes the id.
+    static func identitySpellings(provider: String, model: String) -> (candidates: [String], modelName: String) {
+        let p = provider.lowercased()
+        let raw = model.lowercased()
+        let leaf = raw.split(separator: "/").last.map(String.init) ?? raw
+        var candidates: [String] = []
+        var modelName = leaf
+        func add(_ s: String) {
+            let t = s.trimmingCharacters(in: .whitespaces)
+            if !t.isEmpty && !candidates.contains(t) { candidates.append(t) }
+        }
+        for base in [leaf, raw] {
+            // Peel redundant prefixes: the seller's own name ("nano-gpt-o3",
+            // "kilo-o3"), a lab name in front of the lab's model
+            // ("meta-llama-3.1-8b-instruct"), or a chain of them
+            // ("digitalocean-openai-o3"). The most peeled spelling is tried
+            // first — the raw id still carries the prefix and would otherwise
+            // look like a recognized model.
+            var peeled: [String] = []
+            var rest = base
+            var peeling = true
+            while peeling {
+                peeling = false
+                // The longest matching prefix wins: a seller's name can be
+                // several words ("nano-gpt", "merge-gateway") and the id may
+                // use a shorter form of it ("umans-ai" → "umans-").
+                var match: (prefix: String, tail: String)?
+                var prefixes = [p]
+                if let firstWord = p.split(separator: "-").first, firstWord.count > 2 {
+                    prefixes.append(String(firstWord))
+                }
+                prefixes += modelVendorTokens.sorted(by: { $0.count > $1.count })
+                for prefix in prefixes {
+                    guard !prefix.isEmpty, rest.hasPrefix(prefix + "-") else { continue }
+                    let tail = String(rest.dropFirst(prefix.count + 1))
+                    if match == nil || prefix.count > match!.prefix.count {
+                        match = (prefix, tail)
+                    }
+                }
+                guard let match, !match.tail.isEmpty else { break }
+                let tail = match.tail
+                // A lab names its models after itself ("glm-4.6", "kimi-k2"),
+                // so a lab prefix is only redundant when the rest is one of
+                // its models ("meta-llama-3.1-8b-instruct" → "llama-3.1-8b-
+                // instruct"), never a bare version fragment ("glm-4.6" →
+                // "4.6"). A reseller's own prefix ("kilo-o3") is always
+                // redundant.
+                let vendorPrefixed = match.prefix == p
+                    ? modelVendorTokens.contains { p.contains($0) }
+                    : true
+                if vendorPrefixed, !modelFamilyTokens.contains(where: { tail.hasPrefix($0) }) { break }
+                // What is left must still look like a model, not a word.
+                guard isModelName(tail) else { break }
+                peeled.append(tail)
+                rest = tail
+                peeling = true
+            }
+            for spelling in peeled.reversed() { add(spelling) }
+            add(base)
+            if base == leaf, let most = peeled.last { modelName = most }
+        }
+        return (candidates, modelName)
+    }
+
+    /// A model name carries a version, a size or a family token — "mimo-v2.5",
+    /// "hy3", "inkling". A bare word ("help") is not a model name and must
+    /// not become a family.
+    static func isModelName(_ s: String) -> Bool {
+        if s.contains(where: { $0.isNumber }) { return true }
+        if s.contains("-") { return true }
+        return modelFamilyTokens.contains { s.hasPrefix($0) }
+    }
+
+    /// The identity of a model one of the lab branches recognizes, or nil
+    /// when no branch claims it (the caller then falls back to the model name).
+    private static func resolveIdentity(provider: String, model: String) -> (family: String, displayName: String, providerId: String, providerName: String)? {
         let p = provider.lowercased()
         let m = model.lowercased()
             .replacingOccurrences(of: "_", with: "-")
@@ -1094,12 +1344,16 @@ final class ModelCatalog {
             .replacingOccurrences(of: ":", with: "-")
 
         // 1. Google Gemini, Gemma, Imagen & Veo (dynamic auto-discovery for all 3.x, 2.x, 1.x releases)
-        if p.contains("google") || p.contains("vertex") || m.contains("gemini") || m.contains("gemma") || m.contains("imagen") || m.contains("veo") {
+        // Excludes Claude/Anthropic models that happen to be hosted on Google/Vertex
+        // ("google/claude-opus-5-5@default") — those must reach the Anthropic branch,
+        // not be mangled into a Gemini family.
+        if (p.contains("google") || p.contains("vertex") || m.contains("gemini") || m.contains("gemma") || m.contains("imagen") || m.contains("veo")) && !(m.contains("claude") || m.contains("anthropic")) {
             let clean = m.split(separator: "/").last.map(String.init) ?? m
             var family = clean
                 .replacingOccurrences(of: "-latest", with: "")
                 .replacingOccurrences(of: "-preview", with: "")
                 .replacingOccurrences(of: "-thinking", with: "")
+            family = strippingDateStamps(family)
                 .replacingOccurrences(of: "-exp", with: "")
                 .replacingOccurrences(of: "-customtools", with: "")
             family = family
@@ -1123,15 +1377,27 @@ final class ModelCatalog {
             return (family, name, "glm", "Zhipu AI")
         }
 
-        // 3. Anthropic Claude Models (dynamic for all Claude 3.7, 3.5, 4.x, Sonnet, Opus, Haiku)
+        // 3. Anthropic Claude Models (dynamic for all Claude 3.5/3.7/4.x/5.x, Sonnet, Opus, Haiku)
         if p.contains("anthropic") || p.contains("claude") || m.contains("claude") {
-            let clean = m.split(separator: "/").last.map(String.init) ?? m
+            var clean = m.split(separator: "/").last.map(String.init) ?? m
+            // Drop regional/channel + date affixes: "us.anthropic.claude-sonnet-5"
+            // and "claude-haiku-4-5@20251001" name the same models as their bases.
+            clean = stripRegionalAndDateAffixes(clean)
+            // Drop redundant brand double-prefixes ("anthropic.claude-opus-5-5",
+            // "anthropic-claude-opus-5-5") but never a model's own "claude-" stem.
+            for prefix in ["anthropic.", "anthropic-"] {
+                while clean.lowercased().hasPrefix(prefix) && clean.count > prefix.count {
+                    clean = String(clean.dropFirst(prefix.count))
+                }
+            }
+            if clean.lowercased().hasPrefix("claude.") {
+                clean = "claude-" + clean.dropFirst("claude.".count)
+            }
             var family = clean
                 .replacingOccurrences(of: "-latest", with: "")
                 .replacingOccurrences(of: "-preview", with: "")
-            family = family
-                .replacingOccurrences(of: "claude-3-7-", with: "claude-3.7-")
-                .replacingOccurrences(of: "claude-3-5-", with: "claude-3.5-")
+            // Fold version hyphenation to dots so "-5-5" == "-5.5".
+            family = normalizedVersionDots(family)
             let name = formatModelDisplayName(family)
             return (family, name, "anthropic", "Anthropic")
         }
@@ -1148,41 +1414,70 @@ final class ModelCatalog {
         }
 
         // 5. OpenAI Models (dynamic for GPT-6 Astra, GPT Daybreak, GPT Reserve, GPT-5.6 Sol, Terra, Luna, GPT-5, GPT-4o, GPT-4.5, o1, o3, o4)
-        let isOpenAI = p.contains("openai") || p.contains("codex") || m.contains("gpt") || m.contains("chatgpt") || m.contains("astra") || m.contains("daybreak") || m.contains("reserve") || m.hasPrefix("o1") || m.hasPrefix("o3") || m.hasPrefix("o4") || ((m.contains("sol") || m.contains("terra") || m.contains("luna")) && (p.contains("openai") || p.contains("codex") || m.contains("gpt")))
+        // The id must START with an OpenAI model token: a seller's name can
+        // contain one ("nano-gpt-inkling" is not an OpenAI model).
+        let gptFamily = m.hasPrefix("gpt") || m.hasPrefix("chatgpt")
+            || m.hasPrefix("o1") || m.hasPrefix("o3") || m.hasPrefix("o4")
+        let isOpenAI = p.contains("openai") || p.contains("codex") || gptFamily || m.contains("astra") || m.contains("daybreak") || m.contains("reserve") || ((m.contains("sol") || m.contains("terra") || m.contains("luna")) && (p.contains("openai") || p.contains("codex") || gptFamily))
         if isOpenAI {
             let clean = m.split(separator: "/").last.map(String.init) ?? m
             let family = clean
                 .replacingOccurrences(of: "-latest", with: "")
                 .replacingOccurrences(of: "-preview", with: "")
-            if family.contains("astra") {
-                return ("gpt-6-astra", "GPT-6 Astra", "openai", "OpenAI")
+            // A service tier is its own model with its own price: "gpt-5-batch"
+            // costs half of "gpt-5", "gpt-6.1-sol-pro" is a different tier
+            // again. It matches the base model — so the base model's name
+            // applies — but it keeps its own family, and the base model keeps
+            // its own price.
+            var tier = ""
+            var base = family
+            for suffix in ["-batch", "-pro", "-fast", "-expert", "-high", "-mini", "-lite"] where base.hasSuffix(suffix) {
+                tier = suffix
+                base = String(base.dropLast(suffix.count))
+                break
             }
-            if family.contains("daybreak") {
-                return ("gpt-daybreak", "GPT Daybreak Blue", "openai", "OpenAI")
+            let tierLabel = tier.isEmpty ? "" : " " + tier.dropFirst().uppercased()
+            if base.contains("astra") {
+                return ("gpt-6-astra" + tier, "GPT-6 Astra" + tierLabel, "openai", "OpenAI")
             }
-            if family.contains("reserve") {
-                return ("gpt-reserve", "GPT Reserve", "openai", "OpenAI")
+            if base.contains("daybreak") {
+                return ("gpt-daybreak" + tier, "GPT Daybreak Blue" + tierLabel, "openai", "OpenAI")
             }
-            if family.contains("5.6-sol") || family.contains("5-6-sol") || family.contains("56-sol") {
-                return ("gpt-5.6-sol", "GPT-5.6 Sol", "openai", "OpenAI")
+            if base.contains("reserve") {
+                return ("gpt-reserve" + tier, "GPT Reserve" + tierLabel, "openai", "OpenAI")
             }
-            if (family.contains("gpt-5-sol") || family.contains("gpt-sol") || family.contains("-sol") || family == "sol") && !family.contains("solar") {
-                return ("gpt-5-sol", "GPT-5 Sol", "openai", "OpenAI")
+            if base.contains("5.6-sol") || base.contains("5-6-sol") || base.contains("56-sol") {
+                return ("gpt-5.6-sol" + tier, "GPT-5.6 Sol" + tierLabel, "openai", "OpenAI")
             }
-            if family.contains("5.6-terra") || family.contains("5-6-terra") || family.contains("56-terra") {
-                return ("gpt-5.6-terra", "GPT-5.6 Terra", "openai", "OpenAI")
+            // GPT-6 codex workhorse tiers: the generic "-sol"/"luna" rules below
+            // would otherwise collapse gpt-6.1-sol/gpt-6-sol into gpt-5-sol and
+            // gpt-6-luna into gpt-5-luna, losing their identity (and pricing).
+            if base.contains("6.1-sol") || base.contains("6-1-sol") {
+                return ("gpt-6.1-sol" + tier, "GPT-6.1 Sol" + tierLabel, "openai", "OpenAI")
             }
-            if family.contains("terra") {
-                return ("gpt-5-terra", "GPT-5 Terra", "openai", "OpenAI")
+            if base.contains("6-sol") {
+                return ("gpt-6-sol" + tier, "GPT-6 Sol" + tierLabel, "openai", "OpenAI")
             }
-            if family.contains("5.6-luna") || family.contains("5-6-luna") || family.contains("56-luna") {
-                return ("gpt-5.6-luna", "GPT-5.6 Luna", "openai", "OpenAI")
+            if (base.contains("gpt-5-sol") || base.contains("gpt-sol") || base.contains("-sol") || base == "sol") && !base.contains("solar") {
+                return ("gpt-5-sol" + tier, "GPT-5 Sol" + tierLabel, "openai", "OpenAI")
             }
-            if family.contains("luna") && !family.contains("lunaris") {
-                return ("gpt-5-luna", "GPT-5 Luna", "openai", "OpenAI")
+            if base.contains("5.6-terra") || base.contains("5-6-terra") || base.contains("56-terra") {
+                return ("gpt-5.6-terra" + tier, "GPT-5.6 Terra" + tierLabel, "openai", "OpenAI")
             }
-            if family.contains("auto-review") {
-                return ("codex-auto-review", "Codex Auto Review", "openai", "OpenAI")
+            if base.contains("terra") {
+                return ("gpt-5-terra" + tier, "GPT-5 Terra" + tierLabel, "openai", "OpenAI")
+            }
+            if base.contains("5.6-luna") || base.contains("5-6-luna") || base.contains("56-luna") {
+                return ("gpt-5.6-luna" + tier, "GPT-5.6 Luna" + tierLabel, "openai", "OpenAI")
+            }
+            if base.contains("6-luna") {
+                return ("gpt-6-luna" + tier, "GPT-6 Luna" + tierLabel, "openai", "OpenAI")
+            }
+            if base.contains("luna") && !base.contains("lunaris") {
+                return ("gpt-5-luna" + tier, "GPT-5 Luna" + tierLabel, "openai", "OpenAI")
+            }
+            if base.contains("auto-review") {
+                return ("codex-auto-review" + tier, "Codex Auto Review" + tierLabel, "openai", "OpenAI")
             }
             let name = formatModelDisplayName(family)
             return (family, name, "openai", "OpenAI")
@@ -1304,12 +1599,70 @@ final class ModelCatalog {
         // 16. Local custom models (e.g. ornith-1.5:35b)
         if m.contains("ornith") { return ("ornith-1.5-35b", "Ornith 1.5 35B", "ollama", "Ollama (Local)") }
 
-        // Default: clean ID and provider
-        let lastPart = model.split(separator: "/").last.map(String.init) ?? model
-        let clean = lastPart.replacingOccurrences(of: ":", with: "-")
-        return ("\(p)-\(clean.lowercased())", lastPart, p, provider)
+        // No lab claims this id: the caller falls back to the model name.
+        return nil
     }
 
+    /// The identity of a model no lab branch recognizes: the model name
+    /// itself, without the seller's prefix and without the seller's name in
+    /// front of it. One model sold by many providers is ONE model — the
+    /// prices differ per route, not the model — so the family must not carry
+    /// the seller ("vercel-inkling", "kilo-inkling", "nano-gpt-inkling" are
+    /// one model on three routes). Local models keep their provider: a local
+    /// "foo" and a cloud route called "foo" are different things to the user.
+    private static func defaultIdentity(provider: String, model: String) -> (family: String, displayName: String, providerId: String, providerName: String) {
+        let p = provider.lowercased()
+        let lastPart = model.split(separator: "/").last.map(String.init) ?? model
+        let clean = lastPart.replacingOccurrences(of: ":", with: "-").lowercased()
+        let isLocal = p.contains("ollama")
+        return (isLocal ? "\(p)-\(clean)" : clean, lastPart, p, provider)
+    }
+
+    /// Provider tokens that name a model VENDOR — the lab that builds the
+    /// weights and names its models after itself ("glm-4.6", "kimi-k2",
+    /// "deepseek-v4.1-flash"). A router or aggregator id that only repeats
+    /// the seller's name ("kilo-o3", "vercel-gpt-5") is redundant and must be
+    /// dropped, or one model becomes one family per seller and shows up in the
+    /// catalog once per route.
+    static let modelVendorTokens: Set<String> = [
+        "openai", "codex", "anthropic", "claude", "google", "vertex", "deepseek",
+        "alibaba", "qwen", "bailian", "moonshot", "kimi", "minimax", "xai",
+        "mistral", "codestral", "pixtral", "meta", "cohere", "amazon", "bedrock",
+        "perplexity", "upstage", "nvidia", "zhipu", "zai", "glm", "tencent",
+        "baidu", "bytedance", "xiaomi", "stepfun", "ibm", "sakana", "inception",
+        "liquid", "nebius", "groq", "cerebras", "sambanova", "databricks",
+        "ai21", "ollama", "huggingface", "azure", "microsoft",
+    ]
+
+    /// Model-family tokens: a lab id that repeats the lab's own name is only
+    /// redundant when the remainder is one of that lab's models
+    /// ("meta-llama-3.1-8b-instruct" → "llama-3.1-8b-instruct"). A version
+    /// fragment ("glm-4.6" → "4.6") is not, and must stay.
+    static let modelFamilyTokens: Set<String> = [
+        "gpt", "o1", "o3", "o4", "chatgpt", "claude", "gemini", "gemma", "llama",
+        "mistral", "mixtral", "codestral", "devstral", "deepseek", "qwen", "glm",
+        "chatglm", "kimi", "grok", "nova", "titan", "nemotron", "command", "sonar",
+        "solar", "hunyuan", "ernie", "doubao", "step", "mimo", "jamba", "granite",
+        "phi", "muse", "inkling", "lfm", "fugu", "mercury", "minimax", "exao",
+    ]
+
+    /// The family the default branch produces for an id: the provider in
+    /// front of the model id. Used to tell a recognized model family ("o3",
+    /// "gpt-5") from an unrecognized id that merely got a provider prefix.
+    /// Idempotent: an id that already carries the provider's name
+    /// ("vercel-muse-wonder-1.0") is not prefixed twice.
+    static func defaultFamilyForm(provider: String, model: String) -> String {
+        let p = provider.lowercased()
+        let lastPart = model.split(separator: "/").last.map(String.init) ?? model
+        let clean = lastPart.replacingOccurrences(of: ":", with: "-").lowercased()
+        return clean.hasPrefix(p + "-") ? clean : "\(p)-\(clean)"
+    }
+
+    /// The model id a router/aggregator route carries once the seller's own
+    /// name is removed: "kilo/kilo-o3" → "o3", "vercel/vercel-gpt-5" →
+    /// "gpt-5". Vendors are left alone — "glm-4.6" is the model's name, not
+    /// a prefix — except where the remainder is one of the vendor's own
+    /// model families ("meta-llama-3.1-8b-instruct").
     static func docUrl(for provider: String, model: String, catalogEntry: Entry? = nil) -> URL? {
         if let direct = catalogEntry?.docUrl, let u = URL(string: direct), !direct.isEmpty {
             return u
@@ -1412,6 +1765,10 @@ final class ModelCatalog {
         if let url = URL(string: "https://models.dev/api.json"),
            let obj = Self.fetchJSON(url: url, timeout: 15) as? [String: Any] {
             var map = Self.parseModelsDev(api: obj, benchmarks: bm)
+            // The live provider feeds build their own entries and know only
+            // pricing; the model's capabilities and its card come from the
+            // catalog's own source.
+            let source = map
             injectDirectFlagships(into: &map, benchmarks: bm)
             fetchCodexCachedModels(into: &map, benchmarks: bm)
             fetchLiveZaiModels(into: &map, benchmarks: bm)
@@ -1420,6 +1777,7 @@ final class ModelCatalog {
             fetchLiveAnthropicModels(into: &map, benchmarks: bm)
             fetchLiveGeminiModels(into: &map, benchmarks: bm)
             fetchLiveOpenRouterModels(into: &map, benchmarks: bm)
+            map = Self.completedFromSource(source, map)
             if let enc = try? JSONEncoder().encode(map) {
                 try? enc.write(to: URL(fileURLWithPath: cachePath))
             }
@@ -1517,6 +1875,12 @@ final class ModelCatalog {
                 let openWeights = m["open_weights"] as? Bool
                 let modalities = (m["modalities"] as? [String: Any])?["input"] as? [String] ?? []
                 let vision = modalities.contains("image") || modalities.contains("vision")
+                let outputModalities = (m["modalities"] as? [String: Any])?["output"] as? [String]
+                let reasoningOptions: [String]? = {
+                    guard let opts = m["reasoning_options"] as? [[String: Any]] else { return nil }
+                    let values = opts.compactMap { $0["values"] as? [String] }.flatMap { $0 }
+                    return values.isEmpty ? nil : values
+                }()
                 map[key] = Entry(id: modelId,
                                  name: bench?.name ?? (m["name"] as? String) ?? modelId,
                                  provider: providerId,
@@ -1531,10 +1895,119 @@ final class ModelCatalog {
                                  reasoning: reasoning,
                                  toolCall: toolCall,
                                  vision: vision,
-                                 openWeights: openWeights)
+                                 openWeights: openWeights,
+                                 releaseDate: m["release_date"] as? String,
+                                 knowledgeCutoff: m["knowledge"] as? String,
+                                 status: m["status"] as? String,
+                                 structuredOutput: m["structured_output"] as? Bool,
+                                 temperature: m["temperature"] as? Bool,
+                                 reasoningOptions: reasoningOptions,
+                                 outputModalities: outputModalities,
+                                 outputLimitK: ((limit["output"] as? NSNumber)?.intValue ?? 0) / 1000,
+                                 canonicalModelId: m["canonical_model_id"] as? String)
             }
         }
-        return map
+        return completedFromCanonicalModels(map)
+    }
+
+    /// Fill what an entry does not say from the models.dev entry with the same
+    /// key. The live provider feeds (OpenRouter, the vendor APIs) build their
+    /// own entries and know only pricing, so the model's capabilities, its
+    /// context window and its card come from the catalog's own source.
+    static func completedFromSource(_ source: [String: Entry], _ map: [String: Entry]) -> [String: Entry] {
+        guard !source.isEmpty else { return map }
+        // The source keys a model by its provider ("openai/gpt-6.1-sol"); a
+        // pinned flagship keys it by the model ("gpt-6.1-sol"). Same model,
+        // same card — so the source is indexed by family too.
+        var byFamily: [String: Entry] = [:]
+        for entry in source.values {
+            let family = canonicalIdentity(provider: entry.provider, model: entry.id).family
+            if byFamily[family] == nil { byFamily[family] = entry }
+        }
+        var out = map
+        for (key, entry) in map {
+            let family = canonicalIdentity(provider: entry.provider, model: entry.id).family
+            guard let src = source[key] ?? byFamily[family] else { continue }
+            var e = entry
+            if e.toolCall == nil { e.toolCall = src.toolCall }
+            if e.reasoning == nil { e.reasoning = src.reasoning }
+            if e.vision == nil { e.vision = src.vision }
+            if e.openWeights == nil { e.openWeights = src.openWeights }
+            if e.structuredOutput == nil { e.structuredOutput = src.structuredOutput }
+            if e.temperature == nil { e.temperature = src.temperature }
+            if e.contextK == 0 { e.contextK = src.contextK }
+            if e.outputLimitK == 0 { e.outputLimitK = src.outputLimitK }
+            if e.reasoningOptions == nil { e.reasoningOptions = src.reasoningOptions }
+            if e.outputModalities == nil { e.outputModalities = src.outputModalities }
+            if e.releaseDate == nil { e.releaseDate = src.releaseDate }
+            if e.knowledgeCutoff == nil { e.knowledgeCutoff = src.knowledgeCutoff }
+            if e.status == nil { e.status = src.status }
+            if e.canonicalModelId == nil { e.canonicalModelId = src.canonicalModelId }
+            if (e.description ?? "").isEmpty { e.description = src.description }
+            if e.docUrl == nil { e.docUrl = src.docUrl }
+            if e.inputPerM == 0 && src.inputPerM > 0 {
+                e.inputPerM = src.inputPerM
+                e.outputPerM = src.outputPerM
+                e.cacheReadPerM = src.cacheReadPerM
+            }
+            out[key] = e
+        }
+        return out
+    }
+
+    /// A route id is one spelling of the lab's canonical model: "kilo/openai/
+    /// gpt-5.2" serves the weights of "openai/gpt-5.2". What the route does
+    /// not say about those weights, the canonical entry says — the same
+    /// weights, so it is a fact about the model, not an estimate.
+    static func completedFromCanonicalModels(_ map: [String: Entry]) -> [String: Entry] {
+        // The canonical model is the entry under its own key.
+        var canonical: [String: Entry] = [:]
+        for (key, entry) in map { canonical[key] = entry }
+        var out = map
+        // A route that points at the canonical model carries the model's flags,
+        // and the canonical entry itself may omit them — models.dev does not
+        // always say. The routes agree, so one of them fills the gap.
+        var fromRoutes: [String: Entry] = [:]
+        for (key, entry) in map {
+            guard let id = entry.canonicalModelId, id != key, canonical[id] != nil else { continue }
+            var acc = fromRoutes[id] ?? entry
+            if acc.toolCall == nil { acc.toolCall = entry.toolCall }
+            if acc.reasoning == nil { acc.reasoning = entry.reasoning }
+            if acc.vision == nil { acc.vision = entry.vision }
+            if acc.openWeights == nil { acc.openWeights = entry.openWeights }
+            if acc.contextK == 0 { acc.contextK = entry.contextK }
+            fromRoutes[id] = acc
+        }
+        for (id, c) in canonical {
+            guard let r = fromRoutes[id] else { continue }
+            var e = c
+            if e.toolCall == nil { e.toolCall = r.toolCall }
+            if e.reasoning == nil { e.reasoning = r.reasoning }
+            if e.vision == nil { e.vision = r.vision }
+            if e.openWeights == nil { e.openWeights = r.openWeights }
+            if e.contextK == 0 { e.contextK = r.contextK }
+            out[id] = e
+        }
+        for (key, entry) in map {
+            guard let id = entry.canonicalModelId, id != key, let source = canonical[id] else { continue }
+            var e = entry
+            if e.toolCall == nil { e.toolCall = source.toolCall }
+            if e.reasoning == nil { e.reasoning = source.reasoning }
+            if e.vision == nil { e.vision = source.vision }
+            if e.openWeights == nil { e.openWeights = source.openWeights }
+            if e.structuredOutput == nil { e.structuredOutput = source.structuredOutput }
+            if e.temperature == nil { e.temperature = source.temperature }
+            if e.contextK == 0 { e.contextK = source.contextK }
+            if e.outputLimitK == 0 { e.outputLimitK = source.outputLimitK }
+            if e.reasoningOptions == nil { e.reasoningOptions = source.reasoningOptions }
+            if e.outputModalities == nil { e.outputModalities = source.outputModalities }
+            if e.releaseDate == nil { e.releaseDate = source.releaseDate }
+            if e.knowledgeCutoff == nil { e.knowledgeCutoff = source.knowledgeCutoff }
+            if e.status == nil { e.status = source.status }
+            if (e.description ?? "").isEmpty { e.description = source.description }
+            out[key] = e
+        }
+        return out
     }
 
     /// Bounded synchronous JSON GET for background catalog refresh. Returns the
@@ -1579,42 +2052,62 @@ final class ModelCatalog {
                   docUrl: "https://platform.openai.com/docs/models", description: "OpenAI premier frontier flagship model for complex coding, computer use & autonomous agents (90% prompt cache savings)",
                   reasoning: true, toolCall: true, vision: true, openWeights: false,
                   discountPercent: 90, discountLabel: "-90% CACHED", discountDetail: "90% prompt cache savings ($10.00 → $1.00 / 1M cache read)"),
+            // Codex-plan workhorse tiers. CI has no ~/.codex/models_cache.json, so
+            // fetchCodexCachedModels injects these only locally — pinning them here
+            // keeps them in the published catalog (gpt-6.1-sol is the single most
+            // used model on this machine). Context + descriptions mirror the codex
+            // cache (max_context_window 872000); no benchmark is fabricated here.
+            Entry(id: "gpt-6.1-sol", name: "GPT-6.1 Sol", provider: "openai", providerName: "OpenAI",
+                  inputPerM: 2.50, outputPerM: 10.00, cacheReadPerM: 0.50, contextK: 872,
+                  benchmarks: benchmarks["gpt-6.1-sol"].map { Benchmarks(swe: $0.swe, lcb: $0.lcb, source: $0.source, approx: $0.approx) },
+                  docUrl: "https://platform.openai.com/docs/models", description: "Codex latest workhorse model for coding and everyday work",
+                  reasoning: true, toolCall: true, vision: nil, openWeights: false),
+            Entry(id: "gpt-6-sol", name: "GPT-6 Sol", provider: "openai", providerName: "OpenAI",
+                  inputPerM: 2.50, outputPerM: 10.00, cacheReadPerM: 0.50, contextK: 872,
+                  benchmarks: benchmarks["gpt-6-sol"].map { Benchmarks(swe: $0.swe, lcb: $0.lcb, source: $0.source, approx: $0.approx) },
+                  docUrl: "https://platform.openai.com/docs/models", description: "Codex previous generation workhorse model",
+                  reasoning: true, toolCall: true, vision: nil, openWeights: false),
+            Entry(id: "gpt-6-luna", name: "GPT-6 Luna", provider: "openai", providerName: "OpenAI",
+                  inputPerM: 0.10, outputPerM: 0.40, cacheReadPerM: 0.025, contextK: 872,
+                  benchmarks: benchmarks["gpt-6-luna"].map { Benchmarks(swe: $0.swe, lcb: $0.lcb, source: $0.source, approx: $0.approx) },
+                  docUrl: "https://platform.openai.com/docs/models", description: "Codex fast and affordable model for easier tasks",
+                  reasoning: true, toolCall: true, vision: nil, openWeights: false),
             Entry(id: "gpt-5.6-sol", name: "GPT-5.6 Sol", provider: "openai", providerName: "OpenAI",
                   inputPerM: 2.50, outputPerM: 10.00, cacheReadPerM: 0.50, contextK: 1050,
-                  benchmarks: benchmarks["gpt-5.6-sol"].map { Benchmarks(swe: $0.swe, lcb: $0.lcb, source: $0.source, approx: $0.approx) } ?? Benchmarks(swe: 83.0, lcb: 80.0, source: "OpenAI"),
+                  benchmarks: benchmarks["gpt-5.6-sol"].map { Benchmarks(swe: $0.swe, lcb: $0.lcb, source: $0.source, approx: $0.approx) } ?? Benchmarks(swe: 81.5, lcb: 78.0, source: "OpenAI", approx: true),
                   docUrl: "https://platform.openai.com/docs/models", description: "OpenAI premier flagship tier for complex reasoning & multi-step coding agents (50% promo reduction)",
                   reasoning: true, toolCall: true, vision: true, openWeights: false,
                   discountPercent: 50, discountLabel: "-50% PROMO", discountDetail: "50% promotional reduction ($5.00 → $2.50 / 1M input, $20.00 → $10.00 / 1M output)",
                   originalInputPerM: 5.00, originalOutputPerM: 20.00),
             Entry(id: "gpt-5-sol", name: "GPT-5 Sol", provider: "openai", providerName: "OpenAI",
                   inputPerM: 2.50, outputPerM: 10.00, cacheReadPerM: 0.50, contextK: 256,
-                  benchmarks: benchmarks["gpt-5-sol"].map { Benchmarks(swe: $0.swe, lcb: $0.lcb, source: $0.source, approx: $0.approx) } ?? Benchmarks(swe: 81.5, lcb: 78.0, source: "OpenAI"),
+                  benchmarks: benchmarks["gpt-5-sol"].map { Benchmarks(swe: $0.swe, lcb: $0.lcb, source: $0.source, approx: $0.approx) } ?? Benchmarks(swe: 81.5, lcb: 78.0, source: "OpenAI", approx: true),
                   docUrl: "https://platform.openai.com/docs/models", description: "OpenAI premier flagship tier for complex reasoning & multi-step coding agents (50% promo reduction)",
                   reasoning: true, toolCall: true, vision: true, openWeights: false,
                   discountPercent: 50, discountLabel: "-50% PROMO", discountDetail: "50% promotional reduction ($5.00 → $2.50 / 1M input, $20.00 → $10.00 / 1M output)",
                   originalInputPerM: 5.00, originalOutputPerM: 20.00),
             Entry(id: "gpt-5.6-terra", name: "GPT-5.6 Terra", provider: "openai", providerName: "OpenAI",
                   inputPerM: 1.20, outputPerM: 4.80, cacheReadPerM: 0.15, contextK: 1050,
-                  benchmarks: benchmarks["gpt-5.6-terra"].map { Benchmarks(swe: $0.swe, lcb: $0.lcb, source: $0.source, approx: $0.approx) } ?? Benchmarks(swe: 74.0, lcb: 70.0, source: "OpenAI"),
+                  benchmarks: benchmarks["gpt-5.6-terra"].map { Benchmarks(swe: $0.swe, lcb: $0.lcb, source: $0.source, approx: $0.approx) } ?? Benchmarks(swe: 72.0, lcb: 68.5, source: "OpenAI", approx: true),
                   docUrl: "https://platform.openai.com/docs/models", description: "OpenAI balanced all-rounder tier for daily professional workflows (20% promo reduction)",
                   reasoning: true, toolCall: true, vision: true, openWeights: false,
                   discountPercent: 20, discountLabel: "-20% PROMO", discountDetail: "20% promotional reduction ($1.50 → $1.20 / 1M input, $6.00 → $4.80 / 1M output)",
                   originalInputPerM: 1.50, originalOutputPerM: 6.00),
             Entry(id: "gpt-5-terra", name: "GPT-5 Terra", provider: "openai", providerName: "OpenAI",
                   inputPerM: 1.20, outputPerM: 4.80, cacheReadPerM: 0.15, contextK: 256,
-                  benchmarks: benchmarks["gpt-5-terra"].map { Benchmarks(swe: $0.swe, lcb: $0.lcb, source: $0.source, approx: $0.approx) } ?? Benchmarks(swe: 72.0, lcb: 68.5, source: "OpenAI"),
+                  benchmarks: benchmarks["gpt-5-terra"].map { Benchmarks(swe: $0.swe, lcb: $0.lcb, source: $0.source, approx: $0.approx) } ?? Benchmarks(swe: 72.0, lcb: 68.5, source: "OpenAI", approx: true),
                   docUrl: "https://platform.openai.com/docs/models", description: "OpenAI balanced all-rounder tier for daily professional workflows (20% promo reduction)",
                   reasoning: true, toolCall: true, vision: true, openWeights: false,
                   discountPercent: 20, discountLabel: "-20% PROMO", discountDetail: "20% promotional reduction ($1.50 → $1.20 / 1M input, $6.00 → $4.80 / 1M output)",
                   originalInputPerM: 1.50, originalOutputPerM: 6.00),
             Entry(id: "gpt-5.6-luna", name: "GPT-5.6 Luna", provider: "openai", providerName: "OpenAI",
                   inputPerM: 0.10, outputPerM: 0.40, cacheReadPerM: 0.025, contextK: 1050,
-                  benchmarks: benchmarks["gpt-5.6-luna"].map { Benchmarks(swe: $0.swe, lcb: $0.lcb, source: $0.source, approx: $0.approx) } ?? Benchmarks(swe: 54.0, lcb: 52.0, source: "OpenAI"),
+                  benchmarks: benchmarks["gpt-5.6-luna"].map { Benchmarks(swe: $0.swe, lcb: $0.lcb, source: $0.source, approx: $0.approx) } ?? Benchmarks(swe: 52.0, lcb: 50.0, source: "OpenAI", approx: true),
                   docUrl: "https://platform.openai.com/docs/models", description: "OpenAI high-speed lightweight tier for fast summaries & cost-sensitive tasks",
                   reasoning: true, toolCall: true, vision: true, openWeights: false),
             Entry(id: "gpt-5-luna", name: "GPT-5 Luna", provider: "openai", providerName: "OpenAI",
                   inputPerM: 0.10, outputPerM: 0.40, cacheReadPerM: 0.025, contextK: 128,
-                  benchmarks: benchmarks["gpt-5-luna"].map { Benchmarks(swe: $0.swe, lcb: $0.lcb, source: $0.source, approx: $0.approx) } ?? Benchmarks(swe: 52.0, lcb: 50.0, source: "OpenAI"),
+                  benchmarks: benchmarks["gpt-5-luna"].map { Benchmarks(swe: $0.swe, lcb: $0.lcb, source: $0.source, approx: $0.approx) } ?? Benchmarks(swe: 52.0, lcb: 50.0, source: "OpenAI", approx: true),
                   docUrl: "https://platform.openai.com/docs/models", description: "OpenAI high-speed lightweight tier for fast summaries & cost-sensitive tasks",
                   reasoning: true, toolCall: true, vision: true, openWeights: false),
             Entry(id: "gemini-3.7-flash", name: "Gemini 3.7 Flash", provider: "google", providerName: "Google",
@@ -1668,13 +2161,13 @@ final class ModelCatalog {
                   discountPercent: 90, discountLabel: "-90% CACHED", discountDetail: "90% prompt cache read discount ($5.00 → $0.50 / 1M)"),
             Entry(id: "claude-3.7-sonnet", name: "Claude 3.7 Sonnet", provider: "anthropic", providerName: "Anthropic",
                   inputPerM: 3.00, outputPerM: 15.00, cacheReadPerM: 0.30, contextK: 200,
-                  benchmarks: benchmarks["claude-3.7-sonnet"].map { Benchmarks(swe: $0.swe, lcb: $0.lcb, source: $0.source, approx: $0.approx) } ?? Benchmarks(swe: 70.3, lcb: 71.0, source: "Anthropic"),
+                  benchmarks: benchmarks["claude-3.7-sonnet"].map { Benchmarks(swe: $0.swe, lcb: $0.lcb, source: $0.source, approx: $0.approx) } ?? Benchmarks(swe: 77.6, lcb: 70.3, source: "Anthropic"),
                   docUrl: "https://docs.anthropic.com/en/docs/about-claude/models", description: "Anthropic premier industry benchmark model for coding & agentic workflows (90% prompt cache savings)",
                   reasoning: true, toolCall: true, vision: true, openWeights: false,
                   discountPercent: 90, discountLabel: "-90% CACHED", discountDetail: "90% prompt cache read discount ($3.00 → $0.30 / 1M)"),
             Entry(id: "claude-3.5-sonnet", name: "Claude 3.5 Sonnet", provider: "anthropic", providerName: "Anthropic",
                   inputPerM: 3.00, outputPerM: 15.00, cacheReadPerM: 0.30, contextK: 200,
-                  benchmarks: benchmarks["claude-3.5-sonnet"].map { Benchmarks(swe: $0.swe, lcb: $0.lcb, source: $0.source, approx: $0.approx) } ?? Benchmarks(swe: 65.0, lcb: 67.0, source: "Anthropic"),
+                  benchmarks: benchmarks["claude-3.5-sonnet"].map { Benchmarks(swe: $0.swe, lcb: $0.lcb, source: $0.source, approx: $0.approx) } ?? Benchmarks(swe: 74.5, lcb: 67.2, source: "Anthropic"),
                   docUrl: "https://docs.anthropic.com/en/docs/about-claude/models", description: "Anthropic premier all-rounder model for coding & agents (90% prompt cache savings)",
                   reasoning: false, toolCall: true, vision: true, openWeights: false,
                   discountPercent: 90, discountLabel: "-90% CACHED", discountDetail: "90% prompt cache read discount ($3.00 → $0.30 / 1M)"),
@@ -2351,28 +2844,93 @@ final class ModelCatalog {
     }
 
     static func loadBenchmarks() -> BenchmarkTable {
-        guard let path = resourceJSONPath("benchmarks"),
-              let data = FileManager.default.contents(atPath: path),
-              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let entries = obj["entries"] as? [[String: Any]] else { return [:] }
+        // Two tables: the curated one (a person transcribed the vendor's own
+        // numbers) and the sourced one (public evaluation boards, refreshed by
+        // scripts/refresh-sourced-benchmarks.py). The curated table wins for a
+        // model — a vendor-reported score and an independent harness run are
+        // different measurements, and the curated one is the number the
+        // ecosystem quotes. The sourced table fills the gaps.
         var out = BenchmarkTable()
-        for entry in entries {
-            guard let match = entry["match"] as? String else { continue }
-            let row = BenchmarkScore(
-                name: entry["name"] as? String ?? match,
-                swe: (entry["swe"] as? NSNumber)?.doubleValue,
-                lcb: (entry["lcb"] as? NSNumber)?.doubleValue,
-                source: entry["source"] as? String ?? "",
-                approx: (entry["approx"] as? Bool) ?? false
-            )
-            // A match key with no scores is a name alias, not a measurement:
-            // keeping it would stamp an empty `benchmarks` object on every row
-            // that matches the name (a local Ollama model, say) and make the
-            // model look scored when nothing was measured.
-            guard row.isMeasured else { continue }
-            out[match.lowercased()] = row
+        var curatedKeys: Set<String> = []
+        for name in ["benchmarks", "benchmarks-sourced"] {
+            guard let path = resourceJSONPath(name),
+                  let data = FileManager.default.contents(atPath: path),
+                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let entries = obj["entries"] as? [[String: Any]] else { continue }
+            let isCurated = name == "benchmarks"
+            for entry in entries {
+                guard let match = entry["match"] as? String else { continue }
+                let row = BenchmarkScore(
+                    name: entry["name"] as? String ?? match,
+                    swe: (entry["swe"] as? NSNumber)?.doubleValue,
+                    lcb: (entry["lcb"] as? NSNumber)?.doubleValue,
+                    source: entry["source"] as? String ?? "",
+                    approx: (entry["approx"] as? Bool) ?? false
+                )
+                // A match key with no scores is a name alias, not a measurement:
+                // keeping it would stamp an empty `benchmarks` object on every row
+                // that matches the name (a local Ollama model, say) and make the
+                // model look scored when nothing was measured.
+                guard row.isMeasured else { continue }
+                let key = match.lowercased()
+                let variants = benchmarkKeyVariants(key)
+                if isCurated {
+                    curatedKeys.formUnion(variants)
+                } else {
+                    // The curated table already speaks for this model.
+                    if variants.contains(where: { curatedKeys.contains($0) }) { continue }
+                }
+                for variant in variants where out[variant] == nil || isCurated {
+                    out[variant] = row
+                }
+            }
         }
         return out
+    }
+
+    /// The spellings of a benchmark key that name the same model: the key
+    /// itself, and the version-separator variants ("claude-3.7-sonnet" /
+    /// "claude-3-7-sonnet"). Model ids, gateways and the flagships spell
+    /// generations with dots while older curated keys use hyphens, so a curated
+    /// score must not be shadowed by a hardcoded fallback over a separator.
+    ///
+    /// The folds mirror `normalizedVersionDots` exactly, so a variant only
+    /// ever joins two spellings that already resolve to the same family — it
+    /// can never point a model at another model's score.
+    static func benchmarkKeyVariants(_ key: String) -> [String] {
+        var out = [key]
+        let dotted = key.replacingOccurrences(of: #"-(\d)-(\d)(?!\d)"#, with: "-$1.$2", options: .regularExpression)
+        if dotted != key { out.append(dotted) }
+        let hyphenated = key.replacingOccurrences(of: #"(\d)\.(\d)(?!\d)"#, with: "$1-$2", options: .regularExpression)
+        if hyphenated != key { out.append(hyphenated) }
+        // A curated key may carry the date stamp of the snapshot it scored
+        // ("deepseek-v4-pro-0813") while the family is the model without it.
+        let undated = strippingDateStamps(key)
+        if undated != key { out.append(undated) }
+        return out
+    }
+
+    /// The curated table, loaded once, for the fallback construction path.
+    ///
+    /// `lookup(id:)` synthesizes an entry on every id the catalog does not
+    /// know, so re-reading the bundled JSON per miss would tax exactly the
+    /// path the id memo exists to protect. The primary loaders still call
+    /// `loadBenchmarks()` fresh — this copy only feeds `curatedBenchmark`.
+    private static let fallbackBenchmarks: BenchmarkTable = loadBenchmarks()
+
+    /// Table-first benchmark for hand-authored fallback entries.
+    ///
+    /// `benchmarks.json` is the single source of truth for scores: whenever it
+    /// carries the key, its numbers win, and the caller's literal survives only
+    /// a missing table (a broken install). The inline literals used to drift
+    /// from the curated table — claude-3.7-sonnet shipped 70.3/71 while the
+    /// table said 77.6/70.3, and claude-3.5-sonnet 65/67 against 74.5/67.2 —
+    /// so the literal is now documentation of last resort, not data.
+    static func curatedBenchmark(_ key: String, or fallback: Benchmarks) -> Benchmarks {
+        if let hit = fallbackBenchmarks[key.lowercased()], hit.isMeasured {
+            return Benchmarks(swe: hit.swe, lcb: hit.lcb, source: hit.source, approx: hit.approx)
+        }
+        return fallback
     }
 
     /// Strip a route suffix to the canonical weights a score belongs to.
@@ -2388,6 +2946,19 @@ final class ModelCatalog {
         // Only the last path segment: the provider prefix is not part of the name.
         if let slash = base.lastIndex(of: "/") {
             base = String(base[base.index(after: slash)...])
+        }
+        // Trailing date stamps ("claude-3-5-sonnet-20241022", "gpt-4o-2024-08-06",
+        // "@20251001"): a frozen snapshot of these weights, not a different
+        // model — the same rule as the date affixes stripped from family names.
+        if let stamp = base.range(of: #"[@-]\d{8}$"#, options: .regularExpression)
+            ?? base.range(of: #"[@-]\d{4}-\d{2}-\d{2}$"#, options: .regularExpression) {
+            base = String(base[..<stamp.lowerBound])
+            stripped = true
+        }
+        let undated = strippingDateStamps(base)
+        if undated != base {
+            base = undated
+            stripped = true
         }
         for suffix in ["-free", "-contributor", "-preview", "-preview-free", "-latest", "-exp"] {
             if base.hasSuffix(suffix) {

@@ -323,7 +323,7 @@ func (h *ProxyHandler) finalize(ctx *requestContext) {
 // isLocalEngine marks providers whose usage should feed the Mac app's
 // local-model totals (Ollama + both supervised inference engines).
 func isLocalEngine(p Provider) bool {
-	return p == ProviderOllama || p == ProviderSplash || p == ProviderTHEngine
+	return p == ProviderOllama || p == ProviderSplash || p == ProviderTHEngine || p == ProviderMLX
 }
 
 // ingestOllama forwards a local-model sample to the Mac app so its usage

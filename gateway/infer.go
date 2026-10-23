@@ -26,6 +26,7 @@ var providerPrefixes = []struct {
 	{"/th-opencode", ProviderOpenCode},
 	{"/th-splash", ProviderSplash},
 	{"/th-engine", ProviderTHEngine},
+	{"/th-mlx", ProviderMLX},
 }
 
 // prefixedProvider matches a path (query allowed) against the /th-<name>
@@ -82,6 +83,11 @@ func providerFromModel(model string) Provider {
 	// generic slash ids (openrouter-style "openai/gpt-4o") keep provider routing.
 	if strings.HasSuffix(lower, "-splash") || strings.HasPrefix(lower, "incoai/") {
 		return ProviderSplash
+	}
+	// mlx-community checkpoints are mlx-lm's native naming; they are also
+	// loadable by TH Engine, but the prefix stays authoritative.
+	if strings.HasPrefix(lower, "mlx-community/") {
+		return ProviderMLX
 	}
 	switch {
 	case strings.HasPrefix(lower, "claude"):

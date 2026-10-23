@@ -88,7 +88,18 @@ enum ModelsPipeline {
 
         var rowMap: [String: ModelRow] = [:]
         var hostCounts: [String: Int] = [:]
-        var isPrimaryEntry: [String: Bool] = [:]
+        /// The rank of the route that currently represents each family: the
+        /// lab's own route first, then a plan, then a reseller (see
+        /// `ModelCatalog.pricingAuthority`).
+        var entryRank: [String: (direct: Int, tier: Int)] = [:]
+        /// The route that speaks for a family: its identity and its context
+        /// window. The row carries THIS route's name, price and window, not
+        /// those of whichever route happened to be merged last.
+        struct FamilyRepresentative {
+            let canon: (family: String, displayName: String, providerId: String, providerName: String)
+            let contextK: Int
+        }
+        var familyRep: [String: FamilyRepresentative] = [:]
         // Memoize catalog lookups: the same model id can appear in many
         // synthetic/usage rows, and a miss costs an O(n) suffix scan in
         // ModelCatalog.lookup. One dict lookup per row instead.
@@ -102,7 +113,6 @@ enum ModelsPipeline {
         let totalExpected = catalog.count + syntheticModels.count + usageModels.count
         rowMap.reserveCapacity(totalExpected)
         hostCounts.reserveCapacity(totalExpected)
-        isPrimaryEntry.reserveCapacity(totalExpected)
 
         // Raw source providers per canonical family. Plan coverage is declared
         // against these ids (`opencode-go`, `zai-coding-plan`, …), which the
@@ -117,21 +127,33 @@ enum ModelsPipeline {
             if !rawProvider.isEmpty { familySources[familyKey, default: []].insert(rawProvider) }
             hostCounts[familyKey, default: 0] += 1
             let isPrimary = cat.provider.lowercased() == canon.providerId
-            let existingIsPrimary = isPrimaryEntry[familyKey] ?? false
+            // Which route's pricing represents the model: the lab's own route
+            // first, then a plan that passes the list price through, then a
+            // reseller (whose price is its own). Without this the row took
+            // whichever route the catalog happened to list first — a
+            // regional or discounted route could speak for the model.
+            let rank = (direct: isPrimary ? 0 : 1,
+                        tier: ModelCatalog.pricingAuthority(provider: cat.provider))
+            let existingRank = entryRank[familyKey] ?? (direct: 1, tier: Int.max)
             if let existing = rowMap[familyKey] {
                 var mergedCat = existing.catalog ?? cat
-                if isPrimary && !existingIsPrimary {
+                var rep = familyRep[familyKey]
+                    ?? FamilyRepresentative(canon: canon, contextK: cat.contextK)
+                if rank < existingRank {
+                    // A more authoritative route: it represents the model now.
                     mergedCat = cat
-                    mergedCat.name = canon.displayName
-                    mergedCat.providerName = canon.providerName
-                    isPrimaryEntry[familyKey] = true
-                } else if !isPrimary && existingIsPrimary {
-                    // Authoritative provider entry is already set. Do not allow aggregator pricing to corrupt it.
-                    if mergedCat.benchmarks == nil && cat.benchmarks != nil { mergedCat.benchmarks = cat.benchmarks }
-                    if mergedCat.docUrl == nil && cat.docUrl != nil { mergedCat.docUrl = cat.docUrl }
-                    if mergedCat.description == nil && cat.description != nil { mergedCat.description = cat.description }
-                } else {
-                    if isPrimary { isPrimaryEntry[familyKey] = true }
+                    // …unless it carries no price of its own (a preview id, a
+                    // plan tier): the model still has a price, and the list
+                    // never shows $0 for a model other routes sell.
+                    if mergedCat.inputPerM == 0, let old = existing.catalog, old.inputPerM > 0 {
+                        mergedCat.inputPerM = old.inputPerM
+                        mergedCat.outputPerM = old.outputPerM
+                        mergedCat.cacheReadPerM = old.cacheReadPerM
+                    }
+                    rep = FamilyRepresentative(canon: canon, contextK: cat.contextK)
+                    familyRep[familyKey] = rep
+                    entryRank[familyKey] = rank
+                } else if rank == existingRank {
                     if mergedCat.inputPerM == 0 && cat.inputPerM > 0 { mergedCat.inputPerM = cat.inputPerM }
                     if mergedCat.outputPerM == 0 && cat.outputPerM > 0 { mergedCat.outputPerM = cat.outputPerM }
                     if mergedCat.cacheReadPerM == nil && cat.cacheReadPerM != nil { mergedCat.cacheReadPerM = cat.cacheReadPerM }
@@ -145,17 +167,38 @@ enum ModelsPipeline {
                     if mergedCat.discountDetail == nil && cat.discountDetail != nil { mergedCat.discountDetail = cat.discountDetail }
                     if mergedCat.originalInputPerM == nil && cat.originalInputPerM != nil { mergedCat.originalInputPerM = cat.originalInputPerM }
                     if mergedCat.originalOutputPerM == nil && cat.originalOutputPerM != nil { mergedCat.originalOutputPerM = cat.originalOutputPerM }
+                } else {
+                    // A less authoritative route. Do not let reseller pricing
+                    // corrupt the model's own price — but do not leave the
+                    // model priceless either: a route that does quote a price
+                    // fills an empty one.
+                    if mergedCat.inputPerM == 0 && cat.inputPerM > 0 {
+                        mergedCat.inputPerM = cat.inputPerM
+                        mergedCat.outputPerM = cat.outputPerM
+                        mergedCat.cacheReadPerM = cat.cacheReadPerM
+                    }
+                    if mergedCat.benchmarks == nil && cat.benchmarks != nil { mergedCat.benchmarks = cat.benchmarks }
+                    if mergedCat.docUrl == nil && cat.docUrl != nil { mergedCat.docUrl = cat.docUrl }
+                    if mergedCat.description == nil && cat.description != nil { mergedCat.description = cat.description }
                 }
-                mergedCat.provider = canon.providerId
-                mergedCat.providerName = canon.providerName
-                mergedCat.name = canon.displayName
+                // The row carries the representative's identity: the route
+                // that speaks for the model, not whichever route was merged
+                // last (a Bedrock route must not label an OpenAI model).
+                mergedCat.provider = rep.canon.providerId
+                mergedCat.providerName = rep.canon.providerName
+                mergedCat.name = rep.canon.displayName
                 var u = existing.usage
-                u.provider = canon.providerId
+                u.provider = rep.canon.providerId
                 u.model = canon.family
-                if u.contextK == 0 && cat.contextK > 0 { u.contextK = cat.contextK }
+                if rep.contextK > 0 {
+                    u.contextK = rep.contextK
+                } else if u.contextK == 0 && cat.contextK > 0 {
+                    u.contextK = cat.contextK
+                }
                 rowMap[familyKey] = ModelRow(usage: u, catalog: mergedCat, hostCount: hostCounts[familyKey] ?? 1)
             } else {
-                isPrimaryEntry[familyKey] = isPrimary
+                entryRank[familyKey] = rank
+                familyRep[familyKey] = FamilyRepresentative(canon: canon, contextK: cat.contextK)
                 var updatedCat = cat
                 updatedCat.name = canon.displayName
                 updatedCat.provider = canon.providerId
@@ -492,7 +535,20 @@ enum ModelsPipeline {
 
         candidates.sort { $0.rawScore > $1.rawScore }
 
-        let top10 = Array(candidates.prefix(10))
+        // One pick per model: a free tier, a plan route and the paid route of
+        // the same weights are one model, and listing them side by side spent
+        // half the picks on one deepseek release.
+        var seenWeights: Set<String> = []
+        var distinct: [(row: ModelRow, perf: Double, cost: Double, rawScore: Double)] = []
+        for item in candidates {
+            let weights = ModelCatalog.baseWeightsKey(item.row.usage.model)
+                ?? ModelCatalog.baseWeightsKey(item.row.id)
+                ?? item.row.usage.model
+            guard seenWeights.insert(weights).inserted else { continue }
+            distinct.append(item)
+            if distinct.count >= 10 { break }
+        }
+        let top10 = Array(distinct.prefix(10))
         guard let maxScore = top10.first?.rawScore, maxScore > 0 else { return [] }
 
         return top10.enumerated().map { index, item in

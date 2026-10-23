@@ -42,7 +42,10 @@ final class ScopeCountsCachingTests: XCTestCase {
     func testCachedScopeCounts_areConstantTimeLookup() {
         Self.loadBase()
         let base = Self.base
-        XCTAssertGreaterThan(base.count, 1000)
+        // The fixture repeats every model across ~11 providers, so the deduped
+        // catalog is one row per distinct model (658 of them) — the guard is
+        // against a pipeline that collapses the catalog to nothing.
+        XCTAssertGreaterThan(base.count, 500)
 
         // Precompute scope counts (this is what recomputeFilteredRows does on background)
         let precomputed: [ModelFilterScope: Int] = [

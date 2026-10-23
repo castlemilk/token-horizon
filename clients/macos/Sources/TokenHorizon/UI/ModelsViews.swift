@@ -763,6 +763,18 @@ struct TopPickCardView: View {
     }
 }
 
+/// Whether the lab's card says anything worth showing: the metadata is
+/// absent for models the source does not describe.
+enum ModelCardFacts {
+    static func hasFacts(_ cat: ModelCatalog.Entry) -> Bool {
+        cat.releaseDate != nil || cat.knowledgeCutoff != nil || cat.status != nil
+            || cat.structuredOutput != nil || cat.temperature != nil
+            || !(cat.reasoningOptions ?? []).isEmpty
+            || !(cat.outputModalities ?? []).isEmpty
+            || (cat.outputLimitK ?? 0) > 0 || cat.canonicalModelId != nil
+    }
+}
+
 struct ModelDetailView: View {
     let row: ModelRow
     @Environment(\.dismiss) var dismiss
@@ -866,6 +878,33 @@ struct ModelDetailView: View {
                     detailStat("Out / 1M", row.outputPriceText, sub: row.originalOutputPriceText != nil ? "was \(row.originalOutputPriceText!)" : nil)
                     detailStat("Cache / 1M", row.cachePriceText, sub: nil)
                     detailStat("Net / 1M", row.blendedNetCostText, sub: row.netSavingsPercent > 0 ? "-\(row.netSavingsPercent)% net savings" : "3:1 blended")
+                }
+                if let cat = row.catalog, ModelCardFacts.hasFacts(cat) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Model card").font(.system(size: 9, weight: .heavy, design: .monospaced)).foregroundStyle(.tertiary).kerning(1)
+                        HStack(spacing: 14) {
+                            if let d = cat.releaseDate { detailStat("Released", d, sub: nil) }
+                            if let k = cat.knowledgeCutoff { detailStat("Knows to", k, sub: nil) }
+                            if let ol = cat.outputLimitK, ol > 0 { detailStat("Max output", "\(ol)K", sub: nil) }
+                        }
+                        HStack(spacing: 4) {
+                            if let st = cat.status, st == "deprecated" { pill("DEPRECATED", color: .orange) }
+                            if cat.structuredOutput == true { pill("STRUCTURED", color: .teal) }
+                            if cat.temperature == true { pill("TEMPERATURE", color: .blue) }
+                            if let om = cat.outputModalities {
+                                ForEach(om, id: \.self) { m in pill(m.uppercased(), color: .purple) }
+                            }
+                        }
+                        if let opts = cat.reasoningOptions, !opts.isEmpty {
+                            Text("Reasoning effort: \(opts.joined(separator: " · "))")
+                                .font(.system(size: 8.5, design: .monospaced)).foregroundStyle(.secondary)
+                        }
+                        if let cm = cat.canonicalModelId {
+                            Text("Canonical id: \(cm)")
+                                .font(.system(size: 8.5, design: .monospaced)).foregroundStyle(.secondary)
+                        }
+                    }
+                    .padding(8).background(RoundedRectangle(cornerRadius: 6).fill(Color.white.opacity(0.04)))
                 }
                 if let bench = row.catalog?.benchmarks {
                     VStack(alignment: .leading, spacing: 6) {

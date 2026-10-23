@@ -85,8 +85,8 @@ final class ModelsPipelinePerfTests: XCTestCase {
                 syntheticModels: synthetic,
                 usageModels: usageModels
             )
-            XCTAssertGreaterThan(result.base.count, 1000, "expected deduped catalog to retain >1k rows")
-            XCTAssertGreaterThan(result.filtered.count, 1000)
+            XCTAssertGreaterThan(result.base.count, 500, "expected the deduped catalog to keep one row per distinct model")
+            XCTAssertGreaterThan(result.filtered.count, 500)
             total += Double(result.base.count)
             runs += 1
         }
@@ -140,7 +140,10 @@ final class ModelsPipelinePerfTests: XCTestCase {
             usageModels: []
         )
         let base = baseResult.base
-        XCTAssertGreaterThan(base.count, 1000)
+        // The fixture repeats every model across ~11 providers, so the deduped
+        // catalog is one row per distinct model (658 of them) — the guard is
+        // against a pipeline that collapses the catalog to nothing.
+        XCTAssertGreaterThan(base.count, 500)
 
         measure {
             // Filter + sort: simulate the pipeline's filter+sort phase on a cached base
@@ -156,7 +159,7 @@ final class ModelsPipelinePerfTests: XCTestCase {
                     return false
                 }
             }
-            XCTAssertGreaterThan(list.count, 1000)
+            XCTAssertGreaterThan(list.count, 500)
         }
     }
 
@@ -185,7 +188,7 @@ final class ModelsPipelinePerfTests: XCTestCase {
             counts[.freeOpen] = base.filter { $0.isFree || $0.isLocal }.count
             counts[.benchmarked] = base.filter { $0.sweScore != nil || $0.lcbScore != nil }.count
             counts[.active] = base.filter { $0.usage.tokensAll > 0 || $0.usage.cost > 0 }.count
-            XCTAssertGreaterThan(counts[.all] ?? 0, 1000)
+            XCTAssertGreaterThan(counts[.all] ?? 0, 500)
         }
     }
 
@@ -251,7 +254,7 @@ final class ModelsPipelinePerfTests: XCTestCase {
                     syntheticModels: [],
                     usageModels: []
                 )
-                XCTAssertGreaterThan(r.filtered.count, 1000)
+                XCTAssertGreaterThan(r.filtered.count, 500)
             }
         }
     }

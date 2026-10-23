@@ -62,6 +62,46 @@
       "source": "Anthropic"
     },
     {
+      "match": "claude-fable-5-1",
+      "name": "Claude Fable 5.1",
+      "swe": 84.0,
+      "lcb": 80.5,
+      "aime": null,
+      "gpqa": null,
+      "approx": true,
+      "source": "Anthropic"
+    },
+    {
+      "match": "claude-haiku-4-5",
+      "name": "Claude Haiku 4.5",
+      "swe": 40.6,
+      "lcb": 43.1,
+      "aime": null,
+      "gpqa": null,
+      "approx": true,
+      "source": "Anthropic"
+    },
+    {
+      "match": "claude-opus-4-6",
+      "name": "Claude Opus 4.6",
+      "swe": 76.5,
+      "lcb": 74.0,
+      "aime": null,
+      "gpqa": null,
+      "approx": true,
+      "source": "Anthropic"
+    },
+    {
+      "match": "claude-opus-5",
+      "name": "Claude Opus 5",
+      "swe": 82.0,
+      "lcb": 79.0,
+      "aime": null,
+      "gpqa": null,
+      "approx": true,
+      "source": "Anthropic"
+    },
+    {
       "match": "gpt-6-astra",
       "name": "GPT-6 Astra",
       "swe": 85.2,
