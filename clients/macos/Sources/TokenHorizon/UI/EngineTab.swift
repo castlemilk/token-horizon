@@ -1,13 +1,13 @@
 import SwiftUI
 
-/// ENGINE tab — local inference platform. Two supervised backends:
-/// Splash (incoai's specialised engine, :8000) and TH Engine (our
-/// Rust/candle sidecar, :8001). All state comes from EngineManager →
-/// per-backend supervisors (which probe the engines themselves); this
-/// view never invents status.
+/// ENGINE tab — local inference platform. Three supervised backends:
+/// TH Engine (our Rust/candle sidecar, :8001), Splash (incoai's specialised
+/// engine, :8000) and MLX (Apple's mlx-lm server, :8002). All state comes
+/// from EngineManager → per-backend supervisors (which probe the engines
+/// themselves); this view never invents status.
 struct EngineTabView: View {
     @ObservedObject private var mgr = EngineManager.shared
-    @State private var backend = "splash"
+    @State private var backend = "thengine"
     @State private var overrides = false
     @State private var memDraft = ""
     @State private var ctxDraft = ""
@@ -28,7 +28,7 @@ struct EngineTabView: View {
             backendPicker
             statusCard
             recommendedCard
-            if backend == "splash" { splashCatalogCard } else { thengineCatalogCard }
+            catalogueCard
             chatCard
             benchCard
             connectCard
@@ -36,6 +36,7 @@ struct EngineTabView: View {
         .frame(maxWidth: .infinity, alignment: .topLeading)
         .onReceive(mgr.splash.$state) { _ in tickProgress() }
         .onReceive(mgr.thengine.$state) { _ in tickProgress() }
+        .onReceive(mgr.mlx.$state) { _ in tickProgress() }
         .onDisappear { progressTimer?.invalidate() }
     }
 
@@ -75,7 +76,7 @@ struct EngineTabView: View {
                 Text("No model in the catalogue fits this machine.")
                     .font(.system(size: 10, design: .monospaced)).foregroundStyle(.secondary)
             } else {
-                ForEach(Array(recs.enumerated()), id: \.element.model.id) { index, rec in
+                ForEach(Array(recs.enumerated()), id: \.element.model.modelSpec) { index, rec in
                     recommendedRow(rec, rank: index + 1)
                 }
             }
@@ -160,7 +161,7 @@ struct EngineTabView: View {
             .background(Capsule().fill(isThis ? Color.white.opacity(0.9) : Color.green))
             .buttonStyle(.plain)
             .disabled(serving || !sup.engineAvailable)
-            .help("Download if needed, then serve — traced at http://127.0.0.1:11436/\(backend == "splash" ? "th-splash" : "th-engine")")
+            .help("Download if needed, then serve — traced at http://127.0.0.1:11436/\(gatewaySlug)")
         }
         .padding(.vertical, 2)
     }
@@ -229,13 +230,22 @@ struct EngineTabView: View {
         return cur
     }
 
+    /// The gateway's traced route for the selected engine.
+    private var gatewaySlug: String {
+        switch backend {
+        case "splash": return "th-splash"
+        case "mlx": return "th-mlx"
+        default: return "th-engine"
+        }
+    }
+
     private func sendChat() {
         let prompt = chatPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !prompt.isEmpty, !chatBusy else { return }
         chatBusy = true
         chatPrompt = ""
         let model = sup.state.currentModel ?? backend
-        let path = backend == "splash" ? "th-splash" : "th-engine"
+        let path = gatewaySlug
         var req = URLRequest(url: URL(string: "http://127.0.0.1:11436/\(path)/v1/chat/completions")!)
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -257,8 +267,8 @@ struct EngineTabView: View {
 
     private var backendPicker: some View {
         HStack(spacing: 4) {
-            ForEach(["splash", "thengine"], id: \.self) { b in
-                Button(b == "splash" ? "SPLASH" : "TH ENGINE") { backend = b }
+            ForEach(LocalModelCatalog.engines(), id: \.self) { b in
+                Button(LocalModelCatalog.engineLabel(b)) { backend = b }
                     .font(.system(size: 10, weight: .bold, design: .monospaced))
                     .foregroundStyle(backend == b ? .black : .white.opacity(0.5))
                     .padding(.horizontal, 12).padding(.vertical, 5)
@@ -267,18 +277,15 @@ struct EngineTabView: View {
             }
             Spacer()
             // per-backend availability dot
-            Circle()
-                .fill(mgr.splash.state.isServing ? .green : .white.opacity(0.15))
-                .frame(width: 6, height: 6)
-            Text("splash")
-                .font(.system(size: 8, design: .monospaced))
-                .foregroundStyle(.white.opacity(0.35))
-            Circle()
-                .fill(mgr.thengine.state.isServing ? .green : .white.opacity(0.15))
-                .frame(width: 6, height: 6)
-            Text("thengine")
-                .font(.system(size: 8, design: .monospaced))
-                .foregroundStyle(.white.opacity(0.35))
+            ForEach(LocalModelCatalog.engines(), id: \.self) { b in
+                Circle()
+                    .fill((mgr.supervisor(for: b)?.state.isServing ?? false)
+                          ? .green : .white.opacity(0.15))
+                    .frame(width: 6, height: 6)
+                Text(b)
+                    .font(.system(size: 8, design: .monospaced))
+                    .foregroundStyle(.white.opacity(0.35))
+            }
         }
     }
 
@@ -318,10 +325,8 @@ struct EngineTabView: View {
                     .lineLimit(3)
             }
 
-            if !sup.engineAvailable {
-                Text(backend == "splash"
-                     ? "splash not installed — run: brew install incoai/tap/splash"
-                     : "th-engine not built — run: cargo build --release -p th-engine (engine/)")
+            if !sup.engineAvailable, let hint = sup.installHint {
+                Text(hint)
                     .font(.system(size: 10, design: .monospaced))
                     .foregroundStyle(.yellow.opacity(0.85))
             }
@@ -404,7 +409,7 @@ struct EngineTabView: View {
     }
 
     private var statusTitle: String {
-        let name = backend == "splash" ? "SPLASH" : "TH ENGINE"
+        let name = LocalModelCatalog.engineLabel(backend)
         switch sup.state {
         case .serving(let model, _, let attached):
             return "\(name) · \(model.split(separator: "/").last.map(String.init) ?? model)\(attached ? " (attached)" : "")"
@@ -426,29 +431,48 @@ struct EngineTabView: View {
         }
     }
 
-    // MARK: - Splash catalog
+    // MARK: - Full catalogue
 
-    private var splashCatalogCard: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            catalogHeader
-            ForEach(HardwareProfile.catalog, id: \.id) { m in
-                splashModelRow(m)
+    /// Every catalogue row the selected engine can serve on this machine — the
+    /// full list behind the top-five card, each with the engine's own fit,
+    /// measured-or-estimated throughput, and its serve ceilings.
+    private var catalogueCard: some View {
+        let recs = LocalModelCatalog.runnable(for: machine, engine: backend)
+        let installed = recs.filter { HFModelStore.isInstalled($0.model.id) }.count
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Text("ALL MODELS · \(LocalModelCatalog.engineLabel(backend))")
+                    .font(.system(size: 10, weight: .heavy, design: .monospaced))
+                    .foregroundStyle(.white.opacity(0.5))
+                Text("\(recs.count) run here · \(installed) installed")
+                    .font(.system(size: 8, design: .monospaced))
+                    .foregroundStyle(.white.opacity(0.3))
+                Spacer()
+                catalogTuningButton
             }
+            if overrides { overrideFields }
+            if recs.isEmpty {
+                Text(emptyCatalogueText)
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundStyle(.secondary)
+            } else {
+                ForEach(recs, id: \.model.modelSpec) { rec in
+                    catalogueRow(rec)
+                }
+            }
+            Text(engineFooterText)
+                .font(.system(size: 8, design: .monospaced))
+                .foregroundStyle(.white.opacity(0.3))
         }
         .padding(12)
         .background(RoundedRectangle(cornerRadius: 10).fill(Color.white.opacity(0.05)))
     }
 
-    private var catalogHeader: some View {
-        HStack {
-            Text("MODELS").font(.system(size: 10, weight: .heavy, design: .monospaced))
-                .foregroundStyle(.white.opacity(0.5))
-            Spacer()
-            Button(overrides ? "auto-tuned" : "customize") { overrides.toggle() }
-                .font(.system(size: 9, design: .monospaced))
-                .foregroundStyle(.white.opacity(0.4))
-                .buttonStyle(.plain)
-        }
+    private var catalogTuningButton: some View {
+        Button(overrides ? "auto-tuned" : "customize") { overrides.toggle() }
+            .font(.system(size: 9, design: .monospaced))
+            .foregroundStyle(.white.opacity(0.4))
+            .buttonStyle(.plain)
     }
 
     private var overrideFields: some View {
@@ -464,36 +488,64 @@ struct EngineTabView: View {
         }
     }
 
-    private func splashModelRow(_ m: HardwareProfile.EngineModel) -> some View {
-        let fit = HardwareProfile.fit(m, on: machine)
-        let installed = splashInstalledModelIDs().contains(m.id)
-        let ceil = HardwareProfile.recommendedCeilings(m, on: machine)
+    private var emptyCatalogueText: String {
+        switch backend {
+        case "splash":
+            return "No Splash package fits this machine — Splash needs M3+, macOS 26.4 and 36 GB."
+        case "mlx":
+            return "No MLX checkpoint fits this machine."
+        default:
+            return "No model in the catalogue fits this machine."
+        }
+    }
+
+    private var engineFooterText: String {
+        switch backend {
+        case "splash":
+            return "Splash serves packaged models only — any owner/repo holding a Splash package works too."
+        case "mlx":
+            return "mlx-lm serves any mlx-community checkpoint — this is the curated 4-bit set, not a limit."
+        default:
+            return "TH Engine serves any single-file GGUF (qwen2/qwen3/llama) or MLX 4-bit qwen3_5 repo via the API with an explicit model spec."
+        }
+    }
+
+    private func catalogueRow(_ rec: LocalModelCatalog.Recommendation) -> some View {
         let serving = sup.state.isServing || sup.state.isBusy
-        return VStack(alignment: .leading, spacing: 4) {
-            if overrides { overrideFields }
-            HStack(spacing: 10) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(m.displayName)
+        let isThis = sup.state.currentModel == rec.model.modelSpec
+            || sup.state.currentModel == rec.model.id
+        let installed = HFModelStore.isInstalled(rec.model.id)
+        return HStack(spacing: 10) {
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 6) {
+                    Text(rec.model.name)
                         .font(.system(size: 11, weight: .semibold, design: .monospaced))
-                        .foregroundStyle(.white.opacity(0.9))
-                    Text("\(String(format: "%.1f", m.packageGB)) GB package · \(m.kind)")
-                        .font(.system(size: 9, design: .monospaced))
-                        .foregroundStyle(.white.opacity(0.4))
+                        .foregroundStyle(isThis ? .green : .white.opacity(0.9))
+                    if installed {
+                        Text("INSTALLED")
+                            .font(.system(size: 7, weight: .heavy, design: .monospaced))
+                            .padding(.horizontal, 5).padding(.vertical, 1)
+                            .background(Capsule().fill(Color.blue.opacity(0.18)))
+                            .foregroundStyle(.blue)
+                    }
                 }
-                Spacer()
-                Text(installed ? "installed" : "")
-                    .font(.system(size: 8, design: .monospaced))
-                    .foregroundStyle(.green.opacity(0.7))
-                Text(fit.badge)
-                    .font(.system(size: 8, weight: .bold, design: .monospaced))
-                    .foregroundStyle(fitColor(fit))
-                    .padding(.horizontal, 6).padding(.vertical, 2)
-                    .background(Capsule().fill(fitColor(fit).opacity(0.15)))
-                serveButton(enabled: !serving && fit != .unsupported && sup.engineAvailable) {
-                    let mem = overrides ? Int(memDraft) : ceil.maxMemoryGB
-                    let ctx = overrides ? Int(ctxDraft) : ceil.maxContextK
-                    sup.serve(model: m.id, maxMemoryGB: mem, maxContextK: ctx)
-                }
+                Text("\(String(format: "%.1f", rec.model.sizeGB)) GB · \(rec.model.quant) · \(rec.model.contextK / 1000)M ctx · \(String(format: "%.0f", rec.tokPerSec)) tok/s\(rec.tokPerSecMeasured ? "" : " est") · ceiling \(rec.maxContextK)K @ \(rec.maxMemoryGB) GB")
+                    .font(.system(size: 8.5, design: .monospaced))
+                    .foregroundStyle(.white.opacity(0.4))
+                    .lineLimit(2)
+            }
+            Spacer()
+            Text(rec.fit.badge)
+                .font(.system(size: 8, weight: .bold, design: .monospaced))
+                .foregroundStyle(fitColor(rec.fit))
+                .padding(.horizontal, 6).padding(.vertical, 2)
+                .background(Capsule().fill(fitColor(rec.fit).opacity(0.15)))
+            serveButton(enabled: !serving && sup.engineAvailable) {
+                sup.serve(model: rec.model.modelSpec,
+                          tokenizer: rec.model.engine == "thengine" ? rec.model.tokenizer : nil,
+                          maxMemoryGB: overrides ? Int(memDraft) : rec.maxMemoryGB,
+                          maxContextK: overrides ? Int(ctxDraft) : rec.maxContextK,
+                          keepLoaded: keepLoaded)
             }
         }
     }
@@ -504,56 +556,6 @@ struct EngineTabView: View {
         case .tight: return .orange
         case .comfortable: return .green
         case .generous: return .cyan
-        }
-    }
-
-    // MARK: - TH Engine catalog
-
-    private var thengineCatalogCard: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            catalogHeader
-            if overrides { overrideFields }
-            ForEach(THEngineModel.catalog, id: \.id) { m in
-                thengineModelRow(m)
-            }
-            Text("TH Engine runs any GGUF/safetensors HF repo — serve via API with an explicit model spec.")
-                .font(.system(size: 8, design: .monospaced))
-                .foregroundStyle(.white.opacity(0.3))
-        }
-        .padding(12)
-        .background(RoundedRectangle(cornerRadius: 10).fill(Color.white.opacity(0.05)))
-    }
-
-    private func thengineModelRow(_ m: THEngineModel) -> some View {
-        let installed = THEngineModel.installed(m)
-        let serving = sup.state.isServing || sup.state.isBusy
-        // Rough fit: GGUF resident ≈ package size; want headroom over it.
-        let fits = machine.physicalMemoryGB > m.approxGB + 8
-        return HStack(spacing: 10) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(m.displayName)
-                    .font(.system(size: 11, weight: .semibold, design: .monospaced))
-                    .foregroundStyle(.white.opacity(0.9))
-                Text("\(String(format: "%.1f", m.approxGB)) GB · \(m.kind)")
-                    .font(.system(size: 9, design: .monospaced))
-                    .foregroundStyle(.white.opacity(0.4))
-            }
-            Spacer()
-            Text(installed ? "cached" : "")
-                .font(.system(size: 8, design: .monospaced))
-                .foregroundStyle(.green.opacity(0.7))
-            if !fits {
-                Text("tight")
-                    .font(.system(size: 8, weight: .bold, design: .monospaced))
-                    .foregroundStyle(.orange)
-                    .padding(.horizontal, 6).padding(.vertical, 2)
-                    .background(Capsule().fill(Color.orange.opacity(0.15)))
-            }
-            serveButton(enabled: !serving && sup.engineAvailable) {
-                let ctx = overrides ? Int(ctxDraft) : nil
-                sup.serve(model: m.modelSpec, tokenizer: m.tokenizerRepo,
-                          maxMemoryGB: nil, maxContextK: ctx, keepLoaded: keepLoaded)
-            }
         }
     }
 
@@ -633,7 +635,7 @@ struct EngineTabView: View {
             Text("Point agents at the gateway for traced local inference:")
                 .font(.system(size: 9, design: .monospaced))
                 .foregroundStyle(.white.opacity(0.4))
-            Text("base_url = http://127.0.0.1:11436/\(backend == "splash" ? "th-splash" : "th-engine")")
+            Text("base_url = http://127.0.0.1:11436/\(gatewaySlug)")
                 .font(.system(size: 10, design: .monospaced))
                 .foregroundStyle(.cyan.opacity(0.8))
                 .textSelection(.enabled)

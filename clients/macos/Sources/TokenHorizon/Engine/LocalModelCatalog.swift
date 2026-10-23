@@ -17,8 +17,8 @@ enum LocalModelCatalog {
     struct Model: Equatable {
         let id: String              // HF repo
         let name: String
-        let engine: String          // "thengine" | "splash"
-        let family: String          // qwen3 | qwen2 | llama
+        let engine: String          // "thengine" | "splash" | "mlx"
+        let family: String          // qwen3 | qwen3_5 | qwen2 | llama
         let paramsB: Double
         let quant: String
         let sizeGB: Double          // download
@@ -78,6 +78,14 @@ enum LocalModelCatalog {
         return models
     }
 
+    /// Tests and tooling load a catalogue from disk, so the parser is not
+    /// welded to the bundled resource.
+    static func decode(_ data: Data) -> [Model] {
+        guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let entries = obj["models"] as? [[String: Any]] else { return [] }
+        return entries.compactMap { model(from: $0) }
+    }
+
     private static func model(from dict: [String: Any]) -> Model? {
         guard let id = dict["id"] as? String, !id.isEmpty,
               let name = dict["name"] as? String,
@@ -95,7 +103,8 @@ enum LocalModelCatalog {
             sizeGB: sizeGB,
             residentGB: residentGB,
             contextK: contextK,
-            capabilities: dict["capabilities"] as? [String] ?? [],
+            // The resource spells this `capabilities`; early rows used `caps`.
+            capabilities: (dict["capabilities"] as? [String]) ?? (dict["caps"] as? [String]) ?? [],
             minRAMGB: dict["minRAMGB"] as? Int ?? 0,
             recommendedRAMGB: dict["recommendedRAMGB"] as? Int ?? Int((residentGB * 1.5).rounded(.up)),
             license: dict["license"] as? String ?? "",
@@ -154,8 +163,12 @@ enum LocalModelCatalog {
             let tight = fit == .tight
             let spec = model.modelSpec
             let measured = profile.measured(spec: spec, engine: model.engine)
+            // A known download size IS the bytes streamed per decoded token —
+            // every weight is read once per token — so the estimate follows the
+            // real quantisation rather than a label.
             let tokPerSec = measured?.tokPerSec
-                ?? profile.estimateTokPerSec(paramsB: model.paramsB, quant: model.quant)
+                ?? profile.estimateTokPerSec(paramsB: model.paramsB, quant: model.quant,
+                                             downloadGB: model.sizeGB)
             // A model that fits but decodes below the interactive floor is the
             // wrong recommendation on this machine, however capable.
             let slow = tokPerSec < HardwareMap.interactiveFloor
@@ -184,8 +197,33 @@ enum LocalModelCatalog {
     }
 
     static func recommendations(for machine: HardwareProfile.Machine,
-                                engine: String? = nil, limit: Int = 6) -> [Recommendation] {
-        Array(reconciled(models: models(), machine: machine, engine: engine).prefix(limit))
+                                engine: String? = nil, limit: Int = 6,
+                                map: HardwareMap? = nil) -> [Recommendation] {
+        Array(reconciled(models: models(), machine: machine, engine: engine, map: map).prefix(limit))
+    }
+
+    /// Every catalogue row that runs on this machine, best first — the full
+    /// list behind the top-five recommendation card.
+    static func runnable(for machine: HardwareProfile.Machine, engine: String,
+                         map: HardwareMap? = nil) -> [Recommendation] {
+        reconciled(models: models(), machine: machine, engine: engine, map: map)
+    }
+
+    /// Engines present in the catalogue, in a stable display order.
+    static func engines() -> [String] {
+        let order = ["thengine", "splash", "mlx"]
+        let present = Set(models().map(\.engine))
+        return order.filter { present.contains($0) } + present.subtracting(order).sorted()
+    }
+
+    /// Human name for an engine id.
+    static func engineLabel(_ engine: String) -> String {
+        switch engine {
+        case "thengine": return "TH ENGINE"
+        case "splash": return "SPLASH"
+        case "mlx": return "MLX"
+        default: return engine.uppercased()
+        }
     }
 
     private static func reasons(for model: Model, fit: HardwareProfile.Fit,

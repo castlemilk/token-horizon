@@ -66,14 +66,20 @@ final class LocalModelCatalogTests: XCTestCase {
         XCTAssertTrue(LocalModelCatalog.reconciled(models: catalogue, machine: m8).isEmpty)
     }
 
-    /// The catalogue can be filtered to one engine's back end.
+    /// The catalogue can be filtered to one engine's back end — including MLX,
+    /// which has no catalogue of its own beyond these rows.
     func testReconciliation_engineFilter() {
         let catalogue = catalogue + [model("Qwen3.8 27B Splash", paramsB: 27, sizeGB: 17.4,
-                                           residentGB: 18.6, recommendedRAMGB: 48, engine: "splash")]
+                                           residentGB: 18.6, recommendedRAMGB: 48, engine: "splash"),
+                                     model("Qwen3 8B MLX", paramsB: 8.2, sizeGB: 4.6,
+                                           residentGB: 6.2, recommendedRAMGB: 16, engine: "mlx")]
         let thengine = LocalModelCatalog.reconciled(models: catalogue, machine: m64, engine: "thengine")
         XCTAssertTrue(thengine.allSatisfy { $0.model.engine == "thengine" })
         let splash = LocalModelCatalog.reconciled(models: catalogue, machine: m64, engine: "splash")
         XCTAssertTrue(splash.allSatisfy { $0.model.engine == "splash" })
+        let mlx = LocalModelCatalog.reconciled(models: catalogue, machine: m64, engine: "mlx")
+        XCTAssertEqual(mlx.map(\.model.name), ["Qwen3 8B MLX"])
+        XCTAssertEqual(mlx.first?.fit, .generous, "MLX rows are reconciled like any other engine")
     }
 
     /// Throughput selects models better than fit alone: a 70B that fits but
@@ -129,18 +135,67 @@ final class LocalModelCatalogTests: XCTestCase {
     /// ENGINE tab's recommendations.
     func testBundledCatalogue_parsesAndCarriesServeFields() {
         let models = LocalModelCatalog.models()
-        XCTAssertGreaterThanOrEqual(models.count, 8, "the bundled catalogue must not be empty")
+        XCTAssertGreaterThanOrEqual(models.count, 20, "the bundled catalogue is the rich local roster, not a stub")
         for m in models {
             XCTAssertFalse(m.id.isEmpty)
             XCTAssertGreaterThan(m.sizeGB, 0, "\(m.name) must state a download size")
             XCTAssertGreaterThan(m.residentGB, 0, "\(m.name) must state a resident footprint")
             XCTAssertGreaterThan(m.contextK, 0, "\(m.name) must state a context window")
-            XCTAssertTrue(["thengine", "splash"].contains(m.engine), "\(m.name) must name a bundled engine")
+            XCTAssertTrue(["thengine", "splash", "mlx"].contains(m.engine), "\(m.name) must name a supervised engine")
+            XCTAssertFalse(m.capabilities.isEmpty, "\(m.name) must state its capabilities")
         }
-        // Every GGUF row must carry the tokenizer sibling repo (a GGUF ships
-        // no tokenizer.json, and the engine needs one to load).
-        for m in models where m.engine == "thengine" {
+        // Every pinned GGUF row must carry the tokenizer sibling repo (a GGUF
+        // ships no tokenizer.json, and the engine needs one to load). Directory
+        // repos (MLX checkpoints, Splash packages) ship their own tokenizer.
+        for m in models where m.engine == "thengine" && m.file != nil {
             XCTAssertNotNil(m.tokenizer, "\(m.name) must carry a tokenizer repo for GGUF serving")
         }
+    }
+
+    /// Three engines, one row each per model: the picker and the
+    /// `ForEach(id: \.modelSpec)` in the UI both rely on that.
+    func testBundledCatalogue_coversEveryEngineWithUniqueSpecs() {
+        let models = LocalModelCatalog.models()
+        XCTAssertEqual(LocalModelCatalog.engines(), ["thengine", "splash", "mlx"])
+        let specs = models.map(\.modelSpec)
+        XCTAssertEqual(Set(specs).count, specs.count, "a duplicate model spec would collide in the UI list")
+        for engine in ["thengine", "splash", "mlx"] {
+            XCTAssertGreaterThanOrEqual(models.filter { $0.engine == engine }.count, 2,
+                                        "\(engine) must offer real choice, not a single row")
+        }
+        // The catalogue's whole point: on a big Mac each engine has something
+        // that runs, and the rows carry ceilings to serve it.
+        let big = HardwareProfile.Machine(chipName: "Apple M5 Max", physicalMemoryGB: 128,
+                                          macosMajor: 26, macosMinor: 4,
+                                          chipGeneration: 5, chipTier: .max)
+        for engine in LocalModelCatalog.engines() {
+            let runnable = LocalModelCatalog.runnable(for: big, engine: engine)
+            XCTAssertFalse(runnable.isEmpty, "\(engine) must have a runnable row on a 128 GB Mac")
+            for rec in runnable {
+                XCTAssertGreaterThan(rec.maxMemoryGB, 0)
+                XCTAssertGreaterThan(rec.maxContextK, 0)
+                XCTAssertGreaterThan(rec.tokPerSec, 0, "\(rec.model.name) must carry a throughput figure")
+            }
+        }
+    }
+
+    /// Early rows spelled capabilities `caps`; both spellings must survive the
+    /// decode, and a row without a real download size is rejected rather than
+    /// presented as a model you can fetch.
+    func testDecode_readsCapabilitiesAndRejectsSizelessRows() throws {
+        let json = """
+        {"models": [
+          {"id": "a/one", "name": "One", "engine": "mlx", "sizeGB": 4.6, "residentGB": 6.0,
+           "contextK": 32768, "caps": ["tools", "code"]},
+          {"id": "a/two", "name": "Two", "engine": "thengine", "sizeGB": 5.0, "residentGB": 6.2,
+           "contextK": 32768, "capabilities": ["thinking"]},
+          {"id": "a/three", "name": "Three", "engine": "thengine", "contextK": 32768}
+        ]}
+        """
+        let models = LocalModelCatalog.decode(Data(json.utf8))
+        XCTAssertEqual(models.count, 2, "a row with no download size must not enter the catalogue")
+        XCTAssertEqual(models[0].capabilities, ["tools", "code"])
+        XCTAssertEqual(models[1].capabilities, ["thinking"])
+        XCTAssertEqual(LocalModelCatalog.engineLabel("mlx"), "MLX")
     }
 }

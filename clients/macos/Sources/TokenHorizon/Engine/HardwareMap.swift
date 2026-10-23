@@ -61,20 +61,36 @@ struct HardwareMap: Codable {
 
     // MARK: - Estimation
 
-    /// Published memory bandwidth by chip family, GB/s. Conservatively rounded
-    /// to the figures Apple states for the tier; an unknown chip falls back to
-    /// the base-tier figure for its generation.
+    /// Published memory bandwidth by chip generation and tier, GB/s. Apple
+    /// states these per part; where a generation bins the top part we take the
+    /// fuller die. An unknown chip falls back to the generation's base tier,
+    /// and an unknown generation to the last known base — conservative, never
+    /// optimistic.
     static func bandwidthGBs(chip: String) -> Double {
         let n = chip.lowercased()
-        let gen = Int(n.range(of: #"M(\d+)"#, options: .regularExpression).map { n[$0].dropFirst() } ?? "0") ?? 0
-        if n.contains("ultra") { return max(600, Double(gen) * 130) }
-        if n.contains("max") { return max(300, Double(gen) * 90) }
-        if n.contains("pro") { return max(150, Double(gen) * 50) }
-        return max(100, Double(gen) * 10)
+        let digits = n.range(of: #"m(\d+)"#, options: .regularExpression)
+            .map { String(n[$0].dropFirst()) }
+        let gen = digits.flatMap(Int.init) ?? 0
+        // (base, pro, max, ultra)
+        let table: [Int: (Double, Double, Double, Double)] = [
+            1: (68, 200, 400, 800),
+            2: (100, 200, 400, 800),
+            3: (100, 150, 350, 800),
+            4: (120, 273, 546, 800),
+            5: (150, 300, 550, 900),
+        ]
+        let band = table[gen] ?? (100, 200, 400, 700)
+        if n.contains("ultra") { return band.3 }
+        if n.contains("max") { return band.2 }
+        if n.contains("pro") { return band.1 }
+        return band.0
     }
 
-    /// Approximate bytes per decoded token for a quantisation. Q4_K_M averages
-    /// ~0.57 bytes per weight; the unquantised formats are their float width.
+    /// Approximate bytes per decoded token for a quantisation, in GB — every
+    /// weight is read once per token, so this is weight bytes, not compute.
+    /// Q4_K_M averages ~0.57 bytes per weight; the float formats are their
+    /// width. Prefer `estimateTokPerSec(downloadGB:)` when the real size is
+    /// known: the label is a fallback, the download is the truth.
     static func bytesPerToken(paramsB: Double, quant: String) -> Double {
         let q = quant.uppercased()
         if q.contains("Q8") { return paramsB * 1.05 }
@@ -83,15 +99,24 @@ struct HardwareMap: Codable {
         if q.contains("Q4") { return paramsB * 0.57 }
         if q.contains("Q3") { return paramsB * 0.45 }
         if q.contains("Q2") { return paramsB * 0.35 }
-        if q.contains("F16") || q.contains("FP16") || q.contains("SPLASH") { return paramsB * 2.0 }
+        if q.contains("F16") || q.contains("FP16") { return paramsB * 2.0 }
+        // 4-bit packed formats: MLX affine 4-bit, Splash packages, AWQ/GPTQ.
+        if q.contains("4-BIT") || q.contains("4BIT") || q.contains("NF4")
+            || q.contains("SPLASH") || q.contains("MLX") { return paramsB * 0.60 }
         return paramsB * 0.57
     }
 
     /// Estimated decode throughput for a model on this machine.
-    func estimateTokPerSec(paramsB: Double, quant: String) -> Double {
-        let bytes = HardwareMap.bytesPerToken(paramsB: paramsB, quant: quant)
-        guard bytes > 0 else { return 0 }
-        return (machine.bandwidthGBs * 0.7 / bytes).rounded(.down)
+    ///
+    /// `downloadGB` is the measured weight size, which is exactly what decode
+    /// streams per token; without it the quantisation table stands in.
+    func estimateTokPerSec(paramsB: Double, quant: String, downloadGB: Double = 0) -> Double {
+        let weightGB = downloadGB > 0 ? downloadGB
+            : HardwareMap.bytesPerToken(paramsB: paramsB, quant: quant)
+        guard weightGB > 0 else { return 0 }
+        // Small models are compute-bound long before they are bandwidth-bound,
+        // so the estimate is capped rather than claiming thousands of tok/s.
+        return min(250, (machine.bandwidthGBs * 0.7 / weightGB).rounded(.down))
     }
 
     /// Below this, interactive use (agentic loops, streaming) feels broken —
