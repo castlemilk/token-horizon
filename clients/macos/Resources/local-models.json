@@ -1,0 +1,177 @@
+{
+  "_meta": "Models the bundled engines can serve locally, with the size each quantisation needs on disk. Sizes are fetched from the Hugging Face API by scripts/refresh-local-models.py; the curation is hand-kept.",
+  "models": [
+    {
+      "id": "Qwen/Qwen3-32B-GGUF",
+      "name": "Qwen3 32B",
+      "engine": "thengine",
+      "family": "qwen3",
+      "paramsB": 32.7,
+      "quant": "Q4_K_M",
+      "file": "Qwen3-32B-Q4_K_M.gguf",
+      "contextK": 32768,
+      "caps": [
+        "tools"
+      ],
+      "minRAMGB": 24,
+      "recommendedRAMGB": 48,
+      "license": "apache-2.0",
+      "tokenizer": "Qwen/Qwen3-32B",
+      "sizeGB": 19.8,
+      "residentGB": 21.0
+    },
+    {
+      "id": "Qwen/Qwen3-30B-A3B-GGUF",
+      "name": "Qwen3 30B-A3B (MoE)",
+      "engine": "thengine",
+      "family": "qwen3",
+      "paramsB": 30.5,
+      "quant": "Q4_K_M",
+      "file": "Qwen3-30B-A3B-Q4_K_M.gguf",
+      "contextK": 32768,
+      "caps": [
+        "tools"
+      ],
+      "minRAMGB": 22,
+      "recommendedRAMGB": 48,
+      "license": "apache-2.0",
+      "tokenizer": "Qwen/Qwen3-30B-A3B",
+      "sizeGB": 18.6,
+      "residentGB": 19.8
+    },
+    {
+      "id": "Qwen/Qwen3-14B-GGUF",
+      "name": "Qwen3 14B",
+      "engine": "thengine",
+      "family": "qwen3",
+      "paramsB": 14.8,
+      "quant": "Q4_K_M",
+      "file": "Qwen3-14B-Q4_K_M.gguf",
+      "contextK": 32768,
+      "caps": [
+        "tools"
+      ],
+      "minRAMGB": 12,
+      "recommendedRAMGB": 24,
+      "license": "apache-2.0",
+      "tokenizer": "Qwen/Qwen3-14B",
+      "sizeGB": 9.0,
+      "residentGB": 10.2
+    },
+    {
+      "id": "Qwen/Qwen3-8B-GGUF",
+      "name": "Qwen3 8B",
+      "engine": "thengine",
+      "family": "qwen3",
+      "paramsB": 8.2,
+      "quant": "Q4_K_M",
+      "file": "Qwen3-8B-Q4_K_M.gguf",
+      "contextK": 32768,
+      "caps": [
+        "tools"
+      ],
+      "minRAMGB": 8,
+      "recommendedRAMGB": 16,
+      "license": "apache-2.0",
+      "tokenizer": "Qwen/Qwen3-8B",
+      "sizeGB": 5.0,
+      "residentGB": 6.2
+    },
+    {
+      "id": "Qwen/Qwen3-4B-GGUF",
+      "name": "Qwen3 4B",
+      "engine": "thengine",
+      "family": "qwen3",
+      "paramsB": 4.0,
+      "quant": "Q4_K_M",
+      "file": "Qwen3-4B-Q4_K_M.gguf",
+      "contextK": 32768,
+      "caps": [
+        "tools"
+      ],
+      "minRAMGB": 6,
+      "recommendedRAMGB": 12,
+      "license": "apache-2.0",
+      "tokenizer": "Qwen/Qwen3-4B",
+      "sizeGB": 2.5,
+      "residentGB": 3.7
+    },
+    {
+      "id": "bartowski/Qwen2.5-32B-Instruct-GGUF",
+      "name": "Qwen2.5 32B",
+      "engine": "thengine",
+      "family": "qwen2",
+      "paramsB": 32.8,
+      "quant": "Q4_K_M",
+      "file": "Qwen2.5-32B-Instruct-Q4_K_M.gguf",
+      "contextK": 32768,
+      "caps": [
+        "tools"
+      ],
+      "minRAMGB": 24,
+      "recommendedRAMGB": 48,
+      "license": "apache-2.0",
+      "tokenizer": "Qwen/Qwen2.5-32B-Instruct",
+      "sizeGB": 19.9,
+      "residentGB": 21.1
+    },
+    {
+      "id": "unsloth/Llama-3.3-70B-Instruct-GGUF",
+      "name": "Llama 3.3 70B",
+      "engine": "thengine",
+      "family": "llama",
+      "paramsB": 70.6,
+      "quant": "Q4_K_M",
+      "file": "Llama-3.3-70B-Instruct-Q4_K_M.gguf",
+      "contextK": 32768,
+      "caps": [
+        "tools"
+      ],
+      "minRAMGB": 48,
+      "recommendedRAMGB": 96,
+      "license": "llama3.3",
+      "tokenizer": "unsloth/Llama-3.3-70B-Instruct",
+      "sizeGB": 42.5,
+      "residentGB": 43.7
+    },
+    {
+      "id": "incoai/Qwen3.8-27B-Splash",
+      "name": "Qwen3.8 27B (Splash)",
+      "engine": "splash",
+      "family": "qwen3",
+      "paramsB": 27.0,
+      "quant": "Splash",
+      "file": null,
+      "contextK": 32768,
+      "caps": [
+        "tools",
+        "vision"
+      ],
+      "minRAMGB": 24,
+      "recommendedRAMGB": 48,
+      "license": "apache-2.0",
+      "tokenizer": null,
+      "sizeGB": 17.4,
+      "residentGB": 18.6
+    },
+    {
+      "id": "incoai/Qwen3.6-35B-A3B-Splash",
+      "name": "Qwen3.6 35B-A3B (Splash)",
+      "engine": "splash",
+      "family": "qwen3",
+      "paramsB": 35.0,
+      "quant": "Splash",
+      "file": null,
+      "contextK": 32768,
+      "caps": [
+        "tools"
+      ],
+      "minRAMGB": 28,
+      "recommendedRAMGB": 48,
+      "license": "apache-2.0",
+      "tokenizer": null,
+      "sizeGB": 20.9,
+      "residentGB": 22.1
+    }
+  ]
+}

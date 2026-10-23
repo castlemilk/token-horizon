@@ -1,0 +1,189 @@
+import Foundation
+
+/// The catalogue of models the bundled engines can serve on this machine,
+/// reconciled against the hardware so the app can show the best options.
+///
+/// The catalogue is a curated resource (`Resources/local-models.json`,
+/// refreshed by `scripts/refresh-local-models.py`, which takes the download
+/// sizes from the Hugging Face API). The reconciliation is pure: a catalogue
+/// row × a machine → a fit verdict, serve ceilings, and the reasons a row
+/// made the list. Nothing here talks to the network.
+///
+/// Ranking answers "what are the best options for THIS machine": a model that
+/// leaves the machine usable beats one that barely fits, and among models
+/// that run comfortably, the more capable (larger) one wins.
+enum LocalModelCatalog {
+
+    struct Model: Equatable {
+        let id: String              // HF repo
+        let name: String
+        let engine: String          // "thengine" | "splash"
+        let family: String          // qwen3 | qwen2 | llama
+        let paramsB: Double
+        let quant: String
+        let sizeGB: Double          // download
+        let residentGB: Double      // weights + runtime, fixed
+        let contextK: Int           // native window
+        let capabilities: [String]
+        let minRAMGB: Int
+        let recommendedRAMGB: Int
+        let license: String
+        let file: String?           // explicit GGUF inside the repo
+        let tokenizer: String?      // sibling repo for a GGUF
+
+        /// Model spec handed to the engine's serve: `repo:file` when a file is
+        /// pinned, else the bare repo.
+        var modelSpec: String {
+            guard let file, !file.isEmpty else { return id }
+            return "\(id):\(file)"
+        }
+    }
+
+    /// One catalogue row reconciled against a machine.
+    struct Recommendation: Equatable {
+        let model: Model
+        let fit: HardwareProfile.Fit
+        let maxMemoryGB: Int
+        let maxContextK: Int
+        /// Why this row is on the list, most user-meaningful first.
+        let reasons: [String]
+    }
+
+    // MARK: - Loading
+
+    private static let lock = NSLock()
+    private static var cached: [Model]?
+
+    static func models() -> [Model] {
+        lock.lock()
+        if let cached { lock.unlock(); return cached }
+        lock.unlock()
+
+        var models: [Model] = []
+        if let path = ModelCatalog.resourceJSONPath("local-models"),
+           let data = FileManager.default.contents(atPath: path),
+           let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let entries = obj["models"] as? [[String: Any]] {
+            models = entries.compactMap { Self.model(from: $0) }
+        }
+        lock.lock()
+        cached = models
+        lock.unlock()
+        return models
+    }
+
+    private static func model(from dict: [String: Any]) -> Model? {
+        guard let id = dict["id"] as? String, !id.isEmpty,
+              let name = dict["name"] as? String,
+              let engine = dict["engine"] as? String,
+              let sizeGB = dict["sizeGB"] as? Double,
+              let residentGB = dict["residentGB"] as? Double,
+              let contextK = dict["contextK"] as? Int else { return nil }
+        return Model(
+            id: id,
+            name: name,
+            engine: engine,
+            family: dict["family"] as? String ?? "",
+            paramsB: dict["paramsB"] as? Double ?? 0,
+            quant: dict["quant"] as? String ?? "",
+            sizeGB: sizeGB,
+            residentGB: residentGB,
+            contextK: contextK,
+            capabilities: dict["capabilities"] as? [String] ?? [],
+            minRAMGB: dict["minRAMGB"] as? Int ?? 0,
+            recommendedRAMGB: dict["recommendedRAMGB"] as? Int ?? Int((residentGB * 1.5).rounded(.up)),
+            license: dict["license"] as? String ?? "",
+            file: dict["file"] as? String,
+            tokenizer: dict["tokenizer"] as? String
+        )
+    }
+
+    // MARK: - Reconciliation
+
+    /// The models this machine can run, best options first.
+    ///
+    /// A model that leaves the machine usable outranks one that barely fits,
+    /// and among models that run comfortably the more capable (larger) one
+    /// wins. The fit verdict and the serve ceilings are the engine's own
+    /// analysis (`HardwareProfile`); the reasons are the human explanation.
+    ///
+    /// Splash's machine floor (M3+, 36 GB) applies to Splash's own roster —
+    /// TH Engine GGUF rows carry their own per-model floor (`minRAMGB`) and
+    /// run wherever the weights fit, which is most machines.
+    static func reconciled(models: [Model], machine: HardwareProfile.Machine,
+                           engine: String? = nil) -> [Recommendation] {
+        var rows = models
+        if let engine, !engine.isEmpty {
+            rows = rows.filter { $0.engine == engine }
+        }
+        var recommendations: [(model: Model, fit: HardwareProfile.Fit, tight: Bool, ceilings: (maxMemoryGB: Int, maxContextK: Int))] = []
+        for model in rows {
+            let engineModel = HardwareProfile.EngineModel(
+                id: model.id, displayName: model.name,
+                packageGB: model.sizeGB, residentGB: model.residentGB,
+                kind: model.family, recommendedRAMGB: Double(model.recommendedRAMGB)
+            )
+            // Splash rows take Splash's machine floor; TH Engine rows run
+            // wherever the weights fit (their own floor comes from the row).
+            let fit: HardwareProfile.Fit
+            if model.engine == "splash" {
+                fit = HardwareProfile.fit(engineModel, on: machine)
+            } else {
+                let ram = machine.physicalMemoryGB
+                if ram < model.residentGB + 8 || ram < Double(model.minRAMGB) {
+                    fit = .unsupported
+                } else if ram < Double(model.recommendedRAMGB) {
+                    fit = .tight
+                } else if ram >= Double(model.recommendedRAMGB) * 2 {
+                    fit = .generous
+                } else {
+                    fit = .comfortable
+                }
+            }
+            guard fit != .unsupported else { continue }
+            let ceilings = HardwareProfile.recommendedCeilings(engineModel, on: machine)
+            let tight = fit == .tight
+            recommendations.append((model, fit, tight, ceilings))
+        }
+        // Comfortable and generous both mean "the machine stays usable"; tight
+        // means something else has to give, so it ranks below either.
+        let ranked = recommendations.sorted { a, b in
+            if a.tight != b.tight { return !a.tight }
+            if a.model.paramsB != b.model.paramsB { return a.model.paramsB > b.model.paramsB }
+            return a.model.name < b.model.name
+        }
+        return ranked.map { item in
+            Recommendation(model: item.model, fit: item.fit,
+                           maxMemoryGB: item.ceilings.maxMemoryGB, maxContextK: item.ceilings.maxContextK,
+                           reasons: reasons(for: item.model, fit: item.fit, machine: machine, ceilings: item.ceilings, tight: item.tight))
+        }
+    }
+
+    static func recommendations(for machine: HardwareProfile.Machine,
+                                engine: String? = nil, limit: Int = 6) -> [Recommendation] {
+        Array(reconciled(models: models(), machine: machine, engine: engine).prefix(limit))
+    }
+
+    private static func reasons(for model: Model, fit: HardwareProfile.Fit,
+                                machine: HardwareProfile.Machine,
+                                ceilings: (maxMemoryGB: Int, maxContextK: Int), tight: Bool) -> [String] {
+        var reasons: [String] = []
+        let spare = Int(machine.physicalMemoryGB - model.residentGB)
+        if fit == .generous {
+            reasons.append("plenty of headroom — \(Int(spare)) GB free for context and apps")
+        } else if tight {
+            reasons.append("runs, but little memory left for anything else")
+        } else {
+            reasons.append("fits in \(Int(machine.physicalMemoryGB)) GB with ~\(Int(spare)) GB to spare")
+        }
+        reasons.append("context ceiling \(ceilings.maxContextK)K at a \(ceilings.maxMemoryGB) GB budget")
+        if model.contextK > 0 {
+            reasons.append("\(model.paramsB)B params · \(model.contextK / 1000)M-token window")
+        }
+        if !model.capabilities.isEmpty {
+            reasons.append(model.capabilities.joined(separator: " · "))
+        }
+        reasons.append("downloads \(model.sizeGB) GB on first run")
+        return reasons
+    }
+}

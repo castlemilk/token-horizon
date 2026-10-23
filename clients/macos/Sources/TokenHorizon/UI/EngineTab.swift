@@ -23,11 +23,99 @@ struct EngineTabView: View {
         VStack(alignment: .leading, spacing: 14) {
             backendPicker
             statusCard
+            recommendedCard
             if backend == "splash" { splashCatalogCard } else { thengineCatalogCard }
             benchCard
             connectCard
         }
         .frame(maxWidth: .infinity, alignment: .topLeading)
+    }
+
+    // MARK: - Recommended for this machine
+
+    /// The catalogue reconciled against this machine: what can run here, best
+    /// options first, with the serve ceilings the engine's own analysis picks.
+    private var recommendedCard: some View {
+        let recs = LocalModelCatalog.recommendations(for: machine, engine: backend, limit: 5)
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Text("RECOMMENDED FOR THIS MACHINE")
+                    .font(.system(size: 9, weight: .heavy, design: .monospaced))
+                    .foregroundStyle(.tertiary).kerning(1)
+                Spacer()
+                Text("\(HardwareProfile.probe().chipName) · \(Int(machine.physicalMemoryGB)) GB")
+                    .font(.system(size: 8, design: .monospaced))
+                    .foregroundStyle(.white.opacity(0.35))
+            }
+            if recs.isEmpty {
+                Text("No model in the catalogue fits this machine.")
+                    .font(.system(size: 10, design: .monospaced)).foregroundStyle(.secondary)
+            } else {
+                ForEach(Array(recs.enumerated()), id: \.element.model.id) { index, rec in
+                    recommendedRow(rec, rank: index + 1)
+                }
+            }
+            Text("Sizes are the download from the Hugging Face hub; the engine fetches them on first run and the model stays cached.")
+                .font(.system(size: 7.5, design: .monospaced))
+                .foregroundStyle(.white.opacity(0.28))
+        }
+        .padding(10)
+        .background(RoundedRectangle(cornerRadius: 8).fill(Color.white.opacity(0.03)))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.white.opacity(0.06), lineWidth: 1))
+    }
+
+    private func recommendedRow(_ rec: LocalModelCatalog.Recommendation, rank: Int) -> some View {
+        let serving = sup.state.isServing || sup.state.isBusy
+        return HStack(alignment: .top, spacing: 10) {
+            Text("\(rank)")
+                .font(.system(size: 9, weight: .heavy, design: .monospaced))
+                .foregroundStyle(rank == 1 ? .green : .white.opacity(0.3))
+                .frame(width: 12)
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 6) {
+                    Text(rec.model.name)
+                        .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(.white)
+                    Text(rec.fit.badge)
+                        .font(.system(size: 7.5, weight: .heavy, design: .monospaced))
+                        .padding(.horizontal, 5).padding(.vertical, 1)
+                        .background(Capsule().fill(fitColor(rec.fit).opacity(0.18)))
+                        .foregroundStyle(fitColor(rec.fit))
+                    if let b = rec.model.capabilities.first {
+                        Text(b.uppercased())
+                            .font(.system(size: 7, design: .monospaced))
+                            .foregroundStyle(.white.opacity(0.35))
+                    }
+                }
+                Text(rec.reasons.prefix(2).joined(separator: " · "))
+                    .font(.system(size: 8.5, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                HStack(spacing: 10) {
+                    Text("\(String(format: "%.1f", rec.model.sizeGB)) GB download")
+                    Text("\(rec.model.contextK / 1000)M ctx")
+                    Text("ceiling \(rec.maxContextK)K @ \(rec.maxMemoryGB) GB")
+                }
+                .font(.system(size: 8, design: .monospaced))
+                .foregroundStyle(.white.opacity(0.35))
+            }
+            Spacer()
+            if let _ = rec.model.modelSpec as String? {
+                Button("RUN") {
+                    sup.serve(model: rec.model.modelSpec,
+                              tokenizer: rec.model.engine == "thengine" ? rec.model.tokenizer : nil,
+                              maxMemoryGB: rec.maxMemoryGB, maxContextK: rec.maxContextK)
+                }
+                .font(.system(size: 10, weight: .heavy, design: .monospaced))
+                .foregroundStyle(.black)
+                .padding(.horizontal, 12).padding(.vertical, 4)
+                .background(Capsule().fill(Color.green))
+                .buttonStyle(.plain)
+                .disabled(serving || !sup.engineAvailable)
+                .help("Download if needed, then serve — traced at http://127.0.0.1:11436/\(backend == "splash" ? "th-splash" : "th-engine")")
+            }
+        }
+        .padding(.vertical, 2)
     }
 
     // MARK: - Backend picker
