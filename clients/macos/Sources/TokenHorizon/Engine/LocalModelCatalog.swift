@@ -39,12 +39,18 @@ enum LocalModelCatalog {
         }
     }
 
-    /// One catalogue row reconciled against a machine.
+    /// One catalogue row reconciled against a machine, with the throughput
+    /// profile's verdict.
     struct Recommendation: Equatable {
         let model: Model
         let fit: HardwareProfile.Fit
         let maxMemoryGB: Int
         let maxContextK: Int
+        /// Decode throughput: measured on this machine when the profile has a
+        /// run, else estimated from the chip's memory bandwidth. `measured`
+        /// says which.
+        let tokPerSec: Double
+        let tokPerSecMeasured: Bool
         /// Why this row is on the list, most user-meaningful first.
         let reasons: [String]
     }
@@ -111,12 +117,15 @@ enum LocalModelCatalog {
     /// TH Engine GGUF rows carry their own per-model floor (`minRAMGB`) and
     /// run wherever the weights fit, which is most machines.
     static func reconciled(models: [Model], machine: HardwareProfile.Machine,
-                           engine: String? = nil) -> [Recommendation] {
+                           engine: String? = nil, map: HardwareMap? = nil) -> [Recommendation] {
+        let profile = map ?? HardwareMap.load()
         var rows = models
         if let engine, !engine.isEmpty {
             rows = rows.filter { $0.engine == engine }
         }
-        var recommendations: [(model: Model, fit: HardwareProfile.Fit, tight: Bool, ceilings: (maxMemoryGB: Int, maxContextK: Int))] = []
+        var recommendations: [(model: Model, fit: HardwareProfile.Fit, tight: Bool, slow: Bool,
+                               tokPerSec: Double, measured: Bool,
+                               ceilings: (maxMemoryGB: Int, maxContextK: Int))] = []
         for model in rows {
             let engineModel = HardwareProfile.EngineModel(
                 id: model.id, displayName: model.name,
@@ -143,19 +152,34 @@ enum LocalModelCatalog {
             guard fit != .unsupported else { continue }
             let ceilings = HardwareProfile.recommendedCeilings(engineModel, on: machine)
             let tight = fit == .tight
-            recommendations.append((model, fit, tight, ceilings))
+            let spec = model.modelSpec
+            let measured = profile.measured(spec: spec, engine: model.engine)
+            let tokPerSec = measured?.tokPerSec
+                ?? profile.estimateTokPerSec(paramsB: model.paramsB, quant: model.quant)
+            // A model that fits but decodes below the interactive floor is the
+            // wrong recommendation on this machine, however capable.
+            let slow = tokPerSec < HardwareMap.interactiveFloor
+            recommendations.append((model, fit, tight, slow, tokPerSec, measured != nil, ceilings))
         }
         // Comfortable and generous both mean "the machine stays usable"; tight
-        // means something else has to give, so it ranks below either.
+        // means something else has to give, and a model that decodes below the
+        // interactive floor is the wrong recommendation however capable —
+        // both rank below the rest.
         let ranked = recommendations.sorted { a, b in
+            if a.slow != b.slow { return !a.slow }
             if a.tight != b.tight { return !a.tight }
             if a.model.paramsB != b.model.paramsB { return a.model.paramsB > b.model.paramsB }
             return a.model.name < b.model.name
         }
         return ranked.map { item in
-            Recommendation(model: item.model, fit: item.fit,
+            var reasons = reasons(for: item.model, fit: item.fit, machine: machine,
+                                  ceilings: item.ceilings, tight: item.tight)
+            let throughput = item.tokPerSec >= 1 ? "~\(Int(item.tokPerSec.rounded())) tok/s" : "<1 tok/s"
+            reasons.insert("\(item.measured ? "measured" : "estimated") \(throughput) on this machine", at: 0)
+            return Recommendation(model: item.model, fit: item.fit,
                            maxMemoryGB: item.ceilings.maxMemoryGB, maxContextK: item.ceilings.maxContextK,
-                           reasons: reasons(for: item.model, fit: item.fit, machine: machine, ceilings: item.ceilings, tight: item.tight))
+                           tokPerSec: item.tokPerSec, tokPerSecMeasured: item.measured,
+                           reasons: reasons)
         }
     }
 

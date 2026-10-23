@@ -12,6 +12,10 @@ struct EngineTabView: View {
     @State private var memDraft = ""
     @State private var ctxDraft = ""
     @State private var keepLoaded = false
+    @State private var chatPrompt = ""
+    @State private var chatReply = ""
+    @State private var chatBusy = false
+    @State private var progressTimer: Timer?
 
     private let machine = HardwareProfile.probe()
 
@@ -25,10 +29,30 @@ struct EngineTabView: View {
             statusCard
             recommendedCard
             if backend == "splash" { splashCatalogCard } else { thengineCatalogCard }
+            chatCard
             benchCard
             connectCard
         }
         .frame(maxWidth: .infinity, alignment: .topLeading)
+        .onReceive(mgr.splash.$state) { _ in tickProgress() }
+        .onReceive(mgr.thengine.$state) { _ in tickProgress() }
+        .onDisappear { progressTimer?.invalidate() }
+    }
+
+    // MARK: - Download progress
+
+    /// While an engine is starting, the hub's partial blobs are the ground
+    /// truth for the download; poll them so the row shows real progress.
+    private func tickProgress() {
+        guard sup.state.isBusy else { progressTimer?.invalidate(); return }
+        if progressTimer == nil {
+            let mgr = self.mgr
+            let t = Timer(timeInterval: 1.0, repeats: true) { _ in
+                mgr.objectWillChange.send()
+            }
+            RunLoop.main.add(t, forMode: .common)
+            progressTimer = t
+        }
     }
 
     // MARK: - Recommended for this machine
@@ -66,6 +90,11 @@ struct EngineTabView: View {
 
     private func recommendedRow(_ rec: LocalModelCatalog.Recommendation, rank: Int) -> some View {
         let serving = sup.state.isServing || sup.state.isBusy
+        let activeModel = sup.state.currentModel
+        let isThis = activeModel == rec.model.modelSpec || activeModel == rec.model.id
+        let installed = HFModelStore.isInstalled(rec.model.id)
+        let progress = sup.state.isBusy && isThis
+            ? HFModelStore.progress(rec.model.id, expectedGB: rec.model.sizeGB) : nil
         return HStack(alignment: .top, spacing: 10) {
             Text("\(rank)")
                 .font(.system(size: 9, weight: .heavy, design: .monospaced))
@@ -75,23 +104,43 @@ struct EngineTabView: View {
                 HStack(spacing: 6) {
                     Text(rec.model.name)
                         .font(.system(size: 11, weight: .semibold, design: .monospaced))
-                        .foregroundStyle(.white)
+                        .foregroundStyle(isThis ? .green : .white)
                     Text(rec.fit.badge)
                         .font(.system(size: 7.5, weight: .heavy, design: .monospaced))
                         .padding(.horizontal, 5).padding(.vertical, 1)
                         .background(Capsule().fill(fitColor(rec.fit).opacity(0.18)))
                         .foregroundStyle(fitColor(rec.fit))
-                    if let b = rec.model.capabilities.first {
-                        Text(b.uppercased())
+                    if installed {
+                        Text("INSTALLED")
+                            .font(.system(size: 7, weight: .heavy, design: .monospaced))
+                            .padding(.horizontal, 5).padding(.vertical, 1)
+                            .background(Capsule().fill(Color.blue.opacity(0.18)))
+                            .foregroundStyle(.blue)
+                    }
+                    if let t = rec.model.capabilities.first {
+                        Text(t.uppercased())
                             .font(.system(size: 7, design: .monospaced))
                             .foregroundStyle(.white.opacity(0.35))
                     }
                 }
-                Text(rec.reasons.prefix(2).joined(separator: " · "))
-                    .font(.system(size: 8.5, design: .monospaced))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
+                if let progress {
+                    VStack(alignment: .leading, spacing: 2) {
+                        ProgressView(value: progress.fraction)
+                            .progressViewStyle(.linear)
+                            .tint(.green)
+                        Text("\(String(format: "%.1f", progress.downloadedGB)) / \(String(format: "%.1f", progress.totalGB)) GB downloading")
+                            .font(.system(size: 8, design: .monospaced))
+                            .foregroundStyle(.green.opacity(0.8))
+                    }
+                } else {
+                    Text(rec.reasons.prefix(2).joined(separator: " · "))
+                        .font(.system(size: 8.5, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
                 HStack(spacing: 10) {
+                    Text("\(rec.tokPerSecMeasured ? "" : "~")\(String(format: "%.0f", rec.tokPerSec)) tok/s\(rec.tokPerSecMeasured ? "" : " est")")
+                        .foregroundStyle(rec.tokPerSec < HardwareMap.interactiveFloor ? .orange : .white.opacity(0.45))
                     Text("\(String(format: "%.1f", rec.model.sizeGB)) GB download")
                     Text("\(rec.model.contextK / 1000)M ctx")
                     Text("ceiling \(rec.maxContextK)K @ \(rec.maxMemoryGB) GB")
@@ -100,22 +149,108 @@ struct EngineTabView: View {
                 .foregroundStyle(.white.opacity(0.35))
             }
             Spacer()
-            if let _ = rec.model.modelSpec as String? {
-                Button("RUN") {
-                    sup.serve(model: rec.model.modelSpec,
-                              tokenizer: rec.model.engine == "thengine" ? rec.model.tokenizer : nil,
-                              maxMemoryGB: rec.maxMemoryGB, maxContextK: rec.maxContextK)
-                }
-                .font(.system(size: 10, weight: .heavy, design: .monospaced))
-                .foregroundStyle(.black)
-                .padding(.horizontal, 12).padding(.vertical, 4)
-                .background(Capsule().fill(Color.green))
-                .buttonStyle(.plain)
-                .disabled(serving || !sup.engineAvailable)
-                .help("Download if needed, then serve — traced at http://127.0.0.1:11436/\(backend == "splash" ? "th-splash" : "th-engine")")
+            Button(isThis ? "SERVING" : "RUN") {
+                sup.serve(model: rec.model.modelSpec,
+                          tokenizer: rec.model.engine == "thengine" ? rec.model.tokenizer : nil,
+                          maxMemoryGB: rec.maxMemoryGB, maxContextK: rec.maxContextK)
             }
+            .font(.system(size: 10, weight: .heavy, design: .monospaced))
+            .foregroundStyle(isThis ? .black : .green)
+            .padding(.horizontal, 12).padding(.vertical, 4)
+            .background(Capsule().fill(isThis ? Color.white.opacity(0.9) : Color.green))
+            .buttonStyle(.plain)
+            .disabled(serving || !sup.engineAvailable)
+            .help("Download if needed, then serve — traced at http://127.0.0.1:11436/\(backend == "splash" ? "th-splash" : "th-engine")")
         }
         .padding(.vertical, 2)
+    }
+
+    // MARK: - Chat
+
+    /// A minimal client pointed at the gateway's traced local route: what you
+    /// type runs on the served model and lands in /traces like any other call.
+    private var chatCard: some View {
+        let serving = sup.state.isServing
+        return VStack(alignment: .leading, spacing: 8) {
+            Text("CHAT").font(.system(size: 10, weight: .heavy, design: .monospaced))
+                .foregroundStyle(.white.opacity(0.5))
+            if let reply = chatReply.isEmpty ? nil : chatReply {
+                ScrollView(.vertical, showsIndicators: false) {
+                    Text(reply)
+                        .font(.system(size: 9.5, design: .monospaced))
+                        .foregroundStyle(.white.opacity(0.85))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .textSelection(.enabled)
+                }
+                .frame(maxHeight: 120)
+                .padding(8)
+                .background(RoundedRectangle(cornerRadius: 6).fill(Color.white.opacity(0.04)))
+            }
+            HStack(spacing: 8) {
+                TextField(serving ? "Message \(sup.state.currentModel ?? "the model")…" : "Serve a model to chat",
+                          text: $chatPrompt)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 10, design: .monospaced))
+                    .padding(8)
+                    .background(RoundedRectangle(cornerRadius: 6).fill(Color.black.opacity(0.4)))
+                    .onSubmit { sendChat() }
+                    .disabled(!serving || chatBusy)
+                Button(chatBusy ? "…" : "SEND") { sendChat() }
+                    .font(.system(size: 10, weight: .heavy, design: .monospaced))
+                    .foregroundStyle(.black)
+                    .padding(.horizontal, 12).padding(.vertical, 6)
+                    .background(Capsule().fill(serving && !chatBusy ? Color.cyan : Color.white.opacity(0.2)))
+                    .buttonStyle(.plain)
+                    .disabled(!serving || chatBusy)
+            }
+            if chatBusy {
+                Text("waiting on \(sup.state.currentModel ?? "model")…")
+                    .font(.system(size: 8, design: .monospaced)).foregroundStyle(.white.opacity(0.35))
+            }
+        }
+        .padding(12)
+        .background(RoundedRectangle(cornerRadius: 10).fill(Color.white.opacity(0.03)))
+    }
+
+    /// Subscript a JSON dictionary by key path: ["choices", 0, "message", "content"].
+    private static func jsonPath(_ obj: [String: Any]?, _ path: [Any]) -> Any? {
+        guard let obj else { return nil }
+        var cur: Any = obj
+        for step in path {
+            if let idx = step as? Int, let list = cur as? [Any], list.indices.contains(idx) {
+                cur = list[idx]
+            } else if let key = step as? String, let dict = cur as? [String: Any] {
+                cur = dict[key] ?? NSNull()
+            } else {
+                return nil
+            }
+            if cur is NSNull { return nil }
+        }
+        return cur
+    }
+
+    private func sendChat() {
+        let prompt = chatPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !prompt.isEmpty, !chatBusy else { return }
+        chatBusy = true
+        chatPrompt = ""
+        let model = sup.state.currentModel ?? backend
+        let path = backend == "splash" ? "th-splash" : "th-engine"
+        var req = URLRequest(url: URL(string: "http://127.0.0.1:11436/\(path)/v1/chat/completions")!)
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try? JSONSerialization.data(withJSONObject: [
+            "model": model,
+            "messages": [["role": "user", "content": prompt]],
+        ])
+        URLSession.shared.dataTask(with: req) { data, _, _ in
+            defer { DispatchQueue.main.async { chatBusy = false } }
+            let text = Self.jsonPath((try? JSONSerialization.jsonObject(with: data ?? Data())) as? [String: Any],
+                                     ["choices", 0, "message", "content"]) as? String
+            DispatchQueue.main.async {
+                chatReply = text ?? (data.flatMap { String(data: $0, encoding: .utf8) } ?? "no response")
+            }
+        }.resume()
     }
 
     // MARK: - Backend picker

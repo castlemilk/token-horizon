@@ -76,6 +76,36 @@ final class LocalModelCatalogTests: XCTestCase {
         XCTAssertTrue(splash.allSatisfy { $0.model.engine == "splash" })
     }
 
+    /// Throughput selects models better than fit alone: a 70B that fits but
+    /// decodes below the interactive floor ranks below a 32B that streams —
+    /// and a measured number always beats the bandwidth estimate.
+    func testReconciliation_slowModelsRankBelowInteractiveOnes() throws {
+        let big = model("Big 70B", paramsB: 70, sizeGB: 42, residentGB: 44, recommendedRAMGB: 60)
+        let mid = model("Qwen3 32B", paramsB: 32.7, sizeGB: 19.8, residentGB: 21, recommendedRAMGB: 48)
+        let bigMachine = HardwareProfile.Machine(chipName: "Apple M5 Ultra", physicalMemoryGB: 256,
+                                                 macosMajor: 26, macosMinor: 4,
+                                                 chipGeneration: 5, chipTier: .ultra)
+        // The profile is for the machine under test: an Ultra's bandwidth makes
+        // the 70B's estimate interactive, so it leads.
+        let ultra = HardwareMap(machine: .init(chip: bigMachine.chipName, memoryGB: 256, bandwidthGBs: 650),
+                                measurements: [])
+        let unmeasured = LocalModelCatalog.reconciled(models: [big, mid], machine: bigMachine, map: ultra)
+        XCTAssertEqual(unmeasured.first?.model.name, "Big 70B")
+
+        // A measured profile that says the 70B crawls flips the ranking.
+        let slow = ultra.record(HardwareMap.Measurement(modelSpec: "test/Big 70B", engine: "thengine",
+                                                        quant: "Q4_K_M", paramsB: 70, tokPerSec: 3,
+                                                        promptTokPerSec: nil, measuredAt: Date(), source: "gateway"))
+        let measured = LocalModelCatalog.reconciled(models: [big, mid], machine: bigMachine, map: slow)
+        XCTAssertEqual(measured.first?.model.name, "Qwen3 32B", "a 3 tok/s 70B is the wrong recommendation")
+        XCTAssertFalse(measured.first!.tokPerSecMeasured, "the 32B is ranked on its estimate")
+        XCTAssertTrue(measured.first!.reasons.first!.contains("estimated"))
+        let slowRow = try XCTUnwrap(measured.last)
+        XCTAssertEqual(slowRow.model.name, "Big 70B")
+        XCTAssertTrue(slowRow.tokPerSecMeasured, "the 70B's crawl is a measurement")
+        XCTAssertTrue(slowRow.reasons.first!.contains("3 tok/s"))
+    }
+
     /// Serve ceilings come from the engine's own analysis, not the model's
     /// native window: a comfortable fit gets the full context, anything
     /// tighter gets a conservative ceiling that still covers agentic loops.

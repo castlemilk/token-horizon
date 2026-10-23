@@ -125,6 +125,14 @@ final class BackendSupervisor: ObservableObject {
             if case .starting = self { return true }
             return false
         }
+        /// The model the state names, whatever the phase ("gpt-5.2-preview").
+        var currentModel: String? {
+            switch self {
+            case .starting(let model): return model
+            case .serving(let model, _, _): return model
+            case .stopped, .failed: return nil
+            }
+        }
     }
 
     @Published private(set) var state: State = .stopped
