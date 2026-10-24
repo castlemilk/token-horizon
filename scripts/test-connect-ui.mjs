@@ -8,7 +8,7 @@ const browser = await (await resolveChromium()).launch({ channel: 'chrome', head
 const google = { provider: 'google', sub: 'google-42', name: 'Aurora Builder', email: 'shared@example.com', picture: '' };
 const github = { provider: 'github', sub: '42', name: 'Orbit Builder', email: 'shared@example.com', login: 'orbit-builder', picture: '' };
 const mime = { '.js': 'text/javascript', '.css': 'text/css', '.ttf': 'font/ttf', '.svg': 'image/svg+xml' };
-async function fixture({ user = null, mode = 'authorize', exchange = 'ready', providerCallback = 'immediate', width = 1440, remembered = null, holdFirstSession = false, holdFirstConnections = false, desktopState = 'pending', desktopFailure = null, desktopExpired = false } = {}) {
+async function fixture({ user = null, mode = 'authorize', exchange = 'ready', providerCallback = 'immediate', width = 1440, remembered = null, holdFirstSession = false, holdFirstConnections = false, desktopState = 'pending', desktopFailure = null, desktopExpired = false, passwordAuth = false } = {}) {
   const context = await browser.newContext({ viewport: { width, height: 1000 }, reducedMotion: 'reduce' });
   await context.addInitScript(value => {
     if (value) localStorage.setItem('th_auth_hint', JSON.stringify(value));
@@ -33,6 +33,7 @@ async function fixture({ user = null, mode = 'authorize', exchange = 'ready', pr
     assert.equal(url.origin, origin, 'Fixture cannot contact external services');
     if (url.pathname === '/api/auth/session') { const snapshot = session(); if (++sessionReads === 1 && holdFirstSession) await sessionHeld; return json(route, snapshot); }
     if (url.pathname === '/api/auth/google') { if (exchange === 'held') await held; if (exchange === 'error') return json(route, { error: 'Identity could not be verified.' }, 401); currentUser = google; return json(route, session()); }
+    if (url.pathname === '/api/auth/password') { if (exchange === 'error') return json(route, { error: 'Sign-in was not accepted.' }, 401); currentUser = { provider:'firebase', sub:'reviewer-42', email:'review@example.com', name:'Review sample', picture:'' }; return json(route, session()); }
     if (url.pathname === '/api/auth/logout') { currentUser = null; return json(route, session()); }
     if (url.pathname === '/api/auth/github') return route.fulfill({ contentType: 'text/html', body: '<main id="github-start">Provider redirect intercepted</main>' });
     if (url.pathname === '/api/desktop/request') return desktopExpired
@@ -46,7 +47,7 @@ async function fixture({ user = null, mode = 'authorize', exchange = 'ready', pr
     if (url.pathname === '/oauth/authorize' && request.method() === 'POST') return json(route, { redirect: origin + '/fixture-return' });
     if (url.pathname === '/fixture-return') return route.fulfill({ contentType: 'text/html', body: '<main id="returned">Connected</main>' });
     if (url.pathname === '/oauth/connections') { const snapshot = { connections: [{ id: 'grant42', name: currentUser?.provider === 'github' ? 'GitHub Tool' : 'Google Tool', destination: 'localhost:8765', scope: ['account:read'] }], cursor: null, name: currentUser?.name }; if (++connectionReads === 1 && holdFirstConnections) await connectionsHeld; return json(route, snapshot); }
-    if (url.pathname === '/connect' || url.pathname === '/oauth/authorize') return route.fulfill({ contentType: 'text/html', headers: Object.fromEntries(pageHeaders()), body: connectPage({ mode, desktopId: mode === 'desktop' ? 'a'.repeat(64) : '', clientId: 'test-web-client', handle: 'browser-nonce', githubAuth: true, webSessions: true, clientName: 'Test Connector', redirect: 'localhost:4567' }) });
+    if (url.pathname === '/connect' || url.pathname === '/oauth/authorize') return route.fulfill({ contentType: 'text/html', headers: Object.fromEntries(pageHeaders()), body: connectPage({ mode, desktopId: mode === 'desktop' ? 'a'.repeat(64) : '', clientId: 'test-web-client', handle: 'browser-nonce', githubAuth: true, passwordAuth, webSessions: true, clientName: 'Test Connector', redirect: 'localhost:4567' }) });
     const file = path.resolve(root, url.pathname.slice(1));
     if (!file.startsWith(root + path.sep)) return route.fulfill({ status: 404, body: '' });
     try { return route.fulfill({ contentType: mime[path.extname(file)] || 'application/octet-stream', body: await fs.readFile(file) }); }
@@ -240,6 +241,38 @@ try {
       assert.equal(await other.evaluate(() => window.identityEvents), 0, 'The second tab must not receive a redundant hint write');
       assert.equal(f.requests.filter(request => request.path === '/api/auth/session').length, 2, 'One storage change causes only one additional verification');
       assert.equal(f.requests.filter(request => request.path === '/oauth/connections').length, 2, 'Grant reads must settle after the second verification');
+    } finally { await f.close(); }
+  }
+  console.log('Managed account sign-in: no implicit consent and no credentials in callback, storage or form data...');
+  {
+    const f = await fixture({ passwordAuth:true });
+    try {
+      await f.page.goto(origin + '/oauth/authorize');
+      await f.page.locator('#account-email').fill('review@example.com');
+      await f.page.locator('#account-password').fill('synthetic-password');
+      await f.page.locator('#account-password').press('Enter');
+      await f.page.waitForFunction(() => !document.querySelector('#allow').disabled);
+      assert.equal(await f.page.locator('#account-password').inputValue(),'');
+      assert.match(await f.page.locator('#identity').innerText(),/Token Horizon.*review@example.com/s);
+      assert.equal(f.requests.some(row => row.path === '/oauth/authorize' && row.method === 'POST'),false);
+      assert.ok(!(await f.page.evaluate(() => JSON.stringify({...localStorage}))).includes('synthetic-password'));
+      await f.page.locator('#allow').click(); await f.page.waitForSelector('#returned');
+      const approval=f.requests.find(row => row.path === '/oauth/authorize' && row.method === 'POST');
+      assert.ok(!approval.body.includes('synthetic-password')); assert.ok(!approval.body.includes('review@example.com'));
+    } finally { await f.close(); }
+  }
+  {
+    const f = await fixture({passwordAuth:true,exchange:'error'});
+    try {
+      await f.page.goto(origin + '/oauth/authorize');
+      await f.page.locator('#account-email').fill('review@example.com');
+      await f.page.locator('#account-password').fill('synthetic-wrong-password');
+      await f.page.locator('#password-signin').click();
+      await f.page.waitForFunction(() => document.querySelector('#status').textContent.includes('not accepted'));
+      assert.equal(await f.page.locator('#account-password').inputValue(),'');
+      assert(await f.page.locator('#allow').isDisabled());
+      assert(await f.page.locator('#password-signin').isEnabled());
+      assert(await f.page.locator('#github-signin').isEnabled());
     } finally { await f.close(); }
   }
   console.log('Connector browser checks passed.');

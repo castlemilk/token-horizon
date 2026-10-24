@@ -1,4 +1,5 @@
 import { boundedText } from './request-body.js';
+import { passwordConfigured, passwordIdentity, PasswordIdentityError } from './password-identity.js';
 
 // The browser remembers an opaque token; provider credentials never leave the
 // verification exchange or enter browser storage. KV records are keyed by hash.
@@ -9,13 +10,13 @@ const PRIVATE = { 'Cache-Control': 'private, no-store', 'Referrer-Policy': 'no-r
 const hex = bytes => Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('');
 const random = () => hex(crypto.getRandomValues(new Uint8Array(32)));
 const tokenValid = value => /^[a-f0-9]{64}$/.test(value || '');
-export const identityOwnerId = identity => `${identity?.provider === 'github' ? 'github' : 'google'}:${identity?.sub || ''}`;
+export const identityOwnerId = identity => `${['github', 'firebase'].includes(identity?.provider) ? identity.provider : 'google'}:${identity?.sub || ''}`;
 export function identityOwns(entry, identity, { legacyEmail = false } = {}) {
   if (!identity?.sub) return false;
-  return entry.ownerId === identityOwnerId(identity) || (legacyEmail && identity.provider !== 'github' && entry.ownerId?.startsWith('google:') && entry.googleEmail && entry.googleEmail === identity.email);
+  return entry.ownerId === identityOwnerId(identity) || (legacyEmail && (!identity.provider || identity.provider === 'google') && entry.ownerId?.startsWith('google:') && entry.googleEmail && entry.googleEmail === identity.email);
 }
 export const githubConfigured = env => Boolean(env.OAUTH_KV && env.GITHUB_CLIENT_ID && env.GITHUB_CLIENT_SECRET);
-export const sessionsConfigured = env => Boolean(env.OAUTH_KV && (env.GOOGLE_CLIENT_ID || githubConfigured(env)));
+export const sessionsConfigured = env => Boolean(env.OAUTH_KV && (env.GOOGLE_CLIENT_ID || githubConfigured(env) || passwordConfigured(env)));
 export const sameOrigin = request => request.headers.get('Origin') === new URL(request.url).origin;
 const safeMethod = request => ['GET', 'HEAD', 'OPTIONS'].includes(request.method);
 export function cookieValue(request, name) {
@@ -41,7 +42,7 @@ export async function browserSession(request, env) {
   const token = cookieValue(request, SESSION_COOKIE);
   if (!tokenValid(token)) return null;
   const session = await stored(env, `browser-session:${await hash(token)}`);
-  if (!session || !Number.isFinite(session.expiresAt) || session.expiresAt <= Date.now() || !['google', 'github'].includes(session.identity?.provider) || !session.identity?.sub) return null;
+  if (!session || !Number.isFinite(session.expiresAt) || session.expiresAt <= Date.now() || !['google', 'github', 'firebase'].includes(session.identity?.provider) || !session.identity?.sub) return null;
   return session;
 }
 export async function browserIdentity(request, env) { return (await browserSession(request, env))?.identity || null; }
@@ -109,20 +110,30 @@ export async function handleBrowserAuth(request, env, { verifyGoogleIdToken }) {
       // mutate cookies, so that older response cannot clear the new session.
       return json(result(session));
     }
-    if (['/api/auth/google', '/api/auth/logout'].includes(path) && request.method === 'POST') {
+    if (['/api/auth/google', '/api/auth/password', '/api/auth/logout'].includes(path) && request.method === 'POST') {
       if (!sameOrigin(request)) return json({ ok: false, code: 'invalid_origin', error: 'Reload this page to sign in securely.' }, 403);
       if (!env.OAUTH_KV) return json({ ok: false, code: 'auth_unavailable', error: 'Remembered sign-in is not configured.' }, 503);
       if (path === '/api/auth/logout') {
         await revokeSession(request, env);
         return json(result(null), 200, { 'Set-Cookie': cookie(SESSION_COOKIE, '', 0) });
       }
-      if (!env.GOOGLE_CLIENT_ID) return json({ ok: false, code: 'auth_unavailable', error: 'Google sign-in is not configured.' }, 503);
+      if (path === '/api/auth/google' && !env.GOOGLE_CLIENT_ID) return json({ ok: false, code: 'auth_unavailable', error: 'Google sign-in is not configured.' }, 503);
       if (!(request.headers.get('Content-Type') || '').startsWith('application/json')) return json({ ok: false, code: 'invalid_request', error: 'Send a JSON sign-in request.' }, 400);
       let body;
       try { body = JSON.parse(await boundedText(request, 16384, { timeoutMs: 8000 })); }
       catch (error) {
         if (error instanceof RangeError) throw error;
         return json({ ok: false, code: 'invalid_request', error: 'Send a valid JSON sign-in request.' }, 400);
+      }
+      if (path === '/api/auth/password') {
+        try {
+          const identity = await passwordIdentity(env, body?.email, body?.password);
+          const issued = await issueSession(request, env, identity);
+          return json(result(issued.session), 200, { 'Set-Cookie': issued.value });
+        } catch (error) {
+          const denied = error instanceof PasswordIdentityError && error.denied;
+          return json({ ok: false, code: denied ? 'invalid_credential' : 'auth_unavailable', error: denied ? 'Sign-in was not accepted. Check your account details or use another sign-in method.' : 'Account sign-in is temporarily unavailable. Try again later or use another sign-in method.' }, denied ? 401 : 503);
+        }
       }
       const identity = await verifyGoogleIdToken(body?.credential, env);
       if (!identity?.verified) return json({ ok: false, code: 'invalid_credential', error: 'Your Google sign-in expired. Try again.' }, 401);

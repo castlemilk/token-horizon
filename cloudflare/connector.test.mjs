@@ -156,11 +156,12 @@ test('Chunked oversized requests and unexpected tool fields are rejected',async(
   const preflight=await fetchW(e,'/mcp/public',{method:'OPTIONS'});assert.equal(preflight.status,204);assert.equal(preflight.headers.get('access-control-allow-origin'),'*');
 });
 
-test('Remembered Google and GitHub sessions require explicit bound consent and keep grants in separate namespaces', async () => {
-  for (const provider of ['google', 'github']) {
+test('Remembered Google, GitHub and managed sessions require explicit bound consent and keep grants in separate namespaces', async () => {
+  for (const provider of ['google', 'github', 'firebase']) {
     const e = env();
     const sub = provider === 'github' ? '42' : 'alice-sub';
     if (provider === 'github') await e.LEADERBOARD_BUCKET.put('leaderboard.json', JSON.stringify([...entries, { handle: 'github-alice', claimed: true, ownerId: 'github:42', accountEmail: 'alice@example.com', tokensAll: 20 }]));
+    if (provider === 'firebase') await e.LEADERBOARD_BUCKET.put('leaderboard.json', JSON.stringify([...entries, { handle: 'firebase-alice', claimed: true, ownerId: 'firebase:alice-sub', accountEmail: 'alice@example.com', tokensAll: 20 }]));
     let sessionCookie;
     if (provider === 'google') {
       const login = await fetchW(e, '/api/auth/google', { method: 'POST', headers: { Origin: base, 'Content-Type': 'application/json' }, body: JSON.stringify({ credential: await idToken() }) });
@@ -185,7 +186,7 @@ test('Remembered Google and GitHub sessions require explicit bound consent and k
     const exchanged = await exchange(e, client, flow, code); assert.equal(exchanged.status, 200);
     const token = (await exchanged.json()).access_token;
     const account = await (await rpc(e, 'tools/call', { name: 'get_my_account', arguments: {} }, token)).json();
-    assert.deepEqual(account.result.structuredContent.profiles.map(profile => profile.handle), [provider === 'google' ? 'alice' : 'github-alice']);
+    assert.deepEqual(account.result.structuredContent.profiles.map(profile => profile.handle), [provider === 'google' ? 'alice' : provider + '-alice']);
     const management = await fetchW(e, '/connect'), html = await management.text();
     const nonce = html.match(/data-handle="([^"]+)"/)[1], managementCookie = management.headers.get('Set-Cookie').split(';')[0];
     const listed = await fetchW(e, '/oauth/connections', { method: 'POST', headers: { Origin: base, Cookie: managementCookie + '; ' + sessionCookie, 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ handle: nonce, action: 'list' }) });

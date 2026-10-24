@@ -17,7 +17,7 @@ const publicConfig = { ok: true, googleClientId: 'test-login.apps.googleusercont
 const credential = 'test.' + Buffer.from(JSON.stringify({ ...googleUser, exp: Math.floor(Date.now() / 1000) + 3600 })).toString('base64url') + '.unsigned';
 const browser = await (await resolveChromium()).launch({ channel: 'chrome', headless: true });
 
-async function fixture({ config = 'ready', sdk = 'ready', session = 'ready', exchange = 'ready', account = 'ready', providerCallback = 'immediate', user = null, remembered = null, cachedConfig = null, entryPatch = {}, width = 1440, reducedMotion = 'no-preference' } = {}) {
+async function fixture({ config = 'ready', sdk = 'ready', session = 'ready', exchange = 'ready', account = 'ready', providerCallback = 'immediate', user = null, remembered = null, cachedConfig = null, entryPatch = {}, width = 1440, reducedMotion = 'no-preference', passwordAuth = false } = {}) {
   const context = await browser.newContext({ viewport: { width, height: 1000 }, timezoneId: 'UTC', reducedMotion });
   await context.addInitScript(({ remembered, cachedConfig }) => {
     const fetchNative = window.fetch.bind(window);
@@ -72,7 +72,7 @@ async function fixture({ config = 'ready', sdk = 'ready', session = 'ready', exc
     if (url.pathname === '/api/config') {
       if (configState === 'held') await hold('config');
       if (configState === 'error') return json(route, { ok: false, error: 'Configuration temporarily unavailable.' }, 503);
-      return json(route, publicConfig);
+      return json(route, {...publicConfig,passwordAuth});
     }
     if (url.pathname === '/api/auth/session') {
       const reader = currentUser;
@@ -86,6 +86,12 @@ async function fixture({ config = 'ready', sdk = 'ready', session = 'ready', exc
       currentUser = googleUser;
       await context.addCookies([{ name: '__Host-th-session', value: 'fixture-new-opaque-cookie', domain: 'token-horizon.dev', path: '/', secure: true, httpOnly: true, sameSite: 'Lax' }]);
       return json(route, auth());
+    }
+    if (url.pathname === '/api/auth/password') {
+      if (exchangeState === 'error') return json(route,{ok:false,error:'Sign-in was not accepted.'},401);
+      currentUser = {provider:'firebase',sub:'reviewer-42',email:'review@example.com',name:'Review sample',picture:''};
+      await context.addCookies([{ name:'__Host-th-session',value:'fixture-managed-cookie',domain:'token-horizon.dev',path:'/',secure:true,httpOnly:true,sameSite:'Lax' }]);
+      return json(route,auth());
     }
     if (url.pathname === '/api/auth/logout') {
       currentUser = null;
@@ -766,5 +772,26 @@ try {
     } finally { await f.close(); }
   }
 
+  console.log('Managed account login: verified session survives reload and rejected password can retry...');
+  {
+    const f = await fixture({passwordAuth:true,exchange:'error'});
+    try {
+      await openLogin(f.page);
+      await f.page.locator('#signin-email').fill('review@example.com');
+      await f.page.locator('#signin-password').fill('synthetic-wrong-password');
+      await f.page.locator('#account-password-signin button').click();
+      await f.page.waitForFunction(() => document.querySelector('#signin-status').textContent.includes('not accepted'));
+      assert.equal(await f.page.locator('#signin-password').inputValue(),'');
+      f.recover('exchange');
+      await f.page.locator('#signin-email').fill('review@example.com');
+      await f.page.locator('#signin-password').fill('synthetic-password');
+      await f.page.locator('#account-password-signin button').click();
+      await f.page.waitForSelector('.user-chip');
+      assert.ok(!(await f.page.evaluate(() => JSON.stringify({...localStorage}))).includes('synthetic-password'));
+      await f.page.goto(ORIGIN+'/login');
+      await f.page.waitForSelector('#login-workspace');
+      assert.match(await f.page.locator('.auth-remembered').innerText(),/Token Horizon.*review@example.com/s);
+    } finally { await f.close(); }
+  }
   console.log('Login regression passed.');
 } finally { await browser.close(); }

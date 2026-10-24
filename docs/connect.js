@@ -55,7 +55,7 @@ function storage(key, value, session = false) {
 function identityHint(value) {
   if (!value || typeof value !== 'object') return null;
   const text = (field, limit = 200) => String(field || '').slice(0, limit);
-  return { provider: value.provider === 'github' ? 'github' : 'google', sub: text(value.sub), email: text(value.email, 254), name: text(value.name), picture: /^https:\/\//.test(String(value.picture || '')) ? text(value.picture, 2048) : '', login: text(value.login, 80) };
+  return { provider: ['github', 'firebase'].includes(value.provider) ? value.provider : 'google', sub: text(value.sub), email: text(value.email, 254), name: text(value.name), picture: /^https:\/\//.test(String(value.picture || '')) ? text(value.picture, 2048) : '', login: text(value.login, 80) };
 }
 async function request(path, { method = 'GET', fields, json } = {}) {
   const abort = new AbortController();
@@ -72,7 +72,7 @@ async function request(path, { method = 'GET', fields, json } = {}) {
   finally { clearTimeout(timer); }
 }
 function accepted(data) {
-  return data?.authenticated && ['google', 'github'].includes(data.user?.provider) && typeof data.user.sub === 'string' && data.user.sub && Number(data.expiresAt) > Date.now() + 30000 ? data.user : null;
+  return data?.authenticated && ['google', 'github', 'firebase'].includes(data.user?.provider) && typeof data.user.sub === 'string' && data.user.sub && Number(data.expiresAt) > Date.now() + 30000 ? data.user : null;
 }
 function renderIdentity() {
   const host = document.querySelector('#identity'), options = document.querySelector('#auth-options');
@@ -86,6 +86,7 @@ function renderIdentity() {
     const handle = document.querySelector('#desktop-handle'); if (handle) handle.disabled = busy || !desktopReady || desktopDone;
     desktopForm.querySelector('[value="deny"]').disabled = busy || !desktopReady || desktopDone;
   }
+  for (const control of document.querySelectorAll('.password-signin input, .password-signin button')) control.disabled = busy;
   const github = document.querySelector('#github-signin'); if (github) github.disabled = busy || !githubAvailable;
   const googleHost = document.querySelector('#google-signin'); if (googleHost) { googleHost.inert = busy; googleHost.setAttribute('aria-busy', String(busy)); }
   if (!signedIn()) return;
@@ -93,7 +94,7 @@ function renderIdentity() {
   if (/^https:\/\//.test(identity?.picture || '')) { const img = document.createElement('img'); img.src = identity.picture; img.alt = ''; img.referrerPolicy = 'no-referrer'; img.onerror = () => img.remove(); photo.append(img); }
   const details = document.createElement('div'), name = document.createElement('strong'), description = document.createElement('small');
   name.textContent = identity?.name || identity?.login || identity?.email || 'Google account ready';
-  description.textContent = identity ? `${identity.provider === 'github' ? 'GitHub' : 'Google'} · ${identity.email || '@' + identity.login}` : 'Review your permissions, then connect.';
+  description.textContent = identity ? `${identity.provider === 'github' ? 'GitHub' : identity.provider === 'firebase' ? 'Token Horizon' : 'Google'} · ${identity.email || '@' + identity.login}` : 'Review your permissions, then connect.';
   details.append(name, description); host.append(photo, details);
   if (webSessions) { const change = document.createElement('button'); change.type = 'button'; change.className = 'change-account'; change.textContent = 'Use another account'; change.disabled = busy || desktopDone; change.onclick = signOut; host.append(change); }
 }
@@ -324,3 +325,30 @@ if (initial.searchParams.has('auth') || initial.searchParams.has('auth_error')) 
 if (desktop) void loadDesktopRequest();
 if (webSessions) { say(status?.textContent || 'Checking your remembered account…'); refreshSession().then(current => { if (!current || desktopDone || desktop && !desktopReady) return; if (signedIn()) say(desktop ? desktopMessage() : form ? 'Review permissions, then connect.' : 'Your connections are up to date.'); else if (status?.textContent === 'Checking your remembered account…' || desktop && desktopReady) say(desktop ? desktopMessage() : 'Choose an account to continue.'); }); }
 else { ensureGoogle(); if (!body.dataset.clientId) say('Account sign-in is unavailable on this deployment.'); }
+
+// Password fields have no form names, so consent can never forward them to the
+// assistant callback. They are cleared after the same-origin managed exchange.
+document.querySelector('#password-signin')?.addEventListener('click', async () => {
+  if (busy) return;
+  finishGoogleAttempt(); busy = true;
+  const generation = ++authGeneration;
+  const email = document.querySelector('#account-email'), password = document.querySelector('#account-password');
+  renderIdentity(); say('Verifying your account…');
+  try {
+    const data = await request('/api/auth/password', { method: 'POST', json: { email: email.value, password: password.value } });
+    const verified = accepted(data);
+    if (!verified) throw new Error('Your sign-in could not be verified. Try again.');
+    if (generation !== authGeneration) return;
+    credential = ''; setIdentity(verified, Number(data.expiresAt)); storage('th_auth_signed_out', null, true);
+    if (!form) await loadConnections();
+    say(desktop ? desktopMessage() : form ? 'Review permissions, then connect.' : 'Your connections are up to date.');
+  } catch (error) { if (generation === authGeneration) say(error.message); }
+  finally {
+    password.value = '';
+    if (generation === authGeneration) { busy = false; renderIdentity(); flushPendingRefresh(); }
+  }
+});
+
+for (const input of document.querySelectorAll('.password-signin input')) input.addEventListener('keydown', event => {
+  if (event.key === 'Enter') { event.preventDefault(); document.querySelector('#password-signin').click(); }
+});
