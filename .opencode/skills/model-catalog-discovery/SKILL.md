@@ -48,7 +48,7 @@ rm ~/.config/token-horizon/models-cache.json
 # trigger manually:
 osascript -e 'tell application "Token Horizon" to activate'
 # or via MCP/HTTP:
-curl -s http://127.0.0.1:8765/health
+curl -s http://127.0.0.1:8889/health
 ```
 
 Or dispatch from code: `ModelCatalog.shared.ensureLoaded()` is called on `refreshModelExtras`.

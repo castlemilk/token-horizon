@@ -294,7 +294,7 @@ PYEOF
   ran=1
 done
 
-[ "$ran" = "0" ] && { echo "no engines serving — start one via POST :8765/engine/serve"; rm -f "$PROMPTS_FILE" "$RESULTS_JSON"; exit 1; }
+[ "$ran" = "0" ] && { echo "no engines serving — start one via POST :8889/engine/serve"; rm -f "$PROMPTS_FILE" "$RESULTS_JSON"; exit 1; }
 
 python3 - "$OUT" "$RESULTS_JSON" "$ITERS" "$MAXTOK" <<'PYEOF'
 import json, sys, datetime, os

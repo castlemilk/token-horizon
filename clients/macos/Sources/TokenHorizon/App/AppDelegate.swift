@@ -19,18 +19,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSLog("TokenHorizon starting (build %@)", BuildInfo.display)
-        // Single instance on :8765, newest launch wins. A duplicate of our
+        // Single instance on :8889, newest launch wins. A duplicate of our
         // own build exits quietly (login item + launcher double-fire);
         // anything else is replaced so a stale binary can never shadow us.
         switch InstanceGuard.claimPort() {
         case .proceed:
             break
         case .duplicate:
-            NSLog("TokenHorizon: same build already serving :8765 — exiting quietly")
+            NSLog("TokenHorizon: same build already serving :8889 — exiting quietly")
             NSApp.terminate(nil)
             return
         case .conflict:
-            NSLog("TokenHorizon: :8765 held by another process that would not yield — exiting(1) for supervised relaunch")
+            NSLog("TokenHorizon: :8889 held by another process that would not yield — exiting(1) for supervised relaunch")
             exit(1)
         }
         // Zero-latency instant UI hydration from durable disk cache

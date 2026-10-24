@@ -88,7 +88,7 @@
     <p>Token Horizon tracks AI token usage, cost, plan limits and local model performance from provider-reported data. Use the native macOS app or the desktop dashboard for Windows and Linux. Local tracking works without a Token Horizon account; leaderboard and team sharing are optional.</p>
 
     <h2 id="overview">Overview</h2>
-    <p>On macOS, the app runs as a notch panel or menu-bar item. On Windows and Linux, it opens a desktop dashboard with its portable core included. Both expose the local HTTP API at <code>127.0.0.1:8765</code>; <code>GET /health</code> identifies the running version and build. The notch, WidgetKit extension, and native Mac integrations described later on this page belong to the macOS app.</p>
+    <p>On macOS, the app runs as a notch panel or menu-bar item. On Windows and Linux, it opens a desktop dashboard with its portable core included. Both expose the local HTTP API at <code>127.0.0.1:8889</code>; <code>GET /health</code> identifies the running version and build. The notch, WidgetKit extension, and native Mac integrations described later on this page belong to the macOS app.</p>
 
     <h2 id="install">Install</h2>
     <p><a href="../?platform=macos#install">Choose a macOS download</a>, <a href="../?platform=windows#install">Windows download</a>, or <a href="../?platform=linux#install">Linux download</a>. The download selector shows packages available for each platform. Windows and Linux installers include the core and runtime, so destination machines do not need Go, Node.js, or a separate daemon installation.</p>
@@ -150,7 +150,7 @@ sudo apt install libfuse2t64</code></pre>
   "metering": { "granted": true, "version": 1 }
 }</code></pre>
     <p>Restart the app and set your OpenAI client or SDK's base URL to <code>http://127.0.0.1:9242/v1</code>. Keep its normal provider credentials in that client. Only requests sent through the local meter are counted; other providers have separate meter ports listed at <code>GET /meters</code>. Meter traces are stored locally and can include request and response bodies; set <code>"traceCapture": false</code> in <code>settings.json</code> to disable body capture while retaining usage counts.</p>
-    <p>Opening the desktop app starts its core on <code>127.0.0.1:8765</code>, or attaches to a compatible core already there. Closing the app stops the core it started and preserves your saved history. An independently running service remains available. Local tracking needs no account; enable cloud sharing separately if you want to publish usage.</p>
+    <p>Opening the desktop app starts its core on <code>127.0.0.1:8889</code>, or attaches to a compatible core already there. Closing the app stops the core it started and preserves your saved history. An independently running service remains available. Local tracking needs no account; enable cloud sharing separately if you want to publish usage.</p>
 
     <h2 id="panel">The macOS panel</h2>
     <p>Hover the notch (or click the menu-bar rings) to open the panel. Tabs:</p>
@@ -211,7 +211,7 @@ sudo apt install libfuse2t64</code></pre>
     <p><a href="../leaderboard?view=dashboard">Workspace</a> analyzes one profile’s published token totals, model cost estimates and shared activity. Cost estimates are not provider invoices. Public previews expose only published fields; live traces, device telemetry and plan limits remain in the desktop app.</p>
 
     <h2 id="api">HTTP API</h2>
-    <p>Local daemon on <code>127.0.0.1:8765</code> (CORS enabled for the dashboard):</p>
+    <p>Local daemon on <code>127.0.0.1:8889</code> (CORS enabled for the dashboard):</p>
     <table>
       <tr><th>Endpoint</th><th>Returns</th></tr>
       <tr><td><code>GET /health</code></td><td>Serving build stamp, gateway/proxy ports.</td></tr>
@@ -284,8 +284,8 @@ th reset-cache     # clear and rebuild the durable cache</code></pre>
     <h2 id="troubleshooting">Troubleshooting</h2>
     <table>
       <tr><th>Symptom</th><th>Fix</th></tr>
-      <tr><td>Model list looks stale / commit mismatch</td><td><code>curl -s localhost:8765/health</code> and compare <code>build.commit</code> with <code>git rev-parse --short HEAD</code>. Rebuild with <code>./scripts/make-app.sh</code>.</td></tr>
-      <tr><td>API missing on :8765</td><td>Check the LaunchAgent: <code>/Applications/TokenHorizon.app/Contents/MacOS/TokenHorizon --agent-status</code>. The app never runs API-less — a bind failure exits loudly.</td></tr>
+      <tr><td>Model list looks stale / commit mismatch</td><td><code>curl -s localhost:8889/health</code> and compare <code>build.commit</code> with <code>git rev-parse --short HEAD</code>. Rebuild with <code>./scripts/make-app.sh</code>.</td></tr>
+      <tr><td>API missing on :8889</td><td>Check the LaunchAgent: <code>/Applications/TokenHorizon.app/Contents/MacOS/TokenHorizon --agent-status</code>. The app never runs API-less — a bind failure exits loudly.</td></tr>
       <tr><td><code>llm_gateway_port</code> null</td><td>Rebuild via <code>make-app.sh</code>; the gateway sidecar is bundled and health-gated at launch.</td></tr>
       <tr><td>Provider limits silently missing</td><td>Credentials expired — re-auth with the provider (opencode keys rotate, Claude reads stored tokens, Alibaba needs a fresh cookie).</td></tr>
       <tr><td>Catalog/plans stale on the web</td><td>The static export is refreshed on a schedule; run <code>task models-refresh</code> locally to regenerate <code>docs/data/models.json</code>.</td></tr>

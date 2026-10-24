@@ -1,7 +1,7 @@
 # Token Horizon shell integration — reports command activity to the statusline app.
 # Source from ~/.zshrc after starship init.
 
-typeset -g TOKEN_HORIZON_URL="${TOKEN_HORIZON_URL:-http://127.0.0.1:8765}"
+typeset -g TOKEN_HORIZON_URL="${TOKEN_HORIZON_URL:-http://127.0.0.1:8889}"
 typeset -g _TOKEN_HORIZON_T0
 
 zmodload zsh/datetime 2>/dev/null
@@ -55,7 +55,7 @@ Usage: token-horizon [command] [arguments]
   help                   Show this help without connecting
 
 API paths such as /stats or models/catalog are also accepted.
-Connects to TOKEN_HORIZON_URL (default http://127.0.0.1:8765).
+Connects to TOKEN_HORIZON_URL (default http://127.0.0.1:8889).
 HELP
         return 0
     fi

@@ -8,7 +8,7 @@
  */
 
 const DEFAULT_URLS = [
-  "http://127.0.0.1:8765/models/catalog",
+  "http://127.0.0.1:8889/models/catalog",
   "https://token-horizon.dev/api/models/catalog",
 ];
 

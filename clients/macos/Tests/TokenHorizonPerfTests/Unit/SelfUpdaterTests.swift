@@ -55,7 +55,7 @@ final class SelfUpdaterTests: XCTestCase {
         let current = developerIDSignature(team: "ABC12345DE")
         XCTAssertEqual(try SelfUpdater.validateSigningIdentity(candidate: current, current: current), "ABC12345DE")
         XCTAssertThrowsError(
-            try SelfUpdater.validateSigningIdentity(candidate: developerIDSignature(team: "XYZ98765AB"), current: current)
+            try SelfUpdater.validateSigningIdentity(candidate: developerIDSignature(team: "XYZ98889AB"), current: current)
         )
     }
 
@@ -69,7 +69,7 @@ final class SelfUpdaterTests: XCTestCase {
             "Authority=Developer ID Application: Token Horizon\nTeamIdentifier=not set\n",
             "Authority=Developer ID Application: Token Horizon\n",
             developerIDSignature(team: "malformed"),
-            signed + "TeamIdentifier=XYZ98765AB\n",
+            signed + "TeamIdentifier=XYZ98889AB\n",
             signed + "Signature=adhoc\n"
         ]
         for candidate in invalid {
@@ -79,7 +79,7 @@ final class SelfUpdaterTests: XCTestCase {
 
     func testUnrecognizedCurrentSignatureCannotBypassTeamBinding() {
         let signed = developerIDSignature(team: "ABC12345DE")
-        for current in ["", "Signature=adhoc\n", signed + "TeamIdentifier=XYZ98765AB\n"] {
+        for current in ["", "Signature=adhoc\n", signed + "TeamIdentifier=XYZ98889AB\n"] {
             XCTAssertThrowsError(try SelfUpdater.validateSigningIdentity(candidate: signed, current: current))
         }
     }

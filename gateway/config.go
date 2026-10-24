@@ -38,7 +38,7 @@ type Config struct {
 	CaptureBodies bool
 	// Best-effort POST target for Ollama telemetry samples so the Mac app's
 	// usage totals stay correct for gateway-routed local traffic. Empty
-	// disables. Default points at the app's :8765 ingest route.
+	// disables. Default points at the app's :8889 ingest route.
 	IngestURL string
 }
 
@@ -82,7 +82,7 @@ func ConfigFromEnv() Config {
 		MLXBase:       envOr("TOKEN_HORIZON_MLX_UPSTREAM", "http://127.0.0.1:8002"),
 		TraceDir:      traceDir,
 		CaptureBodies: os.Getenv("TOKEN_HORIZON_CAPTURE_BODIES") == "1",
-		IngestURL:     envOr("TOKEN_HORIZON_INGEST_URL", "http://127.0.0.1:8765/ingest/ollama"),
+		IngestURL:     envOr("TOKEN_HORIZON_INGEST_URL", "http://127.0.0.1:8889/ingest/ollama"),
 	}
 }
 

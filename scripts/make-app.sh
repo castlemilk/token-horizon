@@ -345,9 +345,9 @@ if [ -z "${SKIP_LAUNCH:-}" ] && [ -z "${SKIP_INSTALL:-}" ]; then
 "$INSTALLED/Contents/MacOS/TokenHorizon" --install-launch-agent
 
 # Health gate: the SERVING instance must report our stamp, or fail loudly.
-# A green build that isn't what's on :8765 is exactly the confusion we ended.
+# A green build that isn't what's on :8889 is exactly the confusion we ended.
 for _ in $(seq 1 30); do
-    HEALTH=$(curl -s -m 2 localhost:8765/health 2>/dev/null || true)
+    HEALTH=$(curl -s -m 2 localhost:8889/health 2>/dev/null || true)
     if printf '%s' "$HEALTH" | python3 -c '
 import json, sys
 try:
@@ -365,7 +365,7 @@ except (ValueError, AttributeError):
         # Gateway gate: the app must ship with its proxy available. The
         # supervisor needs a moment after launch to attach/spawn the sidecar.
         for _ in $(seq 1 20); do
-            GW_PORT=$(curl -s -m 2 localhost:8765/health 2>/dev/null | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('llm_gateway_port') or '')" 2>/dev/null || true)
+            GW_PORT=$(curl -s -m 2 localhost:8889/health 2>/dev/null | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('llm_gateway_port') or '')" 2>/dev/null || true)
             if [ -n "$GW_PORT" ]; then
                 echo "verified gateway sidecar on :$GW_PORT"
                 exit 0
@@ -377,7 +377,7 @@ except (ValueError, AttributeError):
     fi
     sleep 1
 done
-echo "FATAL: :8765 is not serving v${VERSION} build ${GIT_SHA} (${BUILT_AT}) after 30s. Health said:"
+echo "FATAL: :8889 is not serving v${VERSION} build ${GIT_SHA} (${BUILT_AT}) after 30s. Health said:"
 echo "$HEALTH" | head -c 600; echo
 exit 1
 fi

@@ -41,7 +41,7 @@ final class TokenHorizonTelemetry {
 
     private init() {
         let prometheus = PrometheusExporter(
-            options: PrometheusExporterOptions(url: "http://127.0.0.1:8765/metrics")
+            options: PrometheusExporterOptions(url: "http://127.0.0.1:8889/metrics")
         )
         var builder = MeterProviderSdk.builder()
             .registerView(selector: InstrumentSelectorBuilder().build(), view: View.builder().build())

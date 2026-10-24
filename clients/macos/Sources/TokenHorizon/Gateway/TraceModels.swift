@@ -2,7 +2,7 @@ import Foundation
 
 // Codable mirror of the gateway sidecar's trace JSON (gateway/trace.go).
 // The gateway owns capture and storage; these types are read models for the
-// :8765 pass-through endpoints. Fields are additive-safe: unknown keys are
+// :8889 pass-through endpoints. Fields are additive-safe: unknown keys are
 // ignored and absent keys decode as nil/zero.
 
 struct GatewayUsage: Codable, Equatable {

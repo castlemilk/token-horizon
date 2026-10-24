@@ -78,7 +78,7 @@ final class BuildIdentityTests: XCTestCase {
 
     func testHealthPayload_carriesBuildDict() {
         // Contract: /health always includes build.version/commit/built_at so
-        // operators and scripts can verify what's actually serving :8765.
+        // operators and scripts can verify what's actually serving :8889.
         let payload: [String: Any] = [
             "ok": true,
             "build": ["version": "0.2.0", "commit": "dev", "built_at": "unknown"],

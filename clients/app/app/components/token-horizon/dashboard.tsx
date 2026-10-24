@@ -16,7 +16,7 @@ export const TokenHorizonDashboard: React.FC = () => {
   const [daemonStatus, setDaemonStatus] = useState<ServiceStatus>('checking')
   const [engineStatus, setEngineStatus] = useState<ServiceStatus>('checking')
 
-  const serverUrl = 'http://127.0.0.1:8765'
+  const serverUrl = 'http://127.0.0.1:8889'
   const engineUrl = 'http://127.0.0.1:8766'
   const proxyUrl = 'http://127.0.0.1:11435'
 

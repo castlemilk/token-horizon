@@ -41,7 +41,7 @@ test('failed local responses cannot appear as a connected service', async () => 
   const originalFetch = globalThis.fetch
   globalThis.fetch = async () => new Response('{"error":"service unavailable"}', { status: 503 })
   try {
-    await assert.rejects(fetchJSON('http://127.0.0.1:8765/stats'), /503/)
+    await assert.rejects(fetchJSON('http://127.0.0.1:8889/stats'), /503/)
   } finally {
     globalThis.fetch = originalFetch
   }

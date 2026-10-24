@@ -5,9 +5,9 @@ DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 echo "=== Token Horizon Full-Stack Launcher ==="
 
-# 1. Check Native Token Horizon Core (:8765)
-if curl -s http://127.0.0.1:8765/health >/dev/null 2>&1; then
-    echo "[✓] Token Horizon native service is running on http://127.0.0.1:8765"
+# 1. Check Native Token Horizon Core (:8889)
+if curl -s http://127.0.0.1:8889/health >/dev/null 2>&1; then
+    echo "[✓] Token Horizon native service is running on http://127.0.0.1:8889"
 else
     echo "[!] Starting Token Horizon native app..."
     if [ -d "$DIR/TokenHorizon.app" ]; then

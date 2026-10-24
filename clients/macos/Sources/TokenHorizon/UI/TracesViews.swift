@@ -1,7 +1,7 @@
 import SwiftUI
 
 // TRACES tab — the local LLM observability surface. Reads gateway traces,
-// session spans, and windowed stats through :8765 (GatewayBridge → sidecar).
+// session spans, and windowed stats through :8889 (GatewayBridge → sidecar).
 // Cost estimates are enriched here from the model catalog; the gateway
 // deliberately records null cost (no pricing dependency in the proxy path).
 
@@ -554,7 +554,7 @@ private struct TraceDetailView: View {
     }
 
     private func load() async {
-        guard let url = URL(string: "http://127.0.0.1:8765/traces/\(id)") else { failed = true; return }
+        guard let url = URL(string: "http://127.0.0.1:8889/traces/\(id)") else { failed = true; return }
         do {
             let (data, _) = try await URLSession.shared.data(from: url)
             trace = try JSONDecoder().decode(GatewayTrace.self, from: data)

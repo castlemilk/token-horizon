@@ -38,7 +38,7 @@ type Status struct {
 
 func SystemdUnit(execPath string) string {
 	return `[Unit]
-Description=Token Horizon headless usage daemon (loopback API on :8765)
+Description=Token Horizon headless usage daemon (loopback API on :8889)
 After=network-online.target
 
 [Service]
@@ -56,7 +56,7 @@ func AutostartDesktop(execPath string) string {
 	return `[Desktop Entry]
 Type=Application
 Name=Token Horizon daemon
-Comment=Token Horizon headless usage daemon (loopback API on :8765)
+Comment=Token Horizon headless usage daemon (loopback API on :8889)
 Exec=` + desktopExec(execPath) + `
 Terminal=false
 X-GNOME-Autostart-enabled=true

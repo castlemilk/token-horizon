@@ -16,7 +16,7 @@ final class LocalServer {
     /// snapshot, history series, and Ollama telemetry summary to remote clients
     /// (the cross-platform shell) that can't read UIModel in-process.
     var localModelsProvider: (() -> [String: Any])?
-    private(set) var port: UInt16 = 8765
+    private(set) var port: UInt16 = 8889
 
     let onCacheReset: (() -> Void)?
 
@@ -52,7 +52,7 @@ final class LocalServer {
                                         streak: history.streak, heatmap: heatmapProvider?(28))
     }
 
-    /// Called when :8765 cannot be served (bind refused or listener dies
+    /// Called when :8889 cannot be served (bind refused or listener dies
     /// before first ready). Defaults to a loud fatal exit — a Token Horizon
     /// with no API is worse than none (stale/missing data with no signal).
     /// Injectable so tests can record instead of exiting.
@@ -60,12 +60,12 @@ final class LocalServer {
     private var bindReady = false
 
     static func fatalBindError() {
-        NSLog("TokenHorizon: FATAL — cannot serve 127.0.0.1:8765 (port held by another process?). Refusing to run API-less; exiting(1).")
+        NSLog("TokenHorizon: FATAL — cannot serve 127.0.0.1:8889 (port held by another process?). Refusing to run API-less; exiting(1).")
         exit(1)
     }
 
     /// Bind the fixed API port. No port-hopping: serving anywhere other than
-    /// :8765 while the world assumes :8765 caused side-by-side instances with
+    /// :8889 while the world assumes :8889 caused side-by-side instances with
     /// divergent data. Use `InstanceGuard.claimPort()` before calling.
     func start() {
         let params = NWParameters.tcp

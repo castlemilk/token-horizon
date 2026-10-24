@@ -32,7 +32,7 @@ struct HorizonProvider: TimelineProvider {
     }
 
     private func load(_ completion: @escaping (HorizonEntry) -> Void) {
-        guard let url = URL(string: "http://127.0.0.1:8765/widget") else {
+        guard let url = URL(string: "http://127.0.0.1:8889/widget") else {
             completion(HorizonEntry(date: Date(), snapshot: WidgetSnapshot(), offline: true))
             return
         }

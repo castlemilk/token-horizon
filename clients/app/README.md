@@ -29,7 +29,7 @@ token-horizon
 
 Use the `arm64` artifacts on ARM Linux machines. For Windows, run `TokenHorizon-0.3.12-windows-x64-setup.exe`, choose the install folder, then open **Token Horizon** from the Start menu or desktop shortcut. Installation is per user and does not require administrator access.
 
-The app starts its bundled core on `127.0.0.1:8765`. If a compatible core already serves that port, it attaches to that core. Closing the app stops only the core it started; an independently running service remains available. An unrelated listener on port 8765 produces a startup error. The dashboard connection indicator and `GET /health` expose the running core version and build stamp.
+The app starts its bundled core on `127.0.0.1:8889`. If a compatible core already serves that port, it attaches to that core. Closing the app stops only the core it started; an independently running service remains available. An unrelated listener on port 8889 produces a startup error. The dashboard connection indicator and `GET /health` expose the running core version and build stamp.
 
 The Go core keeps data in `~/.config/token-horizon/` on Linux and `%USERPROFILE%\.config\token-horizon\` on Windows. `XDG_CONFIG_HOME` changes the config parent; `TH_CONFIG_DIR` selects an explicit directory. Desktop window preferences use Electron's separate user-data directory.
 
@@ -79,7 +79,7 @@ npm run dev
 
 Development builds the daemon for the host OS and architecture, then starts Electron with hot reload. The generated executable lives in `resources/daemon/`; it is ignored by Git. `TOKEN_HORIZON_DAEMON_BIN` can point to a development core executable.
 
-For browser-only UI work, `npm run dev:web` starts Vite and `npm run build:web` emits the browser bundle. Browser mode expects a separately running core on port 8765.
+For browser-only UI work, `npm run dev:web` starts Vite and `npm run build:web` emits the browser bundle. Browser mode expects a separately running core on port 8889.
 
 ## Build installers
 
@@ -111,6 +111,6 @@ npm run smoke:desktop
 node scripts/checksums.mjs
 ```
 
-The smoke test runs on native Linux or Windows, requires port 8765 to be free, and launches the desktop executable with temporary configuration. It defaults to the unpacked build directory; pass `-- --directory` to check an installed app instead. CI installs the `.deb` with `apt` and the NSIS installer silently for the current user, then verifies the installed core build, rendered dashboard, preload bridge, API connection, and shutdown of the owned core. On a headless Linux runner use `xvfb-run -a npm run smoke:desktop -- --directory '/opt/Token Horizon'`. Generate checksums after building installers; an unpacked-only build has no installers to hash.
+The smoke test runs on native Linux or Windows, requires port 8889 to be free, and launches the desktop executable with temporary configuration. It defaults to the unpacked build directory; pass `-- --directory` to check an installed app instead. CI installs the `.deb` with `apt` and the NSIS installer silently for the current user, then verifies the installed core build, rendered dashboard, preload bridge, API connection, and shutdown of the owned core. On a headless Linux runner use `xvfb-run -a npm run smoke:desktop -- --directory '/opt/Token Horizon'`. Generate checksums after building installers; an unpacked-only build has no installers to hash.
 
 Source areas: `app/` contains the React dashboard, `lib/main/` owns desktop lifecycle and daemon supervision, `conveyor/` defines typed IPC, `scripts/` handles portable packaging and smoke tests, and `../../daemons/go/` implements the cross-platform core.

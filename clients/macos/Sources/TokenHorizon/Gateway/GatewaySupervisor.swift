@@ -14,7 +14,7 @@ private let gatewayLog = Logger(subsystem: "com.tokenhorizon.app", category: "ga
 //
 // Discovery is port-based, never assumed: the gateway walks 127.0.0.1:11436+
 // and identifies itself via GET /__token_horizon. All reads go through the
-// gateway's own API; :8765 reverse-proxies those paths (GatewayBridge) so
+// gateway's own API; :8889 reverse-proxies those paths (GatewayBridge) so
 // MCP/UI/shell clients keep one API surface.
 
 final class GatewaySupervisor {
@@ -185,7 +185,7 @@ final class GatewaySupervisor {
     }
 }
 
-// MARK: - Gateway bridge (:8765 pass-through)
+// MARK: - Gateway bridge (:8889 pass-through)
 //
 // Forwards the gateway-owned paths to the sidecar so MCP/UI/shell keep one
 // API surface. Failures degrade to 503 (gateway optional, app never blocks).

@@ -226,7 +226,7 @@ enum SelfUpdateRelaunch {
       /usr/bin/open -n "$app"
     }
     healthy() {
-      payload=$(/usr/bin/curl -fsS --max-time 1 http://127.0.0.1:8765/health 2>/dev/null) || return 1
+      payload=$(/usr/bin/curl -fsS --max-time 1 http://127.0.0.1:8889/health 2>/dev/null) || return 1
       actual_version=$(/usr/bin/printf '%s' "$payload" | /usr/bin/plutil -extract build.version raw -o - - 2>/dev/null) || return 1
       actual_commit=$(/usr/bin/printf '%s' "$payload" | /usr/bin/plutil -extract build.commit raw -o - - 2>/dev/null) || return 1
       [ "$actual_version" = "$version" ] && [ "$actual_commit" = "$commit" ]

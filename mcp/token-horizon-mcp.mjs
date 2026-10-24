@@ -6,7 +6,7 @@ import readline from "node:readline";
 import { extensionTools, extensionResources, extensionTemplates, callExtension, readExtensionResource } from "./extensions.mjs";
 import { fetchCatalog, searchCatalog, planList } from "./catalog.mjs";
 
-const BASE = process.env.NOTCHMON_URL || "http://127.0.0.1:8765";
+const BASE = process.env.NOTCHMON_URL || "http://127.0.0.1:8889";
 const ENGINE_BASE = process.env.TOKEN_HORIZON_ENGINE_URL || "http://127.0.0.1:8766";
 const DB = `${homedir()}/.local/share/opencode/opencode.db`;
 
@@ -575,7 +575,7 @@ async function callTool(name, args) {
               note: "Override with TOKEN_HORIZON_<PROVIDER>_UPSTREAM before launching Token Horizon (useful for mocks and LiteLLM-style gateways).",
             },
             attribution: "Traces carry client (harness classified from User-Agent/originator: claude-code, codex, kimi-cli, opencode, gemini-cli, …), sessionKey (session_id / x-session-id headers, or body-derived conversation keys), providerRequestId (upstream request-id), and source=proxy.",
-            trace_correlation: "Every relayed response carries an x-token-horizon-trace-id header; join client-side logs to GET /traces/<id> on :8765.",
+            trace_correlation: "Every relayed response carries an x-token-horizon-trace-id header; join client-side logs to GET /traces/<id> on :8889.",
             storage_bounds: "Bodies capped at 256KB per side per trace, 30 day-files, 256MB total under ~/.config/token-horizon/traces/. Cloud traces do not feed usage totals (file parsers already count that traffic); Ollama traces also feed local tok/s telemetry.",
           },
           configurations: {},
@@ -718,11 +718,11 @@ async function callTool(name, args) {
 
         guide.observability = {
           ui_tracking: "Tracked tokens/second appear live in Token Horizon's MODELS and MLX/Ollama tabs.",
-          prometheus_exporter: "http://127.0.0.1:8765/metrics",
-          stats_api: "http://127.0.0.1:8765/stats",
-          traces_api: "http://127.0.0.1:8765/traces?provider=&model=&client=&session=&errors=1&limit= (list, bodies omitted) and http://127.0.0.1:8765/traces/<id> (full trace)",
-          sessions_api: "http://127.0.0.1:8765/traces/sessions?hours=24&limit=50 (conversation spans grouped by session key)",
-          proxy_stats_api: "http://127.0.0.1:8765/proxy/stats?provider=openai&hours=24 (TTFT/duration p50/p95, tok/s, cache-hit, tool-call, retry, error-class, per-provider/model/client cuts)",
+          prometheus_exporter: "http://127.0.0.1:8889/metrics",
+          stats_api: "http://127.0.0.1:8889/stats",
+          traces_api: "http://127.0.0.1:8889/traces?provider=&model=&client=&session=&errors=1&limit= (list, bodies omitted) and http://127.0.0.1:8889/traces/<id> (full trace)",
+          sessions_api: "http://127.0.0.1:8889/traces/sessions?hours=24&limit=50 (conversation spans grouped by session key)",
+          proxy_stats_api: "http://127.0.0.1:8889/proxy/stats?provider=openai&hours=24 (TTFT/duration p50/p95, tok/s, cache-hit, tool-call, retry, error-class, per-provider/model/client cuts)",
           mcp_tool: "token_horizon_traces (list/get/stats/sessions)",
           gateway_metrics: "token_horizon_gateway_requests_total, token_horizon_gateway_completed_total{status}, token_horizon_gateway_ttft_seconds, token_horizon_gateway_duration_seconds, token_horizon_gateway_output_tokens_total",
         };
@@ -981,8 +981,8 @@ async function callTool(name, args) {
     if (name === "token_horizon_limits") {
       throw new Error(`limits need the Token Horizon app running at ${BASE} (${err.message})`);
     }
-    if (name === "token_horizon_system") throw new Error("system stats require the Token Horizon app running (http://127.0.0.1:8765)");
-    if (name === "token_horizon_history") throw new Error("history requires the Token Horizon app running (http://127.0.0.1:8765)");
+    if (name === "token_horizon_system") throw new Error("system stats require the Token Horizon app running (http://127.0.0.1:8889)");
+    if (name === "token_horizon_history") throw new Error("history requires the Token Horizon app running (http://127.0.0.1:8889)");
     if (!existsSync(DB)) throw new Error(`${name} needs the Token Horizon app running at ${BASE} (${err.message})`);
     if (name === "token_horizon_usage") return usageFallback();
     if (name === "token_horizon_sessions") return sessionsFallback(Math.min(args?.limit ?? 10, 25));

@@ -92,7 +92,7 @@ def api_port():
     global _api_port
     if _api_port:
         return _api_port
-    for port in range(8765, 8785):
+    for port in range(8889, 8785):
         try:
             with urllib.request.urlopen(
                     "http://127.0.0.1:%d/health" % port, timeout=1) as resp:

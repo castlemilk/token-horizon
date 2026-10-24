@@ -2,7 +2,7 @@ import { spawn, type ChildProcess } from 'node:child_process'
 import { get } from 'node:http'
 import { join, resolve } from 'node:path'
 
-export const DAEMON_URL = 'http://127.0.0.1:8765'
+export const DAEMON_URL = 'http://127.0.0.1:8889'
 
 export interface DaemonHealth {
   ok: true
@@ -63,7 +63,7 @@ export class DaemonSupervisor {
     if (this.stopping) throw new Error('Desktop startup was cancelled.')
     if (existing) return existing
 
-    this.child = spawn(this.options.executable, this.options.args ?? ['--port', '8765', '--desktop'], {
+    this.child = spawn(this.options.executable, this.options.args ?? ['--port', '8889', '--desktop'], {
       env: this.options.env ?? process.env,
       windowsHide: true,
       shell: false,
@@ -137,10 +137,10 @@ export class DaemonSupervisor {
             // An unrelated service or incomplete response must never be adopted.
           }
           if (response.statusCode === 200 && isDaemonHealth(health)) resolve(health)
-          else reject(new Error('Port 8765 is occupied by a service that is not a healthy Token Horizon core.'))
+          else reject(new Error('Port 8889 is occupied by a service that is not a healthy Token Horizon core.'))
         })
       })
-      request.setTimeout(1000, () => request.destroy(new Error('The local core health check timed out on port 8765.')))
+      request.setTimeout(1000, () => request.destroy(new Error('The local core health check timed out on port 8889.')))
       request.on('error', (error: NodeJS.ErrnoException) => {
         if (error.code === 'ECONNREFUSED') resolve(null)
         else reject(error)

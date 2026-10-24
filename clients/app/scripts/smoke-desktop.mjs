@@ -25,12 +25,12 @@ const executable =
   platform === 'darwin'
     ? join(directory, 'Token Horizon.app/Contents/MacOS/token-horizon')
     : join(directory, `token-horizon${platform === 'win32' ? '.exe' : ''}`)
-const healthUrl = 'http://127.0.0.1:8765/health'
+const healthUrl = 'http://127.0.0.1:8889/health'
 try {
   await fetch(healthUrl, { signal: AbortSignal.timeout(1000) })
-  throw new Error('The smoke test requires port 8765 to be unused; an existing local core is running')
+  throw new Error('The smoke test requires port 8889 to be unused; an existing local core is running')
 } catch (error) {
-  if (error.message.includes('requires port 8765')) throw error
+  if (error.message.includes('requires port 8889')) throw error
 }
 
 const portReservation = createServer()

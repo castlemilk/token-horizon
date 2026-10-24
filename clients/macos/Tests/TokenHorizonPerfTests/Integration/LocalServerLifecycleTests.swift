@@ -2,13 +2,13 @@ import XCTest
 @testable import TokenHorizon
 
 /// Live lifecycle test for LocalServer over real loopback. Tolerant by
-/// design: if the desktop app holds :8765 (normal on dev machines) the bind
+/// design: if the desktop app holds :8889 (normal on dev machines) the bind
 /// fails and the test takes the graceful-report path; if the port is free
 /// (CI) it round-trips real HTTP through accept/receive/handle, covering
 /// the connection path end to end. Either outcome passes; only a hang,
 /// crash, or exit fails.
 ///
-/// NOTE: when this test binds :8765 itself it holds the port until the test
+/// NOTE: when this test binds :8889 itself it holds the port until the test
 /// process exits. On dev machines the app normally holds it, so the test
 /// takes the failure path and interferes with nothing.
 final class LocalServerLifecycleTests: XCTestCase {
@@ -47,7 +47,7 @@ final class LocalServerLifecycleTests: XCTestCase {
     }
 
     private func getHealth() -> [String: Any]? {
-        guard let url = URL(string: "http://127.0.0.1:8765/health") else { return nil }
+        guard let url = URL(string: "http://127.0.0.1:8889/health") else { return nil }
         var out: [String: Any]?
         let sema = DispatchSemaphore(value: 0)
         URLSession.shared.dataTask(with: url) { data, resp, _ in

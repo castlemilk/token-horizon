@@ -13,10 +13,10 @@ if [ ! -d "$APP/node_modules" ] || [ "package.json" -nt "$APP/node_modules/.pack
 fi
 
 # Warn (don't block) when the daemon isn't up — the UI renders offline states.
-if curl -s http://127.0.0.1:8765/health >/dev/null 2>&1; then
-    echo "[✓] Token Horizon daemon on :8765"
+if curl -s http://127.0.0.1:8889/health >/dev/null 2>&1; then
+    echo "[✓] Token Horizon daemon on :8889"
 else
-    echo "[!] daemon not detected on :8765 — run scripts/start-all.sh for the full stack"
+    echo "[!] daemon not detected on :8889 — run scripts/start-all.sh for the full stack"
 fi
 
 # electron's postinstall ships the binary; npm --ignore-scripts leaves it missing.

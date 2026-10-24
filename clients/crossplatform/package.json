@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "main": "electron/main.cjs",
-  "description": "Cross-platform port of the Token Horizon macOS dashboard — React web app over the :8765 daemon API",
+  "description": "Cross-platform port of the Token Horizon macOS dashboard — React web app over the :8889 daemon API",
   "scripts": {
     "dev": "vite dev",
     "build": "vite build",

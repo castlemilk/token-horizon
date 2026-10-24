@@ -45,7 +45,7 @@ async function fixture({ user = null, mode = 'authorize', exchange = 'ready', pr
     }
     if (url.pathname === '/oauth/authorize' && request.method() === 'POST') return json(route, { redirect: origin + '/fixture-return' });
     if (url.pathname === '/fixture-return') return route.fulfill({ contentType: 'text/html', body: '<main id="returned">Connected</main>' });
-    if (url.pathname === '/oauth/connections') { const snapshot = { connections: [{ id: 'grant42', name: currentUser?.provider === 'github' ? 'GitHub Tool' : 'Google Tool', destination: 'localhost:8765', scope: ['account:read'] }], cursor: null, name: currentUser?.name }; if (++connectionReads === 1 && holdFirstConnections) await connectionsHeld; return json(route, snapshot); }
+    if (url.pathname === '/oauth/connections') { const snapshot = { connections: [{ id: 'grant42', name: currentUser?.provider === 'github' ? 'GitHub Tool' : 'Google Tool', destination: 'localhost:8889', scope: ['account:read'] }], cursor: null, name: currentUser?.name }; if (++connectionReads === 1 && holdFirstConnections) await connectionsHeld; return json(route, snapshot); }
     if (url.pathname === '/connect' || url.pathname === '/oauth/authorize') return route.fulfill({ contentType: 'text/html', headers: Object.fromEntries(pageHeaders()), body: connectPage({ mode, desktopId: mode === 'desktop' ? 'a'.repeat(64) : '', clientId: 'test-web-client', handle: 'browser-nonce', githubAuth: true, webSessions: true, clientName: 'Test Connector', redirect: 'localhost:4567' }) });
     const file = path.resolve(root, url.pathname.slice(1));
     if (!file.startsWith(root + path.sep)) return route.fulfill({ status: 404, body: '' });

@@ -8,7 +8,7 @@ import { spawnSync } from 'node:child_process';
 // Exercise the exact production shell control flow, with launch/process/HTTP
 // outcomes and sleeps simulated. Real plutil parses fixture health responses;
 // real mv/rm operate behind guards that restrict them to owned temporary files.
-// This does not launch an app, contact :8765, signal a process, or use launchd.
+// This does not launch an app, contact :8889, signal a process, or use launchd.
 const source = readFileSync(new URL('../clients/macos/Sources/TokenHorizon/App/SelfUpdatePlan.swift', import.meta.url), 'utf8');
 const literal = source.match(/    static let script = #"""\n([\s\S]*?)\n    """#/);
 assert.ok(literal, 'The exact SelfUpdateRelaunch raw shell literal must remain testable');
@@ -36,7 +36,7 @@ case "$command" in
     ;;
   curl)
     [ "$#" = 4 ] && [ "$1" = -fsS ] && [ "$2" = --max-time ] && [ "$3" = 1 ] &&
-      [ "$4" = http://127.0.0.1:8765/health ] || unexpected
+      [ "$4" = http://127.0.0.1:8889/health ] || unexpected
     /bin/cat "$TH_WATCHDOG_HEALTH"
     ;;
   open)

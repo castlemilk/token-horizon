@@ -152,7 +152,7 @@ test('Catalog comparison, plan-only price exclusion, bounded inputs and private 
 test('Chunked oversized requests and unexpected tool fields are rejected',async()=>{
   const e=env();
   const large=await fetchW(e,'/mcp/public',{method:'POST',headers:{'Content-Type':'application/json',Accept:'application/json, text/event-stream'},body:'x'.repeat(32769)});assert.equal(large.status,413);
-  const invalid=await (await rpc(e,'tools/call',{name:'get_user_profile',arguments:{handle:'alice',url:'http://127.0.0.1:8765'}},null,'/mcp/public')).json();assert.equal(invalid.result.isError,true);
+  const invalid=await (await rpc(e,'tools/call',{name:'get_user_profile',arguments:{handle:'alice',url:'http://127.0.0.1:8889'}},null,'/mcp/public')).json();assert.equal(invalid.result.isError,true);
   const preflight=await fetchW(e,'/mcp/public',{method:'OPTIONS'});assert.equal(preflight.status,204);assert.equal(preflight.headers.get('access-control-allow-origin'),'*');
 });
 

@@ -1,7 +1,7 @@
 # Token Horizon — developer entry points.
 #
 # `./scripts/make-app.sh` remains the ONLY supported launcher (it stamps
-# THGitSHA/THBuiltAt, syncs /Applications, health-gates :8765). This Makefile
+# THGitSHA/THBuiltAt, syncs /Applications, health-gates :8889). This Makefile
 # is for fast inner-loop checks: lint, tests (incl. TSan, the `go test -race`
 # analogue), and plain builds. It never launches the app.
 

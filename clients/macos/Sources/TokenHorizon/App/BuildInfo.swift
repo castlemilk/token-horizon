@@ -50,12 +50,12 @@ enum BuildInfo {
 ///
 /// History of confusion this prevents: `LocalServer` used to hop to
 /// 8766–8784 when :8765 was taken, so two instances could run side by side —
-/// the user looked at one while agents queried the other. Now :8765 is fixed
+/// the user looked at one while agents queried the other. Now :8889 is fixed
 /// and newest launch wins: a duplicate of the same build exits quietly, a
 /// different build takes over, and a bind that still fails is fatal (never a
 /// silent dead server).
 enum InstanceGuard {
-    static let port: UInt16 = 8765
+    static let port: UInt16 = 8889
 
     enum Decision: Equatable {
         case proceed   // port free (or holder gone)
@@ -71,7 +71,7 @@ enum InstanceGuard {
 
     enum ClaimResult { case proceed, duplicate, conflict }
 
-    /// Claim :8765 for this process. Blocking (short timeouts); call off-main
+    /// Claim :8889 for this process. Blocking (short timeouts); call off-main
     /// when possible. Never returns with another live holder on the port.
     static func claimPort() -> ClaimResult {
         if let health = probeHolder(timeout: 1.0) {
@@ -79,7 +79,7 @@ enum InstanceGuard {
             case .duplicate:
                 return .duplicate
             case .takeover:
-                NSLog("TokenHorizon: taking over :8765 from build %@ (newest launch wins)",
+                NSLog("TokenHorizon: taking over :8889 from build %@ (newest launch wins)",
                       holderBuild(health) ?? "?")
                 terminateOthers()
                 return waitForPortFree(timeout: 3.0) ? .proceed : .conflict

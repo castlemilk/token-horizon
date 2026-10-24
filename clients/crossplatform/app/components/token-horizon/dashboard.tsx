@@ -11,7 +11,7 @@ import { LeaderboardTab } from './leaderboard-tab'
 import { SettingsTab } from './settings-tab'
 
 /** Cross-platform port of the macOS Token Horizon dashboard — the seven
- * SwiftUI tabs reimplemented over the :8765 daemon API. */
+ * SwiftUI tabs reimplemented over the :8889 daemon API. */
 export const TokenHorizonDashboard: React.FC = () => {
   const [activeTab, setActiveTab] = useState<string>('activity')
   const { data: stats } = usePoll('stats', api.stats, 2000)

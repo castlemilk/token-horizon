@@ -479,7 +479,7 @@ func (a *apiServer) mux() *http.ServeMux {
 }
 
 // listen binds exactly the configured loopback port. Desktop clients share
-// :8765; falling back to another port creates divergent stores and hides a
+// :8889; falling back to another port creates divergent stores and hides a
 // conflicting process from the desktop supervisor.
 func listen(preferred int) (net.Listener, int, error) {
 	ln, err := net.Listen("tcp", "127.0.0.1:"+strconv.Itoa(preferred))

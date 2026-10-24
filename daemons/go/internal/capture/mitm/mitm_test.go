@@ -37,8 +37,8 @@ func TestAddonScoping(t *testing.T) {
 	if !strings.Contains(src, "data.ignore_connection = True") {
 		t.Error("non-vendor SNI must pass through undecrypted")
 	}
-	if !strings.Contains(src, `for port in range(8765, 8785)`) {
-		t.Error("loopback API discovery over 8765..8784")
+	if !strings.Contains(src, `for port in range(8889, 8785)`) {
+		t.Error("loopback API discovery over 8889..8784")
 	}
 }
 

@@ -10,7 +10,7 @@ import (
 // API serves the gateway's read surface on its own loopback port:
 // /traces, /traces/<id>, /proxy/stats, /proxy/config, /traces/clear,
 // /__token_horizon, /metrics. The Mac app reverse-proxies these under
-// :8765 so clients keep one API surface.
+// :8889 so clients keep one API surface.
 type API struct {
 	cfg         Config
 	store       *Store

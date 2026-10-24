@@ -6649,7 +6649,7 @@ function openPublishModal() {
   backdrop.innerHTML = `<div class="modal" style="max-width:520px">
     <div class="modal-head"><div><h2>Publish from this machine</h2><p>Push your local Token Horizon daemon entry to the global leaderboard.</p></div><button class="x" data-close aria-label="Close dialog">×</button></div>
     <div class="modal-body">
-      <div class="notice">Requires the Token Horizon app running at <code>127.0.0.1:8765</code>. The daemon entry is published under your handle.</div>
+      <div class="notice">Requires the Token Horizon app running at <code>127.0.0.1:8889</code>. The daemon entry is published under your handle.</div>
       <div style="display:flex;flex-direction:column;gap:10px;margin-top:14px">
         <input id="publish-handle" placeholder="Handle" value="${esc(state.googleSession?.name?.toLowerCase().replace(/\s+/g, "") || "")}" style="background:var(--panel);border:1px solid var(--line);border-radius:9px;padding:10px 12px;color:var(--text)"/>
         <input id="publish-token" placeholder="Claim token (only for anonymous profiles)" style="background:var(--panel);border:1px solid var(--line);border-radius:9px;padding:10px 12px;color:var(--text)"/>
@@ -6664,7 +6664,7 @@ function openPublishModal() {
     const status = $("#publish-status");
     status.textContent = "Reading local daemon…";
     try {
-      const local = await fetch("http://127.0.0.1:8765/leaderboard").then(r => r.json());
+      const local = await fetch("http://127.0.0.1:8889/leaderboard").then(r => r.json());
       const entry = local.userRank?.entry || (local.leaderboard || []).find(r => r.entry?.isLocal)?.entry;
       if (!entry) throw new Error("No local entry found — is the app running?");
       const handle = $("#publish-handle").value.trim() || entry.handle;

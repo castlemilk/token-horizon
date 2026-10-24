@@ -9,7 +9,7 @@
 #   3. Clears the quarantine flag (preview builds carry an ad-hoc signature).
 #   4. Enables crash auto-recovery via the app's own launch agent.
 #   5. Wires the `th` shell helper into ~/.zshrc (idempotent).
-#   6. Launches the app and verifies :8765 serves the installed build.
+#   6. Launches the app and verifies :8889 serves the installed build.
 #
 # Env overrides (mostly for testing):
 #   VERSION=x.y.z       pin a release (with or without leading v)
@@ -252,18 +252,18 @@ if [ -z "${TH_NO_LAUNCH:-}" ]; then
         sleep 1
     fi
     open -a "${INSTALL_DIR}/${APP_NAME}" 2>/dev/null || "$INSTALLED_BIN" >/dev/null 2>&1 &
-    spin_start "waiting for :8765…"
+    spin_start "waiting for :8889…"
     for _ in $(seq 1 30); do
-        HEALTH_JSON=$(curl -s -m 2 localhost:8765/health 2>/dev/null || true)
+        HEALTH_JSON=$(curl -s -m 2 localhost:8889/health 2>/dev/null || true)
         echo "$HEALTH_JSON" | grep -q '"ok":true' && break
         sleep 1
     done
     spin_stop
     echo "$HEALTH_JSON" | grep -q '"ok":true' \
-        || fail ":8765 never came up — check $HOME/Library/Logs/TokenHorizon.log"
+        || fail ":8889 never came up — check $HOME/Library/Logs/TokenHorizon.log"
     SERVING_COMMIT=$(echo "$HEALTH_JSON" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('build',{}).get('commit','?'))" 2>/dev/null || true)
-    ok "api up on :8765 (${SERVING_COMMIT:-?})"
-    # Upgrade sanity: if an old instance survived, :8765 still reports the
+    ok "api up on :8889 (${SERVING_COMMIT:-?})"
+    # Upgrade sanity: if an old instance survived, :8889 still reports the
     # previous build's stamp — flag it instead of silently "succeeding".
     if [ -n "$INSTALLED_VER" ] && [ -n "$SERVING_COMMIT" ] \
         && [ "$SERVING_COMMIT" != "$INSTALLED_VER" ]; then
@@ -276,7 +276,7 @@ if [ -z "${TH_NO_LAUNCH:-}" ]; then
         spin_start "gateway sidecar attaching…"
         sleep 10
         spin_stop
-        GW_PORT=$(curl -s -m 2 localhost:8765/health 2>/dev/null | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('llm_gateway_port') or '')" 2>/dev/null || true)
+        GW_PORT=$(curl -s -m 2 localhost:8889/health 2>/dev/null | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('llm_gateway_port') or '')" 2>/dev/null || true)
     fi
     [ -n "$GW_PORT" ] && ok "gateway sidecar on :$GW_PORT" \
         || fail "gateway sidecar unavailable (llm_gateway_port null) — check $HOME/Library/Logs/token-horizon-gateway.log"
@@ -291,9 +291,9 @@ printf '%s│%s   %s🛰  TOKEN HORIZON v%s%s %s— installed in %ss%s\n' "$DIM"
 printf '%s│%s\n' "$DIM" "$RESET"
 printf '%s│%s   %s✓%s app       %s\n' "$DIM" "$RESET" "$GREEN" "$RESET" "${INSTALL_DIR/#$HOME/~}/${APP_NAME}  ·  v${APP_VER:-?}"
 if [ -n "$GW_PORT" ]; then
-    printf '%s│%s   %s✓%s api       %s\n' "$DIM" "$RESET" "$GREEN" "$RESET" "http://127.0.0.1:8765   ·   http://127.0.0.1:${GW_PORT} (gateway)"
+    printf '%s│%s   %s✓%s api       %s\n' "$DIM" "$RESET" "$GREEN" "$RESET" "http://127.0.0.1:8889   ·   http://127.0.0.1:${GW_PORT} (gateway)"
 else
-    printf '%s│%s   %s✓%s api       %s\n' "$DIM" "$RESET" "$GREEN" "$RESET" "http://127.0.0.1:8765"
+    printf '%s│%s   %s✓%s api       %s\n' "$DIM" "$RESET" "$GREEN" "$RESET" "http://127.0.0.1:8889"
 fi
 printf '%s│%s   %s✓%s helpers   %s\n' "$DIM" "$RESET" "$GREEN" "$RESET" "~/.config/token-horizon (th CLI · MCP server)"
 printf '%s│%s\n' "$DIM" "$RESET"

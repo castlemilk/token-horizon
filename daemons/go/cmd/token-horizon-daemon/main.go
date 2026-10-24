@@ -35,7 +35,7 @@ func main() {
 }
 
 func run() error {
-	port := flag.Int("port", 8765, "loopback API port (fails if occupied)")
+	port := flag.Int("port", 8889, "loopback API port (fails if occupied)")
 	desktop := flag.Bool("desktop", false, "exit when the owning desktop app closes stdin")
 	flag.Parse()
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

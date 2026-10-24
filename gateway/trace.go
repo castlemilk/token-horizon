@@ -22,7 +22,7 @@ import (
 	"time"
 )
 
-// Trace JSON schema. Field names are frozen: the Mac app's :8765 API
+// Trace JSON schema. Field names are frozen: the Mac app's :8889 API
 // reverse-proxies this gateway's read endpoints byte-for-byte, and older
 // day files on disk must keep decoding.
 type Provider string

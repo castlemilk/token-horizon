@@ -56,7 +56,7 @@ build instead.
 | `TOKEN_HORIZON_OPENCODE_UPSTREAM` | `https://opencode.ai/zen` | OpenCode Zen (OpenAI + Anthropic shapes) |
 | `TOKEN_HORIZON_CAPTURE_BODIES` | `0` | Set exactly `1` to opt into local prompt/response storage; existing files are not rewritten |
 | `TOKEN_HORIZON_TRACE_DIR` | `~/.config/token-horizon/traces` | JSONL day-file directory |
-| `TOKEN_HORIZON_INGEST_URL` | `http://127.0.0.1:8765/ingest/ollama` | Best-effort Ollama sample POST to the app (empty disables) |
+| `TOKEN_HORIZON_INGEST_URL` | `http://127.0.0.1:8889/ingest/ollama` | Best-effort Ollama sample POST to the app (empty disables) |
 | `TOKEN_HORIZON_GATEWAY_BIN` | — | App-side only: sidecar binary override |
 
 ## Providers

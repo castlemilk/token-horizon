@@ -6,7 +6,7 @@
 import { fetchCatalog, searchCatalog, planList } from "../catalog.mjs";
 
 export const DEFAULT_API_BASE = "https://token-horizon.dev";
-export const DEFAULT_DAEMON_BASE = "http://127.0.0.1:8765";
+export const DEFAULT_DAEMON_BASE = "http://127.0.0.1:8889";
 
 function getApiBase() {
   return (process.env.TOKEN_HORIZON_API_BASE || DEFAULT_API_BASE).replace(/\/+$/, "");
@@ -199,7 +199,7 @@ export async function runGetDaemonMetrics() {
       online: false,
       daemonBase,
       error: err.message,
-      text: `⚠️ **Token Horizon Local Daemon is OFFLINE** (${daemonBase})\nError: ${err.message}\nEnsure the Token Horizon macOS app or daemon is running on port 8765.`
+      text: `⚠️ **Token Horizon Local Daemon is OFFLINE** (${daemonBase})\nError: ${err.message}\nEnsure the Token Horizon macOS app or daemon is running on port 8889.`
     };
   }
 }

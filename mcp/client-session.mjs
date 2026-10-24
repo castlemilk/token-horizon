@@ -20,7 +20,7 @@ async function runSession() {
     env: {
       ...process.env,
       TOKEN_HORIZON_API_BASE: "https://token-horizon.dev",
-      TOKEN_HORIZON_DAEMON_BASE: "http://127.0.0.1:8765"
+      TOKEN_HORIZON_DAEMON_BASE: "http://127.0.0.1:8889"
     }
   });
 

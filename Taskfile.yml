@@ -16,7 +16,7 @@
 version: "3"
 
 vars:
-  PORT: 8765
+  PORT: 8889
 
 tasks:
   default:
@@ -151,7 +151,7 @@ tasks:
       - node scripts/bench-leaderboard.mjs
 
   smoke:
-    desc: Live validation vs the running app — stamp identity, endpoints, MCP (needs :8765 up)
+    desc: Live validation vs the running app — stamp identity, endpoints, MCP (needs :8889 up)
     cmds:
       - |
         PORT="{{.PORT}}"; fail=0

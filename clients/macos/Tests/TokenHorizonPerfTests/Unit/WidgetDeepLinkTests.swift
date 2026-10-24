@@ -19,7 +19,7 @@ final class WidgetDeepLinkTests: XCTestCase {
         }
         for raw in ["https://sync", "tokenhorizon://unknown", "tokenhorizon://sync/nested",
                     "tokenhorizon://signin?token=private", "tokenhorizon://sync#ignored",
-                    "tokenhorizon://user:password@sync", "tokenhorizon://sync:8765"] {
+                    "tokenhorizon://user:password@sync", "tokenhorizon://sync:8889"] {
             XCTAssertNil(WidgetDeepLink.action(from: URL(string: raw)!))
         }
     }

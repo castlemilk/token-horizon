@@ -2,7 +2,7 @@ import XCTest
 @testable import TokenHorizon
 
 // Decode coverage for the gateway's trace/observability payloads. Field
-// names are frozen on the wire (the :8765 API passes them through
+// names are frozen on the wire (the :8889 API passes them through
 // byte-for-byte), so these pin the contract both directions: new fields
 // decode, and older sidecars lacking them still parse.
 final class GatewayTraceTests: XCTestCase {

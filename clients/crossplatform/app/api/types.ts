@@ -1,4 +1,4 @@
-/** Payload contracts for the Token Horizon daemon API (:8765). Field names
+/** Payload contracts for the Token Horizon daemon API (:8889). Field names
  * mirror the Swift Codable DTOs in clients/macos/Sources/TokenHorizon. */
 
 export interface SystemStats {

@@ -32,7 +32,7 @@ Choose your shortcuts in **More → Customize tabs…** or **Settings → Naviga
 **3. Confirm it's tracking you:**
 
 ```bash
-curl -s localhost:8765/health | python3 -m json.tool   # must report this checkout's commit
+curl -s localhost:8889/health | python3 -m json.tool   # must report this checkout's commit
 th /stats     # usage + system snapshot in your terminal
 th /limits    # remaining quota on every provider plan
 ```
@@ -97,9 +97,9 @@ What it stores beyond harness conversation logs: harness logs record what the ha
 - Traces: `GET /traces?provider=openai&model=gpt-5&limit=25` (bodies omitted), `GET /traces/<id>` (full bodies), `POST /traces/clear`
 - Stats: `GET /proxy/stats?provider=anthropic&hours=24` (TTFT, tok/s, cache-hit, tool-call, retry, error rates per model)
 - Config: `GET /proxy/config` (ports, upstream hosts, storage bounds — never secrets)
-- Metrics: `token_horizon_gateway_requests_total`, `token_horizon_gateway_completed_total{status}`, `token_horizon_gateway_ttft_seconds`, `token_horizon_gateway_duration_seconds`, `token_horizon_gateway_output_tokens_total` on the gateway's own `/metrics` (the sidecar owns its instruments; `:8765/metrics` keeps Ollama/MLX/engine series)
+- Metrics: `token_horizon_gateway_requests_total`, `token_horizon_gateway_completed_total{status}`, `token_horizon_gateway_ttft_seconds`, `token_horizon_gateway_duration_seconds`, `token_horizon_gateway_output_tokens_total` on the gateway's own `/metrics` (the sidecar owns its instruments; `:8889/metrics` keeps Ollama/MLX/engine series)
 
-Privacy and bounds: full request/response bodies stay in `~/.config/token-horizon/traces/` on this machine only (256KB per side per trace, 30 day-files, 256MB total, oldest pruned first). Auth headers pass through upstream and are never stored; traces are never published to the leaderboard, sheets, or cloud. Upstreams default to `https://api.openai.com` / `https://api.anthropic.com` plus the Ollama upstream; override with `TOKEN_HORIZON_OPENAI_UPSTREAM` / `TOKEN_HORIZON_ANTHROPIC_UPSTREAM` / `TOKEN_HORIZON_OLLAMA_UPSTREAM` (handy for mocks), and set `TOKEN_HORIZON_LLM_PROXY_PORT` to move the listener. Redirects are never followed with client credentials attached. The `:8765` endpoints above are reverse-proxied from the sidecar by the app (`GatewayBridge`, degrading to 503 when the sidecar is down); cost estimates are intentionally absent from traces — pricing lives with the model catalog, not the proxy. See `gateway/README.md` for the sidecar contract, standalone use, and its Go test suite.
+Privacy and bounds: full request/response bodies stay in `~/.config/token-horizon/traces/` on this machine only (256KB per side per trace, 30 day-files, 256MB total, oldest pruned first). Auth headers pass through upstream and are never stored; traces are never published to the leaderboard, sheets, or cloud. Upstreams default to `https://api.openai.com` / `https://api.anthropic.com` plus the Ollama upstream; override with `TOKEN_HORIZON_OPENAI_UPSTREAM` / `TOKEN_HORIZON_ANTHROPIC_UPSTREAM` / `TOKEN_HORIZON_OLLAMA_UPSTREAM` (handy for mocks), and set `TOKEN_HORIZON_LLM_PROXY_PORT` to move the listener. Redirects are never followed with client credentials attached. The `:8889` endpoints above are reverse-proxied from the sidecar by the app (`GatewayBridge`, degrading to 503 when the sidecar is down); cost estimates are intentionally absent from traces — pricing lives with the model catalog, not the proxy. See `gateway/README.md` for the sidecar contract, standalone use, and its Go test suite.
 
 History is intentionally an in-memory rolling window:
 
@@ -110,9 +110,9 @@ History is intentionally an in-memory rolling window:
 
 ### Metrics
 
-`GET http://127.0.0.1:8765/metrics` serves Prometheus text from the OpenTelemetry meter. Ollama request/completion counters, token counters, generation duration, tok/s, gateway request/completion/TTFT/duration/token counters (per provider/endpoint, model labels capped with the shared 32-value set), and current MLX resource gauges are included. Model labels are normalized and capped at 32 distinct values; additional models use `model="other"`.
+`GET http://127.0.0.1:8889/metrics` serves Prometheus text from the OpenTelemetry meter. Ollama request/completion counters, token counters, generation duration, tok/s, gateway request/completion/TTFT/duration/token counters (per provider/endpoint, model labels capped with the shared 32-value set), and current MLX resource gauges are included. Model labels are normalized and capped at 32 distinct values; additional models use `model="other"`.
 
-`GET http://127.0.0.1:8765/health` includes `ollama_proxy_port` and `llm_gateway_port`, allowing clients to discover the selected relay ports when the defaults are occupied.
+`GET http://127.0.0.1:8889/health` includes `ollama_proxy_port` and `llm_gateway_port`, allowing clients to discover the selected relay ports when the defaults are occupied.
 
 OTLP/HTTP metrics export is disabled by default. Set `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` to an explicit metrics endpoint, or set `OTEL_EXPORTER_OTLP_ENDPOINT` to a base endpoint (Token Horizon appends `/v1/metrics`). The export interval is 60 seconds. Prometheus remains local and does not require an external collector.
 
@@ -143,7 +143,7 @@ The local script uses an ad-hoc signature for development; published releases ar
 - Settings: `~/.config/token-horizon/settings.json` (0600) — alibaba cookie lives here
 - Shell hook: `shell/token-horizon.zsh` (sourced from `~/.zshrc`) — posts cwd/duration/exit per command; `th` CLI (`th /stats`, `th /limits`, …)
 
-## HTTP API (127.0.0.1:8765)
+## HTTP API (127.0.0.1:8889)
 
 | Endpoint | Returns |
 |---|---|
@@ -230,7 +230,7 @@ Deploy a private or team leaderboard edge API and web dashboard in seconds:
 5. **Google sign-in (optional, recommended for public deployments)**:
    Users sign in with Google to claim profiles, manage sharing, and publish to a claimed handle. The worker verifies the GSI ID token (RS256 against Google's JWKS) — unsigned tokens are rejected once a client ID is configured.
    1. Google Cloud Console → **APIs & Services → Credentials → Create credentials → OAuth client ID → Web application**.
-   2. **Authorized JavaScript origins**: `https://token-horizon.dev` (add `http://localhost:8765` for local testing).
+   2. **Authorized JavaScript origins**: `https://token-horizon.dev` (add `http://localhost:8889` for local testing).
    3. Put the client ID (a public value) in `cloudflare/wrangler.toml`:
       ```toml
       [vars]

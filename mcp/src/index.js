@@ -75,7 +75,7 @@ const TOOL_DEFINITIONS = [
   },
   {
     name: "get_daemon_metrics",
-    description: "Fetch live LLM metrics directly from the local macOS Token Horizon daemon (127.0.0.1:8765): current session tokens, costs, model catalog, and hardware telemetry.",
+    description: "Fetch live LLM metrics directly from the local macOS Token Horizon daemon (127.0.0.1:8889): current session tokens, costs, model catalog, and hardware telemetry.",
     inputSchema: {
       type: "object",
       properties: {}
@@ -89,7 +89,7 @@ const TOOL_DEFINITIONS = [
       properties: {
         from_daemon: {
           type: "boolean",
-          description: "If true (default), pulls live telemetry from the local daemon at 127.0.0.1:8765."
+          description: "If true (default), pulls live telemetry from the local daemon at 127.0.0.1:8889."
         },
         entry: {
           type: "object",

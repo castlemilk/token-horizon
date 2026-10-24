@@ -1,7 +1,7 @@
 import Foundation
 
 // TraceStore fronts the gateway's observability API for the dashboard.
-// The sidecar owns capture/storage; the app reads through :8765 (LocalServer
+// The sidecar owns capture/storage; the app reads through :8889 (LocalServer
 // reverse-proxies gateway routes via GatewayBridge). Polling only runs while
 // the TRACES tab is visible — loopback GETs are cheap but there's no reason
 // to burn them on a hidden tab.
@@ -20,7 +20,7 @@ final class TraceStore: ObservableObject {
     private var inFlight = false
     var windowHours = 24
 
-    private let base = "http://127.0.0.1:8765"
+    private let base = "http://127.0.0.1:8889"
 
     func startPolling() {
         refresh()
