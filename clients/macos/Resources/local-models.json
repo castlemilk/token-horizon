@@ -357,7 +357,7 @@
       "paramsB": 4.0,
       "quant": "MLX 4-bit",
       "file": null,
-      "contextK": 262144,
+      "contextK": 32768,
       "minRAMGB": 6,
       "recommendedRAMGB": 12,
       "license": "apache-2.0",
@@ -485,6 +485,48 @@
       "tokenizer": null,
       "sizeGB": 39.7,
       "residentGB": 41.3,
+      "capabilities": [
+        "tools"
+      ]
+    },
+    {
+      "id": "kernelpool/Kimi-K3-2bit-UVMAX",
+      "name": "Kimi K3 \u00b7 2bit UVMAX",
+      "engine": "mlx",
+      "family": "mlx",
+      "paramsB": 55.0,
+      "quant": "MLX 2-bit",
+      "file": null,
+      "contextK": 131072,
+      "minRAMGB": 16,
+      "recommendedRAMGB": 32,
+      "license": "moonshotai",
+      "tokenizer": null,
+      "params_est": true,
+      "sizeEst": true,
+      "sizeGB": 14.0,
+      "residentGB": 15.6,
+      "capabilities": [
+        "tools"
+      ]
+    },
+    {
+      "id": "catalystsec/Kimi-K3-Audit-451E-MLX-MXFP4",
+      "name": "Kimi K3 \u00b7 MXFP4",
+      "engine": "mlx",
+      "family": "mlx",
+      "paramsB": 55.0,
+      "quant": "MLX MXFP4",
+      "file": null,
+      "contextK": 131072,
+      "minRAMGB": 16,
+      "recommendedRAMGB": 32,
+      "license": "moonshotai",
+      "tokenizer": null,
+      "params_est": true,
+      "sizeEst": true,
+      "sizeGB": 18.0,
+      "residentGB": 19.6,
       "capabilities": [
         "tools"
       ]

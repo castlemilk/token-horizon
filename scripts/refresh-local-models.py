@@ -28,12 +28,15 @@ are excluded; the single-file Q4_K_M builds are the ones listed.
 Usage:
   scripts/refresh-local-models.py            # fetch sizes + write the resource
   scripts/refresh-local-models.py --check    # report only
+  scripts/refresh-local-models.py --discover # + merge hub-discovered rows
 """
 
 import argparse
 import json
 import os
+import re
 import sys
+import time
 import urllib.request
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -133,7 +136,7 @@ MODELS = [
     # ── MLX · mlx-lm roster (any mlx-community checkpoint runs) ─────────────
     dict(id="mlx-community/Qwen3-4B-Instruct-2507-4bit", name="Qwen3 4B Instruct 2507",
          engine="mlx", family="qwen3", paramsB=4.0, quant="MLX 4-bit", file=None,
-         contextK=262144, caps=["tools", "thinking"], minRAMGB=6, recommendedRAMGB=12,
+         contextK=32768, caps=["tools", "thinking"], minRAMGB=6, recommendedRAMGB=12,
          license="apache-2.0", tokenizer=None, size="weights"),
     dict(id="mlx-community/Qwen3-8B-4bit", name="Qwen3 8B", engine="mlx", family="qwen3",
          paramsB=8.2, quant="MLX 4-bit", file=None, contextK=32768,
@@ -159,11 +162,154 @@ MODELS = [
          family="llama", paramsB=70.6, quant="MLX 4-bit", file=None, contextK=131072,
          caps=["tools"], minRAMGB=48, recommendedRAMGB=96, license="llama3.3",
          tokenizer=None, size="weights"),
+
+    # ── MLX · just-released Kimi checkpoints (mlx-format, quantized) ───────
+    # Kimi K3 (the current K-series flagship) publishes mlx-format quants via
+    # third-party packs; these are the ones mlx-lm can actually load.
+    dict(id="kernelpool/Kimi-K3-2bit-UVMAX", name="Kimi K3 · 2bit UVMAX", engine="mlx",
+         family="mlx", paramsB=55.0, quant="MLX 2-bit", file=None, contextK=131072,
+         caps=["tools"], minRAMGB=16, recommendedRAMGB=32, license="moonshotai",
+         tokenizer=None, size="weights", params_est=True, sizeEst=True, sizeGB=14.0),
+    dict(id="catalystsec/Kimi-K3-Audit-451E-MLX-MXFP4", name="Kimi K3 · MXFP4", engine="mlx",
+         family="mlx", paramsB=55.0, quant="MLX MXFP4", file=None, contextK=131072,
+         caps=["tools"], minRAMGB=16, recommendedRAMGB=32, license="moonshotai",
+         tokenizer=None, size="weights", params_est=True, sizeEst=True, sizeGB=18.0),
 ]
 
 # Runtime overhead above the weights, per engine: the process, the graph/arena
 # and the allocator slack. KV cache is charged separately at serve time.
 OVERHEAD_GB = {"thengine": 1.2, "splash": 1.2, "mlx": 1.6}
+
+# ── Auto-discovery ─────────────────────────────────────────────────────────
+# Engines that serve arbitrary checkpoints get their additions from the Hugging
+# Face hub instead of only the hand-curated list, so a newly released model that
+# publishes a quantized checkpoint appears in the catalogue without a curation
+# edit. Engines with restricted loaders stay curated-only:
+#
+#   (engine, author, quant substring) — discovery source
+#
+#   mlx  ← mlx-community                 (mlx-lm serves any mlx-format repo)
+#
+DISCOVERY_SOURCES = [
+    ("mlx", "mlx-community", "4bit"),
+]
+
+DISCOVERY_QUANT_RE = re.compile(r"(?:4bit|4-bit|MXFP4|MXFP8|fp4|fp8|2bit|2-bit|8bit|8-bit)", re.IGNORECASE)
+DISCOVERY_MODALITY_TOKENS = ("image", "vl", "vlm", "audio", "speech", "whisper", "embed",
+                             "diffusion", "tts", "asr", "video", "3d")
+DISCOVERY_MAX_ROWS = 25
+
+
+def _hf_get(path: str, timeout: int = 60, retries: int = 6) -> dict:
+    """GET a Hugging Face endpoint, retrying with backoff on rate-limit."""
+    url = HF + path
+    last: Exception | None = None
+    for attempt in range(retries):
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "token-horizon-catalog"})
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                return json.load(r)
+        except Exception as e:
+            last = e
+            time.sleep(min(2 ** attempt, 8))
+    raise last
+
+
+def _params_estimate(cfg: dict, top: dict) -> float:
+    """Best-effort parameter estimate from a checkpoint config.
+
+    Dense layers cost ≈ 4H² + H·I each (QKV + attention + FFN); expert layers add
+    experts·(eI·2). New quantized checkpoints rarely publish totals, so the
+    estimate marks the row rather than guessing benchmarks — it drives ranking
+    and RAM fit only.
+    """
+    if not cfg:
+        return 0.0
+    H = float(cfg.get("hidden_size") or 0)
+    L = float(cfg.get("num_hidden_layers") or 0)
+    I = float(cfg.get("intermediate_size") or 0)
+    experts = float(cfg.get("num_experts") or top.get("num_experts") or 0)
+    eI = float(cfg.get("expert_intermediate_size") or top.get("expert_intermediate_size") or I)
+    if H <= 0 or L <= 0:
+        return 0.0
+    dense = L * (4.0 * H * H + H * I)
+    expert = experts * (eI * 2.0) if experts > 0 else 0.0
+    embed = float(cfg.get("vocab_size") or 0) * H / 1e9
+    return round((dense + expert + embed) / 1e9, 1)
+
+
+def discover(engine: str, author: str, quant: str, limit: int = 200) -> list[dict]:
+    """Find newly-published quantized checkpoints for an engine that serves
+    arbitrary checkpoints, best (most downloaded) first. Returns catalogue
+    row dicts ready to merge into the curated list."""
+    rows: list[dict] = []
+    offset = 0
+    seen: set[str] = set()
+    while True:
+        try:
+            page = _hf_get(f"?author={author}&limit={limit}&offset={offset}&full=true")
+        except Exception:
+            break
+        items = page.get("models") if isinstance(page, dict) else page
+        items = items or []
+        if not items:
+            break
+        for m in items:
+            repo = m.get("id") or ""
+            if repo in seen:
+                continue
+            seen.add(repo)
+            if not DISCOVERY_QUANT_RE.search(repo):
+                continue
+            if any(t in repo.lower() for t in DISCOVERY_MODALITY_TOKENS):
+                continue
+            if (m.get("library_name") or "") != "mlx":
+                continue
+            doc = _hf_get(f"{repo}?blobs=true")
+            size = size_of(doc, None, "weights")
+            if not size:
+                continue
+            try:
+                cfg = _hf_get(f"{repo}/raw/main/config.json")
+            except Exception:
+                cfg = {}
+            tc = cfg.get("text_config") or cfg or {}
+            paramsB = _params_estimate(cfg, tc)
+            if paramsB <= 0:
+                continue
+            ctx = int(tc.get("max_position_embeddings") or tc.get("n_ctx") or 32768)
+            rows.append({
+                "id": repo,
+                "name": repo.split("/")[-1],
+                "engine": engine,
+                "family": "mlx",
+                "paramsB": paramsB,
+                "quant": quant,
+                "file": None,
+                "contextK": ctx,
+                "capabilities": ["tools"],
+                "minRAMGB": 0,
+                "recommendedRAMGB": max(8, int(round((size + OVERHEAD_GB.get(engine, 1.2)) * 1.5))),
+                "license": "apache-2.0",
+                "tokenizer": None,
+                "sizeGB": size,
+                "residentGB": round(size + OVERHEAD_GB.get(engine, 1.2), 1),
+                "size": "weights",
+                "discovered": True,
+            })
+        offset += limit
+        if len(items) < limit:
+            break
+    # Most-downloaded first, so the merge keeps the strongest additions.
+    with_downloads = []
+    for r in rows:
+        try:
+            dl = _hf_get(f"{r['id']}").get("downloads") or 0
+        except Exception:
+            dl = 0
+        with_downloads.append((dl, r))
+    with_downloads.sort(key=lambda t: -t[0])
+    return [r for _, r in with_downloads[:DISCOVERY_MAX_ROWS]]
 
 
 def fetch(repo: str) -> dict:
@@ -201,6 +347,7 @@ def size_of(doc: dict, filename: str | None, mode: str) -> float | None:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--check", action="store_true")
+    ap.add_argument("--discover", action="store_true")
     args = ap.parse_args()
 
     cache: dict[str, dict] = {}
@@ -215,11 +362,32 @@ def main() -> int:
             print(f"  ! {repo}: no size for {m.get('file') or mode} — skipped")
             continue
         entry = {k: v for k, v in m.items() if k != "size"}
-        entry["sizeGB"] = size
-        entry["residentGB"] = round(size + OVERHEAD_GB.get(m["engine"], 1.2), 1)
+        effective = m.get("sizeGB") or size
+        entry["sizeGB"] = effective
+        entry["residentGB"] = round(effective + OVERHEAD_GB.get(m["engine"], 1.2), 1)
         entry["capabilities"] = entry.pop("caps")
         out.append(entry)
-        print(f"  {entry['engine']:<8} {m['name']:<28} {size:>6.1f} GB  {m['quant']:<9} {repo}")
+        print(f"  {entry['engine']:<8} {m['name']:<28} {effective:>6.1f} GB  {m['quant']:<9} {repo}")
+
+    if args.discover:
+        curated_ids = {m["id"] for m in MODELS}
+        for engine, author, quant in DISCOVERY_SOURCES:
+            print(f"  discovering {engine} candidates from {author} ({quant}) …")
+            discovered = discover(engine, author, quant)
+            added = 0
+            for d in discovered:
+                if d["id"] in curated_ids:
+                    continue
+                curated_ids.add(d["id"])
+                entry = dict(d)
+                entry.pop("size", None)
+                entry["sizeGB"] = d["sizeGB"]
+                entry["residentGB"] = d["residentGB"]
+                entry["capabilities"] = entry.pop("capabilities") if "capabilities" in entry else ["tools"]
+                out.append(entry)
+                added += 1
+                print(f"  + {entry['engine']:<8} {entry['name']:<28} {d['sizeGB']:>6.1f} GB  {d['quant']:<9} {d['id']}")
+            print(f"  discovered {len(discovered)} candidates, added {added}")
 
     if args.check:
         return 0
