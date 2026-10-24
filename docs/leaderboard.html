@@ -780,7 +780,7 @@ const state = {
   signInPending: null,
   groupDraft: { name: "", members: [] },
   googleSession: getGoogleSession(),
-  authHint: getAuthHint(), authStatus: "idle", authBusy: false, authError: "", webSessions: false, githubAuth: false,
+  authHint: getAuthHint(), authStatus: "idle", authBusy: false, authError: "", webSessions: false, githubAuth: false, passwordAuth: false,
   googleClientId: "",
   googleConfig: "loading",
   googleReady: false,
@@ -1583,7 +1583,7 @@ function authStorage(key, value, session = false) {
 }
 function authHint(user) {
   if (!user || typeof user !== "object") return null;
-  const provider = user.provider === "github" ? "github" : "google";
+  const provider = ["github", "firebase"].includes(user.provider) ? user.provider : "google";
   const text = (v, max = 200) => String(v || "").slice(0, max);
   const picture = /^https:\/\//.test(String(user.picture || "")) ? text(user.picture, 2048) : "";
   return { provider, sub: text(user.sub), email: text(user.email, 254), name: text(user.name), picture, login: text(user.login, 80) };
@@ -1662,7 +1662,7 @@ function decodeJwtPayload(jwt) {
 let authIdentityRevision = 0;
 let authGeneration = 0, authSessionFlight = null, authSessionController = null, authSessionReadRevision = 0, authSessionCheckedAt = 0;
 function acceptedSession(data) {
-  if (!data?.authenticated || !data.user?.sub || !["google", "github"].includes(data.user.provider) || !(Number(data.expiresAt) > Date.now() + 30_000)) return null;
+  if (!data?.authenticated || !data.user?.sub || !["google", "github", "firebase"].includes(data.user.provider) || !(Number(data.expiresAt) > Date.now() + 30_000)) return null;
   return { ...authHint(data.user), ownerId: data.user.ownerId || `${data.user.provider}:${data.user.sub}`, serverSession: true, expiresAt: Number(data.expiresAt) };
 }
 async function hydrateAuthSession({ force = false } = {}) {
@@ -1713,6 +1713,25 @@ async function exchangeGoogleCredential(credential, { resume = true } = {}) {
   } finally {
     if (generation === authGeneration) { state.authBusy = false; renderAuthSlot(); mountSignInOptions(); if (state.view === "login") updateLoginIdentity(); }
   }
+}
+async function signInWithPassword(event) {
+  event.preventDefault();
+  if (state.authBusy) return;
+  const email = $("#signin-email").value, field = $("#signin-password");
+  const password = field.value; field.value = "";
+  finishGoogleButtonSignIn();
+  const generation = ++authGeneration;
+  state.authBusy = true; state.authError = ""; mountSignInOptions();
+  try {
+    const data = await api("/api/auth/password", { auth: true, method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email, password }), cache: "no-store", timeoutMs: 10_000 });
+    if (generation !== authGeneration) return;
+    const session = acceptedSession(data);
+    if (!session) throw new Error("Sign-in could not be verified. Try again.");
+    state.authStatus = "ready"; authSessionCheckedAt = Date.now();
+    authStorage("th_auth_signed_out", null, true); setGoogleSession(session);
+    toast("Signed in as " + (session.name || session.email)); completeSignIn();
+  } catch (error) { if (generation === authGeneration) state.authError = error.message || "Sign-in could not be verified. Try again."; }
+  finally { if (generation === authGeneration) { state.authBusy = false; renderAuthSlot(); mountSignInOptions(); if (state.view === "login") updateLoginIdentity(); } }
 }
 function handleGoogleCredential(response) {
   finishGoogleButtonSignIn();
@@ -1799,7 +1818,7 @@ const GITHUB_G = '<svg width="20" height="20" viewBox="0 0 24 24" fill="currentC
 let authConfigFlight;
 function applyAuthConfig(cfg) {
   if (typeof cfg?.googleClientId !== "string") throw new Error("Invalid sign-in configuration.");
-  state.googleClientId = cfg.googleClientId; state.githubAuth = cfg.githubAuth === true; state.webSessions = cfg.webSessions === true; state.googleConfig = "ready";
+  state.googleClientId = cfg.googleClientId; state.githubAuth = cfg.githubAuth === true; state.passwordAuth = cfg.passwordAuth === true; state.webSessions = cfg.webSessions === true; state.googleConfig = "ready";
 }
 function loadAuthConfig({ force = false } = {}) {
   if (authConfigFlight) return authConfigFlight;
@@ -1812,7 +1831,7 @@ function loadAuthConfig({ force = false } = {}) {
   authConfigFlight = (async () => {
     try {
       const cfg = await api("/api/config", force ? { cache: "reload" } : {});
-      applyAuthConfig(cfg); authStorage("th_auth_config", { savedAt: Date.now(), config: { googleClientId: cfg.googleClientId, githubAuth: cfg.githubAuth === true, webSessions: cfg.webSessions === true } });
+      applyAuthConfig(cfg); authStorage("th_auth_config", { savedAt: Date.now(), config: { googleClientId: cfg.googleClientId, githubAuth: cfg.githubAuth === true, passwordAuth: cfg.passwordAuth === true, webSessions: cfg.webSessions === true } });
       initGoogleSignIn(); await hydrateAuthSession();
     } catch (_) { state.googleConfig = "error"; }
     finally {
@@ -6265,7 +6284,7 @@ function updateLoginIdentity() {
   const page = $("#login-page"); if (!page) return;
   const pane = $(".signin-pane", page), session = isGoogleSessionValid() ? state.googleSession : null;
   if (session) {
-    pane.innerHTML = `<div class="auth-success"><div class="auth-form-brand">${AUTH_MARK}<span>Token Horizon</span></div><span class="auth-success-check" aria-hidden="true">✓</span><h1 id="signin-title">You're signed in.</h1><p>Welcome back, ${esc(session.name || session.login || session.email)}.</p><div class="auth-remembered">${avatar(session.name || session.email, session.picture, 44)}<div><strong>${esc(session.name || session.login || session.email)}</strong><small>${session.provider === "github" ? "GitHub" : "Google"} · ${esc(session.email || "@" + session.login)}</small></div></div><button class="auth-primary" id="login-workspace">Open workspace</button><button class="auth-text-link" id="login-switch">Use another account</button><p class="auth-privacy">Your local data stays local.</p></div>`;
+    pane.innerHTML = `<div class="auth-success"><div class="auth-form-brand">${AUTH_MARK}<span>Token Horizon</span></div><span class="auth-success-check" aria-hidden="true">✓</span><h1 id="signin-title">You're signed in.</h1><p>Welcome back, ${esc(session.name || session.login || session.email)}.</p><div class="auth-remembered">${avatar(session.name || session.email, session.picture, 44)}<div><strong>${esc(session.name || session.login || session.email)}</strong><small>${session.provider === "github" ? "GitHub" : session.provider === "firebase" ? "Token Horizon" : "Google"} · ${esc(session.email || "@" + session.login)}</small></div></div><button class="auth-primary" id="login-workspace">Open workspace</button><button class="auth-text-link" id="login-switch">Use another account</button><p class="auth-privacy">Your local data stays local.</p></div>`;
     $("#login-workspace").onclick = () => navigate("dashboard"); $("#login-switch").onclick = () => signOut({ switchAccount: true });
   } else if (!$("#signin-gsi", pane)) { pane.outerHTML = authPane({ page: true }); mountSignInOptions(); }
 }
@@ -6301,10 +6320,11 @@ function mountSignInOptions() {
   const github = `<button class="auth-provider auth-github" id="signin-github" ${state.githubAuth ? "" : "disabled"}>${GITHUB_G}<span>Continue with GitHub</span></button>${state.githubAuth ? "" : '<small class="auth-provider-note">GitHub sign-in is being configured.</small>'}`;
   const googleHost = state.googleReady ? '<div id="signin-gsi-btn"></div>' : state.googleClientId ? `<button class="auth-provider" id="signin-retry" ${state.googleUnavailable ? "" : "disabled"}>${GOOGLE_G}<span>${state.googleUnavailable ? "Retry Google sign-in" : "Loading Google sign-in…"}</span></button>` : legacyGoogleAuthAllowed() ? '<button class="auth-provider" id="signin-dev">Continue (dev mode)</button>' : '<p class="auth-provider-note">Google sign-in is unavailable.</p>';
   const width = Math.max(200, Math.min(400, Math.floor(host.getBoundingClientRect().width || 320)));
-  const key = JSON.stringify([state.googleReady, googleInitializedFor, state.githubAuth, state.googleClientId, state.googleUnavailable, width]);
+  const key = JSON.stringify([state.googleReady, googleInitializedFor, state.githubAuth, state.passwordAuth, state.googleClientId, state.googleUnavailable, width]);
   if (host.dataset.authProviders !== key) {
-    host.innerHTML = `${googleHost}${github}`; host.dataset.authProviders = key;
+    host.innerHTML = `${state.passwordAuth ? '<form id="account-password-signin" class="auth-password"><label for="signin-email">Email</label><input id="signin-email" type="email" autocomplete="username" maxlength="320" required><label for="signin-password">Password</label><input id="signin-password" type="password" autocomplete="current-password" maxlength="1024" required><button class="auth-provider" type="submit">Sign in with email</button></form>' : ''}${googleHost}${github}`; host.dataset.authProviders = key;
     $("#signin-github")?.addEventListener("click", startGithubSignIn);
+    $("#account-password-signin")?.addEventListener("submit", signInWithPassword);
     $("#signin-dev")?.addEventListener("click", promptGoogleLogin);
     $("#signin-retry")?.addEventListener("click", reloadGoogleSDK);
     const container = $("#signin-gsi-btn");

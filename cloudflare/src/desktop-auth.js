@@ -10,7 +10,7 @@ const hex = bytes => Array.from(bytes, byte => byte.toString(16).padStart(2, '0'
 const random = () => hex(crypto.getRandomValues(new Uint8Array(32)));
 const validId = value => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
 const validGrant = value => typeof value === 'string' && /^thd_[a-f0-9]{64}$/.test(value);
-const validIdentity = identity => ['google', 'github'].includes(identity?.provider) && typeof identity.sub === 'string' && Boolean(identity.sub);
+const validIdentity = identity => ['google', 'github', 'firebase'].includes(identity?.provider) && typeof identity.sub === 'string' && Boolean(identity.sub);
 const digest = async value => new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value)));
 const hash = async value => hex(await digest(value));
 const challengeFor = async value => btoa(String.fromCharCode(...await digest(value))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');

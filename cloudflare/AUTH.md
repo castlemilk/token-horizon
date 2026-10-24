@@ -89,3 +89,32 @@ inputs are bounded, with a bounded per-isolate abuse limiter or the optional
 Run `node --test cloudflare/desktop-auth.test.mjs` for native consent, PKCE,
 ownership, scope, cancellation, expiry, concurrent exchange, stale KV reads,
 immediate revocation, and bounded cleanup checks.
+
+## Managed email/password accounts
+
+The normal website and native MCP consent also support verified email/password
+accounts in this service's Firebase project. Enable Firebase email/password
+sign-in and configure `FIREBASE_API_KEY` as a Worker secret through the normal
+secret workflow. Leave it unset to hide this option without affecting Google
+or GitHub. This is not an administrator or reviewer bypass. Accounts must be
+created through the identity provider; this endpoint never registers users or
+resets credentials.
+
+`POST /api/auth/password` requires an exact same-origin JSON request and bounded
+credentials. It checks the managed password and authoritative account lookup,
+requiring a matching immutable subject, enabled account and verified email. A
+pending MFA challenge cannot produce a session. Provider abuse limits apply;
+configuration errors, throttling and outages return a safe temporary failure.
+Passwords and Firebase ID/refresh tokens are never saved in session KV, browser
+storage, logs, MCP schemas or results. The browser receives the same rotated
+HttpOnly account session used by the other sign-in methods.
+
+Managed owners use `firebase:<uid>`. A matching Google/GitHub email never links
+or transfers an existing profile. Sample reviewer accounts must own isolated
+synthetic profiles and must have no production memberships. Supply credentials
+only through secure review fields. Native client consent, read/manage scope
+selection and PKCE remain required after signing in.
+
+Run `node --test cloudflare/password-identity.test.mjs` with the existing browser,
+connector and desktop contract suites. Provider failure and ownership boundaries
+are hermetic; live account sign-in and native consent require separate evidence.
