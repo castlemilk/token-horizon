@@ -23,7 +23,7 @@ export const publicTools = [
   tool('search_models', 'Search the app-exported model catalog, including prices, benchmarks, context and plans.', { query: str, provider: str, plan: str, scope: { enum: ['all', 'cloud', 'local', 'free', 'benchmarked', 'plan', 'unknown_price'] }, sort: { enum: ['featured', 'value', 'swe', 'lcb', 'context', 'input', 'output', 'blended', 'name'] }, unified: { type: 'boolean' }, limit }),
   tool('compare_models', 'Inspect or compare 1–4 exact catalog model IDs, including their provider listings.', { ids: { type: 'array', items: str, minItems: 1, maxItems: 4, uniqueItems: true } }, ['ids']),
   tool('get_cheapest_models', 'Lowest published input prices per model family, derived from the catalog listing spread. USD per million tokens; unknown and plan-only prices excluded.', { query: str, provider: str, limit }),
-  tool('get_plans', 'Curated provider subscription plans, tiers and included models from the same catalog as the Plans view.', { provider: str, plan: str, include_models: { type: 'boolean' }, limit })
+  tool('get_plans', 'Curated provider subscription plans, tiers and included models from the same catalog as the Plans view.', { provider: str, plan: str, include_models: { type: 'boolean' }, limit: { ...limit, description: 'Maximum covered models per plan when include_models is true (default 50). Does not limit the number of plans returned.' } })
 ];
 export const privateTools = [
   tool('get_my_account', 'List profiles claimed by your signed-in account, or read a profile’s published analytics and private sharing settings. Requires account:read.', { handle }),
