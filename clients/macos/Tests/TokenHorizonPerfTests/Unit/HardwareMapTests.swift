@@ -57,6 +57,22 @@ final class HardwareMapTests: XCTestCase {
         XCTAssertEqual(map.estimateTokPerSec(paramsB: 0.6, quant: "Q8_0", downloadGB: 0.6), 250)
     }
 
+    /// A mixture of experts streams only its active weights per token: Flint
+    /// INT4 (39.8B total, 2.5B active, 22.6 GB) moves ~1.42 GB per token, not
+    /// the whole pack, so pricing it like a dense 40B underrates it ~8x.
+    func testEstimate_moeStreamsOnlyActiveWeights() {
+        let map = map([])
+        let moe = map.estimateTokPerSec(paramsB: 39.8, quant: "MLX INT4", downloadGB: 22.6,
+                                        activeParamsB: 2.5)
+        let streamed = 22.6 * 2.5 / 39.8
+        XCTAssertEqual(moe, (machine.bandwidthGBs * HardwareMap.moeUtilisation / streamed).rounded(.down))
+        let dense = map.estimateTokPerSec(paramsB: 39.8, quant: "MLX INT4", downloadGB: 22.6)
+        XCTAssertGreaterThan(moe, dense * 5)
+        XCTAssertEqual(map.estimateTokPerSec(paramsB: 39.8, quant: "MLX INT4", downloadGB: 22.6,
+                                             activeParamsB: 39.8), dense,
+                       "active == total is a dense model")
+    }
+
     /// Unknown chips fall back to a generation base tier instead of guessing
     /// high, so a ranking never promises throughput the machine cannot deliver.
     func testBandwidth_tableAndFallbacks() {

@@ -297,4 +297,25 @@ final class MLXObserverTests: XCTestCase {
                    cpu: cpu, memMB: 10, diskReadMBps: 1, diskWriteMBps: 2,
                    netInKBps: 0, netOutKBps: 0, startTime: Date())
     }
+
+    /// The prefilter must match the command-matchers' vocabulary: any ASCII
+    /// case of `mlx` anywhere in the table (paths like `/mlx_lm/` count too).
+    /// Skipping the full parse is only safe when the marker truly is absent.
+    func testDataContainsMLXMarker_matchesAnyCaseAndSkipsCleanTables() {
+        let table = """
+        PID COMMAND
+        1 /sbin/launchd
+        500 /Applications/TokenHorizon.app/Contents/MacOS/TokenHorizon
+        501 /usr/bin/python3 -m mlx_lm.server --port 8080
+        """
+        XCTAssertTrue(MLXObserver.dataContainsMLXMarker(Data(table.utf8)))
+        XCTAssertTrue(MLXObserver.dataContainsMLXMarker(Data("x MLX_VLM y".utf8)))
+        XCTAssertTrue(MLXObserver.dataContainsMLXMarker(Data("a/mlx-lm".utf8)))
+        XCTAssertTrue(MLXObserver.dataContainsMLXMarker(Data("Mlx".utf8)))
+        XCTAssertFalse(MLXObserver.dataContainsMLXMarker(Data("PID COMMAND\n1 /bin/zsh -l\n".utf8)))
+        XCTAssertFalse(MLXObserver.dataContainsMLXMarker(Data()))
+        XCTAssertFalse(MLXObserver.dataContainsMLXMarker(Data("ml".utf8)))
+        XCTAssertFalse(MLXObserver.dataContainsMLXMarker(Data("xlx".utf8)))
+    }
 }
+

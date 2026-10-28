@@ -168,8 +168,16 @@ ok "verified ${APP_NAME}"
 
 # --- 4: install -------------------------------------------------------------------
 step "Install"
+# Park the previous install OUTSIDE the /Applications application name space.
+# A `*.backup.app` sitting next to the live app shares its bundle identifier,
+# so LaunchServices registers two apps with the same id and `open -b`
+# (Launchpad, Spotlight, "Open With") resolves to whichever it picks — the
+# stale copy wins often enough that the live app looks "missing". A
+# dot-prefixed directory is not scanned as an application.
+BACKUP_ROOT="$HOME/.config/token-horizon/backup"
 if [ -e "${INSTALL_DIR}/${APP_NAME}" ] && [ -z "${TH_INSTALL_URL:-}" ]; then
-    BACKUP="${INSTALL_DIR}/${APP_NAME%.app}.backup.app"
+    mkdir -p "$BACKUP_ROOT"
+    BACKUP="$BACKUP_ROOT/${APP_NAME%.app}.previous.app"
     rm -rf "$BACKUP"
     mv "${INSTALL_DIR}/${APP_NAME}" "$BACKUP"
     info "previous install parked at ${BACKUP/#$HOME/~}"

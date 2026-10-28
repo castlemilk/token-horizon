@@ -136,4 +136,26 @@ final class ListedFilesTests: XCTestCase {
                        ["scratch", ".user_uploaded", ".tempmediaStorage"])
         XCTAssertTrue(UsageEngine.excludedDirNames(for: "claude").isEmpty)
     }
+
+    func testSymlinkedDirIsDescendedLikeFileExists() {
+        // fileExists(atPath:) followed links — the readdir walk must resolve
+        // DT_LNK with stat() so a symlinked directory still contributes files.
+        // (The real dir is walked directly too, so both paths appear.)
+        write("real/deep/a.jsonl")
+        write("top.jsonl")
+        try! FileManager.default.createSymbolicLink(
+            atPath: root + "/linked", withDestinationPath: "real")
+        let got = Set(engine().listedFiles(fm: .default, root: root, rel: "", suffix: ".jsonl"))
+        XCTAssertEqual(got, ["top.jsonl", "real/deep/a.jsonl", "linked/deep/a.jsonl"])
+    }
+
+    func testDanglingSymlinkCountsAsFileLikeFileExists() {
+        // A dangling link fails fileExists → old code took the file branch;
+        // the readdir walk must keep that (stat fails → not a directory).
+        write("a.jsonl")
+        try! FileManager.default.createSymbolicLink(
+            atPath: root + "/dead.jsonl", withDestinationPath: "nowhere")
+        let got = Set(engine().listedFiles(fm: .default, root: root, rel: "", suffix: ".jsonl"))
+        XCTAssertEqual(got, ["a.jsonl", "dead.jsonl"])
+    }
 }

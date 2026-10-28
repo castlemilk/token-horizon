@@ -251,11 +251,20 @@ final class SelfUpdater: ObservableObject {
         defer { try? fm.removeItem(at: prepared) }
         try run("/usr/bin/ditto", [stagedApp.path, prepared.path])
         _ = try validate(app: prepared, release: release)
-        let backup = parent.appendingPathComponent(destination.deletingPathExtension().lastPathComponent + ".backup.app")
+        // Park the replaced build in a DOT-PREFIXED directory beside the
+        // installation. A `*.backup.app` next to the live app keeps the same
+        // bundle identifier, so LaunchServices registers two apps with one id
+        // and `open -b` (Launchpad, Spotlight, "Open With") may resolve to
+        // the stale copy — the live app then looks like it cannot be opened.
+        // A dot-prefixed directory is not scanned as an application, so the
+        // recovery copy stays available without competing for the id.
+        let backupBundle = SelfUpdatePlan.backupURL(for: destination)
+        let backup = backupBundle.deletingLastPathComponent()
         let previous = parent.appendingPathComponent(".TokenHorizon-previous-\(UUID().uuidString).app")
-        try SelfUpdateTransaction.replace(prepared: prepared, destination: destination, backup: backup, previousBackup: previous,
+        try fm.createDirectory(at: backup, withIntermediateDirectories: true)
+        try SelfUpdateTransaction.replace(prepared: prepared, destination: destination, backup: backupBundle, previousBackup: previous,
             exists: { fm.fileExists(atPath: $0.path) }, move: fm.moveItem, remove: fm.removeItem)
-        return backup
+        return backupBundle
     }
 
     private func relaunch(destination: URL, backup: URL, release: SelfUpdateRelease, commit: String) throws {

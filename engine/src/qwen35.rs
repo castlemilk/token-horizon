@@ -140,14 +140,46 @@ struct Weights {
     device: Device,
     bits: usize,
     gs: usize,
+    /// memgov: Σ raw tensor bytes and Σ next_pow2(per-tensor bytes) —
+    /// the second is what Metal's pooled allocator actually reserves
+    /// (GENERALISATION-PLAN §5.4 allocation model).
+    total_bytes: u64,
+    alloc_bytes: u64,
 }
 
 impl Weights {
     fn load(files: &[std::path::PathBuf], device: &Device) -> Result<Self> {
         let mut tensors = HashMap::new();
+        let mut total_bytes = 0u64;
+        let mut alloc_bytes = 0u64;
+        // memgov loader: the old arm (`TH_MEM_LOAD=eager`) fs::read every
+        // file up front, so peak heap = the whole checkpoint before the
+        // first tensor lands on the device. mmap + per-file scope builds
+        // byte-identical tensors while holding only one file's pages at a
+        // time — no advise, so cold files fault lazily and pages drop at
+        // unmap. Same from_raw_buffer inputs either way; pure host-copy
+        // plumbing, no numerics on this path.
+        let eager = std::env::var("TH_MEM_LOAD")
+            .map(|v| v.eq_ignore_ascii_case("eager"))
+            .unwrap_or(false);
         for f in files {
-            let raw = std::fs::read(f).with_context(|| f.display().to_string())?;
-            let st = safetensors::SafeTensors::deserialize(&raw)
+            // eager arm keeps the historical fs::read slurp (A/B via
+            // TH_MEM_LOAD=eager); the default mmaps the file and
+            // deserializes zero-copy from its pages, so peak host memory
+            // is one file's mapping instead of the whole checkpoint.
+            let (mut bytes, mapping): (Vec<u8>, Option<memmap2::Mmap>) = if eager {
+                (std::fs::read(f).with_context(|| f.display().to_string())?, None)
+            } else {
+                let file = std::fs::File::open(f).with_context(|| f.display().to_string())?;
+                let m = unsafe { memmap2::Mmap::map(&file) }
+                    .with_context(|| f.display().to_string())?;
+                (Vec::new(), Some(m))
+            };
+            let st_bytes: &[u8] = match &mapping {
+                Some(m) => &m[..],
+                None => &bytes,
+            };
+            let st = safetensors::SafeTensors::deserialize(st_bytes)
                 .with_context(|| f.display().to_string())?;
             for (name, view) in st.tensors() {
                 let dtype = match view.dtype() {
@@ -163,10 +195,15 @@ impl Weights {
                     view.shape(),
                     &Device::Cpu,
                 )?;
+                total_bytes += tensor_bytes(&t) as u64;
+                alloc_bytes += crate::memgov::pow2(tensor_bytes(&t) as u64);
                 tensors.insert(name.to_string(), t);
             }
+            drop(st);
+            drop(mapping);
+            bytes.clear();
         }
-        Ok(Self { tensors, device: device.clone(), bits: 4, gs: 64 })
+        Ok(Self { tensors, device: device.clone(), bits: 4, gs: 64, total_bytes, alloc_bytes })
     }
 
     /// `key` is the tensor prefix without `.weight`; a `key.scales`
@@ -2341,6 +2378,10 @@ pub struct Qwen35 {
     pub slots: Vec<Slot>,
     /// Shared DFlash draft weights — set once, slots own rings.
     draft_w: Option<crate::dflash::DraftWeights>,
+    /// memgov: Σ raw tensor bytes and the pow2-pooled allocation the
+    /// loader measured (Weights::load walk).
+    pub(crate) weight_bytes: u64,
+    pub(crate) weight_alloc_bytes: u64,
     debug: bool,
     /// `[layers, 2, 64]` f32 GDN gate constants (a_log | dt_bias per
     /// layer row, zero rows for attention layers) for the one-dispatch
@@ -3156,6 +3197,8 @@ impl Qwen35 {
             slots,
             draft_w: None,
             tq: None,
+            weight_bytes: w.total_bytes,
+            weight_alloc_bytes: w.alloc_bytes,
             debug: std::env::var("TH_DEBUG_LAYERS").is_ok(),
             gdn_consts: None,
         })
@@ -3164,6 +3207,38 @@ impl Qwen35 {
     /// Number of decode slots (TH_BATCH, default 1).
     pub fn nslots(&self) -> usize {
         self.slots.len()
+    }
+
+    /// memgov: the device this model runs on (for working-set limits).
+    pub(crate) fn mem_device(&self) -> &Device {
+        &self.device
+    }
+
+    /// memgov geometry — everything the memory plan needs. Full-attention
+    /// layers are the every-interval-th layers (`is_linear` is the GDN
+    /// test); the cache shape comes off the first attention layer present.
+    pub(crate) fn mem_geometry(&self) -> crate::memgov::Geometry {
+        let n = self.cfg.num_hidden_layers;
+        let full = (0..n).filter(|&i| !self.cfg.is_linear(i)).count();
+        let (kv_heads, head_dim) = self
+            .layers
+            .iter()
+            .find_map(|l| match &l.kind {
+                Kind::Attn(a) => Some((a.n_kv, a.head_dim)),
+                _ => None,
+            })
+            .unwrap_or((self.cfg.num_key_value_heads, self.cfg.head_dim));
+        crate::memgov::Geometry {
+            full_attention_layers: full,
+            gdn_layers: n - full,
+            kv_heads,
+            head_dim,
+            kv_quant: self.tq.is_some(),
+            slots: self.slots.len(),
+            weights_bytes: self.weight_bytes,
+            weights_alloc_bytes: self.weight_alloc_bytes,
+            gdn_state_bytes: None,
+        }
     }
 
     /// Keep only the first `n` (>=1) decode slots.
@@ -5828,6 +5903,8 @@ mod gdn_parity_tests {
             tq: None,
             slots,
             draft_w: None,
+            weight_bytes: 0,
+            weight_alloc_bytes: 0,
             debug: false,
             gdn_consts: None,
         })
@@ -6061,6 +6138,8 @@ mod prefix_tests {
             tq: None,
             slots,
             draft_w: None,
+            weight_bytes: 0,
+            weight_alloc_bytes: 0,
             debug: false,
             gdn_consts: None,
         })
@@ -6546,6 +6625,8 @@ mod mem6_tests {
             tq: None,
             slots,
             draft_w: None,
+            weight_bytes: 0,
+            weight_alloc_bytes: 0,
             debug: false,
             gdn_consts: None,
         })

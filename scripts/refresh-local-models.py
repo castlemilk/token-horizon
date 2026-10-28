@@ -129,9 +129,9 @@ MODELS = [
          caps=["tools", "thinking", "vision", "speculative"], minRAMGB=24, recommendedRAMGB=48,
          license="apache-2.0", tokenizer=None, size="package"),
     dict(id="incoai/Qwen3.6-35B-A3B-Splash", name="Qwen3.6 35B-A3B (Splash)", engine="splash",
-         family="qwen3_5", paramsB=35.0, quant="Splash", file=None, contextK=262144,
-         caps=["tools", "thinking", "moe", "speculative"], minRAMGB=28, recommendedRAMGB=48,
-         license="apache-2.0", tokenizer=None, size="package"),
+         family="qwen3_5", paramsB=35.0, activeParamsB=3.0, quant="Splash", file=None,
+         contextK=262144, caps=["tools", "thinking", "moe", "speculative"], minRAMGB=28,
+         recommendedRAMGB=48, license="apache-2.0", tokenizer=None, size="package"),
 
     # ── MLX · mlx-lm roster (any mlx-community checkpoint runs) ─────────────
     dict(id="mlx-community/Qwen3-4B-Instruct-2507-4bit", name="Qwen3 4B Instruct 2507",
@@ -147,7 +147,8 @@ MODELS = [
          caps=["tools", "thinking"], minRAMGB=12, recommendedRAMGB=24, license="apache-2.0",
          tokenizer=None, size="weights"),
     dict(id="mlx-community/Qwen3-30B-A3B-4bit", name="Qwen3 30B-A3B (MoE)", engine="mlx",
-         family="qwen3", paramsB=30.5, quant="MLX 4-bit", file=None, contextK=32768,
+         family="qwen3", paramsB=30.5, activeParamsB=3.3, quant="MLX 4-bit", file=None,
+         contextK=32768,
          caps=["tools", "thinking", "moe"], minRAMGB=22, recommendedRAMGB=48,
          license="apache-2.0", tokenizer=None, size="weights"),
     dict(id="mlx-community/Qwen3-32B-4bit", name="Qwen3 32B", engine="mlx", family="qwen3",
@@ -174,6 +175,19 @@ MODELS = [
          family="mlx", paramsB=55.0, quant="MLX MXFP4", file=None, contextK=131072,
          caps=["tools"], minRAMGB=16, recommendedRAMGB=32, license="moonshotai",
          tokenizer=None, size="weights", params_est=True, sizeEst=True, sizeGB=18.0),
+
+    # ── MLX · Recursive Flint (40B-A2.5B coding MoE; served by mlx-vlm) ────
+    # FlintForCausalLM is new — upstream mlx-lm support is still in PR
+    # (ml-explore/mlx-lm#1998), so the supervisor spawns flint checkpoints
+    # under `mlx_vlm.server` (>=0.7.10) instead of mlx_lm.
+    dict(id="RecursiveSI/flint-int4", name="Flint 40B-A2.5B · INT4", engine="mlx",
+         family="flint", paramsB=39.8, activeParamsB=2.5, quant="MLX INT4", file=None,
+         contextK=262144, caps=["tools", "thinking", "moe", "code"], minRAMGB=48,
+         recommendedRAMGB=96, license="apache-2.0", tokenizer=None, size="weights"),
+    dict(id="mlx-community/flint-mixed-3-4bit", name="Flint 40B-A2.5B · mixed 3/4-bit",
+         engine="mlx", family="flint", paramsB=39.8, activeParamsB=2.5, quant="MLX 3/4-bit",
+         file=None, contextK=262144, caps=["tools", "thinking", "moe", "code"], minRAMGB=24,
+         recommendedRAMGB=32, license="apache-2.0", tokenizer=None, size="weights"),
 ]
 
 # Runtime overhead above the weights, per engine: the process, the graph/arena

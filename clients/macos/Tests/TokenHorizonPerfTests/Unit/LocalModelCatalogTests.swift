@@ -179,6 +179,23 @@ final class LocalModelCatalogTests: XCTestCase {
         }
     }
 
+    /// A small Mac is exactly where the MoE estimate matters: Flint 3/4-bit
+    /// fits a 32 GB Mac, and priced as a dense 40B on a 120 GB/s bus it would
+    /// fall under the interactive floor and be ranked below everything.
+    func testBundledFlintRows_areEstimatedAsMoE() throws {
+        let models = LocalModelCatalog.models()
+        let flint = try XCTUnwrap(models.first { $0.id == "mlx-community/flint-mixed-3-4bit" })
+        XCTAssertEqual(flint.activeParamsB, 2.5)
+        let m32 = HardwareProfile.Machine(chipName: "Apple M4", physicalMemoryGB: 32,
+                                          macosMajor: 26, macosMinor: 4,
+                                          chipGeneration: 4, chipTier: .base)
+        let map = HardwareMap(machine: .init(chip: m32.chipName, memoryGB: 32, bandwidthGBs: 120),
+                              measurements: [])
+        let rec = try XCTUnwrap(LocalModelCatalog.reconciled(models: [flint], machine: m32, map: map).first)
+        XCTAssertGreaterThan(rec.tokPerSec, HardwareMap.interactiveFloor)
+        XCTAssertTrue(rec.reasons.contains { $0.contains("2.5B active") && $0.contains("262K-token") })
+    }
+
     /// Early rows spelled capabilities `caps`; both spellings must survive the
     /// decode, and a row without a real download size is rejected rather than
     /// presented as a model you can fetch.

@@ -333,6 +333,7 @@
       "engine": "splash",
       "family": "qwen3_5",
       "paramsB": 35.0,
+      "activeParamsB": 3.0,
       "quant": "Splash",
       "file": null,
       "contextK": 262144,
@@ -415,6 +416,7 @@
       "engine": "mlx",
       "family": "qwen3",
       "paramsB": 30.5,
+      "activeParamsB": 3.3,
       "quant": "MLX 4-bit",
       "file": null,
       "contextK": 32768,
@@ -529,6 +531,52 @@
       "residentGB": 19.6,
       "capabilities": [
         "tools"
+      ]
+    },
+    {
+      "id": "RecursiveSI/flint-int4",
+      "name": "Flint 40B-A2.5B \u00b7 INT4",
+      "engine": "mlx",
+      "family": "flint",
+      "paramsB": 39.8,
+      "activeParamsB": 2.5,
+      "quant": "MLX INT4",
+      "file": null,
+      "contextK": 262144,
+      "minRAMGB": 48,
+      "recommendedRAMGB": 96,
+      "license": "apache-2.0",
+      "tokenizer": null,
+      "sizeGB": 22.6,
+      "residentGB": 24.2,
+      "capabilities": [
+        "tools",
+        "thinking",
+        "moe",
+        "code"
+      ]
+    },
+    {
+      "id": "mlx-community/flint-mixed-3-4bit",
+      "name": "Flint 40B-A2.5B \u00b7 mixed 3/4-bit",
+      "engine": "mlx",
+      "family": "flint",
+      "paramsB": 39.8,
+      "activeParamsB": 2.5,
+      "quant": "MLX 3/4-bit",
+      "file": null,
+      "contextK": 262144,
+      "minRAMGB": 24,
+      "recommendedRAMGB": 32,
+      "license": "apache-2.0",
+      "tokenizer": null,
+      "sizeGB": 17.8,
+      "residentGB": 19.4,
+      "capabilities": [
+        "tools",
+        "thinking",
+        "moe",
+        "code"
       ]
     }
   ]

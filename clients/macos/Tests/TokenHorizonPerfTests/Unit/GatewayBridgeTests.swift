@@ -100,4 +100,28 @@ final class GatewayBridgeTests: XCTestCase {
                               body: Data(#"{"model":"x","evalCount":1,"evalDurationNs":0}"#.utf8))
         XCTAssertEqual(code2, 400)
     }
+
+    // MARK: Stamp handshake (adopt vs replace)
+
+    /// A sidecar that reports our commit attaches; `-dirty` is build
+    /// metadata make-app.sh stamps into both binaries, never a different
+    /// build. Anything else — other sha, unknown, missing — mismatches and
+    /// the supervisor replaces it (when it carries its own binary).
+    func testStampsMatch() {
+        XCTAssertTrue(GatewaySupervisor.stampsMatch(served: "f124045-dirty", expected: "f124045-dirty"))
+        XCTAssertTrue(GatewaySupervisor.stampsMatch(served: "f124045", expected: "f124045-dirty"))
+        XCTAssertTrue(GatewaySupervisor.stampsMatch(served: "f124045-dirty", expected: "f124045"))
+        XCTAssertTrue(GatewaySupervisor.stampsMatch(served: "dev", expected: "dev"))
+
+        XCTAssertFalse(GatewaySupervisor.stampsMatch(served: "abc1234", expected: "f124045-dirty"),
+                       "a different sha is a different build")
+        XCTAssertFalse(GatewaySupervisor.stampsMatch(served: "dev", expected: "f124045-dirty"),
+                       "an unstamped sidecar must not satisfy a stamped app")
+        XCTAssertFalse(GatewaySupervisor.stampsMatch(served: nil, expected: "f124045-dirty"),
+                       "a sidecar that cannot say what it is is stale by definition")
+        XCTAssertFalse(GatewaySupervisor.stampsMatch(served: "", expected: "f124045-dirty"))
+        XCTAssertFalse(GatewaySupervisor.stampsMatch(served: "?", expected: "f124045-dirty"),
+                       "the initial placeholder is not a stamp")
+        XCTAssertFalse(GatewaySupervisor.stampsMatch(served: "f124045-dirty", expected: "dev"))
+    }
 }

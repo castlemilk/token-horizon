@@ -60,6 +60,7 @@ pub async fn serve(engine: Engine, port: u16, idle_timeout_secs: u64) -> Result<
         .route("/engine/status", get(engine_status))
         .route("/engine/config", get(get_config).post(patch_config))
         .route("/engine/requests", get(requests))
+        .route("/engine/memory", get(engine_memory))
         .route("/engine/kv/clear", post(kv_clear))
         .route("/engine/events", get(events))
         .with_state(app);
@@ -162,9 +163,44 @@ async fn status(State(app): State<Arc<App>>) -> Json<Value> {
             "dflash": s.config.read().unwrap().draft_dir.is_some(),
             "batch_slots": s.model_meta.get("decode_slots").cloned().unwrap_or(json!(1)),
         },
-        "memory": {"rss_bytes": rss_bytes()},
+        "memory": memory_json(s),
         "rss_bytes": rss_bytes(),
         "prefix_cache": prefix_cache_json(s),
+    }))
+}
+
+/// memgov memory accounting — additive keys only (G8b): the pre-existing
+/// `memory.rss_bytes` / top-level `rss_bytes` keep their meaning, everything
+/// else here is new. Live KV is derived from the published token count.
+fn memory_json(s: &EngineState) -> Value {
+    let n = |a: &std::sync::atomic::AtomicU64| a.load(Ordering::Relaxed);
+    let kv_tokens = s.kv_tokens.load(Ordering::Relaxed);
+    let kv_live = s.mem.kv_live_bytes(kv_tokens);
+    let prefix_bytes = n(&s.prefix_stats.bytes);
+    let pressure = s.mem.pressure(kv_tokens, prefix_bytes);
+    json!({
+        "rss_bytes": rss_bytes(),
+        "weights_bytes": n(&s.mem.weights_bytes),
+        "weights_alloc_bytes": n(&s.mem.weights_alloc_bytes),
+        "kv_bytes_per_token": n(&s.mem.kv_bytes_per_token),
+        "kv_live_bytes": kv_live,
+        "kv_tokens": kv_tokens,
+        "prefix_cache_bytes": prefix_bytes,
+        "budget_bytes": n(&s.mem.budget_bytes),
+        "device_limit_bytes": n(&s.mem.device_limit_bytes),
+        "pressure": pressure,
+        "admission": s.mem.admission.read().unwrap().clone(),
+        "plan": s.mem.plan.read().unwrap().clone(),
+    })
+}
+
+/// Full memory introspection: the plan plus the live accounting plus the
+/// tunable that re-scopes admission on the next load.
+async fn engine_memory(State(app): State<Arc<App>>) -> Json<Value> {
+    let s = &app.engine.state;
+    Json(json!({
+        "memory": memory_json(s),
+        "max_mem_gb": s.config.read().unwrap().max_mem_gb,
     }))
 }
 
@@ -229,6 +265,20 @@ async fn metrics(State(app): State<Arc<App>>) -> Response {
     out.push_str(&format!("th_decode_ms_bucket{{le=\"+Inf\"}} {}\n", cum));
     out.push_str(&format!("# TYPE th_kv_tokens gauge\nth_kv_tokens {}\n", s.kv_tokens.load(Ordering::Relaxed)));
     out.push_str(&format!("# TYPE th_rss_bytes gauge\nth_rss_bytes {}\n", rss_bytes()));
+    out.push_str(&format!(
+        "# TYPE th_weights_bytes gauge\nth_weights_bytes {}\n",
+        s.mem.weights_alloc_bytes.load(Ordering::Relaxed)
+    ));
+    out.push_str(&format!(
+        "# TYPE th_kv_bytes_est gauge\nth_kv_bytes_est {}\n",
+        s.mem.kv_live_bytes(s.kv_tokens.load(Ordering::Relaxed))
+    ));
+    if let Some(p) = s.mem.pressure(
+        s.kv_tokens.load(Ordering::Relaxed),
+        s.prefix_stats.bytes.load(Ordering::Relaxed),
+    ) {
+        out.push_str(&format!("# TYPE th_memory_pressure gauge\nth_memory_pressure {p:.4}\n"));
+    }
     (StatusCode::OK, [("content-type", "text/plain; version=0.0.4")], out).into_response()
 }
 
@@ -342,7 +392,9 @@ async fn run_chat(
                     "prompt_tokens_details": {"cached_tokens": s.cached_tokens}}));
                 o.insert("th_stats".into(), json!({"ttft_ms": s.ttft_ms,
                     "decode_tps": s.decode_tps, "prefill_tps": s.prefill_tps,
-                    "total_ms": s.total_ms, "cached_tokens": s.cached_tokens}));
+                    "total_ms": s.total_ms, "cached_tokens": s.cached_tokens,
+                    "spec_rounds": s.spec_rounds,
+                    "spec_accepted": s.spec_accepted}));
                 Event::default().data(Value::Object(o).to_string())
             }
             GenEvent::Error(e) => Event::default().event("error")

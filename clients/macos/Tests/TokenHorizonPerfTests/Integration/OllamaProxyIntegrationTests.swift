@@ -203,4 +203,54 @@ final class OllamaProxyIntegrationTests: XCTestCase {
         XCTAssertEqual(usage.tokensAll, 360) // (100+20) + (200+40)
         XCTAssertEqual(usage.messages, 2)
     }
+
+    /// A refused upstream must produce a fast gateway error, not silence.
+    /// NWConnection reports a refused loopback dial as `.waiting` (never
+    /// `.failed`), which used to leave the client unanswered until its own
+    /// timeout — every /api/tags probe hung ~4s while Ollama was down.
+    func testDeadUpstreamAnswers502Promptly() throws {
+        // Port 1 is privileged/unassigned — deterministic refusal.
+        let proxy = OllamaTelemetryProxy(upstreamOverride: "127.0.0.1:1", portOverride: 11_937)
+        proxy.start()
+        defer { proxy.stop() }
+
+        var bound: UInt16?
+        let bindDeadline = Date().addingTimeInterval(5)
+        while bound == nil, Date() < bindDeadline {
+            bound = proxy.port
+            if bound == nil { usleep(50_000) }
+        }
+        let port = try XCTUnwrap(bound, "proxy listener never bound")
+
+        let conn = NWConnection(host: "127.0.0.1", port: NWEndpoint.Port(rawValue: port)!, using: .tcp)
+        let responded = expectation(description: "gateway error response")
+        var received = Data()
+        conn.stateUpdateHandler = { state in
+            if case .ready = state {
+                conn.send(content: Data("GET /api/tags HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n".utf8),
+                          completion: .contentProcessed { _ in
+                    conn.receive(minimumIncompleteLength: 1, maximumLength: 65_536) { data, _, _, _ in
+                        if let data { received.append(data) }
+                        responded.fulfill()
+                    }
+                })
+            }
+        }
+        conn.start(queue: DispatchQueue(label: "test.ollama-proxy"))
+        wait(for: [responded], timeout: 8)
+        conn.cancel()
+
+        let text = String(decoding: received, as: UTF8.self)
+        XCTAssertTrue(text.contains("502 Bad Gateway"), "expected 502, got: \(text)")
+        XCTAssertTrue(text.contains("ollama upstream unavailable"), "expected body, got: \(text)")
+    }
+
+    func testUpstreamUnavailableResponseIsWellFormed() {
+        let response = String(decoding: OllamaTelemetryProxy.upstreamUnavailableResponse(), as: UTF8.self)
+        XCTAssertTrue(response.hasPrefix("HTTP/1.1 502 Bad Gateway\r\n"))
+        XCTAssertTrue(response.contains("Content-Length: 40\r\n"))
+        XCTAssertTrue(response.contains("Connection: close\r\n\r\n"))
+        XCTAssertTrue(response.hasSuffix("ollama upstream unavailable\"}\n"))
+    }
 }
+

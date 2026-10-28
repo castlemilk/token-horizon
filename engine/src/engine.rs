@@ -156,6 +156,65 @@ impl Engine {
             chat_boundaries = msg_marks.is_some(),
             "prefix cache (TH_PREFIX_CACHE*)"
         );
+        // memgov: load-time plan + admission (qwen3_5 reports geometry;
+        // other backends publish rss only for now). An explicit budget
+        // (--max-mem-gb / TH_MAX_MEM_GB) that the plan exceeds is a hard
+        // load failure; exceeding the device working set is a loud warn —
+        // the plan is reported either way (§5.4).
+        let mem_plan = if let ModelBackend::Qwen35(m) = &loaded.backend {
+            let geo = m.mem_geometry();
+            let env_budget = std::env::var("TH_MAX_MEM_GB").ok();
+            let (budget, source) =
+                crate::memgov::resolve_budget(cfg.max_mem_gb, env_budget.as_deref());
+            let limit = crate::memgov::device_limit_bytes(m.mem_device());
+            let plan_ctx = cfg.max_context.or_else(|| {
+                loaded
+                    .meta
+                    .get("context_length")
+                    .and_then(|v| v.as_u64())
+                    .map(|v| v as usize)
+            });
+            let plan = crate::memgov::build_plan(&geo, plan_ctx, limit, budget, source);
+            let gib = |v: Option<u64>| {
+                v.map(|b| format!("{:.1}", b as f64 / (1 << 30) as f64))
+                    .unwrap_or_else(|| "—".into())
+            };
+            if let Some(p) = plan.projected_working_set_bytes {
+                tracing::info!(
+                    weights_gib = gib(Some(plan.weights_alloc_bytes)),
+                    kv_bytes_per_token = plan.kv_bytes_per_token,
+                    ctx = ?plan_ctx,
+                    projected_gib = gib(Some(p)),
+                    device_limit_gib = gib(plan.device_limit_bytes),
+                    budget_gib = gib(plan.budget_bytes),
+                    admission = plan.admission,
+                    "memory plan (memgov)"
+                );
+            }
+            if plan.admission == "exceeds" {
+                let msg = format!(
+                    "memory plan {:.1} GiB exceeds {} {:.1} GiB (weights + KV at {:?} ctx + margin) — lower --max-context, enable --kv-quant, or raise --max-mem-gb",
+                    gib(Some(plan.projected_working_set_bytes.unwrap())),
+                    if budget.is_some() { "budget" } else { "device limit" },
+                    gib(budget.or(limit)),
+                    plan_ctx,
+                );
+                if budget.is_some() {
+                    anyhow::bail!("{msg}");
+                }
+                tracing::warn!("{msg} — loading anyway; Metal allocation failures likely");
+            }
+            if let Some(o) = meta.as_object_mut() {
+                o.insert("weight_bytes".into(), serde_json::json!(plan.weights_bytes));
+                o.insert(
+                    "weight_alloc_bytes".into(),
+                    serde_json::json!(plan.weights_alloc_bytes),
+                );
+            }
+            Some(plan)
+        } else {
+            None
+        };
         let inner = ModelInner {
             backend: loaded.backend,
             tokenizer: loaded.tokenizer,
@@ -169,6 +228,9 @@ impl Engine {
         let inner = Arc::new(tokio::sync::Mutex::new(inner));
         let mut st = EngineState::new(model_id, meta, cfg);
         st.prefix_cfg = prefix_cfg;
+        if let Some(plan) = &mem_plan {
+            st.set_memory_plan(plan);
+        }
         let state = Arc::new(st);
         let job_tx = if nslots > 1 {
             let (tx, rx) =

@@ -21,6 +21,7 @@ metal = [
 
 [dependencies]
 candle-core = { version = "0.11.0" }
+memmap2 = "0.9"
 candle-nn = { version = "0.11.0" }
 candle-transformers = { version = "0.11.0" }
 tokenizers = { version = "0.22", default-features = false, features = ["onig"] }

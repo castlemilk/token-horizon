@@ -308,15 +308,20 @@ struct EngineTabView: View {
                 }
             }
 
-            if backend == "thengine" {
-                Toggle("Keep model loaded until stopped", isOn: $keepLoaded)
-                    .toggleStyle(.checkbox)
-                    .font(.system(size: 10))
-                    .disabled(sup.state.isServing || sup.state.isBusy)
-                Text(thengineLifecycleText)
-                    .font(.system(size: 10))
-                    .foregroundStyle(.white.opacity(0.45))
+            Toggle("Keep model loaded until stopped", isOn: $keepLoaded)
+                .toggleStyle(.checkbox)
+                .font(.system(size: 10))
+                .disabled(sup.state.isServing || sup.state.isBusy)
+            if !keepLoaded {
+                Stepper(value: idleTimeoutBinding, in: 30...3600, step: 30) {
+                    Text("Idle unload after \(idleText(SettingsStore.shared.engineIdleTimeoutSecs))")
+                        .font(.system(size: 10))
+                }
+                .disabled(sup.state.isServing || sup.state.isBusy)
             }
+            Text(engineLifecycleText)
+                .font(.system(size: 10))
+                .foregroundStyle(.white.opacity(0.45))
 
             if case .failed(let reason) = sup.state {
                 Text(reason)
@@ -389,14 +394,52 @@ struct EngineTabView: View {
         }
     }
 
-    private var thengineLifecycleText: String {
-        if case .serving(_, _, true) = sup.state {
-            return "Started outside Token Horizon. Stop it in the app or terminal that launched it."
+    private var idleTimeoutBinding: Binding<Double> {
+        Binding(
+            get: { Double(max(30, SettingsStore.shared.engineIdleTimeoutSecs)) },
+            set: { SettingsStore.shared.engineIdleTimeoutSecs = Int($0) })
+    }
+
+    private func idleText(_ secs: Int) -> String {
+        secs >= 120 ? "\(secs / 60) min" : "\(secs) seconds"
+    }
+
+    /// memgov readout — th-engine's /status `memory` section (absent on
+    /// splash/mlx, where the key simply never appears and this is "").
+    private func memNote() -> String {
+        guard let m = sup.status?["memory"] as? [String: Any],
+              let w = (m["weights_alloc_bytes"] as? NSNumber)?.doubleValue,
+              w > 0 else { return "" }
+        let gb = String(format: "%.1f GB", w / 1_073_741_824)
+        if let pressure = (m["pressure"] as? NSNumber)?.doubleValue, pressure > 0 {
+            return " · weights \(gb) · mem \(Int((pressure * 100).rounded()))%"
         }
-        let pinned = (sup.status?["lifecycle"] as? [String: Any])?["keep_loaded"] as? Bool ?? keepLoaded
-        return pinned
+        if let admission = m["admission"] as? String, admission == "exceeds" {
+            return " · weights \(gb) · over device limit"
+        }
+        return " · weights \(gb)"
+    }
+
+    private var engineLifecycleText: String {
+        if case .serving(_, _, let attached) = sup.state {
+            if attached {
+                return "Started outside Token Horizon. Stop it in the app or terminal that launched it."
+            }
+            let p = sup.payload()
+            let pinned = (sup.status?["lifecycle"] as? [String: Any])?["keep_loaded"] as? Bool
+                ?? (p["keep_loaded"] as? Bool ?? keepLoaded)
+            let secs = p["idle_timeout_secs"] as? Int
+                ?? SettingsStore.shared.engineIdleTimeoutSecs
+            if pinned || secs <= 0 {
+                return "Loaded until you stop it."
+            }
+            let idle = p["idle_seconds"] as? Int ?? 0
+            return "Idle \(idle)s — releases memory after \(idleText(secs)) without inference.\(memNote())"
+        }
+        let secs = SettingsStore.shared.engineIdleTimeoutSecs
+        return (keepLoaded || secs <= 0)
             ? "Starts when you press Serve and stays loaded until you stop it."
-            : "Starts when you press Serve. Releases memory after 5 minutes without inference."
+            : "Starts when you press Serve. Releases memory after \(idleText(secs)) without inference."
     }
 
     private var statusColor: Color {

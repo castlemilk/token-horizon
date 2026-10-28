@@ -148,6 +148,23 @@ final class SelfUpdatePlanTests: XCTestCase {
         }
     }
 
+    /// Regression: the recovery copy of a replaced build must never sit
+    /// BESIDE the live app. A `*.backup.app` next to the installation keeps
+    /// the same bundle identifier, so LaunchServices registers two apps with
+    /// one id and `open -b` (Launchpad, Spotlight, "Open With") can resolve
+    /// to the stale copy — the live app then looks like it cannot be opened.
+    func testBackupCopyLivesOutsideTheApplicationNameSpace() {
+        let destination = URL(fileURLWithPath: "/Applications/TokenHorizon.app")
+        let backup = SelfUpdatePlan.backupURL(for: destination)
+        XCTAssertEqual(backup.deletingLastPathComponent().lastPathComponent,
+                       SelfUpdatePlan.backupDirectoryName)
+        XCTAssertTrue(SelfUpdatePlan.backupDirectoryName.hasPrefix("."),
+                      "the backup directory must be dot-prefixed so LaunchServices skips it")
+        // Not a sibling .app in the applications directory.
+        XCTAssertNotEqual(backup.deletingLastPathComponent(), destination.deletingLastPathComponent())
+        XCTAssertEqual(backup.lastPathComponent, destination.lastPathComponent)
+    }
+
     func testRelaunchPassesPathsAsArgumentsAndTargetsOnlyMatchingAgent() {
         let quote = "\u{0060}"
         let bundle = URL(fileURLWithPath: "/Applications/Token ' $HOME \(quote)printf unsafe\(quote).app")

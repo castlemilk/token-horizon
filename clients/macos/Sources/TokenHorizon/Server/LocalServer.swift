@@ -283,7 +283,7 @@ final class LocalServer {
 
         case ("POST", "/engine/serve"), ("GET", "/engine/serve"):
             guard let obj = try? JSONSerialization.jsonObject(with: body) as? [String: Any] else {
-                return json(["error": "expected JSON body {backend?, model, tokenizer?, max_memory_gb?, max_context_k?, keep_loaded?}"], 400)
+                return json(["error": "expected JSON body {backend?, model, tokenizer?, max_memory_gb?, max_context_k?, keep_loaded?, expert_cache_gb?, max_num_seqs?, profile?}"], 400)
             }
             guard let model = obj["model"] as? String, !model.isEmpty else {
                 return json(["error": "model is required"], 400)
@@ -292,12 +292,23 @@ final class LocalServer {
             guard let sup = mgr.supervisor(for: backend) else {
                 return json(["error": "unknown backend '\(backend)' — splash|thengine"], 400)
             }
+            let profile: ServeProfile?
+            switch ServeProfile.parse(obj["profile"] as? String) {
+            case .success(let p): profile = p
+            case .failure(let e): return json(["error": e.message], 400)
+            }
             let mem = (obj["max_memory_gb"] as? NSNumber)?.intValue
             let ctx = (obj["max_context_k"] as? NSNumber)?.intValue
             let tok = obj["tokenizer"] as? String
             let keepLoaded = obj["keep_loaded"] as? Bool ?? false
-            sup.serve(model: model, tokenizer: tok, maxMemoryGB: mem, maxContextK: ctx, keepLoaded: keepLoaded)
-            return json(["ok": true], 202)
+            // mlx-vlm-only memory/concurrency knobs (Flint expert offload);
+            // mlx-lm rejects both flags, so the supervisor gates on module.
+            let expertCache = (obj["expert_cache_gb"] as? NSNumber)?.intValue
+            let seqs = (obj["max_num_seqs"] as? NSNumber)?.intValue
+            sup.serve(model: model, tokenizer: tok, maxMemoryGB: mem, maxContextK: ctx,
+                      keepLoaded: keepLoaded, expertCacheGB: expertCache, maxNumSeqs: seqs,
+                      profile: profile)
+            return json(["ok": true, "profile": profile?.rawValue ?? "chat"], 202)
 
         case ("POST", "/engine/stop"), ("GET", "/engine/stop"):
             let obj = (try? JSONSerialization.jsonObject(with: body)) as? [String: Any]

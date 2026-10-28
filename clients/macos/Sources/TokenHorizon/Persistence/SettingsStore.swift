@@ -54,6 +54,8 @@ final class SettingsStore {
     private var _surfaceMode: String = SurfaceMode.auto.rawValue
     private var _showTrayIcon: Bool = false
     private var _autoUpdateEnabled: Bool = true
+    /// Seconds of no inference before an owned engine is stopped (0 = never).
+    private var _engineIdleTimeoutSecs: Int = 60
     private var _widgetPreferences = WidgetPreferences()
     private var _navigationPreferences = DashboardNavigationPreferences()
 
@@ -107,6 +109,19 @@ final class SettingsStore {
             saveLocked()
             lock.unlock()
             NotificationCenter.default.post(name: .tokenHorizonSurfaceDidChange, object: nil)
+        }
+    }
+
+    /// Seconds with no inference before an owned engine backend is stopped
+    /// (memory released). 0 disables — a "keep loaded" pin. The supervisor
+    /// applies it to engines it spawned; adopted servers are never stopped.
+    var engineIdleTimeoutSecs: Int {
+        get { lock.lock(); defer { lock.unlock() }; return _engineIdleTimeoutSecs }
+        set {
+            lock.lock()
+            _engineIdleTimeoutSecs = max(0, newValue)
+            saveLocked()
+            lock.unlock()
         }
     }
 
@@ -351,6 +366,7 @@ final class SettingsStore {
             "surfaceMode": _surfaceMode,
             "showTrayIcon": _showTrayIcon,
             "autoUpdateEnabled": _autoUpdateEnabled,
+            "engineIdleTimeoutSecs": _engineIdleTimeoutSecs,
             "navigationPreferences": (try? JSONEncoder().encode(_navigationPreferences)).flatMap {
                 try? JSONSerialization.jsonObject(with: $0)
             } ?? [:],
@@ -396,6 +412,7 @@ final class SettingsStore {
         var surfaceMode = SurfaceMode.auto.rawValue
         var showTrayIcon = false
         var autoUpdate = true
+        var engineIdleTimeoutSecs = 60
 
         if let data = FileManager.default.contents(atPath: path),
            let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
@@ -464,6 +481,9 @@ final class SettingsStore {
             if let au = obj["autoUpdateEnabled"] as? Bool {
                 autoUpdate = au
             }
+            if let e = obj["engineIdleTimeoutSecs"] as? Int, e >= 0 {
+                engineIdleTimeoutSecs = e
+            }
         }
         if c.isEmpty {
             let fb = directory.appendingPathComponent("alibaba-cookie.txt").path
@@ -495,6 +515,7 @@ final class SettingsStore {
         _surfaceMode = surfaceMode
         _showTrayIcon = showTrayIcon
         _autoUpdateEnabled = autoUpdate
+        _engineIdleTimeoutSecs = engineIdleTimeoutSecs
 
         if restoreLaunchAtLogin {
             DispatchQueue.global(qos: .utility).async { [self] in

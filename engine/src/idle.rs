@@ -3,7 +3,7 @@
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-pub const DEFAULT_IDLE_TIMEOUT_SECS: u64 = 300;
+pub const DEFAULT_IDLE_TIMEOUT_SECS: u64 = 60;
 
 struct IdleState {
     active: usize,

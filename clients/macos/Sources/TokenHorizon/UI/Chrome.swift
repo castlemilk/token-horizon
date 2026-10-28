@@ -9,8 +9,27 @@ struct MonospacedText: View {
     }
 }
 
+/// The collapsed notch's whole observable world. Observing the full UIModel
+/// meant every 5s publish (usage/processes/mlx/docker) invalidated the panel
+/// and recomposited an identical rings view; the shell publishes only what
+/// the collapsed surface renders — the 2s ring values and the expanded flag.
+/// DashboardTabs still observes UIModel once it enters the tree on expand.
+final class NotchShell: ObservableObject {
+    @Published var cpuPercent: Double = 0
+    @Published var ramPercent: Double = 0
+    @Published var expanded = false
+
+    /// Publishes only on a visible move: <0.5% is sub-pixel on the ring arcs
+    /// (~0.2pt on the 7pt radius), so unchanged readings cost zero repaints.
+    func setRings(cpu: Double, ram: Double) {
+        if abs(cpu - cpuPercent) >= 0.5 { cpuPercent = cpu }
+        if abs(ram - ramPercent) >= 0.5 { ramPercent = ram }
+    }
+}
+
 struct NotchContentView: View {
-    @ObservedObject var model: UIModel
+    @ObservedObject var shell: NotchShell
+    var model: UIModel
     let geometry: NotchPanel.Geometry
     var body: some View {
         // AppKit edge constraints do not cap SwiftUI's ideal content width.
@@ -18,17 +37,15 @@ struct NotchContentView: View {
         // recenter the header and footer outside the panel's margins.
         GeometryReader { bounds in
             Group {
-                if model.notchExpanded {
+                if shell.expanded {
                     DashboardTabs(model: model, compact: true)
                         .padding(.top, geometry.topInset + 8).padding(.bottom, 14).padding(.horizontal, 16)
                 } else {
-                    let cpuPct = model.sys.cpuPercent
-                    let ramPct = model.sys.ramUsedGB / max(model.sys.ramTotalGB, 1) * 100
                     HStack(spacing: 0) {
-                        WingRingGauge(percent: cpuPct, color: .red, help: "CPU")
+                        WingRingGauge(percent: shell.cpuPercent, color: .red, help: "CPU")
                             .frame(width: geometry.wing, alignment: .trailing).padding(.trailing, 2)
                         Color.clear.frame(width: geometry.notchWidth)
-                        WingRingGauge(percent: ramPct, color: .cyan, help: "Memory")
+                        WingRingGauge(percent: shell.ramPercent, color: .cyan, help: "Memory")
                             .frame(width: geometry.wing, alignment: .leading).padding(.leading, 2)
                     }
                     .frame(height: geometry.topInset)

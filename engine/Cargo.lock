@@ -2851,6 +2851,7 @@ dependencies = [
  "half",
  "hf-hub",
  "libc",
+ "memmap2",
  "minijinja",
  "objc2",
  "objc2-metal",

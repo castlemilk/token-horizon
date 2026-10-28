@@ -33,4 +33,16 @@ final class ProcessMetricsTests: XCTestCase {
         // 5-second refresh interval even on a loaded development machine.
         XCTAssertLessThan(elapsedMs, 1000, "process sampling took \(elapsedMs)ms")
     }
+
+    /// The KERN_PROCARGS2 path that enriches visible rows must return real
+    /// argv — this is the `command` column's data for every top process.
+    func testProcessArgs_returnsArgvForLivePid() {
+        let pid = ProcessInfo.processInfo.processIdentifier
+        let args = SystemStats.processArgs(for: pid)
+        XCTAssertNotNil(args, "KERN_PROCARGS2 returned nothing for our own pid")
+        XCTAssertTrue(args!.contains("xctest") || args!.contains("Package"),
+                      "expected the test binary path in argv, got \(args ?? "nil")")
+        // Dead/unowned pid must fail cleanly, not trap.
+        XCTAssertNil(SystemStats.processArgs(for: Int32.max - 1))
+    }
 }

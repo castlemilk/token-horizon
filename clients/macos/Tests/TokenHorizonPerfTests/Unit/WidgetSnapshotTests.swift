@@ -261,9 +261,16 @@ final class WidgetSnapshotTests: XCTestCase {
 
     func testMonthlyBucketsAggregate() {
         let calendar = Calendar.current
-        let history = (0..<80).map { offset in
-            HistoryPoint(day: Int(Date().timeIntervalSince1970) - offset * 86_400,
-                         tokens: 10, cost: 0, byTool: ["claude": 10])
+        // Day stamps are local start-of-day epochs (as production writes
+        // them). Raw `now - n*86400` instants land wherever the clock puts
+        // them — near midnight or across a DST shift one falls outside the
+        // local month and the count goes stale by a day.
+        let today = calendar.startOfDay(for: Date())
+        let history = (0..<80).compactMap { offset -> HistoryPoint? in
+            guard let day = calendar.date(byAdding: .day, value: -offset, to: today)
+            else { return nil }
+            return HistoryPoint(day: Int(day.timeIntervalSince1970),
+                                tokens: 10, cost: 0, byTool: ["claude": 10])
         }
         let snapshot = WidgetBridge.makeSnapshot(usage: .empty, history: history, limits: [],
                                                  preferences: WidgetPreferences())

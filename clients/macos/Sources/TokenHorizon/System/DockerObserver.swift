@@ -56,8 +56,19 @@ final class DockerSamplingCache {
 }
 
 enum DockerObserver {
-    private static let cache = DockerSamplingCache()
+    /// 10s cadence: each `docker stats --no-stream` costs ~2s of internal
+    /// collection, so anything tighter burns a third of a thread forever.
+    private static let cache = DockerSamplingCache(interval: 10)
+    /// `docker stats --no-stream` spends ~2s inside the CLI's own collection
+    /// window — it must never run on a shared queue (it previously blocked
+    /// the serial refreshQueue ~40% of every 5s tick cycle). All CLI work
+    /// runs here; callers always read the last completed sample.
+    private static let queue = DispatchQueue(label: "token-horizon.docker", qos: .utility)
     static let collectionTimeout: TimeInterval = 3
+    /// Resolved docker path; `nil` results re-probe after a minute so a
+    /// docker installed mid-run is still picked up.
+    private static var cachedDockerPath: String?
+    private static var dockerPathCheckedAt = Date.distantPast
 
     static func findDockerExecutable() -> String? {
         var candidates: [String] = []
@@ -152,11 +163,19 @@ enum DockerObserver {
         }
     }
 
-    /// Sample running Docker containers with caching.
+    /// Last completed container sample; schedules a background refresh when
+    /// due. Never blocks on the Docker CLI — `docker stats` alone costs ~2s.
     static func sampleContainers() -> [DockerContainerSample] {
-        guard cache.begin() else { return cache.current() }
+        if cache.begin() {
+            queue.async { cache.finish(collectSamples()) }
+        }
+        return cache.current()
+    }
 
-        guard let dockerBin = findDockerExecutable() else { return cache.finish(nil) }
+    /// Runs on the dedicated docker queue. Two CLI invocations (ps + stats)
+    /// bounded by `collectionTimeout`.
+    private static func collectSamples() -> [DockerContainerSample]? {
+        guard let dockerBin = dockerExecutable() else { return nil }
         let deadline = ProcessInfo.processInfo.systemUptime + collectionTimeout
 
         // 1. Fetch metadata (image, status, ports) via docker ps
@@ -168,7 +187,7 @@ enum DockerObserver {
             metaMap = parsePsOutput(psData)
             // A successful empty ps result is authoritative. Avoid an extra
             // stats process (and its collection delay) with no containers.
-            if metaMap.isEmpty { return cache.finish([]) }
+            if metaMap.isEmpty { return [] }
         }
 
         // 2. Fetch live metrics via docker stats --no-stream
@@ -176,11 +195,19 @@ enum DockerObserver {
         statsTask.executableURL = URL(fileURLWithPath: dockerBin)
         statsTask.arguments = ["stats", "--no-stream", "--format", "{{json .}}"]
         guard let statsData = runCapture(statsTask, timeout: deadline - ProcessInfo.processInfo.systemUptime)
-        else { return cache.finish(nil) }
+        else { return nil }
 
-        let samples = parseStatsOutput(statsData, metadata: metaMap)
+        return parseStatsOutput(statsData, metadata: metaMap)
+    }
 
-        return cache.finish(samples)
+    /// Memoized `findDockerExecutable` — hits the filesystem at most once
+    /// when found; misses re-probe every 60s (queue-serial access only).
+    private static func dockerExecutable() -> String? {
+        if let cachedDockerPath { return cachedDockerPath }
+        guard Date().timeIntervalSince(dockerPathCheckedAt) > 60 else { return nil }
+        dockerPathCheckedAt = Date()
+        cachedDockerPath = findDockerExecutable()
+        return cachedDockerPath
     }
 
     // MARK: - Parsing Helpers

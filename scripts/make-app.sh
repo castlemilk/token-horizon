@@ -234,7 +234,15 @@ install_release_app() (
     local source="$1" destination="$2" parent backup work prepared previous
     local previous_moved=0 current_moved=0 committed=0 recovery_failed=0
     parent="$(dirname "$destination")"
-    backup="${destination%.app}.backup.app"
+    # Park the recovery copy in a DOT-PREFIXED directory. A `*.backup.app`
+    # beside the live app keeps the same bundle identifier, so
+    # LaunchServices registers two apps with one id and `open -b` (Launchpad,
+    # Spotlight, "Open With") may resolve to the stale copy — the live app
+    # then looks like it cannot be opened. A dot-prefixed directory is not
+    # scanned as an application, so the recovery copy stays available without
+    # competing for the identifier.
+    backup_dir="$parent/.TokenHorizon-backup"
+    backup="$backup_dir/$(basename "$destination")"
     for existing in "$destination" "$backup"; do
         if [ -L "$existing" ] || { [ -e "$existing" ] && [ ! -d "$existing" ]; }; then
             echo "FATAL: release destination and backup must be app directories, not symlinks: $existing" >&2
@@ -294,6 +302,7 @@ install_release_app() (
         previous_moved=1
     fi
     if [ -d "$destination" ]; then
+        mkdir -p "$backup_dir" || return 1
         mv "$destination" "$backup" || return 1
         current_moved=1
     fi
@@ -303,6 +312,7 @@ install_release_app() (
         echo "previous app retained at $backup"
     elif [ "$previous_moved" = 1 ]; then
         # With no installed app, retain the existing recovery copy.
+        mkdir -p "$backup_dir" || { recovery_failed=1; return 1; }
         mv "$previous" "$backup" || { recovery_failed=1; return 1; }
     fi
 )
@@ -312,26 +322,62 @@ if [ -z "${INSTALL_RELEASE_APP:-}" ] && [ -z "${SKIP_INSTALL:-}" ] && pgrep -x T
     pkill -x TokenHorizon || true
     sleep 0.5
 fi
-# Single canonical install: sync the fresh build over /Applications so a
+# Single canonical install: replace /Applications with the fresh build so a
 # manual launch there can never serve stale code again. SKIP_INSTALL=1
 # (release packaging) builds the bundle in place without touching /Applications.
+#
+# REPLACE, never overlay. `ditto` MERGES into an existing directory, so a
+# bundle installed over a prior release keeps that release's leftover files —
+# including the notarization ticket in Contents/CodeResources, which then
+# contradicts the fresh ad-hoc signature and makes Gatekeeper reject the
+# bundle ("damaged and can't be opened"). Stage into a sibling directory and
+# swap the whole bundle so the installed copy contains exactly what we built.
 if [ -z "${SKIP_INSTALL:-}" ]; then
     if [ -n "${INSTALL_RELEASE_APP:-}" ]; then
         install_release_app "$APP" "$INSTALLED" || exit 1
-    elif ! ditto "$APP" "$INSTALLED" 2>/dev/null; then
-        echo "direct write to $INSTALLED blocked by macOS App Management (TCC);"
-        echo "trying Finder-assisted replacement (approve the Finder prompt if shown)…"
-        if [ -d "$INSTALLED" ] && osascript -e 'tell application "Finder" to delete POSIX file "'"$INSTALLED"'"' >/dev/null 2>&1; then
-            if ! ditto "$APP" "$INSTALLED"; then
-                echo "FATAL: ditto still failed after Finder moved the old bundle to Trash."
-                echo "  The previous app is in the Trash — drag it back to /Applications to recover."
+    else
+        STAGE_PARENT="$(dirname "$INSTALLED")"
+        # Stage inside a DOT-PREFIXED DIRECTORY, not as a dot-prefixed `.app`
+        # in /Applications itself. LaunchServices skips app bundles that live
+        # inside a dot-prefixed directory, but it can still register a
+        # dot-prefixed `.app` sitting directly in /Applications — which would
+        # put a second copy of this bundle identifier back into the launch
+        # name space and let `open -b` resolve to the wrong copy.
+        STAGE_ROOT="$(mktemp -d "$STAGE_PARENT/.TokenHorizon-install.XXXXXX")" || exit 1
+        STAGED="$STAGE_ROOT/TokenHorizon.app"
+        BACKUP_DIR="$STAGE_PARENT/.TokenHorizon-backup"
+        BACKUP="$BACKUP_DIR/TokenHorizon.app"
+        cleanup_staging() { rm -rf "$STAGE_ROOT"; }
+        trap cleanup_staging EXIT
+        if ! ditto "$APP" "$STAGED" 2>/dev/null; then
+            echo "direct write to $INSTALLED blocked by macOS App Management (TCC);"
+            echo "trying Finder-assisted replacement (approve the Finder prompt if shown)…"
+            if [ -d "$INSTALLED" ] && osascript -e 'tell application "Finder" to delete POSIX file "'"$INSTALLED"'"' >/dev/null 2>&1; then
+                if ! ditto "$APP" "$STAGED"; then
+                    echo "FATAL: ditto still failed after Finder moved the old bundle to Trash."
+                    echo "  The previous app is in the Trash — drag it back to /Applications to recover."
+                    exit 1
+                fi
+            else
+                echo "FATAL: could not write $INSTALLED (macOS App Management / TCC)."
+                echo "  sudo does NOT bypass this. Either:"
+                echo "    System Settings → Privacy & Security → App Management → enable your terminal"
+                echo "  or delete /Applications/TokenHorizon.app in Finder, then re-run ./scripts/make-app.sh"
                 exit 1
             fi
-        else
-            echo "FATAL: could not write $INSTALLED (macOS App Management / TCC)."
-            echo "  sudo does NOT bypass this. Either:"
-            echo "    System Settings → Privacy & Security → App Management → enable your terminal"
-            echo "  or delete /Applications/TokenHorizon.app in Finder, then re-run ./scripts/make-app.sh"
+        fi
+        # Swap in the staged bundle. The replaced copy is retained in a
+        # dot-prefixed directory so LaunchServices never registers it as a
+        # second copy of the same bundle identifier — a duplicate id makes
+        # `open -b`/Launchpad resolve to the wrong app — while it stays
+        # available for manual recovery.
+        if [ -d "$INSTALLED" ]; then
+            mkdir -p "$BACKUP_DIR" || exit 1
+            rm -rf "$BACKUP"
+            mv "$INSTALLED" "$BACKUP" || exit 1
+        fi
+        if ! mv "$STAGED" "$INSTALLED"; then
+            [ -d "$BACKUP" ] && mv "$BACKUP" "$INSTALLED"
             exit 1
         fi
     fi

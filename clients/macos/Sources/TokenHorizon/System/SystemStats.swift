@@ -1,6 +1,8 @@
 import Foundation
 #if canImport(Darwin)
 import Darwin
+#elseif canImport(Glibc)
+import Glibc
 #endif
 #if canImport(IOKit)
 import IOKit
@@ -88,64 +90,179 @@ enum SystemStats {
     }
 
     private static func processSamplesLocked() -> (all: [ProcSample], byCPU: [ProcSample], byMem: [ProcSample], byDisk: [ProcSample], byNet: [ProcSample]) {
-        // Extended ps: pid, ppid, %cpu, rss, etime, user, comm
-        // (macOS ps doesn't have nthreads/nlwp in standard column mode; we get threads
-        // via task_threads mach API in processDetail for drill-down)
-        let task = Process()
-        task.executableURL = URL(fileURLWithPath: "/bin/ps")
-        task.arguments = ["-axo", "pid=,ppid=,%cpu=,rss=,etime=,user=,comm="]
-        guard let data = runCapture(task) else {
-            return ([], [], [], [], [])
+        #if canImport(Darwin)
+        return nativeProcessSamplesLocked()
+        #else
+        return ([], [], [], [], [])
+        #endif
+    }
+
+    /// Per-pid cumulative CPU time (ns) at last sample — `ps %cpu` is a
+    /// lifetime average; the delta reports what the process actually did
+    /// since the previous tick, which is what "top CPU" is expected to show.
+    private static var prevProcCPU: [Int32: (ns: UInt64, at: Date)] = [:]
+
+    /// Fill `buf` with live pids; returns bytes written (or needed when the
+    /// buffer was too small).
+    private static func listAllPids(into buf: inout [pid_t]) -> Int32 {
+        buf.withUnsafeMutableBufferPointer { ptr in
+            proc_listpids(UInt32(PROC_ALL_PIDS), 0,
+                          UnsafeMutableRawPointer(ptr.baseAddress),
+                          Int32(ptr.count * MemoryLayout<pid_t>.size))
+        }
+    }
+    /// uid → login name; getpwuid once per distinct user, not per process.
+    private static var uidNames: [UInt32: String] = [:]
+
+    /// Native process table — `proc_listpids` + 2 `proc_pidinfo` calls per
+    /// pid replace the `/bin/ps` spawn+parse every tick (~30ms + ~500-line
+    /// string churn → ~2ms of syscalls). `command` carries the exec comm
+    /// name; rows surfaced in a top list get full argv via KERN_PROCARGS2.
+    private static func nativeProcessSamplesLocked() -> (all: [ProcSample], byCPU: [ProcSample], byMem: [ProcSample], byDisk: [ProcSample], byNet: [ProcSample]) {
+        var pidBuf = [pid_t](repeating: 0, count: 4096)
+        var bytes = listAllPids(into: &pidBuf)
+        if Int(bytes) >= pidBuf.count * MemoryLayout<pid_t>.size {
+            // Buffer filled — table may be larger; size it from the return.
+            pidBuf = [pid_t](repeating: 0, count: Int(bytes) / MemoryLayout<pid_t>.size + 256)
+            bytes = listAllPids(into: &pidBuf)
         }
         let now = Date()
-        let netSnapshot = fetchNetSnapshot()
-        var samples: [ProcSample] = []
-        samples.reserveCapacity(512)
-        for line in String(decoding: data, as: UTF8.self).split(separator: "\n") {
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
-            // 6 fixed fields: pid ppid cpu rss etime user, then the rest is comm
-            let tokens = trimmed.split(separator: " ", omittingEmptySubsequences: true)
-            guard tokens.count >= 6,
-                  let pid = Int32(tokens[0]),
-                  let ppid = Int32(tokens[1]),
-                  let cpu = Double(tokens[2]),
-                  let rssKB = Double(tokens[3]) else { continue }
-            let etime = tokens[4]
-            let user = String(tokens[5])
-            let commRaw: String
-            if tokens.count > 6 {
-                commRaw = tokens[6...].joined(separator: " ")
-            } else {
-                commRaw = user
-            }
-            let name = (commRaw as NSString).lastPathComponent
-            guard !name.isEmpty else { continue }
-            let disk = diskRate(for: pid, now: now)
-            let net = netRate(for: pid, snapshot: netSnapshot, now: now)
-            samples.append(ProcSample(
-                pid: pid, ppid: ppid, name: name, command: commRaw, user: user, threads: 0,
-                cpu: cpu, memMB: rssKB / 1024,
-                diskReadMBps: disk.read, diskWriteMBps: disk.write,
-                netInKBps: net.inK, netOutKBps: net.outK,
-                startTime: parseEtime(String(etime), now: now) ?? now
-            ))
-        }
-        if samples.isEmpty {
+        guard bytes > 0 else {
             let mock = ProcSample(pid: 1, ppid: 0, name: "launchd", command: "/sbin/launchd", user: "root", threads: 0, cpu: 0.5, memMB: 100, diskReadMBps: 0, diskWriteMBps: 0, netInKBps: 0, netOutKBps: 0, startTime: now)
             return ([mock], [mock], [mock], [mock], [mock])
         }
-        let byCPU = samples.sorted { $0.cpu > $1.cpu }
-        let byMem = samples.sorted { $0.memMB > $1.memMB }
-        let byDisk = samples.sorted { ($0.diskReadMBps + $0.diskWriteMBps) > ($1.diskReadMBps + $1.diskWriteMBps) }
-        let byNet = samples.sorted { ($0.netInKBps + $0.netOutKBps) > ($1.netInKBps + $1.netOutKBps) }
-        let livePids = Set(samples.map { $0.pid })
+        let netSnapshot = fetchNetSnapshot()
+        var samples: [ProcSample] = []
+        samples.reserveCapacity(512)
+        for rawPid in pidBuf.prefix(Int(bytes) / MemoryLayout<pid_t>.size) where rawPid > 0 {
+            let pid = Int32(rawPid)
+            var bsd = proc_bsdinfo()
+            guard proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &bsd,
+                               Int32(MemoryLayout<proc_bsdinfo>.size)) > 0 else { continue }
+            var task = proc_taskinfo()
+            let taskOK = proc_pidinfo(pid, PROC_PIDTASKINFO, 0, &task,
+                                      Int32(MemoryLayout<proc_taskinfo>.size)) > 0
+            let name = fixedCString(&bsd.pbi_name)
+            let comm = fixedCString(&bsd.pbi_comm)
+            let display = !name.isEmpty ? name : comm
+            guard !display.isEmpty else { continue }
+            let user = uidNames[bsd.pbi_uid] ?? {
+                let s = getpwuid(bsd.pbi_uid).flatMap { $0.pointee.pw_name.map { String(cString: $0) } }
+                    ?? "\(bsd.pbi_uid)"
+                uidNames[bsd.pbi_uid] = s
+                return s
+            }()
+            let start = Date(timeIntervalSince1970: Double(bsd.pbi_start_tvsec) + Double(bsd.pbi_start_tvusec) / 1e6)
+            let cpu = cpuPercent(for: pid, taskNs: taskOK ? task.pti_total_user &+ task.pti_total_system : 0,
+                                 start: start, now: now)
+            let disk = diskRate(for: pid, now: now)
+            let net = netRate(for: pid, snapshot: netSnapshot, now: now)
+            samples.append(ProcSample(
+                pid: pid, ppid: Int32(bitPattern: bsd.pbi_ppid), name: display, command: display,
+                user: user, threads: taskOK ? Int(task.pti_threadnum) : 0,
+                cpu: cpu, memMB: taskOK ? Double(task.pti_resident_size) / 1_048_576 : 0,
+                diskReadMBps: disk.read, diskWriteMBps: disk.write,
+                netInKBps: net.inK, netOutKBps: net.outK,
+                startTime: start > now ? now : start
+            ))
+        }
+        guard !samples.isEmpty else {
+            let mock = ProcSample(pid: 1, ppid: 0, name: "launchd", command: "/sbin/launchd", user: "root", threads: 0, cpu: 0.5, memMB: 100, diskReadMBps: 0, diskWriteMBps: 0, netInKBps: 0, netOutKBps: 0, startTime: now)
+            return ([mock], [mock], [mock], [mock], [mock])
+        }
+        let livePids = Set(samples.map(\.pid))
         prevDisk = prevDisk.filter { livePids.contains($0.key) }
         prevNet = prevNet.filter { livePids.contains($0.key) }
+        prevProcCPU = prevProcCPU.filter { livePids.contains($0.key) }
         if prevDisk.count > 500 { prevDisk.removeAll() }
         if prevNet.count > 500 { prevNet.removeAll() }
+        if prevProcCPU.count > 2000 { prevProcCPU.removeAll() }
+
+        // Full argv only for rows a user can see — one sysctl per visible
+        // pid instead of a table-wide args fetch (~500 × ~100µs).
+        var tops: Set<Int32> = []
+        for p in top8(samples, by: { $0.cpu > $1.cpu })
+                 + top8(samples, by: { $0.memMB > $1.memMB })
+                 + top8(samples, by: { $0.diskReadMBps + $0.diskWriteMBps > $1.diskReadMBps + $1.diskWriteMBps })
+                 + top8(samples, by: { $0.netInKBps + $0.netOutKBps > $1.netInKBps + $1.netOutKBps }) {
+            tops.insert(p.pid)
+        }
+        var argvMap: [Int32: String] = [:]
+        for pid in tops { if let a = processArgs(for: pid) { argvMap[pid] = a } }
+        if !argvMap.isEmpty {
+            for i in samples.indices { if let a = argvMap[samples[i].pid] { samples[i].command = a } }
+        }
         return (samples,
-                Array(byCPU.prefix(8)), Array(byMem.prefix(8)),
-                Array(byDisk.prefix(8)), Array(byNet.prefix(8)))
+                top8(samples, by: { $0.cpu > $1.cpu }),
+                top8(samples, by: { $0.memMB > $1.memMB }),
+                top8(samples, by: { $0.diskReadMBps + $0.diskWriteMBps > $1.diskReadMBps + $1.diskWriteMBps }),
+                top8(samples, by: { $0.netInKBps + $0.netOutKBps > $1.netInKBps + $1.netOutKBps }))
+    }
+
+    /// Recent-window CPU% for one pid: cumulative task ns delta / wall delta.
+    /// First-seen pids fall back to the lifetime average (ps %cpu semantics).
+    /// A failed taskinfo read (taskNs=0) clears the baseline instead of
+    /// recording it, so the next good sample doesn't report the entire
+    /// cumulative time as one delta spike.
+    private static func cpuPercent(for pid: Int32, taskNs: UInt64, start: Date, now: Date) -> Double {
+        defer { prevProcCPU[pid] = taskNs > 0 ? (ns: taskNs, at: now) : nil }
+        if let prev = prevProcCPU[pid] {
+            let wall = now.timeIntervalSince(prev.at)
+            if wall > 0.05, taskNs >= prev.ns {
+                return Double(taskNs - prev.ns) / wall / 1e7
+            }
+            return 0
+        }
+        let lifetime = now.timeIntervalSince(start)
+        guard lifetime > 1 else { return 0 }
+        return Double(taskNs) / 1e9 / lifetime * 100
+    }
+
+    /// `char[N]`-as-tuple C buffers → String (stops at the first NUL).
+    private static func fixedCString<T>(_ tuple: inout T) -> String {
+        withUnsafeBytes(of: &tuple) { buf in
+            let end = buf.firstIndex(of: 0) ?? buf.count
+            return String(decoding: buf[..<end], as: UTF8.self)
+        }
+    }
+
+    /// Bounded top-8 selection — one pass, O(8n), replaces four full sorts.
+    private static func top8(_ samples: [ProcSample], by areInOrder: (ProcSample, ProcSample) -> Bool) -> [ProcSample] {
+        var top: [ProcSample] = []
+        top.reserveCapacity(9)
+        for s in samples {
+            if let i = top.firstIndex(where: { areInOrder(s, $0) }) {
+                top.insert(s, at: i)
+                if top.count > 8 { top.removeLast() }
+            } else if top.count < 8 { top.append(s) }
+        }
+        return top
+    }
+
+    /// KERN_PROCARGS2 → joined argv, matching what `ps -o comm` displayed.
+    /// Internal for hermetic tests.
+    static func processArgs(for pid: Int32) -> String? {
+        var mib: [Int32] = [CTL_KERN, KERN_PROCARGS2, pid]
+        var size = 0
+        guard sysctl(&mib, 3, nil, &size, nil, 0) == 0,
+              size > MemoryLayout<Int32>.size, size <= 1024 * 1024 else { return nil }
+        var buf = [UInt8](repeating: 0, count: size)
+        guard sysctl(&mib, 3, &buf, &size, nil, 0) == 0, size > MemoryLayout<Int32>.size else { return nil }
+        let argc = buf.withUnsafeBytes { $0.loadUnaligned(as: Int32.self) }
+        var i = MemoryLayout<Int32>.size
+        // exec path, then NUL padding to alignment, then argv[0..argc-1]
+        while i < size, buf[i] != 0 { i += 1 }
+        while i < size, buf[i] == 0 { i += 1 }
+        var args: [String] = []
+        for _ in 0..<max(0, Int(argc)) {
+            guard i < size else { break }
+            let s = i
+            while i < size, buf[i] != 0 { i += 1 }
+            args.append(String(decoding: buf[s..<i], as: UTF8.self))
+            i += 1
+        }
+        let joined = args.joined(separator: " ")
+        return joined.isEmpty ? nil : joined
     }
 
     /// Parse ps etime format (e.g. "5", "12:34", "1-02:34:56") into a start Date.
@@ -319,6 +436,13 @@ enum SystemStats {
         task.executableURL = URL(fileURLWithPath: "/bin/ps")
         task.arguments = ["-axo", "pid=,ppid=,%cpu=,rss=,etime=,user=,args="]
         guard let data = runCapture(task) else { return [] }
+        // Byte-level prefilter: no "mlx" marker anywhere in the table → the
+        // ~500-line args parse is skipped entirely (the common case on
+        // machines with no MLX runner).
+        guard MLXObserver.dataContainsMLXMarker(data) else {
+            prevMLXDisk.removeAll()
+            return []
+        }
 
         struct Raw {
             var pid: Int32
@@ -441,7 +565,12 @@ enum SystemStats {
     }
 
     /// Capture short-lived command output without a Pipe. A temp file avoids
-    /// pipe back-pressure/deadlock when the process list is large.
+    /// pipe back-pressure/deadlock when the process list is large. The wait
+    /// is bounded: a wedged `ps`/`nettop` must not hold the sampler lock
+    /// indefinitely — 2s ticks otherwise stack blocked threads behind it
+    /// (observed live: `ps` stalling ~1.5s per run with 5+ samplers queued).
+    /// The semaphore wakes on exit; the old 20ms `usleep` poll added up to
+    /// a poll-interval of dead latency to every capture.
     private static func runCapture(_ task: Process) -> Data? {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("token-horizon-")
@@ -450,9 +579,20 @@ enum SystemStats {
               let output = FileHandle(forWritingAtPath: url.path) else { return nil }
         defer { try? FileManager.default.removeItem(at: url) }
         task.standardOutput = output
+        let exited = DispatchSemaphore(value: 0)
+        task.terminationHandler = { _ in exited.signal() }
         do {
             try task.run()
-            task.waitUntilExit()
+            guard exited.wait(timeout: .now() + subprocessTimeout) == .success else {
+                task.terminate()
+                if exited.wait(timeout: .now() + 0.2) == .timedOut, task.isRunning {
+                    #if canImport(Darwin) || canImport(Glibc)
+                    _ = kill(task.processIdentifier, SIGKILL)
+                    #endif
+                }
+                try? output.close()
+                return nil
+            }
             try? output.close()
         } catch {
             try? output.close()
@@ -461,6 +601,9 @@ enum SystemStats {
         guard task.terminationStatus == 0 else { return nil }
         return try? Data(contentsOf: url)
     }
+
+    /// Wall-clock bound for one subprocess capture (see runCapture).
+    private static let subprocessTimeout: TimeInterval = 5.0
 
     private static func netRate(for pid: Int32, snapshot: [Int32: (inB: UInt64, outB: UInt64)], now: Date) -> (inK: Double, outK: Double) {
         guard let cur = snapshot[pid] else { return (0, 0) }
@@ -574,9 +717,17 @@ enum SystemStats {
         #endif
     }
 
-    private static var prevTicks: [Int64]?
+    private static var prevTicks: [Int64] = []
+    private static var cpuPrimed = false
+    private static var pageBytes: Double = 0
+    private static var totalRAMGB: Double = 0
+    /// Serializes snapshot state (prevTicks/cpuPrimed) — snapshot() is called
+    /// from the sys timer, HTTP providers, and launch defer on different queues.
+    private static let sysLock = NSLock()
 
     static func snapshot() -> Snapshot {
+        sysLock.lock()
+        defer { sysLock.unlock() }
         var s = Snapshot()
         s.cpuPercent = cpuUsage()
         s.loadAvg1 = loadAverage()
@@ -599,25 +750,26 @@ enum SystemStats {
             vm_deallocate(mach_task_self_, vm_address_t(UInt(bitPattern: ticks)), size)
         }
 
-        var current: [Int64] = []
-        current.reserveCapacity(Int(numCPUs) * Int(CPU_STATE_MAX))
-        for cpu in 0..<Int(numCPUs) {
-            for state in 0..<Int(CPU_STATE_MAX) {
-                current.append(Int64(ticks[cpu * Int(CPU_STATE_MAX) + state]))
-            }
+        // Diff directly against prevTicks — the kernel buffer is copied out
+        // in place instead of allocating a fresh [Int64] every tick.
+        let n = Int(numCPUs) * Int(CPU_STATE_MAX)
+        if prevTicks.count != n {
+            prevTicks = [Int64](repeating: 0, count: n)
+            cpuPrimed = false
         }
-
-        defer { prevTicks = current }
-        guard let prev = prevTicks, prev.count == current.count else { return 0 }
+        defer {
+            for i in 0..<n { prevTicks[i] = Int64(ticks[i]) }
+        }
+        guard cpuPrimed else { cpuPrimed = true; return 0 }
 
         var busyDelta: Int64 = 0
         var totalDelta: Int64 = 0
         for cpu in 0..<Int(numCPUs) {
             let base = cpu * Int(CPU_STATE_MAX)
-            let user = current[base + Int(CPU_STATE_USER)] - prev[base + Int(CPU_STATE_USER)]
-            let sys = current[base + Int(CPU_STATE_SYSTEM)] - prev[base + Int(CPU_STATE_SYSTEM)]
-            let nice = current[base + Int(CPU_STATE_NICE)] - prev[base + Int(CPU_STATE_NICE)]
-            let idle = current[base + Int(CPU_STATE_IDLE)] - prev[base + Int(CPU_STATE_IDLE)]
+            let user = Int64(ticks[base + Int(CPU_STATE_USER)]) - prevTicks[base + Int(CPU_STATE_USER)]
+            let sys = Int64(ticks[base + Int(CPU_STATE_SYSTEM)]) - prevTicks[base + Int(CPU_STATE_SYSTEM)]
+            let nice = Int64(ticks[base + Int(CPU_STATE_NICE)]) - prevTicks[base + Int(CPU_STATE_NICE)]
+            let idle = Int64(ticks[base + Int(CPU_STATE_IDLE)]) - prevTicks[base + Int(CPU_STATE_IDLE)]
             busyDelta += user + sys + nice
             totalDelta += user + sys + nice + idle
         }
@@ -638,13 +790,23 @@ enum SystemStats {
         #endif
     }
 
-    private static func memory() -> (used: Double, total: Double) {
-        let total = Double(ProcessInfo.processInfo.physicalMemory)
+    /// GB memory accounting for /stats + the notch MEM ring. Widened for
+    /// the ram_total regression test: `total` (already GB) used to be
+    /// divided by 1 GiB a second time and published as 0, degenerating
+    /// every MEM% (`used / max(total, 1)`) so the ring pinned at 100%.
+    static func memory() -> (used: Double, total: Double) {
+        if totalRAMGB == 0 {
+            totalRAMGB = Double(ProcessInfo.processInfo.physicalMemory) / 1_073_741_824
+        }
+        let total = totalRAMGB
         #if canImport(Darwin)
         var stats = vm_statistics64_data_t()
         var count = mach_msg_type_number_t(MemoryLayout<vm_statistics64_data_t>.size / MemoryLayout<integer_t>.size)
-        var pageSize: vm_size_t = 0
-        host_page_size(mach_host_self(), &pageSize)
+        if pageBytes == 0 {
+            var pageSize: vm_size_t = 0
+            host_page_size(mach_host_self(), &pageSize)
+            pageBytes = Double(pageSize)
+        }
 
         let ok = withUnsafeMutablePointer(to: &stats) { ptr -> Bool in
             ptr.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
@@ -653,7 +815,7 @@ enum SystemStats {
         }
         guard ok else { return (0, total) }
 
-        let page = Double(pageSize)
+        let page = pageBytes
         // Activity Monitor formula: App Memory + Wired Memory + Compressed Memory
         // App Memory = (internal_page_count - purgeable_count)
         let appMemoryPages = max(0, Double(stats.internal_page_count) - Double(stats.purgeable_count))
@@ -661,7 +823,8 @@ enum SystemStats {
         let compressedPages = Double(stats.compressor_page_count)
         let usedPages = appMemoryPages + wiredPages + compressedPages
         let usedBytes = usedPages * page
-        return (usedBytes / 1_073_741_824, total / 1_073_741_824)
+        // `total` is already GB (totalRAMGB); only usedBytes is in page-bytes.
+        return (usedBytes / 1_073_741_824, total)
         #else
         return (0, total / 1_073_741_824)
         #endif

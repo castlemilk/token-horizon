@@ -15,6 +15,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private var surfacesBuilt = false
     private var surfaceRebuildScheduled = false
     private let heavyRefresh = HeavyRefreshCoordinator()
+    /// Tick coalescing for the trends and MLX collectors: the 2s sys timer
+    /// fires these while each underlying sample/collect can take seconds.
+    /// Without the gate, ticks queue serially — a stall once stacked 8
+    /// pending trendHistory collects and 5 MLX `ps` samplers as blocked
+    /// threads (dispatch soft-limit exhaustion).
+    private let trendsRefresh = HeavyRefreshCoordinator()
+    private let mlxRefresh = HeavyRefreshCoordinator()
+    /// Rounded % last drawn into the status item — skip identical redraws.
+    private var lastIconCPU = -1
+    private var lastIconMEM = -1
     private let refreshQueue = DispatchQueue(label: "token-horizon.refresh", qos: .utility)
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -51,10 +61,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             }
         }
 
-        server = LocalServer(statsProvider: { [engine] in engine.snapshot() },
-                             sysProvider: { SystemStats.snapshot() },
-                             historyProvider: { [engine] days in engine.history(days: days) },
-                             trendsProvider: { [engine] window in engine.trendHistory(window: window) },
+        // Single-flight memos for the HTTP seam: /history, /trends,
+        // /activity/heatmap and /leaderboard must serve the last computed
+        // value while a recompute runs, instead of queueing one engine
+        // collect per caller (a long scan once piled ~90 threads into
+        // dispatch's soft limit and hung the whole API).
+        let historyMemo = KeyedMemo<Int, (points: [HistoryPoint], streak: Int)>(ttl: 2) { [engine] days in
+            engine.history(days: days)
+        }
+        let trendsMemo = KeyedMemo<TrendWindow, [HistoryPoint]>(ttl: 2) { [engine] window in
+            engine.trendHistory(window: window)
+        }
+        let heatmapMemo = KeyedMemo<Int, [[Int]]>(ttl: 2) { [engine] days in
+            engine.activityHeatmap(days: days)
+        }
+        let leaderboardMemo = MemoizedValue<LeaderboardSyncLocalData>(ttl: 2) { [engine] in
+            engine.leaderboardData()
+        }
+        server = LocalServer(statsProvider: { [engine] in
+                                 // Cached (non-blocking): a long background
+                                 // scan must not hang /stats — the heavy tick
+                                 // refreshes lastSnapshot every ~2s anyway.
+                                 engine.cachedSnapshot() ?? engine.snapshot() },
+                             sysProvider: { [weak self] in
+                                 // UIModel sys is refreshed by the 2s tick;
+                                 // serving it keeps /stats free of subprocess
+                                 // latency entirely (runCapture bounds remain
+                                 // as the cold-start fallback).
+                                 self?.model.sys ?? SystemStats.snapshot() },
+                             historyProvider: { [historyMemo] days in
+                                 // Memoized single-flight: repeats and
+                                 // mid-recompute callers get the last points
+                                 // instead of queueing a second collect.
+                                 historyMemo.get(days) ?? ([], 0) },
+                             trendsProvider: { [trendsMemo] window in
+                                 trendsMemo.get(window) ?? [] },
                               limitsProvider: { [engine] in
                                   let plan = PlanLimitsEngine.shared.cachedLimits()
                                   let kimi = KimiLimitsEngine.shared.cachedLimits()
@@ -76,8 +117,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                                   let live = SystemStats.processSamples()
                                   return (live.all, live.byCPU, live.byMem, live.byDisk, live.byNet)
                               },
-                              heatmapProvider: { [engine] days in engine.activityHeatmap(days: days) },
-                              leaderboardDataProvider: { [engine] in engine.leaderboardData() },
+                              heatmapProvider: { [heatmapMemo] days in
+                                  heatmapMemo.get(days) ?? [] },
+                              leaderboardDataProvider: { [leaderboardMemo] in
+                                  leaderboardMemo.get() ?? LeaderboardSyncLocalData(
+                                      snapshot: UsageSnapshot(), history: [], streak: 0,
+                                      heatmap: [], hourlyHistory: []) },
                              onEvent: { [weak self] ev in
                                  EventStore.shared.add(ev)
                                  DispatchQueue.main.async {
@@ -161,6 +206,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                 let sys = SystemStats.snapshot()
                 DispatchQueue.main.async {
                     self.model.sys = sys
+                    self.notchPanel?.shell.setRings(cpu: sys.cpuPercent,
+                                                   ram: sys.ramUsedGB / max(sys.ramTotalGB, 1) * 100)
                     self.model.record(cpu: sys.cpuPercent,
                                       ram: sys.ramUsedGB / max(sys.ramTotalGB, 1) * 100,
                                       disk: sys.diskMBps,
@@ -168,13 +215,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                     self.model.recordCoarse()
                     if self.usingTray {
                         let memPct = sys.ramUsedGB / max(sys.ramTotalGB, 1) * 100
-                        // Rings only — no text title. The old "◉ %2.0f%% %2.0f%%"
-                        // title duplicated the rings, padded single digits with
-                        // spaces, and made the item wide enough to get clipped
-                        // off crowded menu bars (reads as a "broken gauge").
-                        self.statusItem?.button?.title = ""
-                        self.statusItem?.button?.toolTip = String(format: "CPU %.0f%%  ·  MEM %.0f%%", sys.cpuPercent, memPct)
-                        self.statusItem?.button?.image = StatusIcon.image(cpuPercent: sys.cpuPercent, memPercent: memPct)
+                        // Skip the redraw when the displayed (rounded) values
+                        // didn't move — an identical NSImage swap still costs
+                        // a status-bar flush every 2s.
+                        let cpuR = Int(sys.cpuPercent.rounded())
+                        let memR = Int(memPct.rounded())
+                        if cpuR != self.lastIconCPU || memR != self.lastIconMEM {
+                            self.lastIconCPU = cpuR
+                            self.lastIconMEM = memR
+                            // Rings only — no text title. The old "◉ %2.0f%% %2.0f%%"
+                            // title duplicated the rings, padded single digits with
+                            // spaces, and made the item wide enough to get clipped
+                            // off crowded menu bars (reads as a "broken gauge").
+                            self.statusItem?.button?.title = ""
+                            self.statusItem?.button?.toolTip = String(format: "CPU %.0f%%  ·  MEM %.0f%%", sys.cpuPercent, memPct)
+                            self.statusItem?.button?.image = StatusIcon.image(cpuPercent: sys.cpuPercent, memPercent: memPct)
+                        }
                     }
                 }
             }
@@ -435,6 +491,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                                     limits: limits, force: force)
     }
 
+    /// Reopen (Dock click / double-click in Applications) must surface the
+    /// UI. The app is LSUIElement (no Dock icon, no window), so without this
+    /// a click on an already-running instance looks like "nothing happened"
+    /// — indistinguishable from "can't open it". Open the dashboard so the
+    /// click always produces a visible surface.
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool {
+        if !hasVisibleWindows {
+            openDashboard()
+        } else {
+            NSApp.activate(ignoringOtherApps: true)
+        }
+        return true
+    }
+
     func application(_ application: NSApplication, open urls: [URL]) {
         for url in urls where url.scheme?.lowercased() == "tokenhorizon" {
             if let action = WidgetDeepLink.action(from: url) {
@@ -498,6 +568,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         DispatchQueue.main.async { [weak self] in self?.performHeavyRefresh() }
     }
 
+    /// Last local-leaderboard rebuild, on refreshQueue. syncLocal rebuilds the
+    /// whole local entry (breakdowns, 17-week per-model history, calendar,
+    /// sessions) — several seconds on populated stores — so the 5s tick and
+    /// the 60s history tick share one 30s stage budget. HTTP/manual syncs call
+    /// syncLocal directly and are never gated.
+    private var lastLeaderboardStage = Date.distantPast
+    private static let leaderboardStageInterval: TimeInterval = 30
+
     private func performHeavyRefresh() {
         KimiLimitsEngine.shared.refreshIfDue(maxAge: 30)
         PlanLimitsEngine.shared.refreshIfDue(maxAge: 30)
@@ -506,7 +584,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             let data = self.engine.leaderboardData()
             let procs = SystemStats.processSamples()
             let containers = DockerObserver.sampleContainers()
-            LeaderboardStore.shared.syncLocal(data)
+            if Date().timeIntervalSince(self.lastLeaderboardStage) >= Self.leaderboardStageInterval {
+                self.lastLeaderboardStage = Date()
+                LeaderboardStore.shared.syncLocal(data)
+            }
             let rankings = LeaderboardStore.shared.rankings(for: .today)
             DispatchQueue.main.async {
                 self.applyLeaderboardData(data)
@@ -529,6 +610,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     }
 
     func refreshTrends() {
+        guard trendsRefresh.request() else { return }
+        performTrendsRefresh()
+    }
+
+    private func performTrendsRefresh() {
         let window = model.trendWindow
         DispatchQueue.global(qos: .utility).async { [weak self] in
             guard let self else { return }
@@ -543,6 +629,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                 // Republish so the widget's 1H window reflects the fresh
                 // hourly series on the first trends tick after launch.
                 self.publishWidget()
+                // Retained-burst semantics: one follow-up runs the newest
+                // window; concurrent ticks never queue collect after collect.
+                if self.trendsRefresh.finish() { self.performTrendsRefresh() }
             }
         }
     }
@@ -564,6 +653,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private func refreshLocalLeaderboard() {
         refreshQueue.async {
             let data = self.engine.leaderboardData()
+            self.lastLeaderboardStage = Date()
             LeaderboardStore.shared.syncLocal(data)
             let rankings = LeaderboardStore.shared.rankings(for: .today)
             DispatchQueue.main.async {
@@ -678,6 +768,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     }
 
     private func refreshMLX() {
+        guard mlxRefresh.request() else { return }
+        performMLXRefresh()
+    }
+
+    /// Consecutive ticks whose sample found no MLX runner. While idle, a
+    /// full-args `ps` plus a per-line parse every 2s is pure waste — re-probe
+    /// every 4th tick (~8s detection lag for a new runner) and synthesize
+    /// the empty snapshot a real empty sample would produce. A hit restores
+    /// the 2s cadence immediately.
+    private var mlxIdleStreak = 0
+
+    private func performMLXRefresh() {
+        if mlxIdleStreak > 0, mlxIdleStreak % 4 != 0 {
+            mlxIdleStreak += 1
+            let snapshot = MLXSnapshot(sampledAt: Date())
+            TokenHorizonTelemetry.shared.recordMLX(snapshot)
+            model.recordMLX(snapshot)
+            if mlxRefresh.finish() { performMLXRefresh() }
+            return
+        }
         DispatchQueue.global(qos: .utility).async { [weak self] in
             guard let self else { return }
             let samples = SystemStats.mlxProcessSamples()
@@ -685,6 +795,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             TokenHorizonTelemetry.shared.recordMLX(snapshot)
             DispatchQueue.main.async {
                 self.model.recordMLX(snapshot)
+                self.mlxIdleStreak = snapshot.processes.isEmpty ? self.mlxIdleStreak + 1 : 0
+                if self.mlxRefresh.finish() { self.performMLXRefresh() }
             }
         }
     }

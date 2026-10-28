@@ -48,6 +48,27 @@ struct MLXSnapshot: Equatable {
 }
 
 enum MLXObserver {
+    /// Zero-allocation ASCII case-insensitive scan for the "mlx" byte run.
+    /// Every isMLXCommand pattern contains "mlx" after lowercasing, so a miss
+    /// here means no process in the table can match — callers can skip the
+    /// whole parse. `| 0x20` folds A–Z onto a–z without aliasing: m/l/x each
+    /// have exactly one uppercase preimage.
+    static func dataContainsMLXMarker(_ data: Data) -> Bool {
+        data.withUnsafeBytes { ptr -> Bool in
+            guard let base = ptr.baseAddress, ptr.count >= 3 else { return false }
+            var i = 0
+            while i + 2 < ptr.count {
+                let b0 = base.load(fromByteOffset: i, as: UInt8.self) | 0x20
+                guard b0 == UInt8(ascii: "m") else { i += 1; continue }
+                let b1 = base.load(fromByteOffset: i + 1, as: UInt8.self) | 0x20
+                let b2 = base.load(fromByteOffset: i + 2, as: UInt8.self) | 0x20
+                if b1 == UInt8(ascii: "l"), b2 == UInt8(ascii: "x") { return true }
+                i += 1
+            }
+            return false
+        }
+    }
+
     /// Identify the command forms used by mlx-lm, mlx-vlm, and Ollama's MLX runner.
     static func isMLXCommand(_ command: String) -> Bool {
         let value = command.lowercased()

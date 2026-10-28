@@ -45,6 +45,11 @@ pub struct EngineConfig {
     /// speculative decoding (qwen3_5 only). Load-time only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub draft_dir: Option<std::path::PathBuf>,
+    /// Memory budget in GiB for the load-time admission check
+    /// (memgov). None = derive from the device working-set limit, report
+    /// only. Changeable via /engine/config; enforced on the next load.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_mem_gb: Option<f64>,
 }
 
 fn default_repeat_penalty() -> f32 {
@@ -78,6 +83,7 @@ impl Default for EngineConfig {
             seed: 0,
             max_context: None,
             draft_dir: None,
+            max_mem_gb: None,
         }
     }
 }
@@ -96,6 +102,7 @@ pub struct ConfigPatch {
     pub kv_quant: Option<bool>,
     pub seed: Option<u64>,
     pub max_context: Option<Option<usize>>,
+    pub max_mem_gb: Option<Option<f64>>,
 }
 
 impl EngineConfig {
@@ -132,6 +139,9 @@ impl EngineConfig {
         }
         if let Some(v) = p.max_context {
             self.max_context = v;
+        }
+        if let Some(v) = p.max_mem_gb {
+            self.max_mem_gb = v;
         }
     }
 }
@@ -234,6 +244,71 @@ pub struct EngineState {
     /// T1 prefix cache: load-time config + live counters.
     pub prefix_cfg: crate::prefix_cache::PrefixCacheConfig,
     pub prefix_stats: PrefixStats,
+    /// memgov: load-time plan + live byte accounting (/status `memory`).
+    pub mem: MemStats,
+}
+
+/// Memory-governor accounting (memgov). Plan numbers land once at load;
+/// the live KV estimate is derived on read from `kv_tokens` ×
+/// `kv_bytes_per_token` — nothing on the hot path pays for this.
+#[derive(Default)]
+pub struct MemStats {
+    pub weights_bytes: AtomicU64,
+    pub weights_alloc_bytes: AtomicU64,
+    pub kv_bytes_per_token: AtomicU64,
+    pub gdn_state_bytes: AtomicU64,
+    pub budget_bytes: AtomicU64,
+    pub device_limit_bytes: AtomicU64,
+    /// "fits" | "tight" | "exceeds" | "unknown"
+    pub admission: RwLock<String>,
+    pub plan: RwLock<Option<serde_json::Value>>,
+}
+
+impl MemStats {
+    pub fn set_plan(&self, plan: &crate::memgov::MemoryPlan) {
+        let n = |v: Option<u64>| v.unwrap_or(0);
+        self.weights_bytes
+            .store(plan.weights_bytes, Ordering::Relaxed);
+        self.weights_alloc_bytes
+            .store(plan.weights_alloc_bytes, Ordering::Relaxed);
+        self.kv_bytes_per_token
+            .store(plan.kv_bytes_per_token, Ordering::Relaxed);
+        self.gdn_state_bytes
+            .store(n(plan.gdn_state_bytes), Ordering::Relaxed);
+        self.budget_bytes.store(n(plan.budget_bytes), Ordering::Relaxed);
+        self.device_limit_bytes
+            .store(n(plan.device_limit_bytes), Ordering::Relaxed);
+        *self.admission.write().unwrap() = plan.admission.to_string();
+        *self.plan.write().unwrap() = serde_json::to_value(plan).ok();
+    }
+
+    /// Estimated live KV bytes at the currently published token count.
+    pub fn kv_live_bytes(&self, kv_tokens: u64) -> u64 {
+        kv_tokens * self.kv_bytes_per_token.load(Ordering::Relaxed)
+            + self.gdn_state_bytes.load(Ordering::Relaxed)
+    }
+
+    /// Ceiling for pressure: explicit budget wins over the device limit.
+    pub fn ceiling(&self) -> Option<u64> {
+        match (
+            self.budget_bytes.load(Ordering::Relaxed),
+            self.device_limit_bytes.load(Ordering::Relaxed),
+        ) {
+            (0, 0) => None,
+            (0, d) => Some(d),
+            (b, _) => Some(b),
+        }
+    }
+
+    /// 0.0..=1.0+ of the ceiling; None when no ceiling is known.
+    pub fn pressure(&self, kv_tokens: u64, prefix_bytes: u64) -> Option<f64> {
+        crate::memgov::pressure(
+            self.weights_alloc_bytes.load(Ordering::Relaxed),
+            self.kv_live_bytes(kv_tokens),
+            prefix_bytes,
+            self.ceiling(),
+        )
+    }
 }
 
 impl EngineState {
@@ -251,7 +326,13 @@ impl EngineState {
             events,
             prefix_cfg: crate::prefix_cache::PrefixCacheConfig::disabled(),
             prefix_stats: PrefixStats::default(),
+            mem: MemStats::default(),
         }
+    }
+
+    /// memgov: publish the load-time plan (called once from Engine::load).
+    pub fn set_memory_plan(&self, plan: &crate::memgov::MemoryPlan) {
+        self.mem.set_plan(plan);
     }
 
     pub fn record(&self, rec: RequestRecord) {

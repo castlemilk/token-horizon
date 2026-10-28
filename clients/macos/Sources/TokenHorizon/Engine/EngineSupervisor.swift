@@ -48,8 +48,13 @@ struct EngineBackend {
     func probeModel(_ json: [String: Any]) -> String? {
         switch probePath {
         case "/v1/models":
-            // mlx-lm: {"object":"list","data":[{"id":"repo",…}]}
+            // mlx-lm: {"object":"list","data":[{"id":"repo",…}]}. mlx-vlm lists
+            // the whole HF cache sorted by id and flags the one in memory with
+            // `loaded` — no loaded entry there means nothing is served yet.
             guard let data = json["data"] as? [[String: Any]] else { return nil }
+            if data.contains(where: { $0["loaded"] != nil }) {
+                return data.first { $0["loaded"] as? Bool == true }?["id"] as? String
+            }
             return data.first?["id"] as? String
         default:
             // splash / th-engine: {"instance":{"model":…,"pid":…}}
@@ -62,8 +67,16 @@ struct EngineBackend {
     /// (HF repo id for splash/mlx; repo/path or repo:file for thengine).
     /// `tokenizer` is only meaningful for thengine (GGUF repos ship no
     /// tokenizer.json — the catalog carries the sibling base repo).
+    /// `idleSecs` is the engine's own inactivity deadline (0 = never); only
+    /// thengine honours it natively — splash/mlx rely on the supervisor's
+    /// watchdog instead. `expertCacheGB`/`maxNumSeqs` are mlx-vlm-only
+    /// (Flint expert offload + concurrency); mlx-lm rejects both flags, so
+    /// they are forwarded only when the model serves under mlx_vlm.
     func spawnArgs(model: String, tokenizer: String?,
-                   maxMemoryGB: Int?, maxContextK: Int?, keepLoaded: Bool = false) -> [String] {
+                   maxMemoryGB: Int?, maxContextK: Int?, keepLoaded: Bool = false,
+                   expertCacheGB: Int? = nil, maxNumSeqs: Int? = nil,
+                   specTokens: Int? = nil, kvQuant: Bool? = nil,
+                   idleSecs: Int = 60) -> [String] {
         switch id {
         case "splash":
             var args = ["serve", "--model", model]
@@ -73,12 +86,26 @@ struct EngineBackend {
         case "mlx":
             // mlx-lm sizes itself from the model and the machine; it exposes no
             // memory or context ceiling, so those ceilings stay advisory here.
-            return argPrefix + ["--model", model, "--host", "127.0.0.1", "--port", "\(port)"]
+            var args = ["-m", "\(serverModule(for: model) ?? "mlx_lm").server",
+                        "--model", model, "--host", "127.0.0.1", "--port", "\(port)"]
+            if serverModule(for: model) == "mlx_vlm" {
+                if let e = expertCacheGB, e > 0 { args += ["--expert-cache-gb", "\(e)"] }
+                if let n = maxNumSeqs, n > 0 { args += ["--max-num-seqs", "\(n)"] }
+            }
+            return args
         default: // thengine
             var args = ["serve", "--model", model, "--port", "\(port)",
-                        "--idle-timeout-secs", keepLoaded ? "0" : "300"]
+                        "--idle-timeout-secs", keepLoaded ? "0" : "\(max(1, idleSecs))"]
             if let t = tokenizer { args += ["--tokenizer", t] }
             if let c = maxContextK { args += ["--max-context", "\(c * 1024)"] }
+            // memgov admission budget: the engine plans weights + KV at the
+            // context ceiling and refuses to load over an explicit budget
+            // (previously this ceiling was ignored here).
+            if let m = maxMemoryGB { args += ["--max-mem-gb", "\(m)"] }
+            // profile knobs (ServeProfile.knobs) — lookup speculation and
+            // TurboQuant KV.
+            if let s = specTokens { args += ["--spec-tokens", "\(s)"] }
+            if kvQuant == true { args += ["--kv-quant"] }
             // DFlash draft auto-attach: the only packaged draft is
             // trained against Qwen3.8-27B-class targets — a mismatched
             // draft just burns verify cycles, so gate on the model id.
@@ -116,6 +143,45 @@ struct EngineBackend {
     }
 }
 
+/// Named serve profiles — the payload's knobs bundled the way they get
+/// used (HyperQwen-style): "reproduction" is the copy arm, where output
+/// repeats input and prompt-lookup speculation pays, so thengine drafts at
+/// its max; "long-context" trades decode memory for KV headroom via
+/// TurboQuant. mlx sizes itself and splash has no matching flags — both
+/// ignore profiles.
+enum ServeProfile: String, CaseIterable {
+    case chat
+    case reproduction
+    case longContext = "long-context"
+
+    struct ParseError: Error, Equatable {
+        let raw: String
+        var message: String {
+            "unknown profile '\(raw)' — chat | reproduction | long-context"
+        }
+    }
+
+    /// nil/empty → nil (engine defaults). Unknown strings fail so the API
+    /// can 400 instead of silently ignoring.
+    static func parse(_ raw: String?) -> Result<ServeProfile?, ParseError> {
+        guard let raw, !raw.isEmpty else { return .success(nil) }
+        guard let p = ServeProfile(rawValue: raw) else {
+            return .failure(ParseError(raw: raw))
+        }
+        return .success(p)
+    }
+
+    /// Knob expansion per backend. thengine only; nil = engine defaults.
+    func knobs(backendId: String) -> (specTokens: Int?, kvQuant: Bool?) {
+        guard backendId == "thengine" else { return (nil, nil) }
+        switch self {
+        case .chat: return (nil, nil)
+        case .reproduction: return (7, nil)
+        case .longContext: return (nil, true)
+        }
+    }
+}
+
 extension EngineBackend {
     static let splash = EngineBackend(
         id: "splash", displayName: "Splash",
@@ -142,15 +208,29 @@ extension EngineBackend {
         port: 8002,
         binaryEnvVar: "TOKEN_HORIZON_MLX_PYTHON",
         binarySearchPaths: [
+            // The managed runtime (scripts/setup-mlx-runtime.sh) wins: it is
+            // the only interpreter guaranteed to carry the modules — system
+            // pythons are fallbacks (Homebrew's is externally-managed).
+            NSString("~/.config/token-horizon/mlx-runtime/bin/python")
+                .expandingTildeInPath,
             "/opt/homebrew/bin/python3",
             "/usr/local/bin/python3",
             "/usr/bin/python3",
         ],
+        // Flint checkpoints need mlx-vlm (≥0.7.10) — upstream mlx-lm support
+        // is still pending (ml-explore/mlx-lm#1998). `serverModule` picks.
         argPrefix: ["-m", "mlx_lm.server"],
         moduleName: "mlx_lm",
         probePath: "/v1/models")
 
     static let all: [EngineBackend] = [.splash, .thengine, .mlx]
+
+    /// The python module a model is served by. Flint-family checkpoints run
+    /// under mlx-vlm today; everything else on mlx uses mlx-lm.
+    func serverModule(for model: String) -> String? {
+        guard id == "mlx" else { return moduleName }
+        return model.lowercased().contains("flint") ? "mlx_vlm" : "mlx_lm"
+    }
 }
 
 // MARK: - Per-backend supervisor
@@ -191,8 +271,17 @@ final class BackendSupervisor: ObservableObject {
     private var process: Process?
     private var activationID: UUID?
     private var pollTimer: Timer?
-    private var cachedBinary: URL?
-    private var cachedModuleCheck: (String, Bool)?
+    /// "<interpreter path>|<module>" → probe outcome. Positives are cached;
+    /// negatives are re-probed so a module installed while the app runs is
+    /// picked up without a restart.
+    private var cachedModuleCheck: [String: (installed: Bool, version: String?)] = [:]
+    private var spawnedModel: String?
+    // Idle lifecycle — guarded by `lock`, updated only on the probe queue.
+    private var pinnedAtServe = false
+    private var lastActivity = Date.distantPast
+    private var lastRequestSig: UInt64?
+    private var lastCpuNs: UInt64?
+    private var idleSeconds: TimeInterval = 0
 
     init(backend: EngineBackend) {
         self.backend = backend
@@ -214,53 +303,95 @@ final class BackendSupervisor: ObservableObject {
         return nil
     }
 
-    /// Interpreter resolved once — every availability check and spawn reuses
-    /// it, so a python module backend is probed once, not per render.
-    private var resolvedBinary: URL? {
-        lock.lock()
-        if let cachedBinary { lock.unlock(); return cachedBinary }
-        lock.unlock()
-        let url = binaryURL()
-        lock.lock()
-        cachedBinary = url
-        lock.unlock()
-        return url
-    }
-
     /// Module backends (mlx-lm) must also import: an interpreter without the
     /// module cannot serve, and saying so up-front beats a failed spawn.
-    private func moduleImportable(_ module: String) -> Bool {
+    /// `minVersion` gates checkpoints a too-old package can't serve (Flint →
+    /// mlx-vlm ≥0.7.10); an installed module of unknown version passes.
+    private func moduleImportable(_ module: String, minVersion: String? = nil) -> Bool {
+        let probe = moduleProbe(module)
+        guard probe.installed else { return false }
+        guard let floor = minVersion, let have = probe.version else { return true }
+        return Self.versionAtLeast(have, floor)
+    }
+
+    /// `find_spec` + `importlib.metadata` instead of a real import: ~20 ms
+    /// against ~1 s to import mlx_vlm, cheap enough to run on the UI path.
+    /// The child writes its verdict to a temp file (the project's pipe-safe
+    /// pattern — no Pipe+waitUntilExit reads).
+    private func moduleProbe(_ module: String) -> (installed: Bool, version: String?) {
+        let interpreter = binaryURL()?.path ?? ""
+        let key = "\(interpreter)|\(module)"
         lock.lock()
-        if let cachedModuleCheck, cachedModuleCheck.0 == module {
-            let value = cachedModuleCheck.1
+        if let hit = cachedModuleCheck[key], hit.installed {
+            lock.unlock(); return hit
+        }
+        lock.unlock()
+        var result = (installed: false, version: nil as String?)
+        if let bin = binaryURL() {
+            let tmp = NSTemporaryDirectory()
+                .appending("th-modprobe-\(UUID().uuidString)")
+            let proc = Process()
+            proc.executableURL = bin
+            proc.arguments = ["-c",
+                "import importlib.util, importlib.metadata, pathlib\n"
+                + "m='\(module)'\n"
+                + "ok = importlib.util.find_spec(m) is not None\n"
+                + "v = ''\n"
+                + "if ok:\n"
+                + "    try: v = importlib.metadata.version(m.replace('_','-'))\n"
+                + "    except Exception: pass\n"
+                + "pathlib.Path(r'\(tmp)').write_text(('1\\n'+v) if ok else '0\\n')\n"]
+            proc.standardOutput = FileHandle.nullDevice
+            proc.standardError = FileHandle.nullDevice
+            do {
+                try proc.run()
+                proc.waitUntilExit()
+                if let report = try? String(contentsOfFile: tmp, encoding: .utf8) {
+                    let lines = report.split(separator: "\n", omittingEmptySubsequences: false)
+                    let installed = lines.first == "1"
+                    let version = lines.count > 1 ? String(lines[1]) : nil
+                    result = (installed, installed && !(version ?? "").isEmpty ? version : nil)
+                }
+            } catch {}
+            try? FileManager.default.removeItem(atPath: tmp)
+        }
+        if result.installed {
+            lock.lock()
+            cachedModuleCheck[key] = result
             lock.unlock()
-            return value
         }
-        lock.unlock()
-        guard let bin = binaryURL() else { return false }
-        let proc = Process()
-        proc.executableURL = bin
-        proc.arguments = ["-c", "import \(module)"]
-        proc.standardOutput = FileHandle.nullDevice
-        proc.standardError = FileHandle.nullDevice
-        var ok = false
-        do {
-            try proc.run()
-            proc.waitUntilExit()
-            ok = proc.terminationStatus == 0
-        } catch {
-            ok = false
+        return result
+    }
+
+    /// Minimum package versions for serving modules — FlintForCausalLM only
+    /// exists in mlx-vlm ≥0.7.10 (mlx-lm support is ml-explore/mlx-lm#1998).
+    static let moduleFloor: [String: String] = ["mlx_vlm": "0.7.10"]
+
+    /// Dotted-version comparison ("0.7.10" ≥ "0.7.10"): numeric prefix per
+    /// component, missing components count as 0.
+    static func versionAtLeast(_ have: String, _ floor: String) -> Bool {
+        func parts(_ s: String) -> [Int] {
+            s.split(separator: ".").map { Int($0.prefix(while: { $0.isNumber })) ?? 0 }
         }
-        lock.lock()
-        cachedModuleCheck = (module, ok)
-        lock.unlock()
-        return ok
+        let h = parts(have), f = parts(floor)
+        for i in 0..<max(h.count, f.count) {
+            let a = i < h.count ? h[i] : 0, b = i < f.count ? f[i] : 0
+            if a != b { return a > b }
+        }
+        return true
     }
 
     var engineAvailable: Bool {
-        guard resolvedBinary != nil else { return false }
-        if let module = backend.moduleName { return moduleImportable(module) }
-        return true
+        guard binaryURL() != nil else { return false }
+        switch backend.id {
+        case "mlx":
+            // Either serving module makes the backend usable; which module a
+            // given model needs is checked again at spawn.
+            return moduleImportable("mlx_lm") || moduleImportable("mlx_vlm")
+        default:
+            if let module = backend.moduleName { return moduleImportable(module) }
+            return true
+        }
     }
 
     /// How to make the backend available, for the UI's hint line.
@@ -269,10 +400,10 @@ final class BackendSupervisor: ObservableObject {
         case "splash": return "splash not installed — run: brew install incoai/tap/splash"
         case "thengine": return "th-engine not built — run: cargo build --release -p th-engine (engine/)"
         case "mlx":
-            guard resolvedBinary != nil else {
-                return "python3 not found — MLX needs python3 with mlx-lm"
+            guard binaryURL() != nil else {
+                return "python3 not found — MLX needs python3 with mlx-lm/mlx-vlm"
             }
-            return "mlx-lm not installed — run: pip install mlx-lm"
+            return "mlx runtime not installed — run: scripts/setup-mlx-runtime.sh"
         default: return nil
         }
     }
@@ -303,11 +434,20 @@ final class BackendSupervisor: ObservableObject {
     /// Serve a model. If a server already answers on the backend's port we
     /// adopt it instead of double-serving.
     func serve(model: String, tokenizer: String? = nil,
-               maxMemoryGB: Int?, maxContextK: Int?, keepLoaded: Bool = false) {
+               maxMemoryGB: Int?, maxContextK: Int?, keepLoaded: Bool = false,
+               expertCacheGB: Int? = nil, maxNumSeqs: Int? = nil,
+               profile: ServeProfile? = nil) {
         lock.lock()
         let busy = activationID != nil || state.isBusy || state.isServing
         let activation = UUID()
-        if !busy { activationID = activation }
+        if !busy {
+            activationID = activation
+            pinnedAtServe = keepLoaded
+            lastActivity = Date()
+            lastRequestSig = nil
+            lastCpuNs = nil
+            idleSeconds = 0
+        }
         lock.unlock()
         guard !busy else { return }
 
@@ -321,7 +461,9 @@ final class BackendSupervisor: ObservableObject {
             }
             self.spawnServe(model: model, tokenizer: tokenizer,
                             maxMemoryGB: maxMemoryGB, maxContextK: maxContextK,
-                            keepLoaded: keepLoaded, activation: activation)
+                            keepLoaded: keepLoaded, expertCacheGB: expertCacheGB,
+                            maxNumSeqs: maxNumSeqs, profile: profile,
+                            activation: activation)
         }
     }
 
@@ -330,7 +472,11 @@ final class BackendSupervisor: ObservableObject {
         lock.lock()
         let proc = process
         process = nil
+        spawnedModel = nil
         activationID = nil
+        lastRequestSig = nil
+        lastCpuNs = nil
+        idleSeconds = 0
         lock.unlock()
         if let proc, proc.isRunning {
             proc.terminate()
@@ -360,6 +506,10 @@ final class BackendSupervisor: ObservableObject {
         case .failed(let reason):
             stateObj = ["state": "failed", "error": reason]
         }
+        lock.lock()
+        let idle = Int(idleSeconds.rounded())
+        let pinned = pinnedAtServe
+        lock.unlock()
         return [
             "id": backend.id,
             "name": backend.displayName,
@@ -368,41 +518,146 @@ final class BackendSupervisor: ObservableObject {
             "port": backend.port,
             "engine": status ?? NSNull(),
             "last_error": lastError ?? NSNull(),
+            "idle_seconds": idle,
+            "idle_timeout_secs": SettingsStore.shared.engineIdleTimeoutSecs,
+            "keep_loaded": pinned,
         ]
     }
 
     // MARK: Internals
 
+    /// One loopback GET on the backend's port → JSON object; nil on any
+    /// failure or non-200.
+    private func getJSON(_ path: String) -> [String: Any]? {
+        guard let url = URL(string: "http://127.0.0.1:\(backend.port)\(path)") else { return nil }
+        var req = URLRequest(url: url, timeoutInterval: 0.6)
+        req.httpMethod = "GET"
+        var obj: [String: Any]?
+        let sema = DispatchSemaphore(value: 0)
+        URLSession.shared.dataTask(with: req) { data, resp, _ in
+            defer { sema.signal() }
+            guard let data, (resp as? HTTPURLResponse)?.statusCode == 200 else { return }
+            obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        }.resume()
+        _ = sema.wait(timeout: .now() + 1.0)
+        return obj
+    }
+
+    /// Request counters — /status `requests` (splash, thengine) or mlx-vlm's
+    /// /metrics `summary` — reduced to a signature that moves on every start
+    /// or settle, plus the in-flight count. Gauges stay out of the signature
+    /// (queue age, uptime and in-flight itself would mask or fake events);
+    /// nil when no known counter is present.
+    static func requestActivity(_ counters: [String: Any]) -> (signature: UInt64, inFlight: Int64)? {
+        var signature: UInt64 = 0
+        var submitted: Int64 = 0, settled: Int64 = 0, inFlight: Int64 = 0
+        var found = false
+        for (key, value) in counters {
+            guard let n = (value as? NSNumber)?.int64Value else { continue }
+            switch key {
+            case "submitted", "total", "requests_started":
+                submitted = max(submitted, n)
+            case "completed", "cancelled", "failed", "requests_completed", "requests_failed":
+                settled += n
+            case "active", "inflight", "in_flight":
+                inFlight += n
+                found = true
+                continue
+            default:
+                continue
+            }
+            signature &+= UInt64(bitPattern: n)
+            found = true
+        }
+        return found ? (signature, max(inFlight, submitted - settled)) : nil
+    }
+
     /// GET the backend's probe path. Returns the payload when its own server
     /// answers and publishes .serving/.stopped accordingly.
     @discardableResult
     private func probeAndUpdate() -> [String: Any]? {
-        guard let url = URL(string: "http://127.0.0.1:\(backend.port)\(backend.probePath)") else { return nil }
-        var req = URLRequest(url: url, timeoutInterval: 0.6)
-        req.httpMethod = "GET"
-        var payload: [String: Any]?
-        var servedModel: String?
-        let sema = DispatchSemaphore(value: 0)
-        URLSession.shared.dataTask(with: req) { data, resp, _ in
-            defer { sema.signal() }
-            guard let data,
-                  let code = (resp as? HTTPURLResponse)?.statusCode, code == 200,
-                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
-            // The backend's own shape decides: /status names `instance.model`,
-            // mlx-lm's /v1/models names `data[0].id`. Anything else on the port
-            // is not ours.
-            guard let model = self.backend.probeModel(obj) else { return }
-            payload = obj
-            servedModel = model
-        }.resume()
-        _ = sema.wait(timeout: .now() + 1.0)
+        // The backend's own shape decides: /status names `instance.model`,
+        // /v1/models its served entry. Anything else on the port is not ours.
+        var payload = getJSON(backend.probePath)
+        var servedModel = payload.flatMap { backend.probeModel($0) }
+        if servedModel == nil { payload = nil }
 
-        let spawnedPID: Int? = {
+        let (spawnedPID, ownModel): (Int?, String?) = {
             lock.lock(); defer { lock.unlock() }
-            return (process?.isRunning == true) ? Int(process!.processIdentifier) : nil
+            guard let p = process, p.isRunning else { return (nil, nil) }
+            return (Int(p.processIdentifier), spawnedModel)
         }()
+        // mlx-lm's /v1/models lists every cached checkpoint without saying
+        // which is loaded; for a server we spawned, what we asked for is.
+        if servedModel != nil, backend.probePath == "/v1/models", let ownModel {
+            servedModel = ownModel
+        }
+
+        // Idle-lifecycle bookkeeping. Request counters when the backend has
+        // them (splash/thengine /status, mlx-vlm /metrics) — an in-flight
+        // request or a moved signature means work; else CPU moved on the
+        // served pid (mlx-lm — an idle pooled conn burns ~0 while any decode
+        // always does). Probes and keep-alive connections stay under both.
+        // Evaluated on this probe queue; `idleSeconds` is read under `lock`
+        // by payload().
+        let now = Date()
+        var busy = false
+        if let payload, servedModel != nil {
+            var counters = payload["requests"] as? [String: Any]
+            if counters == nil, backend.id == "mlx" {
+                counters = getJSON("/metrics")?["summary"] as? [String: Any]
+            }
+            if let activity = counters.flatMap(Self.requestActivity) {
+                lock.lock()
+                busy = activity.inFlight > 0 || (lastRequestSig.map { $0 != activity.signature } ?? true)
+                lastRequestSig = activity.signature
+                lock.unlock()
+            } else {
+                var pid = spawnedPID
+                if pid == nil {
+                    pid = (payload["instance"] as? [String: Any])?["pid"] as? Int
+                }
+                if let pid {
+                    var t = proc_taskinfo()
+                    let n = proc_pidinfo(pid_t(pid), PROC_PIDTASKINFO, 0, &t,
+                                         Int32(MemoryLayout<proc_taskinfo>.stride))
+                    if n == Int32(MemoryLayout<proc_taskinfo>.stride) {
+                        let ns = t.pti_total_user + t.pti_total_system
+                        lock.lock()
+                        // >20ms CPU in a ~5s window = real work; health probes
+                        // and python GC stay far below this.
+                        busy = lastCpuNs.map { ns > $0 &+ 20_000_000 } ?? true
+                        lastCpuNs = ns
+                        lock.unlock()
+                    }
+                }
+            }
+            lock.lock()
+            // First sighting is the baseline — an adopted server with no
+            // signal must not read as idle since distantPast.
+            if busy || lastActivity == .distantPast { lastActivity = now }
+            let idleFor = now.timeIntervalSince(lastActivity)
+            idleSeconds = idleFor
+            let owned = process?.isRunning == true
+            let pinned = pinnedAtServe
+            lock.unlock()
+            let timeout = TimeInterval(SettingsStore.shared.engineIdleTimeoutSecs)
+            if owned, !pinned, timeout > 0, idleFor >= timeout {
+                engineLog.info("Engine supervisor: \(self.backend.id, privacy: .public) idle \(Int(idleFor))s ≥ \(Int(timeout))s — stopping to release model memory")
+                self.stop()
+                return payload
+            }
+        } else {
+            lock.lock()
+            lastActivity = .distantPast
+            lastRequestSig = nil
+            lastCpuNs = nil
+            idleSeconds = 0
+            lock.unlock()
+        }
+        let (published, publishedModel) = (payload, servedModel)
         DispatchQueue.main.async {
-            if let payload, let model = servedModel {
+            if let payload = published, let model = publishedModel {
                 self.status = payload
                 let inst = payload["instance"] as? [String: Any] ?? [:]
                 let pid = inst["pid"] as? Int ?? spawnedPID ?? 0
@@ -417,17 +672,34 @@ final class BackendSupervisor: ObservableObject {
 
     private func spawnServe(model: String, tokenizer: String?,
                             maxMemoryGB: Int?, maxContextK: Int?,
-                            keepLoaded: Bool, activation: UUID) {
-        guard let bin = resolvedBinary else {
+                            keepLoaded: Bool, expertCacheGB: Int? = nil,
+                            maxNumSeqs: Int? = nil, profile: ServeProfile? = nil,
+                            activation: UUID) {
+        guard let bin = binaryURL() else {
             lock.lock()
             if activationID == activation { activationID = nil }
             lock.unlock()
             publishFail(installHint ?? "\(backend.id) not installed")
             return
         }
+        if let module = backend.serverModule(for: model),
+           !moduleImportable(module, minVersion: Self.moduleFloor[module]) {
+            lock.lock()
+            activationID = nil
+            lock.unlock()
+            publishFail(module == "mlx_vlm"
+                ? "flint needs mlx-vlm ≥0.7.10 — run: scripts/setup-mlx-runtime.sh"
+                : (installHint ?? "\(module) not installed"))
+            return
+        }
+        let knobs = profile?.knobs(backendId: backend.id)
+            ?? (specTokens: nil, kvQuant: nil)
         let args = backend.spawnArgs(model: model, tokenizer: tokenizer,
                                      maxMemoryGB: maxMemoryGB, maxContextK: maxContextK,
-                                     keepLoaded: keepLoaded)
+                                     keepLoaded: keepLoaded, expertCacheGB: expertCacheGB,
+                                     maxNumSeqs: maxNumSeqs,
+                                     specTokens: knobs.specTokens, kvQuant: knobs.kvQuant,
+                                     idleSecs: SettingsStore.shared.engineIdleTimeoutSecs)
 
         let proc = Process()
         proc.executableURL = bin
@@ -449,6 +721,7 @@ final class BackendSupervisor: ObservableObject {
                 self.lock.lock()
                 guard self.process === p else { self.lock.unlock(); return }
                 self.process = nil
+                self.spawnedModel = nil
                 self.activationID = nil
                 self.lock.unlock()
                 if case .starting(let m) = self.state, m == model {
@@ -470,6 +743,7 @@ final class BackendSupervisor: ObservableObject {
             return
         }
         process = proc
+        spawnedModel = model
         lock.unlock()
         DispatchQueue.main.async {
             self.lock.lock()
@@ -557,6 +831,54 @@ final class EngineManager: ObservableObject {
               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
         else { return }
         bench = obj
+        recordBenchMeasurements(obj)
+    }
+
+    /// The bench file's latest run as HardwareMap measurements — one per
+    /// engine that reported a decode rate. Pure: persistence is the caller's.
+    static func benchMeasurements(from payload: [String: Any]) -> [HardwareMap.Measurement] {
+        guard let latest = payload["latest"] as? [String: Any],
+              let engines = latest["engines"] as? [String: Any] else { return [] }
+        let ranAt = (latest["ran_at"] as? String)
+            .flatMap { ISO8601DateFormatter().date(from: $0) } ?? Date()
+        let catalog = LocalModelCatalog.models()
+        var out: [HardwareMap.Measurement] = []
+        for (engineID, raw) in engines {
+            guard let e = raw as? [String: Any],
+                  let model = e["model"] as? String,
+                  let decode = (e["decode_tps"] as? NSNumber)?.doubleValue,
+                  decode > 0 else { continue }
+            // modelSpec carries "repo:file" for GGUF rows, the bare repo
+            // otherwise — matching on it covers both spellings.
+            let row = catalog.first { $0.modelSpec == model && $0.engine == engineID }
+            out.append(HardwareMap.Measurement(
+                modelSpec: row?.modelSpec ?? model,
+                engine: engineID,
+                quant: row?.quant ?? "",
+                paramsB: row?.paramsB ?? 0,
+                tokPerSec: decode,
+                promptTokPerSec: (e["engine_prefill_tps"] as? NSNumber)?.doubleValue,
+                measuredAt: ranAt,
+                source: "engine-bench"))
+        }
+        return out
+    }
+
+    /// A measured run outranks the bandwidth estimate in recommendations —
+    /// the bench harness feeding the hardware profile it belongs to.
+    private func recordBenchMeasurements(_ payload: [String: Any]) {
+        let fresh = Self.benchMeasurements(from: payload)
+        guard !fresh.isEmpty else { return }
+        var map = HardwareMap.load()
+        var changed = false
+        for m in fresh {
+            if let prev = map.measured(spec: m.modelSpec, engine: m.engine),
+               prev.tokPerSec == m.tokPerSec,
+               prev.promptTokPerSec == m.promptTokPerSec { continue }
+            map = map.record(m)
+            changed = true
+        }
+        if changed { map.save() }
     }
 
     private init() {

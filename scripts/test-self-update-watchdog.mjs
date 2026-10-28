@@ -147,7 +147,7 @@ test('a failed restore rename reinstates the candidate and preserves the recover
   const f = fixture(t), result = f.run({ actualCommit: 'wrong', restoreFailure: true });
   assert.equal(result.status, 1);
   assert.equal(f.contents(f.app), 'candidate'); assert.equal(f.contents(f.backup), 'previous'); assert.equal(f.contents(f.failed), null);
-  assert.equal(readFileSync(f.report, 'utf8'), version + '\nUpdate recovery failed. Restore the backup app beside this installation before retrying.\n');
+  assert.equal(readFileSync(f.report, 'utf8'), version + '\nUpdate recovery failed. Restore the backup app from the .TokenHorizon-backup folder beside this installation before retrying.\n');
   assert.deepEqual(f.events('mv'), [['mv', f.app, f.failed], ['mv', f.backup, f.app], ['mv', f.failed, f.app]]);
   assert.equal(f.events('launchctl').length, 1);
 });

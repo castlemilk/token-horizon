@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import os
 
@@ -9,8 +10,11 @@ private let gatewayLog = Logger(subsystem: "com.tokenhorizon.app", category: "ga
 // binary) — portable, decoupled, and runnable without the Mac app. This
 // supervisor keeps the app-side contract small: attach to an already-running
 // gateway if one answers on loopback, else spawn the bundled binary with our
-// environment (ports, upstreams) and terminate it on quit. Standalone runs
-// (`./token-horizon-gateway`) simply get attached to.
+// environment (ports, upstreams) and terminate it on quit. A listener whose
+// build stamp mismatches ours is replaced, not adopted — newest launch wins,
+// mirroring InstanceGuard on :8889 (a stale sidecar silently misses new
+// routes). Replacement only ever happens when we carry our own sidecar
+// binary; a dev checkout without one keeps the adopted gateway.
 //
 // Discovery is port-based, never assumed: the gateway walks 127.0.0.1:11436+
 // and identifies itself via GET /__token_horizon. All reads go through the
@@ -63,7 +67,11 @@ final class GatewaySupervisor {
         DispatchQueue.global(qos: .utility).async { [weak self] in
             guard let self else { return }
             if self.resolveBaseURL() != nil {
-                self.checkStamp(preface: "attached to running gateway")
+                // Same build: attach. Different build: replace — but only
+                // when we have our own binary to replace it with.
+                if !self.replaceIfStale() {
+                    self.checkStamp(preface: "attached to running gateway")
+                }
                 return
             }
             self.spawn()
@@ -118,6 +126,77 @@ final class GatewaySupervisor {
             gatewayLog.info("Gateway supervisor: \(preface, privacy: .public) (build \(commit, privacy: .public) matches app)")
         } else {
             gatewayLog.error("Gateway supervisor: \(preface, privacy: .public) but sidecar build \(commit, privacy: .public) != app build \(BuildInfo.commit, privacy: .public) — rebuild the app to resync")
+        }
+    }
+
+    /// Stamp handshake core (pure; unit-tested): the sidecar matches when
+    /// both commits normalize to the same sha — `-dirty` is build metadata
+    /// stamped into both binaries by make-app.sh, not a different build.
+    /// nil/empty/"?" never match: a sidecar that cannot say what it is is
+    /// stale by definition. "dev" only matches "dev".
+    static func stampsMatch(served: String?, expected: String?) -> Bool {
+        func sha(_ raw: String?) -> String? {
+            guard var s = raw, !s.isEmpty, s != "?" else { return nil }
+            if s.hasSuffix("-dirty") { s = String(s.dropLast("-dirty".count)) }
+            return s.isEmpty ? nil : s
+        }
+        guard let a = sha(served), let b = sha(expected) else { return false }
+        return a == b
+    }
+
+    /// Adopt-or-replace. A listener whose self-reported build is not ours is
+    /// replaced when (and only when) we carry our own sidecar binary —
+    /// killing a gateway we cannot restore would leave the bridge 503ing.
+    /// Returns true when a replacement was attempted.
+    private func replaceIfStale() -> Bool {
+        lock.lock()
+        let served = cachedGatewayCommit
+        let port = cachedBaseURL?.port
+        lock.unlock()
+        guard !Self.stampsMatch(served: served, expected: BuildInfo.commit) else { return false }
+        guard Self.binaryURL() != nil, let port else {
+            gatewayLog.error("Gateway supervisor: adopted sidecar build \(served, privacy: .public) != app \(BuildInfo.commit, privacy: .public) and no bundled binary to replace it with — keeping the adopted gateway")
+            return false
+        }
+        gatewayLog.info("Gateway supervisor: sidecar build \(served, privacy: .public) != app \(BuildInfo.commit, privacy: .public) — replacing (newest launch wins)")
+        Self.terminateListener(port: port)
+        lock.lock()
+        cachedBaseURL = nil
+        lock.unlock()
+        spawn()
+        return true
+    }
+
+    /// SIGTERM whatever listens on the adopted port. The handshake just
+    /// proved that listener identifies as our gateway, so the pid owning the
+    /// socket is the stale sidecar. Temp-file output pattern — never
+    /// Pipe + readDataToEndOfFile (pipe deadlock on utility queues, the
+    /// SystemStats invariant).
+    static func terminateListener(port: Int) {
+        guard FileManager.default.isExecutableFile(atPath: "/usr/sbin/lsof") else { return }
+        let out = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("th-gateway-\(port).pids")
+        FileManager.default.createFile(atPath: out.path, contents: nil)
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/usr/sbin/lsof")
+        proc.arguments = ["-ti", "tcp:\(port)", "-sTCP:LISTEN"]
+        proc.standardInput = FileHandle.nullDevice
+        if let fh = try? FileHandle(forWritingTo: out) {
+            proc.standardOutput = fh
+            proc.standardError = FileHandle.nullDevice
+        }
+        do { try proc.run() } catch { return }
+        proc.waitUntilExit()
+        guard let data = try? Data(contentsOf: out),
+              let text = String(data: data, encoding: .utf8) else {
+            try? FileManager.default.removeItem(at: out)
+            return
+        }
+        try? FileManager.default.removeItem(at: out)
+        for line in text.split(whereSeparator: \.isNewline) {
+            if let pid = pid_t(line.trimmingCharacters(in: .whitespaces)), pid > 1 {
+                kill(pid, SIGTERM)
+            }
         }
     }
 

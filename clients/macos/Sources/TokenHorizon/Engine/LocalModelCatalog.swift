@@ -30,6 +30,7 @@ enum LocalModelCatalog {
         let license: String
         let file: String?           // explicit GGUF inside the repo
         let tokenizer: String?      // sibling repo for a GGUF
+        var activeParamsB: Double? = nil  // MoE: parameters read per token
 
         /// Model spec handed to the engine's serve: `repo:file` when a file is
         /// pinned, else the bare repo.
@@ -109,7 +110,8 @@ enum LocalModelCatalog {
             recommendedRAMGB: dict["recommendedRAMGB"] as? Int ?? Int((residentGB * 1.5).rounded(.up)),
             license: dict["license"] as? String ?? "",
             file: dict["file"] as? String,
-            tokenizer: dict["tokenizer"] as? String
+            tokenizer: dict["tokenizer"] as? String,
+            activeParamsB: dict["activeParamsB"] as? Double
         )
     }
 
@@ -168,7 +170,8 @@ enum LocalModelCatalog {
             // real quantisation rather than a label.
             let tokPerSec = measured?.tokPerSec
                 ?? profile.estimateTokPerSec(paramsB: model.paramsB, quant: model.quant,
-                                             downloadGB: model.sizeGB)
+                                             downloadGB: model.sizeGB,
+                                             activeParamsB: model.activeParamsB)
             // A model that fits but decodes below the interactive floor is the
             // wrong recommendation on this machine, however capable.
             let slow = tokPerSec < HardwareMap.interactiveFloor
@@ -240,7 +243,8 @@ enum LocalModelCatalog {
         }
         reasons.append("context ceiling \(ceilings.maxContextK)K at a \(ceilings.maxMemoryGB) GB budget")
         if model.contextK > 0 {
-            reasons.append("\(model.paramsB)B params · \(model.contextK / 1000)M-token window")
+            let active = model.activeParamsB.map { " (\($0)B active)" } ?? ""
+            reasons.append("\(model.paramsB)B params\(active) · \(model.contextK / 1000)K-token window")
         }
         if !model.capabilities.isEmpty {
             reasons.append(model.capabilities.joined(separator: " · "))

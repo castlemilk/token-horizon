@@ -18,6 +18,7 @@ mod engine;
 mod gdn_kernel;
 mod gpuprof;
 mod idle;
+mod memgov;
 mod model;
 mod outbuf;
 mod prefix_cache;
@@ -93,6 +94,12 @@ enum Cmd {
         /// — enables neural block speculative decoding on qwen3_5.
         #[arg(long)]
         draft: Option<String>,
+        /// Memory budget in GiB for the load-time admission check
+        /// (weights + KV at the context ceiling + margin). A plan that
+        /// exceeds an explicit budget refuses to load. TH_MAX_MEM_GB is
+        /// the env fallback.
+        #[arg(long)]
+        max_mem_gb: Option<f64>,
     },
     /// Load a model, forward the given token ids, print top-8 logits.
     /// Parity/debugging aid — not used by the app.
@@ -139,6 +146,7 @@ async fn main() -> Result<()> {
             spec_tokens,
             kv_quant,
             draft,
+            max_mem_gb,
         } => {
             let mut cfg = state::EngineConfig::default();
             cfg.max_tokens = max_tokens;
@@ -148,6 +156,7 @@ async fn main() -> Result<()> {
             cfg.spec_tokens = spec_tokens.min(7);
             cfg.kv_quant = kv_quant;
             cfg.draft_dir = draft.map(std::path::PathBuf::from);
+            cfg.max_mem_gb = max_mem_gb;
             if let Some(t) = temperature {
                 cfg.temperature = Some(t);
             }

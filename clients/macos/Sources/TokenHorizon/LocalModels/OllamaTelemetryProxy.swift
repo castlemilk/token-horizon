@@ -262,11 +262,18 @@ final class OllamaTelemetryProxy {
         return URL(string: "http://127.0.0.1:\(port)")
     }
 
-    private init() {
-        let upstream = ProcessInfo.processInfo.environment["TOKEN_HORIZON_OLLAMA_UPSTREAM"] ?? "127.0.0.1:11434"
+    /// Overrides exist for hermetic tests (a fake/dead upstream on a chosen
+    /// listen port); production callers use `shared`, which reads the env.
+    private let portOverride: UInt16?
+
+    init(upstreamOverride: String? = nil, portOverride: UInt16? = nil) {
+        let upstream = upstreamOverride
+            ?? ProcessInfo.processInfo.environment["TOKEN_HORIZON_OLLAMA_UPSTREAM"]
+            ?? "127.0.0.1:11434"
         let pieces = upstream.split(separator: ":", maxSplits: 1).map(String.init)
         upstreamHost = NWEndpoint.Host(pieces.first ?? "127.0.0.1")
         upstreamPort = NWEndpoint.Port(rawValue: UInt16(pieces.count > 1 ? pieces[1] : "11434") ?? 11434) ?? 11434
+        self.portOverride = portOverride
     }
 
     func start() {
@@ -275,7 +282,9 @@ final class OllamaTelemetryProxy {
         shouldRun = true
         stateLock.unlock()
         guard !alreadyStarted else { return }
-        let requested = UInt16(ProcessInfo.processInfo.environment["TOKEN_HORIZON_OLLAMA_PROXY_PORT"] ?? "11435") ?? 11435
+        let requested = portOverride
+            ?? UInt16(ProcessInfo.processInfo.environment["TOKEN_HORIZON_OLLAMA_PROXY_PORT"] ?? "11435")
+            ?? 11435
         startListener(at: requested, remaining: 20)
     }
 
@@ -493,7 +502,8 @@ final class OllamaTelemetryProxy {
 
         upstream.stateUpdateHandler = { [weak self] state in
             guard let self else { return }
-            if case .ready = state {
+            switch state {
+            case .ready:
                 upstream.send(content: request, completion: .contentProcessed { error in
                     if error != nil {
                         client.cancel()
@@ -502,11 +512,36 @@ final class OllamaTelemetryProxy {
                         self.receiveResponse(upstream, client: client, accumulator: accumulator)
                     }
                 })
-            } else if case .failed = state {
-                client.cancel()
+            case .failed, .waiting:
+                // A refused upstream parks in .waiting, not .failed — the
+                // handler used to wait for .failed forever, leaving the
+                // client unanswered until its own timeout (observed: every
+                // /api/tags probe hanging 4s while Ollama was down). Answer
+                // with a gateway error immediately instead.
+                self.rejectClient(client, upstream: upstream)
+            default:
+                break
             }
         }
         upstream.start(queue: queue)
+    }
+
+    /// Answer a client whose upstream never came up. A well-formed 502 beats
+    /// a bare connection reset: URLSession/curl callers fail fast with a
+    /// real status instead of hanging until their own timeout.
+    private func rejectClient(_ client: NWConnection, upstream: NWConnection) {
+        client.send(content: Self.upstreamUnavailableResponse(), completion: .contentProcessed { _ in
+            client.cancel()
+            upstream.cancel()
+        })
+    }
+
+    /// Well-formed gateway error sent when the upstream dial never reaches
+    /// `.ready`. Internal for hermetic tests.
+    static func upstreamUnavailableResponse() -> Data {
+        let body = Data("{\"error\":\"ollama upstream unavailable\"}\n".utf8)
+        let head = "HTTP/1.1 502 Bad Gateway\r\nContent-Type: application/json\r\nContent-Length: \(body.count)\r\nConnection: close\r\n\r\n"
+        return Data(head.utf8) + body
     }
 
     private func receiveResponse(_ upstream: NWConnection, client: NWConnection, accumulator: ResponseAccumulator) {

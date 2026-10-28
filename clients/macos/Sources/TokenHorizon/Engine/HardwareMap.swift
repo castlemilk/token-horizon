@@ -109,15 +109,30 @@ struct HardwareMap: Codable {
     /// Estimated decode throughput for a model on this machine.
     ///
     /// `downloadGB` is the measured weight size, which is exactly what decode
-    /// streams per token; without it the quantisation table stands in.
-    func estimateTokPerSec(paramsB: Double, quant: String, downloadGB: Double = 0) -> Double {
+    /// streams per token; without it the quantisation table stands in. A
+    /// mixture of experts (`activeParamsB` < `paramsB`) streams only its
+    /// active share of those bytes.
+    func estimateTokPerSec(paramsB: Double, quant: String, downloadGB: Double = 0,
+                           activeParamsB: Double? = nil) -> Double {
         let weightGB = downloadGB > 0 ? downloadGB
             : HardwareMap.bytesPerToken(paramsB: paramsB, quant: quant)
         guard weightGB > 0 else { return 0 }
+        var streamedGB = weightGB
+        var utilisation = 0.7
+        if let active = activeParamsB, active > 0, active < paramsB {
+            streamedGB = weightGB * active / paramsB
+            utilisation = Self.moeUtilisation
+        }
         // Small models are compute-bound long before they are bandwidth-bound,
         // so the estimate is capped rather than claiming thousands of tok/s.
-        return min(250, (machine.bandwidthGBs * 0.7 / weightGB).rounded(.down))
+        return min(250, (machine.bandwidthGBs * utilisation / streamedGB).rounded(.down))
     }
+
+    /// Routing, expert gathers and many small matmuls keep a MoE further from
+    /// the bus than a dense model: Flint BF16 decodes ~52 tok/s on an M5 Max
+    /// from a 5 GB/token active stream (mlx-vlm flint README), ≈0.47 of
+    /// 550 GB/s. 4-bit packs are more launch-bound still, so this sits lower.
+    static let moeUtilisation = 0.35
 
     /// Below this, interactive use (agentic loops, streaming) feels broken —
     /// the model may fit but it is the wrong recommendation.

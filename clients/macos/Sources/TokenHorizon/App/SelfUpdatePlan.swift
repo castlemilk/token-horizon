@@ -159,6 +159,21 @@ enum SelfUpdatePlan {
         return URL(fileURLWithPath: executable).standardizedFileURL
             == bundle.appendingPathComponent("Contents/MacOS/TokenHorizon").standardizedFileURL
     }
+
+    /// Directory that holds the replaced build after an update. It is
+    /// DOT-PREFIXED on purpose: a `*.backup.app` parked beside the live app
+    /// keeps the same bundle identifier, so LaunchServices registers two apps
+    /// with one id and `open -b` (Launchpad, Spotlight, "Open With") can
+    /// resolve to the stale copy — the live app then looks like it cannot be
+    /// opened. A dot-prefixed directory is not scanned as an application.
+    static let backupDirectoryName = ".TokenHorizon-backup"
+
+    /// The recovery copy of the replaced build for `destination`.
+    static func backupURL(for destination: URL) -> URL {
+        destination.deletingLastPathComponent()
+            .appendingPathComponent(backupDirectoryName)
+            .appendingPathComponent(destination.lastPathComponent)
+    }
 }
 
 /// All paths are siblings on one filesystem; committing a prepared copy uses
@@ -245,7 +260,7 @@ enum SelfUpdateRelaunch {
         launch
       else
         /bin/mv "$failed" "$app"
-        /usr/bin/printf '%s\n%s\n' "$version" 'Update recovery failed. Restore the backup app beside this installation before retrying.' > "$report"
+        /usr/bin/printf '%s\n%s\n' "$version" 'Update recovery failed. Restore the backup app from the .TokenHorizon-backup folder beside this installation before retrying.' > "$report"
       fi
     fi
     exit 1

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, existsSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, delimiter } from 'node:path';
+import { join, delimiter, sep } from 'node:path';
 import { spawnSync } from 'node:child_process';
 
 // Exercise the production transaction without sourcing the build/launcher or
@@ -42,7 +42,7 @@ try {
     const [source,destination] = args;
     const prepared = source.includes('/.TokenHorizon-install.') && source.endsWith('/TokenHorizon.app');
     const current = source === process.env.TH_INSTALL_DESTINATION;
-    const backup = source === process.env.TH_INSTALL_DESTINATION.replace(/\\.app$/,'')+'.backup.app';
+    const backup = source.includes('/.TokenHorizon-backup/');
     if ((prepared && ['prepared','partial','prepared-and-restore'].includes(failure)) ||
         (current && failure === 'current') || (backup && failure === 'backup') ||
         (backup && destination === process.env.TH_INSTALL_DESTINATION && failure === 'prepared-and-restore')) {
@@ -67,7 +67,9 @@ function fixture(t, { current = true, backup = true } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'th-install-release-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const binary = join(root,'bin'), parent = join(root,"Apps ' $ ` safe"), source = join(root,'Downloaded.app');
-  const destination = join(parent,'TokenHorizon.app'), recovery = join(parent,'TokenHorizon.backup.app'), log = join(root,'commands.jsonl');
+  // The recovery copy lives in a dot-prefixed directory so LaunchServices
+  // never registers it as a second app sharing the bundle identifier.
+  const destination = join(parent,'TokenHorizon.app'), recovery = join(parent,'.TokenHorizon-backup','TokenHorizon.app'), log = join(root,'commands.jsonl');
   mkdirSync(binary); mkdirSync(parent); writeFileSync(log,'');
   for (const command of ['ditto','codesign','spctl','xcrun','mv','pgrep','pkill']) writeFileSync(join(binary,command),mock,{mode:0o755});
   function app(directory, kind) {
@@ -139,6 +141,20 @@ test('replacement without an older backup still restores the installed app on fa
   assert.ok(f.resource(f.destination,'removed-resource'));
   assert.equal(existsSync(f.recovery),false);
   assert.deepEqual(f.stages(),[]);
+});
+
+// Regression: a recovery copy parked beside the live app shares its bundle
+// identifier. LaunchServices then registers two apps with one id and
+// `open -b` (Launchpad, Spotlight, "Open With") may resolve to the stale
+// copy, so the live app looks like it cannot be opened. The recovery copy
+// must live in a dot-prefixed directory, which is not scanned as an app.
+test('the recovery copy never sits beside the live app as a competing bundle', t => {
+  const f = fixture(t), result = f.run();
+  assert.equal(result.status,0,result.stderr);
+  const siblings = readdirSync(f.parent).filter(name => name.endsWith('.app'));
+  assert.deepEqual(siblings,['TokenHorizon.app'],'only the installed app may be a visible bundle');
+  assert.ok(f.recovery.startsWith(join(f.parent,'.TokenHorizon-backup')+sep),
+    'the recovery copy must live in a dot-prefixed directory');
 });
 
 for (const target of ['destination','recovery']) {

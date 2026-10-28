@@ -20,6 +20,9 @@ extension NSScreen {
 final class NotchPanel: NSPanel {
     private var notchScreen: NSScreen?
     private let model: UIModel
+    /// Collapsed-surface observables — the panel's only invalidation source
+    /// while collapsed (see NotchContentView for why UIModel isn't observed).
+    let shell = NotchShell()
     private var hostingView: FirstMouseHostingView<NotchContentView>?
     private var interaction = NotchInteractionPolicy()
     private var isExpanded: Bool { interaction.isExpanded }
@@ -107,7 +110,7 @@ final class NotchPanel: NSPanel {
         hasShadow = false
         isMovable = false
 
-        let host = FirstMouseHostingView(rootView: NotchContentView(model: model, geometry: geo))
+        let host = FirstMouseHostingView(rootView: NotchContentView(shell: shell, model: model, geometry: geo))
         hostingView = host
         host.sizingOptions = []
         let wrap = PanelContentView(frame: NSRect(origin: .zero, size: geo.collapsed))
@@ -179,7 +182,7 @@ final class NotchPanel: NSPanel {
         } else {
             collapsedHoverFrame = .zero
         }
-        hostingView?.rootView = NotchContentView(model: model, geometry: geometry)
+        hostingView?.rootView = NotchContentView(shell: shell, model: model, geometry: geometry)
     }
 
     private func screenParametersChanged() {
@@ -204,6 +207,7 @@ final class NotchPanel: NSPanel {
         interaction.setExpanded(flag)
         if !flag { trackingMenus.removeAll() }
         if model.notchExpanded != flag { model.notchExpanded = flag }
+        if shell.expanded != flag { shell.expanded = flag }
         if changed {
             NotificationCenter.default.post(name: NSNotification.Name("TokenHorizonProcessMonitoringDidChange"), object: flag)
         }

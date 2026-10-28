@@ -613,6 +613,12 @@ final class LeaderboardStore {
     private let path: String
     private var entries: [LeaderboardEntry] = []
     private var lastLocalCollectedAt: Date?
+    /// Day-label formatter for syncLocal — shared across calls (lock-held).
+    private lazy var localDayFormatter: DateFormatter = {
+        let df = DateFormatter()
+        df.dateFormat = "EEE d"
+        return df
+    }()
 
     init(customPath: String? = nil) {
         if let customPath {
@@ -722,6 +728,10 @@ final class LeaderboardStore {
         let recent7 = history.suffix(7)
         let tokens7d = recent7.reduce(0) { $0 + $1.tokens }
         let cost7d = recent7.reduce(0.0) { $0 + $1.cost }
+        // Reused across calls — day-label formatting ran ~1k times per sync
+        // (8 models × the 17-week window + calendar rows) and DateFormatter
+        // init alone costs ~ms. All access holds `lock`.
+        let df = localDayFormatter
 
         // Top model resolution: highest all-time tokens or today
         let topModel: String = {
@@ -768,8 +778,6 @@ final class LeaderboardStore {
         }
 
         // Build 7-day history points (day is already epoch seconds)
-        let df = DateFormatter()
-        df.dateFormat = "EEE d"
         var historyPoints: [LeaderboardDailyPoint] = []
         for p in recent7 {
             let date = Date(timeIntervalSince1970: TimeInterval(p.day))
