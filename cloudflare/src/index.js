@@ -7,6 +7,7 @@
  */
 
 import { handleTeamRequest, entryTeams, entryInTeam, applyTeamMemberships, getPublicTeam, getInviteTeam, enrichTeamAggregates, loadTeamLogoDataUri, linkVerifiedOwner } from './team-invites.js';
+import { passwordConfigured } from './password-identity.js';
 import { handleBrowserAuth, browserIdentity, identityOwnerId, identityOwns, githubConfigured, sessionsConfigured } from './browser-auth.js';
 import { handleDesktopAuth, desktopPublishIdentity, DesktopAuthError } from './desktop-auth.js';
 import { buildOgModel, renderProfileOgSvg, renderRestrictedOgSvg, OG_CARD_VERSION } from './og-card.js';
@@ -824,6 +825,7 @@ export default {
         googleClientId: env.GOOGLE_CLIENT_ID || "",
         googleAuth: Boolean(env.GOOGLE_CLIENT_ID),
         githubAuth: githubConfigured(env),
+        passwordAuth: passwordConfigured(env),
         webSessions: sessionsConfigured(env),
         canonicalUrl: `https://${url.hostname}`,
         season: seasonFor()
@@ -1262,7 +1264,7 @@ export default {
               // Publishing with a verified account claims this profile.
               newEntry.claimed = true;
               newEntry.ownerId = identityOwnerId(googleAuth);
-              if (googleAuth.provider === 'github') newEntry.accountEmail = googleAuth.email;
+              if (googleAuth.provider !== 'google' && Boolean(googleAuth.provider)) newEntry.accountEmail = googleAuth.email;
               else newEntry.googleEmail = googleAuth.email;
               newEntry.avatarUrl = googleAuth.picture || prev.avatarUrl || "";
               newEntry.claimedAt = Date.now() / 1000;
@@ -1329,7 +1331,7 @@ export default {
           if (googleAuth) {
             newEntry.claimed = true;
             newEntry.ownerId = identityOwnerId(googleAuth);
-            if (googleAuth.provider === 'github') newEntry.accountEmail = googleAuth.email;
+            if (googleAuth.provider !== 'google' && Boolean(googleAuth.provider)) newEntry.accountEmail = googleAuth.email;
             else newEntry.googleEmail = googleAuth.email;
             newEntry.avatarUrl = googleAuth.picture || "";
             newEntry.claimedAt = Date.now() / 1000;
@@ -1427,7 +1429,7 @@ export default {
 
         entry.claimed = true;
         entry.ownerId = identityOwnerId(googleAuth);
-        if (googleAuth.provider === 'github') entry.accountEmail = googleAuth.email;
+        if (googleAuth.provider !== 'google' && Boolean(googleAuth.provider)) entry.accountEmail = googleAuth.email;
         else entry.googleEmail = googleAuth.email;
         if (googleAuth.picture) entry.avatarUrl = googleAuth.picture;
         entry.claimedAt = Date.now() / 1000;

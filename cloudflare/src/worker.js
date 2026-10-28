@@ -3,6 +3,7 @@ import { boundedText } from './request-body.js';
 import site, { verifyGoogleIdToken } from './index.js';
 import { handleMcp, ORIGIN, READ, MANAGE } from './connector.js';
 import { connectPage, pageHeaders } from './connect-page.js';
+import { passwordConfigured } from './password-identity.js';
 import { browserIdentity, identityOwnerId, githubConfigured, sessionsConfigured } from './browser-auth.js';
 
 const SCOPES = [READ, MANAGE, 'offline_access'];
@@ -24,13 +25,13 @@ const defaultHandler = {
     const url = new URL(request.url), oauth = env.OAUTH_PROVIDER;
     try {
       if (url.pathname === '/oauth/authorize') {
-        if (!env.GOOGLE_CLIENT_ID && !githubConfigured(env)) return new Response(connectPage({ error: 'Account sign-in is not configured.' }), { status: 503, headers: pageHeaders() });
+        if (!env.GOOGLE_CLIENT_ID && !githubConfigured(env) && !passwordConfigured(env)) return new Response(connectPage({ error: 'Account sign-in is not configured.' }), { status: 503, headers: pageHeaders() });
         if (request.method === 'GET') {
           const auth = await oauth.parseAuthRequest(request);
           if (auth.scope.some(s => !SCOPES.includes(s))) throw new Error('The application requested an unsupported permission.');
           const client = await oauth.lookupClient(auth.clientId);
           const consent = await oauth.beginConsent(auth);
-          return new Response(connectPage({ mode: 'authorize', clientId: env.GOOGLE_CLIENT_ID, githubAuth: githubConfigured(env), webSessions: sessionsConfigured(env), handle: consent.handle, clientName: client?.clientName?.slice(0, 80), redirect: new URL(auth.redirectUri).host }), { headers: pageHeaders(consent.headers) });
+          return new Response(connectPage({ mode: 'authorize', clientId: env.GOOGLE_CLIENT_ID, githubAuth: githubConfigured(env), passwordAuth: passwordConfigured(env), webSessions: sessionsConfigured(env), handle: consent.handle, clientName: client?.clientName?.slice(0, 80), redirect: new URL(auth.redirectUri).host }), { headers: pageHeaders(consent.headers) });
         }
         if (request.method === 'POST') {
           const form = await readForm(request), handle = form.get('handle');
@@ -60,13 +61,13 @@ const defaultHandler = {
           const id = url.searchParams.get('desktop') || '';
           if (!/^[a-f0-9]{64}$/.test(id)) return new Response(connectPage({ error: 'This app connection is invalid. Return to Token Horizon and choose Sync now again.' }), { status: 400, headers: pageHeaders() });
           return new Response(connectPage({ mode: 'desktop', desktopId: id, handle: id,
-            clientId: env.GOOGLE_CLIENT_ID, githubAuth: githubConfigured(env), webSessions: sessionsConfigured(env) }), { headers: pageHeaders() });
+            clientId: env.GOOGLE_CLIENT_ID, githubAuth: githubConfigured(env), passwordAuth: passwordConfigured(env), webSessions: sessionsConfigured(env) }), { headers: pageHeaders() });
         }
         const nonce = crypto.randomUUID(), digest = await hash(nonce);
         await env.OAUTH_KV.put(`management:${digest}`, '1', { expirationTtl: 600 });
         const headers = pageHeaders();
         headers.append('Set-Cookie', `__Host-th-connect=${digest}; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age=600`);
-        return new Response(connectPage({ clientId: env.GOOGLE_CLIENT_ID, githubAuth: githubConfigured(env), webSessions: sessionsConfigured(env), handle: nonce }), { headers });
+        return new Response(connectPage({ clientId: env.GOOGLE_CLIENT_ID, githubAuth: githubConfigured(env), passwordAuth: passwordConfigured(env), webSessions: sessionsConfigured(env), handle: nonce }), { headers });
       }
       if (url.pathname === '/oauth/connections' && request.method === 'POST') {
         const form = await readForm(request), nonce = form.get('handle') || '';

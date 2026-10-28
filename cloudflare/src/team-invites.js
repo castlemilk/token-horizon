@@ -409,12 +409,12 @@ export async function handleTeamRequest(request, env, { parseGoogleAuth, jsonRes
 export async function linkVerifiedOwner(env, entry, identity) {
   if (!env.LEADERBOARD_BUCKET || !entry?.claimed || !identity?.sub) return false;
   const next = identityOwnerId(identity);
-  if (!/^(google|github):[^:]+$/.test(next) || entry.identityId === next) return false;
+  if (!/^(google|github|firebase):[^:]+$/.test(next) || entry.identityId === next) return false;
   // An owner id that already *is* the subject needs no link — and claiming it
   // must stay a byte-idempotent no-op.
   if (entry.ownerId === next) return false;
   const owned = identityOwns(entry, identity, { legacyEmail: true })
-    || (!entry.ownerId && Boolean(entry.googleEmail) && entry.googleEmail === identity.email);
+    || ((!identity.provider || identity.provider === 'google') && !entry.ownerId && Boolean(entry.googleEmail) && entry.googleEmail === identity.email);
   if (!owned) return false;
   entry.identityId = next;
   return true;
@@ -447,7 +447,7 @@ export async function linkVerifiedOwners(env, identity) {
 function membershipOwnerId(entry) {
   if (entry?.claimed !== true) return null;
   const subject = typeof entry.identityId === 'string' ? entry.identityId : entry.ownerId;
-  return typeof subject === 'string' && /^(google|github):/.test(subject) ? subject : null;
+  return typeof subject === 'string' && /^(google|github|firebase):/.test(subject) ? subject : null;
 }
 
 export async function applyTeamMemberships(env, entries, { fresh = false } = {}) {

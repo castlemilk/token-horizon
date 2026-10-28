@@ -101,3 +101,5 @@ body[data-surface=login] .filters,body[data-surface=login] .toolbar{display:none
   .ui-update-notice button{min-height:44px;font-size:13px}
   .ui-update-notice .ui-update-dismiss{min-width:44px;min-height:44px}
 }
+
+.auth-password{display:grid;gap:.6rem;margin-bottom:1rem}.auth-password label{font-size:.8rem}.auth-password input{box-sizing:border-box;width:100%;padding:.7rem;background:transparent;color:inherit;border:1px solid #8886;border-radius:.3rem;font:inherit}

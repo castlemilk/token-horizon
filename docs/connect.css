@@ -62,3 +62,5 @@ html body[data-mode] .grant button { flex-shrink: 0; }
 @media (max-width: 760px) {
   html body[data-mode] .connection .lede { overflow-wrap: anywhere; }
 }
+
+.password-signin{display:grid;gap:.6rem;margin:0 0 1rem;padding:1rem;border:1px solid var(--border, #7775)}.password-signin legend{padding:0 .35rem;font-size:.85rem}.password-signin label{font-size:.8rem}.password-signin input{width:100%;box-sizing:border-box;background:transparent;color:inherit;border:1px solid #8886;border-radius:.3rem;padding:.65rem;font:inherit}.password-signin button{margin-top:.3rem}
