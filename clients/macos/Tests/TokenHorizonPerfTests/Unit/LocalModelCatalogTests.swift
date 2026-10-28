@@ -21,6 +21,16 @@ final class LocalModelCatalogTests: XCTestCase {
                                              macosMajor: 26, macosMinor: 4,
                                              chipGeneration: 2, chipTier: .base)
 
+    /// A deterministic hardware profile for the machine under test: the
+    /// declared chip's published bandwidth, no measurements. Without it
+    /// `reconciled` probes the host — fine on a fast Mac, but a weak CI
+    /// runner would mark big models slow and flip every ranking assertion.
+    private func map(for machine: HardwareProfile.Machine) -> HardwareMap {
+        HardwareMap(machine: .init(chip: machine.chipName, memoryGB: Int(machine.physicalMemoryGB),
+                                   bandwidthGBs: HardwareMap.bandwidthGBs(chip: machine.chipName)),
+                    measurements: [])
+    }
+
     private func model(_ name: String, paramsB: Double, sizeGB: Double, residentGB: Double,
                        recommendedRAMGB: Int, engine: String = "thengine") -> LocalModelCatalog.Model {
         LocalModelCatalog.Model(id: "test/\(name)", name: name, engine: engine, family: "qwen3",
@@ -41,7 +51,7 @@ final class LocalModelCatalogTests: XCTestCase {
     /// still fits comfortably leads, and models that would squeeze the machine
     /// rank below anything that leaves it usable.
     func testReconciliation_ranksComfortableFitAboveTightByCapability() {
-        let recs = LocalModelCatalog.reconciled(models: catalogue, machine: m64)
+        let recs = LocalModelCatalog.reconciled(models: catalogue, machine: m64, map: map(for: m64))
         XCTAssertEqual(recs.first?.model.name, "Qwen3 32B", "the largest comfortable model leads on a 64 GB machine")
         XCTAssertEqual(recs.first?.fit, .comfortable)
         // The 14B has generous headroom but is less capable; it must not lead.
@@ -54,7 +64,7 @@ final class LocalModelCatalogTests: XCTestCase {
 
     /// A small machine gates the big models out entirely — and says why.
     func testReconciliation_smallMachineGetsTheSmallModels() {
-        let recs = LocalModelCatalog.reconciled(models: catalogue, machine: m16)
+        let recs = LocalModelCatalog.reconciled(models: catalogue, machine: m16, map: map(for: m16))
         XCTAssertEqual(recs.first?.model.name, "Qwen3 8B", "the 8B leads on a 16 GB machine")
         XCTAssertFalse(recs.contains { $0.model.paramsB > 10 }, "a 14B+ model must not be offered to a 16 GB machine — its resident footprint plus the 8 GB engine floor does not fit")
         XCTAssertTrue(recs.allSatisfy { $0.fit != .unsupported })
@@ -63,7 +73,7 @@ final class LocalModelCatalogTests: XCTestCase {
     /// Below the engine's floor, the reconciliation offers nothing rather
     /// than a model that would make the machine unusable.
     func testReconciliation_tinyMachineOffersNothing() {
-        XCTAssertTrue(LocalModelCatalog.reconciled(models: catalogue, machine: m8).isEmpty)
+        XCTAssertTrue(LocalModelCatalog.reconciled(models: catalogue, machine: m8, map: map(for: m8)).isEmpty)
     }
 
     /// The catalogue can be filtered to one engine's back end — including MLX,
@@ -73,11 +83,11 @@ final class LocalModelCatalogTests: XCTestCase {
                                            residentGB: 18.6, recommendedRAMGB: 48, engine: "splash"),
                                      model("Qwen3 8B MLX", paramsB: 8.2, sizeGB: 4.6,
                                            residentGB: 6.2, recommendedRAMGB: 16, engine: "mlx")]
-        let thengine = LocalModelCatalog.reconciled(models: catalogue, machine: m64, engine: "thengine")
+        let thengine = LocalModelCatalog.reconciled(models: catalogue, machine: m64, engine: "thengine", map: map(for: m64))
         XCTAssertTrue(thengine.allSatisfy { $0.model.engine == "thengine" })
-        let splash = LocalModelCatalog.reconciled(models: catalogue, machine: m64, engine: "splash")
+        let splash = LocalModelCatalog.reconciled(models: catalogue, machine: m64, engine: "splash", map: map(for: m64))
         XCTAssertTrue(splash.allSatisfy { $0.model.engine == "splash" })
-        let mlx = LocalModelCatalog.reconciled(models: catalogue, machine: m64, engine: "mlx")
+        let mlx = LocalModelCatalog.reconciled(models: catalogue, machine: m64, engine: "mlx", map: map(for: m64))
         XCTAssertEqual(mlx.map(\.model.name), ["Qwen3 8B MLX"])
         XCTAssertEqual(mlx.first?.fit, .generous, "MLX rows are reconciled like any other engine")
     }
@@ -117,13 +127,13 @@ final class LocalModelCatalogTests: XCTestCase {
     /// tighter gets a conservative ceiling that still covers agentic loops.
     func testServeCeilings_followTheFit() throws {
         // On 64 GB every catalogue row fits comfortably or generously.
-        let recs = LocalModelCatalog.reconciled(models: catalogue, machine: m64)
+        let recs = LocalModelCatalog.reconciled(models: catalogue, machine: m64, map: map(for: m64))
         let generous = try XCTUnwrap(recs.first { $0.fit == .generous })
         XCTAssertGreaterThanOrEqual(generous.maxContextK, 32)
         XCTAssertGreaterThan(generous.maxMemoryGB, Int(generous.model.residentGB))
         // On 40 GB the 32B still runs but is a tight fit, and it gets the
         // conservative context ceiling.
-        let tightRecs = LocalModelCatalog.reconciled(models: catalogue, machine: m40)
+        let tightRecs = LocalModelCatalog.reconciled(models: catalogue, machine: m40, map: map(for: m40))
         let tight = try XCTUnwrap(tightRecs.first { $0.fit == .tight })
         XCTAssertEqual(tight.model.name, "Qwen3 32B")
         XCTAssertEqual(tight.maxContextK, 32, "a tight fit gets the conservative context ceiling")
@@ -169,7 +179,7 @@ final class LocalModelCatalogTests: XCTestCase {
                                           macosMajor: 26, macosMinor: 4,
                                           chipGeneration: 5, chipTier: .max)
         for engine in LocalModelCatalog.engines() {
-            let runnable = LocalModelCatalog.runnable(for: big, engine: engine)
+            let runnable = LocalModelCatalog.runnable(for: big, engine: engine, map: map(for: big))
             XCTAssertFalse(runnable.isEmpty, "\(engine) must have a runnable row on a 128 GB Mac")
             for rec in runnable {
                 XCTAssertGreaterThan(rec.maxMemoryGB, 0)
