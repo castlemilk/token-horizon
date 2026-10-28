@@ -182,7 +182,7 @@ func makeOpenCodeDB(t *testing.T) string {
 		tokens_reasoning INTEGER, tokens_cache_read INTEGER, tokens_cache_write INTEGER, cost REAL)`)
 	db.Exec(`CREATE TABLE message (data TEXT, time_created REAL)`)
 	db.Exec(`INSERT INTO session VALUES (1789700100000.0, 1000, 100, 50, 400, 0, 0.25)`)
-	db.Exec(`INSERT INTO message VALUES ('{"role":"assistant","responseID":"resp_1","cost":0.25}', 1789700100000.0)`)
+	db.Exec(`INSERT INTO message VALUES ('{"role":"assistant","responseID":"resp_1","cost":0.25,"tokens":{"input":1000,"output":100,"reasoning":50,"cache":{"read":400,"write":0}}}', 1789700100000.0)`)
 	db.Exec(`INSERT INTO message VALUES ('{"role":"user"}', 1789700100000.0)`)
 	return path
 }
@@ -229,11 +229,14 @@ func makeOpenCodeV2DB(t *testing.T) string {
 	db.Exec(`INSERT INTO session VALUES (1789700100000.0, 900000, 0, 0, 0, 0, 9.0)`)
 	db.Exec(`INSERT INTO message VALUES ('{"role":"assistant","responseID":"resp_legacy","cost":9.0}', 1789700100000.0)`)
 	// Live v2: role is the `type` column, model block lives under data.$.model.
+	// The session carries the frozen-v1 creation hour while its message
+	// carries the newer hour — bucket attribution must follow the message,
+	// not the session's creation instant.
 	db.Exec(`CREATE TABLE session_v2 (time_created REAL, tokens_input INTEGER, tokens_output INTEGER,
 		tokens_reasoning INTEGER, tokens_cache_read INTEGER, tokens_cache_write INTEGER, cost REAL)`)
 	db.Exec(`CREATE TABLE session_message (id TEXT, session_id TEXT, type TEXT, time_created REAL, data TEXT)`)
-	db.Exec(`INSERT INTO session_v2 VALUES (1789703700000.0, 1500, 100, 50, 400, 0, 0.5)`)
-	db.Exec(`INSERT INTO session_message VALUES ('m1','s1','assistant',1789703700000.0,'{"responseID":"resp_v2","cost":0.5}')`)
+	db.Exec(`INSERT INTO session_v2 VALUES (1789700100000.0, 1500, 100, 50, 400, 0, 0.5)`)
+	db.Exec(`INSERT INTO session_message VALUES ('m1','s1','assistant',1789703700000.0,'{"responseID":"resp_v2","cost":0.5,"tokens":{"input":1500,"output":100,"reasoning":50,"cache":{"read":400,"write":0}}}')`)
 	db.Exec(`INSERT INTO session_message VALUES ('m2','s1','user',1789703700000.0,'{"role":"assistant","responseID":"resp_user"}')`)
 	return path
 }
@@ -244,7 +247,7 @@ func TestOpenCodeV2SchemaSupersedesFrozenLegacyTables(t *testing.T) {
 
 	buckets := e.opencodePerBucket()
 	if len(buckets) != 1 {
-		t.Fatalf("buckets must come from session_v2 only: %v", buckets)
+		t.Fatalf("buckets must come from session_message only: %v", buckets)
 	}
 	want := bucketStart(1789703700)
 	for got, b := range buckets {

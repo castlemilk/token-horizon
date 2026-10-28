@@ -394,9 +394,23 @@ async function opencodeSessionTable() {
   return name === "session_v2" ? "session_v2" : "session";
 }
 
+// "Today" attribution is message-grain: session_v2.time_created is the
+// session's *creation* instant, so filtering sessions by it reports zero
+// for any session born before today no matter how much it accrues.
+async function opencodeMessageSource() {
+  const name = await sh("sqlite3", [
+    DB,
+    "SELECT name FROM sqlite_master WHERE type='table' AND name='session_message'",
+  ]);
+  return name === "session_message"
+    ? { table: "session_message", where: "type='assistant'" }
+    : { table: "message", where: "json_extract(data,'$.role')='assistant'" };
+}
+
 async function usageFallback() {
   if (!existsSync(DB)) throw new Error("opencode.db not found");
   const table = await opencodeSessionTable();
+  const msg = await opencodeMessageSource();
   const midnightMs =
     new Date(new Date().setHours(0, 0, 0, 0)).getTime();
   const q = async (sql) =>
@@ -404,8 +418,9 @@ async function usageFallback() {
   const [allTok, allCost] = await q(
     `SELECT COALESCE(SUM(tokens_input+tokens_output+tokens_reasoning+tokens_cache_read+tokens_cache_write),0)||'|'||printf('%.2f',SUM(cost)) FROM ${table}`
   );
+  const tokensExpr = `COALESCE(json_extract(data,'$.tokens.total'),COALESCE(json_extract(data,'$.tokens.input'),0)+COALESCE(json_extract(data,'$.tokens.output'),0)+COALESCE(json_extract(data,'$.tokens.reasoning'),0)+COALESCE(json_extract(data,'$.tokens.cache.read'),0)+COALESCE(json_extract(data,'$.tokens.cache.write'),0),0)`;
   const [todayTok, todayCost] = await q(
-    `SELECT COALESCE(SUM(tokens_input+tokens_output+tokens_reasoning+tokens_cache_read+tokens_cache_write),0)||'|'||printf('%.2f',SUM(cost)) FROM ${table} WHERE time_created > ${midnightMs}`
+    `SELECT COALESCE(SUM(${tokensExpr}),0)||'|'||printf('%.2f',SUM(COALESCE(json_extract(data,'$.cost'),0))) FROM ${msg.table} WHERE ${msg.where} AND time_created > ${midnightMs}`
   );
   return { tokens_today: todayTok, cost_today: todayCost, tokens_all_time: allTok, cost_all_time: allCost, sources: ["opencode"], note: "direct sqlite fallback (app not running)" };
 }

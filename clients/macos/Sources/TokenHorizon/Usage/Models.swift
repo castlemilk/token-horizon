@@ -256,6 +256,7 @@ struct ModelUsage: Codable, Identifiable {
     var cacheWriteAll: Int = 0
     var requestsAll: Int = 0
     var requestsToday: Int = 0
+    var costToday: Double = 0
 
     var id: String { "\(provider)/\(model)" }
 
@@ -286,7 +287,7 @@ extension ModelUsage {
         case cacheReadAll, estCost, contextK, tokPerSec, promptTokPerSec
         case paramSize, quant, isLocal, capabilities, localModelName, sharePercent
         case inputTokensAll, outputTokensAll, inputTokensToday, outputTokensToday
-        case cacheWriteAll, requestsAll, requestsToday
+        case cacheWriteAll, requestsAll, requestsToday, costToday
     }
 
     init(from decoder: Decoder) throws {
@@ -316,6 +317,7 @@ extension ModelUsage {
         cacheWriteAll = c.thDecode(.cacheWriteAll, or: 0)
         requestsAll = c.thDecode(.requestsAll, or: 0)
         requestsToday = c.thDecode(.requestsToday, or: 0)
+        costToday = c.thDecode(.costToday, or: 0)
     }
 }
 

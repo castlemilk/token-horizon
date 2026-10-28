@@ -4,6 +4,10 @@ import SQLite3
 final class UsageEngine {
     private var db: OpaquePointer?
     private let lock = NSLock()
+    /// Serializes the opencode sqlite handle + fingerprint cache. Separate
+    /// from `lock` so a multi-second WAL re-query doesn't stall unrelated
+    /// engine calls — lock order is always engine → opencode, never reverse.
+    private let opencodeLock = NSLock()
     private let inputs: UsageEngineInputs?
     private let durableStore: DurableStore
     /// Only set while the engine lock is held for an atomic sync export.
@@ -59,6 +63,36 @@ final class UsageEngine {
     /// data is ever lost (offsets resume; history backfills). Matches
     /// HomeDiscovery's 30s `$HOME` listing cache.
     static let listingTTL: TimeInterval = 30
+
+    /// Per-file consumption cap per poll. A busy agent session can append
+    /// tens of MB between polls; `readDataToEndOfFile` consumed all of it
+    /// (plus JSON-parsed every line) under the engine lock, turning one
+    /// collect into a multi-second stall with every API/tick caller queued
+    /// behind it (observed live: a ~30s claude scan and a ~90-thread dispatch
+    /// convoy). Reads are capped at this window, trimmed to the last newline,
+    /// and the offset advances by exactly the consumed bytes — the remainder
+    /// is picked up on the next poll, so no data is ever skipped (invariant:
+    /// offsets advance only by consumed byte counts; partial tails survive).
+    /// Injectable for hermetic tests.
+    var maxReadBytes: Int = 16 * 1_024 * 1_024
+
+    /// Bounded incremental read shared by the JSONL scanners. The handle is
+    /// already seeked to the tracked offset; returns the newline-terminated
+    /// consumable bytes and exactly how far to advance the offset. A short
+    /// window with no newline is a partial tail → nil (deferred untouched,
+    /// invariant #4). A FULL window with no newline is one oversize line →
+    /// `oversized: true` with the whole window consumed, so a single
+    /// pathological line can never wedge the reader at the same offset
+    /// forever; callers flag it suspect (usage-bearing lines are far smaller
+    /// than the cap, so silently dropping one is the right recovery).
+    private func boundedConsumable(_ fh: FileHandle) -> (consumable: Data, consumed: Int, oversized: Bool)? {
+        let chunk = fh.readData(ofLength: maxReadBytes)
+        if let lastNewline = chunk.lastIndex(of: UInt8(ascii: "\n")) {
+            return (Data(chunk[chunk.startIndex...lastNewline]), lastNewline + 1, false)
+        }
+        guard chunk.count >= maxReadBytes else { return nil }
+        return (Data(), chunk.count, true)
+    }
 
     // MARK: - Change-driven scanning
 
@@ -348,8 +382,10 @@ final class UsageEngine {
         codexFiles.removeAll()
         listingCache.removeAll()
         hourDayCache.removeAll()
+        opencodeLock.lock()
         opencodeCache = nil
         opencodeSchemaCache = nil
+        opencodeLock.unlock()
         devinSessionsCache = nil
         devinMtimes.removeAll()
         scanVersions.removeAll()
@@ -404,10 +440,11 @@ final class UsageEngine {
     }
 
     func snapshot() -> UsageSnapshot {
+        let opencode = cachedOpencode(now: Date())
         lock.lock()
         defer { lock.unlock() }
         let t0 = Self.perfNow()
-        let snap = collectLocked()
+        let snap = collectLocked(opencode: opencode)
         lastSnapshotLock.lock()
         lastSnapshot = snap
         lastSnapshotLock.unlock()
@@ -434,14 +471,17 @@ final class UsageEngine {
     /// independently changing telemetry/sqlite once too, so totals and their
     /// original buckets always describe the same generation.
     func leaderboardData(days: Int = 370, heatmapDays: Int = 28, now: Date? = nil) -> LeaderboardSyncLocalData {
+        let now = now ?? Date()
+        // opencode sqlite (seconds on a large WAL) and the telemetry-store
+        // summary touch no engine state — read them off `lock` so /stats
+        // and friends aren't stalled behind the collect.
+        let localLLM = localLLMSummary(now: now)
+        let opencode = cachedOpencode(now: now)
         lock.lock()
         defer { lock.unlock() }
-        let now = now ?? Date()
         collectionDate = now
         defer { collectionDate = nil }
         let started = Self.perfNow()
-        let localLLM = localLLMSummary()
-        let opencode = cachedOpencodeLocked()
         let snapshot = collectLocked(localLLM: localLLM, opencode: opencode)
         let merged = mergedHourlyLocked(localLLM: localLLM, opencode: opencode)
         let history = historyLocked(merged: merged, days: days, now: now)
@@ -469,11 +509,12 @@ final class UsageEngine {
     }
 
     func history(days: Int) -> (points: [HistoryPoint], streak: Int) {
+        let opencode = cachedOpencode(now: Date())
         lock.lock()
         defer { lock.unlock() }
         let t0 = Self.perfNow()
-        _ = collectLocked()
-        let merged = mergedHourlyLocked()
+        _ = collectLocked(opencode: opencode)
+        let merged = mergedHourlyLocked(opencode: opencode)
         let result = historyLocked(merged: merged, days: days, now: Date())
         let t1 = Self.perfNow()
         durableStore.saveHistory(points: result.points, streak: result.streak)
@@ -540,11 +581,12 @@ final class UsageEngine {
     }
 
     func trendHistory(window: TrendWindow) -> [HistoryPoint] {
+        let opencode = cachedOpencode(now: Date())
         lock.lock()
         defer { lock.unlock() }
         let t0 = Self.perfNow()
-        _ = collectLocked()
-        let merged = mergedHourlyLocked()
+        _ = collectLocked(opencode: opencode)
+        let merged = mergedHourlyLocked(opencode: opencode)
 
         let spec = window.spec
         var points: [HistoryPoint] = []
@@ -659,10 +701,11 @@ final class UsageEngine {
     /// 7 (Mon-first) x 24 local-hour token grid over the trailing `days`.
     /// Buckets are UTC-hour aligned; Calendar converts each to local time.
     func activityHeatmap(days: Int = 28) -> [[Int]] {
+        let opencode = cachedOpencode(now: Date())
         lock.lock()
         defer { lock.unlock() }
-        _ = collectLocked()
-        let merged = mergedHourlyLocked()
+        _ = collectLocked(opencode: opencode)
+        let merged = mergedHourlyLocked(opencode: opencode)
         return activityHeatmapLocked(merged: merged, days: days, now: Date())
     }
 
@@ -701,9 +744,9 @@ final class UsageEngine {
             for (h, b) in st.buckets { add(h, tool, b.tokens, b.cost) }
         }
         for (_, st) in codexFiles { for (h, b) in st.buckets { add(h, "codex", b.tokens, 0) } }
-        let localllm = localLLM ?? localLLMSummary()
+        let localllm = localLLM ?? localLLMSummary(now: collectionDate ?? Date())
         for (h, tokens) in localllm.hourlyBuckets { add(h, "ollama", tokens, 0) }
-        for (day, tokens, cost) in (opencode ?? cachedOpencodeLocked()).hourly { add(day, "opencode", tokens, cost) }
+        for (day, tokens, cost) in (opencode ?? cachedOpencode(now: collectionDate ?? Date())).hourly { add(day, "opencode", tokens, cost) }
         return merged
     }
 
@@ -718,25 +761,6 @@ final class UsageEngine {
         codexFiles.values.compactMap { $0.rate }.max { a, b in
             a.resetsAt != b.resetsAt ? a.resetsAt < b.resetsAt : a.usedPercent < b.usedPercent
         }
-    }
-
-    private func opencodePerDayQuery(_ db: OpaquePointer, _ handler: (Int, Int, Double) -> Void) {
-        let table = opencodeSchema(for: db).sessionTable
-        let sql = """
-        SELECT CAST(time_created / 1000 / 3600 AS INT) * 3600,
-               SUM(COALESCE(tokens_input+tokens_output+tokens_reasoning+tokens_cache_read+tokens_cache_write,0)),
-               SUM(COALESCE(cost,0))
-        FROM \(table)
-        GROUP BY 1
-        """
-        guard let stmt = prepare(db, sql) else { return }
-        while sqlite3_step(stmt) == SQLITE_ROW {
-            let hour = Int(sqlite3_column_int64(stmt, 0))
-            let tokens = Int(sqlite3_column_int64(stmt, 1))
-            let cost = sqlite3_column_double(stmt, 2)
-            handler(hour, tokens, cost)
-        }
-        sqlite3_finalize(stmt)
     }
 
     private func collectLocked(localLLM: LocalLLMSummary? = nil, opencode: OpencodeSnapshot? = nil) -> UsageSnapshot {
@@ -793,7 +817,7 @@ final class UsageEngine {
         if inputs?.watchesFiles ?? true { watcher.sync(roots: spec.map(\.root)) }
         func due(_ s: String) -> Bool { pending.contains("*") || pending.contains(s) }
 
-        let opencode = opencode ?? cachedOpencodeLocked()
+        let opencode = opencode ?? cachedOpencode(now: collectionDate ?? Date())
         if let oc = opencode.sums {
             tools.append(ToolUsage(tool: "opencode",
                                    tokensToday: oc.todayTokens, tokensAllTime: oc.allTokens,
@@ -811,6 +835,7 @@ final class UsageEngine {
             snap.costAllTime += oc.allCost
             snap.recentSessions = oc.sessions
             snap.models = opencode.models
+            mergeModelDays(into: &mergedModelDays, from: opencode.modelDays)
             for p in opencode.projects { snap.projects.append(p) }
         }
         ph.mark("opencode")
@@ -1053,7 +1078,7 @@ final class UsageEngine {
         }
         ph.mark("devin")
 
-        let localllm = localLLM ?? localLLMSummary()
+        let localllm = localLLM ?? localLLMSummary(now: collectionDate ?? Date())
         if localllm.allTokens > 0 {
             var ollamaRequestsAll = 0
             for (_, v) in localllm.models { ollamaRequestsAll += v.messages }
@@ -1105,12 +1130,22 @@ final class UsageEngine {
         return snap
     }
 
+    /// Last engine-state serialization — the disk write is already throttled
+    /// inside DurableStore (60s + 2s deferred flush), but the conversion below
+    /// walks every bucket/model/watermark of every file *before* the store can
+    /// decline it. Match the serialize cadence to the write cadence instead.
+    private var lastEnginePersist = Date.distantPast
+
     private func persistEngineStateLocked() {
         guard SettingsStore.shared.historyPersistenceEnabled else { return }
         // The full-state conversion below walks every bucket/model/watermark
         // of every file (megabytes for heavy users) — skip it when nothing
-        // mutated since the last persist.
+        // mutated since the last persist. `parserStateDirty` stays set until a
+        // persist actually runs so a gated collect never drops state.
         guard parserStateDirty else { return }
+        let persistNow = Date()
+        guard persistNow.timeIntervalSince(lastEnginePersist) >= DurableStore.engineSaveInterval else { return }
+        lastEnginePersist = persistNow
         parserStateDirty = false
         func toStoredAdditive(_ dict: [String: AdditiveFileState]) -> [String: DurableStore.StoredAdditiveFile] {
             var out: [String: DurableStore.StoredAdditiveFile] = [:]
@@ -1386,7 +1421,11 @@ final class UsageEngine {
     }
 
     private func todayBucket() -> Int {
-        Int(Calendar.current.startOfDay(for: collectionDate ?? Date()).timeIntervalSince1970)
+        todayBucket(now: collectionDate ?? Date())
+    }
+
+    private func todayBucket(now: Date) -> Int {
+        Int(Calendar.current.startOfDay(for: now).timeIntervalSince1970)
     }
 
     /// Local day-start for an epoch-hour bucket, memoized. Buckets are
@@ -1482,6 +1521,9 @@ final class UsageEngine {
     /// is still descended: the original `contains("/chunks/")` check does
     /// not match it.
     private func collectDir(fm: FileManager, root: String, rel: String, suffix: String, excluding: Set<String>, out: inout [String]) {
+        #if canImport(Darwin)
+        collectDirNative(root: root, rel: rel, suffix: suffix, excluding: excluding, out: &out)
+        #else
         let abs = rel.isEmpty ? root : root + "/" + rel
         guard let items = try? fm.contentsOfDirectory(atPath: abs) else { return }
         var isDir = ObjCBool(false)
@@ -1497,7 +1539,48 @@ final class UsageEngine {
                 out.append(itemRel)
             }
         }
+        #endif
     }
+
+    #if canImport(Darwin)
+    /// readdir-based walk — one opendir + dirent.d_type per entry replaces
+    /// contentsOfDirectory plus a fileExists stat per item (the profiled
+    /// ~4k-stat cost on the agy tree). Semantics match fileExists: links and
+    /// unknown-type entries are resolved once with stat() (dangling links and
+    /// unstatable names fall through to the file branch, as before).
+    private func collectDirNative(root: String, rel: String, suffix: String, excluding: Set<String>, out: inout [String]) {
+        let abs = rel.isEmpty ? root : root + "/" + rel
+        guard let dir = opendir(abs) else { return }
+        defer { closedir(dir) }
+        while let entry = readdir(dir) {
+            let name = Self.direntName(&entry.pointee.d_name)
+            guard !name.isEmpty, name != ".", name != ".." else { continue }
+            let itemRel = rel.isEmpty ? name : rel + "/" + name
+            var isDir = entry.pointee.d_type == DT_DIR
+            if entry.pointee.d_type == DT_LNK || entry.pointee.d_type == DT_UNKNOWN {
+                var st = stat()
+                isDir = stat(root + "/" + itemRel, &st) == 0 && (st.st_mode & S_IFMT) == S_IFDIR
+            }
+            if isDir {
+                if !rel.isEmpty, name == "chunks" { continue }
+                if excluding.contains(name) { continue }
+                collectDirNative(root: root, rel: itemRel, suffix: suffix, excluding: excluding, out: &out)
+            } else if name.hasSuffix(suffix) {
+                if itemRel.contains("/chunks/") { continue }
+                if itemRel.contains("transcript_full.jsonl") { continue }
+                out.append(itemRel)
+            }
+        }
+    }
+
+    /// dirent.d_name fixed C buffer → String (stops at the first NUL).
+    private static func direntName<T>(_ tuple: inout T) -> String {
+        withUnsafeBytes(of: &tuple) { buf in
+            let end = buf.firstIndex(of: 0) ?? buf.count
+            return String(decoding: buf[..<end], as: UTF8.self)
+        }
+    }
+    #endif
 
     /// Watermark delta for repeated message ids.
     /// Claude transcripts repeat the same assistant message (identical usage)
@@ -1543,10 +1626,13 @@ final class UsageEngine {
                 if size < st.offset { st = AdditiveFileState() }
                 guard size > st.offset, let fh = FileHandle(forReadingAtPath: full) else { continue }
                 fh.seek(toFileOffset: st.offset)
-                let chunk = fh.readDataToEndOfFile()
+                guard let (consumable, consumed, oversized) = boundedConsumable(fh) else {
+                    try? fh.close()
+                    continue
+                }
                 try? fh.close()
-                guard let lastNewline = chunk.lastIndex(of: UInt8(ascii: "\n")) else { continue }
-                let consumable = chunk[chunk.startIndex...lastNewline]
+                st.offset += UInt64(consumed)
+                if oversized { st.suspectLines += 1 }
                 for line in consumable.split(separator: UInt8(ascii: "\n")) where !line.isEmpty {
                     st.linesRead += 1
                     guard let obj = try? JSONSerialization.jsonObject(with: Data(line)) as? [String: Any] else { continue }
@@ -1610,7 +1696,6 @@ final class UsageEngine {
                         }
                     }
                 }
-                st.offset += UInt64(consumable.count)
                 state[key] = st
                 parserStateDirty = true
                 scanVersions[prefix, default: 0] += 1
@@ -1932,10 +2017,13 @@ final class UsageEngine {
                 if size < st.offset { st = AdditiveFileState() }
                 guard size > st.offset, let fh = FileHandle(forReadingAtPath: full) else { continue }
                 fh.seek(toFileOffset: st.offset)
-                let chunk = fh.readDataToEndOfFile()
+                guard let (consumable, consumed, oversized) = boundedConsumable(fh) else {
+                    try? fh.close()
+                    continue
+                }
                 try? fh.close()
-                guard let lastNewline = chunk.lastIndex(of: UInt8(ascii: "\n")) else { continue }
-                let consumable = chunk[chunk.startIndex...lastNewline]
+                st.offset += UInt64(consumed)
+                if oversized { st.suspectLines += 1 }
                 let kimiToday = todayBucket()
                 for line in consumable.split(separator: UInt8(ascii: "\n")) where !line.isEmpty {
                     st.linesRead += 1
@@ -1978,7 +2066,6 @@ final class UsageEngine {
                         }
                     }
                 }
-                st.offset += UInt64(consumable.count)
                 kimiFiles[full] = st
                 parserStateDirty = true
             }
@@ -2018,9 +2105,9 @@ final class UsageEngine {
                 guard size > st.offset, let fh = FileHandle(forReadingAtPath: full) else { continue }
                 defer { try? fh.close() }
                 fh.seek(toFileOffset: st.offset)
-                let chunk = fh.readDataToEndOfFile()
-                guard let lastNewline = chunk.lastIndex(of: UInt8(ascii: "\n")) else { continue }
-                let consumable = chunk[chunk.startIndex...lastNewline]
+                guard let (consumable, consumed, oversized) = boundedConsumable(fh) else { continue }
+                st.offset += UInt64(consumed)
+                if oversized { st.suspectLines += 1 }
                 for line in consumable.split(separator: UInt8(ascii: "\n")) where !line.isEmpty {
                     st.linesRead += 1
                     guard let obj = try? JSONSerialization.jsonObject(with: Data(line)) as? [String: Any] else { continue }
@@ -2097,7 +2184,6 @@ final class UsageEngine {
                         }
                     }
                 }
-                st.offset += UInt64(consumable.count)
                 state[full] = st
                 parserStateDirty = true
             }
@@ -2603,20 +2689,18 @@ final class UsageEngine {
         var sessions: [SessionSummary] = []
     }
 
-    private func localMidnightUTC() -> Int {
-        todayBucket()
-    }
-
     /// stat-gated snapshot of all opencode sqlite reads. The message-table
     /// GROUP BY with per-row json_extract is the hottest query in the 5s
     /// tick (~400ms warm in debug); db content cannot change without the
     /// db/-wal/-shm fingerprint changing, so idle ticks skip sqlite entirely.
-    /// All access happens under `lock` (snapshot/history/trends hold it).
+    /// All access happens under `opencodeLock`, independent of the engine
+    /// `lock`, so a re-query never stalls unrelated collects.
     private struct OpencodeSnapshot {
         var fingerprint: String
         var sums: OCSums?
         var models: [ModelUsage]
         var hourly: [(Int, Int, Double)]
+        var modelDays: [String: [Int: Int]]
         var projects: [ProjectUsage]
     }
     private var opencodeCache: OpencodeSnapshot?
@@ -2628,8 +2712,8 @@ final class UsageEngine {
         ]
     }
 
-    private func localLLMSummary() -> LocalLLMSummary {
-        inputs?.localLLMSummary() ?? OllamaTelemetryStore.shared.summary(now: collectionDate ?? Date())
+    private func localLLMSummary(now: Date) -> LocalLLMSummary {
+        inputs?.localLLMSummary() ?? OllamaTelemetryStore.shared.summary(now: now)
     }
 
     private func opencodeFingerprint() -> String {
@@ -2716,13 +2800,16 @@ final class UsageEngine {
         return schema
     }
 
-    private func cachedOpencodeLocked() -> OpencodeSnapshot {
-        let fp = "\(todayBucket())|\(opencodeFingerprint())"
+    private func cachedOpencode(now: Date) -> OpencodeSnapshot {
+        opencodeLock.lock()
+        defer { opencodeLock.unlock() }
+        let midnight = todayBucket(now: now)
+        let fp = "\(midnight)|\(opencodeFingerprint())"
         if let c = opencodeCache, c.fingerprint == fp { return c }
         // The file changed under us — an opencode upgrade can migrate the
         // schema in place, so re-probe which generation we should read.
         opencodeSchemaCache = nil
-        var snap = OpencodeSnapshot(fingerprint: fp, sums: nil, models: [], hourly: [], projects: [])
+        var snap = OpencodeSnapshot(fingerprint: fp, sums: nil, models: [], hourly: [], modelDays: [:], projects: [])
         guard let database = openDB() else {
             opencodeCache = snap
             return snap
@@ -2733,14 +2820,25 @@ final class UsageEngine {
             return opencodeCache ?? snap
         }
         defer { sqlite3_exec(database, "ROLLBACK", nil, nil, nil) }
-        snap.models = modelUsageQuery()
+        let midnightMs = midnight * 1000
+        // One message-grain scan feeds models, hourly history and per-model
+        // days — the only "when" that exists per token (session_v2 buckets by
+        // creation time, which pins a long-running session's entire accrual
+        // to its creation hour and leaves "today" at zero forever).
+        let scan = opencodeMessageScan(midnightMs: midnightMs)
+        snap.models = scan.models
+        snap.hourly = scan.hourly
+        snap.modelDays = scan.modelDays
         if var sums = opencodeUsageQuery() {
             sums.requestsAll = snap.models.reduce(0) { $0 + $1.requestsAll }
             sums.requestsToday = snap.models.reduce(0) { $0 + $1.requestsToday }
+            sums.todayTokens = snap.models.reduce(0) { $0 + $1.tokensToday }
+            sums.todayCost = snap.models.reduce(0) { $0 + $1.costToday }
+            sums.inputTokensToday = snap.models.reduce(0) { $0 + $1.inputTokensToday }
+            sums.outputTokensToday = snap.models.reduce(0) { $0 + $1.outputTokensToday }
             snap.sums = sums
         }
         if let db = openDB() {
-            opencodePerDayQuery(db) { h, t, c in snap.hourly.append((h, t, c)) }
             snap.projects = opencodeProjectsQuery(db)
         }
         opencodeCache = snap
@@ -2753,7 +2851,6 @@ final class UsageEngine {
         var out = OCSums()
 
         let tokenExpr = "COALESCE(SUM(tokens_input+tokens_output+tokens_reasoning+tokens_cache_read+tokens_cache_write),0)"
-        let midnightMs = localMidnightUTC() * 1000
 
         var sql = """
         SELECT \(tokenExpr), COALESCE(SUM(cost),0),
@@ -2768,18 +2865,6 @@ final class UsageEngine {
             out.cacheWrite = Int(sqlite3_column_int64(stmt, 3))
             out.inputTokensAll = Int(sqlite3_column_int64(stmt, 4))
             out.outputTokensAll = Int(sqlite3_column_int64(stmt, 5))
-            sqlite3_finalize(stmt)
-        }
-        sql = """
-        SELECT \(tokenExpr), COALESCE(SUM(cost),0),
-               COALESCE(SUM(tokens_input),0), COALESCE(SUM(tokens_output),0)
-        FROM \(schema.sessionTable) WHERE time_created > \(midnightMs)
-        """
-        if let stmt = prepare(db, sql), sqlite3_step(stmt) == SQLITE_ROW {
-            out.todayTokens = Int(sqlite3_column_int64(stmt, 0))
-            out.todayCost = sqlite3_column_double(stmt, 1)
-            out.inputTokensToday = Int(sqlite3_column_int64(stmt, 2))
-            out.outputTokensToday = Int(sqlite3_column_int64(stmt, 3))
             sqlite3_finalize(stmt)
         }
         sql = """
@@ -2842,10 +2927,13 @@ final class UsageEngine {
         return out
     }
 
-    private func modelUsageQuery() -> [ModelUsage] {
-        guard let db = openDB() else { return [] }
+    /// One grouped pass over assistant messages: per-(provider, model, hour)
+    /// rows are folded in Swift into per-model rollups (all-time + today),
+    /// the hourly history and per-model day buckets — all attributed by the
+    /// message's own `time_created`.
+    private func opencodeMessageScan(midnightMs: Int) -> (models: [ModelUsage], hourly: [(Int, Int, Double)], modelDays: [String: [Int: Int]]) {
+        guard let db = openDB() else { return ([], [], [:]) }
         let schema = opencodeSchema(for: db)
-        let midnightMs = localMidnightUTC() * 1000
         // MATERIALIZED: tokensExpr is evaluated once per row instead of twice
         // (total + today-conditional SUMs). ~25% faster on large message
         // tables; verified byte-identical output vs the flat form.
@@ -2864,40 +2952,88 @@ final class UsageEngine {
                    COALESCE(json_extract(data,'$.tokens.cache.read'),0) AS cr,
                    COALESCE(json_extract(data,'$.tokens.cache.write'),0) AS cw
             FROM \(schema.messageTable) WHERE \(schema.assistantPredicate))
-        SELECT p, mo, SUM(t),
+        SELECT p, mo, CAST(tc/1000/3600 AS INT)*3600 AS hr,
+               SUM(t),
                SUM(CASE WHEN tc > \(midnightMs) THEN t ELSE 0 END),
-               SUM(c), COUNT(*),
+               SUM(c),
+               SUM(CASE WHEN tc > \(midnightMs) THEN c ELSE 0 END),
+               COUNT(*),
+               SUM(CASE WHEN tc > \(midnightMs) THEN 1 ELSE 0 END),
                SUM(i), SUM(o), SUM(cr), SUM(cw),
                SUM(CASE WHEN tc > \(midnightMs) THEN i ELSE 0 END),
-               SUM(CASE WHEN tc > \(midnightMs) THEN o ELSE 0 END),
-               SUM(CASE WHEN tc > \(midnightMs) THEN 1 ELSE 0 END)
-        FROM m GROUP BY 1,2 ORDER BY 3 DESC
+               SUM(CASE WHEN tc > \(midnightMs) THEN o ELSE 0 END)
+        FROM m GROUP BY 1,2,3
         """
-        var out: [ModelUsage] = []
+        struct MA {
+            var tokensAll = 0, tokensToday = 0, cost = 0.0, costToday = 0.0
+            var messages = 0, requestsToday = 0
+            var iAll = 0, oAll = 0, crAll = 0, cwAll = 0, iToday = 0, oToday = 0
+        }
+        var acc: [String: MA] = [:]
+        var keys: [String: (String, String)] = [:]
+        var hourAgg: [Int: (Int, Double)] = [:]
+        var days: [String: [Int: Int]] = [:]
+        var dayCache: [Int: Int] = [:]
+        func dayStart(_ hour: Int) -> Int {
+            if let d = dayCache[hour] { return d }
+            let d = Int(Calendar.current.startOfDay(
+                for: Date(timeIntervalSince1970: TimeInterval(hour))).timeIntervalSince1970)
+            dayCache[hour] = d
+            return d
+        }
         if let stmt = prepare(db, sql) {
             while sqlite3_step(stmt) == SQLITE_ROW {
                 let provider = text(stmt, 0)
                 let model = text(stmt, 1)
-                let tokensAll = Int(sqlite3_column_int64(stmt, 2))
-                let tokensToday = Int(sqlite3_column_int64(stmt, 3))
-                let cost = sqlite3_column_double(stmt, 4)
-                let messages = Int(sqlite3_column_int64(stmt, 5))
-                let isFree = cost < 0.0001 || provider.lowercased().contains("free") || model.lowercased().contains("free") || model.lowercased().contains("pickle")
-                out.append(ModelUsage(provider: provider, model: model,
-                                      tokensAll: tokensAll, tokensToday: tokensToday,
-                                      cost: cost, messages: messages, free: isFree,
-                                      cacheReadAll: Int(sqlite3_column_int64(stmt, 8)),
-                                      inputTokensAll: Int(sqlite3_column_int64(stmt, 6)),
-                                      outputTokensAll: Int(sqlite3_column_int64(stmt, 7)),
-                                      inputTokensToday: Int(sqlite3_column_int64(stmt, 10)),
-                                      outputTokensToday: Int(sqlite3_column_int64(stmt, 11)),
-                                      cacheWriteAll: Int(sqlite3_column_int64(stmt, 9)),
-                                      requestsAll: messages,
-                                      requestsToday: Int(sqlite3_column_int64(stmt, 12))))
+                let hour = Int(sqlite3_column_int64(stmt, 2))
+                let t = Int(sqlite3_column_int64(stmt, 3))
+                let tt = Int(sqlite3_column_int64(stmt, 4))
+                let c = sqlite3_column_double(stmt, 5)
+                let ct = sqlite3_column_double(stmt, 6)
+                let n = Int(sqlite3_column_int64(stmt, 7))
+                let rt = Int(sqlite3_column_int64(stmt, 8))
+                let key = provider + "\u{0}" + model
+                var a = acc[key] ?? MA()
+                a.tokensAll += t; a.tokensToday += tt
+                a.cost += c; a.costToday += ct
+                a.messages += n; a.requestsToday += rt
+                a.iAll += Int(sqlite3_column_int64(stmt, 9))
+                a.oAll += Int(sqlite3_column_int64(stmt, 10))
+                a.crAll += Int(sqlite3_column_int64(stmt, 11))
+                a.cwAll += Int(sqlite3_column_int64(stmt, 12))
+                a.iToday += Int(sqlite3_column_int64(stmt, 13))
+                a.oToday += Int(sqlite3_column_int64(stmt, 14))
+                acc[key] = a
+                keys[key] = (provider, model)
+                if t > 0 || c > 0 {
+                    let prev = hourAgg[hour] ?? (0, 0)
+                    hourAgg[hour] = (prev.0 + t, prev.1 + c)
+                    days[model, default: [:]][dayStart(hour), default: 0] += t
+                }
             }
             sqlite3_finalize(stmt)
         }
-        return out
+        let cutoff = midnightMs / 1000 - Self.modelHistoryDays * 86_400
+        var models: [ModelUsage] = acc.map { key, a in
+            let (provider, model) = keys[key] ?? ("?", "?")
+            let isFree = a.cost < 0.0001 || provider.lowercased().contains("free") || model.lowercased().contains("free") || model.lowercased().contains("pickle")
+            return ModelUsage(provider: provider, model: model,
+                              tokensAll: a.tokensAll, tokensToday: a.tokensToday,
+                              cost: a.cost, messages: a.messages, free: isFree,
+                              cacheReadAll: a.crAll,
+                              inputTokensAll: a.iAll, outputTokensAll: a.oAll,
+                              inputTokensToday: a.iToday, outputTokensToday: a.oToday,
+                              cacheWriteAll: a.cwAll,
+                              requestsAll: a.messages, requestsToday: a.requestsToday,
+                              costToday: a.costToday)
+        }
+        models.sort { $0.tokensAll > $1.tokensAll }
+        for (m, var d) in days where d.count > Self.modelHistoryDays * 2 {
+            pruneModelDays(&d, cutoff: cutoff)
+            days[m] = d
+        }
+        let hourly = hourAgg.sorted { $0.key < $1.key }.map { ($0.key, $0.value.0, $0.value.1) }
+        return (models, hourly, days)
     }
 
     private func openDB() -> OpaquePointer? {

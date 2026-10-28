@@ -307,8 +307,11 @@ func detectOpencodeSchema(db *sql.DB) opencodeSchema {
 	return s
 }
 
-// opencodePerBucket: UsageEngine.opencodePerBucket port — session-table
-// rows into 5-min buckets.
+// opencodePerBucket: UsageEngine.opencodePerBucket port — message-table
+// rows into 5-min buckets. Bucketing must key on the message's own
+// time_created: session_v2.time_created is the session's *creation*
+// instant, so bucketing by it pins a long-running session's entire accrual
+// to its creation bucket and reports "today" as zero forever after.
 func (e *Engine) opencodePerBucket() map[int64]*BucketEntry {
 	merged := map[int64]*BucketEntry{}
 	path := e.opencodeDBPath()
@@ -322,9 +325,10 @@ func (e *Engine) opencodePerBucket() map[int64]*BucketEntry {
 	defer db.Close()
 	schema := detectOpencodeSchema(db)
 	rows, err := db.Query(`SELECT time_created,
-		COALESCE(tokens_input,0), COALESCE(tokens_output,0),
-		COALESCE(tokens_reasoning,0), COALESCE(tokens_cache_read,0),
-		COALESCE(tokens_cache_write,0), COALESCE(cost,0) FROM ` + schema.sessionTable)
+		COALESCE(json_extract(data,'$.tokens.input'),0), COALESCE(json_extract(data,'$.tokens.output'),0),
+		COALESCE(json_extract(data,'$.tokens.reasoning'),0), COALESCE(json_extract(data,'$.tokens.cache.read'),0),
+		COALESCE(json_extract(data,'$.tokens.cache.write'),0), COALESCE(json_extract(data,'$.cost'),0)
+		FROM ` + schema.messageTable + ` WHERE ` + schema.assistantWhere)
 	if err != nil {
 		return merged
 	}
