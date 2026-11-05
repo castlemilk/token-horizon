@@ -58,7 +58,10 @@ final class BoundedReadTests: XCTestCase {
         XCTAssertEqual(result.perModel["claude-sonnet"]?.all, count * 110)
         // The offset must sit exactly at EOF once fully consumed.
         let key = state.keys.first!
-        let size = try! FileManager.default.attributesOfItem(atPath: root + "/s1.jsonl")[.size] as! Int
+        guard let size = try! FileManager.default.attributesOfItem(atPath: root + "/s1.jsonl")[.size] as? Int else {
+            XCTFail("file size was unavailable")
+            return
+        }
         XCTAssertEqual(Int(state[key]!.offset), size, "offset consumed every byte")
         XCTAssertGreaterThan(polls, 1, "the cap must actually have split the read")
     }
@@ -124,7 +127,10 @@ final class BoundedReadTests: XCTestCase {
         let st = state.values.first
         XCTAssertNotNil(st)
         XCTAssertGreaterThanOrEqual(st!.suspectLines, 1, "oversize skip flagged as suspect")
-        let size = try! FileManager.default.attributesOfItem(atPath: root + "/s1.jsonl")[.size] as! Int
+        guard let size = try! FileManager.default.attributesOfItem(atPath: root + "/s1.jsonl")[.size] as? Int else {
+            XCTFail("file size was unavailable")
+            return
+        }
         XCTAssertEqual(Int(st!.offset), size, "reader reached EOF — not stuck at the blob")
     }
 }
