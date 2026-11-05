@@ -48,3 +48,11 @@ preview_bucket_name = "token-horizon-leaderboard-dev"
 [[kv_namespaces]]
 binding = "OAUTH_KV"
 id = "e1ffd014695c4e54942c1f0b1f477009"
+
+[[durable_objects.bindings]]
+name = "OAUTH_GRANTS"
+class_name = "OAuthGrantCoordinator"
+
+[[migrations]]
+tag = "oauth-grants-v1"
+new_sqlite_classes = ["OAuthGrantCoordinator"]

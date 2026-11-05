@@ -5,6 +5,7 @@ import { handleMcp, ORIGIN, READ, MANAGE } from './connector.js';
 import { connectPage, pageHeaders } from './connect-page.js';
 import { passwordConfigured } from './password-identity.js';
 import { browserIdentity, identityOwnerId, githubConfigured, sessionsConfigured } from './browser-auth.js';
+import { GrantCoordinator, grantKV, routeExchange } from './grant-coordinator.ts';
 
 const SCOPES = [READ, MANAGE, 'offline_access'];
 const json = (body, status = 200, headers = {}) => Response.json(body, { status, headers: { 'Cache-Control': 'no-store', 'X-Robots-Tag': 'noindex', ...headers } });
@@ -110,6 +111,11 @@ const provider = new OAuthProvider({
   clientIdMetadataDocumentEnabled: true,
   resourceMetadata: { resource: `${ORIGIN}/mcp`, authorization_servers: [ORIGIN], scopes_supported: [READ], resource_name: 'Token Horizon' }
 });
+export class OAuthGrantCoordinator extends GrantCoordinator {
+  constructor(state, env) {
+    super(state, env, (request, bindings, context) => provider.fetch(request, bindings, context));
+  }
+}
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
@@ -123,7 +129,13 @@ export default {
       response.headers.set('Access-Control-Allow-Headers', 'Content-Type, MCP-Protocol-Version');
       return response;
     }
-    if (url.pathname === '/mcp' || url.pathname.startsWith('/oauth/') || url.pathname.startsWith('/.well-known/') || url.pathname === '/connect') return provider.fetch(request, env, ctx);
+    // Desktop sign-in is a separate service and does not depend on MCP grants.
+    if (url.pathname === '/connect' && url.searchParams.has('desktop') && (request.method === 'GET' || request.method === 'HEAD')) return defaultHandler.fetch(request, env, ctx);
+    if (url.pathname === '/mcp' || url.pathname.startsWith('/oauth/') || url.pathname.startsWith('/.well-known/') || url.pathname === '/connect') {
+      if (!env.OAUTH_GRANTS) return json({ error: 'Connection service temporarily unavailable.' }, 503);
+      const coordinated = await routeExchange(request, env);
+      return coordinated ?? provider.fetch(request, { ...env, OAUTH_KV: grantKV(env) }, ctx);
+    }
     return site.fetch(request, env, ctx);
   }
 };
