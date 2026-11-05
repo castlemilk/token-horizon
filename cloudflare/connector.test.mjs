@@ -3,7 +3,7 @@ register('./worker-loader.mjs', import.meta.url);
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
-const { default: worker } = await import('./src/worker.js');
+const { default: worker, OAuthGrantCoordinator } = await import('./src/worker.js');
 const { callTool, handleMcp, READ, MANAGE, redact, ownedBy } = await import('./src/connector.js');
 const { verifyGoogleIdToken } = await import('./src/index.js');
 const base = 'https://token-horizon.dev';
@@ -13,6 +13,7 @@ function kv() {
     async get(key, type) { const v = store.get(key); if (!v || (v.exp && v.exp < Date.now()/1000)) return null; return (type === 'json' || type?.type === 'json') ? JSON.parse(v.value) : v.value; },
     async put(key, value, options = {}) { store.set(key, { value, exp: options.expiration || (options.expirationTtl ? Date.now()/1000 + options.expirationTtl : 0) }); },
     async delete(key) { store.delete(key); },
+    async getWithMetadata(key, type) { return { value: await this.get(key, type), metadata: null }; },
     async list({ prefix = '', limit = 1000 } = {}) { return { keys: [...store.keys()].filter(k => k.startsWith(prefix)).slice(0, limit).map(name => ({ name })), list_complete: true }; }
   };
 }
@@ -34,7 +35,27 @@ const entries = [
   { handle: 'unclaimed', claimed: false, googleEmail: 'alice@example.com', ownerId: 'google:alice-sub' }
 ];
 const catalog = { models: [{id:'test/a',name:'Model A',provider:'test',inputPerM:2,outputPerM:4,priceFrom:1,priceFromProvider:'gateway',priceFromOutputPerM:3,priceKnown:true},{id:'test/plan',name:'Plan Model',provider:'test',priceKnown:false,priceFrom:0.1,plans:['test-plan']}],plans:[{id:'test-plan',name:'Test plan',providers:['test'],tiers:[]}] };
-function env() { return { OAUTH_KV:kv(),LEADERBOARD_BUCKET:r2(structuredClone(entries)),GOOGLE_CLIENT_ID:'test-client',GOOGLE_JWKS:JSON.stringify({keys:[jwk]}),ASSETS:{fetch: async () => Response.json(catalog)} }; }
+function env() {
+  const bindings = { OAUTH_KV:kv(),LEADERBOARD_BUCKET:r2(structuredClone(entries)),GOOGLE_CLIENT_ID:'test-client',GOOGLE_JWKS:JSON.stringify({keys:[jwk]}),ASSETS:{fetch: async () => Response.json(catalog)} };
+  const objects = new Map();
+  bindings.OAUTH_GRANTS = {
+    idFromName: name => name,
+    get(name) {
+      if (!objects.has(name)) {
+        const data = new Map(); let tail = Promise.resolve();
+        const storage = {
+          async get(key) { return structuredClone(data.get(key)); },
+          async put(key,value) { data.set(key,structuredClone(value)); },
+          async setAlarm() {},
+          async transaction(fn) { const prior=tail;let release;tail=new Promise(resolve=>{release=resolve});await prior;try{return await fn(this);}finally{release();} },
+        };
+        objects.set(name,new OAuthGrantCoordinator({storage,waitUntil(){}},bindings));
+      }
+      return { fetch(input,init) { return objects.get(name).fetch(input instanceof Request ? input : new Request(input,init)); } };
+    },
+  };
+  return bindings;
+}
 const ctx = () => ({ waitUntil() {}, passThroughOnException() {} });
 const fetchW = (env, path, init = {}) => worker.fetch(new Request(base + path, init), env, ctx());
 async function registerClient(env) {
@@ -192,4 +213,21 @@ test('Remembered Google, GitHub and managed sessions require explicit bound cons
     const listed = await fetchW(e, '/oauth/connections', { method: 'POST', headers: { Origin: base, Cookie: managementCookie + '; ' + sessionCookie, 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ handle: nonce, action: 'list' }) });
     assert.equal(listed.status, 200); assert.equal((await listed.json()).connections.length, 1);
   }
+});
+
+test('overlapping refreshes return the same usable successor',async()=>{
+  const e=env(), t=await authorized(e);
+  const refresh=credential=>fetchW(e,'/oauth/token',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams({grant_type:'refresh_token',client_id:t.client.client_id,refresh_token:credential,resource:base+'/mcp'})});
+  const [a,b]=await Promise.all([refresh(t.refresh_token),refresh(t.refresh_token)]);
+  assert.equal(a.status,200);assert.equal(b.status,200);
+  const first=await a.json(),second=await b.json();assert.equal(first.access_token,second.access_token);assert.equal(first.refresh_token,second.refresh_token);
+  assert.equal((await refresh(first.refresh_token)).status,200);
+});
+
+test('concurrent authorization-code exchanges cannot both succeed',async()=>{
+  const e=env(), client=await registerClient(e), flow=await start(e,client), consent=await approve(e,flow);
+  assert.equal(consent.status,200);
+  const code=new URL((await consent.json()).redirect).searchParams.get('code');
+  const responses=await Promise.all([exchange(e,client,flow,code),exchange(e,client,flow,code)]);
+  assert.equal(responses.filter(r=>r.status===200).length,1);
 });

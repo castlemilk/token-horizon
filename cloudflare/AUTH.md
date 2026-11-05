@@ -90,6 +90,22 @@ Run `node --test cloudflare/desktop-auth.test.mjs` for native consent, PKCE,
 ownership, scope, cancellation, expiry, concurrent exchange, stale KV reads,
 immediate revocation, and bounded cleanup checks.
 
+## MCP grant storage and migration
+
+Each new MCP grant lives in the SQLite-backed `OAUTH_GRANTS` Durable Object.
+Grant, access token and encrypted refresh-retry response commit together.
+Identical refresh retries within five minutes receive the same credentials until
+their successor is used. Reuse of an unexpired retired token afterward or after
+the retry window revokes the connection; an unrecognised token cannot revoke it.
+`OAUTH_KV` retains client registrations, browser state and a grant-management
+index. Preserve both bindings and the Durable Object namespace across deploys.
+
+Existing MCP connections must reconnect at their next refresh after the first
+deployment; access tokens remain valid until expiry or revocation. Importing an
+old KV grant could restore a revoked connection. Reverting to a Worker from
+before the migration requires connections created afterward to reconnect too.
+Website sessions and desktop publishing credentials use separate storage.
+
 ## Managed email/password accounts
 
 The normal website and native MCP consent also support verified email/password
