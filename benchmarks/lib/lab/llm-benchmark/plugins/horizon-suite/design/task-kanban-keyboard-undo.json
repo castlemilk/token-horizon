@@ -1,0 +1,149 @@
+{
+ "id": "kanban-keyboard-undo",
+ "from_angle": "engineering-quality",
+ "title": "Keyboard Kanban with Undo",
+ "category": "ui-building",
+ "why_selected": "The densest state machine of the twelve and the only task about interaction engineering: exact undo/redo history rules, a work-in-progress limit, focus that follows the card, in-place DOM updates measured in nodes (not time), user titles rendered as text on both the add and restore paths, and recovery from corrupt storage. The check keeps its own model of the board and compares it with DOM order and drawn geometry after every step of hidden operation sequences; there is no script API to fake.",
+ "changes_made": "1. De-duplicated against seat-pricing: the responsive and contrast/focus-ring checks were removed here (seat-pricing owns them) and their 12 points moved to the state, focus, undo and update-budget checks; the prompt lost the matching requirements. The long-title wrap is still tested inside the add check. 2. Reads are split by kind: steps driven by in-page clicks are read in the same JavaScript turn (strict synchrony, no race); steps driven by real keys are read after a two-frame settle, so a focus call deferred by one frame passes deterministically and a longer delay fails deterministically. 3. Update budget raised from 12 to 20 nodes and defined in the prompt exactly as the MutationObserver counts it; the check re-focuses the card before the second press so the dropped-focus fixture stays isolated. 4. Every check loads the artifact on its own routed origin (fresh storage); only the persistence check reuses one. Routing fulfils the document path only, so an injected image request cannot be answered with the page. 5. Console-error collection ignores resource-load noise.",
+ "final_prompt": "Build a single-file HTML kanban board called Sprint Board that can be used entirely from the keyboard and supports undo and redo. It should look like a polished, shippable tool. An automated browser script grades it against the exact contract below, using card titles and operation sequences you have not seen. Use every id and data attribute exactly as written.\n\nBOARD\n- Three columns in this order: elements with data-column=\"todo\", \"doing\" and \"done\". Each is a region (a <section> or role=\"region\") whose accessible name is exactly \"To do\", \"Doing\" or \"Done\".\n- Each column contains one list element with the attribute data-list (a <ul>, <ol> or role=\"list\") whose direct children are that column's cards in board order, top to bottom, and one element with the attribute data-count whose text is the number of cards in the column.\n- A card is a list item (<li> or role=\"listitem\") with the attribute data-card and tabindex=\"0\". It contains its title in an element with the attribute data-card-title, and three buttons: data-action=\"move-left\", data-action=\"move-right\" and data-action=\"delete\", with the accessible names Move \"TITLE\" left, Move \"TITLE\" right and Delete \"TITLE\" (the card's own title, in double quotes). move-left is disabled on cards in To do, move-right on cards in Done.\n- First load, when nothing is stored: To do holds \"Draft release notes\", \"Fix login redirect\", \"Update pricing copy\"; Doing holds \"Migrate billing cron\"; Done holds \"Rotate API keys\".\n- Doing holds at most 3 cards. Show that limit in its header.\n\nADDING CARDS\n- <form id=\"add-form\"> containing <input id=\"new-title\" type=\"text\"> (accessible name \"New card title\"), <button id=\"add-btn\" type=\"submit\"> (accessible name \"Add card\") and <p id=\"add-error\">. Submitting, by the button or by Enter, adds a card at the END of To do.\n- The title is normalised first: trim it and collapse every run of whitespace into one space. It is valid if the result is 1 to 80 characters long.\n- Invalid: add nothing, show a message in #add-error (referenced by aria-describedby on #new-title), set aria-invalid=\"true\" on #new-title and leave the typed text alone.\n- Valid: add the card, empty #new-title and #add-error, set aria-invalid=\"false\" and keep focus in #new-title.\n- Titles are user data. Render them as text, never as HTML, on every code path, including restoring after a reload. An 80-character title without spaces wraps inside its card instead of overflowing.\n\nMOVING CARDS (each successful operation here is one action)\n- With a card element focused: Shift+ArrowUp or Shift+ArrowDown swaps it with the card above or below in the same column. Shift+ArrowLeft or Shift+ArrowRight moves it to the END of the neighbouring column; the move-left and move-right buttons do the same. The Delete key removes it; so does the delete button.\n- Plain ArrowUp or ArrowDown on a focused card moves focus to the previous or next card in the column, without wrapping. That is not an action.\n- These are no-ops and are NOT actions: up from the top, down from the bottom, left from To do, right from Done, and any move into Doing while it already holds 3 cards.\n- After a keyboard swap or move, the card keeps focus. After a delete, by key or by button, focus goes to the next card in that column, otherwise to the previous card, otherwise to #new-title.\n- The order of card elements in the DOM is always the board order, and cards are drawn in that order. Do not reorder with CSS.\n\nUNDO AND REDO\n- <button id=\"undo\"> (accessible name \"Undo\") and <button id=\"redo\"> (accessible name \"Redo\"). Each has the disabled attribute whenever it has nothing to do.\n- The actions are add, swap, move and delete. Undo reverts the latest action exactly, so a deleted or moved card returns to its previous column and position. Redo applies it again. A new action empties the redo history. Keep at least 100 levels. No-ops never enter the history.\n- Keyboard: Ctrl+Z or Cmd+Z is undo; Ctrl+Y, Ctrl+Shift+Z or Cmd+Shift+Z is redo. Compare the letter case-insensitively. The shortcuts work while focus is on a card, a button or the page, and must be left alone while focus is in #new-title. With nothing to undo or redo they do nothing.\n\nSTATUS MESSAGES\n- <div id=\"status\" role=\"status\" aria-live=\"polite\">. After every action, undo and redo, set its text to a sentence containing the card's title; after a move it also contains the destination column's name. After a move rejected because Doing is full, the text contains the word \"limit\".\n\nPERSISTENCE\n- Save the board, but not the history, to localStorage after every change and restore it on load. After a reload both history buttons are disabled.\n- If the stored value is missing, is not valid JSON or does not describe a valid board, start from the first-load board without throwing.\n- localStorage can throw on any access. Wrap every use in try/catch: the board must work completely without it.\n\nENGINEERING QUALITY\n- Update the DOM in place. An action must not re-create cards it does not touch: with 100 cards on the board, one swap or move may add or remove at most 20 DOM nodes in total (counted as a MutationObserver watching <body> with childList and subtree reports added plus removed nodes), and every other card stays the same element object.\n- Everything is synchronous: when a key, click or submit handler returns, the DOM, counts, button states, status text and focus are already final. No animations or transitions.\n- <html lang=\"en\">, exactly one <h1>, all content inside <main>. No uncaught exceptions and no console.error output, whatever is typed, pressed or clicked.",
+ "final_checks": [
+  {
+   "name": "kanban-structure-names",
+   "points": 7,
+   "verifies": "The first-load board, the column and list semantics, counts, and accessible names of every control.",
+   "method": "Fresh routed load with empty storage. One probe reads each column's titles as the text of [data-card-title] inside [data-column] [data-list] > [data-card], in DOM order: the first-load board exactly. getByRole('region', {name: 'To do', exact: true}), 'Doing' and 'Done' each resolve to the matching [data-column] (count 1, combined with locator.and); inside each, getByRole('listitem') count equals the card count and [data-count] text equals it. For two seed cards the three buttons match getByRole('button', {name, exact: true}) with the names Move \"T\" left, Move \"T\" right and Delete \"T\"; move-left is disabled in To do and move-right in Done. #undo and #redo are disabled; getByRole('textbox', {name: 'New card title'}) is #new-title; getByRole('button', {name: 'Add card'}) is #add-btn; #status has role status; one h1, a main, html lang starts with en; every card has tabindex 0.",
+   "flake_risk": "Low. Role queries use count() and never auto-wait."
+  },
+  {
+   "name": "kanban-add-validation",
+   "points": 8,
+   "verifies": "Title normalisation, the 1 to 80 character rule, error wiring, focus staying in the input after an add, and wrapping of an unbroken long title.",
+   "method": "Fresh load. locator.fill #new-title with '  Ship   the<TAB>Q3  report ' and press Enter; settle. A new last card in To do carries 'Ship the Q3 report'; #new-title is empty and is document.activeElement; the To do count rose by 1; aria-invalid is 'false'. For '', three spaces and an 81-character string: set the value and submit in-page; the card count is unchanged, aria-invalid is 'true', #add-error is visible with text and its id is in aria-describedby, and the input value is unchanged. An exactly 80-character title with no spaces is then accepted through #add-btn.click() and the error clears; its [data-card-title] right edge is inside its card and the card inside its column (1 px tolerance), and documentElement.scrollWidth <= clientWidth + 1.",
+   "flake_risk": "Low. Containment tests, not line counts, so fonts do not matter."
+  },
+  {
+   "name": "kanban-keyboard-moves",
+   "points": 13,
+   "verifies": "Shift+arrow swaps and moves and the Delete key change the board exactly as specified, edge no-ops included, and each move is announced.",
+   "method": "Fresh load; add five hidden titles in-page so To do holds eight cards. Run a fixed hidden list of 18 key operations generated once from the reference model so that none moves a card into a full Doing: swaps down and up including one at each edge, moves right and left including left from To do and right from Done, and two Delete presses. Before each one focus the target card with an in-page focus() call, so this check does not depend on focus retention, then page.keyboard.press and settle. After each press read the board from the DOM and compare it with the check's own array model; require the [data-count] texts to match, every card's box to lie inside its column's box, and card tops within a column to increase strictly in DOM order. After each successful move #status text contains the title and the destination column name; after each successful swap or delete it contains the title.",
+   "flake_risk": "Low. Real key events on a focused element with a bounded two-frame settle."
+  },
+  {
+   "name": "kanban-focus-management",
+   "points": 11,
+   "verifies": "Focus follows the moved card, plain arrows move focus without changing the board, and focus lands correctly after a delete.",
+   "method": "Fresh load plus three hidden cards. (a) Focus a card in the middle of To do (not second to last) and press Shift+ArrowDown, Shift+ArrowRight, Shift+ArrowLeft with no refocusing in between: after each, document.activeElement is the [data-card] whose title is the moved card's. (b) ArrowDown then ArrowUp: focus moves to the next card and back, the board is unchanged and #undo's disabled state is unchanged. (c) Delete on a middle card puts focus on the next card; Delete on the last card of a column puts it on the previous card; Delete on the only card in Doing puts it on #new-title. (d) After an in-page click on a delete button the same rule holds, read in the same turn. Key steps are read after settle.",
+   "flake_risk": "Low. A focus call deferred by one frame passes deterministically; one deferred by a timer of 50 ms or more fails deterministically."
+  },
+  {
+   "name": "kanban-wip-limit",
+   "points": 8,
+   "verifies": "Doing never exceeds 3 cards, by key or by button, the rejection is announced, and rejections stay out of the history.",
+   "method": "Fresh load. Move two To do cards right with their buttons (in-page clicks) so Doing holds 3; record the board. Attempt a fourth three ways: Shift+ArrowRight on a focused To do card, an in-page click on another To do card's move-right button, and Shift+ArrowLeft on the Done card. After each: board and counts unchanged and #status text contains 'limit' ignoring case. Click #undo once: the board must equal the state before the second successful move, which proves the three rejected attempts were not recorded. Delete a Doing card and repeat one move: it now succeeds.",
+   "flake_risk": "Low."
+  },
+  {
+   "name": "kanban-undo-redo",
+   "points": 16,
+   "verifies": "History semantics: exact reversal, redo, redo cleared by a new action, no-ops not recorded, disabled states, and shortcuts that leave the text input alone.",
+   "method": "Fresh load. A fixed hidden script of 30 steps. Twenty-five are in-page clicks and form submits read in the same turn: adds, move-left and move-right, deletes, undo, redo, a new action after two undos (#redo must become disabled), undo back to the start (#undo disabled and the board equals the first-load board), redo all the way forward. Five use real keys followed by settle: two edge no-ops (Shift+ArrowLeft on a To do card, Shift+ArrowRight on a Done card), each followed by an undo that must revert the previous real action; Control+z and Control+y with a card focused; Control+z while #new-title is focused with text in it, which must leave the board and the text unchanged. After every step compare the board, the counts and the disabled state of #undo and #redo with the reference model (three arrays and two stacks). No swaps are used and Doing is never pushed past its limit, so those defects are scored only in their own checks.",
+   "flake_risk": "Low. Budget rationale: the largest share because it is the densest state logic in the task."
+  },
+  {
+   "name": "kanban-safe-rendering",
+   "points": 9,
+   "verifies": "User titles are rendered as text on both the add path and the restore-from-storage path.",
+   "method": "Fresh load. Add three hostile titles in-page: an img tag with an onerror handler that sets window.__kb; a title with b and i tags, an ampersand entity and double quotes; a closing li tag followed by a script tag that sets window.__kb (35 characters each). For each new card require [data-card-title].textContent to equal the literal string, no img, b, i or script element inside the card, exactly three buttons and no other element children beyond the card's own structure, and window.__kb undefined after settle. Move one of them right and require #status to have no element children. page.reload() on the same routed origin and repeat every assertion on the restored board.",
+   "flake_risk": "Low. The element queries are the evidence; the global flag is secondary. The route answers only the document path, so the injected image request fails cleanly."
+  },
+  {
+   "name": "kanban-persistence-recovery",
+   "points": 9,
+   "verifies": "The board survives a reload, the history does not, and unreadable or invalid stored data falls back to the first-load board.",
+   "method": "One routed origin for the whole check, with a pageerror listener attached. Arrange a hidden board (three adds, two moves, one delete), read it, page.reload(): board and counts identical, #undo and #redo disabled, and localStorage holds at least one key. Then for each of four corrupt values (an unterminated JSON object, the text null, an object whose todo is a string, a bare array of numbers): overwrite every existing localStorage key with it from the check, reload, and require the first-load board, no pageerror event, and a working add.",
+   "flake_risk": "Low. Five reloads at 15 to 45 ms each."
+  },
+  {
+   "name": "kanban-update-budget",
+   "points": 10,
+   "verifies": "Work per step: one action touches only what it must instead of re-creating the board.",
+   "method": "Fresh load; in one probe set #new-title's value and call #add-btn.click() 95 times with distinct titles, giving 100 cards created by the page's own code (assert 98 in To do). Tag ten untouched cards with an expando property and start a MutationObserver on document.body (childList, subtree) that sums addedNodes and removedNodes. Focus the 50th card in To do and press Shift+ArrowDown; settle; flush with takeRecords: the sum is at most 20, the ten tags are still on connected elements, and the two cards have swapped. Reset the counter, focus the same card again and press Shift+ArrowRight: sum at most 20, tags intact, the card is last in Doing.",
+   "flake_risk": "Low. Counts nodes, not time. An in-place move costs 2 nodes for the card plus text nodes for status and counts (10 or fewer); re-rendering one 98-card list costs at least 196."
+  },
+  {
+   "name": "kanban-robust-session",
+   "points": 9,
+   "verifies": "No uncaught exception or console.error in a scripted session of edge-case input, with storage available and with storage throwing.",
+   "method": "pageerror and console-error listeners are attached before a fresh routed load. Sixty fixed steps from a seeded generator (seed 20261110): every shortcut with focus on body, on buttons and on cards; Control+z and Control+y ten times past both ends of the history; Delete until every column is empty, then more key presses; empty submits; a 5,000-character title; emoji, right-to-left and zero-width-joiner titles. Moves use keys only. Then load the artifact with goto('about:blank') and setContent, where localStorage throws, and run 15 steps including add, move, delete and undo. Pass if there were no pageerror events, no console errors other than resource-load messages, no [role=alert] text shaped like an engine error (TypeError, ReferenceError, 'is not defined', 'is not a function', 'Cannot read'), and at the end, in both modes, each [data-count] equals its column's card count, Doing holds at most 3 and no id is duplicated.",
+   "flake_risk": "Low. The step list is generated once from a constant seed and is the same for every artifact; the final assertions are invariants, not a model comparison, so logic defects are scored in their own checks."
+  }
+ ],
+ "fixtures": [
+  {
+   "name": "kanban-good",
+   "kind": "good",
+   "expected": "Cards are moved with insertBefore and refocused synchronously; history is a stack of command objects; restore validates the stored shape; storage access is guarded. Scores 100."
+  },
+  {
+   "name": "kanban-broken-unnamed-card-buttons",
+   "kind": "broken",
+   "expected": "Card buttons contain only arrow and cross glyphs with no accessible names. Fails only kanban-structure-names."
+  },
+  {
+   "name": "kanban-broken-no-whitespace-collapse",
+   "kind": "broken",
+   "expected": "Titles are trimmed but inner whitespace is kept and 81 characters are accepted. Fails only kanban-add-validation; all other checks use single-spaced titles."
+  },
+  {
+   "name": "kanban-broken-swap-edge-off-by-one",
+   "kind": "broken",
+   "expected": "Shift+ArrowDown on the second-to-last card is treated as the bottom. Fails only kanban-keyboard-moves; the focus and update-budget checks swap a middle card."
+  },
+  {
+   "name": "kanban-broken-focus-dropped",
+   "kind": "broken",
+   "expected": "The card is re-inserted without calling focus(), and a delete leaves focus on body. Fails only kanban-focus-management (every other key check focuses its target first)."
+  },
+  {
+   "name": "kanban-broken-wip-button-bypass",
+   "kind": "broken",
+   "expected": "The limit is enforced for keys but not for the move-right button. Fails only kanban-wip-limit."
+  },
+  {
+   "name": "kanban-broken-noop-in-history",
+   "kind": "broken",
+   "expected": "Keyboard edge no-ops push a history entry, so the following undo appears to do nothing. Fails only kanban-undo-redo (limit rejections are not recorded, so kanban-wip-limit passes)."
+  },
+  {
+   "name": "kanban-broken-innerhtml-restore",
+   "kind": "broken",
+   "expected": "New cards use textContent but the restore path builds cards with innerHTML. Fails only kanban-safe-rendering."
+  },
+  {
+   "name": "kanban-broken-trusting-restore",
+   "kind": "broken",
+   "expected": "JSON.parse of the stored value has no try/catch and no shape check. Fails only kanban-persistence-recovery."
+  },
+  {
+   "name": "kanban-broken-full-rerender",
+   "kind": "broken",
+   "expected": "Every action rebuilds all three lists from state and then refocuses the moved card by title. Fails only kanban-update-budget."
+  },
+  {
+   "name": "kanban-broken-undo-empty-throws",
+   "kind": "broken",
+   "expected": "Ctrl+Z with an empty history dereferences the result of pop() and throws a TypeError. Fails only kanban-robust-session (the undo check never presses undo on an empty history)."
+  },
+  {
+   "name": "kanban-control-unguarded-storage",
+   "kind": "broken",
+   "expected": "Composite control: localStorage read at start-up without try/catch. Works on the routed origin, crashes on the opaque origin: fails kanban-robust-session only, which proves the storage-throws half of that check is live."
+  },
+  {
+   "name": "kanban-control-static-fake",
+   "kind": "broken",
+   "expected": "Composite control: the first-load board as static markup with no handlers. Passes only kanban-structure-names (7 of 100) with the full denominator."
+  }
+ ],
+ "implementation_notes": "Category ui-building, scorer 'behavioral', sandboxConstraints = the hygiene-only text. Needs about 9k output tokens.\n\nBuild: (1) kanbanModel in Node: three arrays, undo and redo stacks of snapshots, add (normalise, 1 to 80), swap, move (limit 3 on Doing), delete; no-ops and rejections return without touching the stacks (reference in kanban.cjs). (2) readBoard source string: titles per column in DOM order, counts, #undo/#redo disabled, #status text and child count, activeElement as {card title | id}, card and column rects. (3) freshLoad with a unique routed origin per call; loadOpaque (goto about:blank, then setContent). (4) errorWatch.\n\nPitfalls: the scorer's own page has an opaque origin where localStorage throws and reload gives an empty document, so storage checks must re-host ctx.html with page.route and page.goto; under BENCH_PRELUDE_PARITY=1 the re-hosted body must be wrapped with withPrelude (frame-prelude is client-safe to import). Fulfil only the root path and a 204 for /favicon.ico; abort everything else. MutationObserver callbacks are asynchronous: read the counter after settle and takeRecords(). Use ControlOrMeta-neutral keys: the contract accepts Ctrl on every platform, so press Control+z. Never use an auto-waiting locator action before an in-page existence probe; action timeout 1500 ms.\n\nThresholds. Update budget 20 nodes: an in-place swap or move costs 2 (card removed and added) + 2 (status text) + up to 6 (three count texts) = 10 at most; the cheapest re-render that violates the rule (one 98-card list) costs 196; 20 is 2x above the first and 10x below the second. Settle = two animation frames (about 33 ms): the contract demands synchrony, the grace only makes a one-frame deferral deterministic. Geometry 1 px for sub-pixel layout. Titles are compared as exact strings.\n\nIf the pilot shows no configuration passing kanban-update-budget, keep the check (the requirement is stated in the prompt) but halve it and move the points to kanban-undo-redo."
+}

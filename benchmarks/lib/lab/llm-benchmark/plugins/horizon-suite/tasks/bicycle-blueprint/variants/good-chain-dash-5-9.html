@@ -1,0 +1,141 @@
+<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Bicycle elevation - drafting sheet</title>
+<style>
+html,body{margin:0;min-height:100%;background:#101820;color:#e6edf3;font-family:ui-monospace,Menlo,Consolas,monospace}
+body{overflow:hidden}
+.sheet{position:fixed;inset:0;display:flex;flex-direction:column}
+.bar{flex:0 0 auto;display:flex;gap:18px;align-items:center;padding:8px 14px;background:#16222d;border-bottom:1px solid #2c4254;font-size:12px}
+.bar b{font-size:16px;color:#9ef0c0;margin-left:6px}
+.bar .t{color:#7d94a8;letter-spacing:.08em;text-transform:uppercase}
+.wrap{flex:1 1 auto;min-height:0;position:relative}
+.wrap .inner{position:absolute;inset:0}
+svg#bike{display:block;width:100%;height:100%}
+</style></head><body>
+<div class="sheet"><div class="bar"><span class="t">Bicycle blueprint</span>
+<span>ratio<b id="out-ratio"></b></span><span>development m<b id="out-development"></b></span><span>chain mm<b id="out-chain"></b></span><span>links<b id="out-links"></b></span><span>distance m<b id="out-distance"></b></span></div>
+<div class="wrap"><div class="inner"><svg id="bike" xmlns="http://www.w3.org/2000/svg"></svg></div></div></div>
+<script>
+try {
+var FLAGS = {"chainDash":"5 9"};
+var NS = 'http://www.w3.org/2000/svg';
+if (FLAGS.sidePanel) { var st = document.createElement('style'); st.textContent = '.sheet{flex-direction:row-reverse}.bar{flex:0 0 190px;flex-direction:column;align-items:flex-start;border-bottom:0;border-left:1px solid #2c4254}'; document.head.appendChild(st); }
+var svg = document.getElementById('bike');
+var KEYS = { wheelRadius:[250,380,0], wheelbase:[700,1200,0], chainstay:[380,460,0], bbDrop:[30,80,0], seatTube:[420,620,0], seatAngle:[68,78,0], headAngle:[66,76,0], forkLength:[340,420,0], headTube:[90,200,0], chainringTeeth:[26,56,1], sprocketTeeth:[11,36,1], crankLength:[160,180,0], spokes:[12,36,2] };
+var cur = null, theta = 0;
+var COL = FLAGS.minPaint
+  ? { bg:'#101820', frame:'#611820', wheel:'#106920', chain:'#611820', crank:'#101871', gear:'#617120', ground:'#616971', spoke:'#616920', pedal:'#617171', valve:'#ff6969', saddle:'#617171', bar:'#617171', grid:'#182630' }
+  : { bg:'#101820', frame:'#ff7a59', wheel:'#9ef0c0', chain:'#ffd166', crank:'#c9b6ff', gear:'#6fd3ff', ground:'#b8c7d3', spoke:'#5fae8a', pedal:'#f2f2f2', valve:'#ff4d6d', saddle:'#f4a261', bar:'#e9ecef', grid:'#182630' };
+var SW = FLAGS.minPaint ? { frame:1.5, wheel:1.5, chain:1.5, crank:1.5, gear:1.5, ground:1.5, spoke:1.5 } : { frame:3, wheel:2, chain:2, crank:4, gear:1.6, ground:1.8, spoke:1.5 };
+if (FLAGS.filledRing) { COL.crank = '#1a2630'; }
+function f(v) { return FLAGS.round2 === false ? String(v) : v.toFixed(2); }
+function mk(tag, attrs, parent) { var e = document.createElementNS(NS, tag); for (var k in attrs) e.setAttribute(k, attrs[k]); (parent || svg).appendChild(e); return e; }
+function ok(p) {
+  if (!p || typeof p !== 'object') return false;
+  for (var k in KEYS) { var v = p[k], r = KEYS[k]; if (typeof v !== 'number' || !isFinite(v) || v < r[0] || v > r[1]) return false; if (r[2] >= 1 && v !== Math.round(v)) return false; if (r[2] === 2 && v % 2 !== 0) return false; }
+  return p.wheelbase >= 2 * p.wheelRadius + 20 && p.forkLength >= p.wheelRadius + 15;
+}
+function render() {
+  var p = cur, R = p.wheelRadius, W = p.wheelbase, d2r = Math.PI / 180;
+  var bb = [Math.sqrt(p.chainstay * p.chainstay - p.bbDrop * p.bbDrop), -p.bbDrop];
+  var sa = (180 - p.seatAngle) * d2r, ha = (180 - p.headAngle) * d2r;
+  var sc = [bb[0] + p.seatTube * Math.cos(sa), bb[1] + p.seatTube * Math.sin(sa)];
+  var fc = [W + p.forkLength * Math.cos(ha), p.forkLength * Math.sin(ha)];
+  var ht = [W + (p.forkLength + p.headTube) * Math.cos(ha), (p.forkLength + p.headTube) * Math.sin(ha)];
+  var rf = p.chainringTeeth * 12.7 / (2 * Math.PI), rr = p.sprocketTeeth * 12.7 / (2 * Math.PI);
+  var phi = theta * p.chainringTeeth / p.sprocketTeeth;
+  // fit
+  var box = svg.getBoundingClientRect(), vw = box.width, vh = box.height;
+  var pad = FLAGS.tight ? 0 : 45;
+  var x0 = -R - pad, x1 = W + R + pad, y0 = Math.min(-R, bb[1] - p.crankLength - 12) - pad, y1 = Math.max(R, sc[1] + 70, ht[1] + 70) + pad;
+  var s = Math.min(vw / (x1 - x0), vh / (y1 - y0));
+  var ox = (vw - (x1 - x0) * s) / 2 - x0 * s, oy = (vh - (y1 - y0) * s) / 2 + y1 * s;
+  function X(x) { return ox + x * s; } function Y(y) { return oy - y * s; }
+  while (svg.firstChild) svg.removeChild(svg.firstChild);
+  // decoration first (underneath)
+  var deco = mk('g', { 'class': 'deco' });
+  var gx, gy, over = FLAGS.gridOvershoot ? 300 : 0;
+  for (gx = Math.ceil(x0 / 100) * 100; gx <= x1; gx += 100) mk('line', { x1: f(X(gx)), y1: f(-over), x2: f(X(gx)), y2: f(vh + over), stroke: COL.grid, 'stroke-width': 1 }, deco);
+  for (gy = Math.ceil(y0 / 100) * 100; gy <= y1; gy += 100) mk('line', { x1: f(-over), y1: f(Y(gy)), x2: f(vw + over), y2: f(Y(gy)), stroke: COL.grid, 'stroke-width': 1 }, deco);
+  var t = mk('text', { x: f(X(W / 2)), y: f(Y(-R) + 16), fill: '#6b8296', 'font-size': 11, 'text-anchor': 'middle' }, deco); t.textContent = 'W ' + W + ' mm';
+  var world = mk('g', { id: 'world' });
+  var gA = -R, gB = W + R;
+  if (FLAGS.ground === 'hubExact') { gA = 0; gB = W; }
+  if (FLAGS.ground === 'far') { gA = -6000; gB = W + 6000; }
+  mk('line', { id: 'ground', x1: f(X(gA)), y1: f(Y(-R)), x2: f(X(gB)), y2: f(Y(-R)), stroke: COL.ground, 'stroke-width': SW.ground }, world);
+  // wheels: translated group + rotating group
+  [['rear', 0], ['front', W]].forEach(function (w) {
+    var g = mk('g', { transform: 'translate(' + (FLAGS.directSpokes ? X(w[1]) : f(X(w[1]))) + ' ' + (FLAGS.directSpokes ? Y(0) : f(Y(0))) + ')' }, world);
+    mk('circle', { id: 'wheel-' + w[0], cx: 0, cy: 0, r: f(R * s), fill: 'none', stroke: COL.wheel, 'stroke-width': SW.wheel }, g);
+    var rot = mk('g', { transform: 'rotate(' + phi + ')' }, g);
+    var N = p.spokes, kA = FLAGS.spokeFrom1 ? 1 : 0, kB = FLAGS.spokeFrom1 ? N : N - 1;
+    if (FLAGS.directSpokes) {
+      var hx = X(w[1]), hy = Y(0), Rp = R * s;
+      for (var k2 = 0; k2 < N; k2++) { var a2 = (phi + k2 * 360 / N) * Math.PI / 180; mk('line', { 'class': 'spoke', 'data-wheel': w[0], x1: hx.toFixed(2), y1: hy.toFixed(2), x2: (hx + Rp * Math.sin(a2)).toFixed(2), y2: (hy - Rp * Math.cos(a2)).toFixed(2), stroke: COL.spoke, 'stroke-width': SW.spoke }, world); }
+      var av = phi * Math.PI / 180; mk('circle', { 'class': 'valve', 'data-wheel': w[0], cx: (hx + Rp * Math.sin(av)).toFixed(2), cy: (hy - Rp * Math.cos(av)).toFixed(2), r: 4, fill: COL.valve }, world);
+      return;
+    }
+    for (var k = kA; k <= kB; k++) mk('line', { 'class': 'spoke', 'data-wheel': w[0], x1: 0, y1: 0, x2: 0, y2: f(-R * s), transform: 'rotate(' + (k * 360 / N) + ')', stroke: COL.spoke, 'stroke-width': SW.spoke }, rot);
+    mk('circle', { 'class': 'valve', 'data-wheel': w[0], cx: 0, cy: f(-R * s), r: 4, fill: COL.valve }, rot);
+  });
+  function ln(id, a, b, col, sw) { return mk('line', { id: id, x1: f(X(a[0])), y1: f(Y(a[1])), x2: f(X(b[0])), y2: f(Y(b[1])), stroke: col, 'stroke-width': sw, 'stroke-linecap': 'round' }, world); }
+  mk('circle', { id: 'chainring', cx: f(X(bb[0])), cy: f(Y(bb[1])), r: f(rf * s), fill: FLAGS.filledRing ? '#d8dde2' : 'none', stroke: COL.gear, 'stroke-width': SW.gear }, world);
+  mk('circle', { id: 'sprocket', cx: f(X(0)), cy: f(Y(0)), r: f(rr * s), fill: 'none', stroke: COL.gear, 'stroke-width': SW.gear }, world);
+  // external tangents by angle construction
+  var al = Math.atan2(-bb[1], -bb[0]), be = Math.acos((rf - rr) / p.chainstay);
+  function tp(ang) { return [[bb[0] + rf * Math.cos(ang), bb[1] + rf * Math.sin(ang)], [rr * Math.cos(ang), rr * Math.sin(ang)]]; }
+  var t1 = tp(al + be), t2 = tp(al - be), up = t1, lo = t2;
+  if (t2[0][1] + t2[1][1] > t1[0][1] + t1[1][1]) { up = t2; lo = t1; }
+  ln('chain-upper', up[1], up[0], COL.chain, SW.chain);
+  ln('chain-lower', lo[0], lo[1], COL.chain, SW.chain);
+  ln('chain-stay', bb, [0, 0], COL.frame, SW.frame);
+  ln('seat-stay', sc, [0, 0], COL.frame, SW.frame);
+  ln('seat-tube', sc, bb, COL.frame, SW.frame);
+  ln('top-tube', ht, sc, COL.frame, SW.frame);
+  ln('down-tube', fc, bb, COL.frame, SW.frame);
+  ln('head-tube', ht, fc, COL.frame, SW.frame);
+  ln('fork', [W, 0], fc, COL.frame, SW.frame);
+  // cranks: rotating group at BB, pedals counter-rotated
+  var cg = mk('g', { transform: 'translate(' + f(X(bb[0])) + ' ' + f(Y(bb[1])) + ') rotate(' + theta + ')' }, world);
+  var Lp = p.crankLength * s;
+  mk('line', { id: 'crank-right', x1: 0, y1: 0, x2: 0, y2: f(-Lp), stroke: COL.crank, 'stroke-width': SW.crank, 'stroke-linecap': 'round' }, cg);
+  mk('line', { id: 'crank-left', x1: 0, y1: 0, x2: 0, y2: f(Lp), stroke: COL.crank, 'stroke-width': SW.crank, 'stroke-linecap': 'round' }, cg);
+  [-Lp, Lp].forEach(function (yy) { mk('rect', { 'class': 'pedal', x: -11, y: -3.5, width: 22, height: 7, rx: 2, fill: COL.pedal, transform: 'translate(0 ' + f(yy) + ') rotate(' + (-theta) + ')' }, cg); });
+  // saddle and handlebar
+  if (FLAGS.saddleLine) {
+    mk('line', { id: 'saddle', x1: f(X(sc[0] - 70)), y1: f(Y(sc[1] + 40)), x2: f(X(sc[0] + 60)), y2: f(Y(sc[1] + 40)), stroke: COL.saddle, 'stroke-width': 6, 'stroke-linecap': 'round' }, world);
+    mk('line', { id: 'handlebar', x1: f(X(ht[0])), y1: f(Y(ht[1])), x2: f(X(ht[0] + 70)), y2: f(Y(ht[1] + 45)), stroke: COL.bar, 'stroke-width': 5, 'stroke-linecap': 'round' }, world);
+  } else {
+    var sx = X(sc[0]), sy = Y(sc[1] + 30);
+    mk('path', { id: 'saddle', d: 'M' + f(sx - 70 * s) + ' ' + f(sy) + ' L' + f(sx + 60 * s) + ' ' + f(sy) + ' L' + f(sx + 62 * s) + ' ' + f(sy - 14 * s) + ' L' + f(sx - 66 * s) + ' ' + f(sy - 22 * s) + ' Z', fill: COL.saddle }, world);
+    var hg = mk('g', { id: 'handlebar', transform: 'translate(' + f(X(ht[0])) + ' ' + f(Y(ht[1])) + ')' }, world);
+    mk('path', { d: 'M0 0 L' + f(60 * s) + ' ' + f(-40 * s), stroke: COL.bar, 'stroke-width': 4, fill: 'none', 'stroke-linecap': 'round' }, hg);
+    mk('circle', { cx: f(60 * s), cy: f(-40 * s), r: f(12 * s), fill: COL.bar }, hg);
+  }
+  if (FLAGS.cssTransforms) { Array.prototype.forEach.call(svg.querySelectorAll('[transform]'), function (e) { var t = e.getAttribute('transform'); e.removeAttribute('transform'); e.style.transform = t.replace(/translate\(([-\d.e]+) ([-\d.e]+)\)/g, 'translate($1px, $2px)').replace(/rotate\(([-\d.e]+)\)/g, 'rotate($1deg)'); }); }
+  if (FLAGS.chainDash) { ['chain-upper','chain-lower'].forEach(function (id) { document.getElementById(id).setAttribute('stroke-dasharray', FLAGS.chainDash); }); }
+  // readouts
+  var ratio = p.chainringTeeth / p.sprocketTeeth;
+  var b = Math.asin((rf - rr) / p.chainstay);
+  var loop = 2 * p.chainstay * Math.cos(b) + rf * (Math.PI + 2 * b) + rr * (Math.PI - 2 * b);
+  var n = Math.ceil(loop / 12.7); if (n % 2) n++;
+  var wsp = FLAGS.readoutWhitespace ? '\n  ' : '';
+  document.getElementById('out-ratio').textContent = wsp + ratio.toFixed(2) + wsp;
+  document.getElementById('out-development').textContent = wsp + (2 * Math.PI * R * ratio / 1000).toFixed(2) + wsp;
+  document.getElementById('out-chain').textContent = wsp + loop.toFixed(1) + wsp;
+  document.getElementById('out-links').textContent = wsp + String(n) + wsp;
+  document.getElementById('out-distance').textContent = wsp + (R * phi * d2r / 1000).toFixed(3) + wsp;
+}
+var pending = false;
+function schedule() {
+  if (!FLAGS.raf) { render(); return; }
+  if (pending) return; pending = true;
+  requestAnimationFrame(function () { pending = false; render(); });
+}
+window.__bench = {
+  setParams: function (p) { if (!ok(p)) return false; var q = {}; for (var k in KEYS) q[k] = p[k]; cur = q; schedule(); return true; },
+  setCrank: function (t) { if (typeof t !== 'number' || !isFinite(t) || t < 0) return false; theta = t; if (cur) schedule(); return true; }
+};
+window.__bench.setParams({wheelRadius:340, wheelbase:1010, chainstay:425, bbDrop:65, seatTube:540, seatAngle:73, headAngle:72, forkLength:380, headTube:140, chainringTeeth:48, sprocketTeeth:18, crankLength:170, spokes:24});
+window.__bench.setCrank(35);
+window.addEventListener('resize', function () { if (cur) render(); });
+} catch (e) { var a = document.createElement('div'); a.setAttribute('role', 'alert'); a.textContent = String(e && e.message || e); document.body.appendChild(a); }
+</script></body></html>

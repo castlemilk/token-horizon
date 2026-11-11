@@ -1,0 +1,166 @@
+{
+ "id": "orbit-lab",
+ "from_angle": "instrumented-correctness",
+ "title": "Orbit Lab: conservation laws under instrumentation",
+ "category": "advanced-physics",
+ "why_selected": "Strongest physics signal of the twelve. The grader recomputes energy, angular momentum, momentum, the Kepler period and a softened reference trajectory itself from state(), so nothing self-reported is trusted. Eleven orthogonal checks give a wide partial-credit ladder (integrator order, structure preservation, contract care, camera, pixels), every one a single synchronous probe. Decoded 2D-canvas pixels tie the picture to the numbers, and trails make the best gallery tile.",
+ "changes_made": "1. Removed the two hints that named which integrators fail; the requirement is now three measurable properties (order, angular momentum, reversibility) and the model must pick the method. 2. Energy check now measures the ORDER with a step-halving ratio (>= 10). The original absolute thresholds were passed by velocity-Verlet with 16 sub-steps (measured 4.2e-7 and 9.2e-8, a 9% margin on the figure-eight). 3. Structure check moved to a coarse step (100 steps per period, e = 0.6). At the original 1000 steps per period, RK4 with only 4 sub-steps passed all three symplectic sub-tests (measured 4.6e-13, 2.1e-11*a, 2.2e-13); it now needs 64 or more. Added an unequal-mass run. 4. Contract tightened: no private softening, project() unrounded, step grouping must not change results, disc radius capped at 24 px, trail points appended only after a state change (so render idempotency is well defined), trail colour contrast stated, camera rule limited to __bench.load so presets can frame freely. 5. The pause probe races its frame wait against a timer; every later check is one in-page probe so an animation loop cannot interleave. 6. Trail-cleared test uses a 30 px exclusion derived from the radius cap.",
+ "final_prompt": "Build a single-file HTML page, \"Orbit Lab\": a 2D gravitational N-body simulator drawn on a canvas, with trails, a diagnostics HUD and transport controls. A grading script loads its own hidden systems through the JavaScript API below, advances them step by step, and compares your numbers and your drawn pixels with an independent calculation. Use every id and function name exactly as written.\n\nPHYSICS\n- Bodies are point masses in the plane with state (m, x, y, vx, vy). World +y points up.\n- Acceleration of body i: a_i = sum over j != i of G*m_j*(r_j - r_i) / (|r_j - r_i|^2 + eps^2)^(3/2). eps is the softening length given to load; eps = 0 is exact Newtonian gravity. Never add a softening or a distance floor of your own.\n- Kinetic energy K = sum of 0.5*m_i*|v_i|^2. Potential energy U = - sum over pairs i<j of G*m_i*m_j / sqrt(|r_j - r_i|^2 + eps^2). Energy E = K + U.\n- Momentum P = sum of m_i*v_i. Centre of mass R = sum of m_i*r_i / sum of m_i. Angular momentum about the ORIGIN: Lz = sum of m_i*(x_i*vy_i - y_i*vx_i).\n- The simulated state contains nothing else: no damping, no collisions or merging, no walls, no speed limits, no re-centring of positions or velocities. To keep the picture centred, move the camera, never the bodies.\n\nINTEGRATOR (fixed step dt supplied by the caller). The grader measures the properties below on hidden two-body and three-body systems of any masses, size and orientation. One method must have all of them at once.\n(a) Fourth-order accuracy or better. On a two-body orbit of eccentricity 0.5 at 1000 steps per period, |E(t) - E(0)| / |E(0)| stays below 2e-6 for 10 periods, and the same run at 500 steps per period has a largest error at least 10 times bigger (a fourth-order method gives 16; the ratio is waived once the error is below 1e-10). On the three-body figure-eight orbit at 1000 steps per period the error stays below 1e-7.\n(b) Angular momentum conserved to rounding error at ANY step size. At only 100 steps per period on an orbit of eccentricity 0.6, |Lz(t) - Lz(0)| stays below 1e-11 * |Lz(0)| for 10 periods. For three bodies it stays below 1e-11 * sum(m_i*|r_i|*|v_i|) taken at t = 0.\n(c) Time-reversible at ANY step size. In those same coarse runs, advancing N steps, negating every velocity and advancing N more steps returns every body to its starting position within 1e-10 * D, where D is the largest initial distance between two bodies.\n(d) step(n) is pure computation: no drawing, no DOM access, a handful of force evaluations per step. 20,000 steps of a three-body system take well under one second.\n\nAPI (define window.__bench synchronously while the page loads)\n- __bench.load(bodies, opts): replace the whole system. bodies is an array of 2 to 8 objects {m, x, y, vx, vy}; opts is {G, dt, softening} (softening may be omitted and then means 0). Copy the numbers: the caller may mutate its array afterwards. Set t = 0, clear the trails, fit the camera (see VIEW), stop any demo playback, PAUSE the simulation and draw one frame. After load, nothing changes the state except __bench.step: not timers, not animation frames.\n- __bench.step(n): advance exactly n steps of size dt (n is a non-negative integer; step(0) does nothing). t increases by n*dt. Same input gives the same output bit for bit: no randomness, no dependence on frame timing, and step(2) followed by step(3) equals step(5).\n- __bench.state(): returns {t, bodies:[{m,x,y,vx,vy}, ...]} as full-precision numbers in the order given to load. Immediately after load it returns exactly the numbers that were passed in.\n- __bench.diagnostics(): returns {kinetic, potential, energy, angularMomentum, momentum:[px,py], com:[x,y]} for the current state using the formulas above (eps included in the potential).\n- __bench.render(): synchronously redraw the canvas and the HUD from the current state. Calling it twice in a row with no step in between produces identical pixels.\n- __bench.project(x, y): returns [px, py], the unrounded position of world point (x, y) in the canvas's own pixel grid (0..canvas.width, 0..canvas.height, the coordinates getImageData uses) for the current camera.\n\nVIEW\n- Draw on <canvas id=\"scene\"> with a 2D context (not WebGL). The canvas covers at least half of the browser window. Its background is one flat colour or fully transparent; any decoration (stars, gradients, grid) goes on a layer behind the canvas, not in it.\n- The camera is a uniform scale plus a translation: equal pixels per unit on both axes, +x to the right, +y up, no rotation. __bench.load fits it to the initial positions: every body projects inside the canvas with a margin of at least 5% of the smaller canvas dimension on each side, and the bodies' bounding box spans at least 35% of the smaller canvas dimension along its longer side. This must work whether the system is 0.01 or 1000 units across and wherever it sits in the plane. The camera then stays fixed until the next load. Built-in presets may frame themselves however you like.\n- Each body is a solid, flat-filled disc of radius 4 to 24 canvas pixels centred on its projected position, drawn on top of everything else. Body k (its index in the array given to load) is always drawn in the k-th colour of a fixed palette of at least 8 colours; every palette colour differs from the background and from every other palette colour by more than 60 in at least one RGB channel.\n- Trails: each render() that follows a change of state appends every body's current position to that body's trail (keep at least the latest 300 points per body). Draw each trail as a line at least 2 canvas pixels wide through its points, in a colour that differs from the background by more than 60 in at least one RGB channel, with the latest 100 points at full strength. Redraw trails from the stored history on every render; never create them by leaving old frames on the canvas.\n- HUD, as HTML elements: <span id=\"hud-time\">, <span id=\"hud-energy\">, <span id=\"hud-angmom\">. The text content of each is ONLY a number that JavaScript Number() can parse, correct to at least 7 significant digits (for example -1.287142e+0), refreshed by render(). Also show <span id=\"hud-drift\">, the relative energy drift (E - E0)/|E0| since load.\n\nPAGE\n- On page load, start the figure-eight three-body choreography playing automatically with trails: G = 1, three unit masses at (0.97000436, -0.24308753), (-0.97000436, 0.24308753), (0, 0) with velocities (0.46620369, 0.43236573), (0.46620369, 0.43236573), (-0.93240737, -0.86473146), dt = 0.001, several steps per animation frame.\n- Provide buttons #play-pause and #reset (reload the current preset) and a preset selector with at least three systems (figure-eight, a star with two planets, an eccentric binary). Compact dark HUD; the scene should read well as a still image.",
+ "final_checks": [
+  {
+   "name": "orbit-contract-paused",
+   "points": 8,
+   "verifies": "load/state round trip, copy semantics, pause after load, step accounting, bit-level determinism and independence from how steps are grouped.",
+   "method": "One async string probe. B = three hidden bodies (m 1.3, 0.6, 2.1; positions (-0.7, 0.2), (1.1, 0.5), (0.15, -0.9); velocities (0.11, -0.42), (-0.3, 0.25), (0.02, 0.19)), opts {G: 0.83, dt: 0.004}. load(B, opts); s0 = state(). Mutate the probe's own array (B[0].x += 5, B[2].m = 99); s0b = state(). Wait for three animation frames raced against a 400 ms timer, then 120 ms more; s1 = state(). step(0); s2. step(5); s3. load(fresh copy); step(5); s4. load(fresh copy); step(2); step(3); s5. Node: s0 equals the input with === on every number, t === 0, order and masses kept; s0b, s1 and s2 deep-equal s0; |s3.t - 0.02| <= 1e-12 and at least one coordinate changed; s4 and s5 are bit-identical to s3 (Object.is on every number).",
+   "flake_risk": "Low. The wait can only let an unpaused artifact pass (no frame fired); it can never fail a paused one. The frame wait is raced against a timer so a throttled page cannot hang the probe."
+  },
+  {
+   "name": "orbit-kepler-period",
+   "points": 10,
+   "verifies": "The force law in absolute terms: G, the inverse-square dependence and the total mass give the analytic period and apoapsis.",
+   "method": "Node builds a two-body ellipse from hidden G = 0.37, m = (9.1, 1.3), a = 2.4, e = 0.3, rotated 0.7 rad, with a centre-of-mass velocity (0.05, 0.02); T = 2*pi*sqrt(a^3/(G*(m1+m2))); dt = T/4000. One probe: load, sep0 = r2 - r1, step(2000), sepH, step(2000), sepT, t. Pass iff |sepH + ((1+e)/(1-e))*sep0| <= 5e-3*a, |sepT - sep0| <= 5e-3*a and |t - T| <= 1e-9*T. Measured in Node: velocity-Verlet 2.0e-5, Yoshida-4 1.6e-10, RK4 6e-12; G hard-coded to 1 gives 0.44; a private softening of 0.05 gives 8e-3; explicit Euler 0.17.",
+   "flake_risk": "None. Pure synchronous arithmetic with a 250x margin on the pass side for the weakest acceptable integrator."
+  },
+  {
+   "name": "orbit-energy-fourth-order",
+   "points": 12,
+   "verifies": "Requirement (a): the integrator is fourth order or better, measured both as an absolute energy error and as the error ratio under step halving.",
+   "method": "Energy is computed in Node from state(), never from diagnostics(). Runs A and B: masses (1.5, 1.5), G = 1, e = 0.5, a in {0.8, 37}, rotation in {1.1, -2.3} rad, zero net momentum, starting at periapsis. Each is integrated twice in one probe: dt = T/1000 for 10,000 steps sampled every 20, and dt = T/500 for 5,000 steps sampled every 10 (the same instants). E1000 and E500 are the largest |E - E0|/|E0|. Require E1000 < 2e-6 and (E1000 < 1e-10 or E500/E1000 >= 10). Run C: figure-eight scaled by lambda = 3.2 with masses 0.8 and G = 1 (positions*lambda, velocities*sqrt(G*m/lambda), T = 6.32591398*sqrt(lambda^3/(G*m))), dt = T/1000, 2000 steps sampled every 20: require < 1e-7. Measured (E1000, ratio, C): Yoshida-4 3.3e-8, 15.98, 1.1e-9; Forest-Ruth 1.5e-8, 15.98; PEFRL 1.3e-9, 15.66, 2.8e-10; RK4 4.6e-9, 25.8, 5.4e-10; Verlet 1.07e-4 (fails); Verlet with 16 sub-steps 4.2e-7 with ratio 4.00 (fails on the ratio); Euler 0.58.",
+   "flake_risk": "None. Deterministic arithmetic. Absolute thresholds have margins of 50x or more; the ratio threshold 10 sits between third order (8) and the lowest measured fourth-order value (15.66)."
+  },
+  {
+   "name": "orbit-symplectic-reversible",
+   "points": 12,
+   "verifies": "Requirements (b) and (c): angular momentum conserved to rounding error and exact time reversibility at a coarse step, for two and three bodies.",
+   "method": "Coarse steps on purpose, so brute-force accuracy cannot stand in for structure. Run A: masses (1.5, 1.5), G = 1, a = 2.2, e = 0.6, rotation 0.4 rad, dt = T/100. Run B: masses (2.3, 0.7), a = 31, rotation -0.9 rad. Both start at periapsis with the centre of mass at rest at the origin. (i) 1000 steps sampled every 10: max |Lz - Lz0|/|Lz0| < 1e-11. (ii) reload, step(350), s = state(), load(s with every velocity negated), step(350): max position error against the initial positions < 1e-10*D with D = a*(1-e). Run C: the scaled figure-eight of the previous check at dt = T/100: 200 steps sampled every 10 with max |Lz - Lz0| < 1e-11 * sum(m|r||v|) at t = 0, and a 150 + 150 step reversal within 1e-10*D (D = largest initial pair distance). Measured: every symmetric splitting method (Verlet as kick-drift-kick or drift-kick-drift, Yoshida-4, Forest-Ruth, PEFRL, 1 to 16 sub-steps, pairwise or per-body force sums) gives <= 4e-14 on (i) and <= 7e-13*a on (ii); RK4 gives 2.4e-4 and 2.4e-2*a; RK4 with 32 sub-steps 7e-12 and 7e-10*a (fails (ii)); symplectic Euler and Ruth-3 pass (i) and miss (ii) by order 1.",
+   "flake_risk": "None. Roundoff sits 60x to 250x below the thresholds; non-symmetric methods sit 7 or more orders above."
+  },
+  {
+   "name": "orbit-momentum-com",
+   "points": 6,
+   "verifies": "Nothing in the simulated state is re-centred or damped and forces obey action-reaction: momentum is constant and the centre of mass moves in a straight line.",
+   "method": "Three bodies with masses (1, 2.5, 0.4) at (-2, 0.5), (1.5, -1), (0.5, 2.2) with velocities (0.3, 0.4), (0.1, -0.2), (-0.5, 0.1); G = 1, dt = 0.002, 600 steps sampled every 100 in one probe. Node computes P and COM from state(): require |P - P0| <= 1e-10*|P0| and |COM(t) - (COM0 + P0/M*t)| <= 1e-9. Measured: Verlet, Yoshida and RK4 all give about 1e-14 and 5e-15. A force that weights each body by its own mass instead of the other body's breaks P here (and nowhere else, because two-body separations are unaffected).",
+   "flake_risk": "None."
+  },
+  {
+   "name": "orbit-softening-reference",
+   "points": 8,
+   "verifies": "Plummer softening is applied as r^2 + eps^2 in the force, checked against the grader's own high-resolution integration.",
+   "method": "Three bodies, m = 2 each, G = 1, softening 0.6, positions (-1.1, -0.16666667), (1.0, -0.66666667), (0.1, 0.83333333), velocities (0.1, -0.55), (-0.2, 0.6), (0.1, -0.05) (centre of mass at rest at the origin); dt = 0.0025, step(2400) in one probe. Node integrates the same system with RK4 at 48,000 steps and requires max position difference < 2e-3. Measured: Verlet 6.4e-6, Yoshida 3.6e-9, RK4 1.1e-10; softening ignored 70; r^2 + eps instead of r^2 + eps^2 0.40; Euler 0.20. The reference agrees with a 96,000-step run to 1.5e-13.",
+   "flake_risk": "None. More than 200x margin on both sides."
+  },
+  {
+   "name": "orbit-diagnostics",
+   "points": 10,
+   "verifies": "diagnostics() implements the stated formulas: pair potential counted once with softening, origin-referenced angular momentum, mass-weighted centre of mass.",
+   "method": "Two hidden four-body configurations with unequal masses, G = 2.6, dt = 0.002: A has masses (1.7, 0.6, 2.9, 1.1) and softening 0, B has masses (0.9, 2.2, 1.4, 3.1) and softening 0.35 (positions and velocities are constants in the check file; a unit test asserts no expected component is within 1% of zero relative to its scale). For each, in one probe: load, read diagnostics() and state(); step(10); read both again. Node recomputes all eight numbers from state() and requires relative agreement 1e-10 (absolute floor 1e-12) on kinetic, potential, energy, angularMomentum, both momentum components and both com components.",
+   "flake_risk": "None."
+  },
+  {
+   "name": "orbit-hud-numbers",
+   "points": 6,
+   "verifies": "The on-page HUD shows the true time, energy and angular momentum to at least 7 significant digits.",
+   "method": "One probe: load the three bodies of orbit-contract-paused with {G: 1.9, dt: 0.004}, step(7), render(), then read textContent of #hud-time, #hud-energy and #hud-angmom plus state(). Each trimmed text must satisfy Number.isFinite(Number(text)); compare with 0.028 and with E and Lz recomputed in Node from state() (about -5.75 and 0.706): relative error <= 2e-6.",
+   "flake_risk": "None. Reads DOM text, not rendered glyphs."
+  },
+  {
+   "name": "orbit-view-fit",
+   "points": 8,
+   "verifies": "The camera is an isotropic y-up affine map that auto-fits systems of any size and offset, and the canvas is large.",
+   "method": "Three loads, each measured in one probe: span 0.012 centred at (5.3, -2.1); span 1400 centred at (-3000, 800); a tall system 6 units high and 0.4 wide at the origin (three bodies each). Read W = canvas.width, H = canvas.height, p0 = project(cx, cy), px = project(cx+d, cy), py = project(cx, cy+d), p2 = project(cx+2d, cy) with d = span/4, plus project() of every body. Require sx = (px[0]-p0[0])/d > 0, sy = (p0[1]-py[1])/d > 0, |sx-sy| <= 1e-6*sx, off-axis terms <= 1e-6*sx*d, p2 - px equal to px - p0 within 1e-6*sx*d; every body inside [m, W-m] x [m, H-m] with m = 0.05*min(W,H) - 0.5; projected bounding box longer side >= 0.35*min(W,H). Also canvas.getBoundingClientRect() lies inside the 1024 x 720 viewport with area >= 368,640 px^2.",
+   "flake_risk": "Low. Pure geometry; depends only on the fixed viewport."
+  },
+  {
+   "name": "orbit-bodies-drawn",
+   "points": 12,
+   "verifies": "Bodies are actually drawn where project() says, as solid discs in index-specific colours.",
+   "method": "One probe using getContext('2d').getImageData on #scene (fail with detail if the context is null). Load three unit-mass bodies at rest at (-2.4, 1.1), (1.9, 2.2), (0.6, -2.5); render(). bg = the most frequent RGBA value over the canvas. For each body read the mean of the 3x3 block at round(project(x, y)) and the pixels 2 px away in four directions: all must differ from bg by >= 40 in some RGBA channel, and the three centre colours must differ pairwise by >= 40 in some channel. Then load the same list with bodies 0 and 1 exchanged and render(): the colour at body 0's former pixel must match the colour first seen at body 1's pixel within 12 per channel, and vice versa; body 2's colour is unchanged.",
+   "flake_risk": "Low. Samples sit at most 2.71 px from the true centre, inside the unblended interior of a radius-4 disc. Fails if decoration is painted into the canvas so that no colour dominates; the prompt forbids that."
+  },
+  {
+   "name": "orbit-trails-history",
+   "points": 8,
+   "verifies": "Trails are stored history redrawn on each render: visible, cleared on load, and render() is idempotent.",
+   "method": "One probe. Load a circular equal-mass binary (G = 1, m = 1, separation 1), dt = T/240. Repeat 80 times: step(3); render(); record q_k = round(project(body 0)). Read the canvas once: for every q_k some pixel in its 3x3 block must differ from bg by >= 40 in some channel; require >= 90% lit. Take img1 = full getImageData, render(), img2: the byte arrays must be identical. Finally load two bodies at rest at (-5, 0.3) and (5, -0.3) and render(): of the old q_k farther than 30 px from both new projections, >= 90% must equal the new bg within 8 per channel.",
+   "flake_risk": "Low. Everything happens in one synchronous probe; the 90% rules absorb the few trail points that coincide with a disc edge."
+  }
+ ],
+ "fixtures": [
+  {
+   "name": "orbit-good",
+   "kind": "good",
+   "expected": "Fourth-order symmetric composition (Forest-Ruth / Yoshida), pairwise forces, correct diagnostics, auto-fit camera, history trails. Scores 100."
+  },
+  {
+   "name": "orbit-broken-unpaused",
+   "kind": "broken",
+   "expected": "load() leaves the animation loop stepping. Fails only orbit-contract-paused; every other check is one synchronous probe, so the loop cannot interleave."
+  },
+  {
+   "name": "orbit-broken-g-ignored",
+   "kind": "broken",
+   "expected": "Acceleration uses G = 1 regardless of opts.G (diagnostics still use opts.G). Fails only orbit-kepler-period; every other dynamic check uses G = 1 or compares the page with a recomputation from its own state."
+  },
+  {
+   "name": "orbit-broken-verlet",
+   "kind": "broken",
+   "expected": "Velocity-Verlet. Fails only orbit-energy-fourth-order (1.07e-4 against 2e-6); it is symmetric and symplectic, so the structure check passes."
+  },
+  {
+   "name": "orbit-broken-rk4",
+   "kind": "broken",
+   "expected": "Classical RK4. Fails only orbit-symplectic-reversible (Lz drift 2.4e-4, reversal error 2.4e-2*a); its energy error and ratio (4.6e-9, 25.8) pass."
+  },
+  {
+   "name": "orbit-broken-recentre",
+   "kind": "broken",
+   "expected": "Each step subtracts the centre of mass from the positions. Fails only orbit-momentum-com; the other dynamic checks use systems whose centre of mass is at rest at the origin or compare separations."
+  },
+  {
+   "name": "orbit-broken-no-softening",
+   "kind": "broken",
+   "expected": "Force ignores opts.softening while the potential in diagnostics() keeps it. Fails only orbit-softening-reference."
+  },
+  {
+   "name": "orbit-broken-com-unweighted",
+   "kind": "broken",
+   "expected": "diagnostics().com is the plain average of positions. Fails only orbit-diagnostics."
+  },
+  {
+   "name": "orbit-broken-hud-precision",
+   "kind": "broken",
+   "expected": "HUD prints toFixed(2). Fails only orbit-hud-numbers (relative errors 3e-4 to 7e-2 against 2e-6)."
+  },
+  {
+   "name": "orbit-broken-fixed-zoom",
+   "kind": "broken",
+   "expected": "Camera fixed at 40 px per unit centred on the origin. Fails only orbit-view-fit; the pixel checks use unit-scale systems near the origin."
+  },
+  {
+   "name": "orbit-broken-one-colour",
+   "kind": "broken",
+   "expected": "All bodies drawn white. Fails only orbit-bodies-drawn."
+  },
+  {
+   "name": "orbit-broken-fade-trails",
+   "kind": "broken",
+   "expected": "Trails made by painting a translucent rectangle over the previous frame. Fails only orbit-trails-history (old points fade, render() is not idempotent, trails survive a load)."
+  },
+  {
+   "name": "orbit-control-verlet-substep16",
+   "kind": "broken",
+   "expected": "Composite control for the closed loophole: velocity-Verlet with 16 sub-steps per step. Passes both absolute energy thresholds but has ratio 4.00, so it fails only orbit-energy-fourth-order."
+  },
+  {
+   "name": "orbit-control-euler",
+   "kind": "broken",
+   "expected": "Composite control, explicit Euler: fails orbit-kepler-period, orbit-energy-fourth-order, orbit-symplectic-reversible and orbit-softening-reference; passes the other seven. Proves the contract and drawing checks do not depend on integrator quality."
+  },
+  {
+   "name": "orbit-control-static-fake",
+   "kind": "broken",
+   "expected": "Composite control: a static picture whose __bench returns canned numbers and never advances. Scores 0 of 100 with the full denominator."
+  }
+ ],
+ "implementation_notes": "Category advanced-physics, scorer 'behavioral', keep the global SANDBOX_CONSTRAINTS (this is the one canvas task). Needs about 7k output tokens.\n\nBuild: (1) orbitRef in Node: pairwise acceleration with softening, energy, Lz, P, COM, Yoshida-4 and RK4 steppers, twoBody(G, m1, m2, a, e, rot, boost) starting at periapsis (separation a*(1-e), relative speed sqrt(G*M*(1+e)/(a*(1-e))), split by mass so the centre of mass is at the origin), fig8(lambda, m, G). (2) orbitProbe: one plain-JS source string that takes a list of operations (load, step with sampleEvery, negate-and-reload, render, readPixels) and returns the sampled state() objects, so each check is one JS turn. (3) canvasRead, in-page: getImageData, modal RGBA as background.\n\nPitfalls: never read diagnostics() outside orbit-diagnostics; never assume a backing-store size (the global contract tells models to size it from innerWidth x devicePixelRatio), always go through project(); compare RGBA so a transparent canvas works; do not use ctx.captureCanvas (it returns PNG bytes); a brute-force integrator can take seconds per probe, so rely on the wrapper deadline and keep the full budget; page.evaluate has no timeout of its own.\n\nTolerances. Energy 2e-6: 60x above the worst fourth-order symplectic result (3.3e-8), 50x below Verlet. Ratio 10: order p gives 2^p, so 8 for third order and 16 for fourth; measured 15.66 to 15.98. Waiver 1e-10: about 100x above the roundoff floor (1e-12), where ratios lose meaning. Figure-eight 1e-7: 90x above Yoshida, 230x below Verlet. Lz 1e-11: splitting methods conserve Lz exactly, leaving only roundoff (<= 4e-14 measured), 250x margin. Reversal 1e-10*D: roundoff amplified by the orbit's shear, <= 7e-13*a = 1.7e-12*D measured, 60x margin. Kepler 5e-3*a: 250x above Verlet at 4000 steps per period. Softening 2e-3: 300x above Verlet, 200x below the nearest wrong formula. Diagnostics 1e-10: fewer than 30 floating-point operations (error about 1e-15) and no cancellation by construction. HUD 2e-6: a 7-digit number has relative rounding error <= 5e-7, so 4x margin; four digits give >= 3.8e-5. View 1e-6: admits a float32 camera (1.2e-7). Pixels: 2 px offset + 0.71 px rounding = 2.71 px < 3.5 px (radius 4 minus the anti-aliased rim); colour thresholds 40 against a contract of 60, 12 for the swap match because flat fills are exact. Trails: 30 px exclusion = 24 px maximum disc radius + 6.\n\nAll numbers above were measured with Node reference integrators (scripts orbit.cjs, orbit2.cjs, orbit3.cjs, orbit4.cjs, kepler_extra.cjs in the scratchpad named in the suite notes) and must be re-proven by the fixtures in Chromium."
+}

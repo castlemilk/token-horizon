@@ -1,0 +1,258 @@
+import { describe, it, expect } from 'vitest'
+import { htmlScorer } from './html'
+import { textScorer } from './text'
+import { behavioralTaskIds, selectScorer } from './index'
+import { behavioralScorer } from './behavioral'
+import { executableScorer } from './executable'
+import { BENCHMARK_TASKS } from '../registry'
+
+const htmlTask = BENCHMARK_TASKS.find((t) => t.id === 'n-body-field')!
+const mathTask = BENCHMARK_TASKS.find((t) => t.id === 'equation-solver')!
+const cryptoTask = BENCHMARK_TASKS.find((t) => t.id === 'crypto-hash-race')!
+
+// Both scorers are synchronous; narrow the `number | Promise<number>` interface
+// return so scores can be used as matcher arguments.
+const scoreHtml = (output: string) => htmlScorer.score(output, htmlTask) as number
+const scoreText = (output: string, task = mathTask) => textScorer.score(output, task) as number
+
+describe('html scorer', () => {
+  it('scores a complete well-formed page with scripts at 95 or above', () => {
+    const html = `<!DOCTYPE html>
+<html>
+<head><style>body { margin: 0; }</style></head>
+<body>
+<canvas id="c"></canvas>
+<script>
+const c = document.getElementById('c');
+const ctx = c.getContext('2d');
+function draw() { ctx.fillRect(0, 0, 10, 10); requestAnimationFrame(draw); }
+draw();
+</script>
+</body></html>`
+    expect(htmlScorer.score(html, htmlTask)).toBeGreaterThanOrEqual(95)
+  })
+
+  it('scores an empty shell materially lower than a working page', () => {
+    const shell = '<html><body></body></html>'
+    const shellScore = htmlScorer.score(shell, htmlTask)
+    expect(shellScore).toBeLessThanOrEqual(60)
+  })
+
+  it('does not false-positive the broken-pattern check on well-formed scripts', () => {
+    // Minimal well-formed page with a closed script: the old lookahead regex
+    // flagged every page like this as broken.
+    const html = `<!DOCTYPE html>
+<html><body>
+<canvas id="c"></canvas>
+<script>
+const c = document.getElementById('c');
+</script>
+</body></html>`
+    expect(htmlScorer.score(html, htmlTask)).toBeGreaterThanOrEqual(95)
+  })
+
+  it('returns 0 for empty output', () => {
+    expect(htmlScorer.score('', htmlTask)).toBe(0)
+  })
+
+  it('gives a low score to non-HTML output', () => {
+    expect(htmlScorer.score('just prose', htmlTask)).toBeLessThan(20)
+  })
+
+  it('penalizes an unclosed script tag', () => {
+    expect(htmlScorer.score('<html><body><script>alert(1)</body></html>', htmlTask)).toBeLessThan(60)
+  })
+
+  it('penalizes doubled-bracket garbage', () => {
+    const clean = '<html><body><p>hi</p><script>go();</script></body></html>'
+    const garbage = '<html><body><p>hi</p><<script>go();</script></body></html>'
+    expect(scoreHtml(garbage)).toBeLessThan(scoreHtml(clean))
+  })
+
+  it('reads the doubled-bracket rule on markup only: bit shifts in a script lose nothing', () => {
+    const page = (script: string) =>
+      `<!DOCTYPE html>\n<html><head><style>body{margin:0}</style></head><body>\n<canvas id="c"></canvas>\n<script>\n${script}\n</script>\n</body></html>`
+    const shifted = page('const a = 1 << 3; const b = 256 >> 2; const c = -1 >>> 0; const d = a<<b>>c;')
+    const plain = page('const a = 8; const b = 64; const c = 0; const d = 1;')
+    expect(scoreHtml(shifted)).toBe(scoreHtml(plain))
+    expect(scoreHtml(shifted)).toBeGreaterThanOrEqual(95)
+  })
+
+  it('reads neither style contents nor comments for the doubled-bracket rule', () => {
+    const withBrackets =
+      '<!DOCTYPE html><html><head><style>.x::after{content:"<<>>"}</style></head><body>' +
+      '<!-- 1 << 2 and 8 >> 1 -->\n<canvas id="c"></canvas><script>go()</script></body></html>'
+    const withoutBrackets =
+      '<!DOCTYPE html><html><head><style>.x::after{content:"x"}</style></head><body>' +
+      '<!-- 1 and 8 -->\n<canvas id="c"></canvas><script>go()</script></body></html>'
+    expect(scoreHtml(withBrackets)).toBe(scoreHtml(withoutBrackets))
+  })
+
+  it('a stray << or >> in the markup still loses the cleanliness points', () => {
+    const page = (body: string) =>
+      `<!DOCTYPE html><html><head><style>body{margin:0}</style></head><body>${body}<canvas id="c"></canvas>` +
+      '<script>go()</script></body></html>'
+    // The clean page sums to 105 and is capped at 100. Losing the 15 cleanliness
+    // points leaves 90, so a stray pair costs exactly those 15.
+    expect(scoreHtml(page('<p>hello</p>'))).toBe(100)
+    expect(scoreHtml(page('<p>a < b</p>'))).toBe(100) // one bracket is not a doubled bracket
+    expect(scoreHtml(page('<p>hello<<</p>'))).toBe(90)
+    expect(scoreHtml(page('<div data-x=">>">hi</div>'))).toBe(90)
+  })
+})
+
+describe('text scorer', () => {
+  it('scores a correct equation solution with two distinct pairs highly', () => {
+    const text = 'Solving x^2 + y^2 = 25 and x*y = 12 gives solution pairs (3,4) and (-3,-4).'
+    expect(textScorer.score(text, mathTask)).toBeGreaterThanOrEqual(60)
+  })
+
+  it('recognizes unicode-minus pairs and x=/y= assignment form', () => {
+    const text = 'x = 3, then y = 4. Also (−3, −4) works since xy = 12 and x² + y² = 25.'
+    expect(textScorer.score(text, mathTask)).toBeGreaterThanOrEqual(60)
+  })
+
+  it('no longer scores keyword-stuffed garbage as a correct solution', () => {
+    const garbage = scoreText('x y 12 25 = ...')
+    expect(garbage).toBeLessThan(50)
+    const correct = scoreText('The real solutions are (3,4), (4,3), (-3,-4) and (-4,-3).')
+    expect(correct).toBeGreaterThan(garbage)
+  })
+
+  it('scores a crypto module with expected keywords', () => {
+    const text = 'import hmac; def compare_digest(a,b): ...; def pbkdf2(password, salt): ...; def verify(value, hash): ...'
+    expect(textScorer.score(text, cryptoTask)).toBeGreaterThan(40)
+  })
+
+  it('does not penalize legitimate code that handles exceptions', () => {
+    const base =
+      'import hmac, hashlib, os\nsalt = os.urandom(16)\nkey = hashlib.pbkdf2_hmac("sha256", pw, salt, 100000)\ndef verify(a, b):\n    return hmac.compare_digest(a, b)'
+    const withExcept = base + '\ntry:\n    verify(a, b)\nexcept Exception:\n    raise ValueError("error")'
+    expect(scoreText(withExcept, cryptoTask)).toBeGreaterThanOrEqual(scoreText(base, cryptoTask))
+  })
+
+  it('penalizes genuine runtime-error transcripts', () => {
+    const clean = 'result = compare_digest(a, b) with salt and pbkdf2 verify: passed 12 of 12'
+    const traceback =
+      clean + '\nTraceback (most recent call last):\n  File "x.py", line 1\nSyntaxError: invalid syntax'
+    expect(scoreText(traceback, cryptoTask)).toBeLessThan(scoreText(clean, cryptoTask))
+  })
+
+  it('returns 0 for empty output', () => {
+    expect(textScorer.score('', mathTask)).toBe(0)
+  })
+
+  it('returns a low score for irrelevant text', () => {
+    expect(textScorer.score('hello world', mathTask)).toBeLessThan(30)
+  })
+})
+
+describe('selectScorer', () => {
+  it('routes HTML categories to the behavioral scorer and the rest to text', () => {
+    // HTML categories now use the Playwright-backed behavioral scorer (which
+    // composites 70% behavioral + 30% structural). The structural htmlScorer
+    // remains exported for callers that want the legacy pure-structural score.
+    expect(selectScorer(htmlTask)).toBe(behavioralScorer)
+    // Both text tasks moved to the composite EXECUTABLE scorer in #15; the
+    // structural textScorer survives as its 30% component and as the
+    // category-heuristic fallback below.
+    expect(selectScorer(mathTask)).toBe(executableScorer)
+    expect(selectScorer(cryptoTask)).toBe(executableScorer)
+  })
+
+  it("prefers the task's own scorer declaration over its category", () => {
+    // A text-scored task sitting in an HTML-runnable category, and vice versa.
+    // Both would resolve the other way under the heuristic alone.
+    expect(selectScorer({ ...htmlTask, scorer: 'text' })).toBe(textScorer)
+    expect(selectScorer({ ...mathTask, scorer: 'behavioral' })).toBe(behavioralScorer)
+    // 'html' is a registered name even though no shipped task declares it.
+    expect(selectScorer({ ...mathTask, scorer: 'html' })).toBe(htmlScorer)
+  })
+
+  it('falls back to the category heuristic when no scorer is declared', () => {
+    const { scorer: _htmlScorerName, ...unstampedHtml } = htmlTask
+    const { scorer: _mathScorerName, ...unstampedMath } = mathTask
+    expect(selectScorer(unstampedHtml)).toBe(behavioralScorer)
+    expect(selectScorer(unstampedMath)).toBe(textScorer)
+    // A category nobody has heard of is text — the pre-existing default.
+    expect(selectScorer({ ...unstampedMath, category: 'brand-new-category' })).toBe(textScorer)
+  })
+
+  it('throws — naming the task, the bad name and the registry — on an unregistered scorer', () => {
+    // A declared-but-unregistered name (a typo, or a plugin whose scorer
+    // contribution never registered) used to return undefined and blow up as a
+    // TypeError inside aggregateRuns, mid-sweep, after the money was spent.
+    let error: Error | undefined
+    try {
+      selectScorer({ ...mathTask, id: 'typo-task', scorer: 'behavioural' })
+    } catch (err) {
+      error = err as Error
+    }
+    expect(error, 'selectScorer must reject an unregistered name').toBeInstanceOf(Error)
+    expect(error!.message).toContain('typo-task')
+    expect(error!.message).toContain('behavioural')
+    // …and lists what IS registered, so the fix is readable off the message.
+    expect(error!.message).toContain('behavioral')
+    expect(error!.message).toContain('text')
+  })
+
+  it('resolves every shipped task as the pre-registry heuristic did, bar the two DECLARED exceptions', () => {
+    // Behaviour lock, with an explicit escape hatch. #10 stamped `scorer` on
+    // every row and asserted nothing moved; #15 deliberately MOVED two rows to
+    // the executable scorer. The lock stays useful only if the exceptions are
+    // enumerated here — an unlisted move is still a regression, and reading
+    // this list tells you exactly which tasks are scored differently from what
+    // their category implies (and therefore whose stored records were produced
+    // under a different scorer — see
+    // docs/lab/llm-benchmark/executable-scoring-impact.md).
+    const LEGACY_HTML_CATEGORIES = new Set([
+      '3d-physics-animation',
+      'advanced-game-building',
+      'advanced-physics',
+      'advanced-electronics',
+      'ui-building',
+    ])
+    const DECLARED_EXCEPTIONS: Record<string, typeof executableScorer> = {
+      'crypto-hash-race': executableScorer,
+      'equation-solver': executableScorer,
+    }
+    for (const task of BENCHMARK_TASKS) {
+      const legacy = LEGACY_HTML_CATEGORIES.has(task.category) ? behavioralScorer : textScorer
+      const expected = DECLARED_EXCEPTIONS[task.id] ?? legacy
+      expect(selectScorer(task), `${task.id} scorer`).toBe(expected)
+    }
+  })
+})
+
+describe('behavioralTaskIds', () => {
+  it('returns exactly the built-in behaviourally-scored tasks plus plugin tasks', () => {
+    // The BUILT-IN half is pinned by hand — that is the regression net (a task
+    // that silently stops being behaviourally scored, or one that quietly
+    // starts). The PLUGIN half is derived from the roster instead: pinning it
+    // would make every contributed task a core-file edit, which is exactly the
+    // coupling the plugin system exists to remove. Deriving still asserts
+    // something real — that a plugin task declaring `scorer: 'behavioral'`
+    // reaches `behavioralTaskIds` at all.
+    const builtins = [
+      'circuit-builder-teaser',
+      'landing-page-morph',
+      'mini-platformer',
+      'n-body-field',
+      'physics-pendulum-wave',
+    ]
+    const contributed = BENCHMARK_TASKS.filter((t) => t.pluginId && t.scorer === 'behavioral').map(
+      (t) => t.id,
+    )
+    // Sanity: the shipped roster contributes at least the community-tasks one,
+    // so the derived half can never go vacuously empty.
+    expect(contributed).toContain('tic-tac-toe')
+    expect([...behavioralTaskIds(BENCHMARK_TASKS)].sort()).toEqual(
+      [...builtins, ...contributed].sort(),
+    )
+  })
+
+  it('picks up a task declared behavioral regardless of its category', () => {
+    const extra = { ...mathTask, id: 'future-task', scorer: 'behavioral' as const }
+    expect(behavioralTaskIds([...BENCHMARK_TASKS, extra]).has('future-task')).toBe(true)
+  })
+})

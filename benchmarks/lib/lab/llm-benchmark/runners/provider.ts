@@ -1,0 +1,1532 @@
+import type {
+  BenchmarkFailureReason,
+  BenchmarkModel,
+  BenchmarkResult,
+  BenchmarkRunner,
+  BenchmarkStatus,
+  BenchmarkTask,
+  GenerationResponse,
+  IterationCheckResult,
+  PluginGenerate,
+  PluginGeneratorFactory,
+  Scorer,
+  UsageProvenance,
+} from '../types'
+import { costFromUsage, summarizeUsage } from '../billing'
+import { formatQuotaWindow, parseQuotaResetMs } from '../quota'
+import { generateOpenAI, type OpenAIConfig } from './openai'
+import { ANTHROPIC_DEFAULT_TIMEOUT_MS, generateAnthropic, type AnthropicConfig } from './anthropic'
+import { billedUsageOf, type BilledUsage } from './billed'
+import { generateGoogle, type GoogleConfig } from './google'
+import { generateMoonshot, type MoonshotConfig } from './moonshot'
+import { generateOpenRouter, type OpenRouterConfig } from './openrouter'
+import { generateAgy, type AgyConfig } from './agy'
+import { generateCodex, type CodexConfig } from './codex'
+import { generateDevin, type DevinConfig } from './devin'
+import { generateOpencode, type OpencodeConfig } from './opencode'
+import { generateOllama, type OllamaConfig } from './ollama'
+import { generateLocal, type LocalConfig } from './local'
+import { generateClaudeCode, type ClaudeCodeConfig } from './claude-code'
+import { CLI_PROVIDERS } from './execution-target'
+import { getCachedResponse, setCachedResponse, setBustCache, saveQueue } from '../cache'
+import { forceSpill, hashPrompt, openRunLog, type RunLog } from '../runlog'
+import { selectScorer } from '../scorers'
+import { resolveSandboxPolicy } from '../scorers/sandbox-backend'
+import { withSandboxConstraints } from '../prompts'
+import { promptBundleHash } from '../prompt-bundle'
+import { SCORER_VERSION } from '../scorer-version'
+import { inlineDependenciesAsync } from '../sandbox/inline-dependencies'
+import { scoreBreakdownsOrStop } from '../scorers/browser-fallback'
+import { probeKnownGoodBrowser } from '../scorers/browser-probe'
+import { getChecksForTask } from '../scorers/checks'
+import { BUILTIN_PROVIDERS } from '../providers'
+// The roster (not `../plugins/registry`) so a consumer that only imports the
+// runner still gets the shipped plugins' generators registered.
+import { pluginGenerator, pluginProviderNames } from '../plugins'
+
+export interface ProviderRunnerConfig {
+  openai?: OpenAIConfig
+  anthropic?: AnthropicConfig
+  google?: GoogleConfig
+  moonshot?: MoonshotConfig
+  openrouter?: OpenRouterConfig
+  agy?: AgyConfig
+  codex?: CodexConfig
+  devin?: DevinConfig
+  opencode?: OpencodeConfig
+  ollama?: OllamaConfig
+  /** Claude Code CLI (Kimi via the Kimi Code endpoint). Auth comes from ~/.config/kimi.env. */
+  claudeCode?: ClaudeCodeConfig
+  /** Per-call timeout in milliseconds. Defaults to 10 minutes. */
+  timeoutMs?: number
+  /** Maximum retries for transient failures. Defaults to 2. */
+  maxRetries?: number
+  /** Optional scorer; a default category-based scorer is used when omitted. */
+  scorer?: Scorer
+  /** If true, ignore the response cache and always call the provider. */
+  bustCache?: boolean
+  /**
+   * The plugin bundles this sweep mounted (`[]` = builtins only). AUDIT ONLY —
+   * the runner never reads it for behaviour; bundle selection filters the task
+   * list in `scripts/run-benchmark.mjs`, and this simply carries the resolved
+   * set into every run log's header snapshot so a trace records its own scope.
+   */
+  plugins?: string[]
+  /**
+   * Spend cap in USD, **per model, for the lifetime of this runner** (#28).
+   * Absent = no cap, which is the pre-feature behaviour.
+   *
+   * Per-MODEL rather than per-sweep-total or per-task, matching the quota
+   * breaker it reuses: a cheap model must never be stopped by an expensive
+   * one's spending, and "how much am I willing to spend measuring THIS model"
+   * is the question an operator actually has. A 3-model sweep with a $0.05 cap
+   * may therefore spend up to ~$0.15.
+   */
+  budgetMaxUsd?: number
+  /**
+   * USD already spent per model.id by the pairs a resume skips (see
+   * resume.ts carriedSpendByModel). Seeds the cap, so a resumed sweep's cap is
+   * the sweep's total. Absent on a fresh sweep.
+   */
+  carriedSpendUsd?: Record<string, number>
+}
+
+// `GenerationResponse` — every runner's return shape, and the contract a
+// plugin generator implements — lives in types.ts (the bottom layer) so
+// `plugins/registry.ts` can name it without importing from runners/.
+
+function stripCodeFences(output: string): string {
+  return output
+    .replace(/^\s*```[a-zA-Z0-9]*\s*\n/, '')
+    .replace(/\n\s*```\s*$/, '')
+    .trim()
+}
+
+function extractFirstCodeBlock(output: string): string | undefined {
+  const match = output.match(/```[a-zA-Z0-9]*\s*\n([\s\S]*?)\n\s*```/)
+  return match?.[1]?.trim()
+}
+
+function removePreamble(output: string): string {
+  // If the output is prose followed by a <!DOCTYPE or <html, trim the prose.
+  const doctypeMatch = output.match(/(?:^|\n)\s*(<!DOCTYPE\s+html|<html[\s>])/i)
+  if (doctypeMatch && doctypeMatch.index !== undefined) {
+    return output.slice(doctypeMatch.index).trim()
+  }
+
+  // If the output starts with an explanatory sentence and then code, find the first code-like line.
+  const firstCodeLine = output.search(
+    /\n\s*(?:<!DOCTYPE\s+html|<html[\s>]|import\s+|const\s+|function\s+|class\s+|def\s+|#\s*\w+\s*\n|<canvas|<script|<style|<div|<section|<svg)/i
+  )
+  if (firstCodeLine > 0) {
+    return output.slice(firstCodeLine).trim()
+  }
+
+  return output
+}
+
+export function cleanOutput(output: string): string {
+  // A file-delivered HTML document is already the artifact. Searching inside
+  // it for fences or the next code-looking line can discard its entire head.
+  if (/^\s*(?:<!doctype\s+html|<html[\s>])/i.test(output)) return output.trim()
+  const extracted = extractFirstCodeBlock(output)
+  const noFences = stripCodeFences(extracted ?? output)
+  const trimmed = removePreamble(noFences).trim()
+  return trimmed || output.trim()
+}
+
+export class TimeoutError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'TimeoutError'
+  }
+}
+
+export function isTimeoutError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false
+  // Runner-internal timeouts are TimeoutError; CLI runners throw plain Errors
+  // with a "Timeout after Nms" message, so fall back to message matching.
+  return err.name === 'TimeoutError' || /\btime(?:d[ -]?|-)?out\b/i.test(err.message)
+}
+
+/**
+ * The cap, in ms, an Anthropic call's OUTER clock uses. The runner's own timer
+ * (anthropic.timeoutMs, else the sweep's timeout) is the one that decides a
+ * cut-off: it stops the stream and bills what was generated. The outer clock
+ * sits 5 s above it, so it can never win the race and turn a billed cut-off into
+ * a transient timeout that bills nothing.
+ */
+export const ANTHROPIC_OUTER_MARGIN_MS = 5_000
+
+function outerTimeoutMs(cfg: ProviderRunnerConfig, model: BenchmarkModel, timeoutMs: number): number {
+  if (model.provider !== 'Anthropic') return timeoutMs
+  const runnerCapMs = cfg.anthropic?.timeoutMs ?? timeoutMs ?? ANTHROPIC_DEFAULT_TIMEOUT_MS
+  return runnerCapMs + ANTHROPIC_OUTER_MARGIN_MS
+}
+
+/** The longest a provider's retry-after may make the harness wait before a retry. */
+export const RETRY_AFTER_CAP_MS = 180_000
+
+/**
+ * The wait before a retry: the harness's own backoff, raised to the provider's
+ * `retry-after` when the provider asks for longer, and never more than
+ * RETRY_AFTER_CAP_MS. A 429 or 529 carries the provider's figure as
+ * `retryAfterMs` (see runners/anthropic.ts); any other error has none and
+ * keeps its backoff.
+ */
+export function retryDelayMs(err: unknown, backoffMs: number): number {
+  const advised = (err as { retryAfterMs?: unknown } | null | undefined)?.retryAfterMs
+  if (typeof advised !== 'number' || !Number.isFinite(advised) || advised <= 0) return backoffMs
+  return Math.max(backoffMs, Math.min(advised, RETRY_AFTER_CAP_MS))
+}
+
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const raced = Promise.race([
+    promise,
+    new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new TimeoutError(`Timeout after ${ms}ms: ${label}`)), ms)
+    }),
+  ])
+  // Clear the timer whichever side wins, otherwise every call leaks a live
+  // timer that keeps the process alive for up to the full timeout window.
+  return raced.finally(() => {
+    if (timer !== undefined) clearTimeout(timer)
+  })
+}
+
+function extractStatus(err: unknown): number | undefined {
+  if (!(err instanceof Error)) return undefined
+  const match = err.message.match(/(?:error|status)\s*(\d{3})/i) ?? err.message.match(/\b(\d{3})\b/)
+  return match ? Number(match[1]) : undefined
+}
+
+function isRateLimitError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false
+  const message = err.message.toLowerCase()
+  if (
+    message.includes('rate limit') ||
+    message.includes('too many requests') ||
+    message.includes('overloaded')
+  ) {
+    return true
+  }
+  return extractStatus(err) === 429
+}
+
+/**
+ * Quota/billing exhaustion (Moonshot "usage limit for this billing cycle",
+ * OpenAI insufficient_quota, Anthropic credit balance, ...). These are NOT
+ * transient: every subsequent call to the provider fails identically, so the
+ * runner fail-fast breaks the current task and trips a circuit breaker that
+ * skips the provider for the rest of the sweep — leaving existing results
+ * untouched instead of replacing them with quota-error failures.
+ */
+export function isQuotaError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false
+  const message = err.message.toLowerCase()
+  return (
+    message.includes('access_terminated_error') ||
+    message.includes('usage limit') ||
+    message.includes('insufficient_quota') ||
+    message.includes('exceeded your current quota') ||
+    message.includes('credit balance') ||
+    message.includes('billing cycle') ||
+    // OpenRouter free tier: the per-model daily cap is a hard stop, not a
+    // transient rate limit — every later call fails identically.
+    message.includes('daily limit') ||
+    message.includes('no free model provider') ||
+    // Agy CLI subscription quota (per-model rate limit; not transient).
+    // Without this, the runner retries every iteration for ~3h until the
+    // quota resets, wasting the whole sweep window.
+    message.includes('individual quota reached')
+  )
+}
+
+/**
+ * A failure that describes what the model did on ONE sample, not a fault that
+ * will repeat identically: the answer ran past the output cap, or the model
+ * declined. Not retried (a retry is another paid sample of the same thing),
+ * but the pair's remaining iterations still run, so the record measures how
+ * often it happens instead of turning one bad sample into zeros for the rest.
+ */
+export function isPerIterationOutcome(reason: string | undefined, err: unknown): boolean {
+  if (reason === 'truncated') return true
+  const message = err instanceof Error ? err.message : String(err ?? '')
+  return message.includes('stop_reason refusal')
+}
+
+export function isTransientError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false
+  const message = err.message.toLowerCase()
+
+  // Timeout
+  if (isTimeoutError(err)) return true
+
+  // Truncated generation (reasoning consumed the completion budget) — worth a
+  // retry: sampling is stochastic at temperature 1 and the next attempt may
+  // finish. NOT loop-breaking, unlike quota/auth failures.
+  // A stop at the provider's max_tokens cap is deliberately NOT here: the same
+  // cap truncates the same answer again, so each retry is a paid repeat. The
+  // Anthropic runner words that error "truncated at max_tokens" for this reason.
+  if (message.includes('truncated at the completion-token limit')) return true
+
+  // Rate limiting / overload — always retryable.
+  if (isRateLimitError(err)) return true
+
+  // Network / DNS / socket errors
+  if (
+    message.includes('fetch failed') ||
+    message.includes('network') ||
+    message.includes('econnrefused') ||
+    message.includes('econnreset') ||
+    message.includes('etimedout') ||
+    message.includes('enotfound') ||
+    message.includes('socket')
+  ) {
+    return true
+  }
+
+  // opencode's free tier intermittently rejects concurrent sessions with
+  // "invalid_bearer_credential" even though the same key has hundreds of
+  // sequential successes (verified 2026-08-13: 0 occurrences across 5
+  // sequential sweeps, present in every parallel batch). That is a transient
+  // upstream pool/auth blip, NOT a broken key — retryable. A genuinely
+  // revoked key fails identically on every attempt and is bounded by
+  // maxRetries.
+  if (message.includes('invalid_bearer_credential')) return true
+
+  // HTTP status markers inside error messages: retry 5xx plus 429 (rate limit)
+  // and 408 (request timeout); never other 4xx auth/validation errors.
+  const status = extractStatus(err)
+  if (status !== undefined) {
+    return status >= 500 || status === 429 || status === 408
+  }
+
+  return false
+}
+
+// The CLI provider set is DERIVED from CLI_COMMANDS (execution-target.ts), so
+// classification here and the sweep's install pre-flight can never disagree
+// about which providers spawn a binary.
+
+/**
+ * True when the model is generated by spawning a local CLI (see configForModel).
+ * Classification needs this because a CLI provider's timeout is a *speed* story
+ * (the agent was still generating when the cap fired) while an API provider's
+ * timeout is a *network* story — and the two throw identical messages.
+ */
+export function isCliProvider(model: BenchmarkModel): boolean {
+  return CLI_PROVIDERS.has(model.provider)
+}
+
+/**
+ * True for the raw shape runCli throws ("Timeout after Nms: <command> <args>").
+ * The runner's own withTimeout uses "Timeout after Nms: <model> :: <task> #i/n",
+ * so the ` :: ` label separator is what tells the two apart when no provider
+ * context was passed.
+ */
+function isRawCliTimeoutMessage(message: string): boolean {
+  return /^timeout after \d+ms:/.test(message) && !message.includes(' :: ')
+}
+
+/**
+ * Map a thrown error (or empty-body signal) to a BenchmarkFailureReason.
+ * Order matters: the most specific classification wins.
+ *
+ *   quota → rate-limit → auth → invalid → endpoint-hung/timeout →
+ *   truncated → empty-body → model-error
+ *
+ * `output` is the assistant content (may be empty) for the case where the
+ * provider returned 200 with a length finish and no usable content; pass it
+ * to distinguish `truncated` (reasoning burned the budget) from `empty_body`
+ * (the stream produced no deltas at all).
+ *
+ * `ctx.cliProvider` marks the call as CLI-driven so a timeout classifies as
+ * `cli_timeout` instead of `endpoint_hung`. It has to be passed in: the outer
+ * withTimeout fires before the CLI's own timer (same duration, started
+ * earlier), so most CLI timeouts arrive with a message that is byte-for-byte
+ * the same shape as an API provider's.
+ */
+export function classifyFailureReason(
+  err: unknown,
+  output?: { content: string; finishReason?: string },
+  ctx?: { cliProvider?: boolean }
+): BenchmarkFailureReason {
+  const message = err instanceof Error ? err.message.toLowerCase() : String(err).toLowerCase()
+  const status = extractStatus(err)
+
+  // Quota / billing — hard stop, every later call fails identically.
+  if (isQuotaError(err)) return 'quota_exhausted'
+
+  // Transient 429 / overload — the runner already retried; it still failed.
+  if (status === 429 || message.includes('rate limit') || message.includes('too many requests') || message.includes('overloaded')) {
+    return 'rate_limited'
+  }
+
+  // opencode free-tier pool blips: transient (see isTransientError) but
+  // surface them as rate_limited so the UI says "transient upstream" rather
+  // than implying a revoked key.
+  if (message.includes('invalid_bearer_credential')) return 'rate_limited'
+
+  // Auth / scope errors — never transient, never retry.
+  if (status === 401 || status === 403) return 'auth_error'
+
+  // Provider rejected the request shape.
+  if (status === 400 || message.includes('invalid request')) return 'invalid_request'
+
+  // Network-level failures that survived retries → endpoint genuinely unreachable
+  // or hung. Distinct from the per-call runner timeout (which surfaces as
+  // `endpoint_hung` via the TimeoutError path below — same outcome).
+  if (
+    message.includes('fetch failed') ||
+    message.includes('econnrefused') ||
+    message.includes('econnreset') ||
+    message.includes('etimedout') ||
+    message.includes('enotfound') ||
+    message.includes('socket hang up')
+  ) {
+    return 'endpoint_hung'
+  }
+
+  // Runner timeout (10-minute per-call cap). For a CLI provider this is the
+  // model being too slow to finish the artifact in-window — a capability
+  // story, so it gets its own reason rather than reading as a dead endpoint.
+  if (isTimeoutError(err) && (ctx?.cliProvider || isRawCliTimeoutMessage(message))) {
+    return 'cli_timeout'
+  }
+
+  // Any other timeout: the API endpoint stalled past the cap. From the reader's
+  // perspective that's the same outcome as a hung connection.
+  if (isTimeoutError(err)) return 'endpoint_hung'
+
+  // Truncated generation — reasoning consumed the completion budget before the
+  // model wrote any answer. The runners throw this explicitly so we can
+  // distinguish it from a generic model error.
+  if (message.includes('truncated at the completion-token limit')) return 'truncated'
+  // A provider stop at its output cap (Anthropic stop_reason max_tokens). Not
+  // retryable (see isTransientError), but the same reason: the answer was cut.
+  if (message.includes('truncated at max_tokens')) return 'truncated'
+  // A stop at the context window (Anthropic model_context_window_exceeded).
+  if (message.includes('truncated at the context window')) return 'truncated'
+
+  // 5xx after retries — the provider is degraded.
+  if (status !== undefined && status >= 500) return 'model_error'
+
+  // The response was 200 but the assistant message carried no usable content.
+  // Distinguish truncated (reasoning consumed the budget) from a plain
+  // empty body (stream ended with no deltas).
+  if (output !== undefined) {
+    if (output.finishReason === 'length' && output.content.trim().length === 0) {
+      return 'truncated'
+    }
+    if (output.content.trim().length === 0) {
+      return 'empty_body'
+    }
+  }
+
+  return 'model_error'
+}
+
+/**
+ * Resolved plugin generators, keyed by provider name.
+ *
+ * A plugin declares its generator as a lazy `() => import(...)` factory (the
+ * implementation is node-only and the plugin registry is in the client-bundle
+ * graph). The factory is awaited ONCE per provider per process and the
+ * promise cached: a sweep is hundreds of iterations, and re-importing the
+ * module — or worse, re-running whatever setup it does at import — on every
+ * call would be a per-iteration tax with no upside. A rejected factory is
+ * evicted so a transient import failure is not cached as permanent.
+ */
+const resolvedPluginGenerators = new Map<string, Promise<PluginGenerate>>()
+
+function resolvePluginGenerator(provider: string, factory: PluginGeneratorFactory): Promise<PluginGenerate> {
+  const cached = resolvedPluginGenerators.get(provider)
+  if (cached) return cached
+  const pending = factory().catch((err: unknown) => {
+    resolvedPluginGenerators.delete(provider)
+    throw err
+  })
+  resolvedPluginGenerators.set(provider, pending)
+  return pending
+}
+
+/** Drop the resolved-generator cache (tests and hot reload; never a sweep). */
+export function clearPluginGeneratorCache(): void {
+  resolvedPluginGenerators.clear()
+}
+
+function configForModel(model: BenchmarkModel, cfg: ProviderRunnerConfig) {
+  // Refused before any network call. The entry stays in the registry so its records resolve.
+  if (model.historicalReason) {
+    throw new Error(`Invalid request: ${model.id} is a historical entry and cannot be run: ${model.historicalReason}`)
+  }
+  switch (model.provider) {
+    case 'OpenAI':
+      if (!cfg.openai) throw new Error(`OpenAI config missing for ${model.id}`)
+      return { provider: 'openai' as const, config: cfg.openai }
+    case 'Anthropic':
+      if (!cfg.anthropic) throw new Error(`Anthropic config missing for ${model.id}`)
+      return { provider: 'anthropic' as const, config: cfg.anthropic }
+    case 'Google':
+      if (!cfg.google) throw new Error(`Google config missing for ${model.id}`)
+      return { provider: 'google' as const, config: cfg.google }
+    case 'Moonshot AI':
+      if (!cfg.moonshot) throw new Error(`Moonshot config missing for ${model.id}`)
+      return { provider: 'moonshot' as const, config: cfg.moonshot }
+    case 'OpenRouter':
+      if (!cfg.openrouter) throw new Error(`OpenRouter config missing for ${model.id}`)
+      return { provider: 'openrouter' as const, config: cfg.openrouter }
+    case 'Agy':
+      if (!cfg.agy) throw new Error(`Agy config missing for ${model.id}`)
+      return { provider: 'agy' as const, config: cfg.agy }
+    case 'Codex':
+      if (!cfg.codex) throw new Error(`Codex config missing for ${model.id}`)
+      return { provider: 'codex' as const, config: cfg.codex }
+    case 'OpenCode':
+      if (!cfg.opencode) throw new Error(`OpenCode config missing for ${model.id}`)
+      return { provider: 'opencode' as const, config: cfg.opencode }
+    case 'Devin':
+      if (!cfg.devin) throw new Error(`Devin config missing for ${model.id}`)
+      return { provider: 'devin' as const, config: cfg.devin }
+    case 'Ollama':
+      // Ollama is local — no API key needed, host defaults to localhost:11434.
+      // An explicit config is optional; we provide a default so `task bench:run MODELS=ollama-*`
+      // works without any env.
+      return { provider: 'ollama' as const, config: cfg.ollama ?? {} }
+    case 'Local': {
+      // A local OpenAI-compatible server (rec, llama.cpp). The endpoint lives on
+      // the registry entry, so the same weights served at two precisions are two
+      // models. Auth is optional (`LOCAL_API_KEY`); llama.cpp ignores it.
+      if (!model.baseUrl) throw new Error(`Local config missing baseUrl for ${model.id}`)
+      return {
+        provider: 'local' as const,
+        config: { baseUrl: model.baseUrl } satisfies LocalConfig,
+      }
+    }
+    case 'Claude Code':
+      // The Claude Code CLI running a non-Anthropic model (Kimi K3.1 Pro on the
+      // Kimi Code endpoint) exactly as the `kc` shell function configures it.
+      // No required config: auth is read from ~/.config/kimi.env at run time.
+      if (!cfg.claudeCode) throw new Error(`Claude Code config missing for ${model.id}`)
+      return { provider: 'claude-code' as const, config: cfg.claudeCode }
+    default: {
+      // Unknown to the switch — ask the plugins before giving up. This is the
+      // whole extension seam: a contributed provider needs no case here.
+      const factory = pluginGenerator(model.provider)
+      if (factory) return { provider: 'plugin' as const, config: factory }
+      const fromPlugins = pluginProviderNames()
+      throw new Error(
+        `Unsupported provider: ${model.provider} (built-in: ${BUILTIN_PROVIDERS.join(', ')}; ` +
+          `plugin-provided: ${fromPlugins.length ? fromPlugins.join(', ') : 'none'})`
+      )
+    }
+  }
+}
+
+async function generateWithProvider(
+  cfg: ProviderRunnerConfig,
+  model: BenchmarkModel,
+  task: BenchmarkTask,
+  iterationIndex: number
+): Promise<GenerationResponse> {
+  const { provider, config } = configForModel(model, cfg)
+  switch (provider) {
+    case 'openai':
+      return generateOpenAI(config, model, task)
+    case 'anthropic':
+      // The runner's timeout is the cap the stream is bounded by, so the abort
+      // works whether or not the caller also set the Anthropic-specific one.
+      return generateAnthropic({ ...config, timeoutMs: config.timeoutMs ?? cfg.timeoutMs }, model, task)
+    case 'google':
+      return generateGoogle(config, model, task)
+    case 'moonshot':
+      return generateMoonshot(config, model, task)
+    case 'openrouter':
+      return generateOpenRouter(config, model, task)
+    case 'agy':
+      return generateAgy(config, model, task, iterationIndex)
+    case 'codex':
+      return generateCodex(config, model, task, iterationIndex)
+    case 'opencode':
+      return generateOpencode(config, model, task, iterationIndex)
+    case 'devin':
+      return generateDevin(config, model, task, iterationIndex)
+    case 'ollama':
+      return generateOllama(config, model, task)
+    case 'local':
+      return generateLocal(config, model, task)
+    case 'claude-code':
+      return generateClaudeCode(config, model, task, iterationIndex)
+    case 'plugin': {
+      // Everything around this call — retries, cache, empty-body recovery,
+      // run log, quota breaker, scoring — is unchanged, which is the point:
+      // a plugin provider is measured by exactly the same machinery.
+      const generate = await resolvePluginGenerator(model.provider, config)
+      return generate(model, task, iterationIndex)
+    }
+  }
+}
+
+/**
+ * ONE generation, through the real provider seam, with NOTHING around it.
+ * **Probe-only** (`scripts/prompt-probe.mjs`, #24) — never used by a sweep.
+ *
+ * A prompt-regression probe needs exactly the generation call and exactly the
+ * timeout: it must exercise the same `configForModel` dispatch and the same
+ * per-provider client a sweep uses (a probe that mocked the provider would
+ * prove nothing about the provider), but it must NOT touch the machinery a
+ * measurement needs and a gate does not:
+ *
+ *  - **no cache** — a cached reply is a reply to yesterday's contract, which is
+ *    precisely the regression the probe is looking for.
+ *  - **no retries** — a probe is a gate, not a measurement; a transient failure
+ *    should be visible as a failure, not smoothed over.
+ *  - **no scoring / no aggregation / no run log / no results.json** — a probe
+ *    produces a pass/fail, never a published data point. Nothing it does may
+ *    reach the leaderboard.
+ *  - **no `withSandboxConstraints`** — the probe composes its OWN full prompt
+ *    (`probePrompt()` appends the real contract when the probe asks for it), so
+ *    appending here would double it.
+ *
+ * The caller passes a task-shaped object carrying that prompt; only `prompt`
+ * (and `id`/`title` in log lines) is read by the providers.
+ */
+export function generateForProbe(
+  cfg: ProviderRunnerConfig,
+  model: BenchmarkModel,
+  taskLike: BenchmarkTask,
+  timeoutMs: number
+): Promise<GenerationResponse> {
+  return withTimeout(
+    generateWithProvider(cfg, model, taskLike, 0),
+    timeoutMs,
+    `probe ${model.id} :: ${taskLike.id}`
+  )
+}
+
+/**
+ * Per-iteration measurement sink, OWNED by the `runTask` loop and MUTATED by
+ * `generateOne`.
+ *
+ * WHY a mutable sink rather than widening `generateOne`'s return value: the
+ * retry count matters most when the call ultimately THROWS (an iteration that
+ * failed after two retries is the headline "infrastructure, not model" signal),
+ * and a return value is never delivered on the throw path. The sink records
+ * what happened regardless of how the call ended. It is created fresh per
+ * iteration and never shared, so there is no cross-iteration aliasing.
+ */
+interface CallTelemetry {
+  /**
+   * Retries inside this iteration — transient (network/429/timeout) here, plus
+   * the empty-body retries the runTask loop adds. Same population as the log's
+   * `retry` events, so the two can be cross-checked.
+   */
+  retries: number
+  /** True when a response was replayed from the cache (nothing was generated). */
+  cacheHit: boolean
+  /**
+   * TTFT of the FIRST attempt that produced observable output. dsh
+   * `resetForRetry` parity: a retry inside the step does NOT reset the
+   * boundary, so this is written once and never overwritten.
+   */
+  ttftMs?: number
+  /**
+   * USD priced for every response this iteration received — including the ones
+   * an empty-body retry threw away, because the provider billed for them all
+   * the same. The runner's budget accounting reads this at the iteration
+   * boundary; it rides the sink for the same reason `retries` does (the number
+   * has to survive a throw).
+   */
+  costUsd: number
+  /**
+   * Billed attempts this iteration paid for and then retried (see
+   * IterationRun.retriedUsage). Each one is pushed where the retry is decided.
+   */
+  retriedUsage: BilledUsage[]
+}
+
+/**
+ * Project a finished iteration's sink onto the `IterationRun` fields, keeping
+ * "absent = not measured" (no `ttftMs: undefined` keys, no `retries: 0` noise).
+ */
+function telemetryFields(tel: CallTelemetry): Pick<IterationRun, 'ttftMs' | 'cacheHit' | 'retries' | 'retriedUsage'> {
+  return {
+    ...(tel.ttftMs !== undefined ? { ttftMs: tel.ttftMs } : {}),
+    ...(tel.cacheHit ? { cacheHit: true } : {}),
+    ...(tel.retries > 0 ? { retries: tel.retries } : {}),
+    ...(tel.retriedUsage.length > 0 ? { retriedUsage: tel.retriedUsage } : {}),
+  }
+}
+
+/**
+ * What ONE response costs, in USD — the same pricing path the aggregate uses
+ * (`summarizeUsage` → `costFromUsage`), applied to a single call.
+ *
+ * Computed at the response's log-append site, so a `cost_event` is recorded
+ * exactly where the tokens are, and the per-response costs of a run sum to the
+ * record's `costUsd`.
+ */
+function responseCostUsd(response: GenerationResponse, model: BenchmarkModel): number {
+  return costFromUsage(summarizeUsage([response]), model)
+}
+
+/** Output tokens per second, with the label saying WHICH rate it is. */
+function computeRate(
+  tokensOut: number,
+  runtimeMs: number,
+  ttftMs: number | undefined
+): { tokensPerSec: number; rateKind: 'decode' | 'wall-clock' } | undefined {
+  if (tokensOut <= 0) return undefined
+  // Decode rate — the honest one: generation time only, prefill/queue excluded.
+  if (ttftMs !== undefined && runtimeMs > ttftMs) {
+    return {
+      tokensPerSec: Math.round((tokensOut / ((runtimeMs - ttftMs) / 1000)) * 10) / 10,
+      rateKind: 'decode',
+    }
+  }
+  // Documented fallback: wall-clock. DEPRESSED by queue/prefill and therefore
+  // not comparable to a decode rate — which is exactly why it is labelled.
+  if (runtimeMs > 0) {
+    return { tokensPerSec: Math.round((tokensOut / (runtimeMs / 1000)) * 10) / 10, rateKind: 'wall-clock' }
+  }
+  return undefined
+}
+
+/**
+ * The identity a cached response is keyed on. For most entries that is the
+ * registry id. For an Anthropic entry it also names the request the entry sends
+ * (API model id, pinned effort, thinking mode and output cap): two entries that
+ * differ only in effort share an id prefix and a prompt, so without this a
+ * changed pin would replay responses that were generated under the old pin.
+ */
+export function cacheModelKey(model: BenchmarkModel): string {
+  if (model.provider !== 'Anthropic') return model.id
+  return (
+    `${model.id}@${model.apiModelId ?? model.id}` +
+    `/effort=${model.reasoningEffort ?? '-'}/thinking=${model.thinking ?? '-'}` +
+    `/max=${model.maxOutputTokens ?? 'default'}`
+  )
+}
+
+async function generateOne(
+  cfg: ProviderRunnerConfig,
+  model: BenchmarkModel,
+  rawTask: BenchmarkTask,
+  iterationIndex: number,
+  bustCache: boolean,
+  timeoutMs: number,
+  label: string,
+  // Passed EXPLICITLY rather than read from module state: several (model, task)
+  // jobs run concurrently and a shared "current log" would interleave them.
+  log?: RunLog,
+  // Mutated in place — see CallTelemetry for why this is not a return value.
+  tel?: CallTelemetry
+): Promise<GenerationResponse> {
+  // HTML-category tasks get the demo-sandbox contract appended (self-contained
+  // doc, no CDNs, no runtime JSX) so models generate directly-runnable
+  // artifacts instead of relying on post-processing to patch them up. The
+  // amended prompt is also the cache key, so constraint changes re-run live.
+  const task = withSandboxConstraints(rawTask)
+
+  // "Model-visible means logged": record the exact prompt that will be sent
+  // BEFORE anything can consume it — including on a cache hit, where the
+  // replayed response still answers to this prompt.
+  log?.append({
+    type: 'request',
+    iterationIndex,
+    promptHash: hashPrompt(task.prompt),
+    promptLength: task.prompt.length,
+  })
+
+  if (!bustCache) {
+    const cached = getCachedResponse(cacheModelKey(model), task.id, task.prompt, iterationIndex)
+    if (cached) {
+      console.log(`[harness] cache hit ${model.name} :: ${task.title} #${iterationIndex + 1}`)
+      if (tel) tel.cacheHit = true
+      // Priced even though a replay spends nothing: the aggregate counts these
+      // tokens, so pricing them keeps the log's per-response sum equal to the
+      // published costUsd — and a spend cap should over-count, never under.
+      const cachedCostUsd = responseCostUsd(cached, model)
+      if (tel) tel.costUsd += cachedCostUsd
+      // No ttftMs / tokensPerSec on a replay: nothing was generated, and
+      // republishing the original call's timings as if they were measured now
+      // would put a fabricated latency in this run's telemetry.
+      log?.append({
+        type: 'response',
+        iterationIndex,
+        rawOutput: cached.output,
+        tokensIn: cached.tokensIn,
+        tokensOut: cached.tokensOut,
+        runtimeMs: cached.runtimeMs,
+        cacheHit: true,
+        costUsd: cachedCostUsd,
+      })
+      return cached
+    }
+  }
+
+  const maxRetries = cfg.maxRetries ?? 2
+  let lastErr: unknown
+  const outerMs = outerTimeoutMs(cfg, model, timeoutMs)
+
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      const response = await withTimeout(
+        generateWithProvider(cfg, model, task, iterationIndex),
+        outerMs,
+        label
+      )
+      // First attempt to produce observable output wins the boundary and keeps
+      // it for the rest of the iteration (dsh `resetForRetry` parity).
+      if (tel && tel.ttftMs === undefined && response.ttftMs !== undefined) {
+        tel.ttftMs = response.ttftMs
+      }
+      const rate = computeRate(response.tokensOut, response.runtimeMs, response.ttftMs)
+      // Accrued BEFORE anything can reject this response (an empty body is
+      // still billed), so the budget sees every dollar the provider charged.
+      const costUsd = responseCostUsd(response, model)
+      if (tel) tel.costUsd += costUsd
+      log?.append({
+        type: 'response',
+        iterationIndex,
+        rawOutput: response.output,
+        tokensIn: response.tokensIn,
+        tokensOut: response.tokensOut,
+        runtimeMs: response.runtimeMs,
+        cacheHit: false,
+        costUsd,
+        // Conditional spread, not `?? null`: an absent key is the documented
+        // "not measured" signal and null would read as a measured zero.
+        ...(response.ttftMs !== undefined ? { ttftMs: response.ttftMs } : {}),
+        ...(rate ?? {}),
+      })
+      // Same 40-char floor as aggregation: never cache degenerate outputs
+      // (e.g. a bare "DONE" from a file-handoff run that wrote nothing) — a
+      // poisoned cache would keep serving them on every non-busted rerun.
+      if (!bustCache && response.output.trim().length >= 40) {
+        setCachedResponse(cacheModelKey(model), task.id, task.prompt, iterationIndex, response)
+      }
+      return response
+    } catch (err) {
+      lastErr = err
+      // A call that billed before it failed (a refusal, a stop at the cap, a
+      // stream cut off mid-answer) is accrued here, before the retry decision,
+      // so the budget sees the dollars whether or not this attempt is retried.
+      const billed = billedUsageOf(err)
+      if (billed) {
+        const billedCostUsd = costFromUsage(summarizeUsage([billed]), model)
+        if (tel) tel.costUsd += billedCostUsd
+        log?.append({
+          type: 'response',
+          iterationIndex,
+          rawOutput: billed.partialOutput ?? '',
+          tokensIn: billed.tokensIn,
+          tokensOut: billed.tokensOut,
+          runtimeMs: billed.runtimeMs,
+          cacheHit: false,
+          costUsd: billedCostUsd,
+        })
+      }
+      if (!isTransientError(err) || attempt === maxRetries) {
+        throw err
+      }
+      // This billed attempt is retried, so its usage rides on the iteration.
+      if (billed && tel) tel.retriedUsage.push(billed)
+      // Rate limits deserve a much longer backoff than generic transient errors,
+      // and a 429 or 529 that says how long to wait is waited for, up to the cap.
+      const baseDelayMs = 1000 * 2 ** attempt
+      const delayMs = retryDelayMs(err, isRateLimitError(err) ? baseDelayMs * 4 : baseDelayMs)
+      if (tel) tel.retries++
+      log?.append({
+        type: 'retry',
+        iterationIndex,
+        attempt: attempt + 1,
+        error: err instanceof Error ? err.message : String(err),
+        delayMs,
+        kind: 'transient',
+      })
+      console.warn(
+        `[harness] retry ${attempt + 1}/${maxRetries} for ${model.name} :: ${task.title} #${iterationIndex + 1} after ${delayMs}ms: ${err instanceof Error ? err.message : String(err)}`
+      )
+      await new Promise((resolve) => setTimeout(resolve, delayMs))
+    }
+  }
+
+  throw lastErr ?? new Error(`All retries exhausted for ${model.name} :: ${task.title}`)
+}
+
+/** One iteration's outcome, as collected by the runner before aggregation. */
+export interface IterationRun {
+  /** Cleaned model output on success; the error message on failure. */
+  output: string
+  tokensIn: number
+  tokensOut: number
+  /**
+   * Billed attempts of THIS iteration that were retried (a transient failure, an
+   * empty body) and so are not this run's own tokens. They are priced into the
+   * record's totals with their own provenance, so the record's cost is the cost
+   * the budget counted.
+   */
+  retriedUsage?: BilledUsage[]
+  /**
+   * Where this iteration's token counts came from — passed straight through
+   * from the generation call (`GenerationResponse.usageSource`). Absent on a
+   * failed iteration that never got counts, and on runs produced before the
+   * field existed; `summarizeUsage` reads absence as 'estimated'.
+   */
+  usageSource?: UsageProvenance
+  runtimeMs: number
+  status: 'success' | 'fail'
+  /** Set on failed iterations whose failure was a timeout. */
+  timedOut?: boolean
+  /** Classified failure reason; 'none' when status === 'success'. */
+  failureReason?: BenchmarkFailureReason
+  /** Raw finish_reason from the provider, when known. Used to disambiguate truncated vs empty_body. */
+  finishReason?: string
+  /**
+   * Time to first observable output for this iteration, ms. Absent when the
+   * provider could not measure it (see `GenerationResponse.ttftMs`) and on
+   * cache replays, where nothing was generated. Never 0. It CAN be present on
+   * a failed iteration — an attempt that produced output before a later
+   * attempt threw did genuinely observe that latency.
+   */
+  ttftMs?: number
+  /** True when this iteration was served from the response cache. */
+  cacheHit?: boolean
+  /** Retries this iteration burned (transient + empty-body). Absent = 0. */
+  retries?: number
+}
+
+/**
+ * Fold per-iteration measurements into `BenchmarkResult.telemetry`.
+ *
+ * Rules (documented on the type, restated here because this is where they are
+ * enforced):
+ *  - `cacheHits` / `retries` count over EVERY iteration, failures included —
+ *    a failure after two retries is precisely the signal being collected.
+ *  - `meanTtftMs` averages only the iterations that measured a TTFT, and is
+ *    ABSENT when none did (0 would be a physically impossible latency).
+ *  - `meanTokensPerSec` averages only the iterations a rate was computable
+ *    for, and cache replays are excluded from BOTH means: nothing was
+ *    generated, so their timings describe some earlier call.
+ *  - `rateKind` reports whether those rates were decode rates, wall-clock
+ *    fallbacks, or a mix — a rate whose kind is unknown is not readable.
+ */
+function foldTelemetry(
+  runs: IterationRun[],
+  scoringRescores: number
+): NonNullable<BenchmarkResult['telemetry']> {
+  const cacheHits = runs.filter((r) => r.cacheHit).length
+  const retries = runs.reduce((sum, r) => sum + (r.retries ?? 0), 0)
+
+  const measured = runs.filter((r) => !r.cacheHit)
+  const ttfts = measured.map((r) => r.ttftMs).filter((v): v is number => v !== undefined)
+
+  const rates = measured
+    .map((r) => computeRate(r.tokensOut, r.runtimeMs, r.ttftMs))
+    .filter((v): v is { tokensPerSec: number; rateKind: 'decode' | 'wall-clock' } => v !== undefined)
+
+  const kinds = new Set(rates.map((r) => r.rateKind))
+  const rateKind: 'decode' | 'wall-clock' | 'mixed' | undefined =
+    kinds.size === 0 ? undefined : kinds.size > 1 ? 'mixed' : [...kinds][0]
+
+  return {
+    ...(ttfts.length > 0
+      ? { meanTtftMs: Math.round(ttfts.reduce((a, b) => a + b, 0) / ttfts.length) }
+      : {}),
+    ...(rates.length > 0
+      ? {
+          meanTokensPerSec:
+            Math.round((rates.reduce((a, b) => a + b.tokensPerSec, 0) / rates.length) * 10) / 10,
+        }
+      : {}),
+    ...(rateKind ? { rateKind } : {}),
+    cacheHits,
+    retries,
+    scoringRescores,
+  }
+}
+
+/**
+ * Aggregate per-iteration runs into a single BenchmarkResult, per the
+ * contract documented on BenchmarkResult in ../types:
+ *  - score:      mean 0-100 score across SUCCESSFUL iterations (0 if none),
+ *                clamped to 1..100 and rounded to 1 decimal
+ *  - scoreAllTrials: sum of iteration scores over every REQUESTED iteration,
+ *                rounded to 1 decimal (0 if none succeeded; no floor of 1)
+ *  - runtimeMs:  mean wall-clock per SUCCESSFUL iteration (0 if none)
+ *  - tokensIn/tokensOut: TOTALS across all iterations
+ *  - costUsd:    TOTAL estimated spend across all iterations
+ *  - status:     'success' = all iterations succeeded; 'partial' = some;
+ *                'fail' = none; 'timeout' = none, and the last error was a timeout
+ */
+export async function aggregateRuns(
+  runs: IterationRun[],
+  iterations: number,
+  model: BenchmarkModel,
+  task: BenchmarkTask,
+  scorer: Scorer,
+  createdAt: string = new Date().toISOString(),
+  // Explicit, not module state — concurrent (model, task) jobs each own one.
+  log?: RunLog
+): Promise<BenchmarkResult> {
+  // A "success" that produced no usable output can't be scored or displayed;
+  // treat it as a failed iteration. The 40-char floor also catches degenerate
+  // acknowledgements — e.g. file-handoff runs where the CLI replied "DONE"
+  // without writing the artifact; no real artifact for any task is that short.
+  // Indices are carried alongside so `check` events can name the TRUE iteration
+  // number rather than a position within the filtered successes.
+  const successEntries = runs
+    .map((run, index) => ({ run, index }))
+    .filter(({ run }) => run.status === 'success' && run.output.trim().length >= 40)
+  const successRuns = successEntries.map((entry) => entry.run)
+
+  // One shape for token accounting, provenance included: `usage.source` says
+  // whether these totals are the providers' own numbers or our char-count
+  // estimate. tokensIn/tokensOut below are the same totals, kept for the
+  // consumers (and stored records) that read the flat fields.
+  // A retried billed attempt is part of the iteration's cost even though it is
+  // not the run's own response, so it is summed in with its own provenance.
+  const usage = summarizeUsage(runs.flatMap((run) => [run, ...(run.retriedUsage ?? [])]))
+  const totalTokensIn = usage.inputTokens
+  const totalTokensOut = usage.outputTokens
+
+  // Score EVERY successful iteration's output and publish the mean. When the
+  // scorer exposes a per-iteration breakdown (behavioural scorers), capture
+  // each iteration's checks alongside its score so the UI can show WHICH
+  // check tripped for a low score.
+  let score = 0
+  let iterationScores: number[] = []
+  let iterationCheckResults: IterationCheckResult[][] = []
+  // Artifacts scored again for a timeout or a browser disconnect (see
+  // scorers/browser-fallback.ts). Counted into the telemetry below.
+  let scoringRescores = 0
+  if (successRuns.length > 0) {
+    // The sandbox policy is a SCORING-time fact (#12) — this is the first
+    // moment in the run it is known, and the last at which it still describes
+    // the numbers about to be published. One event per (model, task) log:
+    // every iteration is scored under the same process-wide resolved policy.
+    // Logged for every scored record, not only behavioural ones: it reports
+    // the policy in force, and "this text-scored record needed no browser" is
+    // read off the task's scorer, not off a missing event.
+    log?.append({ type: 'sandboxPolicy', ...resolveSandboxPolicy() })
+    if (scorer.scoreWithBreakdown) {
+      // A browser that cannot run an artifact is retried on a fresh browser once,
+      // and a second failure stops the sweep (see scorers/browser-fallback.ts).
+      // Scoring events (queue wait, probes, rescores) go to this pair's run log,
+      // and the rescores are counted into the record's telemetry.
+      const breakdowns = await scoreBreakdownsOrStop(
+        (output, t) => scorer.scoreWithBreakdown!(output, t),
+        successRuns.map((r) => r.output),
+        task,
+        {
+          log: (event) => {
+            if (event.type === 'rescore') scoringRescores++
+            log?.append(event)
+          },
+          iterationIndexes: successEntries.map((entry) => entry.index),
+          // The probe guards browser renders only: a task with no browser checks
+          // never opens a page, so it must not need a browser either.
+          ...(getChecksForTask(task).length > 0 ? { probe: probeKnownGoodBrowser } : {}),
+        }
+      )
+      iterationScores = breakdowns.map((b) => b.score)
+      iterationCheckResults = breakdowns.map((b) => b.checks)
+      // One event per check per iteration: "why this score" has to be
+      // answerable from the log alone, not just from the composite.
+      breakdowns.forEach((breakdown, i) => {
+        for (const check of breakdown.checks) {
+          log?.append({ type: 'check', iterationIndex: successEntries[i].index, check })
+        }
+      })
+    } else {
+      // One after another, like the browser path: a scorer that renders or runs a
+      // process must not have a pair's iterations in flight together.
+      iterationScores = []
+      for (const run of successRuns) iterationScores.push(await scorer.score(run.output, task))
+    }
+    const mean = iterationScores.reduce((sum, s) => sum + s, 0) / iterationScores.length
+    score = Math.round(Math.min(100, Math.max(1, mean)) * 10) / 10
+  }
+
+  // Mean runtime over SUCCESSFUL iterations only — failed runs report 0ms and
+  // would deflate the average.
+  const runtimeMs =
+    successRuns.length > 0
+      ? Math.round(successRuns.reduce((sum, r) => sum + r.runtimeMs, 0) / successRuns.length)
+      : 0
+
+  const lastFailed = [...runs].reverse().find((r) => r.status === 'fail')
+  // 'success' means EVERY REQUESTED iteration produced an artifact — compared
+  // against `iterations`, not `runs.length`, because the loop can stop early
+  // with nothing failed at all: a budget cap (#28) breaks after N clean
+  // iterations, and calling that "success" while the record says 2 of 5 would
+  // publish a status its own counts contradict (and trip verify-results'
+  // status-consistency check, which derives the same rule). `runs.length` is
+  // the fallback for direct callers that pass a 0/short `iterations`.
+  const expected = Math.max(iterations, runs.length)
+  const status: BenchmarkStatus =
+    runs.length > 0 && successRuns.length === expected
+      ? 'success'
+      : successRuns.length > 0
+        ? 'partial'
+        : lastFailed?.timedOut
+          ? 'timeout'
+          : 'fail'
+
+  // The all-trials score: every REQUESTED iteration in the denominator, so an
+  // iteration that produced no artifact counts as zero, and there is no floor of
+  // 1. `score` (above) keeps its mean-over-successes definition for continuity.
+  const scoreAllTrials =
+    expected > 0
+      ? Math.round((iterationScores.reduce((sum, s) => sum + s, 0) / expected) * 10) / 10
+      : 0
+
+  // Aggregate failure reason: if everything succeeded, 'none'. Otherwise take
+  // the LAST failed iteration's reason (the most recent cause — if the loop
+  // kept retrying transient failures and finally hit a quota, quota is the
+  // dominant story). When multiple different reasons occurred, the per-iteration
+  // breakdown is lost — the UI surfaces a histogram of reasons for that.
+  const failureReason: BenchmarkFailureReason =
+    status === 'success'
+      ? 'none'
+      : (lastFailed?.failureReason ?? 'model_error')
+
+  // Publish the BEST-scoring successful iteration's output — the demo renders
+  // this artifact, so it should be the strongest run, not whichever happened
+  // to come first. Fall back to the last run's output (an error message when
+  // every iteration failed).
+  let output = runs[runs.length - 1]?.output ?? ''
+  if (successRuns.length > 0) {
+    let bestIdx = 0
+    for (let i = 1; i < iterationScores.length; i++) {
+      if (iterationScores[i] > iterationScores[bestIdx]) bestIdx = i
+    }
+    output = successRuns[bestIdx].output
+  }
+
+  const result: BenchmarkResult = {
+    taskId: task.id,
+    modelId: model.id,
+    score,
+    runtimeMs,
+    tokensIn: totalTokensIn,
+    tokensOut: totalTokensOut,
+    // Same flat per-1k math as before (a summary with no cached tokens IS the
+    // old formula — locked by billing.test.ts), now computed in the one place
+    // that knows about cached-token counters.
+    costUsd: costFromUsage(usage, model),
+    usage,
+    iterations,
+    iterationsSucceeded: successRuns.length,
+    status,
+    failureReason,
+    // Per-iteration scores so the UI can show variance (Loop 3). Only present
+    // when at least one iteration produced a scoreable artifact.
+    iterationScores: iterationScores.length > 0 ? iterationScores : undefined,
+    // Per-iteration behavioural check outcomes, aligned by index with
+    // iterationScores. Only present when a behavioural scorer ran and at
+    // least one iteration produced checks.
+    iterationCheckResults:
+      iterationCheckResults.length > 0 ? iterationCheckResults : undefined,
+    scoreAllTrials,
+    scorerVersion: SCORER_VERSION,
+    // Always emitted: the counters are meaningful at 0 ("no cache hits, no
+    // retries" is a fact, not a gap), and the measurement fields inside carry
+    // their own absence.
+    telemetry: foldTelemetry(runs, scoringRescores),
+    // Which prompt bundle this score was produced under. Computed HERE because
+    // this is the one place that holds the task at the moment the number is
+    // minted — and it is only ever computable then: a prompt edit tomorrow
+    // makes it underivable forever (#21).
+    promptBundle: promptBundleHash(task),
+    createdAt,
+    // Every record produced under an active run log points back at its trace —
+    // the acceptance criterion for #1: nothing reaches results.json unexplained.
+    ...(log ? { runLogRef: { runId: log.runId, file: log.file } } : {}),
+    source: 'live',
+    output,
+  }
+
+  if (log) {
+    // The artifact is ALWAYS spilled here, whatever its size: the JSONL has to
+    // stay small enough to serve, and content addressing means these bytes cost
+    // nothing extra (the `clean` event that produced them spilled to the same
+    // file).
+    const { output: artifact, ...rest } = result
+    log.append({
+      type: 'aggregate',
+      result: {
+        ...rest,
+        ...(artifact ? { output: forceSpill(log.dir, artifact) } : {}),
+      },
+    })
+  }
+
+  return result
+}
+
+/**
+ * Create a real API runner for the benchmark.
+ *
+ * The runner executes `iterations` calls per task/model, retries transient
+ * failures, caches successful responses, cleans generated output, scores
+ * successful results, and returns a single aggregated result per task/model.
+ */
+export function createProviderRunner(cfg: ProviderRunnerConfig): BenchmarkRunner {
+  const timeoutMs = cfg.timeoutMs ?? 10 * 60 * 1000 // 10 minutes
+  const bustCache =
+    cfg.bustCache ??
+    (process.env.RUN_BUST_CACHE === '1' || process.env.RUN_BUST_CACHE === 'true')
+  setBustCache(bustCache)
+
+  // Circuit breaker: once a model reports quota/billing exhaustion, every
+  // later call fails identically. Skipping its remaining jobs avoids burning
+  // the sweep on guaranteed failures — and since no result is recorded for a
+  // skipped job, existing good records are left untouched.
+  //
+  // Scoped per MODEL, not per provider: quota/billing exhaustion is a
+  // per-model condition (per-model daily caps, per-model subscription limits
+  // like Agy's "individual quota reached", per-model credit balances). A
+  // provider-wide outage still trips every model individually on its first
+  // failing call, so nothing is lost by keeping the breaker model-scoped.
+  const trippedModels = new Set<string>()
+
+  // Budget breaker (#28): the SAME skip mechanics as `trippedModels`, in a
+  // SEPARATE set so the reason stays distinguishable. A quota trip is
+  // something the provider did to us; a budget trip is a policy WE set, and
+  // the two must never be reported as each other — which is also why a budget
+  // stop is deliberately absent from the `BenchmarkFailureReason` union: the
+  // model did not fail, the operator said stop. Skipped tasks write no record
+  // at all (again like quota), so existing good rows are left untouched.
+  const budgetTrippedModels = new Set<string>()
+  /** Cumulative USD per model.id over this runner's lifetime (= the sweep). */
+  const spentByModel = new Map<string, number>(Object.entries(cfg.carriedSpendUsd ?? {}))
+  for (const [modelId, usd] of spentByModel) {
+    console.log(`[harness] resume: $${usd.toFixed(4)} already spent by completed ${modelId} pairs counts against its cap`)
+  }
+  /** True once the model's shared spend has reached its cap. */
+  const capReached = (modelId: string): boolean =>
+    cfg.budgetMaxUsd !== undefined && (spentByModel.get(modelId) ?? 0) >= cfg.budgetMaxUsd
+
+  return {
+    runTask: async (model: BenchmarkModel, task: BenchmarkTask, iterations: number): Promise<BenchmarkResult[]> => {
+      if (trippedModels.has(model.id)) {
+        throw new Error(
+          `${model.name} disabled for the rest of this run after a quota/billing error — skipping ${model.name} :: ${task.title}`
+        )
+      }
+      if (budgetTrippedModels.has(model.id) || capReached(model.id)) {
+        throw new Error(
+          `${model.name} stopped for the rest of this run by its budget cap ` +
+            `($${(spentByModel.get(model.id) ?? 0).toFixed(4)} spent of a $${cfg.budgetMaxUsd?.toFixed(4)} per-model cap) — ` +
+            `skipping ${model.name} :: ${task.title}`
+        )
+      }
+
+      const now = new Date().toISOString()
+      const scorer = cfg.scorer ?? selectScorer(task)
+      const runs: IterationRun[] = []
+      // Set when a quota error states its own reset window (agy: "Resets in
+      // 57h27m"). Stamped onto the aggregate below so a sweep killed by quota
+      // leaves behind the answer to "when can I run this again?".
+      let quotaNextResetAt: string | undefined
+      // Set when THIS task's iterations crossed the model's cap — post-stamped
+      // onto the aggregate below, exactly like quotaNextResetAt.
+      let budgetExceeded: { spentUsd: number; capUsd: number } | undefined
+      // Ends the iteration loop from the boundary check. A plain `break` is not
+      // available there: the check runs in the `finally` (the one place every
+      // path — success, `continue`, throw — passes through), and breaking out
+      // of a finally is exactly the unsafe control flow lint forbids.
+      let budgetStop = false
+      // USD this PAIR paid, over its own iterations. A budget stamp is written only
+      // where the pair paid something itself: a pair stopped by another pair's trip
+      // with nothing billed would otherwise carry a trip it did not pay for.
+      let pairCostUsd = 0
+      // The model's spend is shared by every pair of it, so a pair that starts an
+      // iteration after another pair crossed the cap stops here too.
+      // One append-only log per (model, task) for this sweep. Undefined — and
+      // therefore a complete no-op at every call site — when no run-log dir is
+      // set, which is the case for unit tests and library use.
+      const log = openRunLog({
+        modelId: model.id,
+        taskId: task.id,
+        configSnapshot: {
+          iterations,
+          timeoutMs,
+          maxRetries: cfg.maxRetries ?? 2,
+          bustCache,
+          plugins: cfg.plugins,
+          promptBundle: promptBundleHash(task),
+          apiModelId: model.apiModelId,
+          reasoningEffort: model.reasoningEffort,
+          // The request shape the API saw, so the log says what was asked for.
+          thinking: model.thinking,
+          maxOutputTokens: model.maxOutputTokens,
+          // The spend cap travels with the log so a resume of this tree can
+          // replay it (see RunLogConfigSnapshot.budgetMaxUsd) — a budget-stopped
+          // sweep whose skipped pairs have no logs would otherwise be respawned
+          // with no cap at all.
+          budgetMaxUsd: cfg.budgetMaxUsd,
+        },
+      })
+
+      for (let i = 0; i < iterations && !budgetStop; i++) {
+        if (capReached(model.id)) {
+          budgetStop = true
+          budgetExceeded = { spentUsd: spentByModel.get(model.id) ?? 0, capUsd: cfg.budgetMaxUsd! }
+          break
+        }
+        const label = `${model.name} :: ${task.title} #${i + 1}/${iterations}`
+        console.log(`[harness] starting ${label}`)
+        const callStart = Date.now()
+        // Fresh per iteration; generateOne mutates it (see CallTelemetry).
+        const tel: CallTelemetry = { retries: 0, cacheHit: false, costUsd: 0, retriedUsage: [] }
+        try {
+          // Empty-body retry (Loop 2): a 200 response with zero assistant
+          // deltas is a distinct failure mode from network/429 errors — the
+          // transient-retry inside generateOne won't catch it (it's not an
+          // error). Free-tier endpoints in particular occasionally return
+          // 200 with an empty stream when the shared pool is pressured; one
+          // more attempt with a short backoff recovers the vast majority.
+          // The retry only fires when the cache miss produced empty content;
+          // cached empty responses still replay (they're real data points).
+          const emptyBodyMaxAttempts = 3
+          let attempt = 0
+          let response: GenerationResponse | undefined
+          while (true) {
+            response = await generateOne(cfg, model, task, i, bustCache, timeoutMs, label, log, tel)
+            const cleanedProbe = cleanOutput(response.output)
+            if (cleanedProbe.trim().length >= 40) break
+            attempt++
+            if (attempt >= emptyBodyMaxAttempts) break
+            const delayMs = 1500 * attempt
+            // Empty-body retries are retries too — same population as the
+            // `retry` events, so the log and the roll-up agree. The discarded
+            // response was billed, so its usage rides on the iteration.
+            tel.retries++
+            tel.retriedUsage.push({
+              tokensIn: response.tokensIn,
+              tokensOut: response.tokensOut,
+              usageSource: response.usageSource ?? 'estimated',
+              runtimeMs: response.runtimeMs,
+            })
+            log?.append({
+              type: 'retry',
+              iterationIndex: i,
+              attempt,
+              error: `empty body (${response.tokensIn}/${response.tokensOut} tokens)`,
+              delayMs,
+              kind: 'empty_body',
+            })
+            console.warn(
+              `[harness] empty body on attempt ${attempt}/${emptyBodyMaxAttempts} for ${label} (${response.tokensIn}/${response.tokensOut} tokens) — retrying after ${delayMs}ms`
+            )
+            await new Promise((resolve) => setTimeout(resolve, delayMs))
+          }
+          const { output, tokensIn, tokensOut, runtimeMs, usageSource } = response
+          let cleaned = cleanOutput(output)
+          if (/<html[\s>]|<!doctype|<head>|<body>|<script\b|<link\b|<style\b|<canvas\b|<svg\b/i.test(cleaned)) {
+            try {
+              const rewritten = await inlineDependenciesAsync(cleaned)
+              if (rewritten.inlined.length || rewritten.failed.length || rewritten.removed.length || rewritten.warnings.length) {
+                console.log(
+                  `[harness] sandboxed ${rewritten.inlined.length} deps, removed ${rewritten.removed.length}, failed ${rewritten.failed.length}, warnings ${rewritten.warnings.length} for ${label}`
+                )
+                for (const warning of rewritten.warnings) {
+                  console.warn(`[harness] sandbox warning for ${label}: ${warning}`)
+                }
+              }
+              cleaned = rewritten.output
+            } catch (inlineErr) {
+              console.warn(
+                `[harness] failed to inline dependencies for ${label}: ${inlineErr instanceof Error ? inlineErr.message : String(inlineErr)}`
+              )
+            }
+          }
+          // Empty-body detection: the provider returned 200 with no usable
+          // assistant content after exhausting the empty-body retry loop above.
+          // Record as a failed iteration so it doesn't pad the success count
+          // with degenerate runs, and stamp the failure reason so the UI can
+          // show "empty_body" rather than burying it inside a partial.
+          if (cleaned.trim().length === 0) {
+            const reason = classifyFailureReason(new Error('empty body'), { content: cleaned, finishReason: undefined })
+            console.error(
+              `[harness] empty body for ${label} after ${Date.now() - callStart}ms and ${attempt + 1} attempt(s) (${tokensIn}/${tokensOut} tokens) — recording as ${reason}`
+            )
+            log?.append({
+              type: 'failure',
+              iterationIndex: i,
+              error: `empty body after ${attempt + 1} attempt(s) (${tokensIn}/${tokensOut} tokens)`,
+              failureReason: reason,
+              timedOut: false,
+            })
+            runs.push({
+              output: `empty body (${tokensIn}/${tokensOut} tokens)`,
+              tokensIn,
+              tokensOut,
+              ...(usageSource ? { usageSource } : {}),
+              runtimeMs,
+              status: 'fail',
+              timedOut: false,
+              failureReason: reason,
+              ...telemetryFields(tel),
+            })
+            // No quota / non-transient break here — an empty body on a free
+            // endpoint is often a transient provider-pool blip; let the next
+            // iteration try again. The outer transient-retry already handled
+            // 429/5xx, so reaching here means the 200 itself was empty.
+            continue
+          }
+          if (attempt > 0) {
+            console.log(
+              `[harness] recovered empty body for ${label} on attempt ${attempt + 1} after ${Date.now() - callStart}ms (${tokensIn}/${tokensOut} tokens)`
+            )
+          } else {
+            console.log(
+              `[harness] completed ${label} in ${Date.now() - callStart}ms (${tokensIn}/${tokensOut} tokens)`
+            )
+          }
+          // The artifact that will actually be scored — post cleanOutput and
+          // post dependency-inlining, i.e. exactly the bytes the scorer sees.
+          log?.append({ type: 'clean', iterationIndex: i, output: cleaned })
+          runs.push({
+            output: cleaned,
+            tokensIn,
+            tokensOut,
+            ...(usageSource ? { usageSource } : {}),
+            runtimeMs,
+            status: 'success',
+            failureReason: 'none',
+            ...telemetryFields(tel),
+          })
+        } catch (err) {
+          // Pass the provider shape so a timeout on a locally-spawned CLI is
+          // recorded as cli_timeout (too slow) rather than endpoint_hung.
+          const reason = classifyFailureReason(err, undefined, { cliProvider: isCliProvider(model) })
+          console.error(
+            `[harness] failed ${label} after ${Date.now() - callStart}ms [${reason}]: ${err instanceof Error ? err.message : String(err)}`
+          )
+          log?.append({
+            type: 'failure',
+            iterationIndex: i,
+            error: err instanceof Error ? err.message : String(err),
+            failureReason: reason,
+            timedOut: isTimeoutError(err),
+          })
+          // A failed call that was billed records its tokens, so the record's
+          // token totals and costUsd match what the provider charged. A call
+          // that billed nothing we know of records zeros, as before.
+          const billed = billedUsageOf(err)
+          runs.push({
+            output: err instanceof Error ? err.message : String(err),
+            tokensIn: billed?.tokensIn ?? 0,
+            tokensOut: billed?.tokensOut ?? 0,
+            ...(billed ? { usageSource: billed.usageSource } : {}),
+            runtimeMs: 0,
+            status: 'fail',
+            timedOut: isTimeoutError(err),
+            failureReason: reason,
+            // The retry count survives the throw — that is the whole reason
+            // CallTelemetry is a sink rather than a return value.
+            ...telemetryFields(tel),
+          })
+          if (isQuotaError(err)) {
+            trippedModels.add(model.id)
+            console.error(
+              `[harness] quota/billing exhausted for ${model.name} — skipping remaining iterations and all further ${model.name} tasks this run`
+            )
+            // Providers usually state the next window in the error itself; keep
+            // it rather than making the operator parse the message by hand.
+            const resetMs = parseQuotaResetMs(err instanceof Error ? err.message : String(err))
+            if (resetMs !== undefined) {
+              const resetAt = new Date(Date.now() + resetMs)
+              quotaNextResetAt = resetAt.toISOString()
+              // Also logged as its own event: this run's record may never reach
+              // results.json (mergeResults drops a 0-success record), and the
+              // log has to answer "when can I run this again?" on its own.
+              log?.append({ type: 'quota', iterationIndex: i, quotaNextResetAt })
+              console.error(
+                `[harness] next window for ${model.name}: ~${formatQuotaWindow(resetMs)} (resets ~${resetAt.toLocaleString(undefined, { weekday: 'short', hour: '2-digit', minute: '2-digit' })})`
+              )
+            }
+            break
+          }
+          if (!isTransientError(err) && !isPerIterationOutcome(reason, err)) {
+            // Auth/validation failures repeat identically for the same prompt —
+            // don't burn the remaining iterations on guaranteed failures.
+            // A truncation or a refusal is different: it is what the model did
+            // on THIS sample, the next sample can differ, and skipping it would
+            // turn one bad sample into zeros for every remaining iteration.
+            console.error(
+              `[harness] non-transient error — skipping remaining iterations for ${model.name} :: ${task.title}`
+            )
+            break
+          }
+        } finally {
+          // Budget accounting at the ITERATION BOUNDARY. Here, in the finally,
+          // because it is the only point every path reaches — a success, the
+          // empty-body `continue`, and a thrown iteration all bill the same —
+          // and because it must never run mid-call: a cap may stop the NEXT
+          // call, it may not kill one already in flight (that would throw away
+          // money already spent and record a failure the model did not cause).
+          const spent = (spentByModel.get(model.id) ?? 0) + tel.costUsd
+          spentByModel.set(model.id, spent)
+          pairCostUsd += tel.costUsd
+          const cap = cfg.budgetMaxUsd
+          if (cap !== undefined && spent >= cap) {
+            // Every pair of this model that is still running stops at its own
+            // boundary, not only the pair that crossed the cap. The model's spend
+            // is shared across its pairs, so a second pair in flight would otherwise
+            // run on to its last iteration and overshoot the cap several times over.
+            budgetStop = true
+            budgetExceeded = { spentUsd: spent, capUsd: cap }
+            if (!budgetTrippedModels.has(model.id)) {
+              budgetTrippedModels.add(model.id)
+              // Its own event, written once per model: this run's record may never
+              // reach results.json (mergeResults drops a 0-success record), and the
+              // log has to be able to say on its own that an operator policy, not
+              // the model, ended the run. paperclip's budget_incidents, as a log line.
+              log?.append({
+                type: 'budget',
+                iterationIndex: i,
+                modelId: model.id,
+                spentUsd: spent,
+                capUsd: cap,
+              })
+              console.error(
+                `[harness] budget cap reached for ${model.name}: $${spent.toFixed(4)} spent of a $${cap.toFixed(4)} per-model cap — ` +
+                  `skipping the remaining iterations and all further ${model.name} tasks this run`
+              )
+            }
+          }
+          // Checkpoint discipline (dsh `session-checkpoint-policy`): make the
+          // iteration durable at its boundary, so a killed sweep loses at most
+          // the in-flight iteration rather than the whole task's evidence.
+          await log?.flush()
+        }
+      }
+
+      // Make sure any cache writes queued by this task have flushed to disk.
+      await saveQueue
+
+      try {
+        // Post-stamp rather than a seventh aggregateRuns parameter: the quota
+        // window is a property of THIS RUN's failure, not of the aggregation,
+        // and the signature has grown enough already.
+        const result = await aggregateRuns(runs, iterations, model, task, scorer, now, log)
+        return [
+          {
+            ...result,
+            ...(quotaNextResetAt ? { quotaNextResetAt } : {}),
+            ...(budgetExceeded && pairCostUsd > 0 ? { budgetExceeded } : {}),
+          },
+        ]
+      } finally {
+        await log?.close()
+      }
+    },
+  }
+}

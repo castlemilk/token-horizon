@@ -21,7 +21,7 @@ Token Horizon polls OpenAI's live backend quota and rolling rate-limit endpoint 
   3. Credentials are grouped by actual ChatGPT account/workspace ID. The freshest credential wins **within the same account**, preserving every profile directory and source path. Different workspace IDs remain separate even when their email addresses match. Never select one globally freshest login for all accounts.
   4. Only the selected credential for each account is refreshed and polled. Each refresh retains its original `OpenAIAuth.Source`; credentials must never be copied into a shared/default auth file. After refresh or a concurrent CLI rotation, reparse the returned access JWT before regrouping accounts.
 * **Credential storage**: this integration reads file-based OAuth stores. API-key mode has no ChatGPT plan quota, and keyring/ephemeral-only profiles show an explicit unavailable/sign-in status. Newly created native profiles set `cli_auth_credentials_store = "file"` in their own private config and launch with that override; importing a profile preserves its existing policy. Official storage and `CODEX_HOME` behavior: [Authentication](https://learn.chatgpt.com/docs/auth#credential-storage), [Config and state locations](https://learn.chatgpt.com/docs/config-file/config-advanced#config-and-state-locations).
-* **Token Auto-Refresh** (`OAuthRefresh` + `ensureFreshOpenAIAuth`): when the access token is inside a 5-minute expiry window, the engine POSTs JSON `{grant_type: "refresh_token", refresh_token, client_id: "app_EMoamEEZ73f0CkXaXp7hrann"}` to `https://auth.openai.com/oauth/token` and writes the rotated tokens back into the same file (atomic write, 0600 preserved). The file is re-read before writing — if its refresh token changed, the CLI already rotated and its newer auth is adopted instead. Rejected refreshes throttle for 10 minutes. This keeps quota polling alive indefinitely without the user ever launching `codex`.
+* **Token Auto-Refresh** (`OAuthRefresh` + `ensureFreshOpenAIAuth`): when the access token is inside a 5-minute expiry window, the engine POSTs JSON `{grant_type: "refresh_token", refresh_token, client_id: "app_EMoamEEZ73f0CkXaXp7hrann"}` to `https://auth.openai.com/oauth/token` and writes the rotated tokens back into the same file (atomic write, 0600 preserved). The file is re-read before writing — if its refresh token changed, the CLI already rotated and its newer auth is adopted instead. Every refresh attempt, successful or rejected, starts a 10-minute cooldown for that file (`openAIRefreshInterval`, `PlanLimitsEngine.swift:835`). This keeps quota polling alive indefinitely without the user ever launching `codex`.
 * **Header Construction**:
   ```http
   Authorization: Bearer <access_token>
@@ -29,6 +29,8 @@ Token Horizon polls OpenAI's live backend quota and rolling rate-limit endpoint 
   User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)
   Accept: application/json
   ```
+
+The `ChatGPT-Account-ID` header is omitted when no account ID is known (`CodexAccountDiscovery.swift:385`).
 
 ### Account ID Extraction
 The current access JWT's `https://api.openai.com/auth.chatgpt_account_id` takes precedence over stored `tokens.account_id` (Codex) / `accountId` (opencode). An `id_token` claim can supply a missing account hint. Access-token profile claims and a matching ID token provide email/name/plan metadata; they are display hints, and the quota API validates the bearer token. A stored account ID must never override a different account in a refreshed/adopted JWT:
@@ -89,7 +91,7 @@ When offline or when scanning history, Token Horizon parses local Codex JSONL se
 * **Stateful Offsets**:
   - Byte offsets and monotonic watermarks (`input`, `output`, `cached`, `reasoning`) are preserved per file.
 * **Model Identification**:
-  - Extracted from `payload.turn_context.model`, `payload.managed_instructions.model`, or `payload.personality.model` (`gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.5`, etc.).
+  - Extracted from `payload.model`, then `payload.turn_context.model`, `payload.managed_instructions.model`, `payload.personality.model`, and top-level `model` (`UsageEngine.swift:2379`; examples `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.5`).
 * **In-Band Quota Fallback**:
   - Reads `payload.rate_limits.primary` (`used_percent`, `window_minutes`, `resets_at`) from completed completion turns.
   - This remains an unscoped `codex` fallback; do not present it as a separate extra account when live account quotas exist.
@@ -104,20 +106,29 @@ Regression coverage: `CodexAccountDiscoveryTests` (injected files/refresh/networ
 
 ## 3. Canonical Model Normalization
 
-In `ModelCatalog.swift`, variant dot-version models automatically normalize into canonical catalog rows:
+In `ModelCatalog.swift`, variant model IDs normalize into canonical catalog rows. The `5.6` IDs keep their own canonical ID and are not folded into `gpt-5-*`:
 
 | Raw Session Model ID | Canonical Family ID | Display Name | Provider |
 |---|---|---|---|
-| `gpt-5.6-sol`, `gpt-5-sol`, `sol` | `gpt-5-sol` | **GPT-5 Sol** | OpenAI |
-| `gpt-5.6-terra`, `gpt-5-terra`, `terra` | `gpt-5-terra` | **GPT-5 Terra** | OpenAI |
-| `gpt-5.6-luna`, `gpt-5.6-luna-fast`, `gpt-5-luna`, `luna` | `gpt-5-luna` | **GPT-5 Luna** | OpenAI |
+| `gpt-5-sol`, `sol` | `gpt-5-sol` | **GPT-5 Sol** | OpenAI |
+| `gpt-5.6-sol` | `gpt-5.6-sol` | **GPT-5.6 Sol** | OpenAI |
+| `gpt-5-terra`, `terra` | `gpt-5-terra` | **GPT-5 Terra** | OpenAI |
+| `gpt-5.6-terra` | `gpt-5.6-terra` | **GPT-5.6 Terra** | OpenAI |
+| `gpt-5-luna`, `luna` | `gpt-5-luna` | **GPT-5 Luna** | OpenAI |
+| `gpt-5.6-luna` | `gpt-5.6-luna` | **GPT-5.6 Luna** | OpenAI |
+| `gpt-5.6-luna-fast` | `gpt-5.6-luna-fast` | **GPT-5.6 Luna FAST** | OpenAI |
+
+A service-tier suffix (`-batch`, `-pro`, `-fast`, `-expert`, `-high`, `-mini`, `-lite`) keeps its own family, and the upper-cased tier is appended to the display name (`resolveIdentity`, `ModelCatalog.swift:1441-1448`). For pricing, `lookup(id:)` falls back to the `gpt-5.6-luna` entry when the catalog has no entry for the tier id itself (`ModelCatalog.swift:297-298`).
 
 ---
 
-## 4. Platform API Billing Quota (API Key Mode)
+## 4. Platform API Usage and Spend (Admin Key Mode)
 
-* **Endpoint**: `GET https://api.openai.com/v1/dashboard/billing/usage`
+This section covers `PlatformUsageEngine.swift`, which reads organization spend and token reports for registered Platform accounts. It is separate from the ChatGPT plan quota above. Each account authenticates with its own OpenAI Admin key (`sk-admin-…`) stored in the Keychain, or, when its auth method is Workload Identity, with a bearer token from a token exchange (`PlatformAuthMethod`, `PlatformAccounts.swift:26-28`; `PlatformUsageEngine.swift:446-454`, `:586-601`). A key without the admin prefix is rejected (`PlatformAccounts.swift:15`, `:396`).
+
+* **Spend and tokens**: `GET https://api.openai.com/v1/organization/costs` and `GET https://api.openai.com/v1/organization/usage/completions?group_by=model`. The window is the 30 UTC days ending today, with `bucket_width=1d`, `limit=31`, and at most 8 pages (`PlatformUsageFetcher.windowDays`, `maxPages`).
+* **Limit discovery**: `GET https://api.openai.com/v1/dashboard/billing/subscription` (`hard_limit_usd`, then `system_hard_limit_usd`), then `GET https://api.openai.com/v1/dashboard/billing/credit_grants` (`total_granted`). A non-200 response leaves the limit unset.
 * **Headers**:
   ```http
-  Authorization: Bearer <OPENAI_API_KEY>
+  Authorization: Bearer <admin key or exchanged token>
   ```

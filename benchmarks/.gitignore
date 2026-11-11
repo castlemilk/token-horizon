@@ -1,0 +1,47 @@
+node_modules/
+
+# Secrets: API keys are read from .env at run time and must never be committed
+.env
+.env.*
+!.env.example
+
+# LLM benchmark API response cache
+.cache/
+
+# Generated static lab data (rebuilt by prebuild from committed sources) —
+# EXCEPT published run traces, which are the opposite kind of file: they are
+# the forensic evidence behind results.json, they can only be produced on the
+# machine that ran the sweep (`sweeps/` is gitignored and pruned), and a CI
+# build could never regenerate them. See scripts/publish-traces.mjs.
+public/lab-data/*
+!public/lab-data/traces/
+
+# Large raw model-generated HTML result variants (never commit — they execute in the browser)
+lib/lab/llm-benchmark/results-*-html.json
+
+# Stray artifacts a CLI model may drop in the repo root when its file-handoff
+# resolves against the process cwd (opencode/agy write ./artifact.html there
+# when the prompt's cwd resolution differs from the scratch dir; parallel
+# sweeps use unique artifact-<model>-<task>-<n>.html names).
+/artifact*.html
+
+# Forensic sweep retention: per-run CLI scratch dirs + copied artifacts
+# (sweeps/<run-id>/{scratch,artifacts}/). Kept on purpose, including on
+# failure; prune with `npx tsx scripts/sweep-clean.mjs`.
+sweeps/
+
+# Failure regression corpus (#25): the ARTIFACT BYTES are ignored, the
+# PROVENANCE is committed. The bytes are model-generated HTML that executes in a
+# browser and are re-derivable from the sweep tree (`scripts/ingest-failures.mjs`);
+# provenance.json is the only durable record that a case exists at all.
+lib/lab/llm-benchmark/failure-corpus/cases/
+
+# Temporary working directories for scripts and manual review
+tmp/
+
+# TypeScript incremental build info (the port does not enable incremental builds)
+tsconfig.tsbuildinfo
+
+# report: generated; report/dist holds model-written artifacts, signals.json holds their paths and signals
+report/dist/
+report/data/signals.json

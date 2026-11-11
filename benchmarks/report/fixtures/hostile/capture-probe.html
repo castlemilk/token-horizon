@@ -1,0 +1,19 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><title>probe</title>
+<!-- A hostile artifact used only by report/capture-isolation-test.mjs. Every __HTTP_PORT__ and __UDP_PORT__ is replaced
+     with a loopback listener the test owns. The test passes when none of these reaches a listener. -->
+<link rel="prefetch" href="http://127.0.0.1:__HTTP_PORT__/prefetch-markup">
+<script type="speculationrules">{"prerender":[{"source":"list","urls":["http://127.0.0.1:__HTTP_PORT__/specrule"]}]}</script>
+<style>body{font:28px monospace;background:#fff;color:#000;padding:20px} li{margin:6px 0}</style></head>
+<body><h1>CAPTURE PROBE</h1><ul id="out"></ul><img src="http://127.0.0.1:__HTTP_PORT__/img" alt="">
+<script>
+const out = document.getElementById('out')
+const say = (t) => { const li = document.createElement('li'); li.textContent = t; out.appendChild(li) }
+fetch('http://127.0.0.1:__HTTP_PORT__/fetch').then(r => say('fetch http: ' + r.status)).catch(() => say('fetch http: blocked'))
+try { const x = new XMLHttpRequest(); x.open('GET', 'http://127.0.0.1:__HTTP_PORT__/xhr'); x.onload = () => say('xhr: ' + x.status); x.onerror = () => say('xhr: error'); x.send() } catch (e) { say('xhr: threw') }
+try { const es = new EventSource('http://127.0.0.1:__HTTP_PORT__/events'); es.onopen = () => say('eventsource: open'); es.onerror = () => say('eventsource: error') } catch (e) { say('eventsource: threw') }
+try { const pc = new RTCPeerConnection({ iceServers: [{ urls: 'stun:127.0.0.1:__UDP_PORT__' }] }); pc.createDataChannel('x'); pc.createOffer().then(o => pc.setLocalDescription(o)); pc.onicecandidate = (e) => { if (e.candidate) say('ice: ' + e.candidate.type) }; say('webrtc: started') } catch (e) { say('webrtc: threw') }
+try { navigator.sendBeacon('http://127.0.0.1:__HTTP_PORT__/beacon', 'x'); say('beacon: queued') } catch (e) { say('beacon: threw') }
+try { const ws = new WebSocket('ws://127.0.0.1:__HTTP_PORT__/ws'); ws.onopen = () => say('ws: open'); ws.onclose = () => say('ws: closed') } catch (e) { say('ws: threw') }
+const l = document.createElement('link'); l.rel = 'prerender'; l.href = 'http://127.0.0.1:__HTTP_PORT__/prerender-link'; document.head.appendChild(l)
+const f = document.createElement('iframe'); f.src = 'http://127.0.0.1:__HTTP_PORT__/frame'; document.body.appendChild(f)
+</script></body></html>

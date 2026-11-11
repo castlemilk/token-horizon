@@ -1,0 +1,110 @@
+{
+  "smoke": {
+    "description": "Cheapest wiring check: 1 iteration, no parallelism, 10-min cap. Pass --model/--task.",
+    "iterations": 1,
+    "concurrency": 1,
+    "timeoutMs": 600000
+  },
+  "fast-refresh": {
+    "description": "Re-measure a fast API model: 5 iterations, concurrency 2, 10-min cap.",
+    "iterations": 5,
+    "concurrency": 2,
+    "timeoutMs": 600000
+  },
+  "slow-model": {
+    "description": "Slow free-tier/CLI model: no retries, 25-min cap, cache busted, concurrency 2.",
+    "concurrency": 2,
+    "maxRetries": 0,
+    "timeoutMs": 1500000,
+    "bustCache": true
+  },
+  "agy-quota": {
+    "description": "Agy per-model subscription window: serial, 5 iterations, default timeouts.",
+    "concurrency": 1,
+    "iterations": 5
+  },
+  "builtins-only": {
+    "description": "Core task set only: mounts no plugins ([] = builtins only). Compose with --iterations etc.",
+    "plugins": []
+  },
+  "astra-devin": {
+    "description": "Astra extra high vs SWE-2 High: 3 fresh iterations, concurrency 4, 25-min cap, no retries.",
+    "iterations": 3,
+    "concurrency": 4,
+    "timeoutMs": 1500000,
+    "maxRetries": 0,
+    "bustCache": true
+  },
+  "claude-family": {
+    "description": "The Claude family at the registry default effort: Fable 5.2, Opus 5.5, Sonnet 5.5 and Haiku 5.5, on the 10 ready headline tasks (seat-pricing is held back until its contrast check passes review). 3 iterations, concurrency 2, 45-min per-call cap (a 128,000-token answer takes about 24 min), 1 retry, $60 cap per model.",
+    "models": [
+      "claude-fable-5-2",
+      "claude-opus-5-5",
+      "claude-sonnet-5-5",
+      "claude-haiku-5-5"
+    ],
+    "tasks": [
+      "tic-tac-toe",
+      "gateway-console",
+      "voxel-lighthouse",
+      "car-racer",
+      "orbit-lab",
+      "pathfinding-lab",
+      "rlc-response-lab",
+      "bicycle-blueprint",
+      "sector-clock",
+      "kanban-keyboard-undo"
+    ],
+    "iterations": 3,
+    "concurrency": 2,
+    "timeoutMs": 2700000,
+    "maxRetries": 1,
+    "budgetMaxUsd": 60
+  },
+  "claude-effort": {
+    "description": "Claude effort variants on the 10 ready headline tasks (seat-pricing held back): Haiku 5.5 and Sonnet 5.5 at low and xhigh, Opus 5.5 at low and high, Fable 5.2 at low. 3 iterations, concurrency 2, 45-min per-call cap, 1 retry, $30 cap per model.",
+    "models": [
+      "claude-haiku-5-5-low",
+      "claude-haiku-5-5-xhigh",
+      "claude-sonnet-5-5-low",
+      "claude-sonnet-5-5-xhigh",
+      "claude-opus-5-5-low",
+      "claude-opus-5-5-high",
+      "claude-fable-5-2-low"
+    ],
+    "tasks": [
+      "tic-tac-toe",
+      "gateway-console",
+      "voxel-lighthouse",
+      "car-racer",
+      "orbit-lab",
+      "pathfinding-lab",
+      "rlc-response-lab",
+      "bicycle-blueprint",
+      "sector-clock",
+      "kanban-keyboard-undo"
+    ],
+    "iterations": 3,
+    "concurrency": 2,
+    "timeoutMs": 2700000,
+    "maxRetries": 1,
+    "budgetMaxUsd": 30
+  },
+  "claude-smoke": {
+    "description": "Claude Haiku 5.5 on the 7 smoke tasks (harness wiring checks, never ranked). 3 iterations, $2 cap per model.",
+    "models": [
+      "claude-haiku-5-5"
+    ],
+    "tasks": [
+      "n-body-field",
+      "mini-platformer",
+      "crypto-hash-race",
+      "landing-page-morph",
+      "equation-solver",
+      "physics-pendulum-wave",
+      "circuit-builder-teaser"
+    ],
+    "iterations": 3,
+    "budgetMaxUsd": 2
+  }
+}

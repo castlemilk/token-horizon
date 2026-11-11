@@ -1,0 +1,490 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Relay Pricing</title>
+<style>
+/*@region:tokens*/
+:root{
+  --bg:#0c0c10;
+  --surface:#15151d;
+  --surface-2:#1c1c26;
+  --line:#2a2a38;
+  --text:#ececf3;
+  --muted:#a9a9ba;
+  --accent:#2563eb;
+  --accent-hover:#1d4ed8;
+  --on-accent:#ffffff;
+  --ring:#93c5fd;
+  --danger:#fca5a5;
+  --ok:#86efac;
+  --highlight:#fde68a;
+  --net:#3b82f6;
+  --tax:#f59e0b;
+  --saved:#22c55e;
+  color-scheme:dark;
+}
+/*@end:tokens*/
+html,body{margin:0;padding:0;min-height:100%;box-sizing:border-box;background:var(--bg);color:var(--text);font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+*,*::before,*::after{box-sizing:border-box}
+body{line-height:1.5;-webkit-font-smoothing:antialiased}
+/*@region:focus-css*/
+:focus-visible{outline:2px solid var(--ring);outline-offset:2px}
+/*@end:focus-css*/
+main{max-width:1120px;margin:0 auto;padding:24px 16px 64px}
+[hidden]{display:none !important}
+h1{font-size:clamp(28px,4.2vw,44px);line-height:1.1;margin:0 0 12px;letter-spacing:-0.02em}
+h2{font-size:20px;line-height:1.3;margin:0 0 12px;letter-spacing:-0.01em}
+h3{font-size:18px;line-height:1.3;margin:0}
+button{font:inherit}
+.topbar{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;padding:8px 0 24px}
+.brand{display:flex;align-items:center;gap:10px;font-weight:700;font-size:18px;letter-spacing:-0.01em}
+.mark{display:inline-block;width:28px;height:28px;border-radius:9px;background:var(--accent)}
+.topbar p{margin:0;color:var(--muted);font-size:14px}
+.hero{padding:16px 0 32px;max-width:720px}
+.eyebrow{margin:0 0 8px;color:var(--ring);font-size:13px;font-weight:600;letter-spacing:0.08em;text-transform:uppercase}
+.lede{margin:0;color:var(--muted);font-size:17px;max-width:60ch}
+.btn{appearance:none;-webkit-appearance:none;display:inline-flex;align-items:center;justify-content:center;min-height:44px;padding:0 16px;border:1px solid var(--line);border-radius:12px;background:var(--surface-2);color:var(--text);font-weight:600;cursor:pointer}
+.btn:hover:not(:disabled){border-color:#3a3a4c}
+.btn:disabled{opacity:0.45;cursor:not-allowed}
+.btn-primary{background:var(--accent);border-color:var(--accent);color:var(--on-accent);width:100%;min-height:52px;font-size:16px}
+.btn-primary:hover:not(:disabled){background:var(--accent-hover);border-color:var(--accent-hover)}
+/*@region:plans-css*/
+.plan-grid{display:grid;gap:16px;grid-template-columns:1fr}
+@media (min-width:960px){.plan-grid{grid-template-columns:repeat(3,minmax(0,1fr))}}
+/*@end:plans-css*/
+.plan{display:flex;flex-direction:column;gap:14px;min-width:0;padding:22px;background:var(--surface);border:1px solid var(--line);border-radius:16px}
+.plan.is-selected{border-color:var(--net);box-shadow:0 0 0 1px var(--net)}
+.plan-head{display:flex;flex-direction:column;gap:4px}
+.blurb{margin:0;color:var(--muted);font-size:14px}
+.badge{align-self:flex-start;margin:0;padding:2px 10px;border-radius:999px;background:var(--highlight);color:#0c0c10;font-size:12px;font-weight:700}
+.price{display:flex;flex-wrap:wrap;align-items:baseline;gap:8px;margin:0}
+.price-amount{font-size:34px;font-weight:700;letter-spacing:-0.02em}
+.price-unit{color:var(--muted);font-size:14px}
+.features{display:grid;gap:6px;margin:0;padding:0 0 0 18px;font-size:15px}
+.features li::marker{color:var(--ok)}
+.choose{width:100%}
+.choose[aria-pressed="true"]{background:var(--accent);border-color:var(--accent);color:var(--on-accent)}
+.workspace{display:grid;gap:24px;margin-top:32px}
+@media (min-width:960px){.workspace{grid-template-columns:minmax(0,1.15fr) minmax(0,1fr);align-items:start}}
+.panel{min-width:0;padding:24px;background:var(--surface);border:1px solid var(--line);border-radius:18px}
+.field{display:grid;gap:8px;margin:0 0 22px}
+.field-label{font-weight:600;font-size:15px}
+.hint{margin:0;color:var(--muted);font-size:14px}
+.msg{margin:0;min-height:1.5em;font-size:14px}
+#seats-error{color:var(--danger)}
+#promo-status[data-state="applied"]{color:var(--ok)}
+#promo-status[data-state="error"]{color:var(--danger)}
+#promo-status[data-state="none"]{color:var(--muted)}
+#checkout-note{color:var(--ok)}
+.segmented{display:flex;flex-wrap:wrap;gap:10px}
+.seg{display:inline-flex;align-items:center;gap:10px;min-height:44px;padding:8px 16px;border:1px solid var(--line);border-radius:999px;background:var(--surface-2);cursor:pointer}
+.seg:has(input:checked){border-color:var(--accent);background:#1e2a4a}
+/*@region:radio-css*/
+.seg input[type="radio"]{appearance:none;-webkit-appearance:none;flex:none;width:18px;height:18px;margin:0;border:2px solid #7a7a8e;border-radius:50%;background:transparent}
+.seg input[type="radio"]:checked{border-color:var(--ring);background:var(--ring);box-shadow:inset 0 0 0 3px #1e2a4a}
+/*@end:radio-css*/
+.stepper{display:grid;grid-template-columns:48px minmax(0,1fr) 48px;gap:8px}
+.step{padding:0;font-size:20px;line-height:1}
+input[type="text"],select{width:100%;min-height:48px;padding:10px 14px;border:1px solid var(--line);border-radius:12px;background:var(--surface-2);color:var(--text);font:inherit;font-size:16px}
+input[type="text"]::placeholder{color:var(--muted);opacity:1}
+#seats{text-align:center;font-variant-numeric:tabular-nums}
+#seats[aria-invalid="true"]{border-color:var(--danger)}
+.promo-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px}
+.summary-meta{margin:0 0 16px;color:var(--muted);font-size:14px}
+.lines{display:grid;margin:0 0 16px}
+.line{display:flex;justify-content:space-between;align-items:baseline;gap:16px;padding:10px 0;border-bottom:1px solid var(--line)}
+.amount{font-variant-numeric:tabular-nums;font-weight:600;text-align:right}
+.line.total{padding-top:16px;border-bottom:none}
+.line.total .amount{font-size:26px;letter-spacing:-0.01em}
+.line.per-seat .label{color:var(--muted)}
+.bar-wrap{margin:8px 0 20px}
+.bar{display:flex;height:12px;overflow:hidden;border-radius:999px;background:var(--surface-2)}
+/*@region:bar-css*/
+.bar > span{flex-basis:0;flex-shrink:0;flex-grow:0;min-width:0}
+/*@end:bar-css*/
+.bar > [data-segment="net"]{background:var(--net)}
+.bar > [data-segment="tax"]{background:var(--tax)}
+.bar > [data-segment="saved"]{background:var(--saved)}
+.legend{display:flex;flex-wrap:wrap;gap:16px;margin:12px 0 0;padding:0;list-style:none;color:var(--muted);font-size:13px}
+.legend li{display:inline-flex;align-items:center;gap:8px}
+.sw{display:inline-block;width:10px;height:10px;border-radius:3px}
+.sw.net{background:var(--net)}
+.sw.tax{background:var(--tax)}
+.sw.saved{background:var(--saved)}
+.fine{margin:20px 0 0;color:var(--muted);font-size:13px}
+.boot-error{margin:0 0 16px;padding:12px 14px;border-radius:12px;background:#3b1212;color:var(--danger)}
+/*@region:extra-css*/
+select{appearance:none;-webkit-appearance:none;text-align-last:center;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='5' fill='none' stroke='%23a9a9ba' stroke-width='2'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:left 14px center;background-size:16px 16px}
+/*@end:extra-css*/
+</style>
+</head>
+<!--@region:body-tag--><body><!--@end:body-tag-->
+<main>
+  <header class="topbar">
+    <div class="brand"><span class="mark" aria-hidden="true"></span>Relay</div>
+    <p>Team chat for product, design and support</p>
+  </header>
+
+  <section class="hero">
+    <p class="eyebrow">Pricing</p>
+    <h1>Team chat that prices the way your team grows</h1>
+    <p class="lede">Choose a plan, set your seat count and watch the order summary update as you type. Volume pricing applies to every seat automatically, and annual billing takes 17% off the subtotal.</p>
+  </section>
+
+  <section aria-labelledby="plans-title">
+    <h2 id="plans-title">Plans</h2>
+    <div class="plan-grid">
+<!--@region:plan-cards-->
+      <article class="plan" data-plan-card="starter">
+        <div class="plan-head">
+          <h3>Starter</h3>
+          <p class="blurb">For small crews setting up their first workspace.</p>
+        </div>
+        <p class="price"><span class="price-amount">$9.00</span><span class="price-unit">per seat / month</span></p>
+        <ul class="features">
+          <li>Unlimited public channels</li>
+          <li>30 days of message history</li>
+          <li>Email support</li>
+        </ul>
+        <!--@region:btn-starter-->
+        <button type="button" class="btn choose" data-plan="starter" aria-pressed="false">Choose Starter</button>
+        <!--@end:btn-starter-->
+      </article>
+
+      <article class="plan is-selected" data-plan-card="team">
+        <div class="plan-head">
+          <p class="badge">Most popular</p>
+          <h3>Team</h3>
+          <p class="blurb">For product and support teams that work in the open.</p>
+        </div>
+        <p class="price"><span class="price-amount">$14.50</span><span class="price-unit">per seat / month</span></p>
+        <ul class="features">
+          <li>Everything in Starter</li>
+          <li>Unlimited message history</li>
+          <li>Shared workspace admin</li>
+        </ul>
+        <!--@region:btn-team-->
+        <button type="button" class="btn choose" data-plan="team" aria-pressed="true">Choose Team</button>
+        <!--@end:btn-team-->
+      </article>
+
+      <article class="plan" data-plan-card="scale">
+        <div class="plan-head">
+          <h3>Scale</h3>
+          <p class="blurb">For organisations that run many teams on one system.</p>
+        </div>
+        <p class="price"><span class="price-amount">$23.75</span><span class="price-unit">per seat / month</span></p>
+        <ul class="features">
+          <li>Everything in Team</li>
+          <li>SAML single sign-on</li>
+          <li>Audit log export</li>
+        </ul>
+        <!--@region:btn-scale-->
+        <button type="button" class="btn choose" data-plan="scale" aria-pressed="false">Choose Scale</button>
+        <!--@end:btn-scale-->
+      </article>
+<!--@end:plan-cards-->
+    </div>
+  </section>
+
+  <div class="workspace">
+    <section class="panel" aria-labelledby="config-title">
+      <h2 id="config-title">Configure your order</h2>
+
+      <div class="field">
+        <span class="field-label" id="billing-label">Billing period</span>
+        <div class="segmented" role="radiogroup" aria-labelledby="billing-label">
+          <label class="seg" for="billing-monthly"><input type="radio" name="billing" id="billing-monthly" value="monthly" checked><span>Monthly</span></label>
+          <label class="seg" for="billing-annual"><input type="radio" name="billing" id="billing-annual" value="annual"><span>Annual</span></label>
+        </div>
+      </div>
+
+      <div class="field">
+        <label class="field-label" for="seats">Seats</label>
+        <div class="stepper">
+          <!--@region:btn-dec-->
+          <button type="button" id="seats-dec" class="btn step" aria-label="Decrease seats">&minus;</button>
+          <!--@end:btn-dec-->
+          <input id="seats" type="text" inputmode="numeric" autocomplete="off" value="5" aria-describedby="seats-hint seats-error">
+          <!--@region:btn-inc-->
+          <button type="button" id="seats-inc" class="btn step" aria-label="Increase seats">+</button>
+          <!--@end:btn-inc-->
+        </div>
+        <p class="hint" id="seats-hint">Whole number from 1 to 5,000. Spaces around the number are fine.</p>
+        <p class="msg" id="seats-error"></p>
+      </div>
+
+      <div class="field">
+        <label class="field-label" for="promo">Promo code</label>
+        <div class="promo-row">
+          <input id="promo" type="text" autocomplete="off" spellcheck="false" placeholder="Try LAUNCH20">
+          <button type="button" id="promo-apply" class="btn" aria-label="Apply promo code">Apply</button>
+        </div>
+        <p class="msg" id="promo-status" data-state="none">Enter a code, then press Apply.</p>
+      </div>
+
+      <div class="field">
+        <label class="field-label" for="region">Tax region</label>
+        <select id="region">
+          <option value="none">No tax</option>
+          <option value="ca">California (7.25%)</option>
+          <option value="ny">New York (8.875%)</option>
+          <option value="uk">United Kingdom (20% VAT)</option>
+          <option value="de">Germany (19% VAT)</option>
+        </select>
+      </div>
+    </section>
+
+    <aside class="panel" id="summary" aria-labelledby="summary-title">
+      <h2 id="summary-title">Order summary</h2>
+      <p class="summary-meta" id="summary-meta">Team, 5 seats, monthly</p>
+      <div class="lines">
+        <div class="line"><span class="label">Subtotal</span><span class="amount" id="subtotal" data-cents="7250">$72.50</span></div>
+        <div class="line"><span class="label">Annual discount (17%)</span><span class="amount" id="annual-discount" data-cents="0">$0.00</span></div>
+        <div class="line"><span class="label">Promo discount</span><span class="amount" id="promo-discount" data-cents="0">$0.00</span></div>
+        <div class="line"><span class="label">Tax</span><span class="amount" id="tax" data-cents="0">$0.00</span></div>
+        <div class="line total" aria-live="polite"><span class="label">Total</span><span class="amount" id="total" data-cents="7250">$72.50</span></div>
+        <div class="line per-seat"><span class="label">Per seat, per month</span><span class="amount" id="per-seat" data-cents="1450">$14.50</span></div>
+      </div>
+      <div class="bar-wrap">
+        <div class="bar" id="breakdown" aria-hidden="true">
+          <span data-segment="net"></span>
+          <span data-segment="tax"></span>
+          <span data-segment="saved"></span>
+        </div>
+        <ul class="legend">
+          <li><i class="sw net"></i>Net after discounts</li>
+          <li><i class="sw tax"></i>Tax</li>
+          <li><i class="sw saved"></i>Saved</li>
+        </ul>
+      </div>
+      <button type="button" id="checkout" class="btn btn-primary">Checkout</button>
+      <p class="msg" id="checkout-note" role="status"></p>
+      <p class="fine">Prices are in US dollars. Annual billing is charged once a year for every seat.</p>
+    </aside>
+  </div>
+
+  <div id="boot-error" class="boot-error" role="alert" hidden></div>
+</main>
+<!--@region:script-->
+<script>
+(function () {
+  'use strict';
+
+  var SEATS_MIN = 1;
+  var SEATS_MAX = 5000;
+  var SEATS_MESSAGE = 'Enter a whole number of seats from 1 to 5,000.';
+  var LIST = { starter: 900n, team: 1450n, scale: 2375n };
+  var PLAN_LABEL = { starter: 'Starter', team: 'Team', scale: 'Scale' };
+  var RATE = { none: 0n, ca: 7250n, ny: 8875n, uk: 20000n, de: 19000n };
+  var FLAT50 = 5000n;
+  var AMOUNT_IDS = ['subtotal', 'annual-discount', 'promo-discount', 'tax', 'total', 'per-seat'];
+
+  var state = { plan: 'team', code: '' };
+
+  function el(id) { return document.getElementById(id); }
+
+  // Round half up for non-negative integers: exact halves go up, applied once.
+  function rhu(num, den) { return (2n * num + den) / (2n * den); }
+
+  function normaliseCode(raw) { return String(raw).trim().toUpperCase(); }
+
+  // Seats text: trimmed, ASCII digits only, 1 to 5000. Null when invalid.
+  function parseSeats(text) {
+    /*@region:parse*/
+    var t = String(text).trim();
+    if (!/^[0-9]+$/.test(t)) return null;
+    var n = Number(t);
+    return n >= SEATS_MIN && n <= SEATS_MAX ? n : null;
+    /*@end:parse*/
+  }
+
+  // Graduated weight in percent points summed over seats: 100 = full list price.
+  function tierWeight(n) {
+    /*@region:tiers*/
+    var t1 = n < 10n ? n : 10n;
+    var t2 = n > 10n ? (n < 50n ? n - 10n : 40n) : 0n;
+    var t3 = n > 50n ? (n < 200n ? n - 50n : 150n) : 0n;
+    var t4 = n > 200n ? n - 200n : 0n;
+    return t1 * 100n + t2 * 90n + t3 * 80n + t4 * 70n;
+    /*@end:tiers*/
+  }
+
+  // Every amount in whole cents. One rounding per stated step, in the stated order.
+  function priceCore(seats, annual, code, plan, region) {
+    var n = BigInt(seats);
+    var months = annual ? 12n : 1n;
+    /*@region:arith*/
+    var subtotal = rhu(months * LIST[plan] * tierWeight(n), 100n);
+    var annualDiscount = annual ? rhu(subtotal * 17n, 100n) : 0n;
+    var base = subtotal - annualDiscount;
+    var promoDiscount = 0n;
+    var promoState = 'none';
+    if (code === 'LAUNCH20') {
+      promoDiscount = rhu(base * 20n, 100n);
+      promoState = 'applied';
+    } else if (code === 'FLAT50') {
+      promoDiscount = base < FLAT50 ? base : FLAT50;
+      promoState = 'applied';
+    } else if (code === 'TEAM10' && plan !== 'starter' && seats >= 5) {
+      promoDiscount = rhu(base * 10n, 100n);
+      promoState = 'applied';
+    } else if (code !== '') {
+      promoState = 'error';
+    }
+    var taxable = base - promoDiscount;
+    var tax = rhu(taxable * RATE[region], 100000n);
+    var total = taxable + tax;
+    var perSeat = rhu(total, n * months);
+    return {
+      subtotal: subtotal, annualDiscount: annualDiscount, promoDiscount: promoDiscount,
+      taxable: taxable, tax: tax, total: total, perSeat: perSeat, promoState: promoState
+    };
+    /*@end:arith*/
+  }
+
+  function money(cents, discount) {
+    /*@region:money*/
+    var negative = discount && cents > 0n;
+    var whole = (cents / 100n).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+    var frac = (cents % 100n).toString().padStart(2, '0');
+    return (negative ? '−' : '') + '$' + whole + '.' + frac;
+    /*@end:money*/
+  }
+
+  function promoMessage(promoState, code, plan) {
+    if (promoState === 'none') return 'Enter a code, then press Apply.';
+    if (promoState === 'applied') {
+      if (code === 'LAUNCH20') return 'LAUNCH20 applied: 20% off after the annual discount.';
+      if (code === 'FLAT50') return 'FLAT50 applied: $50 off, or the whole amount if it is smaller.';
+      return 'TEAM10 applied: 10% off Team and Scale orders of 5 seats or more.';
+    }
+    if (code === 'TEAM10') return 'TEAM10 needs the Team or Scale plan and at least 5 seats.';
+    return '"' + code + '" is not a valid promo code.';
+  }
+
+  function showDashes() {
+    AMOUNT_IDS.forEach(function (id) {
+      var node = el(id);
+      node.textContent = '—';
+      node.setAttribute('data-cents', '');
+    });
+  }
+
+  function setBar(net, tax, saved) {
+    var bar = el('breakdown');
+    /*@region:bar-js*/
+    bar.querySelector('[data-segment="net"]').style.flexGrow = String(Number(net));
+    bar.querySelector('[data-segment="tax"]').style.flexGrow = String(Number(tax));
+    bar.querySelector('[data-segment="saved"]').style.flexGrow = String(Number(saved));
+    /*@end:bar-js*/
+  }
+
+  function syncPlans() {
+    document.querySelectorAll('[data-plan]').forEach(function (button) {
+      var on = button.getAttribute('data-plan') === state.plan;
+      button.setAttribute('aria-pressed', on ? 'true' : 'false');
+    });
+    document.querySelectorAll('[data-plan-card]').forEach(function (card) {
+      card.classList.toggle('is-selected', card.getAttribute('data-plan-card') === state.plan);
+    });
+    /*@region:sync-extra*/
+    /*@end:sync-extra*/
+  }
+
+  function render() {
+    var seatsInput = el('seats');
+    var seats = parseSeats(seatsInput.value);
+    var valid = seats !== null;
+    seatsInput.setAttribute('aria-invalid', valid ? 'false' : 'true');
+    el('seats-error').textContent = valid ? '' : SEATS_MESSAGE;
+    el('seats-dec').disabled = !valid || seats <= SEATS_MIN;
+    el('seats-inc').disabled = !valid || seats >= SEATS_MAX;
+    el('checkout').disabled = !valid;
+    syncPlans();
+    if (!valid) {
+      showDashes();
+      setBar(0n, 0n, 0n);
+      el('summary-meta').textContent = 'Fix the seat count to see your totals.';
+      return;
+    }
+    var annual = el('billing-annual').checked;
+    var r = priceCore(seats, annual, state.code, state.plan, el('region').value);
+    el('subtotal').textContent = money(r.subtotal, false);
+    el('subtotal').setAttribute('data-cents', String(r.subtotal));
+    el('annual-discount').textContent = money(r.annualDiscount, true);
+    el('annual-discount').setAttribute('data-cents', String(r.annualDiscount));
+    el('promo-discount').textContent = money(r.promoDiscount, true);
+    el('promo-discount').setAttribute('data-cents', String(r.promoDiscount));
+    el('tax').textContent = money(r.tax, false);
+    el('tax').setAttribute('data-cents', String(r.tax));
+    el('total').textContent = money(r.total, false);
+    el('total').setAttribute('data-cents', String(r.total));
+    el('per-seat').textContent = money(r.perSeat, false);
+    el('per-seat').setAttribute('data-cents', String(r.perSeat));
+    setBar(r.taxable, r.tax, r.annualDiscount + r.promoDiscount);
+    var status = el('promo-status');
+    status.setAttribute('data-state', r.promoState);
+    status.textContent = promoMessage(r.promoState, state.code, state.plan);
+    el('summary-meta').textContent = PLAN_LABEL[state.plan] + ', ' + seats + (seats === 1 ? ' seat' : ' seats') + ', ' + (annual ? 'annual' : 'monthly');
+  }
+
+  function applyPromo() {
+    /*@region:apply*/
+    state.code = normaliseCode(el('promo').value);
+    /*@end:apply*/
+    render();
+  }
+
+  function stepSeats(delta) {
+    var seats = parseSeats(el('seats').value);
+    if (seats === null) return;
+    var next = Math.min(SEATS_MAX, Math.max(SEATS_MIN, seats + delta));
+    el('seats').value = String(next);
+    render();
+  }
+
+  function init() {
+    document.querySelectorAll('[data-plan]').forEach(function (button) {
+      button.addEventListener('click', function () {
+        state.plan = button.getAttribute('data-plan');
+        render();
+      });
+    });
+    el('billing-monthly').addEventListener('change', render);
+    el('billing-annual').addEventListener('change', render);
+    el('seats').addEventListener('input', render);
+    el('seats').addEventListener('change', render);
+    el('seats-dec').addEventListener('click', function () { stepSeats(-1); });
+    el('seats-inc').addEventListener('click', function () { stepSeats(1); });
+    el('promo-apply').addEventListener('click', applyPromo);
+    /*@region:promo-input*/
+    /*@end:promo-input*/
+    el('promo').addEventListener('keydown', function (event) {
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        applyPromo();
+      }
+    });
+    el('region').addEventListener('change', render);
+    el('checkout').addEventListener('click', function () {
+      if (el('checkout').disabled) return;
+      el('checkout-note').textContent = 'Preview only: nothing is charged in this demo.';
+    });
+    render();
+  }
+
+  try {
+    init();
+  } catch (error) {
+    var box = el('boot-error');
+    box.textContent = 'The calculator could not start: ' + (error && error.message ? error.message : String(error));
+    box.hidden = false;
+  }
+})();
+</script>
+<!--@end:script-->
+</body>
+</html>

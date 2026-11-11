@@ -1,0 +1,66 @@
+blank canvas, plain :: n-body-field
+   score=30 structural=100 behavioural=0/65
+   nbody-renders=fail(0/35) [canvas content: 0.00% of pixels off background (threshold 0.0%)] | nbody-animates=fail(0/30) [pixel diff over 1.2s: 0.00% (threshold 0.0%)]
+blank canvas, plain :: physics-pendulum-wave
+   score=30 structural=100 behavioural=0/65
+   pendulum-renders=fail(0/35) [canvas content: 0.00% of pixels off background (threshold 0.0%)] | pendulum-animates=fail(0/30) [pixel diff over 0.8s: 0.00% (threshold 0.0%)]
+blank canvas + 1px border :: n-body-field
+   score=68 structural=100 behavioural=35/65
+   nbody-renders=PASS(35/35) [canvas content: 0.65% of pixels off background (threshold 0.0%)] | nbody-animates=fail(0/30) [pixel diff over 1.2s: 0.00% (threshold 0.0%)]
+blank canvas + 1px border :: physics-pendulum-wave
+   score=68 structural=100 behavioural=35/65
+   pendulum-renders=PASS(35/35) [canvas content: 0.65% of pixels off background (threshold 0.0%)] | pendulum-animates=fail(0/30) [pixel diff over 0.8s: 0.00% (threshold 0.0%)]
+blank canvas + 2px border + radius :: n-body-field
+   score=68 structural=100 behavioural=35/65
+   nbody-renders=PASS(35/35) [canvas content: 1.30% of pixels off background (threshold 0.0%)] | nbody-animates=fail(0/30) [pixel diff over 1.2s: 0.00% (threshold 0.0%)]
+blank canvas + 2px border + radius :: physics-pendulum-wave
+   score=68 structural=100 behavioural=35/65
+   pendulum-renders=PASS(35/35) [canvas content: 1.30% of pixels off background (threshold 0.0%)] | pendulum-animates=fail(0/30) [pixel diff over 0.8s: 0.00% (threshold 0.0%)]
+blank canvas + border-radius 16px only :: n-body-field
+   score=68 structural=100 behavioural=35/65
+   nbody-renders=PASS(35/35) [canvas content: 0.07% of pixels off background (threshold 0.0%)] | nbody-animates=fail(0/30) [pixel diff over 1.2s: 0.00% (threshold 0.0%)]
+blank canvas + border-radius 16px only :: physics-pendulum-wave
+   score=68 structural=100 behavioural=35/65
+   pendulum-renders=PASS(35/35) [canvas content: 0.07% of pixels off background (threshold 0.0%)] | pendulum-animates=fail(0/30) [pixel diff over 0.8s: 0.00% (threshold 0.0%)]
+blank transparent canvas over body gradient :: n-body-field
+   score=68 structural=100 behavioural=35/65
+   nbody-renders=PASS(35/35) [canvas content: 62.06% of pixels off background (threshold 0.0%)] | nbody-animates=fail(0/30) [pixel diff over 1.2s: 0.00% (threshold 0.0%)]
+blank transparent canvas over body gradient :: physics-pendulum-wave
+   score=68 structural=100 behavioural=35/65
+   pendulum-renders=PASS(35/35) [canvas content: 62.06% of pixels off background (threshold 0.0%)] | pendulum-animates=fail(0/30) [pixel diff over 0.8s: 0.00% (threshold 0.0%)]
+blank canvas with CSS radial-gradient background :: n-body-field
+   score=68 structural=100 behavioural=35/65
+   nbody-renders=PASS(35/35) [canvas content: 32.58% of pixels off background (threshold 0.0%)] | nbody-animates=fail(0/30) [pixel diff over 1.2s: 0.00% (threshold 0.0%)]
+blank canvas with CSS radial-gradient background :: physics-pendulum-wave
+   score=68 structural=100 behavioural=35/65
+   pendulum-renders=PASS(35/35) [canvas content: 32.58% of pixels off background (threshold 0.0%)] | pendulum-animates=fail(0/30) [pixel diff over 0.8s: 0.00% (threshold 0.0%)]
+blank canvas + inset box-shadow :: n-body-field
+   score=68 structural=100 behavioural=35/65
+   nbody-renders=PASS(35/35) [canvas content: 12.74% of pixels off background (threshold 0.0%)] | nbody-animates=fail(0/30) [pixel diff over 1.2s: 0.00% (threshold 0.0%)]
+blank canvas + inset box-shadow :: physics-pendulum-wave
+   score=68 structural=100 behavioural=35/65
+   pendulum-renders=PASS(35/35) [canvas content: 12.74% of pixels off background (threshold 0.0%)] | pendulum-animates=fail(0/30) [pixel diff over 0.8s: 0.00% (threshold 0.0%)]
+blank canvas + DOM overlay (no transition) :: n-body-field
+   score=30 structural=100 behavioural=0/65
+   nbody-renders=fail(0/35) [canvas content: 0.00% of pixels off background (threshold 0.0%)] | nbody-animates=fail(0/30) [pixel diff over 1.2s: 0.00% (threshold 0.0%)]
+blank canvas + DOM overlay (no transition) :: physics-pendulum-wave
+   score=30 structural=100 behavioural=0/65
+   pendulum-renders=fail(0/35) [canvas content: 0.00% of pixels off background (threshold 0.0%)] | pendulum-animates=fail(0/30) [pixel diff over 0.8s: 0.00% (threshold 0.0%)]
+blank canvas + DOM overlay with transition:all :: n-body-field
+   score=68 structural=100 behavioural=35/65
+   nbody-renders=PASS(35/35) [canvas content: 2.50% of pixels off background (threshold 0.0%)] | nbody-animates=fail(0/30) [pixel diff over 1.2s: 0.00% (threshold 0.0%)]
+blank canvas + DOM overlay with transition:all :: physics-pendulum-wave
+   score=68 structural=100 behavioural=35/65
+   pendulum-renders=PASS(35/35) [canvas content: 2.50% of pixels off background (threshold 0.0%)] | pendulum-animates=fail(0/30) [pixel diff over 0.8s: 0.00% (threshold 0.0%)]
+blank canvas + overlay under *{transition:all} :: n-body-field
+   score=68 structural=100 behavioural=35/65
+   nbody-renders=PASS(35/35) [canvas content: 2.66% of pixels off background (threshold 0.0%)] | nbody-animates=fail(0/30) [pixel diff over 1.2s: 0.00% (threshold 0.0%)]
+blank canvas + overlay under *{transition:all} :: physics-pendulum-wave
+   score=68 structural=100 behavioural=35/65
+   pendulum-renders=PASS(35/35) [canvas content: 2.66% of pixels off background (threshold 0.0%)] | pendulum-animates=fail(0/30) [pixel diff over 0.8s: 0.00% (threshold 0.0%)]
+blank canvas + ticking DOM counter with transition :: n-body-field
+   score=100 structural=100 behavioural=65/65
+   nbody-renders=PASS(35/35) [canvas content: 3.16% of pixels off background (threshold 0.0%)] | nbody-animates=PASS(30/30) [pixel diff over 1.2s: 0.19% (threshold 0.0%)]
+blank canvas + ticking DOM counter with transition :: physics-pendulum-wave
+   score=100 structural=100 behavioural=65/65
+   pendulum-renders=PASS(35/35) [canvas content: 2.93% of pixels off background (threshold 0.0%)] | pendulum-animates=PASS(30/30) [pixel diff over 0.8s: 0.20% (threshold 0.0%)]

@@ -1,0 +1,66 @@
+rows 63
+n-body-f kimi-k2.7                      stored 63 new 30 ren False ani False shipped 0.0000% strict 0.0000% sdiff 0.0000% bord 0px rad 0px cbg none bbg none tr 0   
+n-body-f gemini-3.5-flash-agy           stored 47.5 new 96 ren True ani True shipped 1.1484% strict 1.1245% sdiff 2.0695% bord 0px rad 0px cbg none bbg none tr 16   
+n-body-f kimi-k3                        stored 100 new 100 ren True ani True shipped 2.9348% strict 2.8577% sdiff 4.8614% bord 0px rad 0px cbg none bbg none tr 0   
+n-body-f nemotron-3-super               stored 97 new 62 ren False ani True shipped 0.0191% strict 0.0041% sdiff 0.0057% bord 0px rad 0px cbg none bbg none tr 0    <<ANIM?
+n-body-f nemotron-3-ultra               stored 100 new 30 ren False ani False shipped 0.0000% strict 0.0000% sdiff 0.0000% bord 0px rad 0px cbg none bbg none tr 0   
+n-body-f nemotron-3-nano-30b            stored 100 new 30 ren False ani False shipped 0.0000% strict 0.0000% sdiff 0.0000% bord 0px rad 0px cbg none bbg none tr 0   
+n-body-f nemotron-3-nano-omni           stored 82 new 30 ren False ani False shipped 0.0000% strict 0.0000% sdiff 0.0000% bord 0px rad 0px cbg none bbg none tr 0   
+n-body-f nemotron-nano-12b-vl           stored 30 new 30 ren False ani False shipped 0.0000% strict 0.0000% sdiff 0.0000% bord 0px rad 0px cbg none bbg none tr 0   
+n-body-f nemotron-nano-9b               stored 82 new 30 ren False ani False shipped 0.0000% strict 0.0000% sdiff 0.0000% bord 0px rad 0px cbg none bbg none tr 0   
+n-body-f gpt-oss-20b                    stored 96 new 30 ren False ani False shipped None strict None sdiff None bord None rad None cbg  bbg  tr None   
+n-body-f gemma-4-26b                    stored 100 new 30 ren False ani False shipped 0.0000% strict 0.0000% sdiff 0.0000% bord 0px rad 0px cbg none bbg none tr 0   
+n-body-f ling-3.0-tiny                  stored 100 new 30 ren False ani False shipped 0.0000% strict 0.0000% sdiff 0.0000% bord 0px rad 0px cbg none bbg none tr 0   
+n-body-f laguna-s-2.1                   stored 82 new 30 ren False ani False shipped None strict None sdiff None bord None rad None cbg  bbg  tr None   
+n-body-f laguna-xs-2.1                  stored 96 new 30 ren False ani False shipped None strict None sdiff None bord None rad None cbg  bbg  tr None   
+n-body-f codex-gpt-5.6-sol              stored 91 new 100 ren True ani True shipped 24.3205% strict 0.6097% sdiff 1.3097% bord 0px rad 0px cbg radial-gradien bbg none tr 0   
+n-body-f codex-gpt-5.6-terra            stored 96 new 100 ren True ani True shipped 7.8111% strict 7.7186% sdiff 2.5393% bord 0px rad 0px cbg none bbg none tr 0   
+n-body-f codex-gpt-5.6-luna             stored 76 new 100 ren True ani True shipped 24.4227% strict 24.4229% sdiff 2.6345% bord 0px rad 0px cbg none bbg none tr 0   
+n-body-f gemini-3.6-flash-agy           stored 80.8 new 100 ren True ani True shipped 28.9648% strict 23.3668% sdiff 32.5692% bord 0px rad 0px cbg none bbg none tr 16   
+n-body-f claude-opus-4-6-thinking-agy   stored 100 new 100 ren True ani True shipped 0.3152% strict 0.3175% sdiff 0.6272% bord 0px rad 0px cbg none bbg none tr 0   
+n-body-f gpt-oss-120b-agy               stored 42.7 new 30 ren False ani False shipped 0.0000% strict 0.0000% sdiff 0.0000% bord 0px rad 0px cbg none bbg none tr 0   
+n-body-f deepseek-v4-flash-free         stored 53 new 100 ren True ani True shipped 39.4274% strict 39.4581% sdiff 2.9620% bord 0px rad 0px cbg none bbg none tr 0   
+n-body-f gemini-3.6-flash               stored 74.4 new 100 ren True ani True shipped 3.3255% strict 1.4716% sdiff 3.7910% bord 0px rad 0px cbg none bbg none tr 4   
+n-body-f qwen3-8b-ollama                stored 30 new 30 ren False ani False shipped 0.0000% strict 0.0000% sdiff 0.0000% bord 0px rad 0px cbg none bbg none tr 0   
+n-body-f gemma3-12b-ollama              stored 30 new 30 ren False ani False shipped 0.0000% strict 0.0000% sdiff 0.0000% bord 0px rad 0px cbg none bbg none tr 0   
+n-body-f qwen3-14b-ollama               stored 30 new 30 ren False ani False shipped 0.0000% strict 0.0000% sdiff 0.0000% bord 0px rad 0px cbg none bbg none tr 0   
+n-body-f qwen3.8-27b-mlx-ollama         stored 100 new 100 ren True ani True shipped 0.4902% strict 0.4903% sdiff 0.7998% bord 0px rad 0px cbg none bbg none tr 0   
+n-body-f ornith-1.5-35b-ollama          stored 30 new 30 ren False ani False shipped 0.0000% strict 0.0000% sdiff 0.0000% bord 0px rad 0px cbg none bbg none tr 0   
+n-body-f codex-gpt-6-astra-xhigh        stored 97 new 97 ren True ani True shipped 42.1014% strict 6.5301% sdiff 9.2046% bord 0px rad 0px cbg radial-gradien bbg none tr 0   
+n-body-f devin-swe-2-high               stored 100 new 100 ren True ani True shipped 0.3438% strict 0.3316% sdiff 0.6608% bord 0px rad 0px cbg none bbg none tr 0   
+n-body-f flint-40b-a2b-int4-rec         stored 100 new 30 ren False ani False shipped 0.0000% strict 0.0000% sdiff 0.0000% bord 0px rad 0px cbg none bbg none tr 0   
+n-body-f flint-40b-a2b-q8-llamacpp      stored 100 new 100 ren True ani True shipped 1.6728% strict 1.6663% sdiff 3.2701% bord 0px rad 0px cbg none bbg none tr 0   
+n-body-f kimi-k3.1-pro                  stored 97 new 97 ren True ani True shipped 0.7804% strict 0.7970% sdiff 1.3789% bord 0px rad 0px cbg none bbg radial-gradien tr 0   
+physics- kimi-k2.7                      stored 100 new 100 ren True ani True shipped 19.9784% strict 18.8917% sdiff 23.2648% bord 0px rad 0px cbg none bbg none tr 0   
+physics- kimi-k3                        stored 100 new 100 ren True ani True shipped 26.3439% strict 26.6557% sdiff 11.3681% bord 0px rad 0px cbg none bbg none tr 0   
+physics- nemotron-3-super               stored 100 new 100 ren True ani True shipped 2.8647% strict 2.8627% sdiff 5.5303% bord 0px rad 0px cbg none bbg none tr 0   
+physics- nemotron-3-ultra               stored 100 new 100 ren True ani True shipped 3.2286% strict 3.3303% sdiff 5.7888% bord 0px rad 0px cbg none bbg none tr 0   
+physics- nemotron-3-nano-30b            stored 100 new 30 ren False ani False shipped 4.4800% strict 4.4889% sdiff 7.5978% bord 0px rad 0px cbg none bbg none tr 0   
+physics- nemotron-3-nano-omni           stored 94 new 100 ren True ani True shipped 0.0623% strict 0.0712% sdiff 0.1004% bord 0px rad 0px cbg none bbg none tr 0   
+physics- nemotron-nano-9b               stored 100 new 68 ren True ani False shipped 3.6162% strict 1.6822% sdiff 0.0000% bord 1px rad 0px cbg none bbg none tr 0   
+physics- gpt-oss-20b                    stored 100 new 30 ren False ani False shipped 0.0000% strict 0.0000% sdiff 0.0000% bord 0px rad 0px cbg none bbg none tr 0   
+physics- gemma-4-26b                    stored 100 new 100 ren True ani True shipped 0.9995% strict 0.9962% sdiff 1.3908% bord 0px rad 0px cbg none bbg none tr 0   
+physics- ling-3.0-tiny                  stored 100 new 68 ren True ani False shipped 0.4248% strict 0.0000% sdiff 0.0000% bord 0px rad 0px cbg none bbg none tr 3    <<FALSE-RENDERS
+physics- laguna-s-2.1                   stored 100 new 100 ren True ani True shipped 0.5706% strict 0.3499% sdiff 0.8828% bord 0px rad 0px cbg none bbg none tr 0   
+physics- north-mini-code                stored 100 new 30 ren False ani False shipped 0.0000% strict 0.0000% sdiff 0.0000% bord 0px rad 0px cbg none bbg none tr 0   
+physics- laguna-xs-2.1                  stored 100 new 100 ren True ani True shipped 0.2430% strict 0.2505% sdiff 0.5503% bord 0px rad 0px cbg none bbg none tr 0   
+physics- codex-gpt-5.6-sol              stored 100 new 100 ren True ani True shipped 2.7483% strict 3.2888% sdiff 3.2289% bord 0px rad 0px cbg none bbg none tr 0   
+physics- codex-gpt-5.6-terra            stored 64 new 100 ren True ani True shipped 44.8874% strict 44.0640% sdiff 11.1833% bord 0px rad 0px cbg none bbg none tr 0   
+physics- codex-gpt-5.6-luna             stored 82 new 100 ren True ani True shipped 9.5567% strict 10.1614% sdiff 5.7815% bord 0px rad 0px cbg none bbg none tr 0   
+physics- deepseek-v4-flash-free         stored 100 new 100 ren True ani True shipped 10.9515% strict 11.5401% sdiff 10.7383% bord 0px rad 0px cbg none bbg none tr 0   
+physics- gemini-3.6-flash               stored 100 new 100 ren True ani True shipped 3.6370% strict 2.5434% sdiff 3.4612% bord 0px rad 0px cbg none bbg none tr 3   
+physics- nemotron-nano-12b-vl           stored 39.5 new 68 ren True ani False shipped 0.0800% strict 0.0800% sdiff 0.0000% bord 0px rad 0px cbg none bbg none tr 0   
+physics- qwen3-8b-ollama                stored 68 new 30 ren False ani False shipped 0.0000% strict 0.0000% sdiff 0.0000% bord 0px rad 0px cbg none bbg none tr 0   
+physics- gemma3-4b-ollama               stored 68 new 30 ren False ani False shipped 0.0009% strict 0.0000% sdiff 0.0000% bord 0px rad 0px cbg none bbg none tr 0   
+physics- gemma3-12b-ollama              stored 68 new 30 ren False ani False shipped 0.0000% strict 0.0000% sdiff 0.0000% bord 0px rad 0px cbg none bbg none tr 0   
+physics- gemma3-27b-ollama              stored 100 new 100 ren True ani True shipped 0.4895% strict 0.4914% sdiff 0.6063% bord 0px rad 0px cbg none bbg none tr 0   
+physics- qwen3-14b-ollama               stored 11 new 11 ren False ani False shipped 0.0000% strict 0.0000% sdiff 0.0000% bord 0px rad 0px cbg none bbg none tr 0   
+physics- qwen3.8-27b-mlx-ollama         stored 91 new 91 ren True ani True shipped 7.2850% strict 6.9927% sdiff 9.6239% bord 0px rad 0px cbg none bbg none tr 0   
+physics- ornith-1.5-35b-ollama          stored 68 new 30 ren False ani False shipped 0.0000% strict 0.0000% sdiff 0.0000% bord 0px rad 0px cbg none bbg none tr 0   
+physics- codex-gpt-6-astra-xhigh        stored 100 new 100 ren True ani True shipped 12.5141% strict 12.5252% sdiff 3.0016% bord 0px rad 0px cbg none bbg none tr 0   
+physics- devin-swe-2-high               stored 100 new 100 ren True ani True shipped 9.5148% strict 9.6574% sdiff 9.2693% bord 0px rad 0px cbg none bbg none tr 0   
+physics- flint-40b-a2b-int4-rec         stored 100 new 100 ren True ani True shipped 0.4869% strict 0.4880% sdiff 0.8462% bord 0px rad 0px cbg none bbg none tr 0   
+physics- flint-40b-a2b-q8-llamacpp      stored 100 new 100 ren True ani True shipped 0.9941% strict 0.9943% sdiff 1.4876% bord 0px rad 0px cbg none bbg none tr 0   
+physics- kimi-k3.1-pro                  stored 100 new 100 ren True ani True shipped 35.8261% strict 35.0684% sdiff 10.3531% bord 0px rad 0px cbg none bbg none tr 0   
+FALSE-RENDERS ['ling-3.0-tiny::physics-pendulum-wave']
+ANIM? ['nemotron-3-super::n-body-field']

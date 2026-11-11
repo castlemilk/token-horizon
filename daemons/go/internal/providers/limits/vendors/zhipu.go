@@ -25,6 +25,13 @@ func (z Zhipu) Fetch() []limits.Limit {
 		return nil
 	}
 	obj := limits.GetJSON("https://api.z.ai/api/monitor/usage/quota/limit", key, z.Provider())
+	return zhipuLimits(obj)
+}
+
+// zhipuLimits maps a quota/limit payload to rows. Z.ai's percentage is the
+// used share (currentValue / usage), so it is passed through unchanged;
+// PlanLimitsEngine.parseZaiPayload in Swift must read it the same way.
+func zhipuLimits(obj map[string]any) []limits.Limit {
 	data, _ := obj["data"].(map[string]any)
 	rows, _ := data["limits"].([]any)
 	var out []limits.Limit

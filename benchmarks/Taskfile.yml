@@ -1,0 +1,705 @@
+# LLM benchmark harness: a standalone port of benebsworth.com's taskfiles/benchmark.yml.
+#
+# Ported from benebsworth.com at commit a1d5193c3aaa785774815a16b445c916ad613c38.
+# In the source repo these tasks are included under the `bench:` namespace, so
+# `task bench:run` there is `task run` here. Every task also has a `bench:`
+# alias, so commands copied from the website's docs and summaries run unchanged.
+#
+# List the tasks from the token-horizon root with either of:
+#
+#   task -t benchmarks/Taskfile.yml --list
+#   task -d benchmarks --list
+#
+# This file is standalone: its top-level `dotenv` means the root Taskfile cannot
+# `include` it. Every task sets `dir` to this Taskfile's own directory and BIN is
+# the local node_modules/.bin, so paths and binaries resolve no matter where task
+# is run from. Scripts run through `npx tsx` do NOT get that: they resolve paths
+# against the current directory (see README, "Running a real benchmark").
+#
+# The harness makes REAL, PAID API calls. Every task here states what it spends
+# and what it writes. The one file that matters is:
+#
+#   lib/lab/llm-benchmark/results.json   — COMMITTED, the published leaderboard
+#
+# It is written INCREMENTALLY after every completed task/model job, and every
+# write re-reads the file first, so a kill, timeout, or concurrent run never
+# loses finished work. mergeResults() additionally refuses to let a fresh run
+# with 0 successful iterations overwrite a baseline record that has successes —
+# a quota-killed re-run cannot corrupt good data.
+version: '3'
+
+# Secrets: provider keys are read from .env (gitignored), as in the source repo.
+dotenv: ['.env']
+
+# Chromium for the behavioural scorers. Playwright 1.60.0 needs Chromium revision
+# 1223, which the default cache (~/Library/Caches/ms-playwright) does not hold,
+# and that cache can be locked by another project's install. So this package
+# uses its own cache. A PLAYWRIGHT_BROWSERS_PATH exported in the shell wins.
+# Install into it with `task bench:browsers:install`.
+env:
+  PLAYWRIGHT_BROWSERS_PATH:
+    sh: 'echo "${PLAYWRIGHT_BROWSERS_PATH:-$HOME/Library/Caches/ms-playwright-benchmarks}"'
+
+vars:
+  # Task does NOT do npm's PATH munging, so every local binary is invoked as
+  # {{.BIN}}/<name>, which runs the version pinned in this package.
+  BIN: './node_modules/.bin'
+  RESULTS: lib/lab/llm-benchmark/results.json
+  CACHE: .cache/llm-benchmark-responses.json
+
+tasks:
+  # Guards. A behavioural check whose browser cannot launch does not fail: the
+  # scorer (scorers/behavioral.ts) falls back to the structural score with no
+  # checks recorded, so a paid run would store a silently wrong number. Tasks that
+  # score with the browser depend on check:sandbox, which refuses to start; the
+  # fixture tasks depend on check:browser, because they always need a browser.
+  # BENCH_SANDBOX=structural or remote needs no local browser, so check:sandbox skips.
+  check:browser:
+    internal: true
+    dir: '{{.TASKFILE_DIR}}'
+    cmds:
+      - |
+        node -e 'import("playwright").then(({chromium})=>chromium.launch({headless:true})).then(b=>b.close()).then(()=>{console.log("chromium ok ("+(process.env.PLAYWRIGHT_BROWSERS_PATH||"default cache")+")");process.exit(0)},e=>{console.error("Chromium cannot launch ("+(process.env.PLAYWRIGHT_BROWSERS_PATH||"default cache")+"): "+String(e.message).split("\n")[0]+"\n  fix: task bench:browsers:install");process.exit(1)})'
+
+  check:sandbox:
+    internal: true
+    if: '[ "${BENCH_SANDBOX:-chromium}" != structural ] && [ "${BENCH_SANDBOX:-chromium}" != remote ]'
+    deps: [check:browser]
+
+  browsers:install:
+    aliases: ['bench:browsers:install']
+    dir: '{{.TASKFILE_DIR}}'
+    desc: Install the Chromium this package pins into PLAYWRIGHT_BROWSERS_PATH (one-time; no API calls)
+    summary: |
+      Runs Playwright's own installer from this package's node_modules, so the
+      revision matches the pinned playwright (1.60.0 needs Chromium 1223).
+      Do not use `npx playwright install`: it can resolve a different Playwright
+      and install a different revision.
+
+      Already installed? Nothing is downloaded. Playwright also deletes any browser
+      in PLAYWRIGHT_BROWSERS_PATH that this Playwright version does not use, so keep
+      that directory for this package alone. PLAYWRIGHT_BROWSERS_PATH keeps this
+      package's copy apart from the default cache, which other projects' Playwright
+      installs use and can lock.
+    cmds:
+      - node node_modules/playwright/cli.js install chromium
+
+  dump:
+    aliases: ['bench:dump']
+    dir: '{{.TASKFILE_DIR}}'
+    desc: 'Print a run''s effective config and run NOTHING — `task bench:dump -- --model <m> --task <t>` (free, any directory)'
+    summary: |
+      Wrapper over `scripts/run-benchmark.mjs --dump-config`. It prints the config
+      with the provenance of every value, then exits. Use it as a rehearsal before
+      any run. This task resolves its paths from this directory, so it can be
+      run from anywhere. Running the script directly from the token-horizon root
+      writes under the wrong directory (see README).
+    cmds:
+      - '{{.BIN}}/tsx scripts/run-benchmark.mjs {{.CLI_ARGS}} --dump-config'
+
+  visual-games-fixtures:
+    aliases: ['bench:visual-games-fixtures']
+    dir: '{{.TASKFILE_DIR}}'
+    desc: Prove lighthouse and racer checks distinguish working, static, and missing controls
+    deps: [check:browser]
+    env:
+      BENCH_BROWSER_TESTS: '1'
+    cmds:
+      - '{{.BIN}}/vitest run lib/lab/llm-benchmark/plugins/visual-games/checks.test.ts lib/lab/llm-benchmark/scorers/canvas-capture.test.ts'
+
+  default:
+    dir: '{{.TASKFILE_DIR}}'
+    desc: Show benchmark harness usage and the knobs that control a run
+    silent: true
+    cmds:
+      - |
+        cat <<'EOF'
+        LLM benchmark harness
+
+          task bench:profiles                   list the named sweep profiles
+          task bench:profile -- smoke --model kimi-k2.7 --task equation-solver
+          task bench:profile -- slow-model --model x --dump-config   (print config, run nothing)
+          task bench:smoke                      1 iteration, 1 model — verify wiring, ~cents
+          task bench:run MODELS=a,b             run specific models, all tasks
+          task bench:run MODELS=a TASKS=t ITER=1
+          task bench:cli MODELS=codex-gpt-5.5   CLI providers (forced concurrency 1)
+          task bench:devin-preflight           verify Devin commands and artifact delivery (one live call)
+          task bench:profile -- astra-devin    matched Astra xhigh / SWE-2 High sweep
+          task bench:visual-games-fixtures     run lighthouse, racer and WebGL browser fixtures
+          task bench:browsers:install           one-time: install the Chromium this package pins
+          task bench:dump -- --model m --task t  print a run's config, run nothing (any directory)
+          task bench:probe                      prompt-regression probes (free tier) — run BEFORE a sweep
+          task bench:probe -- --dry-run         print the probes + asserts, zero calls
+          task bench:monitor                    quota-recovery plan for killed sweeps (free)
+          task bench:monitor -- --watch --go    auto-resume once quota returns, then walk away
+          task bench:seed                       restore seeded sample data, NO API calls
+          task bench:verify                     typecheck + benchmark unit tests
+          task bench:verify-results             results.json + run-log invariants (free)
+          task bench:feedback -- --list         curator ratings of artifacts (free)
+          task bench:rescore -- --run <id> --model <m> --task <t>
+                                                re-score one stored artifact with today's scorer
+
+        Knobs (all optional):
+          MODELS=   comma-separated registry ids   (default: kimi-k2.7)
+          TASKS=    comma-separated task ids       (default: every task)
+          ITER=     iterations per task/model      (default: task's iterationsDefault, 5)
+          CONC=     parallel task/model jobs       (default: 3; bench:cli forces 1)
+          TIMEOUT=  per-call timeout ms            (default: 10 min)
+          BUST=1    ignore the response cache and force fresh paid calls
+
+        Precedence when both are used: CLI flag > env var (the knobs above) >
+        profile > built-in default. Every run prints its effective config first.
+
+        Browser: run, profile, rescore and corpus:probe refuse to start unless
+        Chromium launches (BENCH_SANDBOX=structural or remote skips the check).
+        One-time setup: task bench:browsers:install
+        EOF
+
+  profiles:
+    aliases: ['bench:profiles']
+    dir: '{{.TASKFILE_DIR}}'
+    desc: List the named sweep profiles (no API calls, free)
+    summary: |
+      Profiles are data in lib/lab/llm-benchmark/sweep-profiles.json — named
+      compositions of the same knobs `bench:run` takes, so a recipe (25-min cap
+      + zero retries for a slow model, say) is stored rather than retyped.
+    cmds:
+      - '{{.BIN}}/tsx scripts/run-benchmark.mjs --list-profiles'
+
+  profile:
+    aliases: ['bench:profile']
+    dir: '{{.TASKFILE_DIR}}'
+    desc: 'Run a named sweep profile (SPENDS MONEY) — `task bench:profile -- <name> [flags]`'
+    deps: [check:sandbox]
+    preconditions:
+      - sh: 'git ls-files --error-unmatch {{.RESULTS}} >/dev/null 2>&1'
+        msg: '{{.RESULTS}} is not tracked by git. Commit benchmarks/ first, so a bad write can be reverted.'
+    summary: |
+      Wrapper over `scripts/run-benchmark.mjs --profile <name>`. Everything after
+      `--` is passed through, so overrides are flags rather than env vars:
+
+        task bench:profile -- smoke --model kimi-k2.7 --task equation-solver
+        task bench:profile -- slow-model --model deepseek-v4-flash-free
+        task bench:profile -- agy-quota --model gemini-3.6-flash-agy
+
+      Add `--dump-config` to print the effective config (with the provenance of
+      every value and a rough duration estimate) and exit WITHOUT running —
+      always worth doing before a long or expensive sweep.
+
+      Cost, credential, caching and failure semantics are identical to
+      `bench:run --summary`; read that first.
+    requires:
+      vars: [CLI_ARGS]
+    cmds:
+      - '{{.BIN}}/tsx scripts/run-benchmark.mjs --profile {{.CLI_ARGS}}'
+
+  devin-preflight:
+    aliases: ['bench:devin-preflight']
+    dir: '{{.TASKFILE_DIR}}'
+    desc: One live SWE-2 call verifying sandboxed command execution and HTML file delivery
+    cmds:
+      - '{{.BIN}}/tsx scripts/probe-devin.mjs'
+
+  run:
+    aliases: ['bench:run']
+    dir: '{{.TASKFILE_DIR}}'
+    desc: Run the harness against live provider APIs (SPENDS MONEY — writes results.json)
+    deps: [check:sandbox]
+    preconditions:
+      - sh: 'git ls-files --error-unmatch {{.RESULTS}} >/dev/null 2>&1'
+        msg: '{{.RESULTS}} is not tracked by git. Commit benchmarks/ first, so a bad write can be reverted.'
+    summary: |
+      Runs `iterations` API calls per task × model, scores every successful
+      output, aggregates into one record per pair, and merges into results.json.
+
+      COST  Real spend. A full sweep (all models × 7 tasks × 5 iterations) is
+      30-40 minutes and dollars, not cents. Scope it: always pass MODELS=, and
+      pass TASKS= when debugging one provider.
+
+      CREDENTIALS  Only the providers whose keys are present are configured;
+      a model whose key is missing simply fails its calls. Keys read from .env:
+      OPENROUTER_API_KEY, MOONSHOT_API_KEY (+ MOONSHOT_BASE_URL), OPENAI_API_KEY,
+      ANTHROPIC_API_KEY, GOOGLE_API_KEY. ANTHROPIC_API_KEY_FILE can name a file that
+      holds the Anthropic key instead (the bare key, or a NAME=value line); when both
+      are set, ANTHROPIC_API_KEY wins. An Anthropic sweep stops before any call if
+      that file is missing or empty. CLI providers (agy, codex, devin, opencode)
+      need no key — they use the locally authenticated CLI. The Claude Code provider
+      (kimi-k3.1-pro) is the exception: it needs MOONSHOT_API_KEY and rewrites
+      ~/.claude/settings.json during each call. Never run it in a sweep you have
+      not checked by hand (see README).
+
+      CACHING  Successful responses cache to {{.CACHE}} (gitignored). The key
+      includes model, task, a SHA-256 of the prompt, and the iteration index.
+      Re-running is therefore nearly free unless you pass BUST=1.
+
+      FAILURE SEMANTICS
+        * Transient errors (network, timeout, 5xx, 429/408) retry up to 2x,
+          rate-limits with 4x backoff. Auth/validation 4xx do NOT retry — same
+          prompt, same guaranteed failure — and break the iteration loop.
+        * A quota error breaks the loop AND trips a per-provider circuit breaker
+          that skips that provider's remaining tasks, recording nothing.
+        * A job that throws is logged and skipped; the rest of the sweep runs on.
+
+      BROWSER  Behavioural checks need Chromium. This task refuses to start unless
+      it launches (see `task bench:browsers:install`), because a missing browser
+      would otherwise score structural-only with no error.
+
+      AFTER A RUN  results.json changed. Run `task bench:verify-results`, then
+      `task bench:publish-traces` for the run logs it cites, then commit both.
+    vars:
+      MODELS: '{{.MODELS | default ""}}'
+      TASKS: '{{.TASKS | default ""}}'
+      ITER: '{{.ITER | default ""}}'
+      CONC: '{{.CONC | default ""}}'
+      TIMEOUT: '{{.TIMEOUT | default ""}}'
+      BUST: '{{.BUST | default ""}}'
+    env:
+      RUN_MODELS: '{{.MODELS}}'
+      RUN_TASKS: '{{.TASKS}}'
+      RUN_ITERATIONS: '{{.ITER}}'
+      RUN_CONCURRENCY: '{{.CONC}}'
+      RUN_TIMEOUT_MS: '{{.TIMEOUT}}'
+      RUN_BUST_CACHE: '{{.BUST}}'
+    cmds:
+      - '{{.BIN}}/tsx scripts/run-benchmark.mjs'
+
+  smoke:
+    aliases: ['bench:smoke']
+    dir: '{{.TASKFILE_DIR}}'
+    desc: One iteration of one model — cheapest possible check that the harness works
+    summary: |
+      The standard post-change smoke test: a single iteration for a single
+      model. Costs cents and takes under a couple of minutes.
+
+      Defaults to kimi-k2.7; override with MODELS=. It DOES write to
+      results.json (merged, not clobbered), which is intended — a smoke run is
+      still a real data point.
+    vars:
+      MODELS: '{{.MODELS | default "kimi-k2.7"}}'
+    cmds:
+      - task: run
+        vars: { MODELS: '{{.MODELS}}', ITER: '1' }
+
+  cli:
+    aliases: ['bench:cli']
+    dir: '{{.TASKFILE_DIR}}'
+    desc: Run CLI-backed providers (agy, codex, devin) — forces concurrency 1
+    summary: |
+      CLI providers shell out to a locally-installed, locally-authenticated
+      binary (`agy -p ... --model ...`, `codex exec --ephemeral --sandbox
+      read-only ...`).
+
+      CONCURRENCY IS FORCED TO 1. Running agy in parallel is unreliable — this
+      task hardcodes CONC=1 rather than trusting the caller to remember.
+      The astra-devin profile instead uses four jobs with unique scratch
+      directories and artifact filenames for Codex and Devin.
+
+      Test the CLI by hand first; a broken login looks like a harness bug:
+        agy -p "say hi" --model "Gemini 3.5 Flash (High)"
+        codex exec --ephemeral --sandbox read-only "say hi"
+
+      Token counts are ESTIMATED when the CLI does not report them, so costs
+      for these models are approximate.
+    requires:
+      vars: [MODELS]
+    cmds:
+      - task: run
+        vars: { MODELS: '{{.MODELS}}', TASKS: '{{.TASKS}}', ITER: '{{.ITER}}', CONC: '1' }
+
+  seed:
+    aliases: ['bench:seed']
+    dir: '{{.TASKFILE_DIR}}'
+    desc: Restore seeded sample results without calling any API (free, offline)
+    preconditions:
+      - sh: 'git ls-files --error-unmatch {{.RESULTS}} >/dev/null 2>&1'
+        msg: '{{.RESULTS}} is not tracked by git. Commit benchmarks/ first, so a bad write can be reverted.'
+    prompt: 'Overwrite {{.RESULTS}} with seeded sample records? Real measurements in it are replaced.'
+    summary: |
+      scripts/seed-mock-results.mjs writes hand-authored sample records from
+      scripts/sample-outputs.json, each stamped `source: 'seeded'`.
+
+      Seeded records are NOT real measurements. The UI must always disclose them
+      and exclude them from headline verdicts — `source` is the flag that makes
+      that possible, so never strip it.
+
+      Writes {{.RESULTS}}. Use for offline UI work, never to fill a gap in a
+      published comparison.
+    cmds:
+      - node scripts/seed-mock-results.mjs
+
+  merge:
+    aliases: ['bench:merge']
+    dir: '{{.TASKFILE_DIR}}'
+    desc: 'Merge per-model result files into results.json — `task bench:merge -- <model-id>...`'
+    preconditions:
+      - sh: 'git ls-files --error-unmatch {{.RESULTS}} >/dev/null 2>&1'
+        msg: '{{.RESULTS}} is not tracked by git. Commit benchmarks/ first, so a bad write can be reverted.'
+    summary: |
+      For the file-handoff workflow: a runner writes
+      lib/lab/llm-benchmark/results-<model-id>.json, and this folds it into the
+      main results.json.
+
+      Per model id: drops the existing records for that model, appends the fresh
+      ones, then DELETES the per-model file. Destructive on the source file by
+      design — do not point it at something you have not reviewed.
+    cmds:
+      - node scripts/merge-benchmark-results.mjs {{.CLI_ARGS}}
+
+  probe:
+    aliases: ['bench:probe']
+    dir: '{{.TASKFILE_DIR}}'
+    desc: 'Prompt-regression probes — the cheap gate to run BEFORE a sweep (free tier by default)'
+    summary: |
+      Six narrow behaviour evals with deterministic asserts on the RAW reply
+      (no LLM judge), defined as inert data in
+      lib/lab/llm-benchmark/probes/probes.json and interpreted by probes.ts.
+
+      WHY  `task bench:verify` tests the prompt TEXT; this tests what a model
+      DOES when it reads it. A sandbox-contract edit (prompts.ts) otherwise has
+      no behavioural gate between the edit and an hours-long sweep.
+
+      RUNBOOK  prompt/contract changed → `task bench:probe` → sweep. A probe
+      failure gates the sweep (exit 1).
+
+      COST  One generation per (probe × model), no retries, no cache. The
+      default model is the cheapest registered FREE model
+      (deepseek-v4-flash-free, via the locally-authenticated opencode CLI), so
+      the default run spends nothing. Past 20 calls the script requires `--yes`.
+
+      Writes NOTHING — not results.json, not the response cache, not sweeps/.
+
+        task bench:probe                                    all probes, default model
+        task bench:probe -- --dry-run                       print probes + asserts, zero calls
+        task bench:probe -- --probe doctype-first
+        task bench:probe -- --model kimi-k2.7 --timeout-ms 90000
+
+      Probes that test the global contract carry `appendGlobalContract: true`
+      and get the REAL `SANDBOX_CONSTRAINTS` appended at run time — contract
+      text is never copied into the JSON, so a probe cannot drift from prompts.ts.
+    cmds:
+      - '{{.BIN}}/tsx scripts/prompt-probe.mjs {{.CLI_ARGS}}'
+
+  verify:
+    aliases: ['bench:verify']
+    dir: '{{.TASKFILE_DIR}}'
+    desc: Typecheck + run the benchmark unit tests
+    summary: |
+      The post-change gate from the skill's verification checklist. It is a
+      typecheck and the benchmark unit tests, nothing else. This package has no
+      site build, so a new route is checked by the website's build, not here.
+    cmds:
+      - '{{.BIN}}/tsc --noEmit'
+      - '{{.BIN}}/vitest run lib/lab/llm-benchmark/'
+
+  verify-results:
+    aliases: ['bench:verify-results']
+    dir: '{{.TASKFILE_DIR}}'
+    desc: Check results.json + the retained run logs for internal consistency (free, offline)
+    summary: |
+      The anti-regression gate for the DATA, not the code: `task bench:verify`
+      typechecks and unit-tests the harness, this one interrogates what the
+      harness produced.
+
+      Fifteen checks (lib/lab/llm-benchmark/verify-results.ts, each carrying the
+      WHY it exists — printed on failure): score is exactly the `aggregateRuns`
+      aggregation of `iterationScores`; `iterationCheckResults` is index-aligned
+      with them; succeeded <= ran with one score per success; `status` agrees
+      with the counts; `taskId`/`modelId` resolve in the registry;
+      `failureReason` is in the taxonomy and consistent with `status`; every run
+      log on disk is named by its record's `runLogRef` and every ref's log
+      matches the record and holds an `aggregate` event; run-log `seq` is
+      strictly increasing (a GAP is dropped-batch evidence — a warning; a
+      duplicate or decrease is a failure); and every content-addressed blob on
+      disk (`spill/<hash>.txt`, `artifacts/<hash>.html`) still hashes to the
+      name it is stored under (#31 — a tampered or truncated artifact fails; an
+      absent one skips, and legacy run-scoped names skip); and every
+      failure-corpus case (#25) names a model/task that still resolves and an
+      `artifact` that is a real content address (skips entirely when no corpus
+      has been ingested); and every curator-feedback entry (#14) is shaped like
+      a rating and names a `bench://` ref that still resolves against the board
+      (skips when the sidecar is absent or empty).
+
+      Records that predate a field skip the checks that need it. Seeded records
+      are exempt from the run-log checks only. The log checks skip entirely
+      when nothing is under `sweeps/`.
+
+      Exit 1 on any failure. Add `-- --strict` to fail on warnings too, and
+      `-- --quiet` for just the summary. Run it after every sweep and before
+      publishing traces. This package has no pre-push hook, so run it by hand.
+    cmds:
+      - '{{.BIN}}/tsx scripts/verify-results.mjs {{.CLI_ARGS}}'
+
+  rescore:
+    aliases: ['bench:rescore']
+    dir: '{{.TASKFILE_DIR}}'
+    desc: 'Re-score ONE stored artifact with the current scorer — `task bench:rescore -- --run <id> --model <m> --task <t>`'
+    deps: [check:sandbox]
+    summary: |
+      The expensive half of artifact verification (#31). `bench:verify-results`
+      re-hashes every stored blob on every run (cheap, exact: are these the
+      bytes that were scored?). This asks the other question: does the scorer we
+      ship TODAY still produce the number the run log recorded? A scorer whose
+      checks were tightened, and a hand-edited artifact, both surface as DRIFT.
+
+      COST — and why nothing runs this automatically: a text-scored task
+      (equation-solver, crypto-hash-race) is milliseconds of string matching,
+      but a behaviourally-scored one launches headless Chromium and drives real
+      input events (seconds to ~30s per artifact). Nothing runs it on commit or
+      push.
+
+      Exit 0 match, 1 drift, 2 the artifact could not be located or its bytes
+      do not match their own content address (fix that first).
+    cmds:
+      - '{{.BIN}}/tsx scripts/rescore-artifact.mjs {{.CLI_ARGS}}'
+
+  feedback:
+    aliases: ['bench:feedback']
+    dir: '{{.TASKFILE_DIR}}'
+    desc: 'Record the CURATOR''s judgment of an artifact — `task bench:feedback -- --ref bench://<model>/<task> --rating positive|negative [--note "…"]`'
+    summary: |
+      The behavioural scorer answers "does Space jump?". It cannot answer "is
+      this artifact any good?", and that judgment is the one signal the board
+      lacks (#14, dsh's `message-feedback` contracts).
+
+        task bench:feedback -- --ref bench://gemini-3.6-flash/n-body-field/1 \
+                               --rating positive --note "the one iteration that moves"
+        task bench:feedback -- --list [--model gemini-3.6-flash]
+        task bench:feedback -- --rm --ref bench://deepseek-v4-flash-free/landing-page-morph
+
+      NOT reader feedback. The site is a static export, so a visitor-writable
+      rating would need a Worker + KV + abuse handling; that is deliberately
+      deferred. Every entry here is the MAINTAINER's, the site labels it
+      "curator note", and the UI never implies a crowd.
+
+      Writes `lib/lab/llm-benchmark/feedback.json` — COMMITTED, and a strict
+      sidecar: feedback never enters results.json, a prompt, a scorer or a
+      run log (`layering.test.ts` enforces both directions structurally).
+
+      Contracts: one entry per `bench://` ref; `createdAt` immutable,
+      `updatedAt` monotonic, `version` +1 per write; a write REPLACES the entry
+      (re-rating without `--note` clears the note, and says so). The ref must
+      RESOLVE against results.json before anything is written — no rating of a
+      record that does not exist. `task bench:verify-results` re-checks all of
+      that on the committed file.
+    cmds:
+      - '{{.BIN}}/tsx scripts/bench-feedback.mjs {{.CLI_ARGS}}'
+
+  corpus:ingest:
+    aliases: ['bench:corpus:ingest']
+    dir: '{{.TASKFILE_DIR}}'
+    desc: File this machine's failing sweep iterations into the failure regression corpus (free, offline)
+    summary: |
+      Production-case ingestion (#25). `sweeps/` is gitignored and pruned, so
+      every broken artifact a sweep found — the platformer that never jumps, the
+      free-tier model that narrated its plan instead of emitting a document —
+      dies with the tree unless it is filed. Those are the regression cases.
+
+      Selects the FAILING iterations from every local run log: score < 40, OR
+      any NAMED behavioural check tripped (which is why a 100-scoring artifact
+      that trips the zero-point `no-runtime-errors` check is still ingested).
+      Writes the bytes to `failure-corpus/cases/<content-address>.html`
+      (GITIGNORED — model HTML that executes in a browser, re-derivable from the
+      sweep) and the story to `failure-corpus/provenance.json` (COMMITTED —
+      model, task, iteration, score, failed checks, prompt bundle, sweep id).
+
+      Idempotent: the key is artifact+model+task+iteration and the original
+      `ingestedAt` is preserved, so re-running over the same trees leaves
+      provenance.json byte-identical. `-- --run <id>` limits it to one sweep,
+      `-- --dry-run` reports without writing. Commit provenance.json after.
+    cmds:
+      - '{{.BIN}}/tsx scripts/ingest-failures.mjs {{.CLI_ARGS}}'
+
+  corpus:probe:
+    aliases: ['bench:corpus:probe']
+    dir: '{{.TASKFILE_DIR}}'
+    desc: Re-run the failure corpus through the CURRENT scorer — the post-prompt-edit report
+    deps: [check:sandbox]
+    summary: |
+      The payoff of #25, and the workflow is: ingest → edit a prompt or a scorer
+      → probe. Each case is graded against its recorded provenance:
+
+        still-broken  reproduces. The EXPECTED steady state, not a failure.
+        now-passing   clears the floor AND nothing that used to fail still does.
+        changed       a DIFFERENT failure set — a partial fix, or breakage the
+                      provenance does not describe (grow the check registry).
+
+      A REPORT, not a gate: exit is 0 whatever the verdicts, because a gate that
+      failed on still-broken would be red forever. `-- --strict` exits 1 on any
+      `changed` case — that is the release-gate use, after an edit.
+
+      COST: behavioural cases launch headless Chromium (seconds to ~30s each).
+      Bound a run with `-- --task <id> --model <id> --limit <n>`. Cases whose
+      bytes are absent (a fresh clone — they are gitignored) are reported and
+      skipped; re-ingest from a sweep tree to probe them.
+    cmds:
+      - '{{.BIN}}/tsx scripts/probe-corpus.mjs {{.CLI_ARGS}}'
+
+  gateway-fixtures:
+    aliases: ['bench:gateway-fixtures']
+    dir: '{{.TASKFILE_DIR}}'
+    desc: Prove the gateway-console checks discriminate broken from working (free, offline, needs a browser)
+    deps: [check:browser]
+    summary: |
+      The acceptance criterion for the gateway-behaviour archetype (#22): run
+      the three `gateway-console` checks over two HAND-WRITTEN reference
+      artifacts and compare each verdict against the expectation recorded
+      beside them in `plugins/gateway-tasks/fixtures.ts`.
+
+        good  contract-perfect console         -> all three PASS
+        bad   retries the DENIED tool and
+              fabricates an API key, but backs
+              off CORRECTLY on the rate limit  -> fail-closed FAIL,
+                                                  rate-backoff PASS,
+                                                  no-fabrication FAIL
+
+      The bad fixture passing one check is the point: a fixture that failed
+      everything would be consistent with a check that always fails.
+
+      A GATE, unlike `corpus:probe` — the fixtures are deterministic, so a
+      mismatch means a check stopped discriminating. Nothing runs it on commit
+      or push: it launches headless Chromium and drives real timers (~10s), the
+      same cost shape as `bench:rescore`.
+
+      `-- --json` prints the per-check table as JSON. Exit 0 all matched,
+      1 mismatch, 2 the task/checks could not be resolved.
+    cmds:
+      - '{{.BIN}}/tsx scripts/gateway-fixtures.mjs {{.CLI_ARGS}}'
+
+  publish-traces:
+    aliases: ['bench:publish-traces']
+    dir: '{{.TASKFILE_DIR}}'
+    desc: Copy the run logs results.json points at into public/lab-data/traces (free, offline)
+    summary: |
+      Makes the forensic evidence PUBLIC. `sweeps/` is gitignored and pruned, so
+      a run log exists only on the machine that ran the sweep — a CI build has
+      none. This copies every log a results.json record references, plus ONLY
+      the spill files that log actually references, into
+      `public/lab-data/traces/<runId>/`, and writes `index.json` (runId, file,
+      modelId, taskId from each log's HEADER). The task page reads that index at
+      build time and the "Iteration trace" disclosure fetches the JSONL on
+      demand — so a trace that is not published simply does not render, and the
+      UI never 404-probes.
+
+      Published traces ARE COMMITTED (the `.gitignore` carves them out of the
+      otherwise-generated `public/lab-data/`). Idempotent, no arguments: it also
+      PRUNES traces no record claims any more, and spill files no surviving log
+      references — a trace for a replaced run is evidence for a result the site
+      no longer shows.
+
+      Spill files are whole artifacts and are copied VERBATIM (a clipped
+      artifact is evidence you cannot trust). The script prints the byte totals
+      and warns past a 2 MB soft budget; you decide whether to commit that much.
+
+      Runbook order after a sweep:
+        task bench:verify-results  →  task bench:publish-traces  →  commit
+    cmds:
+      - '{{.BIN}}/tsx scripts/publish-traces.mjs'
+
+  monitor:
+    aliases: ['bench:monitor']
+    dir: '{{.TASKFILE_DIR}}'
+    desc: 'Quota-recovery monitor — plan (free) or auto-resume killed sweeps with `-- --go`'
+    summary: |
+      scripts/sweep-recovery.mjs. Asks the resume machinery what is still
+      pending in each sweeps/<run-id>/ tree and the quota machinery what is
+      still locked, then prints one verdict per run:
+
+        complete  nothing pending — pruned from the watch set
+        resume    pending pairs, no pending model locked — ready to go
+        wait      a pending pair's model is quota-locked until T
+
+      A resume re-runs EVERY pending pair in the tree, so ONE locked pending
+      model makes the whole run wait — resuming would burn that model against a
+      quota that is provably not back.
+
+        task bench:monitor                          one-shot plan, spends NOTHING
+        task bench:monitor -- --run 2026-08-16T09-30-12
+        task bench:monitor -- --go                  resume everything ready, now
+        task bench:monitor -- --watch --go          poll (15 min) until all complete
+
+      COST  The plan is free. `--go` spawns the real sweep (SPENDS MONEY) —
+      `npx tsx scripts/run-benchmark.mjs --resume <id> --model … --task …`, with
+      the model/task shape read from the tree's run-log headers so the child
+      plans exactly what this plan showed. One child at a time, newest first,
+      stopping at the first nonzero exit.
+
+      LIMITATION  `sweeps/.recovery.lock` (pid file, stale-pid detection) stops
+      two MONITORS from racing. It cannot see a sweep you started by hand — that
+      sweep holds no lock, and a resume into the same tree truncates its run
+      logs. Never run the monitor while a hand-started sweep is live.
+
+      Decisions are logged to stdout AND appended to sweeps/recovery.log
+      (gitignored).
+    cmds:
+      - '{{.BIN}}/tsx scripts/sweep-recovery.mjs {{.CLI_ARGS}}'
+
+  plugin-scaffold:
+    aliases: ['bench:plugin-scaffold']
+    dir: '{{.TASKFILE_DIR}}'
+    desc: 'Scaffold a new plugin — `task bench:plugin-scaffold -- <id> "<Display Name>"`'
+    summary: |
+      Generates lib/lab/llm-benchmark/plugins/<id>/ from the templates in
+      scripts/templates/plugin/: manifest.json, index.ts (a BenchmarkPlugin
+      wired to a stub task), checks.ts (two stub checks with point-budget
+      placeholders and `import type` discipline) and demo.tsx. Prints the two
+      roster lines to add to plugins/index.ts plus the wiring checklist.
+
+      Free and offline — no API calls. Refuses to overwrite an existing
+      directory, and refuses an id that collides with a registered plugin or
+      an existing directory.
+
+      It does NOT edit the roster. Until you add the printed import the plugin
+      is dead code: `task verify` typechecks and lints it but nothing imports
+      it, so an unrostered scaffold cannot break the published task set.
+
+      Guide: docs/lab/llm-benchmark/plugins-authoring.md
+    requires:
+      vars: [CLI_ARGS]
+    cmds:
+      - '{{.BIN}}/tsx scripts/plugin-scaffold.mjs {{.CLI_ARGS}}'
+
+  plugin-validate:
+    aliases: ['bench:plugin-validate']
+    dir: '{{.TASKFILE_DIR}}'
+    desc: 'Review a plugin — `task bench:plugin-validate -- <dir-or-roster-id>`'
+    summary: |
+      Reports EVERY problem with a plugin at once, plus the capability table a
+      reviewer actually wants: what it declares beside what it contributes.
+
+        task bench:plugin-validate -- community-tasks
+        task bench:plugin-validate -- lib/lab/llm-benchmark/plugins/echo-provider
+
+      Two argument forms. A path that exists on disk is IMPORTED for review and
+      deliberately not registered — that is the third-party path, and looking at
+      a plugin must not mount it. Anything else is read out of the roster
+      ("is what we ship still clean?").
+
+      `registerPlugin()` throws on the FIRST violation, which is right for a
+      loader and useless for a review. The rules are shared: one generator in
+      plugins/registry.ts feeds registration and validation, so this tool cannot
+      drift from what registration will do (a parity matrix in
+      plugins/validate-plugin.test.ts asserts it rule by rule). Validation also
+      applies manifest rules registration does not (kebab-case id, semver-ish
+      version, description present) — a review gate is allowed to be stricter
+      than the loader.
+
+      Free and offline. Exit 1 on errors; warnings are printed and never fail.
+
+      Guide: docs/lab/llm-benchmark/plugins-authoring.md
+    requires:
+      vars: [CLI_ARGS]
+    cmds:
+      - '{{.BIN}}/tsx scripts/validate-plugin.mjs {{.CLI_ARGS}}'
+
+  cache:clear:
+    aliases: ['bench:cache:clear']
+    dir: '{{.TASKFILE_DIR}}'
+    desc: Delete the cached provider responses (next run pays for fresh calls)
+    summary: |
+      Removes {{.CACHE}}. Equivalent to BUST=1 but permanent. Only do this when
+      you have a reason to distrust the cached responses — every subsequent run
+      re-pays for every call.
+    prompt: Delete the response cache? Every later run will re-pay for fresh API calls.
+    cmds:
+      - rm -f {{.CACHE}}
+      - echo "removed {{.CACHE}}"

@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Bicycle Blueprint</title>
+<style>
+:root {
+  --bg: #0b1622;
+  --panel: #0f2032;
+  --rule: #22405c;
+  --grid: #142536;
+  --ink: #d9e8f3;
+  --muted: #8aa6bd;
+  --accent: #7fd8ff;
+  --tyre: #1f3a50;
+  --rim: #7fd8ff;
+  --spoke: #7fb7d8;
+  --ground: #8fb9d6;
+  --dim: #3d6079;
+  --frame: #ffb347;
+  --chain: #e8f1f8;
+  --crank: #d8e4ee;
+  --gear: #b6f2c8;
+  --valve: #ffe27a;
+  --seat: #f0b15a;
+  --bar: #d9e6f2;
+  --pedal: #c7d3de;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; background: var(--bg); color: var(--ink); font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+body { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; height: 100vh; height: 100dvh; overflow: hidden; }
+header { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding: 10px 16px; border-bottom: 1px solid var(--rule); }
+h1 { margin: 0; font-size: 14px; letter-spacing: .16em; text-transform: uppercase; font-weight: 650; color: var(--accent); }
+.sub { font-size: 12px; color: var(--muted); }
+#stage { position: relative; min-height: 0; }
+#bike { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+footer { padding: 10px 16px 12px; border-top: 1px solid var(--rule); background: var(--panel); }
+.readouts { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px 14px; margin: 0; }
+.readout { min-width: 0; }
+.readout dt { font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); line-height: 1.3; }
+.readout dd { margin: 2px 0 0; }
+output { font-size: 22px; font-weight: 600; font-variant-numeric: tabular-nums; color: var(--ink); }
+[role="alert"] { position: fixed; left: 16px; right: 16px; top: 60px; padding: 10px 12px; background: #3a1420; color: #ffd4dc; border: 1px solid #7a2a3a; border-radius: 6px; z-index: 5; }
+.grid { fill: none; stroke: var(--grid); stroke-width: 1px; vector-effect: non-scaling-stroke; }
+.dim { fill: none; stroke: var(--dim); stroke-width: 1px; vector-effect: non-scaling-stroke; }
+.tyre { fill: none; stroke: var(--tyre); stroke-width: 7px; vector-effect: non-scaling-stroke; }
+.rim { fill: none; stroke: var(--rim); stroke-width: 2.5px; vector-effect: non-scaling-stroke; }
+#ground { stroke: var(--ground); stroke-width: 2px; vector-effect: non-scaling-stroke; }
+.spoke { stroke: var(--spoke); stroke-width: 1.5px; vector-effect: non-scaling-stroke; }
+.gear { fill: none; stroke: var(--gear); stroke-width: 2px; vector-effect: non-scaling-stroke; }
+.chain { stroke: var(--chain); stroke-width: 2.5px; vector-effect: non-scaling-stroke; }
+/*@region tube-style*/.frame { stroke: var(--frame); stroke-width: 3.5px; stroke-linecap: round; vector-effect: non-scaling-stroke; }/*@end tube-style*/
+.crank { stroke: var(--crank); stroke-width: 5px; stroke-linecap: round; vector-effect: non-scaling-stroke; }
+.pedal { fill: var(--pedal); }
+.valve { fill: var(--valve); }
+#saddle { fill: var(--seat); }
+#handlebar { fill: var(--bar); }
+@media (max-width: 700px) {
+  .sub { display: none; }
+  .readouts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+</style>
+</head>
+<body>
+<header>
+  <h1>Bicycle blueprint</h1>
+  <span class="sub">Side elevation, drawn from its parameters in millimetres</span>
+</header>
+<main id="stage">
+<svg id="bike" xmlns="http://www.w3.org/2000/svg" viewBox="-486.2 -624.749 1982.4 1140.949" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Bicycle side elevation">
+<circle class="tyre" cx="0" cy="0" r="344"></circle>
+<circle class="tyre" cx="1010" cy="0" r="344"></circle>
+<line id="ground" class="" x1="-380" y1="340" x2="1390" y2="340"></line>
+<circle id="wheel-rear" class="rim" cx="0" cy="0" r="340"></circle>
+<circle id="wheel-front" class="rim" cx="1010" cy="0" r="340"></circle>
+<line class="spoke" data-wheel="rear" x1="0" y1="0" x2="339.425" y2="19.769"></line><line class="spoke" data-wheel="rear" x1="0" y1="0" x2="322.742" y2="106.945"></line><line class="spoke" data-wheel="rear" x1="0" y1="0" x2="284.066" y2="186.833"></line><line class="spoke" data-wheel="rear" x1="0" y1="0" x2="226.031" y2="253.989"></line><line class="spoke" data-wheel="rear" x1="0" y1="0" x2="152.592" y2="303.835"></line><line class="spoke" data-wheel="rear" x1="0" y1="0" x2="68.754" y2="332.976"></line><line class="spoke" data-wheel="rear" x1="0" y1="0" x2="-19.769" y2="339.425"></line><line class="spoke" data-wheel="rear" x1="0" y1="0" x2="-106.945" y2="322.742"></line><line class="spoke" data-wheel="rear" x1="0" y1="0" x2="-186.833" y2="284.066"></line><line class="spoke" data-wheel="rear" x1="0" y1="0" x2="-253.989" y2="226.031"></line><line class="spoke" data-wheel="rear" x1="0" y1="0" x2="-303.835" y2="152.592"></line><line class="spoke" data-wheel="rear" x1="0" y1="0" x2="-332.976" y2="68.754"></line><line class="spoke" data-wheel="rear" x1="0" y1="0" x2="-339.425" y2="-19.769"></line><line class="spoke" data-wheel="rear" x1="0" y1="0" x2="-322.742" y2="-106.945"></line><line class="spoke" data-wheel="rear" x1="0" y1="0" x2="-284.066" y2="-186.833"></line><line class="spoke" data-wheel="rear" x1="0" y1="0" x2="-226.031" y2="-253.989"></line><line class="spoke" data-wheel="rear" x1="0" y1="0" x2="-152.592" y2="-303.835"></line><line class="spoke" data-wheel="rear" x1="0" y1="0" x2="-68.754" y2="-332.976"></line><line class="spoke" data-wheel="rear" x1="0" y1="0" x2="19.769" y2="-339.425"></line><line class="spoke" data-wheel="rear" x1="0" y1="0" x2="106.945" y2="-322.742"></line><line class="spoke" data-wheel="rear" x1="0" y1="0" x2="186.833" y2="-284.066"></line><line class="spoke" data-wheel="rear" x1="0" y1="0" x2="253.989" y2="-226.031"></line><line class="spoke" data-wheel="rear" x1="0" y1="0" x2="303.835" y2="-152.592"></line><line class="spoke" data-wheel="rear" x1="0" y1="0" x2="332.976" y2="-68.754"></line><line class="spoke" data-wheel="front" x1="1010" y1="0" x2="1349.425" y2="19.769"></line><line class="spoke" data-wheel="front" x1="1010" y1="0" x2="1332.742" y2="106.945"></line><line class="spoke" data-wheel="front" x1="1010" y1="0" x2="1294.066" y2="186.833"></line><line class="spoke" data-wheel="front" x1="1010" y1="0" x2="1236.031" y2="253.989"></line><line class="spoke" data-wheel="front" x1="1010" y1="0" x2="1162.592" y2="303.835"></line><line class="spoke" data-wheel="front" x1="1010" y1="0" x2="1078.754" y2="332.976"></line><line class="spoke" data-wheel="front" x1="1010" y1="0" x2="990.231" y2="339.425"></line><line class="spoke" data-wheel="front" x1="1010" y1="0" x2="903.055" y2="322.742"></line><line class="spoke" data-wheel="front" x1="1010" y1="0" x2="823.167" y2="284.066"></line><line class="spoke" data-wheel="front" x1="1010" y1="0" x2="756.011" y2="226.031"></line><line class="spoke" data-wheel="front" x1="1010" y1="0" x2="706.165" y2="152.592"></line><line class="spoke" data-wheel="front" x1="1010" y1="0" x2="677.024" y2="68.754"></line><line class="spoke" data-wheel="front" x1="1010" y1="0" x2="670.575" y2="-19.769"></line><line class="spoke" data-wheel="front" x1="1010" y1="0" x2="687.258" y2="-106.945"></line><line class="spoke" data-wheel="front" x1="1010" y1="0" x2="725.934" y2="-186.833"></line><line class="spoke" data-wheel="front" x1="1010" y1="0" x2="783.969" y2="-253.989"></line><line class="spoke" data-wheel="front" x1="1010" y1="0" x2="857.408" y2="-303.835"></line><line class="spoke" data-wheel="front" x1="1010" y1="0" x2="941.246" y2="-332.976"></line><line class="spoke" data-wheel="front" x1="1010" y1="0" x2="1029.769" y2="-339.425"></line><line class="spoke" data-wheel="front" x1="1010" y1="0" x2="1116.945" y2="-322.742"></line><line class="spoke" data-wheel="front" x1="1010" y1="0" x2="1196.833" y2="-284.066"></line><line class="spoke" data-wheel="front" x1="1010" y1="0" x2="1263.989" y2="-226.031"></line><line class="spoke" data-wheel="front" x1="1010" y1="0" x2="1313.835" y2="-152.592"></line><line class="spoke" data-wheel="front" x1="1010" y1="0" x2="1342.976" y2="-68.754"></line>
+<circle id="chainring" class="gear" cx="420" cy="65" r="97.021"></circle>
+<circle id="sprocket" class="gear" cx="0" cy="0" r="36.383"></circle>
+<line id="chain-upper" class="chain" x1="421.007" y1="-32.016" x2="0.378" y2="-36.381"></line>
+<line id="chain-lower" class="chain" x1="391.633" y1="157.781" x2="-10.637" y2="34.793"></line>
+<line id="chain-stay" class="frame" x1="0" y1="0" x2="420" y2="65"></line>
+<line id="seat-stay" class="frame" x1="0" y1="0" x2="262.119" y2="-451.405"></line>
+<line id="seat-tube" class="frame" x1="420" y1="65" x2="262.119" y2="-451.405"></line>
+<line id="top-tube" class="frame" x1="262.119" y1="-451.405" x2="849.311" y2="-494.549"></line>
+<line id="down-tube" class="frame" x1="420" y1="65" x2="892.574" y2="-361.401"></line>
+<line id="head-tube" class="frame" x1="892.574" y1="-361.401" x2="849.311" y2="-494.549"></line>
+<line id="fork" class="frame" x1="892.574" y1="-361.401" x2="1010" y2="0"></line>
+<line id="crank-right" class="crank" x1="420" y1="65" x2="517.508" y2="-74.256"></line>
+<line id="crank-left" class="crank" x1="420" y1="65" x2="322.492" y2="204.256"></line>
+<rect class="pedal" x="494.508" y="-81.256" width="46" height="14"></rect>
+<rect class="pedal" x="299.492" y="197.256" width="46" height="14"></rect>
+<rect id="saddle" x="212.119" y="-479.405" width="124" height="20" rx="6"></rect>
+<rect id="handlebar" x="787.311" y="-518.549" width="80" height="18" rx="8"></rect>
+<circle class="valve" cx="339.425" cy="19.769" r="9" data-wheel="rear"></circle>
+<circle class="valve" cx="1349.425" cy="19.769" r="9" data-wheel="front"></circle>
+</svg>
+</main>
+<footer>
+  <dl class="readouts">
+    <div class="readout"><dt>Gear ratio, Nf / Nr</dt><dd><output id="out-ratio">2.67</output></dd></div>
+    <div class="readout"><dt>Development, m per crank turn</dt><dd><output id="out-development">5.70</output></dd></div>
+    <div class="readout"><dt>Chain loop, mm</dt><dd><output id="out-chain">1277.8</output></dd></div>
+    <div class="readout"><dt>Chain links, even count</dt><dd><output id="out-links">102</output></dd></div>
+    <div class="readout"><dt>Distance at this crank angle, m</dt><dd><output id="out-distance">0.554</output></dd></div>
+  </dl>
+</footer>
+<script>window.__bench={setParams:function(){return true},setCrank:function(){return true}};</script>
+</body>
+</html>

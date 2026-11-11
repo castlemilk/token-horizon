@@ -1,0 +1,1856 @@
+[
+ {
+  "taskId": "n-body-field",
+  "modelId": "kimi-k2.7",
+  "storedScore": 63,
+  "newScore": 30,
+  "nbody-renders": {
+   "passed": false,
+   "detail": "canvas content: 0.00% of pixels off background (threshold 0.0%)"
+  },
+  "nbody-animates": {
+   "passed": false,
+   "detail": "pixel diff over 1.2s: 0.00% (threshold 0.0%)"
+  },
+  "probe": {
+   "css": {
+    "border": "0px",
+    "radius": "0px",
+    "canvasBgImage": "none",
+    "shadow": "none",
+    "bodyBgImage": "none",
+    "htmlBgImage": "none",
+    "canvases": 1,
+    "transitioningOverCanvas": 0
+   },
+   "asShipped": 0,
+   "strictContent": 0,
+   "strictDiff": 0
+  }
+ },
+ {
+  "taskId": "n-body-field",
+  "modelId": "gemini-3.5-flash-agy",
+  "storedScore": 47.5,
+  "newScore": 96,
+  "nbody-renders": {
+   "passed": true,
+   "detail": "canvas content: 1.22% of pixels off background (threshold 0.0%)"
+  },
+  "nbody-animates": {
+   "passed": true,
+   "detail": "pixel diff over 1.2s: 4.51% (threshold 0.0%)"
+  },
+  "probe": {
+   "css": {
+    "border": "0px",
+    "radius": "0px",
+    "canvasBgImage": "none",
+    "shadow": "none",
+    "bodyBgImage": "none",
+    "htmlBgImage": "none",
+    "canvases": 1,
+    "transitioningOverCanvas": 16
+   },
+   "asShipped": 0.01148410373263889,
+   "strictContent": 0.01124538845486111,
+   "strictDiff": 0.020694986979166666
+  }
+ },
+ {
+  "taskId": "n-body-field",
+  "modelId": "kimi-k3",
+  "storedScore": 100,
+  "newScore": 100,
+  "nbody-renders": {
+   "passed": true,
+   "detail": "canvas content: 3.01% of pixels off background (threshold 0.0%)"
+  },
+  "nbody-animates": {
+   "passed": true,
+   "detail": "pixel diff over 1.2s: 4.74% (threshold 0.0%)"
+  },
+  "probe": {
+   "css": {
+    "border": "0px",
+    "radius": "0px",
+    "canvasBgImage": "none",
+    "shadow": "none",
+    "bodyBgImage": "none",
+    "htmlBgImage": "none",
+    "canvases": 1,
+    "transitioningOverCanvas": 0
+   },
+   "asShipped": 0.02934841579861111,
+   "strictContent": 0.02857666015625,
+   "strictDiff": 0.048613823784722225
+  }
+ },
+ {
+  "taskId": "n-body-field",
+  "modelId": "nemotron-3-super",
+  "storedScore": 97,
+  "newScore": 62,
+  "nbody-renders": {
+   "passed": false,
+   "detail": "canvas content: 0.02% of pixels off background (threshold 0.0%)"
+  },
+  "nbody-animates": {
+   "passed": true,
+   "detail": "pixel diff over 1.2s: 0.02% (threshold 0.0%)"
+  },
+  "probe": {
+   "css": {
+    "border": "0px",
+    "radius": "0px",
+    "canvasBgImage": "none",
+    "shadow": "none",
+    "bodyBgImage": "none",
+    "htmlBgImage": "none",
+    "canvases": 1,
+    "transitioningOverCanvas": 0
+   },
+   "asShipped": 0.00019124348958333333,
+   "strictContent": 0.000040690104166666664,
+   "strictDiff": 0.000056966145833333334
+  }
+ },
+ {
+  "taskId": "n-body-field",
+  "modelId": "nemotron-3-ultra",
+  "storedScore": 100,
+  "newScore": 30,
+  "nbody-renders": {
+   "passed": false,
+   "detail": "canvas content: 0.00% of pixels off background (threshold 0.0%)"
+  },
+  "nbody-animates": {
+   "passed": false,
+   "detail": "pixel diff over 1.2s: 0.00% (threshold 0.0%)"
+  },
+  "probe": {
+   "css": {
+    "border": "0px",
+    "radius": "0px",
+    "canvasBgImage": "none",
+    "shadow": "none",
+    "bodyBgImage": "none",
+    "htmlBgImage": "none",
+    "canvases": 1,
+    "transitioningOverCanvas": 0
+   },
+   "asShipped": 0,
+   "strictContent": 0,
+   "strictDiff": 0
+  }
+ },
+ {
+  "taskId": "n-body-field",
+  "modelId": "nemotron-3-nano-30b",
+  "storedScore": 100,
+  "newScore": 30,
+  "nbody-renders": {
+   "passed": false,
+   "detail": "canvas content: 0.00% of pixels off background (threshold 0.0%)"
+  },
+  "nbody-animates": {
+   "passed": false,
+   "detail": "pixel diff over 1.2s: 0.00% (threshold 0.0%)"
+  },
+  "probe": {
+   "css": {
+    "border": "0px",
+    "radius": "0px",
+    "canvasBgImage": "none",
+    "shadow": "none",
+    "bodyBgImage": "none",
+    "htmlBgImage": "none",
+    "canvases": 1,
+    "transitioningOverCanvas": 0
+   },
+   "asShipped": 0,
+   "strictContent": 0,
+   "strictDiff": 0
+  }
+ },
+ {
+  "taskId": "n-body-field",
+  "modelId": "nemotron-3-nano-omni",
+  "storedScore": 82,
+  "newScore": 30,
+  "nbody-renders": {
+   "passed": false,
+   "detail": "canvas content: 0.00% of pixels off background (threshold 0.0%)"
+  },
+  "nbody-animates": {
+   "passed": false,
+   "detail": "pixel diff over 1.2s: 0.00% (threshold 0.0%)"
+  },
+  "no-runtime-errors": {
+   "passed": false,
+   "detail": "page errors: Failed to execute 'attachShader' on 'WebGLRenderingContext': parameter 1 is not of type 'WebGLProgram'. | Cannot read properties of undefined (reading '1')"
+  },
+  "probe": {
+   "css": {
+    "border": "0px",
+    "radius": "0px",
+    "canvasBgImage": "none",
+    "shadow": "none",
+    "bodyBgImage": "none",
+    "htmlBgImage": "none",
+    "canvases": 1,
+    "transitioningOverCanvas": 0
+   },
+   "asShipped": 0,
+   "strictContent": 0,
+   "strictDiff": 0
+  }
+ },
+ {
+  "taskId": "n-body-field",
+  "modelId": "nemotron-nano-12b-vl",
+  "storedScore": 30,
+  "newScore": 30,
+  "nbody-renders": {
+   "passed": false,
+   "detail": "canvas content: 0.00% of pixels off background (threshold 0.0%)"
+  },
+  "nbody-animates": {
+   "passed": false,
+   "detail": "pixel diff over 1.2s: 0.00% (threshold 0.0%)"
+  },
+  "no-runtime-errors": {
+   "passed": false,
+   "detail": "page errors: Failed to execute 'write' on 'Document': Unexpected token '}'"
+  },
+  "probe": {
+   "css": {
+    "border": "0px",
+    "radius": "0px",
+    "canvasBgImage": "none",
+    "shadow": "none",
+    "bodyBgImage": "none",
+    "htmlBgImage": "none",
+    "canvases": 1,
+    "transitioningOverCanvas": 0
+   },
+   "asShipped": 0,
+   "strictContent": 0,
+   "strictDiff": 0
+  }
+ },
+ {
+  "taskId": "n-body-field",
+  "modelId": "nemotron-nano-9b",
+  "storedScore": 82,
+  "newScore": 30,
+  "nbody-renders": {
+   "passed": false,
+   "detail": "canvas content: 0.00% of pixels off background (threshold 0.0%)"
+  },
+  "nbody-animates": {
+   "passed": false,
+   "detail": "pixel diff over 1.2s: 0.00% (threshold 0.0%)"
+  },
+  "no-runtime-errors": {
+   "passed": false,
+   "detail": "page errors: other.pos.clone is not a function"
+  },
+  "probe": {
+   "css": {
+    "border": "0px",
+    "radius": "0px",
+    "canvasBgImage": "none",
+    "shadow": "none",
+    "bodyBgImage": "none",
+    "htmlBgImage": "none",
+    "canvases": 1,
+    "transitioningOverCanvas": 0
+   },
+   "asShipped": 0,
+   "strictContent": 0,
+   "strictDiff": 0
+  }
+ },
+ {
+  "taskId": "n-body-field",
+  "modelId": "gpt-oss-20b",
+  "storedScore": 96,
+  "newScore": 30,
+  "nbody-renders": {
+   "passed": false,
+   "detail": "no <canvas> found"
+  },
+  "nbody-animates": {
+   "passed": false,
+   "detail": "no <canvas>"
+  },
+  "no-runtime-errors": {
+   "passed": false,
+   "detail": "page errors: Failed to execute 'write' on 'Document': Unexpected token '===' | Failed to execute 'write' on 'Document': Invalid or unexpected token"
+  },
+  "probe": {
+   "css": null,
+   "noCanvas": true
+  }
+ },
+ {
+  "taskId": "n-body-field",
+  "modelId": "gemma-4-26b",
+  "storedScore": 100,
+  "newScore": 30,
+  "nbody-renders": {
+   "passed": false,
+   "detail": "canvas content: 0.00% of pixels off background (threshold 0.0%)"
+  },
+  "nbody-animates": {
+   "passed": false,
+   "detail": "pixel diff over 1.2s: 0.00% (threshold 0.0%)"
+  },
+  "no-runtime-errors": {
+   "passed": false,
+   "detail": "page errors: idx is not defined | idx is not defined | idx is not defined"
+  },
+  "probe": {
+   "css": {
+    "border": "0px",
+    "radius": "0px",
+    "canvasBgImage": "none",
+    "shadow": "none",
+    "bodyBgImage": "none",
+    "htmlBgImage": "none",
+    "canvases": 1,
+    "transitioningOverCanvas": 0
+   },
+   "asShipped": 0,
+   "strictContent": 0,
+   "strictDiff": 0
+  }
+ },
+ {
+  "taskId": "n-body-field",
+  "modelId": "ling-3.0-tiny",
+  "storedScore": 100,
+  "newScore": 30,
+  "nbody-renders": {
+   "passed": false,
+   "detail": "canvas content: 0.00% of pixels off background (threshold 0.0%)"
+  },
+  "nbody-animates": {
+   "passed": false,
+   "detail": "pixel diff over 1.2s: 0.00% (threshold 0.0%)"
+  },
+  "no-runtime-errors": {
+   "passed": false,
+   "detail": "page errors: p.speed is not a function"
+  },
+  "probe": {
+   "css": {
+    "border": "0px",
+    "radius": "0px",
+    "canvasBgImage": "none",
+    "shadow": "none",
+    "bodyBgImage": "none",
+    "htmlBgImage": "none",
+    "canvases": 1,
+    "transitioningOverCanvas": 0
+   },
+   "asShipped": 0,
+   "strictContent": 0,
+   "strictDiff": 0
+  }
+ },
+ {
+  "taskId": "n-body-field",
+  "modelId": "laguna-s-2.1",
+  "storedScore": 82,
+  "newScore": 30,
+  "nbody-renders": {
+   "passed": false,
+   "detail": "no <canvas> found"
+  },
+  "nbody-animates": {
+   "passed": false,
+   "detail": "no <canvas>"
+  },
+  "no-runtime-errors": {
+   "passed": false,
+   "detail": "page errors: THREE is not defined"
+  },
+  "probe": {
+   "css": null,
+   "noCanvas": true
+  }
+ },
+ {
+  "taskId": "n-body-field",
+  "modelId": "laguna-xs-2.1",
+  "storedScore": 96,
+  "newScore": 30,
+  "nbody-renders": {
+   "passed": false,
+   "detail": "no <canvas> found"
+  },
+  "nbody-animates": {
+   "passed": false,
+   "detail": "no <canvas>"
+  },
+  "no-runtime-errors": {
+   "passed": false,
+   "detail": "page errors: THREE is not defined"
+  },
+  "probe": {
+   "css": null,
+   "noCanvas": true
+  }
+ },
+ {
+  "taskId": "n-body-field",
+  "modelId": "codex-gpt-5.6-sol",
+  "storedScore": 91,
+  "newScore": 100,
+  "nbody-renders": {
+   "passed": true,
+   "detail": "canvas content: 24.23% of pixels off background (threshold 0.0%)"
+  },
+  "nbody-animates": {
+   "passed": true,
+   "detail": "pixel diff over 1.2s: 1.18% (threshold 0.0%)"
+  },
+  "probe": {
+   "css": {
+    "border": "0px",
+    "radius": "0px",
+    "canvasBgImage": "radial-gradient(circle at 58% 45%, rgb(25, 27, 25) 0px, rgb(12, 15, 15) 42%, rgb(7, 9, 9) 77%), none",
+    "shadow": "none",
+    "bodyBgImage": "none",
+    "htmlBgImage": "none",
+    "canvases": 1,
+    "transitioningOverCanvas": 0
+   },
+   "asShipped": 0.24320475260416666,
+   "strictContent": 0.006096733940972222,
+   "strictDiff": 0.013096788194444445
+  }
+ },
+ {
+  "taskId": "n-body-field",
+  "modelId": "codex-gpt-5.6-terra",
+  "storedScore": 96,
+  "newScore": 100,
+  "nbody-renders": {
+   "passed": true,
+   "detail": "canvas content: 7.64% of pixels off background (threshold 0.0%)"
+  },
+  "nbody-animates": {
+   "passed": true,
+   "detail": "pixel diff over 1.2s: 2.61% (threshold 0.0%)"
+  },
+  "probe": {
+   "css": {
+    "border": "0px",
+    "radius": "0px",
+    "canvasBgImage": "none",
+    "shadow": "none",
+    "bodyBgImage": "none",
+    "htmlBgImage": "none",
+    "canvases": 1,
+    "transitioningOverCanvas": 0
+   },
+   "asShipped": 0.07811143663194445,
+   "strictContent": 0.07718641493055556,
+   "strictDiff": 0.02539333767361111
+  }
+ },
+ {
+  "taskId": "n-body-field",
+  "modelId": "codex-gpt-5.6-luna",
+  "storedScore": 76,
+  "newScore": 100,
+  "nbody-renders": {
+   "passed": true,
+   "detail": "canvas content: 24.44% of pixels off background (threshold 0.0%)"
+  },
+  "nbody-animates": {
+   "passed": true,
+   "detail": "pixel diff over 1.2s: 2.59% (threshold 0.0%)"
+  },
+  "probe": {
+   "css": {
+    "border": "0px",
+    "radius": "0px",
+    "canvasBgImage": "none",
+    "shadow": "none",
+    "bodyBgImage": "none",
+    "htmlBgImage": "none",
+    "canvases": 1,
+    "transitioningOverCanvas": 0
+   },
+   "asShipped": 0.24422743055555557,
+   "strictContent": 0.2442287868923611,
+   "strictDiff": 0.02634548611111111
+  }
+ },
+ {
+  "taskId": "n-body-field",
+  "modelId": "gemini-3.6-flash-agy",
+  "storedScore": 80.8,
+  "newScore": 100,
+  "nbody-renders": {
+   "passed": true,
+   "detail": "canvas content: 27.44% of pixels off background (threshold 0.0%)"
+  },
+  "nbody-animates": {
+   "passed": true,
+   "detail": "pixel diff over 1.2s: 28.31% (threshold 0.0%)"
+  },
+  "probe": {
+   "css": {
+    "border": "0px",
+    "radius": "0px",
+    "canvasBgImage": "none",
+    "shadow": "none",
+    "bodyBgImage": "none",
+    "htmlBgImage": "none",
+    "canvases": 1,
+    "transitioningOverCanvas": 16
+   },
+   "asShipped": 0.2896484375,
+   "strictContent": 0.23366834852430557,
+   "strictDiff": 0.3256917317708333
+  }
+ },
+ {
+  "taskId": "n-body-field",
+  "modelId": "claude-opus-4-6-thinking-agy",
+  "storedScore": 100,
+  "newScore": 100,
+  "nbody-renders": {
+   "passed": true,
+   "detail": "canvas content: 0.29% of pixels off background (threshold 0.0%)"
+  },
+  "nbody-animates": {
+   "passed": true,
+   "detail": "pixel diff over 1.2s: 0.58% (threshold 0.0%)"
+  },
+  "probe": {
+   "css": {
+    "border": "0px",
+    "radius": "0px",
+    "canvasBgImage": "none",
+    "shadow": "none",
+    "bodyBgImage": "none",
+    "htmlBgImage": "none",
+    "canvases": 1,
+    "transitioningOverCanvas": 0
+   },
+   "asShipped": 0.003152126736111111,
+   "strictContent": 0.0031751844618055558,
+   "strictDiff": 0.006271701388888889
+  }
+ },
+ {
+  "taskId": "n-body-field",
+  "modelId": "gpt-oss-120b-agy",
+  "storedScore": 42.7,
+  "newScore": 30,
+  "nbody-renders": {
+   "passed": false,
+   "detail": "canvas content: 0.00% of pixels off background (threshold 0.0%)"
+  },
+  "nbody-animates": {
+   "passed": false,
+   "detail": "pixel diff over 1.2s: 0.00% (threshold 0.0%)"
+  },
+  "no-runtime-errors": {
+   "passed": false,
+   "detail": "page errors: Cannot access 'camera' before initialization"
+  },
+  "probe": {
+   "css": {
+    "border": "0px",
+    "radius": "0px",
+    "canvasBgImage": "none",
+    "shadow": "none",
+    "bodyBgImage": "none",
+    "htmlBgImage": "none",
+    "canvases": 1,
+    "transitioningOverCanvas": 0
+   },
+   "asShipped": 0,
+   "strictContent": 0,
+   "strictDiff": 0
+  }
+ },
+ {
+  "taskId": "n-body-field",
+  "modelId": "deepseek-v4-flash-free",
+  "storedScore": 53,
+  "newScore": 100,
+  "nbody-renders": {
+   "passed": true,
+   "detail": "canvas content: 39.46% of pixels off background (threshold 0.0%)"
+  },
+  "nbody-animates": {
+   "passed": true,
+   "detail": "pixel diff over 1.2s: 3.29% (threshold 0.0%)"
+  },
+  "probe": {
+   "css": {
+    "border": "0px",
+    "radius": "0px",
+    "canvasBgImage": "none",
+    "shadow": "none",
+    "bodyBgImage": "none",
+    "htmlBgImage": "none",
+    "canvases": 1,
+    "transitioningOverCanvas": 0
+   },
+   "asShipped": 0.3942735460069444,
+   "strictContent": 0.39458143446180555,
+   "strictDiff": 0.029619683159722222
+  }
+ },
+ {
+  "taskId": "n-body-field",
+  "modelId": "gemini-3.6-flash",
+  "storedScore": 74.4,
+  "newScore": 100,
+  "nbody-renders": {
+   "passed": true,
+   "detail": "canvas content: 3.30% of pixels off background (threshold 0.0%)"
+  },
+  "nbody-animates": {
+   "passed": true,
+   "detail": "pixel diff over 1.2s: 3.28% (threshold 0.0%)"
+  },
+  "probe": {
+   "css": {
+    "border": "0px",
+    "radius": "0px",
+    "canvasBgImage": "none",
+    "shadow": "none",
+    "bodyBgImage": "none",
+    "htmlBgImage": "none",
+    "canvases": 1,
+    "transitioningOverCanvas": 4
+   },
+   "asShipped": 0.03325466579861111,
+   "strictContent": 0.014716254340277778,
+   "strictDiff": 0.037909613715277776
+  }
+ },
+ {
+  "taskId": "n-body-field",
+  "modelId": "qwen3-8b-ollama",
+  "storedScore": 30,
+  "newScore": 30,
+  "nbody-renders": {
+   "passed": false,
+   "detail": "canvas content: 0.00% of pixels off background (threshold 0.0%)"
+  },
+  "nbody-animates": {
+   "passed": false,
+   "detail": "pixel diff over 1.2s: 0.00% (threshold 0.0%)"
+  },
+  "probe": {
+   "css": {
+    "border": "0px",
+    "radius": "0px",
+    "canvasBgImage": "none",
+    "shadow": "none",
+    "bodyBgImage": "none",
+    "htmlBgImage": "none",
+    "canvases": 1,
+    "transitioningOverCanvas": 0
+   },
+   "asShipped": 0,
+   "strictContent": 0,
+   "strictDiff": 0
+  }
+ },
+ {
+  "taskId": "n-body-field",
+  "modelId": "gemma3-12b-ollama",
+  "storedScore": 30,
+  "newScore": 30,
+  "nbody-renders": {
+   "passed": false,
+   "detail": "canvas content: 0.00% of pixels off background (threshold 0.0%)"
+  },
+  "nbody-animates": {
+   "passed": false,
+   "detail": "pixel diff over 1.2s: 0.00% (threshold 0.0%)"
+  },
+  "probe": {
+   "css": {
+    "border": "0px",
+    "radius": "0px",
+    "canvasBgImage": "none",
+    "shadow": "none",
+    "bodyBgImage": "none",
+    "htmlBgImage": "none",
+    "canvases": 1,
+    "transitioningOverCanvas": 0
+   },
+   "asShipped": 0,
+   "strictContent": 0,
+   "strictDiff": 0
+  }
+ },
+ {
+  "taskId": "n-body-field",
+  "modelId": "qwen3-14b-ollama",
+  "storedScore": 30,
+  "newScore": 30,
+  "nbody-renders": {
+   "passed": false,
+   "detail": "canvas content: 0.00% of pixels off background (threshold 0.0%)"
+  },
+  "nbody-animates": {
+   "passed": false,
+   "detail": "pixel diff over 1.2s: 0.00% (threshold 0.0%)"
+  },
+  "probe": {
+   "css": {
+    "border": "0px",
+    "radius": "0px",
+    "canvasBgImage": "none",
+    "shadow": "none",
+    "bodyBgImage": "none",
+    "htmlBgImage": "none",
+    "canvases": 1,
+    "transitioningOverCanvas": 0
+   },
+   "asShipped": 0,
+   "strictContent": 0,
+   "strictDiff": 0
+  }
+ },
+ {
+  "taskId": "n-body-field",
+  "modelId": "qwen3.8-27b-mlx-ollama",
+  "storedScore": 100,
+  "newScore": 100,
+  "nbody-renders": {
+   "passed": true,
+   "detail": "canvas content: 0.51% of pixels off background (threshold 0.0%)"
+  },
+  "nbody-animates": {
+   "passed": true,
+   "detail": "pixel diff over 1.2s: 0.83% (threshold 0.0%)"
+  },
+  "probe": {
+   "css": {
+    "border": "0px",
+    "radius": "0px",
+    "canvasBgImage": "none",
+    "shadow": "none",
+    "bodyBgImage": "none",
+    "htmlBgImage": "none",
+    "canvases": 1,
+    "transitioningOverCanvas": 0
+   },
+   "asShipped": 0.004901801215277778,
+   "strictContent": 0.004903157552083333,
+   "strictDiff": 0.007998318142361112
+  }
+ },
+ {
+  "taskId": "n-body-field",
+  "modelId": "ornith-1.5-35b-ollama",
+  "storedScore": 30,
+  "newScore": 30,
+  "nbody-renders": {
+   "passed": false,
+   "detail": "canvas content: 0.00% of pixels off background (threshold 0.0%)"
+  },
+  "nbody-animates": {
+   "passed": false,
+   "detail": "pixel diff over 1.2s: 0.00% (threshold 0.0%)"
+  },
+  "probe": {
+   "css": {
+    "border": "0px",
+    "radius": "0px",
+    "canvasBgImage": "none",
+    "shadow": "none",
+    "bodyBgImage": "none",
+    "htmlBgImage": "none",
+    "canvases": 1,
+    "transitioningOverCanvas": 0
+   },
+   "asShipped": 0,
+   "strictContent": 0,
+   "strictDiff": 0
+  }
+ },
+ {
+  "taskId": "n-body-field",
+  "modelId": "codex-gpt-6-astra-xhigh",
+  "storedScore": 97,
+  "newScore": 97,
+  "nbody-renders": {
+   "passed": true,
+   "detail": "canvas content: 42.10% of pixels off background (threshold 0.0%)"
+  },
+  "nbody-animates": {
+   "passed": true,
+   "detail": "pixel diff over 1.2s: 8.86% (threshold 0.0%)"
+  },
+  "probe": {
+   "css": {
+    "border": "0px",
+    "radius": "0px",
+    "canvasBgImage": "radial-gradient(at 54% 44%, rgb(21, 28, 42) 0px, rgb(16, 20, 30) 30%, rgb(12, 12, 16) 73%)",
+    "shadow": "none",
+    "bodyBgImage": "none",
+    "htmlBgImage": "none",
+    "canvases": 1,
+    "transitioningOverCanvas": 0
+   },
+   "asShipped": 0.4210137261284722,
+   "strictContent": 0.06530083550347222,
+   "strictDiff": 0.09204644097222223
+  }
+ },
+ {
+  "taskId": "n-body-field",
+  "modelId": "devin-swe-2-high",
+  "storedScore": 100,
+  "newScore": 100,
+  "nbody-renders": {
+   "passed": true,
+   "detail": "canvas content: 0.34% of pixels off background (threshold 0.0%)"
+  },
+  "nbody-animates": {
+   "passed": true,
+   "detail": "pixel diff over 1.2s: 0.64% (threshold 0.0%)"
+  },
+  "probe": {
+   "css": {
+    "border": "0px",
+    "radius": "0px",
+    "canvasBgImage": "none",
+    "shadow": "none",
+    "bodyBgImage": "none",
+    "htmlBgImage": "none",
+    "canvases": 1,
+    "transitioningOverCanvas": 0
+   },
+   "asShipped": 0.0034383138020833335,
+   "strictContent": 0.0033162434895833335,
+   "strictDiff": 0.006608072916666667
+  }
+ },
+ {
+  "taskId": "n-body-field",
+  "modelId": "flint-40b-a2b-int4-rec",
+  "storedScore": 100,
+  "newScore": 30,
+  "nbody-renders": {
+   "passed": false,
+   "detail": "canvas content: 0.00% of pixels off background (threshold 0.0%)"
+  },
+  "nbody-animates": {
+   "passed": false,
+   "detail": "pixel diff over 1.2s: 0.00% (threshold 0.0%)"
+  },
+  "probe": {
+   "css": {
+    "border": "0px",
+    "radius": "0px",
+    "canvasBgImage": "none",
+    "shadow": "none",
+    "bodyBgImage": "none",
+    "htmlBgImage": "none",
+    "canvases": 1,
+    "transitioningOverCanvas": 0
+   },
+   "asShipped": 0,
+   "strictContent": 0,
+   "strictDiff": 0
+  }
+ },
+ {
+  "taskId": "n-body-field",
+  "modelId": "flint-40b-a2b-q8-llamacpp",
+  "storedScore": 100,
+  "newScore": 100,
+  "nbody-renders": {
+   "passed": true,
+   "detail": "canvas content: 1.48% of pixels off background (threshold 0.0%)"
+  },
+  "nbody-animates": {
+   "passed": true,
+   "detail": "pixel diff over 1.2s: 2.50% (threshold 0.0%)"
+  },
+  "probe": {
+   "css": {
+    "border": "0px",
+    "radius": "0px",
+    "canvasBgImage": "none",
+    "shadow": "none",
+    "bodyBgImage": "none",
+    "htmlBgImage": "none",
+    "canvases": 1,
+    "transitioningOverCanvas": 0
+   },
+   "asShipped": 0.016727701822916666,
+   "strictContent": 0.01666259765625,
+   "strictDiff": 0.03270128038194445
+  }
+ },
+ {
+  "taskId": "n-body-field",
+  "modelId": "kimi-k3.1-pro",
+  "storedScore": 97,
+  "newScore": 97,
+  "nbody-renders": {
+   "passed": true,
+   "detail": "canvas content: 0.80% of pixels off background (threshold 0.0%)"
+  },
+  "nbody-animates": {
+   "passed": true,
+   "detail": "pixel diff over 1.2s: 1.41% (threshold 0.0%)"
+  },
+  "probe": {
+   "css": {
+    "border": "0px",
+    "radius": "0px",
+    "canvasBgImage": "none",
+    "shadow": "none",
+    "bodyBgImage": "radial-gradient(at 52% 43%, rgb(21, 26, 48) 0%, rgb(11, 14, 27) 43%, rgb(6, 7, 13) 76%, rgb(4, 5, 10) 100%)",
+    "htmlBgImage": "none",
+    "canvases": 1,
+    "transitioningOverCanvas": 0
+   },
+   "asShipped": 0.007804361979166666,
+   "strictContent": 0.007969835069444445,
+   "strictDiff": 0.013788519965277777
+  }
+ },
+ {
+  "taskId": "physics-pendulum-wave",
+  "modelId": "kimi-k2.7",
+  "storedScore": 100,
+  "newScore": 100,
+  "pendulum-renders": {
+   "passed": true,
+   "detail": "canvas content: 20.39% of pixels off background (threshold 0.0%)"
+  },
+  "pendulum-animates": {
+   "passed": true,
+   "detail": "pixel diff over 0.8s: 26.13% (threshold 0.0%)"
+  },
+  "probe": {
+   "css": {
+    "border": "0px",
+    "radius": "0px",
+    "canvasBgImage": "none",
+    "shadow": "none",
+    "bodyBgImage": "none",
+    "htmlBgImage": "none",
+    "canvases": 1,
+    "transitioningOverCanvas": 0
+   },
+   "asShipped": 0.19978434244791668,
+   "strictContent": 0.18891737196180555,
+   "strictDiff": 0.23264838324652778
+  }
+ },
+ {
+  "taskId": "physics-pendulum-wave",
+  "modelId": "kimi-k3",
+  "storedScore": 100,
+  "newScore": 100,
+  "pendulum-renders": {
+   "passed": true,
+   "detail": "canvas content: 26.55% of pixels off background (threshold 0.0%)"
+  },
+  "pendulum-animates": {
+   "passed": true,
+   "detail": "pixel diff over 0.8s: 11.90% (threshold 0.0%)"
+  },
+  "probe": {
+   "css": {
+    "border": "0px",
+    "radius": "0px",
+    "canvasBgImage": "none",
+    "shadow": "none",
+    "bodyBgImage": "none",
+    "htmlBgImage": "none",
+    "canvases": 1,
+    "transitioningOverCanvas": 0
+   },
+   "asShipped": 0.26343858506944445,
+   "strictContent": 0.26655680338541665,
+   "strictDiff": 0.1136813693576389
+  }
+ },
+ {
+  "taskId": "physics-pendulum-wave",
+  "modelId": "nemotron-3-super",
+  "storedScore": 100,
+  "newScore": 100,
+  "pendulum-renders": {
+   "passed": true,
+   "detail": "canvas content: 2.86% of pixels off background (threshold 0.0%)"
+  },
+  "pendulum-animates": {
+   "passed": true,
+   "detail": "pixel diff over 0.8s: 5.51% (threshold 0.0%)"
+  },
+  "probe": {
+   "css": {
+    "border": "0px",
+    "radius": "0px",
+    "canvasBgImage": "none",
+    "shadow": "none",
+    "bodyBgImage": "none",
+    "htmlBgImage": "none",
+    "canvases": 1,
+    "transitioningOverCanvas": 0
+   },
+   "asShipped": 0.02864718967013889,
+   "strictContent": 0.028626844618055557,
+   "strictDiff": 0.05530327690972222
+  }
+ },
+ {
+  "taskId": "physics-pendulum-wave",
+  "modelId": "nemotron-3-ultra",
+  "storedScore": 100,
+  "newScore": 100,
+  "pendulum-renders": {
+   "passed": true,
+   "detail": "canvas content: 3.22% of pixels off background (threshold 0.0%)"
+  },
+  "pendulum-animates": {
+   "passed": true,
+   "detail": "pixel diff over 0.8s: 5.59% (threshold 0.0%)"
+  },
+  "probe": {
+   "css": {
+    "border": "0px",
+    "radius": "0px",
+    "canvasBgImage": "none",
+    "shadow": "none",
+    "bodyBgImage": "none",
+    "htmlBgImage": "none",
+    "canvases": 1,
+    "transitioningOverCanvas": 0
+   },
+   "asShipped": 0.03228624131944444,
+   "strictContent": 0.03330349392361111,
+   "strictDiff": 0.05788845486111111
+  }
+ },
+ {
+  "taskId": "physics-pendulum-wave",
+  "modelId": "nemotron-3-nano-30b",
+  "storedScore": 100,
+  "newScore": 30,
+  "pendulum-renders": {
+   "passed": false,
+   "detail": "canvas content: 0.00% of pixels off background (threshold 0.0%)"
+  },
+  "pendulum-animates": {
+   "passed": false,
+   "detail": "pixel diff over 0.8s: 0.00% (threshold 0.0%)"
+  },
+  "no-runtime-errors": {
+   "passed": false,
+   "detail": "page errors: Assignment to constant variable."
+  },
+  "probe": {
+   "css": {
+    "border": "0px",
+    "radius": "0px",
+    "canvasBgImage": "none",
+    "shadow": "none",
+    "bodyBgImage": "none",
+    "htmlBgImage": "none",
+    "canvases": 1,
+    "transitioningOverCanvas": 0
+   },
+   "asShipped": 0.0448,
+   "strictContent": 0.04488888888888889,
+   "strictDiff": 0.07597777777777778
+  }
+ },
+ {
+  "taskId": "physics-pendulum-wave",
+  "modelId": "nemotron-3-nano-omni",
+  "storedScore": 94,
+  "newScore": 100,
+  "pendulum-renders": {
+   "passed": true,
+   "detail": "canvas content: 0.06% of pixels off background (threshold 0.0%)"
+  },
+  "pendulum-animates": {
+   "passed": true,
+   "detail": "pixel diff over 0.8s: 0.11% (threshold 0.0%)"
+  },
+  "probe": {
+   "css": {
+    "border": "0px",
+    "radius": "0px",
+    "canvasBgImage": "none",
+    "shadow": "none",
+    "bodyBgImage": "none",
+    "htmlBgImage": "none",
+    "canvases": 1,
+    "transitioningOverCanvas": 0
+   },
+   "asShipped": 0.0006232766544117647,
+   "strictContent": 0.0007123161764705882,
+   "strictDiff": 0.0010038488051470587
+  }
+ },
+ {
+  "taskId": "physics-pendulum-wave",
+  "modelId": "nemotron-nano-9b",
+  "storedScore": 100,
+  "newScore": 68,
+  "pendulum-renders": {
+   "passed": true,
+   "detail": "canvas content: 3.62% of pixels off background (threshold 0.0%)"
+  },
+  "pendulum-animates": {
+   "passed": false,
+   "detail": "pixel diff over 0.8s: 0.00% (threshold 0.0%)"
+  },
+  "probe": {
+   "css": {
+    "border": "1px",
+    "radius": "0px",
+    "canvasBgImage": "none",
+    "shadow": "none",
+    "bodyBgImage": "none",
+    "htmlBgImage": "none",
+    "canvases": 1,
+    "transitioningOverCanvas": 0
+   },
+   "asShipped": 0.03616242593238062,
+   "strictContent": 0.01682222222222222,
+   "strictDiff": 0
+  }
+ },
+ {
+  "taskId": "physics-pendulum-wave",
+  "modelId": "gpt-oss-20b",
+  "storedScore": 100,
+  "newScore": 30,
+  "pendulum-renders": {
+   "passed": false,
+   "detail": "canvas content: 0.00% of pixels off background (threshold 0.0%)"
+  },
+  "pendulum-animates": {
+   "passed": false,
+   "detail": "pixel diff over 0.8s: 0.00% (threshold 0.0%)"
+  },
+  "no-runtime-errors": {
+   "passed": false,
+   "detail": "page errors: Failed to execute 'write' on 'Document': Unexpected identifier 'time'"
+  },
+  "probe": {
+   "css": {
+    "border": "0px",
+    "radius": "0px",
+    "canvasBgImage": "none",
+    "shadow": "none",
+    "bodyBgImage": "none",
+    "htmlBgImage": "none",
+    "canvases": 1,
+    "transitioningOverCanvas": 0
+   },
+   "asShipped": 0,
+   "strictContent": 0,
+   "strictDiff": 0
+  }
+ },
+ {
+  "taskId": "physics-pendulum-wave",
+  "modelId": "gemma-4-26b",
+  "storedScore": 100,
+  "newScore": 100,
+  "pendulum-renders": {
+   "passed": true,
+   "detail": "canvas content: 1.00% of pixels off background (threshold 0.0%)"
+  },
+  "pendulum-animates": {
+   "passed": true,
+   "detail": "pixel diff over 0.8s: 1.30% (threshold 0.0%)"
+  },
+  "probe": {
+   "css": {
+    "border": "0px",
+    "radius": "0px",
+    "canvasBgImage": "none",
+    "shadow": "none",
+    "bodyBgImage": "none",
+    "htmlBgImage": "none",
+    "canvases": 1,
+    "transitioningOverCanvas": 0
+   },
+   "asShipped": 0.00999484592013889,
+   "strictContent": 0.009962293836805556,
+   "strictDiff": 0.013907877604166667
+  }
+ },
+ {
+  "taskId": "physics-pendulum-wave",
+  "modelId": "ling-3.0-tiny",
+  "storedScore": 100,
+  "newScore": 68,
+  "pendulum-renders": {
+   "passed": true,
+   "detail": "canvas content: 0.42% of pixels off background (threshold 0.0%)"
+  },
+  "pendulum-animates": {
+   "passed": false,
+   "detail": "pixel diff over 0.8s: 0.00% (threshold 0.0%)"
+  },
+  "no-runtime-errors": {
+   "passed": false,
+   "detail": "page errors: Failed to execute 'write' on 'Document': Identifier 'lastTime' has already been declared"
+  },
+  "probe": {
+   "css": {
+    "border": "0px",
+    "radius": "0px",
+    "canvasBgImage": "none",
+    "shadow": "none",
+    "bodyBgImage": "none",
+    "htmlBgImage": "none",
+    "canvases": 1,
+    "transitioningOverCanvas": 3
+   },
+   "asShipped": 0.004248046875,
+   "strictContent": 0,
+   "strictDiff": 0
+  }
+ },
+ {
+  "taskId": "physics-pendulum-wave",
+  "modelId": "laguna-s-2.1",
+  "storedScore": 100,
+  "newScore": 100,
+  "pendulum-renders": {
+   "passed": true,
+   "detail": "canvas content: 0.57% of pixels off background (threshold 0.0%)"
+  },
+  "pendulum-animates": {
+   "passed": true,
+   "detail": "pixel diff over 0.8s: 1.47% (threshold 0.0%)"
+  },
+  "probe": {
+   "css": {
+    "border": "0px",
+    "radius": "0px",
+    "canvasBgImage": "none",
+    "shadow": "none",
+    "bodyBgImage": "none",
+    "htmlBgImage": "none",
+    "canvases": 1,
+    "transitioningOverCanvas": 0
+   },
+   "asShipped": 0.0057061089409722225,
+   "strictContent": 0.0034993489583333335,
+   "strictDiff": 0.008828396267361111
+  }
+ },
+ {
+  "taskId": "physics-pendulum-wave",
+  "modelId": "north-mini-code",
+  "storedScore": 100,
+  "newScore": 30,
+  "pendulum-renders": {
+   "passed": false,
+   "detail": "canvas content: 0.00% of pixels off background (threshold 0.0%)"
+  },
+  "pendulum-animates": {
+   "passed": false,
+   "detail": "pixel diff over 0.8s: 0.00% (threshold 0.0%)"
+  },
+  "no-runtime-errors": {
+   "passed": false,
+   "detail": "page errors: this.pivots is not iterable | Cannot read properties of undefined (reading '0')"
+  },
+  "probe": {
+   "css": {
+    "border": "0px",
+    "radius": "0px",
+    "canvasBgImage": "none",
+    "shadow": "none",
+    "bodyBgImage": "none",
+    "htmlBgImage": "none",
+    "canvases": 1,
+    "transitioningOverCanvas": 0
+   },
+   "asShipped": 0,
+   "strictContent": 0,
+   "strictDiff": 0
+  }
+ },
+ {
+  "taskId": "physics-pendulum-wave",
+  "modelId": "laguna-xs-2.1",
+  "storedScore": 100,
+  "newScore": 100,
+  "pendulum-renders": {
+   "passed": true,
+   "detail": "canvas content: 0.24% of pixels off background (threshold 0.0%)"
+  },
+  "pendulum-animates": {
+   "passed": true,
+   "detail": "pixel diff over 0.8s: 0.51% (threshold 0.0%)"
+  },
+  "probe": {
+   "css": {
+    "border": "0px",
+    "radius": "0px",
+    "canvasBgImage": "none",
+    "shadow": "none",
+    "bodyBgImage": "none",
+    "htmlBgImage": "none",
+    "canvases": 1,
+    "transitioningOverCanvas": 0
+   },
+   "asShipped": 0.002430278884462151,
+   "strictContent": 0.002504980079681275,
+   "strictDiff": 0.005502988047808765
+  }
+ },
+ {
+  "taskId": "physics-pendulum-wave",
+  "modelId": "codex-gpt-5.6-sol",
+  "storedScore": 100,
+  "newScore": 100,
+  "pendulum-renders": {
+   "passed": true,
+   "detail": "canvas content: 2.78% of pixels off background (threshold 0.0%)"
+  },
+  "pendulum-animates": {
+   "passed": true,
+   "detail": "pixel diff over 0.8s: 3.13% (threshold 0.0%)"
+  },
+  "probe": {
+   "css": {
+    "border": "0px",
+    "radius": "0px",
+    "canvasBgImage": "none",
+    "shadow": "none",
+    "bodyBgImage": "none",
+    "htmlBgImage": "none",
+    "canvases": 1,
+    "transitioningOverCanvas": 0
+   },
+   "asShipped": 0.027483452690972222,
+   "strictContent": 0.03288845486111111,
+   "strictDiff": 0.03228895399305556
+  }
+ },
+ {
+  "taskId": "physics-pendulum-wave",
+  "modelId": "codex-gpt-5.6-terra",
+  "storedScore": 64,
+  "newScore": 100,
+  "pendulum-renders": {
+   "passed": true,
+   "detail": "canvas content: 44.92% of pixels off background (threshold 0.0%)"
+  },
+  "pendulum-animates": {
+   "passed": true,
+   "detail": "pixel diff over 0.8s: 12.22% (threshold 0.0%)"
+  },
+  "probe": {
+   "css": {
+    "border": "0px",
+    "radius": "0px",
+    "canvasBgImage": "none",
+    "shadow": "none",
+    "bodyBgImage": "none",
+    "htmlBgImage": "none",
+    "canvases": 1,
+    "transitioningOverCanvas": 0
+   },
+   "asShipped": 0.4488742404513889,
+   "strictContent": 0.4406399197048611,
+   "strictDiff": 0.11183268229166667
+  }
+ },
+ {
+  "taskId": "physics-pendulum-wave",
+  "modelId": "codex-gpt-5.6-luna",
+  "storedScore": 82,
+  "newScore": 100,
+  "pendulum-renders": {
+   "passed": true,
+   "detail": "canvas content: 9.56% of pixels off background (threshold 0.0%)"
+  },
+  "pendulum-animates": {
+   "passed": true,
+   "detail": "pixel diff over 0.8s: 5.57% (threshold 0.0%)"
+  },
+  "probe": {
+   "css": {
+    "border": "0px",
+    "radius": "0px",
+    "canvasBgImage": "none",
+    "shadow": "none",
+    "bodyBgImage": "none",
+    "htmlBgImage": "none",
+    "canvases": 1,
+    "transitioningOverCanvas": 0
+   },
+   "asShipped": 0.09556749131944445,
+   "strictContent": 0.10161404079861111,
+   "strictDiff": 0.05781521267361111
+  }
+ },
+ {
+  "taskId": "physics-pendulum-wave",
+  "modelId": "deepseek-v4-flash-free",
+  "storedScore": 100,
+  "newScore": 100,
+  "pendulum-renders": {
+   "passed": true,
+   "detail": "canvas content: 11.23% of pixels off background (threshold 0.0%)"
+  },
+  "pendulum-animates": {
+   "passed": true,
+   "detail": "pixel diff over 0.8s: 9.85% (threshold 0.0%)"
+  },
+  "probe": {
+   "css": {
+    "border": "0px",
+    "radius": "0px",
+    "canvasBgImage": "none",
+    "shadow": "none",
+    "bodyBgImage": "none",
+    "htmlBgImage": "none",
+    "canvases": 1,
+    "transitioningOverCanvas": 0
+   },
+   "asShipped": 0.10951470269097222,
+   "strictContent": 0.11540120442708333,
+   "strictDiff": 0.10738254123263889
+  }
+ },
+ {
+  "taskId": "physics-pendulum-wave",
+  "modelId": "gemini-3.6-flash",
+  "storedScore": 100,
+  "newScore": 100,
+  "pendulum-renders": {
+   "passed": true,
+   "detail": "canvas content: 3.64% of pixels off background (threshold 0.0%)"
+  },
+  "pendulum-animates": {
+   "passed": true,
+   "detail": "pixel diff over 0.8s: 3.66% (threshold 0.0%)"
+  },
+  "probe": {
+   "css": {
+    "border": "0px",
+    "radius": "0px",
+    "canvasBgImage": "none",
+    "shadow": "none",
+    "bodyBgImage": "none",
+    "htmlBgImage": "none",
+    "canvases": 1,
+    "transitioningOverCanvas": 3
+   },
+   "asShipped": 0.036370171440972224,
+   "strictContent": 0.025434027777777778,
+   "strictDiff": 0.03461235894097222
+  }
+ },
+ {
+  "taskId": "physics-pendulum-wave",
+  "modelId": "nemotron-nano-12b-vl",
+  "storedScore": 39.5,
+  "newScore": 68,
+  "pendulum-renders": {
+   "passed": true,
+   "detail": "canvas content: 0.08% of pixels off background (threshold 0.0%)"
+  },
+  "pendulum-animates": {
+   "passed": false,
+   "detail": "pixel diff over 0.8s: 0.00% (threshold 0.0%)"
+  },
+  "no-runtime-errors": {
+   "passed": false,
+   "detail": "page errors: updateParams is not defined"
+  },
+  "probe": {
+   "css": {
+    "border": "0px",
+    "radius": "0px",
+    "canvasBgImage": "none",
+    "shadow": "none",
+    "bodyBgImage": "none",
+    "htmlBgImage": "none",
+    "canvases": 1,
+    "transitioningOverCanvas": 0
+   },
+   "asShipped": 0.0008002387152777778,
+   "strictContent": 0.0008002387152777778,
+   "strictDiff": 0
+  }
+ },
+ {
+  "taskId": "physics-pendulum-wave",
+  "modelId": "qwen3-8b-ollama",
+  "storedScore": 68,
+  "newScore": 30,
+  "pendulum-renders": {
+   "passed": false,
+   "detail": "canvas content: 0.00% of pixels off background (threshold 0.0%)"
+  },
+  "pendulum-animates": {
+   "passed": false,
+   "detail": "pixel diff over 0.8s: 0.00% (threshold 0.0%)"
+  },
+  "probe": {
+   "css": {
+    "border": "0px",
+    "radius": "0px",
+    "canvasBgImage": "none",
+    "shadow": "none",
+    "bodyBgImage": "none",
+    "htmlBgImage": "none",
+    "canvases": 1,
+    "transitioningOverCanvas": 0
+   },
+   "asShipped": 0,
+   "strictContent": 0,
+   "strictDiff": 0
+  }
+ },
+ {
+  "taskId": "physics-pendulum-wave",
+  "modelId": "gemma3-4b-ollama",
+  "storedScore": 68,
+  "newScore": 30,
+  "pendulum-renders": {
+   "passed": false,
+   "detail": "canvas content: 0.00% of pixels off background (threshold 0.0%)"
+  },
+  "pendulum-animates": {
+   "passed": false,
+   "detail": "pixel diff over 0.8s: 0.00% (threshold 0.0%)"
+  },
+  "probe": {
+   "css": {
+    "border": "0px",
+    "radius": "0px",
+    "canvasBgImage": "none",
+    "shadow": "none",
+    "bodyBgImage": "none",
+    "htmlBgImage": "none",
+    "canvases": 1,
+    "transitioningOverCanvas": 0
+   },
+   "asShipped": 0.000009494357638888889,
+   "strictContent": 0,
+   "strictDiff": 0
+  }
+ },
+ {
+  "taskId": "physics-pendulum-wave",
+  "modelId": "gemma3-12b-ollama",
+  "storedScore": 68,
+  "newScore": 30,
+  "pendulum-renders": {
+   "passed": false,
+   "detail": "canvas content: 0.00% of pixels off background (threshold 0.0%)"
+  },
+  "pendulum-animates": {
+   "passed": false,
+   "detail": "pixel diff over 0.8s: 0.00% (threshold 0.0%)"
+  },
+  "probe": {
+   "css": {
+    "border": "0px",
+    "radius": "0px",
+    "canvasBgImage": "none",
+    "shadow": "none",
+    "bodyBgImage": "none",
+    "htmlBgImage": "none",
+    "canvases": 1,
+    "transitioningOverCanvas": 0
+   },
+   "asShipped": 0,
+   "strictContent": 0,
+   "strictDiff": 0
+  }
+ },
+ {
+  "taskId": "physics-pendulum-wave",
+  "modelId": "gemma3-27b-ollama",
+  "storedScore": 100,
+  "newScore": 100,
+  "pendulum-renders": {
+   "passed": true,
+   "detail": "canvas content: 0.45% of pixels off background (threshold 0.0%)"
+  },
+  "pendulum-animates": {
+   "passed": true,
+   "detail": "pixel diff over 0.8s: 0.65% (threshold 0.0%)"
+  },
+  "probe": {
+   "css": {
+    "border": "0px",
+    "radius": "0px",
+    "canvasBgImage": "none",
+    "shadow": "none",
+    "bodyBgImage": "none",
+    "htmlBgImage": "none",
+    "canvases": 1,
+    "transitioningOverCanvas": 0
+   },
+   "asShipped": 0.00489501953125,
+   "strictContent": 0.0049140082465277775,
+   "strictDiff": 0.006062825520833333
+  }
+ },
+ {
+  "taskId": "physics-pendulum-wave",
+  "modelId": "qwen3-14b-ollama",
+  "storedScore": 11,
+  "newScore": 11,
+  "pendulum-renders": {
+   "passed": false,
+   "detail": "canvas content: 0.00% of pixels off background (threshold 0.0%)"
+  },
+  "pendulum-animates": {
+   "passed": false,
+   "detail": "pixel diff over 0.8s: 0.00% (threshold 0.0%)"
+  },
+  "probe": {
+   "css": {
+    "border": "0px",
+    "radius": "0px",
+    "canvasBgImage": "none",
+    "shadow": "none",
+    "bodyBgImage": "none",
+    "htmlBgImage": "none",
+    "canvases": 1,
+    "transitioningOverCanvas": 0
+   },
+   "asShipped": 0,
+   "strictContent": 0,
+   "strictDiff": 0
+  }
+ },
+ {
+  "taskId": "physics-pendulum-wave",
+  "modelId": "qwen3.8-27b-mlx-ollama",
+  "storedScore": 91,
+  "newScore": 91,
+  "pendulum-renders": {
+   "passed": true,
+   "detail": "canvas content: 7.31% of pixels off background (threshold 0.0%)"
+  },
+  "pendulum-animates": {
+   "passed": true,
+   "detail": "pixel diff over 0.8s: 10.07% (threshold 0.0%)"
+  },
+  "probe": {
+   "css": {
+    "border": "0px",
+    "radius": "0px",
+    "canvasBgImage": "none",
+    "shadow": "none",
+    "bodyBgImage": "none",
+    "htmlBgImage": "none",
+    "canvases": 1,
+    "transitioningOverCanvas": 0
+   },
+   "asShipped": 0.07285020616319444,
+   "strictContent": 0.06992730034722222,
+   "strictDiff": 0.09623887803819445
+  }
+ },
+ {
+  "taskId": "physics-pendulum-wave",
+  "modelId": "ornith-1.5-35b-ollama",
+  "storedScore": 68,
+  "newScore": 30,
+  "pendulum-renders": {
+   "passed": false,
+   "detail": "canvas content: 0.00% of pixels off background (threshold 0.0%)"
+  },
+  "pendulum-animates": {
+   "passed": false,
+   "detail": "pixel diff over 0.8s: 0.00% (threshold 0.0%)"
+  },
+  "no-runtime-errors": {
+   "passed": false,
+   "detail": "page errors: raf is not defined | raf is not defined | raf is not defined"
+  },
+  "probe": {
+   "css": {
+    "border": "0px",
+    "radius": "0px",
+    "canvasBgImage": "none",
+    "shadow": "none",
+    "bodyBgImage": "none",
+    "htmlBgImage": "none",
+    "canvases": 1,
+    "transitioningOverCanvas": 0
+   },
+   "asShipped": 0,
+   "strictContent": 0,
+   "strictDiff": 0
+  }
+ },
+ {
+  "taskId": "physics-pendulum-wave",
+  "modelId": "codex-gpt-6-astra-xhigh",
+  "storedScore": 100,
+  "newScore": 100,
+  "pendulum-renders": {
+   "passed": true,
+   "detail": "canvas content: 12.52% of pixels off background (threshold 0.0%)"
+  },
+  "pendulum-animates": {
+   "passed": true,
+   "detail": "pixel diff over 0.8s: 4.50% (threshold 0.0%)"
+  },
+  "probe": {
+   "css": {
+    "border": "0px",
+    "radius": "0px",
+    "canvasBgImage": "none",
+    "shadow": "none",
+    "bodyBgImage": "none",
+    "htmlBgImage": "none",
+    "canvases": 1,
+    "transitioningOverCanvas": 0
+   },
+   "asShipped": 0.12514105902777778,
+   "strictContent": 0.12525227864583333,
+   "strictDiff": 0.030015733506944444
+  }
+ },
+ {
+  "taskId": "physics-pendulum-wave",
+  "modelId": "devin-swe-2-high",
+  "storedScore": 100,
+  "newScore": 100,
+  "pendulum-renders": {
+   "passed": true,
+   "detail": "canvas content: 9.50% of pixels off background (threshold 0.0%)"
+  },
+  "pendulum-animates": {
+   "passed": true,
+   "detail": "pixel diff over 0.8s: 9.96% (threshold 0.0%)"
+  },
+  "probe": {
+   "css": {
+    "border": "0px",
+    "radius": "0px",
+    "canvasBgImage": "none",
+    "shadow": "none",
+    "bodyBgImage": "none",
+    "htmlBgImage": "none",
+    "canvases": 1,
+    "transitioningOverCanvas": 0
+   },
+   "asShipped": 0.09514838324652777,
+   "strictContent": 0.09657389322916667,
+   "strictDiff": 0.09269341362847222
+  }
+ },
+ {
+  "taskId": "physics-pendulum-wave",
+  "modelId": "flint-40b-a2b-int4-rec",
+  "storedScore": 100,
+  "newScore": 100,
+  "pendulum-renders": {
+   "passed": true,
+   "detail": "canvas content: 0.49% of pixels off background (threshold 0.0%)"
+  },
+  "pendulum-animates": {
+   "passed": true,
+   "detail": "pixel diff over 0.8s: 0.75% (threshold 0.0%)"
+  },
+  "probe": {
+   "css": {
+    "border": "0px",
+    "radius": "0px",
+    "canvasBgImage": "none",
+    "shadow": "none",
+    "bodyBgImage": "none",
+    "htmlBgImage": "none",
+    "canvases": 1,
+    "transitioningOverCanvas": 0
+   },
+   "asShipped": 0.004869249131944444,
+   "strictContent": 0.0048800998263888885,
+   "strictDiff": 0.008462185329861111
+  }
+ },
+ {
+  "taskId": "physics-pendulum-wave",
+  "modelId": "flint-40b-a2b-q8-llamacpp",
+  "storedScore": 100,
+  "newScore": 100,
+  "pendulum-renders": {
+   "passed": true,
+   "detail": "canvas content: 0.99% of pixels off background (threshold 0.0%)"
+  },
+  "pendulum-animates": {
+   "passed": true,
+   "detail": "pixel diff over 0.8s: 1.15% (threshold 0.0%)"
+  },
+  "probe": {
+   "css": {
+    "border": "0px",
+    "radius": "0px",
+    "canvasBgImage": "none",
+    "shadow": "none",
+    "bodyBgImage": "none",
+    "htmlBgImage": "none",
+    "canvases": 1,
+    "transitioningOverCanvas": 0
+   },
+   "asShipped": 0.009940592447916667,
+   "strictContent": 0.009943305121527777,
+   "strictDiff": 0.014876302083333333
+  }
+ },
+ {
+  "taskId": "physics-pendulum-wave",
+  "modelId": "kimi-k3.1-pro",
+  "storedScore": 100,
+  "newScore": 100,
+  "pendulum-renders": {
+   "passed": true,
+   "detail": "canvas content: 35.83% of pixels off background (threshold 0.0%)"
+  },
+  "pendulum-animates": {
+   "passed": true,
+   "detail": "pixel diff over 0.8s: 6.74% (threshold 0.0%)"
+  },
+  "probe": {
+   "css": {
+    "border": "0px",
+    "radius": "0px",
+    "canvasBgImage": "none",
+    "shadow": "none",
+    "bodyBgImage": "none",
+    "htmlBgImage": "none",
+    "canvases": 1,
+    "transitioningOverCanvas": 0
+   },
+   "asShipped": 0.3582614474826389,
+   "strictContent": 0.35068359375,
+   "strictDiff": 0.10353054470486112
+  }
+ }
+]

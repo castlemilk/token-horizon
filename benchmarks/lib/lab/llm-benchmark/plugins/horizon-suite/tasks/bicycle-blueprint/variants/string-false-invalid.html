@@ -1,0 +1,429 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Bicycle Blueprint</title>
+<style>
+:root {
+  --bg: #0b1622;
+  --panel: #0f2032;
+  --rule: #22405c;
+  --grid: #142536;
+  --ink: #d9e8f3;
+  --muted: #8aa6bd;
+  --accent: #7fd8ff;
+  --tyre: #1f3a50;
+  --rim: #7fd8ff;
+  --spoke: #7fb7d8;
+  --ground: #8fb9d6;
+  --dim: #3d6079;
+  --frame: #ffb347;
+  --chain: #e8f1f8;
+  --crank: #d8e4ee;
+  --gear: #b6f2c8;
+  --valve: #ffe27a;
+  --seat: #f0b15a;
+  --bar: #d9e6f2;
+  --pedal: #c7d3de;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; background: var(--bg); color: var(--ink); font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+body { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; height: 100vh; height: 100dvh; overflow: hidden; }
+header { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding: 10px 16px; border-bottom: 1px solid var(--rule); }
+h1 { margin: 0; font-size: 14px; letter-spacing: .16em; text-transform: uppercase; font-weight: 650; color: var(--accent); }
+.sub { font-size: 12px; color: var(--muted); }
+#stage { position: relative; min-height: 0; }
+#bike { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+footer { padding: 10px 16px 12px; border-top: 1px solid var(--rule); background: var(--panel); }
+.readouts { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px 14px; margin: 0; }
+.readout { min-width: 0; }
+.readout dt { font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); line-height: 1.3; }
+.readout dd { margin: 2px 0 0; }
+output { font-size: 22px; font-weight: 600; font-variant-numeric: tabular-nums; color: var(--ink); }
+[role="alert"] { position: fixed; left: 16px; right: 16px; top: 60px; padding: 10px 12px; background: #3a1420; color: #ffd4dc; border: 1px solid #7a2a3a; border-radius: 6px; z-index: 5; }
+.grid { fill: none; stroke: var(--grid); stroke-width: 1px; vector-effect: non-scaling-stroke; }
+.dim { fill: none; stroke: var(--dim); stroke-width: 1px; vector-effect: non-scaling-stroke; }
+.tyre { fill: none; stroke: var(--tyre); stroke-width: 7px; vector-effect: non-scaling-stroke; }
+.rim { fill: none; stroke: var(--rim); stroke-width: 2.5px; vector-effect: non-scaling-stroke; }
+#ground { stroke: var(--ground); stroke-width: 2px; vector-effect: non-scaling-stroke; }
+.spoke { stroke: var(--spoke); stroke-width: 1.5px; vector-effect: non-scaling-stroke; }
+.gear { fill: none; stroke: var(--gear); stroke-width: 2px; vector-effect: non-scaling-stroke; }
+.chain { stroke: var(--chain); stroke-width: 2.5px; vector-effect: non-scaling-stroke; }
+/*@region tube-style*/.frame { stroke: var(--frame); stroke-width: 3.5px; stroke-linecap: round; vector-effect: non-scaling-stroke; }/*@end tube-style*/
+.crank { stroke: var(--crank); stroke-width: 5px; stroke-linecap: round; vector-effect: non-scaling-stroke; }
+.pedal { fill: var(--pedal); }
+.valve { fill: var(--valve); }
+#saddle { fill: var(--seat); }
+#handlebar { fill: var(--bar); }
+@media (max-width: 700px) {
+  .sub { display: none; }
+  .readouts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+</style>
+</head>
+<body>
+<header>
+  <h1>Bicycle blueprint</h1>
+  <span class="sub">Side elevation, drawn from its parameters in millimetres</span>
+</header>
+<main id="stage">
+  <svg id="bike" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 500" preserveAspectRatio="xMidYMid meet" role="img" aria-labelledby="bike-title bike-desc">
+    <title id="bike-title">Bicycle side elevation</title>
+    <desc id="bike-desc">Wheels, frame, drivetrain, cockpit and saddle drawn from the current parameters.</desc>
+    <g id="layer-grid"></g>
+    <g id="layer-dims"></g>
+    <g id="layer-tyres"></g>
+    <line id="ground" x1="0" y1="0" x2="0" y2="0"></line>
+    <circle id="wheel-rear" class="rim" cx="0" cy="0" r="1"></circle>
+    <circle id="wheel-front" class="rim" cx="0" cy="0" r="1"></circle>
+    <g id="layer-spokes"></g>
+    <circle id="chainring" class="gear" cx="0" cy="0" r="1"></circle>
+    <circle id="sprocket" class="gear" cx="0" cy="0" r="1"></circle>
+    <line id="chain-upper" class="chain" x1="0" y1="0" x2="0" y2="0"></line>
+    <line id="chain-lower" class="chain" x1="0" y1="0" x2="0" y2="0"></line>
+    <line id="chain-stay" class="frame" x1="0" y1="0" x2="0" y2="0"></line>
+    <line id="seat-stay" class="frame" x1="0" y1="0" x2="0" y2="0"></line>
+    <line id="seat-tube" class="frame" x1="0" y1="0" x2="0" y2="0"></line>
+    <line id="top-tube" class="frame" x1="0" y1="0" x2="0" y2="0"></line>
+    <line id="down-tube" class="frame" x1="0" y1="0" x2="0" y2="0"></line>
+    <line id="head-tube" class="frame" x1="0" y1="0" x2="0" y2="0"></line>
+    <line id="fork" class="frame" x1="0" y1="0" x2="0" y2="0"></line>
+    <line id="crank-right" class="crank" x1="0" y1="0" x2="0" y2="0"></line>
+    <line id="crank-left" class="crank" x1="0" y1="0" x2="0" y2="0"></line>
+    <rect id="pedal-right" class="pedal" x="0" y="0" width="1" height="1"></rect>
+    <rect id="pedal-left" class="pedal" x="0" y="0" width="1" height="1"></rect>
+    <rect id="saddle" x="0" y="0" width="1" height="1" rx="6"></rect>
+    <rect id="handlebar" x="0" y="0" width="1" height="1" rx="8"></rect>
+    <g id="layer-valves"></g>
+  </svg>
+</main>
+<footer>
+  <dl class="readouts">
+    <div class="readout"><dt>Gear ratio, Nf / Nr</dt><dd><output id="out-ratio">--</output></dd></div>
+    <div class="readout"><dt>Development, m per crank turn</dt><dd><output id="out-development">--</output></dd></div>
+    <div class="readout"><dt>Chain loop, mm</dt><dd><output id="out-chain">--</output></dd></div>
+    <div class="readout"><dt>Chain links, even count</dt><dd><output id="out-links">--</output></dd></div>
+    <div class="readout"><dt>Distance at this crank angle, m</dt><dd><output id="out-distance">--</output></dd></div>
+  </dl>
+</footer>
+<script>
+(function () {
+  'use strict';
+  var PI = Math.PI;
+  var PITCH = 12.7;
+  var SVGNS = 'http://www.w3.org/2000/svg';
+  // Parameter ranges: [min, max, integer?, even?]
+  var RANGES = {
+    wheelRadius: [250, 380], wheelbase: [700, 1200], chainstay: [380, 460], bbDrop: [30, 80],
+    seatTube: [420, 620], seatAngle: [68, 78], headAngle: [66, 76], forkLength: [340, 420],
+    headTube: [90, 200], chainringTeeth: [26, 56, true], sprocketTeeth: [11, 36, true],
+    crankLength: [160, 180], spokes: [12, 36, true, true]
+  };
+  var DEFAULTS = {
+    wheelRadius: 340, wheelbase: 1010, chainstay: 425, bbDrop: 65, seatTube: 540, seatAngle: 73,
+    headAngle: 72, forkLength: 380, headTube: 140, chainringTeeth: 48, sprocketTeeth: 18,
+    crankLength: 170, spokes: 24
+  };
+  var svg = document.getElementById('bike');
+  var layers = {
+    grid: document.getElementById('layer-grid'),
+    dims: document.getElementById('layer-dims'),
+    tyres: document.getElementById('layer-tyres'),
+    spokes: document.getElementById('layer-spokes'),
+    valves: document.getElementById('layer-valves')
+  };
+  var state = { p: null, theta: 35 };
+
+  function el(id) { return document.getElementById(id); }
+  function rad(deg) { return deg * PI / 180; }
+  function teeth(n) { return n * PITCH / (2 * PI); }
+  // Millimetres (y up) to SVG user units (y down).
+  function sv(pt) { return { x: pt.x, y: -pt.y }; }
+  function make(name, attrs, parent) {
+    var node = document.createElementNS(SVGNS, name);
+    for (var key in attrs) node.setAttribute(key, attrs[key]);
+    parent.appendChild(node);
+    return node;
+  }
+  function clear(node) { while (node.firstChild) node.removeChild(node.firstChild); }
+  function setLine(node, a, b) {
+    var pa = sv(a), pb = sv(b);
+    node.setAttribute('x1', pa.x); node.setAttribute('y1', pa.y);
+    node.setAttribute('x2', pb.x); node.setAttribute('y2', pb.y);
+  }
+  function setCircle(node, c, r) {
+    var pc = sv(c);
+    node.setAttribute('cx', pc.x); node.setAttribute('cy', pc.y); node.setAttribute('r', r);
+  }
+  // Box in millimetres: x, bottom y, width and height.
+  function setRect(node, box) {
+    node.setAttribute('x', box.x);
+    node.setAttribute('y', -(box.y + box.h));
+    node.setAttribute('width', box.w);
+    node.setAttribute('height', box.h);
+  }
+  function setText(id, text) { el(id).textContent = text; }
+
+  function validParams(p) {
+    /*@region validate*/
+    if (typeof p !== 'object' || p === null) return false;
+    for (var key in RANGES) {
+      var r = RANGES[key];
+      var v = p[key];
+      if (typeof v !== 'number' || !isFinite(v) || v < r[0] || v > r[1]) return false;
+      if (r[2] && Math.floor(v) !== v) return false;
+      if (r[3] && v % 2 !== 0) return false;
+    }
+    if (p.wheelbase < 2 * p.wheelRadius + 20) return false;
+    if (p.forkLength < p.wheelRadius + 15) return false;
+    return true;
+    /*@end validate*/
+  }
+
+  function validCrank(theta) {
+    /*@region validate-crank*/
+    if (typeof theta !== 'number' || !isFinite(theta) || theta < 0) return false;
+    /*@end validate-crank*/
+    return true;
+  }
+
+  function derive(p, theta) {
+    var A = rad(p.seatAngle), H = rad(p.headAngle);
+    var C = p.chainstay, D = p.bbDrop, W = p.wheelbase, L = p.crankLength;
+    var rear = { x: 0, y: 0 };
+    var front = { x: W, y: 0 };
+    /*@region bb*/
+    var bb = { x: Math.sqrt(C * C - D * D), y: -D };
+    /*@end bb*/
+    var sc = { x: bb.x - p.seatTube * Math.cos(A), y: bb.y + p.seatTube * Math.sin(A) };
+    var fc = { x: W - p.forkLength * Math.cos(H), y: p.forkLength * Math.sin(H) };
+    var ht = { x: fc.x - p.headTube * Math.cos(H), y: fc.y + p.headTube * Math.sin(H) };
+    var th = rad(theta);
+    var sinT = Math.sin(th), cosT = Math.cos(th);
+    /*@region phase*/
+    var phi = theta * p.chainringTeeth / p.sprocketTeeth;
+    /*@end phase*/
+    return {
+      R: p.wheelRadius, W: W, C: C, D: D, rear: rear, front: front, bb: bb, sc: sc, fc: fc, ht: ht,
+      rf: /*@region ring*/teeth(p.chainringTeeth)/*@end ring*/,
+      rr: teeth(p.sprocketTeeth),
+      L: L,
+      crankRight: { x: bb.x + L * sinT, y: bb.y + L * cosT },
+      crankLeft: { x: bb.x - L * sinT, y: bb.y - L * cosT },
+      phi: phi,
+      theta: theta
+    };
+  }
+
+  // Saddle: sits just above SC, its centre 12 mm forward of SC.
+  function saddleBox(g) {
+    /*@region saddle*/
+    return { x: g.sc.x + 12 - 62, y: g.sc.y + 8, w: 124, h: 20 };
+    /*@end saddle*/
+  }
+
+  // Handlebar: centre 22 mm behind HT and 15 mm above it.
+  function handlebarBox(g) {
+    /*@region bars*/
+    return { x: g.ht.x - 62, y: g.ht.y + 6, w: 80, h: 18 };
+    /*@end bars*/
+  }
+
+  // Bounds of everything drawn, padded by 6 % of the larger side (millimetres, y up).
+  function frameOf(g) {
+    var R = g.R, W = g.W;
+    var pts = [
+      { x: -R - 12, y: -R - 12 }, { x: R + 12, y: R + 12 },
+      { x: W - R - 12, y: -R - 12 }, { x: W + R + 12, y: R + 12 },
+      { x: -R - 40, y: -R }, { x: W + R + 40, y: -R },
+      { x: 0, y: -R - 70 }, { x: W, y: -R - 70 },
+      g.sc, g.ht, g.fc, g.bb,
+      { x: g.crankRight.x - 25, y: g.crankRight.y - 12 }, { x: g.crankRight.x + 25, y: g.crankRight.y + 12 },
+      { x: g.crankLeft.x - 25, y: g.crankLeft.y - 12 }, { x: g.crankLeft.x + 25, y: g.crankLeft.y + 12 }
+    ];
+    var sb = saddleBox(g), hb = handlebarBox(g);
+    pts.push({ x: sb.x, y: sb.y }, { x: sb.x + sb.w, y: sb.y + sb.h });
+    pts.push({ x: hb.x, y: hb.y }, { x: hb.x + hb.w, y: hb.y + hb.h });
+    var x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (var i = 0; i < pts.length; i++) {
+      x0 = Math.min(x0, pts[i].x); y0 = Math.min(y0, pts[i].y);
+      x1 = Math.max(x1, pts[i].x); y1 = Math.max(y1, pts[i].y);
+    }
+    var m = 0.06 * Math.max(x1 - x0, y1 - y0);
+    return { x0: x0 - m, y0: y0 - m, x1: x1 + m, y1: y1 + m };
+  }
+
+  // External common tangents of circle 1 (o1, r1) and circle 2 (o2, r2), in millimetres.
+  // Each run is { a: point on circle 1, b: point on circle 2 }. Upper is the run higher on the page.
+  function tangents(o1, r1, o2, r2) {
+    var dx = o2.x - o1.x, dy = o2.y - o1.y, len = Math.sqrt(dx * dx + dy * dy);
+    var ux = dx / len, uy = dy / len;
+    var c = (r1 - r2) / len;
+    var s = Math.sqrt(Math.max(0, 1 - c * c));
+    var vx = -uy, vy = ux;
+    var n1 = { x: c * ux + s * vx, y: c * uy + s * vy };
+    var n2 = { x: c * ux - s * vx, y: c * uy - s * vy };
+    var wx = vy >= 0 ? vx : -vx, wy = vy >= 0 ? vy : -vy;
+    var up = (n1.x * wx + n1.y * wy >= 0) ? n1 : n2;
+    var down = (up === n1) ? n2 : n1;
+    function run(n) {
+      return {
+        a: { x: o1.x + r1 * n.x, y: o1.y + r1 * n.y },
+        b: { x: o2.x + r2 * n.x, y: o2.y + r2 * n.y }
+      };
+    }
+    return { upper: run(up), lower: run(down) };
+  }
+
+  function drawGrid(box) {
+    clear(layers.grid);
+    var x, y;
+    for (x = Math.ceil(box.x0 / 50) * 50; x <= box.x1; x += 50) {
+      make('line', { 'class': 'grid', x1: x, x2: x, y1: -box.y1, y2: -box.y0 }, layers.grid);
+    }
+    for (y = Math.ceil(box.y0 / 50) * 50; y <= box.y1; y += 50) {
+      make('line', { 'class': 'grid', x1: box.x0, x2: box.x1, y1: -y, y2: -y }, layers.grid);
+    }
+  }
+
+  function drawDims(g) {
+    clear(layers.dims);
+    var y = -g.R - 60;
+    make('line', { 'class': 'dim', x1: 0, x2: g.W, y1: -y, y2: -y }, layers.dims);
+    make('line', { 'class': 'dim', x1: 0, x2: 0, y1: -y - 10, y2: -y + 10 }, layers.dims);
+    make('line', { 'class': 'dim', x1: g.W, x2: g.W, y1: -y - 10, y2: -y + 10 }, layers.dims);
+  }
+
+  function drawTyres(g) {
+    clear(layers.tyres);
+    setCircle(make('circle', { 'class': 'tyre' }, layers.tyres), g.rear, g.R + 4);
+    setCircle(make('circle', { 'class': 'tyre' }, layers.tyres), g.front, g.R + 4);
+  }
+
+  function drawSpokes(hub, R, count, phi, wheel) {
+    for (/*@region spoke-loop*/var k = 0; k < count; k++/*@end spoke-loop*/) {
+      var a = rad(phi + k * 360 / count);
+      var end = { x: hub.x + R * Math.sin(a), y: hub.y + R * Math.cos(a) };
+      setLine(make('line', { 'class': 'spoke', 'data-wheel': wheel, x1: 0, y1: 0, x2: 0, y2: 0 }, layers.spokes), hub, end);
+    }
+  }
+
+  function drawValve(hub, R, phi, wheel) {
+    var a = rad(phi);
+    var c = { x: hub.x + R * Math.sin(a), y: hub.y + R * Math.cos(a) };
+    setCircle(make('circle', { 'class': 'valve', 'data-wheel': wheel, cx: 0, cy: 0, r: 9 }, layers.valves), c, 9);
+  }
+
+  function drawPedal(node, c, theta) {
+    setRect(node, { x: c.x - 23, y: c.y - 7, w: 46, h: 14 });
+    /*@region pedal*/
+    /*@end pedal*/
+  }
+
+  function readouts(p, theta) {
+    var ratio = p.chainringTeeth / p.sprocketTeeth;
+    var rf = teeth(p.chainringTeeth), rr = teeth(p.sprocketTeeth);
+    var C = p.chainstay;
+    /*@region loop*/
+    var loop = 2 * Math.sqrt(C * C - (rf - rr) * (rf - rr)) +
+      rf * (PI + 2 * Math.asin((rf - rr) / C)) + rr * (PI - 2 * Math.asin((rf - rr) / C));
+    /*@end loop*/
+    var links = Math.ceil(loop / PITCH);
+    if (links % 2 !== 0) links += 1;
+    var development = 2 * PI * p.wheelRadius * ratio / 1000;
+    var distance = p.wheelRadius * rad(theta * ratio) / 1000;
+    setText('out-ratio', ratio.toFixed(2));
+    setText('out-development', development.toFixed(2));
+    setText('out-chain', loop.toFixed(1));
+    setText('out-links', String(links));
+    setText('out-distance', distance.toFixed(3));
+  }
+
+  function draw() {
+    var p = state.p, theta = state.theta;
+    var g = derive(p, theta);
+    var R = p.wheelRadius;
+    var box = frameOf(g);
+    /*@region view*/
+    svg.setAttribute('viewBox', [box.x0, -box.y1, box.x1 - box.x0, box.y1 - box.y0].join(' '));
+    /*@end view*/
+    drawGrid(box);
+    drawDims(g);
+    drawTyres(g);
+
+    var gy = /*@region ground*/-R/*@end ground*/;
+    setLine(el('ground'), { x: -R - 40, y: gy }, { x: g.W + R + 40, y: gy });
+    setCircle(el('wheel-rear'), g.rear, R);
+    setCircle(el('wheel-front'), g.front, R);
+
+    clear(layers.spokes);
+    drawSpokes(g.rear, R, p.spokes, g.phi, 'rear');
+    drawSpokes(g.front, R, p.spokes, g.phi, 'front');
+
+    var tRf = g.rf, tRr = g.rr;
+    setCircle(el('chainring'), g.bb, tRf);
+    setCircle(el('sprocket'), g.rear, tRr);
+    /*@region chain*/
+    var runs = tangents(g.bb, tRf, g.rear, tRr);
+    /*@end chain*/
+    setLine(el('chain-upper'), runs.upper.a, runs.upper.b);
+    setLine(el('chain-lower'), runs.lower.a, runs.lower.b);
+
+    setLine(el('chain-stay'), g.rear, g.bb);
+    setLine(el('seat-stay'), g.rear, g.sc);
+    setLine(el('seat-tube'), g.bb, g.sc);
+    setLine(el('top-tube'), g.sc, g.ht);
+    setLine(el('down-tube'), g.bb, g.fc);
+    setLine(el('head-tube'), g.fc, g.ht);
+    setLine(el('fork'), g.fc, g.front);
+
+    setLine(el('crank-right'), g.bb, g.crankRight);
+    setLine(el('crank-left'), g.bb, g.crankLeft);
+    drawPedal(el('pedal-right'), g.crankRight, theta);
+    drawPedal(el('pedal-left'), g.crankLeft, theta);
+
+    setRect(el('saddle'), saddleBox(g));
+    setRect(el('handlebar'), handlebarBox(g));
+
+    clear(layers.valves);
+    drawValve(g.rear, R, g.phi, 'rear');
+    drawValve(g.front, R, g.phi, 'front');
+
+    readouts(p, theta);
+  }
+
+  function copyParams(p) {
+    var q = {};
+    for (var key in RANGES) q[key] = p[key];
+    return q;
+  }
+
+  function setParams(p) {
+    if (!validParams(p)) return "false";
+    state.p = copyParams(p);
+    draw();
+    return true;
+  }
+
+  function setCrank(theta) {
+    if (!validCrank(theta)) return "false";
+    state.theta = theta;
+    draw();
+    return true;
+  }
+
+  window.__bench = { setParams: setParams, setCrank: setCrank };
+  try {
+    setParams(DEFAULTS);
+    setCrank(35);
+  } catch (err) {
+    var alert = document.createElement('div');
+    alert.setAttribute('role', 'alert');
+    alert.textContent = 'The blueprint could not be drawn: ' + (err && err.message ? err.message : String(err));
+    document.body.appendChild(alert);
+  }
+})();
+</script>
+</body>
+</html>

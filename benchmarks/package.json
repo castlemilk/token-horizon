@@ -1,0 +1,28 @@
+{
+  "name": "@token-horizon/benchmarks",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Task benchmark harness for LLMs: runners, scorers, registry, results, sweeps, run logs and an MCP server. Copied from benebsworth.com.",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "bench": "PLAYWRIGHT_BROWSERS_PATH=\"${PLAYWRIGHT_BROWSERS_PATH:-$HOME/Library/Caches/ms-playwright-benchmarks}\" tsx scripts/run-benchmark.mjs"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^1.7.0",
+    "react": "19.2.6"
+  },
+  "devDependencies": {
+    "@types/node": "25.9.1",
+    "@types/react": "19.2.15",
+    "gray-matter": "4.0.3",
+    "playwright": "1.60.0",
+    "tsx": "4.22.4",
+    "typescript": "6.0.3",
+    "vitest": "4.1.7"
+  }
+}

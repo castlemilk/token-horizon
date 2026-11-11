@@ -4,7 +4,9 @@ package catalog
 // Catalog/ModelCatalog.loadBenchmarks + ModelsPipeline.computeTopPicks.
 // The JSON is embedded so the daemon carries its own curated scores
 // (SWE-bench Verified / LiveCodeBench); ~/.config/token-horizon/benchmarks.json
-// overrides it when present (same precedence as the Swift app).
+// overrides it when present. The Swift app tries that same user file first
+// (ModelCatalog.resourceJSONCandidates), then its bundled copy. Unlike Swift,
+// this loader has no dev fallbacks and does not read benchmarks-sourced.json.
 
 import (
 	_ "embed"

@@ -1,0 +1,180 @@
+{
+ "id": "sector-clock",
+ "from_angle": "visual-precision",
+ "title": "Sector Clock",
+ "category": "ui-building",
+ "why_selected": "Time and calendar arithmetic measured on screen: hand directions from line endpoints through getScreenCTM, readouts against integer calendar arithmetic in Node, and the sector from decoded pixels, which is independent of drawing technique. The points sit in real edge cases (hour hand around 12, negative and fractional offsets, pre-1970 instants, arcs over 180 degrees, ISO week-years, host time zone, input validation). An analog clock is the classic gallery piece and every tile shows the same instant.",
+ "changes_made": "1. Merged from the rejected year-heatmap: a fourth readout, the ISO 8601 week with its week-numbering year, with its own check and fixture. 2. Hour-hand tolerance tightened from 1.0 to 0.25 degrees with cases at 59 seconds, so dropping the seconds term (0.49 degrees) is caught; the prompt now forbids rounding below 2 decimals, from which the tolerance is derived. 3. Paint proof is differential (hands hidden against shown) instead of moving the hands, which could collide with numerals or decoration; the prompt gains a concrete paint rule. 4. Band check no longer samples the centre or 0.5R, where a legitimate amber cap or decoration would have failed it; a pie wedge is still caught at 0.765R. 5. utcMs range stated as numbers; numeric strings added to the rejection cases; offset -45 added (a sign taken from the hour part prints +00:45). 6. All expected readouts recomputed with integer day arithmetic and cross-checked against Date UTC getters on 200,000 random instants.",
+ "final_prompt": "Build one self-contained HTML page that draws an analog clock as inline SVG with four text readouts. The clock never reads the system clock: it shows a fixed default on load and afterwards only what the test hooks set. A script grades it by setting hidden instants and measuring what is drawn on screen (hand directions, tick and numeral positions, sector pixels), so the geometry must be exact. Use every id and class exactly as written. Do not round coordinates or angles to fewer than 2 decimal places.\n\nTIME MODEL\n- An instant is utcMs (integer milliseconds since 1970-01-01T00:00:00Z, from -2208988800000 to 4133980799999, that is the years 1900 to 2100) plus offsetMinutes (integer, -720 to 840). Local time is UTC plus the offset, in the Gregorian calendar. The result must not depend on the time zone of the computer displaying the page.\n- H, M, S are the local hour (0-23), minute and whole second. Discard milliseconds by flooring (also for negative utcMs).\n- Angles are degrees clockwise from 12 o'clock as seen on screen:\n  hour hand = ((H mod 12) + M/60 + S/3600) * 30\n  minute hand = (M + S/60) * 6\n  second hand = S * 6\n  24-hour hand = (H + M/60 + S/3600) * 15\n\nDRAWING, all inside <svg id=\"clock\">. R is the radius of the dial.\n- <circle id=\"dial\">: the face. Its centre is the pivot. It must be a true circle on screen.\n- Exactly 60 <line class=\"tick\">, one every 6 degrees, each lying on a radius, entirely between 0.90R and 1.00R from the centre. The 12 ticks at multiples of 30 degrees also carry class \"major\" and are at least 1.5 times as long as the others.\n- Exactly 12 <text class=\"numeral\"> with text 1 to 12, upright (not rotated). Numeral n is centred at angle n*30 degrees, at a distance between 0.55R and 0.68R, and stays entirely inside 0.76R.\n- <line id=\"hand-hour\">, <line id=\"hand-minute\">, <line id=\"hand-second\">: one SVG line each. The line passes through the dial centre; its (x2,y2) end is the tip; its (x1,y1) end is at the centre or up to 0.2R behind it. Tip distance from the centre: hour 0.40R-0.55R, minute 0.62R-0.76R, second 0.62R-0.76R. You may place a hand by its coordinates or by a rotate transform.\n- <circle id=\"subdial\">: a 24-hour sub-dial, radius 0.10R-0.14R, centred directly below the dial centre at a distance of 0.26R-0.32R. <line id=\"hand-24h\"> runs from the sub-dial centre (x1,y1) to its tip (x2,y2); tip distance 0.6-0.95 of the sub-dial radius. Midnight is at the top of the sub-dial.\n- All four hands are stroked at least 1.5 px wide on screen, fully opaque, in colours that differ from the face by more than 80 in at least one RGB channel, with nothing drawn over them.\n- <path id=\"sector\">: a ring segment marking a time span on the 12-hour dial. It covers exactly the region between 0.78R and 0.88R from the centre, clockwise from angle start*0.5 degrees to angle end*0.5 degrees, where start and end are minutes after 12:00 (integers 0-719). If end < start the span passes through 12 o'clock. If start equals end the sector is empty and paints nothing. Paint it #f59e0b, fully opaque. Paint nothing else between 0.77R and 0.89R, and keep the face colour there clearly different from #f59e0b.\n- Paint order: sector below the hands; hour hand, then minute hand, then second hand on top.\n\nREADOUTS (elements with these ids, anywhere on the page; the text content is exactly as specified)\n- #digital: local time as HH:MM:SS, 24-hour, zero-padded.\n- #date-window: local date as three-letter English weekday, one space, day of month without leading zero, for example \"Tue 2\".\n- #offset-label: \"UTC\", then a + or - sign taken from offsetMinutes (+ for zero), then two-digit hours, a colon and two-digit minutes of its absolute value, for example \"UTC+05:45\", \"UTC-03:30\", \"UTC+00:00\".\n- #week-label: the ISO 8601 week of the local date as YYYY-Www. Weeks start on Monday, week 1 is the week containing the year's first Thursday, and YYYY is the ISO week-numbering year, which can differ from the calendar year. Example: 14 March 2026 is \"2026-W11\".\n\nTEST HOOKS on window.__bench\n- setInstant(utcMs, offsetMinutes): update all four hands and all four readouts, return true.\n- setSector(startMinutes, endMinutes): redraw the sector, return true.\n- Both are synchronous: when the call returns, the DOM already shows the new state. Use no CSS transitions, animations or easing on anything these calls change.\n- Arguments that are not integer numbers in the stated ranges (NaN, strings including numeric strings, fractions, out of range, missing) make the call return false without throwing and without changing anything on the page.\n\nON LOAD the page shows setInstant(1773453566000, 330) (07:29:26, \"Sat 14\", \"UTC+05:30\", \"2026-W11\") and setSector(540, 330) (09:00 round to 05:30, a 255-degree span).\n\nLAYOUT\n- The whole clock and the readouts are visible without scrolling at 1024x720 and at 380x480. The dial radius is at least 150 px on screen at 1024x720 and at least 100 px at 380x480.\n- Style it as a finely made instrument. Colours, typography and extra decoration are yours to choose, as long as every rule above still holds.",
+ "final_checks": [
+  {
+   "name": "clock-structure",
+   "points": 6,
+   "verifies": "Every contract element exists with the right tag and count, the dial is a true circle of the required size at both viewports, hand and sub-dial proportions are inside their bands, paint order is correct, and the hands are really painted.",
+   "method": "Preamble (see notes). One probe returns tag and presence for svg#clock, circle#dial, the four hand lines, circle#subdial, path#sector and the four readouts, plus counts line.tick = 60, line.tick.major = 12, text.numeral = 12. Map (cx +- r, cy) and (cx, cy +- r) of #dial through getScreenCTM: horizontal and vertical screen radii equal within 1% and >= 150 px. For each hand: perpendicular distance from the dial centre to the line <= 1.5 px, tip distance and tail inside the stated bands (1% slack); sub-dial radius, offset and 24h tip inside theirs. The svg and readouts lie inside 0..1024 x 0..720. compareDocumentPosition proves sector < hour < minute < second. Paint proof at 10:08:37: capture the svg clip with decoded pixels, as drawn and with the four hands set to visibility:hidden; the pixel 60% along each hand must differ between captures by >= 40 in some channel (3x3 maximum). Then setViewportSize(380, 480), two animation frames, repeat the circle and on-screen tests with radius >= 100 px; restore 1024x720 in finally.",
+   "flake_risk": "Low. Two screenshots and one viewport change; a page that re-lays out on a debounce longer than two frames is read early at 380x480, which the contract does not allow for."
+  },
+  {
+   "name": "clock-ticks-numerals",
+   "points": 7,
+   "verifies": "Sixty radial ticks at exact 6-degree steps with the twelve majors marked and longer, and twelve upright numerals at the right hour positions.",
+   "method": "Preamble. For each line.tick map both endpoints to screen and convert to polar about the dial centre: the two endpoint angles agree within 1 degree, radii inside [0.89R, 1.005R], residual to the nearest multiple of 6 degrees <= 0.6, and all 60 multiples are hit exactly once. Class major is present exactly on multiples of 30; shortest major >= 1.4 x longest minor. For each text.numeral: texts are 1..12 once each; bounding-box centre is within 8 degrees of n*30 and at 0.52R-0.71R; CTM rotation atan2(b, a) within 1 degree of zero.",
+   "flake_risk": "Low to medium. The numeral test uses text bounding boxes, which move by a few percent of R with the font; the 8-degree and widened radial bands absorb that while still catching a 30-degree offset, mirroring or rotated numerals."
+  },
+  {
+   "name": "clock-minute-second",
+   "points": 8,
+   "verifies": "Minute hand angle including its continuous advance with seconds, and second hand angle, at ordinary times.",
+   "method": "Preamble. Offset 0, four hidden instants on 2025-05-06 away from 12 with non-zero seconds: 09:15:45 (minute 94.5, second 270), 03:47:20 (284, 120), 18:22:59 (137.9, 354), 10:08:37 (51.7, 222). For each, in one probe: setInstant, then the clockwise screen angle of end1 -> end2 for #hand-minute and #hand-second from x1, y1, x2, y2 through getScreenCTM (atan2(dx, -dy)). Pass when every circular difference is <= 0.5 degree. Only these two hands are read.",
+   "flake_risk": "None expected: DOM geometry read in the same synchronous turn as the hook call."
+  },
+  {
+   "name": "clock-hour-hand",
+   "points": 11,
+   "verifies": "Hour hand partial advance, including the seconds term, and the edge cases around 12.",
+   "method": "Preamble. Offset 0. Hidden local times 12:00:00 (0), 00:00:00 (0), 12:30:00 (15), 11:59:59 (359.992), 23:59:59 (359.992), 00:00:01 (0.008), 06:30:00 (195), 03:47:20 (113.667), 09:15:45 (277.875), 18:22:59 (191.492). Same angle probe on #hand-hour only; circular difference <= 0.25 degree in every case (0 and 360 are the same angle).",
+   "flake_risk": "None expected. Correct implementations are within 0.06 degree (one-decimal rotate angles) and a hand that ignores seconds is off by 0.49 degree at 59 seconds."
+  },
+  {
+   "name": "clock-offset-time",
+   "points": 11,
+   "verifies": "Local time under fractional, negative and extreme UTC offsets that cross midnight, shown consistently by the readouts and the hands.",
+   "method": "Preamble. Seven hidden (UTC time on 2025-05-06, offset) pairs with local seconds 0 and local minutes <= 20: 18:20Z +345 -> 00:05; 02:40Z -210 -> 23:10; 10:15Z +840 -> 00:15; 05:10Z -720 -> 17:10; 20:45Z +330 -> 02:15; 08:35Z -570 -> 23:05; 00:50Z -45 -> 00:05 with label UTC-00:45. After setInstant read #digital (exact HH:MM:SS), #offset-label (trimmed, U+2212 normalised to '-', exact match), the minute hand (within 0.5 degree) and the hour hand within 15.5 degrees of its expected angle, which identifies the hour without re-testing partial advance.",
+   "flake_risk": "None expected."
+  },
+  {
+   "name": "clock-date-window",
+   "points": 7,
+   "verifies": "Weekday and day of month of the local date across month ends, leap days and the 1900/2100 century rules.",
+   "method": "Preamble. Seven hidden pairs: 2024-02-28T10:30Z +840 -> 'Thu 29'; 2021-03-01T02:10Z -210 -> 'Sun 28'; 2100-02-28T23:30Z +60 -> 'Mon 1'; 1900-02-28T20:15Z +330 -> 'Thu 1'; 2000-03-01T05:00Z -720 -> 'Tue 29'; 2024-12-31T23:59:59Z +1 -> 'Wed 1'; 2024-01-01T00:00Z -1 -> 'Sun 31'. Read only #date-window textContent with whitespace collapsed and compare with the value computed in Node by integer day arithmetic.",
+   "flake_risk": "None."
+  },
+  {
+   "name": "clock-iso-week",
+   "points": 7,
+   "verifies": "The ISO 8601 week and week-numbering year of the local date at year boundaries.",
+   "method": "Preamble. Nine hidden pairs, reading only #week-label (trimmed, exact): 2021-01-01T12:00Z 0 -> '2020-W53'; 2024-12-30T12:00Z 0 -> '2025-W01'; 2026-12-31T12:00Z 0 -> '2026-W53'; 2023-01-01T12:00Z 0 -> '2022-W52'; 2018-12-31T10:00Z +840 -> '2019-W01' (local 1 January); 2021-01-04T03:00Z -300 -> '2020-W53' (local Sunday 3 January); 2016-01-03T23:30Z +60 -> '2016-W01'; 1900-01-01T00:00Z 0 -> '1900-W01'; 2100-12-31T23:00Z 0 -> '2100-W52'.",
+   "flake_risk": "None."
+  },
+  {
+   "name": "clock-subdial-24h",
+   "points": 6,
+   "verifies": "The 24-hour hand makes one revolution per day with midnight at the top, pivoting on the sub-dial.",
+   "method": "Preamble. Offset 0. Hidden times 03:00:00 (45), 15:00:00 (225), 00:00:00 (0), 18:45:00 (281.25), 23:59:59 (359.996). Read #hand-24h: (x1, y1) within 1.5 px of the #subdial centre on screen, and the clockwise angle within 1.5 degrees of (H + M/60 + S/3600)*15.",
+   "flake_risk": "None expected. The tolerance is wider than for the main hands because the hand is short."
+  },
+  {
+   "name": "clock-sector-band",
+   "points": 6,
+   "verifies": "The sector is painted in exactly #f59e0b and occupies exactly the 0.78R-0.88R band, not a pie wedge and not a wider ring.",
+   "method": "Preamble. setInstant to a local 12:00:00 so all hands sit at 0 degrees, then setSector(135, 315) (angles 67.5 to 157.5). One decoded capture of the svg clip. At angles 82.5, 112.5 and 142.5 degrees: pixels at 0.80R, 0.83R and 0.86R are within 14 per channel of (245, 158, 11); pixels at 0.765R and 0.895R are at least 60 away from it in some channel.",
+   "flake_risk": "Low. Sample points sit at least 0.015R (2.2 px at the minimum dial size) from the band edges, outside the anti-aliased rim. One screenshot."
+  },
+  {
+   "name": "clock-sector-arcs",
+   "points": 12,
+   "verifies": "The sector's angular extent for hidden spans, including through 12 o'clock, over 180 degrees, exactly 180, nearly full and empty.",
+   "method": "Preamble. Hands parked at 0 degrees. Six hidden setSector cases: 100->190 (45 degrees), 675->105 (through 12), 120->600 (240 degrees), 180->540 (exactly 180), 20->10 (355 degrees), 300->300 (empty). After each: one decoded capture of the svg clip, sampled at 72 points at 0.83R at angles 2.5 + 5k degrees, skipping any within 2 degrees of a span edge. Every in-span sample must be within 14 per channel of (245, 158, 11) and every out-of-span sample at least 60 away in some channel; in the empty case no sample is amber.",
+   "flake_risk": "Low to medium: six screenshots, about one second in total. Under heavy concurrent load a slow screenshot could reach the wrapper deadline (the budget is kept); grade serially after generation."
+  },
+  {
+   "name": "clock-edge-instants",
+   "points": 6,
+   "verifies": "Negative (pre-1970) timestamps and sub-second values are floored, not truncated or rounded.",
+   "method": "Preamble. Offset 0. Hidden instants: -1 -> 23:59:59; -86400001 -> 23:59:59; 1969-07-20T20:17:40.500Z -> 20:17:40; 2024-06-10T12:00:00.999Z -> 12:00:00. Read only #digital (exact) and #hand-second (354, 354, 240, 0 degrees, within 0.5).",
+   "flake_risk": "None."
+  },
+  {
+   "name": "clock-host-timezone",
+   "points": 6,
+   "verifies": "The displayed time, date and week do not depend on the viewer's time zone.",
+   "method": "No UTC pin here. Open a second context from the same browser with timezoneId 'Pacific/Chatham' (UTC+12:45/+13:45) and the 1024x720 viewport, load ctx.html, wait for window.__bench (1.5 s cap). Run three cases with whole minutes: 2025-05-06T12:00Z offset 0; 2025-05-06T02:40Z offset -210 (crossing midnight); 2024-09-28T14:30Z offset 0 (the hour around the Chatham clock change). Compare #digital, #date-window, #week-label and the minute and hour hand angles (0.5 and 15.5 degrees) with the Node values. Close the context in finally. Every other clock check runs with the page pinned to UTC, so this is the only check that exposes local Date getters.",
+   "flake_risk": "Low. One extra page load (about half a second)."
+  },
+  {
+   "name": "clock-sync-validation",
+   "points": 7,
+   "verifies": "Hooks apply synchronously with no transition, return true for valid input, and reject invalid input by returning false without throwing or changing the page.",
+   "method": "Preamble without the finish-animations step. (a) setInstant(A); then in ONE probe setInstant(B) and immediately read the minute hand angle, #digital and the number of document.getAnimations() entries whose target is inside #clock: values must already be B and the count 0. (b) Snapshot (four hand angles, four readout texts, #sector 'd' attribute and computed display). Call inside try/catch: setInstant(NaN, 0), setInstant('abc', 0), setInstant('1700000000000', 0), setInstant(0, 841), setInstant(0, 1.5), setInstant(1.5, 0), setInstant(4133980800000, 0), setInstant(), setSector(-1, 10), setSector(10, 720), setSector(10.5, 20), setSector('a', 'b'), setSector('10', '20'): each returns exactly false with no exception, and the snapshot is unchanged afterwards. (c) A valid setInstant and setSector each return exactly true.",
+   "flake_risk": "None: no waiting, everything in one JavaScript turn."
+  }
+ ],
+ "fixtures": [
+  {
+   "name": "clock-good",
+   "kind": "good",
+   "expected": "Hand-written reference implementing every rule with integer UTC arithmetic. All 13 checks pass, 100 of 100."
+  },
+  {
+   "name": "clock-broken-paint-order",
+   "kind": "broken",
+   "expected": "Second hand element placed before the hour hand in the SVG. Fails only clock-structure."
+  },
+  {
+   "name": "clock-broken-numerals-from-three",
+   "kind": "broken",
+   "expected": "Numerals placed with cos/sin and no quarter-turn shift, so 1 sits where 4 belongs. Fails only clock-ticks-numerals."
+  },
+  {
+   "name": "clock-broken-minute-steps",
+   "kind": "broken",
+   "expected": "Minute hand = M*6, ignoring seconds. Fails only clock-minute-second (other checks read the minute hand only at whole minutes)."
+  },
+  {
+   "name": "clock-broken-hour-no-advance",
+   "kind": "broken",
+   "expected": "Hour hand = (H mod 12)*30. Fails only clock-hour-hand (the offset and time-zone checks tolerate 15.5 degrees and use minutes <= 30)."
+  },
+  {
+   "name": "clock-broken-negative-offset-wrap",
+   "kind": "broken",
+   "expected": "Minute-of-day computed with JavaScript % and no correction for negative results; the date is computed separately and correctly. Fails only clock-offset-time."
+  },
+  {
+   "name": "clock-broken-date-ignores-offset",
+   "kind": "broken",
+   "expected": "Date window taken from the UTC date (the week label is computed correctly from the local date). Fails only clock-date-window."
+  },
+  {
+   "name": "clock-broken-naive-week",
+   "kind": "broken",
+   "expected": "Week = ceil(dayOfYear / 7) with the calendar year. Fails only clock-iso-week."
+  },
+  {
+   "name": "clock-broken-24h-rate",
+   "kind": "broken",
+   "expected": "24-hour hand turns 30 degrees per hour. Fails only clock-subdial-24h."
+  },
+  {
+   "name": "clock-broken-wide-band",
+   "kind": "broken",
+   "expected": "Sector drawn from 0.70R to 0.95R. Fails only clock-sector-band (the arcs check samples at 0.83R only)."
+  },
+  {
+   "name": "clock-broken-large-arc-flag",
+   "kind": "broken",
+   "expected": "Arc commands always use large-arc-flag 0. Fails only clock-sector-arcs (the band check uses a 90-degree span)."
+  },
+  {
+   "name": "clock-broken-round-seconds",
+   "kind": "broken",
+   "expected": "Seconds from Math.round(ms/1000). Fails only clock-edge-instants (every other check uses whole-second instants)."
+  },
+  {
+   "name": "clock-broken-local-getters",
+   "kind": "broken",
+   "expected": "new Date(utcMs + offset*60000) read with getHours/getDate. Passes under the UTC pin, fails only clock-host-timezone."
+  },
+  {
+   "name": "clock-broken-css-transition",
+   "kind": "broken",
+   "expected": "Hands rotated by CSS transform with transition: transform .4s. Other checks disable and finish animations first; fails only clock-sync-validation."
+  },
+  {
+   "name": "clock-control-static-picture",
+   "kind": "broken",
+   "expected": "Composite control: a correct static SVG of the default view with hooks that return true and do nothing. Passes only clock-ticks-numerals (7 of 100), with the full denominator."
+  }
+ ],
+ "implementation_notes": "Category ui-building, scorer 'behavioral', sandboxConstraints = the hygiene-only text. Needs about 6.5k output tokens.\n\nPreamble for every check except clock-host-timezone: wrapper; pin the page zone to UTC through a CDP session (Emulation.setTimezoneOverride, cleared in finally; the host is UTC+11, so an unpinned run would score a buggy artifact differently per machine); hook presence; freezeMotion; after each hook call document.getAnimations() entries are finished inside try/catch (finish throws on infinite animations), so a stray transition costs only clock-sync-validation.\n\nBuild: (1) clockRef in Node with integer day arithmetic only (days-from-civil and civil-from-days, weekday = (days + 3) mod 7 with Monday 0, ISO week from the Thursday of the week); never use Date local getters in the check. Reference values in this spec were produced that way (script clock.cjs). (2) handAngle source string: endpoints through getScreenCTM, clockwise angle atan2(dx, -dy), circular difference. (3) samplePixels and paintDiff from the shared helpers; convert polar sample points to clip pixels from the on-screen dial centre and radius.\n\nPitfalls: if the backend is not local Chromium the CDP pin is unavailable; fail the check with a clear detail rather than run unpinned. page.context().browser() can be null on a remote backend; fall back to a fresh page with the CDP override. The 24-hour hand is 9 to 20 px long, so never tighten its tolerance. Sector technique is free (filled path, stroked arc), which is why it is judged by pixels and not by isPointInFill.\n\nTolerances. Hour hand 0.25 degree: correct output with one-decimal rotate angles or two-decimal coordinates on a hand of at least 0.40R is within 0.06 degree (4x inside); omitting S/3600 gives 0.49 degree at 59 seconds (2x outside). Minute and second 0.5 degree: omitting seconds gives 2 degrees or more in every case. Offset and time-zone hour test 15.5 degrees: half an hour mark plus slack, so it identifies the hour only. 24-hour hand 1.5 degrees: one-decimal coordinates on a 6-unit hand give 0.67 degree; a 12-hour rate is off by 45 or more. Ticks 0.6 degree of 6; numerals 8 degrees of 30 because text boxes depend on the font. Amber within 14 per channel: an opaque flat fill is exact in an sRGB capture, 14 allows a display-profile conversion; not-amber is 60 or more. Angular skip 2 degrees = 4.3 px at 0.83R of the minimum dial, clear of anti-aliasing. Paint proof: 0.75 coverage x 80 contrast = 60 against 40.\n\nIf the pilot shows every configuration above 90, move points from clock-minute-second and clock-ticks-numerals to clock-sector-arcs and clock-iso-week."
+}

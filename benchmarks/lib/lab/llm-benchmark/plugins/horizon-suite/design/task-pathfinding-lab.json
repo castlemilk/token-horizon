@@ -1,0 +1,144 @@
+{
+ "id": "pathfinding-lab",
+ "from_angle": "instrumented-correctness",
+ "title": "Pathfinding Lab: optimal paths on hidden weighted maps",
+ "category": "advanced-game-building",
+ "why_selected": "The only proposal in advanced-game-building and the only one on graph search. Paths are re-walked and re-costed by the grader, and expansion orders are pinned from both sides by a tie-break-independent set bound (verified here: 0 violations in 560 runs over four tie rules), so a lazy, fake or disguised search cannot pass. The DOM grid must then mirror the returned arrays by attribute and by computed colour. Ten independent requirements, each with a known common failure.",
+ "changes_made": "1. Supplied concrete seeded maps with the properties each check needs, found and verified with a Node solver (seeds in the notes). 2. The edit check now hit-tests the cell with elementFromPoint and clicks by coordinate instead of waiting on locator actionability, and it accepts whichever outcome the grader's solver computes for the edited map (new optimum or no path), so it no longer depends on the artifact's tie-breaking. 3. Contract clarified: a path cell also carries data-visited='true'; clicking turns a wall into open and any other terrain into a wall; no transitions on cell backgrounds; #stat-moves shows a dash when there is no path; algorithms are deterministic. 4. Merged from sorting-lab: Math.random is wrapped during solve and a second solve must return the identical result. 5. The no-path map is specified by hand so the enclosure is exact.",
+ "final_prompt": "Build a single-file HTML page, \"Pathfinding Lab\": a weighted grid map on which BFS, Dijkstra and A* are run, replayed and compared. A grading script loads its own hidden maps through the JavaScript API below, checks every returned path and expansion order against its own solver, and then checks that what you DRAW matches what you returned. Use every id, data attribute and function name exactly as written.\n\nMAP\n- A grid of rows x cols cells, up to 24 x 40. Terrain per cell: '#' wall (impassable), '.' open (cost 1), '~' mud (cost 5), '=' road (cost 0.5).\n- A move goes from a cell to a neighbouring non-wall cell and costs the terrain cost of the cell being ENTERED. Path cost is the sum over its moves; the start cell's own terrain is never charged. The path from a cell to itself has cost 0.\n- With diagonals off, the neighbours are the 4 orthogonal cells. With diagonals on, the 4 diagonal neighbours are added; a diagonal move costs sqrt(2) times the entered cell's cost and is allowed only if BOTH orthogonal cells it passes between are non-wall (no cutting corners).\n\nALGORITHMS (deterministic, no randomness; each stops the moment the goal cell is taken off the frontier and expanded)\n- 'bfs': breadth-first search that ignores terrain costs and returns a path with the fewest moves. Its reported cost is still the true terrain cost of that path.\n- 'dijkstra': uniform-cost search; returns a minimum-cost path.\n- 'astar': A* using EXACTLY this heuristic: h(cell) = cmin * D, where cmin is the smallest terrain cost among the map's non-wall cells and D is the Manhattan distance to the goal (diagonals off) or the octile distance max(dr, dc) + (sqrt(2) - 1) * min(dr, dc) (diagonals on). It must return a minimum-cost path.\n- \"Expanded\" means removed from the frontier and finalised. Each cell is expanded at most once: skip stale queue entries and do not count them. Cells that were discovered but never expanded are NOT part of the expansion order.\n\nAPI (define window.__bench synchronously while the page loads)\n- __bench.loadGrid({rows, start, goal, diagonals}): rows is an array of equal-length strings over the characters # . ~ = ; start and goal are [r, c], 0-based, never walls, possibly equal; diagonals is a boolean. Replaces the map, clears any previous result, stops any playback and redraws synchronously.\n- __bench.solve(algorithm): runs 'bfs', 'dijkstra' or 'astar' on the current map synchronously, makes it the displayed result with the scrubber at its maximum, and returns {found, path, cost, order}: found is a boolean; path is [[r,c], ...] from start to goal inclusive, or [] when not found; cost is a number, or null when not found; order is [[r,c], ...], the cells in the order they were expanded (start first; the goal last when found; when not found, every cell reachable from the start, each exactly once).\n- __bench.last(): the most recent result object with an added algorithm field, or null straight after loadGrid.\n\nDRAWING (plain HTML elements, so the grader can read them)\n- Inside <div id=\"grid\">, one element per cell carrying data-r, data-c and data-terrain=\"wall|open|mud|road\". The start and goal cells also carry data-role=\"start\" or data-role=\"goal\".\n- Cells are square, all the same size (at least 8 px a side), in a regular grid: row r above row r+1, column c left of column c+1. The WHOLE grid is visible without scrolling in a 1024 x 720 window for any map up to 24 x 40.\n- Each cell element's own CSS background-color carries its state, with no transition or animation on it. The four terrains have four clearly different colours. An expanded cell has data-visited=\"true\" and a background colour different from the one it has when not expanded. A cell on the shown path has data-path=\"true\" (as well as data-visited=\"true\"), and ALL path cells share one single background colour that no other cell uses. Every other cell carries data-visited=\"false\" and data-path=\"false\". Mark start and goal with an inner marker or outline, not by breaking these rules.\n- <input type=\"range\" id=\"scrub\" min=\"0\"> with max = N = order.length. At scrubber value k (set by the user, or by script through .value plus an 'input' event) exactly the first k cells of the order are shown as visited, synchronously; the path is shown only when k = N and a path was found.\n- <output id=\"stat-cost\">, <output id=\"stat-moves\">, <output id=\"stat-expanded\">: the displayed result's cost (a plain number correct to at least 4 decimal places), its number of moves (path length - 1) and its order length. With no path, cost and moves show a dash. <div id=\"status\" data-state=\"idle|found|no-path\"> with a short message; when there is no path the message contains the words \"no path\".\n\nINTERACTION\n- <select id=\"algo\"> with options bfs, dijkstra, astar; <button id=\"run\">; a checkbox #diagonals; a Play button that animates the scrubber from 0 to N.\n- Clicking a cell (start and goal ignore clicks) turns a wall into open and any other terrain into a wall, then synchronously re-solves with the algorithm of the displayed result (or the selected one if there is none) and updates grid, stats, status and scrubber. __bench.last() returns the new result.\n- On page load show a built-in 20 x 32 demo map that uses all four terrains, already solved with A*.",
+ "final_checks": [
+  {
+   "name": "path-grid-render",
+   "points": 8,
+   "verifies": "A 24 x 40 hidden map is drawn as a regular, square, fully visible grid with correct terrain attributes, distinguishable terrain colours and a cleared result.",
+   "method": "freezeMotion, then loadGrid with the seeded 24 x 40 map (seed 800: 204 walls, 117 mud, 87 road, 552 open). One probe returns for every '#grid [data-r][data-c]' element its attributes, getBoundingClientRect and computed backgroundColor, plus __bench.last(). Node asserts: exactly 960 elements with unique (r, c); data-terrain matches the map; width and height >= 8, |w - h| <= 1 and all sizes equal within 1 px; left constant per column and strictly increasing with c, top constant per row and strictly increasing with r (1 px tolerance); every rect inside [0, 1024] x [0, 720]; each terrain uses one colour and the four differ pairwise by >= 24 in some channel (start and goal excluded); data-role sits on exactly the start and goal cells; every data-visited and data-path is 'false'; last() === null.",
+   "flake_risk": "Low. Sub-pixel layout is covered by the 1 px tolerance. The space left for the grid depends on control heights and therefore on fonts, so an artifact with a hard-coded cell size can differ between machines; one that sizes cells from the available space cannot."
+  },
+  {
+   "name": "path-dijkstra",
+   "points": 12,
+   "verifies": "Dijkstra returns a valid minimum-cost path, expands exactly the cells theory requires, stops when the goal is expanded, and is deterministic.",
+   "method": "Two seeded 18 x 30 maps with walls, mud and roads (seeds 8 and 42, optima 39.5 and 41.5). One probe per map: loadGrid, wrap Math.random with a counter, solve('dijkstra') twice, restore. Node: path starts at start, ends at goal, each move is to an orthogonal non-wall neighbour; cost recomputed from the path equals result.cost and the grader's optimum C* within 1e-9; order has no duplicates and no walls, order[0] is start, the last entry is goal; with g* from the grader's own all-distances Dijkstra, {g* < C*} is a subset of order and order is a subset of {g* <= C*}; the second result deep-equals the first; Math.random was never called.",
+   "flake_risk": "None. The set bound holds for any tie-breaking (0 violations in 560 runs over FIFO, LIFO, highest-g and lowest-g rules); costs are multiples of 0.5 and therefore exact."
+  },
+  {
+   "name": "path-astar-optimal",
+   "points": 12,
+   "verifies": "A* is optimal on maps where an unscaled or inadmissible heuristic is not.",
+   "method": "Map 1 is a hand-built trap: rows ['...............', '...............', '...............', '.===========...', '...............'], start [1,1], goal [1,11]; the optimum is 8.5 by the road detour and A* with h = Manhattan x 1 returns 10 (verified). Map 2 is the seeded 18 x 30 map 103 with 20% roads (optimum 34; an unscaled heuristic returns 35.5 to 38 under all four tie rules). For both: solve('astar'), path validity as in path-dijkstra, cost recomputed from the path and result.cost both within 1e-9 of the optimum.",
+   "flake_risk": "None."
+  },
+  {
+   "name": "path-astar-expansion",
+   "points": 10,
+   "verifies": "A* really uses the prescribed heuristic: it expands every cell it must and none it must not.",
+   "method": "Seeded 18 x 30 map 203 with walls and mud but no roads (cmin = 1, C* = 46). solve('astar'). With f(n) = g*(n) + Manhattan(n, goal): {f < C*} (120 cells) is a subset of order and order is a subset of {f <= C*} (175 cells); no duplicates; start first, goal last. On this map 232 of the 407 cells with g* <= C* have f > C*, so a search with h = 0 or with a half-weight heuristic cannot satisfy the upper bound (both verified to fail).",
+   "flake_risk": "None. All costs are integers, so the comparisons are exact in binary floating point."
+  },
+  {
+   "name": "path-bfs",
+   "points": 8,
+   "verifies": "BFS returns a fewest-moves path and still reports its true terrain cost.",
+   "method": "Seeded 16 x 26 map 300 with 25% mud: fewest moves D* = 36, cheapest fewest-moves path costs 52, the true optimum is 50 and needs 38 moves. solve('bfs'): path valid; path.length - 1 equals D*; result.cost equals the terrain cost recomputed from the returned path within 1e-9; with d = move distance from the grader's BFS, {d < D*} is a subset of order and order is a subset of {d <= D*}; start first, goal last, no duplicates.",
+   "flake_risk": "None."
+  },
+  {
+   "name": "path-no-path-trivial",
+   "points": 10,
+   "verifies": "The unreachable-goal case and the start-equals-goal case, in the API and in the status region.",
+   "method": "Map A (9 x 13, hand-built, goal [3,10] enclosed by a ring of 8 walls, start [1,1]): solve('bfs') must return found === false, path of length 0, cost === null, and an order whose set equals the grader's flood-fill of the start (106 cells) with no duplicates; #status has data-state 'no-path' and its textContent contains 'no path' ignoring case. Map B: the seeded map 501 with goal set equal to start. solve('astar') must return found === true, a path equal to [start], cost === 0, an order equal to [start]; #status data-state is 'found'. Each map is one probe.",
+   "flake_risk": "None. An artifact that loops forever on map A hits the wrapper deadline and fails with the full 10 points in the denominator."
+  },
+  {
+   "name": "path-diagonal-rules",
+   "points": 12,
+   "verifies": "Eight-direction movement: sqrt(2) cost, no corner cutting, optimality of Dijkstra and A* with the octile heuristic.",
+   "method": "Seeded 16 x 24 map 400 with 28% walls, mud, no roads, diagonals true (optimum 36.485281374238575; with corner cutting it would be 27.80; with 4 neighbours 40). For 'dijkstra' and 'astar': each move is to one of 8 neighbours; a diagonal move requires both orthogonal cells it passes between to be non-wall; cost recomputed with sqrt(2) on diagonal moves equals result.cost and the grader's optimum within 1e-9.",
+   "flake_risk": "None. The optimum is about 36 with at most 40 additions, so summation-order differences are below 1e-13."
+  },
+  {
+   "name": "path-visual-sync",
+   "points": 12,
+   "verifies": "The drawn grid mirrors the returned order and path at hidden scrubber positions, by attribute and by computed colour.",
+   "method": "freezeMotion. Seeded 12 x 18 map 600, solve('astar'), N = order.length. One synchronous probe: for k in [0, floor(N/3), N-1, N] set #scrub.value = k, dispatch new Event('input', {bubbles: true}) and read every cell's data-visited, data-path and computed backgroundColor. Node: at each k the set of data-visited='true' cells equals the first k cells of order; for k < N no cell has data-path='true'; every visited cell's colour differs from its colour at k = 0 and every unvisited cell's colour equals it; at k = N the data-path set equals the path, all path cells share one colour and no other cell has that colour. Also #scrub.max equals N.",
+   "flake_risk": "Low. Setting the value, dispatching and reading happen in one JavaScript turn, so no timer or animation can interleave; colours are compared as exact computed strings."
+  },
+  {
+   "name": "path-edit-resolve",
+   "points": 8,
+   "verifies": "A real click on a cell turns it into a wall, re-solves and redraws.",
+   "method": "Seeded 10 x 14 map 702; solve('dijkstra'); take the middle cell of the returned path (never start or goal). Read its rect, require document.elementFromPoint at its centre to be that cell or a descendant, then page.mouse.click at that point; settle (two animation frames); read __bench.last() and the grid. The grader solves the edited map itself. Require the clicked cell's data-terrain to be 'wall' and last().algorithm 'dijkstra'; if a path still exists, a valid path avoiding the new wall with cost equal to the new optimum within 1e-9 and the data-path set equal to that path; if none exists, found === false and #status data-state 'no-path'.",
+   "flake_risk": "Low. The only check with a real pointer action; the hit test fails fast with a clear detail when an overlay covers the grid, instead of waiting on actionability."
+  },
+  {
+   "name": "path-stats-dom",
+   "points": 8,
+   "verifies": "The stats and scrubber show the displayed result.",
+   "method": "Seeded 10 x 14 map 501 whose optimum is 15.5. One probe: solve('dijkstra'), then read the DOM: Number(#stat-cost text) equals result.cost within 1e-4; Number(#stat-moves) equals path.length - 1; Number(#stat-expanded) equals order.length; #status data-state is 'found'; #scrub.max and #scrub.value both equal order.length.",
+   "flake_risk": "None."
+  }
+ ],
+ "fixtures": [
+  {
+   "name": "path-good",
+   "kind": "good",
+   "expected": "Reference implementation with a binary-heap frontier, scaled heuristics and a grid whose cell size is computed from the available space. Scores 100."
+  },
+  {
+   "name": "path-broken-fixed-cells",
+   "kind": "broken",
+   "expected": "Cells are a fixed 28 px, so a 24 x 40 map overflows the viewport. Fails only path-grid-render; all other checks use maps of 18 x 30 or smaller."
+  },
+  {
+   "name": "path-broken-dijkstra-no-early-stop",
+   "kind": "broken",
+   "expected": "Dijkstra explores every reachable cell before returning. Fails only path-dijkstra (order exceeds the upper bound, goal not last)."
+  },
+  {
+   "name": "path-broken-unscaled-heuristic",
+   "kind": "broken",
+   "expected": "A* uses Manhattan x 1 even when roads cost 0.5. Fails only path-astar-optimal (returns 10 on the trap, optimum 8.5); the expansion and diagonal maps have no roads."
+  },
+  {
+   "name": "path-broken-astar-zero-heuristic",
+   "kind": "broken",
+   "expected": "A* runs with h = 0. Fails only path-astar-expansion; its paths stay optimal."
+  },
+  {
+   "name": "path-broken-bfs-move-cost",
+   "kind": "broken",
+   "expected": "BFS reports the number of moves as its cost. Fails only path-bfs."
+  },
+  {
+   "name": "path-broken-no-path-status",
+   "kind": "broken",
+   "expected": "Status stays 'found' and cost is Infinity when the goal is unreachable. Fails only path-no-path-trivial."
+  },
+  {
+   "name": "path-broken-corner-cutting",
+   "kind": "broken",
+   "expected": "Diagonal moves squeeze between two walls. Fails only path-diagonal-rules (returns 27.80 against 36.49)."
+  },
+  {
+   "name": "path-broken-scrub-static",
+   "kind": "broken",
+   "expected": "The scrubber moves but the grid always shows the finished search. Fails only path-visual-sync."
+  },
+  {
+   "name": "path-broken-edit-no-resolve",
+   "kind": "broken",
+   "expected": "A click toggles the wall but the old path stays. Fails only path-edit-resolve."
+  },
+  {
+   "name": "path-broken-stat-expanded",
+   "kind": "broken",
+   "expected": "#stat-expanded shows the path length. Fails only path-stats-dom."
+  },
+  {
+   "name": "path-control-static-fake",
+   "kind": "broken",
+   "expected": "Composite control: the demo map drawn statically, solve() returns the demo result whatever is loaded. Scores 0 of 100 with the full denominator."
+  }
+ ],
+ "implementation_notes": "Category advanced-game-building, scorer 'behavioral', sandboxConstraints = the hygiene-only text in the suite notes (the canvas guidance does not apply). Needs about 8k output tokens.\n\nBuild: (1) pathRef in Node: neighbours with the corner rule, an all-distances Dijkstra (g*), BFS distances, flood fill, validatePath(map, path) that re-walks and re-costs, and the two set-bound assertions. (2) genMap(seed, rows, cols, pWall, pMud, pRoad): mulberry32(seed), row-major, u < pWall wall, < pWall+pMud mud, < pWall+pMud+pRoad road, else open; start [1,1] and goal [rows-2, cols-2] forced open. Seeds found with this convention (script path.cjs): grid 800 (.22/.12/.10); dijkstra 8 and 42 (18x30 .20/.15/.15); astar-optimal 103 (18x30 .18/.10/.20); astar-expansion 203 (18x30 .22/.15/0); bfs 300 (16x26 .15/.25/0); diagonal 400 (16x24 .28/.12/0); stats 501 (10x14 .15/.10/.25); sync 600 (12x18 .20/.12/.12); edit 702 (10x14 .18/.12/.12). A unit test must re-assert each map's stated property (optimum, unscaled A* suboptimal, share of cells with f > C*, BFS/optimum gap, corner-cutting gap) so a changed generator is caught. (3) gridProbe: one source string returning every cell's attributes, rect and computed colour.\n\nWhy the set bound is a theorem: with a consistent heuristic f is non-decreasing along shortest paths, so every cell with f < C* is expanded before the goal and no cell with f > C* is ever expanded, whatever the tie rule; cells with f = C* are optional. h = cmin x Manhattan (or octile) is consistent because every move costs at least cmin per unit of distance. The bound is only asserted on maps whose costs are exact in binary (multiples of 0.5); the diagonal map checks cost only.\n\nPitfalls: Playwright serialises Infinity and NaN faithfully, so cost === null must be tested strictly; compare background colours as computed strings after freezeMotion; never use locator actions that auto-wait; the structural scorer deducts 15 points for any '<<' or '>>' in the file, which a binary heap written with shifts will trigger, so report behavioural points too.\n\nTolerances: 1e-9 on costs (sums of at most about 60 terms of magnitude <= 5*sqrt(2); error below 1e-13); 1 px on layout (sub-pixel cell sizes); 24 per channel between terrain colours (well above the zero difference of an indistinct palette, below any deliberate pair); 1e-4 on the displayed cost (four decimals round to 5e-5)."
+}

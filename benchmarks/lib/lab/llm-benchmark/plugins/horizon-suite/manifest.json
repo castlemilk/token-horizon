@@ -1,0 +1,11 @@
+{
+  "id": "horizon-suite",
+  "name": "Horizon Suite",
+  "version": "1.0.0",
+  "description": "Seven harder tasks (physics, pathfinding, circuits, geometry, calendars, kanban, pricing) graded by 76 deterministic browser checks.",
+  "capabilities": [
+    "tasks",
+    "checks",
+    "demos"
+  ]
+}

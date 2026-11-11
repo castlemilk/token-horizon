@@ -1,0 +1,149 @@
+{
+ "id": "seat-pricing",
+ "from_angle": "engineering-quality",
+ "title": "Seat Pricing Calculator",
+ "category": "ui-building",
+ "why_selected": "Exact decimal arithmetic on a product surface: graduated brackets, an annual discount, three promo rules and five tax rates rounded half up in a fixed order, recomputed with BigInt for inputs the prompt never names (549,920 valid combinations rule out a table). It is also the suite's one audit of accessibility and layout care, all read from behaviour, the accessibility tree, computed styles and geometry: tab order and focus rings, accessible names, WCAG contrast, three-width responsive layout and a drawn bar that must match the reported numbers.",
+ "changes_made": "1. De-duplicated against the kanban task: persistence and the scripted robustness session were removed here (kanban owns them), which also removes the routed-reload machinery from this task's contract; their points went to rounding, discount order, responsive layout and the breakdown bar. 2. Arithmetic, format, validation and bar checks now drive the controls inside one in-page probe (value plus input and change events, click()) and read in the same turn; only the keyboard check and one Enter press use real input. 3. The hidden rounding list was rebuilt and verified by brute force against three float styles (float dollars, integer cents with float multipliers, toFixed at each step): twelve cases with at most 9 seats, each defeating at least one style, four defeating integer cents with float multipliers. Every reference case used by the other checks was verified to be float-safe under all three, so a float fixture fails only the rounding check. 4. Radios are required to be native inputs so checked state is unambiguous. 5. Bar tolerance tightened from 1.5% to 1% from the layout precision. 6. Contrast audit skips clipped screen-reader-only text; the hit test accepts a radio's own label.",
+ "final_prompt": "Build a single-file HTML pricing page for a fictional team chat product called Relay, with a live seat calculator and an itemised order summary. It should look like a polished, shippable product page. An automated browser script grades it against the exact contract below, with inputs you have not seen. Every id below appears exactly once, on a visible element.\n\nPLAN CARDS\n- Three cards in this order, each an element with data-plan-card=\"starter\", \"team\" or \"scale\", showing the plan name, its list price per seat per month, a short feature list and a selection button. List prices: Starter $9.00, Team $14.50, Scale $23.75.\n- The selection button is <button data-plan=\"starter|team|scale\">. Its accessible name contains the plan name (for example \"Choose Team\"). It has aria-pressed=\"true\" on the selected plan and \"false\" on the other two. Team is selected by default.\n\nCONTROLS\n- Billing period: an element with role=\"radiogroup\" and accessible name \"Billing period\" containing exactly two native <input type=\"radio\"> elements, #billing-monthly (accessible name \"Monthly\") and #billing-annual (accessible name \"Annual\"). Monthly is the default; arrow keys switch between them.\n- Seats: <input id=\"seats\" type=\"text\" inputmode=\"numeric\"> with accessible name \"Seats\" and default value \"5\", placed between <button id=\"seats-dec\"> (accessible name \"Decrease seats\") and <button id=\"seats-inc\"> (accessible name \"Increase seats\"), which change the value by 1.\n- Promo code: <input id=\"promo\" type=\"text\"> (accessible name \"Promo code\"), <button id=\"promo-apply\"> (accessible name \"Apply promo code\") and <p id=\"promo-status\">. Pressing Enter in #promo does the same as the button.\n- Tax region: <select id=\"region\"> (accessible name \"Tax region\") whose option values are exactly none, ca, ny, uk, de. Default none.\n- <button id=\"checkout\"> whose text starts with \"Checkout\".\n\nPRICING RULES\nAll money is a whole number of US cents. \"round\" always means round half up to the nearest cent (exactly half a cent goes up), applied to the exact mathematical value. An amount that is one cent off is wrong.\n1. Seats N is a whole number from 1 to 5000.\n2. Graduated volume pricing: each seat is priced by its own position. Seats 1 to 10 cost 100% of the plan's list price, seats 11 to 50 cost 90%, seats 51 to 200 cost 80%, seats 201 and above cost 70%.\n3. months = 1 for monthly billing, 12 for annual billing.\n4. subtotal = round(months x the sum of the per-seat prices from rule 2). Round once, at the end.\n5. annual discount = round(17% of subtotal) for annual billing, 0 for monthly.\n6. promo discount, calculated on (subtotal - annual discount):\n   LAUNCH20: round(20% of it).\n   FLAT50: $50.00, or the whole amount if that is smaller.\n   TEAM10: round(10% of it). Valid only when the plan is Team or Scale and N is at least 5.\n7. taxable = subtotal - annual discount - promo discount.\n8. tax = round(taxable x rate). Rates: none 0%, ca 7.25%, ny 8.875%, uk 20%, de 19%.\n9. total = taxable + tax.\n10. per-seat price = round(total / (N x months)).\n\nPROMO BEHAVIOUR\n- Codes match case-insensitively after trimming whitespace. One code at a time: applying a new one replaces the old one, and applying an empty value removes it.\n- #promo-status has data-state=\"none\" (no code), \"applied\" (a valid code is in effect) or \"error\" (unknown code, or TEAM10 while it is not valid: zero discount and a visible message).\n- An applied code stays in place when other controls change. If TEAM10 stops being valid because the plan or seat count changed, it goes to the error state with zero discount, and returns to applied when it is valid again.\n\nORDER SUMMARY\n- An element #summary containing six amount elements: #subtotal, #annual-discount, #promo-discount, #tax, #total, #per-seat.\n- Each amount element has data-cents set to the whole number of cents (discounts as positive numbers), and its only text is that amount in US dollars: a $ sign, comma thousands separators and exactly two decimals, for example \"$1,234.56\" or \"$0.00\". Discount amounts may start with a minus sign. Put labels in separate elements.\n- #total is inside an element with aria-live=\"polite\".\n- The summary updates synchronously in the input, change or click handler of every control. No calculate button, no debounce, no number animation.\n\nBREAKDOWN BAR\n- An element #breakdown, at least 240px wide at every viewport width, with exactly three children in one row, left to right: data-segment=\"net\", data-segment=\"tax\", data-segment=\"saved\".\n- Their rendered widths are proportional to taxable, tax and (annual discount + promo discount), as shares of the sum of those three amounts. A segment whose amount is 0 has zero width. No min-width, padding, border, margin or gap on the segments.\n\nINVALID SEATS\n- The seats text is valid only if, after trimming whitespace, it consists solely of the digits 0 to 9 and its value is from 1 to 5000. So \" 7 \" and \"007\" mean 7, while \"\", \"0\", \"12.5\", \"1e3\", \"+5\", \"-3\", \"12abc\" and \"5001\" are invalid.\n- While it is invalid: #seats has aria-invalid=\"true\"; <p id=\"seats-error\"> shows a message and is referenced by aria-describedby on #seats; all six amount elements show an em dash (—) and have data-cents=\"\"; #checkout, #seats-dec and #seats-inc are disabled.\n- When it is valid again all of that is undone: aria-invalid=\"false\", #seats-error empty, amounts back.\n- #seats-dec is disabled at 1 and #seats-inc at 5000. Never rewrite the text in #seats while the user is typing in it; only the two buttons may change it.\n\nACCESSIBILITY AND LAYOUT\n- <html lang=\"en\">, exactly one <h1>, all content inside <main>.\n- Everything works with the keyboard alone. Tab order: the three plan buttons (starter, team, scale), the billing radios, #seats-dec, #seats, #seats-inc, #promo, #promo-apply, #region, #checkout. Each of them shows a clearly visible focus indicator when focused from the keyboard.\n- Every piece of text, including muted labels, text on buttons, the promo message and the error message, has a contrast ratio of at least 4.5:1 against its background (3:1 for text of 24px or more, or bold text of 18.66px or more). Put text on solid background colours only, never directly over a gradient or an image. Disabled controls are exempt.\n- Responsive: the page never scrolls horizontally at viewport widths of 390, 768 and 1440 px. At 1440 the three plan cards sit side by side in one row; at 390 they stack in one column. Every control listed above stays completely inside the viewport width.",
+ "final_checks": [
+  {
+   "name": "pricing-graduated-tiers",
+   "points": 10,
+   "verifies": "Rules 2 to 4: each seat priced by its own bracket and the subtotal rounded once, for all three plans.",
+   "method": "Fresh load. One probe: for each plan and each hidden N in 1, 10, 11, 37, 50, 51, 200, 201, 1234, 5000 (monthly, no promo, region none) click [data-plan], set #seats.value and dispatch input and change, then read data-cents of #subtotal, #annual-discount, #promo-discount, #tax and #total in the same turn. Compare with a BigInt reference: all 30 subtotals and totals match (Scale: 2375, 23750, 25888, 81463, 109250, 111150, 394250, 395913, 2113275, 8374250 cents) and the other three amounts are 0. This is the only check that uses N above 9, so a bracket defect stays isolated here; the 30 cases were verified to give the same answer under three float styles, so float care is scored only in pricing-exact-rounding. Scale at N = 37 separates rounding once (81463) from rounding each seat (81476).",
+   "flake_risk": "None. Integer comparison in one JavaScript turn."
+  },
+  {
+   "name": "pricing-discount-order",
+   "points": 12,
+   "verifies": "Rules 5 to 7 and the promo state machine: annual discount first, promo on the reduced amount, eligibility, the FLAT50 cap, case and whitespace handling.",
+   "method": "Fresh load, N at most 9 throughout; every step compares all six data-cents with the reference. (a) scale, 8 seats, annual, then with real input fill #promo with '  launch20 ' and press Enter, settle: data-state applied and [228000, 38760, 37848, 0, 151392, 1577]. The remaining steps are in-page: (b) team, 9 seats, annual, FLAT50, region de: [156600, 26622, 5000, 23746, 148724, 1377]; (c) starter, 1 seat, monthly, FLAT50, none: promo 900, total 0, per-seat 0; then 9 seats: promo 5000, total 3100; (d) team, 5 seats, TEAM10: applied, promo 725; seats 4: data-state error, promo 0, #promo-status has visible text; seats 5: applied again with 725; switch to starter: error; (e) 'SAVE99': error and promo 0; (f) apply an empty value: data-state none.",
+   "flake_risk": "Low. One real Enter press followed by a bounded settle; everything else is same-turn DOM reads."
+  },
+  {
+   "name": "pricing-exact-rounding",
+   "points": 14,
+   "verifies": "Round half up on exact values: ties in tax and the per-seat division are right to the cent.",
+   "method": "Fresh load, one probe, twelve hidden cases with N at most 9 (plan/N/billing/promo/region -> subtotal, annual, promo, tax, total, per-seat): team/4/m/-/ca -> 5800,0,0,421,6221,1555; team/5/m/LAUNCH20/ca -> 7250,0,1450,421,6221,1244; team/8/m/FLAT50/ca -> 11600,0,5000,479,7079,885; scale/6/m/LAUNCH20/ca -> 14250,0,2850,827,12227,2038; starter/2/m/-/ca -> 1800,0,0,131,1931,966; starter/6/m/-/ca -> 5400,0,0,392,5792,965; scale/8/m/-/ca -> 19000,0,0,1378,20378,2547; scale/4/m/LAUNCH20/ny -> 9500,0,1900,675,8275,2069; scale/3/a/-/uk -> 85500,14535,0,14193,85158,2366; scale/5/a/-/uk -> 142500,24225,0,23655,141930,2366; scale/9/a/-/uk -> 256500,43605,0,42579,255474,2366; scale/5/a/FLAT50/uk -> 142500,24225,5000,22655,135930,2266. Pass only if all twelve match exactly. The first four defeat integer cents with float multipliers (tax 420.5 computed as 420.4999...); the rest defeat float dollars or toFixed rounding in tax or per-seat.",
+   "flake_risk": "None at run time. Authoring risk: the list must be regenerated if any price or rate changes; a unit test asserts that three reference float implementations each fail at least one of these cases and pass every reference case used elsewhere in the task."
+  },
+  {
+   "name": "pricing-display-format",
+   "points": 7,
+   "verifies": "The visible text is the reported amount: $ sign, comma thousands separators, two decimals, and an em dash when seats is invalid.",
+   "method": "Fresh load, one probe, four hidden states spanning $0.00 (FLAT50 on one Starter seat), three figures (team, 7 seats: $101.50), five figures (scale, 137 seats, annual, LAUNCH20, ny: total $23,817.65) and seven figures (scale, 5000 seats, annual: subtotal $1,004,910.00). For each of the six amount elements require checkVisibility() true and a non-zero box; innerText.trim() is an optional minus (ASCII or U+2212), a $ sign, digit groups of three separated by commas, a dot and exactly two digits; the digits of the text equal data-cents; data-cents is digits only. Then set #seats to 'abc': every amount text is exactly an em dash and data-cents is empty. The text is compared with the page's own data-cents, not with the reference, so arithmetic defects do not leak into this check.",
+   "flake_risk": "Low. innerText depends only on visibility and text-transform, not on font metrics."
+  },
+  {
+   "name": "pricing-seats-validation",
+   "points": 11,
+   "verifies": "Empty, invalid and extreme seat input is rejected by the stated rule, wired up accessibly, and recovers.",
+   "method": "Fresh load, one probe. For each hidden invalid string ('', three spaces, '0', '000', '5001', '12.5', '1e3', '+5', '-3', '12abc', '0x10', twenty nines) set #seats and dispatch input: aria-invalid 'true'; #seats-error visible with non-empty text and its id present in aria-describedby of #seats; all six amounts show an em dash with empty data-cents; #checkout, #seats-dec and #seats-inc disabled; #seats value still exactly what was typed. For ' 7 ' and '007': aria-invalid 'false', empty #seats-error, value untouched and totals equal to the reference for N = 7 (10150); for '1' and '5000' digit-only data-cents. Stepper: at '1' #seats-dec is disabled; from '4999' one click on #seats-inc gives '5000' and disables it; two clicks on #seats-dec give '4998'.",
+   "flake_risk": "None. Same-turn reads."
+  },
+  {
+   "name": "pricing-keyboard",
+   "points": 10,
+   "verifies": "Keyboard operability, the stated focus order and a visible focus indicator on every control.",
+   "method": "Fresh load; reset sequential focus by focusing and removing a temporary element at the top of body. Press Tab up to 30 times with real key events, recording after each press the contract identity of document.activeElement (id or data-plan) and its computed outline-style, outline-width, box-shadow, border-color and background-color. The identities, filtered to contract controls, must be starter, team, scale, one or two billing radios, seats-dec, seats, seats-inc, promo, promo-apply, region, checkout in that order. After the walk blur and read the same properties unfocused: each control must differ while focused by a non-none outline of at least 1px, or a changed box-shadow, border colour or background colour. Then by keys only: focus the Scale button and press Space (aria-pressed true); focus #billing-monthly and press ArrowRight (#billing-annual checked, annual discount above 0); in #seats press End, Backspace until empty, then 9 (all six amounts equal the reference for scale/9/annual); type launch20 in #promo and press Enter (data-state applied).",
+   "flake_risk": "Low. Tab traversal is deterministic; an autofocus on load is neutralised by the reset; extra focusable elements between contract controls are ignored by the filter. The browser default ring computes to outline auto 1px, so only pages that remove it without a replacement fail."
+  },
+  {
+   "name": "pricing-accessible-names",
+   "points": 8,
+   "verifies": "Roles and accessible names of every control, plus the page landmarks and live region.",
+   "method": "Fresh load. Playwright's role engine computes names independently of the page; each assertion is locator.and(...).count() === 1 with no waiting. getByRole('radiogroup', {name: 'Billing period', exact: true}) contains both radios; getByRole('radio', {name: 'Monthly', exact: true}) is #billing-monthly and 'Annual' is #billing-annual; getByRole('textbox', {name: 'Seats', exact: true}) is #seats; buttons 'Decrease seats', 'Increase seats' and 'Apply promo code' are #seats-dec, #seats-inc and #promo-apply; getByRole('textbox', {name: 'Promo code', exact: true}) is #promo; getByRole('combobox', {name: 'Tax region', exact: true}) is #region. Each [data-plan] button matches getByRole('button', {name: its plan name, case-insensitive substring}) and the three names differ; exactly one has aria-pressed 'true'. Also: one h1, main contains #summary, html lang starts with en, #total has an ancestor-or-self with aria-live polite.",
+   "flake_risk": "Low. The fixture run must confirm that exact name matching is case-sensitive in the installed Playwright."
+  },
+  {
+   "name": "pricing-contrast",
+   "points": 8,
+   "verifies": "Computed colour contrast of all text meets 4.5:1 (3:1 for large text) in the default, seat-error and promo-error states.",
+   "method": "Fresh load, freezeMotion, one probe per state. Candidates: every visible element with a direct non-blank text node, plus input, select and button elements; skipped: disabled controls and their descendants, option elements, and elements whose box is smaller than 2 x 2 px or clipped to nothing (screen-reader-only text). Foreground is the computed color with its alpha multiplied by the opacity of the element and its ancestors. Background is composited bottom to top from the background-color (times opacity) of each element returned by document.elementsFromPoint at the centre of the text's first client rect, starting from white; a background-image under the text with no opaque colour above it counts as a failure, as the prompt states. Compute the WCAG 2 ratio and require at least 4.5, or 3 when font-size is at least 24px or at least 18.66px with weight 700 or more. Pass if no element fails; the detail lists the three lowest ratios.",
+   "flake_risk": "Low: computed styles only. Blind spots: backgrounds painted by pseudo-elements or by layers with pointer-events none are not seen by elementsFromPoint, so a few artifacts may be judged against the wrong backdrop."
+  },
+  {
+   "name": "pricing-responsive",
+   "points": 10,
+   "verifies": "No horizontal overflow at 390, 768 and 1440 px, controls inside the viewport and reachable, and the card layout switching from a row to a stack.",
+   "method": "Fresh load. For each width (height 900): setViewportSize, two animation frames, then one probe: documentElement.scrollWidth at most clientWidth + 1; every contract control and amount element has left at least 0 and right at most innerWidth + 1 after scrollIntoView, and document.elementFromPoint at its centre is the element, a descendant, or (for a radio) its own label; #breakdown is at least 240px wide and inside the viewport. From getBoundingClientRect of the three [data-plan-card]: at 1440 they are pairwise disjoint in x and overlap in y; at 390 they are pairwise disjoint in y and overlap in x. Restore 1024 x 720 in finally.",
+   "flake_risk": "Low. Geometry with a 1px tolerance; no screenshot or font-dependent threshold."
+  },
+  {
+   "name": "pricing-breakdown-geometry",
+   "points": 10,
+   "verifies": "What is drawn matches what is reported: bar segment widths are proportional to net, tax and savings.",
+   "method": "Fresh load at 1024px, one probe, four hidden states: team/7/monthly/ny (expected shares about 0.918, 0.082, 0); scale/8/annual/LAUNCH20/uk (0.586, 0.117, 0.297); team/7/monthly/none (1, 0, 0); starter/1/FLAT50 (0, 0, 1). Read the three segment widths with getBoundingClientRect and the page's own data-cents (net = total - tax, saved = annual discount + promo discount). With W the sum of the widths require W at least 239 and at most the width of #breakdown + 1; for each segment |w/W - amount/sum| <= 0.01; a zero amount means a width of at most 1px; the segments overlap vertically and are ordered net, tax, saved by x.",
+   "flake_risk": "None expected. Layout widths are exact to 1/64 px; the tolerance is for percentages rounded to one decimal or widths rounded to whole pixels."
+  }
+ ],
+ "fixtures": [
+  {
+   "name": "pricing-good",
+   "kind": "good",
+   "expected": "Integer-scaled arithmetic with a single division per rounding, native radios and select, a flex breakdown bar, a solid-colour palette checked for contrast. Scores 100."
+  },
+  {
+   "name": "pricing-broken-volume-pricing",
+   "kind": "broken",
+   "expected": "Every seat is priced at the bracket N falls in. Fails only pricing-graduated-tiers; all other checks use N at most 9 or compare the page with itself (the 137-seat and 5000-seat states are used only by the format check)."
+  },
+  {
+   "name": "pricing-broken-promo-before-annual",
+   "kind": "broken",
+   "expected": "Promo is taken on the subtotal before the annual discount and TEAM10 is not re-validated when seats change. Fails only pricing-discount-order (line items 31008 and 45600 against 38760 and 37848, although the LAUNCH20 total coincides)."
+  },
+  {
+   "name": "pricing-broken-float-multipliers",
+   "kind": "broken",
+   "expected": "Integer cents with Math.round(x * 0.0725) style multipliers. Wrong on four of the twelve hidden tie cases, right on every other reference case in the task (verified by brute force). Fails only pricing-exact-rounding."
+  },
+  {
+   "name": "pricing-broken-plain-tofixed",
+   "kind": "broken",
+   "expected": "Text is a $ sign plus toFixed(2), so amounts of $1,000 or more have no separators. Fails only pricing-display-format."
+  },
+  {
+   "name": "pricing-broken-parseint-seats",
+   "kind": "broken",
+   "expected": "parseInt and Number accept '12abc', '1e3', '+5', '12.5' and '0x10'. Fails only pricing-seats-validation."
+  },
+  {
+   "name": "pricing-broken-outline-none",
+   "kind": "broken",
+   "expected": "A global rule removes the focus outline with no replacement; order and key handling are correct. Fails only pricing-keyboard."
+  },
+  {
+   "name": "pricing-broken-icon-steppers",
+   "kind": "broken",
+   "expected": "Stepper buttons contain only a minus and a plus sign, and the three plan buttons are all named Select. Fails only pricing-accessible-names."
+  },
+  {
+   "name": "pricing-broken-muted-grey",
+   "kind": "broken",
+   "expected": "Labels in #6b7280 on #0c0c10 (4.04:1) and white text on a #3b82f6 button (3.68:1). Fails only pricing-contrast."
+  },
+  {
+   "name": "pricing-broken-fixed-grid",
+   "kind": "broken",
+   "expected": "The plan grid is three fixed 340px columns with no breakpoint, so the page overflows at 390 and 768. Fails only pricing-responsive."
+  },
+  {
+   "name": "pricing-broken-bar-min-width",
+   "kind": "broken",
+   "expected": "Segments carry min-width 48px, so zero amounts still draw and shares are off by up to 20%. Fails only pricing-breakdown-geometry."
+  },
+  {
+   "name": "pricing-control-float-dollars",
+   "kind": "broken",
+   "expected": "Composite control: all money held as float dollars and rounded with Math.round(x * 100) / 100. Fails only pricing-exact-rounding, on a different subset of the twelve cases than the float-multiplier fixture, proving the list covers both styles."
+  },
+  {
+   "name": "pricing-control-static-fake",
+   "kind": "broken",
+   "expected": "Composite control: a static page showing the default order with no handlers. Passes only pricing-accessible-names and, if its palette is sound, pricing-contrast (at most 16 of 100) with the full denominator."
+  }
+ ],
+ "implementation_notes": "Category ui-building, scorer 'behavioral', sandboxConstraints = the hygiene-only text. Needs about 7.5k output tokens.\n\nBuild: (1) pricingRef in Node with BigInt: tier counts, half-up rounding as (2*num + den) / (2*den) on non-negative values, the promo state, six amounts (reference and brute force in pricing.cjs). (2) pricingProbe source string: setState({plan, seats, annual, promo, region}) that clicks the plan button and the radio, sets values and dispatches input and change, applies the promo through #promo-apply.click(), then returns the six data-cents, texts, states and disabled flags. (3) contrastAudit, tabWalk and withViewport from the shared helpers. (4) freshLoad on a unique routed origin per check so no state leaks through storage or globals.\n\nPitfalls: a second setContent keeps the same window object, so always navigate for a fresh load. Do not compare the format or bar checks with the reference; they compare the page with its own data-cents so each defect is scored once. Native radios may be visually hidden behind styled labels; hit-test through the label. On macOS select-all is Meta+A, so the keyboard check clears #seats with End and Backspace. The static-fake control passes the names check by design; that is acceptable because names are a real property of static markup.\n\nThresholds. Money: exact integer equality, no tolerance. Float-safety of the tier and discount cases was verified against three float implementations; keep that as a unit test. Bar 0.01 share: layout is exact to 1/64 px (7e-5 of 240 px); one-decimal percentages give 5e-4 and whole-pixel widths 2e-3, so 0.01 is 5x above the worst honest rounding and 20x below the min-width defect. Responsive 1 px for sub-pixel layout. Contrast 4.5 and 3 are the WCAG 2 AA constants; large-text sizes 24 px and 18.66 px bold are the CSS equivalents of 18 pt and 14 pt. Focus: Chromium's default ring is outline auto 1px, so the test only fails when the ring is removed without a replacement.\n\nIf the pilot shows every configuration failing pricing-contrast, keep the strict rule but report the count of failing elements in the detail so the board can show it."
+}

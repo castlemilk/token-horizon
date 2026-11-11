@@ -1,0 +1,17 @@
+{
+  "id": "community-tasks",
+  "name": "Community Tasks",
+  "version": "1.0.0",
+  "description": "Community-contributed benchmark tasks with their own behavioral checks and demos.",
+  "capabilities": ["tasks", "checks", "demos"],
+  "tasks": [
+    {
+      "id": "tic-tac-toe",
+      "category": "advanced-game-building",
+      "title": "Tic-Tac-Toe",
+      "scorer": "behavioral",
+      "checks": ["ttt-grid-interacts", "ttt-win-detected"],
+      "sandboxConstraints": "task-specific (DOM-board contract; replaces the global canvas-oriented one — see index.ts)"
+    }
+  ]
+}

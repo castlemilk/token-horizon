@@ -5,7 +5,19 @@ Sync, validate, and enrich model benchmark data (SWE-bench Verified, LiveCodeBen
 for Token Horizon's model catalog.
 
 Usage:
-    python3 scripts/update-catalog.py [--fetch-remote] [--verify]
+    python3 scripts/update-catalog.py [--add-missing] [--overwrite] [--dry-run] [--fetch-remote] [--verify]
+
+clients/macos/Resources/benchmarks.json is the single source of truth for scores
+(commit e12cd82). By default the script compares its CURATED_BENCHMARKS list with
+that file, matched by `match` (model id), prints the differences and writes
+nothing. --add-missing appends curated rows the file does not have and never
+changes an existing row. --overwrite also applies the curated values on top of
+existing rows. No run drops a row. --dry-run prints what would be written and
+writes nothing. Unknown arguments are an error.
+
+It does not write ~/.config/token-horizon/models-cache.json. The app and the Go
+daemon fetch models.dev themselves and write the [String: Entry] shape they
+decode; the raw models.dev document cannot be decoded by either reader.
 """
 
 import sys
@@ -15,9 +27,8 @@ import urllib.request
 import urllib.error
 
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-BENCHMARKS_FILE = os.path.join(ROOT_DIR, "Resources", "benchmarks.json")
-CACHE_DIR = os.path.expanduser("~/.config/token-horizon")
-CACHE_FILE = os.path.join(CACHE_DIR, "models-cache.json")
+BENCHMARKS_FILE = os.path.join(ROOT_DIR, "clients", "macos", "Resources", "benchmarks.json")
+BENCHMARKS_META = "Curated approximate benchmark scores. Source: provider announcements, SWE-bench Verified, LiveCodeBench, AIME 2024, GPQA Diamond."
 
 # Curated authoritative benchmarks (SWE-bench Verified %, LiveCodeBench %, AIME %, GPQA %)
 CURATED_BENCHMARKS = [
@@ -39,13 +50,13 @@ CURATED_BENCHMARKS = [
     {"match": "gpt-5-sol", "name": "GPT-5 Sol", "swe": 81.5, "lcb": 78.0, "aime": 89.0, "gpqa": 83.0, "approx": True, "source": "OpenAI"},
     {"match": "gpt-5.6-terra", "name": "GPT-5.6 Terra", "swe": 72.0, "lcb": 68.5, "aime": 80.0, "gpqa": 74.0, "approx": True, "source": "OpenAI"},
     {"match": "gpt-5-terra", "name": "GPT-5 Terra", "swe": 72.0, "lcb": 68.5, "aime": 80.0, "gpqa": 74.0, "approx": True, "source": "OpenAI"},
-    {"match": "gpt-5.6-luna", "name": "GPT-5.6 Luna", "swe": 52.0, "lcb": 50.0, "aime": 60.0, "gpqa": 58.0, "approx": True, "source": "OpenAI"},
-    {"match": "gpt-5-luna", "name": "GPT-5 Luna", "swe": 52.0, "lcb": 50.0, "aime": 60.0, "gpqa": 58.0, "approx": True, "source": "OpenAI"},
+    {"match": "gpt-5.6-luna", "name": "GPT-5.6 Luna", "swe": 52.0, "lcb": 50.0, "aime": 65.0, "gpqa": 60.0, "approx": True, "source": "OpenAI"},
+    {"match": "gpt-5-luna", "name": "GPT-5 Luna", "swe": 52.0, "lcb": 50.0, "aime": 65.0, "gpqa": 60.0, "approx": True, "source": "OpenAI"},
     {"match": "gpt-5.5", "name": "GPT-5.5", "swe": 78.0, "lcb": 75.0, "aime": 84.0, "gpqa": 78.0, "approx": True, "source": "OpenAI"},
     {"match": "gpt-5.4-mini", "name": "GPT-5.4 Mini", "swe": 58.0, "lcb": 55.0, "aime": 68.0, "gpqa": 62.0, "approx": True, "source": "OpenAI"},
     {"match": "gpt-5.3-codex-spark", "name": "GPT-5.3 Codex Spark", "swe": 54.0, "lcb": 50.0, "aime": 62.0, "gpqa": 58.0, "approx": True, "source": "OpenAI"},
     {"match": "codex-auto-review", "name": "Codex Auto Review", "swe": 78.0, "lcb": 75.0, "aime": 84.0, "gpqa": 78.0, "approx": True, "source": "OpenAI"},
-    {"match": "gpt-5", "name": "GPT-5 Preview", "swe": 74.9, "lcb": 72.0, "aime": 84.0, "gpqa": 78.0, "approx": True, "source": "OpenAI"},
+    {"match": "gpt-5", "name": "GPT-5", "swe": 74.9, "lcb": 72.0, "aime": 84.0, "gpqa": 78.0, "approx": True, "source": "OpenAI"},
     {"match": "gpt-5-codex", "name": "GPT-5 Codex", "swe": 74.5, "lcb": 71.5, "aime": 82.0, "gpqa": 76.0, "approx": True, "source": "OpenAI"},
     {"match": "gpt-4.5", "name": "GPT-4.5", "swe": 45.0, "lcb": 48.0, "aime": 58.0, "gpqa": 60.0, "approx": True, "source": "OpenAI"},
     {"match": "o1", "name": "o1", "swe": 61.8, "lcb": 62.0, "aime": 83.3, "gpqa": 77.3, "approx": False, "source": "OpenAI"},
@@ -114,18 +125,88 @@ CURATED_BENCHMARKS = [
     {"match": "ornith-1.5:35b", "name": "Ornith 1.5 35B", "swe": 53.0, "lcb": 50.0, "aime": 58.0, "gpqa": 56.0, "approx": True, "source": "OpenCode"},
 ]
 
-def save_benchmarks():
-    payload = {
-        "_meta": "Curated approximate benchmark scores. Source: provider announcements, SWE-bench Verified, LiveCodeBench, AIME 2024, GPQA Diamond.",
-        "entries": CURATED_BENCHMARKS
-    }
-    with open(BENCHMARKS_FILE, "w", encoding="utf-8") as f:
-        json.dump(payload, f, indent=2)
-    print(f"✓ Saved {len(CURATED_BENCHMARKS)} benchmark entries to {BENCHMARKS_FILE}")
+def merge_benchmarks(file_entries, curated, overwrite=False):
+    """Merge curated rows into the file's rows, keyed by `match`.
 
-def verify_benchmarks():
-    print(f"\nVerifying {len(CURATED_BENCHMARKS)} benchmark entries:")
-    top_models = sorted(CURATED_BENCHMARKS, key=lambda x: (x.get("swe") or 0), reverse=True)
+    The file is the source of truth. A file row whose match is in `curated` is
+    left as it is and its differences are reported, unless `overwrite` is set:
+    then it is updated in place, its keys keep their order and the curated values
+    are applied on top. Curated matches the file does not have are appended in
+    curated order. File rows the script does not list are kept untouched, so a run
+    never drops a row. Returns (merged_rows, summary).
+    """
+    by_match = {}
+    for row in curated:
+        if row["match"] in by_match:
+            raise ValueError(f"duplicate curated match: {row['match']}")
+        by_match[row["match"]] = row
+
+    merged, updated, unchanged = [], [], 0
+    file_matches = set()
+    for old in file_entries:
+        match = old.get("match")
+        if match not in by_match:
+            merged.append(old)
+            continue
+        file_matches.add(match)
+        new = {**old, **by_match[match]}
+        if new == old:
+            unchanged += 1
+        else:
+            changes = {k: (old.get(k), v) for k, v in by_match[match].items() if old.get(k) != v}
+            updated.append((match, changes))
+        merged.append(new if overwrite else old)
+
+    added = [m for m in by_match if m not in file_matches]
+    merged.extend(by_match[m] for m in added)
+    summary = {
+        "before": len(file_entries),
+        "after": len(merged),
+        "added": added,
+        "updated": updated,
+        "unchanged": unchanged,
+        "kept": len(file_entries) - len(file_matches),
+        "overwrite": overwrite,
+    }
+    return merged, summary
+
+def print_summary(summary):
+    verb = "updated" if summary["overwrite"] else "differ (file kept)"
+    print(f"{summary['before']} file entries, {len(summary['added'])} curated rows missing from the file, "
+          f"{len(summary['updated'])} {verb}, {summary['unchanged']} unchanged, "
+          f"{summary['kept']} kept (not in script)")
+    for match, changes in summary["updated"]:
+        diffs = ", ".join(f"{k} file {old!r}, script {new!r}" for k, (old, new) in changes.items())
+        print(f"  {'update' if summary['overwrite'] else 'differs'} {match}: {diffs}")
+    for match in summary["added"]:
+        print(f"  missing {match}")
+
+def save_benchmarks(add_missing=False, overwrite=False, dry_run=False):
+    """Compare CURATED_BENCHMARKS with BENCHMARKS_FILE and, when asked, write the merge. Returns the rows."""
+    file_obj = {}
+    if os.path.exists(BENCHMARKS_FILE):
+        with open(BENCHMARKS_FILE, encoding="utf-8") as f:
+            file_obj = json.load(f)
+    file_entries = file_obj.get("entries", [])
+    entries, summary = merge_benchmarks(file_entries, CURATED_BENCHMARKS, overwrite=overwrite)
+    if not (add_missing or overwrite):
+        # Without --add-missing or --overwrite the curated rows the file lacks are reported, not added.
+        entries = entries[:len(file_entries)]
+    print_summary(summary)
+    if dry_run or not (add_missing or overwrite):
+        print("Nothing written." + ("" if dry_run else " Pass --add-missing or --overwrite to write."))
+        return entries
+    payload = {"_meta": BENCHMARKS_META, **file_obj, "entries": entries}
+    tmp = BENCHMARKS_FILE + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write(json.dumps(payload, indent=2) + "\n")
+    os.replace(tmp, BENCHMARKS_FILE)
+    print(f"✓ Saved {len(entries)} benchmark entries to {BENCHMARKS_FILE}")
+    return entries
+
+def verify_benchmarks(entries):
+    print(f"\nVerifying {len(entries)} benchmark entries:")
+    top_models = sorted(entries, key=lambda x: (x.get("swe") or 0), reverse=True)
     print(f"{'MODEL':<32} {'SWE-BENCH':<12} {'LCB':<8} {'SOURCE':<14}")
     print("-" * 68)
     for m in top_models[:15]:
@@ -135,23 +216,28 @@ def verify_benchmarks():
     print("-" * 68)
 
 def fetch_remote_specs():
+    """Fetch models.dev and check that it parses. Writes nothing (see module doc)."""
     url = "https://models.dev/api.json"
-    os.makedirs(CACHE_DIR, exist_ok=True)
-    print(f"Fetching latest specs from {url}...")
+    print(f"Fetching specs from {url} (check only, nothing written)...")
     try:
         req = urllib.request.Request(url, headers={"User-Agent": "TokenHorizon/0.2.0"})
         with urllib.request.urlopen(req, timeout=10) as resp:
-            data = resp.read()
-            with open(CACHE_FILE, "wb") as f:
-                f.write(data)
-            parsed = json.loads(data)
-            print(f"✓ Saved remote specs for {len(parsed)} providers to {CACHE_FILE}")
+            parsed = json.loads(resp.read())
+        print(f"✓ models.dev parsed: {len(parsed)} providers")
     except Exception as e:
-        print(f"Warning: Could not fetch from models.dev ({e}). Keeping local cache.")
+        print(f"Warning: Could not fetch from models.dev ({e}).")
 
 if __name__ == "__main__":
-    fetch_remote = "--fetch-remote" in sys.argv
-    if fetch_remote:
+    import argparse
+    parser = argparse.ArgumentParser(description="Compare the curated benchmark rows with clients/macos/Resources/benchmarks.json.")
+    parser.add_argument("--add-missing", action="store_true", help="append curated rows the file does not have")
+    parser.add_argument("--overwrite", action="store_true", help="also apply curated values to existing rows")
+    parser.add_argument("--dry-run", action="store_true", help="print what would change and write nothing")
+    parser.add_argument("--fetch-remote", action="store_true", help="check that models.dev parses (writes nothing)")
+    parser.add_argument("--verify", action="store_true", help="print the top rows by SWE-bench")
+    args = parser.parse_args()
+    if args.fetch_remote:
         fetch_remote_specs()
-    save_benchmarks()
-    verify_benchmarks()
+    entries = save_benchmarks(add_missing=args.add_missing, overwrite=args.overwrite, dry_run=args.dry_run)
+    if args.verify:
+        verify_benchmarks(entries)

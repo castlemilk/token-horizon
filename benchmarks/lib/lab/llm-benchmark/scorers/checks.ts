@@ -1,0 +1,426 @@
+import type { BenchmarkTask } from '../types'
+import { defineCheck, type CheckContext, type CheckFn, type CheckResult } from './sandbox'
+import { pluginChecks } from '../plugins'
+
+/**
+ * Per-task behavioral checks for the interactive benchmark tasks.
+ *
+ * The universal technique is **canvas pixel diff**: snapshot the canvas
+ * before an interaction, dispatch the interaction, snapshot again, and
+ * assert that the pixel buffer changed in the region we expected. This
+ * works regardless of whether the artifact exposes state on `window` —
+ * it tests what the user actually sees, which is the whole point.
+ *
+ * Each check returns a CheckResult with a fixed point budget so the
+ * composite scorer can normalize across tasks. Point totals are calibrated
+ * so a fully-working artifact lands near the structural HTML scorer's
+ * ceiling (95-100), and a broken artifact drops to the 30-50 range rather
+ * than the 100 it gets from a tag-balance check.
+ *
+ * If a task has no checks defined here, the scorer falls back to structural
+ * HTML scoring — better than nothing, and lets the rest of the benchmark
+ * keep working while we add coverage.
+ */
+
+/**
+ * Byte-level proxy for "the canvas changed": the share of sampled bytes that
+ * differ between two PNG files, in [0, 1]. It reads the PNG FILE's bytes, not
+ * decoded pixels; the sample walks every 13th byte of the shorter file.
+ *
+ * It is kept for continuity with the 302 version-1 records, which were scored
+ * with it (from two capture regimes: canvas.toDataURL for records before
+ * 2026-09-22, the element screenshot from 2026-09-22 on; see scorer-changelog.md).
+ * It is used only by the five legacy canvas tasks, which are smoke tasks: a
+ * wiring check for the browser and its checks, not a ranked task. It is a proxy: two identical pictures read 0, a change in the compressed
+ * stream that leaves the pixels alone can read non-zero, and a change in pixels
+ * can read 0 if the sampled bytes agree. The decoded-pixel measure (pixels.ts)
+ * is a tested utility that no legacy check uses; it was evaluated on 2026-11-10
+ * and not adopted (docs/lab/llm-benchmark/scorer-v2-impact.md). Returns 0 for an
+ * empty or under-16-byte capture, so the check fails cleanly.
+ */
+function pixelDiffScore(before: Buffer, after: Buffer): number {
+  if (before.length === 0 || after.length === 0) return 0
+  const len = Math.min(before.length, after.length)
+  if (len < 16) return 0
+  let differing = 0
+  // Sample every 13th byte to keep this cheap; the entropy of the diff
+  // is what we care about, not every byte.
+  for (let i = 0; i < len; i += 13) {
+    if (before[i] !== after[i]) differing++
+  }
+  return differing / Math.floor(len / 13)
+}
+
+/**
+ * Byte-level proxy for "is anything drawn on the canvas": the total length of the
+ * PNG file's IDAT chunks (the compressed image data), divided by 50,000 bytes and
+ * capped at 1. It reads the PNG FILE, not decoded pixels. A flat picture
+ * compresses to a few kilobytes and reads low; a picture with varied content
+ * reads high.
+ *
+ * Kept for continuity with the 302 version-1 records, and used only by the five
+ * legacy canvas tasks (smoke tasks; see pixelDiffScore). Because it counts
+ * compressed bytes, it can read a smooth gradient, a border or a page-region
+ * capture as content, so it is not a count of drawn pixels. The decoded-pixel
+ * measure (pixels.ts) was evaluated on 2026-11-10 and not adopted; see
+ * docs/lab/llm-benchmark/scorer-v2-impact.md. Returns 0 for an empty buffer.
+ *
+ * Returns a score in [0, 1] where 0 = blank (all one colour), 1 = busy.
+ */
+function canvasContentScore(buf: Buffer): number {
+  if (buf.length === 0) return 0
+  // PNG signature is 8 bytes; IHDR follows. IDAT length + 'IDAT' = 8 bytes
+  // before the compressed data. Walk the chunks to find the total IDAT size.
+  let pos = 8
+  let totalIdat = 0
+  while (pos < buf.length - 8) {
+    const chunkLen = buf.readUInt32BE(pos)
+    const chunkType = buf.slice(pos + 4, pos + 8).toString('ascii')
+    if (chunkType === 'IDAT') totalIdat += chunkLen
+    pos += 8 + chunkLen + 4 // length + type + data + crc
+    if (chunkType === 'IEND') break
+  }
+  // A 1024x720 RGBA canvas painted solid colour compresses to ~1KB; the
+  // same canvas with varied content runs to 50KB+. 100KB total IDAT ≈ busy.
+  // Score is capped so anything over 50KB IDAT reads as "fully populated".
+  return Math.min(1, totalIdat / 50_000)
+}
+
+// ── Per-task checks ────────────────────────────────────────────────────
+
+const SETTLE_BEFORE_KEY = 100
+
+async function dispatchKey(
+  ctx: CheckContext,
+  code: string,
+  options: { down?: boolean; up?: boolean; holdMs?: number } = { down: true, up: true, holdMs: 150 }
+): Promise<void> {
+  const { down = true, up = true, holdMs = 150 } = options
+  if (down) {
+    await ctx.page.keyboard.down(code)
+    await ctx.page.waitForTimeout(holdMs)
+  }
+  if (up) {
+    await ctx.page.keyboard.up(code)
+    await ctx.page.waitForTimeout(SETTLE_BEFORE_KEY)
+  }
+}
+
+/**
+ * mini-platformer: keyboard input actually moves the player.
+ *
+ * Strategy: snapshot the canvas, press Space (jump should make the player
+ * move up), snapshot, assert pixel change. Then press ArrowRight (should
+ * shift the player horizontally), snapshot, assert change. These two
+ * checks catch the entire class of "the game parses but the controls
+ * don't work" outputs that the structural HTML scorer misses.
+ */
+const miniPlatformerChecks: CheckFn[] = [
+  async (ctx) => {
+    const before = await ctx.captureCanvas()
+    if (!before) {
+      return { name: 'platformer-jump', passed: false, points: 0, maxPoints: 30, detail: 'no <canvas> found' }
+    }
+    await dispatchKey(ctx, 'Space', { down: true, up: true, holdMs: 200 })
+    const after = await ctx.captureCanvas()
+    if (!after) {
+      return { name: 'platformer-jump', passed: false, points: 0, maxPoints: 30, detail: 'canvas gone after keypress' }
+    }
+    const diff = pixelDiffScore(before.data, after.data)
+    // Threshold tuned so a real jump (player translates 30-50px on a 1024px
+    // canvas) yields ~0.1-0.4 diff; a broken controls game yields ~0.
+    const passed = diff > 0.02
+    return {
+      name: 'platformer-jump',
+      passed,
+      points: passed ? 30 : 0,
+      maxPoints: 30,
+      detail: `pixel diff after Space: ${(diff * 100).toFixed(1)}% (threshold 2%)`,
+    }
+  },
+  async (ctx) => {
+    const before = await ctx.captureCanvas()
+    if (!before) {
+      return { name: 'platformer-move', passed: false, points: 0, maxPoints: 25, detail: 'no <canvas> found' }
+    }
+    await dispatchKey(ctx, 'ArrowRight', { down: true, up: true, holdMs: 400 })
+    const after = await ctx.captureCanvas()
+    if (!after) {
+      return { name: 'platformer-move', passed: false, points: 0, maxPoints: 25, detail: 'canvas gone after keypress' }
+    }
+    const diff = pixelDiffScore(before.data, after.data)
+    const passed = diff > 0.02
+    return {
+      name: 'platformer-move',
+      passed,
+      points: passed ? 25 : 0,
+      maxPoints: 25,
+      detail: `pixel diff after ArrowRight: ${(diff * 100).toFixed(1)}% (threshold 2%)`,
+    }
+  },
+]
+
+/**
+ * n-body-field: a Three.js / canvas scene that actually renders particles
+ * AND animates over time. Two snapshots separated by a wait; both must
+ * have non-trivial content and must differ.
+ */
+const nBodyChecks: CheckFn[] = [
+  async (ctx) => {
+    const before = await ctx.captureCanvas()
+    if (!before) {
+      return { name: 'nbody-renders', passed: false, points: 0, maxPoints: 35, detail: 'no <canvas> found' }
+    }
+    const content = canvasContentScore(before.data)
+    const passed = content > 0.15
+    return {
+      name: 'nbody-renders',
+      passed,
+      points: passed ? 35 : 0,
+      maxPoints: 35,
+      detail: `canvas content score: ${(content * 100).toFixed(0)}% (threshold 15%)`,
+    }
+  },
+  async (ctx) => {
+    const before = await ctx.captureCanvas()
+    if (!before) return { name: 'nbody-animates', passed: false, points: 0, maxPoints: 30, detail: 'no <canvas>' }
+    await ctx.page.waitForTimeout(1200)
+    const after = await ctx.captureCanvas()
+    if (!after) return { name: 'nbody-animates', passed: false, points: 0, maxPoints: 30, detail: 'no <canvas> after wait' }
+    const diff = pixelDiffScore(before.data, after.data)
+    const passed = diff > 0.01
+    return {
+      name: 'nbody-animates',
+      passed,
+      points: passed ? 30 : 0,
+      maxPoints: 30,
+      detail: `pixel diff over 1.2s: ${(diff * 100).toFixed(1)}% (threshold 1%)`,
+    }
+  },
+]
+
+/**
+ * landing-page-morph: a rendered animated landing page.
+ *
+ * The DOM has heading/hero content, and the page actually moves.
+ *
+ * "Moves" used to mean "a <canvas> changed pixels". This task builds React and
+ * Tailwind markup and asks for theme-aware transitions; it never produces a
+ * canvas, so both captures were undefined, the diff was always zero, and every
+ * run scored 0 of 35 here — which, at more than half the behavioural weight, is
+ * why the rubric sat at 62 in every loop and no page could clear the capture
+ * gate's 90. The check measured motion through a medium the task does not use.
+ *
+ * It now measures motion where a landing page puts it: a running Web Animation,
+ * motion declared on real elements, or any visible change between two frames.
+ */
+const landingPageChecks: CheckFn[] = [
+  async (ctx) => {
+    const dom = await ctx.page.evaluate(() => ({
+      headings: document.querySelectorAll('h1, h2, h3').length,
+      bodyText: document.body.innerText?.trim().length ?? 0,
+      canvas: document.querySelectorAll('canvas').length,
+    }))
+    const ok = dom.headings >= 1 && (dom.bodyText > 50 || dom.canvas > 0)
+    return {
+      name: 'landing-structure',
+      passed: ok,
+      points: ok ? 30 : 0,
+      maxPoints: 30,
+      detail: `headings=${dom.headings} textChars=${dom.bodyText} canvases=${dom.canvas}`,
+    }
+  },
+  async (ctx) => {
+    const before = await ctx.captureCanvas('canvas').catch(() => undefined)
+    const beforeBody = await ctx.page.evaluate(() => document.body.innerText?.length ?? 0)
+    // Motion on a DOM page: something is running now, or the stylesheet declares
+    // transitions or keyframes on real elements. `getAnimations()` counts what a
+    // browser is actually animating, including CSS transitions triggered by the
+    // page's own script; the declared count catches entrance animations that
+    // have not fired yet, which is most of what a landing page does.
+    const motion = await ctx.page.evaluate(() => {
+      const animations = typeof document.getAnimations === 'function' ? document.getAnimations() : []
+      const running = animations.filter((a) => a.playState === 'running').length
+      let declared = 0
+      const elements = document.querySelectorAll('body *')
+      for (let i = 0; i < elements.length && declared < 3; i += 1) {
+        const style = getComputedStyle(elements[i] as Element)
+        const durations = (style.transitionDuration || '').split(',')
+        const animated = style.animationName !== 'none' || durations.some((d) => parseFloat(d) > 0)
+        if (animated) declared += 1
+      }
+      return { running, declared, keyframes: declared }
+    })
+    await ctx.page.waitForTimeout(1000)
+    const afterBody = await ctx.page.evaluate(() => document.body.innerText?.length ?? 0)
+    const after = await ctx.captureCanvas('canvas').catch(() => undefined)
+    let diff = 0
+    if (before && after) diff = pixelDiffScore(before.data, after.data)
+    // Motion has to be a property of the page, not of one decorative element:
+    // a lone pulsing dot scores 35 of 65 behavioural points otherwise, and this
+    // task is about transitions across a page, not an animation somewhere in it.
+    const moving = motion.declared >= 3 || motion.running >= 2
+    const changed = diff > 0.005 || afterBody !== beforeBody || moving
+    return {
+      name: 'landing-animates',
+      passed: changed,
+      points: changed ? 35 : 0,
+      maxPoints: 35,
+      detail:
+        `pixelDiff=${(diff * 100).toFixed(1)}% running=${String(motion.running)} ` +
+        `declaredMotion=${String(motion.declared)} bodyText ${String(beforeBody)}→${String(afterBody)}`,
+    }
+  },
+]
+
+/**
+ * physics-pendulum-wave: canvas with multiple pendulums. Check that the
+ * canvas is non-trivial (multiple pendulums drawn) and that the scene
+ * animates over time.
+ */
+const pendulumChecks: CheckFn[] = [
+  async (ctx) => {
+    const before = await ctx.captureCanvas()
+    if (!before) return { name: 'pendulum-renders', passed: false, points: 0, maxPoints: 35, detail: 'no canvas' }
+    const content = canvasContentScore(before.data)
+    return {
+      name: 'pendulum-renders',
+      passed: content > 0.15,
+      points: content > 0.15 ? 35 : 0,
+      maxPoints: 35,
+      detail: `canvas content: ${(content * 100).toFixed(0)}%`,
+    }
+  },
+  async (ctx) => {
+    const before = await ctx.captureCanvas()
+    if (!before) return { name: 'pendulum-animates', passed: false, points: 0, maxPoints: 30, detail: 'no canvas' }
+    await ctx.page.waitForTimeout(800)
+    const after = await ctx.captureCanvas()
+    if (!after) return { name: 'pendulum-animates', passed: false, points: 0, maxPoints: 30, detail: 'no canvas' }
+    const diff = pixelDiffScore(before.data, after.data)
+    return {
+      name: 'pendulum-animates',
+      passed: diff > 0.01,
+      points: diff > 0.01 ? 30 : 0,
+      maxPoints: 30,
+      detail: `pixel diff over 0.8s: ${(diff * 100).toFixed(1)}%`,
+    }
+  },
+]
+
+/**
+ * circuit-builder-teaser: interactive circuit UI with R/L/C controls. Verify
+ * the DOM has the expected controls and that interacting with one updates
+ * the circuit (either DOM value changes or canvas re-renders).
+ */
+const circuitChecks: CheckFn[] = [
+  async (ctx) => {
+    const info = await ctx.page.evaluate(() => ({
+      inputs: document.querySelectorAll('input, select, button').length,
+      canvas: document.querySelectorAll('canvas').length,
+      bodyText: document.body.innerText?.trim().length ?? 0,
+    }))
+    const ok = (info.inputs >= 2 || info.canvas > 0) && info.bodyText > 20
+    return {
+      name: 'circuit-structure',
+      passed: ok,
+      points: ok ? 30 : 0,
+      maxPoints: 30,
+      detail: `inputs=${info.inputs} canvas=${info.canvas} textChars=${info.bodyText}`,
+    }
+  },
+  async (ctx) => {
+    const before = await ctx.captureCanvas().catch(() => undefined)
+    // Try to interact with the first range/number input we find.
+    const interacted = await ctx.page.evaluate(() => {
+      const input = document.querySelector('input[type="range"], input[type="number"]') as
+        | HTMLInputElement
+        | null
+      if (!input) return false
+      const cur = Number(input.value)
+      const next = Number.isFinite(cur) ? (cur + 1) % 100 || 1 : 50
+      input.value = String(next)
+      input.dispatchEvent(new Event('input', { bubbles: true }))
+      input.dispatchEvent(new Event('change', { bubbles: true }))
+      return true
+    })
+    if (!interacted) {
+      return { name: 'circuit-interact', passed: false, points: 0, maxPoints: 35, detail: 'no input found' }
+    }
+    await ctx.page.waitForTimeout(400)
+    const after = await ctx.captureCanvas().catch(() => undefined)
+    const diff = before && after ? pixelDiffScore(before.data, after.data) : 0
+    return {
+      name: 'circuit-interact',
+      passed: diff > 0.005,
+      points: diff > 0.005 ? 35 : 0,
+      maxPoints: 35,
+      detail: `pixel diff after input: ${(diff * 100).toFixed(2)}%`,
+    }
+  },
+]
+
+const CHECKS_BY_TASK: Record<string, CheckFn[]> = {
+  'mini-platformer': miniPlatformerChecks,
+  'n-body-field': nBodyChecks,
+  'landing-page-morph': landingPageChecks,
+  'physics-pendulum-wave': pendulumChecks,
+  'circuit-builder-teaser': circuitChecks,
+}
+
+/**
+ * Named check registry. Built-in checks register under their stable result
+ * names; plugin checks merge in via `pluginChecks()`. A task that declares
+ * `checks: [...]` resolves each name through this registry — the seam that
+ * lets plugins ship evaluators for their own tasks.
+ */
+const CHECK_REGISTRY: Record<string, CheckFn> = {}
+
+/**
+ * Register a built-in check under its stable name and stamp its name and point
+ * budget onto the SAME function object. The per-task lists above hold that
+ * object too, so the registry and the task lists never disagree about either.
+ */
+function registerCheck(name: string, fn: CheckFn, maxPoints: number): CheckFn {
+  const check = defineCheck(name, maxPoints, fn)
+  CHECK_REGISTRY[name] = check
+  return check
+}
+
+// Budgets are the `maxPoints` each check returns on both its pass and fail
+// branches. `checks.test.ts` asserts they match what the functions report.
+registerCheck('platformer-jump', miniPlatformerChecks[0], 30)
+registerCheck('platformer-move', miniPlatformerChecks[1], 25)
+registerCheck('nbody-renders', nBodyChecks[0], 35)
+registerCheck('nbody-animates', nBodyChecks[1], 30)
+registerCheck('landing-structure', landingPageChecks[0], 30)
+registerCheck('landing-animates', landingPageChecks[1], 35)
+registerCheck('pendulum-renders', pendulumChecks[0], 35)
+registerCheck('pendulum-animates', pendulumChecks[1], 30)
+registerCheck('circuit-structure', circuitChecks[0], 30)
+registerCheck('circuit-interact', circuitChecks[1], 35)
+Object.assign(CHECK_REGISTRY, pluginChecks())
+
+/**
+ * Resolve the behavioral checks for a task.
+ *
+ * A task row with an explicit `checks` list gets exactly those named checks
+ * (resolved through the registry, so a plugin can contribute them); an
+ * unknown name fails loudly rather than silently scoring with no checks.
+ * Tasks without a `checks` list fall back to the per-task map, preserving
+ * the pre-plugin behavior.
+ */
+export function getChecksForTask(task: BenchmarkTask): CheckFn[] {
+  if (task.checks && task.checks.length > 0) {
+    return task.checks.map((name) => {
+      const fn = CHECK_REGISTRY[name]
+      if (!fn) {
+        throw new Error(
+          `Unknown check '${name}' for task '${task.id}' — is it registered (builtin or via a plugin)?`
+        )
+      }
+      return fn
+    })
+  }
+  return CHECKS_BY_TASK[task.id] ?? []
+}

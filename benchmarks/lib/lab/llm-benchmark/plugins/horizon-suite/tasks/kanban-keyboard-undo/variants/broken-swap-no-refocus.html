@@ -1,0 +1,366 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Sprint Board</title>
+<style>
+:root{color-scheme:dark;--bg:#0c0c10;--panel:#17171d;--card:#22222b;--raised:#2a2a35;--field:#101016;--line:#2e2e3a;--text:#ececf0;--muted:#a1a1ab;--accent:#7aa2ff;--ink:#0c0c10;--warn:#f0b35a;--danger:#ff8a8a;--focus:#ffd166}
+html,body{margin:0;padding:0;min-height:100%;box-sizing:border-box;background:var(--bg);color:var(--text);font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif}
+main{padding:16px;max-width:1120px;margin:0 auto;box-sizing:border-box}
+h1{font-size:1.4rem;margin:0 0 12px}
+h2{font-size:1rem;margin:0}
+p{margin:0}
+label{font-size:.9rem;color:var(--muted)}
+form.add{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.add label{flex:0 0 100%}
+input#new-title{flex:1 1 220px;min-width:0;padding:9px 10px;border-radius:8px;border:1px solid var(--line);background:var(--field);color:var(--text);font:inherit}
+input#new-title[aria-invalid="true"]{border-color:var(--danger)}
+#add-error{flex:0 0 100%;color:var(--danger);min-height:1.2em;font-size:.9rem}
+button{font:inherit;min-height:34px;padding:6px 12px;border-radius:8px;border:1px solid var(--line);background:var(--raised);color:var(--text);cursor:pointer}
+button:disabled{opacity:.42;cursor:not-allowed}
+button#add-btn{background:var(--accent);border-color:var(--accent);color:var(--ink);font-weight:600}
+.toolbar{display:flex;gap:8px;margin:12px 0 8px}
+#status{min-height:1.4em;font-size:.92rem;color:var(--muted);margin-bottom:12px}
+:focus-visible{outline:2px solid var(--focus);outline-offset:2px}
+.board{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}
+@media (max-width:760px){.board{grid-template-columns:minmax(0,1fr)}}
+.column{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:12px;min-width:0}
+.column header{display:flex;justify-content:space-between;align-items:center;gap:8px}
+.count{font-variant-numeric:tabular-nums;color:var(--muted);background:var(--raised);border-radius:999px;padding:2px 10px;min-width:1.5em;text-align:center}
+.limit{font-size:.82rem;color:var(--warn);margin-top:4px}
+ul.list{list-style:none;margin:10px 0 0;padding:0;display:flex;flex-direction:column;gap:8px;min-width:0}
+li[data-card]{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:9px 10px;display:flex;flex-direction:column;gap:8px;min-width:0;box-sizing:border-box}
+[data-card-title]{overflow-wrap:anywhere;min-width:0}
+.actions{display:flex;gap:6px;flex-wrap:wrap}
+.actions button{min-height:30px;padding:4px 9px}
+.app-error{color:var(--danger);margin-top:12px}
+</style>
+</head>
+<body>
+<main>
+  <h1>Sprint Board</h1>
+  <form id="add-form" class="add" novalidate>
+    <label for="new-title">New card title</label>
+    <input id="new-title" type="text" autocomplete="off" aria-describedby="add-error">
+    <button id="add-btn" type="submit">Add card</button>
+    <p id="add-error"></p>
+  </form>
+  <div class="toolbar">
+    <button id="undo" type="button" disabled>Undo</button>
+    <button id="redo" type="button" disabled>Redo</button>
+  </div>
+  <div id="status" role="status" aria-live="polite"></div>
+  <div class="board">
+    <section class="column" data-column="todo" aria-labelledby="h-todo">
+      <header><h2 id="h-todo">To do</h2><span class="count" data-count>0</span></header>
+      <ul class="list" data-list></ul>
+    </section>
+    <section class="column" data-column="doing" aria-labelledby="h-doing">
+      <header><h2 id="h-doing">Doing</h2><p class="limit">Limit: 3 cards</p><span class="count" data-count>0</span></header>
+      <ul class="list" data-list></ul>
+    </section>
+    <section class="column" data-column="done" aria-labelledby="h-done">
+      <header><h2 id="h-done">Done</h2><span class="count" data-count>0</span></header>
+      <ul class="list" data-list></ul>
+    </section>
+  </div>
+  <div id="app-error" class="app-error" role="alert"></div>
+</main>
+<script>
+(function () {
+  'use strict';
+  try {
+    var STORE_KEY = 'sprint-board.v1';
+    var LIMIT = 3;
+    var MAX_TITLE = 80;
+    var HISTORY_CAP = 200;
+    var COLS = ['todo', 'doing', 'done'];
+    var NAME = { todo: 'To do', doing: 'Doing', done: 'Done' };
+    var FIRST_LOAD = {
+      todo: ['Draft release notes', 'Fix login redirect', 'Update pricing copy'],
+      doing: ['Migrate billing cron'],
+      done: ['Rotate API keys']
+    };
+    var board = { todo: [], doing: [], done: [] };
+    var undoStack = [];
+    var redoStack = [];
+    var cardByEl = new WeakMap();
+    var input = document.getElementById('new-title');
+    var addError = document.getElementById('add-error');
+    var statusEl = document.getElementById('status');
+    var undoBtn = document.getElementById('undo');
+    var redoBtn = document.getElementById('redo');
+
+    function listOf(col) { return document.querySelector('[data-column="' + col + '"] [data-list]'); }
+    function countOf(col) { return document.querySelector('[data-column="' + col + '"] [data-count]'); }
+    function normalise(raw) { return String(raw).trim().replace(/\s+/g, ' '); }
+    function validTitle(t) { return t.length >= 1 && t.length <= MAX_TITLE; }
+    function setStatus(text) { statusEl.textContent = text; }
+    function titlesOf(col) { return board[col].map(function (c) { return c.title; }); }
+
+    function makeButton(action, glyph, label, handler) {
+      var b = document.createElement('button');
+      b.type = 'button';
+      b.setAttribute('data-action', action);
+      b.setAttribute('aria-label', label);
+      b.textContent = glyph;
+      b.addEventListener('click', handler);
+      return b;
+    }
+
+    // Builds the card's element once; a card keeps this element for its whole life.
+    function buildCard(card) {
+      var title = card.title;
+      card.el = document.createElement('li');
+      card.el.setAttribute('data-card', '');
+      card.el.tabIndex = 0;
+      var text = document.createElement('span');
+      text.setAttribute('data-card-title', '');
+      text.textContent = title;
+      var actions = document.createElement('span');
+      actions.className = 'actions';
+      card.left = makeButton('move-left', '←', 'Move "' + title + '" left', function () { tryMove(card, -1, true); });
+      card.right = makeButton('move-right', '→', 'Move "' + title + '" right', function () { tryMove(card, 1, true); });
+      card.del = makeButton('delete', '✕', 'Delete "' + title + '"', function () { deleteCard(card); });
+      actions.appendChild(card.left);
+      actions.appendChild(card.right);
+      actions.appendChild(card.del);
+      card.el.appendChild(text);
+      card.el.appendChild(actions);
+      cardByEl.set(card.el, card);
+      return card;
+    }
+
+    function makeCard(title) { return buildCard({ title: title }); }
+
+    function locate(card) {
+      for (var i = 0; i < COLS.length; i++) {
+        var idx = board[COLS[i]].indexOf(card);
+        if (idx >= 0) return { col: COLS[i], index: idx };
+      }
+      return null;
+    }
+
+    function take(card) {
+      var loc = locate(card);
+      board[loc.col].splice(loc.index, 1);
+      card.el.remove();
+    }
+
+    function put(card, col, index) {
+      board[col].splice(index, 0, card);
+      var list = listOf(col);
+      list.insertBefore(card.el, list.children[index] || null);
+      card.left.disabled = col === 'todo';
+      card.right.disabled = col === 'done';
+    }
+
+    // A command records where a card was (from) and where it is now (to).
+    // null on either side means the card was not on the board there.
+    function applyCmd(cmd, forward) {
+      if (forward) {
+        if (cmd.from) take(cmd.card);
+        if (cmd.to) put(cmd.card, cmd.to.col, cmd.to.index);
+      } else {
+        if (cmd.to) take(cmd.card);
+        if (cmd.from) put(cmd.card, cmd.from.col, cmd.from.index);
+      }
+    }
+
+    function commit(cmd) {
+      applyCmd(cmd, true);
+      undoStack.push(cmd);
+      if (undoStack.length > HISTORY_CAP) undoStack.shift();
+      redoStack.length = 0;
+    }
+
+    function sentence(cmd, undone) {
+      var t = '"' + cmd.card.title + '"';
+      if (cmd.kind === 'add') return undone ? 'removed ' + t + ' from To do' : 'added ' + t + ' to To do';
+      if (cmd.kind === 'swap') return undone ? 'moved ' + t + ' back' : 'moved ' + t + (cmd.dir < 0 ? ' up' : ' down');
+      if (cmd.kind === 'move') {
+        return undone ? 'moved ' + t + ' back to ' + NAME[cmd.from.col] : 'moved ' + t + ' to ' + NAME[cmd.to.col];
+      }
+      if (cmd.kind === 'delete') return undone ? 'restored ' + t + ' to ' + NAME[cmd.from.col] : 'deleted ' + t + ' from ' + NAME[cmd.from.col];
+      return '';
+    }
+
+    function refreshCounts() {
+      COLS.forEach(function (col) {
+        var el = countOf(col);
+        var text = String(board[col].length);
+        if (el.textContent !== text) el.textContent = text;
+      });
+    }
+
+    function save() {
+      try {
+        localStorage.setItem(STORE_KEY, JSON.stringify({ todo: titlesOf('todo'), doing: titlesOf('doing'), done: titlesOf('done') }));
+      } catch (e) {
+        // Storage may be unavailable; the board keeps working without it.
+      }
+    }
+
+    function afterChange() {
+      refreshCounts();
+      undoBtn.disabled = undoStack.length === 0;
+      redoBtn.disabled = redoStack.length === 0;
+      save();
+    }
+
+    function focusCard(card) { card.el.focus(); }
+
+    function tryMove(card, dir, enforceLimit) {
+      var loc = locate(card);
+      var ti = COLS.indexOf(loc.col) + dir;
+      if (ti < 0 || ti >= COLS.length) return false;
+      var to = COLS[ti];
+      if (enforceLimit && to === 'doing' && board.doing.length >= LIMIT) {
+        setStatus('Doing is full (limit 3). "' + card.title + '" was not moved.');
+        return false;
+      }
+      commit({ kind: 'move', card: card, from: loc, to: { col: to, index: board[to].length } });
+      setStatus('Moved "' + card.title + '" to ' + NAME[to] + '.');
+      afterChange();
+      focusCard(card);
+      return true;
+    }
+
+    function moveBy(card, dir) { return tryMove(card, dir, true); }
+
+    function swapBy(card, dir) {
+      var loc = locate(card);
+      var j = loc.index + dir;
+      if (j < 0 || j >= board[loc.col].length) return false;
+      commit({ kind: 'swap', card: card, from: loc, to: { col: loc.col, index: j }, dir: dir });
+      setStatus('Moved "' + card.title + '" ' + (dir < 0 ? 'up' : 'down') + '.');
+      afterChange();
+      return true;
+    }
+
+    function deleteCard(card) {
+      var loc = locate(card);
+      commit({ kind: 'delete', card: card, from: loc, to: null });
+      var list = board[loc.col];
+      var next = list[loc.index] || list[loc.index - 1];
+      setStatus('Deleted "' + card.title + '" from ' + NAME[loc.col] + '.');
+      afterChange();
+      if (next) focusCard(next); else input.focus();
+    }
+
+    function addCard(title) {
+      var card = makeCard(title);
+      commit({ kind: 'add', card: card, from: null, to: { col: 'todo', index: board.todo.length } });
+      setStatus('Added "' + title + '" to To do.');
+      afterChange();
+    }
+
+    function undo() {
+      var cmd = undoStack.pop();
+      if (!cmd) return;
+      applyCmd(cmd, false);
+      redoStack.push(cmd);
+      setStatus('Undid: ' + sentence(cmd, true) + '.');
+      afterChange();
+    }
+
+    function redo() {
+      var cmd = redoStack.pop();
+      if (!cmd) return;
+      applyCmd(cmd, true);
+      undoStack.push(cmd);
+      setStatus('Redid: ' + sentence(cmd, false) + '.');
+      afterChange();
+    }
+
+    function neighbour(card, dir) {
+      var loc = locate(card);
+      var target = board[loc.col][loc.index + dir];
+      if (target) target.el.focus();
+    }
+
+    function cardFor(el) {
+      return el && el.nodeType === 1 && cardByEl.has(el) ? cardByEl.get(el) : null;
+    }
+
+    document.getElementById('add-form').addEventListener('submit', function (e) {
+      e.preventDefault();
+      var title = normalise(input.value);
+      if (!validTitle(title)) {
+        addError.textContent = 'Enter 1 to 80 characters.';
+        input.setAttribute('aria-invalid', 'true');
+        return;
+      }
+      addCard(title);
+      input.value = '';
+      addError.textContent = '';
+      input.setAttribute('aria-invalid', 'false');
+      input.focus();
+    });
+
+    undoBtn.addEventListener('click', undo);
+    redoBtn.addEventListener('click', redo);
+
+    document.addEventListener('keydown', function (e) {
+      var t = e.target;
+      if (t === input) return;
+      var key = e.key;
+      if (e.ctrlKey || e.metaKey) {
+        var k = String(key).toLowerCase();
+        if (k === 'z' && !e.shiftKey) { e.preventDefault(); undo(); }
+        else if (k === 'y' || (k === 'z' && e.shiftKey)) { e.preventDefault(); redo(); }
+        return;
+      }
+      var card = cardFor(t);
+      if (!card) return;
+      if (e.shiftKey) {
+        if (key === 'ArrowUp') { e.preventDefault(); swapBy(card, -1); }
+        else if (key === 'ArrowDown') { e.preventDefault(); swapBy(card, 1); }
+        else if (key === 'ArrowLeft') { e.preventDefault(); moveBy(card, -1); }
+        else if (key === 'ArrowRight') { e.preventDefault(); moveBy(card, 1); }
+        return;
+      }
+      if (key === 'ArrowUp') { e.preventDefault(); neighbour(card, -1); }
+      else if (key === 'ArrowDown') { e.preventDefault(); neighbour(card, 1); }
+      else if (key === 'Delete') { e.preventDefault(); deleteCard(card); }
+    });
+
+    function readStored() {
+      try {
+        var raw = window.localStorage.getItem(STORE_KEY);
+        if (raw === null) return null;
+        var data = JSON.parse(raw);
+        if (data === null || typeof data !== 'object' || Array.isArray(data)) return null;
+        for (var i = 0; i < COLS.length; i++) {
+          var list = data[COLS[i]];
+          if (!Array.isArray(list)) return null;
+          for (var j = 0; j < list.length; j++) {
+            if (typeof list[j] !== 'string' || !validTitle(list[j])) return null;
+          }
+        }
+        if (data.doing.length > LIMIT) return null;
+        return data;
+      } catch (e) {
+        return null;
+      }
+    }
+
+    var source = readStored() || FIRST_LOAD;
+    COLS.forEach(function (col) {
+      source[col].forEach(function (title) {
+        var card = makeCard(title);
+        put(card, col, board[col].length);
+      });
+    });
+    refreshCounts();
+    undoBtn.disabled = true;
+    redoBtn.disabled = true;
+  } catch (err) {
+    var alertBox = document.getElementById('app-error');
+    if (alertBox) alertBox.textContent = 'Startup error: ' + (err && err.message ? err.message : String(err));
+  }
+})();
+</script>
+</body>
+</html>

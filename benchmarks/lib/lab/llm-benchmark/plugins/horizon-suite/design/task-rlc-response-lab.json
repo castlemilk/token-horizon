@@ -1,0 +1,144 @@
+{
+ "id": "rlc-response-lab",
+ "from_angle": "instrumented-correctness",
+ "title": "RLC Response Lab: analytic Bode and step response at hidden values",
+ "category": "advanced-electronics",
+ "why_selected": "The only electronics proposal and the most numerically demanding: closed forms in three damping regimes for three outputs, exactly critical damping in binary, phase quadrants, the exact peak condition, a Q = 100 resonance that must be resolved in the drawn curve, auto-ranging over seven decades and SI-prefix rollover. Every number is compared with the grader's own closed form and the drawn polylines are mapped back through the published axes, so the plot cannot disagree with the maths.",
+ "changes_made": "1. Peak-resolution check uses five hidden resonant frequencies instead of three: a lucky uniform 1000-point grid now passes 0.3% of the time (was about 3%), a 2000-point grid 9%. 2. Readouts are held to exactly 4 significant digits as well as value, and the prompt examples no longer coincide with hidden values. 3. Added an underdamped near-critical set (zeta = 1 - 1e-7) to the regime check. 4. Formulas, expected values and the binary exactness of the critical set were re-derived and verified in Node (zeta is exactly 1 for three formula orderings; near-critical sets sit 2x and 100x from the 1e-9 band). 5. Tolerances restated from rendering precision.",
+ "final_prompt": "Build a single-file HTML page, \"RLC Response Lab\", for a series RLC circuit driven by an ideal voltage source: a schematic, a Bode plot and a step-response plot that update live from R, L and C. A grading script sets hidden component values through the JavaScript API below and compares your numbers, and the curves you actually draw, with the exact analytic solution. Use closed-form solutions; results are compared to about 1e-6. Use every id, class, data attribute and function name exactly as written.\n\nCIRCUIT\n- An ideal source Vin in series with R (ohms), L (henries) and C (farads). The output is the voltage across one selected element: 'C', 'R' or 'L'.\n- Frequency response: H(jw) = Vout/Vin in sinusoidal steady state, w = 2*pi*f.\n- Step response: Vin steps from 0 to 1 V at t = 0 with the capacitor uncharged and no current flowing; vout(t) for t >= 0 (at t = 0 give the value just after the step).\n- Definitions: f0 = 1/(2*pi*sqrt(L*C)); zeta = (R/2)*sqrt(C/L); Q = 1/(2*zeta); regime is 'underdamped' if zeta < 1 - 1e-9, 'overdamped' if zeta > 1 + 1e-9, otherwise 'critical'; bandwidthHz = R/(2*pi*L).\n\nAPI (define window.__bench synchronously while the page loads)\n- __bench.set({R, L, C, output}): set the component values (any positive numbers in SI units, from 1e-9 to 1e6) and the output element, then recompute and redraw EVERYTHING synchronously.\n- __bench.metrics(): returns {f0, zeta, Q, regime, bandwidthHz, peakDb, overshootPct}. peakDb is the largest value of 20*log10|H| over all f > 0 for the SELECTED output, exact rather than a high-Q approximation (it is 0 when the gain never exceeds 1). overshootPct is the percentage by which the CAPACITOR step response exceeds 1 at its highest point (0 if it never does), whichever output is selected.\n- __bench.response(f): returns {gainDb, phaseDeg} for the selected output at f hertz; gainDb = 20*log10|H|, phaseDeg = arg(H) in degrees in (-180, 180].\n- __bench.stepAt(t): the selected output's unit-step response at t seconds. It must be finite and accurate to 1e-6 in every regime, including zeta exactly 1, zeta within 1e-7 of 1, and zeta as large as 100.\n\nBODE PLOT: <svg id=\"bode\">\n- <rect id=\"bode-area\"> is the plotting rectangle. The gain curve is one <polyline id=\"bode-gain\"> drawn inside it.\n- Frequency is logarithmic: the left edge of #bode-area is fmin, the right edge is fmax. Gain is linear in dB: the bottom edge is dbmin, the top edge is dbmax. Publish these on the svg element as data-fmin, data-fmax, data-dbmin, data-dbmax.\n- Auto-range on every set(): fmin and fmax are exact powers of ten with fmin <= f0/30 and fmax >= 30*f0, spanning at most 6 decades; dbmin and dbmax are multiples of 10 chosen so the whole curve between fmin and fmax lies inside the rectangle and is never clipped.\n- For every power of ten from fmin to fmax draw a vertical gridline <line class=\"decade\" data-f=\"...\"> at the matching x position, with a label.\n- The polyline has at least 200 vertices in increasing frequency from fmin to fmax. Do not round vertex coordinates to whole pixels (keep at least 2 decimals). It must resolve a resonance: its highest vertex is within 0.3 dB of the true maximum of the curve even at Q = 100.\n- Also draw the phase as <polyline id=\"bode-phase\"> on its own scale or panel.\n\nSTEP PLOT: <svg id=\"step\">\n- <rect id=\"step-area\"> and <polyline id=\"step-curve\"> with at least 200 vertices in increasing time. Linear axes: the left edge is t = 0, the right edge is tmax, the bottom is vmin, the top is vmax; publish data-tmax, data-vmin, data-vmax on the svg.\n- tmax = 10*tau, where tau = 2*L/R when zeta <= 1, and tau = 1/|s_slow| when zeta > 1 (s_slow is the characteristic root closer to zero). Choose vmin and vmax so the curve is never clipped.\n\nREADOUTS (HTML text)\n- <span id=\"readout-f0\"> and <span id=\"readout-bw\">: engineering notation: a mantissa with exactly 4 significant digits in the range [1, 1000), one space, an SI prefix from p n µ m (none) k M G, then Hz. Examples: \"159.2 mHz\", \"1.000 kHz\", \"47.00 Hz\". Never \"1000 Hz\" and never \"0.1592 Hz\".\n- <span id=\"readout-q\"> and <span id=\"readout-zeta\">: plain decimal numbers with exactly 4 significant digits, no exponent (for example \"0.07071\", \"2.500\", \"100.0\").\n- <span id=\"readout-regime\">: the regime word.\n\nPAGE\n- A drawn schematic of the series loop (source, R, L, C) with the selected output element highlighted; three logarithmic sliders #slider-r, #slider-l, #slider-c and an output selector #output that use the same code path as __bench.set and stay in sync with it.\n- On load show R = 20 ohm, L = 10 mH, C = 1 uF with output C. Dark theme; both plots visible without scrolling at 1024 x 720.",
+ "final_checks": [
+  {
+   "name": "rlc-metrics",
+   "points": 10,
+   "verifies": "f0, zeta, Q, bandwidth and the regime word, including the 1e-9 band around critical damping.",
+   "method": "For each hidden set, one probe calls set() then metrics(): U1 (R=47, L=0.022, C=3.3e-7), U2 (R=160, L=0.1, C=1e-5; zeta 0.8), CR (R=2, L=0.25, C=0.25; zeta exactly 1 in binary), NC (R=200.0000001, L=0.01, C=1e-6; zeta = 1 + 5e-10, expected 'critical'), NU (R=200.00002; zeta = 1 + 1e-7, 'overdamped'), ND (R=199.99998; zeta = 1 - 1e-7, 'underdamped'), OV (R=2530, L=0.001, C=1e-6; zeta 40.003). Node recomputes f0, zeta, Q and bandwidthHz and requires relative error <= 1e-9, and the exact regime string.",
+   "flake_risk": "None. NC sits 2x inside the stated band and NU, ND 100x outside it; different formula orderings move zeta by 1e-16."
+  },
+  {
+   "name": "rlc-peak-overshoot",
+   "points": 8,
+   "verifies": "Exact resonant peak and overshoot, including the cases with no peak and no overshoot.",
+   "method": "Sets with zeta in {0.005, 0.1, 0.4, 0.625, 0.8, 3} (L=0.01, C=1e-6, R = 2*zeta*100) and outputs C, L and R. Expected peakDb for C and L: -20*log10(2*zeta*sqrt(1 - zeta^2)) when zeta < 1/sqrt(2), else 0; for R: 0. Expected overshootPct: 100*exp(-pi*zeta/sqrt(1 - zeta^2)) when zeta < 1, else 0. Tolerance 1e-3 dB and 1e-3 percentage points. Verified against brute force (2.69541 dB at zeta 0.4, 0.21295 dB at 0.625); 20*log10(Q) is off by 0.76 dB and 2.2 dB there.",
+   "flake_risk": "None."
+  },
+  {
+   "name": "rlc-response",
+   "points": 14,
+   "verifies": "Gain and phase of all three outputs below, at and above resonance.",
+   "method": "Sets U1, U2 and OV; outputs C, R, L; f in {0.1, 0.7, 1, 1.3, 20} x f0; one probe per set. Node evaluates H = N/(1 - w^2*L*C + j*w*R*C) with N = 1, j*w*R*C, -w^2*L*C. Require |gainDb - expected| <= 1e-6 and phase difference modulo 360 <= 1e-6 degrees, computed as |((a - b + 540) mod 360) - 180|.",
+   "flake_risk": "None. The modulo comparison removes the -180 versus +180 branch ambiguity."
+  },
+  {
+   "name": "rlc-step-underdamped",
+   "points": 10,
+   "verifies": "Closed-form underdamped step response of all three outputs.",
+   "method": "Sets U1 and zeta = 0.005 (R=1, L=0.01, C=1e-6); outputs C, R, L; t in {0, 0.13, 0.5, 1, 2.7, 6} x (2L/R). Expected, with a = R/(2L), wd = w0*sqrt(1 - zeta^2), e = exp(-a*t): vC = 1 - e*(cos(wd*t) + (a/wd)*sin(wd*t)); vR = (2a/wd)*e*sin(wd*t); vL = e*(cos(wd*t) - (a/wd)*sin(wd*t)) (the three sum to 1). Tolerance 1e-6 absolute.",
+   "flake_risk": "None."
+  },
+  {
+   "name": "rlc-step-critical-overdamped",
+   "points": 12,
+   "verifies": "The step response stays finite and accurate at exactly critical, near critical and stiff overdamped values.",
+   "method": "Output C only. Sets CR, NC, NU, ND, OV and R=600, L=0.01, C=1e-6 (zeta 3); t in {0, 0.2, 1, 3, 8} x tau, with tau = 2L/R for zeta <= 1 and 1/|s_slow| otherwise. Expected: critical 1 - e^(-a*t)*(1 + a*t); overdamped 1 + (s2*e^(s1*t) - s1*e^(s2*t))/(s1 - s2) with s1,2 = -a +- sqrt(a^2 - w0^2); underdamped as above. Every value must be finite and within 1e-6. CR gives zeta === 1 and a zero discriminant in every common formula ordering, so an implementation without a critical branch returns NaN.",
+   "flake_risk": "None. Near critical the three formulas agree to about 1e-7, so either branch choice inside the band passes."
+  },
+  {
+   "name": "rlc-bode-curve",
+   "points": 14,
+   "verifies": "The drawn gain polyline lies on the analytic curve when mapped through the published axes.",
+   "method": "Sets U1 with output C and U2 with output R. One probe returns: #bode-gain points (SVGPointList) each transformed with matrixTransform(polyline.getScreenCTM()); the four corners of #bode-area.getBBox() transformed with its getScreenCTM(); the svg's data-fmin, data-fmax, data-dbmin, data-dbmax. Node maps each vertex: f = fmin*(fmax/fmin)^((x - left)/width), dB = dbmax - (y - top)/height*(dbmax - dbmin). Require >= 200 vertices, x non-decreasing, first vertex within 1% of the width from the left edge and last within 1% of the right edge, and for every vertex min over nine f' spread across [f/1.012, 1.012*f] of |dB - G(f')| <= 0.5 dB.",
+   "flake_risk": "Low. Reads SVG geometry, not pixels. Both sets have Q <= 5.5, so slopes are gentle and the window is 50x the rendering precision."
+  },
+  {
+   "name": "rlc-bode-autorange",
+   "points": 8,
+   "verifies": "Decade-aligned auto-ranging and gridlines from sub-hertz to megahertz, with nothing clipped.",
+   "method": "Sets CR (f0 = 0.6366 Hz), R=10, L=1e-6, C=5e-9 (f0 = 2.2508 MHz) and U1, output C. For each: log10(fmin) and log10(fmax) are integers within 1e-9; fmin <= f0/30; fmax >= 30*f0; at most 6 decades; dbmin and dbmax are multiples of 10; every #bode-gain vertex lies inside the #bode-area rectangle within 0.75 px; there is exactly one line.decade per power of ten from fmin to fmax inclusive, each vertical (|x1 - x2| < 0.5 px after the CTM) at the x predicted by the mapping within 1 px, with data-f parsing to that power of ten within 1e-9 relative.",
+   "flake_risk": "Low. Geometry with pixel tolerances."
+  },
+  {
+   "name": "rlc-peak-resolved",
+   "points": 8,
+   "verifies": "The drawn curve reaches the true resonant peak at Q = 100.",
+   "method": "Five sets with R = sqrt(L/C)/100 and output C: (L=4.7e-3, C=2.2e-8; 15.65 kHz), (0.33, 6.8e-7; 336.0 Hz), (0.047, 1e-7; 2321 Hz), (1.5e-4, 3.9e-9; 208.1 kHz), (8.2, 4.7e-6; 25.64 Hz). Map the vertices as in rlc-bode-curve; the largest vertex dB must be within 0.5 dB of the true maximum 40.00011 dB for all five sets.",
+   "flake_risk": "Deterministic per artifact. A dense uniform log grid can pass by where f0 falls: simulated pass rates per set on 5 decades are 6% at 200 points, 29% at 1000, 62% at 2000 and 100% at 5000 (0.5 dB needs a vertex within 0.175% of f0, guaranteed above about 3300 points per 5 decades); requiring all five sets cuts a lucky 1000-point pass to 0.3%."
+  },
+  {
+   "name": "rlc-step-plot",
+   "points": 8,
+   "verifies": "The drawn step response and its time window.",
+   "method": "Sets U1 with output C (expected tmax = 10*2L/R = 9.362 ms) and R=600, L=0.01, C=1e-6 with output C (s_slow = -1716 per second, tmax = 5.828 ms). data-tmax within 1% of the expected value; #step-curve has >= 200 vertices with x non-decreasing, spanning from within 0.5% of the left edge to at least 98% of the width; each vertex maps to (t, v) through #step-area and data-vmin/data-vmax and satisfies min over nine t' in [t - 0.004*tmax, t + 0.004*tmax] of |v - vC(t')| <= 0.01*(vmax - vmin); all vertices inside the area within 0.75 px.",
+   "flake_risk": "Low."
+  },
+  {
+   "name": "rlc-readouts",
+   "points": 8,
+   "verifies": "Engineering-notation readouts, including prefix rollover after rounding and sub-unit values.",
+   "method": "Sets: R=33, L=0.01, C=2.53318e-6 (f0 = 999.9703 Hz, which must print as 1.000 kHz; bandwidth 525.2 Hz); CR (636.6 mHz, 1.273 Hz); the 2.2508 MHz set (2.251 MHz, 1.592 MHz); U1 (1.868 kHz, 340.0 Hz). #readout-f0 and #readout-bw textContent, trimmed, must be: a decimal mantissa, at most one space, an optional prefix from p n u m k M G or either micro-sign code point (U+00B5, U+03BC), then 'Hz'; the mantissa is in [1, 1000), has exactly 4 significant digits, and mantissa x prefix is within 0.1% of the true value. #readout-q and #readout-zeta must be plain decimals (digits and at most one dot), with exactly 4 significant digits counted from the first non-zero digit, within 0.1%. #readout-regime equals the regime word.",
+   "flake_risk": "None. Text content only."
+  }
+ ],
+ "fixtures": [
+  {
+   "name": "rlc-good",
+   "kind": "good",
+   "expected": "Closed forms with an explicit critical branch, exact peak formula, sampling that inserts f0 and its neighbourhood, decade auto-range, rollover-safe formatter. Scores 100."
+  },
+  {
+   "name": "rlc-broken-strict-critical",
+   "kind": "broken",
+   "expected": "Regime uses zeta === 1, so NC is reported as overdamped. Fails only rlc-metrics; its step values stay accurate to 1e-11."
+  },
+  {
+   "name": "rlc-broken-peak-approx",
+   "kind": "broken",
+   "expected": "peakDb = 20*log10(Q). Fails only rlc-peak-overshoot."
+  },
+  {
+   "name": "rlc-broken-atan-phase",
+   "kind": "broken",
+   "expected": "Phase computed with Math.atan of the ratio, losing the quadrant above resonance. Fails only rlc-response."
+  },
+  {
+   "name": "rlc-broken-vr-step",
+   "kind": "broken",
+   "expected": "The resistor step response omits the factor R (returns the current). Fails only rlc-step-underdamped; the other step checks use output C."
+  },
+  {
+   "name": "rlc-broken-no-critical-branch",
+   "kind": "broken",
+   "expected": "Underdamped formula used whenever zeta <= 1, giving 0/0 at zeta = 1. Fails only rlc-step-critical-overdamped."
+  },
+  {
+   "name": "rlc-broken-linear-x",
+   "kind": "broken",
+   "expected": "Bode vertices placed with a linear frequency mapping while the axes are declared logarithmic. Fails only rlc-bode-curve (vertex heights, the peak and the gridlines are unaffected)."
+  },
+  {
+   "name": "rlc-broken-fixed-axis",
+   "kind": "broken",
+   "expected": "Frequency axis fixed at 10 Hz to 1 MHz with dB auto-range intact. Fails only rlc-bode-autorange; the curve and peak sets (25.6 Hz to 208 kHz) lie inside that range."
+  },
+  {
+   "name": "rlc-broken-coarse-sweep",
+   "kind": "broken",
+   "expected": "Uniform 300-point log sweep. Fails only rlc-peak-resolved."
+  },
+  {
+   "name": "rlc-broken-fixed-tmax",
+   "kind": "broken",
+   "expected": "Step plot always spans 10 ms. Fails only rlc-step-plot."
+  },
+  {
+   "name": "rlc-broken-rollover",
+   "kind": "broken",
+   "expected": "Formatter picks the prefix before rounding and prints 1000 Hz. Fails only rlc-readouts."
+  },
+  {
+   "name": "rlc-control-static-fake",
+   "kind": "broken",
+   "expected": "Composite control: the default circuit drawn statically, set() ignored. Scores 0 of 100 with the full denominator."
+  }
+ ],
+ "implementation_notes": "Category advanced-electronics, scorer 'behavioral', sandboxConstraints = the hygiene-only text. Needs about 9k output tokens, the most of the suite.\n\nBuild: (1) rlcRef in Node: H for the three outputs with complex arithmetic, the three step forms per regime (select the regime with the same 1e-9 band), exact peak and overshoot, tau. (2) svgPlotProbe: a source string returning polyline vertices, area corners (getBBox corners through getScreenCTM, which also covers transformed groups), gridline endpoints and the data-* axis limits, for either plot. (3) parseEng: prefix table, significant-digit counter.\n\nPitfalls: SVGPointList must be read with getItem or numberOfItems (not for-of in older builds); never read pixels here; a model may nest the area in a transformed group, so always map through each element's own CTM; set() must be followed by reads in the same probe; Playwright returns NaN faithfully, so test Number.isFinite before comparing.\n\nTolerances. Metrics 1e-9 relative and response/step 1e-6: closed forms in double precision are good to about 1e-13; 1e-6 is the precision promised in the prompt. Near-critical: at zeta = 1 +- 1e-7 the discriminant term is 4.5e-4*a, so cancellation costs 1e-12, far below 1e-6. Peak and overshoot 1e-3: admits an iterative maximiser, rejects the 20*log10(Q) shortcut by 40x or more at zeta >= 0.1. Bode curve 1.2% in frequency and 0.5 dB: two-decimal coordinates give 0.005 px, about 1e-4 decade and 0.005 dB on a 300 x 150 px plot, so the window is 50x the rendering precision while a linear-x mapping is wrong by decades. Autorange 0.75 px and 1 px: sub-pixel rounding of the plot rectangle. Peak 0.5 dB against a contract of 0.3 dB: the curve is 0.5 dB down at 0.175% from f0 for Q = 100. Step plot 0.4% of tmax and 1% of the voltage span: same reasoning. Readouts 0.1%: correct rounding to 4 digits is within 0.05%, so 2x margin; the rollover fixture is caught by the mantissa range, not by the tolerance.\n\nReference values above were computed in Node; the fixtures must re-prove them in Chromium."
+}

@@ -1,0 +1,20 @@
+BLANK + 1px border                                         shipped   0.647% PASS | proposed   0.000% fail
+BLANK + 2px border + radius 8                              shipped   1.299% PASS | proposed   0.000% fail
+BLANK + radius 16 on white page                            shipped   0.071% PASS | proposed   0.000% fail
+BLANK transparent over body gradient                       shipped  62.062% PASS | proposed   0.000% fail
+BLANK + canvas radial-gradient bg                          shipped  32.582% PASS | proposed   0.000% fail
+BLANK + inset box-shadow                                   shipped  12.737% PASS | proposed   0.000% fail
+BLANK + overlay transition:all                             shipped   2.505% PASS | proposed   0.000% fail
+DRAWN white dots, transparent canvas over body gradient    shipped  62.130% PASS | proposed   0.181% PASS
+DRAWN black dots on canvas with white CSS background, dark page shipped   0.181% PASS | proposed   0.181% PASS
+BLANK canvas with CSS background colour on a different page colour shipped   0.000% fail | proposed   0.000% fail
+BLANK canvas filled one colour by script                   shipped   0.000% fail | proposed   0.000% fail
+DRAWN white dots + 1px border + overlay transition         shipped   1.568% PASS | proposed   0.180% PASS
+STORED ling-3.0-tiny::physics-pendulum-wave                shipped   0.425% PASS | proposed   0.000% fail
+STORED kimi-k3::n-body-field                               shipped   2.808% PASS | proposed   2.908% PASS
+STORED codex-gpt-5.6-sol::n-body-field                     shipped  24.276% PASS | proposed   0.630% PASS
+STORED nemotron-nano-9b::physics-pendulum-wave             shipped   3.616% PASS | proposed   1.649% PASS
+STORED kimi-k3.1-pro::n-body-field                         shipped   0.819% PASS | proposed   0.945% PASS
+STORED nemotron-3-nano-omni::physics-pendulum-wave         shipped   0.062% PASS | proposed   0.066% PASS
+STORED claude-opus-4-6-thinking-agy::n-body-field          shipped   0.310% PASS | proposed   0.309% PASS
+STORED gemini-3.6-flash-agy::n-body-field                  shipped  30.279% PASS | proposed  23.674% PASS

@@ -1,0 +1,168 @@
+{
+ "id": "bicycle-blueprint",
+ "from_angle": "visual-precision",
+ "title": "Bicycle Blueprint",
+ "category": "advanced-physics",
+ "why_selected": "The one spatial-reasoning task: nothing is self-reported, every position is read from drawn endpoints and radii through getScreenCTM and converted to millimetres with a scale taken from the drawing. It tests trigonometry with angle conventions, external tangents of two circles, gear-ratio kinematics, the belt-length formula, view fitting and input validation, and it is the most legible gallery tile (people judge a bicycle instantly). Forecast to give the widest spread.",
+ "changes_made": "1. Paint proof is now differential: the same clip is captured with and without the named elements (visibility hidden) and each sample must change, which is independent of background, grid and decoration, and still fails invisible or covered elements. The prompt gains a concrete paint rule (1.5 px, opaque, contrast 80) from which the threshold is derived. 2. Scale is taken from the hub separation (longer baseline) and the joint tolerance is max(1.5 px, 4 mm x s), derived so that whole-millimetre rounding passes and a bottom bracket placed at (C, -D) fails by 2x; hidden sets include large drops so that error is 7.6 to 8.4 mm. 3. Rotation cases re-chosen: two of the original three had phi within 2.3 and 0.5 degrees of a spoke position, so an unrotated wheel would have passed the spoke congruence test. 4. Chain-tangent pairs re-chosen from computed endpoint errors: the 28/34 pair cannot distinguish a naive top-to-top run (0.8 px) and is now only a sanity case. 5. Containment is measured from geometry through the CTM instead of getBoundingClientRect, whose treatment of strokes differs. 6. Prompt forbids rounding below 2 decimals and decoration on top of named elements.",
+ "final_prompt": "Build one self-contained HTML page that draws a parametric side-elevation blueprint of a bicycle as inline SVG, with a small readout panel. The bicycle faces right. A script grades it by setting hidden frame dimensions and crank angles through test hooks, then measuring the drawn geometry on screen (joints, radii, tangency, angles) and comparing the readouts with exact values, so every element must be computed from the parameters, not sketched by eye. Use every id, class and data attribute exactly as written. Do not round coordinates, radii or angles to fewer than 2 decimal places.\n\nCOORDINATES. Describe the bicycle in millimetres in a frame with its origin at the rear hub, x to the right (towards the front wheel) and y up. Map it to the SVG with one uniform scale, fitted so the complete drawing is visible for any valid parameters.\n\nPARAMETERS (keys of the object passed to setParams; all required; numbers)\nwheelRadius R 250-380; wheelbase W 700-1200; chainstay C 380-460; bbDrop D 30-80; seatTube S 420-620; seatAngle A 68-78 degrees; headAngle Hd 66-76 degrees; forkLength F 340-420; headTube T 90-200; chainringTeeth Nf integer 26-56; sprocketTeeth Nr integer 11-36; crankLength L 160-180; spokes N even integer 12-36.\nAlso required: W >= 2R + 20 and F >= R + 15.\n\nGEOMETRY (angles in degrees)\n- Rear hub (0, 0). Front hub (W, 0). Ground: the line y = -R.\n- Bottom bracket BB: at distance C from the rear hub, D below the hub line, ahead of the rear hub: (sqrt(C^2 - D^2), -D).\n- Seat cluster SC = BB + S * (-cos A, sin A).\n- Fork crown FC = front hub + F * (-cos Hd, sin Hd). Head top HT = FC + T * (-cos Hd, sin Hd).\n- Chainring pitch radius rf = Nf * 12.7 / (2*pi), centred on BB. Sprocket pitch radius rr = Nr * 12.7 / (2*pi), centred on the rear hub.\n- The crank angle theta is measured clockwise from straight up as seen on screen. Right crank end = BB + L * (sin theta, cos theta). Left crank end = BB - L * (sin theta, cos theta).\n- Wheel rotation phi = theta * Nf / Nr. Both wheels turn clockwise by phi. theta may exceed 360.\n\nELEMENTS, all inside <svg id=\"bike\">\n- <circle id=\"wheel-rear\"> and <circle id=\"wheel-front\">: radius R, centred on the hubs. <line id=\"ground\">: horizontal, touching both wheels from below and reaching at least from under the rear hub to under the front hub.\n- Frame tubes, one <line> each, whose two ends are exactly the named points: #chain-stay (rear hub to BB), #seat-stay (rear hub to SC), #seat-tube (BB to SC), #top-tube (SC to HT), #down-tube (BB to FC), #head-tube (FC to HT), #fork (FC to front hub).\n- <circle id=\"chainring\">: radius rf at BB. <circle id=\"sprocket\">: radius rr at the rear hub.\n- <line id=\"chain-upper\"> and <line id=\"chain-lower\">: the two straight chain runs. They are the two external common tangents of the chainring and sprocket circles: each end lies on its circle at the point of tangency, and the run touches both circles without cutting through either. Upper is above the line of centres, lower is below it.\n- <line id=\"crank-right\"> from BB to the right crank end and <line id=\"crank-left\"> from BB to the left crank end. Two <rect class=\"pedal\">, each centred on a crank end, wider than tall and always horizontal (they do not rotate with the crank).\n- For each wheel, exactly N <line class=\"spoke\" data-wheel=\"rear\"> or data-wheel=\"front\", from the hub centre to the rim (length R), spoke k at angle phi + k*360/N clockwise from straight up. One <circle class=\"valve\" data-wheel=\"rear\"> and one data-wheel=\"front\", centred on the rim at angle phi clockwise from straight up.\n- #saddle: any shape sitting directly above the seat cluster: entirely above SC, its lowest point within 120 mm of SC, its horizontal centre within 80 mm of SC. #handlebar: any shape whose centre is within 150 mm of HT and not below FC.\n- Every element named above is visibly painted: a stroke at least 1.5 px wide on screen or a solid fill, fully opaque, in a colour that differs from what lies behind it by more than 80 in at least one RGB channel. Decoration (tyres, dimension lines, labels, grid) is welcome around the named elements but never on top of them.\n\nREADOUTS (text content: a number only, formatted as stated)\n- #out-ratio: Nf / Nr with 2 decimals.\n- #out-development: metres travelled per crank revolution = 2*pi*R*Nf/Nr / 1000, with 2 decimals.\n- #out-chain: length in mm of the closed chain loop formed by the two tangent runs plus the arcs the chain wraps on the chainring and on the sprocket, with 1 decimal.\n- #out-links: the smallest even integer n with n * 12.7 >= that loop length.\n- #out-distance: metres travelled for the current crank angle = R * phi / 1000 with phi in radians, with 3 decimals.\n\nTEST HOOKS on window.__bench\n- setParams(p): validate, redraw everything and update the readouts for the current crank angle; return true.\n- setCrank(thetaDegrees): any finite number >= 0. Redraw cranks, pedals, spokes and valves and update #out-distance; return true.\n- Both are synchronous, with no transitions or animation. Invalid input (a missing key, a non-finite or out-of-range value, non-integer teeth or spokes, an odd spoke count, W < 2R + 20, F < R + 15, a negative or non-finite theta) returns false without throwing and leaves the drawing and readouts unchanged.\n\nON LOAD draw setParams({wheelRadius:340, wheelbase:1010, chainstay:425, bbDrop:65, seatTube:540, seatAngle:73, headAngle:72, forkLength:380, headTube:140, chainringTeeth:48, sprocketTeeth:18, crankLength:170, spokes:24}) followed by setCrank(35).\n\nLAYOUT. The whole bicycle is visible without scrolling at 1024x720 and measures at least 560 px on screen from the rear edge of the rear wheel to the front edge of the front wheel, for any valid parameters, with the readouts not covering it. Style it as an engineering blueprint of your own design.",
+ "final_checks": [
+  {
+   "name": "bike-wheels-ground",
+   "points": 8,
+   "verifies": "Two equal wheels at the right separation on a level hub line, with the ground tangent beneath both.",
+   "method": "Preamble. For hidden sets P1 (R 311, W 1085) and P2 (R 268, W 742): setParams, setCrank(0), read in the same probe. Map each wheel circle's centre and four cardinal points through getScreenCTM: each wheel is circular within 1% (horizontal against vertical screen radius); front radius = rear radius within 1%; hub separation / rear radius = W/R within 0.5%; hub y values equal within 1 px; front is to the right. #ground: endpoint y values equal within 0.5 px and equal to hub y + rear radius within 1.5 px; its x range covers both hub x positions.",
+   "flake_risk": "None expected: pure geometry in one JavaScript turn."
+  },
+  {
+   "name": "bike-frame-joints",
+   "points": 14,
+   "verifies": "The seven frame tubes end exactly at the joints the parameters define: bottom bracket by Pythagoras with drop, seat cluster and head tube by the two angles.",
+   "method": "Preamble. Hidden sets P1 = {R 311, W 1085, C 440, D 42, S 480, A 74.5, Hd 69, F 365, T 170}, P2 = {R 268, W 742, C 395, D 33, S 600, A 77, Hd 75, F 345, T 95}, P3 = {R 372, W 980, C 402, D 78, S 590, A 70.5, Hd 73.5, F 398, T 105}. Define the millimetre frame from the drawing itself: origin = rear wheel centre on screen, scale s = hub separation in px / W, y flipped. Convert both endpoints of each tube line. Compare each tube's endpoint pair, unordered, with the points computed in Node (for P3: BB (394.4, -78), SC (197.4, 478.2), FC (867.0, 381.6), HT (837.1, 482.3)); tolerance max(1.5 px, 4 mm x s) per endpoint.",
+   "flake_risk": "None expected. The tolerance covers coordinates rounded to whole millimetres; a bottom bracket at (C, -D) is off by 7.6 mm for P3."
+  },
+  {
+   "name": "bike-drivetrain-circles",
+   "points": 6,
+   "verifies": "Chainring and sprocket have the pitch radii implied by their tooth counts and sit on the drawn bottom bracket and rear hub.",
+   "method": "Preamble. Three hidden tooth pairs (52/12, 28/34, 39/23) on P1 to P3. #chainring centre coincides within 1.5 px with the end of #chain-stay that is not at the rear wheel centre (the drawn BB); its screen radius = Nf*12.7/(2*pi)*s within max(1 px, 1.5%). #sprocket centre = rear wheel centre within 1 px; radius = Nr*12.7/(2*pi)*s within max(1 px, 2%).",
+   "flake_risk": "None expected. Centres are compared with drawn anchors, so a wrong bottom bracket does not fail this check too."
+  },
+  {
+   "name": "bike-chain-tangent",
+   "points": 14,
+   "verifies": "The two chain runs are true external common tangents of the two drawn circles.",
+   "method": "Preamble. Tooth pairs 52/12 on P1 (tangent tilt 10.6 degrees), 48/14 with C 425 (9.3 degrees), 44/11 with C 380 (10.1 degrees) and 28/34 on P2 (sprocket larger, sanity case). Using the DRAWN circle centres and radii: for each chain line, the distance from each circle centre to the infinite line equals that circle's radius within 1.5 px; one endpoint lies within 2.5 px of the foot of the perpendicular from the sprocket centre and the other within 2.5 px of the foot from the chainring centre; both endpoints of #chain-upper are on the upper side of the line of centres and both of #chain-lower on the lower side.",
+   "flake_risk": "Low. A run joining the tops of the circles misses the chainring tangent point by rf*sin(tilt), 5.2 to 6.3 px at the minimum drawing scale, against 2.5 px. The foot-of-perpendicular form is used because a radius-direction test is noisy on a 7 px sprocket."
+  },
+  {
+   "name": "bike-crank-pedals",
+   "points": 8,
+   "verifies": "Cranks at the commanded angle, opposite each other, correct length, with pedals that stay level.",
+   "method": "Preamble. P1 with hidden theta 0, 90, 225 and 765. #crank-right has one end within 1.5 px of the drawn BB and the other at clockwise angle theta mod 360 within 1.2 degrees and length L*s within 2%; #crank-left is the same at theta + 180. The two rect.pedal: transform all four corners through getScreenCTM; the centre of each is within 3 px of a different crank end; edges axis-aligned within 1 degree; width > height.",
+   "flake_risk": "None expected."
+  },
+  {
+   "name": "bike-spokes",
+   "points": 8,
+   "verifies": "Exactly N spokes per wheel, hub to rim, evenly spaced.",
+   "method": "Preamble. setCrank(0) and three setParams with N = 12, 20, 36. For each wheel: exactly N line.spoke with that data-wheel; each has one end within 1.5 px of the hub and the other at R*s within 1.5%; sorted clockwise angles start at 0 within 1 degree and consecutive differences are 360/N within 0.8 degree.",
+   "flake_risk": "None expected."
+  },
+  {
+   "name": "bike-wheel-rotation",
+   "points": 10,
+   "verifies": "Both wheels turn by theta * Nf / Nr, shown by the valve and by every spoke.",
+   "method": "Preamble. Hidden cases (Nf/Nr, theta, N): 48/18 at 100 with 24 spokes (phi 266.667), 44/16 at 765 with 24 spokes (phi mod 360 = 303.75), 28/34 at 55 with 36 spokes (45.294), 52/12 at 50 with 12 spokes (216.667); each phi is at least 3.3 degrees from any multiple of 360/N. For each wheel: circle.valve centre at clockwise angle phi within 1.2 degrees and at R*s within 3%; every spoke angle is congruent to phi modulo 360/N within 1 degree.",
+   "flake_risk": "None expected. An unrotated wheel misses the congruence by at least 3.3 degrees."
+  },
+  {
+   "name": "bike-readouts",
+   "points": 12,
+   "verifies": "Gear ratio, development, exact chain loop length, even link count and distance travelled.",
+   "method": "Preamble. P1 (52/12), P2 (28/34), P3 (39/23) with a crank angle each. Each readout must be a plain decimal with exactly 2, 2, 1, 0 and 3 decimals, and its parsed value must satisfy: |ratio - Nf/Nr| <= 0.0051; |development - 2*pi*R*Nf/Nr/1000| <= 0.0051; |chain - (2*sqrt(C^2-(rf-rr)^2) + rf*(pi+2b) + rr*(pi-2b))| <= 0.051 with b = asin((rf-rr)/C); links equal exactly; |distance - R*phi/1000| <= 0.00051. Expected loops: P1 1301.299 mm and 104 links, P2 1184.072 and 94, P3 1200.303 and 96; the shortcut 2C + pi*(rf+rr) gives 1286.4, 1183.7 and 1197.7.",
+   "flake_risk": "None: numeric comparison with half a unit in the last place plus 2% slack, so a rounding boundary cannot flip the result."
+  },
+  {
+   "name": "bike-saddle-bars",
+   "points": 4,
+   "verifies": "Saddle and handlebar follow the frame instead of sitting at fixed coordinates.",
+   "method": "Preamble. P2 and P3, whose seat cluster and head top differ by more than 150 mm from the default. Convert the corners of getBBox() of #saddle and #handlebar through getScreenCTM to millimetres: saddle lowest point between SC.y - 2 and SC.y + 120, horizontal centre within 80 of SC.x, non-zero area; handlebar centre within 150 mm of HT and not below FC.y, non-zero area.",
+   "flake_risk": "None expected; boxes of shapes, no text."
+  },
+  {
+   "name": "bike-fits-view",
+   "points": 6,
+   "verifies": "The drawing is rescaled to fit for the largest and smallest valid bicycles, with one uniform scale.",
+   "method": "Preamble. Extremes: {R 380, W 1200, C 460, D 30, S 620, A 68, Hd 66, F 420, T 200, 56/11} and {R 250, W 700, C 380, D 80, S 420, A 78, Hd 76, F 340, T 90, 26/36}. From geometry mapped through the CTM (wheel centre +- radius, every line endpoint, saddle and handlebar box corners): everything lies inside the svg's client rect and inside 0..1024 x 0..720 with 0.5 px slack; front wheel right edge minus rear wheel left edge >= 560 px; each wheel is circular within 1%.",
+   "flake_risk": "None expected."
+  },
+  {
+   "name": "bike-validation",
+   "points": 5,
+   "verifies": "Invalid parameters and crank angles are rejected without throwing or redrawing.",
+   "method": "Preamble; a valid setParams and setCrank must each return exactly true. Snapshot all contract geometry (endpoints and radii rounded to 0.1 px) and the five readouts. Call, each inside try/catch in one probe: setParams with a key missing; wheelRadius NaN; chainringTeeth 48.5; spokes 25; wheelbase 700 with wheelRadius 350; forkLength 350 with wheelRadius 340; bbDrop 81; setCrank(-10); setCrank('abc'); setCrank(Infinity). Each returns exactly false with no exception and the snapshot is unchanged.",
+   "flake_risk": "None."
+  },
+  {
+   "name": "bike-painted",
+   "points": 5,
+   "verifies": "The measured geometry is what is visibly painted, not invisible contract elements beside a different picture.",
+   "method": "Preamble; default parameters, setCrank(40). Capture the svg clip twice with decoded pixels: as drawn, and after injecting a style that sets visibility:hidden on every named element (wheels, ground, tubes, drivetrain circles, chain runs, cranks, pedals, spokes, valves, saddle, handlebar). For the midpoint of each of the seven tubes, of each chain run and of each crank, the largest per-channel difference between the two captures within the 3x3 neighbourhood must be at least 40; the same for at least 6 of 8 points round each wheel circle. Remove the style in finally.",
+   "flake_risk": "Low. Two screenshots. A 1.5 px stroke covers at least 75% of its best pixel, giving a difference of 60 or more under the contract's contrast rule, against a threshold of 40."
+  }
+ ],
+ "fixtures": [
+  {
+   "name": "bike-good",
+   "kind": "good",
+   "expected": "Reference blueprint that derives every point from the parameters and fits the viewBox to the bounds. Scores 100."
+  },
+  {
+   "name": "bike-broken-ground-gap",
+   "kind": "broken",
+   "expected": "Ground line drawn 12 mm below the wheels. Fails only bike-wheels-ground."
+  },
+  {
+   "name": "bike-broken-ignores-bb-drop",
+   "kind": "broken",
+   "expected": "Bottom bracket placed at (C, 0); everything attached to it follows. Fails only bike-frame-joints (drivetrain, cranks and chain are tested against drawn anchors; the saddle stays inside its 120 mm window)."
+  },
+  {
+   "name": "bike-broken-diameter-as-radius",
+   "kind": "broken",
+   "expected": "Chainring radius = Nf*12.7/pi, chain still tangent to the drawn circles. Fails only bike-drivetrain-circles."
+  },
+  {
+   "name": "bike-broken-chain-top-to-top",
+   "kind": "broken",
+   "expected": "Chain runs join the topmost and bottommost points of the two circles. Fails only bike-chain-tangent."
+  },
+  {
+   "name": "bike-broken-pedals-rotate",
+   "kind": "broken",
+   "expected": "Pedal rects rotate with the crank. Fails only bike-crank-pedals."
+  },
+  {
+   "name": "bike-broken-spoke-off-by-one",
+   "kind": "broken",
+   "expected": "Loop runs k <= N, drawing N+1 spokes with a duplicate at the top. Fails only bike-spokes (the rotation check tests congruence, not count)."
+  },
+  {
+   "name": "bike-broken-inverse-ratio",
+   "kind": "broken",
+   "expected": "Wheels drawn with phi = theta * Nr / Nf while the readouts stay correct. Fails only bike-wheel-rotation."
+  },
+  {
+   "name": "bike-broken-chain-shortcut",
+   "kind": "broken",
+   "expected": "#out-chain = 2C + pi*(rf + rr). Fails only bike-readouts."
+  },
+  {
+   "name": "bike-broken-fixed-saddle-bars",
+   "kind": "broken",
+   "expected": "Saddle and handlebar at the default bicycle's coordinates. Fails only bike-saddle-bars."
+  },
+  {
+   "name": "bike-broken-fixed-viewbox",
+   "kind": "broken",
+   "expected": "viewBox sized for the default bicycle, so the largest one is clipped. Fails only bike-fits-view."
+  },
+  {
+   "name": "bike-broken-accepts-anything",
+   "kind": "broken",
+   "expected": "setParams and setCrank never validate and always return true. Fails only bike-validation (every other check sets valid parameters first)."
+  },
+  {
+   "name": "bike-broken-ghost-frame",
+   "kind": "broken",
+   "expected": "Frame tubes stroked in the background colour. Fails only bike-painted."
+  },
+  {
+   "name": "bike-control-static-default",
+   "kind": "broken",
+   "expected": "Composite control: a static SVG of the default bicycle with no hooks. Scores 0 of 100 with the full denominator."
+  }
+ ],
+ "implementation_notes": "Category advanced-physics (drivetrain kinematics; the closest live-HTML slug), scorer 'behavioral', sandboxConstraints = the hygiene-only text. Needs about 7k output tokens.\n\nBuild: (1) bikeRef in Node: joints, pitch radii, tangent points, chain length, links, phi. (2) svgGeom source string: lineScreen (both endpoints through getScreenCTM), circleScreen (centre and the two screen radii), rectCorners, bboxCorners. (3) toMm(pt) from the drawn rear hub and s = hub separation / W. (4) paintDiff from the shared helpers. Preamble for every check: wrapper, hook presence, freezeMotion, valid setParams before anything else, hook call and reads in one probe.\n\nPitfalls: hands and wheels may be placed by coordinates, by an SVG transform or by a CSS transform; getScreenCTM covers all three. Do not use getBoundingClientRect for containment (stroke handling differs); use geometry. Hide elements for the paint proof with visibility, not display, so layout cannot change. All hidden sets were checked valid (W >= 2R + 20, F >= R + 15).\n\nTolerances. Wheels: W/R within 0.5% (whole-millimetre rounding costs at most 0.27%). Joints max(1.5 px, 4 mm x s): whole-millimetre endpoints (0.7 mm) plus scale error (0.14% over about 1000 mm) give at most 2.1 mm, 1.9x inside; ignoring Pythagoras costs D^2/(2C) = 7.6 mm for P3, 1.9x outside. Circles 1 px or 1.5 to 2%: a diameter-for-radius slip is 100%. Tangent 1.5 px line distance and 2.5 px endpoints: computed naive-run error 5.2 to 6.3 px at the minimum scale of 0.33 px per mm. Angles 1.0 to 1.2 degrees: two-decimal coordinates on a 50 px crank give 0.01 degree; wrong conventions are off by tens of degrees. Readouts: half a unit in the last place plus 2%. Paint: 0.75 coverage x 80 contrast = 60 against a threshold of 40.\n\nRisk: one misread convention (anticlockwise angles) fails frame, crank and rotation together, so scores may be bimodal; anchoring to drawn elements limits this. If the pilot shows every configuration below 85, drop bike-saddle-bars into bike-frame-joints rather than loosening tolerances."
+}
