@@ -1,11 +1,20 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-target="__TARGET__">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; media-src data: blob:; connect-src 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
 <script>(()=>{let t;try{t=localStorage.getItem('th-theme')}catch(_){}t=t==='light'||t==='dark'?t:matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light';document.documentElement.dataset.theme=t;document.documentElement.style.colorScheme=t;})();</script>
-<title>Benchmark report | Token Horizon</title>
+<!--@private--><title>Benchmark report | Token Horizon</title>
+<!--/@private-->
+<!--@public--><title>Benchmarks | Token Horizon</title>
+<link rel="canonical" href="https://token-horizon.dev/benchmarks/">
+<meta property="og:type" content="website">
+<meta property="og:title" content="Benchmarks | Token Horizon">
+<meta property="og:description" content="Maintainer-run benchmark results: what each model built, scored by deterministic checks, with cost, reliability and speed.">
+<meta property="og:url" content="https://token-horizon.dev/benchmarks/">
+<meta name="twitter:card" content="summary">
+<!--/@public-->
 <meta name="description" content="Maintainer-run benchmark results: what each model built, scored by deterministic checks, with cost, reliability and speed.">
 <link rel="stylesheet" href="./tokens.css">
 <link rel="stylesheet" href="./report.css">
@@ -28,10 +37,11 @@
     <h1>What each model built, and what passed</h1>
     <p id="synthetic-banner" class="synthetic-banner" role="status" hidden></p>
     <p id="scope-sentence" class="lede">Loading the report data.</p>
-    <p class="ownership">These are runs made by the maintainers on their own machine and paid for by them. This is not community data and it is not public.</p>
+    <p class="ownership">These runs were made and paid for by the Token Horizon maintainers on their own machine. They are not community-submitted data.</p>
     <p class="head-links">
+      <!--@public--><a href="/">Token Horizon</a><!--/@public-->
       <a href="#method">How this is measured</a>
-      <a href="#reproduce">Reproduce a result</a>
+      <!--@private--><a href="#reproduce">Reproduce a result</a><!--/@private-->
     </p>
   </div>
 </header>
@@ -80,14 +90,14 @@
   <section id="heatmap" class="section" aria-labelledby="h-heatmap">
     <span id="leaderboard" class="anchor-target"></span>
     <h2 id="h-heatmap" tabindex="-1">Model by task</h2>
-    <p class="what">Each cell is the all-trials score of one model on one task. Rows: models covering at least 80% of the tasks in scope come first, then by the mean over the tasks each model ran, with its coverage under the mean. A hatched cell was not run; a cell with a cross had every iteration fail; a cell marked T had iterations truncated at the output cap, which count as zero; a cell marked S stopped at the account's spend limit or a quota, and is counted over the iterations that ran.</p>
+    <p class="what">Each cell is the all-trials score of one model on one task. Rows: models covering at least 80% of the tasks in scope come first, then by the mean over the tasks each model ran, with its coverage under the mean. A hatched cell was not run; a cell with a cross had every iteration fail; a cell marked T had iterations truncated at the output cap, which count as zero.<span data-stops> A cell marked S stopped at a provider spend limit or quota, and is counted over the iterations that ran.</span></p>
     <p class="scope-line" data-scope-line="heatmap"></p>
     <div id="body-heatmap"></div>
   </section>
 
   <section id="effort" class="section" aria-labelledby="h-effort" hidden>
     <h2 id="h-effort" tabindex="-1">Reasoning effort</h2>
-    <p class="what">For each base model with two or more effort levels: score with its 95% interval, cost per attempt and median seconds per completed iteration, one chart each, on the same effort axis. Each chart has its own scale. A base model is compared only over the tasks that every one of its effort levels ran in the current scope; the count and the list are under its charts. A level with truncated iterations is marked T on each chart, and the count is in the note under its charts. A level with a cell stopped at the account’s spend limit or a quota is marked S and counted over the iterations that ran.</p>
+    <p class="what">For each base model with two or more effort levels: score with its 95% interval, cost per attempt and median seconds per completed iteration, one chart each, on the same effort axis. Each chart has its own scale. A base model is compared only over the tasks that every one of its effort levels ran in the current scope; the count and the list are under its charts. A level with truncated iterations is marked T on each chart, and the count is in the note under its charts.<span data-stops> A level with a cell stopped at a provider spend limit or quota is marked S and counted over the iterations that ran.</span></p>
     <p class="scope-line" data-scope-line="effort"></p>
     <div id="body-effort"></div>
   </section>
@@ -108,7 +118,7 @@
 
   <section id="checks" class="section" aria-labelledby="h-checks">
     <h2 id="h-checks" tabindex="-1">What failed</h2>
-    <p class="what">Covers the tasks of the current scope: the headline tasks, or the horizon tasks in the horizon scope. The smoke tier has no checks matrix. Each cell is the share of iterations with a recorded result for that check that passed. A dash means the cell has no named check rows; truncated means the cell hit the output cap and has none. Within each task, the checks that fail most come first.</p>
+    <p class="what">Covers the tasks of the current scope: the headline tasks, or the horizon tasks in the horizon scope. <span data-smoke>The smoke tier has no checks matrix. </span>Each cell is the share of iterations with a recorded result for that check that passed. A dash means the cell has no named check rows; truncated means the cell hit the output cap and has none. Within each task, the checks that fail most come first.</p>
     <p class="scope-line" data-scope-line="checks"></p>
     <div id="body-checks"></div>
   </section>
@@ -135,7 +145,7 @@
 </main>
 
 <footer class="wrap site-foot">
-  <p>Token Horizon benchmark report. Static, local, generated from <span class="mono">results.json</span> by <span class="mono">report/build.mjs</span>.</p>
+  <p>Token Horizon benchmark report. A static page built on <span data-built-on></span>.</p>
 </footer>
 
 <dialog id="artifact-dialog" aria-labelledby="artifact-title">

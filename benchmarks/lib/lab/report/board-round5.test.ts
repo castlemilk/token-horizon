@@ -266,7 +266,9 @@ describe('F2, real data: the Opus 5.5 values with three effort levels, recompute
     expect(tied.sort()).toEqual(['claude-fable-5-2-low', 'claude-sonnet-5-5-xhigh'])
     const body = board.insights.horizon.claude.find((i) => i.id === 'top')!.body
     const names = tied.map((id) => registry.BENCHMARK_MODELS.find((m) => m.id === id)!.name).sort()
-    expect(body.startsWith(`${names[0]} and ${names[1]} both score 100.0 on every iteration, so the top cannot be ranked among them.`)).toBe(true)
+    // The tied names carry their intervals (P4): "<name> [lo to hi] and <name> [lo to hi] both score 100.0 ...".
+    expect(body.startsWith(`${names[0]} [`)).toBe(true)
+    expect(body).toMatch(new RegExp(`${names[1].replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} \\[[^\\]]+\\] both score 100\\.0 on every iteration, so the top cannot be ranked among them\\.`))
     const opusHigh = levelFromRaw('claude-opus-5-5-high')
     expect(body).toContain(`Claude Opus 5.5 (high effort) (${fmt1(opusHigh.mean)}, interval ${ivText(opusHigh.interval)})`)
     expect(body).toContain(`Claude Opus 5.5 (high effort) (95.6, interval [84.6 to 100.0])`)
@@ -335,17 +337,18 @@ describe('F3b, real data: every finding ends with a full stop, and no clause sta
 })
 
 describe('F4: the seat-pricing sentence has two states, and the constant is set to held', () => {
-  it('the constant is held: the real board says seat-pricing is registered but held back, with no results', () => {
+  // P6: reader-facing wording. The sentence is stated once, in the method, and names the task by its title.
+  it('the constant is held: the real board says one task is not reported, with its title, and why', () => {
     expect(SEAT_PRICING_STATE).toBe('held')
     const held = board.heldBack.find((h) => h.id === 'seat-pricing')!
-    expect(held.sentence).toBe('seat-pricing is registered but held back: its contrast check did not pass review, so it has no results.')
+    expect(held.sentence).toBe('One task (Seat Pricing Calculator) is not reported: one of its checks is still being validated.')
     expect(board.heldBackTasks).toContain(held.title)
   })
 
   it('both states give their own sentence', () => {
-    const task = { id: 'seat-pricing' }
-    expect(heldBackSentenceIn(task, 'held')).toBe('seat-pricing is registered but held back: its contrast check did not pass review, so it has no results.')
-    expect(heldBackSentenceIn(task, 'not-run')).toBe("seat-pricing passed review on 2026-11-11 but has not been run yet: the API key's spend limit was reached.")
+    const task = { id: 'seat-pricing', title: 'Seat Pricing Calculator' }
+    expect(heldBackSentenceIn(task, 'held')).toBe('One task (Seat Pricing Calculator) is not reported: one of its checks is still being validated.')
+    expect(heldBackSentenceIn(task, 'not-run')).toBe('One task (Seat Pricing Calculator) is not reported yet: it has not been run, because a spend limit was reached.')
   })
 
   it('a task with records is not held back: the sentence and the held-back count go, and the task counts with runs', () => {
@@ -363,7 +366,8 @@ describe('F4: the seat-pricing sentence has two states, and the constant is set 
     expect(b.heldBack).toEqual([])
     expect(b.heldBackTasks).toEqual([])
     const horizon = b.suites.find((s) => s.id === 'horizon')!
-    expect(horizon.note).toContain('1 task registered.')
-    expect(horizon.note).not.toContain('held back')
+    // The note counts the tasks with results ("one"); the held-back sentence is not in the note (it is stated once, in the method).
+    expect(horizon.note).toBe('one harder task with hidden test values. Included in the headline summaries.')
+    expect(horizon.note).not.toContain('not reported')
   })
 })

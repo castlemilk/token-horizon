@@ -4,10 +4,11 @@
  *
  *   npx tsx report/build-data.mjs [--now 2026-11-10T12:00:00.000Z]
  *
+ * --target private (default) or public, and --out <dir> (or REPORT_TARGET, REPORT_OUT) pick the build; the public build needs --out.
  * --now (or REPORT_NOW) fixes generatedAt so repeated builds are byte-identical.
  * Without either, generatedAt is the current time. Reads only: results.json,
  * the registry, and report/data/signals.json when it exists. Writes only under
- * report/dist/data/. Never prints record outputs.
+ * report/dist/data/ (or <out>/data/ with --out). Never prints record outputs.
  */
 import { createHash } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
@@ -18,7 +19,7 @@ const here = dirname(fileURLToPath(import.meta.url))
 const benchmarksRoot = resolve(here, '..')
 const resultsPath = resolve(benchmarksRoot, 'lib/lab/llm-benchmark/results.json')
 const signalsPath = resolve(here, 'data/signals.json')
-const outDir = resolve(here, 'dist/data')
+let outDir = resolve(here, 'dist/data')
 
 function argValue(name) {
   const args = process.argv.slice(2)
@@ -34,6 +35,19 @@ if (now !== undefined && Number.isNaN(Date.parse(now))) {
   console.error(`build-data: --now / REPORT_NOW is not an ISO timestamp: ${now}`)
   process.exit(1)
 }
+
+// The target: "private" (the owner's build, report/dist by default) or "public" (the site page, which needs --out).
+const target = argValue('--target') ?? process.env.REPORT_TARGET ?? 'private'
+if (target !== 'private' && target !== 'public') {
+  console.error(`build-data: --target / REPORT_TARGET must be "private" or "public", not "${target}"`)
+  process.exit(1)
+}
+const outRoot = argValue('--out') ?? process.env.REPORT_OUT ?? undefined
+if (target === 'public' && !outRoot) {
+  console.error('build-data: the public target needs --out <dir> (or REPORT_OUT)')
+  process.exit(1)
+}
+if (outRoot !== undefined) outDir = resolve(outRoot, 'data')
 
 const { buildBoard } = await import('../lib/lab/report/board.ts')
 const registry = await import('../lib/lab/llm-benchmark/registry.ts')
@@ -58,6 +72,7 @@ const board = buildBoard({
   categories: registry.BENCHMARK_CATEGORIES,
   signals,
   now,
+  target,
   resultsSha256,
 })
 
@@ -75,7 +90,7 @@ for (const m of board.models) {
 }
 
 const measuredCells = board.cells.length
-console.log(`report data built (schema ${board.schemaVersion}, generatedAt ${board.generatedAt})`)
+console.log(`report data built (target ${board.source.target}, schema ${board.schemaVersion}, generatedAt ${board.generatedAt})`)
 console.log(`  source: ${board.source.records} records, ${board.source.liveRecords} live, ${board.source.seededExcluded} seeded excluded`)
 console.log(`  models: ${board.models.length}`)
 console.log(`  tasks: ${board.tasks.length} (${board.tasks.filter((t) => t.headline).length} headline)`)

@@ -146,7 +146,7 @@ describe('findings wording, real board', () => {
   it('the answer names the value pick once: no repeated "within 5 points" clause', () => {
     const answer = board.guides.horizon.claude.answer
     const value = answer.find((s) => s.startsWith('Cheapest within 5 points of the top: '))!
-    expect(value).toBe('Cheapest within 5 points of the top: Claude Sonnet 5.5 (low effort) at $0.0682 per attempt, scoring 97.7.')
+    expect(value).toMatch(/^Cheapest within 5 points of the top: Claude Sonnet 5\.5 \(low effort\) at \$0\.0682 per attempt, scoring 97\.7 \[\d+\.\d to \d+\.\d\]\.$/)
   })
 
   it('the top finding says "its 95% interval" for one close configuration, and "their" for more', () => {

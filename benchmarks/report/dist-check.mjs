@@ -28,7 +28,8 @@ import { fileURLToPath } from 'node:url'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const benchRoot = resolve(here, '..')
-const dist = join(here, 'dist')
+// The build to check: report/dist, or the directory given as the first argument (or REPORT_DIST), such as a public build.
+const dist = resolve(process.argv[2] ?? process.env.REPORT_DIST ?? join(here, 'dist'))
 const resultsPath = join(benchRoot, 'lib/lab/llm-benchmark/results.json')
 const signalsPath = join(here, 'data/signals.json')
 const { isFullHtmlDoc } = await import('../lib/lab/llm-benchmark/frame-prelude.ts')
@@ -142,6 +143,42 @@ check(!existsSync(join(dist, 'frame.js')), 'no dist/frame.js')
 for (const { index, line } of needles) {
   const hits = found.filter((f) => f.startsWith(`artifact text from record ${index} `))
   check(hits.length === 0, `artifact text from record ${index} (${line.length} characters) is not in report/dist${hits.length ? ': ' + hits.join('; ') : ''}`)
+}
+
+// The target the build was made for (board.source.target). The public site ships no harness, no earlier runs and no
+// font copies (it serves /fonts/); the private build keeps all of them.
+const boardPath = join(dist, 'data', 'board.json')
+const board = existsSync(boardPath) ? JSON.parse(readFileSync(boardPath, 'utf8')) : null
+check(board !== null, 'the build has its data (data/board.json)')
+if (board) {
+  const target = board.source.target
+  check(target === 'public' || target === 'private', `the build names its target (${target})`)
+  if (target === 'public') {
+    // What a reader gets: the page, its data and the shipped script must not name the unpublished harness or the earlier runs.
+    const readerFiles = [join(dist, 'index.html'), join(dist, 'data', 'board.js')]
+    const forbiddenReader = ['not public', 'Earlier runs', 'scorer v1', 'scorer version 1', 'plugin id', 'Reproduce a result', 'id="reproduce"', 'Smoke tier']
+    const readerText = readerFiles.map((p) => readFileSync(p, 'utf8')).join('\n')
+    const readerHits = forbiddenReader.filter((w) => readerText.includes(w))
+    check(readerHits.length === 0, `the public page and data name no harness, earlier runs or smoke tier${readerHits.length ? ': ' + readerHits.join(', ') : ''}`)
+    const harness = ['rescore-behavioral', 'run-benchmark', 'capture-isolation', 'capture.mjs', 'dist-check', 'build.mjs', 'serve.mjs', 'task verify', 'npm ci']
+    const scriptText = readFileSync(join(dist, 'report.js'), 'utf8')
+    const scriptHits = harness.filter((w) => scriptText.includes(w) || readerText.includes(w))
+    check(scriptHits.length === 0, `the public script and page carry no harness command${scriptHits.length ? ': ' + scriptHits.join(', ') : ''}`)
+    check(!existsSync(join(dist, 'fonts')), 'the public build has no font copies (the site serves /fonts/)')
+    check(!board.scopes.includes('earlier') && board.scopes.every((sc) => ['headline', 'horizon', 'smoke'].includes(sc)), `the public board carries no earlier runs (scopes: ${board.scopes.join(', ')})`)
+    check(board.cells.every((c) => c.scorerVersion >= 2), 'every public cell is a version 2 record')
+    check(Object.keys(board.source.scorerVersions).every((v) => v === '2'), 'the public source counts version 2 records only')
+    // Every gallery image the board names is in the build, and the build holds no other gallery image.
+    const shots = [...new Set(board.cells.flatMap((c) => c.shots))]
+    const missing = shots.filter((s) => !existsSync(join(dist, s.replace(/^dist\//, ''))))
+    check(missing.length === 0, `every gallery image the board names is in the public build (${shots.length} images${missing.length ? '; missing ' + missing.slice(0, 3).join(', ') : ''})`)
+    const gallery = join(dist, 'gallery')
+    const shipped = existsSync(gallery) ? readdirSync(gallery, { recursive: true }).filter((f) => /\.jpg$/i.test(f)).length : 0
+    check(shipped === shots.length, `the public build ships only the gallery images the board names (${shipped} shipped, ${shots.length} named)`)
+  } else {
+    check(existsSync(join(dist, 'fonts')), 'the private build carries its two fonts')
+    check(board.scopes.includes('earlier'), 'the private build carries the earlier runs scope')
+  }
 }
 
 console.log(`${failures.length} failed check(s)`)

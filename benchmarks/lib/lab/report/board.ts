@@ -52,6 +52,11 @@ export type Suite = 'horizon' | 'classic' | 'smoke'
  * comparable with the others.
  */
 export type Scope = 'headline' | 'horizon' | 'smoke' | 'earlier'
+/**
+ * The build the board is for. "private" is the owner's review build: every scope, the reproduce commands. "public" is the
+ * page at token-horizon.dev: no earlier (scorer version 1) runs, no harness commands. See buildBoard.
+ */
+export type BoardTarget = 'private' | 'public'
 export type Access = 'api' | 'cli' | 'local'
 export type Group = 'claude' | 'other'
 /** Model groups the page filters by. 'claude' is the Claude family; 'all' is every model. */
@@ -276,6 +281,8 @@ export interface Board {
   schemaVersion: number
   generatedAt: string
   source: {
+    /** The build this board is for (see BoardTarget). The page branches on it. */
+    target: BoardTarget
     resultsSha256: string
     records: number
     liveRecords: number
@@ -309,6 +316,8 @@ export interface Board {
    * no record in it can reach (the earlier runs have no headline or smoke records of version 1 to speak of).
    */
   scopeTasks: Record<Scope, string[]>
+  /** The scopes this board carries, in page order. The public board omits earlier runs, and smoke without version 2 data. */
+  scopes: Scope[]
   summaries: BoardSummary[]
   /** Findings for every scope and model group that has data: insights[scope][group]. */
   insights: Record<Scope, Record<GroupKey, BoardInsight[]>>
@@ -405,6 +414,8 @@ export interface BuildInput {
   signals?: SignalsFile | null
   /** ISO timestamp. Defaults to the current time; pass one for deterministic output. */
   now?: string
+  /** Defaults to "private". The public build drops scorer version 1 records, earlier runs and the smoke suite without version 2 data. */
+  target?: BoardTarget
   resultsSha256: string
   /** Set only by fixtures that invent results. The page then shows a synthetic banner. */
   synthetic?: boolean
@@ -1019,13 +1030,24 @@ const SUITE_LABEL: Record<Suite, string> = {
   smoke: 'Smoke',
 }
 
-const SUITE_NOTE: Record<Suite, string> = {
-  horizon:
-    'Tasks whose plugin id starts with "horizon". Headline tasks. Included in the headline summaries.',
-  classic:
-    'Plugin tasks whose plugin id is not horizon, run by the maintainers. Headline tasks. Included in the headline summaries.',
-  smoke:
-    'The seven built-in tasks. Their checks only test that a page renders, animates or reacts to one input, so strong models cluster near the maximum. Excluded from headline summaries.',
+const WORD_NUMBERS = [
+  'zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'ten',
+  'eleven', 'twelve', 'thirteen', 'fourteen', 'fifteen', 'sixteen', 'seventeen', 'eighteen', 'nineteen', 'twenty',
+]
+
+/** A small count in words ("six"), for the reader-facing suite notes; larger counts stay digits. */
+export function numberWord(n: number): string {
+  return n >= 0 && n < WORD_NUMBERS.length ? WORD_NUMBERS[n] : String(n)
+}
+
+/**
+ * The reader-facing note for each suite, given the number of its tasks that have results. It is the text after the suite's
+ * label in the method ("Horizon: six harder tasks ..."). The seat-pricing sentence is not here: the method states it once.
+ */
+const SUITE_NOTE: Record<Suite, (ran: number) => string> = {
+  horizon: (n) => `${numberWord(n)} harder ${n === 1 ? 'task' : 'tasks'} with hidden test values. Included in the headline summaries.`,
+  classic: (n) => `${numberWord(n)} common app-building ${n === 1 ? 'task' : 'tasks'}. Included in the headline summaries.`,
+  smoke: (n) => `${numberWord(n)} built-in ${n === 1 ? 'task' : 'tasks'} whose checks only test that a page renders, animates or reacts to one input, so strong models cluster near the maximum. Excluded from headline summaries.`,
 }
 
 /** Check rows the harness could not run: the scorer records them with detail "threw: ...". */
@@ -1212,7 +1234,14 @@ function summarize(
 }
 
 export function buildBoard(input: BuildInput): Board {
-  const { results, models, tasks, categories, resultsSha256 } = input
+  const target: BoardTarget = input.target ?? 'private'
+  const isPublic = target === 'public'
+  const { models, tasks, categories, resultsSha256 } = input
+  // The public board holds version 2 records only: the earlier runs (scorer version 1) are not on the page at all.
+  const results = isPublic
+    ? input.results.filter((r) => (r.scorerVersion ?? 1) >= CURRENT_SCORER_VERSION)
+    : input.results
+  const allLiveTaskIds = new Set(input.results.filter((r) => r.source === 'live').map((r) => r.taskId))
   const signals = input.signals ?? null
   const generatedAt = input.now ?? new Date().toISOString()
 
@@ -1254,8 +1283,17 @@ export function buildBoard(input: BuildInput): Board {
     )
   }
 
-  // Board tasks: every registry task, in registry order.
-  const boardTasks: BoardTask[] = tasks.map((t) => {
+  // The public board shows the classic and horizon suites, and smoke only when version 2 smoke records exist. A task with
+  // records but no version 2 record is an earlier-run task, so it is left out; a task with no record at all is held back.
+  const hasSmokeV2 = measured.some((m) => m.cell.suite === 'smoke')
+  const v2RanIds = new Set([...measured.map((m) => m.cell.taskId), ...notRunRecords.map((n) => n.taskId)])
+  const publicSuite = (suite: Suite) => suite === 'smoke' ? hasSmokeV2 : true
+  const shownTasks = isPublic
+    ? tasks.filter((t) => publicSuite(suiteOf(t)) && (v2RanIds.has(t.id) || !allLiveTaskIds.has(t.id)))
+    : tasks
+
+  // Board tasks: every registry task, in registry order (for the public board, the shown tasks).
+  const boardTasks: BoardTask[] = shownTasks.map((t) => {
     const suite = suiteOf(t)
     const checks = new Map<string, number>()
     for (const m of measured) {
@@ -1303,15 +1341,16 @@ export function buildBoard(input: BuildInput): Board {
   )
 
   // The tasks each scope has data for: a task is in a scope when a measured cell of that scope's scorer version covers it.
+  const scopeKeys: Scope[] = SCOPE_KEYS.filter((s) => !isPublic || s === 'headline' || s === 'horizon' || (s === 'smoke' && hasSmokeV2))
   const scopeTasks = {} as Record<Scope, string[]>
-  for (const scope of SCOPE_KEYS) {
+  for (const scope of scopeKeys) {
     const covered = new Set(measured.filter((m) => inScopeCell(m.cell, scope)).map((m) => m.cell.taskId))
     scopeTasks[scope] = boardTasks.filter((t) => covered.has(t.id)).map((t) => t.id)
   }
 
   // Summaries per scope, then frontier flags per scope.
   const summaries: BoardSummary[] = []
-  for (const scope of SCOPE_KEYS) {
+  for (const scope of scopeKeys) {
     const tasksTotal = scopeTasks[scope].length
     for (const m of boardModels) {
       const group = measured.filter(
@@ -1333,16 +1372,12 @@ export function buildBoard(input: BuildInput): Board {
   // only record stopped before any iteration ran was run, so it is not held back.
   const ranTaskIds = new Set([...measured.map((m) => m.cell.taskId), ...notRunRecords.map((n) => n.taskId)])
   const heldBack = boardTasks.filter((t) => !ranTaskIds.has(t.id))
-  const suites: BoardSuite[] = (['horizon', 'classic', 'smoke'] as Suite[]).map((id) => {
-    const count = boardTasks.filter((t) => t.suite === id).length
-    const held = heldBack.filter((t) => t.suite === id)
-    let note = `${SUITE_NOTE[id]} ${count} task${count === 1 ? '' : 's'} registered`
-    if (held.length) note += `, ${count - held.length} with runs`
-    note += '.'
-    if (held.length) {
-      note += ` ${held.map((t) => heldBackSentence(t)).join(' ')}`
-    }
-    return { id, label: SUITE_LABEL[id], note }
+  const suites: BoardSuite[] = (['horizon', 'classic', 'smoke'] as Suite[])
+    .filter((id) => !isPublic || boardTasks.some((t) => t.suite === id))
+    .map((id) => {
+    // The tasks with results in this suite: the registered ones less the held-back ones.
+    const ran = boardTasks.filter((t) => t.suite === id).length - heldBack.filter((t) => t.suite === id).length
+    return { id, label: SUITE_LABEL[id], note: SUITE_NOTE[id](ran) }
   })
 
   const titleById = new Map(boardTasks.map((t) => [t.id, t.title]))
@@ -1370,7 +1405,7 @@ export function buildBoard(input: BuildInput): Board {
   const insights = {} as Record<Scope, Record<GroupKey, BoardInsight[]>>
   const guides = {} as Record<Scope, Record<GroupKey, ScopeGuide>>
   const glance = {} as Record<Scope, Record<GroupKey, GlanceBlock>>
-  for (const scope of SCOPE_KEYS) {
+  for (const scope of scopeKeys) {
     const tasksTotal = scopeTasks[scope].length
     const scopeSummaries = summaries.filter((s) => s.scope === scope)
     insights[scope] = { claude: [], all: [] }
@@ -1427,6 +1462,7 @@ export function buildBoard(input: BuildInput): Board {
     schemaVersion: SCHEMA_VERSION,
     generatedAt,
     source: {
+      target,
       resultsSha256,
       records: results.length,
       liveRecords: live.length,
@@ -1451,6 +1487,7 @@ export function buildBoard(input: BuildInput): Board {
     models: boardModels,
     cells,
     scopeTasks,
+    scopes: scopeKeys,
     summaries,
     insights,
     effort,
@@ -1685,9 +1722,12 @@ function topSentences(ctx: FocusContext, r: NonNullable<ReturnType<typeof rankTo
   if (tied.length >= 2) {
     const every = tied.every((s) => allIterationsAt(ctx, s.modelId, top.meanScoreAllTrials))
     const both = tied.length === 2
-    parts.push(`${listNames(tied.map(name))} ${both ? 'both' : 'all'} score ${score(top)}${every ? ' on every iteration' : ''}, so the top cannot be ranked among ${both ? 'them' : 'those configurations'}.`)
+    parts.push(`${listNames(tied.map((s) => `${name(s)} ${intervalWords(s.interval)}`))} ${both ? 'both' : 'all'} score ${score(top)}${every ? ' on every iteration' : ''}, so the top cannot be ranked among ${both ? 'them' : 'those configurations'}.`)
+  } else if (close.length > 0 || wide.length > 0) {
+    // Another covering configuration's interval reaches the top, so the top does not lead: it is the highest score.
+    parts.push(`Highest score: ${name(top)}, ${score(top)} ${intervalWords(top.interval)}.`)
   } else {
-    parts.push(`${name(top)} leads at ${score(top)} all-trials score.`)
+    parts.push(`${name(top)} leads at ${score(top)} all-trials score, ${intervalClause(top.interval)}.`)
   }
   if (close.length) {
     const subject = close.length === 1 ? 'its 95% interval reaches' : 'their 95% intervals reach'
@@ -1710,6 +1750,11 @@ function topSentences(ctx: FocusContext, r: NonNullable<ReturnType<typeof rankTo
 /** The 95% interval as text, for example "[91.8 to 100.0]", or "not measured". */
 function intervalWords(iv: Interval | null): string {
   return iv ? `[${fmt1(iv[0])} to ${fmt1(iv[1])}]` : 'interval not measured'
+}
+
+/** The 95% interval as a clause, for example "with 95% interval [91.8 to 100.0]", or a plain statement that none is measured. */
+function intervalClause(iv: Interval | null): string {
+  return iv ? `with 95% interval ${intervalWords(iv)}` : 'with no 95% interval measured'
 }
 
 /** The 95% interval without brackets, for example "91.8 to 100.0", for a clause that names it after a comma. */
@@ -2070,18 +2115,19 @@ export type HeldBackState = 'held' | 'not-run'
 export const SEAT_PRICING_STATE: HeldBackState = 'held'
 
 /** The sentence the page states about each held-back task that has a state of its own. Only seat-pricing has one. */
-const HELD_BACK_SENTENCE: Record<string, Record<HeldBackState, string>> = {
+const HELD_BACK_SENTENCE: Record<string, Record<HeldBackState, (title: string) => string>> = {
   'seat-pricing': {
-    held: 'seat-pricing is registered but held back: its contrast check did not pass review, so it has no results.',
-    'not-run': "seat-pricing passed review on 2026-11-11 but has not been run yet: the API key's spend limit was reached.",
+    held: (title) => `One task (${title}) is not reported: one of its checks is still being validated.`,
+    'not-run': (title) => `One task (${title}) is not reported yet: it has not been run, because a spend limit was reached.`,
   },
 }
 
-/** The sentence the page states about a held-back task, in the given seat-pricing state. */
-export function heldBackSentenceIn(t: { id: string }, state: HeldBackState): string {
+/** The sentence the method states about a held-back task, in the given seat-pricing state. */
+export function heldBackSentenceIn(t: { id: string; title?: string }, state: HeldBackState): string {
+  const title = t.title ?? t.id
   const states = HELD_BACK_SENTENCE[t.id]
-  if (states) return states[state]
-  return `${t.id} is registered but held back: it has no runs.`
+  if (states) return states[state](title)
+  return `One task (${title}) is not reported: it has no results yet.`
 }
 
 /** The sentence the page states about a held-back task, in the state the constant gives. */
@@ -2276,12 +2322,25 @@ function answerFor(
   cellOf: (modelId: string, taskId: string) => BoardCell | undefined,
   answer: string[]
 ): void {
-  const { top } = r
-  // The top, as the finding words it.
-  const tiedNames = r.tied.map((s) => ctx.nameOf(s.modelId))
-  answer.push(r.tied.length >= 2
-    ? `${listNames(tiedNames)} share the top score, ${fmt1(top.meanScoreAllTrials)}. The Top score finding below gives the full statement.`
-    : `${ctx.nameOf(top.modelId)} leads at ${fmt1(top.meanScoreAllTrials)}. The Top score finding below gives the full statement.`)
+  const { top, tied, close, wide } = r
+  // The top, as the finding words it. The same separability result as the Top score finding (topSentences) decides the
+  // wording: "leads" only when no other covering configuration's interval reaches the top.
+  const named = (s: BoardSummary) => `${ctx.nameOf(s.modelId)} ${intervalWords(s.interval)}`
+  if (tied.length >= 2) {
+    answer.push(`${listNames(tied.map(named))} share the top score, ${fmt1(top.meanScoreAllTrials)}. The Top score finding below gives the full statement.`)
+  } else if (close.length > 0 || wide.length > 0) {
+    const sample = sampleClause(ctx, coveredCells(ctx, new Set(covered.map((s) => s.modelId))), true)
+    const head = `Highest score: ${ctx.nameOf(top.modelId)}, ${fmt1(top.meanScoreAllTrials)} ${intervalWords(top.interval)}`
+    const sentences: string[] = [close.length > 0
+      ? `${head}; ${listNames(close.map((s) => `${ctx.nameOf(s.modelId)} (${fmt1(s.meanScoreAllTrials)})`))} ${close.length === 1 ? 'is' : 'are'} not separable from it.`
+      : `${head}.`]
+    if (wide.length > 0) {
+      sentences.push(`Too variable to rank: ${listNames(wide.map((s) => `${ctx.nameOf(s.modelId)} (${fmt1(s.meanScoreAllTrials)}, interval ${intervalWords(s.interval)} wider than ${WIDE_INTERVAL_POINTS} points)`))}.`)
+    }
+    answer.push(clauseLast(sentences, sample))
+  } else {
+    answer.push(`${ctx.nameOf(top.modelId)} leads at ${fmt1(top.meanScoreAllTrials)} all-trials score, ${intervalClause(top.interval)}. The Top score finding below gives the full statement.`)
+  }
 
   // The value pick: the cheapest covered configuration within the top's margin.
   const pool = covered.filter((s) => s.costPerAttempt !== null && s.meanScoreAllTrials >= top.meanScoreAllTrials - VALUE_MARGIN_POINTS)
@@ -2290,7 +2349,7 @@ function answerFor(
     name(a).localeCompare(name(b))
   )[0]
   if (value) {
-    answer.push(`Cheapest within ${VALUE_MARGIN_POINTS} points of the top: ${name(value)} at ${formatUsd(value.costPerAttempt as number)} per attempt, scoring ${fmt1(value.meanScoreAllTrials)}.`)
+    answer.push(`Cheapest within ${VALUE_MARGIN_POINTS} points of the top: ${name(value)} at ${formatUsd(value.costPerAttempt as number)} per attempt, scoring ${fmt1(value.meanScoreAllTrials)} ${intervalWords(value.interval)}.`)
   }
 
   // The cheapest covered configuration, and the tasks where it trails the top by TRAIL_POINTS or more.

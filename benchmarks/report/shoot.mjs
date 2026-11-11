@@ -133,6 +133,16 @@ function brokenNumbers(page) {
   })
 }
 
+// The build under test. The public page has no earlier runs, no smoke tier (until it has version 2 data) and no harness
+// commands; the checks below adapt to board.source.target.
+const PUBLIC = await (async () => {
+  const { context, page } = await openPage({ width: 800, height: 600, scheme: 'light' })
+  const target = await page.evaluate(() => (window.__BOARD__ && window.__BOARD__.source ? window.__BOARD__.source.target : null))
+  await context.close()
+  return target === 'public'
+})()
+notes.push(PUBLIC ? 'build under test: public (source.target)' : 'build under test: private (source.target)')
+
 // ── real board, headline and horizon scopes: each has data and draws its charts ──
 /** Charts and tables the real board draws in a scope: a count per section, read from the page. */
 function drawnIn(page) {
@@ -189,6 +199,31 @@ for (const scope of ['headline', 'horizon']) {
   }
 }
 
+// ── public page: its own head, links and text; no harness, no earlier runs, no smoke tier (public build only) ──
+if (PUBLIC) {
+  const { context, page } = await openPage({ width: 1440, height: 900, scheme: 'light' })
+  const text = await page.evaluate(() => document.body.innerText)
+  const head = await page.evaluate(() => ({
+    title: document.title,
+    canonical: (document.querySelector('link[rel="canonical"]') || {}).href || '',
+    ogTitle: (document.querySelector('meta[property="og:title"]') || {}).content || '',
+    homeLink: !!document.querySelector('header a[href="/"]'),
+    reproduce: !!document.querySelector('#reproduce, a[href="#reproduce"]'),
+    scopes: [...document.querySelectorAll('input[name="scope-group"]')].map((i) => i.value),
+    fontFaces: [...document.fonts].map((f) => f.family + ':' + f.status)
+  }))
+  check(head.title === 'Benchmarks | Token Horizon' && head.ogTitle === 'Benchmarks | Token Horizon' && head.canonical === 'https://token-horizon.dev/benchmarks/',
+    'the public page has its title, og:title and canonical link (' + head.canonical + ')')
+  check(head.homeLink, 'the public header links back to the site root')
+  check(!head.reproduce, 'the public page has no reproduce section or link')
+  check(!/not public|Reproduce a result|Earlier runs|scorer v1|scorer version 1|Smoke|plugin id/i.test(text), 'the public page names no unpublished harness, no earlier runs, no scorer v1 runs and no smoke tier')
+  check(JSON.stringify(head.scopes) === JSON.stringify(['headline', 'horizon']), 'the public page offers the headline and horizon scopes only (' + head.scopes.join(', ') + ')')
+  check(/A static page built on \d{4}-\d{2}-\d{2}\./.test(text), 'the footer says the date the page was built')
+  check(/These runs were made and paid for by the Token Horizon maintainers on their own machine\. They are not community-submitted data\./.test(text), 'the header states who made the runs')
+  check(head.fontFaces.every((f) => f.endsWith(':loaded')) && head.fontFaces.length >= 2, 'the site fonts load on the public page (' + head.fontFaces.join(', ') + ')')
+  await context.close()
+}
+
 // ── answer, limits, truncation marks, whiskers, the held-back task and the scope offer ──
 {
   const { context, page } = await openPage({ width: 1440, height: 900, scheme: 'light', hash: '#scope=horizon&models=claude' })
@@ -200,18 +235,19 @@ for (const scope of ['headline', 'horizon']) {
     whiskers: document.querySelectorAll('#effort line.whisker').length,
     truncLabels: [...document.querySelectorAll('#effort text.trunc')].map((t) => t.textContent),
     scopeLine: (document.querySelector('[data-scope-line="frontier"]') || {}).textContent || '',
+    method: (document.getElementById('method') || {}).textContent || '',
     smokeOffered: !!document.querySelector('input[name="scope-group"][value="smoke"]'),
     frontierTitle: (document.querySelector('#frontier .plot-box svg text.axis-title') || {}).textContent || '',
     cardAnswerFirst: document.querySelector('#findings .answer') ? document.querySelector('#findings .answer').getBoundingClientRect().top - document.querySelector('#findings').getBoundingClientRect().top : -1
   }))
-  check(info.answer.length >= 2 && / leads at | share the top score/.test(info.answer[0]), `the horizon scope answers which model to use, starting with the top (${info.answer.length} sentences)`)
+  check(info.answer.length >= 2 && / leads at | share the top score|^Highest score/.test(info.answer[0]), `the horizon scope answers which model to use, starting with the top (${info.answer.length} sentences)`)
   check(info.caveats.some((c) => /^Each cell ran\s\d+\siterations?\./.test(c) || /^Cells ran between/.test(c)), 'the scope states its iterations per cell and the interval width')
   check(info.caveats.some((c) => /Output-cap truncations, counted as zero and billed:/.test(c)), 'the scope names the output-cap truncations among its limits')
   check(info.cardAnswerFirst >= 0 && info.cardAnswerFirst < 340, `the answer sits at the top of the findings, below the scope callout (${Math.round(info.cardAnswerFirst)} px from the section top)`)
   check(info.badges > 0 && info.truncCells > 0, `truncated cells are marked in the heat map and named in the checks matrix (${info.badges} marks, ${info.truncCells} cells)`)
   check(info.truncLabels.length > 0, `the effort chart says which level was truncated (${info.truncLabels.join(', ') || 'none'})`)
   check(info.whiskers > 0, `the effort score chart draws the 95% intervals (${info.whiskers} whisker lines)`)
-  check(/seat-pricing is registered but held back: its contrast check did not pass review, so it has no results\./.test(info.scopeLine), 'the horizon scope line names the held-back task and its reason')
+  check((info.method.match(/One task \(Seat Pricing Calculator\) is not reported/g) || []).length === 1 && !/not reported/.test(info.scopeLine), 'the held-back task is stated once, in the method, and not in the scope line')
   check(!info.smokeOffered, 'the empty smoke scope is not offered')
   check(/All-trials score \(pts, \d+ to 100\)/.test(info.frontierTitle), `the frontier score axis is titled with its own range (${info.frontierTitle})`)
   await context.close()
@@ -226,7 +262,7 @@ for (const scope of ['headline', 'horizon']) {
 }
 
 // ── real board, earlier-runs scope: the scope with data ──
-for (const width of [1440, 390]) {
+for (const width of PUBLIC ? [] : [1440, 390]) {
   const { context, page } = await openPage({ width, height: 900, scheme: 'light', hash: '#scope=earlier&models=all' })
   const info = await overflowOf(page)
   check(info.scrollWidth <= info.clientWidth, `no horizontal overflow at ${width} in the earlier-runs scope (scrollWidth ${info.scrollWidth}, clientWidth ${info.clientWidth})`)
@@ -259,7 +295,7 @@ for (const width of [1440, 390]) {
 }
 
 // ── real board, dark, desktop ──
-{
+if (!PUBLIC) {
   const { context, page } = await openPage({ width: 1440, height: 900, scheme: 'dark', hash: '#scope=earlier&models=all' })
   const theme = await page.evaluate(() => document.documentElement.dataset.theme)
   check(theme === 'dark', `dark scheme sets data-theme to dark (got ${theme})`)
@@ -268,7 +304,7 @@ for (const width of [1440, 390]) {
 }
 
 // ── real board, earlier-runs scope: the gallery dialog (captures, results, one command, no run control) ──
-{
+if (!PUBLIC) {
   const { context, page } = await openPage({ width: 1440, height: 900, scheme: 'light', hash: '#scope=earlier&models=all' })
   const thumb = page.locator('#gallery button.thumb:not([disabled])').first()
   if (await thumb.count()) {
@@ -303,7 +339,7 @@ for (const width of [1440, 390]) {
   }
   await context.close()
 }
-{
+if (!PUBLIC) {
   const { context, page } = await openPage({ width: 1440, height: 900, scheme: 'light', hash: '#scope=earlier&models=all' })
   const thumb = page.locator('#gallery button.thumb:not([disabled])').first()
   if (await thumb.count()) {
@@ -317,7 +353,7 @@ for (const width of [1440, 390]) {
   }
   await context.close()
 }
-{
+if (!PUBLIC) {
   const { context, page } = await openPage({ width: 390, height: 844, scheme: 'light', hash: '#scope=earlier&models=all' })
   const thumb = page.locator('#gallery button.thumb:not([disabled])').first()
   if (await thumb.count()) {
@@ -340,7 +376,7 @@ for (const width of [1440, 390]) {
 }
 
 // ── keyboard: one tab stop per chart, arrow keys between marks, anchors and chevrons ──
-{
+if (!PUBLIC) {
   const { context, page } = await openPage({ width: 1440, height: 900, scheme: 'light', hash: '#scope=earlier&models=all' })
   await page.evaluate(() => {
     document.querySelectorAll('.plot-box').forEach((b, i) => b.setAttribute('data-plot', String(i)))
@@ -637,7 +673,7 @@ async function firstLoadChecks() {
   }
 }
 
-for (const width of [1440, 390]) await chartChecks(indexUrl, 'earlier', width)
+if (!PUBLIC) for (const width of [1440, 390]) await chartChecks(indexUrl, 'earlier', width)
 // The real board's main chart, in each scope and model group with priced models, at the widths either side of the names-fit
 // width: no label over another label or a whisker, nearest dot is its own, every base model named from 900 px.
 for (const models of ['all', 'claude']) {
@@ -684,7 +720,7 @@ async function writePlaceholders(board, synthDir) {
 }
 
 // ── synthetic board: built through the real buildBoard, every scope, every section ──
-{
+if (!PUBLIC) { // the synthetic board is a copy of the private build (its page is served from the site root for the public build, which a file copy cannot reproduce)
   const { buildSyntheticBoard } = await import('./fixtures/synthetic-board.mjs')
   const board = buildSyntheticBoard()
   const synthDir = join(SHOTS_DIR, 'synthetic-dist')

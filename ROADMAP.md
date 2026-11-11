@@ -8,7 +8,7 @@ Two rules hold for all new work. They, and the order of the phases, are judgemen
 
 **Goal.** A local harness with sound scoring, one sweep, and a report the owner can review before anything is public.
 
-**State on 2026-11-12.** Nothing here is deployed or public. Everything below is committed on the local branch `benchmarks-harness`, which is not pushed.
+**State on 2026-11-12.** The report's public build is live at https://token-horizon.dev/benchmarks/ (Worker version b26693e6, deployed from local branch `deploy-benchmarks-report`, commit 3b0aa2f on 714cc27; not yet on `main`). Everything else below is committed on the local branch `benchmarks-harness`, which is not pushed, so the harness itself is not public.
 
 - The task-benchmark harness is in `benchmarks/`, copied from the owner's personal site at commit `a1d5193` (the site's published pages are unchanged).
 - Scoring is version 2 (`benchmarks/docs/lab/llm-benchmark/scorer-changelog.md`): a check that throws, times out or is skipped keeps its points in the denominator; a failed browser never produces a structure-only score; every record carries an all-trials score in which a failed iteration counts as zero; one artifact is scored at a time, a timed-out check is rescored, and a machine that cannot keep time stops the sweep instead of publishing.
@@ -31,7 +31,7 @@ Two rules hold for all new work. They, and the order of the phases, are judgemen
 4. Met in a stronger form. No artifact runs in the report at all: a sandboxed frame with a no-network policy was measured reaching the network, so the report shows captures only, and a test checks the built page contains no frame and no artifact text.
 5. Met. The three skills exist with `name` and `description` frontmatter and were verified against the tree.
 
-**Deferred.** Publication: `.github/workflows/pages.yml` uploads `docs/` on a push to main, so the report stays under `benchmarks/report/`. `seat-pricing`, until its contrast check passes review or is redesigned (about US$11 to run once it does). Agent-CLI runs of Claude models: the audited Claude Code runner overwrites `~/.claude/settings.json` on each call and estimates tokens from character counts. Other vendors.
+**Deferred.** Publishing the harness: the public report hides its reproduce commands until `benchmarks/` is in the public repository. The public build (`npx tsx report/build.mjs --target public --out <dir>`) shows scorer-version-2 runs only. `seat-pricing`, until its contrast check passes review or is redesigned (about US$11 to run once it does). Agent-CLI runs of Claude models: the audited Claude Code runner overwrites `~/.claude/settings.json` on each call and estimates tokens from character counts. Other vendors.
 
 ## Phase 1: Evidence record
 
@@ -196,7 +196,7 @@ Each has a recommended answer in `ROADMAP-DECISIONS.md`, with the reasoning, wha
 | 3 | Whether readers can ever run artefacts | Captures only | Recommendation |
 | 4 | Minimum trials, the interval method, and the provenance level for default rankings | 5 trials to rank, 10 on headline tasks; paired bootstrap over tasks, tied unless the difference's 95% interval excludes zero; level 2 and above | Recommendation |
 | 5 | Who moderates, and the target time to decision | Default: the owner, 5 working days, at most 20 pending | Owner only |
-| 6 | Snapshot store: R2 or a git branch | A dedicated git branch (first check the catalogue refresh job, which has no commits since 2026-10-28 locally) | Recommendation |
+| 6 | Snapshot store: R2 or a git branch | A dedicated git branch (the refresh job runs, but its commits reach the site only on a manual Worker deploy) | Recommendation |
 | 7 | Database for Phase 6 | Decide when Phase 6 starts; then D1 as an index rebuildable from R2 objects | Recommendation |
 | 8 | The order of Phases 4 and 5 | Phase 5's local half (bundle, pack, verify, offline rescoring) first, then Phase 4, then hosted upload | Recommendation |
 | 9 | Funding and its disclosure | Default: self-funded, payer on every record, no vendor money until a written policy exists | Owner only |

@@ -77,7 +77,7 @@ describe('top: exact ties and wide intervals are not leaders', () => {
       rec({ taskId: t.id, modelId: 'beta', values: [100, 100, 100] }),
     ])
     const top = find(buildBoard(world(results, models, tasks)), 'top')!
-    expect(top.body).toContain('Alpha and Beta both score 100.0 on every iteration, so the top cannot be ranked among them (2 configurations covering at least 80% of the headline tasks, 24 requested iterations).')
+    expect(top.body).toContain('Alpha [100.0 to 100.0] and Beta [100.0 to 100.0] both score 100.0 on every iteration, so the top cannot be ranked among them (2 configurations covering at least 80% of the headline tasks, 24 requested iterations).')
     expect(top.body).not.toContain('leads at')
   })
 
@@ -107,7 +107,8 @@ describe('top: exact ties and wide intervals are not leaders', () => {
       ...tasks.map((t) => rec({ taskId: t.id, modelId: 'delta', values: [90, 90, 90] })),
     ]
     const top = find(buildBoard(world(results, models, tasks)), 'top')!
-    expect(top.body.startsWith('Alpha leads at 100.0 all-trials score.')).toBe(true)
+    // Gamma's interval reaches the top, so Alpha is the highest score but does not lead (P4).
+    expect(top.body.startsWith('Highest score: Alpha, 100.0 [100.0 to 100.0].')).toBe(true)
     expect(top.body).toMatch(/Too variable to rank: Gamma \(50\.0, interval \[\d+\.\d to 100\.0\] wider than 40 points\) \(3 configurations covering at least 80% of the headline tasks, 36 requested iterations\)\.$/)
     expect(top.body).not.toContain('Delta')
     expect(top.body).not.toContain('Not separable')
@@ -183,7 +184,9 @@ describe('guide: the answer names the top, the cheapest and where it trails, and
   const guide = board.guides.headline.all
 
   it('answers with the top, the value pick, and the cheapest configuration with the tasks it trails on', () => {
-    expect(guide.answer[0]).toContain('Top M leads at 100.0. The Top score finding below gives the full statement.')
+    // Hi Xhigh's interval reaches the top, so the answer names the highest score and the configuration not separable from it (P4).
+    // Cheap's interval reaches the top (not separable); Hi Xhigh's is wider than 40 points (too variable to rank).
+    expect(guide.answer[0]).toMatch(/^Highest score: Top M, 100\.0 \[100\.0 to 100\.0\]; Cheap \(80\.0\) is not separable from it\. Too variable to rank: Hi Xhigh \(extra high effort\) \(75\.0, interval \[\d+\.\d to 100\.0\] wider than 40 points\) \(3 configurations covering at least 80% of the headline tasks, 36 requested iterations\)\.$/)
     expect(guide.answer.some((s) => s.startsWith('Cheapest within 5 points of the top: '))).toBe(true)
     const cheapest = guide.answer.find((s) => s.startsWith('Cheapest covered configuration: '))!
     expect(cheapest).toContain('Cheap at $0.0300 per attempt, scoring 80.0')
@@ -211,14 +214,15 @@ describe('guide: the answer names the top, the cheapest and where it trails, and
 })
 
 describe('held back: a registered task with no runs is named, and its absence is explained', () => {
-  it('lists the task as held back and says so in its suite note', () => {
+  it('lists the task as held back with its sentence, and the suite note counts only the tasks with results', () => {
     const tasks = [task('t1'), task('ghost', { pluginId: 'horizon-seat-pricing', title: 'Seat Pricing Calculator' })]
     const results = [rec({ taskId: 't1', modelId: 'm', values: [100, 100, 100] })]
     const board = buildBoard(world(results, [model('m', 'M')], tasks))
     expect(board.heldBackTasks).toEqual(['Seat Pricing Calculator'])
     const horizon = board.suites.find((s) => s.id === 'horizon')!
-    expect(horizon.note).toContain('ghost is registered but held back: it has no runs.')
-    expect(board.heldBack).toEqual([{ id: 'ghost', title: 'Seat Pricing Calculator', sentence: 'ghost is registered but held back: it has no runs.' }])
+    // The note counts the tasks with results (none here); the sentence is held in board.heldBack and the method states it.
+    expect(horizon.note).toBe('zero harder tasks with hidden test values. Included in the headline summaries.')
+    expect(board.heldBack).toEqual([{ id: 'ghost', title: 'Seat Pricing Calculator', sentence: 'One task (Seat Pricing Calculator) is not reported: it has no results yet.' }])
   })
 })
 

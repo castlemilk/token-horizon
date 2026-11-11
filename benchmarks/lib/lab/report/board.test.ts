@@ -621,8 +621,9 @@ describe('insights', () => {
     const top = find(buildBoard(mainWorld()), 'top')!
     expect(top).toMatchObject({ figure: '80.0', figureUnit: 'pts', anchor: 'leaderboard', title: 'Top score, headline tasks' })
     // Alpha has 4 cells and Beta 4, each of 5 requested iterations: 40 behind the two means.
-    expect(top.body).toBe(
-      'Alpha leads at 80.0 all-trials score. It is 23.0 points ahead of Beta, and their intervals do not overlap (2 configurations covering at least 80% of the headline tasks, 40 requested iterations).'
+    // The leader's sentence states its 95% interval (P4): the answer and the finding give the same separability result.
+    expect(top.body).toMatch(
+      /^Alpha leads at 80\.0 all-trials score, with 95% interval \[\d+\.\d to \d+\.\d\]\. It is 23\.0 points ahead of Beta, and their intervals do not overlap \(2 configurations covering at least 80% of the headline tasks, 40 requested iterations\)\.$/
     )
   })
 
@@ -633,7 +634,7 @@ describe('insights', () => {
       ...base,
       results: [...base.results.filter((r) => r.modelId !== 'beta'), ...betaSame],
     })
-    expect(find(board, 'top')!.body).toContain('Alpha and Beta both score 80.0 on every iteration, so the top cannot be ranked among them (2 configurations covering at least 80% of the headline tasks, 40 requested iterations).')
+    expect(find(board, 'top')!.body).toContain('Alpha [80.0 to 80.0] and Beta [80.0 to 80.0] both score 80.0 on every iteration, so the top cannot be ranked among them (2 configurations covering at least 80% of the headline tasks, 40 requested iterations).')
     expect(find(board, 'top')!.body).not.toContain('leads at')
   })
 
@@ -815,7 +816,7 @@ describe('insights', () => {
     const base = mainWorld()
     const board = buildBoard({ ...base, results: base.results.filter((r) => r.modelId === 'alpha') })
     expect(find(board, 'spread')).toBeUndefined()
-    expect(find(board, 'top')!.body).toMatch(/^Alpha leads at 80\.0 all-trials score \(1 configuration covering at least 80% of the headline tasks, 20 requested iterations\)\.$/)
+    expect(find(board, 'top')!.body).toMatch(/^Alpha leads at 80\.0 all-trials score, with 95% interval \[\d+\.\d to \d+\.\d\] \(1 configuration covering at least 80% of the headline tasks, 20 requested iterations\)\.$/)
     expect(find(board, 'reliability')!.body).toContain('None of the 1 configuration covering at least 80% of the headline tasks had a failed iteration')
   })
 })

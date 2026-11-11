@@ -4,7 +4,7 @@ Drafted 2026-11-11 against the working tree (ROADMAP.md, VISION.md, PRODUCT.md, 
 
 Four decisions are yours alone: 1 (audience), 5 (who moderates), 9 (funding) and 10 (licence). For those I give a default and the question to answer. The other eight are recommendations you can accept or reject.
 
-Three things I did not verify: whether the GitHub repository is public, what provider terms say about publishing model outputs, and whether the catalogue refresh job is still running on origin (see decision 6).
+Since checked (2026-11-12): the GitHub repository is public, and the catalogue refresh job is running on origin (see decision 6). Not verified: what provider terms say about publishing model outputs.
 
 | # | Decision | Recommendation | Whose call |
 | --- | --- | --- | --- |
@@ -85,7 +85,7 @@ Three things I did not verify: whether the GitHub repository is public, what pro
 
 **What would change it:** snapshots more often than daily, a branch that grows past a few hundred megabytes, or a private repository, where outside readers could not see the history anyway.
 
-**Check first:** local history has 95 commits to `docs/data/models.json` from 2026-09-15 to 2026-10-28 and none since. If origin shows the same gap, the refresh job has stalled, and Phase 3's 14 consecutive days cannot start until it is fixed.
+**Checked 2026-11-12:** the job is running. `origin/main` has 132 commits to `docs/data/models.json`, the last on 2026-11-11; an earlier note that it had stalled since 2026-10-28 read a local `main` that was 40 commits behind origin. The refreshed file is committed but only reaches the site when someone deploys the Worker, so the live catalogue lags `main` (on 2026-11-12 it matched the 2026-11-04 commit). Phase 3's 14 consecutive days need that deploy step automated, not the job fixed.
 
 ## 7. Database for Phase 6
 

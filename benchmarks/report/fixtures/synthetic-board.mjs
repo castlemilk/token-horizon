@@ -121,8 +121,11 @@ export function syntheticSignals(results, tasks) {
   return { cells }
 }
 
-/** Builds the synthetic board through the real buildBoard, with the real registry's models and tasks. */
-export function buildSyntheticBoard() {
+/**
+ * Builds the synthetic board through the real buildBoard, with the real registry's models and tasks. The target is the
+ * build the board is for (private by default; the public target drops earlier runs and smoke without version 2 data).
+ */
+export function buildSyntheticBoard(target = 'private') {
   const tasks = registry.BENCHMARK_TASKS
   const taskIds = tasks.map((t) => t.id)
   // Headline tasks have a plugin id; smoke tasks do not. The eleven pre-v2 tasks are the non-horizon ones.
@@ -206,7 +209,8 @@ export function buildSyntheticBoard() {
     signals: syntheticSignals(results, tasks),
     now: SYNTHETIC_NOW,
     resultsSha256: 'synthetic',
-    synthetic: true
+    synthetic: true,
+    target
   })
 }
 

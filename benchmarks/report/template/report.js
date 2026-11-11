@@ -4,7 +4,7 @@
  * Reads window.__BOARD__ (set by data/board.js). Everything on the page is
  * rendered from that object; there are no hard-coded models, tasks or numbers.
  * Model-written HTML is never run here. The page shows only the captured images
- * (taken by report/capture.mjs) and the stored measurements.
+ * (taken by the capture step) and the stored measurements.
  *
  * Layout of this file:
  *   1. constants and small helpers (DOM, number formats, scales, tooltip, chart focus)
@@ -20,7 +20,7 @@
   var D = null;
   var TIERS = ['fable', 'opus', 'sonnet', 'haiku'];
   var TIER_LABEL = { fable: 'Fable', opus: 'Opus', sonnet: 'Sonnet', haiku: 'Haiku' };
-  var SCOPE_LABEL = { headline: 'Headline tasks', horizon: 'Horizon tasks', smoke: 'Smoke tier', earlier: 'Earlier runs (scorer v1)' };
+  var SCOPE_LABEL = { headline: 'Headline tasks', horizon: 'Horizon tasks', smoke: 'Smoke tier', earlier: [/*@private*/'Earlier runs (scorer v1)'/*/@private*/].join('') };
   var SCOPE_ORDER = ['headline', 'horizon', 'smoke', 'earlier'];
   var MODEL_LABEL = { claude: 'Claude family', all: 'All models' };
   var MODEL_ORDER = ['claude', 'all'];
@@ -435,20 +435,17 @@
     var sc = state.scope;
     var text = 'Scope: ' + SCOPE_LABEL[sc] + ' (' + taskCount(sc) + ' tasks). Models: ' + MODEL_LABEL[state.models] +
       (typeof rowCount === 'number' ? ', ' + rowCount + ' with results in this scope.' : '.');
-    // A held-back task in this scope is named with the sentence the data build wrote for it (its id and its reason).
-    var held = heldBackIn(sc);
-    if (held.length) text += ' ' + held.map(function (t) { return t.sentence; }).join(' ');
-    if (sc === 'earlier') text += ' These are scorer version 1 records: not comparable with any scorer version 2 scope (headline, horizon or smoke).';
+    // The held-back task is stated once, in the method (renderMethod), not in every scope line.
+    if (sc === 'earlier') text += [/*@private*/' These are scorer version 1 records: not comparable with any scorer version 2 scope (headline, horizon or smoke).'/*/@private*/].join('');
     el.textContent = tight(text);
   }
-  /** Registered tasks with no record in any scope, in a scope's own suites: they are held back, and the page says so. */
-  function heldBackIn(sc) {
-    var held = D.board.heldBack || [];
-    return held.filter(function (hb) {
-      var t = D.board.tasks.filter(function (x) { return x.id === hb.id; })[0];
-      return t && taskInScope(t, sc);
-    });
-  }
+
+  /** True for the public build (board.source.target), which has no earlier runs and no harness commands. */
+  function isPublic() { return !!(D && D.board.source && D.board.source.target === 'public'); }
+  /** True when the board carries the smoke scope (the smoke tier has version 2 data). */
+  function hasSmoke() { return (D.board.scopes || []).indexOf('smoke') >= 0; }
+  /** True when a model stopped at a provider spend limit or quota, in a cell or before any iteration ran. */
+  function anyStopped() { return (D.board.source.stoppedCells || 0) > 0 || (D.board.stoppedNotRun || []).length > 0; }
 
   /**
    * The empty state for a section with no rows in the current scope. It names the scopes that have data for
@@ -1408,7 +1405,7 @@
         h('span', { class: 'legend-item' }, hatchKey(), 'not run'),
         h('span', { class: 'legend-item' }, '0 with a cross: every iteration failed'),
         h('span', { class: 'legend-item' }, h('span', { class: 'trunc-badge', 'aria-hidden': 'true', text: 'T' }), 'truncated at the output cap, counted as zero'),
-        anyStoppedCell() ? h('span', { class: 'legend-item' }, h('span', { class: 'stop-badge', 'aria-hidden': 'true', text: 'S' }), 'stopped at the account\'s spend limit or a quota, counted over the iterations that ran') : null),
+        anyStoppedCell() ? h('span', { class: 'legend-item' }, h('span', { class: 'stop-badge', 'aria-hidden': 'true', text: 'S' }), 'stopped at a provider spend limit or quota, counted over the iterations that ran') : null),
       tasks.length > 2 ? hint : null,
       hiddenNote(hiddenTasks),
       scrollBox,
@@ -1524,7 +1521,7 @@
         grid,
         comp.truncationNotes.length || comp.stopNotes.length ? h('div', { class: 'effort-trunc' },
           comp.truncationNotes.length ? h('p', { class: 'section-foot' }, h('span', { class: 'trunc-badge', 'aria-hidden': 'true', text: 'T' }), ' Marks an effort level with truncated iterations, counted as zero.') : null,
-          comp.stopNotes.length ? h('p', { class: 'section-foot' }, h('span', { class: 'stop-badge', 'aria-hidden': 'true', text: 'S' }), ' Marks an effort level with a cell stopped at the account\'s spend limit or a quota; the level is counted over the iterations that ran.') : null,
+          comp.stopNotes.length ? h('p', { class: 'section-foot' }, h('span', { class: 'stop-badge', 'aria-hidden': 'true', text: 'S' }), ' Marks an effort level with a cell stopped at a provider spend limit or quota; the level is counted over the iterations that ran.') : null,
           comp.truncationNotes.map(function (t) { return h('p', { class: 'section-foot', text: t }); }),
           comp.stopNotes.map(function (t) { return h('p', { class: 'section-foot', text: t }); })) : null,
         h('p', { class: 'section-foot effort-compared', text: comparedSentence(comp) })));
@@ -2078,7 +2075,7 @@
         h('span', { class: 'legend-ramp' }, RAMP_LABELS.map(function (lab, i) { return h('span', { class: 'step ramp-' + i, text: lab + '%' }); })),
         h('span', { class: 'legend-item' }, hatchKey(), 'not run'),
         h('span', { class: 'legend-item' }, h('span', { class: 'dash-key', 'aria-hidden': 'true', text: '—' }), 'check not recorded for this model'),
-        anyStoppedCell() ? h('span', { class: 'legend-item' }, h('span', { class: 'stop-badge', 'aria-hidden': 'true', text: 'S' }), 'stopped at the account\'s spend limit or a quota, counted over the iterations that ran') : null),
+        anyStoppedCell() ? h('span', { class: 'legend-item' }, h('span', { class: 'stop-badge', 'aria-hidden': 'true', text: 'S' }), 'stopped at a provider spend limit or quota, counted over the iterations that ran') : null),
       grid,
       hiddenNote(hiddenChecks),
       h('p', { class: 'section-foot', text: 'Checks are grouped by task and sorted by the mean pass share across models, weakest first. Use the arrow keys to move between cells.' })));
@@ -2209,11 +2206,13 @@
    */
   function fillDialogCommand(task, model, cell) {
     var box = document.getElementById('artifact-command');
-    var line = 'npx tsx scripts/rescore-behavioral.mjs --model ' + model.id + ' --task ' + task.id +
+    // The public page names no harness command: the harness is not published yet (see renderMethod).
+    if (isPublic()) { box.replaceChildren(); return; }
+    /*@private*/var line = 'npx tsx scripts/rescore-behavioral.mjs --model ' + model.id + ' --task ' + task.id +
       ' && npx tsx report/capture.mjs --models ' + model.id + ' --tasks ' + task.id + ' --force';
     box.replaceChildren(
       document.createTextNode('To score and capture this artifact again, run this from the benchmarks directory:'),
-      h('pre', { class: 'cmd-line', text: line }));
+      h('pre', { class: 'cmd-line', text: line }));/*/@private*/
   }
 
   function fillDialogDetails(task, model, cell) {
@@ -2375,8 +2374,12 @@
     cells.forEach(function (c) { liveTaskIds[c.taskId] = true; });
     var liveTasks = D.board.tasks.filter(function (t) { return liveTaskIds[t.id]; });
     var suites = D.board.suites.map(function (s) {
-      return h('li', null, h('strong', { text: s.label + '. ' }), s.note);
+      return h('li', null, h('strong', { text: s.label + ': ' }), s.note);
     });
+    // The held-back task is named once, here (its title and why it is not reported), not in each scope line.
+    var heldPara = D.board.heldBack && D.board.heldBack.length
+      ? h('p', { text: D.board.heldBack.map(function (t) { return t.sentence; }).join(' ') })
+      : null;
     var unpricedModels = D.board.models.filter(function (m) { return m.pricing === 'no-per-token-price' && (D.cellsByModel.get(m.id) || []).length; });
     var reviewModels = D.board.models.filter(function (m) { return m.pricing === 'price-under-review' && (D.cellsByModel.get(m.id) || []).length; });
 
@@ -2384,7 +2387,8 @@
       h('div', null,
         h('h3', { text: 'Suites' }),
         h('ul', null, suites),
-        h('p', { text: 'Headline numbers (the headline scope, the findings and the frontier) use the classic and horizon suites only. The smoke tier is shown in its own scope and is not averaged into them.' }),
+        heldPara,
+        h('p', { text: 'Headline numbers (the headline scope, the findings and the frontier) use the classic and horizon suites only.' + (hasSmoke() ? ' The smoke tier is shown in its own scope and is not averaged into them.' : '') }),
         h('h3', { text: 'Definitions' }),
         h('dl', null,
           h('dt', null, 'All-trials score'),
@@ -2400,15 +2404,15 @@
           h('dt', null, 'Cost per attempt'),
           h('dd', null, costDefinition() + ' Only for a model with a positive per-token price in the registry. The mean of the measured costs over the cells in scope, with the count of cells that carry one beside it. Free tiers, subscription command-line routes and local models have no per-token price, so their cost is not measured whatever usage their records carry. A positive price under one cent per million tokens is under review, so its cost is not shown.'),
           h('dt', null, 'Scopes and scorer versions'),
-          h('dd', null, 'Headline, horizon and smoke use only records scored by scorer version 2 or later. The horizon scope is the Horizon tasks alone, a part of the headline scope. Earlier runs (scorer v1) are shown in their own scope and are not comparable with them: a version 1 record is scored differently, so it is never averaged with a version 2 record. A scope with no data shows an empty state that names the scopes that have data.'),
+          h('dd', null, isPublic() ? 'Headline and horizon use only records from the current scorer. The horizon scope is the Horizon tasks alone, a part of the headline scope. Older runs scored differently and are not shown. A scope with no data shows an empty state that names the scopes that have data.' : 'Headline, horizon and smoke use only records scored by scorer version 2 or later. The horizon scope is the Horizon tasks alone, a part of the headline scope. Earlier runs (scorer v1) are shown in their own scope and are not comparable with them: a version 1 record is scored differently, so it is never averaged with a version 2 record. A scope with no data shows an empty state that names the scopes that have data.'),
           h('dt', null, 'Reasoning effort'),
           h('dd', null, 'For each base model with two or more effort levels, the levels are compared only over the tasks that every one of them ran in the current scope; the section says how many tasks that is. Score is the mean all-trials score over those tasks, with its 95% interval. Cost per attempt is the mean over those tasks. Median seconds per completed iteration is the median over those tasks of each cell’s runtime per completed iteration. A change between two levels is established only when their intervals do not overlap.'),
           h('dt', null, 'Output cap'),
           h('dd', null, 'Each call may produce up to ' + tokenCount(D.board.definitions.outputCapTokens) + ' output tokens, reasoning included. The first pass used ' + tokenCount(D.board.definitions.firstPassCapTokens) + '. Every model and task pair that reached ' + tokenCount(D.board.definitions.firstPassCapTokens) + ' was run again under ' + tokenCount(D.board.definitions.outputCapTokens) + ', and the published record is the re-run. An iteration that reaches the cap is truncated: it counts as zero in the all-trials score, and it is billed. A failed iteration is counted as truncated when its record says so, or when a cell with no completed iteration and no recorded reason has exactly the cap in output tokens on every iteration; the page marks those cells T.'),
-          h('dt', null, 'Stopped runs'),
-          h('dd', null, (D.board.definitions.stoppedRule || '') + ' ' + (D.board.definitions.stoppedCount || '')),
+          anyStopped() ? h('dt', null, 'Stopped runs') : null,
+          anyStopped() ? h('dd', null, (D.board.definitions.stoppedRule || '') + ' ' + (D.board.definitions.stoppedCount || '')) : null,
           h('dt', null, 'Captures'),
-          h('dd', null, 'Each cell has two images, taken from the stored output in headless Chromium with the network blocked. The browser cannot reach the network: every connection goes to a proxy that is not listening, and WebRTC may send no UDP outside that proxy. A hostile artifact checks this (report/capture-isolation-test.mjs), and a plain browser must fail the same check. The images are a desktop viewport (1024 by 720) and a phone viewport (390 by 844), each taken after the task’s showcase pose where the task has one, so every model is shown in the same state. Each caption gives the viewport and the time after load. The page never runs the HTML itself.'),
+          h('dd', null, 'Each cell has two images, taken from the stored output in headless Chromium with the network blocked. The browser cannot reach the network: every connection goes to a proxy that is not listening, and WebRTC may send no UDP outside that proxy. A hostile artifact checks this' + (isPublic() ? '' : [/*@private*/' (report/capture-isolation-test.mjs)'/*/@private*/].join('')) + ', and a plain browser must fail the same check. The images are a desktop viewport (1024 by 720) and a phone viewport (390 by 844), each taken after the task’s showcase pose where the task has one, so every model is shown in the same state. Each caption gives the viewport and the time after load. The page never runs the HTML itself.'),
           h('dt', null, 'What failed'),
           h('dd', null, 'The share of iterations whose recorded check row passed. A check row carries points out of a maximum, but these shares count rows, not points, so they are not the task score.'),
           h('dt', null, 'Frontier'),
@@ -2422,16 +2426,17 @@
       h('div', null,
         h('h3', { text: 'Counts from the data build' }),
         h('dl', { class: 'counts' },
-          h('dt', null, 'Records in results.json'), h('dd', null, integer(src.records)),
+          h('dt', null, isPublic() ? 'Records used' : 'Records in results.json'), h('dd', null, integer(src.records)),
           h('dt', null, 'Live records used'), h('dd', null, integer(src.liveRecords)),
           h('dt', null, 'Seeded records excluded'), h('dd', null, integer(src.seededExcluded)),
           h('dt', null, 'Model configurations with live runs'), h('dd', null, integer(D.board.models.filter(function (m) { return (D.cellsByModel.get(m.id) || []).length; }).length)),
-          h('dt', null, 'Tasks with live runs'), h('dd', null, integer(liveTasks.length) + ' of ' + integer(D.board.tasks.length) + ' registered tasks (' + integer(liveTasks.filter(function (t) { return t.headline; }).length) + ' headline, ' + integer(liveTasks.filter(function (t) { return !t.headline; }).length) + ' smoke)'),
+          h('dt', null, 'Tasks with live runs'), h('dd', null, integer(liveTasks.length) + ' of ' + integer(D.board.tasks.length) + ' registered tasks (' + integer(liveTasks.filter(function (t) { return t.headline; }).length) + ' headline' + (hasSmoke() ? ', ' + integer(liveTasks.filter(function (t) { return !t.headline; }).length) + ' smoke' : '') + ')'),
           h('dt', null, 'Cells (model by task)'), h('dd', null, integer(cells.length)),
           h('dt', null, 'Iterations requested'), h('dd', null, integer(cells.reduce(function (s, c) { return s + c.iterations; }, 0))),
           h('dt', null, 'Iterations not run (stopped cells)'), h('dd', null, integer(src.iterationsNotRun || 0)),
           h('dt', null, 'Run dates'), h('dd', null, nw((dates[0] || 'not measured').slice(0, 10)), ' to ', nw((dates[dates.length - 1] || 'not measured').slice(0, 10))),
-          h('dt', null, 'Scorer versions'), h('dd', null, versionText || 'not measured'),
+          isPublic() ? null : h('dt', null, 'Scorer versions'),
+          isPublic() ? null : h('dd', null, versionText || 'not measured'),
           h('dt', null, 'Models without a per-token price'), h('dd', null, unpricedModels.length ? unpricedModels.map(function (m) { return m.name; }).join(', ') : 'none'),
           h('dt', null, 'Models with a price under review'), h('dd', null, reviewModels.length ? reviewModels.map(function (m) { return m.name; }).join(', ') : 'none'),
           h('dt', null, 'Data built at'), h('dd', null, nw(D.board.generatedAt)),
@@ -2446,7 +2451,7 @@
           h('li', null, 'Failed iterations count as zero in the all-trials score, including provider-side failures such as quota, a hung endpoint or a rate limit. Failure reasons recorded across the cells: ' + failureText + '.'),
           fallbackNote,
           h('li', null, 'The maintainers chose which models and tasks to run. This is not a random sample and not an exhaustive one.'),
-          h('li', null, 'Smoke tasks test that a page renders, animates or reacts to one input, so strong models cluster near the maximum.'),
+          hasSmoke() ? h('li', null, 'Smoke tasks test that a page renders, animates or reacts to one input, so strong models cluster near the maximum.') : null,
           h('li', null, 'Cost is measured only for models with a positive per-token price. ' + plural(unpricedModels.length, 'model') + (unpricedModels.length === 1 ? ' has' : ' have') + ' no per-token price (free tiers, subscription command-line routes and local models) and ' + (unpricedModels.length === 1 ? 'is' : 'are') + ' left out of the cost chart and the frontier. Cost excludes hardware, power and subscriptions.'),
           h('li', null, 'Model-written HTML is never run by this page. The captures run it once, in headless Chromium with the network blocked (see Captures), and a broken artifact can stall that browser; the capture has a time limit for that reason. The cell’s score comes from the deterministic checks, not from the captured image.'),
           h('li', null, 'Output speed is output tokens divided by the time after the first visible token. Output tokens include the reasoning tokens the provider bills, so a model that thinks before it answers shows a higher figure than its visible text alone would give.'),
@@ -2455,7 +2460,7 @@
           h('li', null, 'Each scope states its iterations per cell and its interval width in the limits above its findings. A difference inside the 95% intervals is not established, and a task that scores 100 for every configuration cannot separate them.'))))
     );
 
-    var repro = h('section', { id: 'reproduce', 'aria-labelledby': 'h-reproduce' },
+    /*@private*/var repro = h('section', { id: 'reproduce', 'aria-labelledby': 'h-reproduce' },
       h('h3', { id: 'h-reproduce', text: 'Reproduce a result' }),
       h('p', { text: 'Run these from the benchmarks directory of the token-horizon repository. The first three need no model calls. The dump-config form prints the effective config and runs nothing.' }),
       h('pre', { class: 'cmd', 'aria-label': 'Commands to reproduce a result' }, [
@@ -2480,8 +2485,13 @@
         '',
         '# check that the built report holds no artifact text and no embedded frame',
         'npx tsx report/dist-check.mjs'
-      ].join('\n')));
-    box.appendChild(repro);
+      ].join('\n')));/*/@private*/
+    // The public page does not carry the reproduce commands: the harness is not published yet. It says so once, here.
+    if (isPublic()) {
+      box.appendChild(h('p', { class: 'section-foot', text: 'The harness that produced these results is not yet published; the method above describes how each number is computed.' }));
+    } else {
+      /*@private*/box.appendChild(repro);/*/@private*/
+    }
   }
 
   // ── orchestration ──────────────────────────────────────────────────────
@@ -2539,12 +2549,30 @@
     if (main) main.appendChild(h('div', { class: 'notice-empty', role: 'alert', text: message }));
   }
 
+  /**
+   * Page text that depends on the board: the build date in the footer, and the sentences about spend-limit stops, which
+   * the page keeps only when a cell stopped (or a record stopped before any iteration ran).
+   */
+  function applyPageText() {
+    var built = document.querySelector('[data-built-on]');
+    if (built && B.generatedAt) built.textContent = String(B.generatedAt).slice(0, 10);
+    if (!anyStopped()) {
+      Array.prototype.forEach.call(document.querySelectorAll('[data-stops]'), function (el) { el.parentNode.removeChild(el); });
+    }
+    if (!hasSmoke()) {
+      Array.prototype.forEach.call(document.querySelectorAll('[data-smoke]'), function (el) { el.parentNode.removeChild(el); });
+    }
+  }
+
   function init() {
     if (!B || !Array.isArray(B.models) || !Array.isArray(B.cells)) {
-      fail('The report data did not load (report/dist/data/board.js). Run npx tsx report/build.mjs to rebuild it.');
+      // The private build may say how to rebuild it; the public page only asks the reader to reload.
+      var rebuild = document.documentElement.getAttribute('data-target') === 'private' ? [/*@private*/' Run npx tsx report/build.mjs to rebuild it.'/*/@private*/].join('') : '';
+      fail('The report data did not load. Reload the page.' + rebuild);
       return;
     }
     D = prepare(B);
+    applyPageText();
     computeEffortBases();
     fillCostDefinitions();
     state.models = defaultModels();
