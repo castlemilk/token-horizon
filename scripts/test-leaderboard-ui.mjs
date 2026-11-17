@@ -695,13 +695,20 @@ async function run() {
     buildMs: window.__bhBuildMs,
     cols: document.querySelector('.bh-art').textContent.split('\n')[0].length
   }));
-  const artAnimated = await page.evaluate(async () => {
-    const pre = document.querySelector('.bh-art');
-    const a = pre.textContent;
-    await new Promise(r => setTimeout(r, 500));
-    return pre.textContent !== a;
-  });
-  if (!artAnimated) throw new Error('ASCII black hole is not animating');
+  // Observe progress, not two timer samples that can coincide under load.
+  // Keep the original node: replacement/removal must not count as animation.
+  const art = await page.$('.bh-art');
+  const initialFrame = await art.textContent();
+  try {
+    await page.waitForFunction(({ art, initialFrame }) =>
+      art.isConnected && art.textContent.replace(/\s/g, '').length > 200 &&
+      art.textContent !== initialFrame,
+    { art, initialFrame }, { polling: 'raf', timeout: 5000 });
+  } catch (cause) {
+    throw new Error('ASCII black hole showed no frame progression within 5000ms', { cause });
+  } finally {
+    await art.dispose();
+  }
   const benefits = await page.$$eval('.signin-benefit', els => els.length);
   if (benefits !== 3) throw new Error(`Expected workspace, team and report benefits, found ${benefits}`);
   if (!(await page.$('#signin-dev'))) throw new Error('Dev sign-in fallback missing');
@@ -723,7 +730,7 @@ async function run() {
   const signInCopy = await page.locator('.signin-modal .modal-head p').textContent();
   if (!signInCopy.includes('Sharing @benebsworth\'s report')) throw new Error(`Sign-in modal missing action context: ${signInCopy}`);
   await page.evaluate(() => closeModal());
-  console.log(`   art ${artInfo.cols} cols (built ${artInfo.buildMs}ms), animated=${artAnimated}, benefits=${benefits}, gated copy ok`);
+  console.log(`   art ${artInfo.cols} cols (built ${artInfo.buildMs}ms), frameProgress=true, benefits=${benefits}, gated copy ok`);
 
   console.log('9. Google sign-in wiring + resume pending action (stubbed GSI)...');
   let groupBody = null, groupToken = null;
