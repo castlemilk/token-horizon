@@ -1,0 +1,208 @@
+{
+  "repository": "castlemilk/token-horizon",
+  "branch_at_audit": "main",
+  "commit": "b468206e9378c8d7a6788b67072494982e7de17d",
+  "source_retrieval": "Read-only GitHub connector fetch_file at the exact commit. Original UTF-8 bytes verified against returned Git blob SHA. Full source deliberately excluded.",
+  "sources": [
+    {
+      "repository_path": "cloudflare/src/index.js",
+      "git_blob_sha": "98560685746bae8360dd8dae8a870ca85c27b170",
+      "full_source_sha256": "e152e0fc95978bd69508cad1c90848d0a40b6732c5128089d65e2f30967aea08",
+      "full_source_bytes": 151892,
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/cloudflare/src/index.js"
+    },
+    {
+      "repository_path": "cloudflare/src/team-invites.js",
+      "git_blob_sha": "0fc8d7977e1587e6b3d6603fb8ca80469f3bf246",
+      "full_source_sha256": "c15a5350ab1e895bc463567e73b51f39846a04b21a6eab7ff82a6c13c8206d32",
+      "full_source_bytes": 28503,
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/cloudflare/src/team-invites.js"
+    },
+    {
+      "repository_path": "daemons/go/internal/store/query.go",
+      "git_blob_sha": "55d4021627fff84c7772752fdb42614d8ef1484c",
+      "full_source_sha256": "f24a637db464842ae8933b5845e7d1ad373d2cb62349d68264ba7faf38c91d07",
+      "full_source_bytes": 12055,
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/daemons/go/internal/store/query.go"
+    },
+    {
+      "repository_path": "daemons/go/internal/store/schema.go",
+      "git_blob_sha": "5da937f9dcaae10ed6b582aa60c7ff5428bcb6ab",
+      "full_source_sha256": "593204e7312762be9f3a03884af80c3a58244baed08bf94afda75c0e8ed36fe9",
+      "full_source_bytes": 4380,
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/daemons/go/internal/store/schema.go"
+    }
+  ],
+  "excerpts": [
+    {
+      "label": "normalizeProvider",
+      "source_path": "cloudflare/src/index.js",
+      "first_line": 158,
+      "last_line": 179,
+      "source_url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/cloudflare/src/index.js#L158-L179",
+      "exact_excerpt_sha256": "744daa122f90d6aad409b16de1dce7cdcf44e283af1d17df6975502d264cd413"
+    },
+    {
+      "label": "dayNumber",
+      "source_path": "cloudflare/src/index.js",
+      "first_line": 181,
+      "last_line": 183,
+      "source_url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/cloudflare/src/index.js#L181-L183",
+      "exact_excerpt_sha256": "87f6357cdf2d5ea835999cdfe986f7df608531a414ea9539ad1e95e7a1ebda88"
+    },
+    {
+      "label": "sanitizeEntry",
+      "source_path": "cloudflare/src/index.js",
+      "first_line": 228,
+      "last_line": 245,
+      "source_url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/cloudflare/src/index.js#L228-L245",
+      "exact_excerpt_sha256": "7283b9d2ea73ed30f0eebce1587150bd7165a1770362ec47d75e9603b024e4e4"
+    },
+    {
+      "label": "MONTHS",
+      "source_path": "cloudflare/src/index.js",
+      "first_line": 303,
+      "last_line": 303,
+      "source_url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/cloudflare/src/index.js#L303-L303",
+      "exact_excerpt_sha256": "3d852166e21bb27982c9ac741f0f3b18d3591d977ef33bf5f5eb57757a786afe"
+    },
+    {
+      "label": "aggregateUsageHistory",
+      "source_path": "cloudflare/src/index.js",
+      "first_line": 307,
+      "last_line": 345,
+      "source_url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/cloudflare/src/index.js#L307-L345",
+      "exact_excerpt_sha256": "e5269fe801ce3d1435256db509050050046fdc56b05fb77430c31d91955b0e8a"
+    },
+    {
+      "label": "publishedUsageValue",
+      "source_path": "cloudflare/src/index.js",
+      "first_line": 458,
+      "last_line": 463,
+      "source_url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/cloudflare/src/index.js#L458-L463",
+      "exact_excerpt_sha256": "483294d69792b20b26801dcf98a08ff9d33fb7fd85d2833ed0389c97c95cd465"
+    },
+    {
+      "label": "accumulateTeamDaily",
+      "source_path": "cloudflare/src/index.js",
+      "first_line": 465,
+      "last_line": 476,
+      "source_url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/cloudflare/src/index.js#L465-L476",
+      "exact_excerpt_sha256": "9762ad0c024daae6665130d37d0d2e1eadf09f1e0462d3ef312d0769e0c1e33e"
+    },
+    {
+      "label": "aggregateTeams",
+      "source_path": "cloudflare/src/index.js",
+      "first_line": 478,
+      "last_line": 512,
+      "source_url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/cloudflare/src/index.js#L478-L512",
+      "exact_excerpt_sha256": "955f3d6f38910c9307f546f6226992f82688f19129f900c31b0d25c5a6c2bb34"
+    },
+    {
+      "label": "formatTokens and formatCurrency",
+      "source_path": "cloudflare/src/index.js",
+      "first_line": 2287,
+      "last_line": 2300,
+      "source_url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/cloudflare/src/index.js#L2287-L2300",
+      "exact_excerpt_sha256": "919b954a1efc4590cb42903775c8fa3f8c9cb805f89a24ec3e4aae8558374194"
+    },
+    {
+      "label": "validId",
+      "source_path": "cloudflare/src/team-invites.js",
+      "first_line": 12,
+      "last_line": 12,
+      "source_url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/cloudflare/src/team-invites.js#L12-L12",
+      "exact_excerpt_sha256": "25a1cdd00a2b8af3b35937d5b00a25f6a2739c621b68e25a0656654335c02af4"
+    },
+    {
+      "label": "entryTeams",
+      "source_path": "cloudflare/src/team-invites.js",
+      "first_line": 93,
+      "last_line": 96,
+      "source_url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/cloudflare/src/team-invites.js#L93-L96",
+      "exact_excerpt_sha256": "4534dfbbb302dfb602f66d28f171a1335aad94623c41ae66e90b8c1f6b39b0b3"
+    },
+    {
+      "label": "usage_event table DDL",
+      "source_path": "daemons/go/internal/store/schema.go",
+      "first_line": 8,
+      "last_line": 36,
+      "source_url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/daemons/go/internal/store/schema.go#L8-L36",
+      "exact_excerpt_sha256": "e887ce869f3120b161ff628a4c696d751333f40c026a8118388a57e6214613a7"
+    },
+    {
+      "label": "file_annotation table DDL",
+      "source_path": "daemons/go/internal/store/schema.go",
+      "first_line": 62,
+      "last_line": 70,
+      "source_url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/daemons/go/internal/store/schema.go#L62-L70",
+      "exact_excerpt_sha256": "c6e3739e2894ef25c492b14aa3284dc47990fcbb14b3174aeb76603e6779bc3d"
+    },
+    {
+      "label": "annotationJoinSQL declaration",
+      "source_path": "daemons/go/internal/store/query.go",
+      "first_line": 15,
+      "last_line": 20,
+      "source_url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/daemons/go/internal/store/query.go#L15-L20",
+      "exact_excerpt_sha256": "6ab322da42de02937c7c7009daa48f9835f1d20ff263eb69f1493389d7561042"
+    },
+    {
+      "label": "Product filter predicate and context",
+      "source_path": "daemons/go/internal/store/query.go",
+      "first_line": 90,
+      "last_line": 94,
+      "source_url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/daemons/go/internal/store/query.go#L90-L94",
+      "exact_excerpt_sha256": "06d556e71554f6004dc03c28d17d0b044e6cbbf92b385b0fdf3fc2669862f486"
+    },
+    {
+      "label": "generation rate weighted expression",
+      "source_path": "daemons/go/internal/store/query.go",
+      "first_line": 296,
+      "last_line": 296,
+      "source_url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/daemons/go/internal/store/query.go#L296-L296",
+      "exact_excerpt_sha256": "2c9553764ad585939b011b593e5f013c634ce0008a4e7d1d1cdefe2d936cb5b5"
+    },
+    {
+      "label": "raw cost aggregation expression and context",
+      "source_path": "daemons/go/internal/store/query.go",
+      "first_line": 295,
+      "last_line": 295,
+      "source_url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/daemons/go/internal/store/query.go#L295-L295",
+      "exact_excerpt_sha256": "917e921150f9a87f008ea2ca784d45762e1e1950e37ad15faf412a824efd8cb7"
+    },
+    {
+      "label": "effective event cost precedence",
+      "source_path": "daemons/go/internal/store/query.go",
+      "first_line": 156,
+      "last_line": 162,
+      "source_url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/daemons/go/internal/store/query.go#L156-L162",
+      "exact_excerpt_sha256": "1ddac56ddcf323ed83759ef8f38833b724892f7157531dee761c4f659ae2d0eb"
+    },
+    {
+      "label": "Buckets query and supplied joins",
+      "source_path": "daemons/go/internal/store/query.go",
+      "first_line": 230,
+      "last_line": 241,
+      "source_url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/daemons/go/internal/store/query.go#L230-L241",
+      "exact_excerpt_sha256": "e8feae50b843a454bead939ce51079eb5d4ec1e662c13c7ac37fe51912d7cc5d"
+    },
+    {
+      "label": "Summary query and supplied joins",
+      "source_path": "daemons/go/internal/store/query.go",
+      "first_line": 288,
+      "last_line": 305,
+      "source_url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/daemons/go/internal/store/query.go#L288-L305",
+      "exact_excerpt_sha256": "e6117be2490db98cb0f09ce7ac4d85f8ea653540eb31e47cd5064d3295166e4c"
+    }
+  ],
+  "assembly_notes": [
+    "cloud-helpers.mjs assembles exact code excerpts, adds provenance comments and a harness export list. The entryTeams export present in the original is preserved. All helper dependencies used by tested paths are included as exact excerpts; no provider/team logic is stubbed.",
+    "sql-evidence.json contains two exact table definitions and exact SQL expressions plus small code-context excerpts. Parsing removes Go literal delimiters/SQL list punctuation only.",
+    "Fixtures and test assertions are newly authored synthetic inputs. The Node harness freezes only the clock; SQLite runs in memory. Neither harness executes an API route or production service.",
+    "The comparator COALESCE(fa.cost,usage_event.cost) is an authored equivalent of the included Go event cost precedence branch, not a claimed verbatim repository SQL expression."
+  ],
+  "snippet_files": {
+    "cloud-helpers.mjs": "6bd660e5b8b4bb8de756433208907bb42e5d295f90ad3561b3784e8d18278126",
+    "sql-evidence.json": "ad300db17bb32b4725fa5c6f544675080718192f4f0c4b8e9a39714d6a6c6546"
+  }
+}

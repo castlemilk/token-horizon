@@ -1,0 +1,122 @@
+{
+  "synthetic": true,
+  "schema_version": "track5-identity-v1",
+  "tenant_id": "tenant_demo_orion",
+  "note": "Six observed actors/profiles. Two additional joined members have not consented to telemetry; their absence is not zero use. Names and identifiers are entirely invented.",
+  "actors": [
+    {
+      "actor_id": "u01",
+      "display_name": "Synthetic actor 01",
+      "telemetry_consent": true,
+      "profile_ids": [
+        "profile_u01"
+      ]
+    },
+    {
+      "actor_id": "u02",
+      "display_name": "Synthetic actor 02",
+      "telemetry_consent": true,
+      "profile_ids": [
+        "profile_u02"
+      ]
+    },
+    {
+      "actor_id": "u03",
+      "display_name": "Synthetic actor 03",
+      "telemetry_consent": true,
+      "profile_ids": [
+        "profile_u03"
+      ]
+    },
+    {
+      "actor_id": "u04",
+      "display_name": "Synthetic actor 04",
+      "telemetry_consent": true,
+      "profile_ids": [
+        "profile_u04"
+      ]
+    },
+    {
+      "actor_id": "u05",
+      "display_name": "Synthetic actor 05",
+      "telemetry_consent": true,
+      "profile_ids": [
+        "profile_u05"
+      ]
+    },
+    {
+      "actor_id": "u06",
+      "display_name": "Synthetic actor 06",
+      "telemetry_consent": true,
+      "profile_ids": [
+        "profile_u06"
+      ]
+    },
+    {
+      "actor_id": "u07",
+      "display_name": "Synthetic member 07",
+      "telemetry_consent": false,
+      "profile_ids": []
+    },
+    {
+      "actor_id": "u08",
+      "display_name": "Synthetic member 08",
+      "telemetry_consent": false,
+      "profile_ids": []
+    }
+  ],
+  "crews": [
+    {
+      "crew_id": "crew_orion",
+      "label": "Orion",
+      "member_actor_ids": [
+        "u01",
+        "u02",
+        "u03",
+        "u04",
+        "u05",
+        "u06",
+        "u07",
+        "u08"
+      ],
+      "published_actor_ids": [
+        "u01",
+        "u02",
+        "u03",
+        "u04",
+        "u05",
+        "u06"
+      ],
+      "contribution_policy": "full_observed_history_per_member_once_per_crew"
+    },
+    {
+      "crew_id": "crew_lyra",
+      "label": "Lyra",
+      "member_actor_ids": [
+        "u01",
+        "u02",
+        "u03",
+        "u04",
+        "u05"
+      ],
+      "published_actor_ids": [
+        "u01",
+        "u02",
+        "u03",
+        "u04",
+        "u05"
+      ],
+      "contribution_policy": "full_observed_history_per_member_once_per_crew"
+    }
+  ],
+  "projects": [
+    {
+      "project_id": "project_delta",
+      "label": "Delta (synthetic)"
+    },
+    {
+      "project_id": "project_echo",
+      "label": "Echo (synthetic)"
+    }
+  ]
+}

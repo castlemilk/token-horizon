@@ -1,0 +1,91 @@
+{
+  "research_date": "2026-11-18",
+  "source_revision": "b468206e9378c8d7a6788b67072494982e7de17d",
+  "no_remote_changes": true,
+  "evidence_classes": [
+    "observed public",
+    "source-only",
+    "historical",
+    "inferred",
+    "proposed untested",
+    "unavailable"
+  ],
+  "open_seo": {
+    "status": "expired connection / UNAUTHORIZED",
+    "reconnected": false,
+    "paid_calls": 0,
+    "property_metrics_obtained": false
+  },
+  "files": [
+    {
+      "name": "browser-observations.json",
+      "bytes": 1501,
+      "sha256": "55b8019038ac665a392a28f7dada44284197c903a74df645c30c31d10725f42f"
+    },
+    {
+      "name": "catalog-source-metadata.json",
+      "bytes": 714,
+      "sha256": "abce3ab3328574777a7931f4981be43faa1b730a4b7144a97ab4101c6588181b"
+    },
+    {
+      "name": "public-http-observations.json",
+      "bytes": 14911,
+      "sha256": "503a786da0e0b49ceac95e33b3e94546a0070ef20605993066f85e0ce320a909"
+    },
+    {
+      "name": "reference-links.json",
+      "bytes": 5041,
+      "sha256": "3873577e1a88eebf326c4a59810088097272a7f4d578af5246a0e61959770faa"
+    },
+    {
+      "name": "seo-skill-execution.md",
+      "bytes": 11029,
+      "sha256": "40e8b2e504a9c5daf5c504964c9b4269468de1a9ef023bbf9083ea7c20738c72"
+    },
+    {
+      "name": "skill-early-manifest.json",
+      "bytes": 3538,
+      "sha256": "d0eb178bd7543c1baff4e96a4c9394d337f304c5435cf507b0038ebcd38ae5e3"
+    },
+    {
+      "name": "skill-early-observations.json",
+      "bytes": 2130,
+      "sha256": "7367bc0aa5c06d73ec728cd3e0103afa44b25b9268430898efdf0d9d6aaeb7ed"
+    },
+    {
+      "name": "skill-early-relationships.json",
+      "bytes": 907,
+      "sha256": "2c1f56c40be92229d35574fff2fb94ca8dc5bc35322fcb7202f63dce1e2ec50e"
+    },
+    {
+      "name": "skill-late-manifest.json",
+      "bytes": 12955,
+      "sha256": "eaa618e9b6b9dd5f88d703ac825c40a269626258607f9c1af6347e1914ba9eda"
+    },
+    {
+      "name": "skill-late-observations.json",
+      "bytes": 11452,
+      "sha256": "0b05b5d2f29c4e9588a25a682a81e8e04358e7249c22174b7da2dc07782ff5e8"
+    },
+    {
+      "name": "skill-late-relationships.json",
+      "bytes": 352,
+      "sha256": "4bea28d037d978ca4edac25d5a464a5bbf1031fecc3c0d9692d101b1e8e66caa"
+    },
+    {
+      "name": "source-html-counts.json",
+      "bytes": 2025,
+      "sha256": "b2a8718e33a4defdd7f13c9d6b8f118cac820149a59a63b6d6b148dd69e36337"
+    },
+    {
+      "name": "source-manifest.json",
+      "bytes": 34982,
+      "sha256": "fa0678457dc9f3db646031c6d6ebf92672900c6bc6ae4f69b8c958dad7be932e"
+    },
+    {
+      "name": "test-results.json",
+      "bytes": 687,
+      "sha256": "29b3c2564a707bf91c0bb8362e2d9067b1b57f67ad0e19282d196f6814613cb9"
+    }
+  ]
+}

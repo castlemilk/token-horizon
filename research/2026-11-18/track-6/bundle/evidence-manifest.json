@@ -1,0 +1,988 @@
+{
+  "title": "Token Horizon Track 6 evidence manifest",
+  "research_date": "2026-11-18",
+  "user_context": "Regular Pro Chat; read-only connected research; local isolated artifacts only",
+  "repository": {
+    "url": "https://github.com/castlemilk/token-horizon",
+    "branch": "main",
+    "commit": "b468206e9378c8d7a6788b67072494982e7de17d",
+    "commit_time_utc": "2026-11-18T07:35:19Z",
+    "tree_sha": "6de51943395eb99558045ee69a848bb5d63bec57",
+    "tree_entries": 2031,
+    "tree_truncated": false,
+    "head_recheck_matches_pin": true
+  },
+  "upstream_sources": {
+    "codex": {
+      "commit": "24e236514bebcef874c2d38ce5df26164aa50ca4",
+      "commit_time_utc": "2026-11-18T07:43:45Z"
+    },
+    "otel_genai": {
+      "commit": "d28355d28cbe9ff158ecf22d85f9e078e43f7b20",
+      "commit_time_utc": "2026-11-18T03:11:38Z",
+      "files": [
+        {
+          "url": "https://github.com/open-telemetry/semantic-conventions-genai/blob/d28355d28cbe9ff158ecf22d85f9e078e43f7b20/docs/gen-ai/README.md",
+          "blob_sha": "c8bd71de93034623c223cd2e2c9b3fcfa32303de"
+        },
+        {
+          "url": "https://github.com/open-telemetry/semantic-conventions-genai/blob/d28355d28cbe9ff158ecf22d85f9e078e43f7b20/README.md",
+          "blob_sha": "dda914c607726f574e267dee43eceb467257c975"
+        },
+        {
+          "url": "https://github.com/open-telemetry/semantic-conventions-genai/blob/d28355d28cbe9ff158ecf22d85f9e078e43f7b20/docs/gen-ai/gen-ai-token-metrics.md",
+          "blob_sha": "5fc2e1e7f5acf6422cc82882427186c754a40d0a"
+        }
+      ]
+    }
+  },
+  "public_product": {
+    "canonical_url": "https://token-horizon.dev/",
+    "authority": "README at pinned repository revision",
+    "landing_text": "retrieved",
+    "docs_text": "retrieved",
+    "models_page": "shell retrieved; rendered interactive catalog not tested",
+    "catalog_observation": {
+      "operation": "read-only search_models",
+      "query": "gpt-5",
+      "limit": 2,
+      "catalog_total": 2074,
+      "generated_at": 1793821960,
+      "generated_at_utc": "2026-11-04T19:52:40Z",
+      "scope": "published public catalog only; no account/profile/usage reads"
+    },
+    "deployment_commit": "not verified",
+    "retrieval_gaps": [
+      "https://token-horizon.dev/api/health",
+      "https://token-horizon.dev/blog/pricing-evidence"
+    ]
+  },
+  "issue_snapshot": {
+    "ordinary_issues": 31,
+    "ordinary_open": 31,
+    "ordinary_closed": 0,
+    "pulls": 15,
+    "merged": 12,
+    "open_draft": 2,
+    "closed_unmerged": 1,
+    "inventory_file": "issue-inventory.json"
+  },
+  "privacy": {
+    "data": "synthetic numeric counters and opaque synthetic IDs only",
+    "private_usage_accessed": false,
+    "secrets_included": false,
+    "raw_prompt_or_response_included": false
+  },
+  "validation": {
+    "application_tests_run": false,
+    "application_runtime_measured": false,
+    "specification_tests_file": "spec_test_results.json",
+    "sql_probe_file": "daemon-sql-synthetic-results.json",
+    "wireframes": "proposed synthetic static SVGs, rendered and inspected",
+    "specification_tests": 39,
+    "specification_passed": 39,
+    "fixture_schema": "proposal-fixtures-v3",
+    "sql_probe_schema": "Minimal synthetic schema, exact relevant source query expressions; in-memory SQLite only",
+    "html_structure": {
+      "sections": 16,
+      "embedded_svg_images": 3,
+      "external_scripts_or_assets": 0,
+      "responsive_render_verified": false,
+      "render_gap": "Local Chromium could not start under process restrictions; SVG proposals separately rendered and visually inspected"
+    }
+  },
+  "source_files": [
+    {
+      "id": "S1",
+      "path": "clients/macos/Sources/TokenHorizon/Usage/UsageEngine.swift",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/clients/macos/Sources/TokenHorizon/Usage/UsageEngine.swift",
+      "location": "CodexWatermark 243\u2013250; Codex scan 2091\u20132230; parser 2278\u20132310; additive parser 2445\u20132535; Gemini fallback 2576\u20132582; cost estimator 2585\u20132644",
+      "blob_sha": "d8bbc2f0439da7bc7ffcbf00314be74ee0682202",
+      "inspection": "source-only at pinned commit"
+    },
+    {
+      "id": "S2",
+      "path": "clients/macos/Sources/TokenHorizon/Usage/Models.swift",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/clients/macos/Sources/TokenHorizon/Usage/Models.swift",
+      "location": "Token breakdown, nullable/defaulted fields and model context capacity",
+      "blob_sha": "9c83b06f542c8d9b19f185862a0c8364c3809cc4",
+      "inspection": "source-only at pinned commit"
+    },
+    {
+      "id": "S3",
+      "path": "clients/macos/Tests/TokenHorizonPerfTests/Unit/JsonlParserTests.swift",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/clients/macos/Tests/TokenHorizonPerfTests/Unit/JsonlParserTests.swift",
+      "location": "Known generic double-count fixture 30\u201348 and 70\u201376",
+      "blob_sha": "024ca0cad027d2cdda2370649ec31deeb22df650",
+      "inspection": "source-only at pinned commit"
+    },
+    {
+      "id": "S4",
+      "path": "gateway/usage.go",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/gateway/usage.go",
+      "location": "Request/session extraction 75\u2013127; OpenAI 165\u2013240; Anthropic 245\u2013295; Ollama 297\u2013329; Gemini 332\u2013364",
+      "blob_sha": "55ca0ad1b57c4f0fc0fa5be1d0eda4cb45805ed7",
+      "inspection": "source-only at pinned commit"
+    },
+    {
+      "id": "S5",
+      "path": "gateway/trace.go",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/gateway/trace.go",
+      "location": "Trace schema 131\u2013188; throughput 190\u2013205; cache ratio 208\u2013221",
+      "blob_sha": "4836612409dc6e7e8f075e78048a368dd1c1a682",
+      "inspection": "source-only at pinned commit"
+    },
+    {
+      "id": "S6",
+      "path": "gateway/stream_metadata.go",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/gateway/stream_metadata.go",
+      "location": "Bounded stream metadata observer and latest event storage; companion stream_metadata_test.go 142\u2013156",
+      "blob_sha": "ebf21638f6773315761fd05e6e318055c84c1d74",
+      "inspection": "source-only at pinned commit"
+    },
+    {
+      "id": "S7",
+      "path": "gateway/proxy.go",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/gateway/proxy.go",
+      "location": "Streaming observation and finalization 214\u2013315; first-body-byte timing 249\u2013251",
+      "blob_sha": "4ee767a771556737f9bee7b4facaf717ac3f4ac0",
+      "inspection": "source-only at pinned commit"
+    },
+    {
+      "id": "S8",
+      "path": "gateway/config.go",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/gateway/config.go",
+      "location": "CaptureBodies opt-in and bounded storage configuration",
+      "blob_sha": "194e2825945e491d5c538931ab52ac2dd41a02c0",
+      "inspection": "source-only at pinned commit"
+    },
+    {
+      "id": "S9",
+      "path": "clients/macos/Sources/TokenHorizon/Gateway/TraceModels.swift",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/clients/macos/Sources/TokenHorizon/Gateway/TraceModels.swift",
+      "location": "Native GatewayTrace fields 23\u201351",
+      "blob_sha": "ca699f7d4cadbfe16b205460b5c4ca6bf1f90014",
+      "inspection": "source-only at pinned commit"
+    },
+    {
+      "id": "S10",
+      "path": "clients/macos/Sources/TokenHorizon/Gateway/TraceStore.swift",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/clients/macos/Sources/TokenHorizon/Gateway/TraceStore.swift",
+      "location": "Read-time cost formula 91\u201399",
+      "blob_sha": "6777a2e1b9693cd136ad7c9634084fcfa2f5df4d",
+      "inspection": "source-only at pinned commit"
+    },
+    {
+      "id": "S11",
+      "path": "clients/macos/Sources/TokenHorizon/UI/TracesViews.swift",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/clients/macos/Sources/TokenHorizon/UI/TracesViews.swift",
+      "location": "Aggregate default zero 99\u2013104; list 248\u2013251; detail 509",
+      "blob_sha": "ed5f5881fc6a5e974a7b1a3cad76ade334f92069",
+      "inspection": "source-only at pinned commit"
+    },
+    {
+      "id": "S12",
+      "path": "daemons/go/internal/usage/types.go",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/daemons/go/internal/usage/types.go",
+      "location": "Exclusive token DTO 3\u201319; Event 23\u201353; file annotations",
+      "blob_sha": "4fe7f458950934d6ba01cc1adbd3b63d38f25bf3",
+      "inspection": "source-only at pinned commit"
+    },
+    {
+      "id": "S13",
+      "path": "daemons/go/internal/usage/usageparse.go",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/daemons/go/internal/usage/usageparse.go",
+      "location": "Provider numeric parsing and inclusive-to-net normalization",
+      "blob_sha": "daf5d30d38c6adedbfd217986a628fe573468113",
+      "inspection": "source-only at pinned commit"
+    },
+    {
+      "id": "S14",
+      "path": "daemons/go/internal/capture/meter/meter.go",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/daemons/go/internal/capture/meter/meter.go",
+      "location": "Buffer limits, finalization, event construction and input-derived context",
+      "blob_sha": "1da227323c98c3476011af1f65a8a0f911808abf",
+      "inspection": "source-only at pinned commit"
+    },
+    {
+      "id": "S15",
+      "path": "daemons/go/internal/capture/files/codex.go",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/daemons/go/internal/capture/files/codex.go",
+      "location": "Cumulative delta and normalized net token accounting 130\u2013149",
+      "blob_sha": "9beb62874df1d007df75d24400682688b044d2a4",
+      "inspection": "source-only at pinned commit"
+    },
+    {
+      "id": "S16",
+      "path": "daemons/go/internal/capture/files/backfill.go",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/daemons/go/internal/capture/files/backfill.go",
+      "location": "Aggregate import scope and historical attribution limitations",
+      "blob_sha": "e82464f9e924317cef3bc6d38465fe524f2db103",
+      "inspection": "source-only at pinned commit"
+    },
+    {
+      "id": "S17",
+      "path": "daemons/go/internal/store/query.go",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/daemons/go/internal/store/query.go",
+      "location": "Annotation join 16\u201320; equivalent-cost projection and interval pricing; nullable weighted averages and filters",
+      "blob_sha": "55d4021627fff84c7772752fdb42614d8ef1484c",
+      "inspection": "source-only at pinned commit"
+    },
+    {
+      "id": "S18",
+      "path": "daemons/go/internal/store/schema.go",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/daemons/go/internal/store/schema.go",
+      "location": "Usage/annotation/pricing schema and valid_from",
+      "blob_sha": "5da937f9dcaae10ed6b582aa60c7ff5428bcb6ab",
+      "inspection": "source-only at pinned commit"
+    },
+    {
+      "id": "S19",
+      "path": "daemons/go/internal/providers/catalog/catalog.go",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/daemons/go/internal/providers/catalog/catalog.go",
+      "location": "Catalog model rate lookup and provider/plan assumptions; historical SQL interval population not established",
+      "blob_sha": "0640bec99999048583c669eb4e38045f4161d260",
+      "inspection": "source-only at pinned commit"
+    },
+    {
+      "id": "S20",
+      "path": "daemons/go/internal/platform/config.go",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/daemons/go/internal/platform/config.go",
+      "location": "TraceCaptureEnabled default 50\u201378 and methodology/consent settings",
+      "blob_sha": "05d58dbf65711defa30856101699c023b8c061a0",
+      "inspection": "source-only at pinned commit"
+    },
+    {
+      "id": "S21",
+      "path": "docs/sync-consistency.md",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/docs/sync-consistency.md",
+      "location": "Existing dated snapshot, correction, idempotence, ownership and ETag contract",
+      "blob_sha": "682656471bc84ecbaf826daaaa17d628faee98b4",
+      "inspection": "source-only at pinned commit"
+    },
+    {
+      "id": "S22",
+      "path": "DESIGN.md",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/DESIGN.md",
+      "location": "Quiet precision palette and measurement/evidence design principles",
+      "blob_sha": "6f9d76eeb6e8bb394d7751661ab0aa9b8901dd76",
+      "inspection": "source-only at pinned commit"
+    },
+    {
+      "id": "S23",
+      "path": "daemons/go/internal/store/trace.go",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/daemons/go/internal/store/trace.go",
+      "location": "Trace row/age retention implementation",
+      "blob_sha": "9c460c018de076d6070e2bcf12ee13386fcaba46",
+      "inspection": "source-only at pinned commit"
+    },
+    {
+      "id": "S24",
+      "path": "gateway/store.go",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/gateway/store.go",
+      "location": "Trace disk retention and bounded in-memory storage",
+      "blob_sha": "6259afbfaf4964347652dbad4683a511098627c9",
+      "inspection": "source-only at pinned commit"
+    }
+  ],
+  "references": [
+    {
+      "id": "S1",
+      "title": "clients/macos/Sources/TokenHorizon/Usage/UsageEngine.swift \u2014 CodexWatermark 243\u2013250; Codex scan 2091\u20132230; parser 2278\u20132310; additive parser 2445\u20132535; Gemini fallback 2576\u20132582; cost estimator 2585\u20132644",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/clients/macos/Sources/TokenHorizon/Usage/UsageEngine.swift"
+    },
+    {
+      "id": "S2",
+      "title": "clients/macos/Sources/TokenHorizon/Usage/Models.swift \u2014 Token breakdown, nullable/defaulted fields and model context capacity",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/clients/macos/Sources/TokenHorizon/Usage/Models.swift"
+    },
+    {
+      "id": "S3",
+      "title": "clients/macos/Tests/TokenHorizonPerfTests/Unit/JsonlParserTests.swift \u2014 Known generic double-count fixture 30\u201348 and 70\u201376",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/clients/macos/Tests/TokenHorizonPerfTests/Unit/JsonlParserTests.swift"
+    },
+    {
+      "id": "S4",
+      "title": "gateway/usage.go \u2014 Request/session extraction 75\u2013127; OpenAI 165\u2013240; Anthropic 245\u2013295; Ollama 297\u2013329; Gemini 332\u2013364",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/gateway/usage.go"
+    },
+    {
+      "id": "S5",
+      "title": "gateway/trace.go \u2014 Trace schema 131\u2013188; throughput 190\u2013205; cache ratio 208\u2013221",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/gateway/trace.go"
+    },
+    {
+      "id": "S6",
+      "title": "gateway/stream_metadata.go \u2014 Bounded stream metadata observer and latest event storage; companion stream_metadata_test.go 142\u2013156",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/gateway/stream_metadata.go"
+    },
+    {
+      "id": "S7",
+      "title": "gateway/proxy.go \u2014 Streaming observation and finalization 214\u2013315; first-body-byte timing 249\u2013251",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/gateway/proxy.go"
+    },
+    {
+      "id": "S8",
+      "title": "gateway/config.go \u2014 CaptureBodies opt-in and bounded storage configuration",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/gateway/config.go"
+    },
+    {
+      "id": "S9",
+      "title": "clients/macos/Sources/TokenHorizon/Gateway/TraceModels.swift \u2014 Native GatewayTrace fields 23\u201351",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/clients/macos/Sources/TokenHorizon/Gateway/TraceModels.swift"
+    },
+    {
+      "id": "S10",
+      "title": "clients/macos/Sources/TokenHorizon/Gateway/TraceStore.swift \u2014 Read-time cost formula 91\u201399",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/clients/macos/Sources/TokenHorizon/Gateway/TraceStore.swift"
+    },
+    {
+      "id": "S11",
+      "title": "clients/macos/Sources/TokenHorizon/UI/TracesViews.swift \u2014 Aggregate default zero 99\u2013104; list 248\u2013251; detail 509",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/clients/macos/Sources/TokenHorizon/UI/TracesViews.swift"
+    },
+    {
+      "id": "S12",
+      "title": "daemons/go/internal/usage/types.go \u2014 Exclusive token DTO 3\u201319; Event 23\u201353; file annotations",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/daemons/go/internal/usage/types.go"
+    },
+    {
+      "id": "S13",
+      "title": "daemons/go/internal/usage/usageparse.go \u2014 Provider numeric parsing and inclusive-to-net normalization",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/daemons/go/internal/usage/usageparse.go"
+    },
+    {
+      "id": "S14",
+      "title": "daemons/go/internal/capture/meter/meter.go \u2014 Buffer limits, finalization, event construction and input-derived context",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/daemons/go/internal/capture/meter/meter.go"
+    },
+    {
+      "id": "S15",
+      "title": "daemons/go/internal/capture/files/codex.go \u2014 Cumulative delta and normalized net token accounting 130\u2013149",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/daemons/go/internal/capture/files/codex.go"
+    },
+    {
+      "id": "S16",
+      "title": "daemons/go/internal/capture/files/backfill.go \u2014 Aggregate import scope and historical attribution limitations",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/daemons/go/internal/capture/files/backfill.go"
+    },
+    {
+      "id": "S17",
+      "title": "daemons/go/internal/store/query.go \u2014 Annotation join 16\u201320; equivalent-cost projection and interval pricing; nullable weighted averages and filters",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/daemons/go/internal/store/query.go"
+    },
+    {
+      "id": "S18",
+      "title": "daemons/go/internal/store/schema.go \u2014 Usage/annotation/pricing schema and valid_from",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/daemons/go/internal/store/schema.go"
+    },
+    {
+      "id": "S19",
+      "title": "daemons/go/internal/providers/catalog/catalog.go \u2014 model rate lookup; historical interval population not established",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/daemons/go/internal/providers/catalog/catalog.go"
+    },
+    {
+      "id": "S20",
+      "title": "daemons/go/internal/platform/config.go \u2014 TraceCaptureEnabled default 50\u201378 and methodology/consent settings",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/daemons/go/internal/platform/config.go"
+    },
+    {
+      "id": "S21",
+      "title": "docs/sync-consistency.md \u2014 Existing dated snapshot, correction, idempotence, ownership and ETag contract",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/docs/sync-consistency.md"
+    },
+    {
+      "id": "S22",
+      "title": "DESIGN.md \u2014 Quiet precision palette and measurement/evidence design principles",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/DESIGN.md"
+    },
+    {
+      "id": "S23",
+      "title": "daemons/go/internal/store/trace.go \u2014 Trace row/age retention implementation",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/daemons/go/internal/store/trace.go"
+    },
+    {
+      "id": "S24",
+      "title": "gateway/store.go \u2014 Trace disk retention and bounded in-memory storage",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/gateway/store.go"
+    },
+    {
+      "id": "D1",
+      "title": "OpenAI prompt caching",
+      "url": "https://developers.openai.com/api/docs/guides/prompt-caching",
+      "retrieved_date": "2026-11-18",
+      "source_type": "official provider documentation"
+    },
+    {
+      "id": "D2",
+      "title": "OpenAI Responses API reference",
+      "url": "https://developers.openai.com/api/reference/resources/responses/methods/create",
+      "retrieved_date": "2026-11-18",
+      "source_type": "official provider documentation"
+    },
+    {
+      "id": "D3",
+      "title": "OpenAI Chat Completions reference",
+      "url": "https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create",
+      "retrieved_date": "2026-11-18",
+      "source_type": "official provider documentation"
+    },
+    {
+      "id": "D4",
+      "title": "Claude prompt caching",
+      "url": "https://platform.claude.com/docs/en/build-with-claude/prompt-caching",
+      "retrieved_date": "2026-11-18",
+      "source_type": "official provider documentation"
+    },
+    {
+      "id": "D5",
+      "title": "Claude Messages types / output token details",
+      "url": "https://platform.claude.com/docs/en/api/typescript/messages",
+      "retrieved_date": "2026-11-18",
+      "source_type": "official provider documentation"
+    },
+    {
+      "id": "D6",
+      "title": "Claude streaming",
+      "url": "https://platform.claude.com/docs/en/build-with-claude/streaming.md",
+      "retrieved_date": "2026-11-18",
+      "source_type": "official provider documentation"
+    },
+    {
+      "id": "D7",
+      "title": "Claude on-demand compaction",
+      "url": "https://platform.claude.com/docs/en/build-with-claude/compaction-on-demand",
+      "retrieved_date": "2026-11-18",
+      "source_type": "official provider documentation"
+    },
+    {
+      "id": "D8",
+      "title": "Gemini GenerateContent usage reference",
+      "url": "https://aistudio.google.com/api-reference/generate-content",
+      "retrieved_date": "2026-11-18",
+      "source_type": "official provider documentation"
+    },
+    {
+      "id": "D9",
+      "title": "Gemini Interactions API reference",
+      "url": "https://aistudio.google.com/api-reference/interactions-api",
+      "retrieved_date": "2026-11-18",
+      "source_type": "official provider documentation"
+    },
+    {
+      "id": "D10",
+      "title": "Ollama usage",
+      "url": "https://docs.ollama.com/api/usage",
+      "retrieved_date": "2026-11-18",
+      "source_type": "official provider documentation"
+    },
+    {
+      "id": "D11",
+      "title": "Ollama Chat API",
+      "url": "https://docs.ollama.com/api/chat",
+      "retrieved_date": "2026-11-18",
+      "source_type": "official provider documentation"
+    },
+    {
+      "id": "D12",
+      "title": "DeepSeek Chat completion reference",
+      "url": "https://api-docs.deepseek.com/api/create-chat-completion/",
+      "retrieved_date": "2026-11-18",
+      "source_type": "official provider documentation"
+    },
+    {
+      "id": "D13",
+      "title": "xAI cache usage/pricing",
+      "url": "https://docs.x.ai/developers/advanced-api-usage/prompt-caching/usage-and-pricing",
+      "retrieved_date": "2026-11-18",
+      "source_type": "official provider documentation"
+    },
+    {
+      "id": "D14",
+      "title": "OpenAI reasoning guide",
+      "url": "https://developers.openai.com/api/docs/guides/reasoning",
+      "retrieved_date": "2026-11-18",
+      "source_type": "official provider documentation"
+    },
+    {
+      "id": "D15",
+      "title": "OpenAI GPT-5.4 model",
+      "url": "https://developers.openai.com/api/docs/models/gpt-5.4",
+      "retrieved_date": "2026-11-18",
+      "source_type": "official provider documentation"
+    },
+    {
+      "id": "D16",
+      "title": "Claude Sonnet 4.6 model",
+      "url": "https://platform.claude.com/docs/en/models/sonnet-4-6/overview",
+      "retrieved_date": "2026-11-18",
+      "source_type": "official provider documentation"
+    },
+    {
+      "id": "D17",
+      "title": "Gemini 3.8 Flash model",
+      "url": "https://aistudio.google.com/docs/models/gemini-3.8-flash",
+      "retrieved_date": "2026-11-18",
+      "source_type": "official provider documentation"
+    },
+    {
+      "id": "D18",
+      "title": "OpenAI conversation state",
+      "url": "https://developers.openai.com/api/docs/guides/conversation-state",
+      "retrieved_date": "2026-11-18",
+      "source_type": "official provider documentation"
+    },
+    {
+      "id": "D19",
+      "title": "OpenAI compact endpoint",
+      "url": "https://developers.openai.com/api/reference/resources/responses/methods/compact",
+      "retrieved_date": "2026-11-18",
+      "source_type": "official provider documentation"
+    },
+    {
+      "id": "D20",
+      "title": "Gemini workflow streaming",
+      "url": "https://aistudio.google.com/docs/streaming",
+      "retrieved_date": "2026-11-18",
+      "source_type": "official provider documentation"
+    },
+    {
+      "id": "I1",
+      "title": "All-state issue collection; page 2 empty; full inventory supplied",
+      "url": "https://api.github.com/repos/castlemilk/token-horizon/issues?state=all&per_page=100&page=1"
+    },
+    {
+      "id": "I2",
+      "title": "#12 Research preservation roadmap (11 Nov 2026)",
+      "url": "https://github.com/castlemilk/token-horizon/issues/12"
+    },
+    {
+      "id": "I3",
+      "title": "#13 Truthful observability (11 Nov 2026)",
+      "url": "https://github.com/castlemilk/token-horizon/issues/13"
+    },
+    {
+      "id": "I4",
+      "title": "#14 Routing simulation dependency",
+      "url": "https://github.com/castlemilk/token-horizon/issues/14"
+    },
+    {
+      "id": "I5",
+      "title": "#15 Local host/runtime evidence dependency",
+      "url": "https://github.com/castlemilk/token-horizon/issues/15"
+    },
+    {
+      "id": "I6",
+      "title": "#16 Reviewed handoff/context provenance",
+      "url": "https://github.com/castlemilk/token-horizon/issues/16"
+    },
+    {
+      "id": "I7",
+      "title": "#19 Pricing provenance; 18 Nov comment also inspected",
+      "url": "https://github.com/castlemilk/token-horizon/issues/19"
+    },
+    {
+      "id": "I8",
+      "title": "#41 Catalog publication lineage",
+      "url": "https://github.com/castlemilk/token-horizon/issues/41"
+    },
+    {
+      "id": "I9",
+      "title": "#39 Hermetic test boundaries",
+      "url": "https://github.com/castlemilk/token-horizon/issues/39"
+    },
+    {
+      "id": "I10",
+      "title": "Merged PR #4 Reliable metadata traces (7 Oct 2026)",
+      "url": "https://github.com/castlemilk/token-horizon/pull/4"
+    },
+    {
+      "id": "I11",
+      "title": "Merged PR #5 Cost provenance labels (7 Oct 2026)",
+      "url": "https://github.com/castlemilk/token-horizon/pull/5"
+    },
+    {
+      "id": "I12",
+      "title": "Merged PR #7 Hosted plan model-count limit",
+      "url": "https://github.com/castlemilk/token-horizon/pull/7"
+    },
+    {
+      "id": "I13",
+      "title": "Merged PR #8 Managed ownership boundaries",
+      "url": "https://github.com/castlemilk/token-horizon/pull/8"
+    },
+    {
+      "id": "I14",
+      "title": "Merged PR #11 Durable refresh rotation",
+      "url": "https://github.com/castlemilk/token-horizon/pull/11"
+    },
+    {
+      "id": "I15",
+      "title": "Merged PR #17 Benchmark report (11 Nov 2026)",
+      "url": "https://github.com/castlemilk/token-horizon/pull/17"
+    },
+    {
+      "id": "I16",
+      "title": "#26 Authoritative test manifest",
+      "url": "https://github.com/castlemilk/token-horizon/issues/26"
+    },
+    {
+      "id": "I17",
+      "title": "Draft PR #25 Homepage opt-in GA4, separate scope",
+      "url": "https://github.com/castlemilk/token-horizon/pull/25"
+    },
+    {
+      "id": "I18",
+      "title": "PR #24 Closed unmerged predecessor",
+      "url": "https://github.com/castlemilk/token-horizon/pull/24"
+    },
+    {
+      "id": "C1",
+      "title": "Official Codex Responses usage mapping (123\u2013162)",
+      "url": "https://github.com/openai/codex/blob/24e236514bebcef874c2d38ce5df26164aa50ca4/codex-rs/codex-api/src/sse/responses.rs"
+    },
+    {
+      "id": "C2",
+      "title": "Official Codex protocol: per-response identity and context metadata (2576\u20132662)",
+      "url": "https://github.com/openai/codex/blob/24e236514bebcef874c2d38ce5df26164aa50ca4/codex-rs/protocol/src/protocol.rs"
+    },
+    {
+      "id": "O1",
+      "title": "GenAI conventions root README at inspected pin",
+      "url": "https://github.com/open-telemetry/semantic-conventions-genai/blob/d28355d28cbe9ff158ecf22d85f9e078e43f7b20/README.md"
+    },
+    {
+      "id": "O2",
+      "title": "GenAI conventions Development status",
+      "url": "https://github.com/open-telemetry/semantic-conventions-genai/blob/d28355d28cbe9ff158ecf22d85f9e078e43f7b20/docs/gen-ai/README.md"
+    },
+    {
+      "id": "O3",
+      "title": "GenAI token metrics at inspected pin",
+      "url": "https://github.com/open-telemetry/semantic-conventions-genai/blob/d28355d28cbe9ff158ecf22d85f9e078e43f7b20/docs/gen-ai/gen-ai-token-metrics.md"
+    },
+    {
+      "id": "P1",
+      "title": "Current public product landing page",
+      "url": "https://token-horizon.dev/"
+    },
+    {
+      "id": "P2",
+      "title": "Current public documentation",
+      "url": "https://token-horizon.dev/docs/"
+    },
+    {
+      "id": "P3",
+      "title": "Public catalog connector observation; see evidence manifest",
+      "url": "evidence-manifest.json"
+    },
+    {
+      "id": "P4",
+      "title": "README identifying the public product",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/README.md"
+    }
+  ],
+  "inspected_file_index": [
+    {
+      "path": "DESIGN.md",
+      "blob_sha": "6f9d76eeb6e8bb394d7751661ab0aa9b8901dd76",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/DESIGN.md"
+    },
+    {
+      "path": "AGENTS.md",
+      "blob_sha": "fbdce308862d2c14868166e20f0303e80671d2be",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/AGENTS.md"
+    },
+    {
+      "path": "gateway/README.md",
+      "blob_sha": "88b8301552bf0d06ee4add71807de513be6eae05",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/gateway/README.md"
+    },
+    {
+      "path": "gateway/main.go",
+      "blob_sha": "82e06a8e6b14efb04846720da90f86017021ae76",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/gateway/main.go"
+    },
+    {
+      "path": "gateway/usage_test.go",
+      "blob_sha": "0e732bbcbf24d763fd7da12fb6054665d549c99a",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/gateway/usage_test.go"
+    },
+    {
+      "path": "gateway/observability_test.go",
+      "blob_sha": "ded024c8fb41d281017e4d93fc8f992e6b341cbc",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/gateway/observability_test.go"
+    },
+    {
+      "path": "gateway/go.mod",
+      "blob_sha": "6c8253a56f2ce019963c94ac0d8ae2b6ad0f4335",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/gateway/go.mod"
+    },
+    {
+      "path": "gateway/proxy.go",
+      "blob_sha": "4ee767a771556737f9bee7b4facaf717ac3f4ac0",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/gateway/proxy.go"
+    },
+    {
+      "path": "gateway/stream_metadata_test.go",
+      "blob_sha": "307002e942097bc8bc799ee64c6616c71ed0c89c",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/gateway/stream_metadata_test.go"
+    },
+    {
+      "path": "gateway/stream_metadata.go",
+      "blob_sha": "ebf21638f6773315761fd05e6e318055c84c1d74",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/gateway/stream_metadata.go"
+    },
+    {
+      "path": "gateway/proxy_test.go",
+      "blob_sha": "3d5801805e5f7a0adbda5e0dec594b5f6c123a78",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/gateway/proxy_test.go"
+    },
+    {
+      "path": "gateway/metrics.go",
+      "blob_sha": "2b7e8922c350402d92f78e81e40e68686651f5bb",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/gateway/metrics.go"
+    },
+    {
+      "path": "gateway/trace.go",
+      "blob_sha": "4836612409dc6e7e8f075e78048a368dd1c1a682",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/gateway/trace.go"
+    },
+    {
+      "path": "gateway/config.go",
+      "blob_sha": "194e2825945e491d5c538931ab52ac2dd41a02c0",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/gateway/config.go"
+    },
+    {
+      "path": "gateway/usage.go",
+      "blob_sha": "55ca0ad1b57c4f0fc0fa5be1d0eda4cb45805ed7",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/gateway/usage.go"
+    },
+    {
+      "path": "gateway/api.go",
+      "blob_sha": "2af0f18b58c2148412c1dae46768295fc0e29a0a",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/gateway/api.go"
+    },
+    {
+      "path": "gateway/infer.go",
+      "blob_sha": "0624a90a76009eb2bdbcc0b2a3e83358bbb4d2c3",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/gateway/infer.go"
+    },
+    {
+      "path": "gateway/store.go",
+      "blob_sha": "6259afbfaf4964347652dbad4683a511098627c9",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/gateway/store.go"
+    },
+    {
+      "path": "mcp/catalog.mjs",
+      "blob_sha": "03cfd02ccea53315e1b067e7b4148e3bbf09afea",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/mcp/catalog.mjs"
+    },
+    {
+      "path": "cloudflare/CONNECTOR.md",
+      "blob_sha": "45e346dce09140ada404c35ae09ca9f15f919388",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/cloudflare/CONNECTOR.md"
+    },
+    {
+      "path": "docs/sync-consistency.md",
+      "blob_sha": "682656471bc84ecbaf826daaaa17d628faee98b4",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/docs/sync-consistency.md"
+    },
+    {
+      "path": "clients/macos/Sources/TokenHorizon/UI/TracesViews.swift",
+      "blob_sha": "ed5f5881fc6a5e974a7b1a3cad76ade334f92069",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/clients/macos/Sources/TokenHorizon/UI/TracesViews.swift"
+    },
+    {
+      "path": "clients/macos/Sources/TokenHorizon/Gateway/TraceStore.swift",
+      "blob_sha": "6777a2e1b9693cd136ad7c9634084fcfa2f5df4d",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/clients/macos/Sources/TokenHorizon/Gateway/TraceStore.swift"
+    },
+    {
+      "path": "clients/macos/Sources/TokenHorizon/Gateway/TraceModels.swift",
+      "blob_sha": "ca699f7d4cadbfe16b205460b5c4ca6bf1f90014",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/clients/macos/Sources/TokenHorizon/Gateway/TraceModels.swift"
+    },
+    {
+      "path": "clients/macos/Sources/TokenHorizon/Catalog/ModelCatalog.swift",
+      "blob_sha": "0801bcb20befa55c8c484cd5e02c1405a8138409",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/clients/macos/Sources/TokenHorizon/Catalog/ModelCatalog.swift"
+    },
+    {
+      "path": "clients/macos/Sources/TokenHorizon/Catalog/ModelCatalogExport.swift",
+      "blob_sha": "fb433b2d3dd9421caf48ef568816183a45ffe3d2",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/clients/macos/Sources/TokenHorizon/Catalog/ModelCatalogExport.swift"
+    },
+    {
+      "path": "clients/macos/Sources/TokenHorizon/Usage/Models.swift",
+      "blob_sha": "9c83b06f542c8d9b19f185862a0c8364c3809cc4",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/clients/macos/Sources/TokenHorizon/Usage/Models.swift"
+    },
+    {
+      "path": "clients/macos/Sources/TokenHorizon/Usage/UsageEngine.swift",
+      "blob_sha": "d8bbc2f0439da7bc7ffcbf00314be74ee0682202",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/clients/macos/Sources/TokenHorizon/Usage/UsageEngine.swift"
+    },
+    {
+      "path": "clients/macos/Tests/TokenHorizonPerfTests/Unit/JsonlParserTests.swift",
+      "blob_sha": "024ca0cad027d2cdda2370649ec31deeb22df650",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/clients/macos/Tests/TokenHorizonPerfTests/Unit/JsonlParserTests.swift"
+    },
+    {
+      "path": "clients/macos/Tests/TokenHorizonPerfTests/Unit/TokenCountingAccuracyTests.swift",
+      "blob_sha": "ae7450f00fe5012a287a2ab1f7b11bf75e1db562",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/clients/macos/Tests/TokenHorizonPerfTests/Unit/TokenCountingAccuracyTests.swift"
+    },
+    {
+      "path": "daemons/go/internal/api/compat_extra.go",
+      "blob_sha": "3453840be8ca746b1e4aa4fb7fa262f30d295c22",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/daemons/go/internal/api/compat_extra.go"
+    },
+    {
+      "path": "daemons/go/internal/api/run.go",
+      "blob_sha": "82300f06f319462d8a0084deb9881127cd63e7a7",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/daemons/go/internal/api/run.go"
+    },
+    {
+      "path": "daemons/go/internal/api/api.go",
+      "blob_sha": "aabe8d8d5cebd4a7c947bb5e7930e5ae2f619d7a",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/daemons/go/internal/api/api.go"
+    },
+    {
+      "path": "daemons/go/internal/usage/canonical.go",
+      "blob_sha": "adf4f44d1d925bdb6400beced0c26f477b737b35",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/daemons/go/internal/usage/canonical.go"
+    },
+    {
+      "path": "daemons/go/internal/usage/usageparse.go",
+      "blob_sha": "daf5d30d38c6adedbfd217986a628fe573468113",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/daemons/go/internal/usage/usageparse.go"
+    },
+    {
+      "path": "daemons/go/internal/usage/trace.go",
+      "blob_sha": "df30f969c4cd99d0e9a284ab2b6efbc165ea3820",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/daemons/go/internal/usage/trace.go"
+    },
+    {
+      "path": "daemons/go/internal/usage/accountkey.go",
+      "blob_sha": "1aa46c640bdd4c3916999597d998ec983714c461",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/daemons/go/internal/usage/accountkey.go"
+    },
+    {
+      "path": "daemons/go/internal/usage/types.go",
+      "blob_sha": "4fe7f458950934d6ba01cc1adbd3b63d38f25bf3",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/daemons/go/internal/usage/types.go"
+    },
+    {
+      "path": "daemons/go/internal/store/schema.go",
+      "blob_sha": "5da937f9dcaae10ed6b582aa60c7ff5428bcb6ab",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/daemons/go/internal/store/schema.go"
+    },
+    {
+      "path": "daemons/go/internal/store/trace.go",
+      "blob_sha": "9c460c018de076d6070e2bcf12ee13386fcaba46",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/daemons/go/internal/store/trace.go"
+    },
+    {
+      "path": "daemons/go/internal/store/query.go",
+      "blob_sha": "55d4021627fff84c7772752fdb42614d8ef1484c",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/daemons/go/internal/store/query.go"
+    },
+    {
+      "path": "daemons/go/internal/store/store.go",
+      "blob_sha": "a80872db69b70544583ab598df972e56d4e0cfb7",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/daemons/go/internal/store/store.go"
+    },
+    {
+      "path": "daemons/go/internal/cloudsync/sync.go",
+      "blob_sha": "742faf887209711d4d12adb7be1e639014820eb8",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/daemons/go/internal/cloudsync/sync.go"
+    },
+    {
+      "path": "daemons/go/internal/platform/config.go",
+      "blob_sha": "05d58dbf65711defa30856101699c023b8c061a0",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/daemons/go/internal/platform/config.go"
+    },
+    {
+      "path": "daemons/go/internal/providers/catalog/catalog.go",
+      "blob_sha": "0640bec99999048583c669eb4e38045f4161d260",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/daemons/go/internal/providers/catalog/catalog.go"
+    },
+    {
+      "path": "daemons/go/cmd/token-horizon-daemon/main.go",
+      "blob_sha": "1f20748f58f4fa70eb2e422de6de5f3dce8c3466",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/daemons/go/cmd/token-horizon-daemon/main.go"
+    },
+    {
+      "path": "daemons/go/internal/capture/runtime/ledger.go",
+      "blob_sha": "0a66e954345772f6cfd07add723c4ac9cf4c5dc9",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/daemons/go/internal/capture/runtime/ledger.go"
+    },
+    {
+      "path": "daemons/go/internal/capture/meter/meter.go",
+      "blob_sha": "1da227323c98c3476011af1f65a8a0f911808abf",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/daemons/go/internal/capture/meter/meter.go"
+    },
+    {
+      "path": "daemons/go/internal/capture/meter/registry.go",
+      "blob_sha": "874ab90143dc6b3bbcd3fa5930c365a1677847e5",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/daemons/go/internal/capture/meter/registry.go"
+    },
+    {
+      "path": "daemons/go/internal/capture/meter/retry.go",
+      "blob_sha": "242bc9e30fc0fef01da5c7097dbbd2f00c88c3dc",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/daemons/go/internal/capture/meter/retry.go"
+    },
+    {
+      "path": "daemons/go/internal/capture/meter/sniff.go",
+      "blob_sha": "edb2946988689c4c7c54a2d778897c43b9e94c46",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/daemons/go/internal/capture/meter/sniff.go"
+    },
+    {
+      "path": "daemons/go/internal/capture/meter/anthropic.go",
+      "blob_sha": "e87c5a90de07f3ddef68842ad9d4244886c9efc1",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/daemons/go/internal/capture/meter/anthropic.go"
+    },
+    {
+      "path": "daemons/go/internal/capture/meter/openai.go",
+      "blob_sha": "d9acc9479778ee82914c80716895ae9cddf1fd45",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/daemons/go/internal/capture/meter/openai.go"
+    },
+    {
+      "path": "daemons/go/internal/capture/meter/trace.go",
+      "blob_sha": "afa0ce4cf5585c800dfca94d7cd1ffa9ab93582f",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/daemons/go/internal/capture/meter/trace.go"
+    },
+    {
+      "path": "daemons/go/internal/capture/meter/meter_test.go",
+      "blob_sha": "739bbdc5cd6e5bdbb71c40d5b15c34e67f2ce70f",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/daemons/go/internal/capture/meter/meter_test.go"
+    },
+    {
+      "path": "daemons/go/internal/capture/meter/gemini.go",
+      "blob_sha": "5bf0f8a712f7d32ed750749c4085d5a620e34e2c",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/daemons/go/internal/capture/meter/gemini.go"
+    },
+    {
+      "path": "daemons/go/internal/capture/meter/ollama.go",
+      "blob_sha": "4039a0d0ed2ab18c8b90c23038ffad12fe2006aa",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/daemons/go/internal/capture/meter/ollama.go"
+    },
+    {
+      "path": "daemons/go/internal/capture/files/codex.go",
+      "blob_sha": "9beb62874df1d007df75d24400682688b044d2a4",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/daemons/go/internal/capture/files/codex.go"
+    },
+    {
+      "path": "daemons/go/internal/capture/files/backfill.go",
+      "blob_sha": "e82464f9e924317cef3bc6d38465fe524f2db103",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/daemons/go/internal/capture/files/backfill.go"
+    },
+    {
+      "path": "daemons/go/internal/capture/files/consolidators.go",
+      "blob_sha": "4783e70ba994ee3534f78ec6388f4db14139e558",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/daemons/go/internal/capture/files/consolidators.go"
+    }
+  ],
+  "inspected_file_index_note": "Pinned source files copied and inspected across the read-only audit; highlights are in source_files. README and upstream producer/conventions were read separately through connected tools."
+}

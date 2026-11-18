@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "mode": "offline-sample-relations",
+  "sample_size": 18,
+  "duplicate_capture_urls": 0,
+  "pages": [],
+  "sitemaps": [],
+  "coverage": {
+    "target_fetches": "not-performed",
+    "canonical_selection_by_google": "not-tested",
+    "hreflang_language_validity": "not-tested",
+    "full_sitemap_population": "not-tested"
+  }
+}

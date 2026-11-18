@@ -1,0 +1,16 @@
+{
+  "scope": "Standalone in-memory SQLite reproduction of exact source SQL expressions at b468206e9378c8d7a6788b67072494982e7de17d; all rows synthetic; not a daemon execution or production measurement",
+  "weighted_average_with_one_missing_observation": {
+    "actual_gen_tps": 5.0,
+    "actual_context_occupancy": 50,
+    "observed_only_gen_tps": 10,
+    "observed_only_context": 100
+  },
+  "cross_vendor_request_id_annotation_join": {
+    "row": "synthetic-a",
+    "joined_product": "synthetic-foreign-tool",
+    "event_effective_cost": 2.0,
+    "aggregate_raw_cost": 0.0
+  },
+  "product_filter_without_annotation_join": "no such column: fa.product"
+}

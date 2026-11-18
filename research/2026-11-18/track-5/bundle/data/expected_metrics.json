@@ -1,0 +1,98 @@
+{
+  "synthetic": true,
+  "status": "illustrative oracle expectations; not production measurements",
+  "schema_version": "track5-metric-v1",
+  "tenant_id": "tenant_demo_orion",
+  "range": {
+    "from_inclusive": "2026-11-11T00:00:00Z",
+    "to_exclusive": "2026-11-18T00:00:00Z",
+    "zone": "UTC"
+  },
+  "initial": {
+    "as_of": "2026-11-18T00:00:00Z",
+    "unique_requests": 28,
+    "display_tokens": 2660000,
+    "estimated_metered_usd": "23.60",
+    "provider_reported_usd": "36.25",
+    "visible_known_cost_rows": 18
+  },
+  "latest": {
+    "as_of": "2026-11-18T06:00:00Z",
+    "unique_requests": 29,
+    "display_tokens": 2960000,
+    "input_tokens": 2220000,
+    "output_tokens": 740000,
+    "estimated_metered_usd": "27.60",
+    "provider_reported_usd": "36.25",
+    "known_zero_usd": "0.00",
+    "visible_known_cost_rows": 19,
+    "visible_known_cost_denominator": 29,
+    "estimated_metered_token_denominator": 870000,
+    "provider_reported_token_denominator": 290000,
+    "known_zero_token_denominator": 750000,
+    "estimated_metered_rows": 9,
+    "provider_reported_rows": 5,
+    "unknown_rows": 5,
+    "withheld_rows": 5,
+    "known_zero_rows": 5,
+    "distinct_sessions": 12,
+    "observed_actors": 6,
+    "joined_members": 8,
+    "published_profiles": 6,
+    "estimated_usd_per_million_covered_tokens": "31.72413793",
+    "reported_usd_per_million_covered_tokens": "125.00000000",
+    "visible_known_cost_row_percentage": "65.51724138",
+    "lyra_tokens": 2240000,
+    "summed_crew_contributions_tokens": 5200000,
+    "unique_tenant_tokens": 2960000
+  },
+  "daily_latest": {
+    "2026-11-11": {
+      "tokens": 210000,
+      "status": "complete"
+    },
+    "2026-11-12": {
+      "tokens": 410000,
+      "status": "complete"
+    },
+    "2026-11-13": {
+      "tokens": 450000,
+      "status": "partial"
+    },
+    "2026-11-14": {
+      "tokens": null,
+      "status": "unknown"
+    },
+    "2026-11-15": {
+      "tokens": 0,
+      "status": "complete"
+    },
+    "2026-11-16": {
+      "tokens": 840000,
+      "status": "complete"
+    },
+    "2026-11-17": {
+      "tokens": 1050000,
+      "status": "partial"
+    }
+  },
+  "delivery_checks": {
+    "physical_rows": 32,
+    "tenant_rows_including_retries_and_old_revisions": 31,
+    "duplicate_delivery_rows": 1,
+    "superseded_revision_rows": 1,
+    "other_tenant_tokens": 999999
+  },
+  "privacy": {
+    "k": 5,
+    "all_six_actor_aggregate": "visible",
+    "four_actor_subset": "suppressed",
+    "five_of_six_complement_attack": "suppressed"
+  },
+  "notes": [
+    "USD estimates, provider-reported amounts, and zero provider charges are separate bases; there is no asserted invoice total.",
+    "All token examples are simple input+output solely for deterministic tests; detailed production semantics belong to Track 6.",
+    "Crew totals are overlapping full-history contributions and must not be added as unique tenant use.",
+    "The legacy cost_basis field is a simplified fixture scenario discriminator. Separate cost_availability and cost_measurement_basis fields express the proposed distinction. u05 has a known-zero amount but unresolved measurement basis (null), so its rows count in visible-amount coverage and in neither basis-specific rate denominator. A zero with verified reported/estimated basis must enter that basis denominator."
+  ]
+}

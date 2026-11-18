@@ -1,0 +1,320 @@
+{
+  "repository": "castlemilk/token-horizon",
+  "branch": "main",
+  "commit": "b468206e9378c8d7a6788b67072494982e7de17d",
+  "commit_timestamp": "2026-11-18T07:35:19Z",
+  "inspection_date": "2026-11-18",
+  "method": "Read-only connected GitHub file reads at exact commit; targeted source/context audit, not exhaustive correctness certification",
+  "source_files_count": 50,
+  "raw_source_copies_in_package": false,
+  "files": [
+    {
+      "path": "AGENTS.md",
+      "sha256": "f4c4f946c52b07f348cdafab3716db91b3773e1f317a947674978642a28c80c9",
+      "bytes": 63315,
+      "blob_sha": "fbdce308862d2c14868166e20f0303e80671d2be",
+      "line_count": 262,
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/AGENTS.md"
+    },
+    {
+      "path": "DESIGN.md",
+      "sha256": "eeadd50d7ead4d451308ed37513b872d959beec9cfdc1fa85a374ca9acb71cdc",
+      "bytes": 12609,
+      "line_count": 102,
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/DESIGN.md"
+    },
+    {
+      "path": "LEADERBOARD.md",
+      "sha256": "74519ad5a42d5a8b6fa93c4300a2985ed40222a8cbbd9b9209c02f29fdba90fc",
+      "bytes": 47318,
+      "blob_sha": "0e95be224062f6c3d9fd5e3eb178258c5efa4975",
+      "line_count": 690,
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/LEADERBOARD.md"
+    },
+    {
+      "path": "PRODUCT.md",
+      "sha256": "8a863626153c03b9c6377bd318c2f9ff142f70e89d0845a4fa3004a30aefc415",
+      "bytes": 5314,
+      "blob_sha": "8cada3bc2d998c3b64cb13acac73070c672c7737",
+      "line_count": 62,
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/PRODUCT.md"
+    },
+    {
+      "path": "README.md",
+      "sha256": "df98ac0d685da9ac21aba5787c514e7022d7721fbc89f509e94a001aa33477e6",
+      "bytes": 34316,
+      "line_count": 317,
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/README.md"
+    },
+    {
+      "path": "clients/app/app/components/token-horizon/activity-tab.tsx",
+      "blob_sha": "a3d5a7e0931b45a69c08f3c16b9590a7a93f9313",
+      "line_count": 114,
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/clients/app/app/components/token-horizon/activity-tab.tsx"
+    },
+    {
+      "path": "clients/crossplatform/app/components/token-horizon/activity-tab.tsx",
+      "blob_sha": "bc66a55af45c6b1488cbacf4ec4d5572994e58e2",
+      "line_count": 237,
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/clients/crossplatform/app/components/token-horizon/activity-tab.tsx"
+    },
+    {
+      "path": "clients/crossplatform/app/components/token-horizon/tokens-tab.tsx",
+      "blob_sha": "251f7e0d2d9180fb1096dcf04839afd287196101",
+      "line_count": 251,
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/clients/crossplatform/app/components/token-horizon/tokens-tab.tsx"
+    },
+    {
+      "path": "clients/macos/Sources/TokenHorizon/Leaderboard/LeaderboardAnalytics.swift",
+      "sha256": "232e592b88f985159c5d9a4129ae3822b5d2ace13a6037e759d02c54e9f6aece",
+      "bytes": 10239,
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/clients/macos/Sources/TokenHorizon/Leaderboard/LeaderboardAnalytics.swift"
+    },
+    {
+      "path": "clients/macos/Sources/TokenHorizon/Leaderboard/LeaderboardStore.swift",
+      "sha256": "c73e744930535f5a3e9ee49483067ec77c062a8ff437179a4356d1e1df9197de",
+      "bytes": 94515,
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/clients/macos/Sources/TokenHorizon/Leaderboard/LeaderboardStore.swift"
+    },
+    {
+      "path": "clients/macos/Sources/TokenHorizon/Leaderboard/LeaderboardSyncController.swift",
+      "sha256": "685f6e47cfb5a1a6c393d5945aa655691fb1cd7452829b852083c3c38ce223d3",
+      "bytes": 18689,
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/clients/macos/Sources/TokenHorizon/Leaderboard/LeaderboardSyncController.swift"
+    },
+    {
+      "path": "clients/macos/Sources/TokenHorizon/Persistence/DurableStore.swift",
+      "sha256": "f7ab99acbec9e92075424552193b21c7e3d19f7807ffda3bea40e33a21b1f899",
+      "bytes": 15318,
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/clients/macos/Sources/TokenHorizon/Persistence/DurableStore.swift"
+    },
+    {
+      "path": "clients/macos/Sources/TokenHorizon/UI/LeaderboardViews.swift",
+      "blob_sha": "09efb86398de65200c5b4289476adf1e45d0deec",
+      "line_count": 843,
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/clients/macos/Sources/TokenHorizon/UI/LeaderboardViews.swift"
+    },
+    {
+      "path": "clients/macos/Sources/TokenHorizon/UI/TeamsViews.swift",
+      "blob_sha": "3e00ca6f00ad2ab116394a1f9ffb0563abda86a4",
+      "line_count": 456,
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/clients/macos/Sources/TokenHorizon/UI/TeamsViews.swift"
+    },
+    {
+      "path": "clients/macos/Sources/TokenHorizon/UI/UsageHistoryViews.swift",
+      "blob_sha": "72371b9d41b5757cc2e160602e669902a06bb423",
+      "line_count": 115,
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/clients/macos/Sources/TokenHorizon/UI/UsageHistoryViews.swift"
+    },
+    {
+      "path": "clients/macos/Sources/TokenHorizon/Usage/Models.swift",
+      "sha256": "2ee5c0f2681e440e3af1af60a6b8416b6510336ae99bd0b2d77dc7c2f19d48a6",
+      "bytes": 18875,
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/clients/macos/Sources/TokenHorizon/Usage/Models.swift"
+    },
+    {
+      "path": "clients/macos/Sources/TokenHorizon/Usage/UsageEngine.swift",
+      "sha256": "3379271c2eb74b686fcd5a55848f2f22d51096d2c9c98741783615d23c50f3e3",
+      "bytes": 152898,
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/clients/macos/Sources/TokenHorizon/Usage/UsageEngine.swift"
+    },
+    {
+      "path": "cloudflare/AUTH.md",
+      "sha256": "939bdada8ed1d35280bad822230ae923c0907d457befb8d01433649c30ea8278",
+      "bytes": 11002,
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/cloudflare/AUTH.md"
+    },
+    {
+      "path": "cloudflare/leaderboard-storage.test.mjs",
+      "sha256": "e29e6cf3c58b69b1607b1cf05527c2d5023ecc89903663aded1cef21d3252306",
+      "bytes": 14496,
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/cloudflare/leaderboard-storage.test.mjs"
+    },
+    {
+      "path": "cloudflare/src/index.js",
+      "sha256": "08422b6cc5e6264d2cb2e16160adb9c5967b4487df46294414366947950d404f",
+      "bytes": 151893,
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/cloudflare/src/index.js"
+    },
+    {
+      "path": "cloudflare/src/leaderboard-storage.js",
+      "sha256": "930a6999e9cc248abccf1a291fb7b847e71af4db44d5e6d159b0edb571d7bf87",
+      "bytes": 2093,
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/cloudflare/src/leaderboard-storage.js"
+    },
+    {
+      "path": "cloudflare/src/team-invites.js",
+      "sha256": "ddd2f26852713a0b21b5ef7f414276671a6b93971c807a10f2a334f931a448b4",
+      "bytes": 28504,
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/cloudflare/src/team-invites.js"
+    },
+    {
+      "path": "cloudflare/src/usage-history.js",
+      "sha256": "c8746c66cdb58393d7bc83b95ce74172f416a8d96c8b7deb7a57193c96870abe",
+      "bytes": 7558,
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/cloudflare/src/usage-history.js"
+    },
+    {
+      "path": "cloudflare/src/worker.js",
+      "sha256": "4851f7e39da2a1ac45ecce6cd94d789d4654bb4b51a70132b77959c489d2d2c9",
+      "bytes": 11120,
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/cloudflare/src/worker.js"
+    },
+    {
+      "path": "cloudflare/usage-history.test.mjs",
+      "sha256": "d1cca9454c2d3e241e11f799be56765f851c8dcadeeedee64a2720a942988fe6",
+      "bytes": 9174,
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/cloudflare/usage-history.test.mjs"
+    },
+    {
+      "path": "daemons/go/internal/api/api.go",
+      "sha256": "ce5ef2b6039c532f5cb516b55111b24a518cae17cf23c2b370ef1d60739ba7c8",
+      "bytes": 16213,
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/daemons/go/internal/api/api.go"
+    },
+    {
+      "path": "daemons/go/internal/api/compat.go",
+      "sha256": "4802db26e88dfec1f19400b68910748782a26601a4f89083cb0a7982e8134fb7",
+      "bytes": 8634,
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/daemons/go/internal/api/compat.go"
+    },
+    {
+      "path": "daemons/go/internal/capture/files/backfill.go",
+      "sha256": "7e133a464901bb09e1f92883b0f18d129333d5751b75124d78ac8f1995147c0d",
+      "bytes": 11013,
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/daemons/go/internal/capture/files/backfill.go"
+    },
+    {
+      "path": "daemons/go/internal/capture/files/consolidators.go",
+      "sha256": "f626430b019866faf7887e8707d2aff360a308e87889599b2981007df6f23ecb",
+      "bytes": 9898,
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/daemons/go/internal/capture/files/consolidators.go"
+    },
+    {
+      "path": "daemons/go/internal/capture/files/poller.go",
+      "sha256": "16545bb69538d46d3723806ec611404285c1123ef76b085db368d322ed174645",
+      "bytes": 2410,
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/daemons/go/internal/capture/files/poller.go"
+    },
+    {
+      "path": "daemons/go/internal/capture/files/projects.go",
+      "sha256": "cb95bd457d975cc0309c023dd5459a65957f01fcb23cf667041c8426ff5b29b1",
+      "bytes": 4117,
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/daemons/go/internal/capture/files/projects.go"
+    },
+    {
+      "path": "daemons/go/internal/capture/files/uuidcheck_test.go",
+      "sha256": "747e32ddf4772765be258f662eb9c5a15a0a2dbc72a3e49036f42c9aa7c781b5",
+      "bytes": 590,
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/daemons/go/internal/capture/files/uuidcheck_test.go"
+    },
+    {
+      "path": "daemons/go/internal/cloudsync/sync.go",
+      "sha256": "cc5d2968b3bc2976a88fe270001ef166f334de524cd838faf4a7c4db924960df",
+      "bytes": 10293,
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/daemons/go/internal/cloudsync/sync.go"
+    },
+    {
+      "path": "daemons/go/internal/store/query.go",
+      "sha256": "4aa10198928bb523b44fa1abf7892a911c3e6e435f4001ac3cc7852e71dcbaf5",
+      "bytes": 12056,
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/daemons/go/internal/store/query.go"
+    },
+    {
+      "path": "daemons/go/internal/store/schema.go",
+      "sha256": "a381e58df7776863a528e92e7b9ba2886e266a76d268401ed2b07bc193a46e84",
+      "bytes": 4381,
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/daemons/go/internal/store/schema.go"
+    },
+    {
+      "path": "daemons/go/internal/store/store.go",
+      "sha256": "78fb994e35b1d12986e684f36993ec91f078e15aaa00e6d98e1ea83b63c92213",
+      "bytes": 8301,
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/daemons/go/internal/store/store.go"
+    },
+    {
+      "path": "daemons/go/internal/store/trace.go",
+      "sha256": "98aef4cde19dbc3458fbc93a3573d446e4c83f6dcf4a5fba393cf6f57c0d894a",
+      "bytes": 8318,
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/daemons/go/internal/store/trace.go"
+    },
+    {
+      "path": "daemons/go/internal/usage/canonical.go",
+      "sha256": "58e430f8d75cfdb57e7e4ebf5d05d00fcbb48a89164774e9067b6dae039eb257",
+      "bytes": 4527,
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/daemons/go/internal/usage/canonical.go"
+    },
+    {
+      "path": "daemons/go/internal/usage/types.go",
+      "sha256": "3281e51b028b48c7187416c4195ba444be0e728f9d2b85422f24d212528637e3",
+      "bytes": 3467,
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/daemons/go/internal/usage/types.go"
+    },
+    {
+      "path": "docs/leaderboard.html",
+      "blob_sha": "bdbd8dda13925cec70336e66436746930e98b0ad",
+      "line_count": 6796,
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/docs/leaderboard.html"
+    },
+    {
+      "path": "docs/sync-consistency.md",
+      "sha256": "92f841007c5d3ddc39ed7f8c5938bd310597da99aec13ef6dee2b6bd58e1cef1",
+      "bytes": 2306,
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/docs/sync-consistency.md"
+    },
+    {
+      "path": "docs/workspace.js",
+      "blob_sha": "50fff3e578f56dd5d4494343b08e515e2a156509",
+      "line_count": 325,
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/docs/workspace.js"
+    },
+    {
+      "path": "gateway/README.md",
+      "sha256": "6cf90ccbbad4dc832394b86cd2a93db013a612b1a93dd70b5fd78dfb7451198a",
+      "bytes": 9945,
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/gateway/README.md"
+    },
+    {
+      "path": "gateway/store.go",
+      "sha256": "227fac016a5eaae95c9ff3c58632a75ab04a21dd2501e467259e95cd681ac11e",
+      "bytes": 11029,
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/gateway/store.go"
+    },
+    {
+      "path": "gateway/trace.go",
+      "sha256": "a447f37a00054ea8b6b20c798ca2608b7cb4f576323122fa1ec5a3dd256a6778",
+      "bytes": 11710,
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/gateway/trace.go"
+    },
+    {
+      "path": "leaderboard-worker/README.md",
+      "sha256": "38baaa65f255c2e15e64a5ccfa495c5ad89f6ee4a0d6d57042cb1058fe4866d9",
+      "bytes": 1949,
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/leaderboard-worker/README.md"
+    },
+    {
+      "path": "leaderboard-worker/worker.js",
+      "sha256": "d74400703e60b4cbd68189eb23352581b545c571760eed480d645b0d823ca74f",
+      "bytes": 8306,
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/leaderboard-worker/worker.js"
+    },
+    {
+      "path": "scripts/bench-leaderboard.mjs",
+      "blob_sha": "9c36355df6dc740ad5e9d273a8f75f32f3211885",
+      "line_count": 300,
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/scripts/bench-leaderboard.mjs"
+    },
+    {
+      "path": "scripts/test-profile-ui.mjs",
+      "blob_sha": "060ccff82bdb4b06b4f0d9c944fd6ff85dab8407",
+      "line_count": 489,
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/scripts/test-profile-ui.mjs"
+    },
+    {
+      "path": "scripts/test-workspace-ui.mjs",
+      "blob_sha": "edd5d10d200bf592ccca2faca191e12698646027",
+      "line_count": 461,
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/scripts/test-workspace-ui.mjs"
+    }
+  ]
+}

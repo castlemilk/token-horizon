@@ -1,0 +1,93 @@
+{
+  "algorithm": "SHA-256",
+  "excludes": [
+    "artifact-checksums.json"
+  ],
+  "files": [
+    {
+      "path": "README.md",
+      "size_bytes": 3154,
+      "sha256": "85b6c3ebc2199c87cd101558f27c17482e2737b7d91451517cde0d935078911a"
+    },
+    {
+      "path": "daemon-sql-synthetic-results.json",
+      "size_bytes": 654,
+      "sha256": "c39a5cec5f23bfca94ef1887ffee59e3d3fb5919e0f0f1b7e8822eece53ddfcd"
+    },
+    {
+      "path": "daemon_sql_probe.py",
+      "size_bytes": 4198,
+      "sha256": "776d16dd914ae8c52ac8166c302014be008d41a83e297369c82f81666bf7dd18"
+    },
+    {
+      "path": "evidence-manifest.json",
+      "size_bytes": 47809,
+      "sha256": "7bbfd72b55bad9612b1a2c2faecc35df0209f0575db4c7e28abc20768fa93bc9"
+    },
+    {
+      "path": "issue-inventory.json",
+      "size_bytes": 18810,
+      "sha256": "95c93f71d3564da17bed88d2b7ac268405bfac4ad438e80a3adbc57fa8744b0c"
+    },
+    {
+      "path": "spec_test_results.json",
+      "size_bytes": 373,
+      "sha256": "6309eef3416549f86d8f84b7325fd16ea66308348ef92d23c1dd2d50a0256456"
+    },
+    {
+      "path": "token-horizon-track6-research-spec.html",
+      "size_bytes": 297295,
+      "sha256": "eb2c7fb0f632673d0d3e8ef04821e612b807e444fefaf15b4c8ae4ef61d52917"
+    },
+    {
+      "path": "token-horizon-track6-research-spec.md",
+      "size_bytes": 107010,
+      "sha256": "576e4d0a2a64530b4981df7a87dba6ea97875f58d5aa5d93b17f0471a38d3b5b"
+    },
+    {
+      "path": "token_context_fixtures.json",
+      "size_bytes": 6929,
+      "sha256": "fa86c4cc90348a2aa4a04c16923beac3d433a98b4a3b545769152719e9f9bf45"
+    },
+    {
+      "path": "verify_contract.py",
+      "size_bytes": 24487,
+      "sha256": "48d8a58aa122de349c3dd8b5c28f2087572cb3db63b93665ccbd21b2f98c1119"
+    },
+    {
+      "path": "visuals/contact-sheet.png",
+      "size_bytes": 522264,
+      "sha256": "09b0fba3ea0d239c94543ca73716cfafbdf267bfff4ec9610463d3c01774ec9a"
+    },
+    {
+      "path": "visuals/context-timeline.png",
+      "size_bytes": 181531,
+      "sha256": "65f223ca9e3a4ce8ba6373d53ff5ebcc0ebc49fa422d420ad8cc3413721cd632"
+    },
+    {
+      "path": "visuals/context-timeline.svg",
+      "size_bytes": 12018,
+      "sha256": "eae4bf4e5bf875396dfc395a5962090bfb296e4d9bc0fa5b730f0cc7000f47b9"
+    },
+    {
+      "path": "visuals/coverage-and-cost.png",
+      "size_bytes": 209235,
+      "sha256": "a1c388efcd9c382cd15271c6189164f86982e8d56950774d37949a0659746e61"
+    },
+    {
+      "path": "visuals/coverage-and-cost.svg",
+      "size_bytes": 9599,
+      "sha256": "b27c57eea9c5c9c4a81d621a2a8236ca2d968d65555b57c6dc2294a47d177e92"
+    },
+    {
+      "path": "visuals/request-reconciliation.png",
+      "size_bytes": 185497,
+      "sha256": "a6c8a0381ff7bb9052f3502c4ee1d44016ed1caf457e913bf723c5abb9426b15"
+    },
+    {
+      "path": "visuals/request-reconciliation.svg",
+      "size_bytes": 10370,
+      "sha256": "d3bbf59c6074a0c56df7b4991565348c0c0bec9458e7f69b24cd13f97d95c19f"
+    }
+  ]
+}

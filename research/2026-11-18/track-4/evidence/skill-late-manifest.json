@@ -1,0 +1,283 @@
+{
+  "schema_version": 1,
+  "source_file": "research/live_capture.json",
+  "source_file_sha256": "a99640a378818cb0fe327b456ea683fc3c3b0de6cfcca5ec2cda34fc74721232",
+  "snapshot_file": "research/seo_skill_runtime/late_snapshot.json",
+  "snapshot_file_sha256": "126b7430d5ce1d6784639b9485c6b58d550ff60b3ed7d7675b254e8025d97982",
+  "source_record_count": 24,
+  "included_count": 18,
+  "excluded_count": 6,
+  "included_mapping": [
+    {
+      "sample_index": 0,
+      "source_index": 0,
+      "url": "https://token-horizon.dev/",
+      "fetched_at": "2026-11-18T08:57:50.550802+00:00",
+      "capture_method": "GET",
+      "user_agent_original": "Python-urllib/3.11",
+      "user_agent_corrected": "Python-urllib/3.12",
+      "user_agent_correction_basis": "Parent confirmed collector default on Python 3.12.14; no UA override. Original hardcoded 3.11 metadata incorrect.",
+      "cookies_sent": false,
+      "body_sha256_utf8": "26f90902074bde516cc0106fb9ae9bd17563fb1fa5388594df6ce9f556c97df3"
+    },
+    {
+      "sample_index": 1,
+      "source_index": 1,
+      "url": "https://token-horizon.dev/robots.txt",
+      "fetched_at": "2026-11-18T08:57:50.551587+00:00",
+      "capture_method": "GET",
+      "user_agent_original": "Python-urllib/3.11",
+      "user_agent_corrected": "Python-urllib/3.12",
+      "user_agent_correction_basis": "Parent confirmed collector default on Python 3.12.14; no UA override. Original hardcoded 3.11 metadata incorrect.",
+      "cookies_sent": false,
+      "body_sha256_utf8": "0c4756b55623fafa9e2c8f942624c9467d8d4b0acf719b17a3af7f0d8fd776cf"
+    },
+    {
+      "sample_index": 2,
+      "source_index": 2,
+      "url": "https://token-horizon.dev/sitemap.xml",
+      "fetched_at": "2026-11-18T08:57:50.552234+00:00",
+      "capture_method": "GET",
+      "user_agent_original": "Python-urllib/3.11",
+      "user_agent_corrected": "Python-urllib/3.12",
+      "user_agent_correction_basis": "Parent confirmed collector default on Python 3.12.14; no UA override. Original hardcoded 3.11 metadata incorrect.",
+      "cookies_sent": false,
+      "body_sha256_utf8": "93fd6a8450d99eed2f2de69a792cf4bd8172c90fc9d89b362eec683584bfe2a1"
+    },
+    {
+      "sample_index": 3,
+      "source_index": 3,
+      "url": "https://token-horizon.dev/llms.txt",
+      "fetched_at": "2026-11-18T08:57:58.147426+00:00",
+      "capture_method": "GET",
+      "user_agent_original": "Python-urllib/3.11",
+      "user_agent_corrected": "Python-urllib/3.12",
+      "user_agent_correction_basis": "Parent confirmed collector default on Python 3.12.14; no UA override. Original hardcoded 3.11 metadata incorrect.",
+      "cookies_sent": false,
+      "body_sha256_utf8": "8581ab5cd1f7deb98eb6d9a99638d9a921219636b8d1c4b51aee95a5a7a3d79e"
+    },
+    {
+      "sample_index": 4,
+      "source_index": 4,
+      "url": "https://token-horizon.dev/models",
+      "fetched_at": "2026-11-18T08:57:58.178840+00:00",
+      "capture_method": "GET",
+      "user_agent_original": "Python-urllib/3.11",
+      "user_agent_corrected": "Python-urllib/3.12",
+      "user_agent_correction_basis": "Parent confirmed collector default on Python 3.12.14; no UA override. Original hardcoded 3.11 metadata incorrect.",
+      "cookies_sent": false,
+      "body_sha256_utf8": "01040e9062c3ee39b5bf85f288455bcf053241e6da01511b6b7df090eecba93d"
+    },
+    {
+      "sample_index": 5,
+      "source_index": 5,
+      "url": "https://token-horizon.dev/models/",
+      "fetched_at": "2026-11-18T08:57:58.203902+00:00",
+      "capture_method": "GET",
+      "user_agent_original": "Python-urllib/3.11",
+      "user_agent_corrected": "Python-urllib/3.12",
+      "user_agent_correction_basis": "Parent confirmed collector default on Python 3.12.14; no UA override. Original hardcoded 3.11 metadata incorrect.",
+      "cookies_sent": false,
+      "body_sha256_utf8": "f1af9d28d39edf00a0dc3ff08bc0c3a63e2827c97bd271595655bbe23258543e"
+    },
+    {
+      "sample_index": 6,
+      "source_index": 9,
+      "url": "https://token-horizon.dev/leaderboard",
+      "fetched_at": "2026-11-18T08:58:13.669466+00:00",
+      "capture_method": "GET",
+      "user_agent_original": "Python-urllib/3.11",
+      "user_agent_corrected": "Python-urllib/3.12",
+      "user_agent_correction_basis": "Parent confirmed collector default on Python 3.12.14; no UA override. Original hardcoded 3.11 metadata incorrect.",
+      "cookies_sent": false,
+      "body_sha256_utf8": "8b942cd602c80982ce1723b11381984ca9a308afeeafcd0c50392b7c8886025a"
+    },
+    {
+      "sample_index": 7,
+      "source_index": 12,
+      "url": "https://token-horizon.dev/teams",
+      "fetched_at": "2026-11-18T08:58:16.484547+00:00",
+      "capture_method": "GET",
+      "user_agent_original": "Python-urllib/3.11",
+      "user_agent_corrected": "Python-urllib/3.12",
+      "user_agent_correction_basis": "Parent confirmed collector default on Python 3.12.14; no UA override. Original hardcoded 3.11 metadata incorrect.",
+      "cookies_sent": false,
+      "body_sha256_utf8": "6119ac9652217b9cceb7e62ba9f1f9bb2b65f3870c2f5373ba8bc85ce9471229"
+    },
+    {
+      "sample_index": 8,
+      "source_index": 13,
+      "url": "https://token-horizon.dev/docs/",
+      "fetched_at": "2026-11-18T08:58:16.485195+00:00",
+      "capture_method": "GET",
+      "user_agent_original": "Python-urllib/3.11",
+      "user_agent_corrected": "Python-urllib/3.12",
+      "user_agent_correction_basis": "Parent confirmed collector default on Python 3.12.14; no UA override. Original hardcoded 3.11 metadata incorrect.",
+      "cookies_sent": false,
+      "body_sha256_utf8": "1614792e7431f23c1dce3f1dbd75a446401283a397908c137d3f043a0a888cea"
+    },
+    {
+      "sample_index": 9,
+      "source_index": 14,
+      "url": "https://token-horizon.dev/benchmarks/",
+      "fetched_at": "2026-11-18T08:58:16.515942+00:00",
+      "capture_method": "GET",
+      "user_agent_original": "Python-urllib/3.11",
+      "user_agent_corrected": "Python-urllib/3.12",
+      "user_agent_correction_basis": "Parent confirmed collector default on Python 3.12.14; no UA override. Original hardcoded 3.11 metadata incorrect.",
+      "cookies_sent": false,
+      "body_sha256_utf8": "0a564f601fbb005957ada22af8ff97f2e1ba44fbe07295f0d236901a7522733c"
+    },
+    {
+      "sample_index": 10,
+      "source_index": 15,
+      "url": "https://token-horizon.dev/blog/",
+      "fetched_at": "2026-11-18T08:58:23.438620+00:00",
+      "capture_method": "GET",
+      "user_agent_original": "Python-urllib/3.11",
+      "user_agent_corrected": "Python-urllib/3.12",
+      "user_agent_correction_basis": "Parent confirmed collector default on Python 3.12.14; no UA override. Original hardcoded 3.11 metadata incorrect.",
+      "cookies_sent": false,
+      "body_sha256_utf8": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "sample_index": 11,
+      "source_index": 16,
+      "url": "https://token-horizon.dev/blog/pricing-evidence.html",
+      "fetched_at": "2026-11-18T08:58:23.451858+00:00",
+      "capture_method": "GET",
+      "user_agent_original": "Python-urllib/3.11",
+      "user_agent_corrected": "Python-urllib/3.12",
+      "user_agent_correction_basis": "Parent confirmed collector default on Python 3.12.14; no UA override. Original hardcoded 3.11 metadata incorrect.",
+      "cookies_sent": false,
+      "body_sha256_utf8": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "sample_index": 12,
+      "source_index": 17,
+      "url": "https://token-horizon.dev/blog/pricing-evidence",
+      "fetched_at": "2026-11-18T08:58:23.455807+00:00",
+      "capture_method": "GET",
+      "user_agent_original": "Python-urllib/3.11",
+      "user_agent_corrected": "Python-urllib/3.12",
+      "user_agent_correction_basis": "Parent confirmed collector default on Python 3.12.14; no UA override. Original hardcoded 3.11 metadata incorrect.",
+      "cookies_sent": false,
+      "body_sha256_utf8": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "sample_index": 13,
+      "source_index": 18,
+      "url": "https://token-horizon.dev/blog/why-token-horizon.html",
+      "fetched_at": "2026-11-18T08:58:31.460418+00:00",
+      "capture_method": "GET",
+      "user_agent_original": "Python-urllib/3.11",
+      "user_agent_corrected": "Python-urllib/3.12",
+      "user_agent_correction_basis": "Parent confirmed collector default on Python 3.12.14; no UA override. Original hardcoded 3.11 metadata incorrect.",
+      "cookies_sent": false,
+      "body_sha256_utf8": "2aec0dc97e367a07a6cd95c55f9728e4513eb05fd829fd3a9ebe96f360edf89c"
+    },
+    {
+      "sample_index": 14,
+      "source_index": 19,
+      "url": "https://token-horizon.dev/blog/why-token-horizon",
+      "fetched_at": "2026-11-18T08:58:31.467424+00:00",
+      "capture_method": "GET",
+      "user_agent_original": "Python-urllib/3.11",
+      "user_agent_corrected": "Python-urllib/3.12",
+      "user_agent_correction_basis": "Parent confirmed collector default on Python 3.12.14; no UA override. Original hardcoded 3.11 metadata incorrect.",
+      "cookies_sent": false,
+      "body_sha256_utf8": "7d2569f70d9a5106b48c6a4b5020938c831117f0bf91dceb1dc13898ebd77f25"
+    },
+    {
+      "sample_index": 15,
+      "source_index": 20,
+      "url": "https://token-horizon.dev/connect",
+      "fetched_at": "2026-11-18T08:58:31.470122+00:00",
+      "capture_method": "GET",
+      "user_agent_original": "Python-urllib/3.11",
+      "user_agent_corrected": "Python-urllib/3.12",
+      "user_agent_correction_basis": "Parent confirmed collector default on Python 3.12.14; no UA override. Original hardcoded 3.11 metadata incorrect.",
+      "cookies_sent": false,
+      "body_sha256_utf8": "94b7858493c4fff4b8cdef52ff5109374a7538ea9f1222228c6faad17b4df0ce"
+    },
+    {
+      "sample_index": 16,
+      "source_index": 21,
+      "url": "https://token-horizon.dev/login/",
+      "fetched_at": "2026-11-18T08:58:34.631932+00:00",
+      "capture_method": "GET",
+      "user_agent_original": "Python-urllib/3.11",
+      "user_agent_corrected": "Python-urllib/3.12",
+      "user_agent_correction_basis": "Parent confirmed collector default on Python 3.12.14; no UA override. Original hardcoded 3.11 metadata incorrect.",
+      "cookies_sent": false,
+      "body_sha256_utf8": "8835a6fef8651f35d73391abfc02823d35682517daee76c0f3df4e21afd9c1a4"
+    },
+    {
+      "sample_index": 17,
+      "source_index": 23,
+      "url": "https://token-horizon.dev/seo-audit-missing-page-20261118",
+      "fetched_at": "2026-11-18T08:58:34.673224+00:00",
+      "capture_method": "GET",
+      "user_agent_original": "Python-urllib/3.11",
+      "user_agent_corrected": "Python-urllib/3.12",
+      "user_agent_correction_basis": "Parent confirmed collector default on Python 3.12.14; no UA override. Original hardcoded 3.11 metadata incorrect.",
+      "cookies_sent": false,
+      "body_sha256_utf8": "bf2a7bc59f59e3f594f2b4a37545874b74f95488a0cb4b3bf2a92cf82dd28df3"
+    }
+  ],
+  "excluded_records": [
+    {
+      "source_index": 6,
+      "url": "https://token-horizon.dev/models?tab=cheapest",
+      "reasons": [
+        "query-bearing URL unsupported; not stripped or relabeled"
+      ]
+    },
+    {
+      "source_index": 7,
+      "url": "https://token-horizon.dev/models?tab=providers",
+      "reasons": [
+        "query-bearing URL unsupported; not stripped or relabeled"
+      ]
+    },
+    {
+      "source_index": 8,
+      "url": "https://token-horizon.dev/models?tab=plans",
+      "reasons": [
+        "query-bearing URL unsupported; not stripped or relabeled"
+      ]
+    },
+    {
+      "source_index": 10,
+      "url": "https://token-horizon.dev/leaderboard?view=teams",
+      "reasons": [
+        "query-bearing URL unsupported; not stripped or relabeled"
+      ]
+    },
+    {
+      "source_index": 11,
+      "url": "https://token-horizon.dev/leaderboard?view=leagues",
+      "reasons": [
+        "query-bearing URL unsupported; not stripped or relabeled"
+      ]
+    },
+    {
+      "source_index": 22,
+      "url": "https://token-horizon.dev/leaderboard?view=dashboard",
+      "reasons": [
+        "query-bearing URL unsupported; not stripped or relabeled"
+      ]
+    }
+  ],
+  "conversion": "Subset only; no network, query stripping, URL normalization, HTML repair, timestamp invention or source-file modification. Only Content-Type/X-Robots-Tag headers copied; errors represented as truthy flag. Early/late captures kept separate.",
+  "code_revision": "0b456a340126e868559e0ce750ba7a2ccf855510",
+  "code_origin": "https://github.com/skunkworq/skunkworq-skills",
+  "code_modified": false,
+  "acquisition_coverage": {
+    "planned_request_count": 27,
+    "serialized_outcomes": 24,
+    "requests_without_reliable_serialized_outcome": 3,
+    "missing_scope": "Three host/scheme variants after collector 55-second timeout; absence of serialized outcome does not prove request was not attempted or no network occurred.",
+    "analyzer_network_requests": 0
+  }
+}

@@ -1,0 +1,70 @@
+{
+  "artifact_type": "SPECIFICATION TEST HARNESS",
+  "status": "Proposed normalization examples; not Token Horizon application tests",
+  "data_classification": "Synthetic numeric counters and opaque synthetic IDs only",
+  "rates_notice": "All prices are invented arithmetic fixtures, not market tariffs or measured charges",
+  "schema_version": "proposal-fixtures-v3",
+  "observations": {
+    "openai_complete": {
+      "provider": "openai_responses",
+      "usage": {
+        "input_tokens": 1000,
+        "input_tokens_details": {"cached_tokens": 600, "cache_write_tokens": 100, "cache_write_tokens_details": {"ttl_30m_tokens": 60, "ttl_12h_tokens": 40}},
+        "output_tokens": 200,
+        "output_tokens_details": {"reasoning_tokens": 50},
+        "total_tokens": 1200
+      }
+    },
+    "chat_absent": {"provider": "openai_chat"},
+    "chat_null": {"provider": "openai_chat", "usage": null},
+    "chat_zero": {"provider": "openai_chat", "usage": {"prompt_tokens": 0, "prompt_tokens_details": {"cached_tokens": 0}, "completion_tokens": 0, "completion_tokens_details": {"reasoning_tokens": 0}, "total_tokens": 0}},
+    "openai_no_reasoning": {"provider": "openai_responses", "usage": {"input_tokens": 1000, "output_tokens": 200, "total_tokens": 1200}},
+    "anthropic_complete": {"provider": "anthropic", "usage": {"input_tokens": 500, "cache_read_input_tokens": 8000, "cache_creation_input_tokens": 1500, "cache_creation": {"ephemeral_5m_input_tokens": 1000, "ephemeral_1h_input_tokens": 500}, "output_tokens": 2000, "output_tokens_details": {"thinking_tokens": 1500}}},
+    "anthropic_missing_cache": {"provider": "anthropic", "usage": {"input_tokens": 500, "output_tokens": 2000}},
+    "anthropic_compaction": {"provider": "anthropic_compaction", "usage": {"input_tokens": 0, "output_tokens": 0, "iterations": [{"type": "compaction", "input_tokens": 14000, "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0, "output_tokens": 900}]}},
+    "gemini_complete": {"provider": "gemini_generate", "usageMetadata": {"promptTokenCount": 10000, "cachedContentTokenCount": 8000, "toolUsePromptTokenCount": 2000, "candidatesTokenCount": 600, "thoughtsTokenCount": 1400, "totalTokenCount": 14000}},
+    "gemini_residual": {"provider": "gemini_generate", "usageMetadata": {"promptTokenCount": 10000, "cachedContentTokenCount": 8000, "toolUsePromptTokenCount": 2000, "candidatesTokenCount": 600, "thoughtsTokenCount": 1400, "totalTokenCount": 14100}},
+    "gemini_total_only": {"provider": "gemini_generate", "usageMetadata": {"totalTokenCount": 900}},
+    "ollama_complete": {"provider": "ollama", "usage": {"prompt_eval_count": 1000, "prompt_eval_cached_count": 800, "eval_count": 200}},
+    "invalid_cache_subset": {"provider": "openai_responses", "usage": {"input_tokens": 100, "input_tokens_details": {"cached_tokens": 101, "cache_write_tokens": 0}, "output_tokens": 20, "total_tokens": 120}},
+    "invalid_reasoning_subset": {"provider": "openai_responses", "usage": {"input_tokens": 100, "output_tokens": 20, "output_tokens_details": {"reasoning_tokens": 21}, "total_tokens": 120}},
+    "invalid_ttl_split": {"provider": "openai_responses", "usage": {"input_tokens": 1000, "input_tokens_details": {"cached_tokens": 600, "cache_write_tokens": 100, "cache_write_tokens_details": {"ttl_30m_tokens": 60, "ttl_12h_tokens": 50}}, "output_tokens": 200, "total_tokens": 1200}},
+    "invalid_negative": {"provider": "ollama", "usage": {"prompt_eval_count": -1, "eval_count": 200}},
+    "invalid_boolean": {"provider": "openai_chat", "usage": {"prompt_tokens": true, "completion_tokens": 20}},
+    "openai_missing_ttl": {"provider": "openai_responses", "usage": {"input_tokens": 1000, "input_tokens_details": {"cached_tokens": 600, "cache_write_tokens": 100}, "output_tokens": 200, "total_tokens": 1200}}
+  },
+  "anthropic_stream": {
+    "complete": true,
+    "events": [
+      {"type": "message_start", "message": {"usage": {"input_tokens": 600, "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0, "output_tokens": 1}}},
+      {"type": "message_delta", "usage": {"output_tokens": 30}},
+      {"type": "message_delta", "usage": {"output_tokens": 85, "output_tokens_details": {"thinking_tokens": 35}}},
+      {"type": "message_stop"}
+    ]
+  },
+  "ledger": [
+    {"tenant_id": "synth_tenant_a", "billing_account_namespace": "synth_account_a", "provider": "synth_provider_a", "api_family": "synth_api_a", "response_id": "synth_response_a", "attempt_id": "synth_attempt_a", "reported_total": 120},
+    {"tenant_id": "synth_tenant_a", "billing_account_namespace": "synth_account_a", "provider": "synth_provider_a", "api_family": "synth_api_a", "response_id": "synth_response_a", "attempt_id": "synth_attempt_a", "reported_total": 120},
+    {"tenant_id": "synth_tenant_a", "billing_account_namespace": "synth_account_a", "provider": "synth_provider_a", "api_family": "synth_api_a", "response_id": "synth_response_b", "attempt_id": "synth_attempt_b", "reported_total": 125}
+  ],
+  "contexts": {
+    "unknown_limit": {"latest_prompt_tokens": 80000, "limit_kind": "unknown"},
+    "combined": {"latest_prompt_tokens": 80000, "limit_kind": "combined_context", "limit_tokens": 200000, "output_reserve_tokens": 40000},
+    "separate_input": {"latest_prompt_tokens": 80000, "limit_kind": "max_input", "limit_tokens": 100000, "max_output_tokens": 50000, "output_reserve_tokens": 40000},
+    "session": {"unique_request_inputs": [50000, 80000, 100000], "latest_prompt_tokens": 100000, "limit_kind": "combined_context", "limit_tokens": 200000, "output_reserve_tokens": 20000},
+    "negative_headroom": {"latest_prompt_tokens": 180000, "limit_kind": "combined_context", "limit_tokens": 200000, "output_reserve_tokens": 40000},
+    "cached_prompt": {"latest_prompt_tokens": 100000, "cache_read_tokens": 80000, "limit_kind": "combined_context", "limit_tokens": 200000, "output_reserve_tokens": 20000},
+    "provider_admission_strict": {"latest_prompt_tokens": 160000, "limit_kind": "combined_context", "limit_tokens": 200000, "output_reserve_tokens": 20000, "provider_admission_rule": "subtract_model_output_allowance", "provider_required_output_allowance_tokens": 60000},
+    "provider_admission_unknown": {"latest_prompt_tokens": 160000, "limit_kind": "combined_context", "limit_tokens": 200000, "output_reserve_tokens": 20000, "provider_admission_rule": "unknown"}
+  },
+  "retrieval": {
+    "component_id": "synth_component_a",
+    "offered_tokens": 4000,
+    "inserted_tokens": 900,
+    "carrier_kind": "tool_result"
+  },
+  "synthetic_tariffs": {
+    "synth_tariff_v1": {"currency": "USD", "rate_unit": "per_1000000_tokens", "ordinary_input": "2", "cache_read": "0.2", "cache_write_30m": "2.5", "cache_write_12h": "5", "output": "8"},
+    "synth_tariff_v2": {"currency": "USD", "rate_unit": "per_1000000_tokens", "ordinary_input": "2", "cache_read": "0.2", "cache_write_30m": "2.5", "cache_write_12h": "5", "output": "10"}
+  }
+}

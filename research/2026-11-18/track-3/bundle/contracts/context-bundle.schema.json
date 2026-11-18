@@ -1,0 +1,231 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:token-horizon:proposal:context-bundle:1",
+  "title": "Synthetic reviewed context bundle \u2014 proposal",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": "proposal-1"
+    },
+    "synthetic_example": {
+      "type": "boolean"
+    },
+    "bundle_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+    },
+    "version_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+    },
+    "workspace_ref": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "expires_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "destination": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "class": {
+          "enum": [
+            "local_file",
+            "local_mcp_resource"
+          ]
+        },
+        "client_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+        }
+      },
+      "required": [
+        "class",
+        "client_id"
+      ]
+    },
+    "review_snapshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "view_token": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+        }
+      },
+      "required": [
+        "view_token"
+      ]
+    },
+    "items": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "version_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+          },
+          "kind": {
+            "enum": [
+              "decision",
+              "constraint",
+              "verification",
+              "task_state",
+              "preference",
+              "instruction"
+            ]
+          },
+          "review_state": {
+            "const": "approved"
+          },
+          "measurement_kind": {
+            "enum": [
+              "source_observed",
+              "human_reviewed"
+            ]
+          },
+          "text": {
+            "type": "string",
+            "maxLength": 32768
+          },
+          "evidence": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "source_id": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128,
+                  "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+                },
+                "revision": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128,
+                  "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+                },
+                "locator": {
+                  "type": "string",
+                  "maxLength": 256
+                },
+                "valid_from": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "date-time"
+                },
+                "valid_to": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "date-time"
+                },
+                "recorded_from": {
+                  "type": "string",
+                  "format": "date-time"
+                }
+              },
+              "required": [
+                "source_id",
+                "revision",
+                "locator"
+              ]
+            },
+            "minItems": 1,
+            "maxItems": 25
+          },
+          "explanation": {
+            "type": "string",
+            "maxLength": 2048
+          }
+        },
+        "required": [
+          "version_id",
+          "kind",
+          "review_state",
+          "measurement_kind",
+          "text",
+          "evidence",
+          "explanation"
+        ]
+      },
+      "minItems": 1,
+      "maxItems": 200
+    },
+    "content_budget": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "estimated_tokens": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4096
+        },
+        "max_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 262144
+        }
+      },
+      "required": [
+        "estimated_tokens",
+        "max_bytes"
+      ]
+    },
+    "omissions_policy": {
+      "const": "Do not disclose inaccessible labels or counts."
+    },
+    "context_state": {
+      "enum": [
+        "available",
+        "requested",
+        "returned"
+      ]
+    },
+    "insertion_receipt": {
+      "type": "null",
+      "description": "Insertion is outside this manifest. A separate authenticated harness receipt is required; export cannot claim insertion."
+    }
+  },
+  "required": [
+    "schema_version",
+    "synthetic_example",
+    "bundle_id",
+    "version_id",
+    "workspace_ref",
+    "created_at",
+    "expires_at",
+    "destination",
+    "review_snapshot",
+    "items",
+    "content_budget",
+    "omissions_policy",
+    "context_state",
+    "insertion_receipt"
+  ]
+}

@@ -1,0 +1,87 @@
+{
+  "classification": "Source-only parser observations; not live responses or accessibility conformance",
+  "revision": "b468206e9378c8d7a6788b67072494982e7de17d",
+  "pages": [
+    {
+      "source_path": "docs/index.html",
+      "h1": 1,
+      "title": 1,
+      "canonical": 1,
+      "noscript": 2,
+      "images_missing_alt_attribute": 0,
+      "json_ld_scripts": 1
+    },
+    {
+      "source_path": "docs/docs/index.html",
+      "h1": 1,
+      "title": 1,
+      "canonical": 1,
+      "noscript": 0,
+      "images_missing_alt_attribute": 0,
+      "json_ld_scripts": 1
+    },
+    {
+      "source_path": "docs/blog/index.html",
+      "h1": 1,
+      "title": 1,
+      "canonical": 1,
+      "noscript": 0,
+      "images_missing_alt_attribute": 0,
+      "json_ld_scripts": 1
+    },
+    {
+      "source_path": "docs/blog/pricing-evidence.html",
+      "h1": 1,
+      "title": 1,
+      "canonical": 1,
+      "noscript": 0,
+      "images_missing_alt_attribute": 0,
+      "json_ld_scripts": 1
+    },
+    {
+      "source_path": "docs/blog/why-token-horizon.html",
+      "h1": 1,
+      "title": 1,
+      "canonical": 1,
+      "noscript": 0,
+      "images_missing_alt_attribute": 0,
+      "json_ld_scripts": 1
+    },
+    {
+      "source_path": "docs/leaderboard.html",
+      "h1": 0,
+      "title": 1,
+      "canonical": 1,
+      "noscript": 0,
+      "images_missing_alt_attribute": 0,
+      "json_ld_scripts": 1
+    },
+    {
+      "source_path": "docs/models/index.html",
+      "h1": 0,
+      "title": 1,
+      "canonical": 1,
+      "noscript": 0,
+      "images_missing_alt_attribute": 0,
+      "json_ld_scripts": 1
+    },
+    {
+      "source_path": "docs/teams/index.html",
+      "h1": 0,
+      "title": 1,
+      "canonical": 1,
+      "noscript": 0,
+      "images_missing_alt_attribute": 0,
+      "json_ld_scripts": 0
+    },
+    {
+      "source_path": "docs/connect/index.html",
+      "h1": 0,
+      "title": 1,
+      "canonical": 1,
+      "noscript": 0,
+      "images_missing_alt_attribute": 0,
+      "json_ld_scripts": 0
+    }
+  ]
+}

@@ -1,0 +1,18 @@
+{
+  "review_date": "2026-11-18",
+  "status": "PASS within bounded scope",
+  "pdf_pages": 34,
+  "report_words": 10811,
+  "pdf_render_review": "All 34 pages rasterized with Poppler and reviewed in contact sheets; selected opening, metric, issue-table and appendix pages inspected at higher resolution. Heading pagination corrected. No clipping observed.",
+  "references": "All zero-padded evidence citation identifiers resolve; source/issue URLs are clickable in PDF.",
+  "synthetic_validation": "69/69 passed; fixture arithmetic only",
+  "source_checks": "Node and SQLite checks passed by reproducing audited behavior, not demonstrating repairs",
+  "structured_files": "All JSON/JSONL parsed and 3 SVGs parsed",
+  "privacy_scan": {
+    "text_files": 37,
+    "email_or_credential_pattern_matches": 0,
+    "limits": "Bounded pattern scan plus manual/reviewer checks; not a security certification"
+  },
+  "html_runtime": "Blocked before page load; interactive behavior, responsive layout and assistive-technology behavior remain untested",
+  "no_shared_mutations": true
+}

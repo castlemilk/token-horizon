@@ -1,0 +1,51 @@
+{
+  "status": "Proposed; synthetic data; not implemented or user-tested",
+  "baseline": "b468206e9378c8d7a6788b67072494982e7de17d",
+  "pages": [
+    {
+      "page": 1,
+      "title": "An administrative overview with an explicit boundary",
+      "description": "Desktop \u00b7 A coherent extension of Quiet precision. Aggregate work usage leads; personal histories and public rankings stay outside this surface."
+    },
+    {
+      "page": 2,
+      "title": "People administration is separate from usage accounting",
+      "description": "Desktop \u00b7 Invite, change access and resolve lifecycle states without adding a performance score or an activity feed to the roster."
+    },
+    {
+      "page": 3,
+      "title": "A named drilldown that explains its purpose",
+      "description": "Desktop \u00b7 This is a proposed cost-allocation capability. A self view is a different authorization path, not a filter over all members."
+    },
+    {
+      "page": 4,
+      "title": "Switch scope before loading data",
+      "description": "Desktop \u00b7 Keep published profiles, private workspaces and community navigation visibly distinct. Clear the previous scope before requesting the next."
+    },
+    {
+      "page": 5,
+      "title": "Invitations disclose access before acceptance",
+      "description": "Desktop and mobile \u00b7 The proposal adds invitee-bound, expiring invitations for private workspaces; current community invitations retain their own contract."
+    },
+    {
+      "page": 6,
+      "title": "Membership lifecycle with explicit consequences",
+      "description": "Desktop dialogs \u00b7 Suspensions, removals and owner transfer are server-authorized state transitions. A disabled button is never the enforcement boundary."
+    },
+    {
+      "page": 7,
+      "title": "Mobile uses the same scope and permission rules",
+      "description": "Four mobile states \u00b7 Stacked records replace dense tables. Controls stay reachable, labels remain visible, and sensitive operations retain a review step."
+    },
+    {
+      "page": 8,
+      "title": "State design carries the trust contract",
+      "description": "Desktop and mobile patterns \u00b7 These states are proposed specifications. Existing loading, empty and failure primitives should be extended, not erased."
+    },
+    {
+      "page": 9,
+      "title": "Make access and retention reviewable",
+      "description": "Desktop policy panel \u00b7 A member can understand who sees their attributed usage. Administration, aggregate review and named accounting remain independent."
+    }
+  ]
+}

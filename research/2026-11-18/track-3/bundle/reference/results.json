@@ -1,0 +1,313 @@
+{
+  "status": "passed",
+  "classification": "SYNTHETIC REFERENCE EXPERIMENT; not Token Horizon implementation or product validation",
+  "generated_at_utc": "2026-11-18T08:37:07.313423+00:00",
+  "source_baseline_for_research": "Token Horizon main b468206e9378c8d7a6788b67072494982e7de17d; not imported or executed",
+  "runtime": {
+    "python": "3.12.14",
+    "sqlite": "3.53.1",
+    "platform": "Linux",
+    "database": ":memory:",
+    "fts5": true
+  },
+  "input_sha256": {
+    "schema.sql": "efe7e3b60f4295bf3273e99eb40b6734926f0f071f7e515b6e6fcd9ec26c5c93",
+    "fixture.json": "5efeca52db38f290f8b37fd7011aa2a64457de2f559b8adc623a59ff8cf96a22",
+    "validate.py": "fab9fe4c7d821be36ee7f4ab45b3e0725a287f045a5ff299738a34ee2c1f9cbe"
+  },
+  "fixture_counts": {
+    "kg_node_version": 76,
+    "kg_edge_version": 56,
+    "kg_fts": 76
+  },
+  "tests_passed": 25,
+  "tests_total": 25,
+  "tests": [
+    {
+      "case": "tenant_ids_and_membership_are_isolated",
+      "passed": true,
+      "elapsed_ms": 0.2976
+    },
+    {
+      "case": "public_team_membership_does_not_grant_private_access",
+      "passed": true,
+      "elapsed_ms": 0.0587
+    },
+    {
+      "case": "composite_foreign_key_rejects_cross_workspace_reference",
+      "passed": true,
+      "elapsed_ms": 0.1665
+    },
+    {
+      "case": "typed_edges_and_immutable_versions_are_enforced",
+      "passed": true,
+      "elapsed_ms": 0.0907
+    },
+    {
+      "case": "seed_authorization_and_empty_scope_fail_closed",
+      "passed": true,
+      "elapsed_ms": 0.1058
+    },
+    {
+      "case": "hidden_middle_node_cannot_bridge_visible_destination",
+      "passed": true,
+      "elapsed_ms": 10.3531
+    },
+    {
+      "case": "hidden_required_source_blocks_assertion",
+      "passed": true,
+      "elapsed_ms": 0.5569
+    },
+    {
+      "case": "every_edge_requires_authorized_scope_and_all_evidence",
+      "passed": true,
+      "elapsed_ms": 15.9068
+    },
+    {
+      "case": "required_scope_sets_are_conjunctive",
+      "passed": true,
+      "elapsed_ms": 0.2757
+    },
+    {
+      "case": "viewer_cannot_export_even_with_export_scope",
+      "passed": true,
+      "elapsed_ms": 0.2284
+    },
+    {
+      "case": "read_scope_is_not_export_scope",
+      "passed": true,
+      "elapsed_ms": 1.0102
+    },
+    {
+      "case": "membership_revocation_invalidates_read_cache_and_export",
+      "passed": true,
+      "elapsed_ms": 4.098
+    },
+    {
+      "case": "role_or_grant_revocation_invalidates_preview_and_cache",
+      "passed": true,
+      "elapsed_ms": 17.7761
+    },
+    {
+      "case": "current_source_revocation_overrides_historical_queries",
+      "passed": true,
+      "elapsed_ms": 2.1523
+    },
+    {
+      "case": "valid_time_and_known_time_handle_late_correction",
+      "passed": true,
+      "elapsed_ms": 0.3653
+    },
+    {
+      "case": "source_replay_is_idempotent_and_payload_conflict_rejected",
+      "passed": true,
+      "elapsed_ms": 0.3226
+    },
+    {
+      "case": "cycles_terminate_and_depth_limit_is_reported",
+      "passed": true,
+      "elapsed_ms": 1.2628
+    },
+    {
+      "case": "fanout_result_and_execution_budgets_are_enforced",
+      "passed": true,
+      "elapsed_ms": 5.8567
+    },
+    {
+      "case": "unknown_valid_time_is_explicit_and_not_exported",
+      "passed": true,
+      "elapsed_ms": 0.1489
+    },
+    {
+      "case": "source_deletion_removes_dependency_closure_fts_and_cache",
+      "passed": true,
+      "elapsed_ms": 23.474
+    },
+    {
+      "case": "all_required_synthesis_dies_but_independent_assertion_survives",
+      "passed": true,
+      "elapsed_ms": 2.3448
+    },
+    {
+      "case": "injection_text_and_query_are_inert_data",
+      "passed": true,
+      "elapsed_ms": 0.7941
+    },
+    {
+      "case": "constructed_handoff_matches_fixed_relational_join",
+      "passed": true,
+      "elapsed_ms": 4.4171
+    },
+    {
+      "case": "stale_source_is_readable_but_not_exportable",
+      "passed": true,
+      "elapsed_ms": 0.3348
+    },
+    {
+      "case": "hidden_fts_matches_do_not_change_visible_ranking_or_count",
+      "passed": true,
+      "elapsed_ms": 2.2044
+    }
+  ],
+  "constructed_query_examples": [
+    {
+      "id": "Q1",
+      "description": "Task handoff: lexical query is deliberately insufficient for fixture facts linked by the reviewed bundle.",
+      "lexical_match_ids": [
+        "ctx-lexical"
+      ],
+      "graph_context_ids": [
+        "ctx-a",
+        "ctx-b",
+        "ctx-combined"
+      ],
+      "graph_source_ids": [],
+      "required_context_ids": [
+        "ctx-a",
+        "ctx-b",
+        "ctx-combined"
+      ],
+      "lexical_required_found": 0,
+      "graph_required_found": 3,
+      "paths": {
+        "task-v1": [
+          "task-v1"
+        ],
+        "bundle-v1": [
+          "task-v1",
+          "bundle-v1"
+        ],
+        "ctx-a": [
+          "task-v1",
+          "bundle-v1",
+          "ctx-a"
+        ],
+        "ctx-b": [
+          "task-v1",
+          "bundle-v1",
+          "ctx-b"
+        ],
+        "ctx-combined": [
+          "task-v1",
+          "bundle-v1",
+          "ctx-combined"
+        ]
+      },
+      "truncated": true,
+      "required_node_evidence": {
+        "bundle-v1": [
+          "src-a",
+          "src-b",
+          "src-topology"
+        ],
+        "ctx-a": [
+          "src-a"
+        ],
+        "ctx-b": [
+          "src-b"
+        ],
+        "ctx-combined": [
+          "src-a",
+          "src-b"
+        ],
+        "task-v1": [
+          "src-topology"
+        ]
+      },
+      "required_edge_evidence": {
+        "e-bundle": [
+          "src-topology"
+        ],
+        "e-includes-a": [
+          "src-topology"
+        ],
+        "e-includes-b": [
+          "src-topology"
+        ],
+        "e-includes-combined": [
+          "src-topology"
+        ]
+      },
+      "single_run_ms": {
+        "lexical": 0.2501,
+        "graph": 1.4472
+      },
+      "fixed_relational_join_ids": [
+        "ctx-a",
+        "ctx-b",
+        "ctx-combined"
+      ]
+    },
+    {
+      "id": "Q2",
+      "description": "Attempt explanation: traverse its observed context and cited source.",
+      "lexical_match_ids": [
+        "ctx-b"
+      ],
+      "graph_context_ids": [
+        "ctx-a"
+      ],
+      "graph_source_ids": [
+        "src-a"
+      ],
+      "required_context_ids": [
+        "ctx-a"
+      ],
+      "lexical_required_found": 0,
+      "graph_required_found": 1,
+      "paths": {
+        "attempt-v1": [
+          "attempt-v1"
+        ],
+        "ctx-a": [
+          "attempt-v1",
+          "ctx-a"
+        ],
+        "src-a": [
+          "attempt-v1",
+          "ctx-a",
+          "src-a"
+        ]
+      },
+      "truncated": false,
+      "required_node_evidence": {
+        "attempt-v1": [
+          "src-topology"
+        ],
+        "ctx-a": [
+          "src-a"
+        ],
+        "src-a": [
+          "src-a"
+        ]
+      },
+      "required_edge_evidence": {
+        "e-observed": [
+          "src-topology"
+        ],
+        "e-cites": [
+          "src-topology"
+        ]
+      },
+      "single_run_ms": {
+        "lexical": 0.0928,
+        "graph": 0.3091
+      }
+    }
+  ],
+  "elapsed_seconds_including_fixture_setup": 0.3827,
+  "limits": [
+    "All data are synthetic. Fixture cases are deliberately constructed, not a representative benchmark.",
+    "Subjects are trusted function arguments; no authentication server or transport is implemented.",
+    "Times are single-process toy measurements; no p95, concurrency, disk, network or production-size result is claimed.",
+    "No bm25/global corpus scores, hidden match counts, autocomplete or facets are exposed.",
+    "Search is toy ASCII tokenization and OR matching, not multilingual or phrase retrieval.",
+    "Inert text checks SQL/data handling here, not an LLM's prompt-injection resistance.",
+    "Cache labels stand for trusted canonical query keys; no public cache API is implemented.",
+    "Logical row/FTS/cache removal and tombstone no-resurrection are tested; physical disk, backup and downstream-copy erasure are not.",
+    "Current ACL/lifecycle override historical reads; this is not historical access permission replay.",
+    "The fixture inserts preclosed bitemporal intervals; an atomic production correction writer is not implemented.",
+    "SQL statement interruption bounds this traversal; timing-constant noninterference is not established.",
+    "No paid calls, installs, network, Token Horizon imports, app mutations or shared repository edits."
+  ]
+}

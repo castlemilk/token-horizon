@@ -1,0 +1,43 @@
+{
+  "schema_version": "proposal-1",
+  "synthetic_example": true,
+  "bundle_id": "bundle-demo",
+  "version_id": "bundle-v4",
+  "workspace_ref": "workspace-demo",
+  "created_at": "2026-11-18T09:00:00Z",
+  "expires_at": "2026-11-18T09:15:00Z",
+  "destination": {
+    "class": "local_file",
+    "client_id": "codex-demo"
+  },
+  "review_snapshot": {
+    "view_token": "view-demo-opaque"
+  },
+  "items": [
+    {
+      "version_id": "decision-v3",
+      "kind": "decision",
+      "review_state": "approved",
+      "measurement_kind": "human_reviewed",
+      "text": "Keep source identity scoped to its project.",
+      "evidence": [
+        {
+          "source_id": "source-demo",
+          "revision": "r7",
+          "locator": "section-2",
+          "valid_from": "2026-11-18T08:00:00Z",
+          "valid_to": null,
+          "recorded_from": "2026-11-18T08:30:00Z"
+        }
+      ],
+      "explanation": "Reviewed decision for the selected task, supported by the pinned source revision."
+    }
+  ],
+  "content_budget": {
+    "estimated_tokens": 24,
+    "max_bytes": 65536
+  },
+  "omissions_policy": "Do not disclose inaccessible labels or counts.",
+  "context_state": "available",
+  "insertion_receipt": null
+}
