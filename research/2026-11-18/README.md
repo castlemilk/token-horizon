@@ -10,7 +10,7 @@ Five completed research streams, reconciled against main `b468206e9378c8d7a6788b
 - [5: Team and individual analytics](track-5/bundle/token-horizon-track5-specification.md) · [original bundle](track-5/bundle/)
 - [6: Token and context analytics](track-6/bundle/token-horizon-track6-research-spec.md) · [original bundle](track-6/bundle/)
 
-Original bundles preserve supplied PDFs, PNG/SVG wireframes, manifests, synthetic fixtures and recorded reference-test results. Use the bundle report above for relative companion links. The top-level `report.md` copies are text preservation copies. `artifact-manifest.json` records content hashes before this index was added. No research script was executed during synchronization; JSON parsing and file integrity checks do not validate the application. Findings and claimed synthetic checks remain attributed to their source studies.
+Original bundles preserve supplied PDFs, PNG/SVG wireframes, manifests, synthetic fixtures and recorded reference-test results. Use the bundle report above for relative companion links. The top-level `report.md` copies are text preservation copies. `artifact-manifest.json` records content hashes for all preserved files except the manifest itself. No research script was executed during synchronization; JSON parsing and file integrity checks do not validate the application. Findings and claimed synthetic checks remain attributed to their source studies.
 
 ## Deduplicated backlog
 
