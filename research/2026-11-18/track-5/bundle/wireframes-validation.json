@@ -1,0 +1,35 @@
+{
+  "artifact_kind": "original synthetic proposal",
+  "date": "2026-11-18",
+  "source_commit_context": "b468206e9378c8d7a6788b67072494982e7de17d",
+  "checks": {
+    "python_generation": "passed",
+    "svg_xml_parse": "passed: 3 of 3",
+    "javascript_syntax": "passed: final executable script node --check; application/json fixture parsed separately",
+    "synthetic_daily_reconciliation": "passed: self 150000; team 2960000",
+    "svg_rasterization": "passed: 3 of 3 with installed sharp",
+    "visual_inspection": "passed: all three 1440x980 SVG rasterizations inspected; no clipped text observed",
+    "network_code_scan": "no fetch, XMLHttpRequest or remote URLs in authored JavaScript",
+    "pdf_appendix_visual_inspection": "passed: final self/team/admin appendix renders inspected; labels readable, no observed clipping"
+  },
+  "browser_interaction_validation": {
+    "status": "blocked_before_page_load",
+    "reason": "Local Chromium cannot create its process singleton socket in this runtime (Operation not permitted). No browser interaction or responsive runtime claims.",
+    "planned_checks": [
+      "view navigation",
+      "illustrative role preview",
+      "daily null/zero distinction",
+      "metric dialog focus and Escape",
+      "synthetic JSON export",
+      "desktop/mobile overflow"
+    ]
+  },
+  "implementation_status": "Proposal only. No product source, settings, deployments or alerts changed.",
+  "correction_checks": {
+    "cost_basis": "estimated_metered; provider_reported explicitly proposed synthetic class",
+    "complementary_suppression": "Lyra subset and contribution sum suppressed in analyst SVG/HTML and export",
+    "daily_scope": "restricted analyst daily-detail grant; broad reports >=5 people and >=7-day bins",
+    "export_scope": "selected illustrative role only; suppression retained; no authorized service claimed",
+    "self_scope_coverage": "u01 only: Nov13/17 reported, Nov14 unknown, Nov15 reported-zero; team partials retained; self inspector targets Nov14."
+  }
+}

@@ -1,0 +1,58 @@
+{
+  "research_date": "2026-11-18",
+  "user_timezone": "Australia/Melbourne",
+  "evidence_class": "Live observed; anonymous public routes only",
+  "canonical_product": {
+    "url": "https://token-horizon.dev/",
+    "authority": "README.md at pinned repository commit and live landing page"
+  },
+  "observations": [
+    {
+      "url": "https://token-horizon.dev/",
+      "method": "Public primary-source search/open",
+      "observed": "Landing page identifies product, local/published scope and explicitly illustrative demo blocks. Marketing examples were not treated as customer measurements."
+    },
+    {
+      "url": "https://token-horizon.dev/teams",
+      "method": "Anonymous browser UI",
+      "observed": "Comparison and Over time views; published profiles and members distinguished; UTC history, partial coverage and activity-not-productivity text."
+    },
+    {
+      "url": "https://token-horizon.dev/teams?teamChart=history&teamDays=30",
+      "method": "Anonymous browser UI control",
+      "observed": "Over time selection recorded in URL; daily-value table present."
+    },
+    {
+      "url": "https://token-horizon.dev/teams?teamChart=history&teamDays=7",
+      "method": "Anonymous browser UI control",
+      "observed": "Seven-day history selection; table shows exact UTC dates and Not reported for absent history. No profile values retained."
+    },
+    {
+      "url": "https://token-horizon.dev/teams",
+      "method": "Linked anonymous public team detail inspected; identity deliberately omitted",
+      "observed": "Membership versus published profiles, partial history, daily average, all-time provider mix and shared estimates visible. Real names/handles/amounts/screenshots omitted."
+    },
+    {
+      "url": "https://token-horizon.dev/leaderboard.html?view=dashboard",
+      "method": "Anonymous browser UI",
+      "observed": "Signed-out published-usage entry; explanatory text states published snapshots and local-only live traces/device telemetry."
+    }
+  ],
+  "hosted_connector": {
+    "success": true,
+    "mode": "hosted",
+    "scope": "Published community data",
+    "device_traces_present": false,
+    "private_profile_lookup": false,
+    "retained_payload": "Capability summary only"
+  },
+  "limitations": [
+    "Deployment commit not established",
+    "No sign-in or private profile/usage access",
+    "No live email test",
+    "No native application launch",
+    "No export or alert delivery exercised",
+    "No production performance benchmark"
+  ],
+  "privacy": "No real user screenshots, public profile handles, real project names, contact values or usage amounts retained in this log."
+}

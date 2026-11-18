@@ -1,0 +1,589 @@
+{
+  "checks": [
+    {
+      "actual": true,
+      "expected": true,
+      "name": "every ledger row explicitly synthetic",
+      "passed": true
+    },
+    {
+      "actual": 32,
+      "expected": 32,
+      "name": "physical delivery count",
+      "passed": true
+    },
+    {
+      "actual": true,
+      "expected": true,
+      "name": "input plus output equals fixture display tokens",
+      "passed": true
+    },
+    {
+      "actual": true,
+      "expected": true,
+      "name": "cost amounts are decimal strings or null",
+      "passed": true
+    },
+    {
+      "actual": 29,
+      "expected": 29,
+      "name": "latest metric: unique_requests",
+      "passed": true
+    },
+    {
+      "actual": 2960000,
+      "expected": 2960000,
+      "name": "latest metric: display_tokens",
+      "passed": true
+    },
+    {
+      "actual": 2220000,
+      "expected": 2220000,
+      "name": "latest metric: input_tokens",
+      "passed": true
+    },
+    {
+      "actual": 740000,
+      "expected": 740000,
+      "name": "latest metric: output_tokens",
+      "passed": true
+    },
+    {
+      "actual": "27.60",
+      "expected": "27.60",
+      "name": "latest metric: estimated_metered_usd",
+      "passed": true
+    },
+    {
+      "actual": "36.25",
+      "expected": "36.25",
+      "name": "latest metric: provider_reported_usd",
+      "passed": true
+    },
+    {
+      "actual": "0.00",
+      "expected": "0.00",
+      "name": "latest metric: known_zero_usd",
+      "passed": true
+    },
+    {
+      "actual": 19,
+      "expected": 19,
+      "name": "latest metric: visible_known_cost_rows",
+      "passed": true
+    },
+    {
+      "actual": 29,
+      "expected": 29,
+      "name": "latest metric: visible_known_cost_denominator",
+      "passed": true
+    },
+    {
+      "actual": 870000,
+      "expected": 870000,
+      "name": "latest metric: estimated_metered_token_denominator",
+      "passed": true
+    },
+    {
+      "actual": 290000,
+      "expected": 290000,
+      "name": "latest metric: provider_reported_token_denominator",
+      "passed": true
+    },
+    {
+      "actual": 750000,
+      "expected": 750000,
+      "name": "latest metric: known_zero_token_denominator",
+      "passed": true
+    },
+    {
+      "actual": 9,
+      "expected": 9,
+      "name": "latest metric: estimated_metered_rows",
+      "passed": true
+    },
+    {
+      "actual": 5,
+      "expected": 5,
+      "name": "latest metric: provider_reported_rows",
+      "passed": true
+    },
+    {
+      "actual": 5,
+      "expected": 5,
+      "name": "latest metric: unknown_rows",
+      "passed": true
+    },
+    {
+      "actual": 5,
+      "expected": 5,
+      "name": "latest metric: withheld_rows",
+      "passed": true
+    },
+    {
+      "actual": 5,
+      "expected": 5,
+      "name": "latest metric: known_zero_rows",
+      "passed": true
+    },
+    {
+      "actual": 12,
+      "expected": 12,
+      "name": "latest metric: distinct_sessions",
+      "passed": true
+    },
+    {
+      "actual": 6,
+      "expected": 6,
+      "name": "latest metric: observed_actors",
+      "passed": true
+    },
+    {
+      "actual": 8,
+      "expected": 8,
+      "name": "latest metric: joined_members",
+      "passed": true
+    },
+    {
+      "actual": 6,
+      "expected": 6,
+      "name": "latest metric: published_profiles",
+      "passed": true
+    },
+    {
+      "actual": "31.72413793",
+      "expected": "31.72413793",
+      "name": "latest metric: estimated_usd_per_million_covered_tokens",
+      "passed": true
+    },
+    {
+      "actual": "125.00000000",
+      "expected": "125.00000000",
+      "name": "latest metric: reported_usd_per_million_covered_tokens",
+      "passed": true
+    },
+    {
+      "actual": "65.51724138",
+      "expected": "65.51724138",
+      "name": "latest metric: visible_known_cost_row_percentage",
+      "passed": true
+    },
+    {
+      "actual": 2240000,
+      "expected": 2240000,
+      "name": "latest metric: lyra_tokens",
+      "passed": true
+    },
+    {
+      "actual": 5200000,
+      "expected": 5200000,
+      "name": "latest metric: summed_crew_contributions_tokens",
+      "passed": true
+    },
+    {
+      "actual": 2960000,
+      "expected": 2960000,
+      "name": "latest metric: unique_tenant_tokens",
+      "passed": true
+    },
+    {
+      "actual": 28,
+      "expected": 28,
+      "name": "initial metric: unique_requests",
+      "passed": true
+    },
+    {
+      "actual": 2660000,
+      "expected": 2660000,
+      "name": "initial metric: display_tokens",
+      "passed": true
+    },
+    {
+      "actual": "23.60",
+      "expected": "23.60",
+      "name": "initial metric: estimated_metered_usd",
+      "passed": true
+    },
+    {
+      "actual": "36.25",
+      "expected": "36.25",
+      "name": "initial metric: provider_reported_usd",
+      "passed": true
+    },
+    {
+      "actual": 18,
+      "expected": 18,
+      "name": "initial metric: visible_known_cost_rows",
+      "passed": true
+    },
+    {
+      "actual": 1,
+      "expected": 1,
+      "name": "one duplicate delivery removed",
+      "passed": true
+    },
+    {
+      "actual": 1,
+      "expected": 1,
+      "name": "one superseded revision removed",
+      "passed": true
+    },
+    {
+      "actual": 31,
+      "expected": 31,
+      "name": "tenant-scoped deliveries",
+      "passed": true
+    },
+    {
+      "actual": [
+        2,
+        30000,
+        "3.75"
+      ],
+      "expected": [
+        2,
+        30000,
+        "3.75"
+      ],
+      "name": "correction replaces prior value",
+      "passed": true
+    },
+    {
+      "actual": "2026-11-12T02:00:00Z",
+      "expected": "2026-11-12T02:00:00Z",
+      "name": "correction retains event date",
+      "passed": true
+    },
+    {
+      "actual": {
+        "display_tokens": 2960000,
+        "distinct_sessions": 12,
+        "estimated_metered_rows": 9,
+        "estimated_metered_token_denominator": 870000,
+        "estimated_metered_usd": "27.60",
+        "estimated_usd_per_million_covered_tokens": "31.72413793",
+        "input_tokens": 2220000,
+        "known_zero_rows": 5,
+        "known_zero_token_denominator": 750000,
+        "known_zero_usd": "0.00",
+        "observed_actors": 6,
+        "output_tokens": 740000,
+        "provider_reported_rows": 5,
+        "provider_reported_token_denominator": 290000,
+        "provider_reported_usd": "36.25",
+        "reported_usd_per_million_covered_tokens": "125.00000000",
+        "unique_requests": 29,
+        "unknown_rows": 5,
+        "visible_known_cost_denominator": 29,
+        "visible_known_cost_row_percentage": "65.51724138",
+        "visible_known_cost_rows": 19,
+        "withheld_rows": 5
+      },
+      "expected": {
+        "display_tokens": 2960000,
+        "distinct_sessions": 12,
+        "estimated_metered_rows": 9,
+        "estimated_metered_token_denominator": 870000,
+        "estimated_metered_usd": "27.60",
+        "estimated_usd_per_million_covered_tokens": "31.72413793",
+        "input_tokens": 2220000,
+        "known_zero_rows": 5,
+        "known_zero_token_denominator": 750000,
+        "known_zero_usd": "0.00",
+        "observed_actors": 6,
+        "output_tokens": 740000,
+        "provider_reported_rows": 5,
+        "provider_reported_token_denominator": 290000,
+        "provider_reported_usd": "36.25",
+        "reported_usd_per_million_covered_tokens": "125.00000000",
+        "unique_requests": 29,
+        "unknown_rows": 5,
+        "visible_known_cost_denominator": 29,
+        "visible_known_cost_row_percentage": "65.51724138",
+        "visible_known_cost_rows": 19,
+        "withheld_rows": 5
+      },
+      "name": "retry does not change canonical values",
+      "passed": true
+    },
+    {
+      "actual": 2660000,
+      "expected": 2660000,
+      "name": "late record excluded before receipt",
+      "passed": true
+    },
+    {
+      "actual": 2960000,
+      "expected": 2960000,
+      "name": "late record included at as-of receipt",
+      "passed": true
+    },
+    {
+      "actual": "2026-11-17T02:00:00Z",
+      "expected": "2026-11-17T02:00:00Z",
+      "name": "late row preserves original occurrence",
+      "passed": true
+    },
+    {
+      "actual": 999999,
+      "expected": 999999,
+      "name": "same event ID in another tenant remains isolated",
+      "passed": true
+    },
+    {
+      "actual": 1,
+      "expected": 1,
+      "name": "other tenant has one request",
+      "passed": true
+    },
+    {
+      "actual": true,
+      "expected": true,
+      "name": "colliding event ID deliberately present",
+      "passed": true
+    },
+    {
+      "actual": 210000,
+      "expected": 210000,
+      "name": "UTC interval includes start and excludes next midnight",
+      "passed": true
+    },
+    {
+      "actual": {
+        "2026-11-11": {
+          "status": "complete",
+          "tokens": 210000
+        },
+        "2026-11-12": {
+          "status": "complete",
+          "tokens": 410000
+        },
+        "2026-11-13": {
+          "status": "partial",
+          "tokens": 450000
+        },
+        "2026-11-14": {
+          "status": "unknown",
+          "tokens": null
+        },
+        "2026-11-15": {
+          "status": "complete",
+          "tokens": 0
+        },
+        "2026-11-16": {
+          "status": "complete",
+          "tokens": 840000
+        },
+        "2026-11-17": {
+          "status": "partial",
+          "tokens": 1050000
+        }
+      },
+      "expected": {
+        "2026-11-11": {
+          "status": "complete",
+          "tokens": 210000
+        },
+        "2026-11-12": {
+          "status": "complete",
+          "tokens": 410000
+        },
+        "2026-11-13": {
+          "status": "partial",
+          "tokens": 450000
+        },
+        "2026-11-14": {
+          "status": "unknown",
+          "tokens": null
+        },
+        "2026-11-15": {
+          "status": "complete",
+          "tokens": 0
+        },
+        "2026-11-16": {
+          "status": "complete",
+          "tokens": 840000
+        },
+        "2026-11-17": {
+          "status": "partial",
+          "tokens": 1050000
+        }
+      },
+      "name": "daily series with explicit coverage",
+      "passed": true
+    },
+    {
+      "actual": null,
+      "expected": null,
+      "name": "unknown day is null",
+      "passed": true
+    },
+    {
+      "actual": 0,
+      "expected": 0,
+      "name": "complete empty day is zero",
+      "passed": true
+    },
+    {
+      "actual": [
+        "partial",
+        "partial"
+      ],
+      "expected": [
+        "partial",
+        "partial"
+      ],
+      "name": "partial days retain observed sum with partial status",
+      "passed": true
+    },
+    {
+      "actual": 2960000,
+      "expected": 2960000,
+      "name": "daily numeric values reconcile",
+      "passed": true
+    },
+    {
+      "actual": true,
+      "expected": true,
+      "name": "ratio of sums differs from invalid mean of row rates",
+      "passed": true
+    },
+    {
+      "actual": true,
+      "expected": true,
+      "name": "unknown and withheld amounts remain null",
+      "passed": true
+    },
+    {
+      "actual": true,
+      "expected": true,
+      "name": "known-zero amounts are explicit zero",
+      "passed": true
+    },
+    {
+      "actual": false,
+      "expected": false,
+      "name": "cost bases remain separate; no asserted invoice total",
+      "passed": true
+    },
+    {
+      "actual": true,
+      "expected": true,
+      "name": "overlapping crew contributions exceed unique use",
+      "passed": true
+    },
+    {
+      "actual": [],
+      "expected": [],
+      "name": "unconsented members have no telemetry rows",
+      "passed": true
+    },
+    {
+      "actual": "2026-11-12",
+      "expected": "2026-11-12",
+      "name": "UTC date can differ from display timezone",
+      "passed": true
+    },
+    {
+      "actual": 23,
+      "expected": 23,
+      "name": "Melbourne DST day has 23 elapsed hours",
+      "passed": true
+    },
+    {
+      "actual": "2026-10-03T14:00:00Z",
+      "expected": "2026-10-03T14:00:00Z",
+      "name": "DST UTC start",
+      "passed": true
+    },
+    {
+      "actual": "2026-10-04T13:00:00Z",
+      "expected": "2026-10-04T13:00:00Z",
+      "name": "DST UTC end",
+      "passed": true
+    },
+    {
+      "actual": 3,
+      "expected": 3,
+      "name": "DST spring-forward skips 02 local hour",
+      "passed": true
+    },
+    {
+      "actual": "visible",
+      "expected": "visible",
+      "name": "all-six aggregate meets k5",
+      "passed": true
+    },
+    {
+      "actual": {
+        "status": "suppressed",
+        "tokens": null
+      },
+      "expected": {
+        "status": "suppressed",
+        "tokens": null
+      },
+      "name": "four-actor filter suppressed",
+      "passed": true
+    },
+    {
+      "actual": {
+        "status": "suppressed",
+        "tokens": null
+      },
+      "expected": {
+        "status": "suppressed",
+        "tokens": null
+      },
+      "name": "five-of-six differencing guard",
+      "passed": true
+    },
+    {
+      "actual": true,
+      "expected": true,
+      "name": "conflicting duplicate revision rejected",
+      "passed": true
+    }
+  ],
+  "checks_passed": 69,
+  "checks_total": 69,
+  "fixture_version": "track5-synthetic-v1",
+  "input_sha256": {
+    "coverage.json": "61c2017355a2ddb5e5dbf3784acc01e777cddfa1e8224b042c471e9c5036d6f7",
+    "expected_metrics.json": "6cb2e9f3219e70c53bb2c25c5ecbed219b79689b4fb14d26259242af4fc67679",
+    "identity_fixture.json": "5ab44b9e92202c975118a9743414aa02d200bbc76429262b37047dc72426a0f3",
+    "ledger_fixture.jsonl": "1d54308d3d8bc810706dc55ceaa0cc150cae11992d74d24c8f5758dea0167814"
+  },
+  "invalid_mean_of_estimated_row_rates_for_comparison_only": "72.59259259",
+  "latest_synthetic_metrics": {
+    "display_tokens": 2960000,
+    "distinct_sessions": 12,
+    "estimated_metered_rows": 9,
+    "estimated_metered_token_denominator": 870000,
+    "estimated_metered_usd": "27.60",
+    "estimated_usd_per_million_covered_tokens": "31.72413793",
+    "input_tokens": 2220000,
+    "joined_members": 8,
+    "known_zero_rows": 5,
+    "known_zero_token_denominator": 750000,
+    "known_zero_usd": "0.00",
+    "lyra_tokens": 2240000,
+    "observed_actors": 6,
+    "output_tokens": 740000,
+    "provider_reported_rows": 5,
+    "provider_reported_token_denominator": 290000,
+    "provider_reported_usd": "36.25",
+    "published_profiles": 6,
+    "reported_usd_per_million_covered_tokens": "125.00000000",
+    "summed_crew_contributions_tokens": 5200000,
+    "unique_requests": 29,
+    "unique_tenant_tokens": 2960000,
+    "unknown_rows": 5,
+    "visible_known_cost_denominator": 29,
+    "visible_known_cost_row_percentage": "65.51724138",
+    "visible_known_cost_rows": 19,
+    "withheld_rows": 5
+  },
+  "scope": "Synthetic specification oracle only. Not production telemetry, a benchmark, backend/RBAC verification, or deployed behavior.",
+  "status": "PASS"
+}

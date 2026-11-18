@@ -1,0 +1,462 @@
+{
+  "classification": "Read-only source research; no production validation; no personal usage data",
+  "research_date": "2026-11-18",
+  "user_timezone": "Australia/Melbourne",
+  "repository": {
+    "url": "https://github.com/castlemilk/token-horizon",
+    "branch": "main",
+    "commit": "b468206e9378c8d7a6788b67072494982e7de17d",
+    "commit_time_utc": "2026-11-18T07:35:19Z",
+    "commit_time_aedt": "2026-11-18T18:35:19+11:00",
+    "tree_sha": "b468206e9378c8d7a6788b67072494982e7de17d",
+    "tree_entries": 2031,
+    "tree_truncated": false,
+    "branch_rechecked_same_head": true
+  },
+  "release": {
+    "name": "v0.5.2",
+    "published_at_utc": "2026-10-28T07:33:44Z",
+    "tag_object": "6ce0619d7323c5e818be709349331d50789cdf54",
+    "resolved_commit": "4ebad0b69c3113509f974438e46238631d52d77c",
+    "url": "https://github.com/castlemilk/token-horizon/releases/tag/v0.5.2",
+    "binary_inspected": false
+  },
+  "issue_inventory": {
+    "observed_at_approx_utc": "2026-11-18T08:12:00Z",
+    "page1_url": "https://api.github.com/repos/castlemilk/token-horizon/issues?state=all&per_page=100&page=1",
+    "page1_objects": 46,
+    "page2_url": "https://api.github.com/repos/castlemilk/token-horizon/issues?state=all&per_page=100&page=2",
+    "page2_objects": 0,
+    "ordinary_issues_open": 31,
+    "ordinary_issues_closed": 0,
+    "prs_merged": 12,
+    "prs_closed_unmerged": 1,
+    "prs_open_draft": 2,
+    "primary_parents": [
+      12,
+      16
+    ],
+    "dependencies": [
+      13,
+      14,
+      15,
+      19,
+      26,
+      37,
+      39,
+      41
+    ],
+    "note": "All bodies retrieved; relevant issues, merged/closed PR metadata and selected comments inspected. THR rows are within issue12, not separate issues."
+  },
+  "project_context": [
+    {
+      "title": "Research root",
+      "url": "https://chatgpt.com/space/page_6af3b3f3a6308191a3b0fed46bc74230",
+      "updated_utc": "2026-11-16T23:44:11.231224Z",
+      "access": "Text read directly"
+    },
+    {
+      "title": "Knowledge and memory integration",
+      "url": "https://chatgpt.com/space/page_15d632f379b08191862a536e8d2b1995",
+      "updated_utc": "2026-11-11T00:31:25.715919Z",
+      "access": "Text read directly"
+    },
+    {
+      "title": "Harness and gateway integration",
+      "url": "https://chatgpt.com/space/page_0fe8aece1bdc8191b7a3c1a4117e4999",
+      "updated_utc": "2026-11-11T00:31:15.555522Z",
+      "access": "Text read directly"
+    }
+  ],
+  "public_product": {
+    "authoritative_link": "README.md at pinned commit",
+    "urls": [
+      "https://token-horizon.dev/",
+      "https://token-horizon.dev/docs/",
+      "https://token-horizon.dev/connect"
+    ],
+    "method": "Anonymous public HTML plus hosted overview read",
+    "hosted_overview": "Successful; declared published community scope, no device traces",
+    "individual_profile_calls": 0,
+    "health_url": "https://token-horizon.dev/api/health",
+    "health_access": "Not retrievable through research tool; not evidence of outage",
+    "deployment_commit": "unknown"
+  },
+  "inspected_files": [
+    {
+      "path": "AGENTS.md",
+      "blob_sha": "fbdce308862d2c14868166e20f0303e80671d2be",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/AGENTS.md",
+      "inspection": "Targeted sections inspected; not a claim that every line or execution path was reviewed."
+    },
+    {
+      "path": "README.md",
+      "blob_sha": "260d05c68d2de0949aca3885b86181c9ea754447",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/README.md",
+      "inspection": "Targeted sections inspected; not a claim that every line or execution path was reviewed."
+    },
+    {
+      "path": "clients/macos/Package.swift",
+      "blob_sha": "607bd0b0a6c1b4519fa1645806d758cab7763626",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/clients/macos/Package.swift",
+      "inspection": "Targeted sections inspected; not a claim that every line or execution path was reviewed."
+    },
+    {
+      "path": "clients/macos/Sources/TokenHorizon/Leaderboard/LeaderboardStore.swift",
+      "blob_sha": "af9d354c8d58520555f00fd173eb887f71f9e601",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/clients/macos/Sources/TokenHorizon/Leaderboard/LeaderboardStore.swift",
+      "inspection": "Targeted sections inspected; not a claim that every line or execution path was reviewed."
+    },
+    {
+      "path": "clients/macos/Sources/TokenHorizon/Leaderboard/LeaderboardSyncController.swift",
+      "blob_sha": "792fedcf884b05ca747dec19a50cbdfb90f94b92",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/clients/macos/Sources/TokenHorizon/Leaderboard/LeaderboardSyncController.swift",
+      "inspection": "Targeted sections inspected; not a claim that every line or execution path was reviewed."
+    },
+    {
+      "path": "clients/macos/Sources/TokenHorizon/Persistence/DurableStore.swift",
+      "blob_sha": "13acded85dacc508546c7024dc874fc168829f6c",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/clients/macos/Sources/TokenHorizon/Persistence/DurableStore.swift",
+      "inspection": "Targeted sections inspected; not a claim that every line or execution path was reviewed."
+    },
+    {
+      "path": "clients/macos/Sources/TokenHorizon/Persistence/SettingsStore.swift",
+      "blob_sha": "7c9b9be13f0647196f8167cdcd0c61a6520d95be",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/clients/macos/Sources/TokenHorizon/Persistence/SettingsStore.swift",
+      "inspection": "Targeted sections inspected; not a claim that every line or execution path was reviewed."
+    },
+    {
+      "path": "clients/macos/Sources/TokenHorizon/Server/LocalServer.swift",
+      "blob_sha": "948cec6bc01cb358e6dc3d1674fa8ac5ede244d8",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/clients/macos/Sources/TokenHorizon/Server/LocalServer.swift",
+      "inspection": "Targeted sections inspected; not a claim that every line or execution path was reviewed."
+    },
+    {
+      "path": "clients/macos/Sources/TokenHorizon/Usage/Models.swift",
+      "blob_sha": "9c83b06f542c8d9b19f185862a0c8364c3809cc4",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/clients/macos/Sources/TokenHorizon/Usage/Models.swift",
+      "inspection": "Targeted sections inspected; not a claim that every line or execution path was reviewed."
+    },
+    {
+      "path": "clients/macos/Sources/TokenHorizon/Usage/UsageEngine.swift",
+      "blob_sha": "d8bbc2f0439da7bc7ffcbf00314be74ee0682202",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/clients/macos/Sources/TokenHorizon/Usage/UsageEngine.swift",
+      "inspection": "Targeted sections inspected; not a claim that every line or execution path was reviewed."
+    },
+    {
+      "path": "clients/macos/Sources/TokenHorizon/Usage/UsageEngineInputs.swift",
+      "blob_sha": "6ec39eeb41e29d3fc000c6029746bc19b7e48c69",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/clients/macos/Sources/TokenHorizon/Usage/UsageEngineInputs.swift",
+      "inspection": "Targeted sections inspected; not a claim that every line or execution path was reviewed."
+    },
+    {
+      "path": "cloudflare/AUTH.md",
+      "blob_sha": "d7f3f2b5208258f7a377ea904bb8158cf4358b07",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/cloudflare/AUTH.md",
+      "inspection": "Targeted sections inspected; not a claim that every line or execution path was reviewed."
+    },
+    {
+      "path": "cloudflare/CONNECTOR.md",
+      "blob_sha": "45e346dce09140ada404c35ae09ca9f15f919388",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/cloudflare/CONNECTOR.md",
+      "inspection": "Targeted sections inspected; not a claim that every line or execution path was reviewed."
+    },
+    {
+      "path": "cloudflare/package.json",
+      "blob_sha": "c7942f26f481e4cfd9e60acd323c39444f2d6b09",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/cloudflare/package.json",
+      "inspection": "Targeted sections inspected; not a claim that every line or execution path was reviewed."
+    },
+    {
+      "path": "cloudflare/src/connector.js",
+      "blob_sha": "aa11ea3df00a31252a88556a055834a88f81246a",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/cloudflare/src/connector.js",
+      "inspection": "Targeted sections inspected; not a claim that every line or execution path was reviewed."
+    },
+    {
+      "path": "cloudflare/src/index.js",
+      "blob_sha": "98560685746bae8360dd8dae8a870ca85c27b170",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/cloudflare/src/index.js",
+      "inspection": "Targeted sections inspected; not a claim that every line or execution path was reviewed."
+    },
+    {
+      "path": "cloudflare/src/leaderboard-storage.js",
+      "blob_sha": "3691c3f7630627d4b36a7edae1738606f45579ea",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/cloudflare/src/leaderboard-storage.js",
+      "inspection": "Targeted sections inspected; not a claim that every line or execution path was reviewed."
+    },
+    {
+      "path": "cloudflare/src/team-invites.js",
+      "blob_sha": "0fc8d7977e1587e6b3d6603fb8ca80469f3bf246",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/cloudflare/src/team-invites.js",
+      "inspection": "Targeted sections inspected; not a claim that every line or execution path was reviewed."
+    },
+    {
+      "path": "cloudflare/src/usage-history.js",
+      "blob_sha": "70b15ad9b440e573256f6baf6a50dd53b35cc690",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/cloudflare/src/usage-history.js",
+      "inspection": "Targeted sections inspected; not a claim that every line or execution path was reviewed."
+    },
+    {
+      "path": "cloudflare/src/worker.js",
+      "blob_sha": "8f6933a62503586fffb88c07a25412bae519bd0a",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/cloudflare/src/worker.js",
+      "inspection": "Targeted sections inspected; not a claim that every line or execution path was reviewed."
+    },
+    {
+      "path": "cloudflare/wrangler.toml",
+      "blob_sha": "305665ec207c1438fcf56f59132960cd3fd54c2d",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/cloudflare/wrangler.toml",
+      "inspection": "Targeted sections inspected; not a claim that every line or execution path was reviewed."
+    },
+    {
+      "path": "daemons/go/internal/api/api.go",
+      "blob_sha": "aabe8d8d5cebd4a7c947bb5e7930e5ae2f619d7a",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/daemons/go/internal/api/api.go",
+      "inspection": "Targeted sections inspected; not a claim that every line or execution path was reviewed."
+    },
+    {
+      "path": "daemons/go/internal/api/compat_part3.go",
+      "blob_sha": "57a92c6e910788d561d37e91835e52f2ef162a95",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/daemons/go/internal/api/compat_part3.go",
+      "inspection": "Targeted sections inspected; not a claim that every line or execution path was reviewed."
+    },
+    {
+      "path": "daemons/go/internal/api/compat_part4.go",
+      "blob_sha": "b90e96644939962fb3a7e2b47c98052ce921359a",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/daemons/go/internal/api/compat_part4.go",
+      "inspection": "Targeted sections inspected; not a claim that every line or execution path was reviewed."
+    },
+    {
+      "path": "daemons/go/internal/api/run.go",
+      "blob_sha": "82300f06f319462d8a0084deb9881127cd63e7a7",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/daemons/go/internal/api/run.go",
+      "inspection": "Targeted sections inspected; not a claim that every line or execution path was reviewed."
+    },
+    {
+      "path": "daemons/go/internal/capture/files/backfill.go",
+      "blob_sha": "e82464f9e924317cef3bc6d38465fe524f2db103",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/daemons/go/internal/capture/files/backfill.go",
+      "inspection": "Targeted sections inspected; not a claim that every line or execution path was reviewed."
+    },
+    {
+      "path": "daemons/go/internal/capture/files/codex.go",
+      "blob_sha": "9beb62874df1d007df75d24400682688b044d2a4",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/daemons/go/internal/capture/files/codex.go",
+      "inspection": "Targeted sections inspected; not a claim that every line or execution path was reviewed."
+    },
+    {
+      "path": "daemons/go/internal/capture/files/consolidators.go",
+      "blob_sha": "4783e70ba994ee3534f78ec6388f4db14139e558",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/daemons/go/internal/capture/files/consolidators.go",
+      "inspection": "Targeted sections inspected; not a claim that every line or execution path was reviewed."
+    },
+    {
+      "path": "daemons/go/internal/capture/files/projects.go",
+      "blob_sha": "3c2b919f41a49f1a53707ae3c913dfa3bf4d67d5",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/daemons/go/internal/capture/files/projects.go",
+      "inspection": "Targeted sections inspected; not a claim that every line or execution path was reviewed."
+    },
+    {
+      "path": "daemons/go/internal/capture/meter/anthropic.go",
+      "blob_sha": "e87c5a90de07f3ddef68842ad9d4244886c9efc1",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/daemons/go/internal/capture/meter/anthropic.go",
+      "inspection": "Targeted sections inspected; not a claim that every line or execution path was reviewed."
+    },
+    {
+      "path": "daemons/go/internal/capture/meter/meter.go",
+      "blob_sha": "1da227323c98c3476011af1f65a8a0f911808abf",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/daemons/go/internal/capture/meter/meter.go",
+      "inspection": "Targeted sections inspected; not a claim that every line or execution path was reviewed."
+    },
+    {
+      "path": "daemons/go/internal/capture/meter/openai.go",
+      "blob_sha": "d9acc9479778ee82914c80716895ae9cddf1fd45",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/daemons/go/internal/capture/meter/openai.go",
+      "inspection": "Targeted sections inspected; not a claim that every line or execution path was reviewed."
+    },
+    {
+      "path": "daemons/go/internal/capture/meter/retry.go",
+      "blob_sha": "242bc9e30fc0fef01da5c7097dbbd2f00c88c3dc",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/daemons/go/internal/capture/meter/retry.go",
+      "inspection": "Targeted sections inspected; not a claim that every line or execution path was reviewed."
+    },
+    {
+      "path": "daemons/go/internal/capture/meter/sniff.go",
+      "blob_sha": "edb2946988689c4c7c54a2d778897c43b9e94c46",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/daemons/go/internal/capture/meter/sniff.go",
+      "inspection": "Targeted sections inspected; not a claim that every line or execution path was reviewed."
+    },
+    {
+      "path": "daemons/go/internal/capture/meter/trace.go",
+      "blob_sha": "afa0ce4cf5585c800dfca94d7cd1ffa9ab93582f",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/daemons/go/internal/capture/meter/trace.go",
+      "inspection": "Targeted sections inspected; not a claim that every line or execution path was reviewed."
+    },
+    {
+      "path": "daemons/go/internal/cloudsync/sync.go",
+      "blob_sha": "742faf887209711d4d12adb7be1e639014820eb8",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/daemons/go/internal/cloudsync/sync.go",
+      "inspection": "Targeted sections inspected; not a claim that every line or execution path was reviewed."
+    },
+    {
+      "path": "daemons/go/internal/platform/config.go",
+      "blob_sha": "05d58dbf65711defa30856101699c023b8c061a0",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/daemons/go/internal/platform/config.go",
+      "inspection": "Targeted sections inspected; not a claim that every line or execution path was reviewed."
+    },
+    {
+      "path": "daemons/go/internal/store/query.go",
+      "blob_sha": "55d4021627fff84c7772752fdb42614d8ef1484c",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/daemons/go/internal/store/query.go",
+      "inspection": "Targeted sections inspected; not a claim that every line or execution path was reviewed."
+    },
+    {
+      "path": "daemons/go/internal/store/schema.go",
+      "blob_sha": "5da937f9dcaae10ed6b582aa60c7ff5428bcb6ab",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/daemons/go/internal/store/schema.go",
+      "inspection": "Targeted sections inspected; not a claim that every line or execution path was reviewed."
+    },
+    {
+      "path": "daemons/go/internal/store/store.go",
+      "blob_sha": "a80872db69b70544583ab598df972e56d4e0cfb7",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/daemons/go/internal/store/store.go",
+      "inspection": "Targeted sections inspected; not a claim that every line or execution path was reviewed."
+    },
+    {
+      "path": "daemons/go/internal/store/trace.go",
+      "blob_sha": "9c460c018de076d6070e2bcf12ee13386fcaba46",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/daemons/go/internal/store/trace.go",
+      "inspection": "Targeted sections inspected; not a claim that every line or execution path was reviewed."
+    },
+    {
+      "path": "daemons/go/internal/usage/accountkey.go",
+      "blob_sha": "1aa46c640bdd4c3916999597d998ec983714c461",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/daemons/go/internal/usage/accountkey.go",
+      "inspection": "Targeted sections inspected; not a claim that every line or execution path was reviewed."
+    },
+    {
+      "path": "daemons/go/internal/usage/canonical.go",
+      "blob_sha": "adf4f44d1d925bdb6400beced0c26f477b737b35",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/daemons/go/internal/usage/canonical.go",
+      "inspection": "Targeted sections inspected; not a claim that every line or execution path was reviewed."
+    },
+    {
+      "path": "daemons/go/internal/usage/trace.go",
+      "blob_sha": "df30f969c4cd99d0e9a284ab2b6efbc165ea3820",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/daemons/go/internal/usage/trace.go",
+      "inspection": "Targeted sections inspected; not a claim that every line or execution path was reviewed."
+    },
+    {
+      "path": "daemons/go/internal/usage/types.go",
+      "blob_sha": "4fe7f458950934d6ba01cc1adbd3b63d38f25bf3",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/daemons/go/internal/usage/types.go",
+      "inspection": "Targeted sections inspected; not a claim that every line or execution path was reviewed."
+    },
+    {
+      "path": "gateway/README.md",
+      "blob_sha": "88b8301552bf0d06ee4add71807de513be6eae05",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/gateway/README.md",
+      "inspection": "Targeted sections inspected; not a claim that every line or execution path was reviewed."
+    },
+    {
+      "path": "gateway/api.go",
+      "blob_sha": "2af0f18b58c2148412c1dae46768295fc0e29a0a",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/gateway/api.go",
+      "inspection": "Targeted sections inspected; not a claim that every line or execution path was reviewed."
+    },
+    {
+      "path": "gateway/config.go",
+      "blob_sha": "194e2825945e491d5c538931ab52ac2dd41a02c0",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/gateway/config.go",
+      "inspection": "Targeted sections inspected; not a claim that every line or execution path was reviewed."
+    },
+    {
+      "path": "gateway/infer.go",
+      "blob_sha": "0624a90a76009eb2bdbcc0b2a3e83358bbb4d2c3",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/gateway/infer.go",
+      "inspection": "Targeted sections inspected; not a claim that every line or execution path was reviewed."
+    },
+    {
+      "path": "gateway/main.go",
+      "blob_sha": "82e06a8e6b14efb04846720da90f86017021ae76",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/gateway/main.go",
+      "inspection": "Targeted sections inspected; not a claim that every line or execution path was reviewed."
+    },
+    {
+      "path": "gateway/proxy.go",
+      "blob_sha": "4ee767a771556737f9bee7b4facaf717ac3f4ac0",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/gateway/proxy.go",
+      "inspection": "Targeted sections inspected; not a claim that every line or execution path was reviewed."
+    },
+    {
+      "path": "gateway/store.go",
+      "blob_sha": "6259afbfaf4964347652dbad4683a511098627c9",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/gateway/store.go",
+      "inspection": "Targeted sections inspected; not a claim that every line or execution path was reviewed."
+    },
+    {
+      "path": "gateway/trace.go",
+      "blob_sha": "4836612409dc6e7e8f075e78048a368dd1c1a682",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/gateway/trace.go",
+      "inspection": "Targeted sections inspected; not a claim that every line or execution path was reviewed."
+    },
+    {
+      "path": "gateway/usage.go",
+      "blob_sha": "55ca0ad1b57c4f0fc0fa5be1d0eda4cb45805ed7",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/gateway/usage.go",
+      "inspection": "Targeted sections inspected; not a claim that every line or execution path was reviewed."
+    },
+    {
+      "path": "mcp/README.md",
+      "blob_sha": "736d8b90020bf9db12c8de38d2d50fd949831d03",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/mcp/README.md",
+      "inspection": "Targeted sections inspected; not a claim that every line or execution path was reviewed."
+    },
+    {
+      "path": "mcp/src/tools.js",
+      "blob_sha": "fb7dc675b25eb19581228b08413e82e2abb30a33",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/mcp/src/tools.js",
+      "inspection": "Targeted sections inspected; not a claim that every line or execution path was reviewed."
+    },
+    {
+      "path": "mcp/token-horizon-mcp.mjs",
+      "blob_sha": "00e7188912aefcd6501ba30c65b5c1e96a525fe0",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/mcp/token-horizon-mcp.mjs",
+      "inspection": "Targeted sections inspected; not a claim that every line or execution path was reviewed."
+    },
+    {
+      "path": "package.json",
+      "blob_sha": "7bb2876f426ceb408f35d030c4f5dea0a8070129",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/package.json",
+      "inspection": "Targeted sections inspected; not a claim that every line or execution path was reviewed."
+    }
+  ],
+  "access_limits": [
+    "No native installed runtime or binary build",
+    "No backend implementation for optional /ingest/events verified",
+    "No private prompts or personal usage records read/exported",
+    "Original prior conversation and image attachments not inspected",
+    "No product test chain, inference, paid service or third-party contact",
+    "No observed deployment revision",
+    "Synthetic reference is separate from Token Horizon source"
+  ],
+  "search_coverage": [
+    {
+      "query": "knowledge_graph",
+      "result": "No matches in repository code search"
+    },
+    {
+      "query": "context_bundle",
+      "result": "No matches in repository code search"
+    },
+    {
+      "query": "knowledge",
+      "result": "Inspected matches included model knowledge cutoffs, not a dedicated graph feature"
+    },
+    {
+      "query": "embedding",
+      "result": "Inspected matches included inference-engine dependencies, not a graph integration"
+    }
+  ]
+}

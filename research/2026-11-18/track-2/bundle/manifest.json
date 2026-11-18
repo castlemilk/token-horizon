@@ -1,0 +1,86 @@
+{
+  "title": "Token Horizon — Track 2 research and specification",
+  "created_at": "2026-11-18T19:39:43+11:00",
+  "repository": "https://github.com/castlemilk/token-horizon",
+  "branch": "main",
+  "commit": "b468206e9378c8d7a6788b67072494982e7de17d",
+  "status": "Read-only research. Proposed designs are unimplemented and untested.",
+  "privacy": "Synthetic examples only; no observed personal usage records or browser captures bundled.",
+  "files": [
+    {
+      "name": "README.md",
+      "bytes": 2785,
+      "sha256": "279b3f8a3dddf41e6b7da0bf7884497faae13b23782d82dee82bedc0231f120c"
+    },
+    {
+      "name": "token-horizon-track2-contact-sheet.png",
+      "bytes": 697170,
+      "sha256": "09189a7ca50e522d65c0ed2aad39d1b6e49ba9c9e154fe86048537b2335da28d"
+    },
+    {
+      "name": "token-horizon-track2-research.md",
+      "bytes": 90616,
+      "sha256": "6fa4b2ecc3723d41a99d818a87641ab04a1fba4e3785c6d1e3cbc26330b2f7d1"
+    },
+    {
+      "name": "token-horizon-track2-research.pdf",
+      "bytes": 178925,
+      "sha256": "de8bbff8b7400c327bc657aa80d6eb14e6fbe17521007c550615960fbafad9a9"
+    },
+    {
+      "name": "token-horizon-track2-wireframes.pdf",
+      "bytes": 65134,
+      "sha256": "d352e8e3bd6768529787d38a9ea663eb1d8fac47789c56721f4af27cbf1928ed"
+    },
+    {
+      "name": "wireframe-1.png",
+      "bytes": 207523,
+      "sha256": "52de95e0f97a9626cf5ec5e66738d5462e7633212a2e077facb4ac93651282df"
+    },
+    {
+      "name": "wireframe-2.png",
+      "bytes": 198880,
+      "sha256": "1ae147f8b59184b72c621c43ca248ea0ab4d76825674c8c146650dd938752beb"
+    },
+    {
+      "name": "wireframe-3.png",
+      "bytes": 199152,
+      "sha256": "729b0f75cf3b73d8a1ebd368e1c14506a3f500aa394c1f24b306c3fce7086b92"
+    },
+    {
+      "name": "wireframe-4.png",
+      "bytes": 192138,
+      "sha256": "ef431915c1e8c6118e125d29c3cace628386b34943df058e931989dd21485468"
+    },
+    {
+      "name": "wireframe-5.png",
+      "bytes": 187131,
+      "sha256": "97cbc2a197bfb1433a7c06b3b30c2fcf44610edd3716f06a6d2eade89954202d"
+    },
+    {
+      "name": "wireframe-6.png",
+      "bytes": 140058,
+      "sha256": "de7c14e15817d85fe4673e6ccbfa6bc292344caf698c0d146b5f2056b9194886"
+    },
+    {
+      "name": "wireframe-7.png",
+      "bytes": 169514,
+      "sha256": "e085be8bc8052cf47382c54008cd27e237834680a13954a155b4d8d8050919b7"
+    },
+    {
+      "name": "wireframe-8.png",
+      "bytes": 137793,
+      "sha256": "dfa528499a1acb3e23a24e1ee728eb45243f09a5d24649b4d7e4583a3a99008b"
+    },
+    {
+      "name": "wireframe-9.png",
+      "bytes": 208927,
+      "sha256": "8f236a911f952d947c398dc07754acff6e2e96813fef5cf0cbe05c631804b81f"
+    },
+    {
+      "name": "wireframe-index.json",
+      "bytes": 2567,
+      "sha256": "c8f3681813d3bd1e6dd61020721681138df52dff2b11e99196206e033a3a3194"
+    }
+  ]
+}

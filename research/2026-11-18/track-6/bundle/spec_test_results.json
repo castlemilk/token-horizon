@@ -1,0 +1,14 @@
+{
+  "artifact_type": "SPECIFICATION TEST HARNESS",
+  "scope": "Synthetic proposed normalization arithmetic; NOT Token Horizon application tests",
+  "fixture_schema": "proposal-fixtures-v3",
+  "tests_run": 39,
+  "passed": 39,
+  "failures": 0,
+  "errors": 0,
+  "skipped": 0,
+  "success": true,
+  "network_calls": 0,
+  "production_code_imports": 0,
+  "failure_test_ids": []
+}

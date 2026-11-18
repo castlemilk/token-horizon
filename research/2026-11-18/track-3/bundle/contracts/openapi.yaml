@@ -1,0 +1,938 @@
+openapi: 3.1.0
+info:
+  title: Token Horizon knowledge evidence API — PROPOSAL
+  version: 0.0.0-proposal
+  description: Untested interface proposal, not deployed endpoints. Synthetic examples
+    only. Transport/authentication, concurrent release, migrations and production
+    controls are not implemented by this artifact.
+paths:
+  /knowledge/v1/capabilities:
+    get:
+      operationId: knowledgeCapabilities
+      summary: Discover the current producer contract
+      description: Only metadata safe for the verified caller. Public hosted account
+        scope never implies these capabilities.
+      security:
+      - localCapability: []
+      x-required-capabilities:
+      - knowledge:metadata:read
+      responses:
+        '200':
+          description: Authorized result.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Capabilities'
+        '401': &id001
+          description: No verified caller.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404': &id002
+          description: Missing and inaccessible objects share this response.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '409': &id003
+          description: Review snapshot is stale or invalid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '413': &id004
+          description: Request or response exceeds byte limits.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '422': &id005
+          description: Invalid schema or unsupported recipe.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '503': &id006
+          description: Required policy/source state unavailable; fail closed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /knowledge/v1/query:
+    post:
+      operationId: knowledgeQuery
+      summary: Run a bounded read-only recipe
+      description: Workspace and actor derive only from verified authorization. Authorize
+        nodes, edges and ALL required evidence before expansion. Current permissions
+        and deletion state override historical cutoffs. Additional JSON properties,
+        including tenant selectors, are rejected. Query POST does not mutate graph
+        content.
+      security:
+      - localCapability: []
+      x-required-capabilities:
+      - knowledge:content:read
+      responses:
+        '200':
+          description: Authorized result.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QueryResponse'
+        '401': *id001
+        '404': *id002
+        '409': *id003
+        '413': *id004
+        '422': *id005
+        '503': *id006
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/QueryRequest'
+  /knowledge/v1/nodes/{version_id}/explanation:
+    get:
+      operationId: knowledgeExplain
+      summary: Explain permitted evidence for a version
+      description: Default current-time explanation. Missing and forbidden IDs are
+        indistinguishable. No hidden counts or labels.
+      security:
+      - localCapability: []
+      x-required-capabilities:
+      - knowledge:content:read
+      responses:
+        '200':
+          description: Authorized result.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QueryResponse'
+        '401': *id001
+        '404': *id002
+        '409': *id003
+        '413': *id004
+        '422': *id005
+        '503': *id006
+      parameters:
+      - name: version_id
+        in: path
+        required: true
+        schema: &id007
+          type: string
+          minLength: 1
+          maxLength: 128
+          pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]*$
+  /knowledge/v1/handoffs/preview:
+    post:
+      operationId: knowledgePreview
+      summary: Prepare an ephemeral review manifest
+      description: Creates a local, time-limited preview only. Exact manifest, authorized-view
+        token, source/deletion generations, source versions and destination are bound
+        in server-held state. Global epochs remain internal. No third-party send and
+        no grant to export later.
+      security:
+      - localCapability: []
+      x-required-capabilities:
+      - knowledge:content:read
+      responses:
+        '200':
+          description: Authorized result.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PreviewResponse'
+        '401': *id001
+        '404': *id002
+        '409': *id003
+        '413': *id004
+        '422': *id005
+        '503': *id006
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PreviewRequest'
+  /knowledge/v1/handoffs/{preview_id}/export:
+    post:
+      operationId: knowledgeExport
+      summary: Release a reviewed local artifact
+      description: Explicit mutation/action. Freshly require read AND export on every
+        item, edge and required source. The caller token is only a comparison value.
+        Bind destination, hash, expiry, authorized-view token and source/deletion
+        generations in server-held state. Export only approved, non-suggested items.
+        Keep global epochs internal; unrelated hidden writes must not alter visible
+        tokens or force observable re-review. Recheck transactionally before releasing
+        bytes. No implicit transmission to a named harness and no causal-use claim.
+        Blocking review reasons prohibit export.
+      security:
+      - localCapability: []
+      x-required-capabilities:
+      - knowledge:content:read
+      - knowledge:export
+      responses:
+        '200':
+          description: Authorized result.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExportResponse'
+        '401': *id001
+        '404': *id002
+        '409': *id003
+        '413': *id004
+        '422': *id005
+        '503': *id006
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ExportRequest'
+      parameters:
+      - name: preview_id
+        in: path
+        required: true
+        schema: *id007
+  /knowledge/v1/sources/{source_version_id}:
+    delete:
+      operationId: knowledgeDeleteSource
+      summary: Block source revision and propagate deletion
+      description: Explicit destructive operation under scoped lifecycle ownership.
+        Erasure does not require content readability, so revoked or expired sources
+        remain erasable. Tombstone the generation before reads; invalidate complete
+        dependency closure, caches, FTS, previews and controlled shares. Receipt reveals
+        no hidden descendant labels or counts; physical cleanup and external copies
+        are separate statuses.
+      security:
+      - localCapability: []
+      x-required-capabilities:
+      - knowledge:delete
+      responses:
+        '200':
+          description: Authorized result.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeletionReceipt'
+        '401': *id001
+        '404': *id002
+        '409': *id003
+        '413': *id004
+        '422': *id005
+        '503': *id006
+      parameters:
+      - name: source_version_id
+        in: path
+        required: true
+        schema: *id007
+components:
+  securitySchemes:
+    localCapability:
+      type: http
+      scheme: bearer
+      description: Proposed per-client local capability; identity/workspace are server-derived.
+        This schema does not implement issuance or storage.
+  schemas:
+    QueryRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        recipe:
+          enum:
+          - resume_task
+          - explain_context
+          - changes_since_bundle
+        seed_ids:
+          type: array
+          items: *id007
+          minItems: 1
+          maxItems: 10
+          uniqueItems: true
+        as_of: &id008
+          type: string
+          format: date-time
+        known_at: *id008
+        bounds:
+          type: object
+          additionalProperties: false
+          properties:
+            max_hops:
+              type: integer
+              minimum: 0
+              maximum: 2
+              default: 1
+            max_nodes:
+              type: integer
+              minimum: 1
+              maximum: 200
+              default: 100
+            max_edges:
+              type: integer
+              minimum: 0
+              maximum: 500
+              default: 200
+          required: []
+        content_budget:
+          type: object
+          additionalProperties: false
+          properties:
+            estimated_tokens:
+              type: integer
+              minimum: 1
+              maximum: 4096
+            max_bytes:
+              type: integer
+              minimum: 1024
+              maximum: 262144
+          required: []
+      required:
+      - recipe
+      - seed_ids
+      - as_of
+      - known_at
+    QueryResponse:
+      type: object
+      additionalProperties: false
+      properties:
+        schema_version:
+          const: proposal-1
+        status:
+          enum:
+          - complete
+          - partial
+        items:
+          type: array
+          items: &id012
+            type: object
+            additionalProperties: false
+            properties:
+              version_id: *id007
+              kind:
+                enum:
+                - decision
+                - constraint
+                - verification
+                - task_state
+                - preference
+                - instruction
+              review_state:
+                enum:
+                - approved
+                - needs_review
+              measurement_kind:
+                enum:
+                - source_observed
+                - human_reviewed
+                - suggested
+              text:
+                type: string
+                maxLength: 32768
+              evidence:
+                type: array
+                items:
+                  type: object
+                  additionalProperties: false
+                  properties:
+                    source_id: *id007
+                    revision: *id007
+                    locator:
+                      type: string
+                      maxLength: 256
+                    valid_from: &id009
+                      type:
+                      - string
+                      - 'null'
+                      format: date-time
+                    valid_to: *id009
+                    recorded_from: *id008
+                  required:
+                  - source_id
+                  - revision
+                  - locator
+                minItems: 1
+                maxItems: 25
+              explanation:
+                type: string
+                maxLength: 2048
+            required:
+            - version_id
+            - kind
+            - review_state
+            - measurement_kind
+            - text
+            - evidence
+            - explanation
+          maxItems: 200
+        coverage:
+          type: object
+          additionalProperties: false
+          properties:
+            scope:
+              const: authorized_selected_sources
+            indexed_through:
+              type:
+              - string
+              - 'null'
+            unknown_validity_present:
+              type: boolean
+            partial_reason:
+              enum:
+              - budget_exhausted
+              - source_stale
+              - source_unknown
+              - deadline_exceeded
+              - null
+          required:
+          - scope
+          - indexed_through
+          - unknown_validity_present
+        budget:
+          type: object
+          additionalProperties: false
+          properties:
+            estimated_tokens:
+              type: integer
+              minimum: 0
+            observed_inserted_tokens:
+              type: 'null'
+          required:
+          - estimated_tokens
+          - observed_inserted_tokens
+        authorization: &id011
+          type: object
+          additionalProperties: false
+          properties:
+            view_token: *id007
+          required:
+          - view_token
+        context_state:
+          const: returned
+      required:
+      - schema_version
+      - status
+      - items
+      - coverage
+      - budget
+      - authorization
+      - context_state
+    PreviewRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        selected_version_ids:
+          type: array
+          items: *id007
+          minItems: 1
+          maxItems: 200
+          uniqueItems: true
+        destination: &id010
+          type: object
+          additionalProperties: false
+          properties:
+            class:
+              enum:
+              - local_file
+              - local_mcp_resource
+            client_id: *id007
+          required:
+          - class
+          - client_id
+        as_of: *id008
+        known_at: *id008
+      required:
+      - selected_version_ids
+      - destination
+      - as_of
+      - known_at
+    PreviewResponse:
+      type: object
+      additionalProperties: false
+      properties:
+        preview_id: *id007
+        manifest_sha256:
+          type: string
+          pattern: ^[a-f0-9]{64}$
+        expires_at: *id008
+        manifest:
+          type: object
+          additionalProperties: false
+          properties:
+            schema_version:
+              const: proposal-1
+            synthetic_example:
+              type: boolean
+            bundle_id: *id007
+            version_id: *id007
+            workspace_ref: *id007
+            created_at: *id008
+            expires_at: *id008
+            destination: *id010
+            review_snapshot: *id011
+            items:
+              type: array
+              items: *id012
+              minItems: 1
+              maxItems: 200
+            content_budget:
+              type: object
+              additionalProperties: false
+              properties:
+                estimated_tokens:
+                  type: integer
+                  minimum: 0
+                  maximum: 4096
+                max_bytes:
+                  type: integer
+                  minimum: 1
+                  maximum: 262144
+              required:
+              - estimated_tokens
+              - max_bytes
+            omissions_policy:
+              const: Do not disclose inaccessible labels or counts.
+            context_state:
+              enum:
+              - available
+              - requested
+              - returned
+            insertion_receipt:
+              type: 'null'
+              description: Insertion is outside this manifest. A separate authenticated
+                harness receipt is required; export cannot claim insertion.
+          required:
+          - schema_version
+          - synthetic_example
+          - bundle_id
+          - version_id
+          - workspace_ref
+          - created_at
+          - expires_at
+          - destination
+          - review_snapshot
+          - items
+          - content_budget
+          - omissions_policy
+          - context_state
+          - insertion_receipt
+        review_required:
+          const: true
+        blocking_reasons:
+          type: array
+          items:
+            enum:
+            - source_stale
+            - unknown_validity
+            - unsupported_destination
+            - source_changed
+            - unapproved_item
+            - suggested_relation
+      required:
+      - preview_id
+      - manifest_sha256
+      - expires_at
+      - manifest
+      - review_required
+      - blocking_reasons
+    ExportRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        review_confirmed:
+          const: true
+        manifest_sha256:
+          type: string
+          pattern: ^[a-f0-9]{64}$
+        destination: *id010
+        review_snapshot: *id011
+      required:
+      - review_confirmed
+      - manifest_sha256
+      - destination
+      - review_snapshot
+    ExportResponse:
+      type: object
+      additionalProperties: false
+      properties:
+        export_receipt_id: *id007
+        manifest:
+          type: object
+          additionalProperties: false
+          properties:
+            schema_version:
+              const: proposal-1
+            synthetic_example:
+              type: boolean
+            bundle_id: &id013
+              type: string
+              minLength: 1
+              maxLength: 128
+              pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]*$
+            version_id: *id013
+            workspace_ref: *id013
+            created_at: &id014
+              type: string
+              format: date-time
+            expires_at: *id014
+            destination:
+              type: object
+              additionalProperties: false
+              properties:
+                class:
+                  enum:
+                  - local_file
+                  - local_mcp_resource
+                client_id: *id013
+              required:
+              - class
+              - client_id
+            review_snapshot:
+              type: object
+              additionalProperties: false
+              properties:
+                view_token: *id013
+              required:
+              - view_token
+            items:
+              type: array
+              items:
+                type: object
+                additionalProperties: false
+                properties:
+                  version_id: *id013
+                  kind:
+                    enum:
+                    - decision
+                    - constraint
+                    - verification
+                    - task_state
+                    - preference
+                    - instruction
+                  review_state:
+                    const: approved
+                  measurement_kind:
+                    enum:
+                    - source_observed
+                    - human_reviewed
+                  text:
+                    type: string
+                    maxLength: 32768
+                  evidence:
+                    type: array
+                    items:
+                      type: object
+                      additionalProperties: false
+                      properties:
+                        source_id: *id013
+                        revision: *id013
+                        locator:
+                          type: string
+                          maxLength: 256
+                        valid_from: &id015
+                          type:
+                          - string
+                          - 'null'
+                          format: date-time
+                        valid_to: *id015
+                        recorded_from: *id014
+                      required:
+                      - source_id
+                      - revision
+                      - locator
+                    minItems: 1
+                    maxItems: 25
+                  explanation:
+                    type: string
+                    maxLength: 2048
+                required:
+                - version_id
+                - kind
+                - review_state
+                - measurement_kind
+                - text
+                - evidence
+                - explanation
+              minItems: 1
+              maxItems: 200
+            content_budget:
+              type: object
+              additionalProperties: false
+              properties:
+                estimated_tokens:
+                  type: integer
+                  minimum: 0
+                  maximum: 4096
+                max_bytes:
+                  type: integer
+                  minimum: 1
+                  maximum: 262144
+              required:
+              - estimated_tokens
+              - max_bytes
+            omissions_policy:
+              const: Do not disclose inaccessible labels or counts.
+            context_state:
+              const: returned
+            insertion_receipt:
+              type: 'null'
+              description: Insertion is outside this manifest. A separate authenticated
+                harness receipt is required; export cannot claim insertion.
+          required:
+          - schema_version
+          - synthetic_example
+          - bundle_id
+          - version_id
+          - workspace_ref
+          - created_at
+          - expires_at
+          - destination
+          - review_snapshot
+          - items
+          - content_budget
+          - omissions_policy
+          - context_state
+          - insertion_receipt
+        context_state:
+          const: returned
+        insertion_receipt:
+          type: 'null'
+        external_copy_recallable:
+          const: false
+      required:
+      - export_receipt_id
+      - manifest
+      - context_state
+      - insertion_receipt
+      - external_copy_recallable
+    DeletionReceipt:
+      type: object
+      additionalProperties: false
+      properties:
+        receipt_id: *id007
+        source_version_id: *id007
+        logical_access:
+          const: blocked
+        physical_cleanup:
+          enum:
+          - pending
+          - complete
+          - unverified
+        controlled_shares:
+          enum:
+          - revoked
+          - none
+          - pending
+        external_copies:
+          const: uncontrolled
+      required:
+      - receipt_id
+      - source_version_id
+      - logical_access
+      - physical_cleanup
+      - controlled_shares
+      - external_copies
+    Capabilities:
+      type: object
+      additionalProperties: false
+      properties:
+        schema_version:
+          const: proposal-1
+        producer_id: *id007
+        producer_version:
+          type: string
+        mode:
+          enum:
+          - local_personal
+          - private_team
+        recipes:
+          type: array
+          items:
+            enum:
+            - resume_task
+            - explain_context
+            - changes_since_bundle
+        content_capture:
+          enum:
+          - disabled
+          - selected_metadata
+          - selected_content
+        export_destinations:
+          type: array
+          items:
+            enum:
+            - local_file
+            - local_mcp_resource
+        insertion_receipt_supported:
+          type: boolean
+        max_hops:
+          const: 2
+        max_response_bytes:
+          const: 262144
+      required:
+      - schema_version
+      - producer_id
+      - producer_version
+      - mode
+      - recipes
+      - content_capture
+      - export_destinations
+      - insertion_receipt_supported
+      - max_hops
+      - max_response_bytes
+    ContextBundle:
+      type: object
+      additionalProperties: false
+      properties:
+        schema_version:
+          const: proposal-1
+        synthetic_example:
+          type: boolean
+        bundle_id: &id016
+          type: string
+          minLength: 1
+          maxLength: 128
+          pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]*$
+        version_id: *id016
+        workspace_ref: *id016
+        created_at: &id017
+          type: string
+          format: date-time
+        expires_at: *id017
+        destination:
+          type: object
+          additionalProperties: false
+          properties:
+            class:
+              enum:
+              - local_file
+              - local_mcp_resource
+            client_id: *id016
+          required:
+          - class
+          - client_id
+        review_snapshot:
+          type: object
+          additionalProperties: false
+          properties:
+            view_token: *id016
+          required:
+          - view_token
+        items:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            properties:
+              version_id: *id016
+              kind:
+                enum:
+                - decision
+                - constraint
+                - verification
+                - task_state
+                - preference
+                - instruction
+              review_state:
+                const: approved
+              measurement_kind:
+                enum:
+                - source_observed
+                - human_reviewed
+              text:
+                type: string
+                maxLength: 32768
+              evidence:
+                type: array
+                items:
+                  type: object
+                  additionalProperties: false
+                  properties:
+                    source_id: *id016
+                    revision: *id016
+                    locator:
+                      type: string
+                      maxLength: 256
+                    valid_from: &id018
+                      type:
+                      - string
+                      - 'null'
+                      format: date-time
+                    valid_to: *id018
+                    recorded_from: *id017
+                  required:
+                  - source_id
+                  - revision
+                  - locator
+                minItems: 1
+                maxItems: 25
+              explanation:
+                type: string
+                maxLength: 2048
+            required:
+            - version_id
+            - kind
+            - review_state
+            - measurement_kind
+            - text
+            - evidence
+            - explanation
+          minItems: 1
+          maxItems: 200
+        content_budget:
+          type: object
+          additionalProperties: false
+          properties:
+            estimated_tokens:
+              type: integer
+              minimum: 0
+              maximum: 4096
+            max_bytes:
+              type: integer
+              minimum: 1
+              maximum: 262144
+          required:
+          - estimated_tokens
+          - max_bytes
+        omissions_policy:
+          const: Do not disclose inaccessible labels or counts.
+        context_state:
+          enum:
+          - available
+          - requested
+          - returned
+        insertion_receipt:
+          type: 'null'
+          description: Insertion is outside this manifest. A separate authenticated
+            harness receipt is required; export cannot claim insertion.
+      required:
+      - schema_version
+      - synthetic_example
+      - bundle_id
+      - version_id
+      - workspace_ref
+      - created_at
+      - expires_at
+      - destination
+      - review_snapshot
+      - items
+      - content_budget
+      - omissions_policy
+      - context_state
+      - insertion_receipt
+    Error:
+      type: object
+      additionalProperties: false
+      properties:
+        error:
+          enum:
+          - not_available
+          - unauthenticated
+          - review_required
+          - invalid_request
+          - budget_exceeded
+          - temporarily_unavailable
+        request_id: *id007
+      required:
+      - error
+      - request_id

@@ -1,0 +1,36 @@
+{
+  "test_scope": "Offline evaluation of exact source helper excerpts with synthetic fixtures; no worker/API/server or live user tested",
+  "commit": "b468206e9378c8d7a6788b67072494982e7de17d",
+  "runtime": {
+    "node": "v24.22.1"
+  },
+  "fixed_clock": "2026-11-18T12:00:00Z",
+  "requested_days": 7,
+  "input_observation_ages_days": [
+    90,
+    70,
+    60,
+    40,
+    20,
+    10,
+    0
+  ],
+  "observed_dates_retained": 7,
+  "earliest_retained_age_days": 90,
+  "per_team_tokens": [
+    100,
+    100
+  ],
+  "unique_profile_tokens": 100,
+  "sum_of_membership_contributions": 200,
+  "summary_retained_keys": [
+    "handle",
+    "googleEmail"
+  ],
+  "full_retained_keys": [
+    "handle",
+    "googleEmail"
+  ],
+  "checks": "PASS — audited behavior reproduced; not a production correctness or privacy certification",
+  "privacy_boundary": "Only field names are emitted. Email sentinel retention is a source-level allowlist gap, not evidence of any production disclosure."
+}

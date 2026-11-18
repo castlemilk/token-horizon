@@ -1,0 +1,407 @@
+{
+  "synthetic": true,
+  "schema_version": "track5-coverage-v1",
+  "tenant_id": "tenant_demo_orion",
+  "timezone": "UTC",
+  "from_inclusive": "2026-11-11T00:00:00Z",
+  "to_exclusive": "2026-11-18T00:00:00Z",
+  "initial_as_of": "2026-11-18T00:00:00Z",
+  "revised_as_of": "2026-11-18T06:00:00Z",
+  "note": "Coverage is a separate synthetic manifest; presence of an event does not prove a full day is complete. Unknown source activity is not inferred to be zero.",
+  "source_days": [
+    {
+      "day": "2026-11-11",
+      "actor_id": "u01",
+      "source_id": "collector_u01",
+      "status": "complete",
+      "observed_hours": 24,
+      "expected_hours": 24,
+      "reason": null
+    },
+    {
+      "day": "2026-11-11",
+      "actor_id": "u02",
+      "source_id": "collector_u02",
+      "status": "complete",
+      "observed_hours": 24,
+      "expected_hours": 24,
+      "reason": null
+    },
+    {
+      "day": "2026-11-11",
+      "actor_id": "u03",
+      "source_id": "collector_u03",
+      "status": "complete",
+      "observed_hours": 24,
+      "expected_hours": 24,
+      "reason": null
+    },
+    {
+      "day": "2026-11-11",
+      "actor_id": "u04",
+      "source_id": "collector_u04",
+      "status": "complete",
+      "observed_hours": 24,
+      "expected_hours": 24,
+      "reason": null
+    },
+    {
+      "day": "2026-11-11",
+      "actor_id": "u05",
+      "source_id": "collector_u05",
+      "status": "complete",
+      "observed_hours": 24,
+      "expected_hours": 24,
+      "reason": null
+    },
+    {
+      "day": "2026-11-11",
+      "actor_id": "u06",
+      "source_id": "collector_u06",
+      "status": "complete",
+      "observed_hours": 24,
+      "expected_hours": 24,
+      "reason": null
+    },
+    {
+      "day": "2026-11-12",
+      "actor_id": "u01",
+      "source_id": "collector_u01",
+      "status": "complete",
+      "observed_hours": 24,
+      "expected_hours": 24,
+      "reason": null
+    },
+    {
+      "day": "2026-11-12",
+      "actor_id": "u02",
+      "source_id": "collector_u02",
+      "status": "complete",
+      "observed_hours": 24,
+      "expected_hours": 24,
+      "reason": null
+    },
+    {
+      "day": "2026-11-12",
+      "actor_id": "u03",
+      "source_id": "collector_u03",
+      "status": "complete",
+      "observed_hours": 24,
+      "expected_hours": 24,
+      "reason": null
+    },
+    {
+      "day": "2026-11-12",
+      "actor_id": "u04",
+      "source_id": "collector_u04",
+      "status": "complete",
+      "observed_hours": 24,
+      "expected_hours": 24,
+      "reason": null
+    },
+    {
+      "day": "2026-11-12",
+      "actor_id": "u05",
+      "source_id": "collector_u05",
+      "status": "complete",
+      "observed_hours": 24,
+      "expected_hours": 24,
+      "reason": null
+    },
+    {
+      "day": "2026-11-12",
+      "actor_id": "u06",
+      "source_id": "collector_u06",
+      "status": "complete",
+      "observed_hours": 24,
+      "expected_hours": 24,
+      "reason": null
+    },
+    {
+      "day": "2026-11-13",
+      "actor_id": "u01",
+      "source_id": "collector_u01",
+      "status": "complete",
+      "observed_hours": 24,
+      "expected_hours": 24,
+      "reason": null
+    },
+    {
+      "day": "2026-11-13",
+      "actor_id": "u02",
+      "source_id": "collector_u02",
+      "status": "complete",
+      "observed_hours": 24,
+      "expected_hours": 24,
+      "reason": null
+    },
+    {
+      "day": "2026-11-13",
+      "actor_id": "u03",
+      "source_id": "collector_u03",
+      "status": "complete",
+      "observed_hours": 24,
+      "expected_hours": 24,
+      "reason": null
+    },
+    {
+      "day": "2026-11-13",
+      "actor_id": "u04",
+      "source_id": "collector_u04",
+      "status": "complete",
+      "observed_hours": 24,
+      "expected_hours": 24,
+      "reason": null
+    },
+    {
+      "day": "2026-11-13",
+      "actor_id": "u05",
+      "source_id": "collector_u05",
+      "status": "complete",
+      "observed_hours": 24,
+      "expected_hours": 24,
+      "reason": null
+    },
+    {
+      "day": "2026-11-13",
+      "actor_id": "u06",
+      "source_id": "collector_u06",
+      "status": "partial",
+      "observed_hours": 21,
+      "expected_hours": 24,
+      "reason": "synthetic outage lasting 3 hours; event count unknown"
+    },
+    {
+      "day": "2026-11-14",
+      "actor_id": "u01",
+      "source_id": "collector_u01",
+      "status": "unknown",
+      "observed_hours": null,
+      "expected_hours": 24,
+      "reason": "no source coverage acknowledgement"
+    },
+    {
+      "day": "2026-11-14",
+      "actor_id": "u02",
+      "source_id": "collector_u02",
+      "status": "unknown",
+      "observed_hours": null,
+      "expected_hours": 24,
+      "reason": "no source coverage acknowledgement"
+    },
+    {
+      "day": "2026-11-14",
+      "actor_id": "u03",
+      "source_id": "collector_u03",
+      "status": "unknown",
+      "observed_hours": null,
+      "expected_hours": 24,
+      "reason": "no source coverage acknowledgement"
+    },
+    {
+      "day": "2026-11-14",
+      "actor_id": "u04",
+      "source_id": "collector_u04",
+      "status": "unknown",
+      "observed_hours": null,
+      "expected_hours": 24,
+      "reason": "no source coverage acknowledgement"
+    },
+    {
+      "day": "2026-11-14",
+      "actor_id": "u05",
+      "source_id": "collector_u05",
+      "status": "unknown",
+      "observed_hours": null,
+      "expected_hours": 24,
+      "reason": "no source coverage acknowledgement"
+    },
+    {
+      "day": "2026-11-14",
+      "actor_id": "u06",
+      "source_id": "collector_u06",
+      "status": "unknown",
+      "observed_hours": null,
+      "expected_hours": 24,
+      "reason": "no source coverage acknowledgement"
+    },
+    {
+      "day": "2026-11-15",
+      "actor_id": "u01",
+      "source_id": "collector_u01",
+      "status": "complete",
+      "observed_hours": 24,
+      "expected_hours": 24,
+      "reason": "explicit complete zero-activity day"
+    },
+    {
+      "day": "2026-11-15",
+      "actor_id": "u02",
+      "source_id": "collector_u02",
+      "status": "complete",
+      "observed_hours": 24,
+      "expected_hours": 24,
+      "reason": "explicit complete zero-activity day"
+    },
+    {
+      "day": "2026-11-15",
+      "actor_id": "u03",
+      "source_id": "collector_u03",
+      "status": "complete",
+      "observed_hours": 24,
+      "expected_hours": 24,
+      "reason": "explicit complete zero-activity day"
+    },
+    {
+      "day": "2026-11-15",
+      "actor_id": "u04",
+      "source_id": "collector_u04",
+      "status": "complete",
+      "observed_hours": 24,
+      "expected_hours": 24,
+      "reason": "explicit complete zero-activity day"
+    },
+    {
+      "day": "2026-11-15",
+      "actor_id": "u05",
+      "source_id": "collector_u05",
+      "status": "complete",
+      "observed_hours": 24,
+      "expected_hours": 24,
+      "reason": "explicit complete zero-activity day"
+    },
+    {
+      "day": "2026-11-15",
+      "actor_id": "u06",
+      "source_id": "collector_u06",
+      "status": "complete",
+      "observed_hours": 24,
+      "expected_hours": 24,
+      "reason": "explicit complete zero-activity day"
+    },
+    {
+      "day": "2026-11-16",
+      "actor_id": "u01",
+      "source_id": "collector_u01",
+      "status": "complete",
+      "observed_hours": 24,
+      "expected_hours": 24,
+      "reason": null
+    },
+    {
+      "day": "2026-11-16",
+      "actor_id": "u02",
+      "source_id": "collector_u02",
+      "status": "complete",
+      "observed_hours": 24,
+      "expected_hours": 24,
+      "reason": null
+    },
+    {
+      "day": "2026-11-16",
+      "actor_id": "u03",
+      "source_id": "collector_u03",
+      "status": "complete",
+      "observed_hours": 24,
+      "expected_hours": 24,
+      "reason": null
+    },
+    {
+      "day": "2026-11-16",
+      "actor_id": "u04",
+      "source_id": "collector_u04",
+      "status": "complete",
+      "observed_hours": 24,
+      "expected_hours": 24,
+      "reason": null
+    },
+    {
+      "day": "2026-11-16",
+      "actor_id": "u05",
+      "source_id": "collector_u05",
+      "status": "complete",
+      "observed_hours": 24,
+      "expected_hours": 24,
+      "reason": null
+    },
+    {
+      "day": "2026-11-16",
+      "actor_id": "u06",
+      "source_id": "collector_u06",
+      "status": "complete",
+      "observed_hours": 24,
+      "expected_hours": 24,
+      "reason": null
+    },
+    {
+      "day": "2026-11-17",
+      "actor_id": "u01",
+      "source_id": "collector_u01",
+      "status": "complete",
+      "observed_hours": 24,
+      "expected_hours": 24,
+      "reason": null
+    },
+    {
+      "day": "2026-11-17",
+      "actor_id": "u02",
+      "source_id": "collector_u02",
+      "status": "complete",
+      "observed_hours": 24,
+      "expected_hours": 24,
+      "reason": null
+    },
+    {
+      "day": "2026-11-17",
+      "actor_id": "u03",
+      "source_id": "collector_u03",
+      "status": "complete",
+      "observed_hours": 24,
+      "expected_hours": 24,
+      "reason": null
+    },
+    {
+      "day": "2026-11-17",
+      "actor_id": "u04",
+      "source_id": "collector_u04",
+      "status": "partial",
+      "observed_hours": 18,
+      "expected_hours": 24,
+      "reason": "synthetic collector stale for 6 hours"
+    },
+    {
+      "day": "2026-11-17",
+      "actor_id": "u05",
+      "source_id": "collector_u05",
+      "status": "complete",
+      "observed_hours": 24,
+      "expected_hours": 24,
+      "reason": null
+    },
+    {
+      "day": "2026-11-17",
+      "actor_id": "u06",
+      "source_id": "collector_u06",
+      "status": "partial",
+      "observed_hours": 18,
+      "expected_hours": 24,
+      "reason": "late record received 2026-11-18T05:00:00Z; provisional for six hours after receipt",
+      "late_event_received_at": "2026-11-18T05:00:00Z",
+      "provisional_until": "2026-11-18T11:00:00Z"
+    }
+  ],
+  "timezone_cases": [
+    {
+      "occurred_at": "2026-11-11T23:30:00Z",
+      "zone": "Australia/Melbourne",
+      "expected_local_day": "2026-11-12"
+    },
+    {
+      "local_day": "2026-10-04",
+      "zone": "Australia/Melbourne",
+      "expected_utc_start": "2026-10-03T14:00:00Z",
+      "expected_utc_end": "2026-10-04T13:00:00Z",
+      "expected_duration_hours": 23
+    }
+  ]
+}

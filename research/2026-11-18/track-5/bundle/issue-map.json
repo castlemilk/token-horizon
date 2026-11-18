@@ -1,0 +1,462 @@
+[
+  {
+    "id": "pr-1",
+    "title": "crossplatform daemon + ui",
+    "state": "closed",
+    "updated_at": "2026-09-24T09:22:03Z",
+    "url": "https://github.com/castlemilk/token-horizon/pull/1",
+    "t5_dispositions": [
+      "No direct Track 5 implementation overlap identified in the bounded audit; preserve existing scope."
+    ]
+  },
+  {
+    "id": "pr-2",
+    "title": "Fix dashboard search synchronization and login focus restoration",
+    "state": "closed",
+    "updated_at": "2026-10-07T21:40:31Z",
+    "url": "https://github.com/castlemilk/token-horizon/pull/2",
+    "t5_dispositions": [
+      "No direct Track 5 implementation overlap identified in the bounded audit; preserve existing scope."
+    ]
+  },
+  {
+    "id": "pr-3",
+    "title": "Preserve live dashboard changes while releasing CI fixes",
+    "state": "closed",
+    "updated_at": "2026-10-07T21:40:29Z",
+    "url": "https://github.com/castlemilk/token-horizon/pull/3",
+    "t5_dispositions": [
+      "No direct Track 5 implementation overlap identified in the bounded audit; preserve existing scope."
+    ]
+  },
+  {
+    "id": "pr-4",
+    "title": "Add MCP app extensions and reliable metadata traces",
+    "state": "closed",
+    "updated_at": "2026-10-07T21:40:49Z",
+    "url": "https://github.com/castlemilk/token-horizon/pull/4",
+    "t5_dispositions": [
+      "Merged 2026-10-07. Preserve metadata coverage and hosted/local separation in T5-02/03; do not recreate the merged feature or infer deployment from merger."
+    ]
+  },
+  {
+    "id": "pr-5",
+    "title": "Clarify MCP usage labels and cost provenance",
+    "state": "closed",
+    "updated_at": "2026-10-07T22:04:28Z",
+    "url": "https://github.com/castlemilk/token-horizon/pull/5",
+    "t5_dispositions": [
+      "Merged 2026-10-07. Extend existing MCP estimate/invoice provenance in T5-03; no duplicate provenance-formatting fix."
+    ]
+  },
+  {
+    "id": "pr-6",
+    "title": "Engine: rich local-run roster across TH Engine, Splash and MLX + supervised MLX backend",
+    "state": "closed",
+    "updated_at": "2026-10-23T14:44:14Z",
+    "url": "https://github.com/castlemilk/token-horizon/pull/6",
+    "t5_dispositions": [
+      "No direct Track 5 implementation overlap identified in the bounded audit; preserve existing scope."
+    ]
+  },
+  {
+    "id": "pr-7",
+    "title": "Clarify the hosted MCP plan model limit",
+    "state": "closed",
+    "updated_at": "2026-10-24T05:03:00Z",
+    "url": "https://github.com/castlemilk/token-horizon/pull/7",
+    "t5_dispositions": [
+      "No direct Track 5 implementation overlap identified in the bounded audit; preserve existing scope."
+    ]
+  },
+  {
+    "id": "pr-8",
+    "title": "Add managed account sign-in for website and MCP review access",
+    "state": "closed",
+    "updated_at": "2026-10-24T06:38:42Z",
+    "url": "https://github.com/castlemilk/token-horizon/pull/8",
+    "t5_dispositions": [
+      "Merged 2026-10-24. Existing identity infrastructure supports the Track 2 dependency; not evidence of enterprise admin roles."
+    ]
+  },
+  {
+    "id": "pr-9",
+    "title": "Publish MCP app domain verification",
+    "state": "closed",
+    "updated_at": "2026-10-25T06:47:37Z",
+    "url": "https://github.com/castlemilk/token-horizon/pull/9",
+    "t5_dispositions": [
+      "No direct Track 5 implementation overlap identified in the bounded audit; preserve existing scope."
+    ]
+  },
+  {
+    "id": "pr-10",
+    "title": "Update hosted MCP SDK dependencies",
+    "state": "closed",
+    "updated_at": "2026-11-05T03:51:33Z",
+    "url": "https://github.com/castlemilk/token-horizon/pull/10",
+    "t5_dispositions": [
+      "No direct Track 5 implementation overlap identified in the bounded audit; preserve existing scope."
+    ]
+  },
+  {
+    "id": "pr-11",
+    "title": "Make hosted MCP refresh rotation durable",
+    "state": "closed",
+    "updated_at": "2026-11-05T05:31:49Z",
+    "url": "https://github.com/castlemilk/token-horizon/pull/11",
+    "t5_dispositions": [
+      "Merged 2026-11-05. Existing durable MCP refresh handling; auth dependency, not an analytics ingestion service."
+    ]
+  },
+  {
+    "id": "issue-12",
+    "title": "[Research preservation] Token Horizon direction and validation backlog — 2026-11-11",
+    "state": "open",
+    "updated_at": "2026-11-11T04:42:31Z",
+    "url": "https://github.com/castlemilk/token-horizon/issues/12",
+    "t5_dispositions": [
+      "Primary roadmap parent for T5-01 through T5-10; extend THR-03–09/13/25/30–32 as identified in the specification. No duplicate epic proposed."
+    ]
+  },
+  {
+    "id": "issue-13",
+    "title": "[Proposed] TH-UI-01 Truthful observability and request-attempt detail",
+    "state": "open",
+    "updated_at": "2026-11-11T04:42:46Z",
+    "url": "https://github.com/castlemilk/token-horizon/issues/13",
+    "t5_dispositions": [
+      "Extend existing truthful-observability acceptance for T5-01/02/03/04/05/06/08/09. Track 6 retains detailed counter/accounting semantics."
+    ]
+  },
+  {
+    "id": "issue-14",
+    "title": "[Proposed] TH-UI-02 Explainable draft routing simulation",
+    "state": "open",
+    "updated_at": "2026-11-11T04:42:49Z",
+    "url": "https://github.com/castlemilk/token-horizon/issues/14",
+    "t5_dispositions": [
+      "Existing proposed routing simulation; outside Track 5. Analytics may consume policy identity later, without implementing routing."
+    ]
+  },
+  {
+    "id": "issue-15",
+    "title": "[Proposed] TH-UI-03 Local host inventory and model lifecycle",
+    "state": "open",
+    "updated_at": "2026-11-11T04:42:52Z",
+    "url": "https://github.com/castlemilk/token-horizon/issues/15",
+    "t5_dispositions": [
+      "Existing proposed local host inventory/lifecycle; outside Track 5. Do not claim cloud telemetry or invent local cost."
+    ]
+  },
+  {
+    "id": "issue-16",
+    "title": "[Proposed] TH-UI-04 Reviewed work handoff, plans and setup evidence",
+    "state": "open",
+    "updated_at": "2026-11-11T04:42:56Z",
+    "url": "https://github.com/castlemilk/token-horizon/issues/16",
+    "t5_dispositions": [
+      "T5-08 reuses reviewed export-preview conventions. Plans/handoff work remains existing scope; no duplicate context-handoff feature."
+    ]
+  },
+  {
+    "id": "pr-17",
+    "title": "Publish the benchmark report at /benchmarks/",
+    "state": "closed",
+    "updated_at": "2026-11-11T23:25:02Z",
+    "url": "https://github.com/castlemilk/token-horizon/pull/17",
+    "t5_dispositions": [
+      "No direct Track 5 implementation overlap identified in the bounded audit; preserve existing scope."
+    ]
+  },
+  {
+    "id": "issue-18",
+    "title": "[SEO][High] Investigate catalog rendering and request-dependent access",
+    "state": "open",
+    "updated_at": "2026-11-18T02:07:49Z",
+    "url": "https://github.com/castlemilk/token-horizon/issues/18",
+    "t5_dispositions": [
+      "Existing public catalog rendering/access investigation. Track 4 responsibility; no competing analytics UI-access investigation."
+    ]
+  },
+  {
+    "id": "issue-19",
+    "title": "[SEO][High] Expose reproducible pricing provenance and freshness in catalog comparisons",
+    "state": "open",
+    "updated_at": "2026-11-18T03:56:17Z",
+    "url": "https://github.com/castlemilk/token-horizon/issues/19",
+    "t5_dispositions": [
+      "T5-03 reuses exact pricing identity, provenance, availability and dated offer evidence. Coordinate with Track 6 and catalog work."
+    ]
+  },
+  {
+    "id": "issue-20",
+    "title": "[SEO][Medium] Decide parameter-view indexation after rendered-content comparison",
+    "state": "open",
+    "updated_at": "2026-11-17T00:30:44Z",
+    "url": "https://github.com/castlemilk/token-horizon/issues/20",
+    "t5_dispositions": [
+      "Existing parameter-view indexation decision. Track 4 responsibility; preserve private analytics boundaries."
+    ]
+  },
+  {
+    "id": "issue-21",
+    "title": "[SEO][Medium] Connect model discovery to supported desktop activation",
+    "state": "open",
+    "updated_at": "2026-11-17T00:30:47Z",
+    "url": "https://github.com/castlemilk/token-horizon/issues/21",
+    "t5_dispositions": [
+      "Existing model discovery-to-desktop activation. Track 4/Track 2 dependency, outside analytics implementation."
+    ]
+  },
+  {
+    "id": "issue-22",
+    "title": "[SEO][Medium] Align llms.txt discovery with public MCP documentation policy",
+    "state": "open",
+    "updated_at": "2026-11-17T00:30:51Z",
+    "url": "https://github.com/castlemilk/token-horizon/issues/22",
+    "t5_dispositions": [
+      "Existing llms.txt/MCP public documentation policy. Track 4 responsibility; no private analytics exposure implied."
+    ]
+  },
+  {
+    "id": "issue-23",
+    "title": "[SEO][Medium] Complete rendered, accessibility, performance and indexing validation",
+    "state": "open",
+    "updated_at": "2026-11-18T03:56:52Z",
+    "url": "https://github.com/castlemilk/token-horizon/issues/23",
+    "t5_dispositions": [
+      "T5-10 extends rendered, keyboard, screen-reader, state and performance validation; T5-01 consumes relevant accessibility cases."
+    ]
+  },
+  {
+    "id": "pr-24",
+    "title": "feat: prepare opt-in homepage analytics",
+    "state": "closed",
+    "updated_at": "2026-11-17T03:13:20Z",
+    "url": "https://github.com/castlemilk/token-horizon/pull/24",
+    "t5_dispositions": [
+      "Closed unmerged; superseded by PR #25. Homepage marketing analytics is outside Track 5; do not revive this patch."
+    ]
+  },
+  {
+    "id": "pr-25",
+    "title": "feat: prepare isolated opt-in homepage analytics (clean scope)",
+    "state": "open",
+    "updated_at": "2026-11-17T03:13:03Z",
+    "url": "https://github.com/castlemilk/token-horizon/pull/25",
+    "t5_dispositions": [
+      "Open draft, homepage-only default-disabled marketing analytics; explicitly excludes account/profile/dashboard/native telemetry. Not Track 5 measurement foundation."
+    ]
+  },
+  {
+    "id": "issue-26",
+    "title": "[CI][P1] Give local and CI checks one authoritative command manifest",
+    "state": "open",
+    "updated_at": "2026-11-18T00:30:40Z",
+    "url": "https://github.com/castlemilk/token-horizon/issues/26",
+    "t5_dispositions": [
+      "T5-10 wires new hermetic analytics cases into the authoritative command manifest; do not fork another harness."
+    ]
+  },
+  {
+    "id": "issue-27",
+    "title": "[CI][P1] Replace fixed-time animation sampling with observable progress",
+    "state": "open",
+    "updated_at": "2026-11-17T04:52:19Z",
+    "url": "https://github.com/castlemilk/token-horizon/issues/27",
+    "t5_dispositions": [
+      "Existing animation test work is addressed by draft PR #45. T5-10 should coordinate edits rather than duplicate it."
+    ]
+  },
+  {
+    "id": "issue-28",
+    "title": "[CI][P2] Include both installed npm lockfiles in cache identity",
+    "state": "open",
+    "updated_at": "2026-11-17T03:57:35Z",
+    "url": "https://github.com/castlemilk/token-horizon/issues/28",
+    "t5_dispositions": [
+      "No direct Track 5 implementation overlap identified in the bounded audit; preserve existing scope."
+    ]
+  },
+  {
+    "id": "issue-29",
+    "title": "[CI][P3] Remove the ineffective gateway dependency-cache configuration",
+    "state": "open",
+    "updated_at": "2026-11-17T03:57:56Z",
+    "url": "https://github.com/castlemilk/token-horizon/issues/29",
+    "t5_dispositions": [
+      "No direct Track 5 implementation overlap identified in the bounded audit; preserve existing scope."
+    ]
+  },
+  {
+    "id": "issue-30",
+    "title": "[CI][P2] Make the focused performance command actually focused",
+    "state": "open",
+    "updated_at": "2026-11-17T03:58:05Z",
+    "url": "https://github.com/castlemilk/token-horizon/issues/30",
+    "t5_dispositions": [
+      "Existing focused-performance command fix. T5-10 consumes its command-selection contract; do not duplicate CI infrastructure."
+    ]
+  },
+  {
+    "id": "issue-31",
+    "title": "[CI][P2] Remove optional film rendering from the mandatory native-release path",
+    "state": "open",
+    "updated_at": "2026-11-17T03:58:18Z",
+    "url": "https://github.com/castlemilk/token-horizon/issues/31",
+    "t5_dispositions": [
+      "No direct Track 5 implementation overlap identified in the bounded audit; preserve existing scope."
+    ]
+  },
+  {
+    "id": "issue-32",
+    "title": "[CI][P2] Make report-generation failures explicit and retain bounded diagnostics",
+    "state": "open",
+    "updated_at": "2026-11-17T03:58:23Z",
+    "url": "https://github.com/castlemilk/token-horizon/issues/32",
+    "t5_dispositions": [
+      "Existing report-generation diagnostics. T5-10 preserves explicit failure/result semantics; no duplicate reporting framework."
+    ]
+  },
+  {
+    "id": "issue-33",
+    "title": "[CI][P1] Replace the synthetic scope-count benchmark with production-cache coverage",
+    "state": "open",
+    "updated_at": "2026-11-17T03:58:42Z",
+    "url": "https://github.com/castlemilk/token-horizon/issues/33",
+    "t5_dispositions": [
+      "Existing native model scope-count cache benchmark replacement. Keep separate from T5-10 analytics performance workloads."
+    ]
+  },
+  {
+    "id": "issue-34",
+    "title": "[CI][P1] Stop executing the complete Swift suite twice on every PR",
+    "state": "open",
+    "updated_at": "2026-11-17T03:58:50Z",
+    "url": "https://github.com/castlemilk/token-horizon/issues/34",
+    "t5_dispositions": [
+      "No direct Track 5 implementation overlap identified in the bounded audit; preserve existing scope."
+    ]
+  },
+  {
+    "id": "issue-35",
+    "title": "[CI][P1] Introduce trusted, toolchain-specific native build caches",
+    "state": "open",
+    "updated_at": "2026-11-17T03:58:55Z",
+    "url": "https://github.com/castlemilk/token-horizon/issues/35",
+    "t5_dispositions": [
+      "No direct Track 5 implementation overlap identified in the bounded audit; preserve existing scope."
+    ]
+  },
+  {
+    "id": "issue-36",
+    "title": "[CI][P1] Consolidate browser fixtures and orchestration without deleting scenarios",
+    "state": "open",
+    "updated_at": "2026-11-17T03:59:06Z",
+    "url": "https://github.com/castlemilk/token-horizon/issues/36",
+    "t5_dispositions": [
+      "T5-10 reuses synthetic fixtures, unexpected-network blocking, lifecycle isolation and existing browser scenarios."
+    ]
+  },
+  {
+    "id": "issue-37",
+    "title": "[CI][P2] Give scheduled catalog refresh a smaller, verifiable build boundary",
+    "state": "open",
+    "updated_at": "2026-11-17T03:59:24Z",
+    "url": "https://github.com/castlemilk/token-horizon/issues/37",
+    "t5_dispositions": [
+      "No direct Track 5 implementation overlap identified in the bounded audit; preserve existing scope."
+    ]
+  },
+  {
+    "id": "issue-38",
+    "title": "[CI][P2] Make LocalServer integration tests prove both lifecycle outcomes",
+    "state": "open",
+    "updated_at": "2026-11-17T03:59:33Z",
+    "url": "https://github.com/castlemilk/token-horizon/issues/38",
+    "t5_dispositions": [
+      "Existing LocalServer lifecycle coverage. T5-04 may coordinate API tests, without duplicating bind/lifecycle work."
+    ]
+  },
+  {
+    "id": "issue-39",
+    "title": "[CI][P2] Make the default MCP test command hermetic",
+    "state": "open",
+    "updated_at": "2026-11-17T03:59:43Z",
+    "url": "https://github.com/castlemilk/token-horizon/issues/39",
+    "t5_dispositions": [
+      "T5-10 preserves hermetic default MCP tests; no live telemetry publishing during validation."
+    ]
+  },
+  {
+    "id": "issue-40",
+    "title": "[CI][P0] Establish the intended Cuttlefish project, rig and execution contract",
+    "state": "open",
+    "updated_at": "2026-11-17T03:59:52Z",
+    "url": "https://github.com/castlemilk/token-horizon/issues/40",
+    "t5_dispositions": [
+      "Existing intended Cuttlefish rig/execution mapping investigation. Later performance execution must honor the verified environment; this study changed no routing."
+    ]
+  },
+  {
+    "id": "issue-41",
+    "title": "[CI][P1] Verify catalog commit-to-publication lineage",
+    "state": "open",
+    "updated_at": "2026-11-17T03:59:59Z",
+    "url": "https://github.com/castlemilk/token-horizon/issues/41",
+    "t5_dispositions": [
+      "Existing source-to-publication lineage investigation. Supports evidence classification; do not claim pinned source equals deployed release."
+    ]
+  },
+  {
+    "id": "issue-42",
+    "title": "[CI][P2] Prove a dependency map before enabling selective execution",
+    "state": "open",
+    "updated_at": "2026-11-17T04:00:02Z",
+    "url": "https://github.com/castlemilk/token-horizon/issues/42",
+    "t5_dispositions": [
+      "No direct Track 5 implementation overlap identified in the bounded audit; preserve existing scope."
+    ]
+  },
+  {
+    "id": "issue-43",
+    "title": "[CI][P3] Measure superseded PR work before adding cancellation",
+    "state": "open",
+    "updated_at": "2026-11-17T04:00:05Z",
+    "url": "https://github.com/castlemilk/token-horizon/issues/43",
+    "t5_dispositions": [
+      "No direct Track 5 implementation overlap identified in the bounded audit; preserve existing scope."
+    ]
+  },
+  {
+    "id": "issue-44",
+    "title": "[CI][P1] Explain the render-budget failure without relaxing its threshold",
+    "state": "open",
+    "updated_at": "2026-11-17T04:00:09Z",
+    "url": "https://github.com/castlemilk/token-horizon/issues/44",
+    "t5_dispositions": [
+      "T5-10 preserves current render thresholds and historical failure diagnosis; no fresh benchmark or relaxed budget is claimed."
+    ]
+  },
+  {
+    "id": "pr-45",
+    "title": "test: wait for observable ASCII animation progress",
+    "state": "open",
+    "updated_at": "2026-11-17T04:51:33Z",
+    "url": "https://github.com/castlemilk/token-horizon/pull/45",
+    "t5_dispositions": [
+      "Open draft for #27 observable animation progress. Coordinate T5-10 browser fixture edits; no production analytics implementation."
+    ]
+  },
+  {
+    "id": "issue-46",
+    "title": "[SEO][Medium] Align article canonical URLs with redirects and discovery links",
+    "state": "open",
+    "updated_at": "2026-11-18T03:56:37Z",
+    "url": "https://github.com/castlemilk/token-horizon/issues/46",
+    "t5_dispositions": [
+      "Existing article canonical/redirect/discovery alignment. Track 4 responsibility, outside Track 5."
+    ]
+  }
+]

@@ -1,0 +1,129 @@
+{
+  "label": "PROPOSAL • SYNTHETIC DATA • NOT IMPLEMENTED",
+  "range": {
+    "start_inclusive": "2026-11-11T00:00:00Z",
+    "end_exclusive": "2026-11-18T00:00:00Z",
+    "timezone": "UTC",
+    "granularity": "day",
+    "as_of": "2026-11-18T06:00:00Z"
+  },
+  "team": {
+    "tenant_id": "synthetic_tenant",
+    "team": "Orion",
+    "canonical_requests": 29,
+    "observed_tokens": 2960000,
+    "observed_actors": 6,
+    "opted_in_actors": 6,
+    "roster_members": 8,
+    "sessions": 12,
+    "provider_reported_cost_usd": 36.25,
+    "estimated_metered_cost_usd": 27.6,
+    "cost_known_visible_requests": 19,
+    "cost_unknown_requests": 5,
+    "cost_withheld_requests": 5,
+    "daily": [
+      {
+        "day": "2026-11-11",
+        "tokens": 210000,
+        "status": "reported"
+      },
+      {
+        "day": "2026-11-12",
+        "tokens": 410000,
+        "status": "reported"
+      },
+      {
+        "day": "2026-11-13",
+        "tokens": 450000,
+        "status": "partial"
+      },
+      {
+        "day": "2026-11-14",
+        "tokens": null,
+        "status": "unknown"
+      },
+      {
+        "day": "2026-11-15",
+        "tokens": 0,
+        "status": "reported_zero"
+      },
+      {
+        "day": "2026-11-16",
+        "tokens": 840000,
+        "status": "reported"
+      },
+      {
+        "day": "2026-11-17",
+        "tokens": 1050000,
+        "status": "partial"
+      }
+    ]
+  },
+  "self": {
+    "actor_id": "u01",
+    "observed_tokens": 150000,
+    "canonical_requests": 5,
+    "sessions": 2,
+    "estimated_metered_cost_usd": 18.0,
+    "daily": [
+      {
+        "day": "2026-11-11",
+        "tokens": 10000,
+        "status": "reported"
+      },
+      {
+        "day": "2026-11-12",
+        "tokens": 20000,
+        "status": "reported"
+      },
+      {
+        "day": "2026-11-13",
+        "tokens": 30000,
+        "status": "reported"
+      },
+      {
+        "day": "2026-11-14",
+        "tokens": null,
+        "status": "unknown"
+      },
+      {
+        "day": "2026-11-15",
+        "tokens": 0,
+        "status": "reported_zero"
+      },
+      {
+        "day": "2026-11-16",
+        "tokens": 40000,
+        "status": "reported"
+      },
+      {
+        "day": "2026-11-17",
+        "tokens": 50000,
+        "status": "reported"
+      }
+    ]
+  },
+  "quality": {
+    "duplicate_deliveries": 1,
+    "corrections": 1,
+    "late_records": 1,
+    "missing_days": [
+      "2026-11-14"
+    ],
+    "partial_days": [
+      "2026-11-13",
+      "2026-11-17"
+    ],
+    "advisory_state": "suppressed_incomplete_data"
+  },
+  "team_overlap": {
+    "Orion_contributions_tokens": 2960000,
+    "Lyra_contributions_tokens": 2240000,
+    "sum_contributions_tokens": 5200000,
+    "unique_tenant_tokens": 2960000
+  },
+  "baseline": null,
+  "cost_class_note": "provider_reported is a proposed synthetic cost class, not the current Go CostSource=reported field.",
+  "reviewer_fixture_note": "Detailed numerical overlap is an offline reviewer oracle only. The analyst HTML and SVG suppress subset/sum values.",
+  "implementation": "Offline illustration only. Private team/admin views require a proposed tenant service and server-side authorization. Role preview grants no access."
+}

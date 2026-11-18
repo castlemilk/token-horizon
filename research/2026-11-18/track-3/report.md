@@ -1,3 +1,5 @@
+> Preservation copy. Original report and companion-relative links are available in [bundle/](bundle/). See [handoff index](../README.md) for backlog reconciliation and evidence limits.
+
 # Token Horizon: knowledge graph integration
 
 ## Track 3 research and implementation specification

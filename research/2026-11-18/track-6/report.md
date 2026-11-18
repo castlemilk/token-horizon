@@ -1,3 +1,5 @@
+> Preservation copy. Original report and companion-relative links are available in [bundle/](bundle/). See [handoff index](../README.md) for backlog reconciliation and evidence limits.
+
 # Token Horizon — Track 6: Token and Context Analytics
 
 **Research and implementation specification · 18 November 2026 · Regular Pro Chat**  

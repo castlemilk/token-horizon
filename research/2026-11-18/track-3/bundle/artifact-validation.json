@@ -1,0 +1,25 @@
+{
+  "classification": "Deliverable validation only; not product/runtime validation",
+  "repository_baseline": "main@b468206e9378c8d7a6788b67072494982e7de17d",
+  "report_words": 12351,
+  "pdf_pages": 34,
+  "pdf_all_pages_rendered": true,
+  "pdf_visual_review": "Cover, contents, tables, source register, architecture, code examples and both proposal views inspected; final revised code/heading layout checked.",
+  "pdf_link_annotations": 198,
+  "markdown_reference_labels_resolved": true,
+  "draft_contract_checks": [
+    "OpenAPI YAML parsed as 3.1.0 with six proposed paths",
+    "Component schemas passed JSON Schema syntax checks",
+    "Synthetic bundle passed JSON Schema plus date-time validation",
+    "Unapproved, suggested, inserted-without-receipt and public-global-counter variants were rejected by reviewed-bundle schema"
+  ],
+  "runtime_conformance_tested": false,
+  "synthetic_reference_result": "reference/results.json",
+  "limitations": [
+    "No product tests/builds/native runtime",
+    "No deployed API or authentication server validated",
+    "No physical erasure, concurrency or real-user retrieval utility proved",
+    "Static UI images have no interaction or accessibility runtime test",
+    "No current hosted deployment hash verified"
+  ]
+}

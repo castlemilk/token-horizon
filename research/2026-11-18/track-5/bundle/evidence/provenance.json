@@ -1,0 +1,31 @@
+{
+  "repository": "castlemilk/token-horizon",
+  "branch": "main",
+  "commit": "b468206e9378c8d7a6788b67072494982e7de17d",
+  "commitDate": "2026-11-18T07:35:19Z",
+  "inspectionDate": "2026-11-18",
+  "treeEntries": 2031,
+  "treeTruncated": false,
+  "hostedConnector": {
+    "mode": "hosted",
+    "scope": "Published community data; no device traces",
+    "successful": true,
+    "privateProfileDataRead": false
+  },
+  "source_status": "Source-present at immutable commit; deployment SHA unverified",
+  "final_review_branch_recheck": "same pinned commit returned during final review, 2026-11-18 UTC",
+  "authoritative_product_url": "https://token-horizon.dev/",
+  "issue_inventory": {
+    "records": 46,
+    "regular_issues": 31,
+    "open_regular_issues": 31,
+    "closed_regular_issues": 0,
+    "pull_requests": 15,
+    "open_draft_pull_requests": 2,
+    "merged_pull_requests": 12,
+    "closed_unmerged_pull_requests": 1
+  },
+  "privacy": "No personal usage, prompts, credentials, real profile handles or real-user screenshots included. All example observations are synthetic.",
+  "source_copies_included": false,
+  "scope": "Track 5 only; Track 2 identity/team shell and Track 6 canonical token/context/cost semantics are dependencies"
+}
