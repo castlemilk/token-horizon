@@ -998,3 +998,8 @@ The ZIP contains this complete specification, the two original PNG/SVG proposals
 [W10]: https://developers.cloudflare.com/durable-objects/best-practices/access-durable-objects-storage/
 [W11]: https://developers.cloudflare.com/r2/reference/consistency/
 [W12]: https://cheatsheetseries.owasp.org/cheatsheets/Authorization_Cheat_Sheet.html
+[W13]: https://www.sqlite.org/c3ref/set_authorizer.html
+[W14]: https://www.sqlite.org/c3ref/progress_handler.html
+[W15]: https://arxiv.org/abs/2404.16130
+[W16]: https://microsoft.github.io/graphrag/index/methods/
+[W17]: https://www.w3.org/TR/prov-dm/
