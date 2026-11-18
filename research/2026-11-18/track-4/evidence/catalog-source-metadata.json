@@ -1,0 +1,22 @@
+{
+  "repository": "castlemilk/token-horizon",
+  "ref": "b468206e9378c8d7a6788b67072494982e7de17d",
+  "git_blob_sha": "1e89f78729b8770d5c633fcf8a6c9f491a3d7132",
+  "source_path": "docs/data/models.json",
+  "source_url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/docs/data/models.json",
+  "generatedAt": 1794987318,
+  "generatedAtISO": "2026-11-18T07:35:18.000Z",
+  "build": {
+    "builtAt": "2026-11-18T07:35:13Z",
+    "commit": "56841ba",
+    "version": "0.5.2"
+  },
+  "schemaVersion": 1,
+  "count": 2186,
+  "models_length": 2186,
+  "catalogCount": 10340,
+  "providers_length": 157,
+  "plans_length": 13,
+  "plansUpdatedAt": "2026-09-15",
+  "topPicks_length": 10
+}

@@ -1,0 +1,41 @@
+{
+  "date": "2026-11-18",
+  "exact_capture_time": "not logged",
+  "browser": "Cloud browser, anonymous public page",
+  "scope": "DOM and accessibility observations; not a Google render, lab benchmark or field measurement",
+  "observations": [
+    {
+      "url": "https://token-horizon.dev/models",
+      "title": "AI Model Explorer — Models, Providers & Pricing — Token Horizon",
+      "canonical": [
+        "https://token-horizon.dev/models"
+      ],
+      "h1": [
+        "Find your next model."
+      ],
+      "robots": [
+        "index, follow, max-image-preview:large"
+      ],
+      "catalog_snapshot_label": "Nov 5, 2026",
+      "virtualized_options_observed": 20,
+      "anchors_in_observed_model_rows": 0,
+      "images_without_alt_attribute": 0
+    },
+    {
+      "url": "https://token-horizon.dev/models?view=models&tab=cheapest",
+      "title": "Cheapest AI Models & Provider Prices — Token Horizon",
+      "canonical": [
+        "https://token-horizon.dev/models?tab=cheapest"
+      ],
+      "h1": [
+        "Cheapest Inference"
+      ],
+      "robots": [
+        "index, follow, max-image-preview:large"
+      ]
+    }
+  ],
+  "keyboard": "First Tab focused Skip to content; Enter focused main view container.",
+  "unavailable": "Providers click timed out in browser automation; subsequent state read timed out. Plans/mobile/full keyboard/screen reader not tested. No website-performance claim.",
+  "screenshots": "Used for internal inspection only; not included in deliverable."
+}

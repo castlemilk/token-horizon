@@ -1,0 +1,25 @@
+{
+  "revision": "b468206e9378c8d7a6788b67072494982e7de17d",
+  "runtime": "Node v24.22.1",
+  "installation": false,
+  "scope": "Isolated pinned source; synthetic fixtures, not production",
+  "commands": [
+    {
+      "command": "node --test cloudflare/page-metadata.test.mjs",
+      "passed": 9,
+      "failed": 0,
+      "skipped": 0
+    },
+    {
+      "command": "node scripts/test-site-seo.mjs",
+      "passed": 5,
+      "failed": 0,
+      "skipped": 0
+    }
+  ],
+  "limits": [
+    "ASSETS is mocked as successful in metadata suite",
+    "Static SEO suite expects legacy teams and .html article URL policy",
+    "No deployed routing, search-index or field-performance conclusion"
+  ]
+}

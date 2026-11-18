@@ -1,0 +1,66 @@
+{
+  "schema_version": 1,
+  "mode": "offline-raw-response",
+  "pages": [
+    {
+      "url": "https://token-horizon.dev/robots.txt",
+      "fetched_at": "2026-11-18T08:11:53.000Z",
+      "status": 200,
+      "body_sha256": "2e557edfb514c978a3dfb28ecc1ced1f8b4cd2fc0b4fd876623ec199ba767424",
+      "observations": [
+        {
+          "code": "robots_requires_interpretation",
+          "detail": "Only directive-line counts measured",
+          "next_check": "Interpret full groups and specific user agent separately; do not infer indexation",
+          "classification": "observation"
+        }
+      ],
+      "analysis": "robots-lines-only",
+      "robots": {
+        "user_agent_lines": 1,
+        "sitemap_declarations": 1
+      }
+    },
+    {
+      "url": "https://token-horizon.dev/sitemap.xml",
+      "fetched_at": "2026-11-18T08:12:00.000Z",
+      "status": 200,
+      "body_sha256": "140865fdfa287ab10f37bc875bee7dc4be7a8eda0499680c3e49648c3f9d0356",
+      "observations": [],
+      "analysis": "sitemap-structure-only",
+      "sitemap": {
+        "kind": "urlset",
+        "loc_count": 13
+      }
+    },
+    {
+      "url": "https://token-horizon.dev/",
+      "fetched_at": "2026-11-18T08:12:12.000Z",
+      "status": 200,
+      "body_sha256": "a2a078ebad8b8c767fcd7ae00b742aa0aca916bf327b07a5b6ace456d2d2fd86",
+      "observations": [
+        {
+          "code": "response_unavailable",
+          "detail": "Non-200, incomplete, failed or access-blocked response",
+          "next_check": "Confirm access and retry only through a permitted retrieval surface; do not infer Googlebot behavior",
+          "classification": "observation"
+        }
+      ],
+      "analysis": "not-tested"
+    }
+  ],
+  "coverage": {
+    "rendered_dom": "not-tested",
+    "google_indexation": "not-tested",
+    "rich_results_eligibility": "not-tested",
+    "field_cwv": "not-tested",
+    "lab_performance": "not-tested",
+    "backlinks": "not-tested",
+    "keyword_volume": "not-tested",
+    "accessibility": "not-tested",
+    "content_quality": "not-tested",
+    "full_crawl": "not-tested"
+  },
+  "sample_size": 3,
+  "analyzed_raw_html": 0
+}

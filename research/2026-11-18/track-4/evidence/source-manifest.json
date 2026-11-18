@@ -1,0 +1,711 @@
+{
+  "repository": "castlemilk/token-horizon",
+  "branch": "main",
+  "commit": "b468206e9378c8d7a6788b67072494982e7de17d",
+  "commit_date": "2026-11-18T07:35:19Z",
+  "retrieved_date": "2026-11-18",
+  "tree_truncated": false,
+  "files": [
+    {
+      "path": ".github/workflows/ci.yml",
+      "git_blob_sha": "6961961aa810a52cc4aae5e721ee545774d44b5d",
+      "repo_size": 5985,
+      "ref": "b468206e9378c8d7a6788b67072494982e7de17d",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/.github/workflows/ci.yml",
+      "local_sha256": "ceaf3b043a8f4624cc33f073528db82b4f710b13840465ef84514bd838834e4e",
+      "local_bytes": 5985,
+      "git_blob_hash_verified": true
+    },
+    {
+      "path": ".github/workflows/pages.yml",
+      "git_blob_sha": "62f15388e2952c3c6286ff88c736b8d45ef3acbb",
+      "repo_size": 761,
+      "ref": "b468206e9378c8d7a6788b67072494982e7de17d",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/.github/workflows/pages.yml",
+      "local_sha256": "25a503b243b8225f8fbdf2d30c1e2c4d0c873a83c76515c1c87fafa6506b0774",
+      "local_bytes": 761,
+      "git_blob_hash_verified": true
+    },
+    {
+      "path": "AGENTS.md",
+      "git_blob_sha": "fbdce308862d2c14868166e20f0303e80671d2be",
+      "repo_size": 63314,
+      "ref": "b468206e9378c8d7a6788b67072494982e7de17d",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/AGENTS.md",
+      "local_sha256": "fc18101d10a9866ccf1379a35ee025b05a5cbf1382b2f655e147639dff3df3c3",
+      "local_bytes": 63314,
+      "git_blob_hash_verified": true
+    },
+    {
+      "path": "README.md",
+      "git_blob_sha": "260d05c68d2de0949aca3885b86181c9ea754447",
+      "repo_size": 34315,
+      "ref": "b468206e9378c8d7a6788b67072494982e7de17d",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/README.md",
+      "local_sha256": "861c190a5bd5f05d0df12f9437a32edb9a3f26d5647b152f02fab4b95977c77b",
+      "local_bytes": 34315,
+      "git_blob_hash_verified": true
+    },
+    {
+      "path": "clients/macos/Sources/TokenHorizon/Catalog/ModelCatalogExport.swift",
+      "git_blob_sha": "fb433b2d3dd9421caf48ef568816183a45ffe3d2",
+      "repo_size": 20881,
+      "ref": "b468206e9378c8d7a6788b67072494982e7de17d",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/clients/macos/Sources/TokenHorizon/Catalog/ModelCatalogExport.swift",
+      "local_sha256": "9e24742511b80e83ecd06179584d648f8a8d77f0c7099340871a5773b085be3d",
+      "local_bytes": 20881,
+      "git_blob_hash_verified": true
+    },
+    {
+      "path": "cloudflare/package.json",
+      "git_blob_sha": "c7942f26f481e4cfd9e60acd323c39444f2d6b09",
+      "repo_size": 861,
+      "ref": "b468206e9378c8d7a6788b67072494982e7de17d",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/cloudflare/package.json",
+      "local_sha256": "7f3565606cba877da55d344fd700a3a78efdc644bb026e527336313d636055bd",
+      "local_bytes": 861,
+      "git_blob_hash_verified": true
+    },
+    {
+      "path": "cloudflare/page-metadata.test.mjs",
+      "git_blob_sha": "68668f90268a432a3a60fb8cbbeb5b7221a4512d",
+      "repo_size": 11960,
+      "ref": "b468206e9378c8d7a6788b67072494982e7de17d",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/cloudflare/page-metadata.test.mjs",
+      "local_sha256": "a49c790f53c42da44730ba7b7af6a8a40effceef1b126a39de7649762dc93aca",
+      "local_bytes": 11960,
+      "git_blob_hash_verified": true
+    },
+    {
+      "path": "cloudflare/src/browser-auth.js",
+      "git_blob_sha": "af757d3ece07088cb7975e67f3445b35c53d307d",
+      "repo_size": 13695,
+      "ref": "b468206e9378c8d7a6788b67072494982e7de17d",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/cloudflare/src/browser-auth.js",
+      "local_sha256": "3641773661a29d27435cda9542d0d11f6d45317d42eaf0db959b27500eb32b2c",
+      "local_bytes": 13695,
+      "git_blob_hash_verified": true
+    },
+    {
+      "path": "cloudflare/src/connect-page.js",
+      "git_blob_sha": "549f6c7be27b646915303764ace74c598bcbde26",
+      "repo_size": 11898,
+      "ref": "b468206e9378c8d7a6788b67072494982e7de17d",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/cloudflare/src/connect-page.js",
+      "local_sha256": "17a7ecbf5e6b45d19e3b0380834970303013b9ae846809b3889dcae3e600db0a",
+      "local_bytes": 11898,
+      "git_blob_hash_verified": true
+    },
+    {
+      "path": "cloudflare/src/desktop-auth.js",
+      "git_blob_sha": "fc9fea5b33415cc1a2bb62a76d2d36eafa4e6888",
+      "repo_size": 17651,
+      "ref": "b468206e9378c8d7a6788b67072494982e7de17d",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/cloudflare/src/desktop-auth.js",
+      "local_sha256": "d8f6943ef88aef6761990a887da1ea1ee7729cae8fa80b1c860539a79d423383",
+      "local_bytes": 17651,
+      "git_blob_hash_verified": true
+    },
+    {
+      "path": "cloudflare/src/index.js",
+      "git_blob_sha": "98560685746bae8360dd8dae8a870ca85c27b170",
+      "repo_size": 151892,
+      "ref": "b468206e9378c8d7a6788b67072494982e7de17d",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/cloudflare/src/index.js",
+      "local_sha256": "e152e0fc95978bd69508cad1c90848d0a40b6732c5128089d65e2f30967aea08",
+      "local_bytes": 151892,
+      "git_blob_hash_verified": true
+    },
+    {
+      "path": "cloudflare/src/leaderboard-storage.js",
+      "git_blob_sha": "3691c3f7630627d4b36a7edae1738606f45579ea",
+      "repo_size": 2092,
+      "ref": "b468206e9378c8d7a6788b67072494982e7de17d",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/cloudflare/src/leaderboard-storage.js",
+      "local_sha256": "6d199a6a0584a815676ab21869937e1cd3c6b1a9e0c3526a022655917133e6a7",
+      "local_bytes": 2092,
+      "git_blob_hash_verified": true
+    },
+    {
+      "path": "cloudflare/src/og-avatar.js",
+      "git_blob_sha": "47e2c45e942b50ea2f5d845deafde912923a8c93",
+      "repo_size": 11289,
+      "ref": "b468206e9378c8d7a6788b67072494982e7de17d",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/cloudflare/src/og-avatar.js",
+      "local_sha256": "c462ca2e9075e4df878b8ad3d8b4837e3c70512cb194965f2dfb0882e5e84418",
+      "local_bytes": 11289,
+      "git_blob_hash_verified": true
+    },
+    {
+      "path": "cloudflare/src/og-card.js",
+      "git_blob_sha": "13ed69bbdde929ada982db95232ca4a53bbb3d0b",
+      "repo_size": 23157,
+      "ref": "b468206e9378c8d7a6788b67072494982e7de17d",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/cloudflare/src/og-card.js",
+      "local_sha256": "85bf43baa9b1c54d96dad343dc90c598517deda647d7e5ffd626e0feff1bd92e",
+      "local_bytes": 23157,
+      "git_blob_hash_verified": true
+    },
+    {
+      "path": "cloudflare/src/og-league-assets.js",
+      "git_blob_sha": "2927c919acd15213c2e81349767b9a0db2ca2f4d",
+      "repo_size": 239567,
+      "ref": "b468206e9378c8d7a6788b67072494982e7de17d",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/cloudflare/src/og-league-assets.js",
+      "local_sha256": "e861d561db9a2b3d76920473513e486fd381f0ac9acc98d1faa6b124a4a71432",
+      "local_bytes": 239567,
+      "git_blob_hash_verified": true
+    },
+    {
+      "path": "cloudflare/src/og-team.js",
+      "git_blob_sha": "314d72ec8badbd1a68c7728276ffc51a12259fab",
+      "repo_size": 22015,
+      "ref": "b468206e9378c8d7a6788b67072494982e7de17d",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/cloudflare/src/og-team.js",
+      "local_sha256": "490dd44fb7821c593290fb12f8ab1bf72b39eaa1d9f4f8fe913e9014a4c2ce8a",
+      "local_bytes": 22015,
+      "git_blob_hash_verified": true
+    },
+    {
+      "path": "cloudflare/src/page-metadata.js",
+      "git_blob_sha": "9fa051a33956b7398437b86bcbaf6f19dbbec54c",
+      "repo_size": 9260,
+      "ref": "b468206e9378c8d7a6788b67072494982e7de17d",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/cloudflare/src/page-metadata.js",
+      "local_sha256": "f587d93e3f7cbad085b8515de6dfa9cac3723a7973be6a73f6f28ea3c81934a8",
+      "local_bytes": 9260,
+      "git_blob_hash_verified": true
+    },
+    {
+      "path": "cloudflare/src/password-identity.js",
+      "git_blob_sha": "ea5f3ab17ed9080ccc057967d03a064fd038bbb9",
+      "repo_size": 2693,
+      "ref": "b468206e9378c8d7a6788b67072494982e7de17d",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/cloudflare/src/password-identity.js",
+      "local_sha256": "dd4d14392f388a859edacc3bbb5704e394c36853a4cc9f47eeb9cdead4acd6bb",
+      "local_bytes": 2693,
+      "git_blob_hash_verified": true
+    },
+    {
+      "path": "cloudflare/src/request-body.js",
+      "git_blob_sha": "91b934a8f38df491aa820fd2b621c7479f335107",
+      "repo_size": 1419,
+      "ref": "b468206e9378c8d7a6788b67072494982e7de17d",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/cloudflare/src/request-body.js",
+      "local_sha256": "2e9921055b1ce092e1d15e91d0d8de581638650a55dd8eff3a485a39803bd638",
+      "local_bytes": 1419,
+      "git_blob_hash_verified": true
+    },
+    {
+      "path": "cloudflare/src/team-invites.js",
+      "git_blob_sha": "0fc8d7977e1587e6b3d6603fb8ca80469f3bf246",
+      "repo_size": 28503,
+      "ref": "b468206e9378c8d7a6788b67072494982e7de17d",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/cloudflare/src/team-invites.js",
+      "local_sha256": "c15a5350ab1e895bc463567e73b51f39846a04b21a6eab7ff82a6c13c8206d32",
+      "local_bytes": 28503,
+      "git_blob_hash_verified": true
+    },
+    {
+      "path": "cloudflare/src/usage-history.js",
+      "git_blob_sha": "70b15ad9b440e573256f6baf6a50dd53b35cc690",
+      "repo_size": 7557,
+      "ref": "b468206e9378c8d7a6788b67072494982e7de17d",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/cloudflare/src/usage-history.js",
+      "local_sha256": "c1065b0d2edcb9a3b67b00c0f3c76cb19e3b8214a94aef79635d01e2aa9d4939",
+      "local_bytes": 7557,
+      "git_blob_hash_verified": true
+    },
+    {
+      "path": "cloudflare/src/worker.js",
+      "git_blob_sha": "8f6933a62503586fffb88c07a25412bae519bd0a",
+      "repo_size": 11119,
+      "ref": "b468206e9378c8d7a6788b67072494982e7de17d",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/cloudflare/src/worker.js",
+      "local_sha256": "4355be0a585f874296691a76f8595b2412c2a03280b48f2c6e8b1694c08ce045",
+      "local_bytes": 11119,
+      "git_blob_hash_verified": true
+    },
+    {
+      "path": "cloudflare/worker.test.mjs",
+      "git_blob_sha": "1f0a05219bd6a2f789b94e81198fcf26549f09cf",
+      "repo_size": 145965,
+      "ref": "b468206e9378c8d7a6788b67072494982e7de17d",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/cloudflare/worker.test.mjs",
+      "local_sha256": "1bc5cb23456f515a5046cd7c01fdd72d47c6e335372d471c1581ada034db2460",
+      "local_bytes": 145965,
+      "git_blob_hash_verified": true
+    },
+    {
+      "path": "cloudflare/wrangler.toml",
+      "git_blob_sha": "305665ec207c1438fcf56f59132960cd3fd54c2d",
+      "repo_size": 2144,
+      "ref": "b468206e9378c8d7a6788b67072494982e7de17d",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/cloudflare/wrangler.toml",
+      "local_sha256": "fa5cdb2115ebe5458e745926d6334de2173a233ce72c282ba546c1bd53f6cc39",
+      "local_bytes": 2144,
+      "git_blob_hash_verified": true
+    },
+    {
+      "path": "docs/.assetsignore",
+      "git_blob_sha": "c83c7eeb59eb187a6ffce0def9d7e4700729c5d3",
+      "repo_size": 47,
+      "ref": "b468206e9378c8d7a6788b67072494982e7de17d",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/docs/.assetsignore",
+      "local_sha256": "94157f1ef5df5d63a53ee15a0a0f53461c65bbc27185b8deb9dab7b7a219d860",
+      "local_bytes": 47,
+      "git_blob_hash_verified": true
+    },
+    {
+      "path": "docs/DISCOVERY.md",
+      "git_blob_sha": "da970cd7e6514ddee3de4cdbfab5c384243cf1c8",
+      "repo_size": 4082,
+      "ref": "b468206e9378c8d7a6788b67072494982e7de17d",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/docs/DISCOVERY.md",
+      "local_sha256": "115bd349f17d08fcf43ad639bcf00588f0b063497c97d4a8ee5d68f1ca48a54e",
+      "local_bytes": 4082,
+      "git_blob_hash_verified": true
+    },
+    {
+      "path": "docs/LANDING.md",
+      "git_blob_sha": "a8144b2d316005754e1b6f16e1ea56c97e1c3ba2",
+      "repo_size": 4900,
+      "ref": "b468206e9378c8d7a6788b67072494982e7de17d",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/docs/LANDING.md",
+      "local_sha256": "868a6082130aa31f70489ed121a640de656280247c494ab28f098953592d9f9b",
+      "local_bytes": 4900,
+      "git_blob_hash_verified": true
+    },
+    {
+      "path": "docs/_headers",
+      "git_blob_sha": "84fc64fd88220e6c1a51b9f8c69cbbfc2e4f8065",
+      "repo_size": 132,
+      "ref": "b468206e9378c8d7a6788b67072494982e7de17d",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/docs/_headers",
+      "local_sha256": "5a73d7b9ebea59f5abf08bc78207d1ce043c06e23f72629189b7bd6e8274fdb1",
+      "local_bytes": 132,
+      "git_blob_hash_verified": true
+    },
+    {
+      "path": "docs/app.js",
+      "git_blob_sha": "825fa1a64024ee744b459a3244cf5b9bbce01ca9",
+      "repo_size": 2029,
+      "ref": "b468206e9378c8d7a6788b67072494982e7de17d",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/docs/app.js",
+      "local_sha256": "95bd041a061a7303c21b7eb9c275af9f003f66113e17733ea43e918056ab1ad8",
+      "local_bytes": 2029,
+      "git_blob_hash_verified": true
+    },
+    {
+      "path": "docs/blog/index.html",
+      "git_blob_sha": "b4afd4fe0ff44c8771cbb9236322d7d828702c27",
+      "repo_size": 7962,
+      "ref": "b468206e9378c8d7a6788b67072494982e7de17d",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/docs/blog/index.html",
+      "local_sha256": "025c0c81227a2ada18860c86b60ec2eb1073f9c6f918c13269220f9249b7a878",
+      "local_bytes": 7962,
+      "git_blob_hash_verified": true
+    },
+    {
+      "path": "docs/blog/pricing-evidence.html",
+      "git_blob_sha": "835be8da03a1972c070575a5b78b428d7c836ed2",
+      "repo_size": 10652,
+      "ref": "b468206e9378c8d7a6788b67072494982e7de17d",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/docs/blog/pricing-evidence.html",
+      "local_sha256": "4170191e05fd327a8c31b140a06c039dd4e132e284cc048b2a7924a8b429a681",
+      "local_bytes": 10652,
+      "git_blob_hash_verified": true
+    },
+    {
+      "path": "docs/blog/why-token-horizon.html",
+      "git_blob_sha": "f65bf3ff1d908385c7d46d745a2d2c1c3cbc3268",
+      "repo_size": 11312,
+      "ref": "b468206e9378c8d7a6788b67072494982e7de17d",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/docs/blog/why-token-horizon.html",
+      "local_sha256": "2e24a7d7bbce5c1ac472a813a2b13b974bbcbfc77b17c74a6eefd7cf8e525434",
+      "local_bytes": 11312,
+      "git_blob_hash_verified": true
+    },
+    {
+      "path": "docs/connect/index.html",
+      "git_blob_sha": "0a4b694566b4e90b93535e83e4afcc4d14b09c55",
+      "repo_size": 3727,
+      "ref": "b468206e9378c8d7a6788b67072494982e7de17d",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/docs/connect/index.html",
+      "local_sha256": "d5a551fff511f0833d08d8b03fcee16c5c924b99d00186051cbcdc98c6417ad8",
+      "local_bytes": 3727,
+      "git_blob_hash_verified": true
+    },
+    {
+      "path": "docs/docs/index.html",
+      "git_blob_sha": "889cd3bf268182f2a07749c4a8ff99c83a40610b",
+      "repo_size": 35545,
+      "ref": "b468206e9378c8d7a6788b67072494982e7de17d",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/docs/docs/index.html",
+      "local_sha256": "a448b03119ab74a080d5aee6392edee4ea3191638985e1809a9be3cfd815169d",
+      "local_bytes": 35545,
+      "git_blob_hash_verified": true
+    },
+    {
+      "path": "docs/explore-nav.js",
+      "git_blob_sha": "74fe9ecd339ea1f80538804607d33a2475302fe8",
+      "repo_size": 20711,
+      "ref": "b468206e9378c8d7a6788b67072494982e7de17d",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/docs/explore-nav.js",
+      "local_sha256": "e6cc93a2cfb58e0f346b4fab57a40b71b18295c7681aa5717e6121b88e5f43db",
+      "local_bytes": 20711,
+      "git_blob_hash_verified": true
+    },
+    {
+      "path": "docs/index.html",
+      "git_blob_sha": "08aaeae016a7ea0f13c3aaabdc7c3823f22cdec1",
+      "repo_size": 28367,
+      "ref": "b468206e9378c8d7a6788b67072494982e7de17d",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/docs/index.html",
+      "local_sha256": "cd4a1d4572c573f3759ffcab8d67a5f75ba9dab55d3d86bf0b4549020bc9551a",
+      "local_bytes": 28367,
+      "git_blob_hash_verified": true
+    },
+    {
+      "path": "docs/landing.css",
+      "git_blob_sha": "8e3e2498f9995c25179ba82ac1ac4eff7894929f",
+      "repo_size": 47560,
+      "ref": "b468206e9378c8d7a6788b67072494982e7de17d",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/docs/landing.css",
+      "local_sha256": "252bf74f7bdad49965cc0646b7e9782eb5bc9f1ce3f77615501ec9d0367f9f58",
+      "local_bytes": 47560,
+      "git_blob_hash_verified": true
+    },
+    {
+      "path": "docs/landing.js",
+      "git_blob_sha": "0d598b95d6814db9301c18cb39348a7e76498e07",
+      "repo_size": 19941,
+      "ref": "b468206e9378c8d7a6788b67072494982e7de17d",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/docs/landing.js",
+      "local_sha256": "080f54cecb6d64065f82538fe726a1aba07e0aef0959a6928d517bb79c99a9d3",
+      "local_bytes": 19941,
+      "git_blob_hash_verified": true
+    },
+    {
+      "path": "docs/leaderboard.html",
+      "git_blob_sha": "bdbd8dda13925cec70336e66436746930e98b0ad",
+      "repo_size": 483610,
+      "ref": "b468206e9378c8d7a6788b67072494982e7de17d",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/docs/leaderboard.html",
+      "local_sha256": "eb44e33dd7909b04cd5fb4b729529964119640ee7ddf1acf92f9df0feab8925d",
+      "local_bytes": 483610,
+      "git_blob_hash_verified": true
+    },
+    {
+      "path": "docs/llms.txt",
+      "git_blob_sha": "2b9fd1ef6c28e9238acce95038e46d59d56818fc",
+      "repo_size": 2350,
+      "ref": "b468206e9378c8d7a6788b67072494982e7de17d",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/docs/llms.txt",
+      "local_sha256": "477b6ff64a786d51717150ac13ab2c868570af14d7a3c4aadda65c281f376100",
+      "local_bytes": 2350,
+      "git_blob_hash_verified": true
+    },
+    {
+      "path": "docs/login/index.html",
+      "git_blob_sha": "1278eb2b3f6988033399eb9fe9a84cafdb7bb9c1",
+      "repo_size": 845,
+      "ref": "b468206e9378c8d7a6788b67072494982e7de17d",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/docs/login/index.html",
+      "local_sha256": "c9e6f4e7991a7da29c6988a52d1c03e5410830f9e97487ca5f7bbfcd48fbe840",
+      "local_bytes": 845,
+      "git_blob_hash_verified": true
+    },
+    {
+      "path": "docs/models/index.html",
+      "git_blob_sha": "a6c66ea05de76c49d556b1f54718afc7fb55d79d",
+      "repo_size": 5501,
+      "ref": "b468206e9378c8d7a6788b67072494982e7de17d",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/docs/models/index.html",
+      "local_sha256": "a4f16526e09c350d4002992afe2abfe68b03a2d80f2c4e01998aa269b784528a",
+      "local_bytes": 5501,
+      "git_blob_hash_verified": true
+    },
+    {
+      "path": "docs/robots.txt",
+      "git_blob_sha": "7c388e40adeae848560dad6c30daa8aa3dcdddf9",
+      "repo_size": 682,
+      "ref": "b468206e9378c8d7a6788b67072494982e7de17d",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/docs/robots.txt",
+      "local_sha256": "2e557edfb514c978a3dfb28ecc1ced1f8b4cd2fc0b4fd876623ec199ba767424",
+      "local_bytes": 682,
+      "git_blob_hash_verified": true
+    },
+    {
+      "path": "docs/sitemap.xml",
+      "git_blob_sha": "67c7de6b2ba7504587a2e42f17b036e884dbc276",
+      "repo_size": 903,
+      "ref": "b468206e9378c8d7a6788b67072494982e7de17d",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/docs/sitemap.xml",
+      "local_sha256": "2bab74681968886817ecf62adf1feb164b133a265bdaa5f01cfa1525279dd3b7",
+      "local_bytes": 903,
+      "git_blob_hash_verified": true
+    },
+    {
+      "path": "docs/teams/index.html",
+      "git_blob_sha": "1e98a204e766050bce942e67c4f4b2ce6c1f634a",
+      "repo_size": 921,
+      "ref": "b468206e9378c8d7a6788b67072494982e7de17d",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/docs/teams/index.html",
+      "local_sha256": "39763024b42c783de7275b713f9556e6bb9f0b15f25289774accadb0751d4121",
+      "local_bytes": 921,
+      "git_blob_hash_verified": true
+    },
+    {
+      "path": "docs/theme.js",
+      "git_blob_sha": "e28e165ad2ffa85c1ccd805a77d446c8f132c29f",
+      "repo_size": 3861,
+      "ref": "b468206e9378c8d7a6788b67072494982e7de17d",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/docs/theme.js",
+      "local_sha256": "983cc20fd3bcfb877e48a4e9cf3a05501ede99f1b759df1dd5385b99b2423cc0",
+      "local_bytes": 3861,
+      "git_blob_hash_verified": true
+    },
+    {
+      "path": "package.json",
+      "git_blob_sha": "7bb2876f426ceb408f35d030c4f5dea0a8070129",
+      "repo_size": 795,
+      "ref": "b468206e9378c8d7a6788b67072494982e7de17d",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/package.json",
+      "local_sha256": "d4f86d88965c287437ed927d6f51c4fdac1aa9fdcdc08965a3c8a9850c7e7a45",
+      "local_bytes": 795,
+      "git_blob_hash_verified": true
+    },
+    {
+      "path": "scripts/bench-leaderboard.mjs",
+      "git_blob_sha": "9c36355df6dc740ad5e9d273a8f75f32f3211885",
+      "repo_size": 16244,
+      "ref": "b468206e9378c8d7a6788b67072494982e7de17d",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/scripts/bench-leaderboard.mjs",
+      "local_sha256": "79491caeab4868dc62df0c67bd52b6576892c5f5f19027828964e896fb18cb86",
+      "local_bytes": 16244,
+      "git_blob_hash_verified": true
+    },
+    {
+      "path": "scripts/build-brand-assets.mjs",
+      "git_blob_sha": "74217a426f93a2cc2c9cdb2a99fa1efb663634fb",
+      "repo_size": 15198,
+      "ref": "b468206e9378c8d7a6788b67072494982e7de17d",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/scripts/build-brand-assets.mjs",
+      "local_sha256": "c7d7486d7377b988fa55b58a863a2392f259e0b77fd6f470d63063ee1e7be959",
+      "local_bytes": 15198,
+      "git_blob_hash_verified": true
+    },
+    {
+      "path": "scripts/deploy-cloudflare.sh",
+      "git_blob_sha": "7f5c9d8db1c50b5ac770b2b7cae3e4192be754c0",
+      "repo_size": 2927,
+      "ref": "b468206e9378c8d7a6788b67072494982e7de17d",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/scripts/deploy-cloudflare.sh",
+      "local_sha256": "96f32a5d2188c37501cba3019ffb1f09c98ac499d23ceb28ffebe719daff110d",
+      "local_bytes": 2927,
+      "git_blob_hash_verified": true
+    },
+    {
+      "path": "scripts/test-leaderboard-ui.mjs",
+      "git_blob_sha": "b9e6f8e83c7457681c5b7402cfc823eab2f1e8d0",
+      "repo_size": 84507,
+      "ref": "b468206e9378c8d7a6788b67072494982e7de17d",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/scripts/test-leaderboard-ui.mjs",
+      "local_sha256": "13bd6be986176200ed3ae21bd05d23fa6b3e6874e9e2b88bb4bde1ea081db16b",
+      "local_bytes": 84507,
+      "git_blob_hash_verified": true
+    },
+    {
+      "path": "scripts/test-site-seo.mjs",
+      "git_blob_sha": "c55e0946b3790bdde00ec61f152c675b186b14f7",
+      "repo_size": 20158,
+      "ref": "b468206e9378c8d7a6788b67072494982e7de17d",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/scripts/test-site-seo.mjs",
+      "local_sha256": "c4e31ffc5a21c74d32cda93a46bd71119629d8248bfe7c0065821bd11988bcfe",
+      "local_bytes": 20158,
+      "git_blob_hash_verified": true
+    },
+    {
+      "path": "scripts/update-catalog.py",
+      "git_blob_sha": "5bd1dd885d6bdc51f281029502ab1542c58c0683",
+      "repo_size": 12657,
+      "ref": "b468206e9378c8d7a6788b67072494982e7de17d",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/scripts/update-catalog.py",
+      "local_sha256": "8d40eb2847267e551b5d45ccd6689a2a447b59a97a29ce181cae721a938f8bf1",
+      "local_bytes": 12657,
+      "git_blob_hash_verified": true
+    },
+    {
+      "path": "docs/favicon.ico",
+      "git_blob_sha": "021d936f2c239d01bfd4a4d5b296916bc4f5f944",
+      "git_blob_hash_verified": true,
+      "local_sha256": "e5656b15c01f27eaf5f83db9fab5e8f482042d93248a07ec9dee5762fdbced60",
+      "local_bytes": 3334,
+      "ref": "b468206e9378c8d7a6788b67072494982e7de17d",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/docs/favicon.ico"
+    },
+    {
+      "path": "docs/favicon-32x32.png",
+      "git_blob_sha": "5f33dfb0c28fab181c32ce8607677a62e592781e",
+      "git_blob_hash_verified": true,
+      "local_sha256": "3016b6aa0a0ba6d16abb77946cfa00fb5d8200212e077bbe10e8487754d01402",
+      "local_bytes": 616,
+      "ref": "b468206e9378c8d7a6788b67072494982e7de17d",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/docs/favicon-32x32.png"
+    },
+    {
+      "path": "docs/favicon-48x48.png",
+      "git_blob_sha": "2923d8d387260c64b90278e31c80d0fe58eb6860",
+      "git_blob_hash_verified": true,
+      "local_sha256": "267e4b00bc8cda5e5da0a0750c40328de158afc91f5fa09720a0a3c9e07ef9a1",
+      "local_bytes": 966,
+      "ref": "b468206e9378c8d7a6788b67072494982e7de17d",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/docs/favicon-48x48.png"
+    },
+    {
+      "path": "docs/apple-touch-icon.png",
+      "git_blob_sha": "a568656b9df0b864500b01aab12e6cbe69df504c",
+      "git_blob_hash_verified": true,
+      "local_sha256": "ee4503f465f177a2fbfe49c83af77c45918ca020e3c0d8ce3701737218291b0e",
+      "local_bytes": 2024,
+      "ref": "b468206e9378c8d7a6788b67072494982e7de17d",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/docs/apple-touch-icon.png"
+    },
+    {
+      "path": "docs/icon-192.png",
+      "git_blob_sha": "dafdeb896ff4a340c38a9480836a8641f54e377e",
+      "git_blob_hash_verified": true,
+      "local_sha256": "7dacaa97c815be692d70ddfa22cc0654621aa5900a58bc4c73935976756f117f",
+      "local_bytes": 2153,
+      "ref": "b468206e9378c8d7a6788b67072494982e7de17d",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/docs/icon-192.png"
+    },
+    {
+      "path": "docs/icon-512.png",
+      "git_blob_sha": "431a07035ee5d0ba8bfddd7845e89ae6761042c7",
+      "git_blob_hash_verified": true,
+      "local_sha256": "532702a991902e73e7086244e7f49f303391ea598d71b15c948a2d2a77a06045",
+      "local_bytes": 6345,
+      "ref": "b468206e9378c8d7a6788b67072494982e7de17d",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/docs/icon-512.png"
+    },
+    {
+      "path": "docs/assets/favicon.svg",
+      "git_blob_sha": "82b69c7aaf06061a578f0837ef37a45cafbe32f0",
+      "git_blob_hash_verified": true,
+      "local_sha256": "5e23a295679aef8b6290b3751362d1f0fca01c4f3a3900f058332a7444541416",
+      "local_bytes": 355,
+      "ref": "b468206e9378c8d7a6788b67072494982e7de17d",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/docs/assets/favicon.svg"
+    },
+    {
+      "path": "docs/assets/safari-pinned-tab.svg",
+      "git_blob_sha": "d343082ee8f2a59d814c84c20259987423e52310",
+      "git_blob_hash_verified": true,
+      "local_sha256": "6cafdd15f5f0857288fbd5ecaac77576e12fb4e276b92eb63f7372ca1d44a1e1",
+      "local_bytes": 219,
+      "ref": "b468206e9378c8d7a6788b67072494982e7de17d",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/docs/assets/safari-pinned-tab.svg"
+    },
+    {
+      "path": "docs/site.webmanifest",
+      "git_blob_sha": "39654d603c0516397e09eeda7627e65a3dd710d8",
+      "git_blob_hash_verified": true,
+      "local_sha256": "6750ae745a819b72c2fed406087ac1997daf984a15316a7743ae6f5797124ba7",
+      "local_bytes": 597,
+      "ref": "b468206e9378c8d7a6788b67072494982e7de17d",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/docs/site.webmanifest"
+    },
+    {
+      "path": "docs/assets/og.png",
+      "git_blob_sha": "d08039473d5db916032f6cc989bee057bbefea47",
+      "git_blob_hash_verified": true,
+      "local_sha256": "b1c0be055092f6a1bae906ee5f7a346d39bf534ace6141ae41fcd86a48401b6e",
+      "local_bytes": 55055,
+      "ref": "b468206e9378c8d7a6788b67072494982e7de17d",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/docs/assets/og.png"
+    },
+    {
+      "path": "docs/assets/og-leaderboard.png",
+      "git_blob_sha": "9dc0f6f4d6d76745d5e4dca86378dd9aae8e4866",
+      "git_blob_hash_verified": true,
+      "local_sha256": "3615f7ad07747c1cdf2255751cc1d66d26675fad58c0c50a6dd92e1d336aa7d6",
+      "local_bytes": 99057,
+      "ref": "b468206e9378c8d7a6788b67072494982e7de17d",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/docs/assets/og-leaderboard.png"
+    },
+    {
+      "path": "docs/assets/og-models.png",
+      "git_blob_sha": "e24b6554e130eaa72ff949197aec964dc8ce7739",
+      "git_blob_hash_verified": true,
+      "local_sha256": "9c80a6d5b0ab8dd565d18c0d925c128d8813f5de388f6cb4f91951601e205346",
+      "local_bytes": 55236,
+      "ref": "b468206e9378c8d7a6788b67072494982e7de17d",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/docs/assets/og-models.png"
+    },
+    {
+      "path": "docs/assets/og-docs.png",
+      "git_blob_sha": "5fa673a0db1d5e5929df34da94ddf237ee819400",
+      "git_blob_hash_verified": true,
+      "local_sha256": "7a183e4b9fcb3da6fece5336113217a18b8dc000ee4803b7cc5070ba73540f5e",
+      "local_bytes": 49477,
+      "ref": "b468206e9378c8d7a6788b67072494982e7de17d",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/docs/assets/og-docs.png"
+    },
+    {
+      "path": "docs/assets/og-blog.png",
+      "git_blob_sha": "d76e9ce5770aaba912457bf3da0a1cf3c8a1e3e9",
+      "git_blob_hash_verified": true,
+      "local_sha256": "680cb0d9ab57f35421dc80462888a6e630377f96eb171a9c341611b41be990b2",
+      "local_bytes": 43668,
+      "ref": "b468206e9378c8d7a6788b67072494982e7de17d",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/docs/assets/og-blog.png"
+    },
+    {
+      "path": "docs/assets/og-why-token-horizon.png",
+      "git_blob_sha": "796883a0cc8912a10052725a3933c753054c0eae",
+      "git_blob_hash_verified": true,
+      "local_sha256": "58c64b3287a5adedddf7d790cf16fdfd40212616cb9670071f2b4589b33fa91d",
+      "local_bytes": 45720,
+      "ref": "b468206e9378c8d7a6788b67072494982e7de17d",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/docs/assets/og-why-token-horizon.png"
+    },
+    {
+      "path": "docs/assets/og-pricing-evidence.png",
+      "git_blob_sha": "14ef7fb7965e84e9dac957131dbff3abc2ac729f",
+      "git_blob_hash_verified": true,
+      "local_sha256": "e9d9cec987a60485b435d1ad7703fac5e68133bced43f4e3a7ad73fdea038cdf",
+      "local_bytes": 45764,
+      "ref": "b468206e9378c8d7a6788b67072494982e7de17d",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/docs/assets/og-pricing-evidence.png"
+    },
+    {
+      "path": "docs/assets/og-connect.png",
+      "git_blob_sha": "ef2616c19f8a084e3f83b9ba7dc13e84dddc4999",
+      "git_blob_hash_verified": true,
+      "local_sha256": "0f6e59896828cc8732054006ed4eedca7f21f19efae1758fe7c2cc39a3d26849",
+      "local_bytes": 49406,
+      "ref": "b468206e9378c8d7a6788b67072494982e7de17d",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/docs/assets/og-connect.png"
+    },
+    {
+      "path": "scripts/refresh-models.sh",
+      "git_blob_sha": "07612f1d7fbbf66666dd187c88f9faedddcc8a8e",
+      "ref": "b468206e9378c8d7a6788b67072494982e7de17d",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/scripts/refresh-models.sh",
+      "local_sha256": "6e12359ca0efa860cb7b35b29c2a0b5eb0736972c3d7fc14fc327593c4adbc20",
+      "local_bytes": 1721,
+      "git_blob_hash_verified": true
+    },
+    {
+      "path": ".github/workflows/models-refresh.yml",
+      "git_blob_sha": "4e6a418f698d0a9e4177b6f7c4a091b78ca30671",
+      "ref": "b468206e9378c8d7a6788b67072494982e7de17d",
+      "url": "https://github.com/castlemilk/token-horizon/blob/b468206e9378c8d7a6788b67072494982e7de17d/.github/workflows/models-refresh.yml",
+      "local_sha256": "82e0bad81013593beea0fe28a09ffb0bba57b15575932b56287f7c9c737e3af7",
+      "local_bytes": 1446,
+      "git_blob_hash_verified": true
+    }
+  ]
+}

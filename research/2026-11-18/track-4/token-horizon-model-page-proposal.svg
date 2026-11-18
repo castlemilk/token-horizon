@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE svg
+  PUBLIC '-//W3C//DTD SVG 1.0//EN'
+  'http://www.w3.org/TR/2001/REC-SVG-20010904/DTD/svg10.dtd'>
+<svg width="500" height="555" preserveAspectRatio="xMinYMin meet" viewBox="0 0 500 555" xmlns="http://www.w3.org/2000/svg" version="1.0" fill-rule="evenodd" xmlns:xlink="http://www.w3.org/1999/xlink">
+	<title>...</title>
+	<desc>...</desc>
+	<clipPath id="clip">
+		<rect x="0" y="0" width="500" height="555"/>
+	</clipPath>
+	<g id="group" transform="scale(1,-1) translate(0,-555)" style="clip-path: url(#clip)">
+		<g transform="">
+			<rect x="0" y="0" width="500" height="555" rx="6" ry="6" style="stroke: rgb(78%,83%,80%); stroke-linecap: butt; stroke-width: 0.6; fill: rgb(100%,100%,100%); fill-rule: evenodd;"/>
+			<rect x="0" y="515" width="500" height="40" style="stroke: rgb(7%,14%,11%); stroke-linecap: butt; stroke-width: 1; fill: rgb(7%,14%,11%); fill-rule: evenodd;"/>
+			<text x="17" y="531" style="font-family: BodyBold; font-size: 13px;fill: rgb(100%,100%,100%); stroke:none;" transform="translate(0,1062) scale(1,-1)">Token Horizon</text>
+			<text x="300" y="531" style="font-family: Body; font-size: 9px;fill: rgb(71%,92%,80%); stroke:none;" transform="translate(0,1062) scale(1,-1)">Models    Methodology    Docs</text>
+			<text x="18" y="494" style="font-family: BodyBold; font-size: 8px;fill: rgb(13%,36%,26%); stroke:none;" transform="translate(0,988) scale(1,-1)">PROPOSAL / SYNTHETIC EXAMPLE / NOT IMPLEMENTED</text>
+			<text x="18" y="473" style="font-family: Body; font-size: 8px;fill: rgb(32%,39%,35%); stroke:none;" transform="translate(0,946) scale(1,-1)">Models  /  Example Provider  /  Alpha 2</text>
+			<text x="18" y="443" style="font-family: BodyBold; font-size: 24px;fill: rgb(7%,14%,11%); stroke:none;" transform="translate(0,886) scale(1,-1)">Model Alpha 2</text>
+			<text x="18" y="424" style="font-family: Body; font-size: 10px;fill: rgb(7%,14%,11%); stroke:none;" transform="translate(0,848) scale(1,-1)">Published API pricing, context and availability</text>
+			<text x="18" y="407" style="font-family: Body; font-size: 8.5px;fill: rgb(32%,39%,35%); stroke:none;" transform="translate(0,814) scale(1,-1)">A reviewed public evidence page, readable before JavaScript loads.</text>
+			<rect x="18" y="340" width="464" height="53" rx="6" ry="6" style="stroke: rgb(78%,83%,80%); stroke-linecap: butt; stroke-width: 0.6; fill: rgb(95%,96%,93%); fill-rule: evenodd;"/>
+			<text x="30" y="374" style="font-family: BodyBold; font-size: 10px;fill: rgb(7%,14%,11%); stroke:none;" transform="translate(0,748) scale(1,-1)">Evidence attached to each claim</text>
+			<text x="30" y="356" style="font-family: Body; font-size: 8px;fill: rgb(7%,14%,11%); stroke:none;" transform="translate(0,712) scale(1,-1)">Exact ID: example/alpha-2    |    Synthetic verification date: 18 Nov 2026</text>
+			<rect x="18" y="241" width="296" height="85" rx="6" ry="6" style="stroke: rgb(78%,83%,80%); stroke-linecap: butt; stroke-width: 0.6; fill: rgb(98%,98%,97%); fill-rule: evenodd;"/>
+			<text x="31" y="306" style="font-family: BodyBold; font-size: 8px;fill: rgb(13%,36%,26%); stroke:none;" transform="translate(0,612) scale(1,-1)">RATES / USD PER 1M TOKENS</text>
+			<text x="31" y="281" style="font-family: Body; font-size: 9px;fill: rgb(7%,14%,11%); stroke:none;" transform="translate(0,562) scale(1,-1)">Input</text>
+			<text x="131" y="281" style="font-family: Body; font-size: 9px;fill: rgb(7%,14%,11%); stroke:none;" transform="translate(0,562) scale(1,-1)">Output</text>
+			<text x="227" y="281" style="font-family: Body; font-size: 9px;fill: rgb(7%,14%,11%); stroke:none;" transform="translate(0,562) scale(1,-1)">Cache</text>
+			<text x="31" y="259" style="font-family: BodyBold; font-size: 17px;fill: rgb(7%,14%,11%); stroke:none;" transform="translate(0,518) scale(1,-1)">$2.00</text>
+			<text x="131" y="259" style="font-family: BodyBold; font-size: 17px;fill: rgb(7%,14%,11%); stroke:none;" transform="translate(0,518) scale(1,-1)">$8.00</text>
+			<text x="227" y="261" style="font-family: BodyBold; font-size: 11px;fill: rgb(7%,14%,11%); stroke:none;" transform="translate(0,522) scale(1,-1)">Unknown</text>
+			<rect x="327" y="241" width="155" height="85" rx="6" ry="6" style="stroke: rgb(78%,83%,80%); stroke-linecap: butt; stroke-width: 0.6; fill: rgb(95%,96%,93%); fill-rule: evenodd;"/>
+			<text x="339" y="305" style="font-family: BodyBold; font-size: 9px;fill: rgb(7%,14%,11%); stroke:none;" transform="translate(0,610) scale(1,-1)">Source and conditions</text>
+			<text x="339" y="286" style="font-family: Body; font-size: 8px;fill: rgb(13%,36%,26%); stroke:none;" transform="translate(0,572) scale(1,-1)">Official source link</text>
+			<text x="339" y="271" style="font-family: Body; font-size: 8px;fill: rgb(7%,14%,11%); stroke:none;" transform="translate(0,542) scale(1,-1)">Tier / region / expiry</text>
+			<text x="339" y="255" style="font-family: Body; font-size: 7.7px;fill: rgb(32%,39%,35%); stroke:none;" transform="translate(0,510) scale(1,-1)">Export date is separate</text>
+			<rect x="18" y="141" width="464" height="86" rx="6" ry="6" style="stroke: rgb(78%,83%,80%); stroke-linecap: butt; stroke-width: 0.6; fill: rgb(95%,96%,93%); fill-rule: evenodd;"/>
+			<text x="31" y="207" style="font-family: BodyBold; font-size: 8px;fill: rgb(13%,36%,26%); stroke:none;" transform="translate(0,414) scale(1,-1)">REPRODUCE A SYNTHETIC SCENARIO</text>
+			<text x="31" y="187" style="font-family: BodyBold; font-size: 10px;fill: rgb(7%,14%,11%); stroke:none;" transform="translate(0,374) scale(1,-1)">1M input + 250k output + no cache assumption</text>
+			<text x="31" y="169" style="font-family: BodyBold; font-size: 12px;fill: rgb(7%,14%,11%); stroke:none;" transform="translate(0,338) scale(1,-1)">Estimated provider charge: $4.00</text>
+			<text x="31" y="153" style="font-family: Body; font-size: 8px;fill: rgb(32%,39%,35%); stroke:none;" transform="translate(0,306) scale(1,-1)">Excludes tools, storage, tax and discounts. These are fictional rates.</text>
+			<text x="18" y="116" style="font-family: BodyBold; font-size: 10px;fill: rgb(7%,14%,11%); stroke:none;" transform="translate(0,232) scale(1,-1)">What this comparison establishes</text>
+			<text x="18" y="99" style="font-family: Body; font-size: 8px;fill: rgb(7%,14%,11%); stroke:none;" transform="translate(0,198) scale(1,-1)">Rate evidence and explicit assumptions; no unmeasured quality or savings claim.</text>
+			<text x="18" y="82" style="font-family: Body; font-size: 8px;fill: rgb(7%,14%,11%); stroke:none;" transform="translate(0,164) scale(1,-1)">Unknown fields stay unknown. Provider facts and measured results stay distinct.</text>
+			<rect x="18" y="27" width="205" height="35" rx="6" ry="6" style="stroke: rgb(13%,36%,26%); stroke-linecap: butt; stroke-width: 0.6; fill: rgb(13%,36%,26%); fill-rule: evenodd;"/>
+			<text x="31" y="40" style="font-family: BodyBold; font-size: 10px;fill: rgb(100%,100%,100%); stroke:none;" transform="translate(0,80) scale(1,-1)">Open public comparison</text>
+			<text x="243" y="40" style="font-family: Body; font-size: 9px;fill: rgb(13%,36%,26%); stroke:none;" transform="translate(0,80) scale(1,-1)">Read methodology  /  Supported setup</text>
+		</g>
+	</g>
+</svg>

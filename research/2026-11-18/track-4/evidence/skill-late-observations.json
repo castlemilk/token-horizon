@@ -1,0 +1,290 @@
+{
+  "schema_version": 1,
+  "mode": "offline-raw-response",
+  "pages": [
+    {
+      "url": "https://token-horizon.dev/",
+      "fetched_at": "2026-11-18T08:57:50.550802+00:00",
+      "status": 403,
+      "body_sha256": "26f90902074bde516cc0106fb9ae9bd17563fb1fa5388594df6ce9f556c97df3",
+      "observations": [
+        {
+          "code": "response_unavailable",
+          "detail": "Non-200, incomplete, failed or access-blocked response",
+          "next_check": "Confirm access and retry only through a permitted retrieval surface; do not infer Googlebot behavior",
+          "classification": "observation"
+        }
+      ],
+      "analysis": "not-tested"
+    },
+    {
+      "url": "https://token-horizon.dev/robots.txt",
+      "fetched_at": "2026-11-18T08:57:50.551587+00:00",
+      "status": 403,
+      "body_sha256": "0c4756b55623fafa9e2c8f942624c9467d8d4b0acf719b17a3af7f0d8fd776cf",
+      "observations": [
+        {
+          "code": "response_unavailable",
+          "detail": "Non-200, incomplete, failed or access-blocked response",
+          "next_check": "Confirm access and retry only through a permitted retrieval surface; do not infer Googlebot behavior",
+          "classification": "observation"
+        }
+      ],
+      "analysis": "not-tested"
+    },
+    {
+      "url": "https://token-horizon.dev/sitemap.xml",
+      "fetched_at": "2026-11-18T08:57:50.552234+00:00",
+      "status": 403,
+      "body_sha256": "93fd6a8450d99eed2f2de69a792cf4bd8172c90fc9d89b362eec683584bfe2a1",
+      "observations": [
+        {
+          "code": "response_unavailable",
+          "detail": "Non-200, incomplete, failed or access-blocked response",
+          "next_check": "Confirm access and retry only through a permitted retrieval surface; do not infer Googlebot behavior",
+          "classification": "observation"
+        }
+      ],
+      "analysis": "not-tested"
+    },
+    {
+      "url": "https://token-horizon.dev/llms.txt",
+      "fetched_at": "2026-11-18T08:57:58.147426+00:00",
+      "status": 403,
+      "body_sha256": "8581ab5cd1f7deb98eb6d9a99638d9a921219636b8d1c4b51aee95a5a7a3d79e",
+      "observations": [
+        {
+          "code": "response_unavailable",
+          "detail": "Non-200, incomplete, failed or access-blocked response",
+          "next_check": "Confirm access and retry only through a permitted retrieval surface; do not infer Googlebot behavior",
+          "classification": "observation"
+        }
+      ],
+      "analysis": "not-tested"
+    },
+    {
+      "url": "https://token-horizon.dev/models",
+      "fetched_at": "2026-11-18T08:57:58.178840+00:00",
+      "status": 403,
+      "body_sha256": "01040e9062c3ee39b5bf85f288455bcf053241e6da01511b6b7df090eecba93d",
+      "observations": [
+        {
+          "code": "response_unavailable",
+          "detail": "Non-200, incomplete, failed or access-blocked response",
+          "next_check": "Confirm access and retry only through a permitted retrieval surface; do not infer Googlebot behavior",
+          "classification": "observation"
+        }
+      ],
+      "analysis": "not-tested"
+    },
+    {
+      "url": "https://token-horizon.dev/models/",
+      "fetched_at": "2026-11-18T08:57:58.203902+00:00",
+      "status": 403,
+      "body_sha256": "f1af9d28d39edf00a0dc3ff08bc0c3a63e2827c97bd271595655bbe23258543e",
+      "observations": [
+        {
+          "code": "response_unavailable",
+          "detail": "Non-200, incomplete, failed or access-blocked response",
+          "next_check": "Confirm access and retry only through a permitted retrieval surface; do not infer Googlebot behavior",
+          "classification": "observation"
+        }
+      ],
+      "analysis": "not-tested"
+    },
+    {
+      "url": "https://token-horizon.dev/leaderboard",
+      "fetched_at": "2026-11-18T08:58:13.669466+00:00",
+      "status": 403,
+      "body_sha256": "8b942cd602c80982ce1723b11381984ca9a308afeeafcd0c50392b7c8886025a",
+      "observations": [
+        {
+          "code": "response_unavailable",
+          "detail": "Non-200, incomplete, failed or access-blocked response",
+          "next_check": "Confirm access and retry only through a permitted retrieval surface; do not infer Googlebot behavior",
+          "classification": "observation"
+        }
+      ],
+      "analysis": "not-tested"
+    },
+    {
+      "url": "https://token-horizon.dev/teams",
+      "fetched_at": "2026-11-18T08:58:16.484547+00:00",
+      "status": 403,
+      "body_sha256": "6119ac9652217b9cceb7e62ba9f1f9bb2b65f3870c2f5373ba8bc85ce9471229",
+      "observations": [
+        {
+          "code": "response_unavailable",
+          "detail": "Non-200, incomplete, failed or access-blocked response",
+          "next_check": "Confirm access and retry only through a permitted retrieval surface; do not infer Googlebot behavior",
+          "classification": "observation"
+        }
+      ],
+      "analysis": "not-tested"
+    },
+    {
+      "url": "https://token-horizon.dev/docs/",
+      "fetched_at": "2026-11-18T08:58:16.485195+00:00",
+      "status": 403,
+      "body_sha256": "1614792e7431f23c1dce3f1dbd75a446401283a397908c137d3f043a0a888cea",
+      "observations": [
+        {
+          "code": "response_unavailable",
+          "detail": "Non-200, incomplete, failed or access-blocked response",
+          "next_check": "Confirm access and retry only through a permitted retrieval surface; do not infer Googlebot behavior",
+          "classification": "observation"
+        }
+      ],
+      "analysis": "not-tested"
+    },
+    {
+      "url": "https://token-horizon.dev/benchmarks/",
+      "fetched_at": "2026-11-18T08:58:16.515942+00:00",
+      "status": 403,
+      "body_sha256": "0a564f601fbb005957ada22af8ff97f2e1ba44fbe07295f0d236901a7522733c",
+      "observations": [
+        {
+          "code": "response_unavailable",
+          "detail": "Non-200, incomplete, failed or access-blocked response",
+          "next_check": "Confirm access and retry only through a permitted retrieval surface; do not infer Googlebot behavior",
+          "classification": "observation"
+        }
+      ],
+      "analysis": "not-tested"
+    },
+    {
+      "url": "https://token-horizon.dev/blog/",
+      "fetched_at": "2026-11-18T08:58:23.438620+00:00",
+      "status": null,
+      "body_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "observations": [
+        {
+          "code": "response_unavailable",
+          "detail": "Non-200, incomplete, failed or access-blocked response",
+          "next_check": "Confirm access and retry only through a permitted retrieval surface; do not infer Googlebot behavior",
+          "classification": "observation"
+        }
+      ],
+      "analysis": "not-tested"
+    },
+    {
+      "url": "https://token-horizon.dev/blog/pricing-evidence.html",
+      "fetched_at": "2026-11-18T08:58:23.451858+00:00",
+      "status": null,
+      "body_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "observations": [
+        {
+          "code": "response_unavailable",
+          "detail": "Non-200, incomplete, failed or access-blocked response",
+          "next_check": "Confirm access and retry only through a permitted retrieval surface; do not infer Googlebot behavior",
+          "classification": "observation"
+        }
+      ],
+      "analysis": "not-tested"
+    },
+    {
+      "url": "https://token-horizon.dev/blog/pricing-evidence",
+      "fetched_at": "2026-11-18T08:58:23.455807+00:00",
+      "status": null,
+      "body_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "observations": [
+        {
+          "code": "response_unavailable",
+          "detail": "Non-200, incomplete, failed or access-blocked response",
+          "next_check": "Confirm access and retry only through a permitted retrieval surface; do not infer Googlebot behavior",
+          "classification": "observation"
+        }
+      ],
+      "analysis": "not-tested"
+    },
+    {
+      "url": "https://token-horizon.dev/blog/why-token-horizon.html",
+      "fetched_at": "2026-11-18T08:58:31.460418+00:00",
+      "status": 403,
+      "body_sha256": "2aec0dc97e367a07a6cd95c55f9728e4513eb05fd829fd3a9ebe96f360edf89c",
+      "observations": [
+        {
+          "code": "response_unavailable",
+          "detail": "Non-200, incomplete, failed or access-blocked response",
+          "next_check": "Confirm access and retry only through a permitted retrieval surface; do not infer Googlebot behavior",
+          "classification": "observation"
+        }
+      ],
+      "analysis": "not-tested"
+    },
+    {
+      "url": "https://token-horizon.dev/blog/why-token-horizon",
+      "fetched_at": "2026-11-18T08:58:31.467424+00:00",
+      "status": 403,
+      "body_sha256": "7d2569f70d9a5106b48c6a4b5020938c831117f0bf91dceb1dc13898ebd77f25",
+      "observations": [
+        {
+          "code": "response_unavailable",
+          "detail": "Non-200, incomplete, failed or access-blocked response",
+          "next_check": "Confirm access and retry only through a permitted retrieval surface; do not infer Googlebot behavior",
+          "classification": "observation"
+        }
+      ],
+      "analysis": "not-tested"
+    },
+    {
+      "url": "https://token-horizon.dev/connect",
+      "fetched_at": "2026-11-18T08:58:31.470122+00:00",
+      "status": 403,
+      "body_sha256": "94b7858493c4fff4b8cdef52ff5109374a7538ea9f1222228c6faad17b4df0ce",
+      "observations": [
+        {
+          "code": "response_unavailable",
+          "detail": "Non-200, incomplete, failed or access-blocked response",
+          "next_check": "Confirm access and retry only through a permitted retrieval surface; do not infer Googlebot behavior",
+          "classification": "observation"
+        }
+      ],
+      "analysis": "not-tested"
+    },
+    {
+      "url": "https://token-horizon.dev/login/",
+      "fetched_at": "2026-11-18T08:58:34.631932+00:00",
+      "status": 403,
+      "body_sha256": "8835a6fef8651f35d73391abfc02823d35682517daee76c0f3df4e21afd9c1a4",
+      "observations": [
+        {
+          "code": "response_unavailable",
+          "detail": "Non-200, incomplete, failed or access-blocked response",
+          "next_check": "Confirm access and retry only through a permitted retrieval surface; do not infer Googlebot behavior",
+          "classification": "observation"
+        }
+      ],
+      "analysis": "not-tested"
+    },
+    {
+      "url": "https://token-horizon.dev/seo-audit-missing-page-20261118",
+      "fetched_at": "2026-11-18T08:58:34.673224+00:00",
+      "status": 403,
+      "body_sha256": "bf2a7bc59f59e3f594f2b4a37545874b74f95488a0cb4b3bf2a92cf82dd28df3",
+      "observations": [
+        {
+          "code": "response_unavailable",
+          "detail": "Non-200, incomplete, failed or access-blocked response",
+          "next_check": "Confirm access and retry only through a permitted retrieval surface; do not infer Googlebot behavior",
+          "classification": "observation"
+        }
+      ],
+      "analysis": "not-tested"
+    }
+  ],
+  "coverage": {
+    "rendered_dom": "not-tested",
+    "google_indexation": "not-tested",
+    "rich_results_eligibility": "not-tested",
+    "field_cwv": "not-tested",
+    "lab_performance": "not-tested",
+    "backlinks": "not-tested",
+    "keyword_volume": "not-tested",
+    "accessibility": "not-tested",
+    "content_quality": "not-tested",
+    "full_crawl": "not-tested"
+  },
+  "sample_size": 18,
+  "analyzed_raw_html": 0
+}

@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "mode": "offline-sample-relations",
+  "sample_size": 3,
+  "duplicate_capture_urls": 0,
+  "pages": [],
+  "sitemaps": [
+    {
+      "sample_index": 1,
+      "kind": "urlset",
+      "locations": 13,
+      "coverage_counts": {
+        "captured": 1,
+        "not-in-sample": 7,
+        "invalid-or-sensitive-target": 5
+      },
+      "captured_targets": [
+        {
+          "state": "captured",
+          "sample_index": 2,
+          "status": 200,
+          "analysis": "not-tested",
+          "noindex_observed": null
+        }
+      ],
+      "captured_target_limit_reached": false,
+      "interpretation": "sample matches only; absent sample does not mean broken"
+    }
+  ],
+  "coverage": {
+    "target_fetches": "not-performed",
+    "canonical_selection_by_google": "not-tested",
+    "hreflang_language_validity": "not-tested",
+    "full_sitemap_population": "not-tested"
+  }
+}

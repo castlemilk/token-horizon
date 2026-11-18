@@ -1,0 +1,72 @@
+{
+  "schema_version": 1,
+  "source_file": "research/live_early_capture.json",
+  "source_file_sha256": "d1819a246b773a92601c6f5f6218af59e4dc6962a88b9bd2186b6494edeba523",
+  "snapshot_file": "research/seo_skill_runtime/early_snapshot.json",
+  "snapshot_file_sha256": "f69cd1e64fcfc4db34daeae2de55f2e4ff0eea0478a72865a2db4a157e0cc95f",
+  "source_record_count": 3,
+  "included_count": 3,
+  "excluded_count": 0,
+  "included_mapping": [
+    {
+      "sample_index": 0,
+      "source_index": 0,
+      "url": "https://token-horizon.dev/robots.txt",
+      "fetched_at": "2026-11-18T08:11:53.000Z",
+      "capture_method": "GET",
+      "user_agent_original": "not recorded",
+      "user_agent_corrected": "TokenHorizon-ReadOnly-Research/1.0",
+      "user_agent_correction_basis": "Parent inspected original collector command; explicit UA.",
+      "cookies_sent": false,
+      "body_sha256_utf8": "2e557edfb514c978a3dfb28ecc1ced1f8b4cd2fc0b4fd876623ec199ba767424",
+      "authentication_sent": false,
+      "timestamp_basis": "response_date_header",
+      "capture_time_measured_locally": false
+    },
+    {
+      "sample_index": 1,
+      "source_index": 1,
+      "url": "https://token-horizon.dev/sitemap.xml",
+      "fetched_at": "2026-11-18T08:12:00.000Z",
+      "capture_method": "GET",
+      "user_agent_original": "not recorded",
+      "user_agent_corrected": "TokenHorizon-ReadOnly-Research/1.0",
+      "user_agent_correction_basis": "Parent inspected original collector command; explicit UA.",
+      "cookies_sent": false,
+      "body_sha256_utf8": "140865fdfa287ab10f37bc875bee7dc4be7a8eda0499680c3e49648c3f9d0356",
+      "authentication_sent": false,
+      "timestamp_basis": "response_date_header",
+      "capture_time_measured_locally": false
+    },
+    {
+      "sample_index": 2,
+      "source_index": 2,
+      "url": "https://token-horizon.dev/",
+      "fetched_at": "2026-11-18T08:12:12.000Z",
+      "capture_method": "GET",
+      "user_agent_original": "not recorded",
+      "user_agent_corrected": "TokenHorizon-ReadOnly-Research/1.0",
+      "user_agent_correction_basis": "Parent inspected original collector command; explicit UA.",
+      "cookies_sent": false,
+      "body_sha256_utf8": "a2a078ebad8b8c767fcd7ae00b742aa0aca916bf327b07a5b6ace456d2d2fd86",
+      "authentication_sent": false,
+      "timestamp_basis": "response_date_header",
+      "capture_time_measured_locally": false
+    }
+  ],
+  "excluded_records": [],
+  "conversion": "Subset only; no network, query stripping, URL normalization, HTML repair, timestamp invention or source-file modification. Only Content-Type/X-Robots-Tag headers copied; errors represented as truthy flag. Early/late captures kept separate.",
+  "code_revision": "0b456a340126e868559e0ce750ba7a2ccf855510",
+  "code_origin": "https://github.com/skunkworq/skunkworq-skills",
+  "code_modified": false,
+  "capture_metadata_correction": {
+    "basis": "Parent clarified original executed collector command and response headers; no new fetch or analyzer rerun.",
+    "method": "GET",
+    "user_agent": "TokenHorizon-ReadOnly-Research/1.0",
+    "cookies_sent": false,
+    "authentication_sent": false,
+    "timestamp_basis": "response_date_header",
+    "timestamp_limitation": "Supplied fetched_at values come from HTTP response Date headers, not a separately recorded local acquisition clock. Analyzer field name does not change that provenance.",
+    "homepage_truncation": "Collector requested up to 30000 bytes, but only first 20000 decoded characters were output; retained truncated:true."
+  }
+}
