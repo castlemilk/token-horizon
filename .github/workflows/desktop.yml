@@ -131,7 +131,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version-file: daemons/go/go.mod
+          go-version: '1.27.4'
           cache-dependency-path: daemons/go/go.sum
 
       - name: Verify native target
