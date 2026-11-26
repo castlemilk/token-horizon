@@ -123,7 +123,7 @@ jobs:
       - name: Set up native Node
         uses: actions/setup-node@v4
         with:
-          node-version: "24"
+          node-version-file: .nvmrc
           architecture: ${{ matrix.arch }}
           cache: npm
           cache-dependency-path: clients/app/package-lock.json
@@ -281,7 +281,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: "24"
+          node-version-file: .nvmrc
 
       - name: Download all three tested platform bundles
         uses: actions/download-artifact@v4
